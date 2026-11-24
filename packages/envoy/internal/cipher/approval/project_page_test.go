@@ -17,7 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess/projectaccesstest"
 	"github.com/sjawhar/envoy/internal/cipher/record"
-	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/memory"
 	"github.com/sjawhar/envoy/internal/logtest"
 )
 
@@ -34,13 +34,13 @@ func projectRig(t *testing.T, profiles ...string) (*rig, *projectaccesstest.Serv
 	dispatch := projectaccesstest.NewServer(t, map[string]projectaccesstest.Row{
 		privProject: {Visibility: "private", Owner: ada, Listed: []string{ben}},
 	}, nil)
-	tagged := func(name, owner string) awstest.LocalSecret {
+	tagged := func(name, owner string) memory.Secret {
 		s := policytest.Secret(name, owner, policy.TierHuman, strings.ToLower(name)+"-v1")
 		s.Tags[policy.TagProject] = privProject
 		return s
 	}
 	r := newRig(t, func(s *rigSetup) {
-		s.secrets = []awstest.LocalSecret{tagged("PRIV_SECRET", ada), tagged("PRIV_SHARED", policy.OwnerShared)}
+		s.secrets = []memory.Secret{tagged("PRIV_SECRET", ada), tagged("PRIV_SHARED", policy.OwnerShared)}
 		s.projects = projectaccess.New(dispatch.URL, dispatch.Account, nil)
 		if len(profiles) > 0 {
 			s.profiles = policytest.KindsFile(profiles...)
@@ -360,7 +360,7 @@ func TestADispatchOutageLeavesATaggedRequestUnavailableAndDecidesTheRest(t *test
 	r := newRig(t, func(s *rigSetup) {
 		shared := policytest.Secret("PRIV_SHARED", policy.OwnerShared, policy.TierHuman, "priv-shared-not-a-secret")
 		shared.Tags[policy.TagProject] = privProject
-		s.secrets = []awstest.LocalSecret{shared}
+		s.secrets = []memory.Secret{shared}
 		s.projects = access
 	})
 	plainSession, plainKey := r.benSession(t, "ben-plain-box")

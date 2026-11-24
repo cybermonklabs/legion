@@ -41,7 +41,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
-	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/memory"
 	"github.com/sjawhar/envoy/internal/cipher/store"
 	brokerstoretest "github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
@@ -89,7 +89,7 @@ func newContractRig(t *testing.T) *contractRig {
 	t.Helper()
 	brokerStore := brokerstoretest.Open(t)
 
-	local := awstest.NewLocal(
+	local := memory.New(
 		policytest.Secret("DEEL_API_KEY", contractApprover, policy.TierHuman, "deel-v1"),
 		// contractApprover's own sessions get it without asking.
 		policytest.Secret("AUTO_TOKEN", contractApprover, policy.TierAgent, "auto-v1"),
@@ -114,7 +114,7 @@ func newContractRig(t *testing.T) *contractRig {
 	}
 	enr.Chain = enroll.NewChainVerifier(brokerStore, brokerServer.URL, time.Minute)
 	reqMachine := &requests.Machine{
-		Store: brokerStore, Policy: cur, Secrets: policytest.Store(local),
+		Store: brokerStore, Policy: cur, Secrets: local,
 		PendingTTL: 12 * time.Hour,
 		Audience:   brokerServer.URL, Skew: time.Minute, Replay: enr.Replay,
 	}

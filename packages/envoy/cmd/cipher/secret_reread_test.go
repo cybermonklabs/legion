@@ -169,13 +169,13 @@ func typedWrite(t *testing.T, local *awstest.Local, form string) []string {
 		useStdin(t, login)
 		return []string{"create", "LOGIN_KEY", "--owner", "me", "--tier", "agent", "--type", policy.TypeGoogleLogin}
 	case "set":
-		local.Put(awstest.LocalSecret{Name: policytest.ID("LOGIN_KEY"), KmsKeyID: policytest.KeyARN,
-			Tags: policytest.TypeSecret("LOGIN_KEY", "ada@example.com", policy.TierAgent, policy.TypeGoogleLogin, "").Tags, Value: "old"})
+		local.Put(awstest.LocalSecret{Name: policytest.ID("LOGIN_KEY"), KmsKeyID: awstest.KeyARN,
+			Tags: awstest.TypeSecret("LOGIN_KEY", "ada@example.com", policy.TierAgent, policy.TypeGoogleLogin, "").Tags, Value: "old"})
 		useStdin(t, login+"\n")
 		return []string{"set", "LOGIN_KEY"}
 	default:
-		local.Put(awstest.LocalSecret{Name: policytest.ID("LOGIN_KEY"), KmsKeyID: policytest.KeyARN,
-			Tags: policytest.Secret("LOGIN_KEY", "ada@example.com", policy.TierAgent, "").Tags, Value: login})
+		local.Put(awstest.LocalSecret{Name: policytest.ID("LOGIN_KEY"), KmsKeyID: awstest.KeyARN,
+			Tags: awstest.Secret("LOGIN_KEY", "ada@example.com", policy.TierAgent, "").Tags, Value: login})
 		return []string{"retag", "LOGIN_KEY", "--type", policy.TypeGoogleLogin}
 	}
 }
@@ -494,7 +494,7 @@ func TestASecretWriteWithNoIdentityTradesNothingAndWaitsOnNothing(t *testing.T) 
 	for _, row := range []string{"a launcher still enrolling", "a machine with no session yet"} {
 		t.Run(row, func(t *testing.T) {
 			local := awstest.NewLocal()
-			startSecretBrokerWith(t, Settings{SecretsPrefix: policytest.Prefix, KMSKeyARN: policytest.KeyARN, AWSAccountID: testAccount,
+			startSecretBrokerWith(t, Settings{SecretsPrefix: policytest.Prefix, KMSKeyARN: awstest.KeyARN, AWSAccountID: testAccount,
 				AWSRegion: "us-east-1", SecretTypeTag: true, GoogleExchangeAudience: "agent-secrets-vm"}, servedBy(local))
 			withNoBrokerIdentity(t)
 			metadata := startMetadataServer(t, "machine@example.iam.gserviceaccount.com")

@@ -1,9 +1,8 @@
-// Package policytest builds a live policy for tests: secrets held by a awstest.Local, under one
-// namespace and encrypted with one agent-secrets key, loaded by the real policy.Loader.
+// Package policytest builds a live policy for tests: secrets held by a memory store, under one
+// namespace, loaded by the real policy.Loader.
 package policytest
 
 import (
-	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
@@ -15,43 +14,32 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
-	smtypes "github.com/aws/aws-sdk-go-v2/service/secretsmanager/types"
-
 	"github.com/sjawhar/envoy/internal/cipher/policy"
-	awsstore "github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
-	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/memory"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/metrics"
 )
 
 // Prefix is the namespace every Secret sits under.
-const (
-	Prefix = "example/agent-secrets/"
-	// KeyARN is the agent-secrets key every Secret is encrypted with (an AWS documentation
-	// account).
-	KeyARN = "arn:aws:kms:us-east-1:111122223333:key/1234abcd-12ab-34cd-56ef-1234567890ab"
-)
+const Prefix = "example/agent-secrets/"
 
 // Secret is the namespace secret a session asks for as name (an environment-variable name such as
-// DEEL_API_KEY), tagged with owner and tier, encrypted with KeyARN, holding value.
-func Secret(name, owner, tier, value string) awstest.LocalSecret {
-	return awstest.LocalSecret{
-		Name:     ID(name),
-		KmsKeyID: KeyARN,
-		Tags:     map[string]string{policy.TagOwner: owner, policy.TagTier: tier},
-		Value:    value,
+// DEEL_API_KEY), tagged with owner and tier, holding value, on the agent-secrets key.
+func Secret(name, owner, tier, value string) memory.Secret {
+	return memory.Secret{
+		Name:  ID(name),
+		Tags:  map[string]string{policy.TagOwner: owner, policy.TagTier: tier},
+		Value: value,
 	}
 }
 
 // Judged is s with a judge tag of seconds (policy.TagJudge), which makes it a key the model judge
 // decides for that long, and a guidance tag of guidance (policy.TagGuidance) unless guidance is "".
-func Judged(s awstest.LocalSecret, seconds int, guidance string) awstest.LocalSecret {
+func Judged(s memory.Secret, seconds int, guidance string) memory.Secret {
 	s.Tags[policy.TagJudge] = strconv.Itoa(seconds)
 	if guidance != "" {
 		s.Tags[policy.TagGuidance] = guidance
@@ -63,15 +51,13 @@ func Judged(s awstest.LocalSecret, seconds int, guidance string) awstest.LocalSe
 // guidance unless it is "", as its owner's `agent-secrets secret retag --judge --guidance` does,
 // and has cur read the namespace again, so the policy a test's broker holds gives the judge that
 // key from here on.
-func JudgeTags(t testing.TB, store *awstest.Local, cur *policy.Current, name string, seconds int, guidance string) {
+func JudgeTags(t testing.TB, store *memory.Store, cur *policy.Current, name string, seconds int, guidance string) {
 	t.Helper()
-	tags := []smtypes.Tag{{Key: aws.String(policy.TagJudge), Value: aws.String(strconv.Itoa(seconds))}}
-	if guidance != "" {
-		tags = append(tags, smtypes.Tag{Key: aws.String(policy.TagGuidance), Value: aws.String(guidance)})
+	secret, ok := store.Get(ID(name))
+	if !ok {
+		t.Fatalf("tag %s with judge %d: the store holds no %s", name, seconds, ID(name))
 	}
-	if _, err := store.TagResource(t.Context(), &secretsmanager.TagResourceInput{SecretId: aws.String(ID(name)), Tags: tags}); err != nil {
-		t.Fatalf("tag %s with judge %d: %v", name, seconds, err)
-	}
+	store.Put(Judged(secret, seconds, guidance))
 	if err := cur.Refresh(t.Context()); err != nil {
 		t.Fatalf("policy.Current.Refresh after tagging %s: %v", name, err)
 	}
@@ -95,7 +81,7 @@ const FixtureMaxGrant = "1h"
 // rules demand — its owner alone — and the max-grant its type must set (FixtureMaxGrant), so the
 // fixture loads for an owner who is a person or a group; a test of those refusals edits the
 // tags. An anthropic-federation secret is human tier only, so it loads only for tier human.
-func TypeSecret(name, owner, tier, secretType, value string) awstest.LocalSecret {
+func TypeSecret(name, owner, tier, secretType, value string) memory.Secret {
 	secret := Secret(name, owner, tier, value)
 	secret.Tags[policy.TagType] = secretType
 	if policy.TypeNeedsGitHubOwners(secretType) {
@@ -207,16 +193,22 @@ func UnsignableAppKey(t testing.TB) string {
 // FixtureMaxGrant: the shape of a secret whose list says who may ask for it, with a cap short
 // enough that the type and admin rules which demand one (policy.TagRules) are met as well. A test
 // of a refusal those rules answer edits the tags of what this returns.
-func ListedSecret(name, owner, tier, requesters, value string) awstest.LocalSecret {
+func ListedSecret(name, owner, tier, requesters, value string) memory.Secret {
 	secret := Secret(name, owner, tier, value)
 	secret.Tags[policy.TagRequesters] = requesters
 	secret.Tags[policy.TagMaxGrant] = FixtureMaxGrant
 	return secret
 }
 
-// ID is the Secrets Manager name of the secret a session asks for as name.
+// ID is the name in the store of the secret a session asks for as name.
 func ID(name string) string {
 	return Prefix + mustSlug(name)
+}
+
+// Source is the source the policy serves the secret a session asks for as name by: the memory
+// store's own (memory.Source) of its ID.
+func Source(name string) string {
+	return memory.Source(ID(name))
 }
 
 // mustSlug is name's slug under the prefix; a fixture naming no valid secret name is a test bug.
@@ -228,54 +220,14 @@ func mustSlug(name string) string {
 	return slug
 }
 
-// Store is the aws.Store over store, keyed on KeyARN: what Loader and every rig read with.
-func Store(store *awstest.Local) awsstore.Store {
-	return awsstore.Store{Client: store, KMS: store, KeyARN: KeyARN}
-}
-
-// StoreThrough is Store with client, a wrapper over store that counts, delays or fails its Secrets
-// Manager calls, in place of store itself.
-func StoreThrough(store *awstest.Local, client awsstore.SecretsManagerAPI) awsstore.Store {
-	return awsstore.Store{Client: client, KMS: store, KeyARN: KeyARN}
-}
-
-// CountingDescriber counts the DescribeSecret calls a reread or a reload makes through it.
-type CountingDescriber struct {
-	awsstore.SecretsManagerAPI
-	Calls atomic.Int64
-}
-
-func (c *CountingDescriber) DescribeSecret(ctx context.Context, in *secretsmanager.DescribeSecretInput, opts ...func(*secretsmanager.Options)) (*secretsmanager.DescribeSecretOutput, error) {
-	c.Calls.Add(1)
-	return c.SecretsManagerAPI.DescribeSecret(ctx, in, opts...)
-}
-
-// HeldDescriber holds each DescribeSecret until Release closes, reporting the secret name on
-// Entered before it waits. It lets a test control exactly when a reread's metadata read returns.
-type HeldDescriber struct {
-	awsstore.SecretsManagerAPI
-	Entered chan<- string
-	Release <-chan struct{}
-}
-
-func (d HeldDescriber) DescribeSecret(ctx context.Context, in *secretsmanager.DescribeSecretInput, opts ...func(*secretsmanager.Options)) (*secretsmanager.DescribeSecretOutput, error) {
-	d.Entered <- aws.ToString(in.SecretId)
-	select {
-	case <-d.Release:
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	}
-	return d.SecretsManagerAPI.DescribeSecret(ctx, in, opts...)
-}
-
 // Loader is the policy.Loader over store, with services registered.
-func Loader(store *awstest.Local, services ...string) policy.Loader {
-	return policy.Loader{Store: Store(store), Prefix: Prefix, Services: services}
+func Loader(store secretstore.Store, services ...string) policy.Loader {
+	return policy.Loader{Store: store, Prefix: Prefix, Services: services}
 }
 
 // Current loads store's policy, as the broker does at boot; Refresh rereads it after store
 // changes. It stops reloading when t ends.
-func Current(t testing.TB, store *awstest.Local, services ...string) *policy.Current {
+func Current(t testing.TB, store secretstore.Store, services ...string) *policy.Current {
 	t.Helper()
 	return current(t, Loader(store, services...))
 }
@@ -297,7 +249,7 @@ func Profiles(t testing.TB, file string, services ...string) policy.Profiles {
 
 // ProfiledCurrent is Current with file as the deployment's profiles file (Profiles), so the
 // policy it loads serves those profiles and refuses each that fails against its source.
-func ProfiledCurrent(t testing.TB, store *awstest.Local, file string, services ...string) *policy.Current {
+func ProfiledCurrent(t testing.TB, store secretstore.Store, file string, services ...string) *policy.Current {
 	t.Helper()
 	loader := Loader(store, services...)
 	loader.Profiles = Profiles(t, file, services...)
@@ -348,14 +300,14 @@ func KindsFileOf(kinds string, profiles ...string) string {
 
 // Proxied is s with a proxy tag naming kind (policy.TagProxy), which puts it behind Cipher's proxy
 // under that kind of the profiles file.
-func Proxied(s awstest.LocalSecret, kind string) awstest.LocalSecret {
+func Proxied(s memory.Secret, kind string) memory.Secret {
 	s.Tags[policy.TagProxy] = kind
 	return s
 }
 
 // Narrowed is s with the proxy-narrowed tag (policy.TagProxyNarrowed), which has the policy serve it
 // through exactly one profile, and one with an allow.
-func Narrowed(s awstest.LocalSecret) awstest.LocalSecret {
+func Narrowed(s memory.Secret) memory.Secret {
 	s.Tags[policy.TagProxyNarrowed] = policy.ProxyNarrowedTrue
 	return s
 }
@@ -364,14 +316,14 @@ func Narrowed(s awstest.LocalSecret) awstest.LocalSecret {
 // registers them: broker_policy_store_reads_total counted from the first load on
 // (policy.NewStoreReads), and broker_unservable_secrets once that load answered
 // (policy.NewUnservableSecrets).
-func MeteredCurrent(t testing.TB, store *awstest.Local, registry *metrics.Registry, services ...string) *policy.Current {
+func MeteredCurrent(t testing.TB, store secretstore.Store, registry *metrics.Registry, services ...string) *policy.Current {
 	t.Helper()
 	return MeteredProfiledCurrent(t, store, registry, "", services...)
 }
 
 // MeteredProfiledCurrent is MeteredCurrent with file as the deployment's profiles file (Profiles),
 // or none for "", as BROKER_PROFILES_FILE is set or not.
-func MeteredProfiledCurrent(t testing.TB, store *awstest.Local, registry *metrics.Registry, file string, services ...string) *policy.Current {
+func MeteredProfiledCurrent(t testing.TB, store secretstore.Store, registry *metrics.Registry, file string, services ...string) *policy.Current {
 	t.Helper()
 	loader := Loader(store, services...)
 	if file != "" {

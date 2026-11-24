@@ -25,8 +25,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
-	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
-	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/memory"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 )
 
@@ -134,7 +133,7 @@ func requireJudgedAlone(t *testing.T, watched *judged, id string) {
 // names its keys here. A request m wrote before the call, while m ran no judge, is a person's.
 func watchJudgeOf(t *testing.T, m *Machine, names ...string) *judged {
 	t.Helper()
-	local := m.Secrets.(aws.Store).Client.(*awstest.Local)
+	local := m.Secrets.(*memory.Store)
 	for _, name := range names {
 		policytest.JudgeTags(t, local, m.Policy, name, 900, "")
 	}

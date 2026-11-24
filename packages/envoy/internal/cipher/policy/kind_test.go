@@ -12,12 +12,12 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
-	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/memory"
 )
 
 const typeOwner = "ada@example.com"
 
-func typeSecret(name, secretType, value string) awstest.LocalSecret {
+func typeSecret(name, secretType, value string) memory.Secret {
 	return policytest.TypeSecret(name, typeOwner, policy.TierAgent, secretType, value)
 }
 
@@ -37,7 +37,7 @@ func TestTypeSecretsAreServed(t *testing.T) {
 	googleLogin := typeSecret("GOOGLE_LOGIN_KEY", policy.TypeGoogleLogin, "google-login-value")
 	googleLogin.Tags[policy.TagMaxGrant] = "1h"
 	azureLogin := typeSecret("AZURE_LOGIN_KEY", "azure-login", `{"tenant_id":"tenant","client_id":"client"}`)
-	store := awstest.NewLocal(githubApp, googleLogin, azureLogin)
+	store := memory.New(githubApp, googleLogin, azureLogin)
 
 	set, err := policytest.Loader(store).Load(context.Background())
 	if err != nil {
@@ -54,7 +54,7 @@ func TestTypeSecretsAreServed(t *testing.T) {
 			t.Errorf("Load did not serve %s", name)
 			continue
 		}
-		store := awstest.ARN(policytest.ID(name))
+		store := policytest.Source(name)
 		if want := policy.TypeSource(secretType, store); secret.Source != want {
 			t.Errorf("%s Source = %q, want %q", name, secret.Source, want)
 		}
@@ -127,7 +127,7 @@ func TestParseScopes(t *testing.T) {
 }
 
 func TestUnknownTypeIsRefused(t *testing.T) {
-	store := awstest.NewLocal(typeSecret("UNKNOWN_TYPE_KEY", "other", "value"))
+	store := memory.New(typeSecret("UNKNOWN_TYPE_KEY", "other", "value"))
 
 	set, err := policytest.Loader(store).Load(context.Background())
 	if err != nil {
@@ -164,7 +164,7 @@ func TestEveryTypeDecodesAValueThroughParseValue(t *testing.T) {
 }
 
 func TestTypeSecretWithoutValueIsRefused(t *testing.T) {
-	store := awstest.NewLocal(typeSecret("EMPTY_TYPE_KEY", policy.TypeGitHubApp, ""))
+	store := memory.New(typeSecret("EMPTY_TYPE_KEY", policy.TypeGitHubApp, ""))
 
 	set, err := policytest.Loader(store).Load(context.Background())
 	if err != nil {
@@ -179,7 +179,7 @@ func TestTypeSecretWithoutValueIsRefused(t *testing.T) {
 func TestMalformedMaxGrantIsRefused(t *testing.T) {
 	secret := typeSecret("BAD_MAX_GRANT", policy.TypeGoogleLogin, "value")
 	secret.Tags[policy.TagMaxGrant] = "soon"
-	store := awstest.NewLocal(secret)
+	store := memory.New(secret)
 
 	set, err := policytest.Loader(store).Load(context.Background())
 	if err != nil {
@@ -193,7 +193,7 @@ func TestMalformedMaxGrantIsRefused(t *testing.T) {
 
 func TestTypeRetagChangesVersionAndSource(t *testing.T) {
 	first := typeSecret("MUTABLE_TYPE_KEY", policy.TypeGitHubApp, "value")
-	store := awstest.NewLocal(first)
+	store := memory.New(first)
 	loader := policytest.Loader(store)
 
 	before, err := loader.Load(context.Background())
@@ -221,8 +221,8 @@ func TestTypeRetagChangesVersionAndSource(t *testing.T) {
 }
 
 func TestPlainSecretDigestIsUnchanged(t *testing.T) {
-	store := awstest.NewLocal(policytest.Secret("PLAIN_KEY", typeOwner, policy.TierAgent, "value"))
-	set, err := policytest.Loader(store).Load(context.Background())
+	store := memory.New(policytest.Secret("PLAIN_KEY", typeOwner, policy.TierAgent, "value"))
+	set, err := policytest.Loader(arnSourced{store}).Load(context.Background())
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -235,7 +235,7 @@ func TestPlainSecretDigestIsUnchanged(t *testing.T) {
 func TestLegacyMintTagIsIgnoredAndEmptySecretIsRefused(t *testing.T) {
 	secret := policytest.Secret("LEGACY_MINT_KEY", typeOwner, policy.TierAgent, "")
 	secret.Tags["mint-service-account"] = "ignored"
-	store := awstest.NewLocal(secret)
+	store := memory.New(secret)
 
 	set, err := policytest.Loader(store).Load(context.Background())
 	if err != nil {
@@ -249,11 +249,11 @@ func TestLegacyMintTagIsIgnoredAndEmptySecretIsRefused(t *testing.T) {
 
 func TestEmptyTypeIsAPlainSecret(t *testing.T) {
 	secret := typeSecret("EMPTY_TYPE", "", "value")
-	set, err := policytest.Loader(awstest.NewLocal(secret)).Load(context.Background())
+	set, err := policytest.Loader(memory.New(secret)).Load(context.Background())
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if got := set.Secrets["EMPTY_TYPE"]; got.Source != awstest.ARN(policytest.ID("EMPTY_TYPE")) {
+	if got := set.Secrets["EMPTY_TYPE"]; got.Source != policytest.Source("EMPTY_TYPE") {
 		t.Fatalf("EMPTY_TYPE = %+v, want plain stored source", got)
 	}
 }
@@ -269,7 +269,7 @@ func TestAGitHubAppSecretWithoutOwnersIsRefused(t *testing.T) {
 			if owners != nil {
 				secret.Tags[policy.TagGitHubOwners] = *owners
 			}
-			set, err := policytest.Loader(awstest.NewLocal(secret)).Load(context.Background())
+			set, err := policytest.Loader(memory.New(secret)).Load(context.Background())
 			if err != nil {
 				t.Fatalf("Load: %v", err)
 			}
@@ -290,7 +290,7 @@ func TestGitHubOwnersAreReadWithoutRegardToCase(t *testing.T) {
 		secret.Tags[policy.TagGitHubOwners] = owners
 		login := typeSecret("LOGIN_KEY", policy.TypeGoogleLogin, "value")
 		login.Tags[policy.TagGitHubOwners] = "ignored"
-		set, err := policytest.Loader(awstest.NewLocal(secret, login)).Load(context.Background())
+		set, err := policytest.Loader(memory.New(secret, login)).Load(context.Background())
 		if err != nil {
 			t.Fatalf("Load: %v", err)
 		}
@@ -322,7 +322,7 @@ func TestAGitHubOwnersCommaIsRefused(t *testing.T) {
 		t.Run(owners, func(t *testing.T) {
 			secret := typeSecret("APP_KEY", policy.TypeGitHubApp, "value")
 			secret.Tags[policy.TagGitHubOwners] = owners
-			set, err := policytest.Loader(awstest.NewLocal(secret)).Load(context.Background())
+			set, err := policytest.Loader(memory.New(secret)).Load(context.Background())
 			if err != nil {
 				t.Fatalf("Load: %v", err)
 			}
@@ -362,7 +362,7 @@ func TestAGitHubOwnerThatIsNoGitHubLoginIsRefused(t *testing.T) {
 		t.Run(owners, func(t *testing.T) {
 			secret := typeSecret("APP_KEY", policy.TypeGitHubApp, "value")
 			secret.Tags[policy.TagGitHubOwners] = "acme-org " + owners
-			set, err := policytest.Loader(awstest.NewLocal(secret)).Load(context.Background())
+			set, err := policytest.Loader(memory.New(secret)).Load(context.Background())
 			if err != nil {
 				t.Fatalf("Load: %v", err)
 			}
@@ -393,7 +393,7 @@ func TestAGitHubOwnerThatIsNoGitHubLoginIsRefused(t *testing.T) {
 	// secret could name and so one the broker minted no token for.
 	managed := typeSecret("MANAGED_APP_KEY", policy.TypeGitHubApp, "value")
 	managed.Tags[policy.TagGitHubOwners] = "mona-cat_octo acme-org Ada_Lovelace"
-	set, err := policytest.Loader(awstest.NewLocal(secret, managed)).Load(context.Background())
+	set, err := policytest.Loader(memory.New(secret, managed)).Load(context.Background())
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -424,12 +424,12 @@ func TestTheRollbackGuardIsRefusedByEarlierBrokersAndIgnoredHere(t *testing.T) {
 	for _, secretType := range policy.Types {
 		secret := typeSecret("GUARDED_KEY", secretType, "value")
 		secret.Tags[policy.TagRollbackGuard] = policy.RollbackGuardValue
-		guarded, err := policytest.Loader(awstest.NewLocal(secret)).Load(context.Background())
+		guarded, err := policytest.Loader(memory.New(secret)).Load(context.Background())
 		if err != nil {
 			t.Fatalf("Load: %v", err)
 		}
 		delete(secret.Tags, policy.TagRollbackGuard)
-		bare, err := policytest.Loader(awstest.NewLocal(secret)).Load(context.Background())
+		bare, err := policytest.Loader(memory.New(secret)).Load(context.Background())
 		if err != nil {
 			t.Fatalf("Load: %v", err)
 		}
@@ -446,7 +446,7 @@ func TestDefaultGrantTag(t *testing.T) {
 	good.Tags[policy.TagDefaultGrant] = policy.DefaultGrantSession
 	bad := typeSecret("BAD_KEY", policy.TypeGoogleLogin, "v")
 	bad.Tags[policy.TagDefaultGrant] = "forever"
-	set, err := policytest.Loader(awstest.NewLocal(good, bad)).Load(context.Background())
+	set, err := policytest.Loader(memory.New(good, bad)).Load(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}

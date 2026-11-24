@@ -92,7 +92,7 @@ const (
 	multiprocessNewOwner = "grace@example.com"
 )
 
-// fakeSecretsJSON is the secret store every broker here is started over: the memory store's file
+// memorySecretsJSON is the secret store every broker here is started over: the memory store's file
 // (BROKER_MEMORY_SECRETS_FILE) holding the one agent-tier secret, owned by owner. A row that
 // retags the secret writes this same function's output with another owner, so what it writes
 // differs from what the processes booted on in the owner tag and nothing else — which is what a
@@ -102,18 +102,18 @@ const (
 // the policy loader refuses a secret under another prefix, a refusal that would show up as nothing
 // but this one secret never being served, so the fixture and the configuration name one value
 // rather than two that must agree.
-func fakeSecretsJSON(owner string) string {
+func memorySecretsJSON(owner string) string {
 	return `{"secrets": [
 		{"name": "` + testSecretsPrefix + multiprocessSecretSlug + `", "tags": {"owner": "` + owner + `", "tier": "agent"}, "value": "` + multiprocessSecretValue + `"}
 	]}`
 }
 
-// writeFakeSecrets writes the store's content to path, as a write to the real store would land:
+// writeMemorySecrets writes the store's content to path, as a write to the real store would land:
 // the brokers read the file again on every list and every describe, so this is the only kind of
 // "the store changed" these rows can stage.
-func writeFakeSecrets(t *testing.T, path, owner string) {
+func writeMemorySecrets(t *testing.T, path, owner string) {
 	t.Helper()
-	if err := os.WriteFile(path, []byte(fakeSecretsJSON(owner)), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(memorySecretsJSON(owner)), 0o600); err != nil {
 		t.Fatalf("write the memory secrets file %s: %v", path, err)
 	}
 }
@@ -251,7 +251,7 @@ func startBrokerFleet(t *testing.T, binary string, drains []time.Duration, env .
 		caller: newListedCaller(t),
 		env:    env,
 	}
-	writeFakeSecrets(t, fleet.MemorySecretsFile, multiprocessPerson)
+	writeMemorySecrets(t, fleet.MemorySecretsFile, multiprocessPerson)
 	for _, drain := range drains {
 		fleet.Processes = append(fleet.Processes, fleet.launch(t, drain))
 	}
@@ -525,7 +525,7 @@ func startSoloBroker(t *testing.T, binary string, drain time.Duration) *soloBrok
 	t.Helper()
 	solo := &soloBroker{DatabaseURL: storetest.DatabaseURL(t)}
 	memorySecretsFile := filepath.Join(t.TempDir(), "memory-secrets.json")
-	writeFakeSecrets(t, memorySecretsFile, multiprocessPerson)
+	writeMemorySecrets(t, memorySecretsFile, multiprocessPerson)
 	caller := newListedCaller(t)
 	solo.Process = startBroker(t, brokerOptions{
 		Binary: binary,
@@ -833,7 +833,7 @@ func TestTwoBrokers(t *testing.T) {
 				b.Addr, multiprocessSecret, baseline.Status, baseline.Body)
 		}
 
-		writeFakeSecrets(t, pair.MemorySecretsFile, multiprocessNewOwner)
+		writeMemorySecrets(t, pair.MemorySecretsFile, multiprocessNewOwner)
 
 		if control := ask(); control.State != "granted" {
 			t.Fatalf("with the store retagged but nothing reread, B (%s) already answered %d %s; want it still granted — a write to the store changes what a pod serves only once something makes that pod read it again",

@@ -10,14 +10,14 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
-	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/memory"
 )
 
 // kindsProfiled is the live policy of a store holding stored, under the profiles file holding
 // profiles and kinds, a JSON list of kinds (policytest.KindsFileOf), with daemonService registered.
-func kindsProfiled(t *testing.T, kinds string, stored []awstest.LocalSecret, profiles ...string) *policy.Set {
+func kindsProfiled(t *testing.T, kinds string, stored []memory.Secret, profiles ...string) *policy.Set {
 	t.Helper()
-	return policytest.ProfiledCurrent(t, awstest.NewLocal(stored...), policytest.KindsFileOf(kinds, profiles...), daemonService).Get()
+	return policytest.ProfiledCurrent(t, memory.New(stored...), policytest.KindsFileOf(kinds, profiles...), daemonService).Get()
 }
 
 // refusedSecret fails t unless set refuses the stored secret name by its own id for reason, and
@@ -52,7 +52,7 @@ func servedSecret(t *testing.T, set *policy.Set, name string) policy.Secret {
 // kind, no fingerprint, no binding, and the version of a deployment before the kinds.
 func TestAProxyTagPutsASecretBehindItsKind(t *testing.T) {
 	tagged := policytest.Proxied(policytest.Secret("SLACK_TOKEN", appOwner, policy.TierAgent, "xoxb-v1"), "slack")
-	store := awstest.NewLocal(tagged)
+	store := memory.New(tagged)
 	loader := policytest.Loader(store, daemonService)
 	loader.Profiles = policytest.Profiles(t, policytest.KindsFile(), daemonService)
 	for name, set := range map[string]*policy.Set{
@@ -76,12 +76,12 @@ func TestAProxyTagPutsASecretBehindItsKind(t *testing.T) {
 	}
 	t.Run("the control: no proxy tag", func(t *testing.T) {
 		bare := policytest.Secret("SLACK_TOKEN", appOwner, policy.TierAgent, "xoxb-v1")
-		set := policytest.ProfiledCurrent(t, awstest.NewLocal(bare), policytest.KindsFile(), daemonService).Get()
+		set := policytest.ProfiledCurrent(t, memory.New(bare), policytest.KindsFile(), daemonService).Get()
 		secret := servedSecret(t, set, "SLACK_TOKEN")
 		if secret.Proxy != "" || secret.Way != "" || secret.ProfileDigest != "" || set.ProxyRules().Lookup("SLACK_TOKEN") != nil {
 			t.Errorf("an untagged SLACK_TOKEN = %+v, bound %+v; want it behind no kind", secret, set.ProxyRules().Lookup("SLACK_TOKEN"))
 		}
-		if before := policytest.Current(t, awstest.NewLocal(policytest.Secret("SLACK_TOKEN", appOwner, policy.TierAgent, "xoxb-v1"))).Get(); before.Version != set.Version {
+		if before := policytest.Current(t, memory.New(policytest.Secret("SLACK_TOKEN", appOwner, policy.TierAgent, "xoxb-v1"))).Get(); before.Version != set.Version {
 			t.Errorf("an untagged secret under a kinds file moved the version from %s to %s", before.Version, set.Version)
 		}
 	})
@@ -105,20 +105,20 @@ func must[T any](v T, err error) T {
 // with the same detail.
 func TestEachProxyTagRefusalNamesWhatIsWrong(t *testing.T) {
 	const capped = `[{"name": "capped", "hosts": ["api.example.com"], "ways": ["swap"], "max_grant": "12h"}]`
-	withTags := func(s awstest.LocalSecret, tags map[string]string) awstest.LocalSecret {
+	withTags := func(s memory.Secret, tags map[string]string) memory.Secret {
 		for k, v := range tags {
 			s.Tags[k] = v
 		}
 		return s
 	}
-	plain := func() awstest.LocalSecret { return policytest.Secret("ROW_KEY", appOwner, policy.TierAgent, "row-v1") }
-	azure := func() awstest.LocalSecret {
+	plain := func() memory.Secret { return policytest.Secret("ROW_KEY", appOwner, policy.TierAgent, "row-v1") }
+	azure := func() memory.Secret {
 		return policytest.TypeSecret("ROW_KEY", appOwner, policy.TierAgent, policy.TypeAzureLogin, policytest.TypeValue(policy.TypeAzureLogin))
 	}
 	for _, row := range []struct {
 		name    string
 		kinds   string
-		secret  awstest.LocalSecret
+		secret  memory.Secret
 		reason  string
 		details []string
 	}{
@@ -132,7 +132,7 @@ func TestEachProxyTagRefusalNamesWhatIsWrong(t *testing.T) {
 		{"an empty proxy-narrowed", policytest.Kinds, withTags(plain(), map[string]string{policy.TagProxyNarrowed: ""}), policy.ReasonProxyNarrowedMalformed, []string{`""`}},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			set := kindsProfiled(t, row.kinds, []awstest.LocalSecret{row.secret})
+			set := kindsProfiled(t, row.kinds, []memory.Secret{row.secret})
 			refusal := refusedSecret(t, set, "ROW_KEY", row.reason)
 			for _, want := range row.details {
 				if !strings.Contains(refusal.Detail, want) {
@@ -145,7 +145,7 @@ func TestEachProxyTagRefusalNamesWhatIsWrong(t *testing.T) {
 
 			// A reread finds the same refusal, detail and all: the secret starts served, the
 			// store is retagged, and RefreshOne merges what LoadOne reads.
-			store := awstest.NewLocal(plain())
+			store := memory.New(plain())
 			cur := policytest.ProfiledCurrent(t, store, policytest.KindsFileOf(row.kinds), daemonService)
 			servedSecret(t, cur.Get(), "ROW_KEY")
 			store.Put(row.secret)
@@ -160,7 +160,7 @@ func TestEachProxyTagRefusalNamesWhatIsWrong(t *testing.T) {
 	t.Run("the controls", func(t *testing.T) {
 		for name, c := range map[string]struct {
 			kinds  string
-			secret awstest.LocalSecret
+			secret memory.Secret
 			way    string
 		}{
 			"a stored value under aws signs":            {policytest.Kinds, withTags(plain(), map[string]string{policy.TagProxy: "aws"}), proxyrules.WaySign},
@@ -173,7 +173,7 @@ func TestEachProxyTagRefusalNamesWhatIsWrong(t *testing.T) {
 				if c.secret.Tags[policy.TagProxyNarrowed] != "" {
 					profiles = append(profiles, `{"name": "ROW_KEY", "allow": [{"method": "GET", "pathPrefix": "/"}]}`)
 				}
-				set := kindsProfiled(t, c.kinds, []awstest.LocalSecret{c.secret}, profiles...)
+				set := kindsProfiled(t, c.kinds, []memory.Secret{c.secret}, profiles...)
 				secret, served := set.Secrets["ROW_KEY"]
 				if !served || secret.Way != c.way {
 					t.Fatalf("ROW_KEY served %t as %+v, refused %+v; want it served by way %s", served, secret, set.Refused[policytest.ID("ROW_KEY")], c.way)
@@ -221,11 +221,11 @@ func TestWayOfTakesTheWayOfEachType(t *testing.T) {
 // string's kind is held to it as a tagged source is: a way its kind's ways hold, and a grant cap
 // within its kind's max_grant, its own maxGrant over its source's.
 func TestAProxyStringServesAProfileUntilItsSourceIsTagged(t *testing.T) {
-	plain := func() awstest.LocalSecret {
+	plain := func() memory.Secret {
 		return policytest.Secret("PLAIN_KEY", appOwner, policy.TierAgent, "plain-v1")
 	}
 	t.Run("a string alone", func(t *testing.T) {
-		set := kindsProfiled(t, policytest.Kinds, []awstest.LocalSecret{plain()}, `{"name": "PLAIN_READ", "source": "PLAIN_KEY", "proxy": "github"}`)
+		set := kindsProfiled(t, policytest.Kinds, []memory.Secret{plain()}, `{"name": "PLAIN_READ", "source": "PLAIN_KEY", "proxy": "github"}`)
 		if got := servedProfile(t, set, "PLAIN_READ"); got.Proxy != "github" || got.Way != proxyrules.WaySwap {
 			t.Errorf("PLAIN_READ is served behind %q by way %q; want github, swap", got.Proxy, got.Way)
 		}
@@ -234,7 +234,7 @@ func TestAProxyStringServesAProfileUntilItsSourceIsTagged(t *testing.T) {
 		}
 	})
 	t.Run("a string naming another kind than the source's tag", func(t *testing.T) {
-		set := kindsProfiled(t, policytest.Kinds, []awstest.LocalSecret{policytest.Proxied(plain(), "slack")}, `{"name": "PLAIN_READ", "source": "PLAIN_KEY", "proxy": "github"}`)
+		set := kindsProfiled(t, policytest.Kinds, []memory.Secret{policytest.Proxied(plain(), "slack")}, `{"name": "PLAIN_READ", "source": "PLAIN_KEY", "proxy": "github"}`)
 		refusal := refusedProfile(t, set, "PLAIN_READ", policy.ReasonProxyKindConflict)
 		if !strings.Contains(refusal.Detail, "github") || !strings.Contains(refusal.Detail, "slack") {
 			t.Errorf("the conflict's detail %q names not both kinds", refusal.Detail)
@@ -242,7 +242,7 @@ func TestAProxyStringServesAProfileUntilItsSourceIsTagged(t *testing.T) {
 	})
 	t.Run("a string naming the source's tag's kind", func(t *testing.T) {
 		logged := policytest.CaptureLog(t)
-		store := awstest.NewLocal(policytest.Proxied(plain(), "github"))
+		store := memory.New(policytest.Proxied(plain(), "github"))
 		cur := policytest.ProfiledCurrent(t, store, policytest.KindsFile(`{"name": "PLAIN_READ", "source": "PLAIN_KEY", "proxy": "github"}`), daemonService)
 		if got := servedProfile(t, cur.Get(), "PLAIN_READ"); got.Proxy != "github" {
 			t.Errorf("PLAIN_READ is served behind %q; want github", got.Proxy)
@@ -260,19 +260,19 @@ func TestAProxyStringServesAProfileUntilItsSourceIsTagged(t *testing.T) {
 	})
 	t.Run("the control: no line for a string the source's tag does not repeat", func(t *testing.T) {
 		logged := policytest.CaptureLog(t)
-		kindsProfiled(t, policytest.Kinds, []awstest.LocalSecret{plain()}, `{"name": "PLAIN_READ", "source": "PLAIN_KEY", "proxy": "github"}`)
+		kindsProfiled(t, policytest.Kinds, []memory.Secret{plain()}, `{"name": "PLAIN_READ", "source": "PLAIN_KEY", "proxy": "github"}`)
 		if strings.Contains(logged.String(), policy.ProxyKindRedundantMessage) {
 			t.Errorf("a string its source's tag does not repeat wrote %q:\n%s", policy.ProxyKindRedundantMessage, logged)
 		}
 	})
 	t.Run("a string naming a kind its source's type takes no way of", func(t *testing.T) {
 		login := policytest.TypeSecret("AZURE_KEY", appOwner, policy.TierAgent, policy.TypeAzureLogin, policytest.TypeValue(policy.TypeAzureLogin))
-		set := kindsProfiled(t, policytest.Kinds, []awstest.LocalSecret{login}, `{"name": "AZURE_READ", "source": "AZURE_KEY", "proxy": "slack"}`)
+		set := kindsProfiled(t, policytest.Kinds, []memory.Secret{login}, `{"name": "AZURE_READ", "source": "AZURE_KEY", "proxy": "slack"}`)
 		refusedProfile(t, set, "AZURE_READ", policy.ReasonProxyWay)
 	})
 	t.Run("a string naming a kind whose max_grant its grant cap is not within", func(t *testing.T) {
 		const capped = `[{"name": "capped", "hosts": ["api.example.com"], "ways": ["swap"], "max_grant": "1h"}]`
-		set := kindsProfiled(t, capped, []awstest.LocalSecret{plain()},
+		set := kindsProfiled(t, capped, []memory.Secret{plain()},
 			`{"name": "PLAIN_READ", "source": "PLAIN_KEY", "proxy": "capped"}`,
 			`{"name": "PLAIN_SHORT", "source": "PLAIN_KEY", "proxy": "capped", "maxGrant": "1h"}`)
 		refusedProfile(t, set, "PLAIN_READ", policy.ReasonProxyMaxGrant)
@@ -293,7 +293,7 @@ const enterpriseRows = `"allow": [` +
 // person appOwner, human tier, an administrator's, asked for by appOwner alone for an hour at
 // most, behind the github kind and narrowed by its profile (narrowed); with narrowed false, the
 // same secret with its proxy-narrowed tag removed.
-func enterpriseAdmin(narrowed bool) awstest.LocalSecret {
+func enterpriseAdmin(narrowed bool) memory.Secret {
 	s := policytest.ListedSecret("GITHUB_ENTERPRISE_ADMIN", appOwner, policy.TierHuman, appOwner, "gea-v1")
 	s.Tags[policy.TagAdmin] = policy.AdminTrue
 	s = policytest.Proxied(s, "github")
@@ -323,7 +323,7 @@ func TestANarrowedSecretIsServedThroughExactlyOneProfileWithAnAllow(t *testing.T
 	)
 	served := func(t *testing.T, narrowed bool, profiles ...string) *policy.Set {
 		t.Helper()
-		return kindsProfiled(t, policytest.Kinds, []awstest.LocalSecret{enterpriseAdmin(narrowed)}, profiles...)
+		return kindsProfiled(t, policytest.Kinds, []memory.Secret{enterpriseAdmin(narrowed)}, profiles...)
 	}
 	t.Run("its one profile with the five rows is served", func(t *testing.T) {
 		set := served(t, true, own)
@@ -418,12 +418,12 @@ func TestANarrowedProfilesAllowStaysInsideItsKind(t *testing.T) {
 			`{"method": "GET", "pathPrefix": "/enterprises/t/actions/"}, {"method": "PUT", "pathPrefix": "/enterprises/t/actions/"}]}]`
 		wider = `[{"name": "github", "hosts": ["api.github.com"], "ways": ["swap"], "allow": [{"method": "GET", "pathPrefix": "/enterprises/"}]}]`
 	)
-	source := func(narrowed bool) []awstest.LocalSecret {
+	source := func(narrowed bool) []memory.Secret {
 		s := policytest.Proxied(policytest.Secret("GEA_TOKEN", appOwner, policy.TierHuman, "gea-v1"), "github")
 		if narrowed {
 			s = policytest.Narrowed(s)
 		}
-		return []awstest.LocalSecret{s}
+		return []memory.Secret{s}
 	}
 	profile := func(rows string) string {
 		return `{"name": "GEA_TOKEN", "allow": [` + rows + `]}`
@@ -475,10 +475,10 @@ func TestAProfileOfASourceOnlyTheProxyScopesNeedsAKind(t *testing.T) {
 	untagged := policytest.Narrowed(policytest.ListedSecret("GITHUB_ENTERPRISE_ADMIN", appOwner, policy.TierHuman, appOwner, "gea-v1"))
 	untagged.Tags[policy.TagAdmin] = policy.AdminTrue
 	profile := `{"name": "GITHUB_ENTERPRISE_ADMIN", ` + enterpriseRows + `}`
-	set := kindsProfiled(t, policytest.Kinds, []awstest.LocalSecret{untagged}, profile)
+	set := kindsProfiled(t, policytest.Kinds, []memory.Secret{untagged}, profile)
 	refusedProfile(t, set, "GITHUB_ENTERPRISE_ADMIN", policy.ReasonProfileSourceNotProxied)
 	refusedSecret(t, set, "GITHUB_ENTERPRISE_ADMIN", policy.ReasonProfileSourceNotProxied)
-	servedProfile(t, kindsProfiled(t, policytest.Kinds, []awstest.LocalSecret{enterpriseAdmin(true)}, profile), "GITHUB_ENTERPRISE_ADMIN")
+	servedProfile(t, kindsProfiled(t, policytest.Kinds, []memory.Secret{enterpriseAdmin(true)}, profile), "GITHUB_ENTERPRISE_ADMIN")
 }
 
 // TestAProxyTagOrAnAllowEndsTheGrantsOfItsNameAlone: a request records the fingerprint of each name
@@ -490,11 +490,11 @@ func TestAProfileOfASourceOnlyTheProxyScopesNeedsAKind(t *testing.T) {
 // header moves no fingerprint and no version, so it ends no grant.
 func TestAProxyTagOrAnAllowEndsTheGrantsOfItsNameAlone(t *testing.T) {
 	other := policytest.Proxied(policytest.Secret("OTHER_KEY", appOwner, policy.TierAgent, "other-v1"), "example")
-	served := func(t *testing.T, kinds string, secret awstest.LocalSecret, profiles ...string) *policy.Set {
+	served := func(t *testing.T, kinds string, secret memory.Secret, profiles ...string) *policy.Set {
 		t.Helper()
-		return kindsProfiled(t, kinds, []awstest.LocalSecret{secret, other}, profiles...)
+		return kindsProfiled(t, kinds, []memory.Secret{secret, other}, profiles...)
 	}
-	key := func(tags map[string]string) awstest.LocalSecret {
+	key := func(tags map[string]string) memory.Secret {
 		s := policytest.Secret("ROW_KEY", appOwner, policy.TierHuman, "row-v1")
 		for k, v := range tags {
 			s.Tags[k] = v
@@ -535,7 +535,7 @@ func TestAProxyTagOrAnAllowEndsTheGrantsOfItsNameAlone(t *testing.T) {
 		before = `[{"name": "github", "hosts": ["api.github.com"], "headers": ["Authorization"], "ways": ["swap"]}, {"name": "example", "hosts": ["api.example.com"], "ways": ["swap"]}]`
 		gained = `[{"name": "github", "hosts": ["api.github.com", "uploads.github.com"], "headers": ["Authorization", "X-Api-Key"], "ways": ["swap"]}, {"name": "example", "hosts": ["api.example.com", "www.example.com"], "ways": ["swap"]}]`
 	)
-	tagged := func() awstest.LocalSecret {
+	tagged := func() memory.Secret {
 		return key(map[string]string{policy.TagProxy: "github", policy.TagProxyNarrowed: "true"})
 	}
 	was, now := served(t, before, tagged(), narrowedProfile), served(t, gained, tagged(), narrowedProfile)
@@ -553,7 +553,7 @@ func TestAProxyTagOrAnAllowEndsTheGrantsOfItsNameAlone(t *testing.T) {
 // kind under the name a dpop profile holds is bound once, as that profile's inline rule.
 func TestProxyRulesAreBuiltOnceWithTheSet(t *testing.T) {
 	tagged := policytest.Proxied(policytest.Secret("TEST_MINTED_TOKEN", appOwner, policy.TierAgent, "stored-v1"), "example")
-	set := policytest.ProfiledCurrent(t, awstest.NewLocal(tagged, policytest.Proxied(policytest.Secret("SLACK_TOKEN", appOwner, policy.TierAgent, "x"), "slack")),
+	set := policytest.ProfiledCurrent(t, memory.New(tagged, policytest.Proxied(policytest.Secret("SLACK_TOKEN", appOwner, policy.TierAgent, "x"), "slack")),
 		policytest.KindsFile(`{"name": "TEST_MINTED_TOKEN", `+mintedBlock+`}`), daemonService).Get()
 	if allocs := testing.AllocsPerRun(100, func() { _ = set.ProxyRules() }); allocs != 0 {
 		t.Errorf("ProxyRules allocates %v times a call, want 0", allocs)

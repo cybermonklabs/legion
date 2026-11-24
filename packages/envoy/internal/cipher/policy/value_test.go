@@ -2,6 +2,7 @@ package policy_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -9,36 +10,35 @@ import (
 	"testing"
 	"time"
 
-	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
-	"github.com/aws/smithy-go"
-
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore"
-	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
-	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/memory"
 	"github.com/sjawhar/envoy/internal/metrics"
 )
 
 // undecodable is a stored value no type's decoder reads: it is not JSON.
 const undecodable = "not json"
 
-// refusingReads is a awstest.Local whose GetSecretValue answers AccessDeniedException, as IAM
-// refuses a role the read, while refusing is set.
+// errReadRefused is what a refusing store answers a value read, as a store's permissions refuse
+// a role the read: AWS IAM's words for it.
+var errReadRefused = errors.New("AccessDeniedException: not authorized to perform: secretsmanager:GetSecretValue")
+
+// refusingReads is a store whose Read answers errReadRefused while refusing is set.
 type refusingReads struct {
-	*awstest.Local
+	*memory.Store
 	mu       sync.Mutex
 	refusing bool
 }
 
-func (r *refusingReads) GetSecretValue(ctx context.Context, in *secretsmanager.GetSecretValueInput, opts ...func(*secretsmanager.Options)) (*secretsmanager.GetSecretValueOutput, error) {
+func (r *refusingReads) Read(ctx context.Context, source string) (string, error) {
 	r.mu.Lock()
 	refusing := r.refusing
 	r.mu.Unlock()
 	if refusing {
-		return nil, &smithy.GenericAPIError{Code: "AccessDeniedException", Message: "not authorized to perform: secretsmanager:GetSecretValue"}
+		return "", fmt.Errorf("read %s: %w", source, errReadRefused)
 	}
-	return r.Local.GetSecretValue(ctx, in, opts...)
+	return r.Store.Read(ctx, source)
 }
 
 func (r *refusingReads) refuse(refusing bool) {
@@ -50,7 +50,7 @@ func (r *refusingReads) refuse(refusing bool) {
 // valueCurrent is the Current a pod boots over store, read through its refusals (bootThrough).
 func valueCurrent(t *testing.T, store *refusingReads) (*policy.Current, *metrics.Registry, fmt.Stringer) {
 	t.Helper()
-	return bootThrough(t, store.Local, store)
+	return bootThrough(t, store)
 }
 
 // valueReads is how many values the policy over registry has read: its read="value" count.
@@ -97,7 +97,7 @@ func refresh(t *testing.T, cur *policy.Current) {
 // The named revert: drop readValues' decode (take every read as decoded); the first load then
 // serves BAD_APP and this test fails.
 func TestTheBootLoadRefusesAValueTheDecoderRefusesBeforeTheFirstRequest(t *testing.T) {
-	store := &refusingReads{Local: awstest.NewLocal(
+	store := &refusingReads{Store: memory.New(
 		typeSecret("BAD_APP", policy.TypeAzureLogin, undecodable),
 		typeSecret("GOOD_LOGIN", policy.TypeGoogleLogin, policytest.TypeValue(policy.TypeGoogleLogin)),
 		policytest.Secret("PLAIN_KEY", typeOwner, policy.TierAgent, undecodable),
@@ -152,7 +152,7 @@ func TestTheBootLoadRefusesAValueTheDecoderRefusesBeforeTheFirstRequest(t *testi
 // count then fails this test.
 func TestANewVersionIsReadOnceAndASecretOfNoTypeIsNeverRead(t *testing.T) {
 	login := typeSecret("LOGIN_KEY", policy.TypeGoogleLogin, policytest.TypeValue(policy.TypeGoogleLogin))
-	store := &refusingReads{Local: awstest.NewLocal(login, policytest.Secret("PLAIN_KEY", typeOwner, policy.TierAgent, "plain-v1"))}
+	store := &refusingReads{Store: memory.New(login, policytest.Secret("PLAIN_KEY", typeOwner, policy.TierAgent, "plain-v1"))}
 	cur, registry, logged := valueCurrent(t, store)
 	version := cur.Get().Version
 
@@ -209,7 +209,7 @@ func TestANewVersionIsReadOnceAndASecretOfNoTypeIsNeverRead(t *testing.T) {
 func TestARetagOfTheTypeOnTheSameVersionDecodesTheValueAgain(t *testing.T) {
 	value := policytest.TypeValue(policy.TypeGoogleLogin)
 	login := typeSecret("RETAGGED_KEY", policy.TypeGoogleLogin, value)
-	store := &refusingReads{Local: awstest.NewLocal(login)}
+	store := &refusingReads{Store: memory.New(login)}
 	cur, registry, logged := valueCurrent(t, store)
 	gained := logChecker(logged)
 	if got := gained(); got != noProfilesLine {
@@ -223,7 +223,7 @@ func TestARetagOfTheTypeOnTheSameVersionDecodesTheValueAgain(t *testing.T) {
 
 	for _, step := range []struct {
 		name   string
-		secret awstest.LocalSecret
+		secret memory.Secret
 		reads  int
 		served bool
 		lines  string
@@ -258,7 +258,7 @@ func TestARetagOfTheTypeOnTheSameVersionDecodesTheValueAgain(t *testing.T) {
 // The named revert: write the failure line on every failed read, not only the first of a run; the
 // second failing load then fails this test.
 func TestAFailedValueReadMarksNothingAndLogsWhenItStartsAndEnds(t *testing.T) {
-	store := &refusingReads{Local: awstest.NewLocal(typeSecret("APP_KEY", policy.TypeGoogleLogin, policytest.TypeValue(policy.TypeGoogleLogin)))}
+	store := &refusingReads{Store: memory.New(typeSecret("APP_KEY", policy.TypeGoogleLogin, policytest.TypeValue(policy.TypeGoogleLogin)))}
 	cur, registry, logged := valueCurrent(t, store)
 	gained := logChecker(logged)
 	id := policytest.ID("APP_KEY")
@@ -313,7 +313,7 @@ func TestAFailedValueReadMarksNothingAndLogsWhenItStartsAndEnds(t *testing.T) {
 // drops it, though that read fails too, writing ServableMessage. The load that reads that version
 // and finds it refused refuses the secret again.
 func TestAMintTheDecoderRefusesRefusesTheSecretTheLoadCouldNotRead(t *testing.T) {
-	store := &refusingReads{Local: awstest.NewLocal(typeSecret("APP_KEY", policy.TypeGoogleLogin, undecodable)), refusing: true}
+	store := &refusingReads{Store: memory.New(typeSecret("APP_KEY", policy.TypeGoogleLogin, undecodable)), refusing: true}
 	cur, registry, logged := valueCurrent(t, store)
 	gained := logChecker(logged)
 	id := policytest.ID("APP_KEY")
@@ -370,7 +370,7 @@ func TestAMintTheDecoderRefusesRefusesTheSecretTheLoadCouldNotRead(t *testing.T)
 // same value stored again is read again by the load that lists it and refused again, and a new
 // value the decoder reads makes it servable.
 func TestASecretThatLeavesTheListingDropsItsValueRefusal(t *testing.T) {
-	store := &refusingReads{Local: awstest.NewLocal(typeSecret("APP_KEY", policy.TypeGoogleLogin, undecodable))}
+	store := &refusingReads{Store: memory.New(typeSecret("APP_KEY", policy.TypeGoogleLogin, undecodable))}
 	cur, registry, logged := valueCurrent(t, store)
 	gained := logChecker(logged)
 	id := policytest.ID("APP_KEY")
@@ -404,13 +404,13 @@ func TestASecretThatLeavesTheListingDropsItsValueRefusal(t *testing.T) {
 	}
 }
 
-// bootThrough is the Current a pod boots over local, its Secrets Manager calls made through
-// client, with the store-read counter and broker_unservable_secrets on a registry of its own as
-// main wires them, and the lines it writes captured from before its first load.
-func bootThrough(t *testing.T, local *awstest.Local, client aws.SecretsManagerAPI) (*policy.Current, *metrics.Registry, fmt.Stringer) {
+// bootThrough is the Current a pod boots over store, with the store-read counter and
+// broker_unservable_secrets on a registry of its own as main wires them, and the lines it writes
+// captured from before its first load.
+func bootThrough(t *testing.T, store secretstore.Store) (*policy.Current, *metrics.Registry, fmt.Stringer) {
 	t.Helper()
 	registry := metrics.New()
-	loader := policy.Loader{Store: policytest.StoreThrough(local, client), Prefix: policytest.Prefix, StoreReads: policy.NewStoreReads(registry)}
+	loader := policy.Loader{Store: store, Prefix: policytest.Prefix, StoreReads: policy.NewStoreReads(registry)}
 	logged := policytest.CaptureLog(t)
 	cur, err := policy.NewCurrent(t.Context(), loader, time.Hour)
 	if err != nil {
@@ -420,16 +420,15 @@ func bootThrough(t *testing.T, local *awstest.Local, client aws.SecretsManagerAP
 	return cur, registry, logged
 }
 
-// binaryValues is a awstest.Local whose GetSecretValue answers each value as SecretBinary alone,
-// with no SecretString, as Secrets Manager answers a secret whose value was stored as binary.
-type binaryValues struct{ *awstest.Local }
+// notText is a store whose Read answers each value as one that is not text, as Secrets Manager
+// answers a secret whose value was stored as binary alone (secretstore.ErrValueNotText).
+type notText struct{ secretstore.Store }
 
-func (b binaryValues) GetSecretValue(ctx context.Context, in *secretsmanager.GetSecretValueInput, opts ...func(*secretsmanager.Options)) (*secretsmanager.GetSecretValueOutput, error) {
-	out, err := b.Local.GetSecretValue(ctx, in, opts...)
-	if err != nil {
-		return nil, err
+func (n notText) Read(ctx context.Context, source string) (string, error) {
+	if _, err := n.Store.Read(ctx, source); err != nil {
+		return "", err
 	}
-	return &secretsmanager.GetSecretValueOutput{Name: out.Name, ARN: out.ARN, SecretBinary: []byte(*out.SecretString)}, nil
+	return "", fmt.Errorf("read %s: %w", source, secretstore.ErrValueNotText)
 }
 
 // TestAValueThatIsNotTextIsRefusedAndReadOnce: a type secret whose store answers a value that is
@@ -439,8 +438,8 @@ func (b binaryValues) GetSecretValue(ctx context.Context, in *secretsmanager.Get
 // series, and writes no ValueReadFailedMessage. A reload and a reread read the value no more and
 // write nothing.
 func TestAValueThatIsNotTextIsRefusedAndReadOnce(t *testing.T) {
-	local := awstest.NewLocal(typeSecret("BINARY_APP", policy.TypeGoogleLogin, policytest.TypeValue(policy.TypeGoogleLogin)))
-	cur, registry, logged := bootThrough(t, local, binaryValues{local})
+	local := memory.New(typeSecret("BINARY_APP", policy.TypeGoogleLogin, policytest.TypeValue(policy.TypeGoogleLogin)))
+	cur, registry, logged := bootThrough(t, notText{local})
 	gained := logChecker(logged)
 	id := policytest.ID("BINARY_APP")
 
@@ -463,10 +462,10 @@ func TestAValueThatIsNotTextIsRefusedAndReadOnce(t *testing.T) {
 	}
 }
 
-// stalledRead is a awstest.Local whose next GetSecretValue, once stall arms it, waits until
-// released and then answers AccessDeniedException; every other read is Local's own.
+// stalledRead is a store whose next Read, once stall arms it, waits until released and then
+// answers errReadRefused; every other read is the store's own.
 type stalledRead struct {
-	*awstest.Local
+	*memory.Store
 	mu       sync.Mutex
 	entered  chan struct{}
 	released chan struct{}
@@ -481,17 +480,17 @@ func (s *stalledRead) stall() (entered <-chan struct{}, release chan<- struct{})
 	return s.entered, s.released
 }
 
-func (s *stalledRead) GetSecretValue(ctx context.Context, in *secretsmanager.GetSecretValueInput, opts ...func(*secretsmanager.Options)) (*secretsmanager.GetSecretValueOutput, error) {
+func (s *stalledRead) Read(ctx context.Context, source string) (string, error) {
 	s.mu.Lock()
 	entered, released := s.entered, s.released
 	s.entered, s.released = nil, nil
 	s.mu.Unlock()
 	if entered == nil {
-		return s.Local.GetSecretValue(ctx, in, opts...)
+		return s.Store.Read(ctx, source)
 	}
 	close(entered)
 	<-released
-	return nil, &smithy.GenericAPIError{Code: "AccessDeniedException", Message: "not authorized to perform: secretsmanager:GetSecretValue"}
+	return "", fmt.Errorf("read %s: %w", source, errReadRefused)
 }
 
 // TestAFailedReadRecordedAfterASuccessfulReadOfTheSameValueRecordsNothing: a reload and a reread
@@ -500,9 +499,9 @@ func (s *stalledRead) GetSecretValue(ctx context.Context, in *secretsmanager.Get
 // no ValueReadFailedMessage, and the next load, which reads nothing since that value is decoded,
 // writes nothing either.
 func TestAFailedReadRecordedAfterASuccessfulReadOfTheSameValueRecordsNothing(t *testing.T) {
-	local := awstest.NewLocal(typeSecret("APP_KEY", policy.TypeGoogleLogin, policytest.TypeValue(policy.TypeGoogleLogin)))
-	store := &stalledRead{Local: local}
-	cur, registry, logged := bootThrough(t, local, store)
+	local := memory.New(typeSecret("APP_KEY", policy.TypeGoogleLogin, policytest.TypeValue(policy.TypeGoogleLogin)))
+	store := &stalledRead{Store: local}
+	cur, registry, logged := bootThrough(t, store)
 	gained := logChecker(logged)
 	if got := gained(); got != noProfilesLine {
 		t.Fatalf("the first load logged:\n%s", got)
@@ -537,12 +536,12 @@ func TestAFailedReadRecordedAfterASuccessfulReadOfTheSameValueRecordsNothing(t *
 	}
 }
 
-// lockedOutRead is a awstest.Local whose next GetSecretValue, once armRead arms it, waits until
-// released and then answers Local's own value, and whose next ListSecrets, once holdList arms it,
-// waits until let go and then answers Local's listing as it stands then: a reread's value read
+// lockedOutRead is a memory store whose next Read, once armRead arms it, waits until released and
+// then answers the store's own value, and whose next List, once holdList arms it, waits until let
+// go and then answers the store's listing as it stands then: a reread's value read
 // that returns while a reload, stuck on a slow listing, holds the writer lock.
 type lockedOutRead struct {
-	*awstest.Local
+	*memory.Store
 	mu                       sync.Mutex
 	readEntered, readRelease chan struct{}
 	listEntered, listRelease chan struct{}
@@ -565,7 +564,7 @@ func (s *lockedOutRead) holdList() (entered <-chan struct{}, release chan<- stru
 	return s.listEntered, s.listRelease
 }
 
-func (s *lockedOutRead) GetSecretValue(ctx context.Context, in *secretsmanager.GetSecretValueInput, opts ...func(*secretsmanager.Options)) (*secretsmanager.GetSecretValueOutput, error) {
+func (s *lockedOutRead) Read(ctx context.Context, source string) (string, error) {
 	s.mu.Lock()
 	entered, released := s.readEntered, s.readRelease
 	s.readEntered, s.readRelease = nil, nil
@@ -574,10 +573,10 @@ func (s *lockedOutRead) GetSecretValue(ctx context.Context, in *secretsmanager.G
 		close(entered)
 		<-released
 	}
-	return s.Local.GetSecretValue(ctx, in, opts...)
+	return s.Store.Read(ctx, source)
 }
 
-func (s *lockedOutRead) ListSecrets(ctx context.Context, in *secretsmanager.ListSecretsInput, opts ...func(*secretsmanager.Options)) (*secretsmanager.ListSecretsOutput, error) {
+func (s *lockedOutRead) List(ctx context.Context, prefix string, opts secretstore.ReadOptions) ([]secretstore.Listing, error) {
 	s.mu.Lock()
 	entered, released := s.listEntered, s.listRelease
 	s.listEntered, s.listRelease = nil, nil
@@ -586,7 +585,7 @@ func (s *lockedOutRead) ListSecrets(ctx context.Context, in *secretsmanager.List
 		close(entered)
 		<-released
 	}
-	return s.Local.ListSecrets(ctx, in, opts...)
+	return s.Store.List(ctx, prefix, opts)
 }
 
 // TestAValueReadWaitsForTheWriterLockOnlyWhileItsCallerDoes (ca-parser, Verification v9): a
@@ -600,9 +599,9 @@ func (s *lockedOutRead) ListSecrets(ctx context.Context, in *secretsmanager.List
 // (fbaa5626); the reread then waits for the reload to let go, past its deadline, and this test
 // fails.
 func TestAValueReadWaitsForTheWriterLockOnlyWhileItsCallerDoes(t *testing.T) {
-	local := awstest.NewLocal(typeSecret("APP_KEY", policy.TypeGoogleLogin, policytest.TypeValue(policy.TypeGoogleLogin)))
-	store := &lockedOutRead{Local: local}
-	cur, registry, logged := bootThrough(t, local, store)
+	local := memory.New(typeSecret("APP_KEY", policy.TypeGoogleLogin, policytest.TypeValue(policy.TypeGoogleLogin)))
+	store := &lockedOutRead{Store: local}
+	cur, registry, logged := bootThrough(t, store)
 	gained := logChecker(logged)
 	if got := gained(); got != noProfilesLine {
 		t.Fatalf("the first load logged:\n%s", got)
@@ -681,7 +680,7 @@ func TestAValueReadWaitsForTheWriterLockOnlyWhileItsCallerDoes(t *testing.T) {
 func TestAMintsRefusalUnderAKeyARetagReplacedRefusesNothing(t *testing.T) {
 	const value = `{"type":"authorized_user","client_id":"client","client_secret":"secret","refresh_token":"refresh","tenant_id":"tenant"}`
 	secret := typeSecret("LOGIN_KEY", policy.TypeGoogleLogin, value)
-	store := &refusingReads{Local: awstest.NewLocal(secret)}
+	store := &refusingReads{Store: memory.New(secret)}
 	cur, _, logged := valueCurrent(t, store)
 	gained := logChecker(logged)
 	id, version := policytest.ID("LOGIN_KEY"), cur.Get().ValueVersion("LOGIN_KEY")

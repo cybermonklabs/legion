@@ -9,7 +9,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
-	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/memory"
 	"github.com/sjawhar/envoy/internal/logtest"
 )
 
@@ -33,7 +33,7 @@ import (
 // the same grant releases again. At ab4e4ca the paused row ends the grant for good instead, with
 // the reason that the key carries no judge tag.
 func TestAJudgeTagLoweredBelowAJudgedGrantOrTakenOffEndsItForGood(t *testing.T) {
-	deel := func(judge int) awstest.LocalSecret {
+	deel := func(judge int) memory.Secret {
 		s := policytest.Secret("DEEL_API_KEY", fixtureOperator, policy.TierHuman, "deel-v1")
 		if judge == 0 {
 			return s

@@ -37,10 +37,10 @@ func TestOneServicesTwoAccountsEachGetItsSecret(t *testing.T) {
 		secretValue  = "service-value"
 	)
 	memorySecretsFile := filepath.Join(t.TempDir(), "memory-secrets.json")
-	fakeSecrets := `{"secrets": [
+	memorySecrets := `{"secrets": [
 		{"name": "example/agent-secrets/service-key", "tags": {"owner": "` + service + `", "tier": "agent"}, "value": "` + secretValue + `"}
 	]}`
-	if err := os.WriteFile(memorySecretsFile, []byte(fakeSecrets), 0o600); err != nil {
+	if err := os.WriteFile(memorySecretsFile, []byte(memorySecrets), 0o600); err != nil {
 		t.Fatal(err)
 	}
 

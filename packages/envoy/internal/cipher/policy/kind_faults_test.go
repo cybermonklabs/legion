@@ -8,7 +8,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
-	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/memory"
 )
 
 // faultKinds are the kinds of the fault tests: tight, which mints alone, caps a grant at an hour
@@ -57,7 +57,7 @@ func TestProxyFaultsAreEveryFaultInTheLoadsOrder(t *testing.T) {
 		t.Errorf("the outside fault says %q, want %q", faults[4].Detail, want)
 	}
 
-	set := policytest.ProfiledCurrent(t, awstest.NewLocal(policytest.Secret("PLAIN_KEY", appOwner, policy.TierAgent, "plain-v1")),
+	set := policytest.ProfiledCurrent(t, memory.New(policytest.Secret("PLAIN_KEY", appOwner, policy.TierAgent, "plain-v1")),
 		policytest.KindsFileOf(faultKinds, faultyProfile), daemonService).Get()
 	if refusal := refusedProfile(t, set, "PLAIN_READ", faults[0].Reason); refusal.Detail != faults[0].Detail {
 		t.Errorf("the load refuses PLAIN_READ for %q, want the first fault's words, %q", refusal.Detail, faults[0].Detail)
@@ -134,9 +134,9 @@ func TestGrantAndTypeReadsTheTagsInTheLoadsOrder(t *testing.T) {
 	bad := policytest.Secret("BAD_KEY", appOwner, policy.TierAgent, "v1")
 	bad.Tags[policy.TagDefaultGrant], bad.Tags[policy.TagType] = "forever", "no-such-type"
 	profiles := policytest.Profiles(t, policytest.KindsFile(), daemonService)
-	set := policytest.ProfiledCurrent(t, awstest.NewLocal(bad), policytest.KindsFile(), daemonService).Get()
+	set := policytest.ProfiledCurrent(t, memory.New(bad), policytest.KindsFile(), daemonService).Get()
 	refusedSecret(t, set, "BAD_KEY", policy.ReasonDefaultGrantMalformed)
-	if _, reason, _ := profiles.SecretOfTags(awstest.ARN(bad.Name), bad.Tags); reason != policy.ReasonDefaultGrantMalformed {
+	if _, reason, _ := profiles.SecretOfTags(memory.Source(bad.Name), bad.Tags); reason != policy.ReasonDefaultGrantMalformed {
 		t.Errorf("SecretOfTags refuses BAD_KEY for %q; the load refuses it for %q", reason, policy.ReasonDefaultGrantMalformed)
 	}
 }
@@ -153,19 +153,19 @@ func TestGrantAndTypeReadsTheTagsInTheLoadsOrder(t *testing.T) {
 // names.
 func TestSecretOfTagsIsTheLoadsReading(t *testing.T) {
 	profiles := policytest.Profiles(t, policytest.KindsFile(), daemonService)
-	tag := func(s awstest.LocalSecret, tags map[string]string) awstest.LocalSecret {
+	tag := func(s memory.Secret, tags map[string]string) memory.Secret {
 		for k, v := range tags {
 			s.Tags[k] = v
 		}
 		return s
 	}
-	plain := func(name string) awstest.LocalSecret {
+	plain := func(name string) memory.Secret {
 		return policytest.Secret(name, appOwner, policy.TierAgent, "v1")
 	}
-	federation := func(name string) awstest.LocalSecret {
+	federation := func(name string) memory.Secret {
 		return policytest.TypeSecret(name, appOwner, policy.TierHuman, policy.TypeAnthropicFederation, policytest.TypeValue(policy.TypeAnthropicFederation))
 	}
-	rows := []awstest.LocalSecret{
+	rows := []memory.Secret{
 		tag(plain("SWAP_KEY"), map[string]string{policy.TagProxy: "slack"}),
 		tag(plain("SIGN_KEY"), map[string]string{policy.TagProxy: "aws", policy.TagMaxGrant: "2h"}),
 		tag(plain("NARROW_KEY"), map[string]string{policy.TagProxy: "github", policy.TagProxyNarrowed: policy.ProxyNarrowedTrue}),
@@ -183,7 +183,7 @@ func TestSecretOfTagsIsTheLoadsReading(t *testing.T) {
 	}
 	wantServed := []string{"SWAP_KEY", "SIGN_KEY", "NARROW_KEY", "FED_KEY", "LOGIN_KEY", "SESSION_KEY", "BARE_KEY", "CAP_KEY"}
 	wantRefused := []string{"UNKNOWN_KEY", "WAY_KEY", "NARROWED_BAD_KEY", "GRANT_BAD_KEY", "DEFAULT_BAD_KEY", "TYPE_BAD_KEY"}
-	loader := policytest.Loader(awstest.NewLocal(rows...), daemonService)
+	loader := policytest.Loader(memory.New(rows...), daemonService)
 	loader.Profiles = profiles
 	set, err := loader.Load(t.Context())
 	if err != nil {
@@ -201,7 +201,7 @@ func TestSecretOfTagsIsTheLoadsReading(t *testing.T) {
 	}
 	for _, row := range rows {
 		name := policy.SlugToName(row.Name[len(policytest.Prefix):])
-		got, reason, detail := profiles.SecretOfTags(awstest.ARN(row.Name), row.Tags)
+		got, reason, detail := profiles.SecretOfTags(memory.Source(row.Name), row.Tags)
 		if refusal, refused := set.Refused[row.Name]; refused {
 			if reason != refusal.Reason || detail != refusal.Detail {
 				t.Errorf("SecretOfTags(%s) = %q, %q; the load refuses it %q, %q", name, reason, detail, refusal.Reason, refusal.Detail)
@@ -235,7 +235,7 @@ func TestSecretOfTagsIsTheLoadsReading(t *testing.T) {
 // profile holds its name, as the load words it.
 func TestSourceMissingFaultWordsEachStateOfASource(t *testing.T) {
 	unknownKind := policytest.Proxied(policytest.Secret("UNKNOWN_KIND_KEY", appOwner, policy.TierAgent, "v1"), "gitlab")
-	store := awstest.NewLocal(
+	store := memory.New(
 		policytest.Secret("BAD_TIER_KEY", appOwner, "admin", "v1"),
 		unknownKind,
 		createdWithoutValue("WAITING_KEY", time.Now()),

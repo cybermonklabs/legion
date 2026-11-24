@@ -39,9 +39,9 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
-	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/backends"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/gcp"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/memory"
 )
 
 // TestSettingsRecordedOnMain: GET /v1/settings for a broker on AWS Secrets Manager and for one on
@@ -130,13 +130,13 @@ func TestSettingsRecordedOnMain(t *testing.T) {
 // judgedPolicy is a live policy serving two keys the model judge decides, so a body's judge_keys
 // carries each of its fields: DEEL_READ, a profile made from the stored secret DEEL_API_KEY, at that
 // secret's 900 seconds and guidance, naming it as its source; and SHARED_KEY, at 300 seconds with
-// no guidance. The keys' store is the AWS fake for both rows: the settings name the judge keys
+// no guidance. The keys' store is the memory store for both rows: the settings name the judge keys
 // from the policy alone, whatever store the broker reads.
 func judgedPolicy(t *testing.T) *policy.Current {
 	t.Helper()
-	local := awstest.NewLocal()
-	local.Put(policytest.Judged(policytest.Secret("DEEL_API_KEY", "ada@example.com", policy.TierHuman, "deel-v1"), 900, "grant for the payroll export job"))
-	local.Put(policytest.Judged(policytest.Secret("SHARED_KEY", policy.OwnerShared, policy.TierHuman, "shared-v1"), 300, ""))
+	local := memory.New(
+		policytest.Judged(policytest.Secret("DEEL_API_KEY", "ada@example.com", policy.TierHuman, "deel-v1"), 900, "grant for the payroll export job"),
+		policytest.Judged(policytest.Secret("SHARED_KEY", policy.OwnerShared, policy.TierHuman, "shared-v1"), 300, ""))
 	return policytest.ProfiledCurrent(t, local, policytest.KindsFile(`{"name": "DEEL_READ", "source": "DEEL_API_KEY", "proxy": "example"}`))
 }
 

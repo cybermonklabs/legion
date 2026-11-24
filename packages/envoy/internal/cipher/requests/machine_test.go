@@ -16,7 +16,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 	"github.com/google/uuid"
 	"golang.org/x/oauth2"
 
@@ -27,8 +26,8 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore"
-	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
-	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/memory"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/secretstoretest"
 	"github.com/sjawhar/envoy/internal/cipher/store"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/ratelimit"
@@ -54,8 +53,8 @@ const (
 // automatic for the operator's session; SHARED_KEY, shared and human-tier, needs anyone's approval;
 // SERVICE_KEY, the registered service's, goes at once to the pods its launcher enrolled running as
 // fixtureSubject (newServiceEnrollment) and is denied to every other session.
-func fixtureSecrets() []awstest.LocalSecret {
-	return []awstest.LocalSecret{
+func fixtureSecrets() []memory.Secret {
+	return []memory.Secret{
 		policytest.Secret("DEEL_API_KEY", fixtureOperator, policy.TierHuman, "deel-v1"),
 		policytest.Secret("ALICE_KEY", otherPerson, policy.TierAgent, "alice-v1"),
 		policytest.Secret("AUTO_TOKEN", fixtureOperator, policy.TierAgent, "auto-v1"),
@@ -64,14 +63,14 @@ func fixtureSecrets() []awstest.LocalSecret {
 	}
 }
 
-// fixtureStore is the awstest.Local m's policy and values come from.
-func fixtureStore(m *Machine) *awstest.Local {
-	return m.Secrets.(aws.Store).Client.(*awstest.Local)
+// fixtureStore is the memory.Store m's policy and values come from.
+func fixtureStore(m *Machine) *memory.Store {
+	return m.Secrets.(*memory.Store)
 }
 
 // retag puts changed into the fixture's store, replacing each secret of the same name, and reloads
 // the policy, as the broker's next refresh does after someone edits a secret in Secrets Manager.
-func retag(t *testing.T, m *Machine, changed ...awstest.LocalSecret) {
+func retag(t *testing.T, m *Machine, changed ...memory.Secret) {
 	t.Helper()
 	for _, s := range changed {
 		fixtureStore(m).Put(s)
@@ -155,13 +154,13 @@ func newFixture(t testing.TB) (m *Machine, enrollmentID string, requesterKey *ec
 func newAppFixture(t testing.TB, apps ...string) (m *Machine, enrollmentID string, requesterKey *ecdsa.PrivateKey, approver string) {
 	t.Helper()
 	st := storetest.Open(t)
-	local := awstest.NewLocal(fixtureSecrets()...)
+	local := memory.New(fixtureSecrets()...)
 	enrollmentID, requesterKey = newEnrollment(t, st, "session", "box-a-"+t.Name(), new(fixtureOperator), nil)
 
 	m = &Machine{
 		Store:             st,
 		Policy:            appCurrent(t, local, apps...),
-		Secrets:           policytest.Store(local),
+		Secrets:           local,
 		PendingTTL:        12 * time.Hour,
 		Audience:          testAudience,
 		Skew:              time.Minute,
@@ -174,7 +173,7 @@ func newAppFixture(t testing.TB, apps ...string) (m *Machine, enrollmentID strin
 
 // appCurrent is the live policy of local with fixtureService registered and, for each of apps, a
 // profile of that github-app secret's own name; with none, a deployment with no profiles file.
-func appCurrent(t testing.TB, local *awstest.Local, apps ...string) *policy.Current {
+func appCurrent(t testing.TB, local *memory.Store, apps ...string) *policy.Current {
 	t.Helper()
 	if len(apps) == 0 {
 		return policytest.Current(t, local, fixtureService)
@@ -573,9 +572,8 @@ func TestCreateRefusesASecretPendingItsFirstValueUntilTheValueLands(t *testing.T
 func TestMissRereadsAreBoundedPerEnrollment(t *testing.T) {
 	m, enr, key, _ := newFixture(t)
 	m.MissRereads = &ratelimit.Limit{Every: time.Hour, Burst: 2}
-	count := &policytest.CountingDescriber{SecretsManagerAPI: fixtureStore(m)}
-	loader := policytest.Loader(fixtureStore(m), fixtureService) // the fixture's services, as newFixture registers them
-	loader.Store = policytest.StoreThrough(fixtureStore(m), count)
+	count := &secretstoretest.Counting{Store: fixtureStore(m)}
+	loader := policytest.Loader(count, fixtureService) // the fixture's services, as newFixture registers them
 	cur, err := policy.NewCurrent(t.Context(), loader, time.Hour)
 	if err != nil {
 		t.Fatal(err)
@@ -586,8 +584,8 @@ func TestMissRereadsAreBoundedPerEnrollment(t *testing.T) {
 			t.Fatalf("miss %d: %v", i, err)
 		}
 	}
-	if got := count.Calls.Load(); got != 2 {
-		t.Fatalf("DescribeSecret calls = %d, want 2 (the burst); the third miss must skip the reread", got)
+	if got := count.Describes.Load(); got != 2 {
+		t.Fatalf("Describe calls = %d, want 2 (the burst); the third miss must skip the reread", got)
 	}
 }
 
@@ -618,8 +616,7 @@ func TestARereadItsCallerAbandonedRaisesNoAlarm(t *testing.T) {
 	m, enr, key, _ := newFixture(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	loader := policytest.Loader(fixtureStore(m), fixtureService)
-	loader.Store = policytest.StoreThrough(fixtureStore(m), abandoningDescriber{SecretsManagerAPI: fixtureStore(m), cancel: cancel})
+	loader := policytest.Loader(abandoningDescriber{Store: fixtureStore(m), cancel: cancel}, fixtureService)
 	cur, err := policy.NewCurrent(t.Context(), loader, time.Hour)
 	if err != nil {
 		t.Fatal(err)
@@ -640,16 +637,16 @@ func TestARereadItsCallerAbandonedRaisesNoAlarm(t *testing.T) {
 	}
 }
 
-// abandoningDescriber is a client that goes away while the reread's DescribeSecret is in flight:
-// it ends the request's context and fails as the AWS SDK does once its context has ended.
+// abandoningDescriber is a client that goes away while the reread's Describe is in flight: it
+// ends the request's context and fails as a store's client does once its context has ended.
 type abandoningDescriber struct {
-	aws.SecretsManagerAPI
+	secretstore.Store
 	cancel context.CancelFunc
 }
 
-func (d abandoningDescriber) DescribeSecret(ctx context.Context, _ *secretsmanager.DescribeSecretInput, _ ...func(*secretsmanager.Options)) (*secretsmanager.DescribeSecretOutput, error) {
+func (d abandoningDescriber) Describe(ctx context.Context, id string, _ secretstore.ReadOptions) (secretstore.Listing, error) {
 	d.cancel()
-	return nil, fmt.Errorf("operation error Secrets Manager: DescribeSecret, %w", ctx.Err())
+	return secretstore.Listing{}, fmt.Errorf("describe %s: %w", id, ctx.Err())
 }
 
 // TestAnOrdinaryRereadFailureRaisesThePolicyAlarm pins the other half of that rule: a reread
@@ -657,8 +654,7 @@ func (d abandoningDescriber) DescribeSecret(ctx context.Context, _ *secretsmanag
 // naming the requested secret, and the name stays unknown with no request written.
 func TestAnOrdinaryRereadFailureRaisesThePolicyAlarm(t *testing.T) {
 	m, enr, key, _ := newFixture(t)
-	loader := policytest.Loader(fixtureStore(m), fixtureService)
-	loader.Store = policytest.StoreThrough(fixtureStore(m), failingDescriber{SecretsManagerAPI: fixtureStore(m), err: errors.New("throttled")})
+	loader := policytest.Loader(secretstoretest.Failing{Store: fixtureStore(m), DescribeErr: errors.New("throttled")}, fixtureService)
 	cur, err := policy.NewCurrent(t.Context(), loader, time.Hour)
 	if err != nil {
 		t.Fatal(err)
@@ -682,16 +678,6 @@ func TestAnOrdinaryRereadFailureRaisesThePolicyAlarm(t *testing.T) {
 	if err := m.Store.Pool.QueryRow(context.Background(), `select count(*) from requests where enrollment_id=$1`, enr).Scan(&written); err != nil || written != 0 {
 		t.Fatalf("requests rows for the enrollment = %d, %v; want 0", written, err)
 	}
-}
-
-// failingDescriber is a Secrets Manager that answers every DescribeSecret with err.
-type failingDescriber struct {
-	aws.SecretsManagerAPI
-	err error
-}
-
-func (d failingDescriber) DescribeSecret(context.Context, *secretsmanager.DescribeSecretInput, ...func(*secretsmanager.Options)) (*secretsmanager.DescribeSecretOutput, error) {
-	return nil, d.err
 }
 
 func TestCoalescesIdenticalPendingAndReturnsTheFirstRecordID(t *testing.T) {
@@ -1091,7 +1077,7 @@ func TestApprovalAfterTheEnrollmentLapsedDenies(t *testing.T) {
 // automatic grant never had, or no longer serves the secret at all, values are refused and the
 // grant is no longer handed back by reuse.
 func TestTightenedPolicyStopsLiveGrants(t *testing.T) {
-	autoToken := func(owner, tier string) awstest.LocalSecret {
+	autoToken := func(owner, tier string) memory.Secret {
 		return policytest.Secret("AUTO_TOKEN", owner, tier, "auto-v1")
 	}
 	for name, tighten := range map[string]func(t *testing.T, m *Machine){
@@ -1111,7 +1097,7 @@ func TestTightenedPolicyStopsLiveGrants(t *testing.T) {
 		},
 		"moved to another key": func(t *testing.T, m *Machine) {
 			moved := autoToken(fixtureOperator, policy.TierAgent)
-			moved.KmsKeyID = "arn:aws:kms:us-east-1:111122223333:key/another-key"
+			moved.OffKey = true
 			retag(t, m, moved)
 		},
 		"deleted": func(t *testing.T, m *Machine) {
@@ -1142,7 +1128,7 @@ func TestTightenedPolicyStopsLiveGrants(t *testing.T) {
 // requester have the secret at once keeps its grant usable and reusable, whether the edit is to
 // another secret or to this one.
 func TestUnchangedPermissionSurvivesAPolicyChange(t *testing.T) {
-	for name, edit := range map[string]awstest.LocalSecret{
+	for name, edit := range map[string]memory.Secret{
 		"another secret retiered": policytest.Secret("DEEL_API_KEY", fixtureOperator, policy.TierAgent, "deel-v1"),
 		"this secret now shared":  policytest.Secret("AUTO_TOKEN", policy.OwnerShared, policy.TierAgent, "auto-v1"),
 	} {
@@ -1174,9 +1160,9 @@ func TestUnchangedPermissionSurvivesAPolicyChange(t *testing.T) {
 // console's and the CLI's default), whose value Secrets Manager refuses to read as an invalid
 // request rather than a missing secret.
 func TestValuesNamesASecretDeletedBeforeTheNextRefresh(t *testing.T) {
-	for shape, remove := range map[string]func(*awstest.Local){
-		"deleted at once": func(store *awstest.Local) { store.Delete(policytest.ID("AUTO_TOKEN")) },
-		"scheduled for deletion": func(store *awstest.Local) {
+	for shape, remove := range map[string]func(*memory.Store){
+		"deleted at once": func(store *memory.Store) { store.Delete(policytest.ID("AUTO_TOKEN")) },
+		"scheduled for deletion": func(store *memory.Store) {
 			for _, s := range fixtureSecrets() {
 				if s.Name == policytest.ID("AUTO_TOKEN") {
 					s.DeletedAt = new(time.Now().Add(7 * 24 * time.Hour))
@@ -1409,7 +1395,7 @@ func TestAPodBoundToOneServiceAndLoggedInAsAnotherGetsNoServiceSecrets(t *testin
 // is not live, so its release and its reuse both refuse it and the session asks again, rather than
 // reading a source the policy no longer decides about.
 func TestAGrantFrozenOnAnotherSourceIsNotLive(t *testing.T) {
-	store := awstest.NewLocal(policytest.Secret("DEEL_API_KEY", policy.OwnerShared, policy.TierAgent, "v"))
+	store := memory.New(policytest.Secret("DEEL_API_KEY", policy.OwnerShared, policy.TierAgent, "v"))
 	set := policytest.Current(t, store).Get()
 	live := set.Secrets["DEEL_API_KEY"].Source
 	requester := policy.Requester{Operator: "ada@example.com"}

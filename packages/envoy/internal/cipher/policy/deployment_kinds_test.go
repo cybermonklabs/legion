@@ -11,7 +11,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
-	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/memory"
 )
 
 // deploymentFile is testdata/deployment-profiles-kinds.json: the deployment repository main's
@@ -34,8 +34,8 @@ const deploymentOwner = "owner@example.com"
 // kind's max_grant; the two GitHub Apps whose profiles carry the proxy string carry no proxy tag. The
 // three Anthropic admin secrets are anthropic-federation, human tier, admin and an hour at most.
 // tagged false leaves every proxy tag off.
-func deploymentSecrets(tagged bool) []awstest.LocalSecret {
-	with := func(s awstest.LocalSecret, tags map[string]string) awstest.LocalSecret {
+func deploymentSecrets(tagged bool) []memory.Secret {
+	with := func(s memory.Secret, tags map[string]string) memory.Secret {
 		for k, v := range tags {
 			if !tagged && (k == policy.TagProxy || k == policy.TagProxyNarrowed) {
 				continue
@@ -44,20 +44,20 @@ func deploymentSecrets(tagged bool) []awstest.LocalSecret {
 		}
 		return s
 	}
-	app := func(name, owners string) awstest.LocalSecret {
+	app := func(name, owners string) memory.Secret {
 		return with(policytest.TypeSecret(name, deploymentOwner, policy.TierAgent, policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp)),
 			map[string]string{policy.TagGitHubOwners: owners, policy.TagMaxGrant: "12h"})
 	}
-	stored := func(name, kind, maxGrant string) awstest.LocalSecret {
+	stored := func(name, kind, maxGrant string) memory.Secret {
 		return with(policytest.Secret(name, deploymentOwner, policy.TierHuman, name+"-v1"), map[string]string{policy.TagProxy: kind, policy.TagMaxGrant: maxGrant})
 	}
-	typed := func(name, secretType, kind, maxGrant string) awstest.LocalSecret {
+	typed := func(name, secretType, kind, maxGrant string) memory.Secret {
 		return with(policytest.TypeSecret(name, deploymentOwner, policy.TierHuman, secretType, policytest.TypeValue(secretType)), map[string]string{policy.TagProxy: kind, policy.TagMaxGrant: maxGrant})
 	}
-	admin := func(s awstest.LocalSecret, kind string) awstest.LocalSecret {
+	admin := func(s memory.Secret, kind string) memory.Secret {
 		return with(s, map[string]string{policy.TagAdmin: policy.AdminTrue, policy.TagRequesters: deploymentOwner, policy.TagMaxGrant: "1h", policy.TagProxy: kind, policy.TagProxyNarrowed: policy.ProxyNarrowedTrue})
 	}
-	return []awstest.LocalSecret{
+	return []memory.Secret{
 		app("LEGION_IMPLEMENT_APP", "cybermonklabs example-user example-org"),
 		app("GITHUB_APP_OWNER", "cybermonklabs example-user example-org"),
 		app("GITHUB_ADMIN_APP", "example-org"),
@@ -116,7 +116,7 @@ var anthropicRows = []proxyrules.Allow{
 func TestDeploymentMainMovedToKindsServesEveryProxiedName(t *testing.T) {
 	file := readDeploymentFile(t)
 	profiles := policytest.Profiles(t, file, daemonService)
-	set := policytest.ProfiledCurrent(t, awstest.NewLocal(deploymentSecrets(true)...), file, daemonService).Get()
+	set := policytest.ProfiledCurrent(t, memory.New(deploymentSecrets(true)...), file, daemonService).Get()
 	if len(set.Refused) != 0 {
 		t.Fatalf("the moved file refuses %+v; want every name served", set.Refused)
 	}
@@ -181,7 +181,7 @@ func TestDeploymentMainMovedToKindsServesEveryProxiedName(t *testing.T) {
         { "method": "DELETE", "pathPrefix": "/v1/organizations/" }
       ]`, `      "max_grant": "1h",
       "allow": [{ "method": "GET", "pathPrefix": "/v1/organizations/" }]`})
-		set := policytest.ProfiledCurrent(t, awstest.NewLocal(deploymentSecrets(true)...), getOnly, daemonService).Get()
+		set := policytest.ProfiledCurrent(t, memory.New(deploymentSecrets(true)...), getOnly, daemonService).Get()
 		for _, name := range []string{"ANTHROPIC_ADMIN_HDO", "ANTHROPIC_ADMIN_HDO_V2", "ANTHROPIC_ADMIN_PBC"} {
 			refusal := refusedProfile(t, set, name, policy.ReasonProfileAllowOutsideKind)
 			if !strings.Contains(refusal.Detail, "POST /v1/organizations/ and DELETE /v1/organizations/") || strings.Contains(refusal.Detail, "GET") {
@@ -191,7 +191,7 @@ func TestDeploymentMainMovedToKindsServesEveryProxiedName(t *testing.T) {
 		servedProfile(t, set, "GITHUB_ENTERPRISE_ADMIN")
 	})
 	t.Run("the control: no source carries a proxy tag", func(t *testing.T) {
-		set := policytest.ProfiledCurrent(t, awstest.NewLocal(deploymentSecrets(false)...), file, daemonService).Get()
+		set := policytest.ProfiledCurrent(t, memory.New(deploymentSecrets(false)...), file, daemonService).Get()
 		for _, name := range []string{"AIRLOCK_PROBE", "LEGION_SLACK_BOT_TOKEN", "GCLOUD_OWNER", "AZURE_ADMIN", "GITHUB_ENTERPRISE_ADMIN", "ANTHROPIC_ADMIN_HDO", "ANTHROPIC_ADMIN_PBC"} {
 			refusedProfile(t, set, name, policy.ReasonProfileSourceNotProxied)
 			refusedSecret(t, set, name, policy.ReasonProfileSourceNotProxied)
@@ -230,7 +230,7 @@ func TestK47AnAnthropicSecretIsBoundByItsKindAndItsProfile(t *testing.T) {
       {"method": "GET", "pathPrefix": "/v1/organizations/"},
       {"method": "POST", "pathPrefix": "/v1/organizations/"},
       {"method": "DELETE", "pathPrefix": "/v1/organizations/"}]}`)
-	anthropic := func(name string, narrowed bool) awstest.LocalSecret {
+	anthropic := func(name string, narrowed bool) memory.Secret {
 		s := policytest.TypeSecret(name, deploymentOwner, policy.TierHuman, policy.TypeAnthropicFederation, policytest.TypeValue(policy.TypeAnthropicFederation))
 		s.Tags[policy.TagAdmin] = policy.AdminTrue
 		s = policytest.Proxied(s, "anthropic")
@@ -239,7 +239,7 @@ func TestK47AnAnthropicSecretIsBoundByItsKindAndItsProfile(t *testing.T) {
 		}
 		return s
 	}
-	set := policytest.ProfiledCurrent(t, awstest.NewLocal(anthropic("AIRLOCK_ANTHROPIC_KIND", false), anthropic("AIRLOCK_ANTHROPIC_NARROWED", true)), file, daemonService).Get()
+	set := policytest.ProfiledCurrent(t, memory.New(anthropic("AIRLOCK_ANTHROPIC_KIND", false), anthropic("AIRLOCK_ANTHROPIC_NARROWED", true)), file, daemonService).Get()
 
 	kind := set.ProxyRules().Kind("anthropic")
 	if kind == nil || !reflect.DeepEqual(kind.Hosts, []string{"api.anthropic.com"}) || !reflect.DeepEqual(kind.HeaderNames(), []string{"Authorization"}) ||

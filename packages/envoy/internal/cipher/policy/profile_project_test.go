@@ -11,7 +11,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
-	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/memory"
 )
 
 // projectProfiles is the profiles file of these rows: PRIV_READ and GONE_READ, each a profile of
@@ -28,9 +28,9 @@ var projectProfiles = policytest.KindsFile(
 // loadProfiled is the policy a broker holding a K3 client publishes over stored, with
 // projectProfiles applied: Current applies the profiles at every publish, which a bare Load does
 // not.
-func loadProfiled(t *testing.T, stored ...awstest.LocalSecret) *policy.Set {
+func loadProfiled(t *testing.T, stored ...memory.Secret) *policy.Set {
 	t.Helper()
-	loader := projectLoader(awstest.NewLocal(stored...))
+	loader := projectLoader(memory.New(stored...))
 	loader.Profiles = policytest.Profiles(t, projectProfiles, projectSvc)
 	current, err := policy.NewCurrent(t.Context(), loader, time.Hour)
 	if err != nil {
@@ -54,7 +54,7 @@ func TestAProfileOfAPrivateProjectSecretGoesOnlyToACredentialThatNamesIt(t *test
 	if got := set.Secrets["PRIV_READ"].Project; got != privProject {
 		t.Fatalf("PRIV_READ is served with project %q; want its source's %q", got, privProject)
 	}
-	priv := awstest.ARN(policytest.ID("PRIV_KEY"))
+	priv := policytest.Source("PRIV_KEY")
 	for _, c := range []struct {
 		name, secret string
 		requester    policy.Requester
@@ -64,7 +64,7 @@ func TestAProfileOfAPrivateProjectSecretGoesOnlyToACredentialThatNamesIt(t *test
 		{"a credential naming no project", "PRIV_READ", credential(carol, ""), policy.Decision{Outcome: policy.Deny, Reason: policy.ReasonProjectNotNamed, Source: priv}},
 		{"a credential naming the public project", "PRIV_READ", credential(carol, "", pubProject), policy.Decision{Outcome: policy.Deny, Reason: policy.ReasonProjectNotNamed, Source: priv}},
 		{"a credential naming the missing project", "GONE_READ", credential(carol, "", goneProject),
-			policy.Decision{Outcome: policy.Deny, Reason: policy.ReasonProjectMissing, Source: awstest.ARN(policytest.ID("GONE_KEY"))}},
+			policy.Decision{Outcome: policy.Deny, Reason: policy.ReasonProjectMissing, Source: policytest.Source("GONE_KEY")}},
 	} {
 		got, err := set.Evaluate(c.secret, c.requester)
 		if err != nil || got != c.want {
@@ -114,7 +114,7 @@ func TestAProfileOfAProjectChannelsSecretIsLimitedAsItsSource(t *testing.T) {
 // version as tagging a secret served by its own name does, so the airlock proxy reads again the
 // values it holds (proxy's bound.go) and each live grant is evaluated again.
 func TestTaggingAProfilesSourceMovesTheVersion(t *testing.T) {
-	app := func(channels bool) awstest.LocalSecret {
+	app := func(channels bool) memory.Secret {
 		s := policytest.TypeSecret("APP_KEY", policy.OwnerShared, policy.TierAgent, policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp))
 		if channels {
 			s.Tags[policy.TagProjectChannels] = policy.ProjectChannelsSlack

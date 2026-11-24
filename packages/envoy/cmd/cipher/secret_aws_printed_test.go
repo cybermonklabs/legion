@@ -26,7 +26,6 @@ import (
 	"github.com/aws/smithy-go"
 
 	"github.com/sjawhar/envoy/internal/cipher/policy"
-	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 )
 
@@ -114,7 +113,7 @@ func TestAWSWebIdentityTokenFileIsNamedByItsVariableNeverItsPath(t *testing.T) {
 		}, "read the web identity token file AWS_WEB_IDENTITY_TOKEN_FILE names: read: is a directory"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			local := awstest.NewLocal(policytest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "v1"))
+			local := awstest.NewLocal(awstest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "v1"))
 			startSecretBroker(t, servedBy(local))
 			sent := useAWSWebIdentity(t, row.place(t))
 
@@ -129,7 +128,7 @@ func TestAWSWebIdentityTokenFileIsNamedByItsVariableNeverItsPath(t *testing.T) {
 		})
 	}
 	t.Run("control: a file that holds a token", func(t *testing.T) {
-		local := awstest.NewLocal(policytest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "v1"))
+		local := awstest.NewLocal(awstest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "v1"))
 		startSecretBroker(t, servedBy(local))
 		file := filepath.Join(t.TempDir(), "token")
 		if err := os.WriteFile(file, []byte("not-a-secret-web-identity-token"), 0o600); err != nil {
@@ -204,7 +203,7 @@ func TestAnAWSProfileTheConfigDoesNotHoldIsNotPrinted(t *testing.T) {
 	}
 	for _, variable := range []string{"AWS_PROFILE", "AWS_DEFAULT_PROFILE"} {
 		t.Run(variable, func(t *testing.T) {
-			local := awstest.NewLocal(policytest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "v1"))
+			local := awstest.NewLocal(awstest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "v1"))
 			startSecretBroker(t, servedBy(local))
 			useProfiles(t)
 			t.Setenv(variable, secret)
@@ -419,7 +418,7 @@ func TestTheAWSSDKsSignInFailurePrintsNoSetting(t *testing.T) {
 		}, "read your AWS sign-in: AWS refused it: AccessDenied (missing permission: sts:AssumeRoleWithWebIdentity; AWS's message is not printed)"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			local := awstest.NewLocal(policytest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "v1"))
+			local := awstest.NewLocal(awstest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "v1"))
 			startSecretBroker(t, servedBy(local))
 			awsSignInOnly(t)
 			row.set(t)
@@ -537,7 +536,7 @@ func TestAnIAMIdentityCenterFailureIsSaidOnlyWhereTheSDKOrIAMIdentityCenterSaysI
 			"read your AWS sign-in: AWS refused it: AccessDenied (AWS's message is not printed)"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			local := awstest.NewLocal(policytest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "v1"))
+			local := awstest.NewLocal(awstest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "v1"))
 			startSecretBroker(t, servedBy(local))
 			awsSignInOnly(t)
 			row.set(t)
@@ -560,7 +559,7 @@ func TestAnIAMIdentityCenterFailureIsSaidOnlyWhereTheSDKOrIAMIdentityCenterSaysI
 			"Secrets Manager ListSecrets: IAM Identity Center refused it: ResourceNotFoundException (its message is not printed); check the profile's sso_account_id and sso_role_name"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			local := awstest.NewLocal(policytest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "v1"))
+			local := awstest.NewLocal(awstest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "v1"))
 			startSecretBroker(t, servedBy(local))
 			useAWS(t, failingList{Local: local, err: refresh(row.code)}, testAccount, adaSignIn)
 			_, stderr, code := runSecret("list")

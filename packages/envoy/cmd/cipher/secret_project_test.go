@@ -95,9 +95,9 @@ func TestRetagNoneRemovesTheProjectTag(t *testing.T) {
 // the store's tagged secrets counts the rows whose project is not null.
 func TestShowPrintsTheProject(t *testing.T) {
 	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
-	tagged := policytest.Secret("PRIV_KEY", "ada@example.com", policy.TierAgent, "v1")
+	tagged := awstest.Secret("PRIV_KEY", "ada@example.com", policy.TierAgent, "v1")
 	tagged.Tags[policy.TagProject] = "PRIV"
-	plain := policytest.Secret("PLAIN_KEY", "ada@example.com", policy.TierAgent, "v1")
+	plain := awstest.Secret("PLAIN_KEY", "ada@example.com", policy.TierAgent, "v1")
 	local := awstest.NewLocal(tagged, plain)
 	startSecretBroker(t, servedBy(local))
 	useAWS(t, local, testAccount, adaSignIn)
@@ -188,7 +188,7 @@ func TestShowPrintsTheProject(t *testing.T) {
 // The refusal does not print the value it refused (valueNotPrinted), as no tag flag's refusal does.
 func TestAMalformedProjectIsRefusedBeforeAnyWrite(t *testing.T) {
 	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
-	local := awstest.NewLocal(policytest.Secret("API_KEY", "ada@example.com", policy.TierAgent, "v1"))
+	local := awstest.NewLocal(awstest.Secret("API_KEY", "ada@example.com", policy.TierAgent, "v1"))
 	writes := &countingTagWrites{Local: local}
 	startSecretBroker(t, servedBy(local))
 	useAWS(t, writes, testAccount, adaSignIn)

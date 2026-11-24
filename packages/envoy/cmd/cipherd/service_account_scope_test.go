@@ -38,11 +38,11 @@ func TestAnAccountProvesOnlyTheServiceItIsListedFor(t *testing.T) {
 		otherSecret  = "OTHER_KEY"
 	)
 	memorySecretsFile := filepath.Join(t.TempDir(), "memory-secrets.json")
-	fakeSecrets := `{"secrets": [
+	memorySecrets := `{"secrets": [
 		{"name": "example/agent-secrets/service-key", "tags": {"owner": "` + service + `", "tier": "agent"}, "value": "service-value"},
 		{"name": "example/agent-secrets/other-key", "tags": {"owner": "` + otherService + `", "tier": "agent"}, "value": "other-value"}
 	]}`
-	if err := os.WriteFile(memorySecretsFile, []byte(fakeSecrets), 0o600); err != nil {
+	if err := os.WriteFile(memorySecretsFile, []byte(memorySecrets), 0o600); err != nil {
 		t.Fatal(err)
 	}
 

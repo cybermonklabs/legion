@@ -90,10 +90,10 @@ func TestABrokerOutageLongerThanALease(t *testing.T) {
 	// (nextBackoff's cap), so a renewer whose broker is back renews within it.
 	renewerLongestWait := leasetime.RenewBackoffMax
 	memorySecretsFile := filepath.Join(t.TempDir(), "memory-secrets.json")
-	fakeSecrets := `{"secrets": [
+	memorySecrets := `{"secrets": [
 		{"name": "` + testSecretsPrefix + `outage-token", "tags": {"owner": "` + service + `", "tier": "agent"}, "value": "` + secretValue + `"}
 	]}`
-	if err := os.WriteFile(memorySecretsFile, []byte(fakeSecrets), 0o600); err != nil {
+	if err := os.WriteFile(memorySecretsFile, []byte(memorySecrets), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	brokerBinary := buildBroker(t)

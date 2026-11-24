@@ -42,7 +42,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
-	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/memory"
 	"github.com/sjawhar/envoy/internal/cipher/store"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/metrics"
@@ -65,13 +65,13 @@ const (
 
 // testServer is a live broker HTTP server (real handlers, real Postgres) plus a direct handle to
 // its store — needed to seed fixtures (an enrollment, a launcher credential) the API itself has
-// no route to create directly — the awstest.Local standing in for Secrets Manager, which a test
+// no route to create directly — the memory.Store standing in for Secrets Manager, which a test
 // writes to as a person would, and the local OIDC issuer its pod verifier trusts, which mints the
 // projected service-account tokens a pod enrollment presents.
 type testServer struct {
 	URL       string
 	Store     *store.Store
-	Secrets   *awstest.Local
+	Secrets   *memory.Store
 	podIssuer *oidctest.Issuer
 	podKey    *oidctest.Key
 	// machine is the broker's requests.Machine, which reads a record as the approval page does.
@@ -135,7 +135,7 @@ func newProfiledTestServer(t *testing.T, file string, adjust func(*api.Deps)) *t
 	t.Helper()
 	st := storetest.Open(t)
 
-	local := awstest.NewLocal(
+	local := memory.New(
 		policytest.Secret("DEEL_API_KEY", testApprover, policy.TierHuman, "deel-v1"),
 		policytest.Secret("WORKER_TOKEN", policy.OwnerShared, policy.TierAgent, "worker-v1"),
 		policytest.Secret("SHARED_KEY", policy.OwnerShared, policy.TierHuman, "shared-v1"),
@@ -194,7 +194,7 @@ func newProfiledTestServer(t *testing.T, file string, adjust func(*api.Deps)) *t
 	}
 
 	reqMachine := &requests.Machine{
-		Store: st, Policy: cur, Secrets: policytest.Store(local),
+		Store: st, Policy: cur, Secrets: local,
 		PendingTTL: 12 * time.Hour,
 		Audience:   srv.URL, Skew: time.Minute, Replay: enr.Replay,
 	}

@@ -57,7 +57,7 @@ import (
 // and the key every one of them is encrypted with on the AWS store, as productionEnv configures
 // every broker these tests start (BROKER_SECRETS_PREFIX, BROKER_SECRETS_KMS_KEY_ARN). A memory
 // secrets file a test writes names its secrets under this prefix, through this constant and not a
-// literal of its own (multiprocess_test.go's fakeSecretsJSON): the policy loader refuses a secret
+// literal of its own (multiprocess_test.go's memorySecretsJSON): the policy loader refuses a secret
 // under another prefix, which shows up as nothing but a secret never served, and one constant per
 // fact is what leaves no second value to drift from this one.
 const (
@@ -1004,12 +1004,12 @@ func requireHealthy(t *testing.T, addr string) {
 func refusedSecretEnv(t *testing.T, databaseURL string) []string {
 	t.Helper()
 	memorySecretsFile := filepath.Join(t.TempDir(), "memory-secrets.json")
-	const fakeSecrets = `{"secrets": [
+	const memorySecrets = `{"secrets": [
 		{"name": "example/agent-secrets/demo-key", "tags": {"owner": "shared", "tier": "agent"}, "value": "demo"},
 		{"name": "example/agent-secrets/untagged-key", "tags": {"owner": "sjawhar", "tier": "agent"}, "value": "nope"},
 		{"name": "example/agent-secrets/service-key", "tags": {"owner": "example-service", "tier": "agent"}, "value": "service"}
 	]}`
-	if err := os.WriteFile(memorySecretsFile, []byte(fakeSecrets), 0o600); err != nil {
+	if err := os.WriteFile(memorySecretsFile, []byte(memorySecrets), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	return []string{

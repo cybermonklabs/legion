@@ -186,10 +186,10 @@ func TestACreateOrSetExitsOneWhileTheBrokerServesAnotherType(t *testing.T) {
 		{"create: served as written", policy.TypeGoogleLogin, nil, []string{"--type", policy.TypeGoogleLogin}, 0, "", ""},
 		{"create of a stored secret: served as a type", policy.TypeGoogleLogin, nil, nil, 1, "serves LOGIN_KEY as " + policy.TypeGoogleLogin + ", not a stored secret", "--type none"},
 		{"create of a stored secret: served as stored", "", nil, nil, 0, "", ""},
-		{"set: served as stored", "", new(policytest.TypeSecret("LOGIN_KEY", "ada@example.com", policy.TierAgent, policy.TypeGoogleLogin, login)), nil, 1, "serves LOGIN_KEY as a stored secret, not " + policy.TypeGoogleLogin, "--type " + policy.TypeGoogleLogin},
-		{"set: served as written", policy.TypeGoogleLogin, new(policytest.TypeSecret("LOGIN_KEY", "ada@example.com", policy.TierAgent, policy.TypeGoogleLogin, login)), nil, 0, "", ""},
-		{"set of a stored secret: served as a type", policy.TypeGoogleLogin, new(policytest.Secret("LOGIN_KEY", "ada@example.com", policy.TierAgent, "v1")), nil, 1, "serves LOGIN_KEY as " + policy.TypeGoogleLogin + ", not a stored secret", "--type none"},
-		{"set of a stored secret: served as stored", "", new(policytest.Secret("LOGIN_KEY", "ada@example.com", policy.TierAgent, "v1")), nil, 0, "", ""},
+		{"set: served as stored", "", new(awstest.TypeSecret("LOGIN_KEY", "ada@example.com", policy.TierAgent, policy.TypeGoogleLogin, login)), nil, 1, "serves LOGIN_KEY as a stored secret, not " + policy.TypeGoogleLogin, "--type " + policy.TypeGoogleLogin},
+		{"set: served as written", policy.TypeGoogleLogin, new(awstest.TypeSecret("LOGIN_KEY", "ada@example.com", policy.TierAgent, policy.TypeGoogleLogin, login)), nil, 0, "", ""},
+		{"set of a stored secret: served as a type", policy.TypeGoogleLogin, new(awstest.Secret("LOGIN_KEY", "ada@example.com", policy.TierAgent, "v1")), nil, 1, "serves LOGIN_KEY as " + policy.TypeGoogleLogin + ", not a stored secret", "--type none"},
+		{"set of a stored secret: served as stored", "", new(awstest.Secret("LOGIN_KEY", "ada@example.com", policy.TierAgent, "v1")), nil, 0, "", ""},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			local := awstest.NewLocal()

@@ -5,14 +5,39 @@
 package requests
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
-	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/memory"
 )
+
+// resourceNamed is a store whose listings' Source is the secret's full name (Listing.ID), as a
+// Secret Manager listing answers (gcp.Store): the source a Secret Manager secret is read by is its
+// resource name, projects/<number>/secrets/<id>. Over the memory store, whose own sources are
+// memory:<name>, it gives these rows the sources a GCP deployment freezes, and Read takes that
+// name, which the memory store answers by name.
+type resourceNamed struct{ secretstore.Store }
+
+func (r resourceNamed) List(ctx context.Context, prefix string, opts secretstore.ReadOptions) ([]secretstore.Listing, error) {
+	listings, err := r.Store.List(ctx, prefix, opts)
+	for i := range listings {
+		listings[i].Source = listings[i].ID
+	}
+	return listings, err
+}
+
+func (r resourceNamed) Describe(ctx context.Context, id string, opts secretstore.ReadOptions) (secretstore.Listing, error) {
+	listing, err := r.Store.Describe(ctx, id, opts)
+	if err == nil {
+		listing.Source = listing.ID
+	}
+	return listing, err
+}
 
 // The three Secret Manager prefixes of these rows, in one placeholder project: the one the broker
 // is configured with, the second one a move leaves, and one that is neither.
@@ -34,9 +59,9 @@ const (
 // setting empty, and a source that is the second prefix itself where the policy serves the
 // configured prefix itself, which leaves no remainder after either.
 //
-// The policy rows load a real policy through the loader on Secret Manager resource names
-// (awstest.ResourceNamed), and hold stillAllowed, the re-check of a release and of a reuse, and
-// readSource, the release's read, to the same answers, so each goes through the rule.
+// The policy rows load a real policy through the loader on Secret Manager resource names (the
+// memory store through resourceNamed), and hold stillAllowed, the re-check of a release and of a
+// reuse, and readSource, the release's read, to the same answers, so each goes through the rule.
 //
 // The named reverts: compare by the part after the prefix alone, and the type, neither-prefix
 // and stored-against-minted rows count; replace the prefix in both directions, and the
@@ -89,7 +114,7 @@ func TestSourceCountsThroughTheSecondPrefix(t *testing.T) {
 	appKey := policytest.TypeSecret("APP_KEY", policy.OwnerShared, policy.TierAgent, policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp))
 	appKey.Name = movedConfigured + "app-key"
 	loader := policy.Loader{
-		Store:  awstest.ResourceNamed(policytest.Store(awstest.NewLocal(stored, appKey))),
+		Store:  resourceNamed{memory.New(stored, appKey)},
 		Prefix: movedConfigured,
 		Profiles: policytest.Profiles(t, policytest.ProfilesFile(
 			`{"name": "APP_READ", "source": "APP_KEY", "github": {"accounts": ["acme"], "permissions": {"metadata": "read"}}}`)),

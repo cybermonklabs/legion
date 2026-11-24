@@ -204,7 +204,7 @@ func TestRetagTakesTheKindsGuardOutOfAListWithTheLastProxyTag(t *testing.T) {
 		}
 	})
 	t.Run("aws write order", func(t *testing.T) {
-		listed := policytest.Secret("LISTED_KEY", "ada@example.com", policy.TierHuman, "v1")
+		listed := awstest.Secret("LISTED_KEY", "ada@example.com", policy.TierHuman, "v1")
 		listed.Tags[policy.TagProxy] = "github"
 		listed.Tags[policy.TagRequesters] = kindsGuarded("ada@example.com")
 		local := awstest.NewLocal(listed)
@@ -279,14 +279,14 @@ func TestTheKindsGuardHoldsToAWSsTagLimit(t *testing.T) {
 // finds every secret behind the proxy that carries no guard: a proxy tag written without this CLI,
 // which a broker from before the kinds would release as its value.
 func TestShowPrintsTheKindsGuardApart(t *testing.T) {
-	both := policytest.Secret("BOTH_KEY", "ada@example.com", policy.TierHuman, "v1")
+	both := awstest.Secret("BOTH_KEY", "ada@example.com", policy.TierHuman, "v1")
 	both.Tags[policy.TagProject] = "PRIV"
 	both.Tags[policy.TagProxy] = "github"
 	both.Tags[policy.TagRequesters] = bothGuarded("ada@example.com")
-	proxied := policytest.Secret("PROXIED_KEY", "ada@example.com", policy.TierHuman, "v1")
+	proxied := awstest.Secret("PROXIED_KEY", "ada@example.com", policy.TierHuman, "v1")
 	proxied.Tags[policy.TagProxyNarrowed] = policy.ProxyNarrowedTrue
 	proxied.Tags[policy.TagRequesters] = kindsGuarded("")
-	bare := policytest.Secret("BARE_KEY", "ada@example.com", policy.TierAgent, "v1")
+	bare := awstest.Secret("BARE_KEY", "ada@example.com", policy.TierAgent, "v1")
 	bare.Tags[policy.TagProxy] = "github"
 	local := awstest.NewLocal(both, proxied, bare)
 	startSecretBroker(t, servedBy(local))

@@ -6,13 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
-	smtypes "github.com/aws/aws-sdk-go-v2/service/secretsmanager/types"
-
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
-	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/memory"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 )
 
@@ -23,12 +19,12 @@ import (
 func newAirlockFixture(t *testing.T, file string) (m *Machine, enrollmentID string, requesterKey *ecdsa.PrivateKey) {
 	t.Helper()
 	st := storetest.Open(t)
-	local := awstest.NewLocal(fixtureSecrets()...)
+	local := memory.New(fixtureSecrets()...)
 	enrollmentID, requesterKey = newEnrollment(t, st, "session", "box-a-"+t.Name(), new(fixtureOperator), nil)
 	m = &Machine{
 		Store:             st,
 		Policy:            policytest.ProfiledCurrent(t, local, file, fixtureService),
-		Secrets:           policytest.Store(local),
+		Secrets:           local,
 		PendingTTL:        12 * time.Hour,
 		Audience:          testAudience,
 		Skew:              time.Minute,
@@ -63,16 +59,16 @@ func proxied(kind string, names ...string) string {
 // of its profiles file, or behind none.
 func proxyTag(t *testing.T, m *Machine, name, kind string) {
 	t.Helper()
-	id := aws.String(policytest.ID(name))
-	var err error
+	secret, held := fixtureStore(m).Get(policytest.ID(name))
+	if !held {
+		t.Fatalf("set the %s tag of %s to %q: the store holds no %s", policy.TagProxy, name, kind, policytest.ID(name))
+	}
 	if kind == "" {
-		_, err = fixtureStore(m).UntagResource(t.Context(), &secretsmanager.UntagResourceInput{SecretId: id, TagKeys: []string{policy.TagProxy}})
+		delete(secret.Tags, policy.TagProxy)
 	} else {
-		_, err = fixtureStore(m).TagResource(t.Context(), &secretsmanager.TagResourceInput{SecretId: id, Tags: []smtypes.Tag{{Key: aws.String(policy.TagProxy), Value: aws.String(kind)}}})
+		secret = policytest.Proxied(secret, kind)
 	}
-	if err != nil {
-		t.Fatalf("set the %s tag of %s to %q: %v", policy.TagProxy, name, kind, err)
-	}
+	fixtureStore(m).Put(secret)
 	if err := m.Policy.Refresh(t.Context()); err != nil {
 		t.Fatalf("policy refresh after the %s tag of %s: %v", policy.TagProxy, name, err)
 	}

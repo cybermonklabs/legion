@@ -16,7 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/record"
-	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/memory"
 )
 
 // listedValue is the value every listed secret below holds, so a release can be told apart from
@@ -36,7 +36,7 @@ const anHour = 3600
 // secret whose requesters tag names requesters, carrying that fixture's max-grant of an hour so
 // that the requests below sign for exactly as long as the secret allows. A test of a secret the
 // list leaves uncapped, or of a type whose own rules demand a cap, builds its secret itself.
-func listedSecret(name, owner, tier, requesters string) awstest.LocalSecret {
+func listedSecret(name, owner, tier, requesters string) memory.Secret {
 	return policytest.ListedSecret(name, owner, tier, requesters, listedValue)
 }
 

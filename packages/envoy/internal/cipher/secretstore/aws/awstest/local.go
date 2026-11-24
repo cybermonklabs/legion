@@ -22,8 +22,6 @@ import (
 	kmstypes "github.com/aws/aws-sdk-go-v2/service/kms/types"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager/types"
-
-	"github.com/sjawhar/envoy/internal/cipher/secretstore"
 )
 
 // Local stands in, in memory, for the AWS calls the broker and the agent-secrets CLI make: Secrets
@@ -82,33 +80,6 @@ type localFile struct {
 // ARN is the ARN a Local gives the secret named name.
 func ARN(name string) string {
 	return "arn:aws:secretsmanager:local:000000000000:secret:" + name
-}
-
-// ResourceNamed is store with each listing's Source its full name (Listing.ID), as Secret Manager
-// answers a listing (gcp.Store's listing): the source a Secret Manager secret is read by is its
-// resource name, where Secrets Manager's is an ARN. cmd/cipherd reads BROKER_FAKE_SECRETS_FILE
-// through it under gcp-secret-manager, so a request a local run or a test makes there freezes the
-// source one made on Secret Manager freezes, projects/<number>/secrets/<id>, and not an ARN. Read
-// takes that name, which a Local answers by name as it does by its ARN.
-func ResourceNamed(store secretstore.Store) secretstore.Store { return resourceNamed{store} }
-
-// resourceNamed is ResourceNamed's store.
-type resourceNamed struct{ secretstore.Store }
-
-func (r resourceNamed) List(ctx context.Context, prefix string, opts secretstore.ReadOptions) ([]secretstore.Listing, error) {
-	listings, err := r.Store.List(ctx, prefix, opts)
-	for i := range listings {
-		listings[i].Source = listings[i].ID
-	}
-	return listings, err
-}
-
-func (r resourceNamed) Describe(ctx context.Context, id string, opts secretstore.ReadOptions) (secretstore.Listing, error) {
-	listing, err := r.Store.Describe(ctx, id, opts)
-	if err == nil {
-		listing.Source = listing.ID
-	}
-	return listing, err
 }
 
 // KeyARN is the agent-secrets key the AWS store of a test is built on, an AWS documentation

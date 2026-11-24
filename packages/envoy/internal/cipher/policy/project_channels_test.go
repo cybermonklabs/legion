@@ -9,11 +9,11 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
-	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/memory"
 )
 
 // channelsSecret is a namespace secret carrying the project-channels tag, owned by owner at tier.
-func channelsSecret(name, owner, tier, value string) awstest.LocalSecret {
+func channelsSecret(name, owner, tier, value string) memory.Secret {
 	s := policytest.Secret(name, owner, tier, "v")
 	s.Tags[policy.TagProjectChannels] = value
 	return s
@@ -23,7 +23,7 @@ func channelsSecret(name, owner, tier, value string) awstest.LocalSecret {
 // any other value, the empty tag and the word none included, refuses the secret
 // project-channels-malformed, since a value the broker cannot read names no limit it could apply.
 func TestProjectChannelsTagIsLoaded(t *testing.T) {
-	store := awstest.NewLocal(
+	store := memory.New(
 		channelsSecret("SLACK_TOKEN", policy.OwnerShared, policy.TierAgent, policy.ProjectChannelsSlack),
 		channelsSecret("UPPER_TOKEN", policy.OwnerShared, policy.TierAgent, "SLACK"),
 		channelsSecret("NONE_TOKEN", policy.OwnerShared, policy.TierAgent, "none"),
@@ -115,7 +115,7 @@ func TestProjectChannelsTagMovesTheVersionOnlyWhenPresent(t *testing.T) {
 // same secret asked for by a credential that names only a public project, follow owner and tier
 // as before.
 func TestAProjectChannelsSecretOutsideTheAirlockIsDeniedToAPrivateProject(t *testing.T) {
-	store := awstest.NewLocal(channelsSecret("SLACK_TOKEN", policy.OwnerShared, policy.TierAgent, policy.ProjectChannelsSlack))
+	store := memory.New(channelsSecret("SLACK_TOKEN", policy.OwnerShared, policy.TierAgent, policy.ProjectChannelsSlack))
 	loader := projectLoader(store)
 	bare, err := loader.Load(context.Background())
 	if err != nil {
@@ -127,13 +127,13 @@ func TestAProjectChannelsSecretOutsideTheAirlockIsDeniedToAPrivateProject(t *tes
 		t.Fatalf("policy.NewCurrent with a proxy string: %v", err)
 	}
 	behind := current.Get()
-	tagged := projectLoader(awstest.NewLocal(policytest.Proxied(channelsSecret("SLACK_TOKEN", policy.OwnerShared, policy.TierAgent, policy.ProjectChannelsSlack), "slack")))
+	tagged := projectLoader(memory.New(policytest.Proxied(channelsSecret("SLACK_TOKEN", policy.OwnerShared, policy.TierAgent, policy.ProjectChannelsSlack), "slack")))
 	tagged.Profiles = policytest.Profiles(t, policytest.KindsFile(), projectSvc)
 	underTag, err := tagged.Load(context.Background())
 	if err != nil {
 		t.Fatalf("Load of the tagged secret: %v", err)
 	}
-	source := awstest.ARN(policytest.ID("SLACK_TOKEN"))
+	source := policytest.Source("SLACK_TOKEN")
 	for _, c := range []struct {
 		name      string
 		set       *policy.Set

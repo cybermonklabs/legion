@@ -11,7 +11,8 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/record"
-	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/memory"
 )
 
 // The people and projects of the project tag's tests. carol owns PRIV and bob is on its access
@@ -27,21 +28,21 @@ const (
 )
 
 // projectSecret is a namespace secret tagged with project, owned by owner at tier.
-func projectSecret(name, owner, tier, project string) awstest.LocalSecret {
+func projectSecret(name, owner, tier, project string) memory.Secret {
 	s := policytest.Secret(name, owner, tier, "v")
 	s.Tags[policy.TagProject] = project
 	return s
 }
 
 // projectLoader is the Loader of a broker that holds a K3 client, so it serves a tagged secret.
-func projectLoader(store *awstest.Local) policy.Loader {
+func projectLoader(store secretstore.Store) policy.Loader {
 	loader := policytest.Loader(store, projectSvc)
 	loader.ProjectChecks = true
 	return loader
 }
 
 // loadProjects loads store through projectLoader, failing the test on an error.
-func loadProjects(t *testing.T, store *awstest.Local) *policy.Set {
+func loadProjects(t *testing.T, store *memory.Store) *policy.Set {
 	t.Helper()
 	set, err := projectLoader(store).Load(context.Background())
 	if err != nil {
@@ -73,8 +74,8 @@ func credential(operator, service string, projects ...string) policy.Requester {
 // person is decides nothing here: naming the project is what the rule reads. A pod of the
 // project's service whose credential names it gets the secret too.
 func TestAPrivateProjectSecretGoesOnlyToACredentialThatNamesIt(t *testing.T) {
-	set := loadProjects(t, awstest.NewLocal(projectSecret("PRIV_KEY", policy.OwnerShared, policy.TierAgent, privProject)))
-	source := awstest.ARN(policytest.ID("PRIV_KEY"))
+	set := loadProjects(t, memory.New(projectSecret("PRIV_KEY", policy.OwnerShared, policy.TierAgent, privProject)))
+	source := policytest.Source("PRIV_KEY")
 	released := policy.Decision{Outcome: policy.Automatic, Source: source}
 	refused := policy.Decision{Outcome: policy.Deny, Reason: policy.ReasonProjectNotNamed, Source: source}
 	for _, c := range []struct {
@@ -114,7 +115,7 @@ func TestAPrivateProjectSecretGoesOnlyToACredentialThatNamesIt(t *testing.T) {
 func TestAPrivateProjectSecretOwnedByAPersonStillAsksItsOwner(t *testing.T) {
 	listed := projectSecret("PRIV_LISTED", carol, policy.TierHuman, privProject)
 	listed.Tags[policy.TagRequesters] = carol
-	set := loadProjects(t, awstest.NewLocal(
+	set := loadProjects(t, memory.New(
 		projectSecret("PRIV_HUMAN", carol, policy.TierHuman, privProject),
 		projectSecret("PRIV_AGENT", carol, policy.TierAgent, privProject),
 		listed,
@@ -137,7 +138,7 @@ func TestAPrivateProjectSecretOwnedByAPersonStillAsksItsOwner(t *testing.T) {
 		{"PRIV_HUMAN", "carol's session naming no project", credential(carol, ""), policy.Decision{Outcome: policy.Deny, Reason: policy.ReasonProjectNotNamed}},
 	} {
 		got, err := set.Evaluate(c.name, c.requester)
-		c.want.Source = awstest.ARN(policytest.ID(c.name))
+		c.want.Source = policytest.Source(c.name)
 		if err != nil || got != c.want {
 			t.Errorf("Evaluate(%s) for %s = %+v, %v; want %+v", c.name, c.credential, got, err, c.want)
 		}
@@ -148,7 +149,7 @@ func TestAPrivateProjectSecretOwnedByAPersonStillAsksItsOwner(t *testing.T) {
 // secret whose project is public answers every credential, whatever projects it names or does
 // not, exactly as owner and tier answer an untagged one.
 func TestAPrivateProjectSecretOfAPublicProjectFollowsOwnerAndTier(t *testing.T) {
-	set := loadProjects(t, awstest.NewLocal(
+	set := loadProjects(t, memory.New(
 		projectSecret("PUB_SHARED", policy.OwnerShared, policy.TierAgent, pubProject),
 		projectSecret("PUB_PERSON", carol, policy.TierAgent, pubProject),
 		projectSecret("PUB_HUMAN", policy.OwnerShared, policy.TierHuman, pubProject),
@@ -170,7 +171,7 @@ func TestAPrivateProjectSecretOfAPublicProjectFollowsOwnerAndTier(t *testing.T) 
 		{"PUB_SERVICE", "alice's session naming PUB", credential(alice, "", pubProject), policy.Decision{Outcome: policy.Deny}},
 	} {
 		got, err := set.Evaluate(c.name, c.requester)
-		c.want.Source = awstest.ARN(policytest.ID(c.name))
+		c.want.Source = policytest.Source(c.name)
 		if err != nil || got != c.want {
 			t.Errorf("Evaluate(%s) for %s = %+v, %v; want %+v", c.name, c.credential, got, err, c.want)
 		}
@@ -183,8 +184,8 @@ func TestAPrivateProjectSecretOfAPublicProjectFollowsOwnerAndTier(t *testing.T) 
 // an unnamed private project, so a refusal never says whether a project exists; the broker's own
 // log keeps project-missing apart.
 func TestAPrivateProjectSecretTaggedWithAMissingProjectGoesToNobody(t *testing.T) {
-	set := loadProjects(t, awstest.NewLocal(projectSecret("GONE_KEY", policy.OwnerShared, policy.TierAgent, goneProject)))
-	want := policy.Decision{Outcome: policy.Deny, Reason: policy.ReasonProjectMissing, Source: awstest.ARN(policytest.ID("GONE_KEY"))}
+	set := loadProjects(t, memory.New(projectSecret("GONE_KEY", policy.OwnerShared, policy.TierAgent, goneProject)))
+	want := policy.Decision{Outcome: policy.Deny, Reason: policy.ReasonProjectMissing, Source: policytest.Source("GONE_KEY")}
 	for who, r := range map[string]policy.Requester{
 		"carol's session naming GONE":   credential(carol, "", goneProject),
 		"carol's session naming none":   credential(carol, ""),
@@ -213,7 +214,7 @@ func TestAPrivateProjectSecretTaggedWithAMissingProjectGoesToNobody(t *testing.T
 // so a caller that evaluates a tagged secret without having resolved its project's state gets
 // ErrNoProjectState rather than a guess — neither a release nor a denial it did not decide.
 func TestAPrivateProjectSecretWithNoStateIsAnError(t *testing.T) {
-	set := loadProjects(t, awstest.NewLocal(
+	set := loadProjects(t, memory.New(
 		projectSecret("PRIV_KEY", policy.OwnerShared, policy.TierAgent, privProject),
 		policytest.Secret("PLAIN_KEY", policy.OwnerShared, policy.TierAgent, "v"),
 	))
@@ -292,7 +293,7 @@ func TestAPrivateProjectSecretTagMovesTheVersionOnlyWhenPresent(t *testing.T) {
 		}
 	}
 	// The golden namespace loads to the same version whether or not the broker checks projects.
-	checked, err := projectLoader(goldenFixture()).Load(context.Background())
+	checked, err := projectLoader(arnSourced{goldenFixture()}).Load(context.Background())
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -309,7 +310,7 @@ func TestAPrivateProjectSecretTagMovesTheVersionOnlyWhenPresent(t *testing.T) {
 // client (project-unchecked), which could not tell whether the project is private and would
 // otherwise release it to every session.
 func TestAPrivateProjectSecretTagIsLoaded(t *testing.T) {
-	store := awstest.NewLocal(
+	store := memory.New(
 		projectSecret("PRIV_KEY", policy.OwnerShared, policy.TierAgent, privProject),
 		projectSecret("LOWER_KEY", policy.OwnerShared, policy.TierAgent, "priv"),
 		projectSecret("NONE_KEY", policy.OwnerShared, policy.TierAgent, "none"),
@@ -374,7 +375,7 @@ func TestAMisspelledProjectTagKeyRefusesTheSecret(t *testing.T) {
 		"CHANNELS_US_KEY": "project_channels",
 		"CHANNELS_DOT":    "Project.Channels",
 	}
-	stored := []awstest.LocalSecret{}
+	stored := []memory.Secret{}
 	for name, key := range misspelled {
 		s := policytest.Secret(name, policy.OwnerShared, policy.TierAgent, "v")
 		s.Tags[key] = privProject
@@ -384,7 +385,7 @@ func TestAMisspelledProjectTagKeyRefusesTheSecret(t *testing.T) {
 	other.Tags["project"] = "billing"
 	other.Tags["dispatch-projects"] = privProject
 	stored = append(stored, other)
-	store := awstest.NewLocal(stored...)
+	store := memory.New(stored...)
 	for _, checks := range []bool{true, false} {
 		loader := policytest.Loader(store, projectSvc)
 		loader.ProjectChecks = checks
@@ -416,7 +417,7 @@ func TestAMisspelledProjectTagKeyRefusesTheSecret(t *testing.T) {
 // that reason, or the error, in every row, so the two readers cannot drift.
 func TestTheProjectRuleIsOneFunction(t *testing.T) {
 	const unresolved = "NEW"
-	store := awstest.NewLocal(
+	store := memory.New(
 		policytest.Secret("PLAIN_KEY", policy.OwnerShared, policy.TierAgent, "v"),
 		projectSecret("PUB_KEY", policy.OwnerShared, policy.TierAgent, pubProject),
 		projectSecret("PRIV_KEY", policy.OwnerShared, policy.TierAgent, privProject),

@@ -29,8 +29,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
-	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
-	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/memory"
 )
 
 // oldClientBody is what one released agent-secrets sent for one run, captured byte for byte by a
@@ -123,7 +122,7 @@ func newGitHubAppFieldServer(t *testing.T, off bool) *gitHubAppFieldServer {
 	t.Helper()
 	s := &gitHubAppFieldServer{}
 	s.testServer = newTestServerWith(t, func(d *api.Deps) {
-		local := d.Machine.Secrets.(aws.Store).Client.(*awstest.Local)
+		local := d.Machine.Secrets.(*memory.Store)
 		// The shared App's installations, which its profiles may name: the two of every github-app
 		// fixture and the account the approval-shadow pod's call asks for, since a profile naming
 		// an account its source's github-owners tag leaves out is refused profile-block-mismatch.
@@ -851,7 +850,7 @@ func TestAnAppServedOnlyByOtherNamesWithAProjectTagIsAnswered(t *testing.T) {
 	)
 	s := &gitHubAppFieldServer{}
 	s.testServer = newTestServerWith(t, func(d *api.Deps) {
-		local := d.Machine.Secrets.(aws.Store).Client.(*awstest.Local)
+		local := d.Machine.Secrets.(*memory.Store)
 		app := policytest.TypeSecret("TAGGED_APP", policy.OwnerShared, policy.TierAgent, policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp))
 		app.Tags[policy.TagProject] = "PUB"
 		local.Put(app)
@@ -863,7 +862,7 @@ func TestAnAppServedOnlyByOtherNamesWithAProjectTagIsAnswered(t *testing.T) {
 			t.Fatalf("policy.NewCurrent: %v", err)
 		}
 		d.Policy, d.Machine.Policy, d.MachineLogin.Policy = current, current, current
-		d.Machine.Secrets, d.Machine.Projects = policytest.Store(local), access
+		d.Machine.Projects = access
 		d.Machine.ServicesByAccount = map[string]string{workerAccount: oldClientService}
 		d.Machine.GitHubAppFieldRequesters = oldClientService
 		d.Machine.GitHubAppFieldSecrets = "TAGGED_APP"

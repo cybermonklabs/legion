@@ -68,7 +68,7 @@ func TestRetagWritesAndRemovesProjectChannels(t *testing.T) {
 	})
 
 	t.Run("a malformed value is refused before any write", func(t *testing.T) {
-		local := awstest.NewLocal(policytest.Secret("API_KEY", "ada@example.com", policy.TierAgent, "v1"))
+		local := awstest.NewLocal(awstest.Secret("API_KEY", "ada@example.com", policy.TierAgent, "v1"))
 		writes := &countingTagWrites{Local: local}
 		startSecretBroker(t, servedBy(local))
 		useAWS(t, writes, testAccount, adaSignIn)
@@ -99,9 +99,9 @@ func TestRetagWritesAndRemovesProjectChannels(t *testing.T) {
 	})
 
 	t.Run("show, list and --json print it", func(t *testing.T) {
-		tagged := policytest.Secret("SLACK_TOKEN", policy.OwnerShared, policy.TierAgent, "v1")
+		tagged := awstest.Secret("SLACK_TOKEN", policy.OwnerShared, policy.TierAgent, "v1")
 		tagged.Tags[policy.TagProjectChannels] = policy.ProjectChannelsSlack
-		plain := policytest.Secret("PLAIN_KEY", "ada@example.com", policy.TierAgent, "v1")
+		plain := awstest.Secret("PLAIN_KEY", "ada@example.com", policy.TierAgent, "v1")
 		local := awstest.NewLocal(tagged, plain)
 		startSecretBroker(t, servedBy(local))
 		useAWS(t, local, testAccount, adaSignIn)

@@ -122,7 +122,7 @@ func TestRetagTakesTheGuardOutOfAListWithTheLastProjectTag(t *testing.T) {
 		}
 	})
 	t.Run("aws write order", func(t *testing.T) {
-		listed := policytest.Secret("LISTED_KEY", "ada@example.com", policy.TierHuman, "v1")
+		listed := awstest.Secret("LISTED_KEY", "ada@example.com", policy.TierHuman, "v1")
 		listed.Tags[policy.TagProject] = "PRIV"
 		listed.Tags[policy.TagRequesters] = guarded("ada@example.com")
 		local := awstest.NewLocal(listed)
@@ -164,10 +164,10 @@ func TestTheGuardIsNoRequesterACommandCanName(t *testing.T) {
 // without it.
 func TestShowPrintsRequestersWithoutTheGuard(t *testing.T) {
 	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
-	guardedKey := policytest.Secret("GUARDED_KEY", "ada@example.com", policy.TierHuman, "v1")
+	guardedKey := awstest.Secret("GUARDED_KEY", "ada@example.com", policy.TierHuman, "v1")
 	guardedKey.Tags[policy.TagProject] = "PRIV"
 	guardedKey.Tags[policy.TagRequesters] = guarded("ada@example.com")
-	bare := policytest.Secret("BARE_KEY", "ada@example.com", policy.TierAgent, "v1")
+	bare := awstest.Secret("BARE_KEY", "ada@example.com", policy.TierAgent, "v1")
 	bare.Tags[policy.TagProject] = "PRIV"
 	local := awstest.NewLocal(guardedKey, bare)
 	startSecretBroker(t, servedBy(local))

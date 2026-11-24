@@ -37,7 +37,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
-	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/memory"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
@@ -61,7 +61,7 @@ const (
 func newDevrelayTestServer(t *testing.T) (brokerURL, callerToken string, issuer *oidctest.Issuer) {
 	t.Helper()
 	st := storetest.Open(t)
-	local := awstest.NewLocal(policytest.Secret("AGENT_SECRETS_PROOF_APPROVAL", testApprover, policy.TierHuman, testValue))
+	local := memory.New(policytest.Secret("AGENT_SECRETS_PROOF_APPROVAL", testApprover, policy.TierHuman, testValue))
 	cur := policytest.Current(t, local)
 
 	mux := http.NewServeMux()
@@ -71,7 +71,7 @@ func newDevrelayTestServer(t *testing.T) (brokerURL, callerToken string, issuer 
 	enr := &enroll.Service{Store: st, Lease: time.Hour}
 	enr.Chain = enroll.NewChainVerifier(st, srv.URL, time.Minute)
 	reqMachine := &requests.Machine{
-		Store: st, Policy: cur, Secrets: policytest.Store(local),
+		Store: st, Policy: cur, Secrets: local,
 		PendingTTL: 12 * time.Hour,
 		Audience:   srv.URL, Skew: time.Minute, Replay: enr.Replay,
 	}

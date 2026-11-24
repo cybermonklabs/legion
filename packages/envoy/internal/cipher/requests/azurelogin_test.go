@@ -13,7 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
-	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/memory"
 )
 
 func TestAzureLoginReleaseIsDisabledWithoutConfiguredSecret(t *testing.T) {
@@ -23,14 +23,14 @@ func TestAzureLoginReleaseIsDisabledWithoutConfiguredSecret(t *testing.T) {
 		t.Fatal(err)
 	}
 	stored := policytest.TypeSecret("AZURE_LOGIN", fixtureOperator, policy.TierHuman, policy.TypeAzureLogin, `{"tenant_id":"tenant","client_id":"client"}`)
-	local := awstest.NewLocal(stored)
+	local := memory.New(stored)
 	set, err := policytest.Loader(local).Load(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
 	machine := &Machine{
 		Policy:  policytest.Current(t, local),
-		Secrets: policytest.Store(local),
+		Secrets: local,
 		Minters: map[string]Minter{policy.TypeAzureLogin: (secrets.AzureLogin{TokenFile: file}).Mint},
 	}
 	secret := set.Secrets["AZURE_LOGIN"]
@@ -63,7 +63,7 @@ func TestAzureLoginReleaseUsesThePolicySecretNameAndTier(t *testing.T) {
 				stored.Tags[policy.TagOwner] = fixtureService
 				stored.Tags[policy.TagTier] = policy.TierAgent
 			}
-			local := awstest.NewLocal(stored)
+			local := memory.New(stored)
 			set, err := policytest.Loader(local, fixtureService).Load(t.Context())
 			if err != nil {
 				t.Fatal(err)
@@ -92,7 +92,7 @@ func TestAzureLoginReleaseUsesThePolicySecretNameAndTier(t *testing.T) {
 			}
 			machine := &Machine{
 				Policy:  policytest.Current(t, local, fixtureService),
-				Secrets: policytest.Store(local),
+				Secrets: local,
 				Minters: map[string]Minter{policy.TypeAzureLogin: (secrets.AzureLogin{TokenFile: file, SecretName: "AZURE_LOGIN"}).Mint},
 			}
 			value, _, err := machine.release(t.Context(), granted, secret)

@@ -20,7 +20,6 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess/projectaccesstest"
-	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/memory"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
@@ -329,7 +328,7 @@ func TestASecretOwnedByAMappedAccountsLoginServiceIsRefusedAtLoad(t *testing.T) 
 			personPodAdaAccount, cfg.PodOperators[personPodAdaAccount], cfg.ServiceLogins[personPodAdaAccount], personPodPerson, personPodAdaService)
 	}
 
-	set := policytest.Current(t, awstest.NewLocal(
+	set := policytest.Current(t, memory.New(
 		policytest.Secret(loginOwnedSecret, personPodAdaService, policy.TierAgent, "login-owned-value"),
 		policytest.Secret(serviceOwnedSecret, registeredService, policy.TierAgent, "service-owned-value"),
 	), serviceNames(cfg)...).Get()

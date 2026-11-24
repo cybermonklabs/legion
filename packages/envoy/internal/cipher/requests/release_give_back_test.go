@@ -24,7 +24,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules/proxyrulestest"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
-	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/memory"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 )
 
@@ -35,7 +35,7 @@ import (
 // the stand-in minted, in order.
 type giveBackFixture struct {
 	*requests.Machine
-	local        *awstest.Local
+	local        *memory.Store
 	enrollmentID string
 	grantID      string
 	service      *proxyrulestest.Service
@@ -57,7 +57,7 @@ func newGiveBackFixture(t *testing.T, rules proxyrules.Rules) *giveBackFixture {
 func newGiveBackFixtureOf(t *testing.T, rules proxyrules.Rules, file string) *giveBackFixture {
 	t.Helper()
 	st := storetest.Open(t)
-	stored := map[string]awstest.LocalSecret{
+	stored := map[string]memory.Secret{
 		"APP_KEY": policytest.TypeSecret("APP_KEY", checkOperator, policy.TierAgent, policy.TypeGitHubApp, standInAppValue(t)),
 		"ZED_KEY": policytest.Secret("ZED_KEY", checkOperator, policy.TierAgent, "zed-v1"),
 	}
@@ -68,7 +68,7 @@ func newGiveBackFixtureOf(t *testing.T, rules proxyrules.Rules, file string) *gi
 		}
 		stored[binding.Name] = policytest.Proxied(secret, binding.Kind)
 	}
-	local := awstest.NewLocal(stored["APP_KEY"], stored["ZED_KEY"])
+	local := memory.New(stored["APP_KEY"], stored["ZED_KEY"])
 	enrollmentID, key := newEnrollment(t, st)
 	service, err := proxyrulestest.NewService(proxyrulestest.ServiceOptions{Plain: true})
 	if err != nil {
@@ -102,7 +102,7 @@ func newGiveBackFixtureOf(t *testing.T, rules proxyrules.Rules, file string) *gi
 	f.Machine = &requests.Machine{
 		Store:      st,
 		Policy:     policytest.ProfiledCurrent(t, local, file),
-		Secrets:    policytest.Store(local),
+		Secrets:    local,
 		PendingTTL: 12 * time.Hour,
 		Audience:   checkAudience,
 		Skew:       time.Minute,

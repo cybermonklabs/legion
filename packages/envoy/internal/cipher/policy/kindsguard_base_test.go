@@ -14,10 +14,14 @@ package policy_test
 //	go test -C <tmp>/packages/envoy ./internal/cipher/policy -run TestTheKindsGuardBaseAnswersAreRecorded -count=1 -v -args -write-kinds-guard-golden
 //	cp <tmp>/packages/envoy/internal/cipher/policy/testdata/kinds-guard-merge-base.json packages/envoy/internal/cipher/policy/testdata/
 //
-// The merge base holds no secretstore/aws/awstest package, so the copy run there spells the fake
-// store secrets.Local, secrets.LocalSecret and secrets.NewLocal, out of internal/cipher/secrets,
-// which is where those names were before the AWS store moved (checked at 233828e4aeb:
-// packages/envoy/internal/cipher/secrets/local.go).
+// The merge base holds no secretstore/memory package. Its store is the fake AWS one out of
+// internal/cipher/secrets: secrets.Local, holding secrets.LocalSecret, built by secrets.NewLocal;
+// its policytest.Secret answers a secrets.LocalSecret and its policytest.Loader takes a
+// *secrets.Local (checked at 233828e4aeb: packages/envoy/internal/cipher/secrets/local.go and
+// packages/envoy/internal/cipher/policy/policytest/policytest.go). So the copy run there imports
+// internal/cipher/secrets in place of internal/cipher/secretstore/memory, and spells this file's
+// memory.Secret, memory.New and *memory.Store as secrets.LocalSecret, secrets.NewLocal and
+// *secrets.Local.
 //
 // Never regenerate it at a later commit: a later broker reads the guard as no requester, so a
 // golden written there records what this broker answers and not what a rollback would. The head
@@ -36,7 +40,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
-	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/memory"
 )
 
 var writeKindsGuardGolden = flag.Bool("write-kinds-guard-golden", false, "write testdata/kinds-guard-merge-base.json; run only at the merge base, as kindsguard_base_test.go's head comment says")
@@ -56,7 +60,7 @@ const (
 // it carries the guard, and list, the requesters list it carries beside the guard ("" for none).
 type kindsGuardCase struct {
 	name    string
-	secret  awstest.LocalSecret
+	secret  memory.Secret
 	guarded bool
 	list    string
 }
@@ -72,26 +76,26 @@ type kindsGuardCase struct {
 func kindsGuardCases() []kindsGuardCase {
 	shapes := []struct {
 		shape string
-		make  func(name string) awstest.LocalSecret
+		make  func(name string) memory.Secret
 		list  string
 		tags  map[string]string
 	}{
-		{"STORED", func(name string) awstest.LocalSecret {
+		{"STORED", func(name string) memory.Secret {
 			return policytest.Secret(name, policy.OwnerShared, policy.TierAgent, "v")
 		}, "", map[string]string{baseTagProxy: "slack"}},
-		{"LISTED", func(name string) awstest.LocalSecret {
+		{"LISTED", func(name string) memory.Secret {
 			return policytest.Secret(name, guardOwner, policy.TierHuman, "v")
 		}, guardOwner, map[string]string{baseTagProxy: "github"}},
-		{"ADMIN", func(name string) awstest.LocalSecret {
+		{"ADMIN", func(name string) memory.Secret {
 			return policytest.Secret(name, guardOwner, policy.TierHuman, "v")
 		}, guardOwner, map[string]string{baseTagProxy: "github", policy.TagAdmin: policy.AdminTrue, policy.TagMaxGrant: "1h"}},
-		{"NARROWED", func(name string) awstest.LocalSecret {
+		{"NARROWED", func(name string) memory.Secret {
 			return policytest.Secret(name, policy.OwnerShared, policy.TierAgent, "v")
 		}, "", map[string]string{baseTagProxy: "github", baseTagProxyNarrowed: "true"}},
-		{"APP", func(name string) awstest.LocalSecret {
+		{"APP", func(name string) memory.Secret {
 			return policytest.TypeSecret(name, policy.OwnerShared, policy.TierAgent, policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp))
 		}, "", map[string]string{baseTagProxy: "github"}},
-		{"FEDERATION", func(name string) awstest.LocalSecret {
+		{"FEDERATION", func(name string) memory.Secret {
 			return policytest.TypeSecret(name, guardOwner, policy.TierHuman, policy.TypeAnthropicFederation, policytest.TypeValue(policy.TypeAnthropicFederation))
 		}, guardOwner, map[string]string{baseTagProxy: "anthropic", policy.TagAdmin: policy.AdminTrue, policy.TagMaxGrant: "1h"}},
 	}
@@ -122,8 +126,8 @@ func kindsGuardCases() []kindsGuardCase {
 }
 
 // kindsGuardStore is a store holding every case.
-func kindsGuardStore() *awstest.Local {
-	store := awstest.NewLocal()
+func kindsGuardStore() *memory.Store {
+	store := memory.New()
 	for _, c := range kindsGuardCases() {
 		store.Put(c.secret)
 	}
