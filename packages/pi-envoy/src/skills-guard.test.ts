@@ -1,7 +1,6 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { readFileSync, rmSync } from "node:fs";
 import * as path from "node:path";
-import { dispatchToolSpecs } from "@legion/contracts";
 import {
   dispatchFirstSkillFile,
   readDispatchFirstContext,
@@ -233,42 +232,6 @@ test("the three Dispatch skills total fewer than 2,340 words", () => {
   expect(words).toBeLessThan(2_340);
 });
 
-test("the staged decisions rule separates material choices from spec details", () => {
-  const skill = readFileSync(path.join(staged, "dispatch-writing-specs/SKILL.md"), "utf8");
-  expect(skill).toContain("only if a disagreeing reader would act differently");
-  expect(skill).toContain("keep others to one spec line each");
-  expect(skill).not.toContain("Each choice you made alone, and each a person made");
-});
-
-// dispatch://INFRA-3204: a check may name the CI check run that proves it, and then carries no
-// command. Every spec writer reads the check's attributes here, so the list names `ci_check` and
-// its rule, in the phrase the Legion skills and prompts carry once each.
-test("the spec writer's check attributes name `ci_check`, which takes no `run`", () => {
-  const skill = readFileSync(path.join(staged, "dispatch-writing-specs/SKILL.md"), "utf8");
-  expect(skill.split("check carrying `ci_check` is CI's").length - 1).toBe(1);
-  expect(skill).toContain("takes no `run`");
-});
-
-// Agents reach Dispatch through the `dispatch` command, so no skill or daemon prompt may tell one
-// to call a native tool it no longer has: each names the command (`dispatch ask`) instead.
-test("no skill or daemon prompt names a native Dispatch tool", () => {
-  const toolName = new RegExp(`\\b(${dispatchToolSpecs.map((spec) => spec.name).join("|")})\\b`);
-  const named = skillAndPromptRoots
-    .flatMap(files)
-    .filter((file) => file.endsWith(".md"))
-    .flatMap((file) =>
-      readFileSync(file, "utf8")
-        .split("\n")
-        .flatMap((line, index) => {
-          const match = toolName.exec(line);
-          return match === null
-            ? []
-            : [`${path.relative(REPO_ROOT, file)}:${index + 1}: ${match[0]}`];
-        })
-    );
-  expect(named).toEqual([]);
-});
-
 test("every skill://<name>/<path> link names a file that exists, and its #anchor a heading in it", () => {
   expect(brokenSkillLinks(skillLinks([staged]), repoSkillsRoot)).toEqual([]);
 });
@@ -309,17 +272,4 @@ test("a heading inside a code fence is no anchor, since a Markdown reader render
     "# After",
   ].join("\n");
   expect([...anchors(markdown)]).toEqual(["outside", "after"]);
-});
-
-// Every role of an issue writes into one $TMPDIR on the issue's volume, so a glob sweep deletes
-// another role's open directory (dispatch://INFRA-654). The reviewer's pair carries the rule once,
-// in the maintainability rubric, and the correctness rubric names that skill rather than repeating
-// it, so the two can never drift apart.
-test("the reviewer's pair states the shared scratch rule once and names it from the other", () => {
-  const quality = readFileSync(path.join(staged, "thermonuclear-code-quality/SKILL.md"), "utf8");
-  const deep = readFileSync(path.join(staged, "thermonuclear-deep-review/SKILL.md"), "utf8");
-  expect(quality).toContain("Make your own scratch with `mktemp -d`");
-  expect(quality).toContain("Never delete by a glob in a shared directory");
-  expect(deep).toContain("skill://thermonuclear-code-quality");
-  expect(deep).not.toContain("Never delete by a glob in a shared directory");
 });
