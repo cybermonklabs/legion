@@ -12,12 +12,14 @@ import (
 // Unanswered is err, the failure of an HTTP request that got no answer it could read
 // (http.Client.Do's error, or the error of reading the answer's body), as a message may print it:
 // net/http's operation and the request named shown, or where shown is "" by the URL it asked as
-// URL prints it, and then the failure by its transport text, a TLS record or certificate
+// askedURL names it, and then the failure by its transport text, a TLS record or certificate
 // failure's fixed words, or its class (unansweredFailure). It is for a request whose URL Call does
 // not print, such as a GitHub API path: Cause prints a transport failure's own text only beside a
 // configured URL and a request URL under /v1/ of it, Class never prints it, and neither keeps a
 // timeout's or a refused connection's own words for any other request. A module outside this one,
-// the daemon among them, prints such a request through it as oauth2call.Unanswered.
+// the daemon among them, prints such a request through it as oauth2call.Unanswered. A caller
+// passes shown only for words of its own that name the call in place of its URL, never for a name
+// of the URL another rule made, so a URL has one name wherever it prints.
 //
 // It never prints net/http's own text of any other failure, which can quote the answering
 // party's words: Go parses a redirect's Location before a client's CheckRedirect is asked
@@ -45,9 +47,12 @@ func Unanswered(err error, request *http.Request, shown string) error {
 	switch {
 	case name != "":
 	case request != nil:
-		name = URL(request.URL.String())
+		name = askedURL(request.URL)
 	default:
-		name = URL(failed.URL)
+		name = NotPrinted
+		if asked, err := url.Parse(failed.URL); err == nil {
+			name = askedURL(asked)
+		}
 	}
 	text := unansweredFailure(failed.Err)
 	switch {
@@ -119,4 +124,21 @@ func unreadable(err error) error {
 func redirectedElsewhere(failed string, asked *url.URL) bool {
 	at, err := url.Parse(failed)
 	return err != nil || !strings.EqualFold(at.Host, asked.Host)
+}
+
+// askedURL is u, the URL a request asked, as Unanswered names it, daemon and envoy alike: scheme
+// "://" host path, with u's user information, its query and its fragment removed, where URL prints
+// that unchanged, and NotPrinted where URL refuses it (an escape, a path or a host it does not
+// allow) or u is nil or opaque. The host is the one net/url parsed, the host the request dialled,
+// which a failed dial's own words name too: where a password holds an '@' and no host follows it
+// (URL's https://user:p@ssword), the tail net/url read as the host prints, as it does there. The
+// query goes whole, its keys with its values: a client can write a credential as a key alone
+// (?<token>), and neither URL's allow-list, which a token's letters, digits and '-' pass, nor the
+// credentials the request carried, whose query values requestTokens reads and never its keys, can
+// tell such a key from a parameter's name.
+func askedURL(u *url.URL) string {
+	if u == nil || u.Opaque != "" {
+		return NotPrinted
+	}
+	return URL(u.Scheme + "://" + u.Host + u.EscapedPath())
 }

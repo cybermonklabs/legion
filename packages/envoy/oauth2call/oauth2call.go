@@ -103,9 +103,10 @@ func DecodeError(err error, data []byte, into any) error { return redact.DecodeE
 
 // Unanswered is redact.Unanswered: err, the failure of an HTTP request that got no answer
 // (http.Client.Do's error, or http.NewRequest's with request nil), as a message may print it:
-// net/http's operation, the request named shown or, where shown is "", by its URL as redact.URL
-// prints it, and the failure by its transport text, a TLS record or certificate failure's fixed
-// words, or its class, never net/http's or x509's text of what the answering party sent. It
+// net/http's operation, the request named shown or, where shown is "", by the URL it asked as
+// redact.Unanswered names it, and the failure by its transport text, a TLS record or certificate
+// failure's fixed words, or its class, never net/http's or x509's text of what the answering party
+// sent. shown is a caller's own words for the call, never a name of its URL another rule made. It
 // unwraps to err, so errors.Is and errors.As still find the failure.
 func Unanswered(err error, request *http.Request, shown string) error {
 	return redact.Unanswered(err, request, shown)

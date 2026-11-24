@@ -26,8 +26,8 @@ const unansweredToken = "hj4tn-not-a-secret-RDX-31d9"
 // Location that does not parse, a status line that does not parse, the address a followed
 // redirect named - prints as its class and holds no run of the token net/http's own text quotes
 // (each row's twin: that text holds it); a transport failure on the request's own host prints
-// net/http's text of it, as it did; the call is named shown, or the URL it asked as redact.URL
-// prints it; and errors.Is and errors.As find what they found before.
+// net/http's text of it, as it did; the call is named shown, or the URL it asked by its scheme,
+// host and path, its query dropped; and errors.Is and errors.As find what they found before.
 func TestUnansweredNamesTheCallAndTheFailuresClassAndNoneOfNetHTTPsWords(t *testing.T) {
 	refusing := redirects.Refused(&http.Client{})
 	following := &http.Client{}
@@ -88,7 +88,7 @@ func TestUnansweredNamesTheCallAndTheFailuresClassAndNoneOfNetHTTPsWords(t *test
 			}
 			name := c.shown
 			if name == "" {
-				name = redact.URL(request.URL.String())
+				name = c.base + "/repos/acme/widgets"
 			}
 			if wantLine := `Get "` + name + `": `; !strings.HasPrefix(printed.Error(), wantLine) || !strings.Contains(printed.Error(), c.want) {
 				t.Errorf("Unanswered = %q, want it to begin %q and hold %q", printed, wantLine, c.want)
