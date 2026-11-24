@@ -25,7 +25,7 @@ import (
 // step's measurements were taken at.
 //
 // go test parses its flags inside m.Run, so a -parallel on the command line still wins.
-const daemonTestParallelism = 4
+const daemonTestParallelism = 8
 
 // processDSN is LEGION_TEST_PG_DSN as this test process started with it, after the guard: the
 // server whose template testDSN clones each test's database from. A test that sets the variable to
