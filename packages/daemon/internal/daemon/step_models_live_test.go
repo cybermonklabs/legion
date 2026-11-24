@@ -10,9 +10,19 @@
 // harness, so a reader of this file sees what the counting rests on before it reads the chain.
 package daemon
 
+// What the chain reads outside its own package, which no import of this file carries: each is a
+// program it spawns or a file that program reads. The packs of the two Oh My Pi plugins are
+// declared in live_agent_proof_test.go, whose installProofPlugins this test runs.
+//ci:reads packages/claude-envoy/** TestStepModelsLive builds the claude-envoy plugin each Claude Code pane loads, with bun packages/claude-envoy/scripts/build.ts
+//ci:reads packages/envoy-client/** TestStepModelsLive reads each issue's records with the real dispatch CLI, bun packages/envoy-client/bin/dispatch.ts (dispatchCLI)
+//ci:reads scripts/e2e/step-models-check.sh TestStepModelsLive runs the comparator over both issues
+//ci:reads scripts/e2e/lib/step-models-check.ts scripts/e2e/step-models-check.sh, which TestStepModelsLive runs, is its wrapper
+//ci:reads scripts/e2e/lib/dispatch-read.sh scripts/e2e/step-models-check.sh, which TestStepModelsLive runs, sources it to run the real dispatch CLI
+
 import (
 	"encoding/json"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -103,6 +113,28 @@ func TestTheStandInGivesEachResponseItsOwnID(t *testing.T) {
 		if one.id == two.id {
 			t.Fatalf("two responses of the stand-in carry the one id %q, so a reader that counts "+
 				"one call for each id counts one call for two responses", one.id)
+		}
+	})
+
+	t.Run("one response of two blocks carries one id", func(t *testing.T) {
+		recorder := httptest.NewRecorder()
+		streamAnthropicBlocks(recorder, standinModel("omp"), "tool_use",
+			anthropicBlock{open: `{"type":"text","text":""}`, delta: `{"type":"text_delta","text":"what I am about to do"}`},
+			anthropicBlock{
+				open:  `{"type":"tool_use","id":"toolu_standin","name":"bash","input":{}}`,
+				delta: `{"type":"input_json_delta","partial_json":"{\"command\":\"true\"}"}`,
+			})
+
+		response := readStandinResponse(t, recorder.Body.String())
+		if got := response.blocks; !slices.Equal(got, []int{0, 1}) {
+			t.Fatalf("the response opened blocks at %v; want one block at 0 and one at 1, so a host "+
+				"reads the text and the call of one answer", got)
+		}
+		if response.id == "" {
+			t.Fatal("the response of two blocks carries no id")
+		}
+		if response.model != standinModel("omp") {
+			t.Fatalf("the response names the model %q; want the served model %q", response.model, standinModel("omp"))
 		}
 	})
 }

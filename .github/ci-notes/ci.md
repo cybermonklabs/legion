@@ -1410,6 +1410,25 @@ The one test of that suite that packs the two plugin releases, in a job of its o
 pack reads bun.lock, so with it in daemon-go a lockfile change ran the daemon's whole Go
 suite (dispatch://INFRA-1413, A4).
 
+## Why the step-models chain is a job of its own
+
+The chain that drives both real harnesses behind the real shim and the real daemon, in a job of
+its own: it is the one job of ci.yaml that runs the daemon's `e2e` build tag, and the two tests
+it runs install Oh My Pi and Claude Code, a Postgres service and a NATS image that no other
+daemon lane needs together. It is a slow suite
+(.github/ci-notes/ci.md#how-a-slow-suite-is-held-back-on-a-pull-request): the merge queue runs it
+on the tree the change lands as.
+
+Its step joins `-tags e2e` with `-run`, so it runs those two tests and none of
+internal/daemon's untagged tests. Its untagged companion is `daemon-go-race`, whose step "Test
+the concurrent packages under the race detector" is the one run of that package untagged, and
+ci_job_reads.py's `TAG_RUNS` holds `daemon_go_tests` to every file this job's step reads. That
+entry selects no job: what turns each output on is ci.yaml's own label terms. So a pull request
+that needs this job's result at its head carries `lane:step_models_chain` and
+`lane:daemon_go_tests` together, or `full-ci`. `lane:step_models_chain` alone runs the tagged
+job while its companion stays off, and such a run is not the paired result
+(.github/ci-notes/ci.md#a-lane-label-turns-on-one-slow-suite-on-a-pull-request).
+
 ## Why the private-name port harness has an output of its own
 
 The private-name port harness, in a job of its own: it builds the `legion` binary of
@@ -1513,12 +1532,13 @@ no job of the file it calls starts, and the run the check names (`test / test`) 
 ## A lane label turns on one slow suite on a pull request
 
 A pull request label `lane:<output>` turns on that one slow suite, as `full-ci` turns on all of
-them. `<output>` is one of the fifteen outputs the `full-ci` term gates, and the label turns
+them. `<output>` is one of the sixteen outputs the `full-ci` term gates, and the label turns
 that output on where its paths matched: `daemon_go_tests`, `dispatch_browser`,
 `dispatch_memory`, `dispatch_multiprocess`, `dispatch_two_builds`, `envoy_go`,
 `envoy_go_checks`, `envoy_go_claim_model`, `envoy_go_race`, `envoy_go_race_api`,
 `envoy_go_race_docs` (which gates envoy-go-race-docs and envoy-go-docs-finalizers both),
-`envoy_infra_go`, `envoy_smoke`, `pi_legion` and `test`. It is for a pull request that needs
+`envoy_infra_go`, `envoy_smoke`, `pi_legion`, `step_models_chain` and `test`. It is for a pull
+request that needs
 one slow suite's result at its head - a test that only that suite runs, or a `ci_check` naming
 that job - without running the others. Each term names its own label, so the label that turns
 a job on is written beside it and nowhere else, and the paths term stays: a lane label never
@@ -1538,7 +1558,7 @@ request and reopen it. Take it off once the run it was added for passes, as `ful
 .github/scripts/ci-router-outputs.test.sh evaluates ci.yaml's own outputs
 (.github/scripts/ci_router_outputs.py) and holds them to this: each lane label turns on its
 own output and leaves every other one as an unlabelled pull request has it, `full-ci` still
-turns all fifteen on, the paths term still holds under both, and a label naming no such output
+turns all sixteen on, the paths term still holds under both, and a label naming no such output
 turns on nothing.
 
 ## Why envoy-go's build and checks come back on every push

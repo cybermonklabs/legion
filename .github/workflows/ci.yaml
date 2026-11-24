@@ -38,6 +38,7 @@ env:
       "tooling-checks": "tooling_checks",
       "daemon-go": "daemon_go_tests",
       "plugin-pack": "plugin_pack",
+      "step-models-chain": "step_models_chain",
       "private-names-port": "private_names_port",
       "docs": "docs",
       "contracts": "contracts",
@@ -119,6 +120,8 @@ jobs:
       daemon_go_tests: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:daemon_go_tests')) && steps.filter.outputs.daemon_go_tests || 'false' }}
       # why: .github/ci-notes/ci.md#why-the-plugin-pack-has-an-output-of-its-own
       plugin_pack: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.plugin_pack }}
+      # why: .github/ci-notes/ci.md#why-the-step-models-chain-is-a-job-of-its-own
+      step_models_chain: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:step_models_chain')) && steps.filter.outputs.step_models_chain || 'false' }}
       # why: .github/ci-notes/ci.md#why-the-private-name-port-harness-has-an-output-of-its-own
       private_names_port: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.private_names_port }}
       # why: .github/ci-notes/ci.md#why-the-session-message-wait-suite-has-an-output-of-its-own
@@ -456,6 +459,18 @@ jobs:
       actions: read
       checks: write
     uses: ./.github/workflows/ci-job-plugin-pack.yaml
+    with:
+      ci-ok-changes: ${{ toJSON(needs.changes) }}
+
+  # why: .github/ci-notes/ci.md#why-the-step-models-chain-is-a-job-of-its-own
+  step-models-chain:
+    needs: changes
+    if: ${{ !cancelled() && !github.event.pull_request.draft && (github.event_name != 'merge_group' || github.run_attempt == '1') && (needs.changes.result != 'success' || needs.changes.outputs.step_models_chain == 'true') }}
+    permissions:
+      contents: read
+      actions: read
+      checks: write
+    uses: ./.github/workflows/ci-job-step-models-chain.yaml
     with:
       ci-ok-changes: ${{ toJSON(needs.changes) }}
 
@@ -1046,6 +1061,7 @@ jobs:
       - tooling-checks
       - daemon-go
       - plugin-pack
+      - step-models-chain
       - private-names-port
       - docs
       - contracts

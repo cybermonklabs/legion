@@ -64,6 +64,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -501,12 +502,32 @@ func streamAnthropicText(w http.ResponseWriter, provider, text string) {
 		fmt.Sprintf(`{"type":"text_delta","text":%q}`, text))
 }
 
-// streamAnthropicBlock answers one Anthropic Messages request with one content block, which opens
-// as block and is written whole by the one delta after it, and a message that stops for stop, as
-// that harness's `messageStream` writes either kind of block: a text block ends the turn
+// anthropicBlock is one content block of a stand-in's answer: the JSON the block opens as, and
+// the one delta that writes it whole, as that harness's `messageStream` writes either kind of
+// block.
+type anthropicBlock struct {
+	open, delta string
+}
+
+// standinResponses is the counter standinResponseID raises, one for the whole process: the live
+// proofs run their stand-ins in parallel, and an id is read back across them.
+var standinResponses atomic.Uint64
+
+// standinResponseID is the id of the next response any stand-in of this package writes, each one
+// its own. A reader of a transcript tells one response from the next by this id and counts a call
+// for each, so two responses under one id would be counted as one call.
+func standinResponseID() string {
+	return "msg_standin_" + strconv.FormatUint(standinResponses.Add(1), 10)
+}
+
+// streamAnthropicBlocks answers one Anthropic Messages request with one response of blocks: a
+// message_start carrying an id of its own and the model served, then each block opened and
+// written whole at its own index, and a message that stops for stop. A text block ends the turn
 // (streamAnthropicText), and a tool_use block stops for tool_use, which has the host run the tool
-// and send its result in the next request (streamAnthropicToolUse).
-func streamAnthropicBlock(w http.ResponseWriter, provider, stop, block, delta string) {
+// and send its result in the next request (streamAnthropicToolUse). served is the model the
+// answer names, which is the model the request asked for in every proof but the capture that
+// measures what a transcript holds of a model that never answered.
+func streamAnthropicBlocks(w http.ResponseWriter, served, stop string, blocks ...anthropicBlock) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.WriteHeader(http.StatusOK)
 	flusher, _ := w.(http.Flusher)
@@ -516,14 +537,23 @@ func streamAnthropicBlock(w http.ResponseWriter, provider, stop, block, delta st
 			flusher.Flush()
 		}
 	}
-	event("message_start", fmt.Sprintf(`{"type":"message_start","message":{"id":"answered","type":"message","role":"assistant",`+
+	event("message_start", fmt.Sprintf(`{"type":"message_start","message":{"id":%q,"type":"message","role":"assistant",`+
 		`"model":%q,"content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":1000,"output_tokens":1}}}`,
-		provider+standinModelID))
-	event("content_block_start", fmt.Sprintf(`{"type":"content_block_start","index":0,"content_block":%s}`, block))
-	event("content_block_delta", fmt.Sprintf(`{"type":"content_block_delta","index":0,"delta":%s}`, delta))
-	event("content_block_stop", `{"type":"content_block_stop","index":0}`)
+		standinResponseID(), served))
+	for index, block := range blocks {
+		event("content_block_start", fmt.Sprintf(`{"type":"content_block_start","index":%d,"content_block":%s}`, index, block.open))
+		event("content_block_delta", fmt.Sprintf(`{"type":"content_block_delta","index":%d,"delta":%s}`, index, block.delta))
+		event("content_block_stop", fmt.Sprintf(`{"type":"content_block_stop","index":%d}`, index))
+	}
 	event("message_delta", fmt.Sprintf(`{"type":"message_delta","delta":{"stop_reason":%q,"stop_sequence":null},"usage":{"output_tokens":16}}`, stop))
 	event("message_stop", `{"type":"message_stop"}`)
+}
+
+// streamAnthropicBlock answers one Anthropic Messages request with one content block, which opens
+// as block and is written whole by the one delta after it, and a message that stops for stop,
+// served by the one model this provider's stand-in serves.
+func streamAnthropicBlock(w http.ResponseWriter, provider, stop, block, delta string) {
+	streamAnthropicBlocks(w, provider+standinModelID, stop, anthropicBlock{open: block, delta: delta})
 }
 
 // streamAnthropicToolUse answers one Anthropic Messages request with a single call of the tool

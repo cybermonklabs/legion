@@ -1,0 +1,183 @@
+name: CI job step-models-chain
+
+# The steps of ci.yaml's `step-models-chain` job, in a file of its own.
+# ci.yaml's job of the same id calls this file, and that caller keeps `needs: changes` and the
+# whole `if:` that decides whether these steps run, so this file carries no `if:` of its own.
+#
+# The split is for the filters. This job's filter names this file beside ci.yaml, so a change to
+# these steps selects this job alone, where a change to ci.yaml selects every job.
+#
+# What runs here is the two tests of internal/daemon that carry the e2e build tag, which
+# .github/scripts/ci_job_reads.py's STEP_MODELS_CHAIN_TESTS names:
+# TestStepModelsLive runs the pinned Oh My Pi and the pinned Claude Code behind the real
+# `legion worker-shim` and the real daemon, over two issues whose steps the agents end and whose
+# steps an architect stops, and judges each step record's set model and its answering counts
+# against the agents' own transcripts (scripts/e2e/step-models-check.sh); and
+# TestTheStandInGivesEachResponseItsOwnID holds the model stand-ins those counts rest on to one
+# id per response. They are the acceptance of the chain before a merge: everything below the
+# model endpoint is the real thing, and CI holds no model credential, so each harness talks to a
+# stand-in endpoint of the test's own, as every live proof of this repository does.
+#
+# Everything here is what those two tests need:
+#   * Bun and a frozen install, for the `dispatch` CLI the test reads the records with, the packs
+#     of the two Oh My Pi plugins and the claude-envoy build the Claude panes load;
+#   * setup-go and the go-daemon cache restore: the step compiles internal/daemon's test binary,
+#     the same build the daemon-go race step makes, so it restores the same entry;
+#   * jj, which the test's workspace seed runs; Oh My Pi at the pin .omp-pin names, which the
+#     implementer panes run; and Claude Code at the pin .claude-code-pin names, which the tester
+#     panes run. internal/testbin's OMP and Claude refuse on GitHub Actions without theirs;
+#   * the NATS test container image of the package's own broker;
+#   * a Postgres service, the daemon's store, sized for the Dispatch processes the test starts as
+#     every lane that starts one sizes its own.
+#
+# The step runs the daemon's e2e tag, which no other job of ci.yaml runs, and selects with -run,
+# so internal/daemon's untagged tests run in daemon-go-race's "Test the concurrent packages under
+# the race detector" (ci_job_reads.py's TAG_RUNS). A pull request that needs this job's result at
+# its head therefore carries `lane:step_models_chain` and `lane:daemon_go_tests` together
+# (.github/ci-notes/ci.md#why-the-step-models-chain-is-a-job-of-its-own).
+#
+# The job's last step reports ci-ok for the caller: on a merge-group run this job's own result
+# decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
+# ci.yaml ends. `ci-ok-changes` carries ci.yaml's `toJSON(needs.changes)` for it.
+on:
+  workflow_call:
+    inputs:
+      ci-ok-changes:
+        description: >-
+          ci.yaml's `toJSON(needs.changes)`: end the job with ci-ok's report
+          (.github/actions/ci-ok-report), as every job of ci.yaml ends.
+        type: string
+        required: true
+
+# A `|` between proxy entries makes a go command fall through to the next source after ANY error,
+# where a `,` falls through only after a 404 or a 410 (Go's module reference, "GOPROXY protocol").
+# proxy.golang.org reset a download mid-stream and turned a Go lane red on a module whose hash
+# go.sum already holds (sjawhar/legion#2512); with `|direct` the command fetches the same bytes
+# straight from the source and checks them against go.sum, so this is a second path, not a weaker
+# check.
+env:
+  GOPROXY: https://proxy.golang.org|direct
+
+jobs:
+  step-models-chain:
+    # ubuntu-24.04, not arm64: the pinned Oh My Pi this job installs is built for linux-x64 alone
+    # (.github/ci-notes/ci.md#choose-the-runner).
+    runs-on: ubuntu-24.04
+    # The step's own -timeout is 40 minutes, so a hung chain prints the goroutine dump that names
+    # the pane it waited for before the runner cancels the job. Around it are the Bun install, the
+    # two harness installs, the image pull and the Go build of internal/daemon's test binary,
+    # which the cache restore makes incremental; 60 minutes leaves that setup room on a slow
+    # runner and still fails inside the hour.
+    timeout-minutes: 60
+    services:
+      postgres:
+        # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
+        image: ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
+        env:
+          POSTGRES_PASSWORD: ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -h 127.0.0.1 -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      JOB_TIMEOUT_MINUTES: 60 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+      # The daemon's store, and the store of the Dispatch the test starts beside it.
+      LEGION_TEST_PG_DSN: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
+      # The runner VM is discarded after the job, so testcontainers' Ryuk reaper has nothing to
+      # clean up, and its image (testcontainers/ryuk, on Docker Hub) would be one more registry
+      # pull a test could fail on.
+      TESTCONTAINERS_RYUK_DISABLED: "true"
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The `dispatch` CLI the test reads each issue's records with, the packs of the two Oh My Pi
+      # plugins each implementer pane loads, and the claude-envoy build each tester pane loads.
+      - name: Setup Bun
+        uses: ./.github/actions/setup-bun
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/daemon/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
+          cache: false
+
+      # go-daemon, shared with typecheck, daemon-go, plugin-pack and pi-legion: this step compiles
+      # the same package's test binary the daemon-go race step does.
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-daemon-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ format('go-daemon-{0}-{1}-', runner.os, runner.arch) }}
+
+      # The test seeds each issue's workspace with the real jj.
+      - uses: ./.github/actions/install-jj
+
+      # The implementer panes run the pinned Oh My Pi (testbin.OMP), which refuses on GitHub
+      # Actions without one. The action exports LEGION_TEST_OMP.
+      - uses: ./.github/actions/install-omp
+
+      # The tester panes run the pinned Claude Code (testbin.Claude), which refuses on GitHub
+      # Actions without one. The action exports LEGION_TEST_CLAUDE.
+      - uses: ./.github/actions/install-claude-code
+
+      # The broker the test's daemon consumes is the package's own (testnats.Image), pulled first
+      # for the reason the action gives.
+      - name: Pull the NATS test container images
+        uses: ./.github/actions/pull-test-images
+        with:
+          consts: |
+            packages/daemon/internal/testnats/nats.go Image
+
+      # The test starts a Dispatch process, and one such process opens up to
+      # store.ConnectionsPerProcess connections, more than PostgreSQL's default max_connections
+      # allows. So the service is raised to what a Dispatch test lane needs, as every lane that
+      # starts a Dispatch process raises its own. The go run of the script builds envoy's
+      # internal/dispatch/store/cmd/connections, after the cache restore so that it reads the
+      # restored module cache.
+      - name: Size the service for this lane's Dispatch processes
+        run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
+
+      # The two tests, by name. .github/scripts/ci_job_reads.py builds this text from
+      # STEP_MODELS_CHAIN_TESTS and holds the step to what it builds.
+      - name: Run the step-models chain on the real harnesses
+        run: go test -tags e2e -count=1 -timeout 40m -v -run '^(TestStepModelsLive|TestTheStandInGivesEachResponseItsOwnID)$' ./internal/daemon/
+        working-directory: packages/daemon
+        env:
+          LEGION_E2E_DAEMON_LOG: ${{ runner.temp }}/step-models-evidence/daemon.log
+          LEGION_E2E_STEP_MODELS_EVIDENCE: ${{ runner.temp }}/step-models-evidence
+
+      # The chain writes passed.txt as its last act, and only where it has neither failed nor
+      # skipped. So a run whose test skipped, or whose -run matched nothing, fails here rather
+      # than reporting a green job that proved nothing.
+      - name: Fail where the step-models chain did not pass
+        run: test -s "$RUNNER_TEMP/step-models-evidence/passed.txt"
+
+      # Whatever the result: the records of both issues, the daemon's JSON log, the four claims'
+      # transcripts, the stand-ins' served lists, the comparator's whole output and the captures.
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: step-models-evidence-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/step-models-evidence
+          if-no-files-found: warn
+
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: step-models-chain
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}
