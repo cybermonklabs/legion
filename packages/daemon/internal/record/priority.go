@@ -1,13 +1,16 @@
 package record
 
+import "encoding/json"
+
 // Priority is an issue's own Dispatch priority as the record keeps it (Issue.Priority): P0, the
 // most urgent, to P3, or NoPriority for an issue Dispatch shows none. NoPriority is the zero
 // value, so a record stored before the daemon read priorities, and every record built without
 // one, reads as an issue with none.
 //
-// Dispatch serves the priority as an integer from 0 for P0 to 3 for P3, or null for none
-// (DispatchPriority), and the store keeps that integer in the issues table's priority column, so
-// the column reads as Dispatch's own issue does.
+// Dispatch serves the priority as an integer from 0 for P0 to 3 for P3, or null for none, and the
+// store keeps that integer in the issues table's priority column, so the column reads as Dispatch's
+// own issue does. DispatchPriority reads that integer and Level writes it: the offset between it
+// and Priority lives in these two functions alone.
 type Priority uint8
 
 // The four priorities Dispatch has, and none.
@@ -29,7 +32,30 @@ func DispatchPriority(level *int) (Priority, bool) {
 	if *level < 0 || *level > 3 {
 		return NoPriority, false
 	}
-	return Priority(*level + 1), true
+	return P0 + Priority(*level), true
+}
+
+// Level is p as Dispatch serves it, 0 for P0 to 3 for P3, and nil for none: the inverse of
+// DispatchPriority. The store writes it to the issues table's priority column, and the API to the
+// wire.
+func (p Priority) Level() *int {
+	if p < P0 || p > P3 {
+		return nil
+	}
+	level := int(p - P0)
+	return &level
+}
+
+// DecodePriority reads raw, a priority as Dispatch writes it in JSON (an integer from 0 to 3, or
+// null), through DispatchPriority. An error says raw is no integer or null at all; false says it
+// is a level Dispatch never writes, which reads as none.
+func DecodePriority(raw []byte) (Priority, bool, error) {
+	var level *int
+	if err := json.Unmarshal(raw, &level); err != nil {
+		return NoPriority, false, err
+	}
+	priority, read := DispatchPriority(level)
+	return priority, read, nil
 }
 
 // String is the priority as Dispatch names it, P0 to P3, and the empty string for none.

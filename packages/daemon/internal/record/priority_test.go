@@ -139,3 +139,19 @@ func TestTheRecordKeepsAnIssuesOwnPriorityAsDispatchsLevel(t *testing.T) {
 		t.Fatalf("the priority column of %s, written with none, holds %d, want null", plain.Key, *level)
 	}
 }
+
+// Level writes a priority back as Dispatch serves it, so the store's column and the wire hold the
+// level DispatchPriority read: each of Dispatch's four levels, and null for none, makes the round
+// trip.
+func TestLevelIsTheLevelDispatchPriorityRead(t *testing.T) {
+	for _, level := range []*int{nil, new(0), new(1), new(2), new(3)} {
+		priority, read := DispatchPriority(level)
+		if !read {
+			t.Fatalf("DispatchPriority(%v) could not read a level Dispatch writes", level)
+		}
+		back := priority.Level()
+		if (back == nil) != (level == nil) || (back != nil && *back != *level) {
+			t.Errorf("%v.Level() = %v, want the level %v it was read from", priority, back, level)
+		}
+	}
+}

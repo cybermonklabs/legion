@@ -605,20 +605,18 @@ func issueEventClaim(raw json.RawMessage, unread *[]string) (string, bool) {
 }
 
 // issueEventPriority reads an issue event's own priority, Dispatch's 0 for P0 to 3 for P3 or null,
-// as the record keeps it (record.DispatchPriority); an absent field is none. A value Dispatch never
+// as the record keeps it (record.DecodePriority); an absent field is none. A value Dispatch never
 // writes, a level outside 0 to 3 or no integer at all, is none and named in unread rather than
 // making the event poison: the event can carry a status the workflow acts on.
 func issueEventPriority(raw json.RawMessage, unread *[]string) record.Priority {
 	if raw == nil {
 		return record.NoPriority
 	}
-	var level *int
-	if err := json.Unmarshal(raw, &level); err != nil {
+	priority, read, err := record.DecodePriority(raw)
+	switch {
+	case err != nil:
 		*unread = append(*unread, fmt.Sprintf("priority %s is not a priority: %v", raw, err))
-		return record.NoPriority
-	}
-	priority, read := record.DispatchPriority(level)
-	if !read {
+	case !read:
 		*unread = append(*unread, fmt.Sprintf("priority %s is no level Dispatch writes", raw))
 	}
 	return priority

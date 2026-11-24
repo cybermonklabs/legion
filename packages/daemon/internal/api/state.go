@@ -14,7 +14,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 
@@ -992,21 +991,18 @@ type WaitingOnView struct {
 // contract that added it carries no key at all.
 type PriorityView record.Priority
 
-// MarshalJSON writes the priority's number, or null for none.
+// MarshalJSON writes the priority's number, or null for none (record.Priority.Level).
 func (p PriorityView) MarshalJSON() ([]byte, error) {
-	if record.Priority(p) == record.NoPriority {
-		return []byte("null"), nil
-	}
-	return strconv.AppendInt(nil, int64(p)-1, 10), nil
+	return json.Marshal(record.Priority(p).Level())
 }
 
-// UnmarshalJSON reads the number back, 0 for P0 to 3 for P3; null reads as none.
+// UnmarshalJSON reads the number back, 0 for P0 to 3 for P3; null reads as none
+// (record.DecodePriority).
 func (p *PriorityView) UnmarshalJSON(data []byte) error {
-	var level *int
-	if err := json.Unmarshal(data, &level); err != nil {
+	priority, read, err := record.DecodePriority(data)
+	if err != nil {
 		return err
 	}
-	priority, read := record.DispatchPriority(level)
 	if !read {
 		return fmt.Errorf("priority %s is no priority Dispatch sends", data)
 	}
