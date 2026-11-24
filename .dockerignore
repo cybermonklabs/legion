@@ -5,8 +5,10 @@
 **/build
 **/coverage
 *.log
-.env
-.env.*
+# An operator's untracked environment files (.env, .env.local and the like, which .gitignore
+# ignores anywhere), at the root and under every directory a COPY takes whole.
+**/.env
+**/.env.*
 .vscode
 .idea
 **/docker-data
@@ -32,10 +34,11 @@ packages/envoy/**/*_test.go
 packages/envoy/internal/integration/
 packages/envoy/internal/smoke/
 packages/envoy/deploy/
-# The envoy-infra Pulumi plugin's module, which no image builds. Leaving it out of the context lets
-# ci.yaml's worker_image filter leave it out, so a pull request that touches only it builds no
-# worker image. On main, release.yaml's push paths still match it (packages/envoy/**), and every
-# release.yaml run on main builds the worker image.
+# The envoy-infra Pulumi plugin's module. Leaving it out of the context lets ci.yaml's
+# worker_image filter leave it out, so a pull request that touches only it builds no worker image.
+# On main, release.yaml's push paths still match it (packages/envoy/**), and every release.yaml run
+# on main builds the worker image. The Envoy image, which builds envoy-infra from it, reads
+# packages/envoy/docker/Dockerfile.dockerignore in place of this file; change the two together.
 packages/envoy/infra/
 
 # Every package's changelog fragments, which no build reads: a pull request writes its changelog

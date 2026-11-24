@@ -82,7 +82,7 @@ func TestABucketStreamIsCreatedAsNatsGoCreatesIt(t *testing.T) {
 			t.Cleanup(func() { _ = js.DeleteStream(stream) })
 
 			_, natsFirst := js.CreateKeyValue(row.config(bucket))
-			ours := createBucketStream(t.Context(), conn, js, row.config(bucket))
+			_, ours := createBucketStream(t.Context(), conn, js, row.config(bucket))
 			_, natsSecond := js.CreateKeyValue(row.config(bucket))
 
 			if natsFirst == nil {
@@ -107,7 +107,11 @@ func TestABucketStreamIsCreatedAsNatsGoCreatesIt(t *testing.T) {
 		})
 	}
 
-	t.Run("a connection that has not connected", func(t *testing.T) {
+	t.Run("a connection that has not connected is refused ErrNoServerVersion before any send", func(t *testing.T) {
+		// nats.go's CreateKeyValue answers such a connection a server too old for a bucket; the bus
+		// classifies no version as ErrNoServerVersion instead (addBucketStream's first read), so
+		// `envoy-infra buckets create` tells it from a server before 2.6.2 and from a create that
+		// failed after a send, without reading the connection again.
 		client, err := Connect([]string{"nats://127.0.0.1:1"}, WithEnvironment(seedLookup("")), WithConnectInBackground())
 		if err != nil {
 			t.Fatalf("connect in the background: %v", err)
@@ -118,9 +122,11 @@ func TestABucketStreamIsCreatedAsNatsGoCreatesIt(t *testing.T) {
 			t.Fatalf("open JetStream: %v", err)
 		}
 		config := &nats.KeyValueConfig{Bucket: "envoy_create_unconnected"}
-		_, natsErr := unconnected.CreateKeyValue(config)
-		if ours := createBucketStream(t.Context(), client.Conn, unconnected, config); natsErr == nil || !sameErrorText(ours, natsErr) {
-			t.Fatalf("a create on a connection that has not connected answered nats.go %v, createBucketStream %v, want the same refusal", natsErr, ours)
+		if _, natsErr := unconnected.CreateKeyValue(config); natsErr == nil {
+			t.Fatal("nats.go's CreateKeyValue did not refuse a connection that has not connected")
+		}
+		if _, ours := createBucketStream(t.Context(), client.Conn, unconnected, config); !errors.Is(ours, ErrNoServerVersion) {
+			t.Fatalf("a create on a connection that has not connected = %v, want ErrNoServerVersion", ours)
 		}
 	})
 }

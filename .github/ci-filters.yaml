@@ -1707,6 +1707,7 @@ envoy_infra_go:
   - 'packages/envoy/internal/dispatch/githubapp/**'
   - 'packages/envoy/internal/fixtureenv/*'
   - 'packages/envoy/internal/githubtest/*'
+  - 'packages/envoy/internal/goroutinetest/*'
   - 'packages/envoy/internal/logtest/*'
   - 'packages/envoy/internal/bus/bustest/*'
   - 'packages/envoy/internal/oidc/oidctest/*'
@@ -2360,7 +2361,6 @@ envoy_smoke:
   - *ci_filters_data
   # why: .github/ci-notes/ci.md#envoy_smoke-the-jobs-steps-which-build-the-image-and-smoke-it
   - '.github/workflows/ci-job-envoy-smoke.yaml'
-  - '.dockerignore'
   - '.bun-version'
   - 'package.json'
   - 'bun.lock'

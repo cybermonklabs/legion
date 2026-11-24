@@ -731,12 +731,15 @@ change to it must start the build.
 
 ## envoy_smoke: The Envoy module, which the image's Go stage copies whole
 
-The Envoy module, which the image's Go stage copies whole, and the envoy-infra
-module under it, which the held-port image's build copies whole with it
+The Envoy module, which the image's Go stage copies whole (its own ignore file,
+packages/envoy/docker/Dockerfile.dockerignore, which BuildKit reads in place of the
+root .dockerignore, lets in of envoy-infra the module files and Go sources the image
+builds envoy-infra from), and the envoy-infra module under it, which the held-port
+image's build copies whole with it
 (packages/envoy/infra/host/heldportwrapper/Dockerfile and its .dockerignore) and
 envoy-infra's host live tests and plugin build compile in packages/envoy/infra's own
 workspace. The envoy_smoke filter's two hand-written `!` patterns, `'!packages/envoy/deploy/**'` and `'!packages/envoy/.changes/**'`, leave out deploy and the changelog fragments,
-which neither .dockerignore lets in; the generated block leaves out the test files
+which no ignore file of the two builds lets in; the generated block leaves out the test files
 (internal/integration holds nothing else).
 
 ## envoy_e2e_local: And @legion/cipher-client with it: the tsc program of

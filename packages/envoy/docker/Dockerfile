@@ -98,11 +98,18 @@ COPY scripts/go-third-party-notices.sh scripts/assemble-third-party-notices.sh /
 RUN go-third-party-notices.sh --install
 COPY packages/envoy/go.mod packages/envoy/go.sum ./
 RUN go mod download
+# No download of the envoy-infra module's own dependencies here: its go.mod requires the Pulumi
+# SDKs and the rest of the Pulumi plugin's, 0.8 GB of module cache that /usr/local/bin/envoy-infra
+# never compiles, so `go build` and the notices step below fetch only the modules its packages import.
+# The module is built in its workspace (infra/go.work, which binds it and the envoy module at
+# /src), as the envoy-infra release builds it.
 
 # The whole module, so a binary that imports a new package of it builds here with no edit to this
-# file, as the worker image's `COPY packages/envoy packages/envoy` builds agent-secrets. The root
-# .dockerignore leaves out what no image compiles: test files, internal/integration,
-# internal/smoke, deploy, infra (the envoy-infra module) and the changelog fragments.
+# file, as the worker image's `COPY packages/envoy packages/envoy` builds agent-secrets. This
+# Dockerfile's own ignore file, Dockerfile.dockerignore beside it, which BuildKit reads in place of
+# the root .dockerignore, leaves out what no image compiles: test files, internal/integration,
+# internal/smoke, deploy, the changelog fragments, and of infra (the envoy-infra module) all but
+# its module files and Go sources.
 COPY packages/envoy ./
 # The Go contracts files are generated from packages/contracts/schemas; never
 # trust the copy checked into the tree over a fresh regeneration.
@@ -110,23 +117,25 @@ COPY --from=web /repo/packages/envoy/internal/contracts/generated.go ./internal/
 COPY --from=web /repo/packages/envoy/listenerwire/envelope_generated.go ./listenerwire/envelope_generated.go
 
 # /out/THIRD_PARTY_NOTICES, the image's /usr/share/doc/legion/THIRD_PARTY_NOTICES: the licenses of
-# the Go modules the four binaries below compile in (with the build's CGO_ENABLED and the image's
+# the Go modules the five binaries below compile in (with the build's CGO_ENABLED and the image's
 # own GOARCH, which decide them) and of the npm packages the SPA inlines and the typeface it ships. Fails the build when a
 # module's or a package's license cannot be determined.
 COPY --from=web /repo/packages/dispatch/web/dist/THIRD_PARTY_NOTICES.txt /tmp/dispatch-web-notices
 RUN mkdir -p /out \
     && CGO_ENABLED=0 go-third-party-notices.sh /tmp/go-notices \
       ./cmd/listener ./cmd/dispatch ./cmd/cipherd ./cmd/cipher \
+    && (cd infra && CGO_ENABLED=0 go-third-party-notices.sh /tmp/infra-notices ./cmd/envoy-infra) \
     && assemble-third-party-notices.sh /out/THIRD_PARTY_NOTICES \
       "Third-party software in the Legion Envoy image, with the license of each piece. Legion's own code is under the Apache License 2.0. The Debian packages the image installs carry their terms in /usr/share/doc/<package>/copyright." \
       "Go modules compiled into /usr/local/bin/envoy-listener, envoy-dispatch, envoy-broker and agent-secrets" /tmp/go-notices \
+      "Go modules compiled into /usr/local/bin/envoy-infra" /tmp/infra-notices \
       "npm packages inlined into, and the typeface shipped with, the Dispatch web app, /srv/dispatch-web (served as /THIRD_PARTY_NOTICES.txt)" /tmp/dispatch-web-notices
 
 # The legion commit this image is built from, which envoy-dispatch's /healthz reports as
-# `commit`, and which every binary below that connects to NATS names after its connection's name
-# (internal/buildversion's commit; legacy-subjects-gate.sh reads it from the hub's census of
-# connections). The release workflow passes its own github.sha, for the image it publishes and for
-# the smoke image it tests first. Left empty — a local compose or hand build, and the
+# `commit`, and which every binary below that connects to NATS, envoy-infra among them, names after
+# its connection's name (internal/buildversion's commit; legacy-subjects-gate.sh reads it from the
+# hub's census of connections). The release workflow passes its own github.sha, for the image it
+# publishes and for the smoke image it tests first. Left empty — a local compose or hand build, and the
 # pull-request lane's smoke image, which publishes nothing to match — the binary reports null and
 # names no build; anything else must be a full commit sha, so no placeholder is ever reported as a
 # commit.
@@ -142,7 +151,9 @@ RUN if [ -n "$LEGION_COMMIT" ] && ! printf '%s' "$LEGION_COMMIT" | grep -Eqx '[0
     && CGO_ENABLED=0 GOOS=linux GOARCH=$(go env GOARCH) \
     go build -ldflags "$build" -o /out/envoy-broker ./cmd/cipherd \
     && CGO_ENABLED=0 GOOS=linux GOARCH=$(go env GOARCH) \
-    go build -ldflags "$build" -o /out/agent-secrets ./cmd/cipher
+    go build -ldflags "$build" -o /out/agent-secrets ./cmd/cipher \
+    && cd infra && CGO_ENABLED=0 GOOS=linux GOARCH=$(go env GOARCH) \
+    go build -ldflags "$build" -o /out/envoy-infra ./cmd/envoy-infra
 
 # Minimal runtime — static binary, no shell needed.
 # curl is included for HEALTHCHECK and operational debugging.
@@ -160,6 +171,9 @@ COPY --from=build /out/envoy-listener /usr/local/bin/envoy-listener
 COPY --from=build /out/envoy-dispatch /usr/local/bin/envoy-dispatch
 COPY --from=build /out/envoy-broker /usr/local/bin/envoy-broker
 COPY --from=build /out/agent-secrets /usr/local/bin/agent-secrets
+# envoy-infra, the operator's command (`envoy-infra buckets create` among it), at a fixed path, so
+# a Job runs it from this image with `command: [envoy-infra, ...]` in place of the ENTRYPOINT.
+COPY --from=build /out/envoy-infra /usr/local/bin/envoy-infra
 COPY --from=build /out/THIRD_PARTY_NOTICES /usr/share/doc/legion/THIRD_PARTY_NOTICES
 COPY --from=web --chown=envoy:envoy /repo/packages/dispatch/web/dist /srv/dispatch-web
 # The Amazon RDS CA bundle, for a secrets broker that signs in to an RDS database by IAM token to

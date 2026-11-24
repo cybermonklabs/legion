@@ -1,0 +1,55 @@
+# The Envoy image's own build-context filter. BuildKit reads <Dockerfile>.dockerignore beside the
+# Dockerfile in place of the context's root .dockerignore, and every build of this Dockerfile is a
+# BuildKit one (docker/build-push-action in release-envoy-listener.yaml and ci-job-envoy-smoke.yaml,
+# docker compose). It is the root .dockerignore with one change: of the envoy-infra module
+# (packages/envoy/infra), this image builds /usr/local/bin/envoy-infra, so it lets in that module's
+# module and workspace files and its Go sources but tests. The worker image, which copies
+# packages/envoy whole, keeps the root file, which leaves the module out, so an envoy-infra change
+# rebuilds this image and not that one. Change the two files together.
+.git
+.jj
+**/node_modules
+**/dist
+**/build
+**/coverage
+*.log
+# An operator's untracked environment files (.env, .env.local and the like, which .gitignore
+# ignores anywhere), at the root and under every directory a COPY takes whole.
+**/.env
+**/.env.*
+.vscode
+.idea
+**/docker-data
+tmp
+docs
+# The documentation site is a root workspace, so every frozen Bun install needs its manifest
+# (.github/scripts/check-bun-workspace-manifests.sh).
+!docs/site/package.json
+skills/AGENTS.md
+
+# Every folder named out, which .gitignore ignores anywhere and no build reads from the context
+# (the root .dockerignore says why).
+**/out
+
+# Envoy: test files and deploy tooling not needed in the image.
+packages/envoy/**/*_test.go
+packages/envoy/internal/integration/
+packages/envoy/internal/smoke/
+packages/envoy/deploy/
+# The envoy-infra module: what `go build ./cmd/envoy-infra` reads and nothing else, its module and
+# workspace files and its Go sources but tests (packages/envoy/**/*_test.go above). Each of its
+# other files is left out by name - its guides, docs, scripts, test data and the held-port
+# wrapper's Dockerfile - rather than the module left out and its Go sources taken back: a `!` line
+# with a wildcard makes BuildKit walk every directory this file leaves out (.git, each
+# node_modules) to look for a match, where it skips them while every `!` line is a plain path.
+# A pull request that adds another file here fails check-image-trigger-paths.sh, since
+# release-envoy-listener.yaml's push paths take only the files this lets in.
+packages/envoy/infra/*.md
+packages/envoy/infra/docs/
+packages/envoy/infra/scripts/
+packages/envoy/infra/**/testdata/
+packages/envoy/infra/host/heldportwrapper/Dockerfile
+packages/envoy/infra/host/heldportwrapper/Dockerfile.dockerignore
+
+# Every package's changelog fragments, which no build reads.
+packages/*/.changes/

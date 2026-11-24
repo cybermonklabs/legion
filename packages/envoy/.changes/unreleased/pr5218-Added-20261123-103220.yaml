@@ -1,0 +1,6 @@
+kind: Added
+body: |-
+  The Envoy image carries `envoy-infra` at `/usr/local/bin/envoy-infra`, built from and stamped with the image's own commit, so a Kubernetes Job runs the operator's command, such as `envoy-infra buckets create --nats nats://<hub>:4222 --inbox-prefix _INBOX. --bucket envoy_known_sessions --replicas 3`, from the image a deployment already pins, and each NATS connection it makes names that build. The image's entrypoint is still `envoy-listener`, so the Job sets `command: [envoy-infra, ...]`. The image's `/usr/share/doc/legion/THIRD_PARTY_NOTICES` names the modules envoy-infra compiles in.
+time: 2026-11-23T10:32:20Z
+custom:
+    Issue: pr5218

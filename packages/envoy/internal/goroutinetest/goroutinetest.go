@@ -40,3 +40,25 @@ func Live(id uint64) bool {
 	header := fmt.Sprintf("goroutine %d ", id)
 	return slices.ContainsFunc(Traces(), func(trace string) bool { return strings.HasPrefix(trace, header) })
 }
+
+// Running returns the id of every goroutine whose trace holds frame, a function's call as it opens a
+// stack frame (`<import path>.<func>(`), so a test can wait for each goroutine running a given
+// function to return (Live).
+func Running(frame string) []uint64 {
+	var ids []uint64
+	for _, trace := range Traces() {
+		if !strings.Contains(trace, frame) {
+			continue
+		}
+		fields := strings.Fields(trace)
+		if len(fields) < 2 {
+			continue
+		}
+		id, err := strconv.ParseUint(fields[1], 10, 64)
+		if err != nil {
+			panic(fmt.Sprintf("read the goroutine id from %q: %v", trace, err))
+		}
+		ids = append(ids, id)
+	}
+	return ids
+}

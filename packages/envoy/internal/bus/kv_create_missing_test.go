@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/nats-io/nats.go"
 
+	"github.com/sjawhar/envoy/internal/goroutinetest"
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
@@ -218,7 +220,7 @@ func TestCreateMissingCopiedBucketUpdatesNoStreamItsCreateFindsInUse(t *testing.
 
 	// The control: the normal path's step on the same answers updates the stream.
 	control := serverBefore211{&behindMember{JetStreamContext: js}}
-	if err := createBucketStream(t.Context(), conn, control, &config); err != nil {
+	if _, err := createBucketStream(t.Context(), conn, control, &config); err != nil {
 		t.Fatalf("control: the normal path's create on a server answering no metadata = %v, want the stream updated", err)
 	}
 	if got := writes.Take(t); len(got) != 2 || got[1] != "$JS.API.STREAM.UPDATE."+stream {
@@ -250,6 +252,107 @@ func TestAnUnansweredCreateOfAMissingCopiedBucketIsSentAgain(t *testing.T) {
 		t.Fatalf("creates sent = %d, want 2: the lost one and the one that made the bucket", sends)
 	}
 }
+
+// A create-only open whose context ends while its account info is in flight sends no create once
+// that request is answered. The relay holds the open's $JS.API.INFO, the first request of its
+// create, and the context is cancelled: the open answers at once (Bounded), leaving its create
+// running on a goroutine of its own. The held request is then written to the server, which answers
+// it, and that create reads its context before the STREAM.CREATE (addBucketStream) and sends none,
+// so the server sees no create and holds no bucket. The test waits for that goroutine to end
+// (createGoroutines), not a fixed time, before it reads what the create sent: with the read
+// replaced by a 3 s sleep, the STREAM.CREATE goes out once the sleep ends and the test sees it,
+// where at 69cde74210 it waited 2 s and passed that change. Before the release it checks that a
+// goroutine of the open runs addBucketStream, so the wait is not a wait for nothing. The test is
+// not parallel: while it runs, every test that calls t.Parallel is paused. The control is the same
+// hold released with the context live: the create goes on and makes the bucket.
+func TestACreateMissingCopiedBucketCancelledWithItsAccountInfoInFlightSendsNoCreate(t *testing.T) {
+	stream := "KV_" + SessionBucket
+	// A server of the test's own, so no other test's account info rides the relay's subject.
+	_, uri := testnats.Start(t)
+	relay := startUnansweredRelayOn(t, uri, accountInfoSubject())
+	conn, js := relayedJetStream(t, relay)
+	writes := testnats.WatchStreamWrites(t, uri)
+	watch := testnats.Connect(t, uri)
+	t.Cleanup(watch.Close)
+	infos, err := watch.SubscribeSync(accountInfoSubject())
+	if err == nil {
+		err = watch.Flush()
+	}
+	if err != nil {
+		t.Fatalf("watch the account infos the server receives: %v", err)
+	}
+	// open starts the create-only open with the account info held, and returns once the relay
+	// holds it.
+	open := func(ctx context.Context, release <-chan struct{}) <-chan error {
+		relay.holdNext(release)
+		answer := make(chan error, 1)
+		go func() {
+			_, err := CreateMissingCopiedBucket(ctx, conn, js, SessionBucket, 1)
+			answer <- err
+		}()
+		for deadline := time.Now().Add(30 * time.Second); relay.sent() == 0; time.Sleep(10 * time.Millisecond) {
+			if time.Now().After(deadline) {
+				t.Fatalf("the open sent no account info in 30 s")
+			}
+		}
+		return answer
+	}
+
+	before := goroutinetest.Running(createInBus)
+	ctx, cancel := context.WithCancel(t.Context())
+	release := make(chan struct{})
+	answer := open(ctx, release)
+	// The create the open leaves running once its context ends: each goroutine running the create
+	// step now that did not before the open. Goroutine ids are never reused.
+	var ours []uint64
+	for _, id := range goroutinetest.Running(createInBus) {
+		if !slices.Contains(before, id) {
+			ours = append(ours, id)
+		}
+	}
+	if len(ours) == 0 {
+		close(release)
+		t.Fatalf("no goroutine of the open runs addBucketStream while its account info is held, so the wait for the create to end would wait for nothing")
+	}
+	cancel()
+	select {
+	case err := <-answer:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("the open whose context ended with its account info held = %v, want context.Canceled", err)
+		}
+	case <-time.After(5 * time.Second):
+		close(release)
+		t.Fatalf("the open had not answered 5 s after its context ended, with its account info held")
+	}
+	close(release)
+	if _, err := infos.NextMsg(30 * time.Second); err != nil {
+		t.Fatalf("the held account info did not reach the server in 30 s after its release: %v", err)
+	}
+	for deadline := time.Now().Add(30 * time.Second); slices.ContainsFunc(ours, goroutinetest.Live); time.Sleep(10 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("the create the open left running (goroutines %v) still ran 30 s after its held account info was released", ours)
+		}
+	}
+	if got := writes.Take(t); len(got) != 0 {
+		t.Fatalf("the open whose context ended sent %v after its held account info was answered, want no create", got)
+	}
+	if _, err := js.StreamInfo(stream); !errors.Is(err, nats.ErrStreamNotFound) {
+		t.Fatalf("%s after the cancelled open: %v, want it absent", stream, err)
+	}
+
+	release = make(chan struct{})
+	answer = open(t.Context(), release)
+	close(release)
+	if err := <-answer; err != nil {
+		t.Fatalf("control: the open whose held account info was released with its context live = %v, want the bucket made", err)
+	}
+	if got := writes.Take(t); len(got) != 1 || got[0] != "$JS.API.STREAM.CREATE."+stream {
+		t.Fatalf("control: the open sent %v, want its create alone", got)
+	}
+}
+
+// createInBus is a bucket's create step, addBucketStream, as a goroutine's trace names it.
+const createInBus = "github.com/sjawhar/envoy/internal/bus.addBucketStream("
 
 // A create-only open answers with a handle only once the member answering has applied its create
 // (awaitBucketApplied): a clustered create is answered once the metadata group commits it, and a

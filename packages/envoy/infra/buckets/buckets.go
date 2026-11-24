@@ -508,13 +508,32 @@ func createCommand(ctx context.Context, stdout, stderr io.Writer, natsURL string
 // the lookup and the create with the same configuration is the one this create asked for, which
 // JetStream answers as made.
 //
+// The server's version decides the stream a create makes (bus.CopiedBucketStreamConfig: its
+// discard policy, new from nats-server 2.7.2 on), so it is read once, before the first read, and a
+// connection that reports none - ConnectedServerVersion answers "" while it is not connected -
+// refuses the run with its own line and reads nothing (bus.ServerVersion): nats.go and the bus read
+// "" as a server too old for a bucket, and every present bucket would be judged against a stream
+// made for such a server, discard old, and refused naming its discard policy as a difference. The
+// create reads the version twice more where nats.go does (bus's addBucketStream), each before any
+// send: before it sends anything, and after the account's info, for the discard policy. No version
+// at either answers bus.ErrNoServerVersion and the create sends no STREAM.CREATE there, where the
+// second read would have made a stream of discard old. A create that fails while the connection
+// reports no version is refused with the same line, which says the bucket is not created, or, when
+// a send of this create did go out and its answer was lost (bus.ErrStreamCreateSent), that the
+// bucket may be there.
+//
 // A read or a create the server refuses under the connection's grant is sent again until
 // refusalWait has passed since the run began (untilGranted). Once ctx has ended the run stops where
-// it is, creates nothing more and fails naming ctx's cause (stopped): every read and wait ends with
-// ctx, the check before each create reads it, and the create sends no request once it has ended.
+// it is, starts no create after it and fails naming ctx's cause (stopped): every read and wait ends
+// with ctx, the check before each create reads it, and the create sends no request once it has
+// ended. A create it had already sent when ctx ended is not called back, and lands: the line says
+// so.
 func createBuckets(ctx context.Context, stdout, stderr io.Writer, conn *nats.Conn, js nats.JetStreamContext, buckets []string, replicas int, announce func(bucket string)) int {
 	deadline := time.Now().Add(refusalWait)
-	version := conn.ConnectedServerVersion()
+	version, err := bus.ServerVersion(conn)
+	if err != nil {
+		return noServerVersion(stderr, "nothing is read or created")
+	}
 	var absent, differ []string
 	for _, bucket := range buckets {
 		missing, differences, err := judgeBucket(ctx, stderr, deadline, js, version, bucket, replicas)
@@ -557,6 +576,20 @@ func createBuckets(ctx context.Context, stdout, stderr io.Writer, conn *nats.Con
 		if ctx.Err() != nil {
 			return stopped(ctx, stderr)
 		}
+		// A connection that drops during the create reports no server version, which the create
+		// classifies (bus.ErrNoServerVersion) at whichever read met it, so the run says what happened
+		// without reading the connection again, which could report a version a later reconnect
+		// restored. What the hub may hold is the create's own answer: a STREAM.CREATE the server
+		// left unanswered is sent again, and the send after it can end at its first version read,
+		// having sent nothing, while the first send still lands. The bus marks such an error
+		// (bus.ErrStreamCreateSent), so the line says the bucket may be there rather than that it
+		// is not created.
+		if errors.Is(err, bus.ErrNoServerVersion) {
+			if errors.Is(err, bus.ErrStreamCreateSent) {
+				return noServerVersion(stderr, "KV_"+bucket+" may have been created: a create of it was sent and its answer was never read")
+			}
+			return noServerVersion(stderr, "KV_"+bucket+" is not created")
+		}
 		if !errors.Is(err, bus.ErrBucketExists) {
 			fmt.Fprintf(stderr, "envoy-infra buckets: create %s: %v\n", bucket, err)
 			return 1
@@ -581,11 +614,21 @@ func createBuckets(ctx context.Context, stdout, stderr io.Writer, conn *nats.Con
 	return 0
 }
 
+// noServerVersion refuses a create whose connection reports no server version where the version
+// chooses the stream a bucket is judged against or created as (bus.ServerVersion), saying what the
+// run left undone: a bucket a line above says was created stays.
+func noServerVersion(stderr io.Writer, undone string) int {
+	fmt.Fprintf(stderr, "envoy-infra buckets create: refused: the connection reports no server version, as one that is not connected does, and each bucket is judged against the stream its create makes on the hub's version; %s: run create again\n", undone)
+	return 1
+}
+
 // stopped fails a create whose ctx has ended, naming ctx's cause: main ends ctx on an interrupt or
-// SIGTERM, whose cause names the signal. The run creates nothing after it; a bucket a line above
-// says was created stays.
+// SIGTERM, whose cause names the signal. The run starts no create after it. A create it had sent
+// before - the create of the bucket it was on, whose answer it stops waiting for - still reaches
+// the hub and lands, so the line says so and that create run again reads what the hub holds. A
+// bucket a line above says was created stays.
 func stopped(ctx context.Context, stderr io.Writer) int {
-	fmt.Fprintf(stderr, "envoy-infra buckets create: stopped: %v; nothing more is created\n", context.Cause(ctx))
+	fmt.Fprintf(stderr, "envoy-infra buckets create: stopped: %v; it starts no create after this, but one it had sent may still land: run create again to see what the hub holds\n", context.Cause(ctx))
 	return 1
 }
 

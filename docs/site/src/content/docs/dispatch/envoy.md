@@ -854,12 +854,12 @@ machine can read and send messages through it: run it on a machine whose users y
 
 You need Linux with Docker Engine and the Compose plugin (`docker compose version` answers), and a
 checkout of this repository. The NATS and listener images are public. The `buckets` service runs
-`envoy-infra`, which the published image does not carry, so `up` builds its image from the
-checkout, on the pinned Go image from `ghcr.io` with the Go modules from `proxy.golang.org`. The
-services listen on `4222` (NATS), `8222` (NATS monitoring) and `9020` (the listener). When
-something else on the machine uses one, move it in `.env` (`NATS_PORT`, `NATS_MONITOR_PORT`,
-`ENVOY_LISTENER_PORT`) and use that port wherever a command or the `envoy.json` below names the
-default.
+`envoy-infra`, which the Envoy image carries only from the release that added it, and the tag you
+set may name an older one, so `up` builds its image from the checkout, on the pinned Go image from
+`ghcr.io` with the Go modules from `proxy.golang.org`. The services listen on `4222` (NATS),
+`8222` (NATS monitoring) and `9020` (the listener). When something else on the machine uses one,
+move it in `.env` (`NATS_PORT`, `NATS_MONITOR_PORT`, `ENVOY_LISTENER_PORT`) and use that port
+wherever a command or the `envoy.json` below names the default.
 
 The file pins NATS 2.15.1 by digest, the image the hub runs, because the consumer cap the
 listener sets replaces a limit only that version applies: from 2.15 a stream that sets no cap is

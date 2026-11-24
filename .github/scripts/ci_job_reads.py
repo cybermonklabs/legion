@@ -3784,8 +3784,9 @@ GATES = [
          f"{at('envoy-smoke', 'Report what the live tests ran on')} run it"),
         (f"{ENVOY}/docker/Dockerfile", f"{at('envoy-smoke', SMOKE_IMAGE_STEP)} builds it (its `file:`), and "
                                        f"{at('envoy-smoke', BASE_IMAGES_STEP)} reads its FROM lines"),
-        (".dockerignore", f"{at('envoy-smoke', SMOKE_IMAGE_STEP)} builds with `context: .`, so the root .dockerignore "
-                          "decides which of the files below reach any COPY of that Dockerfile"),
+        (f"{ENVOY}/docker/Dockerfile.dockerignore", f"{at('envoy-smoke', SMOKE_IMAGE_STEP)} builds with `context: .`, and BuildKit "
+                                                    "reads this file beside the Dockerfile in place of the root .dockerignore, so it "
+                                                    "decides which of the files below reach any COPY of that Dockerfile"),
         (".bun-version", "packages/envoy/docker/Dockerfile:20 COPY .bun-version, which :21-27 holds the web stage's own Bun to"),
         ("package.json", "packages/envoy/docker/Dockerfile:29 COPY package.json bun.lock ./"),
         ("bun.lock", "packages/envoy/docker/Dockerfile:29 COPY package.json bun.lock ./"),
@@ -3802,20 +3803,22 @@ GATES = [
         ("packages/dispatch/**", "packages/envoy/docker/Dockerfile:38 and :69 COPY packages/dispatch packages/dispatch, which :80 runs build:web in"),
         ("packages/proof-editor/**", "packages/envoy/docker/Dockerfile:39, :42 and :70 COPY packages/proof-editor packages/proof-editor, which the SPA build aliases"),
         ("scripts/third-party-notices.ts", "packages/envoy/docker/Dockerfile:74 COPY scripts/third-party-notices.ts, which the SPA build writes its notices with"),
-        ("scripts/go-third-party-notices.sh", "packages/envoy/docker/Dockerfile:97 COPY, run by :98 and :118"),
-        ("scripts/assemble-third-party-notices.sh", "packages/envoy/docker/Dockerfile:97 COPY, run by :120"),
-        # The image's Go stage copies the Envoy module whole (packages/envoy/docker/Dockerfile:106
+        ("scripts/go-third-party-notices.sh", "packages/envoy/docker/Dockerfile:97 COPY, run by :98, :125 and :127"),
+        ("scripts/assemble-third-party-notices.sh", "packages/envoy/docker/Dockerfile:97 COPY, run by :128"),
+        # The image's Go stage copies the Envoy module whole (packages/envoy/docker/Dockerfile:113
         # COPY packages/envoy ./), and the held-port image's build copies it whole with the
         # envoy-infra module under it (packages/envoy/infra/host/heldportwrapper/Dockerfile:30
         # COPY packages/envoy /src/packages/envoy). Each reads every file of it but what its
         # .dockerignore drops: test files, internal/integration, internal/smoke (the smoke step
-        # compiles that one), deploy and the changelog fragments, and infra for the first. No go
-        # command of this gate reaches most of those files, so rule 9 of check-ci-filters.sh reads
+        # compiles that one), deploy and the changelog fragments, and for the first, of infra, all
+        # but its module and workspace files and Go sources, which build envoy-infra (:127 and
+        # :156). No go command of this gate reaches most of those files, so rule 9 of
+        # check-ci-filters.sh reads
         # the filter's module pattern as matching unread files without these rows, while
         # check-image-trigger-paths.sh refuses the filter without it: the read is the image
         # builds', and this is where the two checks meet. listenerwire's envelope_generated.go is
-        # among them, which the Go stage then replaces with the web stage's fresh generation (:110).
-        *[(path, "packages/envoy/docker/Dockerfile:106 COPY packages/envoy ./, and "
+        # among them, which the Go stage then replaces with the web stage's fresh generation (:117).
+        *[(path, "packages/envoy/docker/Dockerfile:113 COPY packages/envoy ./, and "
                  "packages/envoy/infra/host/heldportwrapper/Dockerfile:30 COPY packages/envoy /src/packages/envoy")
           for path in files_but_tests(ENVOY, suffix="", tree=True, skip=(".changes",))
           if not path.startswith(tuple(f"{ENVOY}/{d}/" for d in ("internal/integration", "internal/smoke", "deploy")))],

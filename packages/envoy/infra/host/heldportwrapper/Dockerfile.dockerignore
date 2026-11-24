@@ -14,3 +14,7 @@ packages/envoy/.changes/
 **/dist
 **/build
 **/coverage
+# An operator's untracked environment files (.env, .env.local and the like, which .gitignore
+# ignores anywhere), which `!packages/envoy` above would otherwise let in.
+**/.env
+**/.env.*

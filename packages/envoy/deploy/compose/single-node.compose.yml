@@ -61,9 +61,10 @@ services:
   # is present, changes nothing and exits 0. A bucket there at other copies or with another
   # configuration fails it, naming each difference, and `up` with it.
   #
-  # envoy-infra is not in the published envoy image, so this image is built from the checkout
-  # (buckets.Dockerfile), and pull_policy: build rebuilds it from the checkout on every `up`; the
-  # build's layers and Go caches make that quick once the first `up` has built it.
+  # The envoy image carries envoy-infra only from the release that added it, and ENVOY_IMAGE_TAG
+  # may name an older one, so this image is built from the checkout (buckets.Dockerfile), and
+  # pull_policy: build rebuilds it from the checkout on every `up`; the build's layers and Go caches
+  # make that quick once the first `up` has built it.
   buckets:
     build:
       context: ../../../..

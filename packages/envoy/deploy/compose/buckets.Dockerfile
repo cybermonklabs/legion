@@ -1,7 +1,9 @@
-# The image of single-node.compose.yml's one-shot `buckets` service: `envoy-infra`, which the
-# published envoy image does not carry, built from this checkout. Build context is the repository
-# root, read through buckets.Dockerfile.dockerignore beside this file, which admits the two Go
-# modules of packages/envoy (their module files and every Go source but tests) and nothing else:
+# The image of single-node.compose.yml's one-shot `buckets` service: `envoy-infra`, built from this
+# checkout. The Envoy image carries envoy-infra only from the release that added it, and the
+# compose file's ENVOY_IMAGE_TAG may name an older one, so this builds it. Build context is the
+# repository root, read through buckets.Dockerfile.dockerignore beside this file, which admits the
+# two Go modules of packages/envoy (their module files and every Go source but tests) and nothing
+# else:
 #
 #   docker build -f packages/envoy/deploy/compose/buckets.Dockerfile -t envoy-buckets:local .
 

@@ -202,6 +202,12 @@ runner, so an archive attested by any other workflow, branch or runner in the re
 explains each flag). `--version` prints the release's version, `<version>`. Put the binary on your
 `PATH`; the commands below call it `envoy-infra`.
 
+The Envoy image (`ghcr.io/cybermonklabs/legion/envoy`) carries the same command at
+`/usr/local/bin/envoy-infra`, built from the image's own commit, so a Kubernetes Job can run it from
+the image a deployment already pins. The image's entrypoint is `envoy-listener`, so such a Job sets
+its command: `command: [envoy-infra, buckets, create, --inbox-prefix, _INBOX., ...]`. The image's
+`/usr/share/doc/legion/THIRD_PARTY_NOTICES` names the modules it compiles in.
+
 To install it with mise, give it a tool alias: `github:cybermonklabs/legion` is also where the `legion`
 command's releases come from, so a second pin of that repository needs a name of its own. Pin the
 tag, and name each platform's archive with its digest, since each release holds the plugin's
@@ -3461,7 +3467,20 @@ named bucket first, and changes no bucket that is there, so it can run again:
   the bucket's configuration (`bus.CopiedBucketStreamConfig`). The session bucket's age is the
   exception: the listeners set it from `ENVOY_SESSION_MAX_AGE` on the running bucket, so its age is
   not compared;
-- a read the server does not answer fails the run with exit 1, and nothing is created.
+- a read the server does not answer fails the run with exit 1, and nothing is created;
+- a connection that reports no server version, as one that is not connected does, refuses the run
+  with exit 1 before any read (`refused: the connection reports no server version`), and nothing
+  is created: each bucket is judged against the stream its create makes on the hub's version, and
+  nats.go reads no version as a server too old for a bucket. A connection that drops during a
+  create, and is reconnecting when the create reads the version again (before it sends anything,
+  and after the account's JetStream info, where nats.go reads it for the stream's discard policy),
+  refuses the run the same way, where it used to print nats.go's error for a server too old for a
+  bucket, or create that bucket with a discard policy of old. Each of those reads is before every
+  send of that call, so the line names the bucket it did not create. It says the bucket **may have
+  been created** instead when a `STREAM.CREATE` of this create did go out and its answer was never
+  read: a create the server leaves unanswered is sent again, and the send after it can end at its
+  first version read while the first send lands. Run `create` again either way: it reads what the
+  hub holds.
 
 Each absent bucket is then created with no writer proof (`bus.CreateMissingCopiedBucket`), and
 the run prints `created <bucket> (<n> copies)`. The create sends no stream update, on any server
@@ -3484,8 +3503,12 @@ says so once, on standard error, at the first refusal of each request, and its c
 no line for each refused send.
 
 An interrupt or SIGTERM stops `create` where it is, its wait included: it exits 1 with
-`envoy-infra buckets create: stopped: <the signal>; nothing more is created` and sends no create
-after it. A bucket a `created` line above names stays.
+`envoy-infra buckets create: stopped: <the signal>; it starts no create after this, but one it had
+sent may still land: run create again to see what the hub holds`, and starts no create after it. A
+`STREAM.CREATE` it had already sent when the signal came is not called back: the hub still
+applies it, so the bucket the run was on may be there although no `created` line names it. Run
+`create` again to see what the hub holds: that bucket is then present, or absent and made. A bucket
+a `created` line above names stays.
 
 `check` takes the check and changes nothing, for a step another tool makes, such as a `nats stream
 restore`. It needs an inventory of every place a writer runs, and refuses with exit 2 without one:

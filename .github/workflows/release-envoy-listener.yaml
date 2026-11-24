@@ -3,18 +3,26 @@ name: Release Envoy Listener
 on:
   push:
     branches: [main]
-    # Every file packages/envoy/docker/Dockerfile builds from: the Go module and the Dockerfile
-    # (packages/envoy/**), the web stage's frozen install (the root manifest, lockfile, patches and
-    # every root workspace's package.json), the Bun pin that stage holds its own Bun to, the
-    # sources it builds the SPA and the Go contracts from, the context's .dockerignore, and this
-    # workflow. A commit touching only one of them would otherwise publish no image, so no pin
-    # could name it. .github/scripts/check-image-trigger-paths.sh fails the build when this list
-    # misses a file the image build reads. The envoy-infra plugin's module (packages/envoy/infra)
-    # is no input of the image or of this release's binaries, and release-envoy-infra.yaml
-    # releases it.
+    # Every file packages/envoy/docker/Dockerfile builds from: the Go module, the Dockerfile and its
+    # own ignore file, Dockerfile.dockerignore, which BuildKit reads in place of the root
+    # .dockerignore (packages/envoy/**), the web stage's frozen install (the root manifest,
+    # lockfile, patches and every root workspace's package.json), the Bun pin that stage holds its
+    # own Bun to, the sources it builds the SPA and the Go contracts from, and this workflow. A
+    # commit touching only one of them would otherwise publish no image, so no pin could name it.
+    # .github/scripts/check-image-trigger-paths.sh fails the build when this list misses a file the
+    # image build reads. Of the envoy-infra module (packages/envoy/infra), which
+    # release-envoy-infra.yaml releases, the image builds /usr/local/bin/envoy-infra from its
+    # module and workspace files and its Go sources but its tests, the files that ignore file
+    # lets in.
     paths:
       - "packages/envoy/**"
       - "!packages/envoy/infra/**"
+      - "packages/envoy/infra/go.mod"
+      - "packages/envoy/infra/go.sum"
+      - "packages/envoy/infra/go.work"
+      - "packages/envoy/infra/go.work.sum"
+      - "packages/envoy/infra/**/*.go"
+      - "!packages/envoy/infra/**/*_test.go"
       - "packages/contracts/**"
       - "packages/dispatch/**"
       - "packages/proof-editor/**"
@@ -29,7 +37,6 @@ on:
       - "packages/claude-envoy/package.json"
       - "packages/test-fixtures/package.json"
       - "docs/site/package.json"
-      - ".dockerignore"
       - ".bun-version"
       - ".github/workflows/release-envoy-listener.yaml"
       # The image's and the binaries' third-party notices, and the archives' target list.
@@ -96,7 +103,10 @@ env:
   # version) and release_publish (which confirms it, --expect, inside the concurrency group):
   # every notices script changes an artifact this release publishes, and the target lists decide
   # the archives, so they take a patch release; packages/envoy/infra is excluded, since
-  # release-envoy-infra.yaml releases it and nothing published here compiles it in.
+  # release-envoy-infra.yaml releases it and no archive released here compiles it in. The image
+  # does, as /usr/local/bin/envoy-infra: a push that changes only the module's files the image
+  # builds from publishes the image under its commit and moves `latest`, as every push matching the
+  # paths above does, and cuts no legion-envoy-v release.
   LEGION_ENVOY_VERSION_ARGS: >-
     --patch-path scripts/third-party-notices.ts --patch-path scripts/go-third-party-notices.sh
     --patch-path scripts/assemble-third-party-notices.sh --patch-path .github/go-release-targets.json
