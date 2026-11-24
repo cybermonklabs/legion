@@ -27,7 +27,9 @@ type Block struct {
 // other block is skipped. A document with no task block is read as a plan with no task, which
 // Validate refuses. It answers an error only for a block it cannot read at all: a task or a role
 // with no id, one id on two such blocks, and a task whose `steps` is outside the grammar
-// (ParseSteps); the error names the block.
+// (ParseSteps); the error names the block by its id. The plan route passes it only blocks whose
+// ids its read of Dispatch held to TaskIDGrammar and to no run of the credential that read carried
+// (dispatch's PlanDocument), so an id this error prints is one the route may print.
 func FromBlocks(artifactID string, version int, blocks []Block) (Plan, error) {
 	p := Plan{ArtifactID: artifactID, Version: version}
 	typeOf := map[string]string{}

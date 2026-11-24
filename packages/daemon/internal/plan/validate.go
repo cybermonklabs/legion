@@ -74,10 +74,12 @@ func Supported(p Plan) []Refusal {
 }
 
 // taskReasons is Supported's causes in one task: its attributes first, then its steps (stepReasons).
+// An attribute is named and no value of it printed: `needs`, `owner` and `part_of` are Dispatch's
+// words, or the words of whatever answers in its place, which the route answers back.
 func taskReasons(t Task) []string {
 	var reasons []string
 	if len(t.Needs) > 0 {
-		reasons = append(reasons, fmt.Sprintf("task %s needs %s.", t.ID, strings.Join(t.Needs, ", ")))
+		reasons = append(reasons, fmt.Sprintf("task %s names needs.", t.ID))
 	}
 	if t.Owner != "" {
 		reasons = append(reasons, fmt.Sprintf("task %s names owner.", t.ID))

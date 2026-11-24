@@ -56,6 +56,22 @@ func TestParseSteps(t *testing.T) {
 	}
 }
 
+// A word outside the grammar is named by its place among the words of steps, never by its text,
+// which is Dispatch's in a plan. The place is written as English writes it: the 11th, 12th and
+// 13th, then the 21st and 22nd.
+func TestParseStepsNamesABadWordByItsPlace(t *testing.T) {
+	for place, want := range map[int]string{1: "1st", 2: "2nd", 3: "3rd", 4: "4th", 11: "11th", 12: "12th", 13: "13th", 21: "21st", 22: "22nd", 111: "111th"} {
+		words := slices.Repeat([]string{"implementer"}, place-1)
+		_, err := ParseSteps(strings.Join(append(words, "Echoed:Word"), " "))
+		if err == nil {
+			t.Fatalf("ParseSteps with a bad word at place %d answered no error", place)
+		}
+		if strings.Contains(err.Error(), "Echoed") || !strings.HasPrefix(err.Error(), "the "+want+" word of steps is neither") {
+			t.Errorf("ParseSteps with a bad word at place %d = %q, want it named the %s word and its text left out", place, err, want)
+		}
+	}
+}
+
 // The default steps walk today's line: the five steps' phases in order, then Legion's own retro
 // and merge.
 func TestLineOfTheDefaultStepsIsTodaysOrder(t *testing.T) {
@@ -167,8 +183,8 @@ func TestFromBlocksReadsTaskAndRoleBlocks(t *testing.T) {
 	// The blocks FromBlocks cannot read at all: steps outside the grammar, a task or a role with
 	// no id, and one id on two blocks of the plan.
 	if _, err := FromBlocks("plan-md", 1, []Block{{ID: "a", Type: "plan_task", Attributes: map[string]string{"steps": "implementer Reviewer"}}}); err == nil ||
-		!strings.Contains(err.Error(), "task a") || !strings.Contains(err.Error(), `"Reviewer"`) {
-		t.Fatalf("FromBlocks(steps outside the grammar) error = %v, want one naming task a and the word", err)
+		!strings.Contains(err.Error(), "task a") || !strings.Contains(err.Error(), "the 2nd word of steps") || strings.Contains(err.Error(), "Reviewer") {
+		t.Fatalf("FromBlocks(steps outside the grammar) error = %v, want one naming task a and the word's place, not the word", err)
 	}
 	for name, blocks := range map[string][]Block{
 		"a task with no id":         {{Type: "plan_task", Text: "Do it."}},

@@ -335,7 +335,9 @@ func readDefaultSteps(value *yaml.Node, key string) ([]plan.Step, error) {
 	for _, word := range words {
 		parsed, err := plan.ParseSteps(word)
 		if err != nil {
-			return nil, fmt.Errorf("%s: %w", key, err)
+			// ParseSteps names a word by its place and never by its text, which in a plan is
+			// Dispatch's; an entry of this list is the operator's own, and its text names it.
+			return nil, fmt.Errorf("%s: the step %q is neither a role nor a role:key, where each matches %s", key, word, plan.TaskIDGrammar)
 		}
 		if len(parsed) != 1 {
 			return nil, fmt.Errorf("%s names %q, which is not one step: each entry of the list is one step", key, word)

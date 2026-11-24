@@ -4,6 +4,7 @@ package dispatch
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -397,6 +398,25 @@ type DocumentBlock struct {
 // alone. No plan can be read from that Dispatch until it is upgraded; an empty plan is never
 // assumed.
 var ErrNoBlocks = errors.New("Dispatch answered the document version without its blocks: it predates the version read with ?blocks=true")
+
+// RefusedBlockError is PlanDocument's refusal of a block of one of a plan's two types whose words
+// the daemon will not hand on (planBlockRule): an id outside plan.TaskIDGrammar, or an id, `steps`
+// or `needs` value holding a run of the bearer the read carried. It names the block by its place
+// among the version's typed blocks and by its type, one of those two, and says the rule, never the
+// block's words: they are Dispatch's, or those of whatever answers in its place. Its owner fixes
+// the block in a new version.
+type RefusedBlockError struct {
+	// Place is the block's place among the version's typed blocks, from 1.
+	Place int
+	// Type is the block's type: plan.TaskBlockType or plan.RoleBlockType.
+	Type string
+	// Rule is the rule the block breaks, as Error writes it after the block.
+	Rule string
+}
+
+func (e *RefusedBlockError) Error() string {
+	return fmt.Sprintf("typed block %d of the document, a %s block, %s", e.Place, e.Type, e.Rule)
+}
 
 // ArtifactChanges is what changed in a document from version From to version To, as Dispatch's
 // GET /api/v1/artifacts/{id}/changes answers it (its artifactChanges), whose JSON it decodes as it

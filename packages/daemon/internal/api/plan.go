@@ -240,11 +240,13 @@ func (s *server) stopTask(w http.ResponseWriter, r *http.Request) {
 
 // planAt is the plan in version of the document artifactID, which documentOfIssue already held
 // to issue: its blocks as Dispatch gives them for that version (dispatch.Client.PlanDocument),
-// read as a plan (plan.FromBlocks). A block the plan's grammar cannot read is a refused plan
-// whose one reason names the block; a Dispatch that gives no blocks cannot show Legion a plan at
-// all. Every refusal records nothing.
+// read as a plan (plan.FromBlocks). A block the read refuses (dispatch.RefusedBlockError), naming
+// its place, its type and the rule, and a block the plan's grammar cannot read are each a refused
+// plan whose one reason names the block; a Dispatch that gives no blocks cannot show Legion a plan
+// at all. Every refusal records nothing.
 func (s *server) planAt(w http.ResponseWriter, r *http.Request, artifactID string, version int, issue string) (plan.Plan, bool) {
 	document, err := s.dispatch.PlanDocument(r.Context(), artifactID, version)
+	var refused *dispatch.RefusedBlockError
 	switch {
 	case errors.Is(err, dispatch.ErrNoBlocks):
 		s.writeFailure(w, r, http.StatusBadGateway, "PLAN_UNREADABLE", fmt.Sprintf(
@@ -253,6 +255,9 @@ func (s *server) planAt(w http.ResponseWriter, r *http.Request, artifactID strin
 		return plan.Plan{}, false
 	case dispatch.Missing(err), err == nil && document.IssueKey != issue:
 		s.writeFailure(w, r, http.StatusNotFound, "ARTIFACT_NOT_ON_ISSUE", fmt.Sprintf("%s is not a document of %s", artifactID, issue))
+		return plan.Plan{}, false
+	case errors.As(err, &refused):
+		s.writeRefusal(w, r, intake.PlanRefused([]plan.Refusal{{Reason: refused.Error() + "."}}))
 		return plan.Plan{}, false
 	case err != nil:
 		s.writeFailure(w, r, http.StatusBadGateway, "DISPATCH_FAILED", fmt.Sprintf("Dispatch read of %s at version %d failed; retry %s", artifactID, version, registerPlanRoute))
