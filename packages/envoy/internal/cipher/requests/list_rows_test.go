@@ -198,7 +198,7 @@ func stalledRowsFirst(t *testing.T, m *Machine, list listUnderTest, stalled int)
 // fixed, and this row cannot tell on its own whether a waiting row holds a slot:
 // TestARowWaitingOnAnotherRowsQuestionHoldsNoSlot does, on the memo itself.
 func TestRowsWaitingOnAStalledProjectHoldNoQuestionSlot(t *testing.T) {
-	// Not parallel: it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past (an upper bound on a measured time at list_rows_test.go:221).
+	// Not parallel: it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past (an upper bound on a measured time at list_rows_test.go:223).
 	for _, c := range listsUnderTest {
 		t.Run(c.name, func(t *testing.T) {
 			m, _, _, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)

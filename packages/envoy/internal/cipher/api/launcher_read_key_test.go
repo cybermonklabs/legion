@@ -86,6 +86,7 @@ func (ts *testServer) launcherState(t *testing.T) string {
 // The same proof signed with each credential's own key is answered past 401, so what refused it
 // was the key.
 func TestALaunchersProofSignedWithAReadTokensKeyIsRefused(t *testing.T) {
+	t.Parallel()
 	ts := newTestServerWith(t, func(d *api.Deps) {
 		d.Enroll.VMServicesByAccount = map[string]string{readKeyMachine: signInCredentialFleet}
 	})

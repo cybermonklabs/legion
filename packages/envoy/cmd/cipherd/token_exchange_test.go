@@ -752,6 +752,7 @@ func TestTheBinaryExchangesAReadEntrysPodTokenForOneThatOnlyReads(t *testing.T) 
 // shared verifier, Dispatch, the listener and the NATS auth service are held to
 // (ciphertokentest.NarrowedAnswers), the read entry's with the cut beside it.
 func TestTheBinaryNarrowsATradeOnRequest(t *testing.T) {
+	t.Parallel()
 	databaseURL := storetest.URL(t)
 	cluster, github := oidctest.New(t), oidctest.New(t)
 	clusterKey := cluster.PublishKey(t, "cluster-key")

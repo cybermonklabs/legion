@@ -848,7 +848,7 @@ func TestApproveMachineRecordWithoutCodeIsCodeRequired(t *testing.T) {
 // session's own status/values reads, the UI's grant list, and human revocation, refused for any
 // login but the approver's.
 func TestAgentSecretRequestLifecycle(t *testing.T) {
-	// Not parallel: it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past (an upper bound on a measured time at api_test.go:964).
+	// Not parallel: it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past (an upper bound on a measured time at api_test.go:975).
 	ts := newTestServer(t)
 	enrollmentID, sessionKey := ts.newSessionEnrollment(t, "session-"+t.Name(), testApprover)
 

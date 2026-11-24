@@ -77,7 +77,7 @@ type changed struct {
 // than a second after that decision returned (R1: a waiting command learns of a decision within
 // one second of it). A read that was not held would answer pending at once.
 func TestReadRequestWaitsForTheDecision(t *testing.T) {
-	// Not parallel: it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past (an upper bound on a measured time at request_wait_test.go:112).
+	// Not parallel: it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past (an upper bound on a measured time at request_wait_test.go:113).
 	for _, row := range []struct {
 		name    string
 		approve bool
@@ -121,7 +121,7 @@ func TestReadRequestWaitsForTheDecision(t *testing.T) {
 // TestReadRequestWaitEndsPending: with no decision, a read with ?wait=2 is held the two seconds
 // and answers pending, before a third second has passed.
 func TestReadRequestWaitEndsPending(t *testing.T) {
-	// Not parallel: it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past (an upper bound on a measured time at request_wait_test.go:134).
+	// Not parallel: it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past (an upper bound on a measured time at request_wait_test.go:136).
 	ts := newTestServer(t)
 	enrollmentID, key, asked := ts.pendingRequest(t)
 	start := time.Now()
@@ -144,7 +144,7 @@ func TestReadRequestWaitEndsPending(t *testing.T) {
 // longer judge_deciding, well before its wait ends: the request is its person's now, and the
 // agent learns so at once rather than at the end of its wait.
 func TestReadRequestWaitEndsAtTheJudgesHandOver(t *testing.T) {
-	// Not parallel: it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past (an upper bound on a measured time at request_wait_test.go:159).
+	// Not parallel: it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past (an upper bound on a measured time at request_wait_test.go:162).
 	ts := newTestServer(t)
 	enrollmentID, key, asked := ts.pendingRequest(t)
 	if _, err := ts.Store.Pool.Exec(context.Background(), `update requests set judge_until = now() + interval '1 second' where id=$1`, asked.RequestID); err != nil {
@@ -169,7 +169,7 @@ func TestReadRequestWaitEndsAtTheJudgesHandOver(t *testing.T) {
 // record.MaxRequestWaitSeconds is refused 400 REQUEST_WAIT_INPUT, at once, for a request that is
 // pending.
 func TestReadRequestWaitRefusesBadInput(t *testing.T) {
-	// Not parallel: it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past (an upper bound on a measured time at request_wait_test.go:178).
+	// Not parallel: it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past (an upper bound on a measured time at request_wait_test.go:182).
 	ts := newTestServer(t)
 	enrollmentID, key, asked := ts.pendingRequest(t)
 	for _, wait := range []string{strconv.Itoa(record.MaxRequestWaitSeconds + 1), "x", "0", "-1", "1.5"} {
@@ -231,7 +231,7 @@ func TestReadRequestWaitAnswersAFailedStoreUnavailable(t *testing.T) {
 // answered 403 NOT_YOURS at the next step, as a new read of it is, and not the request's state
 // for the rest of the wait.
 func TestReadRequestWaitEndsWhenTheRequestMoves(t *testing.T) {
-	// Not parallel: it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past (an upper bound on a measured time at request_wait_test.go:246).
+	// Not parallel: it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past (an upper bound on a measured time at request_wait_test.go:252).
 	ts := newTestServer(t)
 	enrollmentID, key, asked := ts.pendingRequest(t)
 	successor, _ := ts.newSessionEnrollment(t, "successor-"+t.Name(), testApprover)
@@ -434,7 +434,7 @@ func TestReadRequestWithNoWaitEndedByItsCallerIsAFailure(t *testing.T) {
 // stalls for a second, a lock on the enrollments table, answers pending 2 s after it was sent, as
 // it asked, and not 3 s.
 func TestReadRequestWaitCountsFromItsArrival(t *testing.T) {
-	// Not parallel: it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past (an upper bound on a measured time at request_wait_test.go:438).
+	// Not parallel: it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past (an upper bound on a measured time at request_wait_test.go:448).
 	ts := newTestServer(t)
 	enrollmentID, key, asked := ts.pendingRequest(t)
 
