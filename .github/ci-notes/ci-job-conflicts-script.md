@@ -24,5 +24,10 @@ install added at its worst, which counts each step before an install at no less 
 
 50 s + 425 s = 475 s, rounded up to 8 minutes.
 
+A second sweep of the same window on 2026-11-24, later in the day, read 98 conflicts-script jobs
+in ci.yaml's 100 latest runs, of which 20 were green with times: 27 s to 39 s, median 30 s, and
+none over the 480 s this limit gives. The 50 s above is the slower of the two windows, so the
+limit keeps it.
+
 `./.github/actions/setup-bun` is left out, as in every other job's sum (`ci-job-pi-legion.md`): its
 first source, oven-sh/setup-bun's own download, has no bound of this repository's to count.
