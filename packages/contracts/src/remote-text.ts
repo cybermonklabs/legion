@@ -581,12 +581,21 @@ export function oneLine(text: string): string {
     const code = text.charCodeAt(i);
     const next = i + 1 < text.length ? text.charCodeAt(i + 1) : 0;
     const control = code <= 0x1f || (code >= 0x7f && code <= 0x9f);
-    const high = code >= 0xd800 && code <= 0xdbff;
-    const low = code >= 0xdc00 && code <= 0xdfff;
-    if (control || low || (high && !(next >= 0xdc00 && next <= 0xdfff))) return goQuote(text);
+    const high = highSurrogate(code);
+    if (control || lowSurrogate(code) || (high && !lowSurrogate(next))) return goQuote(text);
     if (high) i++;
   }
   return text;
+}
+
+/** Whether `code`, one code unit of a string, is a high surrogate: the first of a pair. */
+function highSurrogate(code: number): boolean {
+  return code >= 0xd800 && code <= 0xdbff;
+}
+
+/** Whether `code`, one code unit of a string, is a low surrogate: the second of a pair. */
+function lowSurrogate(code: number): boolean {
+  return code >= 0xdc00 && code <= 0xdfff;
 }
 
 /** A character Go's `strconv.IsPrint` prints as it is: a letter, mark, number, punctuation or
@@ -612,7 +621,7 @@ function goQuote(text: string): string {
   let out = '"';
   for (const ch of text) {
     let code = ch.codePointAt(0) as number;
-    if (code >= 0xd800 && code <= 0xdfff) code = 0xfffd;
+    if (highSurrogate(code) || lowSurrogate(code)) code = 0xfffd;
     const char = String.fromCodePoint(code);
     if (code === 0x22 || code === 0x5c) out += `\\${char}`;
     else if (printable.test(char)) out += char;
