@@ -372,8 +372,10 @@ func TestEveryMarkingStatementKeepsOrRaisesTheRuleAsR13States(t *testing.T) {
 var markingStatementDigests = map[int]string{
 	1: "86cea356636cc095fe73ddbd7a74a7c96b9d1fcfccb154be4773ba0a3b970887",
 	// Rule 2: every node's scope - the project or the parties the comment write and the backfill's
-	// block and comment reads carry, and the node write that states them.
-	2: "52743f9e06e54d437dfc5631bd5c3ce1c53a5386516f0ece2e23d624c30428bb",
+	// block and comment reads carry, and the node write that states them. Its digest moved as rule
+	// 1's did, from 52743f9e06e54d437dfc5631bd5c3ce1c53a5386516f0ece2e23d624c30428bb: rule 2's
+	// block selection carries the same `materialized` word, which keeps its rows.
+	2: "a91a82cf300c1e0ef800e0cccc03b003e89cc906702a34e3d3510e1b2ccf6d05",
 }
 
 // The marking rule is held to the statements whose results decide which documents a build marks
