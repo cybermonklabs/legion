@@ -802,7 +802,7 @@ func TestThePodsProcessesAreVisibleThroughEveryProcEntry(t *testing.T) {
 		t.Fatal(err)
 	}
 	output := &lockedBuffer{}
-	child := exec.Command(self, "-test.run=^TestVolumeGuardNamespaceHelper$")
+	child := exec.Command(self, reentry(t, "TestVolumeGuardNamespaceHelper")...)
 	child.Dir = "/"
 	child.Env = append(os.Environ(), volumeGuardNamespaceEnv+"="+string(plan))
 	child.SysProcAttr = attr
@@ -820,7 +820,7 @@ func TestThePodsProcessesAreVisibleThroughEveryProcEntry(t *testing.T) {
 	// Each process reports itself ready by a marker of its own; the chrooted one writes its
 	// marker inside the root it took, which is that same directory from here.
 	markers := []string{filepath.Join(tree.Ready, "opener"), filepath.Join(tree.Ready, "runner"), filepath.Join(tree.Ready, "mapper"), filepath.Join(tree.Root, "chrooted")}
-	deadline := time.Now().Add(testwait.Bounded(t, 30*time.Second, time.Second))
+	deadline := time.Now().Add(beforeDeadline(t))
 	for ready := false; !ready; {
 		ready = true
 		for _, marker := range markers {
@@ -837,7 +837,7 @@ func TestThePodsProcessesAreVisibleThroughEveryProcEntry(t *testing.T) {
 		default:
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("the four processes were not ready within the bound\n%s", output.String())
+			t.Fatalf("the four processes were not ready under the test's hang guard\n%s", output.String())
 		}
 		time.Sleep(testwait.Poll)
 	}
@@ -929,7 +929,7 @@ func TestVolumeGuardNamespaceHelper(t *testing.T) {
 		if process.Kind == "runner" {
 			argv0 = tree.Copy
 		}
-		started := exec.Command(argv0, "-test.run=^TestVolumeGuardProcessHelper$")
+		started := exec.Command(argv0, reentry(t, "TestVolumeGuardProcessHelper")...)
 		started.Dir = "/"
 		started.Env = append(os.Environ(), volumeGuardProcessEnv+"="+string(plan))
 		started.Stdout, started.Stderr = os.Stdout, os.Stderr
@@ -939,7 +939,7 @@ func TestVolumeGuardNamespaceHelper(t *testing.T) {
 		}
 	}
 	time.Sleep(guardHold)
-	os.Exit(0)
+	exitHelper(t)
 }
 
 // TestVolumeGuardProcessHelper is one process inside those namespaces: it takes hold of the one
@@ -1004,7 +1004,7 @@ func TestVolumeGuardProcessHelper(t *testing.T) {
 		fail(err)
 	}
 	time.Sleep(guardHold)
-	os.Exit(0)
+	exitHelper(t)
 }
 
 // A process whose working directory is a reclaimable root is not a hold on the root: the spec
