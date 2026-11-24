@@ -2756,7 +2756,7 @@ test("a reader at the previous contract parses the state body this daemon serves
   expect(droppedFromState(served)).toBe("strandedClaims[0].suspendedBy");
 });
 
-// Contract 249: a root's gated step may stand open on an ancestor's approval (`open_on_basis`) or
+// Contract 276: a root's gated step may stand open on an ancestor's approval (`open_on_basis`) or
 // wait, closed, on an ancestor's open approval request (`pending_on_basis`), each with the `basis`
 // that names the approval or the request, and every root the daemon records says whether its
 // tree runs (`treeRuns`). The state golden carries LEGION-207's step open on LEGION-200's
@@ -2853,12 +2853,12 @@ test("the state golden carries a step on an ancestor's basis and whether each ro
   expect(LegionStateResponse.safeParse(notBoolean).success).toBeFalse();
 });
 
-// `legionGatedStepView`'s status as contracts 55 to 248 hold it: four words, in an enum. Every
+// `legionGatedStepView`'s status as contracts 55 to 275 hold it: four words, in an enum. Every
 // plugin parses the state with the schema of the contract it was built at, so this reader is live
-// in every pod still on an image before 249. It reads every step of the golden that stands on no
-// basis, and refuses the two words of 249 — and with them the whole state body, since
+// in every pod still on an image before 276. It reads every step of the golden that stands on no
+// basis, and refuses the two words of 276 — and with them the whole state body, since
 // `gatedSteps` is an array it parses whole — which is why the state route serves a caller below
-// 249 no `gatedSteps` on an issue with a step on a basis (`api`'s `withoutGateBasis` and
+// 276 no `gatedSteps` on an issue with a step on a basis (`api`'s `withoutGateBasis` and
 // `withoutUnadmittedStepStatuses`, pinned on the Go side): neither `waiting` nor `approved` is true
 // of such a step, so it serves no entry of that issue rather than a wrong one.
 const gatedStepStatusBeforeBasis = z.object({
@@ -2885,7 +2885,7 @@ test("a reader before the basis words reads every gated step but those on a basi
   }
 });
 
-// The architect's registration on an ancestor's basis (contract 249): the three fields come
+// The architect's registration on an ancestor's basis (contract 276): the three fields come
 // together, the document is a UUID, the version positive and the reason a sentence; a request
 // that names none of them is the request it was.
 test("a gate registration names a basis by its document, its version and a reason", () => {
@@ -2979,20 +2979,22 @@ test("a reader at contract 152 parses the repositories block served below 202", 
   expect(block.data?.caches).toEqual(live.caches);
 
   // Every other key is the state golden's own, the `contract` mark, `lowestPluginContract`,
-  // `intakeGiveUps` and the keys contracts 220, 246 and 249 added aside: the mark names the
-  // contract the caller is served at, 199, the recorded contract below the 201 the caller states
-  // (`recordedContractAtOrBelow`), INFRA-4605's, which moved no answer's shape, and the lowest
-  // plugin contract reports the claims of the snapshot the route projected the body from, a pod at
-  // 201, which `state.json`'s own fixture does not hold. Five bands stand above 199: the
-  // repositories block's at 202; contract 220's, which takes `plan` off each assignment, so the
-  // golden's rows are compared without it; the intake's give-ups' at 228, so the narrowing leaves
-  // `intakeGiveUps` off; the pod hold's at 246, which leaves `podHold` off every issue
-  // (`withoutPodHold`); and contract 249's, which takes every root's `treeRuns` and the
-  // `gatedSteps` of each issue with a step on an ancestor's basis (`api`'s `withoutGateBasis`), so
-  // the narrowing changes this one block and those keys and no other key. One value strip of
+  // `intakeGiveUps` and the keys contracts 220, 246, 250, 256 and 276 added aside: the mark names
+  // the contract the caller is served at, 199, the recorded contract below the 201 the caller
+  // states (`recordedContractAtOrBelow`), INFRA-4605's, which moved no answer's shape, and the
+  // lowest plugin contract reports the claims of the snapshot the route projected the body from, a
+  // pod at 201, which `state.json`'s own fixture does not hold. Seven bands stand above 199: the
+  // repositories block's at 202; contract 220's, which takes `plan` off each assignment; the
+  // intake's give-ups' at 228, so the narrowing leaves `intakeGiveUps` off; the pod hold's at 246,
+  // which leaves `podHold` off every issue (`withoutPodHold`); contract 250's, which takes
+  // `priority` off each issue and off its `waitingLine`; contract 256's, which takes `lastDeathAt`
+  // and `lastStartFailureAt` off each claim view; and contract 276's, which takes every root's
+  // `treeRuns` and the `gatedSteps` of each issue with a step on an ancestor's basis (`api`'s
+  // `withoutGateBasis`); so the golden's issues, rows and claim views are compared without them,
+  // and the narrowing changes this one block and those keys and no other key. One value strip of
   // contract 213 stands above 199 as well: `caches`, the source of the repository-cache-room row,
   // arrived at contract 213, so that row is served here without its `source`, every other field of
-  // it and every other row as the state golden holds them. Contract 249's value strips take
+  // it and every other row as the state golden holds them. Contract 276's value strips take
   // nothing more here: the strip of its two step statuses takes the `gatedSteps` its band has taken
   // already, and the golden holds no issue in `awaiting_children` and no held row of it.
   const { daemonApiVersion } = z
@@ -3031,20 +3033,41 @@ test("a reader at contract 152 parses the repositories block served below 202", 
       delete issue.gatedSteps;
     }
   }
+  const withoutCauseTimes = (view: unknown): unknown => {
+    if (!isJsonObject(view)) {
+      return view;
+    }
+    const { lastDeathAt: _deathAt, lastStartFailureAt: _startFailureAt, ...kept } = view;
+    return kept;
+  };
   const issues = Object.fromEntries(
     Object.entries(rest.issues as Record<string, Record<string, unknown>>).map(([key, issue]) => {
-      const { podHold: _podHold, ...kept } = issue;
-      return [
-        key,
-        kept.assignments === undefined
-          ? kept
-          : {
-              ...kept,
-              assignments: (kept.assignments as Record<string, unknown>[]).map(
-                ({ plan: _plan, ...row }) => row
-              ),
-            },
-      ];
+      const { podHold: _podHold, priority: _priority, ...kept } = issue;
+      const narrowed: Record<string, unknown> = { ...kept };
+      const line = kept.waitingLine;
+      if (isJsonObject(line)) {
+        const { priority: _placed, ...placed } = line;
+        narrowed.waitingLine = placed;
+      }
+      if (kept.assignments !== undefined) {
+        narrowed.assignments = (kept.assignments as Record<string, unknown>[]).map(
+          ({ plan: _plan, ...row }) => row
+        );
+      }
+      if (kept.architect !== undefined) {
+        narrowed.architect = withoutCauseTimes(kept.architect);
+      }
+      if (isJsonObject(kept.workers)) {
+        narrowed.workers = Object.fromEntries(
+          Object.entries(kept.workers).map(([role, worker]) => [
+            role,
+            isJsonObject(worker) && worker.claim !== undefined
+              ? { ...worker, claim: withoutCauseTimes(worker.claim) }
+              : worker,
+          ])
+        );
+      }
+      return [key, narrowed];
     })
   );
   const capabilities = z.array(z.record(z.string(), z.unknown())).parse(rest.capabilities);

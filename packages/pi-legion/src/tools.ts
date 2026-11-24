@@ -331,7 +331,7 @@ function stateSummary(state: LegionState): string {
     if (issue.designGate !== undefined) {
       const gate = issue.designGate;
       // A spec step open on an ancestor's approval holds in `approvedVersion` the version its root
-      // registered, which no person approved (contract 249), so a step on a basis reads its entry
+      // registered, which no person approved (contract 276), so a step on a basis reads its entry
       // in `gatedSteps`: the status word, and the ancestor and version it opened on or waits on.
       // The loop binds each entry of `gatedSteps`, so the read census sees every field read off
       // one, under the list's name (`LEGION_ANSWER_READS`).

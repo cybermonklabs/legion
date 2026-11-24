@@ -7,8 +7,8 @@
     "startedAt": "2026-09-22T09:15:02Z"
   },
   "contract": {
-    "daemon": 249,
-    "caller": 249
+    "daemon": 276,
+    "caller": 276
   },
   "admission": {
     "cap": 5,
@@ -72,6 +72,7 @@
       "repo": "acme/widgets",
       "defaultBranch": "main",
       "lingerUntil": "2026-09-22T10:10:12Z",
+      "priority": null,
       "workers": {
         "implementer": {
           "claim": {
@@ -155,7 +156,9 @@
         "lastTurnStart": "2026-09-22T09:16:40Z",
         "lastTurnEnd": "2026-09-22T09:16:58Z",
         "lastDeathCause": "the pane's process was gone at the daemon's read",
+        "lastDeathAt": "2026-09-22T09:15:21Z",
         "lastStartFailure": "the pod was not ready within the worker boot timeout",
+        "lastStartFailureAt": "2026-09-22T09:15:50Z",
         "lastReady": "2026-09-22T09:15:44Z",
         "step": {
           "at": "2026-09-22T09:16:58Z",
@@ -172,6 +175,7 @@
           "dueAt": "2026-09-22T09:18:03Z"
         }
       },
+      "priority": null,
       "workers": {
         "implementer": {
           "claim": {
@@ -321,6 +325,7 @@
       "status": "in_progress",
       "repo": "acme/widgets",
       "defaultBranch": "main",
+      "priority": null,
       "workers": {},
       "why": {
         "state": "blocked",
@@ -362,6 +367,7 @@
       "defaultBranch": "release/v7.1",
       "holdReason": "escalated",
       "heldFrom": "implementing",
+      "priority": null,
       "workers": {
         "implementer": {
           "claim": {
@@ -424,6 +430,7 @@
         "LEGION-209",
         "LEGION-208"
       ],
+      "priority": 1,
       "workers": {
         "implementer": {
           "claim": {
@@ -462,7 +469,8 @@
         "rootRank": "00011",
         "ownRank": "00011",
         "rootKey": "LEGION-211",
-        "reason": "It has not started. It is 1st of 1 issue that has not started, by its own Dispatch rank, and 1 issue whose work came back stands ahead of all of them."
+        "priority": 1,
+        "reason": "It has not started. It waits at P1, its own priority. It is 1st of 1 issue at P1 that has not started, by its own Dispatch rank."
       },
       "why": {
         "state": "claim_stopped",
@@ -482,6 +490,7 @@
       "treeRuns": true,
       "repo": "acme/widgets",
       "defaultBranch": "main",
+      "priority": 0,
       "workers": {},
       "gatedSteps": [
         {
@@ -506,7 +515,8 @@
         "partLength": 1,
         "holdsSlot": true,
         "since": "2026-09-22T09:21:00Z",
-        "reason": "A person answered it, and its work came back at 2026-09-22T09:21:00Z. It is 1st of 1 issue whose work came back. It already holds its admission slot, so it resumes at the next pass whatever the cap says."
+        "priority": 0,
+        "reason": "A person answered it, and its work came back at 2026-09-22T09:21:00Z. It waits at P0, its own priority. It is 1st of 1 issue at P0 whose work came back. It already holds its admission slot, so it resumes at the next pass whatever the cap says."
       },
       "why": {
         "state": "claim_stopped",
@@ -531,6 +541,7 @@
       "treeRuns": false,
       "repo": "zeta/tools",
       "defaultBranch": "release/v7.1",
+      "priority": null,
       "workers": {},
       "gatedSteps": [
         {
@@ -557,6 +568,7 @@
       "treeRuns": true,
       "repo": "acme/widgets",
       "defaultBranch": "main",
+      "priority": null,
       "workers": {
         "implementer": {
           "claim": {
@@ -613,6 +625,7 @@
       "treeRuns": true,
       "repo": "zeta/tools",
       "defaultBranch": "release/v7.1",
+      "priority": null,
       "workers": {
         "implementer": {
           "claim": {
