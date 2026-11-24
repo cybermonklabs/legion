@@ -35,6 +35,9 @@ const nonEmptyString = z.string().min(1);
 const issueKey = z.string().regex(DISPATCH_KEY_PATTERN);
 /** Go emits RFC 3339 through `time.Time`; a daemon on a non-UTC clock emits an offset. */
 const timestamp = z.iso.datetime({ offset: true });
+/** A Dispatch priority as the daemon serves it: 0 for P0 to 3 for P3, or null for none (contract
+ * 250), absent where the daemon serves the caller no such key. */
+const dispatchPriority = z.number().int().min(0).max(3).nullable().optional();
 
 /** The RFC 3339 instant a session sends: seconds required, the fraction optional, `Z` or an
  * offset required, as Go's `time.Time` decode requires them. It is the stricter of the two: it
@@ -551,7 +554,7 @@ const legionWaitingLineView = z.object({
   rootRank: nonEmptyString.optional(),
   ownRank: nonEmptyString.optional(),
   rootKey: issueKey.optional(),
-  priority: z.number().int().min(0).max(3).nullable().optional(),
+  priority: dispatchPriority,
   reason: nonEmptyString.optional(),
 });
 
@@ -797,7 +800,7 @@ const legionIssue = z.object({
    * Present on every issue the workflow records; absent on an issue it does not record (phase
    * `unrecorded`, an operator's claim), and from every issue of the body the route serves a
    * caller below 250. */
-  priority: z.number().int().min(0).max(3).nullable().optional(),
+  priority: dispatchPriority,
   workers: z.partialRecord(z.string(), legionPhaseView).optional(),
   pullRequest: legionPullRequestView.optional(),
   designGate: legionGateView.optional(),

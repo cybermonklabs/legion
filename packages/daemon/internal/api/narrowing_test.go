@@ -313,52 +313,31 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 		}
 	})
 
-	// The newest narrowing is a row of the table like every other, so the caller below it is
-	// told what it lost: a caller one contract below the highest row, priorityContract, which
-	// states that contract in its header as every plugin from shapedAnswersContract on does, is
-	// served at the recorded contract at or below it (recordedContractAtOrBelow),
-	// intakeGiveUpsContract, so it stands below that row alone and the log holds that row's line
-	// and nothing else. The populated state gives every issue a priority, null included, and each
-	// member of the waiting line the priority that placed it, so the body carries neither key
-	// only because the strip took it. This subtest does not catch a strip applied beside the
-	// loop, because it reads both its expectation and its answer from stateNarrowings; the
-	// subtests below, which name their lines as literals, are what catch that.
-	t.Run("the highest narrowing writes its own line", func(t *testing.T) {
+	// The priority narrowing is a row of the table like every other, so a caller below it is told
+	// what it lost: a caller one contract below priorityContract, which states that contract in its
+	// header as every plugin from shapedAnswersContract on does, is served at the recorded contract
+	// at or below it (recordedContractAtOrBelow), stands below that row and every row above it,
+	// and the log holds those rows' lines, the priority row's among them, and nothing else. What
+	// the body leaves out is TestTheStateServedBelowThePriorityContractCarriesNoPriority's. This
+	// subtest does not catch a strip applied beside the loop, because it reads both its
+	// expectation and its answer from stateNarrowings; the subtests below, which name their lines
+	// as literals, are what catch that.
+	t.Run("the priority narrowing writes its own line", func(t *testing.T) {
+		const droppedPriority = "the issues' priority and their waitingLine's priority"
 		state := populatedState(t)
-		highest := stateNarrowings[len(stateNarrowings)-1].contract
-		body, narrowings := stateNarrowedStating(t, state, statePodAddr+":41000", podClaims(0), highest-1)
-
-		lined := 0
-		for key, view := range issueViews(t, body) {
-			if value, carried := view["priority"]; carried {
-				t.Errorf("the body served to a caller below %d carries %s's `priority` %v, the key that contract added",
-					highest, key, value)
-			}
-			line, inLine := view["waitingLine"].(map[string]any)
-			if !inLine {
-				continue
-			}
-			lined++
-			if value, carried := line["priority"]; carried {
-				t.Errorf("the body served to a caller below %d carries %s's waitingLine `priority` %v, the key that contract added",
-					highest, key, value)
-			}
-		}
-		if lined == 0 {
-			t.Fatal("the populated state serves no member of the waiting line: this subtest proves nothing of waitingLine's `priority`")
-		}
-		want := narrowingsExpected(state, highest-1)
-		if len(want) != 1 {
-			t.Fatalf("a caller at %d expects the lines %v, want the highest row's alone", highest-1, want)
+		below := priorityContract - 1
+		_, narrowings := stateNarrowedStating(t, state, statePodAddr+":41000", podClaims(0), below)
+		want := narrowingsExpected(state, below)
+		if !slices.Contains(want, droppedPriority) {
+			t.Fatalf("a caller at %d expects the lines %v, want the priority row's among them", below, want)
 		}
 		if len(narrowings) != len(want) {
 			t.Fatalf("the daemon wrote %d narrowing lines for a caller at %d, want %d, one for each contract above it: %+v",
-				len(narrowings), highest-1, len(want), narrowings)
+				len(narrowings), below, len(want), narrowings)
 		}
 		for i, line := range narrowings {
 			if line.Dropped != want[i] {
-				t.Errorf("line %d of a caller at %d says it dropped %q, want %q",
-					i, highest-1, line.Dropped, want[i])
+				t.Errorf("line %d of a caller at %d says it dropped %q, want %q", i, below, line.Dropped, want[i])
 			}
 		}
 	})

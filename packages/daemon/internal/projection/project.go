@@ -484,11 +484,12 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 		projected.Admission.Waiting[i] = key
 		holds := entry.Holds
 		placed := api.PriorityView(entry.Priority)
+		standsIn := bandPart{entry.Priority, entry.Part}
 		view := projected.Issues[key]
 		view.WaitingLine = &api.WaitingLineView{
 			Place: i + 1, Length: len(line),
 			Part: entry.Part.String(), Kind: entry.Kind.String(),
-			PartPlace: entry.PartPlace, PartLength: parts[bandPart{entry.Priority, entry.Part}],
+			PartPlace: entry.PartPlace, PartLength: parts[standsIn],
 			HoldsSlot: &holds,
 			RootRank:  entry.RootRank,
 			Priority:  &placed,
@@ -517,7 +518,7 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 		if entry.Part == record.PartReturned {
 			other.part = record.PartStarting
 		}
-		view.WaitingLine.Reason = waitingLineReason(entry, parts[bandPart{entry.Priority, entry.Part}], parts[other])
+		view.WaitingLine.Reason = waitingLineReason(entry, parts[standsIn], parts[other])
 		projected.Issues[key] = view
 	}
 	projected.Admission.Blocked = blockers.Blocked(rows, own, line, record.ChildWaitRows(facts.ChildWaits))

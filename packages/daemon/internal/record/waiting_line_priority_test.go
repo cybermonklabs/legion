@@ -17,24 +17,14 @@ func openGate(root string, opened time.Time) TreeGate {
 		ApprovedVersion: &approved, ApprovedMark: EventMark{Seq: 7, At: opened}, EverOpened: true}}}
 }
 
-// linePriorityKeys is the keys of line in its order.
-func linePriorityKeys(line []LineEntry) []string {
-	keys := make([]string, 0, len(line))
-	for _, entry := range line {
-		keys = append(keys, entry.Issue.Key)
-	}
-	return keys
-}
-
 // The acceptance case: a line holding a P0 child of a P1 tree, a P1 root whose work came back and
 // a P2 root ranked first on the board puts the P0 child first, the P1 root second and the P2 root
 // last. Priority is the first key of the whole line, and the line's own order holds only within
 // one priority.
 //
-// Today's line puts the P1 root first, since its work came back, and the P2 root ahead of the P0
-// child, since the P2 root ranks first on the board and the child takes its tree root's place.
-// The test reads the order of the keys alone: which part each entry stands in once priority
-// leads is the next spec version's to say.
+// Before priority, the line put the P1 root first, since its work came back, and the P2 root
+// ahead of the P0 child, since the P2 root ranks first on the board and the child takes its tree
+// root's place.
 func TestTheWaitingLinePutsAP0ChildOfAP1TreeAheadOfAP1RootWhoseWorkCameBackAndAP2RootRankedFirst(t *testing.T) {
 	base := time.Date(2026, 11, 24, 6, 0, 0, 0, time.UTC)
 	opened, owedAt := base.Add(-3*time.Hour), base.Add(-time.Hour)
@@ -63,7 +53,7 @@ func TestTheWaitingLinePutsAP0ChildOfAP1TreeAheadOfAP1RootWhoseWorkCameBackAndAP
 	slots := []Slot{{Issue: "LEGION-10", Index: 0, AdmittedAt: opened}}
 
 	line, _ := Waiting(issues, slots, facts)
-	if got, want := linePriorityKeys(line), []string{"LEGION-11", "LEGION-20", "LEGION-30"}; !reflect.DeepEqual(got, want) {
+	if got, want := keysOf(WaitingIssues(line)), []string{"LEGION-11", "LEGION-20", "LEGION-30"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("the line = %v, want %v: the P0 child first, then the P1 root whose work came back, then the P2 root ranked first on the board", got, want)
 	}
 	// Each entry keeps the part and kind the line gives it today, says the priority that placed
@@ -92,8 +82,8 @@ func TestTheWaitingLinePutsAP0ChildOfAP1TreeAheadOfAP1RootWhoseWorkCameBackAndAP
 // entry here stands in the part of the issues whose first phase can start, so no question of how
 // priority meets the part of the work that came back is read.
 //
-// Today's line orders them by their tree roots' ranks alone: the root with none ranked A first,
-// the P3 root, the child, and the two P1 roots.
+// Before priority, the line ordered them by their tree roots' ranks alone: the root with none
+// ranked A first, the P3 root, the child, and the two P1 roots.
 func TestTheWaitingLinePlacesAnIssueWithNoPriorityAtItsRootsAndOneWithNoneOnEitherLast(t *testing.T) {
 	opened := time.Date(2026, 11, 24, 3, 0, 0, 0, time.UTC)
 	// A running P0 tree ranked in the middle of the board, its root waiting on its open child,
@@ -120,7 +110,7 @@ func TestTheWaitingLinePlacesAnIssueWithNoPriorityAtItsRootsAndOneWithNoneOnEith
 
 	line, _ := Waiting(issues, slots, facts)
 	want := []string{"LEGION-41", "LEGION-80", "LEGION-50", "LEGION-70", "LEGION-60"}
-	if got := linePriorityKeys(line); !reflect.DeepEqual(got, want) {
+	if got := keysOf(WaitingIssues(line)); !reflect.DeepEqual(got, want) {
 		t.Fatalf("the line = %v, want %v: the child at its P0 root's priority, the two P1 roots by rank, the P3 root, and the root with none last", got, want)
 	}
 	// The child is placed at its root's P0 and its own priority stays none: the inherited

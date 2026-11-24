@@ -51,13 +51,12 @@ const ServingFloor = 46
 // entries that added them name them (shapedAnswersContract, the shaped answers' entry;
 // repositoriesLiveContract, dispatch://INFRA-4401's; childRouteRemovedContract,
 // dispatch://INFRA-3178's; cachesSourceContract, dispatch://INFRA-4036's; OwnerPlanContract, the
-// owner's plan's; assignmentPlanContract, the experiment group's; and intakeGiveUpsContract
+// owner's plan's; assignmentPlanContract, the experiment group's; priorityContract, the waiting
+// line's priority's; and intakeGiveUpsContract
 // (dispatch://INFRA-1575's 228)): a renumber of any of those entries moves its constant and this
 // list with it, and moving one of the two alone would describe a shape at a contract no entry
 // declares. The other entries above 193 follow them as numbers: 199 is version.go's entry for
 // INFRA-4605, and 217 its entry for dispatch://INFRA-3531 and dispatch://INFRA-4567.
-// priorityContract, 250, is a constant for the same reason: the entry of the waiting line's
-// priority names it.
 var SupportedContracts = []int{46, 48, 49, 51, 52, 53, 54, 55, 56, 57, 58, 59, 62, 64, 68, 73, 75, 85, 86, 87, 94, 98, 104, 111, 123, 132, 133, 137, 141, 144, 146, 151, 152, 160, 168, 178, 188, 189, shapedAnswersContract, 199, repositoriesLiveContract, childRouteRemovedContract, cachesSourceContract, 217, OwnerPlanContract, assignmentPlanContract, intakeGiveUpsContract, priorityContract}
 
 // AnswerID names one answer a plugin parses. It is stable: every write of this package goes

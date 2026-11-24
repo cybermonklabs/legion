@@ -1097,10 +1097,11 @@ const WaitingLineBand = "within its priority, among the issues whose work came b
 // Priority is the first key of the whole line: each entry stands in the band
 // of the priority that places it (PriorityOf: the issue's own Dispatch priority, else its tree
 // root's, else after P3), P0 first. Within one band the line keeps the order below, in two parts.
-// Priority orders the line only: it takes no slot back from running work, and an entry the
-// promotion passes over (a LineWaitingOnIssue entry while its wait lasts, an entry that holds a
-// slot) is placed by its priority and passed over as before. The members of a re-admitted tree
-// stand in no line until their root's promotion, so they wait behind their root's band.
+// Priority orders the line only: it takes no slot back from running work. A LineWaitingOnIssue
+// entry is placed by its priority and passed over while its wait lasts, as before, and an entry
+// that already holds a slot is placed by its priority and promoted at its place, taking no slot.
+// The members of a re-admitted tree stand in no line until their root's promotion, so they wait
+// behind their root's band.
 //
 // First, by when their work came back, oldest first: the issues the daemon has already started
 // whose work has come back to them. Four kinds of record say that work came back, and each
