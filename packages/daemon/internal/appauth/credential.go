@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
@@ -209,7 +210,7 @@ func ControllerCredential(source Source, served func(ghrepo.Repository) bool, re
 			return ghconfig.Bundle{}, fmt.Errorf("the controller's default owner %q %w", owner, ErrDefaultOwnerNotInstalled)
 		}
 		if owner != "" && slices.Contains(layout.refused, owner) {
-			return ghconfig.Bundle{}, noDirectoryName(owner)
+			return ghconfig.Bundle{}, noDirectoryAsked(owner)
 		}
 		return mintBundle(ctx, source, appRole, claim.RoleController, true, owner, layout, left, log)
 	}
@@ -622,10 +623,11 @@ func (l bundleLayout) mintOwner(name string) string {
 // rename names is a directory; what refused is for is a name that is still no directory of a
 // bundle — one past GitHub's 39 characters, or a path — which discovery would hand on, since it
 // takes any login GitHub lists, and which would otherwise fail the bundle and cost every role of
-// the App every other owner. No directory is written from such a name, and no lease is minted
-// for it. The one name that cannot be left out is the default's: a bundle with no directory for
-// its issue's own repository is no bundle to launch a role on, so that name is an error, as a
-// controller's asked-for owner is (ControllerCredential).
+// the App every other owner. No directory is written from such a name, no lease is minted for
+// it, and it is said only in its shape (noDirectoryName). The one name that cannot be left out
+// is the default's: a bundle with no directory for its issue's own repository is no bundle to
+// launch a role on, so that name is an error, as a controller's asked-for owner is
+// (ControllerCredential, noDirectoryAsked).
 func bundleDirs(installed []string, served func(ghrepo.Repository) bool, renames ghrepo.Renames, repo ghrepo.Repository) (bundleLayout, error) {
 	// The rename rule is read per repository: a pair resolves exactly when its `to` is served and
 	// its `from` is not, which is asked of the two repositories themselves.
@@ -664,17 +666,28 @@ func bundleDirs(installed []string, served func(ghrepo.Repository) bool, renames
 			continue
 		}
 		if dir.name == layout.dflt {
-			return bundleLayout{}, noDirectoryName(dir.name)
+			return bundleLayout{}, noDirectoryAsked(dir.name)
 		}
 		layout.refused = append(layout.refused, dir.name)
 	}
 	return layout, nil
 }
 
-// noDirectoryName is the refusal of an owner whose name is no directory's (ghconfig.IsOwner):
-// the failure of a bundle whose default it is, and what is said of every other such owner,
-// which is left out (bundleDirs, mintBundle).
+// noDirectoryName is what is said of an owner whose name is no directory's (ghconfig.IsOwner),
+// which the bundle leaves out (bundleDirs, layout.refused; mintBundle, sayLeftOut). Such a name
+// is one discovery listed: GitHub's words, or those of whatever answers in its place, which can
+// write the JWT the listing's request carried as an account's login. So it names the owner only
+// as a login GitHub allows (githubrest.ShownLogin), which a name that is no directory's is only
+// where it is a bot's login, and as a fixed phrase otherwise.
 func noDirectoryName(name string) error {
+	return fmt.Errorf("the owner %s names no gh bundle directory: it is no lowercased GitHub login", githubrest.ShownLogin(name))
+}
+
+// noDirectoryAsked is the refusal of name, the owner a caller asked the bundle for - the
+// controller's default (ControllerCredential) or the directory its issue's repository routes to
+// (bundleDirs) - where it is no directory's name: the failure of the bundle, naming the owner as
+// the caller asked for it, the caller's own words.
+func noDirectoryAsked(name string) error {
 	return fmt.Errorf("the gh bundle directory %q is no lowercased GitHub login", name)
 }
 
@@ -702,9 +715,11 @@ var (
 // the life of the process (saidLeftOut): the role's other owners are served, and what its
 // bundle does not hold is said once rather than at every launch and every refresh, while a
 // reason that changes is news and costs one line. It carries no token: a mint's failure names
-// the ask and GitHub's answer to it and never a token (exchange, mintFromCommand), and the
-// refusal of a name carries the name alone. A caller that holds no logger of its own
-// (sandbox.Options.Log is one) says it on slog.Default.
+// the ask and GitHub's answer to it and never a token (exchange, mintFromCommand), and the owner
+// is named only as a login GitHub allows (githubrest.ShownLogin), since one discovery listed
+// whose name is no directory's can be the JWT the listing's request carried (noDirectoryName).
+// The key is the owner as it came, so two such owners are still said once each. A caller that
+// holds no logger of its own (sandbox.Options.Log is one) says it on slog.Default.
 func sayLeftOut(log *slog.Logger, role AppRole, owner, reason string, status error) {
 	key := leftOutDirectory{role: role, owner: strings.ToLower(strings.TrimSpace(owner)), reason: reason}
 	saidLeftOutMu.Lock()
@@ -718,7 +733,7 @@ func sayLeftOut(log *slog.Logger, role AppRole, owner, reason string, status err
 		log = slog.Default()
 	}
 	log.Warn("appauth: an owner's directory is left out of the role's gh bundle",
-		"app", string(role), "owner", owner, "reason", reason, "status", status.Error())
+		"app", string(role), "owner", githubrest.ShownLogin(owner), "reason", reason, "status", status.Error())
 }
 
 // noDirectoryReason is the reason an owner is left out of a bundle because its name is no
@@ -866,7 +881,9 @@ func mintBundle(ctx context.Context, tokens Tokens, appRole AppRole, role claim.
 // is refused with every owner's failure (failures): a bundle without a default would be refused
 // later as one whose default holds no gh files (ghconfig.Bundle.Validate), long after the asks
 // that could say why. Where every one of those was GitHub refusing the lease, the refusal is
-// ErrNarrowingRefused, as each of them is.
+// ErrNarrowingRefused, as each of them is. The refusal names each owner only as a login GitHub
+// allows (githubrest.ShownLogin): the layout's owners include the ones whose names are no
+// directory's, which discovery listed as it came (noDirectoryName).
 func bundleDefault(bundle ghconfig.Bundle, appRole AppRole, role claim.Role, dflt string, layout bundleLayout, failures []error) (string, error) {
 	if dflt != "" {
 		return dflt, nil
@@ -876,8 +893,12 @@ func bundleDefault(bundle ghconfig.Bundle, appRole AppRole, role claim.Role, dfl
 			return dir.name, nil
 		}
 	}
+	shown := make([]string, 0, len(layout.owners))
+	for _, owner := range slices.Sorted(maps.Keys(layout.owners)) {
+		shown = append(shown, githubrest.ShownLogin(owner))
+	}
 	return "", fmt.Errorf("the %s App's gh bundle for %s holds no owner the App is installed on (%s): %w",
-		appRole, role, strings.Join(slices.Sorted(maps.Keys(layout.owners)), ", "), errors.Join(failures...))
+		appRole, role, strings.Join(shown, ", "), errors.Join(failures...))
 }
 
 // dirEntry is the directory's lease, rendered as gh's two files. A lease is the owner's whole
