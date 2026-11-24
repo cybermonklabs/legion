@@ -18,6 +18,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/githubname"
 	"github.com/sjawhar/envoy/internal/githubappjwt"
+	"github.com/sjawhar/envoy/internal/urljoin"
 )
 
 const githubAPIBase = "https://api.github.com"
@@ -333,7 +334,11 @@ func (m GitHubApp) revokeInstallationToken(ctx context.Context, mint *mintRetry,
 // runs past it.
 func (m GitHubApp) revokeToken(ctx context.Context, mint *mintRetry, token string) error {
 	const what = "revoke GitHub App installation token"
-	request, err := githubRequest(ctx, http.MethodDelete, m.base()+"/installation/token", token, nil)
+	target, err := m.at("/installation/token")
+	if err != nil {
+		return fmt.Errorf("%w: %s: %w", ErrMintUpstream, what, err)
+	}
+	request, err := githubRequest(ctx, http.MethodDelete, target, token, nil)
 	if err != nil {
 		return fmt.Errorf("%w: %s: %w", ErrMintUpstream, what, err)
 	}
@@ -682,12 +687,27 @@ func (m GitHubApp) Mint(ctx context.Context, req MintRequest) (_ Minted, err err
 	return Minted{Value: string(encoded), Expires: expires, LeftOut: leftOut}, nil
 }
 
-func (m GitHubApp) base() string {
-	return cmp.Or(strings.TrimSuffix(m.Base, "/"), githubAPIBase)
+// at is ref joined onto the GitHub API's URL path: Base (BROKER_AIRLOCK_TEST_GITHUB_API_BASE,
+// which a local stack points at a stand-in GitHub) or githubAPIBase, with ref's path onto its
+// path, its query kept ahead of ref's own and its fragment, which no request sends, dropped
+// (urljoin.Join). ref appended to that URL's text would sit inside a query or a fragment, and
+// GitHub, or the stand-in, would be asked another path. A base that does not parse or names no
+// host is named by the setting and never printed: it is a deployment's own value, which can carry
+// a credential in its user information or its query, where url.Parse's error, which
+// http.NewRequest's carries, quotes the URL whole.
+func (m GitHubApp) at(ref string) (string, error) {
+	joined, err := urljoin.Join(cmp.Or(m.Base, githubAPIBase), ref)
+	if err != nil {
+		return "", errors.New("BROKER_AIRLOCK_TEST_GITHUB_API_BASE is not an absolute URL with a host")
+	}
+	return joined.String(), nil
 }
 
 // githubRequest is a call to GitHub's API with bearer as its credential (the App's JWT, or an
-// installation token revoking itself), carrying body as JSON when it is not nil.
+// installation token revoking itself), carrying body as JSON when it is not nil. target is a URL
+// GitHubApp.at joined, which url.Parse took; one url.URL.String writes as text it refuses again
+// (an IPv6 zone escape) is named in fixed words, since http.NewRequest's error carries
+// url.Parse's, which quotes the URL whole, user information and query included.
 func githubRequest(ctx context.Context, method, target, bearer string, body []byte) (*http.Request, error) {
 	var reader io.Reader
 	if body != nil {
@@ -695,7 +715,7 @@ func githubRequest(ctx context.Context, method, target, bearer string, body []by
 	}
 	request, err := http.NewRequestWithContext(ctx, method, target, reader)
 	if err != nil {
-		return nil, err
+		return nil, errors.New("the URL joined from BROKER_AIRLOCK_TEST_GITHUB_API_BASE does not parse")
 	}
 	request.Header.Set("Authorization", "Bearer "+bearer)
 	request.Header.Set("Accept", "application/vnd.github+json")
@@ -709,7 +729,11 @@ func (m GitHubApp) installations(ctx context.Context, mint *mintRetry, jwt strin
 	const what = "list GitHub App installations"
 	var installations []githubInstallation
 	for page := 1; ; page++ {
-		request, err := githubRequest(ctx, http.MethodGet, fmt.Sprintf("%s/app/installations?per_page=100&page=%d", m.base(), page), jwt, nil)
+		target, err := m.at(fmt.Sprintf("/app/installations?per_page=100&page=%d", page))
+		if err != nil {
+			return nil, fmt.Errorf("%w: %s: %w", ErrMintUpstream, what, err)
+		}
+		request, err := githubRequest(ctx, http.MethodGet, target, jwt, nil)
 		if err != nil {
 			return nil, fmt.Errorf("%w: %s: %w", ErrMintUpstream, what, err)
 		}
@@ -748,7 +772,11 @@ func (m GitHubApp) installations(ctx context.Context, mint *mintRetry, jwt strin
 // logs.
 func (m GitHubApp) installationToken(ctx context.Context, mint *mintRetry, jwt, appID string, installationID int64, body []byte, check bool) (githubInstallationToken, error) {
 	const what = "mint GitHub App installation token"
-	request, err := githubRequest(ctx, http.MethodPost, m.base()+"/app/installations/"+strconv.FormatInt(installationID, 10)+"/access_tokens", jwt, body)
+	target, err := m.at("/app/installations/" + strconv.FormatInt(installationID, 10) + "/access_tokens")
+	if err != nil {
+		return githubInstallationToken{}, fmt.Errorf("%w: %s: %w", ErrMintUpstream, what, err)
+	}
+	request, err := githubRequest(ctx, http.MethodPost, target, jwt, body)
 	if err != nil {
 		return githubInstallationToken{}, fmt.Errorf("%w: %s: %w", ErrMintUpstream, what, err)
 	}
