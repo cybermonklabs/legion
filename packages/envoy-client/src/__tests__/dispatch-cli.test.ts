@@ -1327,6 +1327,10 @@ describe("the dispatch CLI", () => {
           ["--ref", "dispatch://DSP-4/children", "--events", "5"],
           dropped("--events", "the issue's children"),
         ],
+        [
+          ["--ref", "dispatch://DSP-4/comments", "--events", "5"],
+          dropped("--events", "the issue's comments"),
+        ],
         [["--ref", `dispatch://DSP-4/ask/${id}`, "--events", "5"], dropped("--events", "an ask")],
         [
           ["--ref", `dispatch://CORE/artifact/runbook/ask/${id}`, "--events", "5"],

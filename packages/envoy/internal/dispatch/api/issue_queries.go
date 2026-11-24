@@ -12,6 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/prioritystore"
@@ -360,8 +361,6 @@ func issueSummaryJoins(readAdvances bool) string {
 }
 
 const (
-	maxIssueLabels  = 20
-	maxIssueLabel16 = 40
 	// unsetPriorityFilter is the `priority` query value that matches an issue with no priority.
 	unsetPriorityFilter = "none"
 	// noAdvancesFilter is the `advances` query value that matches an issue advancing no live
@@ -520,15 +519,15 @@ func (a *advancesScan) resolve() []model.IssueAdvance {
 }
 
 func normalizeIssueLabels(values []string) ([]string, error) {
-	if len(values) > maxIssueLabels {
-		return nil, countExceededError("LABELS_INPUT", "labels", len(values), maxIssueLabels)
+	if len(values) > contracts.MaxIssueLabels {
+		return nil, countExceededError("LABELS_INPUT", "labels", len(values), contracts.MaxIssueLabels)
 	}
 	labels := make([]string, 0, len(values))
 	seen := make(map[string]struct{}, len(values))
 	for _, value := range values {
 		label := strings.TrimSpace(value)
-		if length := itemblocks.Units16(label); length == 0 || length > maxIssueLabel16 {
-			return nil, errorf(http.StatusBadRequest, "LABELS_INPUT", "each label must be 1 to %d characters", maxIssueLabel16)
+		if length := itemblocks.Units16(label); length == 0 || length > contracts.IssueLabelMax {
+			return nil, errorf(http.StatusBadRequest, "LABELS_INPUT", "each label must be 1 to %d characters", contracts.IssueLabelMax)
 		}
 		key := strings.ToLower(label)
 		if _, duplicate := seen[key]; duplicate {
@@ -812,14 +811,14 @@ func (s *server) scanIssuePage(ctx context.Context, listQuery string, arguments 
 // given back in turn (store.sharedPoolSize says what that costs a loaded server).
 //
 // Batch 1 is everything keyed on the issue key alone: the issue row, its external links, the
-// issues it blocks, its artifacts, its open asks, its children and its backlink count. A key no
-// issue carries is what the issue row's callback records, answered as that row's pgx.ErrNoRows -
-// 404 NOT_FOUND - once the batch has closed: a callback that returned the error would close the
-// batch on it, and pgx invalidates every statement of a batch whose Close answers an error in the
-// connection's statement and description caches (invalidateCachesOnBatchResultsError), so one 404
-// would cost that connection the whole read's prepared statements. The other callbacks run
-// against an issue with no row, answer empty lists, and readIssue drops them with the rest of the
-// read.
+// issues it blocks, its artifacts, its open asks, its children, its comment count and its backlink
+// count. A key no issue carries is what the issue row's callback records, answered as that row's
+// pgx.ErrNoRows - 404 NOT_FOUND - once the batch has closed: a callback that returned the error
+// would close the batch on it, and pgx invalidates every statement of a batch whose Close answers
+// an error in the connection's statement and description caches
+// (invalidateCachesOnBatchResultsError), so one 404 would cost that connection the whole read's
+// prepared statements. The other callbacks run against an issue with no row, answer empty lists,
+// and readIssue drops them with the rest of the read.
 //
 // Batch 2 is what only batch 1's answers name: every artifact's versions in one statement, the
 // documents' latest reviews and open approval requests, and the open asks' identity events and
@@ -863,9 +862,9 @@ type issueDetail struct {
 	// issue_links rows blocked_by reads, read by their target (issueBlocksStatement). It is this
 	// read's alone. model.Issue is also an issue event's payload and a write's answer, which a
 	// write of another issue never updates, and a listing row (model.IssueSummary) carries none.
-	// It comes before the lists below, so a reader that keeps only the start of a long read - the
-	// command bar's agent among them - still has it. readIssue always sets it, so the read always
-	// writes it; omitzero leaves out only a nil list, and makes the field optional in the
+	// It comes before the lists below, so a reader that keeps only the start of a long read - an
+	// agent whose context cuts the rest, say - still has it. readIssue always sets it, so the read
+	// always writes it; omitzero leaves out only a nil list, and makes the field optional in the
 	// generated types, so a value typed before the field still type-checks.
 	Blocks []string `json:"blocks,omitzero"`
 	model.IssueRouteReach
@@ -875,10 +874,9 @@ type issueDetail struct {
 	model.IssueClaimLiveness
 	Progress model.IssueProgress `json:"progress"`
 	// CommentCount is how many comments the issue holds, each one its comment list (GET
-	// /api/v1/issues/{key}/comments) answers, so a reader of the issue alone - the command bar's
-	// agent among them - knows it has comments to read. An issue with none leaves it out. It
-	// comes before the lists below, so a reader that keeps only the start of a long read still
-	// has it.
+	// /api/v1/issues/{key}/comments) answers, so a reader of the issue alone knows it has comments
+	// to read. An issue with none leaves it out. It comes before the lists below, so a reader that
+	// keeps only the start of a long read still has it.
 	CommentCount int                `json:"comment_count,omitempty"`
 	Artifacts    []artifactRead     `json:"artifacts"`
 	OpenAsks     []issueOpenAsk     `json:"open_asks"`

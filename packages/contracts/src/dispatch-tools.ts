@@ -1,12 +1,16 @@
 import {
   DEFAULT_ISSUE_PAGE_LIMIT,
   DEFAULT_ISSUE_READ_EVENTS,
+  ISSUE_LABEL_MAX,
   ISSUE_TITLE_MAX,
   MAX_ISSUE_ADVANCES,
   MAX_ISSUE_BLOCKERS,
+  MAX_ISSUE_COMPONENTS,
+  MAX_ISSUE_LABELS,
   MAX_ISSUE_PAGE_LIMIT,
   PROJECT_NAME_MAX,
 } from "./dispatch-api-limits";
+import { goBlankPattern } from "./go-blank";
 import { LEGION_PLAN_RATING_LEAST, LEGION_PLAN_RATING_MOST } from "./legion-roles";
 import type { SchemaApi, SchemaNode, ToolArgumentsShape } from "./tool-schema";
 
@@ -514,7 +518,7 @@ function componentsArgument<E extends SchemaNode<E>>(z: SchemaApi<E>): E {
             "inherit: take the parent chain's attachment within the issue's own project (the default; deletes this issue's own). explicit: attach to ids, which it requires. none: not architectural work, with the reason it requires."
           ),
         ids: z
-          .array(z.string({ min: 1 }), { min: 1, max: 50 })
+          .array(z.string({ min: 1 }), { min: 1, max: MAX_ISSUE_COMPONENTS })
           .describe(
             "Required for mode explicit: bare component ids from the project's architecture model (web, dispatch-server), not external ones."
           )
@@ -533,8 +537,9 @@ function componentsArgument<E extends SchemaNode<E>>(z: SchemaApi<E>): E {
           readonly reason?: unknown;
         };
         if (input.mode === "explicit") return Array.isArray(input.ids) && input.ids.length > 0;
+        // The route trims the reason as Go's strings.TrimSpace does, which is not trim.
         if (input.mode === "none")
-          return typeof input.reason === "string" && input.reason.trim() !== "";
+          return typeof input.reason === "string" && !goBlankPattern.test(input.reason);
         return true;
       },
       COMPONENTS_RULE
@@ -725,7 +730,7 @@ const reviewValidation: NonNullable<DispatchToolSpec["validation"]> = {
     const input = value as { readonly verdict?: unknown; readonly reason?: unknown };
     return (
       input.verdict !== "changes_requested" ||
-      (typeof input.reason === "string" && input.reason.trim() !== "")
+      (typeof input.reason === "string" && !goBlankPattern.test(input.reason))
     );
   },
   message: REVIEW_REASON_RULE,
@@ -943,8 +948,10 @@ export const dispatchToolSpecs = [
         .describe(`Optional initial primary-document markdown. ${SPEC_WRITING_POINTER}`)
         .optional(),
       labels: z
-        .array(z.string({ min: 1, max: 40 }), { max: 20 })
-        .describe("Optional initial labels, at most 20 labels of up to 40 characters.")
+        .array(z.string({ min: 1, max: ISSUE_LABEL_MAX }), { max: MAX_ISSUE_LABELS })
+        .describe(
+          `Optional initial labels, at most ${MAX_ISSUE_LABELS} labels of up to ${ISSUE_LABEL_MAX} characters.`
+        )
         .optional(),
       priority: z
         .number({ int: true, min: 0, max: 3 })
@@ -1026,15 +1033,15 @@ export const dispatchToolSpecs = [
         .describe("Replacement title, at most 1,000 characters.")
         .optional(),
       labels: z
-        .array(z.string({ min: 1, max: 40 }), { max: 20 })
+        .array(z.string({ min: 1, max: ISSUE_LABEL_MAX }), { max: MAX_ISSUE_LABELS })
         .describe(
-          "Replacement label set, at most 20 labels of up to 40 characters; replaces every existing label, so a label it does not name is removed. To add labels and keep the others, use labels_add. Not with labels_add."
+          `Replacement label set, at most ${MAX_ISSUE_LABELS} labels of up to ${ISSUE_LABEL_MAX} characters; replaces every existing label, so a label it does not name is removed. To add labels and keep the others, use labels_add. Not with labels_add.`
         )
         .optional(),
       labels_add: z
-        .array(z.string({ min: 1, max: 40 }), { max: 20 })
+        .array(z.string({ min: 1, max: ISSUE_LABEL_MAX }), { max: MAX_ISSUE_LABELS })
         .describe(
-          "Labels to add, at most 20 of up to 40 characters: each is added to the labels the issue holds when the write lands, and every label it holds stays; the issue holds at most 20 in all. Not with labels."
+          `Labels to add, at most ${MAX_ISSUE_LABELS} of up to ${ISSUE_LABEL_MAX} characters: each is added to the labels the issue holds when the write lands, and every label it holds stays; the issue holds at most ${MAX_ISSUE_LABELS} in all. Not with labels.`
         )
         .optional(),
       // `.describe()` comes last here, unlike every other field. On the OMP host's Zod facade a
@@ -1618,7 +1625,7 @@ export const dispatchToolSpecs = [
               find: z
                 .string()
                 .describe(
-                  "Text of the target as rendered, for replace or delete; inline markdown (**bold**, `code`) is tolerated and must be balanced; a leading '# ' matches a heading. A delete of a block's entire text removes the block."
+                  "Text of the target as rendered, for replace or delete; inline markdown (**bold**, `code`) is tolerated and must be balanced; a leading '# ' matches a heading at any level whose whole text is the rest. A delete of a block's entire text removes the block."
                 )
                 .optional(),
               with: z

@@ -3,9 +3,12 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { z } from "zod";
 import {
+  ISSUE_LABEL_MAX,
   ISSUE_TITLE_MAX,
   MAX_ISSUE_ADVANCES,
   MAX_ISSUE_BLOCKERS,
+  MAX_ISSUE_COMPONENTS,
+  MAX_ISSUE_LABELS,
   MAX_ISSUE_PAGE_LIMIT,
   PROJECT_NAME_MAX,
 } from "./dispatch-api";
@@ -1579,12 +1582,21 @@ describe("dispatchToolSpecs", () => {
     }
   });
 
+  // reviews.go trims the reason with Go's strings.TrimSpace, which reads U+0085 as space and
+  // U+FEFF as content, where JavaScript's trim reads each the other way (go-blank.ts).
   test("dispatch_review requests changes only with a reason, and names the rule without one", () => {
     const schema = schemaFor("dispatch_review");
     const changes = { issue: "DSP-1", version: 2, verdict: "changes_requested" };
 
-    expect(schema.safeParse({ ...changes, reason: "Name the rollback path." }).success).toBe(true);
-    for (const args of [changes, { ...changes, reason: "" }, { ...changes, reason: "   " }]) {
+    for (const reason of ["Name the rollback path.", "\uFEFF"]) {
+      expect(schema.safeParse({ ...changes, reason }).success, JSON.stringify(reason)).toBe(true);
+    }
+    for (const args of [
+      changes,
+      { ...changes, reason: "" },
+      { ...changes, reason: "   " },
+      { ...changes, reason: "\u0085" },
+    ]) {
       const result = schema.safeParse(args);
       expect(result.success, JSON.stringify(args)).toBe(false);
       expect(result.error?.issues.map((issue) => issue.message)).toEqual([
@@ -1876,26 +1888,6 @@ function statedBounds(name: string): string[] {
   return held(specFor(name).arguments(api) as Record<string, Bounded>);
 }
 
-/** The text of a file of the Dispatch server's API package. */
-function serverSource(path: string): string {
-  return readFileSync(resolve(import.meta.dir, "../../envoy/internal/dispatch/api", path), "utf8");
-}
-
-/** The value of an integer constant a file of the Dispatch server declares, `name = N`. */
-function serverConstant(path: string, name: string): number {
-  const value = serverSource(path).match(new RegExp(`\\b${name}\\s*=\\s*(\\d+)\\b`))?.[1];
-  if (value === undefined) throw new Error(`${path} declares no ${name}`);
-  return Number(value);
-}
-
-/** A function a file of the Dispatch server declares, from its signature to its closing brace. */
-function serverFunction(path: string, name: string): string {
-  const source = serverSource(path);
-  const start = source.indexOf(`\nfunc ${name}(`);
-  if (start < 0) throw new Error(`${path} declares no func ${name}`);
-  return source.slice(start, source.indexOf("\n}\n", start) + 2);
-}
-
 /** The rule of a `components` argument's parts, as dispatch_issue and dispatch_issue_update
  *  state it. */
 const COMPONENTS_RULE = "components mode explicit names ids, and mode none names a reason.";
@@ -1905,34 +1897,18 @@ const COMPONENTS_RULE = "components mode explicit names ids, and mode none names
 // one looser than the route's, promises an argument the route refuses.
 describe("the bounds and words each tool states beside its arguments", () => {
   test("the generated Go carries every bound each tool's arguments state, on the field that states it", () => {
-    const stated = dispatchToolSpecs.flatMap((spec) => statedBounds(spec.name));
-    // A text's length, a list's count of items and a number's value are all among them.
-    expect(goFieldBounds("dispatch_issue_update", "title").own).toEqual([
-      "Min:1",
-      `Max:${ISSUE_TITLE_MAX}`,
-    ]);
-    expect(goFieldBounds("dispatch_issue_update", "labels_add")).toEqual({
-      own: ["Max:20"],
-      item: ["Min:1", "Max:40"],
-    });
-    expect(goFieldBounds("dispatch_issues", "limit").own).toEqual([
-      "Min:1",
-      `Max:${MAX_ISSUE_PAGE_LIMIT}`,
-    ]);
-    expect(stated.length).toBeGreaterThan(0);
+    expect(dispatchToolSpecs.flatMap((spec) => statedBounds(spec.name)).length).toBeGreaterThan(0);
     for (const spec of dispatchToolSpecs) {
       expect(goBounds(generatedTool(spec.name)), spec.name).toEqual(statedBounds(spec.name));
     }
   });
 
-  // Each row is the bounds a route holds a field to. An upper bound is a constant of
-  // dispatch-api-limits.ts, which gen-go writes into Go as the one the server enforces, or a
-  // constant the route's own Go declares; a lower bound is the route's refusal of an empty value
-  // (1) or of a one-character search (2). The field's generated Go states the same bounds, no
-  // looser and no tighter.
-  const labels = serverConstant("issue_queries.go", "maxIssueLabels");
-  const labelLength = serverConstant("issue_queries.go", "maxIssueLabel16");
-  const componentIds = serverConstant("issue_components.go", "maxIssueComponents");
+  // Each row is the bounds a route holds a field to, one of each kind among them: a text's length,
+  // a list's count of items and a number's value. An upper bound is a constant gen-go writes into
+  // Go for the handler that enforces it: one of dispatch-api-limits.ts, or SEARCH_QUERY_MAX of
+  // dispatch-tools.ts. A lower bound is the route's refusal of an empty value (1) or of a
+  // one-character search (2). The field's generated Go states the same bounds, no looser and no
+  // tighter.
   test.each([
     ["dispatch_issue", "title", [`Max:${ISSUE_TITLE_MAX}`], []],
     ["dispatch_issue_update", "title", ["Min:1", `Max:${ISSUE_TITLE_MAX}`], []],
@@ -1940,11 +1916,21 @@ describe("the bounds and words each tool states beside its arguments", () => {
     ["dispatch_issue_update", "advances", [`Max:${MAX_ISSUE_ADVANCES}`], ["Min:1"]],
     ["dispatch_issue", "blocked_by", [`Max:${MAX_ISSUE_BLOCKERS}`], ["Min:1"]],
     ["dispatch_issue_update", "blocked_by", [`Max:${MAX_ISSUE_BLOCKERS}`], ["Min:1"]],
-    ["dispatch_issue", "labels", [`Max:${labels}`], ["Min:1", `Max:${labelLength}`]],
-    ["dispatch_issue_update", "labels", [`Max:${labels}`], ["Min:1", `Max:${labelLength}`]],
-    ["dispatch_issue_update", "labels_add", [`Max:${labels}`], ["Min:1", `Max:${labelLength}`]],
-    ["dispatch_issue", "ids", ["Min:1", `Max:${componentIds}`], ["Min:1"]],
-    ["dispatch_issue_update", "ids", ["Min:1", `Max:${componentIds}`], ["Min:1"]],
+    ["dispatch_issue", "labels", [`Max:${MAX_ISSUE_LABELS}`], ["Min:1", `Max:${ISSUE_LABEL_MAX}`]],
+    [
+      "dispatch_issue_update",
+      "labels",
+      [`Max:${MAX_ISSUE_LABELS}`],
+      ["Min:1", `Max:${ISSUE_LABEL_MAX}`],
+    ],
+    [
+      "dispatch_issue_update",
+      "labels_add",
+      [`Max:${MAX_ISSUE_LABELS}`],
+      ["Min:1", `Max:${ISSUE_LABEL_MAX}`],
+    ],
+    ["dispatch_issue", "ids", ["Min:1", `Max:${MAX_ISSUE_COMPONENTS}`], ["Min:1"]],
+    ["dispatch_issue_update", "ids", ["Min:1", `Max:${MAX_ISSUE_COMPONENTS}`], ["Min:1"]],
     ["dispatch_issues", "limit", ["Min:1", `Max:${MAX_ISSUE_PAGE_LIMIT}`], []],
     ["dispatch_project", "name", [`Max:${PROJECT_NAME_MAX}`], []],
     ["dispatch_search", "query", ["Min:2", `Max:${SEARCH_QUERY_MAX}`], []],
@@ -1953,26 +1939,21 @@ describe("the bounds and words each tool states beside its arguments", () => {
   });
 
   // parseIssueComponents (issue_components.go) refuses, 400 COMPONENTS_INPUT, mode explicit with
-  // no ids or an empty list, and mode none with no reason or one that is blank once trimmed. Each
-  // row reads those two conditions from the route's Go, as the bound rows read its limits, and
-  // holds the tool to them: it refuses what the route refuses, in the rule its field states, before
-  // anything is sent, and takes what the route takes.
-  const parseComponents = serverFunction("issue_components.go", "parseIssueComponents");
+  // no ids or an empty list, and mode none with no reason or one Go's strings.TrimSpace empties:
+  // TestIssueComponentsInputValidation holds the route to each, U+0085 among them, and takes a
+  // reason of U+FEFF. The tool refuses the same calls before anything is sent, in the rule its
+  // field states, and takes what the route takes; JavaScript's trim would read U+0085 and U+FEFF
+  // the other way.
   test.each([
     "dispatch_issue",
     "dispatch_issue_update",
   ] as const)("%s refuses the components parseIssueComponents refuses, in the rule its field states", (name) => {
-    expect(parseComponents).toMatch(
-      /case "explicit":\s*if input\.IDs == nil \|\| len\(\*input\.IDs\) == 0 \{\s*return nil, true, errorf\(http\.StatusBadRequest, "COMPONENTS_INPUT"/
-    );
-    expect(parseComponents).toMatch(
-      /case "none":\s*if input\.Reason == nil \|\| strings\.TrimSpace\(\*input\.Reason\) == "" \{\s*return nil, true, errorf\(http\.StatusBadRequest, "COMPONENTS_INPUT"/
-    );
     const schema = schemaFor(name);
     for (const components of [
       { mode: "explicit" },
       { mode: "none" },
       { mode: "none", reason: " \n" },
+      { mode: "none", reason: "\u0085" },
     ]) {
       const result = schema.safeParse({ ...validCalls[name], components });
       expect(result.success, JSON.stringify(components)).toBe(false);
@@ -1987,6 +1968,7 @@ describe("the bounds and words each tool states beside its arguments", () => {
       { mode: "inherit" },
       { mode: "explicit", ids: ["web"] },
       { mode: "none", reason: "hiring" },
+      { mode: "none", reason: "\uFEFF" },
     ]) {
       const result = schema.safeParse({ ...validCalls[name], components });
       expect(result.success, JSON.stringify(components)).toBe(true);
@@ -1999,7 +1981,8 @@ describe("the bounds and words each tool states beside its arguments", () => {
 
   // POST /api/v1/issues imports the GitHub issue an external reference names into the project the
   // create names: one already imported into that project answers its issue and creates nothing,
-  // and one imported into another project is refused 400 EXTERNAL_PROJECT_MISMATCH (createIssue).
+  // and one imported into another project is refused 400 EXTERNAL_PROJECT_MISMATCH (createIssue,
+  // which TestExternalIssueLinkedInAnotherProjectIsRefused in server_test.go holds).
   test("dispatch_issue's external says the form its route reads and the refusal it answers", () => {
     const external = argumentDescriptions("dispatch_issue").find((text) =>
       text.startsWith("Optional external issue reference")
@@ -2007,14 +1990,15 @@ describe("the bounds and words each tool states beside its arguments", () => {
     expect(external).toContain("owner/repo#n");
     expect(external).toContain("answers its issue and creates nothing");
     expect(external).toContain("400 EXTERNAL_PROJECT_MISMATCH");
-    expect(serverSource("issue_create.go")).toContain(`"EXTERNAL_PROJECT_MISMATCH"`);
   });
 
   // A suggestion's replacement is markdown: text alone stays in the quoted text's block, and whole
   // blocks stand where the quoted text stood, over a heading's whole text in the heading's place.
-  // block_edits_test.go's TestASuggestionsBlocksOverAHeadingsTextStandInItsPlace holds the route
-  // to it; the words promise no more than that, and no block in a table cell.
-  test("dispatch_suggest's replace_with says which blocks its route takes, and where", () => {
+  // A section moves by its blocks written beside the whole text of the block where it goes, then
+  // each emptied where it stood, a heading staying as its #s alone. block_edits_test.go's
+  // TestASuggestionsBlocksOverAHeadingsTextStandInItsPlace holds the route to each step; the
+  // words promise no more than that, and no block in a table cell.
+  test("dispatch_suggest's replace_with says which blocks its route takes, where, and how a section moves", () => {
     const replaceWith = argumentDescriptions("dispatch_suggest").find((text) =>
       text.startsWith("Replacement markdown for the quoted text.")
     );
@@ -2023,6 +2007,7 @@ describe("the bounds and words each tool states beside its arguments", () => {
       "whole blocks (paragraphs, lists, headings written with their #s) stand where the quoted text stood",
       "over a heading's whole text they take the heading's place, so a heading that stays is written with its #s",
       "A table cell takes text alone.",
+      "To move a section, write its blocks beside the whole text of the block where it goes, and suggest each moved block's text replaced with nothing where it stood (an emptied heading stays as its #s alone).",
     ]) {
       expect(replaceWith, promise).toContain(promise);
     }

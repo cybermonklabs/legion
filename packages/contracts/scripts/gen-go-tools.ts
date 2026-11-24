@@ -6,10 +6,14 @@ import type { SchemaApi, SchemaNode } from "../src/tool-schema";
 // dispatch tool's arguments through a SchemaApi that records these calls instead of building zod,
 // so the Go the server validates a call with is the TypeScript declaration itself rather than a
 // second copy of it. A bound (min, max) is a text's length in UTF-16 units, as a JavaScript string
-// counts it, a list's count of items or a number's value. The server's own handler enforces each
-// bound and names it in its refusal, and the catalogue serves it beside the field.
-// dispatch-tools.test.ts holds the generated Go to every bound a spec states, and the bounds of
-// the fields its rows name to the bounds their routes hold them to.
+// counts it, a list's count of items or a number's value. Most are a route's own: a constant of
+// dispatch-api-limits.ts or dispatch-tools.ts that gen-go writes into Go for the handler that
+// enforces it and names it in its refusal, or the route's refusal of an empty value. A few are the
+// tool's alone, which no route reads: dispatch_issues' priority list of at most 5 buckets (0 to 3,
+// and null for none), which the route reads as repeated values, and the image files of `images`,
+// which the command uploads before it sends anything. The catalogue serves a write tool's bounds
+// beside its fields. dispatch-tools.test.ts holds the generated Go to every bound a spec states,
+// and the fields its rows name to the constants their routes enforce.
 type RecordedField = {
   kind: "string" | "number" | "boolean" | "enum" | "array" | "object" | "any";
   optional: boolean;

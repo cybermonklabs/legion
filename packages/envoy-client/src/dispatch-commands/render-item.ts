@@ -229,8 +229,9 @@ export function commentSummary(
 }
 
 /** An issue's comments, its `dispatch://KEY/comments`, in the order the route lists them: each
- *  comment's id, author and time, its anchor, the block and the comment it replies to, and its
- *  body. */
+ *  comment's id, author and time, its anchor, the block it replies to, the head of its thread
+ *  (`Reply to:`), the comment it answers where that is another (`Answers:`), as the reply chain of
+ *  `commentSummary` prints it, the ask it replies to (`Ask:`), and its body. */
 export function commentsSummary(issueKey: string, comments: readonly Comment[]): string {
   return [
     `Comments: ${issueKey}`,
@@ -241,6 +242,10 @@ export function commentsSummary(issueKey: string, comments: readonly Comment[]):
           ...anchorLines(comment),
           ...replyBlockLines(comment),
           ...(comment.reply_to === null ? [] : [`Reply to: ${comment.reply_to}`]),
+          ...(comment.answers != null && comment.answers !== comment.reply_to
+            ? [`Answers: ${comment.answers}`]
+            : []),
+          ...(comment.ask_id == null ? [] : [`Ask: ${comment.ask_id}`]),
           `Body: ${comment.body}`,
         ])),
   ].join("\n");

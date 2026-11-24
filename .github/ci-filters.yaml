@@ -661,6 +661,7 @@ contracts:
   - 'packages/envoy/internal/dispatch/pmdoc/testdata/block-pointer-values.json'
   - 'packages/envoy/internal/dispatch/pmdoc/testdata/typed-block-id-spellings.json'
   - 'packages/envoy/internal/contracts/generated.go'
+  - 'packages/envoy/internal/contracts/dispatch_tools_generated.go'
   - 'packages/envoy/listenerwire/envelope_generated.go'
   - 'packages/envoy/internal/dispatch/pmdoc/schema_generated.go'
   - 'packages/test-fixtures/src/**'

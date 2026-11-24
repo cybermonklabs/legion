@@ -280,9 +280,8 @@ func TestBatchedIssueReadAnswersTheSequentialLoadersBytes(t *testing.T) {
 
 // An issue's read says how many comments the issue holds - a reply to an ask among them, each
 // comment its comment list answers - so a reader of the issue alone knows it has comments to
-// read: answer-02 and answer-11 of the command bar's eval read the issue, which said nothing of
-// its comments, and never read the comments that held the answer. An issue with none leaves the
-// count out.
+// read, where before the read said nothing of them and a reader that read only the issue missed
+// what its comments held. An issue with none leaves the count out.
 func TestAnIssueReadSaysHowManyCommentsItHolds(t *testing.T) {
 	t.Parallel()
 	handler := newTestHandler(t)
@@ -322,11 +321,10 @@ func TestAnIssueReadSaysHowManyCommentsItHolds(t *testing.T) {
 }
 
 // An issue's read names the issues it blocks: those whose blocked_by names it, the same
-// issue_links rows read by their target. Asked what DEMO-30 blocks, the command bar's agent read
-// DEMO-30, whose read named nothing that waits on it, so it could find DEMO-31 only by scanning a
-// whole project's listing. A link removed leaves blocks empty, never absent. blocks comes before
-// the read's lists, so a reader that keeps only the start of a long read still has it, and the
-// listing's rows carry none.
+// issue_links rows read by their target. Before, a reader asked what an issue blocks found
+// nothing in its read and could answer only by scanning a whole project's listing. A link removed
+// leaves blocks empty, never absent. blocks comes before the read's lists, so a reader that keeps
+// only the start of a long read still has it, and the listing's rows carry none.
 func TestIssueReadNamesTheIssuesItBlocks(t *testing.T) {
 	t.Parallel()
 	handler := newTestHandler(t)

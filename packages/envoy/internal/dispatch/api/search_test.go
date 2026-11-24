@@ -145,9 +145,8 @@ func TestSearchFindsEveryKindWithSnippetsAndHrefs(t *testing.T) {
 }
 
 // A comment's, a message's and an ask's hit names who wrote it, so a reader of the hit alone can
-// say who said it: answer-24 of the command bar's eval found a comment by its hit and told its
-// words, but not that Eli wrote it, since the hit named nobody. An issue's hit and a document's
-// carry no author.
+// say who said it, where before the hit named nobody and the reader had to read the item too. An
+// issue's hit and a document's carry no author.
 func TestSearchNamesWhoWroteACommentAMessageAndAnAsk(t *testing.T) {
 	t.Parallel()
 	handler := newTestHandler(t)
