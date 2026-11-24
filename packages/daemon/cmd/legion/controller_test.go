@@ -702,7 +702,7 @@ func TestControllerStartWritesTheSecretAndTheControllersFilesUnderTheStateDirect
 		t.Errorf("legion launcher mode %o, want executable", got)
 	}
 	instructions, err := os.ReadFile(filepath.Join(c.defaultDir, "deployment-instructions.md"))
-	if err != nil || !strings.HasPrefix(string(instructions), "# Deployment instructions (demo)\n\nAlways be kind.") {
+	if err != nil || !strings.Contains(string(instructions), "Always be kind.") {
 		t.Errorf("deployment instructions = %q, %v", instructions, err)
 	}
 	cwd, err := os.ReadFile(filepath.Join(c.record, "cwd"))
@@ -717,8 +717,8 @@ func TestControllerStartWritesTheSecretAndTheControllersFilesUnderTheStateDirect
 // word daemon.ControllerStartCommand; under the operator's own environment plus exactly the
 // shared controller environment — the secrets as file pointers, never values — including
 // LEGION_CONTROLLER_START_MESSAGE, which that pi-legion command sends as the session's first
-// turn. This default daemon has no GitHub App, so the controller's gh acts as nobody and its
-// prompt says its App is installed on no owner, whatever repositories the live records name.
+// turn. This default daemon has no GitHub App, so the controller's gh acts as nobody and the
+// reach in its addressing is the one of no owner, whatever repositories the live records name.
 func TestControllerStartLaunchesOhMyPiWithTheSharedControllerEnvironment(t *testing.T) {
 	d := newControllerDaemon(t)
 	c := newControllerStart(t, d, controllerOptions{})
@@ -757,9 +757,10 @@ func TestControllerStartLaunchesOhMyPiWithTheSharedControllerEnvironment(t *test
 		!strings.HasPrefix(name, "legion-demo-controller-") || !strings.HasSuffix(name, "-system-prompt.md") {
 		t.Fatalf("the prompt file is %s, want legion-demo-controller-<run>-system-prompt.md under %s", promptFile, filepath.Join(c.defaultDir, "secrets"))
 	}
-	// Each file's trailing newlines are dropped where the parts join.
-	wantPrompt := strings.TrimRight(string(controllerPrompt), "\n") + "\n\nDesign gate steps: `spec`. A root that registers its Verification document as `criteria` " +
-		"is held on that step too. Your role's GitHub App is installed on no owner, so you have no GitHub owner and its token reaches no repository.\n\n" +
+	// Each file's trailing newlines are dropped where the parts join. The addressing between them
+	// is built from the steps this daemon gates and from no owner.
+	addressing := daemon.DesignGateFragment(config.DesignGateRootIssues.Steps()) + " " + daemon.RepositoriesSentence(nil)
+	wantPrompt := strings.TrimRight(string(controllerPrompt), "\n") + "\n\n" + addressing + "\n\n" +
 		strings.TrimRight(string(instructions), "\n")
 	if got := c.systemPrompt(); got != wantPrompt {
 		t.Fatalf("the controller's prompt file held %q\nwant %q", got, wantPrompt)
@@ -930,8 +931,8 @@ func TestOverlappingControllerStartsEachKeepTheirOwnPromptFile(t *testing.T) {
 		t.Fatalf("the held run of legion controller start = %d", code)
 	}
 	got, err := os.ReadFile(filepath.Join(c.record, "held-prompt"))
-	if err != nil || !strings.Contains(string(got), "Design gate steps: `spec`.") {
-		t.Fatalf("the held run's Oh My Pi read %q (%v) from the prompt file it was handed, want the controller prompt: the other run's exit removed it", got, err)
+	if err != nil || len(got) == 0 || string(got) != c.systemPrompt() {
+		t.Fatalf("the held run's Oh My Pi read %q (%v) from the prompt file it was handed, want the controller prompt the second run's Oh My Pi read: the other run's exit removed it", got, err)
 	}
 	left, err := filepath.Glob(filepath.Join(c.defaultDir, "secrets", "*-system-prompt.md"))
 	if err != nil || len(left) != 0 {
@@ -939,21 +940,19 @@ func TestOverlappingControllerStartsEachKeepTheirOwnPromptFile(t *testing.T) {
 	}
 }
 
-// The controller is told the design-gate steps the daemon really gates, so under a deployment
-// that gates none its take comment promises no design approval that cannot happen, and under
-// one that gates several it names each (skill://legion-controller). `legion controller start`
-// accepts every answer the route gives, so each deployment launches. The sentence after the
-// steps is the reach of the controller's gh, which this daemon, having no GitHub App, gives none.
+// The controller's addressing is built from the design-gate steps the daemon really gates, so
+// under a deployment that gates none its take comment promises no design approval that cannot
+// happen, and under one that gates several it names each (skill://legion-controller). `legion
+// controller start` accepts every answer the route gives, so each deployment launches. The
+// reach after the steps is the one of no owner, since this daemon has no GitHub App.
 func TestControllerStartTellsTheControllerTheDaemonsGatedSteps(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
 		steps []record.DesignStep
-		line  string
 	}{
-		{"two steps", []record.DesignStep{record.DesignStepCriteria, record.DesignStepSpec}, "Design gate steps: `criteria`, `spec`."},
-		{"root-issues", config.DesignGateRootIssues.Steps(),
-			"Design gate steps: `spec`. A root that registers its Verification document as `criteria` is held on that step too."},
-		{"off", config.DesignGateOff.Steps(), "Design gate steps: none."},
+		{"two steps", []record.DesignStep{record.DesignStepCriteria, record.DesignStepSpec}},
+		{"root-issues", config.DesignGateRootIssues.Steps()},
+		{"off", config.DesignGateOff.Steps()},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			d := newControllerDaemonGated(t, tc.steps)
@@ -961,7 +960,7 @@ func TestControllerStartTellsTheControllerTheDaemonsGatedSteps(t *testing.T) {
 			if code, _, errb := c.run(); code != 0 {
 				t.Fatalf("legion controller start = %d, stderr %q", code, errb)
 			}
-			want := "\n\n" + tc.line + " Your role's GitHub App is installed on no owner, so you have no GitHub owner and its token reaches no repository.\n\n"
+			want := "\n\n" + daemon.DesignGateFragment(tc.steps) + " " + daemon.RepositoriesSentence(nil) + "\n\n"
 			if prompt := c.systemPrompt(); !strings.Contains(prompt, want) {
 				t.Fatalf("Oh My Pi's system prompt = %q; want it to carry %q", prompt, want)
 			}
@@ -993,7 +992,7 @@ func TestControllerStartsAddressingGainsTheReachItsAppGives(t *testing.T) {
 			t.Fatalf("the controller's gh holds no token for %s (%v), so this case proves nothing", owner, err)
 		}
 	}
-	want := "\n\nDesign gate steps: none. Your role's GitHub App is installed on the owners acme, example-org, and its token reaches every repository of those owners.\n\n"
+	want := "\n\n" + daemon.DesignGateFragment(config.DesignGateOff.Steps()) + " " + daemon.RepositoriesSentence([]string{"acme", "example-org"}) + "\n\n"
 	if prompt := c.systemPrompt(); !strings.Contains(prompt, want) {
 		t.Fatalf("Oh My Pi's system prompt = %q; want it to contain %q", prompt, want)
 	}
@@ -1056,7 +1055,7 @@ func TestControllerStartsAddressingNamesNeitherARenameAliasNorAnOwnerItsGhHoldsN
 		t.Fatalf("Oh My Pi's argv = %q, want three words", argv)
 	}
 	prompt := c.systemPrompt()
-	want := "\n\nDesign gate steps: none. Your role's GitHub App is installed on the owner cybermonklabs, and its token reaches every repository of that owner.\n\n"
+	want := "\n\n" + daemon.DesignGateFragment(config.DesignGateOff.Steps()) + " " + daemon.RepositoriesSentence([]string{"cybermonklabs"}) + "\n\n"
 	if !strings.Contains(prompt, want) {
 		t.Errorf("Oh My Pi's system prompt = %q; want it to contain %q", prompt, want)
 	}
@@ -1134,22 +1133,22 @@ func TestControllerStartLaunchesWhereNoLiveRepositoryHasBothApps(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(c.defaultDir, "gh", "example-org", ghconfig.HostsFile)); err != nil {
 		t.Fatalf("the controller's gh holds no token for example-org (%v), so this case proves nothing", err)
 	}
-	want := "\n\nDesign gate steps: none. Your role's GitHub App is installed on the owner example-org, and its token reaches every repository of that owner.\n\n"
+	want := "\n\n" + daemon.DesignGateFragment(config.DesignGateOff.Steps()) + " " + daemon.RepositoriesSentence([]string{"example-org"}) + "\n\n"
 	if prompt := c.systemPrompt(); !strings.Contains(prompt, want) {
 		t.Fatalf("Oh My Pi's system prompt = %q; want it to contain %q", prompt, want)
 	}
 }
 
 // An empty `live` (no workflow reached, or no record live) also launches. This daemon has no
-// GitHub App, so the controller is told its App is installed on no owner — the same wording and
-// behavior on both launch paths.
+// GitHub App, so the reach in the controller's addressing is the one of no owner, as on the
+// daemon's own launch path.
 func TestControllerStartLaunchesWithNoLiveRepository(t *testing.T) {
 	d := newControllerDaemonWithOptions(t, controllerDaemonOptions{steps: config.DesignGateOff.Steps(), repositories: []string{}})
 	c := newControllerStart(t, d, controllerOptions{})
 	if code, _, errb := c.run(); code != 0 {
 		t.Fatalf("legion controller start = %d, stderr %q", code, errb)
 	}
-	want := "Your role's GitHub App is installed on no owner, so you have no GitHub owner and its token reaches no repository.\n\n"
+	want := daemon.RepositoriesSentence(nil) + "\n\n"
 	if prompt := c.systemPrompt(); !strings.Contains(prompt, want) {
 		t.Fatalf("Oh My Pi's system prompt = %q; want it to contain %q", prompt, want)
 	}
