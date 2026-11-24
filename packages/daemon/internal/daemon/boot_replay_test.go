@@ -149,11 +149,18 @@ func (h *slowFactHandler) applied(fact intake.Fact) int {
 }
 
 // A boot must not die on the number of terminal facts no daemon applied. Those it replays one at a
-// time, each taking the fact lock, and each may wait there behind live facts: here 100 restored
+// time, each taking the fact lock, and each may wait there behind live facts: here 25 restored
 // claims fail while the replay runs, and their failures (terminal) apply beside it. The 300
-// replayed facts and the 100 live ones take several times the replay's budget between them; the
-// replay still finishes, since the budget is each fact's own, and every fact, replayed or live, is
-// applied exactly once.
+// replayed facts take more than the replay's budget between them; the replay still finishes, since
+// the budget is each fact's own, and every fact, replayed or live, is applied exactly once.
+//
+// Each step of the replay may wait behind every live fact: the read of which facts are applied
+// (intake.Applied) and each replayed fact queue on the store's pool, whose 4 connections
+// (testdb.PoolConns) the live facts hold while they wait their turn on the fact lock. So one
+// step's budget holds that whole queue, and the live load is sized well inside it: 25 facts of
+// 20 ms hold the queue for about 0.5 s against the budget of 5 s. With 100 live facts the queue was
+// about 2 s, and under the race detector on a loaded runner the read waited past 5 s
+// (dispatch://INFRA-3904/comment/0944aa3f-0fb9-4555-b310-1e65085befbf).
 func TestAReplayOfHundredsOfUnappliedFactsBesideLiveFailuresOutlastsItsBudget(t *testing.T) {
 	t.Parallel()
 	const budget = 5 * time.Second
@@ -161,7 +168,7 @@ func TestAReplayOfHundredsOfUnappliedFactsBesideLiveFailuresOutlastsItsBudget(t 
 	handler := &slowFactHandler{delay: 20 * time.Millisecond, seen: map[intake.Fact]int{}}
 	w := &workflowRuntime{pool: pool, handlers: []intake.Handler{handler}, log: quietLogger(), failed: make(chan error, 1), limits: replayLimits}
 	replayed := terminalClaims(t, "legion", 300)
-	failing := make([]supervise.Claim, 100)
+	failing := make([]supervise.Claim, 25)
 	for i := range failing {
 		issue := fmt.Sprintf("LEGION-%d", 1001+i)
 		token, err := claim.NewToken("legion", issue, claim.RoleTester)
