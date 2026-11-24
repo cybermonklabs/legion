@@ -23,7 +23,12 @@ body: |-
   --fresh-session`, the controller's `fresh_session`). A claim whose provider had refused its
   last `launch_failure_limit` turns in a row used to take a new session at any retry, though most
   such runs are refusals that can clear, such as a team limit's 429, which refuses every session
-  alike. The run of refused turns is now only what the daemon answers each report with.
+  alike. The run of refused turns is now only what the daemon answers each report with. One retry
+  asks for a new session on its own: the daemon's controller keeper, when it retries a failed
+  controller whose resume is refused because a name of its recorded session is held for another
+  claim or for none. Before, such a controller kept its session and the keeper logged the refused
+  retry at Error at every try; now it drops the session once the hold lets it (`mayForget`, which
+  waits while the Envoy listener still names that session as the role's holder).
 time: 2026-11-23T20:03:51.993913529Z
 custom:
   Issue: INFRA-4508

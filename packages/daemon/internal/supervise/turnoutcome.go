@@ -160,9 +160,9 @@ func (m *Machine) freshRun() { m.claim.TurnOutcomes = nil }
 // The reverse holds too: a clean prompt result ends the run with no such guard (promptResulted), so
 // one that arrives after a later plugin turn's refused report was counted ends the run that refusal
 // began. Either way the controller's notice comes later, or not at all for a run of exactly six,
-// and no claim fails for it. A refused report marked prompted is still judged by nothing: its
-// prompt's result counts it. The same two bounds hold for every judgment: new to the window, and
-// of the generation the claim runs now.
+// and no claim fails or is held for it. A refused report marked prompted is still judged by
+// nothing: its prompt's result counts it. The same two bounds hold for every judgment: new to the
+// window, and of the generation the claim runs now.
 func turnOutcome(m *Machine, ctx context.Context, ev Event) error {
 	r := ev.(RequestTurnOutcome)
 	m.turnOutcomeFailed = false
