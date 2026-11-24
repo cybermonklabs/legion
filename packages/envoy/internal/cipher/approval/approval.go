@@ -34,6 +34,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/requests"
 	"github.com/sjawhar/envoy/internal/cipher/store"
 	"github.com/sjawhar/envoy/internal/oidc"
+	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/urljoin"
 )
 
@@ -125,9 +126,11 @@ type Page struct {
 // URL: the pattern routes_table.go mounts ServeCallback at.
 const signInCallbackPath = "/signin/callback"
 
-// New builds the page from cfg, refusing a public URL that is not an absolute http(s) URL. It
-// reads nothing: the sign-in's code flow reads the provider's discovery document when the first
-// sign-in needs it.
+// New builds the page from cfg, refusing a public URL that is not an absolute http(s) URL, named
+// as the rule reads it (redact.URL), never as written: a URL a deployment set can carry a
+// credential in its user information or its query, as config.Load's own refusal of
+// BROKER_PUBLIC_URL names it. It reads nothing: the sign-in's code flow reads the provider's
+// discovery document when the first sign-in needs it.
 //
 // The sign-in's redirect URI is signInCallbackPath joined onto that URL's path (urljoin.JoinURL),
 // its query kept and its fragment dropped, which is what RFC 6749 section 3.1.2 says of a
@@ -136,7 +139,7 @@ const signInCallbackPath = "/signin/callback"
 func New(cfg Config) (*Page, error) {
 	u, err := url.Parse(cfg.PublicURL)
 	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
-		return nil, fmt.Errorf("approval: the public URL %q is not an absolute http(s) URL", cfg.PublicURL)
+		return nil, fmt.Errorf("approval: the public URL %q is not an absolute http(s) URL", redact.URL(cfg.PublicURL))
 	}
 	if cfg.Store == nil || cfg.Machine == nil {
 		return nil, errors.New("approval: the page needs the store and the request machine")
