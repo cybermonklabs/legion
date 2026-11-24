@@ -2251,7 +2251,7 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 			writeStoreError(ctx, w, fmt.Errorf("refresh role claimant registration: %w", writeErr), http.StatusServiceUnavailable)
 			return
 		}
-		// The claim just recorded the session's admission; at the edge that resumes its relay (resumeHeld).
+		// At the edge the claim just recorded the session's admission, which resumes its relay there (resumeHeld).
 		d.consumers.resumeHeld(r, body.SessionID)
 		// landed is set by a claim that landed, whose own handover hands the claimed role's lane
 		// over, so the handovers of a claimant this refresh made live again leave that role out.

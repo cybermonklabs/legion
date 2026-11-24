@@ -289,9 +289,10 @@ func (d *sessionDelivery) admitHeld(r *http.Request, sessionID string) {
 // replica's relay run for the session if it had ended for want of an admission, which the entry's
 // change (a relayCheck) does not. It is for the claim refresh that just recorded the session's
 // admission (admitHeld). It does nothing for a request no edge listener admitted (heldProjects),
-// which every listener but an edge one is, nor for a nil delivery or one with no relay: on a hub a
-// run ends for want of a consumer or a grant (restartFailed), which a claim cannot cure, and a
-// session the claim moves here has no run, which apply starts on the entry's change (run == nil).
+// which every listener but an edge one is: on a hub a run ends for want of a consumer or a grant
+// (restartFailed), which a claim cannot cure, and a session the claim moves here has no run, which
+// apply starts on the entry's change (run == nil). It does nothing for a nil delivery or one with
+// no relay either.
 func (d *sessionDelivery) resumeHeld(r *http.Request, sessionID string) {
 	if d == nil || d.relay == nil {
 		return
