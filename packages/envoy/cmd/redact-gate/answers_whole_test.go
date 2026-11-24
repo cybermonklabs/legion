@@ -186,20 +186,19 @@ func wholeCensus(t *testing.T) []finding {
 	if err != nil {
 		t.Fatal(err)
 	}
-	exports := map[string]string{}
 	for _, p := range listed {
-		exports[p.ImportPath] = p.Export
 		if p.Error != nil {
 			t.Fatalf("%s does not build: %s", p.ImportPath, p.Error.Err)
 		}
 	}
+	build := newGoBuild(listed)
 	g := &gate{}
 	g.inv.Gate.Box = boxConfig{Type: "example.com/box.Text", Field: "text"}
 	g.inv.Gate.External = []string{"example.com/m/p.ExternalError"}
 	var c census
 	for _, p := range listed {
 		if p.ImportPath == "example.com/m/p" || p.ImportPath == "example.com/m/r" {
-			g.goPackage(&c, dir, p.ImportPath, p.Dir, p.GoFiles, false, exports, nil, nil, nil)
+			g.goPackage(&c, dir, p.ImportPath, build, false, nil, nil, nil)
 		}
 	}
 	if len(c.Unknown) > 0 {

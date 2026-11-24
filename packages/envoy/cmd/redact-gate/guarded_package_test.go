@@ -259,7 +259,7 @@ func guardedCensusOf(t *testing.T, lib, source string, entry *reflectionExempt, 
 		}
 		stubs[stub.path] = pkg
 		if stub.path == "example.com/lib" {
-			libSource = &checkedSource{pkg: pkg, files: []*ast.File{f}, info: stubInfo}
+			libSource = &checkedSource{files: []*ast.File{f}, info: stubInfo}
 		}
 	}
 	f, err := parser.ParseFile(fset, "/repo/pkg/kv.go", source, parser.SkipObjectResolution)
@@ -288,7 +288,7 @@ func guardedCensusOf(t *testing.T, lib, source string, entry *reflectionExempt, 
 	// The guarded package as the census type-checks it from source (sourceChecked).
 	g.declared = map[string]*checkedSource{"example.com/lib": libSource}
 	var c census
-	g.structural(&c, "/repo", "example.com/pkg", fset, []*ast.File{f}, info)
+	g.structural(&c, "/repo", "example.com/pkg", nil, fset, []*ast.File{f}, info)
 	if len(c.Reflect) != 1 {
 		t.Fatalf("the census listed %d reflection sites, want the one FieldByName: %+v", len(c.Reflect), c.Reflect)
 	}
@@ -296,14 +296,10 @@ func guardedCensusOf(t *testing.T, lib, source string, entry *reflectionExempt, 
 }
 
 // TestAGuardedPackageEntryPassesOnlyAReadItsGuardHoldsToACleanPackage: a guarded_package entry
-// passes main's read of a library handle's unexported field, behind an interface, only where it is
-// a FieldByName with a constant name whose result is only the receiver of methods that answer
-// nothing or closed values (no Elem, Interface, Call, CallSlice, Method, MethodByName, Type, Index,
-// Addr or Pointer), its guard holds the handle's type to the named package through an unexported
-// variable, that package's import closure holds neither the box's package nor an external error
-// type's, it declares no generic type, and every struct type it declares with that field types it
-// with no interface or type parameter at any depth; every other shape is refused, each with its
-// reason, and with no entry the site is refused as before.
+// passes main's read of a library handle's unexported field, behind an interface, only as
+// guardedPackageRead (guarded.go) admits it, its guard's package written in place or through an
+// unexported variable; every other shape, each breaking one of that rule's conditions, is refused
+// with its reason, and with no entry the site is refused as before.
 func TestAGuardedPackageEntryPassesOnlyAReadItsGuardHoldsToACleanPackage(t *testing.T) {
 	entry := &reflectionExempt{File: "pkg/kv.go", Function: "example.com/pkg.readsDirect", GuardedPackage: "example.com/lib", Why: "test"}
 	clean := map[string]bool{"example.com/lib": true, "fmt": true}
@@ -418,9 +414,9 @@ var exportModule = map[string]string{
 
 // exportedGuardedCensus writes exportModule, with inner's field typed innerType and lib's wrapped
 // embedding embed, to a scratch directory, lists pkg with its export data and records each listed
-// package as goModuleCensus does (recordImports, recordSource), and runs the census over pkg
-// (goPackage) with a guarded_package entry for readsDirect naming lib. It answers the one
-// reflection finding the census lists.
+// package's import closure as goModuleCensus does (recordImports), and runs the census over pkg
+// (goPackage) as that listing builds it, with a guarded_package entry for readsDirect naming lib.
+// It answers the one reflection finding the census lists.
 func exportedGuardedCensus(t *testing.T, innerType, embed string) finding {
 	t.Helper()
 	t.Setenv("GOWORK", "off")
@@ -440,22 +436,20 @@ func exportedGuardedCensus(t *testing.T, innerType, embed string) finding {
 	if err != nil {
 		t.Fatal(err)
 	}
-	exports := map[string]string{}
 	g := &gate{}
 	for _, p := range listed {
 		if p.Error != nil {
 			t.Fatalf("%s does not build: %s", p.ImportPath, p.Error.Err)
 		}
-		exports[p.ImportPath] = p.Export
 		g.recordImports(p.ImportPath, p.Deps)
-		g.recordSource(p, exports)
 	}
+	build := newGoBuild(listed)
 	g.inv.Gate.Box = boxConfig{Type: "example.com/box.Text", Field: "text"}
 	g.inv.Gate.Reflection = []reflectionExempt{{File: "m/pkg/kv.go", Function: "example.com/m/pkg.readsDirect", GuardedPackage: "example.com/m/lib", Why: "test"}}
 	var c census
 	for _, p := range listed {
 		if p.ImportPath == "example.com/m/pkg" {
-			g.goPackage(&c, dir, p.ImportPath, p.Dir, p.GoFiles, false, exports, nil, nil, nil)
+			g.goPackage(&c, dir, p.ImportPath, build, false, nil, nil, nil)
 		}
 	}
 	if len(c.Unknown) > 0 {
