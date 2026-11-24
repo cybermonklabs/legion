@@ -418,7 +418,7 @@ func main() {
 	//
 	// Discovery is bounded: an issuer that accepts the connection and never answers refuses the
 	// boot instead of hanging it with no health endpoint serving.
-	identities, err := identityboot.Open(ctx, cfg, issuerKeys)
+	identities, err := identityboot.Open(ctx, cfg.Identity, issuerKeys)
 	fatal(err)
 	pod := identities.Pods
 	// config.Load parsed BROKER_NATS_SERVICES (cfg.NATS.Services); a broker that runs no NATS auth
@@ -585,7 +585,7 @@ func main() {
 			"detail", "BROKER_PROJECT_ACCESS_URL is unset, so a token or a session naming no project is minted and enrolled as before, a restricted member's machine login as its person and held to no one project, a person's trade or session naming one is refused, a secret tagged with a project is refused project-unchecked, and no enrollment or secret request asks what kind of member its person is")
 		slog.Info("hold of refused people", "state", "off", "reason", "BROKER_PROJECT_ACCESS_URL is not set")
 	}
-	logPodRegistrars(cfg)
+	logPodRegistrars(cfg, identities)
 	// Every claim on a session name, the exchange's and an enrollment's alike, is BindSession's,
 	// and it reads two things off the store: the pairs of BROKER_SESSION_ACCOUNT_PAIRS, either of
 	// whose accounts takes a name the other holds, set here, and the names the exchange's entries
@@ -1682,8 +1682,8 @@ func wireJudge(ctx context.Context, cfg config.Config, m *requests.Machine, disp
 // The boot is not refused over one, since the list may be derived from another source than the
 // logins and a refusal would turn a mismatch into an outage; each such registrar gets a WARN line
 // naming it instead.
-func logPodRegistrars(cfg config.Config) {
-	slog.Info("pod-session registrars", "entries", len(cfg.PodRegistrars), "registration_audience", cfg.PodRegistrationAudience != "")
+func logPodRegistrars(cfg config.Config, identities identityboot.Boot) {
+	slog.Info("pod-session registrars", "entries", len(cfg.PodRegistrars), "registration_audience", identities.PodRegistration != nil)
 	for _, registrar := range cfg.PodRegistrars.Registrars() {
 		if _, login := cfg.ServiceLogins[registrar]; !login {
 			slog.Warn("pod-session registrar cannot log in", "registrar", registrar,
@@ -1696,7 +1696,7 @@ func logPodRegistrars(cfg config.Config) {
 // BROKER_VM_SERVICES'. The policy loader serves a secret whose owner tag names one of them as that
 // service's, and refuses any other owner that is not a person.
 func serviceNames(cfg config.Config) []string {
-	names := slices.AppendSeq(slices.Collect(maps.Values(cfg.ServicesByAccount)), maps.Values(cfg.VMServicesByAccount))
+	names := slices.AppendSeq(slices.Collect(maps.Values(cfg.ServicesByAccount)), slices.Values(cfg.Identity.Services()))
 	slices.Sort(names)
 	return slices.Compact(names)
 }

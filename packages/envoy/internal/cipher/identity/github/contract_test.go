@@ -3,7 +3,6 @@ package github_test
 import (
 	"testing"
 
-	"github.com/sjawhar/envoy/internal/cipher/exchange"
 	"github.com/sjawhar/envoy/internal/cipher/identity"
 	"github.com/sjawhar/envoy/internal/cipher/identity/github"
 	"github.com/sjawhar/envoy/internal/cipher/identity/identitytest"
@@ -20,7 +19,7 @@ func TestGitHubRunsTheIdentityContract(t *testing.T) {
 		New: func(t *testing.T, issuer string, keys *oidc.Keys, audience string) identity.Provider {
 			p, err := github.New(github.Config{
 				Issuer: issuer, Audience: audience, Keys: keys,
-				Workflows: []exchange.WorkflowEntry{{
+				Workflows: []github.WorkflowEntry{{
 					Repository: "example-org/example-repo", Workflow: ".github/workflows/release.yaml", Ref: "refs/heads/main",
 					Project: "ACME", Person: "ada@example.com",
 				}},

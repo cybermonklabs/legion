@@ -16,7 +16,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/cipher/exchange"
+	"github.com/sjawhar/envoy/internal/cipher/identity/google"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/logtest"
 )
@@ -147,7 +147,7 @@ func TestASharedRequestIsListedForTheSessionsOperator(t *testing.T) {
 // lists it and bob's does not.
 func TestASharedRequestIsListedForTheFleetsPerson(t *testing.T) {
 	m, _, _, _ := newFixture(t)
-	m.Exchange = fleetPolicy(t, exchange.GoogleEntry{Account: fixtureMachineAccount, Service: fixtureService, Project: "EXAMPLE", Person: carol})
+	m.Exchange = fleetPolicy(t, google.GoogleEntry{Account: fixtureMachineAccount, Service: fixtureService, Project: "EXAMPLE", Person: carol})
 	machine, key := newMachineEnrollment(t, m, fixtureService, fixtureMachineSubject, "machine-"+t.Name())
 	req := askShared(t, m, machine, key)
 	requireListedFor(t, m, *req.RecordID, carol, []string{carol, bob}, carol)
@@ -215,7 +215,7 @@ func TestASharedRequestWithNoResponsiblePersonIsListedForEveryone(t *testing.T) 
 			var enrollment string
 			var key *ecdsa.PrivateKey
 			if c.machine {
-				m.Exchange = fleetPolicy(t, exchange.GoogleEntry{Account: fixtureMachineAccount, Service: fixtureService})
+				m.Exchange = fleetPolicy(t, google.GoogleEntry{Account: fixtureMachineAccount, Service: fixtureService})
 				enrollment, key = newMachineEnrollment(t, m, fixtureService, fixtureMachineSubject, "machine-"+t.Name())
 			} else {
 				enrollment, key = newClaimPod(t, m, c.claim)
@@ -259,7 +259,7 @@ func TestASharedRequestWithNoResponsiblePersonIsListedForEveryone(t *testing.T) 
 // reads as a machine of a fleet that names carol is alice's, the first step of the order.
 func TestTheFirstResponsiblePersonWins(t *testing.T) {
 	m, _, _, _ := newFixture(t)
-	m.Exchange = fleetPolicy(t, exchange.GoogleEntry{Account: fixtureMachineAccount, Service: fixtureService, Project: "EXAMPLE", Person: carol})
+	m.Exchange = fleetPolicy(t, google.GoogleEntry{Account: fixtureMachineAccount, Service: fixtureService, Project: "EXAMPLE", Person: carol})
 	service, subject := fixtureService, fixtureMachineSubject
 	session, key := insertEnrollment(t, m.Store, "session", "signin-"+t.Name(), new(alice), &service, &subject)
 	req := askShared(t, m, session, key)

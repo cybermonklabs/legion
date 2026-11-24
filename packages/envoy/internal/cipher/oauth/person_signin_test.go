@@ -19,7 +19,6 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/cipher/enroll"
-	"github.com/sjawhar/envoy/internal/cipher/exchange"
 	"github.com/sjawhar/envoy/internal/cipher/identity/google"
 	"github.com/sjawhar/envoy/internal/cipher/oauth"
 	"github.com/sjawhar/envoy/internal/cipher/oauthstore"
@@ -50,8 +49,8 @@ const (
 // it is what this suite reads.
 type signInFixture struct {
 	*exchangeFixture
-	google    *oidctest.Issuer
-	googleKey *oidctest.Key
+	googleIssuer *oidctest.Issuer
+	googleKey    *oidctest.Key
 	// issuer is the `iss` the fixture's tokens carry and the exchange is configured to take: the
 	// stand-in issuer's own URL unless a test names another spelling (newSignInFixtureAt).
 	issuer string
@@ -99,21 +98,21 @@ func newSignInFixtureWith(t *testing.T, adjust func(*oauth.Config), changes ...f
 // applied to the configuration last (newSignInFixtureWith).
 func newSignInFixtureAtWith(t *testing.T, iss string, adjust func(*oauth.Config), changes ...func(*identities)) *signInFixture {
 	t.Helper()
-	google := oidctest.New(t)
-	googleKey := google.PublishKey(t, "google-key")
-	googleKeys, err := oidc.NewKeys(context.Background(), google.URL())
+	issuerOf := oidctest.New(t)
+	googleKey := issuerOf.PublishKey(t, "google-key")
+	googleKeys, err := oidc.NewKeys(context.Background(), issuerOf.URL())
 	if err != nil {
 		t.Fatalf("Google keys: %v", err)
 	}
 	if iss == "" {
-		iss = google.URL()
+		iss = issuerOf.URL()
 	}
-	f := &signInFixture{google: google, googleKey: googleKey, issuer: iss, revoked: map[string]bool{}, moved: map[string]bool{},
+	f := &signInFixture{googleIssuer: issuerOf, googleKey: googleKey, issuer: iss, revoked: map[string]bool{}, moved: map[string]bool{},
 		otherAccount: map[string]bool{}, replaced: map[string]bool{}}
 	signIns := append([]func(*identities){
-		listing(nil, nil, exchange.GoogleEntry{Account: signInMachine, Service: signInFleet}),
+		listing(nil, nil, google.GoogleEntry{Account: signInMachine, Service: signInFleet}),
 		func(id *identities) {
-			id.google = issuer{URL: iss, Audience: machineAudience, Keys: googleKeys}
+			id.googleIssuer = issuer{URL: iss, Audience: machineAudience, Keys: googleKeys}
 			id.personAudience = deviceAudience
 		},
 	}, changes...)
@@ -189,7 +188,7 @@ func (f *signInFixture) personToken(t *testing.T, login, audience string, verifi
 	if domain != "" {
 		claims["hd"] = domain
 	}
-	return f.google.Mint(t, f.googleKey, claims)
+	return f.googleIssuer.Mint(t, f.googleKey, claims)
 }
 
 // machineToken is the machine's own Google identity token, the one its metadata server answers
@@ -197,7 +196,7 @@ func (f *signInFixture) personToken(t *testing.T, login, audience string, verifi
 func (f *signInFixture) machineToken(t *testing.T, account, audience string, verified any) string {
 	t.Helper()
 	now := time.Now()
-	return f.google.Mint(t, f.googleKey, map[string]any{
+	return f.googleIssuer.Mint(t, f.googleKey, map[string]any{
 		"iss":            f.issuer,
 		"sub":            "110" + account,
 		"aud":            audience,
@@ -253,7 +252,7 @@ func TestAPersonSignedInOnAMachineExchangesForATokenNamingBoth(t *testing.T) {
 		}
 	}
 
-	want := []oauth.PersonSignIn{{Person: person, Thumbprint: thumbprint(t, key), Machine: signInMachine, Issuer: f.google.URL(), Subject: "109" + person,
+	want := []oauth.PersonSignIn{{Person: person, Thumbprint: thumbprint(t, key), Machine: signInMachine, Issuer: f.googleIssuer.URL(), Subject: "109" + person,
 		CredentialSubject: google.PersonSubject(person, signInMachine, thumbprint(t, key))}}
 	if got := f.signIns(); len(got) != 1 || got[0] != want[0] {
 		t.Fatalf("the exchange recorded %+v, want %+v: the first trade of a person and a box key is the sign-in, made by the account the person's token names", got, want)
@@ -297,11 +296,11 @@ func TestEachTradeOfOneSignInRecordsTheSameKeyAndASecondBoxIsItsOwn(t *testing.T
 	}
 	got := f.signIns()
 	want := []oauth.PersonSignIn{
-		{Person: person, Thumbprint: thumbprint(t, first), Machine: signInMachine, Issuer: f.google.URL(), Subject: "109" + person,
+		{Person: person, Thumbprint: thumbprint(t, first), Machine: signInMachine, Issuer: f.googleIssuer.URL(), Subject: "109" + person,
 			CredentialSubject: google.PersonSubject(person, signInMachine, thumbprint(t, first))},
-		{Person: person, Thumbprint: thumbprint(t, first), Machine: signInMachine, Issuer: f.google.URL(), Subject: "109" + person,
+		{Person: person, Thumbprint: thumbprint(t, first), Machine: signInMachine, Issuer: f.googleIssuer.URL(), Subject: "109" + person,
 			CredentialSubject: google.PersonSubject(person, signInMachine, thumbprint(t, first))},
-		{Person: person, Thumbprint: thumbprint(t, second), Machine: signInMachine, Issuer: f.google.URL(), Subject: "109" + person,
+		{Person: person, Thumbprint: thumbprint(t, second), Machine: signInMachine, Issuer: f.googleIssuer.URL(), Subject: "109" + person,
 			CredentialSubject: google.PersonSubject(person, signInMachine, thumbprint(t, second))},
 	}
 	if len(got) != len(want) {
@@ -532,14 +531,14 @@ func TestABrokerWithNoDeviceAudienceRegistersNeitherSignInType(t *testing.T) {
 // fleet and the same Google issuer as f and no device-flow audience at all.
 func newExchangeFixtureWithoutPerson(t *testing.T, f *signInFixture) *exchangeFixture {
 	t.Helper()
-	googleKeys, err := oidc.NewKeys(context.Background(), f.google.URL())
+	googleKeys, err := oidc.NewKeys(context.Background(), f.googleIssuer.URL())
 	if err != nil {
 		t.Fatalf("Google keys: %v", err)
 	}
 	return newExchangeFixture(t, func(c *oauth.Config) {
 		c.Exchange.MachineCredentials = recordCredential
-	}, listing(nil, nil, exchange.GoogleEntry{Account: signInMachine, Service: signInFleet}), func(id *identities) {
-		id.google = issuer{URL: f.google.URL(), Audience: machineAudience, Keys: googleKeys}
+	}, listing(nil, nil, google.GoogleEntry{Account: signInMachine, Service: signInFleet}), func(id *identities) {
+		id.googleIssuer = issuer{URL: f.googleIssuer.URL(), Audience: machineAudience, Keys: googleKeys}
 	})
 }
 
@@ -890,7 +889,7 @@ func TestAProviderNeedsItsSignInRecorder(t *testing.T) {
 		says   string
 	}{
 		{name: "no recorder", change: func(*identities) {}, adjust: func(e *oauth.ExchangeConfig) { e.PersonSignIns = nil }, says: "PersonSignIns"},
-		{name: "no Google issuer", change: func(id *identities) { id.google = issuer{} }, adjust: func(e *oauth.ExchangeConfig) {
+		{name: "no Google issuer", change: func(id *identities) { id.googleIssuer = issuer{} }, adjust: func(e *oauth.ExchangeConfig) {
 			e.MachineCredentials = nil
 		}, says: "Google issuer"},
 	} {
@@ -913,16 +912,16 @@ func TestAProviderNeedsItsSignInRecorder(t *testing.T) {
 // building the registry or oauth.New said.
 func buildRefusal(t *testing.T, change func(*identities), adjust func(*oauth.ExchangeConfig)) error {
 	t.Helper()
-	google := oidctest.New(t)
-	google.PublishKey(t, "google-key")
-	keys, err := oidc.NewKeys(context.Background(), google.URL())
+	issuerOf := oidctest.New(t)
+	issuerOf.PublishKey(t, "google-key")
+	keys, err := oidc.NewKeys(context.Background(), issuerOf.URL())
 	if err != nil {
 		t.Fatalf("Google keys: %v", err)
 	}
 	id := identities{
-		google:         issuer{URL: google.URL(), Audience: machineAudience, Keys: keys},
+		googleIssuer:   issuer{URL: issuerOf.URL(), Audience: machineAudience, Keys: keys},
 		personAudience: deviceAudience,
-		machines:       []exchange.GoogleEntry{{Account: signInMachine, Service: signInFleet}},
+		machines:       []google.GoogleEntry{{Account: signInMachine, Service: signInFleet}},
 	}
 	change(&id)
 	registry, err := id.build()

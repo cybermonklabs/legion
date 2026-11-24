@@ -678,7 +678,7 @@ func TestNewRefusesAConfigurationItCouldNotServe(t *testing.T) {
 		// (identity.TokenType.Validate, TestTokenTypesAreTheConfiguredOnes); what oauth.New holds
 		// is a configured type it could not serve.
 		"a machine's type with nothing to mint its credential": func(c *oauth.Config) {
-			c.Exchange.Registry = identities{google: issuer{URL: "https://accounts.example", Audience: "broker-machines", Keys: oidc.NewKeysAt("https://accounts.example/keys")}}.registry(t)
+			c.Exchange.Registry = identities{googleIssuer: issuer{URL: "https://accounts.example", Audience: "broker-machines", Keys: oidc.NewKeysAt("https://accounts.example/keys")}}.registry(t)
 		},
 	} {
 		t.Run(name, func(t *testing.T) {

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/exchange"
+	"github.com/sjawhar/envoy/internal/cipher/identity/google"
 	"github.com/sjawhar/envoy/internal/cipher/oauth"
 	"github.com/sjawhar/envoy/internal/cipher/oauthstore"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
@@ -198,7 +199,7 @@ func TestOnlyASignInIsTradedForTheApprovePlaceholder(t *testing.T) {
 	fleet := newSignInFixtureWith(t, func(c *oauth.Config) {
 		c.Exchange.Projects = access
 		c.Approve = approveSettings()
-	}, listing(nil, nil, exchange.GoogleEntry{Account: signInMachine, Service: signInFleet, Project: project, Person: person}))
+	}, listing(nil, nil, google.GoogleEntry{Account: signInMachine, Service: signInFleet, Project: project, Person: person}))
 	form = exchangeForm(fleet.machineToken(t, signInMachine, machineAudience, true), oauthwire.SubjectTokenTypeGoogle, "example-machine")
 	if traded := fleet.exchanged(t, form, key); traded == "" {
 		t.Fatal("the fleet's machine trade minted no token for its person; the row below would prove nothing")

@@ -50,7 +50,7 @@ const (
 // machines are the three Google entries every decision test asks: one pinned to a project and an
 // instance-name pattern that writes for a person, one pinned to nothing that names no person, and
 // one that fixes the session its machines write under.
-var machines = []exchange.GoogleEntry{
+var machines = []google.GoogleEntry{
 	{Account: pinnedAccount, Service: pinnedService, CloudProject: cloudProject, Instance: instanceGlob, Project: project, Person: person},
 	{Account: poolAccount, Service: poolService},
 	{Account: fixedAccount, Service: poolService, Session: machineSession},
@@ -67,7 +67,7 @@ func listed(t *testing.T) *google.Provider {
 
 // build is the provider of machines composed into a registry, which is where a session name two
 // entries fix is refused.
-func build(entries []exchange.GoogleEntry) (*identity.Registry, error) {
+func build(entries []google.GoogleEntry) (*identity.Registry, error) {
 	p, err := google.New(google.Config{Machines: entries, SignInDomain: signInDomain})
 	if err != nil {
 		return nil, err
@@ -114,42 +114,42 @@ func personToken(login string, verified any, domain string) map[string]any {
 }
 
 func TestNewSetRefusesAnEntryItCannotServe(t *testing.T) {
-	entry := exchange.GoogleEntry{Account: pinnedAccount, Service: pinnedService}
-	withMachine := func(change func(*exchange.GoogleEntry)) exchange.GoogleEntry {
+	entry := google.GoogleEntry{Account: pinnedAccount, Service: pinnedService}
+	withMachine := func(change func(*google.GoogleEntry)) google.GoogleEntry {
 		e := entry
 		change(&e)
 		return e
 	}
 	for _, c := range []struct {
 		name     string
-		machines []exchange.GoogleEntry
+		machines []google.GoogleEntry
 		names    string
 	}{
 		{name: "a Google account that is not an email address",
-			machines: []exchange.GoogleEntry{withMachine(func(e *exchange.GoogleEntry) { e.Account = "example-fleet" })}, names: "example-fleet"},
+			machines: []google.GoogleEntry{withMachine(func(e *google.GoogleEntry) { e.Account = "example-fleet" })}, names: "example-fleet"},
 		{name: "a Google account written with capitals, which no token carries",
-			machines: []exchange.GoogleEntry{withMachine(func(e *exchange.GoogleEntry) { e.Account = "Example-Fleet@example-project.iam.gserviceaccount.com" })},
+			machines: []google.GoogleEntry{withMachine(func(e *google.GoogleEntry) { e.Account = "Example-Fleet@example-project.iam.gserviceaccount.com" })},
 			names:    "google entry 1"},
 		{name: "a Google account with no service",
-			machines: []exchange.GoogleEntry{withMachine(func(e *exchange.GoogleEntry) { e.Service = " " })}, names: pinnedAccount},
+			machines: []google.GoogleEntry{withMachine(func(e *google.GoogleEntry) { e.Service = " " })}, names: pinnedAccount},
 		{name: "a machine pinned to a project and no instance pattern",
-			machines: []exchange.GoogleEntry{withMachine(func(e *exchange.GoogleEntry) { e.CloudProject = cloudProject })}, names: pinnedAccount},
+			machines: []google.GoogleEntry{withMachine(func(e *google.GoogleEntry) { e.CloudProject = cloudProject })}, names: pinnedAccount},
 		{name: "a machine pinned to an instance pattern and no project",
-			machines: []exchange.GoogleEntry{withMachine(func(e *exchange.GoogleEntry) { e.Instance = instanceGlob })}, names: pinnedAccount},
+			machines: []google.GoogleEntry{withMachine(func(e *google.GoogleEntry) { e.Instance = instanceGlob })}, names: pinnedAccount},
 		{name: "a machine whose instance pattern is not a pattern",
-			machines: []exchange.GoogleEntry{withMachine(func(e *exchange.GoogleEntry) { e.CloudProject, e.Instance = cloudProject, "example-[vm" })},
+			machines: []google.GoogleEntry{withMachine(func(e *google.GoogleEntry) { e.CloudProject, e.Instance = cloudProject, "example-[vm" })},
 			names:    "example-[vm"},
 		{name: "a machine named a person and no project",
-			machines: []exchange.GoogleEntry{withMachine(func(e *exchange.GoogleEntry) { e.Person = person })}, names: pinnedAccount},
+			machines: []google.GoogleEntry{withMachine(func(e *google.GoogleEntry) { e.Person = person })}, names: pinnedAccount},
 		{name: "a machine named a project and no person",
-			machines: []exchange.GoogleEntry{withMachine(func(e *exchange.GoogleEntry) { e.Project = project })}, names: pinnedAccount},
+			machines: []google.GoogleEntry{withMachine(func(e *google.GoogleEntry) { e.Project = project })}, names: pinnedAccount},
 		{name: "a machine whose fixed session carries whitespace",
-			machines: []exchange.GoogleEntry{withMachine(func(e *exchange.GoogleEntry) { e.Session = "example fleet" })}, names: pinnedAccount},
+			machines: []google.GoogleEntry{withMachine(func(e *google.GoogleEntry) { e.Session = "example fleet" })}, names: pinnedAccount},
 		{name: "the same Google account twice",
-			machines: []exchange.GoogleEntry{entry, withMachine(func(e *exchange.GoogleEntry) { e.Service = poolService })}, names: "google entry 2"},
+			machines: []google.GoogleEntry{entry, withMachine(func(e *google.GoogleEntry) { e.Service = poolService })}, names: "google entry 2"},
 		{name: "a session name two machines fix",
-			machines: []exchange.GoogleEntry{
-				withMachine(func(e *exchange.GoogleEntry) { e.Session = machineSession }),
+			machines: []google.GoogleEntry{
+				withMachine(func(e *google.GoogleEntry) { e.Session = machineSession }),
 				{Account: fixedAccount, Service: poolService, Session: machineSession},
 			}, names: "google entry 1"},
 	} {
@@ -417,7 +417,7 @@ func TestPersonSaysWhichRefusalItIs(t *testing.T) {
 // whatever their token says, rather than taking every account outside any Workspace. It is the
 // rule oidc.WorkspaceLogin states, and the one a broker told about no domain has to follow.
 func TestAnEmptySignInDomainAdmitsNobody(t *testing.T) {
-	set, err := google.New(google.Config{Machines: []exchange.GoogleEntry{{Account: poolAccount, Service: poolService}}})
+	set, err := google.New(google.Config{Machines: []google.GoogleEntry{{Account: poolAccount, Service: poolService}}})
 	if err != nil {
 		t.Fatalf("NewSet: %v", err)
 	}

@@ -33,7 +33,7 @@ const (
 // and one whose session the entry fixes, of one repository on one ref.
 func listed(t *testing.T) *github.Provider {
 	t.Helper()
-	p, err := github.New(github.Config{Workflows: []exchange.WorkflowEntry{
+	p, err := github.New(github.Config{Workflows: []github.WorkflowEntry{
 		{Repository: repository, Workflow: workflow, Ref: ref, Project: project, Person: person},
 		{Repository: repository, Workflow: nightly, Ref: ref, Project: project, Person: person, Session: nightlySession},
 	}})
@@ -45,7 +45,7 @@ func listed(t *testing.T) *github.Provider {
 
 // build is the provider of workflows composed into a registry, which is where a session name two
 // entries fix is refused.
-func build(workflows []exchange.WorkflowEntry) (*identity.Registry, error) {
+func build(workflows []github.WorkflowEntry) (*identity.Registry, error) {
 	p, err := github.New(github.Config{Workflows: workflows})
 	if err != nil {
 		return nil, err
@@ -80,54 +80,54 @@ func withRun(token map[string]any, run string) map[string]any {
 }
 
 func TestNewSetRefusesAnEntryItCannotServe(t *testing.T) {
-	flow := exchange.WorkflowEntry{Repository: repository, Workflow: workflow, Ref: ref, Project: project, Person: person}
-	withFlow := func(change func(*exchange.WorkflowEntry)) exchange.WorkflowEntry {
+	flow := github.WorkflowEntry{Repository: repository, Workflow: workflow, Ref: ref, Project: project, Person: person}
+	withFlow := func(change func(*github.WorkflowEntry)) github.WorkflowEntry {
 		entry := flow
 		change(&entry)
 		return entry
 	}
 	for _, c := range []struct {
 		name      string
-		workflows []exchange.WorkflowEntry
+		workflows []github.WorkflowEntry
 		names     string
 	}{
 		{name: "a repository that is not <owner>/<name>",
-			workflows: []exchange.WorkflowEntry{withFlow(func(e *exchange.WorkflowEntry) { e.Repository = "example-repo" })}, names: "example-repo"},
+			workflows: []github.WorkflowEntry{withFlow(func(e *github.WorkflowEntry) { e.Repository = "example-repo" })}, names: "example-repo"},
 		// A repository's owner is a GitHub login, so each owner below is refused for what no
 		// login holds.
 		{name: "a repository whose owner holds a dot, which only a repository name may",
-			workflows: []exchange.WorkflowEntry{withFlow(func(e *exchange.WorkflowEntry) { e.Repository = "a.b/example-repo" })}, names: "a.b/example-repo"},
+			workflows: []github.WorkflowEntry{withFlow(func(e *github.WorkflowEntry) { e.Repository = "a.b/example-repo" })}, names: "a.b/example-repo"},
 		{name: "a repository whose owner holds a slash, which makes it no <owner>/<name>",
-			workflows: []exchange.WorkflowEntry{withFlow(func(e *exchange.WorkflowEntry) { e.Repository = "a/b/example-repo" })}, names: "a/b/example-repo"},
+			workflows: []github.WorkflowEntry{withFlow(func(e *github.WorkflowEntry) { e.Repository = "a/b/example-repo" })}, names: "a/b/example-repo"},
 		{name: "a repository whose owner starts with a hyphen, which no login does",
-			workflows: []exchange.WorkflowEntry{withFlow(func(e *exchange.WorkflowEntry) { e.Repository = "-ada/example-repo" })}, names: "-ada/example-repo"},
+			workflows: []github.WorkflowEntry{withFlow(func(e *github.WorkflowEntry) { e.Repository = "-ada/example-repo" })}, names: "-ada/example-repo"},
 		{name: "a repository whose owner starts with an underscore, which no login does",
-			workflows: []exchange.WorkflowEntry{withFlow(func(e *exchange.WorkflowEntry) { e.Repository = "_ada/example-repo" })}, names: "_ada/example-repo"},
+			workflows: []github.WorkflowEntry{withFlow(func(e *github.WorkflowEntry) { e.Repository = "_ada/example-repo" })}, names: "_ada/example-repo"},
 		{name: "a repository whose owner is 40 characters, past GitHub's 39",
-			workflows: []exchange.WorkflowEntry{withFlow(func(e *exchange.WorkflowEntry) { e.Repository = strings.Repeat("a", 40) + "/example-repo" })},
+			workflows: []github.WorkflowEntry{withFlow(func(e *github.WorkflowEntry) { e.Repository = strings.Repeat("a", 40) + "/example-repo" })},
 			names:     strings.Repeat("a", 40) + "/example-repo"},
 		{name: "a repository with no owner",
-			workflows: []exchange.WorkflowEntry{withFlow(func(e *exchange.WorkflowEntry) { e.Repository = "/example-repo" })}, names: "/example-repo"},
+			workflows: []github.WorkflowEntry{withFlow(func(e *github.WorkflowEntry) { e.Repository = "/example-repo" })}, names: "/example-repo"},
 		{name: "a workflow with no path",
-			workflows: []exchange.WorkflowEntry{withFlow(func(e *exchange.WorkflowEntry) { e.Workflow = "" })}, names: repository},
+			workflows: []github.WorkflowEntry{withFlow(func(e *github.WorkflowEntry) { e.Workflow = "" })}, names: repository},
 		{name: "a workflow with no ref",
-			workflows: []exchange.WorkflowEntry{withFlow(func(e *exchange.WorkflowEntry) { e.Ref = "" })}, names: workflow},
+			workflows: []github.WorkflowEntry{withFlow(func(e *github.WorkflowEntry) { e.Ref = "" })}, names: workflow},
 		{name: "a workflow with no project",
-			workflows: []exchange.WorkflowEntry{withFlow(func(e *exchange.WorkflowEntry) { e.Project = "" })}, names: workflow},
+			workflows: []github.WorkflowEntry{withFlow(func(e *github.WorkflowEntry) { e.Project = "" })}, names: workflow},
 		{name: "a workflow with no person",
-			workflows: []exchange.WorkflowEntry{withFlow(func(e *exchange.WorkflowEntry) { e.Person = " " })}, names: workflow},
+			workflows: []github.WorkflowEntry{withFlow(func(e *github.WorkflowEntry) { e.Person = " " })}, names: workflow},
 		{name: "a workflow whose fixed session is unprintable",
-			workflows: []exchange.WorkflowEntry{withFlow(func(e *exchange.WorkflowEntry) { e.Session = "legion\x00daemon" })}, names: workflow},
+			workflows: []github.WorkflowEntry{withFlow(func(e *github.WorkflowEntry) { e.Session = "legion\x00daemon" })}, names: workflow},
 		{name: "the same workflow twice",
-			workflows: []exchange.WorkflowEntry{flow, withFlow(func(e *exchange.WorkflowEntry) { e.Person = "bob@example.com" })}, names: "workflow entry 2"},
+			workflows: []github.WorkflowEntry{flow, withFlow(func(e *github.WorkflowEntry) { e.Person = "bob@example.com" })}, names: "workflow entry 2"},
 		{name: "two workflows whose principals spell alike",
-			workflows: []exchange.WorkflowEntry{
-				withFlow(func(e *exchange.WorkflowEntry) { e.Workflow, e.Ref = ".github/workflows/a.yaml@refs/heads/b", "c" }),
-				withFlow(func(e *exchange.WorkflowEntry) { e.Workflow, e.Ref = ".github/workflows/a.yaml", "refs/heads/b@c" }),
+			workflows: []github.WorkflowEntry{
+				withFlow(func(e *github.WorkflowEntry) { e.Workflow, e.Ref = ".github/workflows/a.yaml@refs/heads/b", "c" }),
+				withFlow(func(e *github.WorkflowEntry) { e.Workflow, e.Ref = ".github/workflows/a.yaml", "refs/heads/b@c" }),
 			}, names: "workflow entry 1"},
 		{name: "a session name two workflows fix",
-			workflows: []exchange.WorkflowEntry{
-				withFlow(func(e *exchange.WorkflowEntry) { e.Session = nightlySession }),
+			workflows: []github.WorkflowEntry{
+				withFlow(func(e *github.WorkflowEntry) { e.Session = nightlySession }),
 				{Repository: repository, Workflow: nightly, Ref: ref, Project: project, Person: person, Session: nightlySession},
 			}, names: "workflow entry 1"},
 	} {
@@ -144,7 +144,7 @@ func TestNewSetRefusesAnEntryItCannotServe(t *testing.T) {
 }
 
 func TestNewSetTakesTheSameAccountAndWorkflowKeyTwiceApart(t *testing.T) {
-	set, err := github.New(github.Config{Workflows: []exchange.WorkflowEntry{
+	set, err := github.New(github.Config{Workflows: []github.WorkflowEntry{
 		{Repository: repository, Workflow: workflow, Ref: ref, Project: project, Person: person},
 		{Repository: repository, Workflow: workflow, Ref: "refs/heads/release", Project: "OTHER", Person: person},
 	}})
@@ -167,7 +167,7 @@ func TestNewSetTakesTheSameAccountAndWorkflowKeyTwiceApart(t *testing.T) {
 // entry's.
 func TestNewSetTakesAManagedUsersRepository(t *testing.T) {
 	const managed = "mona-cat_octo/example-repo"
-	set, err := github.New(github.Config{Workflows: []exchange.WorkflowEntry{{Repository: managed, Workflow: workflow, Ref: ref, Project: project, Person: person}}})
+	set, err := github.New(github.Config{Workflows: []github.WorkflowEntry{{Repository: managed, Workflow: workflow, Ref: ref, Project: project, Person: person}}})
 	if err != nil {
 		t.Fatalf("NewSet(a workflow of %s): %v", managed, err)
 	}

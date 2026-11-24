@@ -69,13 +69,11 @@ func ParseNATSAccount(raw string) (string, error) {
 // parsed first (ParseNATSServices), so an entry of no form is refused for its form before any rule
 // here reads its kind or its account, and BROKER_NATS_ACCOUNT next (ParseNATSAccount). None set is
 // no service; BROKER_NATS_SERVICES alone is no service either, when every entry of it is an edge
-// listener's, which the broker reads for GET /v1/project-repositories whether or not it answers a
-// hub; any other set needs BROKER_NATS_URLS and the three seed files, each holding a seed of its
-// own kind; BROKER_NATS_K8S_AUDIENCE needs k8sIssuer, BROKER_K8S_OIDC_ISSUER. A hub URL carrying
-// user info, or one that is no URL, is refused by its place in the list (hubURLRefusal). A refusal
-// carries no seed, no hub URL and no value of BROKER_NATS_ACCOUNT; one of BROKER_NATS_SERVICES
-// quotes its entry (ParseNATSServices).
-func loadNATSCallout(getenv func(string) string, k8sIssuer string) (NATSCallout, error) {
+// listener's, which the broker's API serves whether or not the auth service runs. Each kind of
+// audience a service's token needs is its own identity provider's variable
+// (BROKER_NATS_K8S_AUDIENCE, BROKER_NATS_GOOGLE_AUDIENCE), read by that provider and checked
+// against the listed entries where Load reads them (boot.Settings.Serves).
+func loadNATSCallout(getenv func(string) string) (NATSCallout, error) {
 	services, err := ParseNATSServices(getenv(NATSServicesVariable))
 	if err != nil {
 		return NATSCallout{}, err
@@ -131,9 +129,6 @@ func loadNATSCallout(getenv func(string) string, k8sIssuer string) (NATSCallout,
 			return NATSCallout{}, err
 		}
 	}
-	if settings.K8sAudience != "" && k8sIssuer == "" {
-		return NATSCallout{}, errors.New("BROKER_NATS_K8S_AUDIENCE needs BROKER_K8S_OIDC_ISSUER, whose projected tokens a service presents to the NATS auth service")
-	}
 	return settings, nil
 }
 
@@ -162,22 +157,16 @@ func loadNATSHold(getenv func(string) string, settings *NATSCallout) error {
 	return nil
 }
 
-// edgeListenerEntries is the first edge-listener entry of Services that names a Kubernetes
-// account and the first that names a Google one, each "" when there is none: the callers of the
-// broker's API whose identity tokens need the cluster's issuer and Google's audience.
-func (n NATSCallout) edgeListenerEntries() (kubernetes, google string) {
+// edgeEntries is every edge-listener entry of Services, in the order the setting listed them:
+// the callers of the broker's API whose identity tokens need their own provider's audience.
+func (n NATSCallout) edgeEntries() []NATSService {
+	var edges []NATSService
 	for _, entry := range n.Services {
-		switch {
-		case entry.Kind != NATSEdgeListener:
-		case entry.Account.Kind == googleAccountKind:
-			if google == "" {
-				google = entry.Text
-			}
-		case kubernetes == "":
-			kubernetes = entry.Text
+		if entry.Kind == NATSEdgeListener {
+			edges = append(edges, entry)
 		}
 	}
-	return kubernetes, google
+	return edges
 }
 
 // hubURLRefusal is why entry, one of BROKER_NATS_URLS, cannot name the hub, or "" when it can. The

@@ -7,7 +7,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/internal/cipher/exchange"
+	"github.com/sjawhar/envoy/internal/cipher/identity/kubernetes"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 )
@@ -32,7 +32,7 @@ import (
 // carol "PRIV, private, which the session does not name".
 func TestAPrivateProjectsPodRequestIsDecidedListedAndShownOnlyToItsPeople(t *testing.T) {
 	m, _, _, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
-	set, err := kubernetesPolicy([]exchange.AccountEntry{{Account: fixtureSubject, Project: privProject, Person: insider}})
+	set, err := kubernetesPolicy([]kubernetes.AccountEntry{{Account: fixtureSubject, Project: privProject, Person: insider}})
 	if err != nil {
 		t.Fatalf("exchange.NewSet: %v", err)
 	}

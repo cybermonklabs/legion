@@ -81,7 +81,7 @@ func (p *Provider) machine(token map[string]any, session string, projects []stri
 // on each differently: a token with no Compute Engine claims was minted somewhere the pins cannot
 // describe, and a token with them from another project or another instance name is a machine the
 // entry does not list.
-func allowedMachine(entry exchange.GoogleEntry, identity Identity) error {
+func allowedMachine(entry GoogleEntry, identity Identity) error {
 	if entry.CloudProject == "" && entry.Instance == "" {
 		return nil
 	}

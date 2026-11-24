@@ -52,6 +52,19 @@ func ValidServiceAccountEmail(account string) bool {
 	return googleServiceAccountEmail.MatchString(account)
 }
 
+// serviceAgent is a Google-managed service agent: an account named service-<number>,
+// service-org-<number> or service-folder-<number>, or any account of a gcp-sa- domain. Google's
+// own services run as these accounts, never a VM and never a workload of the deployment's.
+var serviceAgent = regexp.MustCompile(`^service-(org-|folder-)?[0-9]+@|@gcp-sa-`)
+
+// IsServiceAgent answers whether account is a Google-managed service agent. It is exported so
+// that every setting of the broker that names a Google account — the minter's bindings, the
+// judge's account, the directory reader's and the identity providers' — refuses one by the same
+// rule: the broker must not be able to mint or impersonate a token of Google's own services.
+func IsServiceAgent(account string) bool {
+	return serviceAgent.MatchString(account)
+}
+
 // GoogleServiceAccount mints a Google access token for the one service account the deployment
 // binds to a google-service-account secret (Accounts), by impersonating that account with the
 // broker's own Google credential. The secret's stored value names an account as well, and a

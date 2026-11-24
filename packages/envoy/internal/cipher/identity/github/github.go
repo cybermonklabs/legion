@@ -24,21 +24,55 @@ const SubjectTokenType = oauthwire.SubjectTokenTypeGitHub
 // the exchange accepts.
 const tolerance = time.Hour
 
-// Config is the issuer this provider trusts and the workflows the exchange lists.
+// Config is the issuer this provider trusts and the workflows the exchange lists, as LoadConfig
+// reads them from the broker's environment.
 type Config struct {
-	// Issuer and Audience are BROKER_EXCHANGE_GITHUB_ISSUER and BROKER_EXCHANGE_GITHUB_AUDIENCE;
-	// an empty Issuer registers the subject token type unconfigured.
-	Issuer, Audience string
-	// Keys is the issuer's published key set.
+	// BROKER_EXCHANGE_GITHUB_ISSUER: the issuer of the token a continuous-integration workflow
+	// run presents to the exchange, https://token.actions.githubusercontent.com for runs on
+	// GitHub's own hosts. Set it with BROKER_EXCHANGE_GITHUB_AUDIENCE, or neither, in which case
+	// the broker accepts no workflow token at all.
+	Issuer string
+	// BROKER_EXCHANGE_GITHUB_AUDIENCE: the audience a workflow run's token must carry, the one
+	// the run asks GitHub to mint it for.
+	Audience string
+	// Keys is the issuer's published key set, which the identity registry reads at boot
+	// (identity/boot's Open).
 	Keys *oidc.Keys
-	// Workflows are the exchange's workflow entries.
-	Workflows []exchange.WorkflowEntry
+	// BROKER_EXCHANGE_WORKFLOWS, BROKER_EXCHANGE_JOB_WORKFLOWS: the GitHub workflows whose runs
+	// exchange their token, BROKER_EXCHANGE_JOB_WORKFLOWS' entries after
+	// BROKER_EXCHANGE_WORKFLOWS' own. BROKER_EXCHANGE_WORKFLOWS lists them as
+	// whitespace-separated <repository>=<workflow path>=<ref>=<project>=<person>[=<session>]
+	// entries, such as
+	// example-org/example-repo=.github/workflows/release.yaml=refs/heads/main=EXAMPLE=ada@example.com.
+	// Each field is compared exactly and nothing is wildcarded: a run of another workflow, or of
+	// this one on another ref, is not this entry. The session is everything after the fifth "=",
+	// so it alone may carry one, and a workflow listed twice is refused. Needs
+	// BROKER_EXCHANGE_GITHUB_ISSUER and BROKER_EXCHANGE_GITHUB_AUDIENCE, whose tokens its runs
+	// present. Unset, no workflow exchanges.
+	//
+	// BROKER_EXCHANGE_JOB_WORKFLOWS: the GitHub workflows whose runs are a job that writes for no
+	// person, whitespace-separated <repository>=<workflow path>=<ref>=<projects>[=<session>]
+	// entries, such as example-org/example-repo=.github/workflows/sweep.yaml=refs/heads/main=public.
+	// The repository, the workflow and the ref are compared exactly, as BROKER_EXCHANGE_WORKFLOWS
+	// compares them, and the projects are spelled as BROKER_EXCHANGE_JOB_ACCOUNTS spells them. The
+	// token minted for a run names the workflow, <repository>/<workflow path>@<ref>, as its service
+	// and no person, holds no OAuth scope, and carries the entry's projects whatever the request
+	// names, as a job account's token does. It writes under the session the entry fixes; an entry
+	// that fixes none requires the run to name its own session. The session is everything after the
+	// fourth "=", so it alone may carry one. Refused at start, naming the setting and the entry: an
+	// entry not of that form or with a blank repository, workflow or ref; a workflow listed twice;
+	// projects of any other spelling; and a workflow BROKER_EXCHANGE_WORKFLOWS lists too, since one
+	// workflow run has one answer. Needs BROKER_EXCHANGE_GITHUB_ISSUER and
+	// BROKER_EXCHANGE_GITHUB_AUDIENCE, whose tokens its runs present. A broker of a build older than
+	// this setting does not read it, so it mints those runs no token at all. Unset, no workflow
+	// exchanges for a job's token.
+	Workflows []WorkflowEntry
 }
 
 // Provider is the GitHub identity provider of one configuration.
 type Provider struct {
 	config    Config
-	workflows map[workflowKey]exchange.WorkflowEntry
+	workflows map[workflowKey]WorkflowEntry
 	listings  []exchange.Listing
 }
 
@@ -50,7 +84,7 @@ var _ identity.Provider = (*Provider)(nil)
 // session name. A session name two entries fix is refused where the registry composes every
 // provider's listings (exchange.NewSet), with the same words.
 func New(c Config) (*Provider, error) {
-	p := &Provider{config: c, workflows: make(map[workflowKey]exchange.WorkflowEntry, len(c.Workflows))}
+	p := &Provider{config: c, workflows: make(map[workflowKey]WorkflowEntry, len(c.Workflows))}
 	spelledBy := map[string]string{}
 	for i, entry := range c.Workflows {
 		where := fmt.Sprintf("workflow entry %d, %q", i+1, entry.Repository+"/"+entry.Workflow+"@"+entry.Ref)

@@ -18,6 +18,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/api"
 	"github.com/sjawhar/envoy/internal/cipher/exchange"
+	"github.com/sjawhar/envoy/internal/cipher/identity/kubernetes"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess/projectaccesstest"
 )
 
@@ -114,7 +115,7 @@ type sessionHiddenRig struct {
 
 func newSessionHiddenRig(t *testing.T) *sessionHiddenRig {
 	t.Helper()
-	pods, err := kubernetesPolicy([]exchange.AccountEntry{
+	pods, err := kubernetesPolicy([]kubernetes.AccountEntry{
 		{Account: workerAccount, Project: "PRIV", Person: testApprover},
 		{Account: otherAccount, Project: "PUB", Person: testApprover},
 	})

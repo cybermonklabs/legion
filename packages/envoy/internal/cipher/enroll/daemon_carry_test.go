@@ -167,7 +167,7 @@ func TestAPodAndItsTradeStillShareOneSessionName(t *testing.T) {
 	ctx := context.Background()
 	svc := newService(t)
 	issuer, key := withPodVerifier(t, svc)
-	set, err := kubernetesPods([]exchange.AccountEntry{{Account: carryPodAccount, Project: "LEGION", Person: "ada@example.com"}})
+	set, err := kubernetesPods([]kubernetes.AccountEntry{{Account: carryPodAccount, Project: "LEGION", Person: "ada@example.com"}})
 	if err != nil {
 		t.Fatalf("exchange.NewSet: %v", err)
 	}

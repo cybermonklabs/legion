@@ -8,7 +8,6 @@ import (
 	"crypto/ecdsa"
 	"testing"
 
-	"github.com/sjawhar/envoy/internal/cipher/exchange"
 	"github.com/sjawhar/envoy/internal/cipher/identity"
 	"github.com/sjawhar/envoy/internal/cipher/identity/google"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
@@ -43,7 +42,7 @@ func newMachineEnrollment(t *testing.T, m *Machine, service, subject, runtimeID 
 func TestAMachinesSessionIsItsFleetsAndNoPersons(t *testing.T) {
 	ctx := context.Background()
 	m, _, _, operator := newFixture(t)
-	m.Exchange = fleetPolicy(t, exchange.GoogleEntry{Account: fixtureMachineAccount, Service: fixtureService})
+	m.Exchange = fleetPolicy(t, google.GoogleEntry{Account: fixtureMachineAccount, Service: fixtureService})
 	retag(t, m, policytest.Secret("SHARED_TOKEN", policy.OwnerShared, policy.TierAgent, "shared-token-v1"))
 	machine, machineKey := newMachineEnrollment(t, m, fixtureService, fixtureMachineSubject, "machine-"+t.Name())
 

@@ -190,7 +190,7 @@ func recordSignIn(t *testing.T, f *signInFixture, person, thumbprint, machine st
 	defer tx.Rollback(ctx)
 	if err := enroll.RecordPersonSignIn(ctx, tx, store.SignInTrade{
 		Person: person, Thumbprint: thumbprint, MachineAccount: machine,
-		Account: store.IssuerSubject{Issuer: f.google.URL(), Subject: "109" + person}, EndUnrecorded: true,
+		Account: store.IssuerSubject{Issuer: f.googleIssuer.URL(), Subject: "109" + person}, EndUnrecorded: true,
 	}, google.PersonSubject(person, machine, thumbprint)); err != nil {
 		t.Fatalf("RecordPersonSignIn: %v", err)
 	}
@@ -260,8 +260,8 @@ func TestAReadTradeMakesOrMovesNoLauncherCredential(t *testing.T) {
 		box := newKey(t)
 		// The sign-in's credential expires with the identity token its ordinary trade presents,
 		// here a few seconds away, so it lapses while the test runs.
-		lapsing := f.google.Mint(t, f.googleKey, map[string]any{
-			"iss": f.google.URL(), "sub": "109" + person, "aud": deviceAudience, "iat": time.Now().Add(-time.Minute).Unix(),
+		lapsing := f.googleIssuer.Mint(t, f.googleKey, map[string]any{
+			"iss": f.googleIssuer.URL(), "sub": "109" + person, "aud": deviceAudience, "iat": time.Now().Add(-time.Minute).Unix(),
 			"exp": time.Now().Add(3 * time.Second).Unix(), "email": person, "email_verified": true, "hd": signInDomain,
 		})
 		status, body := f.exchange(t, signInForm(lapsing, f.machineToken(t, signInMachine, machineAudience, true), narrowedBoxSession), box)

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/sjawhar/envoy/internal/cipher/exchange"
 	"github.com/sjawhar/envoy/internal/cipher/identity"
 	"github.com/sjawhar/envoy/internal/cipher/identity/google"
 	"github.com/sjawhar/envoy/internal/cipher/identity/identitytest"
@@ -26,7 +25,7 @@ func TestGoogleRunsTheIdentityContract(t *testing.T) {
 		New: func(t *testing.T, issuer string, keys *oidc.Keys, audience string) identity.Provider {
 			p, err := google.New(google.Config{
 				Issuer: issuer, Keys: keys, Audience: audience, PersonAudience: audience, SignInDomain: "example.com",
-				Machines: []exchange.GoogleEntry{{Account: contractAccount, Service: "example-fleet"}},
+				Machines: []google.GoogleEntry{{Account: contractAccount, Service: "example-fleet"}},
 			})
 			if err != nil {
 				t.Fatalf("google.New: %v", err)
@@ -132,10 +131,10 @@ func TestACallerTokenNamingNoVerifiedAccountNamesNoCaller(t *testing.T) {
 func TestTheSettingsNameTheExchangeAudienceOnlyWhereAMachineIsListed(t *testing.T) {
 	for _, c := range []struct {
 		name     string
-		machines []exchange.GoogleEntry
+		machines []google.GoogleEntry
 		want     string
 	}{
-		{name: "a listed machine", machines: []exchange.GoogleEntry{{Account: contractAccount, Service: "example-fleet"}}, want: "broker-machines"},
+		{name: "a listed machine", machines: []google.GoogleEntry{{Account: contractAccount, Service: "example-fleet"}}, want: "broker-machines"},
 		{name: "an API caller alone", want: ""},
 	} {
 		p, err := google.New(google.Config{Audience: "broker-machines", Machines: c.machines})

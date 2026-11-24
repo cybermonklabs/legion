@@ -286,125 +286,19 @@ type Listing struct {
 	Job                                                 JobProjects
 }
 
-// AccountEntry lists one Kubernetes service account and what a pod running as it may write.
-// Account is required. Person is required of an entry that names a project, and Job and Person
-// are never both set: an entry names the person its pods act for, with a project or none, or a
-// job list, or neither, for an entry whose pods act as the account itself. Session is not
-// required.
-type AccountEntry struct {
-	// Account is the subject a pod's projected token carries,
-	// system:serviceaccount:<namespace>:<name>, named exactly: there is no wildcard.
-	Account string
-	// Project is the one project key the minted token names, or empty for an entry that names
-	// none: the shared public-session account, whose named tokens act for Person and name no
-	// project, or an entry that names no person either. Only an account entry may leave it empty.
-	Project string
-	// Person is who the account's pods act for, or empty for an entry that names no project
-	// either: such an entry's tokens act as the account itself, which they name as their service
-	// (Claims.Service) and Dispatch records their writes under. An entry that names a project
-	// names its person, so no account entry's token that names a project is personless.
-	Person string
-	// Job, when set, is the job list of an entry that names no person and no project: its pods'
-	// tokens name Account as their service and carry the list (BROKER_EXCHANGE_JOB_ACCOUNTS).
-	Job JobProjects
-	// Session, when set, is the session name every token minted for this account carries, and a
-	// request naming any other is refused. It is how a long-running service keeps writing under
-	// one name it does not get to choose per request. The name is one of the set's Reservations,
-	// held for the account however many of its pods exchange and refused to every other caller.
-	// oauthwire.LegionDaemonSessionPrefix + Project makes the entry a Legion daemon's own
-	// (Claims.LegionStatus).
-	Session string
-}
-
-// ReadEntry lists one Kubernetes service account whose pods may read and may write nothing: the
-// token they are minted holds the OAuth scope oauthwire.ScopeRead and the project scope
-// ProjectScopeNone, names Service and Session, and names no person and no project. Every field is
-// required. A resource server accepts such a token only where it asks to, and Dispatch serves it
-// on every GET route it classes as a read and nowhere else.
-//
-// It is a list of its own, BROKER_EXCHANGE_READ_ACCOUNTS, rather than a kind of AccountEntry, so
-// that a broker of a build that predates it reads none of its entries and mints such an account
-// nothing, where the same entry in BROKER_EXCHANGE_ACCOUNTS would read as a project and a person.
-type ReadEntry struct {
-	// Account is the subject a pod's projected token carries,
-	// system:serviceaccount:<namespace>:<name>, named exactly, as AccountEntry.Account is.
-	Account string
-	// Service is the service the minted token names in place of a person: the one a resource
-	// server reads to decide what the caller is.
-	Service string
-	// Session is the session name every token minted for this account carries, and a request
-	// naming any other is refused. It is required because a token that names no person has
-	// nobody whose session a request could name, and it is one of the set's Reservations, held
-	// for the account as AccountEntry.Session is.
-	Session string
-}
-
-// WorkflowEntry lists one GitHub workflow of one repository on one ref, and what a run of it may
-// write. Repository, Workflow and Ref are required, and so are Project and Person, or Job in
-// their place: nothing is wildcarded by leaving a field out, so an entry that names no ref
-// matches no run rather than every one of them. Session is not required.
-type WorkflowEntry struct {
-	// Repository is <owner>/<name>, the repository the run belongs to.
-	Repository string
-	// Workflow is the workflow file's path inside the repository, such as
-	// .github/workflows/release.yaml, compared exactly.
-	Workflow string
-	// Ref is the git ref the run is on, such as refs/heads/main, compared exactly.
-	Ref string
-	// Project is the one project key the minted token names.
-	Project string
-	// Person is who the run acts for.
-	Person string
-	// Job, when set, is the job list of an entry that names no person and no project: its runs'
-	// tokens name the workflow, <Repository>/<Workflow>@<Ref>, as their service and carry the
-	// list (BROKER_EXCHANGE_JOB_WORKFLOWS).
-	Job JobProjects
-	// Session, when set, is the session name every token minted for this workflow carries, as
-	// AccountEntry.Session is for an account.
-	Session string
-}
-
-// GoogleEntry lists one Google service account and what a machine holding its identity token may
-// write. Account and Service are required; the rest is what the entry chooses to pin and to
-// grant.
-//
-// The two pins go together: an entry that pins both holds the machine to one Compute Engine
-// project and to the instance names its pattern matches, and refuses a token carrying no Compute
-// Engine claims at all. An entry that pins neither takes such a token, which is what a token
-// minted through a workload identity pool and a token a pod's metadata server answers both carry.
-//
-// Project and Person go together too: an entry that names them mints a token that acts for that
-// person and names that one project, exactly as an AccountEntry does for a pod, and an entry
-// that names neither mints a token that names its service and no person at all. An entry that
-// names a job list names neither of them: its token names the account's address as its service
-// and carries the list.
-type GoogleEntry struct {
-	// Account is the service account's email address, the `email` claim of its identity tokens,
-	// named exactly: there is no wildcard.
-	Account string
-	// Service is the service a machine of this account is, which the minted token names when the
-	// entry names neither a person nor a job list, and which the launcher credential of every
-	// machine of the account records (Claims.Fleet).
-	Service string
-	// CloudProject, when set, is the Google Cloud project the machine must run in, compared
-	// exactly with the token's google.compute_engine.project_id.
-	CloudProject string
-	// Instance, when set, is the pattern the machine's instance name must match, in path.Match's
-	// syntax, such as example-vm-*.
-	Instance string
-	// Project, when set, is the one Dispatch project key the minted token names. It is set
-	// with Person and with nothing else.
-	Project string
-	// Person, when set, is who the machine's token acts for. An entry that names none mints a
-	// token that names Service and no person, or the account when it names a job list.
-	Person string
-	// Job, when set, is the job list of an entry that names no person and no project: its
-	// machines' tokens name Account as their service and carry the list, and the launcher
-	// credential each exchange mints still records Service (BROKER_VM_EXCHANGE_JOB_ACCOUNTS).
-	Job JobProjects
-	// Session, when set, is the session name every token minted for this account carries, as
-	// AccountEntry.Session is for an account.
-	Session string
+// EntryFields splits one entry of an exchange setting into want fields on "=", the last field — a
+// session name — taking everything after the last separator, since a session name may carry "="
+// and no other field may. An entry one field short fixes no session and answers "" for it; any
+// other count is not of the form. Every provider's exchange setting reads its entries with it.
+func EntryFields(text string, want int) ([]string, bool) {
+	fields := strings.SplitN(text, "=", want)
+	switch len(fields) {
+	case want:
+		return fields, true
+	case want - 1:
+		return append(fields, ""), true
+	}
+	return nil, false
 }
 
 // Set is the listed identities as the identity providers of one configuration spell them. It is

@@ -12,6 +12,7 @@ package identity
 import (
 	"context"
 	"crypto"
+	"errors"
 	"fmt"
 	"time"
 
@@ -219,3 +220,30 @@ const (
 	// UseNATS is a service connecting to the hub through the NATS auth service.
 	UseNATS
 )
+
+// Site is where the broker's settings met an account a provider must serve: the setting that names
+// it, the entry's text where the provider's sentence quotes one ("" for a setting whose refusal
+// names no entry), and whether that entry is an edge listener's, which the API serves whether or
+// not the NATS auth service runs.
+type Site struct {
+	Setting, Entry string
+	Edge           bool
+}
+
+// Mention is one place a provider's own settings name an account or a service: the variable and
+// the entry's text, the person it acts for ("" for none), the service it names, an account
+// listed to read alone (ReadOnly) among them, and the job list a job entry gives it. A setting a
+// provider does not own is checked against what the provider's settings say through these.
+type Mention struct {
+	Variable, Entry, Person, Service string
+	ReadOnly                         bool
+	// Job is the job list a job entry gives the account in place of a person; the zero
+	// JobProjects for every other entry.
+	Job exchange.JobProjects
+}
+
+// ErrAccountForm is what every refusal of an account written in no provider's form wraps: the
+// registry's, for a setting that names a caller, and a provider's own, for a setting that names
+// an account of its kind. A setting matches it (errors.Is) to refuse in its own words, naming
+// its entry form.
+var ErrAccountForm = errors.New("the account is written in no form this build of cipherd reads")

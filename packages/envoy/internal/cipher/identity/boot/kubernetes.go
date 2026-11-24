@@ -3,29 +3,51 @@
 package boot
 
 import (
-	"slices"
-
-	"github.com/sjawhar/envoy/internal/cipher/config"
 	"github.com/sjawhar/envoy/internal/cipher/identity"
 	"github.com/sjawhar/envoy/internal/cipher/identity/kubernetes"
 	"github.com/sjawhar/envoy/internal/oidc"
 )
 
 func init() {
-	register(entry{kind: kubernetes.Kind, rank: 10, open: openKubernetes, accountNoun: "a Kubernetes account", natsAudience: "BROKER_NATS_K8S_AUDIENCE"})
+	register(entry{
+		kind: kubernetes.Kind, rank: 10,
+		zero:            func() any { return kubernetes.Config{} },
+		load:            func(getenv func(string) string) (any, error) { return kubernetes.LoadConfig(getenv) },
+		open:            openKubernetes,
+		parseAccount:    kubernetes.ParseAccount,
+		parsePodAccount: kubernetes.ParsePodAccount,
+		accountForm:     kubernetes.AccountForm,
+		serves: func(cfg any, use identity.Use, site identity.Site) error {
+			return cfg.(kubernetes.Config).Serves(use, site)
+		},
+		podsServed: func(cfg any, setting string) error { return cfg.(kubernetes.Config).PodsServed(setting) },
+		mentions: func(cfg any, account identity.Account) []identity.Mention {
+			return cfg.(kubernetes.Config).Mentions(account)
+		},
+		services:  func(cfg any) []string { return cfg.(kubernetes.Config).Services() },
+		exchanges: func(cfg any) bool { return cfg.(kubernetes.Config).ExchangeAudience != "" },
+		exchangeFields: func(cfg any) []any {
+			c := cfg.(kubernetes.Config)
+			// The job entries LoadConfig appends to Accounts are counted apart, as the line
+			// always counted BROKER_EXCHANGE_JOB_ACCOUNTS.
+			jobs := 0
+			for _, entry := range c.Accounts {
+				if entry.Job.Listed() {
+					jobs++
+				}
+			}
+			return []any{"kubernetes", c.ExchangeAudience != "", "accounts", len(c.Accounts) - jobs, "read_accounts", len(c.Reads), "job_accounts", jobs}
+		},
+	})
 }
 
-// openKubernetes builds the Kubernetes provider: the cluster BROKER_K8S_OIDC_ISSUER names, the
-// exchange's account entries (BROKER_EXCHANGE_ACCOUNTS, then BROKER_EXCHANGE_JOB_ACCOUNTS, so a
-// job entry is numbered after them in a refusal) and read entries, the pod verifiers at
+// openKubernetes builds the Kubernetes provider from its own settings: the cluster
+// BROKER_K8S_OIDC_ISSUER names, the exchange's account and read entries, the pod verifiers at
 // BROKER_K8S_OIDC_AUDIENCE and BROKER_POD_REGISTRATION_AUDIENCE, and the API's and the NATS auth
 // service's callers at their audiences. A broker told about no cluster reads no key set and
 // verifies no pod.
-func openKubernetes(cfg config.Config, keys func(string) (*oidc.Keys, error), b *Boot) (opened, error) {
-	c := kubernetes.Config{
-		Issuer: cfg.K8sOIDCIssuer, ExchangeAudience: cfg.ExchangeK8sAudience,
-		Accounts: slices.Concat(cfg.ExchangeAccounts, cfg.ExchangeJobAccounts), Reads: cfg.ExchangeReadAccounts,
-	}
+func openKubernetes(cfg any, _ Shared, keys func(string) (*oidc.Keys, error), b *Boot) (opened, error) {
+	c := cfg.(kubernetes.Config)
 	if c.Issuer != "" {
 		var err error
 		if c.Keys, err = keys(c.Issuer); err != nil {
@@ -40,13 +62,13 @@ func openKubernetes(cfg config.Config, keys func(string) (*oidc.Keys, error), b 
 	if c.Issuer == "" {
 		return built, nil
 	}
-	b.Pods = p.PodVerifier(cfg.K8sOIDCAudience)
-	if cfg.PodRegistrationAudience != "" {
-		b.PodRegistration = p.PodVerifier(cfg.PodRegistrationAudience)
+	b.Pods = p.PodVerifier(c.Audience)
+	if c.PodRegistrationAudience != "" {
+		b.PodRegistration = p.PodVerifier(c.PodRegistrationAudience)
 	}
-	built.callers[identity.UseAPI] = p.CallerVerifier(cfg.K8sOIDCAudience)
-	if cfg.NATS.K8sAudience != "" {
-		built.callers[identity.UseNATS] = p.CallerVerifier(cfg.NATS.K8sAudience)
+	built.callers[identity.UseAPI] = p.CallerVerifier(c.Audience)
+	if c.NATSAudience != "" {
+		built.callers[identity.UseNATS] = p.CallerVerifier(c.NATSAudience)
 	}
 	return built, nil
 }

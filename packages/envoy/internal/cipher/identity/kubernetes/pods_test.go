@@ -39,11 +39,11 @@ const (
 func listed(t *testing.T) *kubernetes.Provider {
 	t.Helper()
 	p, err := kubernetes.New(kubernetes.Config{
-		Accounts: []exchange.AccountEntry{
+		Accounts: []kubernetes.AccountEntry{
 			{Account: workerAccount, Project: project, Person: person},
 			{Account: daemonAccount, Project: project, Person: person, Session: fixedSession},
 		},
-		Reads: []exchange.ReadEntry{{Account: readerAccount, Service: readerService, Session: readerSession}},
+		Reads: []kubernetes.ReadEntry{{Account: readerAccount, Service: readerService, Session: readerSession}},
 	})
 	if err != nil {
 		t.Fatalf("kubernetes.New: %v", err)
@@ -53,7 +53,7 @@ func listed(t *testing.T) *kubernetes.Provider {
 
 // build is the provider of accounts and reads composed into a registry, which is where a session
 // name two entries fix is refused.
-func build(accounts []exchange.AccountEntry, reads []exchange.ReadEntry) (*identity.Registry, error) {
+func build(accounts []kubernetes.AccountEntry, reads []kubernetes.ReadEntry) (*identity.Registry, error) {
 	p, err := kubernetes.New(kubernetes.Config{Accounts: accounts, Reads: reads})
 	if err != nil {
 		return nil, err
@@ -77,71 +77,71 @@ func podToken(account, uid string) map[string]any {
 }
 
 func TestNewSetRefusesAnEntryItCannotServe(t *testing.T) {
-	account := exchange.AccountEntry{Account: workerAccount, Project: project, Person: person}
-	with := func(change func(*exchange.AccountEntry)) exchange.AccountEntry {
+	account := kubernetes.AccountEntry{Account: workerAccount, Project: project, Person: person}
+	with := func(change func(*kubernetes.AccountEntry)) kubernetes.AccountEntry {
 		entry := account
 		change(&entry)
 		return entry
 	}
-	reader := exchange.ReadEntry{Account: readerAccount, Service: readerService, Session: readerSession}
-	withReader := func(change func(*exchange.ReadEntry)) exchange.ReadEntry {
+	reader := kubernetes.ReadEntry{Account: readerAccount, Service: readerService, Session: readerSession}
+	withReader := func(change func(*kubernetes.ReadEntry)) kubernetes.ReadEntry {
 		entry := reader
 		change(&entry)
 		return entry
 	}
 	for _, c := range []struct {
 		name     string
-		accounts []exchange.AccountEntry
-		reads    []exchange.ReadEntry
+		accounts []kubernetes.AccountEntry
+		reads    []kubernetes.ReadEntry
 		names    string
 	}{
 		{name: "an account that is not a service account subject",
-			accounts: []exchange.AccountEntry{with(func(e *exchange.AccountEntry) { e.Account = "example-worker" })}, names: "example-worker"},
+			accounts: []kubernetes.AccountEntry{with(func(e *kubernetes.AccountEntry) { e.Account = "example-worker" })}, names: "example-worker"},
 		{name: "an account with no namespace",
-			accounts: []exchange.AccountEntry{with(func(e *exchange.AccountEntry) { e.Account = "system:serviceaccount:example-worker" })}, names: "system:serviceaccount:example-worker"},
+			accounts: []kubernetes.AccountEntry{with(func(e *kubernetes.AccountEntry) { e.Account = "system:serviceaccount:example-worker" })}, names: "system:serviceaccount:example-worker"},
 		{name: "an empty account",
-			accounts: []exchange.AccountEntry{with(func(e *exchange.AccountEntry) { e.Account = "" })}, names: "account entry 1"},
+			accounts: []kubernetes.AccountEntry{with(func(e *kubernetes.AccountEntry) { e.Account = "" })}, names: "account entry 1"},
 		{name: "an account with no project",
-			accounts: []exchange.AccountEntry{with(func(e *exchange.AccountEntry) { e.Project = "  " })}, names: workerAccount},
+			accounts: []kubernetes.AccountEntry{with(func(e *kubernetes.AccountEntry) { e.Project = "  " })}, names: workerAccount},
 		{name: "an account with no person",
-			accounts: []exchange.AccountEntry{with(func(e *exchange.AccountEntry) { e.Person = "" })}, names: workerAccount},
+			accounts: []kubernetes.AccountEntry{with(func(e *kubernetes.AccountEntry) { e.Person = "" })}, names: workerAccount},
 		{name: "an account whose fixed session carries whitespace",
-			accounts: []exchange.AccountEntry{with(func(e *exchange.AccountEntry) { e.Session = "legion daemon" })}, names: workerAccount},
+			accounts: []kubernetes.AccountEntry{with(func(e *kubernetes.AccountEntry) { e.Session = "legion daemon" })}, names: workerAccount},
 		{name: "an account whose fixed session is too long",
-			accounts: []exchange.AccountEntry{with(func(e *exchange.AccountEntry) { e.Session = strings.Repeat("s", exchange.MaxSessionBytes+1) })}, names: workerAccount},
+			accounts: []kubernetes.AccountEntry{with(func(e *kubernetes.AccountEntry) { e.Session = strings.Repeat("s", exchange.MaxSessionBytes+1) })}, names: workerAccount},
 		{name: "an account whose fixed session is a wildcard",
-			accounts: []exchange.AccountEntry{with(func(e *exchange.AccountEntry) { e.Session = "*" })}, names: workerAccount},
+			accounts: []kubernetes.AccountEntry{with(func(e *kubernetes.AccountEntry) { e.Session = "*" })}, names: workerAccount},
 		{name: "the same account twice",
-			accounts: []exchange.AccountEntry{account, with(func(e *exchange.AccountEntry) { e.Project = "OTHER" })}, names: "account entry 2"},
+			accounts: []kubernetes.AccountEntry{account, with(func(e *kubernetes.AccountEntry) { e.Project = "OTHER" })}, names: "account entry 2"},
 		{name: "a session name two accounts fix",
-			accounts: []exchange.AccountEntry{
-				with(func(e *exchange.AccountEntry) { e.Session = fixedSession }),
+			accounts: []kubernetes.AccountEntry{
+				with(func(e *kubernetes.AccountEntry) { e.Session = fixedSession }),
 				{Account: daemonAccount, Project: project, Person: person, Session: fixedSession},
 			}, names: "account entry 1"},
 		{name: "a read entry whose account is not a service account subject",
-			reads: []exchange.ReadEntry{withReader(func(e *exchange.ReadEntry) { e.Account = "example-reader" })}, names: `read entry 1, "example-reader"`},
+			reads: []kubernetes.ReadEntry{withReader(func(e *kubernetes.ReadEntry) { e.Account = "example-reader" })}, names: `read entry 1, "example-reader"`},
 		{name: "a read entry with no account",
-			reads: []exchange.ReadEntry{withReader(func(e *exchange.ReadEntry) { e.Account = "" })}, names: "read entry 1"},
+			reads: []kubernetes.ReadEntry{withReader(func(e *kubernetes.ReadEntry) { e.Account = "" })}, names: "read entry 1"},
 		{name: "a read entry with a blank service",
-			reads: []exchange.ReadEntry{withReader(func(e *exchange.ReadEntry) { e.Service = " " })}, names: `read entry 1, "` + readerAccount + `"`},
+			reads: []kubernetes.ReadEntry{withReader(func(e *kubernetes.ReadEntry) { e.Service = " " })}, names: `read entry 1, "` + readerAccount + `"`},
 		{name: "a read entry with no service",
-			reads: []exchange.ReadEntry{withReader(func(e *exchange.ReadEntry) { e.Service = "" })}, names: `read entry 1, "` + readerAccount + `"`},
+			reads: []kubernetes.ReadEntry{withReader(func(e *kubernetes.ReadEntry) { e.Service = "" })}, names: `read entry 1, "` + readerAccount + `"`},
 		{name: "a read entry with no session, which it must fix",
-			reads: []exchange.ReadEntry{withReader(func(e *exchange.ReadEntry) { e.Session = "" })}, names: `read entry 1, "` + readerAccount + `"`},
+			reads: []kubernetes.ReadEntry{withReader(func(e *kubernetes.ReadEntry) { e.Session = "" })}, names: `read entry 1, "` + readerAccount + `"`},
 		{name: "a read entry whose session carries whitespace",
-			reads: []exchange.ReadEntry{withReader(func(e *exchange.ReadEntry) { e.Session = "example reader" })}, names: `read entry 1, "` + readerAccount + `"`},
+			reads: []kubernetes.ReadEntry{withReader(func(e *kubernetes.ReadEntry) { e.Session = "example reader" })}, names: `read entry 1, "` + readerAccount + `"`},
 		{name: "a read entry whose session is too long",
-			reads: []exchange.ReadEntry{withReader(func(e *exchange.ReadEntry) { e.Session = strings.Repeat("s", exchange.MaxSessionBytes+1) })}, names: `read entry 1, "` + readerAccount + `"`},
+			reads: []kubernetes.ReadEntry{withReader(func(e *kubernetes.ReadEntry) { e.Session = strings.Repeat("s", exchange.MaxSessionBytes+1) })}, names: `read entry 1, "` + readerAccount + `"`},
 		{name: "a read entry whose session holds a wildcard",
-			reads: []exchange.ReadEntry{withReader(func(e *exchange.ReadEntry) { e.Session = "example-reader.>" })}, names: `read entry 1, "` + readerAccount + `"`},
+			reads: []kubernetes.ReadEntry{withReader(func(e *kubernetes.ReadEntry) { e.Session = "example-reader.>" })}, names: `read entry 1, "` + readerAccount + `"`},
 		{name: "the same read account twice",
-			reads: []exchange.ReadEntry{reader, withReader(func(e *exchange.ReadEntry) { e.Session = "example-reader-other" })}, names: `read entry 2, "` + readerAccount + `"`},
+			reads: []kubernetes.ReadEntry{reader, withReader(func(e *kubernetes.ReadEntry) { e.Session = "example-reader-other" })}, names: `read entry 2, "` + readerAccount + `"`},
 		{name: "an account an account entry and a read entry both list",
-			accounts: []exchange.AccountEntry{account},
-			reads:    []exchange.ReadEntry{withReader(func(e *exchange.ReadEntry) { e.Account = workerAccount })}, names: `read entry 1, "` + workerAccount + `"`},
+			accounts: []kubernetes.AccountEntry{account},
+			reads:    []kubernetes.ReadEntry{withReader(func(e *kubernetes.ReadEntry) { e.Account = workerAccount })}, names: `read entry 1, "` + workerAccount + `"`},
 		{name: "a session name a read entry and an account fix",
-			accounts: []exchange.AccountEntry{with(func(e *exchange.AccountEntry) { e.Session = readerSession })},
-			reads:    []exchange.ReadEntry{reader}, names: `read entry 1, "` + readerAccount + `"`},
+			accounts: []kubernetes.AccountEntry{with(func(e *kubernetes.AccountEntry) { e.Session = readerSession })},
+			reads:    []kubernetes.ReadEntry{reader}, names: `read entry 1, "` + readerAccount + `"`},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			set, err := build(c.accounts, c.reads)
@@ -160,7 +160,7 @@ func TestNewSetRefusesAnEntryItCannotServe(t *testing.T) {
 // entry's person, and name no project; a request naming one is refused as any entry's is; and
 // MappedProjects answers the same empty list. A blank project that is not empty is still refused.
 func TestAnAccountEntryWithNoProjectNamesNone(t *testing.T) {
-	p, err := kubernetes.New(kubernetes.Config{Accounts: []exchange.AccountEntry{{Account: workerAccount, Person: person}}})
+	p, err := kubernetes.New(kubernetes.Config{Accounts: []kubernetes.AccountEntry{{Account: workerAccount, Person: person}}})
 	if err != nil {
 		t.Fatalf("NewSet with an account entry naming no project = %v, want it taken", err)
 	}
@@ -179,7 +179,7 @@ func TestAnAccountEntryWithNoProjectNamesNone(t *testing.T) {
 	if gotPerson, projects, ok := registry.Policy().MappedProjects(workerPrincipal); gotPerson != person || len(projects) != 0 || !ok {
 		t.Fatalf("MappedProjects = %q, %v, %v; want %s, no project, true", gotPerson, projects, ok, person)
 	}
-	if _, err := kubernetes.New(kubernetes.Config{Accounts: []exchange.AccountEntry{{Account: workerAccount, Project: "  ", Person: person}}}); err == nil {
+	if _, err := kubernetes.New(kubernetes.Config{Accounts: []kubernetes.AccountEntry{{Account: workerAccount, Project: "  ", Person: person}}}); err == nil {
 		t.Fatal("NewSet with an account entry whose project is blank but not empty = nil error, want a refusal")
 	}
 }

@@ -94,12 +94,12 @@ type issuer struct {
 // settings give it to each provider: the cluster's, GitHub's and Google's issuers, the
 // device-flow client's audience a person's own token carries, and the entries each lists.
 type identities struct {
-	cluster, github, google issuer
-	personAudience          string
-	accounts                []exchange.AccountEntry
-	reads                   []exchange.ReadEntry
-	workflows               []exchange.WorkflowEntry
-	machines                []exchange.GoogleEntry
+	cluster, githubIssuer, googleIssuer issuer
+	personAudience                      string
+	accounts                            []kubernetes.AccountEntry
+	reads                               []kubernetes.ReadEntry
+	workflows                           []github.WorkflowEntry
+	machines                            []google.GoogleEntry
 }
 
 // registry builds each provider of id and the registry of them, in rank order, failing the test
@@ -123,13 +123,13 @@ func (id identities) build() (*identity.Registry, error) {
 		return nil, err
 	}
 	machines, err := google.New(google.Config{
-		Issuer: id.google.URL, Keys: id.google.Keys, Audience: id.google.Audience, PersonAudience: id.personAudience,
+		Issuer: id.googleIssuer.URL, Keys: id.googleIssuer.Keys, Audience: id.googleIssuer.Audience, PersonAudience: id.personAudience,
 		SignInDomain: signInDomain, Machines: id.machines,
 	})
 	if err != nil {
 		return nil, err
 	}
-	runs, err := github.New(github.Config{Issuer: id.github.URL, Audience: id.github.Audience, Keys: id.github.Keys, Workflows: id.workflows})
+	runs, err := github.New(github.Config{Issuer: id.githubIssuer.URL, Audience: id.githubIssuer.Audience, Keys: id.githubIssuer.Keys, Workflows: id.workflows})
 	if err != nil {
 		return nil, err
 	}
@@ -139,7 +139,7 @@ func (id identities) build() (*identity.Registry, error) {
 // listing lists the accounts, the workflows and the Google accounts given and no read entry, in
 // place of what the fixture lists, keeping its issuers. machines are the Google accounts a test
 // that drives the machine subject token lists; every other test passes none.
-func listing(accounts []exchange.AccountEntry, workflows []exchange.WorkflowEntry, machines ...exchange.GoogleEntry) func(*identities) {
+func listing(accounts []kubernetes.AccountEntry, workflows []github.WorkflowEntry, machines ...google.GoogleEntry) func(*identities) {
 	return func(id *identities) {
 		id.accounts, id.reads, id.workflows, id.machines = accounts, nil, workflows, machines
 	}
@@ -147,7 +147,7 @@ func listing(accounts []exchange.AccountEntry, workflows []exchange.WorkflowEntr
 
 // listingWithReads is listing with the read entries too, for a test whose trades include a read
 // entry's: the kubernetes provider lists both kinds, and listing names no read entry.
-func listingWithReads(accounts []exchange.AccountEntry, reads []exchange.ReadEntry, workflows []exchange.WorkflowEntry, machines ...exchange.GoogleEntry) func(*identities) {
+func listingWithReads(accounts []kubernetes.AccountEntry, reads []kubernetes.ReadEntry, workflows []github.WorkflowEntry, machines ...google.GoogleEntry) func(*identities) {
 	return func(id *identities) {
 		id.accounts, id.reads, id.workflows, id.machines = accounts, reads, workflows, machines
 	}
@@ -157,10 +157,10 @@ func listingWithReads(accounts []exchange.AccountEntry, reads []exchange.ReadEnt
 // workflows above, with a local issuer standing in for the cluster's and another for GitHub's.
 type exchangeFixture struct {
 	*fixture
-	cluster    *oidctest.Issuer
-	clusterKey *oidctest.Key
-	github     *oidctest.Issuer
-	githubKey  *oidctest.Key
+	cluster      *oidctest.Issuer
+	clusterKey   *oidctest.Key
+	githubIssuer *oidctest.Issuer
+	githubKey    *oidctest.Key
 	// identities is the identity configuration as built, after the test's changes.
 	identities identities
 	// config is the token exchange's configuration as built, before the test's adjust.
@@ -172,26 +172,26 @@ type exchangeFixture struct {
 // can list other entries, drop an issuer or shorten a lifetime.
 func newExchangeFixture(t *testing.T, adjust func(*oauth.Config), changes ...func(*identities)) *exchangeFixture {
 	t.Helper()
-	cluster, github := oidctest.New(t), oidctest.New(t)
-	clusterKey, githubKey := cluster.PublishKey(t, "cluster-key"), github.PublishKey(t, "github-key")
+	cluster, ghIssuer := oidctest.New(t), oidctest.New(t)
+	clusterKey, githubKey := cluster.PublishKey(t, "cluster-key"), ghIssuer.PublishKey(t, "github-key")
 	clusterKeys, err := oidc.NewKeys(context.Background(), cluster.URL())
 	if err != nil {
 		t.Fatalf("cluster keys: %v", err)
 	}
-	githubKeys, err := oidc.NewKeys(context.Background(), github.URL())
+	githubKeys, err := oidc.NewKeys(context.Background(), ghIssuer.URL())
 	if err != nil {
 		t.Fatalf("GitHub keys: %v", err)
 	}
 	id := identities{
-		cluster: issuer{URL: cluster.URL(), Audience: podAudience, Keys: clusterKeys},
-		github:  issuer{URL: github.URL(), Audience: workflowAudience, Keys: githubKeys},
-		accounts: []exchange.AccountEntry{
+		cluster:      issuer{URL: cluster.URL(), Audience: podAudience, Keys: clusterKeys},
+		githubIssuer: issuer{URL: ghIssuer.URL(), Audience: workflowAudience, Keys: githubKeys},
+		accounts: []kubernetes.AccountEntry{
 			{Account: account, Project: project, Person: person},
 			{Account: daemonAccount, Project: project, Person: person, Session: daemonSession},
 			{Account: otherAccount, Project: otherProject, Person: otherPerson},
 		},
-		reads: []exchange.ReadEntry{{Account: readAccount, Service: readService, Session: readSession}},
-		workflows: []exchange.WorkflowEntry{
+		reads: []kubernetes.ReadEntry{{Account: readAccount, Service: readService, Session: readSession}},
+		workflows: []github.WorkflowEntry{
 			{Repository: repository, Workflow: workflow, Ref: ref, Project: project, Person: person},
 			{Repository: repository, Workflow: deployWorkflow, Ref: ref, Project: project, Person: person, Session: deploySession},
 		},
@@ -204,7 +204,7 @@ func newExchangeFixture(t *testing.T, adjust func(*oauth.Config), changes ...fun
 		c.Exchange = config
 		adjust(c)
 	})
-	return &exchangeFixture{fixture: inner, cluster: cluster, clusterKey: clusterKey, github: github, githubKey: githubKey, identities: id, config: config}
+	return &exchangeFixture{fixture: inner, cluster: cluster, clusterKey: clusterKey, githubIssuer: ghIssuer, githubKey: githubKey, identities: id, config: config}
 }
 
 // replica is a second broker process on f's database, trusting f's issuers, started with f's
@@ -219,7 +219,7 @@ func (f *exchangeFixture) replica(t *testing.T, changes ...func(*identities)) *e
 	config := f.config
 	config.Registry = id.registry(t)
 	inner := newFixtureOn(t, f.dsn, func(c *oauth.Config) { c.Exchange = config })
-	return &exchangeFixture{fixture: inner, cluster: f.cluster, clusterKey: f.clusterKey, github: f.github, githubKey: f.githubKey, identities: id, config: config}
+	return &exchangeFixture{fixture: inner, cluster: f.cluster, clusterKey: f.clusterKey, githubIssuer: f.githubIssuer, githubKey: f.githubKey, identities: id, config: config}
 }
 
 // podToken is a projected service-account token of the account above bound to the pod uid, with
@@ -256,7 +256,7 @@ func (f *exchangeFixture) workflowToken(t *testing.T, run string, change func(ma
 	t.Helper()
 	now := time.Now()
 	claims := map[string]any{
-		"iss":              f.github.URL(),
+		"iss":              f.githubIssuer.URL(),
 		"sub":              "repo:" + repository + ":ref:" + ref,
 		"aud":              workflowAudience,
 		"iat":              now.Add(-time.Minute).Unix(),
@@ -271,7 +271,7 @@ func (f *exchangeFixture) workflowToken(t *testing.T, run string, change func(ma
 	if change != nil {
 		change(claims)
 	}
-	return f.github.Mint(t, f.githubKey, claims)
+	return f.githubIssuer.Mint(t, f.githubKey, claims)
 }
 
 // exchangeForm is a complete token-exchange request a test spoils one field at a time: the
@@ -1088,12 +1088,12 @@ func TestARePointedNameIsItsNewEntrysWhicheverReplicaReservesLast(t *testing.T) 
 	old.introspectsAs(t, old.exchanged(t, daemonForm(old, ""), key), daemonSession, person, project)
 
 	next := old.replica(t, listing(
-		[]exchange.AccountEntry{
+		[]kubernetes.AccountEntry{
 			{Account: account, Project: project, Person: person},
 			{Account: daemonAccount, Project: project, Person: person},
 			{Account: otherAccount, Project: otherProject, Person: otherPerson, Session: daemonSession},
 		},
-		[]exchange.WorkflowEntry{
+		[]github.WorkflowEntry{
 			{Repository: repository, Workflow: workflow, Ref: ref, Project: project, Person: person},
 			{Repository: repository, Workflow: deployWorkflow, Ref: ref, Project: project, Person: person, Session: deploySession},
 		}))
@@ -1424,7 +1424,7 @@ func TestTheExchangeClientAuthenticatesWithNoCredentialAndOnlyThere(t *testing.T
 // not registered at all, so a caller presenting it is refused by the library before any handler
 // of the broker's runs.
 func TestAnIssuerTheBrokerWasNotToldAboutRegistersNoType(t *testing.T) {
-	f := newExchangeFixture(t, func(*oauth.Config) {}, func(id *identities) { id.github = issuer{} })
+	f := newExchangeFixture(t, func(*oauth.Config) {}, func(id *identities) { id.githubIssuer = issuer{} })
 	key := newKey(t)
 	status, body := f.exchange(t, exchangeForm(f.workflowToken(t, "4242", nil), oauthwire.SubjectTokenTypeGitHub, "ci-release"), key)
 	if status != http.StatusBadRequest || body["error"] != "invalid_request" {
@@ -1682,7 +1682,7 @@ func TestANamedTradeIsRefusedWhenItsEntryPersonCannotSeeTheProject(t *testing.T)
 
 	machines := newSignInFixtureWith(t, func(c *oauth.Config) {
 		c.Exchange.Projects = access
-	}, listing(nil, nil, exchange.GoogleEntry{Account: signInMachine, Service: signInFleet, Project: project, Person: person}))
+	}, listing(nil, nil, google.GoogleEntry{Account: signInMachine, Service: signInFleet, Project: project, Person: person}))
 	form := exchangeForm(machines.machineToken(t, signInMachine, machineAudience, true), oauthwire.SubjectTokenTypeGoogle, "example-machine")
 	status, body = machines.exchange(t, form, key)
 	refusedSaying(t, status, body, http.StatusBadRequest, "invalid_request", "its entry names the project "+project+", which its person "+person+" cannot see")
@@ -1749,7 +1749,7 @@ func TestAnAccountEntryWithNoProjectMintsANamedTokenWithNoProject(t *testing.T) 
 		t.Helper()
 		f := newExchangeFixture(t, func(c *oauth.Config) {
 			c.Exchange.Projects = access
-		}, listing([]exchange.AccountEntry{{Account: account, Person: person}}, nil))
+		}, listing([]kubernetes.AccountEntry{{Account: account, Person: person}}, nil))
 		f.registers(t, account, "pod-uid-1", "public-session-1")
 		status, body := f.exchange(t, exchangeForm(f.podToken(t, "pod-uid-1", nil), oauthwire.SubjectTokenTypeKubernetes, "public-session-1"), newKey(t))
 		return f, status, body
@@ -1785,7 +1785,7 @@ func TestAnAccountEntryWithNoProjectMintsANamedTokenWithNoProject(t *testing.T) 
 	})
 	t.Run("a workflow entry may not leave its project empty", func(t *testing.T) {
 		var id identities
-		listing(nil, []exchange.WorkflowEntry{{Repository: repository, Workflow: workflow, Ref: ref, Person: person}})(&id)
+		listing(nil, []github.WorkflowEntry{{Repository: repository, Workflow: workflow, Ref: ref, Person: person}})(&id)
 		if _, err := id.build(); err == nil {
 			t.Fatal("NewSet with a workflow entry naming no project = nil error, want a refusal")
 		}
@@ -1896,7 +1896,7 @@ func TestANamedTokenStoresItsProjectUnderTheOlderClaimToo(t *testing.T) {
 		t.Fatalf("the person token's stored `project` claim = %#v, want none", got)
 	}
 
-	public := newExchangeFixture(t, func(*oauth.Config) {}, listing([]exchange.AccountEntry{{Account: account, Person: person}}, nil))
+	public := newExchangeFixture(t, func(*oauth.Config) {}, listing([]kubernetes.AccountEntry{{Account: account, Person: person}}, nil))
 	public.registers(t, account, "pod-uid-1", "public-session-1")
 	public.exchanged(t, exchangeForm(public.podToken(t, "pod-uid-1", nil), oauthwire.SubjectTokenTypeKubernetes, "public-session-1"), newKey(t))
 	if got := olderClaim(t, public, "public-session-1"); got != nil {
@@ -1945,7 +1945,7 @@ func TestAnUncheckedMintLogsItsEntry(t *testing.T) {
 
 	public := newExchangeFixture(t, func(c *oauth.Config) {
 		c.Exchange.Projects = access
-	}, listing([]exchange.AccountEntry{{Account: otherAccount, Person: person}}, nil))
+	}, listing([]kubernetes.AccountEntry{{Account: otherAccount, Person: person}}, nil))
 	public.registers(t, otherAccount, "pod-uid-2", "public-session-1")
 	public.exchanged(t, exchangeForm(public.podTokenOf(t, otherAccount, "pod-uid-2"), oauthwire.SubjectTokenTypeKubernetes, "public-session-1"), key)
 	if got := logs.lines("unchecked", otherAccount, "public-session-1"); len(got) != 1 {
@@ -1990,12 +1990,12 @@ func newJobFixture(t *testing.T, access *fakeAccess) *signInFixture {
 	return newSignInFixtureWith(t, func(c *oauth.Config) {
 		c.Exchange.Projects = access
 	}, listing(
-		[]exchange.AccountEntry{
+		[]kubernetes.AccountEntry{
 			{Account: jobAccount, Job: jobList(t, project)},
 			{Account: publicJobAccount, Job: jobList(t, "public,PRIVB,PRIVA"), Session: publicJobSession},
 		},
-		[]exchange.WorkflowEntry{{Repository: repository, Workflow: jobWorkflow, Ref: ref, Job: jobList(t, "public,PRIVA")}},
-		exchange.GoogleEntry{Account: jobMachine, Service: signInFleet, Job: jobList(t, project)}))
+		[]github.WorkflowEntry{{Repository: repository, Workflow: jobWorkflow, Ref: ref, Job: jobList(t, "public,PRIVA")}},
+		google.GoogleEntry{Account: jobMachine, Service: signInFleet, Job: jobList(t, project)}))
 }
 
 // actionsRun is workflowToken's change for a push to ref running the workflow at path of

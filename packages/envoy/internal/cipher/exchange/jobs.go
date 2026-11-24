@@ -108,3 +108,56 @@ func (j JobProjects) String() string {
 // Listed reports whether the entry holding j names a job list: false for the zero value alone,
 // which an entry naming a person holds.
 func (j JobProjects) Listed() bool { return j.scope != ProjectScopeUnset }
+
+// JobEntry is one entry of a job setting that names an account (BROKER_EXCHANGE_JOB_ACCOUNTS,
+// BROKER_VM_EXCHANGE_JOB_ACCOUNTS): the account it names, the job list its tokens carry, the
+// session name it fixes, if any, and its text as the setting gave it.
+type JobEntry struct {
+	Account       string
+	Job           JobProjects
+	Session, Text string
+}
+
+// ParseJobEntries reads setting's whitespace-separated entries of form, an account, its projects
+// and an optional session, in order. The session is everything after the second "=", so it alone
+// may carry one. It refuses, naming the setting and the entry: one not of that form or with a
+// blank account; an account accountRefusal refuses; projects ParseSettingJobProjects refuses; and
+// an account named twice, since one account writes as one identity. The identity provider whose
+// setting it is passes its own accountRefusal, so each holds the account to its own form.
+func ParseJobEntries(setting, value, form string, accountRefusal func(setting, text, account string) error) ([]JobEntry, error) {
+	var entries []JobEntry
+	seen := map[string]bool{}
+	for _, text := range strings.Fields(value) {
+		fields, ok := EntryFields(text, 3)
+		if !ok || fields[0] == "" {
+			return nil, fmt.Errorf("%s must be %s entries, the session everything after the second =, got %q", setting, form, text)
+		}
+		account := fields[0]
+		if err := accountRefusal(setting, text, account); err != nil {
+			return nil, err
+		}
+		job, err := ParseSettingJobProjects(setting, text, fields[1])
+		if err != nil {
+			return nil, err
+		}
+		if seen[account] {
+			return nil, fmt.Errorf("%s names the service account %s twice, got %q again; one account writes as one identity, so name it once", setting, account, text)
+		}
+		seen[account] = true
+		entries = append(entries, JobEntry{Account: account, Job: job, Session: fields[2], Text: text})
+	}
+	return entries, nil
+}
+
+// ParseSettingJobProjects reads projects, the projects field of a job setting's entry text,
+// through ParseJobProjects, and refuses projects it refuses, naming the setting and the entry
+// beside the rule they break. Every job setting reads its projects with it
+// (BROKER_EXCHANGE_JOB_ACCOUNTS, BROKER_EXCHANGE_JOB_WORKFLOWS, BROKER_VM_EXCHANGE_JOB_ACCOUNTS),
+// so each refuses them in the same words.
+func ParseSettingJobProjects(setting, text, projects string) (JobProjects, error) {
+	job, err := ParseJobProjects(projects)
+	if err != nil {
+		return JobProjects{}, fmt.Errorf("%s names projects no job entry may name, got %q: %w", setting, text, err)
+	}
+	return job, nil
+}

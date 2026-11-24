@@ -11,7 +11,6 @@ import (
 
 	"authelia.com/provider/oauth2"
 
-	"github.com/sjawhar/envoy/internal/cipher/exchange"
 	"github.com/sjawhar/envoy/internal/cipher/identity"
 	"github.com/sjawhar/envoy/internal/cipher/identity/google"
 	"github.com/sjawhar/envoy/internal/cipher/identity/kubernetes"
@@ -135,8 +134,8 @@ func claimsDecider(t *testing.T) (*Provider, []claimsSubject) {
 	unread := oidc.NewKeysAt("https://keys.example/unread")
 	pods, err := kubernetes.New(kubernetes.Config{
 		Issuer: claimsIssuer, Keys: unread, ExchangeAudience: claimsAudience,
-		Accounts: []exchange.AccountEntry{{Account: claimsPodAccount, Project: claimsProject, Person: claimsPerson}},
-		Reads:    []exchange.ReadEntry{{Account: claimsReadAccount, Service: claimsReadService, Session: claimsSessionName}},
+		Accounts: []kubernetes.AccountEntry{{Account: claimsPodAccount, Project: claimsProject, Person: claimsPerson}},
+		Reads:    []kubernetes.ReadEntry{{Account: claimsReadAccount, Service: claimsReadService, Session: claimsSessionName}},
 	})
 	if err != nil {
 		t.Fatalf("kubernetes.New: %v", err)
@@ -145,7 +144,7 @@ func claimsDecider(t *testing.T) (*Provider, []claimsSubject) {
 	// client's audience; the actor token below is the machine's, under Google's own.
 	machines, err := google.New(google.Config{
 		Issuer: claimsGoogleIssuer, Keys: unread, Audience: claimsGoogleAudience, PersonAudience: claimsDeviceAudience,
-		SignInDomain: claimsSignInDomain, Machines: []exchange.GoogleEntry{{Account: claimsGoogleAccount, Service: claimsGoogleService}},
+		SignInDomain: claimsSignInDomain, Machines: []google.GoogleEntry{{Account: claimsGoogleAccount, Service: claimsGoogleService}},
 	})
 	if err != nil {
 		t.Fatalf("google.New: %v", err)

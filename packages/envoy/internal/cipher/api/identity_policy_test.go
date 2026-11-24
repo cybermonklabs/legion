@@ -14,7 +14,7 @@ import (
 
 // kubernetesRegistry is the identity registry of a Kubernetes provider listing accounts and
 // trusting no cluster, as cmd/cipherd composes one.
-func kubernetesRegistry(accounts []exchange.AccountEntry) (*identity.Registry, error) {
+func kubernetesRegistry(accounts []kubernetes.AccountEntry) (*identity.Registry, error) {
 	pods, err := kubernetes.New(kubernetes.Config{Accounts: accounts})
 	if err != nil {
 		return nil, err
@@ -24,7 +24,7 @@ func kubernetesRegistry(accounts []exchange.AccountEntry) (*identity.Registry, e
 
 // kubernetesPolicy is kubernetesRegistry's listed identities: the set the request machine reads
 // an enrolled pod's mapped projects from.
-func kubernetesPolicy(accounts []exchange.AccountEntry) (*exchange.Set, error) {
+func kubernetesPolicy(accounts []kubernetes.AccountEntry) (*exchange.Set, error) {
 	registry, err := kubernetesRegistry(accounts)
 	if err != nil {
 		return nil, err
@@ -35,7 +35,7 @@ func kubernetesPolicy(accounts []exchange.AccountEntry) (*exchange.Set, error) {
 // identities is the identity registry of the three providers, each trusting no issuer and
 // listing nothing, as cmd/cipherd composes them: the Subjects an enroll.Service and a
 // requests.Machine read.
-func identities(t testing.TB, machines ...exchange.GoogleEntry) *identity.Registry {
+func identities(t testing.TB, machines ...google.GoogleEntry) *identity.Registry {
 	t.Helper()
 	pods, err := kubernetes.New(kubernetes.Config{})
 	if err != nil {
@@ -57,9 +57,9 @@ func identities(t testing.TB, machines ...exchange.GoogleEntry) *identity.Regist
 // held to.
 func fleetPolicy(t testing.TB, services map[string]string) *exchange.Set {
 	t.Helper()
-	var machines []exchange.GoogleEntry
+	var machines []google.GoogleEntry
 	for _, account := range slices.Sorted(maps.Keys(services)) {
-		machines = append(machines, exchange.GoogleEntry{Account: account, Service: services[account]})
+		machines = append(machines, google.GoogleEntry{Account: account, Service: services[account]})
 	}
 	return identities(t, machines...).Policy()
 }

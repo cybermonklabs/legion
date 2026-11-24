@@ -14,7 +14,7 @@ import (
 // accounts and the Google one listing machines, each trusting no issuer, as cmd/cipherd composes
 // them: the reader of every launcher credential's subject (Machine.Subjects) and, through its
 // Policy, of what every operator's entry lists (Machine.Exchange).
-func registryOf(t testing.TB, accounts []exchange.AccountEntry, machines []exchange.GoogleEntry) *identity.Registry {
+func registryOf(t testing.TB, accounts []kubernetes.AccountEntry, machines []google.GoogleEntry) *identity.Registry {
 	t.Helper()
 	pods, err := kubernetes.New(kubernetes.Config{Accounts: accounts})
 	if err != nil {
@@ -41,7 +41,7 @@ func identities(t testing.TB) *identity.Registry { return registryOf(t, nil, nil
 // kubernetesPolicy is the listed identities the identity registry composes from a Kubernetes
 // provider listing accounts, as cmd/cipherd composes them: the set the request machine reads an
 // enrolled pod's mapped projects from.
-func kubernetesPolicy(accounts []exchange.AccountEntry) (*exchange.Set, error) {
+func kubernetesPolicy(accounts []kubernetes.AccountEntry) (*exchange.Set, error) {
 	pods, err := kubernetes.New(kubernetes.Config{Accounts: accounts})
 	if err != nil {
 		return nil, err
@@ -56,7 +56,7 @@ func kubernetesPolicy(accounts []exchange.AccountEntry) (*exchange.Set, error) {
 // fleetPolicy is the listed identities of a Google provider listing machines: the services
 // BROKER_VM_SERVICES lists their accounts for, and the person each BROKER_VM_EXCHANGE_ACCOUNTS
 // entry names.
-func fleetPolicy(t testing.TB, machines ...exchange.GoogleEntry) *exchange.Set {
+func fleetPolicy(t testing.TB, machines ...google.GoogleEntry) *exchange.Set {
 	t.Helper()
 	return registryOf(t, nil, machines).Policy()
 }

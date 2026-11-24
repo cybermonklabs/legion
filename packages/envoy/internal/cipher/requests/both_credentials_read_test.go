@@ -7,7 +7,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/internal/cipher/exchange"
+	"github.com/sjawhar/envoy/internal/cipher/identity/kubernetes"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess/projectaccesstest"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 )
@@ -78,7 +78,7 @@ func TestEveryReaderReadsTheProjectsOfBothCredentials(t *testing.T) {
 		}
 		// The asking pod's account is mapped to PRIV here directly, standing in for any way the
 		// projects of the two credentials come to differ.
-		set, err := kubernetesPolicy([]exchange.AccountEntry{{Account: fixtureSubject, Project: privProject, Person: insider}})
+		set, err := kubernetesPolicy([]kubernetes.AccountEntry{{Account: fixtureSubject, Project: privProject, Person: insider}})
 		if err != nil {
 			t.Fatalf("exchange.NewSet: %v", err)
 		}

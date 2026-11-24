@@ -82,7 +82,7 @@ func TestIntrospectionAnswersTheAccountTheTokensCredentialRecords(t *testing.T) 
 				recordSignIn(t, f, person, jkt, signInMachine)
 				return token
 			},
-			person: person, issuer: f.google.URL(), subject: "109" + person,
+			person: person, issuer: f.googleIssuer.URL(), subject: "109" + person,
 			proves: "the account of the person token that made the sign-in",
 		},
 		{
@@ -107,7 +107,7 @@ func TestIntrospectionAnswersTheAccountTheTokensCredentialRecords(t *testing.T) 
 					set request = request #- '{session,extra,account_issuer}' #- '{session,extra,account_subject}'
 					where request #>> '{session,extra,person}' = $1 and request #>> '{session,jwk_thumbprint}' = $2`, person, jkt)
 				if _, err := f.pool.Exec(context.Background(), `insert into person_signins (person, thumbprint, machine_account, issuer, subject)
-					values ($1, $2, $3, $4, '109another-account')`, person, jkt, signInMachine, f.google.URL()); err != nil {
+					values ($1, $2, $3, $4, '109another-account')`, person, jkt, signInMachine, f.googleIssuer.URL()); err != nil {
 					t.Fatalf("insert the sign-in row another account's trade wrote: %v", err)
 				}
 				return token
@@ -155,7 +155,7 @@ func TestATokenRecordsWhenItsCredentialWasMade(t *testing.T) {
 	var signInMade int64
 	if err := f.pool.QueryRow(ctx, `insert into person_signins (person, thumbprint, machine_account, issuer, subject, created_at, last_used_at)
 		values ($1, $2, $3, $4, $5, now() - interval '3 days', now() - interval '3 days') returning floor(extract(epoch from created_at))::bigint`,
-		person, thumbprint(t, key), signInMachine, oidc.CanonicalIssuer(f.google.URL()), "109"+person).Scan(&signInMade); err != nil {
+		person, thumbprint(t, key), signInMachine, oidc.CanonicalIssuer(f.googleIssuer.URL()), "109"+person).Scan(&signInMade); err != nil {
 		t.Fatalf("the sign-in this box key made three days ago: %v", err)
 	}
 	signInToken := f.exchanged(t, signInForm(

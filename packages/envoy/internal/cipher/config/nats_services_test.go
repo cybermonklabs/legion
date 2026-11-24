@@ -8,6 +8,8 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/api"
 	"github.com/sjawhar/envoy/internal/cipher/identity"
+	"github.com/sjawhar/envoy/internal/cipher/identity/google"
+	"github.com/sjawhar/envoy/internal/cipher/identity/kubernetes"
 )
 
 const (
@@ -19,7 +21,7 @@ const (
 
 // inCluster is the Kubernetes service account whose subject is address.
 func inCluster(address string) identity.Account {
-	return identity.Account{Kind: kubernetesAccountKind, Address: address}
+	return identity.Account{Kind: kubernetes.Kind, Address: address}
 }
 
 // Each entry is read as <kind>/<machine id or ->/<* or ->=<account>, the account written as
@@ -32,7 +34,7 @@ func TestParseNATSServicesReadsEachEntry(t *testing.T) {
 	require.Equal(t, []NATSService{
 		{Kind: NATSListener, MachineID: "dev-stack", Account: inCluster(listenerAccount), AllProjects: true, Text: listener},
 		{Kind: NATSDaemon, Account: inCluster(daemonAccount), Text: daemon},
-		{Kind: NATSMeasure, Account: identity.Account{Kind: googleAccountKind, Address: measureAccount}, AllProjects: true, Text: measure},
+		{Kind: NATSMeasure, Account: identity.Account{Kind: google.Kind, Address: measureAccount}, AllProjects: true, Text: measure},
 		{Kind: NATSDispatch, MachineID: "example-dispatch", Account: inCluster("system:serviceaccount:dispatch:dispatch"), AllProjects: true, Text: dispatch},
 	}, services)
 	none, err := ParseNATSServices("  ")
@@ -62,7 +64,7 @@ func TestEdgeListenersAreTheEdgeListenerEntries(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, []api.EdgeListener{
 		{Account: inCluster(edgeAccount), Projects: []string{"PRIV"}},
-		{Account: identity.Account{Kind: googleAccountKind, Address: "example-edge@example-project.iam.gserviceaccount.com"}, Projects: []string{"OTHER"}},
+		{Account: identity.Account{Kind: google.Kind, Address: "example-edge@example-project.iam.gserviceaccount.com"}, Projects: []string{"OTHER"}},
 	}, NATSCallout{Services: services}.EdgeListeners())
 	require.Empty(t, NATSCallout{}.EdgeListeners())
 }

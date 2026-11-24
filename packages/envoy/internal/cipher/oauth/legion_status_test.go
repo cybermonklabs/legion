@@ -12,7 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/cipher/exchange"
+	"github.com/sjawhar/envoy/internal/cipher/identity/github"
+	"github.com/sjawhar/envoy/internal/cipher/identity/google"
+	"github.com/sjawhar/envoy/internal/cipher/identity/kubernetes"
 	"github.com/sjawhar/envoy/internal/cipher/oauth"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
@@ -70,7 +72,7 @@ func TestTheBrokerGivesLegionStatusToTheDaemonAlone(t *testing.T) {
 	// One policy holds every entry, so one broker mints every row's token. NewSet refuses two
 	// entries that fix one session name, so each entry below fixes a name of its own.
 	f := newSignInFixtureWith(t, func(*oauth.Config) {}, listingWithReads(
-		[]exchange.AccountEntry{
+		[]kubernetes.AccountEntry{
 			{Account: account, Project: project, Person: person},
 			{Account: daemonAccount, Project: project, Person: person, Session: daemonSession},
 			{Account: otherProjectAccount, Project: "OTHERP", Person: person},
@@ -78,12 +80,12 @@ func TestTheBrokerGivesLegionStatusToTheDaemonAlone(t *testing.T) {
 			{Account: noProjectAccount, Person: person, Session: "legion-daemon:"},
 			{Account: roleAccount, Project: project, Person: person, Session: roleSession},
 		},
-		[]exchange.ReadEntry{{Account: readAccount, Service: readService, Session: readSession}},
-		[]exchange.WorkflowEntry{
+		[]kubernetes.ReadEntry{{Account: readAccount, Service: readService, Session: readSession}},
+		[]github.WorkflowEntry{
 			{Repository: repository, Workflow: legionWorkflow, Ref: ref, Project: "WF", Person: person, Session: "legion-daemon:WF"},
 		},
-		exchange.GoogleEntry{Account: signInMachine, Service: signInFleet},
-		exchange.GoogleEntry{Account: vmMachine, Service: vmService, Project: "VM", Person: person, Session: "legion-daemon:VM"},
+		google.GoogleEntry{Account: signInMachine, Service: signInFleet},
+		google.GoogleEntry{Account: vmMachine, Service: vmService, Project: "VM", Person: person, Session: "legion-daemon:VM"},
 	))
 	broker, verifier := newDispatchVerifier(t)
 

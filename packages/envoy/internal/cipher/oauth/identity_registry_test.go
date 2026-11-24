@@ -10,7 +10,8 @@ import (
 
 	"authelia.com/provider/oauth2/handler/rfc8693"
 
-	"github.com/sjawhar/envoy/internal/cipher/exchange"
+	"github.com/sjawhar/envoy/internal/cipher/identity/github"
+	"github.com/sjawhar/envoy/internal/cipher/identity/kubernetes"
 	"github.com/sjawhar/envoy/internal/cipher/oauth"
 	"github.com/sjawhar/envoy/internal/cipher/oauthstore"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
@@ -24,8 +25,8 @@ import (
 // while a sound token of each type trades.
 func TestEachSubjectTypeIsHeldToItsIssuerAudienceAndExpiry(t *testing.T) {
 	s := newSignInFixtureWith(t, func(*oauth.Config) {}, func(id *identities) {
-		id.accounts = []exchange.AccountEntry{{Account: account, Project: project, Person: person}}
-		id.workflows = []exchange.WorkflowEntry{{Repository: repository, Workflow: workflow, Ref: ref, Project: project, Person: person}}
+		id.accounts = []kubernetes.AccountEntry{{Account: account, Project: project, Person: person}}
+		id.workflows = []github.WorkflowEntry{{Repository: repository, Workflow: workflow, Ref: ref, Project: project, Person: person}}
 	})
 	stranger := oidctest.New(t)
 	strangerKey := stranger.PublishKey(t, "stranger-key")
@@ -41,7 +42,7 @@ func TestEachSubjectTypeIsHeldToItsIssuerAudienceAndExpiry(t *testing.T) {
 	}
 	googleClaims := func(subject, email, audience string) map[string]any {
 		return map[string]any{
-			"iss": s.google.URL(), "sub": subject, "aud": audience, "iat": now.Add(-time.Minute).Unix(), "exp": now.Add(time.Hour).Unix(),
+			"iss": s.googleIssuer.URL(), "sub": subject, "aud": audience, "iat": now.Add(-time.Minute).Unix(), "exp": now.Add(time.Hour).Unix(),
 			"email": email, "email_verified": true,
 		}
 	}
@@ -57,24 +58,24 @@ func TestEachSubjectTypeIsHeldToItsIssuerAudienceAndExpiry(t *testing.T) {
 		}},
 		{"a workflow run's", func(spoil func(map[string]any), byStranger bool) url.Values {
 			claims := map[string]any{
-				"iss": s.github.URL(), "sub": "repo:" + repository + ":ref:" + ref, "aud": workflowAudience,
+				"iss": s.githubIssuer.URL(), "sub": "repo:" + repository + ":ref:" + ref, "aud": workflowAudience,
 				"iat": now.Add(-time.Minute).Unix(), "exp": now.Add(15 * time.Minute).Unix(), "jti": "run-" + time.Now().Format(time.RFC3339Nano),
 				"repository": repository, "workflow_ref": repository + "/" + workflow + "@" + ref,
 				"job_workflow_ref": repository + "/" + workflow + "@" + ref, "ref": ref,
 			}
 			spoil(claims)
-			return exchangeForm(mint(s.github, s.githubKey, claims, byStranger), oauthwire.SubjectTokenTypeGitHub, "release-bot")
+			return exchangeForm(mint(s.githubIssuer, s.githubKey, claims, byStranger), oauthwire.SubjectTokenTypeGitHub, "release-bot")
 		}},
 		{"a machine's", func(spoil func(map[string]any), byStranger bool) url.Values {
 			claims := googleClaims("machine-subject", signInMachine, machineAudience)
 			spoil(claims)
-			return exchangeForm(mint(s.google, s.googleKey, claims, byStranger), oauthwire.SubjectTokenTypeGoogle, "example-machine")
+			return exchangeForm(mint(s.googleIssuer, s.googleKey, claims, byStranger), oauthwire.SubjectTokenTypeGoogle, "example-machine")
 		}},
 		{"a person's", func(spoil func(map[string]any), byStranger bool) url.Values {
 			claims := googleClaims("109ada", person, deviceAudience)
 			claims["hd"] = signInDomain
 			spoil(claims)
-			return signInForm(mint(s.google, s.googleKey, claims, byStranger), s.machineToken(t, signInMachine, machineAudience, true), "ada-box")
+			return signInForm(mint(s.googleIssuer, s.googleKey, claims, byStranger), s.machineToken(t, signInMachine, machineAudience, true), "ada-box")
 		}},
 	}
 	s.registers(t, account, "pod-uid-1", "implementer-g1")
@@ -110,7 +111,7 @@ func TestEachSubjectTypeIsHeldToItsIssuerAudienceAndExpiry(t *testing.T) {
 // the stray actor token to anything.
 func TestAnActorTokenBesideAPodsTokenIsIgnoredAsBefore(t *testing.T) {
 	s := newSignInFixtureWith(t, func(*oauth.Config) {}, func(id *identities) {
-		id.accounts = []exchange.AccountEntry{{Account: account, Project: project, Person: person}}
+		id.accounts = []kubernetes.AccountEntry{{Account: account, Project: project, Person: person}}
 	})
 	s.registers(t, account, "pod-uid-1", "implementer-g1")
 	form := exchangeForm(s.podToken(t, "pod-uid-1", nil), oauthwire.SubjectTokenTypeKubernetes, "implementer-g1")

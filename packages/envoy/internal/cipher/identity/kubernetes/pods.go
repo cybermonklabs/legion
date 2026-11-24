@@ -170,7 +170,7 @@ func (p *Provider) pod(token map[string]any, session string, projects []string) 
 // oauthwire.LegionDaemonSessionPrefix + that project, compared exactly. It reads the session the
 // entry fixes, never the one a request names, and a job entry names no Project, so it is never
 // one.
-func isLegionDaemon(entry exchange.AccountEntry) bool {
+func isLegionDaemon(entry AccountEntry) bool {
 	project, fixesDaemonSession := strings.CutPrefix(entry.Session, oauthwire.LegionDaemonSessionPrefix)
 	return fixesDaemonSession && entry.Project != "" && project == entry.Project
 }
@@ -178,8 +178,8 @@ func isLegionDaemon(entry exchange.AccountEntry) bool {
 // podListing is the entry that lists a pod's account: its AccountEntry, or, when readOnly is set,
 // its ReadEntry. New refuses an account both lists name, so exactly one of them answers.
 type podListing struct {
-	account  exchange.AccountEntry
-	read     exchange.ReadEntry
+	account  AccountEntry
+	read     ReadEntry
 	readOnly bool
 }
 

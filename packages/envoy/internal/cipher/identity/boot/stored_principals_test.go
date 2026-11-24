@@ -191,7 +191,9 @@ func decided(t *testing.T, row recordedRow, registry *identity.Registry) exchang
 	var kind identity.Kind
 	switch c.Kind {
 	case "devbox":
-		claims, err := registry.Policy().Machine("00000000-0000-4000-8000-000000000001", c.Person, c.Session, nil)
+		// Every recorded row was a full member's: a restricted member's machine is held to one
+		// named project (exchange.ApproverRestricted), which no row here carries.
+		claims, err := registry.Policy().Machine("00000000-0000-4000-8000-000000000001", c.Person, c.Session, nil, exchange.ApproverUnrestricted)
 		if err != nil {
 			t.Fatalf("the set's decision of a dev box session: %v", err)
 		}

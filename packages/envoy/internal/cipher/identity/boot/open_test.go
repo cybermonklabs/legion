@@ -10,10 +10,9 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/sjawhar/envoy/internal/cipher/config"
-	"github.com/sjawhar/envoy/internal/cipher/exchange"
 	"github.com/sjawhar/envoy/internal/cipher/identity"
 	"github.com/sjawhar/envoy/internal/cipher/identity/boot"
+	"github.com/sjawhar/envoy/internal/cipher/identity/google"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/oidc"
@@ -45,12 +44,27 @@ func newIssuers(t *testing.T) issuers {
 	return i
 }
 
-// everyIssuer is a configuration naming every issuer and every audience the providers read.
-func everyIssuer(i issuers) config.Config {
-	return config.Config{
-		K8sOIDCIssuer: i.cluster.URL(), K8sOIDCAudience: "broker", ExchangeK8sAudience: "broker-exchange",
-		GoogleOIDCIssuer: i.google.URL(), GoogleOIDCAudience: "broker-machines", SignInDeviceAudience: "broker-signin",
-		ExchangeGitHubIssuer: i.github.URL(), ExchangeGitHubAudience: "broker-ci",
+// settingsOf is every provider's settings read from env, as the broker reads them from its
+// environment (Load); a variable env does not name is unset.
+func settingsOf(t *testing.T, env map[string]string) boot.Settings {
+	t.Helper()
+	settings, err := boot.Load(func(name string) string { return env[name] })
+	if err != nil {
+		t.Fatalf("boot.Load: %v", err)
+	}
+	return settings
+}
+
+// everyIssuer is the environment naming every issuer and every audience the providers read.
+func everyIssuer(i issuers) map[string]string {
+	return map[string]string{
+		"BROKER_K8S_OIDC_ISSUER": i.cluster.URL(), "BROKER_K8S_OIDC_AUDIENCE": "broker",
+		"BROKER_EXCHANGE_K8S_AUDIENCE": "broker-exchange",
+		"BROKER_GOOGLE_OIDC_ISSUER":    i.google.URL(), "BROKER_GOOGLE_OIDC_AUDIENCE": "broker-machines",
+		"BROKER_SIGNIN_DEVICE_AUDIENCE":   "broker-signin",
+		"BROKER_VM_SERVICES":              "example-fleet=example-fleet@example-project.iam.gserviceaccount.com",
+		"BROKER_EXCHANGE_GITHUB_ISSUER":   i.github.URL(),
+		"BROKER_EXCHANGE_GITHUB_AUDIENCE": "broker-ci",
 	}
 }
 
@@ -60,7 +74,7 @@ func everyIssuer(i issuers) config.Config {
 func TestOpenBuildsEachProviderFromItsSettings(t *testing.T) {
 	i := newIssuers(t)
 	reads := &countingKeys{reads: map[string]int{}}
-	b, err := boot.Open(context.Background(), everyIssuer(i), reads.keys)
+	b, err := boot.Open(context.Background(), settingsOf(t, everyIssuer(i)), reads.keys)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -100,7 +114,7 @@ func TestOpenBuildsEachProviderFromItsSettings(t *testing.T) {
 // every type unconfigured, has no pod verifier and authenticates no API or NATS caller.
 func TestOpenReadsNoIssuerItIsNotTold(t *testing.T) {
 	reads := &countingKeys{reads: map[string]int{}}
-	b, err := boot.Open(context.Background(), config.Config{}, reads.keys)
+	b, err := boot.Open(context.Background(), settingsOf(t, nil), reads.keys)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -122,18 +136,19 @@ func TestOpenReadsNoIssuerItIsNotTold(t *testing.T) {
 func TestOpenAnswersTheGoogleExchangeAudienceOnlyWhereAMachineIsListed(t *testing.T) {
 	i := newIssuers(t)
 	listed := everyIssuer(i)
-	listed.ExchangeGoogleAccounts = []exchange.GoogleEntry{{Account: "example-fleet@example-project.iam.gserviceaccount.com", Service: "example-fleet"}}
+	// An API caller's audience alone: the same environment with no VM service listed.
+	callerOnly := withEnv(everyIssuer(i), map[string]string{"BROKER_VM_SERVICES": "", "BROKER_SIGNIN_DEVICE_AUDIENCE": ""})
 	for _, c := range []struct {
 		name string
-		cfg  config.Config
+		env  map[string]string
 		want map[string]string
 	}{
-		{name: "a listed machine", cfg: listed, want: map[string]string{"google_exchange_audience": "broker-machines"}},
-		{name: "an API caller's audience alone", cfg: everyIssuer(i), want: map[string]string{}},
-		{name: "no Google issuer", cfg: config.Config{}, want: map[string]string{}},
+		{name: "a listed machine", env: listed, want: map[string]string{"google_exchange_audience": "broker-machines"}},
+		{name: "an API caller's audience alone", env: callerOnly, want: map[string]string{}},
+		{name: "no Google issuer", env: nil, want: map[string]string{}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			b, err := boot.Open(context.Background(), c.cfg, (&countingKeys{reads: map[string]int{}}).keys)
+			b, err := boot.Open(context.Background(), settingsOf(t, c.env), (&countingKeys{reads: map[string]int{}}).keys)
 			if err != nil {
 				t.Fatalf("Open: %v", err)
 			}
@@ -148,21 +163,21 @@ func TestOpenAnswersTheGoogleExchangeAudienceOnlyWhereAMachineIsListed(t *testin
 // account, project or instance name appears in a test.
 const exampleVMAccount = "example-fleet@example-project.iam.gserviceaccount.com"
 
-// vmConfig is the broker's configuration with the cluster's issuer and, when audience is set,
-// one VM service, as config.Load reads it from BROKER_VM_SERVICES, BROKER_VM_PROJECTS and
-// BROKER_VM_INSTANCES: example-fleet, run by exampleVMAccount in example-project as example-vm-*,
-// with Google's own issuer, which Load answers for BROKER_GOOGLE_OIDC_ISSUER unset.
-func vmConfig(audience string) config.Config {
-	cfg := config.Config{
-		K8sOIDCIssuer: "https://cluster.example", K8sOIDCAudience: "example-broker-pod", ExchangeK8sAudience: "example-broker-exchange",
-		GoogleOIDCIssuer: config.DefaultGoogleOIDCIssuer,
+// vmEnv is the broker's environment with the cluster's issuer and, when audience is set, one VM
+// service: example-fleet, run by exampleVMAccount in example-project as example-vm-*, with
+// Google's own issuer, which the google provider reads for BROKER_GOOGLE_OIDC_ISSUER unset.
+func vmEnv(audience string) map[string]string {
+	env := map[string]string{
+		"BROKER_K8S_OIDC_ISSUER": "https://cluster.example", "BROKER_K8S_OIDC_AUDIENCE": "example-broker-pod",
+		"BROKER_EXCHANGE_K8S_AUDIENCE": "example-broker-exchange",
 	}
 	if audience != "" {
-		cfg.GoogleOIDCAudience = audience
-		cfg.VMServicesByAccount = map[string]string{exampleVMAccount: "example-fleet"}
-		cfg.ExchangeGoogleAccounts = []exchange.GoogleEntry{{Account: exampleVMAccount, Service: "example-fleet", CloudProject: "example-project", Instance: "example-vm-*"}}
+		env["BROKER_GOOGLE_OIDC_AUDIENCE"] = audience
+		env["BROKER_VM_SERVICES"] = "example-fleet=" + exampleVMAccount
+		env["BROKER_VM_PROJECTS"] = exampleVMAccount + "=example-project"
+		env["BROKER_VM_INSTANCES"] = exampleVMAccount + "=example-vm-*"
 	}
-	return cfg
+	return env
 }
 
 // discovery is a KeysFunc that records each issuer whose keys are asked for and answers a key
@@ -202,7 +217,7 @@ func keysOf(b boot.Boot, tokenType string) identity.KeySource {
 func TestWithNoGoogleAudienceTheBrokerDiscoversOneIssuer(t *testing.T) {
 	logged := captureLog(t)
 	d := &discovery{}
-	b, err := boot.Open(context.Background(), vmConfig(""), d.keysFor)
+	b, err := boot.Open(context.Background(), settingsOf(t, vmEnv("")), d.keysFor)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -231,15 +246,15 @@ func TestWithNoGoogleAudienceTheBrokerDiscoversOneIssuer(t *testing.T) {
 func TestAGoogleAudienceDiscoversGooglesIssuer(t *testing.T) {
 	logged := captureLog(t)
 	d := &discovery{}
-	b, err := boot.Open(context.Background(), vmConfig("example-vm-audience"), d.keysFor)
+	b, err := boot.Open(context.Background(), settingsOf(t, vmEnv("example-vm-audience")), d.keysFor)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := []string{"https://cluster.example", config.DefaultGoogleOIDCIssuer}; !slices.Equal(d.asked, want) {
+	if want := []string{"https://cluster.example", google.DefaultIssuer}; !slices.Equal(d.asked, want) {
 		t.Fatalf("read the key sets of %v, want %v", d.asked, want)
 	}
-	if keys := keysOf(b, oauthwire.SubjectTokenTypeGoogle); keys == nil || keys != identity.KeySource(d.keys[config.DefaultGoogleOIDCIssuer]) {
-		t.Fatalf("the exchange's Google key source = %v, want Google's own, %p", keys, d.keys[config.DefaultGoogleOIDCIssuer])
+	if keys := keysOf(b, oauthwire.SubjectTokenTypeGoogle); keys == nil || keys != identity.KeySource(d.keys[google.DefaultIssuer]) {
+		t.Fatalf("the exchange's Google key source = %v, want Google's own, %p", keys, d.keys[google.DefaultIssuer])
 	}
 	lines := strings.Count(logged.String(), "google machine identity")
 	wantLine := `msg="google machine identity" issuer=https://accounts.google.com audience=example-vm-audience services=example-fleet fleets=1`
@@ -254,17 +269,17 @@ func TestAGoogleAudienceDiscoversGooglesIssuer(t *testing.T) {
 func TestAStandInIssuerIsDiscoveredInGooglesPlace(t *testing.T) {
 	logged := captureLog(t)
 	d := &discovery{}
-	cfg := vmConfig("example-vm-audience")
-	cfg.GoogleOIDCIssuer = "http://127.0.0.1:18080"
-	b, err := boot.Open(context.Background(), cfg, d.keysFor)
+	const standIn = "http://127.0.0.1:18080"
+	env := withEnv(vmEnv("example-vm-audience"), map[string]string{"BROKER_GOOGLE_OIDC_ISSUER": standIn})
+	b, err := boot.Open(context.Background(), settingsOf(t, env), d.keysFor)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := []string{"https://cluster.example", cfg.GoogleOIDCIssuer}; !slices.Equal(d.asked, want) {
+	if want := []string{"https://cluster.example", standIn}; !slices.Equal(d.asked, want) {
 		t.Fatalf("read the key sets of %v, want %v", d.asked, want)
 	}
-	if keys := keysOf(b, oauthwire.SubjectTokenTypeGoogle); keys == nil || keys != identity.KeySource(d.keys[cfg.GoogleOIDCIssuer]) {
-		t.Fatalf("the exchange's Google key source = %v, want the stand-in issuer's own, %p", keys, d.keys[cfg.GoogleOIDCIssuer])
+	if keys := keysOf(b, oauthwire.SubjectTokenTypeGoogle); keys == nil || keys != identity.KeySource(d.keys[standIn]) {
+		t.Fatalf("the exchange's Google key source = %v, want the stand-in issuer's own, %p", keys, d.keys[standIn])
 	}
 	if !strings.Contains(logged.String(), "issuer=http://127.0.0.1:18080") {
 		t.Fatalf("log = %q, want the stand-in issuer named", logged)
@@ -275,9 +290,11 @@ func TestAStandInIssuerIsDiscoveredInGooglesPlace(t *testing.T) {
 // at its NATS audience, and the pod registration verifier is the cluster's at its own audience.
 func TestOpenWiresEachNATSAudienceToItsKind(t *testing.T) {
 	i := newIssuers(t)
-	cfg := everyIssuer(i)
-	cfg.NATS.K8sAudience, cfg.NATS.GoogleAudience, cfg.PodRegistrationAudience = "nats-cluster", "nats-google", "broker-registration"
-	b, err := boot.Open(context.Background(), cfg, (&countingKeys{reads: map[string]int{}}).keys)
+	env := withEnv(everyIssuer(i), map[string]string{
+		"BROKER_NATS_K8S_AUDIENCE": "nats-cluster", "BROKER_NATS_GOOGLE_AUDIENCE": "nats-google",
+		"BROKER_POD_REGISTRATION_AUDIENCE": "broker-registration",
+	})
+	b, err := boot.Open(context.Background(), settingsOf(t, env), (&countingKeys{reads: map[string]int{}}).keys)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -299,7 +316,9 @@ func TestOpenWiresEachNATSAudienceToItsKind(t *testing.T) {
 func TestOpenReadsGooglesKeysForANATSAudienceAlone(t *testing.T) {
 	i := newIssuers(t)
 	reads := &countingKeys{reads: map[string]int{}}
-	b, err := boot.Open(context.Background(), config.Config{GoogleOIDCIssuer: i.google.URL(), NATS: config.NATSCallout{GoogleAudience: "nats-google"}}, reads.keys)
+	b, err := boot.Open(context.Background(), settingsOf(t, map[string]string{
+		"BROKER_GOOGLE_OIDC_ISSUER": i.google.URL(), "BROKER_NATS_GOOGLE_AUDIENCE": "nats-google",
+	}), reads.keys)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -313,11 +332,11 @@ func TestOpenReadsGooglesKeysForANATSAudienceAlone(t *testing.T) {
 // the listed identities reads one set.
 func TestOpenListsEveryProvidersEntries(t *testing.T) {
 	i := newIssuers(t)
-	cfg := everyIssuer(i)
-	cfg.ExchangeAccounts = []exchange.AccountEntry{{Account: "system:serviceaccount:example-ns:example-worker", Project: "ACME", Person: "ada@example.com"}}
-	cfg.ExchangeWorkflows = []exchange.WorkflowEntry{{Repository: "example-org/example-repo", Workflow: ".github/workflows/release.yaml", Ref: "refs/heads/main", Project: "ACME", Person: "ada@example.com"}}
-	cfg.ExchangeGoogleAccounts = []exchange.GoogleEntry{{Account: "example-fleet@example-project.iam.gserviceaccount.com", Service: "example-fleet"}}
-	b, err := boot.Open(context.Background(), cfg, (&countingKeys{reads: map[string]int{}}).keys)
+	env := withEnv(everyIssuer(i), map[string]string{
+		"BROKER_EXCHANGE_ACCOUNTS":  "system:serviceaccount:example-ns:example-worker=ACME=ada@example.com",
+		"BROKER_EXCHANGE_WORKFLOWS": "example-org/example-repo=.github/workflows/release.yaml=refs/heads/main=ACME=ada@example.com",
+	})
+	b, err := boot.Open(context.Background(), settingsOf(t, env), (&countingKeys{reads: map[string]int{}}).keys)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -344,24 +363,21 @@ func TestOpenListsEveryProvidersEntries(t *testing.T) {
 // person's.
 func TestOpenListsTheJobEntries(t *testing.T) {
 	i := newIssuers(t)
-	job := func(text string) exchange.JobProjects {
-		list, err := exchange.ParseJobProjects(text)
-		if err != nil {
-			t.Fatalf("ParseJobProjects(%q): %v", text, err)
-		}
-		return list
-	}
 	const (
 		worker     = "system:serviceaccount:example-ns:example-worker"
 		jobAccount = "system:serviceaccount:example-ns:example-job"
+		jobFleet   = "example-job@example-project.iam.gserviceaccount.com"
+		repo       = "example-org/example-repo"
 	)
-	cfg := everyIssuer(i)
-	cfg.ExchangeAccounts = []exchange.AccountEntry{{Account: worker, Project: "ACME", Person: "ada@example.com"}}
-	cfg.ExchangeJobAccounts = []exchange.AccountEntry{{Account: jobAccount, Job: job("ACME")}}
-	cfg.ExchangeWorkflows = []exchange.WorkflowEntry{{Repository: "example-org/example-repo", Workflow: ".github/workflows/release.yaml", Ref: "refs/heads/main", Project: "ACME", Person: "ada@example.com"}}
-	cfg.ExchangeJobWorkflows = []exchange.WorkflowEntry{{Repository: "example-org/example-repo", Workflow: ".github/workflows/sweep.yaml", Ref: "refs/heads/main", Job: job("public,PRIVB,PRIVA")}}
-	cfg.ExchangeGoogleAccounts = []exchange.GoogleEntry{{Account: "example-job@example-project.iam.gserviceaccount.com", Service: "example-jobs", Job: job("PRIVA")}}
-	b, err := boot.Open(context.Background(), cfg, (&countingKeys{reads: map[string]int{}}).keys)
+	env := withEnv(everyIssuer(i), map[string]string{
+		"BROKER_EXCHANGE_ACCOUNTS":        worker + "=ACME=ada@example.com",
+		"BROKER_EXCHANGE_JOB_ACCOUNTS":    jobAccount + "=ACME",
+		"BROKER_EXCHANGE_WORKFLOWS":       repo + "=.github/workflows/release.yaml=refs/heads/main=ACME=ada@example.com",
+		"BROKER_EXCHANGE_JOB_WORKFLOWS":   repo + "=.github/workflows/sweep.yaml=refs/heads/main=public,PRIVB,PRIVA",
+		"BROKER_VM_SERVICES":              "example-jobs=" + jobFleet,
+		"BROKER_VM_EXCHANGE_JOB_ACCOUNTS": jobFleet + "=PRIVA",
+	})
+	b, err := boot.Open(context.Background(), settingsOf(t, env), (&countingKeys{reads: map[string]int{}}).keys)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -370,16 +386,19 @@ func TestOpenListsTheJobEntries(t *testing.T) {
 		projects  []string
 	}{
 		{"account:" + jobAccount, []string{"ACME"}},
-		{"workflow:example-org/example-repo/.github/workflows/sweep.yaml@refs/heads/main", []string{"PRIVA", "PRIVB"}},
-		{"google:example-job@example-project.iam.gserviceaccount.com", []string{"PRIVA"}},
+		{"workflow:" + repo + "/.github/workflows/sweep.yaml@refs/heads/main", []string{"PRIVA", "PRIVB"}},
+		{"google:" + jobFleet, []string{"PRIVA"}},
 	} {
 		person, projects, ok := b.Registry.Policy().MappedProjects(c.principal)
 		if !ok || person != "" || !slices.Equal(projects, c.projects) {
 			t.Errorf("Policy().MappedProjects(%s) = %q, %v, %t; want no person and the job list %v", c.principal, person, projects, ok, c.projects)
 		}
 	}
-	cfg.ExchangeJobAccounts = []exchange.AccountEntry{{Account: worker, Job: job("ACME")}}
-	if _, err := boot.Open(context.Background(), cfg, (&countingKeys{reads: map[string]int{}}).keys); err == nil || !strings.Contains(err.Error(), "account entry 2") {
-		t.Fatalf("Open with %s in BROKER_EXCHANGE_ACCOUNTS and BROKER_EXCHANGE_JOB_ACCOUNTS = %v; want a refusal naming account entry 2", worker, err)
+	// An account both settings name is refused where the provider reads its settings, before any
+	// issuer is read, and the refusal names both settings and the account.
+	twice := withEnv(env, map[string]string{"BROKER_EXCHANGE_JOB_ACCOUNTS": worker + "=ACME"})
+	_, err = boot.Load(func(name string) string { return twice[name] })
+	if err == nil || !strings.Contains(err.Error(), "BROKER_EXCHANGE_JOB_ACCOUNTS and BROKER_EXCHANGE_ACCOUNTS both name the service account "+worker) {
+		t.Fatalf("Load with %s in BROKER_EXCHANGE_ACCOUNTS and BROKER_EXCHANGE_JOB_ACCOUNTS = %v; want a refusal naming both settings and the account", worker, err)
 	}
 }

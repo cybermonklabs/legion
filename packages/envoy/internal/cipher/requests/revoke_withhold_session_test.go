@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/cipher/exchange"
+	"github.com/sjawhar/envoy/internal/cipher/identity/kubernetes"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
@@ -144,7 +145,7 @@ func TestARevokeWaitsForAnAdoptionOfTheSessionInFlight(t *testing.T) {
 func TestAnUnmappedPersonsPodsAutomaticGrantNamesNoOperatorOnLiveGrants(t *testing.T) {
 	m, _, _, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
 	dave := personPod{person: "dave@example.com", service: "person-dave", account: "system:serviceaccount:people:dave"}
-	set, err := kubernetesPolicy([]exchange.AccountEntry{{Account: dave.account, Project: teamProject, Person: insider}})
+	set, err := kubernetesPolicy([]kubernetes.AccountEntry{{Account: dave.account, Project: teamProject, Person: insider}})
 	if err != nil {
 		t.Fatalf("exchange.NewSet: %v", err)
 	}
@@ -197,7 +198,7 @@ func TestOnlyAMappedPersonRevokesTheirPodsAutomaticGrant(t *testing.T) {
 			const dave = "dave@example.com"
 			m, _, _, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
 			p := personPod{person: dave, service: "person-dave", account: "system:serviceaccount:people:dave"}
-			set, err := kubernetesPolicy([]exchange.AccountEntry{{Account: p.account, Project: teamProject, Person: insider}})
+			set, err := kubernetesPolicy([]kubernetes.AccountEntry{{Account: p.account, Project: teamProject, Person: insider}})
 			if err != nil {
 				t.Fatal(err)
 			}

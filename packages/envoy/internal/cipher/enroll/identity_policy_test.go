@@ -14,7 +14,7 @@ import (
 // registryOf is the identity registry of the three providers, each trusting no issuer, the
 // Google one listing machines: the Subjects and, through its Policy, the listed identities an
 // enroll.Service reads, as cmd/cipherd composes them.
-func registryOf(machines []exchange.GoogleEntry) *identity.Registry {
+func registryOf(machines []google.GoogleEntry) *identity.Registry {
 	pods, err := kubernetes.New(kubernetes.Config{})
 	if err != nil {
 		panic(err)
@@ -38,16 +38,16 @@ func registryOf(machines []exchange.GoogleEntry) *identity.Registry {
 // service, as BROKER_VM_SERVICES lists it: the Policy a machine's or a sign-in's credential is
 // held to (AuthenticateLauncher).
 func fleets(services map[string]string) *exchange.Set {
-	var machines []exchange.GoogleEntry
+	var machines []google.GoogleEntry
 	for _, account := range slices.Sorted(maps.Keys(services)) {
-		machines = append(machines, exchange.GoogleEntry{Account: account, Service: services[account]})
+		machines = append(machines, google.GoogleEntry{Account: account, Service: services[account]})
 	}
 	return registryOf(machines).Policy()
 }
 
 // kubernetesPolicy is the listed identities the identity registry composes from a Kubernetes
 // provider listing accounts, as cmd/cipherd composes them.
-func kubernetesPolicy(accounts []exchange.AccountEntry) (*exchange.Set, error) {
+func kubernetesPolicy(accounts []kubernetes.AccountEntry) (*exchange.Set, error) {
 	pods, err := kubernetes.New(kubernetes.Config{Accounts: accounts})
 	if err != nil {
 		return nil, err
@@ -69,7 +69,7 @@ func (p podDecisions) Pod(token map[string]any, session string, projects []strin
 }
 
 // kubernetesPods is the Kubernetes provider listing accounts.
-func kubernetesPods(accounts []exchange.AccountEntry) (podDecisions, error) {
+func kubernetesPods(accounts []kubernetes.AccountEntry) (podDecisions, error) {
 	provider, err := kubernetes.New(kubernetes.Config{Accounts: accounts})
 	return podDecisions{provider: provider}, err
 }

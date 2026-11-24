@@ -9,6 +9,9 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/cipher/identity"
+	"github.com/sjawhar/envoy/internal/cipher/identity/boot"
+	"github.com/sjawhar/envoy/internal/cipher/identity/google"
+	"github.com/sjawhar/envoy/internal/cipher/identity/kubernetes"
 )
 
 // The accounts BROKER_POD_OPERATORS maps in these tests, and the login service each one logs in
@@ -158,8 +161,9 @@ func mappedAccountRefusalCases(t *testing.T) []mappedAccountRefusalCase {
 				return e
 			},
 			reachable: func(cfg Config) (string, bool) {
+				machines, _ := boot.ConfigOf[google.Config](cfg.Identity, google.Kind)
 				return "BROKER_VM_SERVICES names example-service, the login service of " + adaAccount + ", and BROKER_SERVICES is unset",
-					cfg.ServiceLogins[adaAccount] == "example-service" && cfg.VMServicesByAccount[exampleVMServiceAccount] == "example-service" && len(cfg.ServicesByAccount) == 0
+					cfg.ServiceLogins[adaAccount] == "example-service" && machines.ServicesByAccount[exampleVMServiceAccount] == "example-service" && len(cfg.ServicesByAccount) == 0
 			},
 			names: []string{"BROKER_VM_SERVICES names its login service " + strconv.Quote("example-service")},
 		},
@@ -173,8 +177,9 @@ func mappedAccountRefusalCases(t *testing.T) []mappedAccountRefusalCase {
 				return e
 			},
 			reachable: func(cfg Config) (string, bool) {
+				pods, _ := boot.ConfigOf[kubernetes.Config](cfg.Identity, kubernetes.Kind)
 				return "BROKER_EXCHANGE_ACCOUNTS maps " + adaAccount + " to grace@example.com",
-					len(cfg.ExchangeAccounts) == 1 && cfg.ExchangeAccounts[0].Account == adaAccount && cfg.ExchangeAccounts[0].Person == "grace@example.com"
+					len(pods.Accounts) == 1 && pods.Accounts[0].Account == adaAccount && pods.Accounts[0].Person == "grace@example.com"
 			},
 			names: []string{"BROKER_EXCHANGE_ACCOUNTS maps it to grace@example.com"},
 		},
@@ -188,7 +193,8 @@ func mappedAccountRefusalCases(t *testing.T) []mappedAccountRefusalCase {
 				return e
 			},
 			reachable: func(cfg Config) (string, bool) {
-				entries := cfg.ExchangeAccounts
+				pods, _ := boot.ConfigOf[kubernetes.Config](cfg.Identity, kubernetes.Kind)
+				entries := pods.Accounts
 				return "BROKER_EXCHANGE_ACCOUNTS lists " + adaAccount + " with no person and no project",
 					len(entries) == 1 && entries[0].Account == adaAccount && entries[0].Person == "" && entries[0].Project == ""
 			},
@@ -221,7 +227,7 @@ func mappedAccountRefusalCases(t *testing.T) []mappedAccountRefusalCase {
 				return e
 			},
 			reachable: func(cfg Config) (string, bool) {
-				caller, calls := cfg.APIAccounts[identity.Account{Kind: kubernetesAccountKind, Address: adaAccount}]
+				caller, calls := cfg.APIAccounts[identity.Account{Kind: kubernetes.Kind, Address: adaAccount}]
 				return "BROKER_API_ACCOUNTS names " + adaAccount + " as the caller dispatch",
 					calls && caller.Name == "dispatch" && cfg.ServiceLogins[adaAccount] == adaLoginService
 			},
@@ -251,8 +257,9 @@ func mappedAccountRefusalCases(t *testing.T) []mappedAccountRefusalCase {
 				return e
 			},
 			reachable: func(cfg Config) (string, bool) {
+				pods, _ := boot.ConfigOf[kubernetes.Config](cfg.Identity, kubernetes.Kind)
 				return "BROKER_EXCHANGE_READ_ACCOUNTS names " + adaAccount + " as a reader of example-reader",
-					len(cfg.ExchangeReadAccounts) == 1 && cfg.ExchangeReadAccounts[0].Account == adaAccount && cfg.ExchangeReadAccounts[0].Service == "example-reader" &&
+					len(pods.Reads) == 1 && pods.Reads[0].Account == adaAccount && pods.Reads[0].Service == "example-reader" &&
 						cfg.ServiceLogins[adaAccount] == adaLoginService
 			},
 			names: []string{"BROKER_EXCHANGE_READ_ACCOUNTS names it as a reader of the service " + strconv.Quote("example-reader")},
@@ -267,8 +274,9 @@ func mappedAccountRefusalCases(t *testing.T) []mappedAccountRefusalCase {
 				return e
 			},
 			reachable: func(cfg Config) (string, bool) {
+				pods, _ := boot.ConfigOf[kubernetes.Config](cfg.Identity, kubernetes.Kind)
 				return "BROKER_EXCHANGE_JOB_ACCOUNTS names " + adaAccount + " as a job's account for the projects EXAMPLE",
-					len(cfg.ExchangeJobAccounts) == 1 && cfg.ExchangeJobAccounts[0].Account == adaAccount && cfg.ExchangeJobAccounts[0].Job.String() == "EXAMPLE" &&
+					len(pods.Accounts) == 1 && pods.Accounts[0].Account == adaAccount && pods.Accounts[0].Job.String() == "EXAMPLE" &&
 						cfg.ServiceLogins[adaAccount] == adaLoginService
 			},
 			names: []string{"BROKER_EXCHANGE_JOB_ACCOUNTS names it as a job's account for the projects EXAMPLE"},
@@ -317,8 +325,8 @@ func TestPodOperatorsRefusesAMappedAccountAnotherSettingGivesARole(t *testing.T)
 				t.Fatalf("with BROKER_POD_OPERATORS unset, Load: %v; want it to load, so that the refusal of %s is the mapping's", err, adaAccount)
 			}
 			if state, holds := tc.reachable(unmapped); !holds {
-				t.Fatalf("with BROKER_POD_OPERATORS unset, want %s; ServiceLogins = %v, ServicesByAccount = %v, VMServicesByAccount = %v, ExchangeAccounts = %+v, ExchangeReadAccounts = %+v, ExchangeJobAccounts = %+v, APIAccounts = %v, SessionAccountPairs = %v, PodRegistrars = %v, NATS = %+v",
-					state, unmapped.ServiceLogins, unmapped.ServicesByAccount, unmapped.VMServicesByAccount, unmapped.ExchangeAccounts, unmapped.ExchangeReadAccounts, unmapped.ExchangeJobAccounts, unmapped.APIAccounts, unmapped.SessionAccountPairs, unmapped.PodRegistrars, unmapped.NATS)
+				t.Fatalf("with BROKER_POD_OPERATORS unset, want %s; ServiceLogins = %v, ServicesByAccount = %v, the providers' services = %v, APIAccounts = %v, SessionAccountPairs = %v, PodRegistrars = %v, NATS = %+v",
+					state, unmapped.ServiceLogins, unmapped.ServicesByAccount, unmapped.Identity.Services(), unmapped.APIAccounts, unmapped.SessionAccountPairs, unmapped.PodRegistrars, unmapped.NATS)
 			}
 			e := tc.env()
 			e["BROKER_POD_OPERATORS"] = adaPodOperator
@@ -376,10 +384,11 @@ func TestPodOperatorsLoadsMappedAccounts(t *testing.T) {
 	for account := range cfg.APIAccounts {
 		apiKinds[account.Kind]++
 	}
-	if apiKinds[kubernetesAccountKind] != 1 || apiKinds[googleAccountKind] != 1 || len(cfg.SessionAccountPairs) != 1 || len(cfg.ExchangeReadAccounts) != 1 || !cfg.NATS.Enabled() ||
+	pods, _ := boot.ConfigOf[kubernetes.Config](cfg.Identity, kubernetes.Kind)
+	if apiKinds[kubernetes.Kind] != 1 || apiKinds[google.Kind] != 1 || len(cfg.SessionAccountPairs) != 1 || len(pods.Reads) != 1 || !cfg.NATS.Enabled() ||
 		len(cfg.PodRegistrars) != 1 || !cfg.PodRegistrars.Lists("system:serviceaccount:legion-system:legion-daemon", adaAccount) {
-		t.Fatalf("APIAccounts = %v, SessionAccountPairs = %v, ExchangeReadAccounts = %+v, PodRegistrars = %v, NATS = %+v; want one Kubernetes caller, one Google caller, one pair, one reader, one registrar pairing a daemon with %s as its pod account, and the NATS auth service",
-			cfg.APIAccounts, cfg.SessionAccountPairs, cfg.ExchangeReadAccounts, cfg.PodRegistrars, cfg.NATS, adaAccount)
+		t.Fatalf("APIAccounts = %v, SessionAccountPairs = %v, read accounts = %+v, PodRegistrars = %v, NATS = %+v; want one Kubernetes caller, one Google caller, one pair, one reader, one registrar pairing a daemon with %s as its pod account, and the NATS auth service",
+			cfg.APIAccounts, cfg.SessionAccountPairs, pods.Reads, cfg.PodRegistrars, cfg.NATS, adaAccount)
 	}
 	if people, err := parsePodOperators("BROKER_POD_OPERATORS", " \n\t "); err != nil || people != nil {
 		t.Fatalf("parsePodOperators of white space alone = %v, %v; want nil and no error", people, err)
@@ -405,8 +414,9 @@ func TestPodOperatorsUnsetMapsNoDaemonToAPerson(t *testing.T) {
 	if want := map[string]string{alphaDaemon: "legion-daemon", betaDaemon: "legion-daemon"}; !maps.Equal(cfg.ServiceLogins, want) {
 		t.Fatalf("ServiceLogins = %v, want %v", cfg.ServiceLogins, want)
 	}
-	if len(cfg.ExchangeAccounts) != 2 || cfg.ExchangeAccounts[0].Person != "ada@example.com" || cfg.ExchangeAccounts[1].Person != "ada@example.com" {
-		t.Fatalf("ExchangeAccounts = %+v, want both daemons mapped to ada@example.com", cfg.ExchangeAccounts)
+	pods, _ := boot.ConfigOf[kubernetes.Config](cfg.Identity, kubernetes.Kind)
+	if len(pods.Accounts) != 2 || pods.Accounts[0].Person != "ada@example.com" || pods.Accounts[1].Person != "ada@example.com" {
+		t.Fatalf("the exchange accounts = %+v, want both daemons mapped to ada@example.com", pods.Accounts)
 	}
 	if cfg.PodOperators != nil {
 		t.Fatalf("PodOperators = %v, want nil: BROKER_POD_OPERATORS is unset, so no daemon acts for ada@example.com at the broker", cfg.PodOperators)

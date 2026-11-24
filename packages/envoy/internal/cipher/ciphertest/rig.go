@@ -28,9 +28,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/cipher/api"
-	"github.com/sjawhar/envoy/internal/cipher/config"
 	"github.com/sjawhar/envoy/internal/cipher/enroll"
-	"github.com/sjawhar/envoy/internal/cipher/exchange"
 	"github.com/sjawhar/envoy/internal/cipher/hold"
 	"github.com/sjawhar/envoy/internal/cipher/identity"
 	identityboot "github.com/sjawhar/envoy/internal/cipher/identity/boot"
@@ -600,17 +598,17 @@ const MachineLoginURL = "https://dispatch.example/credentials/machine"
 // box a person could have signed in on and no domain to hold one to.
 func newIdentities(t *testing.T, issuer *oidctest.Issuer) *identity.Registry {
 	t.Helper()
-	identities, err := identityboot.Open(context.Background(), config.Config{
-		K8sOIDCIssuer: issuer.URL(), K8sOIDCAudience: podAudience, ExchangeK8sAudience: ExchangeAudience,
-		ExchangeGitHubIssuer: issuer.URL(), ExchangeGitHubAudience: githubAudience,
-		ExchangeAccounts: []exchange.AccountEntry{
-			{Account: ExchangeAccount, Project: ExchangeProject, Person: ExchangePerson, Session: ExchangeSession},
-			{Account: ExchangeRolesAccount, Project: ExchangeProject, Person: ExchangePerson},
-			{Account: DaemonExchangeAccount, Project: ExchangeProject, Person: ExchangePerson, Session: DaemonExchangeSession},
-			{Account: OtherProjectAccount, Project: OtherProject, Person: ExchangePerson, Session: OtherProjectSession},
-		},
-		ExchangeWorkflows: []exchange.WorkflowEntry{{Repository: ExchangeRepository, Workflow: ExchangeWorkflow, Ref: ExchangeRef, Project: ExchangeProject, Person: ExchangePerson}},
-	}, func(ctx context.Context, url string) (*oidc.Keys, error) { return oidc.NewKeys(ctx, url) })
+	identities, err := identityboot.Open(context.Background(), identitySettings(t, map[string]string{
+		"BROKER_K8S_OIDC_ISSUER": issuer.URL(), "BROKER_K8S_OIDC_AUDIENCE": podAudience,
+		"BROKER_EXCHANGE_K8S_AUDIENCE":    ExchangeAudience,
+		"BROKER_EXCHANGE_GITHUB_ISSUER":   issuer.URL(),
+		"BROKER_EXCHANGE_GITHUB_AUDIENCE": githubAudience,
+		"BROKER_EXCHANGE_ACCOUNTS": ExchangeAccount + "=" + ExchangeProject + "=" + ExchangePerson + "=" + ExchangeSession +
+			" " + ExchangeRolesAccount + "=" + ExchangeProject + "=" + ExchangePerson +
+			" " + DaemonExchangeAccount + "=" + ExchangeProject + "=" + ExchangePerson + "=" + DaemonExchangeSession +
+			" " + OtherProjectAccount + "=" + OtherProject + "=" + ExchangePerson + "=" + OtherProjectSession,
+		"BROKER_EXCHANGE_WORKFLOWS": ExchangeRepository + "=" + ExchangeWorkflow + "=" + ExchangeRef + "=" + ExchangeProject + "=" + ExchangePerson,
+	}), func(ctx context.Context, url string) (*oidc.Keys, error) { return oidc.NewKeys(ctx, url) })
 	if err != nil {
 		t.Fatalf("identityboot.Open: %v", err)
 	}
@@ -623,7 +621,7 @@ func newIdentities(t *testing.T, issuer *oidctest.Issuer) *identity.Registry {
 // (Subjects) of another package's rig need, so such a rig names no provider package itself.
 func Identities(t testing.TB) *identity.Registry {
 	t.Helper()
-	identities, err := identityboot.Open(context.Background(), config.Config{}, func(ctx context.Context, url string) (*oidc.Keys, error) {
+	identities, err := identityboot.Open(context.Background(), identitySettings(t, nil), func(ctx context.Context, url string) (*oidc.Keys, error) {
 		return oidc.NewKeys(ctx, url)
 	})
 	if err != nil {
@@ -652,19 +650,31 @@ func ClusterPods(t testing.TB, issuer, audience string) identity.PodVerifier {
 // issuer signs, held to audience.
 func clusterBoot(t testing.TB, issuer, audience string) identityboot.Boot {
 	t.Helper()
-	b, err := identityboot.Open(context.Background(), config.Config{K8sOIDCIssuer: issuer, K8sOIDCAudience: audience},
-		func(ctx context.Context, url string) (*oidc.Keys, error) { return oidc.NewKeys(ctx, url) })
+	b, err := identityboot.Open(context.Background(), identitySettings(t, map[string]string{
+		"BROKER_K8S_OIDC_ISSUER": issuer, "BROKER_K8S_OIDC_AUDIENCE": audience,
+	}), func(ctx context.Context, url string) (*oidc.Keys, error) { return oidc.NewKeys(ctx, url) })
 	if err != nil {
 		t.Fatalf("identityboot.Open: %v", err)
 	}
 	return b
 }
 
+// identitySettings is every identity provider's settings read from env, as the broker reads them
+// from its environment (identity/boot's Load); a variable env does not name is unset.
+func identitySettings(t testing.TB, env map[string]string) identityboot.Settings {
+	t.Helper()
+	settings, err := identityboot.Load(func(name string) string { return env[name] })
+	if err != nil {
+		t.Fatalf("identityboot.Load: %v", err)
+	}
+	return settings
+}
+
 // ClusterAccount is the Kubernetes service account subject names, as BROKER_API_ACCOUNTS lists
 // one (config.ParseAccount): the key api.Deps.APIAccounts holds a cluster caller under.
 func ClusterAccount(t testing.TB, subject string) identity.Account {
 	t.Helper()
-	account, err := config.ParseAccount("BROKER_API_ACCOUNTS", subject, subject)
+	account, err := identityboot.ParseAccount("BROKER_API_ACCOUNTS", subject, subject)
 	if err != nil {
 		t.Fatalf("config.ParseAccount(%s): %v", subject, err)
 	}

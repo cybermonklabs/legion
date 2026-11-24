@@ -42,31 +42,120 @@ const tolerance = time.Hour
 var googleAccountPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._%+-]*@[a-z0-9][a-z0-9.-]*\.[a-z]{2,}$`)
 
 // Config is the issuer this provider trusts, the audiences it holds tokens to, the Workspace a
-// signing-in person belongs to, and the fleets the exchange lists.
+// signing-in person belongs to, and the fleets the exchange lists, as LoadConfig reads them from
+// the broker's environment. SignInDomain is the one field no variable of this provider's holds:
+// BROKER_SIGNIN_DOMAIN is the broker's own sign-in setting, which config hands over.
 type Config struct {
-	// Issuer is BROKER_GOOGLE_OIDC_ISSUER.
+	// BROKER_GOOGLE_OIDC_ISSUER: the issuer of the Google identity tokens machines present,
+	// https://accounts.google.com when unset, which is where every real one comes from. It is a
+	// variable because a dev stack has no Google: cmd/dev-oidc-issuer stands in for it on a
+	// loopback port, so a broker, its machines and Dispatch can be driven end to end on one
+	// machine with no cloud. Read only where BROKER_GOOGLE_OIDC_AUDIENCE is set, which is what
+	// turns Google identity tokens on at all.
 	Issuer string
-	// Keys is the issuer's one key set, shared with every verifier of this issuer.
+	// Keys is the issuer's one key set, shared with every verifier of this issuer; the identity
+	// registry reads it at boot (identity/boot's Open).
 	Keys *oidc.Keys
-	// Audience is BROKER_GOOGLE_OIDC_AUDIENCE, what a machine's identity token must carry as a
-	// subject and as an actor; "" registers the machine's subject token type unconfigured.
+	// BROKER_GOOGLE_OIDC_AUDIENCE: the audience a machine's Google identity token must carry,
+	// for a caller listed in BROKER_API_ACCOUNTS, for an edge listener a google: entry of
+	// BROKER_NATS_SERVICES names, and at the RFC 8693 token exchange, where it is a subject token
+	// (urn:envoy:params:oauth:token-type:google-identity). Its issuer is BROKER_GOOGLE_OIDC_ISSUER,
+	// Google's own unless a dev stack says otherwise. Needs a Google caller, a google: entry in
+	// BROKER_API_ACCOUNTS, a VM service in BROKER_VM_SERVICES or a google: edge-listener entry in
+	// BROKER_NATS_SERVICES, since with none no token for it could ever be accepted; and any such
+	// caller without it refuses the start. API callers and edge listeners need no VM service. The
+	// exchange accepts only accounts listed in BROKER_VM_SERVICES, and
+	// BROKER_SIGNIN_DEVICE_AUDIENCE needs a VM service for its machine actor token. Unset, the
+	// broker accepts no Google identity token, and BROKER_VM_SERVICES, BROKER_VM_PROJECTS,
+	// BROKER_VM_INSTANCES, BROKER_VM_EXCHANGE_ACCOUNTS, BROKER_VM_EXCHANGE_JOB_ACCOUNTS and
+	// BROKER_SIGNIN_DEVICE_AUDIENCE are refused.
 	Audience string
-	// PersonAudience is BROKER_SIGNIN_DEVICE_AUDIENCE, what a person's own identity token must
-	// carry: the device-flow client `agent-secrets login` runs Google's device grant as. It is an
-	// audience of its own, so neither a machine's token nor a person's is spendable where the
-	// other is. "" registers the person subject type and the machine actor type unconfigured.
+	// BROKER_SIGNIN_DEVICE_AUDIENCE: the audience a person's own Google identity token must
+	// carry to be traded at the RFC 8693 token exchange, where such a token is a subject token
+	// (urn:envoy:params:oauth:token-type:person-google-identity) and the machine the person
+	// signed in on presents its own as the actor token
+	// (urn:envoy:params:oauth:token-type:machine-google-identity). It is the OAuth client id of
+	// the device-flow client `agent-secrets login` runs Google's device authorization grant as,
+	// since Google puts the client's id in an ID token's aud. Its issuer is
+	// BROKER_GOOGLE_OIDC_ISSUER, Google's own unless a dev stack says otherwise, and the person
+	// it names is held to BROKER_SIGNIN_DOMAIN through the hd claim, exactly as a person
+	// signing in to the broker's own approval page is. Needs BROKER_GOOGLE_OIDC_AUDIENCE and
+	// BROKER_VM_SERVICES: the listed machines are the boxes a person may sign in on. Unset, the
+	// broker accepts no person's sign-in and registers neither token type, so a caller presenting
+	// either is refused by name. It is not one of the four SignInSettings, which are required
+	// together: those are what a person approves a secret request through and no broker that
+	// signs people in serves without them, where this one is optional, as the whole Google
+	// exchange is. Beside BROKER_SIGNIN=off it is refused with them, since that broker holds no
+	// BROKER_SIGNIN_DOMAIN to hold a person to.
 	PersonAudience string
-	// SignInDomain is BROKER_SIGNIN_DOMAIN, the Workspace a signing-in person must belong to. An
-	// empty one admits nobody (oidc.WorkspaceLogin).
+	// SignInDomain is BROKER_SIGNIN_DOMAIN, the Workspace a signing-in person must belong to,
+	// which config hands this provider with its own settings. An empty one admits nobody
+	// (oidc.WorkspaceLogin).
 	SignInDomain string
-	// Machines are the exchange's Google entries.
-	Machines []exchange.GoogleEntry
+	// BROKER_VM_EXCHANGE_ACCOUNTS, BROKER_VM_EXCHANGE_JOB_ACCOUNTS: what the token a machine of each
+	// fleet is minted writes for. BROKER_VM_EXCHANGE_ACCOUNTS names the person and the Dispatch
+	// project each fleet writes for, whitespace-separated
+	// <service account email>=<project>=<person>[=<session>] entries, the grammar
+	// BROKER_EXCHANGE_ACCOUNTS uses for a pod, such as
+	// example-fleet@example-project.iam.gserviceaccount.com=EXAMPLE=ada@example.com. A token the
+	// exchange mints for a machine of that account names that one project, acts for that
+	// person, and writes under the session the entry fixes; an entry that fixes none requires the
+	// machine to name its own session. The session is everything after the third "=", so it alone
+	// may carry one. The person an entry names is also the one whose Dispatch Inbox lists a request
+	// one of that fleet's machines makes for a shared human-tier secret; it reaches no secret.
+	//
+	// BROKER_VM_EXCHANGE_JOB_ACCOUNTS names a job's projects in place of a person,
+	// whitespace-separated <service account email>=<projects>[=<session>] entries, such as
+	// example-fleet@example-project.iam.gserviceaccount.com=public,PRIVA, the projects spelled as
+	// BROKER_EXCHANGE_JOB_ACCOUNTS spells them. A token the exchange mints for a machine of that
+	// account names the account's address as its service and no person, holds no OAuth scope, and
+	// carries the entry's projects whatever the request names, as a job account's token does; the
+	// launcher credential the exchange mints beside it still records the account's
+	// BROKER_VM_SERVICES service. Every machine of such an account then writes to Dispatch with no
+	// person signed in, under the session the entry fixes or, where it fixes none, the one the
+	// machine names, so list an account here only when every machine that runs as it is that job's.
+	// The session is everything after the second "=", so it alone may carry one.
+	//
+	// Refused at start, naming the setting and the entry: an entry of either setting not of its
+	// form or with a blank field, an account no VM service may name, as BROKER_VM_SERVICES refuses
+	// one, an account named twice, a job entry's projects of any other spelling, an account
+	// BROKER_VM_SERVICES does not list, and an account both settings name, since one account has
+	// one answer. An account BROKER_VM_SERVICES lists and neither setting names gets a token that
+	// names its service and no person at all, which a resource server holds to what a service may
+	// do. Both need BROKER_GOOGLE_OIDC_AUDIENCE. With both unset, every listed account's machines
+	// get such a token.
+	//
+	// The entries this answers are the whole of what the exchange decides a machine's token on:
+	// each one carries its account's service (BROKER_VM_SERVICES), the pins (BROKER_VM_PROJECTS
+	// and BROKER_VM_INSTANCES) and, where the two settings name them, the person and the project
+	// or the job's projects, and the session.
+	Machines []GoogleEntry
+	// BROKER_VM_SERVICES: the VM services, whitespace-separated name=<service account email>
+	// entries, such as example-service=example-fleet@example-project.iam.gserviceaccount.com. A name
+	// is lowercase letters, digits and hyphens, at most 64, not shared; the account is a user-managed
+	// Google service account (<account id>@<project id>.iam.gserviceaccount.com, in lowercase, as a
+	// token carries it) that the service's machines run as, so every machine of that account is one
+	// identity. A
+	// service may be named for several accounts, one entry each, but each account is given once and
+	// proves exactly one service. A project's default service accounts (Compute Engine's and App
+	// Engine's) and Google-managed service agents are refused: a project's workloads run as the first
+	// by default and Google's own services as the second, so neither proves which VMs are the
+	// service's. An account may be pinned to one Compute Engine project and one instance-name
+	// pattern (BROKER_VM_PROJECTS and BROKER_VM_INSTANCES), or to neither, in which case its
+	// machines are taken wherever they run. Keyed
+	// by account, each answering its service. Needs BROKER_GOOGLE_OIDC_AUDIENCE. Unset, no VM service
+	// is listed.
+	ServicesByAccount map[string]string
+	// NATSAudience is BROKER_NATS_GOOGLE_AUDIENCE, the audience a service's Google identity
+	// token must carry at the NATS auth service (the NATS settings' own comment in config.Config
+	// documents it with the rest of them); "" verifies no Google token there.
+	NATSAudience string
 }
 
 // Provider is the Google identity provider of one configuration.
 type Provider struct {
 	config   Config
-	machines map[string]exchange.GoogleEntry
+	machines map[string]GoogleEntry
 	listings []exchange.Listing
 }
 
@@ -87,7 +176,7 @@ func New(c Config) (*Provider, error) {
 	if c.PersonAudience != "" && c.Audience == "" {
 		return nil, errPersonWithoutMachines
 	}
-	p := &Provider{config: c, machines: make(map[string]exchange.GoogleEntry, len(c.Machines))}
+	p := &Provider{config: c, machines: make(map[string]GoogleEntry, len(c.Machines))}
 	for i, entry := range c.Machines {
 		where := fmt.Sprintf("google entry %d, %q", i+1, entry.Account)
 		if !googleAccountPattern.MatchString(entry.Account) {

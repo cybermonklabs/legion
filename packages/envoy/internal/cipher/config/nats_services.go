@@ -8,6 +8,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/api"
 	"github.com/sjawhar/envoy/internal/cipher/identity"
+	"github.com/sjawhar/envoy/internal/cipher/identity/boot"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/natsgrant"
 )
@@ -164,7 +165,7 @@ func parseNATSService(text string) (NATSService, error) {
 		return NATSService{}, form()
 	}
 	parsed, err := ParseAccount(NATSServicesVariable, text, account)
-	if errors.Is(err, ErrAccountForm) {
+	if errors.Is(err, boot.ErrAccountForm) {
 		return NATSService{}, form()
 	}
 	if err != nil {

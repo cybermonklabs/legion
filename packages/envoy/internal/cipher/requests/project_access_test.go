@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/cipher/exchange"
+	"github.com/sjawhar/envoy/internal/cipher/identity/kubernetes"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
@@ -91,7 +92,7 @@ func everyonesPod(t *testing.T, m *Machine, name, project string) (string, *ecds
 	t.Helper()
 	subject := "system:serviceaccount:example:" + name
 	if project != "" {
-		set, err := kubernetesPolicy([]exchange.AccountEntry{{Account: subject, Project: project, Person: insider}})
+		set, err := kubernetesPolicy([]kubernetes.AccountEntry{{Account: subject, Project: project, Person: insider}})
 		if err != nil {
 			t.Fatalf("exchange.NewSet: %v", err)
 		}
@@ -114,14 +115,14 @@ type jobPod struct {
 // the fixture's service as its launcher's, as TestAPodOfThePrivateProjectGetsItsSecret's pods are.
 func jobPods(t *testing.T, m *Machine, lists ...string) []jobPod {
 	t.Helper()
-	entries := make([]exchange.AccountEntry, len(lists))
+	entries := make([]kubernetes.AccountEntry, len(lists))
 	for i, list := range lists {
 		job, err := exchange.ParseJobProjects(list)
 		if err != nil {
 			t.Fatalf("exchange.ParseJobProjects(%q): %v", list, err)
 		}
 		name := "job-" + strings.ToLower(strings.ReplaceAll(list, ",", "-"))
-		entries[i] = exchange.AccountEntry{Account: "system:serviceaccount:example:" + name, Job: job}
+		entries[i] = kubernetes.AccountEntry{Account: "system:serviceaccount:example:" + name, Job: job}
 	}
 	set, err := kubernetesPolicy(entries)
 	if err != nil {
@@ -241,7 +242,7 @@ func TestASessionNamingThePrivateProjectGetsItsSecret(t *testing.T) {
 func TestAPodOfThePrivateProjectGetsItsSecret(t *testing.T) {
 	m, _, _, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
 	const otherSubject = "system:serviceaccount:example:other-sa"
-	set, err := kubernetesPolicy([]exchange.AccountEntry{
+	set, err := kubernetesPolicy([]kubernetes.AccountEntry{
 		{Account: fixtureSubject, Project: privProject, Person: insider},
 		{Account: otherSubject, Project: teamProject, Person: insider},
 	})

@@ -17,7 +17,9 @@ import (
 	"authelia.com/provider/oauth2/handler/rfc8693"
 	"github.com/google/uuid"
 
-	"github.com/sjawhar/envoy/internal/cipher/exchange"
+	"github.com/sjawhar/envoy/internal/cipher/identity/github"
+	"github.com/sjawhar/envoy/internal/cipher/identity/google"
+	"github.com/sjawhar/envoy/internal/cipher/identity/kubernetes"
 	"github.com/sjawhar/envoy/internal/cipher/oauth"
 	"github.com/sjawhar/envoy/internal/cipher/oauthstore"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
@@ -149,19 +151,19 @@ var narrowingRows = map[string]narrowingRow{
 func newNarrowingFixture(t *testing.T, adjust func(*oauth.Config)) *signInFixture {
 	t.Helper()
 	return newSignInFixtureWith(t, adjust, listingWithReads(
-		[]exchange.AccountEntry{
+		[]kubernetes.AccountEntry{
 			{Account: account, Project: project, Person: person},
 			{Account: daemonAccount, Project: project, Person: person, Session: daemonSession},
 			{Account: otherAccount, Project: otherProject, Person: otherPerson},
 			{Account: personlessAccount, Session: personlessSession},
 		},
-		[]exchange.ReadEntry{{Account: readAccount, Service: readService, Session: readSession}},
-		[]exchange.WorkflowEntry{
+		[]kubernetes.ReadEntry{{Account: readAccount, Service: readService, Session: readSession}},
+		[]github.WorkflowEntry{
 			{Repository: repository, Workflow: workflow, Ref: ref, Project: project, Person: person},
 			{Repository: repository, Workflow: deployWorkflow, Ref: ref, Project: project, Person: person, Session: deploySession},
 		},
-		exchange.GoogleEntry{Account: signInMachine, Service: signInFleet},
-		exchange.GoogleEntry{Account: pinnedMachine, Service: pinnedFleet, Project: project, Person: person}))
+		google.GoogleEntry{Account: signInMachine, Service: signInFleet},
+		google.GoogleEntry{Account: pinnedMachine, Service: pinnedFleet, Project: project, Person: person}))
 }
 
 // personTrade is a person's sign-in trade on signInMachine, with fresh tokens of both halves.
@@ -242,7 +244,7 @@ func withRecordedAccount(t *testing.T, f *signInFixture, kind string, answer oau
 	t.Helper()
 	switch kind {
 	case "person-sign-in":
-		issuer, subject := oidc.CanonicalIssuer(f.google.URL()), "109"+person
+		issuer, subject := oidc.CanonicalIssuer(f.googleIssuer.URL()), "109"+person
 		if answer.AccountIssuer != issuer || answer.AccountSubject != subject {
 			t.Errorf("the sign-in's token answers the account %q %q, want %q %q, the account its person token named",
 				answer.AccountIssuer, answer.AccountSubject, issuer, subject)
@@ -507,7 +509,7 @@ func TestANarrowedTradeIsCheckedAsItsBaseWord(t *testing.T) {
 		down.down = true
 		f := newSignInFixtureWith(t, func(c *oauth.Config) {
 			c.Exchange.Projects = down
-		}, listing([]exchange.AccountEntry{{Account: account, Person: person}}, nil, exchange.GoogleEntry{Account: signInMachine, Service: signInFleet}))
+		}, listing([]kubernetes.AccountEntry{{Account: account, Person: person}}, nil, google.GoogleEntry{Account: signInMachine, Service: signInFleet}))
 		f.registers(t, account, "pod-uid-public", "public-session-1")
 		_, status, body := both(t, f, func() narrowingTrade {
 			return narrowingTrade{form: exchangeForm(f.podToken(t, "pod-uid-public", nil), oauthwire.SubjectTokenTypeKubernetes, "public-session-1"), key: newKey(t)}
@@ -596,11 +598,11 @@ func TestANarrowedTokenExpiresNoLaterThanItsSubject(t *testing.T) {
 	expires := func(claims map[string]any, at time.Time) { claims["exp"] = at.Unix() }
 	googleToken := func(t *testing.T, account, audience, sub string, at time.Time, extra map[string]any) string {
 		claims := map[string]any{
-			"iss": f.google.URL(), "sub": sub, "aud": audience, "iat": time.Now().Add(-time.Minute).Unix(), "exp": at.Unix(),
+			"iss": f.googleIssuer.URL(), "sub": sub, "aud": audience, "iat": time.Now().Add(-time.Minute).Unix(), "exp": at.Unix(),
 			"email": account, "email_verified": true,
 		}
 		maps.Copy(claims, extra)
-		return f.google.Mint(t, f.googleKey, claims)
+		return f.googleIssuer.Mint(t, f.googleKey, claims)
 	}
 	for _, c := range []struct {
 		name  string

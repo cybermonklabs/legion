@@ -19,6 +19,10 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/approval"
 	"github.com/sjawhar/envoy/internal/cipher/exchange"
 	"github.com/sjawhar/envoy/internal/cipher/identity"
+	"github.com/sjawhar/envoy/internal/cipher/identity/boot"
+	"github.com/sjawhar/envoy/internal/cipher/identity/github"
+	"github.com/sjawhar/envoy/internal/cipher/identity/google"
+	"github.com/sjawhar/envoy/internal/cipher/identity/kubernetes"
 	"github.com/sjawhar/envoy/internal/cipher/leasetime"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
@@ -948,7 +952,9 @@ func TestLoadReadsTheRegisteredServices(t *testing.T) {
 const exampleVMServiceAccount = "example-fleet@example-project.iam.gserviceaccount.com"
 
 // validVMEnv is validEnv with one VM service fully configured: the Google audience, the service's
-// account, its project and its instance-name pattern.
+// account, its project and its instance-name pattern. The google provider's own tests hold what
+// each of those four settings parses to (identity/google's settings_test.go); here they stand for
+// a configuration that lists a machine.
 func validVMEnv() map[string]string {
 	e := validEnv()
 	e["BROKER_GOOGLE_OIDC_AUDIENCE"] = "example-broker"
@@ -958,169 +964,9 @@ func validVMEnv() map[string]string {
 	return e
 }
 
-// TestLoadReadsTheVMServices pins the four VM settings: one entry gives the service, the project
-// and the instance pattern, each keyed by the account's email.
-func TestLoadReadsTheVMServices(t *testing.T) {
-	cfg, err := Load(env(validVMEnv()))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.GoogleOIDCAudience != "example-broker" {
-		t.Fatalf("GoogleOIDCAudience = %q, want example-broker", cfg.GoogleOIDCAudience)
-	}
-	if want := map[string]string{exampleVMServiceAccount: "example-service"}; !maps.Equal(cfg.VMServicesByAccount, want) {
-		t.Fatalf("VMServicesByAccount = %v, want %v", cfg.VMServicesByAccount, want)
-	}
-	pinned := []exchange.GoogleEntry{{Account: exampleVMServiceAccount, Service: "example-service", CloudProject: "example-project", Instance: "example-vm-*"}}
-	if !slices.Equal(cfg.ExchangeGoogleAccounts, pinned) {
-		t.Fatalf("ExchangeGoogleAccounts = %+v, want %+v: the two pins are read into the entry and nowhere else", cfg.ExchangeGoogleAccounts, pinned)
-	}
-
-	// Two accounts for one service, entries separated by any white space, and an audience with
-	// white space around it, which is trimmed, as a token's audience never carries it.
-	const second = "second-fleet@example-project.iam.gserviceaccount.com"
-	two := validVMEnv()
-	two["BROKER_GOOGLE_OIDC_AUDIENCE"] = " \texample-broker\n"
-	two["BROKER_VM_SERVICES"] += "\texample-service=" + second
-	two["BROKER_VM_PROJECTS"] += "\n" + second + "=example-other"
-	two["BROKER_VM_INSTANCES"] += "\t" + second + "=example-vm-[0-9]*"
-	cfg, err = Load(env(two))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.GoogleOIDCAudience != "example-broker" {
-		t.Fatalf("GoogleOIDCAudience = %q, want example-broker with its white space trimmed", cfg.GoogleOIDCAudience)
-	}
-	if want := map[string]string{exampleVMServiceAccount: "example-service", second: "example-service"}; !maps.Equal(cfg.VMServicesByAccount, want) {
-		t.Fatalf("VMServicesByAccount with two accounts = %v, want %v", cfg.VMServicesByAccount, want)
-	}
-	bothPinned := []exchange.GoogleEntry{
-		{Account: exampleVMServiceAccount, Service: "example-service", CloudProject: "example-project", Instance: "example-vm-*"},
-		{Account: second, Service: "example-service", CloudProject: "example-other", Instance: "example-vm-[0-9]*"},
-	}
-	if !slices.Equal(cfg.ExchangeGoogleAccounts, bothPinned) {
-		t.Fatalf("ExchangeGoogleAccounts with two accounts = %+v, want %+v", cfg.ExchangeGoogleAccounts, bothPinned)
-	}
-	// A second account pinned in one setting and not the other is half a pin, refused naming
-	// both settings and that account, not only the first's.
-	for _, missing := range []string{"BROKER_VM_PROJECTS", "BROKER_VM_INSTANCES"} {
-		e := maps.Clone(two)
-		e[missing] = validVMEnv()[missing]
-		named := "BROKER_VM_INSTANCES"
-		if missing == "BROKER_VM_INSTANCES" {
-			named = "BROKER_VM_PROJECTS"
-		}
-		_, err := Load(env(e))
-		want := named + " names " + second + " but " + missing + ` does not, got "example-service=` + second + `"`
-		if err == nil || !strings.HasPrefix(err.Error(), want) {
-			t.Errorf("Load with the second account missing from %s = %v, want a refusal starting %q", missing, err, want)
-		}
-	}
-	// The pinned account with no BROKER_VM_EXCHANGE_ACCOUNTS entry is one machine entry of the
-	// exchange: its service and its two pins, and no person, no project and no session.
-	oneEntry, err := Load(env(validVMEnv()))
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := []exchange.GoogleEntry{{
-		Account: exampleVMServiceAccount, Service: "example-service",
-		CloudProject: "example-project", Instance: "example-vm-*",
-	}}
-	if !slices.Equal(oneEntry.ExchangeGoogleAccounts, want) {
-		t.Fatalf("ExchangeGoogleAccounts = %+v, want %+v", oneEntry.ExchangeGoogleAccounts, want)
-	}
-}
-
-// TestTheGoogleIssuerDefaultsToGooglesOwn: BROKER_GOOGLE_OIDC_ISSUER is Google's own issuer when
-// the environment names none, and a dev stack's stand-in when it does, which is the only reason
-// the variable exists.
-func TestTheGoogleIssuerDefaultsToGooglesOwn(t *testing.T) {
-	cfg, err := Load(env(validVMEnv()))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.GoogleOIDCIssuer != DefaultGoogleOIDCIssuer || DefaultGoogleOIDCIssuer != "https://accounts.google.com" {
-		t.Fatalf("GoogleOIDCIssuer = %q, want %q", cfg.GoogleOIDCIssuer, DefaultGoogleOIDCIssuer)
-	}
-	e := validVMEnv()
-	e["BROKER_GOOGLE_OIDC_ISSUER"] = " http://127.0.0.1:8080\n"
-	if cfg, err = Load(env(e)); err != nil || cfg.GoogleOIDCIssuer != "http://127.0.0.1:8080" {
-		t.Fatalf("GoogleOIDCIssuer with a stand-in issuer = %q, %v; want the issuer with its white space trimmed", cfg.GoogleOIDCIssuer, err)
-	}
-	// With no Google audience the issuer is still answered, since nothing reads it then: it is
-	// the audience that turns Google identity tokens on at all.
-	if cfg, err = Load(env(validEnv())); err != nil || cfg.GoogleOIDCIssuer != DefaultGoogleOIDCIssuer {
-		t.Fatalf("GoogleOIDCIssuer with no Google audience = %q, %v; want the default", cfg.GoogleOIDCIssuer, err)
-	}
-}
-
-// TestTheVMExchangeAccountsGiveAFleetItsPersonAndProject pins BROKER_VM_EXCHANGE_ACCOUNTS: a
-// listed account it names writes that project, acts for that person and may fix its session,
-// while a listed account it does not name is its service and nothing else. Its refusals are each
-// its own: an entry that is not of the form, a blank field, an account no VM service lists, an
-// account named twice, an account no VM setting may name, and the setting with no Google
-// audience.
-func TestTheVMExchangeAccountsGiveAFleetItsPersonAndProject(t *testing.T) {
-	const second = "second-fleet@example-project.iam.gserviceaccount.com"
-	e := validVMEnv()
-	e["BROKER_VM_SERVICES"] += " example-other=" + second
-	e["BROKER_VM_PROJECTS"] += " " + second + "=example-other"
-	e["BROKER_VM_INSTANCES"] += " " + second + "=example-vm-*"
-	e["BROKER_VM_EXCHANGE_ACCOUNTS"] = exampleVMServiceAccount + "=EXAMPLE=ada@example.com=example-fleet-1"
-	cfg, err := Load(env(e))
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := []exchange.GoogleEntry{
-		{
-			Account: exampleVMServiceAccount, Service: "example-service",
-			CloudProject: "example-project", Instance: "example-vm-*",
-			Project: "EXAMPLE", Person: "ada@example.com", Session: "example-fleet-1",
-		},
-		{
-			Account: second, Service: "example-other",
-			CloudProject: "example-other", Instance: "example-vm-*",
-		},
-	}
-	if !slices.Equal(cfg.ExchangeGoogleAccounts, want) {
-		t.Fatalf("ExchangeGoogleAccounts = %+v, want %+v", cfg.ExchangeGoogleAccounts, want)
-	}
-	// An entry that fixes no session: everything after the third = is the session, so there is
-	// none to read.
-	noSession := validVMEnv()
-	noSession["BROKER_VM_EXCHANGE_ACCOUNTS"] = exampleVMServiceAccount + "=EXAMPLE=ada@example.com"
-	cfg, err = Load(env(noSession))
-	if err != nil || len(cfg.ExchangeGoogleAccounts) != 1 || cfg.ExchangeGoogleAccounts[0].Session != "" ||
-		cfg.ExchangeGoogleAccounts[0].Person != "ada@example.com" {
-		t.Fatalf("ExchangeGoogleAccounts with no session fixed = %+v, %v", cfg.ExchangeGoogleAccounts, err)
-	}
-	for _, row := range []struct{ value, want string }{
-		{exampleVMServiceAccount + "=EXAMPLE", "BROKER_VM_EXCHANGE_ACCOUNTS must be <service account email>=<project>=<person>[=<session>] entries"},
-		{exampleVMServiceAccount + "==ada@example.com", "BROKER_VM_EXCHANGE_ACCOUNTS must be <service account email>=<project>=<person>[=<session>] entries"},
-		{exampleVMServiceAccount + "=EXAMPLE=", "BROKER_VM_EXCHANGE_ACCOUNTS must be <service account email>=<project>=<person>[=<session>] entries"},
-		{"not-an-email=EXAMPLE=ada@example.com", "BROKER_VM_EXCHANGE_ACCOUNTS must name user-managed service accounts"},
-		{"system:serviceaccount:example-ns:example-worker=EXAMPLE=ada@example.com", "BROKER_VM_EXCHANGE_ACCOUNTS must name user-managed service accounts"},
-		{exampleVMServiceAccount + "=EXAMPLE=ada@example.com " + exampleVMServiceAccount + "=OTHER=bob@example.com",
-			"BROKER_VM_EXCHANGE_ACCOUNTS names the service account " + exampleVMServiceAccount + " twice"},
-		{second + "=EXAMPLE=ada@example.com", "BROKER_VM_EXCHANGE_ACCOUNTS names " + second},
-	} {
-		bad := validVMEnv()
-		bad["BROKER_VM_EXCHANGE_ACCOUNTS"] = row.value
-		_, err := Load(env(bad))
-		if err == nil || !strings.HasPrefix(err.Error(), row.want) {
-			t.Errorf("Load(BROKER_VM_EXCHANGE_ACCOUNTS=%q) = %v, want a refusal starting %q", row.value, err, row.want)
-		}
-	}
-	withoutAudience := validEnv()
-	withoutAudience["BROKER_VM_EXCHANGE_ACCOUNTS"] = exampleVMServiceAccount + "=EXAMPLE=ada@example.com"
-	_, err = Load(env(withoutAudience))
-	if want := "BROKER_VM_EXCHANGE_ACCOUNTS needs BROKER_GOOGLE_OIDC_AUDIENCE"; err == nil || !strings.HasPrefix(err.Error(), want) {
-		t.Fatalf("Load with the fleet grants and no Google audience = %v, want a refusal starting %q", err, want)
-	}
-}
-
 // TestTheVMSettingsLeaveEveryOtherFieldAlone pins requirement R4: a Kubernetes configuration loads
-// to the same Config with or without the four VM settings beside it, apart from the VM fields.
+// to the same Config with or without the four VM settings beside it, apart from the identity
+// providers' own settings, which the google provider's own tests hold (settings_test.go).
 func TestTheVMSettingsLeaveEveryOtherFieldAlone(t *testing.T) {
 	base := validEnv()
 	base["BROKER_K8S_OIDC_ISSUER"] = "https://oidc.eks.example.invalid/id/EXAMPLE"
@@ -1140,13 +986,14 @@ func TestTheVMSettingsLeaveEveryOtherFieldAlone(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.VMServicesByAccount == nil {
+	machines, _ := boot.ConfigOf[google.Config](got.Identity, google.Kind)
+	if len(machines.Machines) == 0 {
 		t.Fatal("the VM settings were not read")
 	}
-	got.GoogleOIDCAudience, got.VMServicesByAccount = "", nil
-	got.ExchangeGoogleAccounts = nil
+	// The providers' settings are the one field the VM settings change.
+	got.Identity, want.Identity = boot.Settings{}, boot.Settings{}
 	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("Config with the VM settings, VM fields cleared = %+v, want it equal to the Config without them, %+v", got, want)
+		t.Fatalf("the VM settings changed another field:\n got %+v\nwant %+v", got, want)
 	}
 }
 
@@ -1262,15 +1109,16 @@ func TestGoogleAPIAccountsAndVMServicesAreIndependent(t *testing.T) {
 			}
 			if row.api {
 				caller, _ := api.AccountFor("listener")
-				if want := map[identity.Account]api.Account{{Kind: googleAccountKind, Address: exampleListenerAccount}: caller}; !maps.Equal(cfg.APIAccounts, want) {
+				if want := map[identity.Account]api.Account{{Kind: google.Kind, Address: exampleListenerAccount}: caller}; !maps.Equal(cfg.APIAccounts, want) {
 					t.Fatalf("APIAccounts = %v, want %v", cfg.APIAccounts, want)
 				}
 			}
-			if !row.services && (cfg.VMServicesByAccount != nil || cfg.ExchangeGoogleAccounts != nil) {
-				t.Fatalf("VM services = %v, exchange entries = %v; want neither without BROKER_VM_SERVICES", cfg.VMServicesByAccount, cfg.ExchangeGoogleAccounts)
+			machines, _ := boot.ConfigOf[google.Config](cfg.Identity, google.Kind)
+			if !row.services && machines.Machines != nil {
+				t.Fatalf("the google provider's machines = %v, want none without BROKER_VM_SERVICES", machines.Machines)
 			}
-			if row.services && len(cfg.ExchangeGoogleAccounts) != 1 {
-				t.Fatalf("exchange entries = %v, want the listed VM service", cfg.ExchangeGoogleAccounts)
+			if row.services && len(machines.Machines) != 1 {
+				t.Fatalf("the google provider's machines = %v, want the listed VM service", machines.Machines)
 			}
 		})
 	}
@@ -1301,122 +1149,6 @@ func TestVMCallerSettingsNeedVMServices(t *testing.T) {
 	}
 }
 
-// TestAVMAccountIsPinnedToBothOrToNeither pins the rule each pin follows: an account named in
-// BROKER_VM_PROJECTS and in BROKER_VM_INSTANCES is held to that project and those names, an
-// account named in neither takes its machines wherever they run, and an account named in one and
-// not the other is refused at boot naming both settings and the account, since half a pin says
-// nothing clear. It also pins that neither setting may name an account no VM service lists (the
-// first such entry as written is the one named), an account twice, or a malformed value; and that
-// an instance glob holds only an instance name's characters and path.Match's.
-func TestAVMAccountIsPinnedToBothOrToNeither(t *testing.T) {
-	for _, missing := range []string{"BROKER_VM_PROJECTS", "BROKER_VM_INSTANCES"} {
-		named := "BROKER_VM_INSTANCES"
-		if missing == "BROKER_VM_INSTANCES" {
-			named = "BROKER_VM_PROJECTS"
-		}
-		e := validVMEnv()
-		delete(e, missing)
-		_, err := Load(env(e))
-		want := named + " names " + exampleVMServiceAccount + " but " + missing + ` does not, got "example-service=` + exampleVMServiceAccount + `"`
-		if err == nil || !strings.HasPrefix(err.Error(), want) {
-			t.Errorf("Load with %s unset = %v, want a refusal starting %q", missing, err, want)
-		}
-	}
-	// Neither pin: the account is listed, and its entry takes a machine wherever it runs.
-	unpinned := validVMEnv()
-	delete(unpinned, "BROKER_VM_PROJECTS")
-	delete(unpinned, "BROKER_VM_INSTANCES")
-	cfg, err := Load(env(unpinned))
-	if err != nil {
-		t.Fatalf("Load with neither pin = %v, want an unpinned account", err)
-	}
-	// Neither pin reaches the entry, which is the only place a pin is read.
-	want := []exchange.GoogleEntry{{Account: exampleVMServiceAccount, Service: "example-service"}}
-	if !slices.Equal(cfg.ExchangeGoogleAccounts, want) {
-		t.Errorf("ExchangeGoogleAccounts with neither pin = %+v, want %+v", cfg.ExchangeGoogleAccounts, want)
-	}
-	const other, third = "other-fleet@example-project.iam.gserviceaccount.com", "third-fleet@example-project.iam.gserviceaccount.com"
-	for name, values := range map[string][2]string{
-		"BROKER_VM_PROJECTS":  {"example-project", "example-project"},
-		"BROKER_VM_INSTANCES": {"example-vm-*", "example-vm-*"},
-	} {
-		// Twenty loads, since a refusal that ranged over a map would name either account.
-		for range 20 {
-			e := validVMEnv()
-			e[name] += " " + other + "=" + values[0] + " " + third + "=" + values[1]
-			_, err := Load(env(e))
-			want := name + " names " + other + `, got "` + other + "=" + values[0] + `", but BROKER_VM_SERVICES does not list it`
-			if err == nil || !strings.HasPrefix(err.Error(), want) {
-				t.Fatalf("Load with %s naming two unlisted accounts = %v, want a refusal starting %q", name, err, want)
-			}
-		}
-	}
-	for _, row := range []struct{ name, value string }{
-		{"BROKER_VM_PROJECTS", "Example_Project"},
-		{"BROKER_VM_PROJECTS", "123456789012"},
-		{"BROKER_VM_PROJECTS", "example-project=x"},
-		{"BROKER_VM_INSTANCES", "example-vm-["},
-		{"BROKER_VM_INSTANCES", "[!t]*"},
-		{"BROKER_VM_INSTANCES", "example-vm-*/"},
-		{"BROKER_VM_INSTANCES", "Example-VM-*"},
-		{"BROKER_VM_INSTANCES", "example-vm-*=x"},
-		{"BROKER_VM_INSTANCES", "example.vm.*"},
-		{"BROKER_VM_INSTANCES", "example_vm_*"},
-		{"BROKER_VM_INSTANCES", "a{b,c}"},
-		{"BROKER_VM_INSTANCES", `example-vm-\*`},
-		{"BROKER_VM_INSTANCES", "example-vm^x"},
-		{"BROKER_VM_INSTANCES", "^example-vm-*"},
-		{"BROKER_VM_INSTANCES", ""},
-		{"BROKER_VM_PROJECTS", ""},
-		{"BROKER_VM_PROJECTS", "short"},
-		{"BROKER_VM_PROJECTS", strings.Repeat("a", 31)},
-		{"BROKER_VM_PROJECTS", "example-project-"},
-	} {
-		e := validVMEnv()
-		bad := exampleVMServiceAccount + "=" + row.value
-		e[row.name] = bad
-		_, err := Load(env(e))
-		if err == nil || !strings.HasPrefix(err.Error(), row.name+" must be <service account email>=<") || !strings.Contains(err.Error(), strconv.Quote(bad)) {
-			t.Errorf("Load(%s=%q) = %v, want a refusal naming it and the entry", row.name, bad, err)
-		}
-	}
-	for _, glob := range []string{"example-vm-[0-9]*", "example-vm-[^x]?", "*"} {
-		e := validVMEnv()
-		e["BROKER_VM_INSTANCES"] = exampleVMServiceAccount + "=" + glob
-		cfg, err := Load(env(e))
-		if err != nil || len(cfg.ExchangeGoogleAccounts) != 1 || cfg.ExchangeGoogleAccounts[0].Instance != glob {
-			t.Errorf("Load(BROKER_VM_INSTANCES glob %q) = %+v, %v; want it accepted", glob, cfg.ExchangeGoogleAccounts, err)
-		}
-	}
-	for _, setting := range []string{"BROKER_VM_PROJECTS", "BROKER_VM_INSTANCES"} {
-		e := validVMEnv()
-		bad := "not-an-email=" + strings.SplitN(validVMEnv()[setting], "=", 2)[1]
-		e[setting] = bad
-		_, err := Load(env(e))
-		if want := setting + " must name user-managed service accounts"; err == nil || !strings.HasPrefix(err.Error(), want) || !strings.Contains(err.Error(), strconv.Quote(bad)) {
-			t.Errorf("Load(%s=%q) = %v, want a refusal starting %q and naming the entry", setting, bad, err, want)
-		}
-	}
-	for setting, row := range map[string]struct {
-		kind   string
-		values []string
-	}{
-		"BROKER_VM_PROJECTS":  {"project id", []string{"example-other", "example-project"}},
-		"BROKER_VM_INSTANCES": {"instance-name glob", []string{"example-other", "example-vm-*"}},
-	} {
-		kind := row.kind
-		for _, other := range row.values {
-			e := validVMEnv()
-			e[setting] += " " + exampleVMServiceAccount + "=" + other
-			_, err := Load(env(e))
-			want := setting + " names the service account " + exampleVMServiceAccount + " twice; each account has one " + kind + ", so name it once"
-			if err == nil || err.Error() != want {
-				t.Errorf("Load with an account given twice in %s = %v, want %q", setting, err, want)
-			}
-		}
-	}
-}
-
 // TestAnAccountBoundByTheKubernetesServicesIsRefusedAsAVMAccount pins that the two account kinds
 // never overlap: BROKER_SERVICE_LOGINS refuses a Google email, so a VM's account cannot log in as a
 // Kubernetes service, and BROKER_VM_SERVICES refuses a Kubernetes subject, so a pod's account cannot
@@ -1433,6 +1165,9 @@ func TestAnAccountBoundByTheKubernetesServicesIsRefusedAsAVMAccount(t *testing.T
 		t.Fatalf("Load with a Google account in BROKER_SERVICE_LOGINS = %v, want a refusal starting %q and naming the account", err, want)
 	}
 
+	// BROKER_VM_SERVICES refusing a Kubernetes subject is the google provider's own
+	// (identity/google's TestAKubernetesSubjectIsRefusedAsAVMAccount), reached through Load here
+	// so that no other refusal of the broker's stands in front of it.
 	const subject = "system:serviceaccount:example:example-sa"
 	e = validVMEnv()
 	e["BROKER_SERVICES"] = "example-service=" + subject
@@ -1442,21 +1177,6 @@ func TestAnAccountBoundByTheKubernetesServicesIsRefusedAsAVMAccount(t *testing.T
 	_, err = Load(env(e))
 	if want := `BROKER_VM_SERVICES must name user-managed service accounts, <account id>@<project id>.iam.gserviceaccount.com, got "example-service=` + subject + `"`; err == nil || err.Error() != want {
 		t.Fatalf("Load with a Kubernetes subject in BROKER_VM_SERVICES = %v, want %q", err, want)
-	}
-}
-
-// TestWithNoGoogleAudienceEveryVMFieldIsEmpty pins requirement R4's configuration half: with no
-// Google audience and no VM setting, every VM field is empty, so nothing downstream can act on one.
-func TestWithNoGoogleAudienceEveryVMFieldIsEmpty(t *testing.T) {
-	cfg, err := Load(env(validEnv()))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.GoogleOIDCAudience != "" || cfg.VMServicesByAccount != nil {
-		t.Fatalf("VM configuration = audience %q, services %v; want empty with no Google audience", cfg.GoogleOIDCAudience, cfg.VMServicesByAccount)
-	}
-	if cfg.ExchangeGoogleAccounts != nil {
-		t.Fatalf("ExchangeGoogleAccounts = %+v, want none with no Google audience: the exchange then registers no Google subject token type", cfg.ExchangeGoogleAccounts)
 	}
 }
 
@@ -1620,8 +1340,8 @@ func TestRegistrarSettings(t *testing.T) {
 			refused: []string{"BROKER_POD_REGISTRARS", strconv.Quote("legion-daemon=" + worker)},
 		},
 		{
-			name: "a registrar that is a Google account", env: withAudiences(list(googleAPIAccountTag + exampleListenerAccount + "=" + worker)),
-			refused: []string{"BROKER_POD_REGISTRARS", strconv.Quote(googleAPIAccountTag + exampleListenerAccount + "=" + worker)},
+			name: "a registrar that is a Google account", env: withAudiences(list(google.AccountTag + exampleListenerAccount + "=" + worker)),
+			refused: []string{"BROKER_POD_REGISTRARS", strconv.Quote(google.AccountTag + exampleListenerAccount + "=" + worker)},
 		},
 		{
 			name: "a pod account that is no subject", env: withAudiences(list(daemonA + "=example-worker")),
@@ -1682,8 +1402,10 @@ func TestRegistrarSettings(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Load = %v, want no refusal", err)
 			}
-			if !maps.Equal(cfg.PodRegistrars, row.registrars) || cfg.PodRegistrationAudience != row.audience {
-				t.Fatalf("Load read the pairs %v and the audience %q, want exactly %v and %q", cfg.PodRegistrars, cfg.PodRegistrationAudience, row.registrars, row.audience)
+			pods, _ := boot.ConfigOf[kubernetes.Config](cfg.Identity, kubernetes.Kind)
+			audience := pods.PodRegistrationAudience
+			if !maps.Equal(cfg.PodRegistrars, row.registrars) || audience != row.audience {
+				t.Fatalf("Load read the pairs %v and the audience %q, want exactly %v and %q", cfg.PodRegistrars, audience, row.registrars, row.audience)
 			}
 		})
 	}
@@ -2142,8 +1864,8 @@ func TestLoadReadsTheAPIAccounts(t *testing.T) {
 	dispatchCaller, _ := api.AccountFor("dispatch")
 	listenerCaller, _ := api.AccountFor("listener")
 	want := map[identity.Account]api.Account{
-		{Kind: kubernetesAccountKind, Address: "system:serviceaccount:example-ns:example-dispatch"}: dispatchCaller,
-		{Kind: kubernetesAccountKind, Address: "system:serviceaccount:example-ns:example-listener"}: listenerCaller,
+		{Kind: kubernetes.Kind, Address: "system:serviceaccount:example-ns:example-dispatch"}: dispatchCaller,
+		{Kind: kubernetes.Kind, Address: "system:serviceaccount:example-ns:example-listener"}: listenerCaller,
 	}
 	if !maps.Equal(cfg.APIAccounts, want) {
 		t.Fatalf("APIAccounts = %v, want %v and no Google caller", cfg.APIAccounts, want)
@@ -2186,7 +1908,7 @@ func TestLoadReadsAGoogleAPIAccount(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantGoogle := map[identity.Account]api.Account{{Kind: googleAccountKind, Address: exampleListenerAccount}: listenerCaller}
+	wantGoogle := map[identity.Account]api.Account{{Kind: google.Kind, Address: exampleListenerAccount}: listenerCaller}
 	if !maps.Equal(cfg.APIAccounts, wantGoogle) {
 		t.Fatalf("APIAccounts = %v, want %v and no Kubernetes caller: a Google entry needs no cluster at all", cfg.APIAccounts, wantGoogle)
 	}
@@ -2200,8 +1922,8 @@ func TestLoadReadsAGoogleAPIAccount(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := map[identity.Account]api.Account{
-		{Kind: kubernetesAccountKind, Address: "system:serviceaccount:example-ns:example-dispatch"}: dispatchCaller,
-		{Kind: googleAccountKind, Address: exampleListenerAccount}:                                  listenerCaller,
+		{Kind: kubernetes.Kind, Address: "system:serviceaccount:example-ns:example-dispatch"}: dispatchCaller,
+		{Kind: google.Kind, Address: exampleListenerAccount}:                                  listenerCaller,
 	}
 	if !maps.Equal(cfg.APIAccounts, want) {
 		t.Fatalf("APIAccounts = %v; want %v: each entry keyed by its own kind, which its token is verified as", cfg.APIAccounts, want)
@@ -2276,205 +1998,6 @@ func TestLoadReadsTheAccessTokenLifetime(t *testing.T) {
 	}
 }
 
-// TestLoadReadsTheExchangeAccounts pins BROKER_EXCHANGE_ACCOUNTS: whitespace-separated
-// <account>=<project>=<person>[=<session>] entries in order, none when unset, a session that may
-// itself carry "=", an empty project (the shared public-session account's entry, whose named
-// tokens name no project), an empty project and person (an account whose tokens act as
-// the account itself), and refusals naming the entry for one that is not of that form, has a
-// blank account, names a project and no person, names a namespace's default account or lists an
-// account twice. It needs the cluster issuer and the exchange audience, whose tokens its pods
-// present.
-func TestLoadReadsTheExchangeAccounts(t *testing.T) {
-	cfg, err := Load(env(validEnv()))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.ExchangeAccounts != nil {
-		t.Fatalf("ExchangeAccounts = %v, want nil when BROKER_EXCHANGE_ACCOUNTS is unset", cfg.ExchangeAccounts)
-	}
-	withExchange := func() map[string]string {
-		e := withK8sIssuer()
-		e["BROKER_EXCHANGE_K8S_AUDIENCE"] = "dispatch-exchange"
-		return e
-	}
-	e := withExchange()
-	e["BROKER_EXCHANGE_ACCOUNTS"] = "system:serviceaccount:example-ns:example-worker=EXAMPLE=ada@example.com\n" +
-		" system:serviceaccount:example-ns:example-daemon=EXAMPLE=ada@example.com=legion-daemon:EXAMPLE=1 " +
-		"system:serviceaccount:example-ns:example-public==ada@example.com " +
-		"system:serviceaccount:example-ns:example-job== system:serviceaccount:example-ns:example-probe===example-probe-session"
-	cfg, err = Load(env(e))
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := []exchange.AccountEntry{
-		{Account: "system:serviceaccount:example-ns:example-worker", Project: "EXAMPLE", Person: "ada@example.com"},
-		{Account: "system:serviceaccount:example-ns:example-daemon", Project: "EXAMPLE", Person: "ada@example.com", Session: "legion-daemon:EXAMPLE=1"},
-		{Account: "system:serviceaccount:example-ns:example-public", Project: "", Person: "ada@example.com"},
-		{Account: "system:serviceaccount:example-ns:example-job"},
-		{Account: "system:serviceaccount:example-ns:example-probe", Session: "example-probe-session"},
-	}
-	if !slices.Equal(cfg.ExchangeAccounts, want) {
-		t.Fatalf("ExchangeAccounts = %v, want %v", cfg.ExchangeAccounts, want)
-	}
-	for _, bad := range []string{
-		"system:serviceaccount:example-ns:example-worker", "system:serviceaccount:example-ns:example-worker=EXAMPLE",
-		"system:serviceaccount:example-ns:example-worker=EXAMPLE=", "=EXAMPLE=ada@example.com",
-		"example-worker=EXAMPLE=ada@example.com", "system:serviceaccount:example-ns:default=EXAMPLE=ada@example.com",
-	} {
-		e := withExchange()
-		e["BROKER_EXCHANGE_ACCOUNTS"] = bad
-		if _, err := Load(env(e)); err == nil || !strings.Contains(err.Error(), "BROKER_EXCHANGE_ACCOUNTS") || !strings.Contains(err.Error(), strconv.Quote(bad)) {
-			t.Errorf("BROKER_EXCHANGE_ACCOUNTS = %q: err = %v, want a refusal naming the setting and the entry", bad, err)
-		}
-	}
-	// An entry naming a project and no person is refused naming that rule, not only its form.
-	e = withExchange()
-	e["BROKER_EXCHANGE_ACCOUNTS"] = "system:serviceaccount:example-ns:example-worker=EXAMPLE="
-	if _, err := Load(env(e)); err == nil || !strings.Contains(err.Error(), "names no person only when it names no project either") {
-		t.Errorf("BROKER_EXCHANGE_ACCOUNTS naming a project and no person: err = %v, want a refusal naming the rule", err)
-	}
-	e = withExchange()
-	e["BROKER_EXCHANGE_ACCOUNTS"] = "system:serviceaccount:x:y=A=ada@example.com system:serviceaccount:x:y=B=ada@example.com"
-	if _, err := Load(env(e)); err == nil || !strings.Contains(err.Error(), "system:serviceaccount:x:y") {
-		t.Errorf("BROKER_EXCHANGE_ACCOUNTS naming one account twice: err = %v, want a refusal naming the account", err)
-	}
-	e = withK8sIssuer()
-	e["BROKER_EXCHANGE_ACCOUNTS"] = "system:serviceaccount:example-ns:example-worker=EXAMPLE=ada@example.com"
-	if _, err := Load(env(e)); err == nil || !strings.Contains(err.Error(), "BROKER_EXCHANGE_K8S_AUDIENCE") {
-		t.Errorf("BROKER_EXCHANGE_ACCOUNTS with no exchange audience: err = %v, want a refusal naming BROKER_EXCHANGE_K8S_AUDIENCE", err)
-	}
-	e = validEnv()
-	e["BROKER_EXCHANGE_K8S_AUDIENCE"] = "dispatch-exchange"
-	if _, err := Load(env(e)); err == nil || !strings.Contains(err.Error(), "BROKER_K8S_OIDC_ISSUER") {
-		t.Errorf("BROKER_EXCHANGE_K8S_AUDIENCE with no cluster issuer: err = %v, want a refusal naming BROKER_K8S_OIDC_ISSUER", err)
-	}
-}
-
-// TestLoadReadsTheExchangeReadAccounts pins BROKER_EXCHANGE_READ_ACCOUNTS: whitespace-separated
-// <account>=<service>=<session> entries in order, none when unset, a session that may itself
-// carry "=", and refusals naming the setting and the entry for one with fewer than three fields
-// or a blank one, an account that is not a service account's subject, a namespace's default
-// account, a service that is not a service's name or is the shared owner, and an account listed
-// twice. An account BROKER_EXCHANGE_ACCOUNTS lists too is refused naming both settings, and the
-// setting needs the cluster issuer and the exchange audience, whose tokens its pods present.
-func TestLoadReadsTheExchangeReadAccounts(t *testing.T) {
-	cfg, err := Load(env(validEnv()))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.ExchangeReadAccounts != nil {
-		t.Fatalf("ExchangeReadAccounts = %v, want nil when BROKER_EXCHANGE_READ_ACCOUNTS is unset", cfg.ExchangeReadAccounts)
-	}
-	withExchange := func() map[string]string {
-		e := withK8sIssuer()
-		e["BROKER_EXCHANGE_K8S_AUDIENCE"] = "dispatch-exchange"
-		return e
-	}
-	e := withExchange()
-	e["BROKER_EXCHANGE_READ_ACCOUNTS"] = "system:serviceaccount:example-ns:example-reader=example-reader=example-reader-session\n" +
-		" system:serviceaccount:example-ns:example-viewer=example-viewer=example-viewer=1 "
-	cfg, err = Load(env(e))
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := []exchange.ReadEntry{
-		{Account: "system:serviceaccount:example-ns:example-reader", Service: "example-reader", Session: "example-reader-session"},
-		{Account: "system:serviceaccount:example-ns:example-viewer", Service: "example-viewer", Session: "example-viewer=1"},
-	}
-	if !slices.Equal(cfg.ExchangeReadAccounts, want) {
-		t.Fatalf("ExchangeReadAccounts = %v, want %v", cfg.ExchangeReadAccounts, want)
-	}
-	for _, bad := range []string{
-		"system:serviceaccount:example-ns:example-reader",
-		"system:serviceaccount:example-ns:example-reader=example-reader",
-		"=example-reader=example-reader-session",
-		"system:serviceaccount:example-ns:example-reader==example-reader-session",
-		"system:serviceaccount:example-ns:example-reader=example-reader=",
-		"example-reader=example-reader=example-reader-session",
-		"system:serviceaccount:example-ns:default=example-reader=example-reader-session",
-		"system:serviceaccount:example-ns:example-reader=Example_Reader=example-reader-session",
-		"system:serviceaccount:example-ns:example-reader=shared=example-reader-session",
-	} {
-		e := withExchange()
-		e["BROKER_EXCHANGE_READ_ACCOUNTS"] = bad
-		if _, err := Load(env(e)); err == nil || !strings.Contains(err.Error(), "BROKER_EXCHANGE_READ_ACCOUNTS") || !strings.Contains(err.Error(), strconv.Quote(bad)) {
-			t.Errorf("BROKER_EXCHANGE_READ_ACCOUNTS = %q: err = %v, want a refusal naming the setting and the entry", bad, err)
-		}
-	}
-	e = withExchange()
-	const again = "system:serviceaccount:x:y=example-other=other-session"
-	e["BROKER_EXCHANGE_READ_ACCOUNTS"] = "system:serviceaccount:x:y=example-reader=example-reader-session " + again
-	if _, err := Load(env(e)); err == nil || !strings.Contains(err.Error(), "BROKER_EXCHANGE_READ_ACCOUNTS") || !strings.Contains(err.Error(), strconv.Quote(again)) {
-		t.Errorf("BROKER_EXCHANGE_READ_ACCOUNTS naming one account twice: err = %v, want a refusal naming the setting and the entry", err)
-	}
-	e = withExchange()
-	e["BROKER_EXCHANGE_ACCOUNTS"] = "system:serviceaccount:example-ns:example-worker=EXAMPLE=ada@example.com"
-	e["BROKER_EXCHANGE_READ_ACCOUNTS"] = "system:serviceaccount:example-ns:example-worker=example-reader=example-reader-session"
-	if _, err := Load(env(e)); err == nil || !strings.Contains(err.Error(), "BROKER_EXCHANGE_READ_ACCOUNTS") ||
-		!strings.Contains(err.Error(), "BROKER_EXCHANGE_ACCOUNTS ") || !strings.Contains(err.Error(), "system:serviceaccount:example-ns:example-worker") {
-		t.Errorf("an account both exchange settings list: err = %v, want a refusal naming both settings and the account", err)
-	}
-	e = withK8sIssuer()
-	e["BROKER_EXCHANGE_READ_ACCOUNTS"] = "system:serviceaccount:example-ns:example-reader=example-reader=example-reader-session"
-	if _, err := Load(env(e)); err == nil || !strings.Contains(err.Error(), "BROKER_EXCHANGE_READ_ACCOUNTS") || !strings.Contains(err.Error(), "BROKER_EXCHANGE_K8S_AUDIENCE") {
-		t.Errorf("BROKER_EXCHANGE_READ_ACCOUNTS with no exchange audience: err = %v, want a refusal naming the setting and BROKER_EXCHANGE_K8S_AUDIENCE", err)
-	}
-}
-
-// TestLoadReadsTheExchangeWorkflows pins BROKER_EXCHANGE_WORKFLOWS:
-// <repository>=<workflow>=<ref>=<project>=<person>[=<session>] entries in order, none when unset,
-// and refusals naming the entry for one that is not of that form or lists a workflow twice. It
-// needs GitHub's issuer and audience, whose tokens its runs present.
-func TestLoadReadsTheExchangeWorkflows(t *testing.T) {
-	cfg, err := Load(env(validEnv()))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.ExchangeWorkflows != nil {
-		t.Fatalf("ExchangeWorkflows = %v, want nil when BROKER_EXCHANGE_WORKFLOWS is unset", cfg.ExchangeWorkflows)
-	}
-	withGitHub := func() map[string]string {
-		e := validEnv()
-		e["BROKER_EXCHANGE_GITHUB_ISSUER"] = "https://token.actions.githubusercontent.com"
-		e["BROKER_EXCHANGE_GITHUB_AUDIENCE"] = "dispatch-exchange"
-		return e
-	}
-	e := withGitHub()
-	e["BROKER_EXCHANGE_WORKFLOWS"] = "example-org/example-repo=.github/workflows/release.yaml=refs/heads/main=EXAMPLE=ada@example.com=release=1"
-	cfg, err = Load(env(e))
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := []exchange.WorkflowEntry{{
-		Repository: "example-org/example-repo", Workflow: ".github/workflows/release.yaml", Ref: "refs/heads/main",
-		Project: "EXAMPLE", Person: "ada@example.com", Session: "release=1",
-	}}
-	if !slices.Equal(cfg.ExchangeWorkflows, want) {
-		t.Fatalf("ExchangeWorkflows = %v, want %v", cfg.ExchangeWorkflows, want)
-	}
-	for _, bad := range []string{
-		"example-org/example-repo", "example-org/example-repo=.github/workflows/release.yaml=refs/heads/main=EXAMPLE",
-		"example-org/example-repo=.github/workflows/release.yaml==EXAMPLE=ada@example.com",
-	} {
-		e := withGitHub()
-		e["BROKER_EXCHANGE_WORKFLOWS"] = bad
-		if _, err := Load(env(e)); err == nil || !strings.Contains(err.Error(), "BROKER_EXCHANGE_WORKFLOWS") || !strings.Contains(err.Error(), strconv.Quote(bad)) {
-			t.Errorf("BROKER_EXCHANGE_WORKFLOWS = %q: err = %v, want a refusal naming the setting and the entry", bad, err)
-		}
-	}
-	e = withGitHub()
-	entry := "example-org/example-repo=.github/workflows/release.yaml=refs/heads/main"
-	e["BROKER_EXCHANGE_WORKFLOWS"] = entry + "=A=ada@example.com " + entry + "=B=ada@example.com"
-	if _, err := Load(env(e)); err == nil || !strings.Contains(err.Error(), entry) {
-		t.Errorf("BROKER_EXCHANGE_WORKFLOWS naming one workflow twice: err = %v, want a refusal naming the workflow", err)
-	}
-	e = validEnv()
-	e["BROKER_EXCHANGE_WORKFLOWS"] = entry + "=EXAMPLE=ada@example.com"
-	if _, err := Load(env(e)); err == nil || !strings.Contains(err.Error(), "BROKER_EXCHANGE_GITHUB_ISSUER") {
-		t.Errorf("BROKER_EXCHANGE_WORKFLOWS with no GitHub issuer: err = %v, want a refusal naming BROKER_EXCHANGE_GITHUB_ISSUER", err)
-	}
-}
-
 // The identities the job settings' tests list. This repository is public, so each is a
 // placeholder.
 const (
@@ -2524,9 +2047,9 @@ func jobList(t *testing.T, text string) exchange.JobProjects {
 }
 
 // TestLoadReadsTheJobSettings pins the three job settings, one row for each identity kind: each
-// entry is read, in order, into an exchange entry that holds its identity, its projects as Job and
-// the session it fixes, if any, everything after the last separator, and that names no person and
-// no project. A VM job entry lands in its account's machine entry, beside its service and its
+// entry is read, in order, into its provider's entry that holds its identity, its projects as Job
+// and the session it fixes, if any, everything after the last separator, and that names no person
+// and no project. A VM job entry lands in its account's machine entry, beside its service and its
 // pins.
 func TestLoadReadsTheJobSettings(t *testing.T) {
 	const sweeper = "system:serviceaccount:example-ns:example-sweeper"
@@ -2541,9 +2064,12 @@ func TestLoadReadsTheJobSettings(t *testing.T) {
 			setting: "BROKER_EXCHANGE_JOB_ACCOUNTS",
 			env:     jobPodEnv,
 			value:   jobAccount + "=EXAMPLE=example-job:EXAMPLE=1\n " + sweeper + "=public,PRIVB,PRIVA",
-			got:     func(cfg Config) any { return cfg.ExchangeJobAccounts },
+			got: func(cfg Config) any {
+				pods, _ := boot.ConfigOf[kubernetes.Config](cfg.Identity, kubernetes.Kind)
+				return pods.Accounts
+			},
 			want: func(t *testing.T) any {
-				return []exchange.AccountEntry{
+				return []kubernetes.AccountEntry{
 					{Account: jobAccount, Job: jobList(t, "EXAMPLE"), Session: "example-job:EXAMPLE=1"},
 					{Account: sweeper, Job: jobList(t, "public,PRIVA,PRIVB")},
 				}
@@ -2553,9 +2079,12 @@ func TestLoadReadsTheJobSettings(t *testing.T) {
 			setting: "BROKER_EXCHANGE_JOB_WORKFLOWS",
 			env:     jobWorkflowEnv,
 			value:   jobWorkflow + "=public=sweep=1\texample-org/example-repo=.github/workflows/triage.yaml=refs/heads/main=ACME",
-			got:     func(cfg Config) any { return cfg.ExchangeJobWorkflows },
+			got: func(cfg Config) any {
+				runs, _ := boot.ConfigOf[github.Config](cfg.Identity, github.Kind)
+				return runs.Workflows
+			},
 			want: func(t *testing.T) any {
-				return []exchange.WorkflowEntry{
+				return []github.WorkflowEntry{
 					{Repository: "example-org/example-repo", Workflow: ".github/workflows/sweep.yaml", Ref: "refs/heads/main", Job: jobList(t, "public"), Session: "sweep=1"},
 					{Repository: "example-org/example-repo", Workflow: ".github/workflows/triage.yaml", Ref: "refs/heads/main", Job: jobList(t, "ACME")},
 				}
@@ -2565,9 +2094,12 @@ func TestLoadReadsTheJobSettings(t *testing.T) {
 			setting: "BROKER_VM_EXCHANGE_JOB_ACCOUNTS",
 			env:     jobFleetEnv,
 			value:   exampleVMServiceAccount + "=EXAMPLE=example-fleet-job " + secondFleet + "=public,PRIVA",
-			got:     func(cfg Config) any { return cfg.ExchangeGoogleAccounts },
+			got: func(cfg Config) any {
+				machines, _ := boot.ConfigOf[google.Config](cfg.Identity, google.Kind)
+				return machines.Machines
+			},
 			want: func(t *testing.T) any {
-				return []exchange.GoogleEntry{
+				return []google.GoogleEntry{
 					{
 						Account: exampleVMServiceAccount, Service: "example-service",
 						CloudProject: "example-project", Instance: "example-vm-*",
@@ -2661,7 +2193,10 @@ func TestLoadRefusesAJobEntryItCannotServe(t *testing.T) {
 				e[setting.name] = row.value
 				cfg, err := Load(env(e))
 				if err == nil {
-					t.Fatalf("Load(%s=%q) loaded, ExchangeJobAccounts = %+v, ExchangeJobWorkflows = %+v, ExchangeGoogleAccounts = %+v; want a refusal", setting.name, row.value, cfg.ExchangeJobAccounts, cfg.ExchangeJobWorkflows, cfg.ExchangeGoogleAccounts)
+					pods, _ := boot.ConfigOf[kubernetes.Config](cfg.Identity, kubernetes.Kind)
+					runs, _ := boot.ConfigOf[github.Config](cfg.Identity, github.Kind)
+					machines, _ := boot.ConfigOf[google.Config](cfg.Identity, google.Kind)
+					t.Fatalf("Load(%s=%q) loaded, the exchange accounts = %+v, the exchange workflows = %+v, the machines = %+v; want a refusal", setting.name, row.value, pods.Accounts, runs.Workflows, machines.Machines)
 				}
 				entry := row.entry
 				if entry == "" {
@@ -2850,24 +2385,6 @@ func TestAPrivateProjectOnlyInItsPodsParsesTheSetting(t *testing.T) {
 		if !strings.Contains(err.Error(), "BROKER_PRIVATE_PROJECTS") || !strings.Contains(err.Error(), c.key) {
 			t.Errorf("BROKER_PRIVATE_PROJECTS = %q: err = %v, want a refusal naming the setting and %s", c.setting, err, c.key)
 		}
-	}
-}
-
-// TestLoadRefusesAHalfConfiguredGitHubIssuer pins that GitHub's issuer and audience are
-// both-or-neither, as the cluster's pair is: half a pair would register a token type whose tokens
-// could not be checked.
-func TestLoadRefusesAHalfConfiguredGitHubIssuer(t *testing.T) {
-	for _, half := range []string{"BROKER_EXCHANGE_GITHUB_ISSUER", "BROKER_EXCHANGE_GITHUB_AUDIENCE"} {
-		e := validEnv()
-		e[half] = "https://token.actions.githubusercontent.com"
-		_, err := Load(env(e))
-		if err == nil || !strings.Contains(err.Error(), "BROKER_EXCHANGE_GITHUB_ISSUER") || !strings.Contains(err.Error(), "BROKER_EXCHANGE_GITHUB_AUDIENCE") {
-			t.Errorf("Load(%s alone) = %v, want a refusal naming both halves", half, err)
-		}
-	}
-	cfg, err := Load(env(validEnv()))
-	if err != nil || cfg.ExchangeGitHubIssuer != "" || cfg.ExchangeGitHubAudience != "" {
-		t.Fatalf("Load with neither half = (%q, %q, %v), want no GitHub issuer and no error", cfg.ExchangeGitHubIssuer, cfg.ExchangeGitHubAudience, err)
 	}
 }
 

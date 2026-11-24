@@ -133,7 +133,7 @@ func (l listedSet) Person(token, actor map[string]any, session string, projects 
 }
 
 // build composes the providers of the entries given into one set, as the identity registry does.
-func build(accounts []exchange.AccountEntry, reads []exchange.ReadEntry, workflows []exchange.WorkflowEntry, machines []exchange.GoogleEntry) (listedSet, error) {
+func build(accounts []kubernetes.AccountEntry, reads []kubernetes.ReadEntry, workflows []github.WorkflowEntry, machines []google.GoogleEntry) (listedSet, error) {
 	pods, err := kubernetes.New(kubernetes.Config{Accounts: accounts, Reads: reads})
 	if err != nil {
 		return listedSet{}, err
@@ -162,21 +162,21 @@ func build(accounts []exchange.AccountEntry, reads []exchange.ReadEntry, workflo
 func listed(t *testing.T) listedSet {
 	t.Helper()
 	set, err := build(
-		[]exchange.AccountEntry{
+		[]kubernetes.AccountEntry{
 			{Account: workerAccount, Project: project, Person: person},
 			{Account: daemonAccount, Project: project, Person: person, Session: fixedSession},
 			{Account: jobAccount, Job: jobList(t, project)},
 			{Account: publicJobAccount, Job: jobList(t, publicJobs)},
 			{Account: fixedJobAccount, Job: jobList(t, project), Session: jobPodSession},
 		},
-		[]exchange.ReadEntry{{Account: readerAccount, Service: readerService, Session: readerSession}},
-		[]exchange.WorkflowEntry{
+		[]kubernetes.ReadEntry{{Account: readerAccount, Service: readerService, Session: readerSession}},
+		[]github.WorkflowEntry{
 			{Repository: repository, Workflow: workflow, Ref: ref, Project: project, Person: person},
 			{Repository: repository, Workflow: nightly, Ref: ref, Project: project, Person: person, Session: nightlySession},
 			{Repository: repository, Workflow: jobWorkflow, Ref: ref, Job: jobList(t, publicJobs)},
 			{Repository: repository, Workflow: fixedJobWorkflow, Ref: ref, Job: jobList(t, project), Session: jobRunSession},
 		},
-		[]exchange.GoogleEntry{
+		[]google.GoogleEntry{
 			{Account: pinnedAccount, Service: pinnedService, CloudProject: cloudProject, Instance: instanceGlob, Project: project, Person: person},
 			{Account: poolAccount, Service: poolService},
 			{Account: fixedAccount, Service: poolService, Session: machineSession},
@@ -220,79 +220,79 @@ func runRef(path string) string { return repository + "/" + path + "@" + ref }
 // name entries of two providers fix, and an identity two listings name. It holds too, through
 // the providers, an account subject with text around it and every job entry a provider refuses.
 func TestNewSetRefusesAnEntryItCannotServe(t *testing.T) {
-	account := exchange.AccountEntry{Account: workerAccount, Project: project, Person: person, Session: fixedSession}
-	flow := exchange.WorkflowEntry{Repository: repository, Workflow: workflow, Ref: ref, Project: project, Person: person, Session: fixedSession}
-	machine := exchange.GoogleEntry{Account: pinnedAccount, Service: pinnedService, Session: fixedSession}
-	with := func(change func(*exchange.AccountEntry)) exchange.AccountEntry {
+	account := kubernetes.AccountEntry{Account: workerAccount, Project: project, Person: person, Session: fixedSession}
+	flow := github.WorkflowEntry{Repository: repository, Workflow: workflow, Ref: ref, Project: project, Person: person, Session: fixedSession}
+	machine := google.GoogleEntry{Account: pinnedAccount, Service: pinnedService, Session: fixedSession}
+	with := func(change func(*kubernetes.AccountEntry)) kubernetes.AccountEntry {
 		entry := account
 		change(&entry)
 		return entry
 	}
-	withFlow := func(change func(*exchange.WorkflowEntry)) exchange.WorkflowEntry {
+	withFlow := func(change func(*github.WorkflowEntry)) github.WorkflowEntry {
 		entry := flow
 		change(&entry)
 		return entry
 	}
-	withMachine := func(change func(*exchange.GoogleEntry)) exchange.GoogleEntry {
+	withMachine := func(change func(*google.GoogleEntry)) google.GoogleEntry {
 		entry := machine
 		change(&entry)
 		return entry
 	}
-	reader := exchange.ReadEntry{Account: readerAccount, Service: readerService, Session: readerSession}
-	withReader := func(change func(*exchange.ReadEntry)) exchange.ReadEntry {
+	reader := kubernetes.ReadEntry{Account: readerAccount, Service: readerService, Session: readerSession}
+	withReader := func(change func(*kubernetes.ReadEntry)) kubernetes.ReadEntry {
 		entry := reader
 		change(&entry)
 		return entry
 	}
 	for _, c := range []struct {
 		name      string
-		accounts  []exchange.AccountEntry
-		reads     []exchange.ReadEntry
-		workflows []exchange.WorkflowEntry
-		machines  []exchange.GoogleEntry
+		accounts  []kubernetes.AccountEntry
+		reads     []kubernetes.ReadEntry
+		workflows []github.WorkflowEntry
+		machines  []google.GoogleEntry
 		names     string
 	}{
 		{name: "an account with text after it",
-			accounts: []exchange.AccountEntry{with(func(e *exchange.AccountEntry) { e.Account = "system:serviceaccount:example-ns:example-public===x" })}, names: "example-public===x"},
+			accounts: []kubernetes.AccountEntry{with(func(e *kubernetes.AccountEntry) { e.Account = "system:serviceaccount:example-ns:example-public===x" })}, names: "example-public===x"},
 		{name: "an account with text before it",
-			accounts: []exchange.AccountEntry{with(func(e *exchange.AccountEntry) { e.Account = "xsystem:serviceaccount:example-ns:example-public" })}, names: "xsystem:serviceaccount:example-ns:example-public"},
+			accounts: []kubernetes.AccountEntry{with(func(e *kubernetes.AccountEntry) { e.Account = "xsystem:serviceaccount:example-ns:example-public" })}, names: "xsystem:serviceaccount:example-ns:example-public"},
 		{name: "a session name an account and a workflow fix",
-			accounts: []exchange.AccountEntry{account}, workflows: []exchange.WorkflowEntry{flow}, names: workerAccount},
+			accounts: []kubernetes.AccountEntry{account}, workflows: []github.WorkflowEntry{flow}, names: workerAccount},
 		{name: "a session name a machine and an account fix",
-			accounts: []exchange.AccountEntry{account}, machines: []exchange.GoogleEntry{machine}, names: pinnedAccount},
+			accounts: []kubernetes.AccountEntry{account}, machines: []google.GoogleEntry{machine}, names: pinnedAccount},
 		// An entry names a person and its project, or a job list, and never both; a workflow entry
 		// that names neither mints a token answerable to nobody. An account entry that names
 		// neither acts as the account itself (TestAnAccountEntryMayNameNoPerson).
 		{name: "a job account that names a person too",
-			accounts: []exchange.AccountEntry{with(func(e *exchange.AccountEntry) { e.Project, e.Job = "", jobList(t, project) })}, names: workerAccount},
+			accounts: []kubernetes.AccountEntry{with(func(e *kubernetes.AccountEntry) { e.Project, e.Job = "", jobList(t, project) })}, names: workerAccount},
 		{name: "a job account that names a project too",
-			accounts: []exchange.AccountEntry{with(func(e *exchange.AccountEntry) { e.Person, e.Job = "", jobList(t, project) })}, names: workerAccount},
+			accounts: []kubernetes.AccountEntry{with(func(e *kubernetes.AccountEntry) { e.Person, e.Job = "", jobList(t, project) })}, names: workerAccount},
 		{name: "a job account whose fixed session carries whitespace",
-			accounts: []exchange.AccountEntry{{Account: workerAccount, Job: jobList(t, publicJobs), Session: "example job"}}, names: workerAccount},
+			accounts: []kubernetes.AccountEntry{{Account: workerAccount, Job: jobList(t, publicJobs), Session: "example job"}}, names: workerAccount},
 		{name: "an account a person entry and a job entry both list",
-			accounts: []exchange.AccountEntry{account, {Account: workerAccount, Job: jobList(t, project)}}, names: "account entry 2"},
+			accounts: []kubernetes.AccountEntry{account, {Account: workerAccount, Job: jobList(t, project)}}, names: "account entry 2"},
 		{name: "an account a job entry and a read entry both list",
-			accounts: []exchange.AccountEntry{{Account: workerAccount, Job: jobList(t, project)}},
-			reads:    []exchange.ReadEntry{withReader(func(e *exchange.ReadEntry) { e.Account = workerAccount })}, names: `read entry 1, "` + workerAccount + `"`},
+			accounts: []kubernetes.AccountEntry{{Account: workerAccount, Job: jobList(t, project)}},
+			reads:    []kubernetes.ReadEntry{withReader(func(e *kubernetes.ReadEntry) { e.Account = workerAccount })}, names: `read entry 1, "` + workerAccount + `"`},
 		{name: "a job workflow that names a person too",
-			workflows: []exchange.WorkflowEntry{withFlow(func(e *exchange.WorkflowEntry) { e.Project, e.Job = "", jobList(t, publicJobs) })}, names: workflow},
+			workflows: []github.WorkflowEntry{withFlow(func(e *github.WorkflowEntry) { e.Project, e.Job = "", jobList(t, publicJobs) })}, names: workflow},
 		{name: "a job workflow that names a project too",
-			workflows: []exchange.WorkflowEntry{withFlow(func(e *exchange.WorkflowEntry) { e.Person, e.Job = "", jobList(t, publicJobs) })}, names: workflow},
+			workflows: []github.WorkflowEntry{withFlow(func(e *github.WorkflowEntry) { e.Person, e.Job = "", jobList(t, publicJobs) })}, names: workflow},
 		{name: "a workflow naming neither a person nor a job list",
-			workflows: []exchange.WorkflowEntry{withFlow(func(e *exchange.WorkflowEntry) { e.Project, e.Person = "", "" })}, names: workflow},
+			workflows: []github.WorkflowEntry{withFlow(func(e *github.WorkflowEntry) { e.Project, e.Person = "", "" })}, names: workflow},
 		{name: "a job workflow whose fixed session is unprintable",
-			workflows: []exchange.WorkflowEntry{{Repository: repository, Workflow: workflow, Ref: ref, Job: jobList(t, project), Session: "example\x00job"}}, names: workflow},
+			workflows: []github.WorkflowEntry{{Repository: repository, Workflow: workflow, Ref: ref, Job: jobList(t, project), Session: "example\x00job"}}, names: workflow},
 		{name: "a session name a job account and a job workflow fix",
-			accounts:  []exchange.AccountEntry{{Account: workerAccount, Job: jobList(t, project), Session: jobPodSession}},
-			workflows: []exchange.WorkflowEntry{{Repository: repository, Workflow: workflow, Ref: ref, Job: jobList(t, project), Session: jobPodSession}}, names: workerAccount},
+			accounts:  []kubernetes.AccountEntry{{Account: workerAccount, Job: jobList(t, project), Session: jobPodSession}},
+			workflows: []github.WorkflowEntry{{Repository: repository, Workflow: workflow, Ref: ref, Job: jobList(t, project), Session: jobPodSession}}, names: workerAccount},
 		{name: "a Google job entry that names a person too",
-			machines: []exchange.GoogleEntry{withMachine(func(e *exchange.GoogleEntry) { e.Person, e.Job = person, jobList(t, project) })}, names: pinnedAccount},
+			machines: []google.GoogleEntry{withMachine(func(e *google.GoogleEntry) { e.Person, e.Job = person, jobList(t, project) })}, names: pinnedAccount},
 		{name: "a Google job entry that names a project too",
-			machines: []exchange.GoogleEntry{withMachine(func(e *exchange.GoogleEntry) { e.Project, e.Job = project, jobList(t, project) })}, names: pinnedAccount},
+			machines: []google.GoogleEntry{withMachine(func(e *google.GoogleEntry) { e.Project, e.Job = project, jobList(t, project) })}, names: pinnedAccount},
 		{name: "a Google job entry that names a person and a project too",
-			machines: []exchange.GoogleEntry{withMachine(func(e *exchange.GoogleEntry) { e.Project, e.Person, e.Job = project, person, jobList(t, publicJobs) })}, names: pinnedAccount},
+			machines: []google.GoogleEntry{withMachine(func(e *google.GoogleEntry) { e.Project, e.Person, e.Job = project, person, jobList(t, publicJobs) })}, names: pinnedAccount},
 		{name: "a Google job entry whose fixed session carries whitespace",
-			machines: []exchange.GoogleEntry{withMachine(func(e *exchange.GoogleEntry) { e.Session, e.Job = "example job", jobList(t, project) })}, names: pinnedAccount},
+			machines: []google.GoogleEntry{withMachine(func(e *google.GoogleEntry) { e.Session, e.Job = "example job", jobList(t, project) })}, names: pinnedAccount},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			set, err := build(c.accounts, c.reads, c.workflows, c.machines)
@@ -324,7 +324,7 @@ func TestNewSetRefusesAnEntryItCannotServe(t *testing.T) {
 // request naming a project is refused as under any entry naming none, and MappedProjects and
 // ProjectsForAccount answer neither a person nor a project.
 func TestAnAccountEntryMayNameNoPerson(t *testing.T) {
-	set, err := build([]exchange.AccountEntry{
+	set, err := build([]kubernetes.AccountEntry{
 		{Account: workerAccount},
 		{Account: daemonAccount, Session: fixedSession},
 	}, nil, nil, nil)
@@ -364,21 +364,21 @@ func TestAnAccountEntryMayNameNoPerson(t *testing.T) {
 func TestAPersonlessEntryNamesNoProject(t *testing.T) {
 	for _, c := range []struct {
 		name      string
-		accounts  []exchange.AccountEntry
-		workflows []exchange.WorkflowEntry
+		accounts  []kubernetes.AccountEntry
+		workflows []github.WorkflowEntry
 		names     []string
 	}{
 		{name: "an account entry naming a project and no person",
-			accounts: []exchange.AccountEntry{{Account: workerAccount, Project: project}},
+			accounts: []kubernetes.AccountEntry{{Account: workerAccount, Project: project}},
 			names:    []string{workerAccount, "names no person only when it names no project"}},
 		{name: "an account entry naming no project and a blank person",
-			accounts: []exchange.AccountEntry{{Account: workerAccount, Person: " "}},
+			accounts: []kubernetes.AccountEntry{{Account: workerAccount, Person: " "}},
 			names:    []string{workerAccount, "the person is required"}},
 		{name: "a workflow entry naming a project and no person",
-			workflows: []exchange.WorkflowEntry{{Repository: repository, Workflow: workflow, Ref: ref, Project: project}},
+			workflows: []github.WorkflowEntry{{Repository: repository, Workflow: workflow, Ref: ref, Project: project}},
 			names:     []string{workflow, "the person is required"}},
 		{name: "a workflow entry naming neither",
-			workflows: []exchange.WorkflowEntry{{Repository: repository, Workflow: workflow, Ref: ref}},
+			workflows: []github.WorkflowEntry{{Repository: repository, Workflow: workflow, Ref: ref}},
 			names:     []string{workflow}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -501,7 +501,7 @@ func TestPodGivesLegionStatusToTheDaemonsEntryAlone(t *testing.T) {
 		roleSession      = "legion-acme-acme-1-implementer"
 	)
 	set, err := build(
-		[]exchange.AccountEntry{
+		[]kubernetes.AccountEntry{
 			{Account: daemonAccount, Project: project, Person: person, Session: fixedSession},
 			{Account: workerAccount, Project: project, Person: person},
 			{Account: crossAccount, Project: "P2", Person: person, Session: "legion-daemon:P3"},
@@ -510,7 +510,7 @@ func TestPodGivesLegionStatusToTheDaemonsEntryAlone(t *testing.T) {
 			{Account: caseAccount, Project: "CASE", Person: person, Session: "Legion-Daemon:CASE"},
 			{Account: jobAccount, Job: jobList(t, "JOB"), Session: "legion-daemon:JOB"},
 		},
-		[]exchange.ReadEntry{{Account: readerAccount, Service: readerService, Session: "legion-daemon:READ"}},
+		[]kubernetes.ReadEntry{{Account: readerAccount, Service: readerService, Session: "legion-daemon:READ"}},
 		nil, nil)
 	if err != nil {
 		t.Fatalf("NewSet: %v", err)

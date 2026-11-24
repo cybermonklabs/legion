@@ -18,9 +18,9 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/ciphertest"
 	"github.com/sjawhar/envoy/internal/cipher/config"
-	"github.com/sjawhar/envoy/internal/cipher/exchange"
 	"github.com/sjawhar/envoy/internal/cipher/identity"
 	identityboot "github.com/sjawhar/envoy/internal/cipher/identity/boot"
+	"github.com/sjawhar/envoy/internal/cipher/identity/google"
 	"github.com/sjawhar/envoy/internal/cipher/judge"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/oidc"
@@ -34,6 +34,14 @@ const exampleVMAccount = "example-fleet@example-project.iam.gserviceaccount.com"
 // vmConfig loads the broker's configuration with the cluster's issuer and, when audience is set,
 // one VM service: example-fleet, run by exampleVMAccount in example-project as example-vm-*.
 func vmConfig(t *testing.T, audience string) config.Config {
+	t.Helper()
+	return vmConfigWith(t, audience, nil)
+}
+
+// vmConfigWith is vmConfig with each entry of extra set over the environment above: a test that
+// lists other machines sets the settings, as a deployment does, rather than the fields they parse
+// to, which the providers hold.
+func vmConfigWith(t *testing.T, audience string, extra map[string]string) config.Config {
 	t.Helper()
 	env := map[string]string{
 		"BROKER_DATABASE_URL":        "postgres://unused",
@@ -56,6 +64,9 @@ func vmConfig(t *testing.T, audience string) config.Config {
 		env["BROKER_VM_SERVICES"] = "example-fleet=" + exampleVMAccount
 		env["BROKER_VM_PROJECTS"] = exampleVMAccount + "=example-project"
 		env["BROKER_VM_INSTANCES"] = exampleVMAccount + "=example-vm-*"
+	}
+	for name, value := range extra {
+		env[name] = value
 	}
 	cfg, err := config.Load(func(name string) string { return env[name] })
 	if err != nil {
@@ -84,7 +95,7 @@ func TestTheEnrollmentServiceReadsTheMachineServicesFromThePolicy(t *testing.T) 
 // named and never read.
 func openIdentities(t *testing.T, cfg config.Config) *identity.Registry {
 	t.Helper()
-	identities, err := identityboot.Open(context.Background(), cfg, func(_ context.Context, issuer string) (*oidc.Keys, error) {
+	identities, err := identityboot.Open(context.Background(), cfg.Identity, func(_ context.Context, issuer string) (*oidc.Keys, error) {
 		return oidc.NewKeysAt(issuer + "/keys"), nil
 	})
 	if err != nil {
@@ -101,11 +112,10 @@ func openIdentities(t *testing.T, cfg config.Config) *identity.Registry {
 // the very read main gives the model judge.
 func TestTheRequestMachineCarriesWhoIsResponsible(t *testing.T) {
 	const otherAccount = "example-other@example-project.iam.gserviceaccount.com"
-	cfg := vmConfig(t, "example-vm-audience")
-	cfg.ExchangeGoogleAccounts = []exchange.GoogleEntry{
-		{Account: exampleVMAccount, Service: "example-fleet", Project: "ACME", Person: "ada@example.com"},
-		{Account: otherAccount, Service: "example-fleet"},
-	}
+	cfg := vmConfigWith(t, "example-vm-audience", map[string]string{
+		"BROKER_VM_SERVICES":          "example-fleet=" + exampleVMAccount + " example-fleet=" + otherAccount,
+		"BROKER_VM_EXCHANGE_ACCOUNTS": exampleVMAccount + "=ACME=ada@example.com",
+	})
 	if dispatch := judgeDispatch(cfg); dispatch != nil {
 		t.Fatalf("judgeDispatch = %#v with no BROKER_JUDGE_DISPATCH_URL; want none", dispatch)
 	}
@@ -196,7 +206,7 @@ func TestWithNoGoogleAudienceTheBootLogHoldsNoGoogleLine(t *testing.T) {
 		"BROKER_K8S_OIDC_ISSUER=" + issuer.URL(),
 		"BROKER_K8S_OIDC_AUDIENCE=example-broker-pod",
 	}})
-	for _, never := range []string{config.DefaultGoogleOIDCIssuer, "google machine identity"} {
+	for _, never := range []string{google.DefaultIssuer, "google machine identity"} {
 		if strings.Contains(broker.Boot, never) {
 			t.Fatalf("boot log with no Google audience holds %q:\n%s", never, broker.Boot)
 		}

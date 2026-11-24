@@ -5,6 +5,9 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/cipher/exchange"
+	"github.com/sjawhar/envoy/internal/cipher/identity/github"
+	"github.com/sjawhar/envoy/internal/cipher/identity/google"
+	"github.com/sjawhar/envoy/internal/cipher/identity/kubernetes"
 )
 
 // TestNewSetRefusesAnEntryWhoseProjectIsNoProjectKey: an entry's project is what every token minted
@@ -25,17 +28,17 @@ func TestNewSetRefusesAnEntryWhoseProjectIsNoProjectKey(t *testing.T) {
 		t.Run(bad, func(t *testing.T) {
 			for _, c := range []struct {
 				setting   string
-				accounts  []exchange.AccountEntry
-				workflows []exchange.WorkflowEntry
-				machines  []exchange.GoogleEntry
+				accounts  []kubernetes.AccountEntry
+				workflows []github.WorkflowEntry
+				machines  []google.GoogleEntry
 				names     string
 			}{
 				{setting: "BROKER_EXCHANGE_ACCOUNTS",
-					accounts: []exchange.AccountEntry{{Account: workerAccount, Project: bad, Person: person}}, names: workerAccount},
+					accounts: []kubernetes.AccountEntry{{Account: workerAccount, Project: bad, Person: person}}, names: workerAccount},
 				{setting: "BROKER_EXCHANGE_WORKFLOWS",
-					workflows: []exchange.WorkflowEntry{{Repository: repository, Workflow: workflow, Ref: ref, Project: bad, Person: person}}, names: workflow},
+					workflows: []github.WorkflowEntry{{Repository: repository, Workflow: workflow, Ref: ref, Project: bad, Person: person}}, names: workflow},
 				{setting: "BROKER_VM_EXCHANGE_ACCOUNTS",
-					machines: []exchange.GoogleEntry{{Account: pinnedAccount, Service: pinnedService, Project: bad, Person: person}}, names: pinnedAccount},
+					machines: []google.GoogleEntry{{Account: pinnedAccount, Service: pinnedService, Project: bad, Person: person}}, names: pinnedAccount},
 			} {
 				set, err := build(c.accounts, nil, c.workflows, c.machines)
 				if err == nil {

@@ -439,7 +439,7 @@ func TestAPodsEnrollmentAndTheExchangeHoldItsNameUnderTheSameAccount(t *testing.
 	const subject = "system:serviceaccount:legion:worker"
 	// The exchange as the cluster's deployment lists this account: the entry fixes no session
 	// name, so the name the pod asks under is the name it writes, which is the name it enrols.
-	set, err := kubernetesPods([]exchange.AccountEntry{{Account: subject, Project: "LEGION", Person: "ada@example.com"}})
+	set, err := kubernetesPods([]kubernetes.AccountEntry{{Account: subject, Project: "LEGION", Person: "ada@example.com"}})
 	if err != nil {
 		t.Fatalf("exchange.NewSet: %v", err)
 	}

@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/api"
 	"github.com/sjawhar/envoy/internal/cipher/ciphertest"
 	"github.com/sjawhar/envoy/internal/cipher/exchange"
+	"github.com/sjawhar/envoy/internal/cipher/identity/kubernetes"
 	"github.com/sjawhar/envoy/internal/cipher/oauth"
 	"github.com/sjawhar/envoy/internal/logtest"
 )
@@ -158,7 +159,7 @@ func TestThePodSessionRouteRegistersAJobAccountsPod(t *testing.T) {
 		return list
 	}
 	const fixed = "example-sweeper"
-	registry, err := kubernetesRegistry([]exchange.AccountEntry{
+	registry, err := kubernetesRegistry([]kubernetes.AccountEntry{
 		{Account: workerAccount, Job: job(ciphertest.ExchangeProject)},
 		{Account: otherAccount, Job: job("public,PRIVA"), Session: fixed},
 	})
@@ -194,9 +195,9 @@ func TestThePodSessionRouteRegistersAJobAccountsPod(t *testing.T) {
 // accounts it registers here.
 func withExchangeAccounts(t *testing.T, accounts ...string) func(*api.Deps) {
 	t.Helper()
-	entries := make([]exchange.AccountEntry, 0, len(accounts))
+	entries := make([]kubernetes.AccountEntry, 0, len(accounts))
 	for _, account := range accounts {
-		entries = append(entries, exchange.AccountEntry{Account: account, Project: ciphertest.ExchangeProject, Person: ciphertest.ExchangePerson})
+		entries = append(entries, kubernetes.AccountEntry{Account: account, Project: ciphertest.ExchangeProject, Person: ciphertest.ExchangePerson})
 	}
 	registry, err := kubernetesRegistry(entries)
 	if err != nil {

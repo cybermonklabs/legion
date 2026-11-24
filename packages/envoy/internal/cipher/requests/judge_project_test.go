@@ -3,7 +3,7 @@ package requests
 import (
 	"testing"
 
-	"github.com/sjawhar/envoy/internal/cipher/exchange"
+	"github.com/sjawhar/envoy/internal/cipher/identity/kubernetes"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 )
 
@@ -19,7 +19,7 @@ import (
 // tag, so a private project's pod request of an untagged secret reached the model.
 func TestTheJudgeLeavesAPrivateProjectsPodRequestToAPerson(t *testing.T) {
 	m, enr, _, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
-	set, err := kubernetesPolicy([]exchange.AccountEntry{{Account: fixtureSubject, Project: privProject, Person: insider}})
+	set, err := kubernetesPolicy([]kubernetes.AccountEntry{{Account: fixtureSubject, Project: privProject, Person: insider}})
 	if err != nil {
 		t.Fatalf("exchange.NewSet: %v", err)
 	}
@@ -45,7 +45,7 @@ func TestTheJudgeLeavesAPrivateProjectsPodRequestToAPerson(t *testing.T) {
 // names a public project is judged as before too: only a private named project refers it.
 func TestTheJudgeOfAPodWithAProjectAndNoProjectAccessDecidesAsBefore(t *testing.T) {
 	m, _, _, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
-	set, err := kubernetesPolicy([]exchange.AccountEntry{{Account: fixtureSubject, Project: teamProject, Person: insider}})
+	set, err := kubernetesPolicy([]kubernetes.AccountEntry{{Account: fixtureSubject, Project: teamProject, Person: insider}})
 	if err != nil {
 		t.Fatalf("exchange.NewSet: %v", err)
 	}

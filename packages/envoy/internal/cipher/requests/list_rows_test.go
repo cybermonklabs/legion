@@ -19,7 +19,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/cipher/exchange"
+	"github.com/sjawhar/envoy/internal/cipher/identity/kubernetes"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/logtest"
@@ -561,7 +561,7 @@ func TestAReadThatPanicsFailsItsRowClosedAndTheListGoesOn(t *testing.T) {
 	// makes it: its requests and grants are PRIV's.
 	privatePod := func(t *testing.T, m *Machine) (string, *ecdsa.PrivateKey) {
 		t.Helper()
-		set, err := kubernetesPolicy([]exchange.AccountEntry{{Account: fixtureSubject, Project: privProject, Person: insider}})
+		set, err := kubernetesPolicy([]kubernetes.AccountEntry{{Account: fixtureSubject, Project: privProject, Person: insider}})
 		if err != nil {
 			t.Fatalf("exchange.NewSet: %v", err)
 		}

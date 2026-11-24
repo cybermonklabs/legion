@@ -12,6 +12,8 @@ import (
 	"testing"
 
 	"github.com/nats-io/nkeys"
+	"github.com/sjawhar/envoy/internal/cipher/identity/boot"
+	"github.com/sjawhar/envoy/internal/cipher/identity/google"
 )
 
 // natsSeeds writes a user, an account and a curve seed to files of the test's own and returns
@@ -140,8 +142,9 @@ func TestNATSCalloutSettings(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if cfg.GoogleOIDCAudience != e["BROKER_GOOGLE_OIDC_AUDIENCE"] || entryTexts(cfg.NATS.Services) != e["BROKER_NATS_SERVICES"] || cfg.NATS.Enabled() {
-			t.Fatalf("a Google edge listener with its audience configured audience %q and %+v", cfg.GoogleOIDCAudience, cfg.NATS)
+		machines, _ := boot.ConfigOf[google.Config](cfg.Identity, google.Kind)
+		if machines.Audience != e["BROKER_GOOGLE_OIDC_AUDIENCE"] || entryTexts(cfg.NATS.Services) != e["BROKER_NATS_SERVICES"] || cfg.NATS.Enabled() {
+			t.Fatalf("a Google edge listener with its audience configured audience %q and %+v", machines.Audience, cfg.NATS)
 		}
 	})
 	for name, row := range map[string]struct {
