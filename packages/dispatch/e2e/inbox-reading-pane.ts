@@ -471,7 +471,7 @@ export async function seedOpenPage(): Promise<OpenPageSeed> {
   await expect
     .poll(
       async () => ((await listMyReplies()).rows ?? []).some((row) => row.thread_id === answered.id),
-      INDEX_PROBE
+      { ...INDEX_PROBE, message: "item 8 is alice's Reply thread" }
     )
     .toBe(true);
 

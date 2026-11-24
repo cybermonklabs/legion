@@ -751,16 +751,7 @@ export function answerAsk(
 export async function handAskOn(id: string, login: string): Promise<void> {
   // The person it is handed to has signed in, which the route requires of them.
   await userHeaders(login);
-  const response = await fetch(new URL(`/api/v1/asks/${id}/asked-of`, baseUrlOf()), {
-    body: JSON.stringify({ asked_of: login }),
-    headers: { ...(await userHeaders("alice")), "Content-Type": "application/json" },
-    method: "PUT",
-  });
-  if (!response.ok) {
-    throw new Error(
-      `handing ${id} on to ${login} failed: ${response.status} ${await response.text()}`
-    );
-  }
+  await put("/api/v1/asks/{id}/asked-of", { body: { asked_of: login }, params: { id } });
 }
 
 export function resolveAsk(

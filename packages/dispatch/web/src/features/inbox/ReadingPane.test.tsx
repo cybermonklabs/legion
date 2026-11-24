@@ -240,6 +240,31 @@ function drawBlocks(blocks: string): (inner: CreateEditor) => CreateEditor {
   };
 }
 
+/** The decision block `ship_it` under the heading `rollout`, as the editor draws them. */
+const SHIP_IT_UNDER_ROLLOUT =
+  '<h2 data-block-id="rollout">Rollout</h2>' +
+  '<section data-block-id="ship_it">Ship behind a flag?</section>';
+
+/** The decision block `ship_it` before any heading, as the editor draws it. */
+const SHIP_IT_BEFORE_ANY_HEADING =
+  '<p data-block-id="context">How it goes out.</p>' +
+  '<section data-block-id="ship_it">Ship behind a flag?</section>' +
+  '<h2 data-block-id="rollout">Rollout</h2>';
+
+/** The fake's runtime, with its editor wrapped in `createEditor` where a row gives one. */
+function runtimeWith(
+  fake: FakeDocumentRuntime,
+  createEditor: ((inner: CreateEditor) => CreateEditor) | undefined
+) {
+  return {
+    ...fake.runtime,
+    createEditor:
+      createEditor === undefined
+        ? fake.runtime.createEditor
+        : createEditor(fake.runtime.createEditor),
+  };
+}
+
 function renderPane({
   ask,
   createEditor,
@@ -253,11 +278,7 @@ function renderPane({
   /** Each document the column opened a room for, in the order it opened them. */
   const opened: string[] = [];
   const runtime = {
-    ...fake.runtime,
-    createEditor:
-      createEditor === undefined
-        ? fake.runtime.createEditor
-        : createEditor(fake.runtime.createEditor),
+    ...runtimeWith(fake, createEditor),
     loadTransport: async () => {
       const connect = await fake.runtime.loadTransport();
       return (artifactId: string, callbacks: Parameters<typeof connect>[1]) => {
@@ -384,11 +405,7 @@ test("a decision block's column marks the section from its heading down to the b
 test("a decision block before any heading sits in no section, so no bar is drawn", async () => {
   const { runtime, view } = renderPane({
     ask: decisionAsk(),
-    createEditor: drawBlocks(
-      '<p data-block-id="context">How it goes out.</p>' +
-        '<section data-block-id="ship_it">Ship behind a flag?</section>' +
-        '<h2 data-block-id="rollout">Rollout</h2>'
-    ),
+    createEditor: drawBlocks(SHIP_IT_BEFORE_ANY_HEADING),
     seed: (client) => seedDocument(client, document()),
   });
 
@@ -1077,10 +1094,7 @@ test("a project document's head names the project and the document, and opens it
       issue: undefined,
       issue_key: null,
     }),
-    createEditor: drawBlocks(
-      '<h2 data-block-id="rollout">Rollout</h2>' +
-        '<section data-block-id="ship_it">Ship behind a flag?</section>'
-    ),
+    createEditor: drawBlocks(SHIP_IT_UNDER_ROLLOUT),
     seed: (client) =>
       seedDocument(
         client,
@@ -1115,17 +1129,6 @@ test("a project document's head names the project and the document, and opens it
 function openPage(): HTMLElement {
   return within(screen.getByTestId("inbox-pane")).getByRole("link", { name: "Open page" });
 }
-
-/** The decision block `ship_it` under the heading `rollout`, as the editor draws them. */
-const SHIP_IT_UNDER_ROLLOUT =
-  '<h2 data-block-id="rollout">Rollout</h2>' +
-  '<section data-block-id="ship_it">Ship behind a flag?</section>';
-
-/** The decision block `ship_it` before any heading, as the editor draws it. */
-const SHIP_IT_BEFORE_ANY_HEADING =
-  '<p data-block-id="context">How it goes out.</p>' +
-  '<section data-block-id="ship_it">Ship behind a flag?</section>' +
-  '<h2 data-block-id="rollout">Rollout</h2>';
 
 /** `talk.md` as an ask row names the document its quote or its approval is of. */
 const TALK_NAMED: AskAnchorArtifact = {
@@ -1814,13 +1817,7 @@ function renderThread(
   } = {}
 ) {
   const fake = fakeDocumentRuntime({ text: "The live document" });
-  const runtime = {
-    ...fake.runtime,
-    createEditor:
-      createEditor === undefined
-        ? fake.runtime.createEditor
-        : createEditor(fake.runtime.createEditor),
-  };
+  const runtime = runtimeWith(fake, createEditor);
   const client = createQueryClient();
   client.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
   seed(client);

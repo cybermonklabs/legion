@@ -6,7 +6,6 @@ import {
   getAsk,
   getInbox,
   getIssue,
-  listMyReplies,
   patchIssue,
   resolveAsk,
 } from "./api";
@@ -439,7 +438,8 @@ test("picker keeps a pick on screen: the priority on an Inbox row, over a read t
 // The head's Open page opens the document a question is about, at the section the column is
 // opened at: a decision block's document at the heading above the block, or at the block where no
 // heading stands above it; an approval request's document at its top; the quoted document at the
-// quote's block; the issue for a question in no document; a project document as it always did.
+// quote's block; the issue for a question in no document; a project document's question opens that
+// document at its section.
 // The Reply thread of a decision block opens its document at the section once the column shows
 // that document, and `o` follows it there.
 // SLOW(>=2s): three documents and eight questions seeded, then four pages opened from the column
@@ -454,8 +454,9 @@ test("Open page opens the document of the question, at its section, for each kin
   const seed = await seedOpenPage();
 
   // 1. What decides the row's scope, before the Inbox opens. Question 1 has the shape the server
-  // sends for a decision block in an issue's second document; items 1 to 7 each wait on alice,
-  // question 6 because it was handed to her; item 8 is her Reply thread.
+  // sends for a decision block in an issue's second document, and its Inbox row names no project
+  // document; items 1 to 7 each wait on alice, question 6 because it was handed to her. The seed
+  // waits until item 8 is her Reply thread.
   const first = (await getAsk(seed.talkDecision)).ask;
   expect(
     {
@@ -466,7 +467,6 @@ test("Open page opens the document of the question, at its section, for each kin
         slug: first.block_artifact?.slug,
       },
       block_id: first.block_id,
-      has_document: "document" in first,
       kind: first.kind,
     },
     "question 1 is a decision block in the issue's second document"
@@ -475,7 +475,6 @@ test("Open page opens the document of the question, at its section, for each kin
     artifact_id: null,
     block_artifact: { primary: false, slug: "talk-md" },
     block_id: OPEN_TALK_DECISION,
-    has_document: false,
     kind: "question",
   });
   const questions = [
@@ -489,6 +488,10 @@ test("Open page opens the document of the question, at its section, for each kin
   ];
   const inbox = await getInbox();
   expect(
+    inbox.find((row) => row.id === seed.talkDecision),
+    "question 1's Inbox row names no project document"
+  ).not.toHaveProperty("document");
+  expect(
     questions.map((id) => {
       const row = inbox.find((listed) => listed.id === id);
       return { id, waiting_on: row?.waiting_on, waiting_on_person: row?.waiting_on_person };
@@ -498,10 +501,6 @@ test("Open page opens the document of the question, at its section, for each kin
   expect((await getAsk(seed.runbookDecision)).ask.asked_of, "question 6 is handed to alice").toBe(
     "alice"
   );
-  expect(
-    ((await listMyReplies()).rows ?? []).map((row) => row.thread_id),
-    "item 8 is alice's Reply thread"
-  ).toContain(seed.answeredAskId);
 
   const alice = await asUser(browser, "alice");
   try {
@@ -590,7 +589,6 @@ test("Open page opens the document of the question, at its section, for each kin
       await expect(openPage).toHaveAttribute("href", address);
       await openPage.click();
       await expect(page).toHaveURL(address);
-      expect(new URL(page.url()).hash).toBe(item.fragment);
       await expect(documentEditor(page)).toContainText(holds);
       await expect(documentEditor(page)).not.toContainText(lacks);
       await page.goBack();
