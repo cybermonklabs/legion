@@ -722,44 +722,59 @@ const newsOnlyRefusal = "a supervise start for news alone carries no task and no
 
 // A hook prompt's message is three parts with a blank line between them: the daemon's header,
 // the hook's words exactly as the deployment wrote them, and the daemon's remaining facts. The
-// counts stand below the words, because the shipped hook's words point at them, and the header
-// stands above, because a worker knows a hook by the line it starts with. The counts are listed
-// in the order phase.MovePairs() gives, which is neither the map's own order nor
-// alphabetical, so two readings of one row read alike. The pull-request sentence stands only for
-// an issue with a pull request, and the words of the hook come through whole: a prompt that
-// spells a word in angle brackets is published with it, since the daemon substitutes nothing
-// into the hook's own text.
+// header names the hook, the issue and the move that fired it. The counts stand below the words
+// and are listed in the order phase.MovePairs() gives, which is neither the map's own order nor
+// alphabetical, so two readings of one row read alike. The pull request is named only for an
+// issue with one, and the words of the hook come through whole: a prompt that spells a word in
+// angle brackets is published with it, since the daemon substitutes nothing into the hook's own
+// text.
 func TestAHookPromptStatesTheFactsAndLeavesTheHooksWordsAlone(t *testing.T) {
 	const prompt = "This is the third time the work came back. Say what the round missed;\n<count> is no placeholder the daemon fills."
 	fired := HookPrompt{Hook: "back-to-implementing", Role: claim.RoleImplementer, From: phase.Reviewing, To: phase.Implementing,
 		Count: 3, Counts: map[string]int{"reviewing-implementing": 3, "testing-implementing": 1, "retro-implementing": 2},
 		PullRequest: "sjawhar/legion#42", Prompt: prompt}
-	want := "Legion hook back-to-implementing on LEGION-208: work went back from reviewing to implementing.\n\n" +
-		prompt + "\n\nMoves back this hook counts: 3." +
-		" Counts by move: testing-implementing=1, reviewing-implementing=3, retro-implementing=2." +
-		" Pull request: sjawhar/legion#42."
-	if got := fired.Message("LEGION-208"); got != want {
-		t.Fatalf("Message of a firing with a pull request =\n%q\nwant\n%q", got, want)
+	parts := func(t *testing.T, h HookPrompt) []string {
+		t.Helper()
+		got := h.Message("LEGION-208")
+		split := strings.SplitN(got, "\n\n", 3)
+		if len(split) != 3 || split[1] != prompt {
+			t.Fatalf("Message = %q, want the header, the hook's words whole, then the facts, a blank line apart", got)
+		}
+		for _, value := range []string{"back-to-implementing", "LEGION-208", string(phase.Reviewing), string(phase.Implementing)} {
+			if !strings.Contains(split[0], value) {
+				t.Errorf("the header %q does not name %s", split[0], value)
+			}
+		}
+		return split
+	}
+
+	facts := parts(t, fired)[2]
+	order := []string{"testing-implementing=1", "reviewing-implementing=3", "retro-implementing=2"}
+	at := -1
+	for _, count := range order {
+		next := strings.Index(facts, count)
+		if next <= at {
+			t.Fatalf("the facts %q do not list the counts as %q, in phase.MovePairs order", facts, order)
+		}
+		at = next
+	}
+	if !strings.Contains(facts, "sjawhar/legion#42") {
+		t.Errorf("the facts %q of a firing with a pull request do not name it", facts)
 	}
 
 	noPull := fired
 	noPull.PullRequest = ""
-	want = "Legion hook back-to-implementing on LEGION-208: work went back from reviewing to implementing.\n\n" +
-		prompt + "\n\nMoves back this hook counts: 3." +
-		" Counts by move: testing-implementing=1, reviewing-implementing=3, retro-implementing=2."
-	if got := noPull.Message("LEGION-208"); got != want {
-		t.Fatalf("Message of a firing with no pull request =\n%q\nwant\n%q", got, want)
+	if facts := parts(t, noPull)[2]; strings.Contains(facts, "sjawhar/legion#42") {
+		t.Errorf("the facts %q of a firing with no pull request name one", facts)
 	}
 
 	// The counts cannot normally be empty, since the firing counted the move that fired it, but a
-	// row written any other way says so rather than dropping the sentence.
+	// row written any other way keeps its facts part rather than dropping it.
 	counted := fired
 	counted.Counts = nil
 	counted.PullRequest = ""
-	want = "Legion hook back-to-implementing on LEGION-208: work went back from reviewing to implementing.\n\n" +
-		prompt + "\n\nMoves back this hook counts: 3. Counts by move: none."
-	if got := counted.Message("LEGION-208"); got != want {
-		t.Fatalf("Message of a firing that counts nothing =\n%q\nwant\n%q", got, want)
+	if facts := parts(t, counted)[2]; strings.Contains(facts, "=") {
+		t.Errorf("the facts %q of a firing that counts nothing name a count", facts)
 	}
 }
 

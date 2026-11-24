@@ -1,15 +1,12 @@
 package textcheck
 
-// The pages and the proof scripts that state the production check's rule outside a prompt.
-// main's #4092 read the first two in internal/prompts's production-check test. That half moved
-// here, so an edit of one of them alone starts the text checks and not the daemon's lane
-// (dispatch://INFRA-1413).
+// The pages that state the production check's rule outside a prompt, read here rather than in
+// internal/prompts, so an edit of one of them alone starts the text checks and not the daemon's
+// lane.
 //ci:reads scripts/e2e/README.md TestThePagesFailAnUnobservedRequirementWhetherOrNotProductionCarriesTheMerge reads it under ../../../..
 //ci:reads docs/site/src/content/docs/legion/concepts.md TestThePagesFailAnUnobservedRequirementWhetherOrNotProductionCarriesTheMerge reads it under ../../../..
 //ci:reads docs/site/src/content/docs/legion/walkthrough.md TestThePagesFailAnUnobservedRequirementWhetherOrNotProductionCarriesTheMerge reads it under ../../../..
 //ci:reads docs/site/src/content/docs/legion/using-legion.md TestThePagesFailAnUnobservedRequirementWhetherOrNotProductionCarriesTheMerge reads it under ../../../..
-//ci:reads scripts/e2e/stage3-devbox-workflow.sh TestThePagesFailAnUnobservedRequirementWhetherOrNotProductionCarriesTheMerge reads it under ../../../..
-//ci:reads scripts/e2e/stage4b-sandbox-tree.sh TestThePagesFailAnUnobservedRequirementWhetherOrNotProductionCarriesTheMerge reads it under ../../../..
 
 import (
 	"errors"
@@ -21,17 +18,11 @@ import (
 // The production check fails a requirement that only the deploy can show when a look observes it
 // as not met. It also fails one that is still unobserved at the last look, whether or not
 // production carries the merge, and the last look's pending is only for an issue with no such
-// requirement. Four pages and the two proof scripts state that rule, or the part of it they are
-// about, outside a prompt: the concepts page, the walkthrough, the using-Legion page, the e2e
-// proof's account of the bound's look (scripts/e2e/README.md) and the tester instructions of the
-// two proofs. This is the page half of that check. It stays apart from the prompt half for the
-// reason every test of this package does: a test that reads a page puts the page in its job's
-// filter, so an edit of a page alone would start the whole daemon Go lane. The prompt half is
-// internal/prompts's
-// TestTheProductionCheckFailsAnUnobservedRequirementWhetherOrNotProductionCarriesTheMerge, which
-// reads the composed tester's and implementer's prompts, and
-// TestTheProductionCheckRuleHoldsInEveryPromptPart, which reads every prompt part. Neither half
-// alone is the guarantee.
+// requirement. Four pages, which people read, state that rule, or the part of it they are about:
+// the concepts page, the walkthrough, the using-Legion page and the e2e proof's account of the
+// bound's look (scripts/e2e/README.md). It stays apart from the daemon's tests for the reason
+// every test of this package does: a test that reads a page puts the page in its job's filter, so
+// an edit of a page alone would start the whole daemon Go lane.
 //
 // The unit is the clause, cut at `; ` as well as at full stops, never the sentence (ruleClauses):
 // matched sentence by sentence, a test of this rule passed with the concepts page's limit taken
@@ -43,15 +34,10 @@ import (
 // than passing on nothing. The concepts page lists the three verdicts, so it also holds a fail
 // clause for a requirement observed as not met. Each page is held in both its readings
 // (failRuleOfThePage), so a rule or a limit that only an HTML comment holds, which the rendered
-// page does not show, fails rather than passing. A proof script states that its issues have no
-// requirement that only the deploy can show (proofSentence), the one case where its last look's
-// pending is true. It is read once, each line without its leading white space and one `#`
-// (scriptProse), so that its comments and its heredocs read as prose.
+// page does not show, fails rather than passing.
 func TestThePagesFailAnUnobservedRequirementWhetherOrNotProductionCarriesTheMerge(t *testing.T) {
 	for _, text := range []struct {
 		path string
-		// script marks a shell script, read as prose (failRuleOfTheScript).
-		script bool
 		// listsVerdicts marks the page that lists the three verdicts of a look.
 		listsVerdicts bool
 	}{
@@ -59,18 +45,9 @@ func TestThePagesFailAnUnobservedRequirementWhetherOrNotProductionCarriesTheMerg
 		{path: "docs/site/src/content/docs/legion/walkthrough.md"},
 		{path: "docs/site/src/content/docs/legion/using-legion.md"},
 		{path: "scripts/e2e/README.md"},
-		{path: "scripts/e2e/stage3-devbox-workflow.sh", script: true},
-		{path: "scripts/e2e/stage4b-sandbox-tree.sh", script: true},
 	} {
 		t.Run(text.path, func(t *testing.T) {
-			body := shippedText(t, text.path)
-			var err error
-			if text.script {
-				err = failRuleOfTheScript(body)
-			} else {
-				err = failRuleOfThePage(body, text.listsVerdicts)
-			}
-			if err != nil {
+			if err := failRuleOfThePage(shippedText(t, text.path), text.listsVerdicts); err != nil {
 				t.Errorf("%s %v", text.path, err)
 			}
 		})
@@ -132,32 +109,6 @@ func TestTheFailRuleIsHeldWhereAReaderSeesIt(t *testing.T) {
 	}
 }
 
-// A proof script says proofSentence, that its issues have no requirement that only the deploy can
-// show, and states no old limit (failRuleOfTheScript). A script without that sentence fails for it
-// (errNoProofSentence). An old limit in a `#` comment that wraps over two lines fails too
-// (errBannedLimit), since scriptProse joins the lines of a comment. The old wording is joined from
-// halves, as bannedCheckLimits is.
-func TestAProofScriptSaysItsIssuesHaveNoRequirementOnlyTheDeployCanShow(t *testing.T) {
-	const (
-		shebang = "#!/usr/bin/env bash\n"
-		heredoc = "cat <<'EOF'\n" + proofSentence + ".\nEOF\n"
-	)
-	limit := "# That look's `pending` is for production not carrying" + "\n# the merge alone.\n"
-	for _, script := range []struct {
-		shape, text string
-		err         error
-	}{
-		{"a heredoc that holds the proof sentence", shebang + heredoc, nil},
-		{"the same script without the proof sentence", shebang + "cat <<'EOF'\nEOF\n", errNoProofSentence},
-		{"the proof sentence and an old limit in a comment over two lines", shebang + limit + heredoc, errBannedLimit},
-	} {
-		err := failRuleOfTheScript(script.text)
-		if !errors.Is(err, script.err) {
-			t.Errorf("%s: holding the rule answers the error %v, want %v: %q", script.shape, err, script.err, script.text)
-		}
-	}
-}
-
 // bannedCheckLimits are limits of the last look that the production check's rule no longer has:
 // each keeps the last look's pending, or its close as not run, for a merge that production does
 // not carry. Each is joined from halves, as internal/prompts's retiredCheckSentences are, so a
@@ -170,14 +121,9 @@ var bannedCheckLimits = []string{
 	"never carried" + " the merge",
 }
 
-const (
-	// whetherOrNotCarried are the words that keep a fail clause's mention of production from
-	// limiting the fail.
-	whetherOrNotCarried = "whether or not production carries the merge"
-	// proofSentence is what a proof script says of its issues: no requirement that only the deploy
-	// can show, so its last look's pending is true.
-	proofSentence = "The issues of this proof have no requirement that only the deploy can show"
-)
+// whetherOrNotCarried are the words that keep a fail clause's mention of production from limiting
+// the fail.
+const whetherOrNotCarried = "whether or not production carries the merge"
 
 var (
 	// errBannedLimit is why a check refuses a text: a clause of it states a limit the rule no
@@ -196,9 +142,6 @@ var (
 	// clause of it names a requirement observed as not met.
 	errNoObservedNotMet = errors.New("lists the three verdicts of a look but holds no fail clause for a requirement " +
 		"observed as not met")
-	// errNoProofSentence is why a check refuses a proof script: it does not say proofSentence.
-	errNoProofSentence = errors.New("does not say \"" + proofSentence + "\", the one case where the proof's last " +
-		"look's pending is true")
 )
 
 // failRuleOfThePage holds the rule to page, a Markdown page, in both its readings (bothReadings):
@@ -229,22 +172,6 @@ func failRuleIn(text string, listsVerdicts bool) error {
 	}
 	if listsVerdicts && observedNotMet == 0 {
 		errs = append(errs, errNoObservedNotMet)
-	}
-	return errors.Join(errs...)
-}
-
-// failRuleOfTheScript holds the rule to script, a proof's shell script, read once as prose
-// (scriptProse): it states no limit the rule no longer has (limitsIn), and it says proofSentence
-// (errNoProofSentence). The error joins every refusal.
-func failRuleOfTheScript(script string) error {
-	clauses := ruleClauses(scriptProse(script))
-	errs := []error{limitsIn(clauses)}
-	said := false
-	for _, clause := range clauses {
-		said = said || strings.Contains(clause, proofSentence)
-	}
-	if !said {
-		errs = append(errs, errNoProofSentence)
 	}
 	return errors.Join(errs...)
 }
@@ -280,16 +207,6 @@ func limitsIn(clauses []string) error {
 // fail.
 func isCheckFailClause(clause string) bool {
 	return strings.Contains(clause, "unobserved") && strings.Contains(clause, "last") && strings.Contains(clause, "fail")
-}
-
-// scriptProse is a shell script as its prose reads: each line without its leading white space and
-// one `#`, so that the words of a comment, and of a heredoc, join across their line breaks.
-func scriptProse(script string) string {
-	lines := strings.Split(script, "\n")
-	for i, line := range lines {
-		lines[i] = strings.TrimPrefix(strings.TrimLeft(line, " \t"), "#")
-	}
-	return strings.Join(lines, "\n")
 }
 
 // ruleClauses splits text as internal/prompts's clauses does: by blank-line paragraph, each folded

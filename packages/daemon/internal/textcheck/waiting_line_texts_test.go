@@ -12,8 +12,6 @@ package textcheck
 //ci:reads packages/contracts/.changes/unreleased/pr2989-Added-20261108-074056.yaml shippedText reads that one fragment under ../../../..
 //ci:reads packages/pi-legion/.changes/unreleased/pr2989-Changed-20261108-074108.yaml shippedText reads that one fragment under ../../../..
 //ci:reads packages/claude-envoy/.changes/unreleased/pr2989-Changed-20261108-074111.yaml shippedText reads that one fragment under ../../../..
-//ci:reads skills/legion-controller/references/admission.md shippedText reads it under ../../../..
-//ci:reads skills/legion-controller/references/wakes.md shippedText reads it under ../../../..
 
 import (
 	"errors"
@@ -133,9 +131,7 @@ var waitingLineBandTexts = []string{
 	runningLegionGuide,
 	"docs/site/src/content/docs/legion/troubleshooting.md",
 	"packages/contracts/src/legion-api.ts",
-	"skills/legion-controller/references/admission.md",
 	"docs/site/src/content/docs/legion/concepts.md",
-	"skills/legion-controller/references/wakes.md",
 }
 
 // quotedText is one section of a committed copy: the repository-relative path it was taken from

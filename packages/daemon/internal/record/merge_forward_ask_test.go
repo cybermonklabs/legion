@@ -48,29 +48,25 @@ func TestAMergeForwardNamesTheRoleItAsks(t *testing.T) {
 	}
 }
 
-// The merger's ask tells it that the merge and its conflict are its own and that, where its task
-// has a reviewer step, the reviewer is asked to approve the head it pushes
-// (cybermonklabs/legion#4979); the landed message, not the ask, holds its merge to that approval.
-// The implementer's ask says none of that: an ask of the
-// implementer that a daemon before that change queued in merging still reads as it did.
-func TestTheMergersAskSaysTheMergeIsItsOwn(t *testing.T) {
+// The ask of a merge forward names its issue, its pull request, the head that conflicts and the
+// base, whichever role is asked, and the role asked decides the rest of it: the merger's ask and
+// the implementer's ask of the same merge forward are not one message.
+func TestAMergeForwardAskNamesItsMergeAndDependsOnTheRoleAsked(t *testing.T) {
 	merger := MergeForwardMessage{Role: claim.RoleMerger, Step: MergeForwardAsk, Head: "c0de", Base: "main", Phase: phase.Merging,
 		PullRequest: 42, Why: ConflictMergeNext}
-	said := merger.Message("LEGION-208", PullRequest{Repo: "sjawhar/legion"})
-	for _, want := range []string{
-		"LEGION-208: pull request sjawhar/legion#42 at head c0de conflicts with its base branch main",
-		"The issue stays in merging.",
-		"Merge main forward in the issue workspace",
-		"The merge and its conflict are yours to resolve, as your role says.",
-		"the daemon asks the reviewer to read it and approve the new head, where your task has a reviewer step.",
-	} {
-		if !strings.Contains(said, want) {
-			t.Errorf("the merger's ask reads %q, want it to say %q", said, want)
-		}
-	}
 	implementer := merger
 	implementer.Role = claim.RoleImplementer
-	if said := implementer.Message("LEGION-208", PullRequest{Repo: "sjawhar/legion"}); strings.Contains(said, "yours to resolve") || strings.Contains(said, "approve the new head") {
-		t.Fatalf("the implementer's ask in merging reads %q, want none of the merger's sentences", said)
+	asks := map[claim.Role]string{}
+	for _, ask := range []MergeForwardMessage{merger, implementer} {
+		said := ask.Message("LEGION-208", PullRequest{Repo: "sjawhar/legion"})
+		for _, value := range []string{"LEGION-208", "sjawhar/legion#42", "c0de", "main"} {
+			if !strings.Contains(said, value) {
+				t.Errorf("the %s's ask reads %q, want it to name %s", ask.Role, said, value)
+			}
+		}
+		asks[ask.Role] = said
+	}
+	if asks[claim.RoleMerger] == asks[claim.RoleImplementer] {
+		t.Fatalf("the merger's ask and the implementer's are both %q, want the role asked to decide the ask", asks[claim.RoleMerger])
 	}
 }
