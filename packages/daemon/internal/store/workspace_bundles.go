@@ -36,18 +36,18 @@ func (s *Store) PutWorkspaceBundle(ctx context.Context, issue string, release in
 	if b.PodUID == "" {
 		return fmt.Errorf("the workspace bundle of %s needs the uid of the pod its work came off", issue)
 	}
-	tips, bookmarks, err := bundleJSON(b)
+	tips, bookmarks, copies, err := bundleJSON(b)
 	if err != nil {
 		return fmt.Errorf("save the workspace bundle of %s: %w", issue, err)
 	}
 	err = Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
-		_, err := tx.Exec(ctx, `insert into workspace_bundles (issue, release_id, source_pod_uid, bundle, size_bytes, at, head, tips, bookmarks)
-			values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		_, err := tx.Exec(ctx, `insert into workspace_bundles (issue, release_id, source_pod_uid, bundle, size_bytes, at, head, tips, bookmarks, working_copies)
+			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 			on conflict (issue) do update set release_id = excluded.release_id, source_pod_uid = excluded.source_pod_uid,
 				bundle = excluded.bundle, size_bytes = excluded.size_bytes, at = excluded.at, head = excluded.head,
-				tips = excluded.tips, bookmarks = excluded.bookmarks,
+				tips = excluded.tips, bookmarks = excluded.bookmarks, working_copies = excluded.working_copies,
 				attempt_pod_uid = null, attempt_at = null, attempt_outcome = null`,
-			issue, release, b.PodUID, b.Bundle, b.Size(), b.At, b.Head, tips, bookmarks)
+			issue, release, b.PodUID, b.Bundle, b.Size(), b.At, b.Head, tips, bookmarks, copies)
 		return err
 	})
 	if err != nil {
@@ -120,10 +120,10 @@ func (s *Store) TakeWorkspaceBundleForRestore(ctx context.Context, project, issu
 		return runtime.WorkspaceBundle{}, runtime.WorkspaceBundleNone, err
 	}
 	var (
-		b               runtime.WorkspaceBundle
-		outcome         string
-		tips, bookmarks []byte
-		found           bool
+		b                       runtime.WorkspaceBundle
+		outcome                 string
+		tips, bookmarks, copies []byte
+		found                   bool
 	)
 	// The body is read back only when it is being sent: a refusal records the attempt and
 	// answers the row's facts alone, and a bundle runs to tens of megabytes.
@@ -134,8 +134,8 @@ func (s *Store) TakeWorkspaceBundleForRestore(ctx context.Context, project, issu
 				attempt_outcome = case when `+saveSecond+` <= $3 then 'sent' else 'refused_older' end
 			where `+bundleOffered+`
 			returning attempt_outcome, case when attempt_outcome = 'sent' then bundle end,
-				at, head, tips, bookmarks, release_id, source_pod_uid`,
-			issue, podUID, podCreated, project).Scan(&outcome, &b.Bundle, &b.At, &b.Head, &tips, &bookmarks, &b.Release, &b.PodUID)
+				at, head, tips, bookmarks, working_copies, release_id, source_pod_uid`,
+			issue, podUID, podCreated, project).Scan(&outcome, &b.Bundle, &b.At, &b.Head, &tips, &bookmarks, &copies, &b.Release, &b.PodUID)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
 		}
@@ -156,6 +156,9 @@ func (s *Store) TakeWorkspaceBundleForRestore(ctx context.Context, project, issu
 	}
 	if err := json.Unmarshal(bookmarks, &b.Bookmarks); err != nil {
 		return runtime.WorkspaceBundle{}, runtime.WorkspaceBundleNone, fmt.Errorf("read the workspace bundle of %s: its bookmarks: %w", issue, err)
+	}
+	if err := json.Unmarshal(copies, &b.WorkingCopies); err != nil {
+		return runtime.WorkspaceBundle{}, runtime.WorkspaceBundleNone, fmt.Errorf("read the workspace bundle of %s: its working copies: %w", issue, err)
 	}
 	// The outcome the statement wrote is the answer: `sent` for the body above, `refused_older`
 	// for the pod it refused, whose attempt is spent all the same.
@@ -339,20 +342,27 @@ func workspaceBundleUnrestored(ctx context.Context, tx pgx.Tx, issue string) (bo
 	return unrestored, nil
 }
 
-// bundleJSON renders the two members the row keeps as jsonb. Each is written even when empty — a
-// bundle with no local bookmark is `{}`, not null — so every row reads back the same way.
-func bundleJSON(b runtime.WorkspaceBundle) (tips, bookmarks []byte, err error) {
+// bundleJSON renders the three members the row keeps as jsonb. Each is written even when empty — a
+// bundle with no local bookmark is `{}`, not null, as is one with no working copy of a task — so
+// every row reads back the same way.
+func bundleJSON(b runtime.WorkspaceBundle) (tips, bookmarks, copies []byte, err error) {
 	if b.Tips == nil {
 		b.Tips = []string{}
 	}
 	if b.Bookmarks == nil {
 		b.Bookmarks = map[string]string{}
 	}
+	if b.WorkingCopies == nil {
+		b.WorkingCopies = map[string]string{}
+	}
 	if tips, err = json.Marshal(b.Tips); err != nil {
-		return nil, nil, fmt.Errorf("its tips: %w", err)
+		return nil, nil, nil, fmt.Errorf("its tips: %w", err)
 	}
 	if bookmarks, err = json.Marshal(b.Bookmarks); err != nil {
-		return nil, nil, fmt.Errorf("its bookmarks: %w", err)
+		return nil, nil, nil, fmt.Errorf("its bookmarks: %w", err)
 	}
-	return tips, bookmarks, nil
+	if copies, err = json.Marshal(b.WorkingCopies); err != nil {
+		return nil, nil, nil, fmt.Errorf("its working copies: %w", err)
+	}
+	return tips, bookmarks, copies, nil
 }

@@ -156,8 +156,9 @@ func (r *ownerStepsRig) waitBoots(count int) {
 // (step_stop), and a parent held before its retro for the child beneath it. The daemon stops and a
 // second one boots on the same store: once its boot has applied its resume by rule, neither issue
 // has a start queued or a launch, the tester is still suspended by the daemon, and each hold stands.
-// The control clears the stopped task's hold with SQL before the second boot, and the boot's resume
-// by rule then starts the tester again.
+// The control clears the stopped task's hold and its stop with SQL before the second boot (the
+// stop is a fact of the task, so the step it ended is no running step while the task stands
+// stopped), and the boot's resume by rule then starts the tester again.
 func TestABootResumesNoStoppedStepAndNoHeldParent(t *testing.T) {
 	t.Parallel()
 	t.Run("the boot", func(t *testing.T) {
@@ -184,15 +185,16 @@ func TestABootResumesNoStoppedStepAndNoHeldParent(t *testing.T) {
 		}
 	})
 
-	t.Run("control: the hold cleared by SQL before the second boot", func(t *testing.T) {
+	t.Run("control: the hold and the stop cleared by SQL before the second boot", func(t *testing.T) {
 		r := newOwnerStepsRig(t, newLiveProofOn(t, workflowNATS(t)), startScratchDispatchOn(t, scratchDispatchOptions{}), 1, config.Project{})
 		stopped := r.stopAtTesting()
 		r.restartWith(func() {
 			r.exec("update issues set phase = 'testing', held_from = null where key = $1", stopped)
+			r.exec("update plan_tasks set state = 'running', stopped_reason = '' where issue = $1 and state = 'stopped'", stopped)
 		})
 		r.waitBoots(2)
 		r.awaitLaunch(r.tokenOf(stopped, claim.RoleTester))
-		t.Logf("control: with the hold cleared, the second boot launched %s's tester: %v", stopped, r.launchesOfRole(claim.RoleTester))
+		t.Logf("control: with the hold and the stop cleared, the second boot launched %s's tester: %v", stopped, r.launchesOfRole(claim.RoleTester))
 	})
 }
 

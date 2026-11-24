@@ -20,8 +20,9 @@
 //    in the same file, so every jj commit a Bash command of the session makes carries an
 //    `Omp-Session: <id>` line, then a `Legion-Role: <role>` line for a pane whose `LEGION_ROLE`
 //    names a role, and a `Dispatch: <KEY>` line too for a pane whose environment names an issue
-//    key, scoped to that pane's own workspace — which of the pane's variables say so, and how, is
-//    `paneAttributionOptions` (`exportJjSessionAttribution`, `@legion/pi-shared/jj-attribution`).
+//    key, scoped to the jj repository of that pane's workspace — which of the pane's variables
+//    say so, and how, is `paneAttributionOptions` (`exportJjSessionAttribution`,
+//    `@legion/pi-shared/jj-attribution`).
 //    The hook writes it, not the claim boot: that boot is the MCP server Claude Code spawns as a
 //    child, and a child cannot change its parent's environment. This line replaces an earlier one
 //    rather than joining it: exactly one `export JJ_CONFIG=` stands however many times the hook

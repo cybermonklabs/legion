@@ -528,7 +528,7 @@ func TestARelaunchSentenceTellsTheOperatorsRetryOfAStoppedWorkerWhatTheStopEnded
 	operatorAPI := api.NewServer("127.0.0.1", 8437, api.Options{
 		Supervisor: rig.sup, BootTokens: api.NewBootTokens(rig.st), Project: "legion", DispatchProject: "LEGION",
 		OperatorToken: freshSessionOperatorToken, Controller: rig.st, Trees: rig.st, Releaser: rig.rt, Pool: rig.pool,
-		Record: rig.runner.records, Handlers: rig.runner.handlers, RoleFor: workflow.RoleFor, Log: quietLogger(),
+		Record: rig.runner.records, Handlers: rig.runner.handlers, Log: quietLogger(),
 	}).Handler
 	operator := func(request string) *httptest.ResponseRecorder {
 		t.Helper()

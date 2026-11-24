@@ -228,9 +228,11 @@ issue_claim_states() {
 claim_pending_phase() {
   claims_list | jq -r --arg issue "$1" --arg role "$2" '[.claims[] | select(.issue == $issue and .role == $role)] | last | .pending.phase // empty'
 }
-# claim_states_are ISSUE ROLE STATES OTHERS: ISSUE has its six claims, the architect's and the five
-# phase roles', ROLE's in one of the states STATES names (space-separated) and every other in one of
-# OTHERS: how a close leaves an issue, whose production check keeps the role the project's
+# claim_states_are ISSUE ROLE STATES OTHERS: ISSUE has its six claims, one for each of the agents
+# of an issue whose plan keys no step and whose deployment defines no role, the architect's and
+# the five phase roles', each named for its role: ROLE's in one of the states STATES names
+# (space-separated) and every other in one of OTHERS. That is how a close, which reaches each
+# stored claim of the issue, leaves it, whose production check keeps the role the project's
 # `production_check` names apart from the rest (live at a look, suspended between looks, retired
 # once the check closed). An empty ROLE spares none and holds all six to OTHERS, which is how the
 # close of an issue of a project whose `production_check` is off leaves them.

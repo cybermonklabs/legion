@@ -315,7 +315,7 @@ func roleCacheHome(t *testing.T, role claim.Role) string {
 }
 
 // renderedStartWrapper is the start script a launch of this pod renders, built as launcherCommand
-// builds it (launcher.go): the role's own state home and generation, the plugin pair's install
+// builds it (launcher.go): the slot's own state home and generation, the plugin pair's install
 // block and Claude Code's — the one that writes under the cache home today — so a cache path added
 // to either is in the text this test reads. An Oh My Pi launch renders no Claude block, which is
 // why the launch rendered here is a Claude one.

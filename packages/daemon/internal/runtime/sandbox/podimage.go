@@ -45,7 +45,8 @@ func (r *Runtime) IssuePodRunsConfiguredImage(issue string) bool {
 }
 
 // IssueSandbox says whether the runtime still holds the Sandbox of issue, and what that Sandbox
-// is called: the one name the six role claims of the issue share, which its pod carries too
+// is called: the one name every claim of the issue shares, each named for its agent, Legion's six
+// and the roles of the deployment alike, which its pod carries too
 // (SandboxName, through issueSandboxName), read from the Sandbox the runtime's store holds. The
 // name is built from the issue key and never read off the object, and the object is taken as the
 // informer holds it (storedObject), never decoded: decoding a whole Sandbox to answer it would

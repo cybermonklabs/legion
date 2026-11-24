@@ -143,7 +143,7 @@ func gitWorktreeEntries(cloneDir, dir string) (own []string, unread error, err e
 
 // entryUnreadable is gitWorktreeEntries' unread in case C of its table: dir's .git names an entry
 // whose gitdir cannot be read. It is the one case its callers tell apart, with errors.As:
-// WorkspaceOf accepts it, and lockGitWorktree and removeGitWorktree answer it as their error. B
+// WorkspaceOf accepts it, and LockGitWorktree and removeGitWorktree answer it as their error. B
 // and D are plain errors, the line and nothing more.
 type entryUnreadable struct{ err error }
 
@@ -236,7 +236,7 @@ func readGitdir(path string) (string, error) {
 // symlink sends no write anywhere (O_EXCL). Its directory is opened first, refused when it is a
 // symlink (rolefile.OpenDirectory), and the file is created under that descriptor, so the
 // directory cannot be swapped for a link between the two. Both of its callers write under the
-// shared clone's .git/worktrees, which a role can write: lockGitWorktree, into each own entry it
+// shared clone's .git/worktrees, which a role can write: LockGitWorktree, into each own entry it
 // listed, and restoreGitWorktree, into the temporary entry it made.
 func createFile(path, content string) error {
 	dir := filepath.Dir(path)
@@ -386,20 +386,21 @@ func removeGitWorktree(cloneDir, dir string) error {
 	return nil
 }
 
-// lockGitWorktree locks the shared clone's git worktree entry for dir, as `git worktree lock` does,
-// so a bare `git worktree prune` from a process that cannot see dir skips it. An entry already
-// locked keeps its lock and reason. An entry dir's .git names whose gitdir cannot be read
-// (gitWorktreeEntries' case C) is that error, as for removeGitWorktree: under the tmux runtime
-// nothing else would say the entry went unlocked. Every later provision of the workspace fails on
-// it the same way and nothing repairs it, so the error says what does, as restoreGitWorktree's
-// refusal of a pointer outside the clone says it.
+// LockGitWorktree locks the shared clone's git worktree entry for dir, as `git worktree lock` does,
+// so a bare `git worktree prune` from a process that cannot see dir skips it: provisioning locks
+// each working copy it makes, and a pod's restore each task's working copy it puts back
+// (internal/launcher). An entry already locked keeps its lock and reason. An entry dir's .git
+// names whose gitdir cannot be read (gitWorktreeEntries' case C) is that error, as for
+// removeGitWorktree: under the tmux runtime nothing else would say the entry went unlocked. Every
+// later provision of the workspace fails on it the same way and nothing repairs it, so the error
+// says what does, as restoreGitWorktree's refusal of a pointer outside the clone says it.
 //
 // The lock is written with createFile, which opens the entry's directory without following a
 // link and creates the file under that descriptor: the entries were listed by gitWorktreeEntries'
 // ReadDir, and a role that swapped an entry for a symlink after that would otherwise have the lock
 // written wherever the link points. No row covers it: the window is a swap between that ReadDir
 // and this open, which no test can land in deterministically.
-func lockGitWorktree(cloneDir, dir string) error {
+func LockGitWorktree(cloneDir, dir string) error {
 	own, unread, err := gitWorktreeEntries(cloneDir, dir)
 	if err != nil {
 		return err

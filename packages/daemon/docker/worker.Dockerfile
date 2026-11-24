@@ -1584,7 +1584,8 @@ COPY --from=notices /out/THIRD_PARTY_NOTICES /usr/share/doc/legion/THIRD_PARTY_N
 # The three plugins are root's like the rest of /opt/legion: every role of an issue pod that does not
 # install the plugins loads them from here, one container's filesystem, so a role that could write
 # them could change the plugin code its siblings load. A launch that installs the plugins loads them
-# from the role's state home on the issue volume instead, which every role of the issue can write;
+# from the state home of its slot, its claim's agent's whatever role its step is on, on the issue
+# volume instead, which every slot of the issue can write;
 # nothing here covers that copy. The final step refuses an image where anything under them is not
 # root's or is writable by anyone else.
 COPY --from=plugin /out/pi-envoy /opt/legion/pi-envoy
@@ -1650,8 +1651,9 @@ ARG GH_STACK_TOOL
 # /opt/legion/pi-envoy,
 # /opt/legion/pi-legion, /opt/legion/claude-envoy and /opt/legion/gh-extensions is root's and
 # writable by no one else, so no role changes the image's copy
-# of the plugin code (a launch that installs the plugins loads them instead from the role's state
-# home on the issue volume, which every role of the issue can write); the role mount points under
+# of the plugin code (a launch that installs the plugins loads them instead from the state home of
+# its slot, its claim's agent's, on the issue volume, which every slot of the issue can write); the
+# role mount points under
 # /var/run/legion are root's, mode 0755 and empty, and the mount point of the pod's test server
 # log there, /var/run/legion/testpg.log, is root's, mode 0444 and empty;
 # and no file under /usr/lib/openssh or /usr/bin/ssh-agent

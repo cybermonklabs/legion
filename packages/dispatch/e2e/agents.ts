@@ -167,8 +167,9 @@ export async function setListsState(state: ListsState): Promise<void> {
 }
 
 /** One Legion agent registry entry as the daemon writes it to the listener
- *  (`packages/envoy/internal/legionagents` `Entry`); `role_token` is
- *  `roleToken(legion_project, issue, role)` from `@legion/contracts`. */
+ *  (`packages/envoy/internal/legionagents` `Entry`); `role_token` is the claim token of the
+ *  session's agent, `legion-<legion_project>-<issue>-<agent>`, and `role` the role of the step
+ *  that agent runs, which for a keyed agent can be another role than its token's last part. */
 export interface FakeLegionAgent {
   session_id: string;
   legion_project: string;
@@ -181,10 +182,11 @@ export interface FakeLegionAgent {
   recorded_at?: string;
 }
 
-/** One registry entry as the daemon writes it: `omp` harness, the role's own token under the
- *  Legion project, and the title the daemon stamps. A spec that seeds the registry builds its
- *  rows here so the `role_token` a read is checked against is always the one the daemon would
- *  have written for that project, issue and role. */
+/** One registry entry as the daemon writes it for the agent named for its role: `omp` harness,
+ *  the role's own token under the Legion project (`roleToken`, the claim token of that agent),
+ *  and the title the daemon stamps. A spec that seeds the registry builds its rows here so the
+ *  `role_token` a read is checked against is always the one the daemon would have written for
+ *  that project, issue and agent. */
 export function legionAgentEntry({
   issue,
   legionProject,

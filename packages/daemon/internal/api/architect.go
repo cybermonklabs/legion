@@ -100,12 +100,19 @@ type HeldChild = record.BlockedIssue
 // PhaseBackwardRequest asks a phase worker to return its own issue to an earlier phase, or an
 // architect to return an issue it owns from accepting. An architect may own more issues than its
 // own, so it names the issue; a phase worker's grant names its own, so issue may be left out and,
-// when given, must be the grant's.
+// when given, must be the grant's. ReturnTo names the step of the task the move returns to by its
+// place, 1 for its first: the workflow judges it as it judges a failed step's, and to must be the
+// phase that step runs as. Task names the task of the issue's plan the architect's move is of
+// (intake.BackwardMove.Task), optional: one that names none is of the one task at accepting. A
+// phase worker's move is of the task of the step its claim's agent runs, so its task may be left
+// out and, when given, must be that one.
 type PhaseBackwardRequest struct {
-	GrantID string      `json:"grantId"`
-	To      phase.Phase `json:"to"`
-	Reason  string      `json:"reason"`
-	Issue   string      `json:"issue,omitempty"`
+	GrantID  string      `json:"grantId"`
+	To       phase.Phase `json:"to"`
+	Reason   string      `json:"reason"`
+	Issue    string      `json:"issue,omitempty"`
+	ReturnTo *int        `json:"returnTo,omitempty"`
+	Task     string      `json:"task,omitempty"`
 }
 
 // PhaseBackwardResponse confirms the phase-backward fact committed.
@@ -116,21 +123,28 @@ type PhaseBackwardResponse struct{}
 // task the restarted role is given and into the daemon's own log line for the release, and an
 // escalation sends it to the controller in the held notice, beside the cause that hold already
 // names (record.Notice.Escalation). A request naming none leaves the daemon's own words in the
-// restarted role's task and the escalation's notice without the field, so it is optional.
+// restarted role's task and the escalation's notice without the field, so it is optional. Task
+// is the held task of the issue's plan the decision is of (intake.RetryOrEscalate.Task), optional
+// too: a request that names none is of the one held task, and the workflow refuses it where two
+// or more are held (TASK_REQUIRED), and a named task that is not held (TASK_NOT_AT_PHASE).
 type PhaseRetryRequest struct {
 	GrantID  string                         `json:"grantId"`
 	Issue    string                         `json:"issue"`
 	Decision intake.RetryOrEscalateDecision `json:"decision"`
 	Reason   string                         `json:"reason,omitempty"`
+	Task     string                         `json:"task,omitempty"`
 }
 
 // PhaseRetryResponse confirms the retry-or-escalate fact committed.
 type PhaseRetryResponse struct{}
 
-// SignOffRequest records the owning architect's acceptance of an issue in accepting.
+// SignOffRequest records the owning architect's acceptance of an issue in accepting. Task names
+// the task of the issue's plan it accepts (intake.SignOff.Task), optional: one that names none is
+// of the one task at accepting.
 type SignOffRequest struct {
 	GrantID string `json:"grantId"`
 	Issue   string `json:"issue"`
+	Task    string `json:"task,omitempty"`
 }
 
 // SignOffResponse confirms the sign-off fact committed.
@@ -174,13 +188,11 @@ func (s *server) phaseWorkerGrant(w http.ResponseWriter, r *http.Request, id str
 	return grant, true
 }
 
+// isPhaseWorker says whether role works a phase of an issue: every role but the architect, Legion's
+// five workers and each role the deployment defines, which works the issue's step. It reads the
+// role, never the settings.
 func isPhaseWorker(role claim.Role) bool {
-	switch role {
-	case claim.RolePlanner, claim.RoleImplementer, claim.RoleTester, claim.RoleReviewer, claim.RoleMerger:
-		return true
-	default:
-		return false
-	}
+	return claim.IsRole(role) && role != claim.RoleArchitect
 }
 
 // recordedIssue reads the issue record, whose tree root is the single source of tree membership
@@ -331,13 +343,14 @@ func requestFactID(route string) string {
 // applyFact applies one fact of a fact route and answers the empty object every fact route
 // answers (AnswerEmptyObject), or the refusal the workflow committed.
 func (s *server) applyFact(w http.ResponseWriter, r *http.Request, eventID string, fact intake.Fact, response any) {
-	s.applyFactAnswering(w, r, eventID, fact, AnswerEmptyObject, response)
+	s.applyFactAnswering(w, r, eventID, fact, AnswerEmptyObject, func(intake.Result) any { return response })
 }
 
-// applyFactAnswering is applyFact for a route whose answer is not the empty object: response is
+// applyFactAnswering is applyFact for a route whose answer is not the empty object: answer builds
+// the body from what the fact's apply answered (register_plan's tasks the version added), and it is
 // written as the answer id names (register_plan's AnswerPlanRegister), so the route's body is
 // shaped and recorded as that answer and not as the empty object.
-func (s *server) applyFactAnswering(w http.ResponseWriter, r *http.Request, eventID string, fact intake.Fact, id AnswerID, response any) {
+func (s *server) applyFactAnswering(w http.ResponseWriter, r *http.Request, eventID string, fact intake.Fact, id AnswerID, answer func(intake.Result) any) {
 	if s.pool == nil {
 		s.writeFailure(w, r, http.StatusInternalServerError, "FACTS_UNAVAILABLE", "fact intake is unavailable")
 		return
@@ -351,7 +364,7 @@ func (s *server) applyFactAnswering(w http.ResponseWriter, r *http.Request, even
 		s.writeRefusal(w, r, result.Refusal)
 		return
 	}
-	s.writeAnswer(w, r, id, http.StatusOK, response)
+	s.writeAnswer(w, r, id, http.StatusOK, answer(result))
 }
 
 func (s *server) gateRegister(w http.ResponseWriter, r *http.Request) {
@@ -1365,7 +1378,11 @@ func recordedOutside(tree string, children []releasedChild) []intake.AdoptedChil
 // architect's on an issue it owns (architectOwns, as sign_off), named by the request, from
 // accepting. The workflow decides whether the requester runs the phase (BACKWARD_REFUSED), so a
 // move it applies ends the requester's own step — the worker's phase, or accepting, the owning
-// architect's — which apply waits for the requester's stream before.
+// architect's — which apply waits for the requester's stream before. A phase worker's move carries
+// the entry its claim serves (intake.BackwardMove.PhaseEntry), which the workflow holds to the
+// worker's phases row under the fact's lock, since the phase can be handed to the role again
+// between the turn's decision and the fact; an architect's carries the run of accepting its read
+// found (intake.BackwardMove.Entry), which the workflow holds to the run that stands.
 func (s *server) phaseBackward(w http.ResponseWriter, r *http.Request) {
 	var req PhaseBackwardRequest
 	if !s.readBody(w, r, &req, s.redeemIdentityCheck) || !s.requireFailureFields(w, r,
@@ -1378,6 +1395,16 @@ func (s *server) phaseBackward(w http.ResponseWriter, r *http.Request) {
 	if !validPhase(req.To) {
 		s.writeFailure(w, r, http.StatusBadRequest, "INVALID_PHASE", "to is not a phase")
 		return
+	}
+	// returnTo names a step by its place; which step it may name is the workflow's to judge against
+	// the task's steps, as for a failed step's returnTo.
+	returnTo := 0
+	if req.ReturnTo != nil {
+		if returnTo = *req.ReturnTo; returnTo < 1 {
+			s.writeFailure(w, r, http.StatusBadRequest, "INVALID_RETURN_TO", fmt.Sprintf(
+				"returnTo is %d, and it names a step of the task by its place, 1 for its first; nothing was recorded", returnTo))
+			return
+		}
 	}
 	if req.Issue != "" && !claim.IsIssueKey(req.Issue) {
 		s.writeFailure(w, r, http.StatusBadRequest, "INVALID_ISSUE", "issue is not an issue key")
@@ -1400,8 +1427,8 @@ func (s *server) phaseBackward(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.applyFact(w, r, requestFactID("phase/backward"),
-			intake.BackwardMove{Issue: req.Issue, Requester: claim.RoleArchitect, To: req.To, Reason: req.Reason,
-				By: architect.Claim, Generation: recorded.Generation, Entry: entry}, PhaseBackwardResponse{})
+			intake.BackwardMove{Issue: req.Issue, Requester: claim.RoleArchitect, To: req.To, Reason: req.Reason, ReturnTo: returnTo,
+				By: architect.Claim, Generation: recorded.Generation, Entry: entry, Task: req.Task}, PhaseBackwardResponse{})
 		return
 	}
 	grant, ok = s.phaseWorkerGrant(w, r, req.GrantID)
@@ -1412,8 +1439,46 @@ func (s *server) phaseBackward(w http.ResponseWriter, r *http.Request) {
 		s.writeFailure(w, r, http.StatusBadRequest, "ISSUE_NOT_GRANTS", fmt.Sprintf("a phase worker moves only its own issue %s, not %s", grant.Issue, req.Issue))
 		return
 	}
+	// A phase worker's move is of the task of the step its claim's agent runs, which the route
+	// reads rather than takes from the request: a task the request names must be that one.
+	task, err := s.taskOfAgent(r.Context(), grant.Issue, grant.Claim)
+	if err != nil {
+		s.writeFailure(w, r, http.StatusInternalServerError, "RECORD_UNAVAILABLE", "could not read the issue record")
+		return
+	}
+	if req.Task != "" && req.Task != task {
+		s.writeFailure(w, r, http.StatusBadRequest, "TASK_NOT_GRANTS", fmt.Sprintf("a phase worker moves only the task of its own step of %s, %q, not %q", grant.Issue, task, req.Task))
+		return
+	}
+	var entry int64
+	if machine, running := s.supervisor.Machine(grant.Claim); running {
+		entry = machine.Claim().ServingEntry()
+	}
 	s.applyFact(w, r, requestFactID("phase/backward"),
-		intake.BackwardMove{Issue: grant.Issue, Requester: grant.Role, To: req.To, Reason: req.Reason}, PhaseBackwardResponse{})
+		intake.BackwardMove{Issue: grant.Issue, Requester: grant.Role, To: req.To, Reason: req.Reason, ReturnTo: returnTo, PhaseEntry: entry, Task: task}, PhaseBackwardResponse{})
+}
+
+// taskOfAgent is the task of the plan of issue key whose step the agent of token runs
+// (record.Issue.StepOfAgent), read in a snapshot of its own, for a plan of any count of tasks: ""
+// for an issue with no plan rows and an issue the record does not hold, whose move is the issue's
+// as before, and for an agent that runs no step, whose move the workflow refuses.
+func (s *server) taskOfAgent(ctx context.Context, key string, token claim.Token) (string, error) {
+	var task string
+	err := store.TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		issue, err := s.records.Issue(ctx, tx, key)
+		if err != nil || issue == nil {
+			return err
+		}
+		stored, err := s.records.Plan(ctx, tx, key, issue.Generation)
+		if err != nil || stored == nil {
+			return err
+		}
+		_, agent, _ := token.Cut()
+		step, _ := issue.StepOfAgent(agent)
+		task = step.Task
+		return nil
+	})
+	return task, err
 }
 
 func (s *server) phaseRetry(w http.ResponseWriter, r *http.Request) {
@@ -1438,7 +1503,7 @@ func (s *server) phaseRetry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.applyFact(w, r, requestFactID("phase/retry"),
-		intake.RetryOrEscalate{Issue: req.Issue, Decision: req.Decision, Reason: req.Reason, By: grant.Claim, Generation: recorded.Generation}, PhaseRetryResponse{})
+		intake.RetryOrEscalate{Issue: req.Issue, Decision: req.Decision, Reason: req.Reason, By: grant.Claim, Generation: recorded.Generation, Task: req.Task}, PhaseRetryResponse{})
 }
 
 func (s *server) signOff(w http.ResponseWriter, r *http.Request) {
@@ -1458,7 +1523,7 @@ func (s *server) signOff(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	s.applyFact(w, r, requestFactID("signoff"), intake.SignOff{Issue: req.Issue, By: grant.Claim, Generation: recorded.Generation, Entry: entry}, SignOffResponse{})
+	s.applyFact(w, r, requestFactID("signoff"), intake.SignOff{Issue: req.Issue, By: grant.Claim, Generation: recorded.Generation, Entry: entry, Task: req.Task}, SignOffResponse{})
 }
 
 // closeRoot ends the architect's tree while its root has started no phase — admitted, or waiting

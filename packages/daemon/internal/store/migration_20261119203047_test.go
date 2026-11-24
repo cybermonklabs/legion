@@ -46,9 +46,9 @@ const designNewsVersion = 20261119203047
 // read from the lanes (record.OutboxLanes, record.LaneKinds) rather than listed here, the
 // merge-queue kinds, role_holders_publish, step_record, plan_record, conflict_confirm,
 // merge_forward and design_changes among them, and so is phase_ended, which no lane runs and the
-// list keeps for a rollback, since this migration writes the list last on any database; an unread
-// history is taken only with its reason and a version above 0, and a change set is taken as
-// unchanged only where Dispatch answered it and it is not decision-only.
+// list keeps for a rollback, since this migration and every later one that writes the list keep it;
+// an unread history is taken only with its reason and a version above 0, and a change set is taken
+// as unchanged only where Dispatch answered it and it is not decision-only.
 func TestTheDesignNewsSeedOwesNobodyWhatTheRecordShowsTakenWith20261119203047(t *testing.T) {
 	ctx := context.Background()
 	store := emptyStore(t)

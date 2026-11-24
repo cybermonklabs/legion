@@ -563,7 +563,7 @@ func (r *conflictMergerLive) pullRequest() record.PullRequest {
 	var pr *record.PullRequest
 	r.write("nothing: a read of the pull request of "+r.key, func(tx pgx.Tx) error {
 		var err error
-		pr, err = r.records.PullRequest(context.Background(), tx, r.key)
+		pr, err = r.records.MergePullRequest(context.Background(), tx, r.key)
 		return err
 	})
 	if pr == nil {

@@ -16,16 +16,16 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/exchange"
 )
 
-// plannerClaim and implementerClaim are two role claims of one issue, as the Legion daemon's
-// claim tokens spell them (packages/daemon/internal/claim/token.go): the same service launches
-// both, so only the claim tells their requests apart.
+// plannerClaim and implementerClaim are the claims of two agents of one issue, as the Legion
+// daemon's claim tokens spell them (packages/daemon/internal/claim/token.go): the same service
+// launches both, so only the claim tells their requests apart.
 const (
 	plannerClaim     = "legion-acme-acme-12-planner"
 	implementerClaim = "legion-acme-acme-12-implementer"
 )
 
-// claimPod enrols one role process as the Legion daemon does: under the launcher's own token
-// login, a pod uid of its own, a session of its own and the role's claim.
+// claimPod enrols one pod process as the Legion daemon does: under the launcher's own token
+// login, a pod uid of its own, a session of its own and the claim of the agent it runs for.
 func claimPod(t *testing.T, r podRig, launcher Credential, claim, session, podUID string) Enrollment {
 	t.Helper()
 	in := r.podEnrollment(t, launcher, workerPodAccount, podUID)

@@ -88,7 +88,7 @@ func TestVolumeTrimEnabledFalseTurnsTheTrimmerOff(t *testing.T) {
 }
 
 // What the loader refuses, each refusal naming the key an operator has to edit, so
-// `legion start --check-config` exits 1 saying where to look.
+// `legion config check` exits 1 saying where to look.
 func TestVolumeTrimRefusals(t *testing.T) {
 	for _, tc := range []struct {
 		name, block, want string

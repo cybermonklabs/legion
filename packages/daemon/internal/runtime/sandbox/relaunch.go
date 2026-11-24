@@ -250,8 +250,7 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 		return fail("ensure its sandbox", err)
 	}
 	pod := r.storedPod(s.Name)
-	_, initExit := failedInit(pod)
-	live := s.mode() != modeSuspended && ownedBy(pod, s.UID) && !terminal(pod) && initExit == nil
+	live := livePod(s, pod)
 	// A pod its node never started (neverStarted) is not live either: no launcher connects from it,
 	// so a launch that kept it would wait out its start bound on it, be charged a launch failure,
 	// and leave it for the next try to find again. It is replaced as a pod whose init failed is,
@@ -330,6 +329,17 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 		}
 	}
 	if !replace {
+		// A pod it would keep that was built before the deployment defined the slot this claim
+		// runs in (slotOf, its agent's name) or the role of its step has no launcher, Secret or
+		// volume of that slot, or none of that role's own resources (its role_config_files
+		// overlays): replacing it here would end every role in it and delete the issue's disk
+		// with whatever they did not push, so the launch writes nothing and waits for the pod's
+		// update round or its release (runtime.ErrAwaitsPodUpdate, PodLacksRole, rolesDrift),
+		// naming what the pod lacks. A launch whose slot and role the template holds goes on.
+		if lacks := templateLacks(templateRoles(s), slotOf(spec.Claim), spec.Role); lacks != "" {
+			return runtime.Locator{}, fmt.Errorf("launch %s: the pod %s of %s was built without %s: %w",
+				spec.Claim, pod.UID, spec.Issue, lacks, runtime.ErrAwaitsPodUpdate)
+		}
 		bound, err := r.launcherBound(bounded, s, pod, &l)
 		if err != nil {
 			return fail("read its pod's launcher bindings", err)
@@ -453,16 +463,16 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 			"sandbox %s's pod %s: its launcher has not said in its hello that it can look a session up by its id, so it was sent nothing: %w",
 			loc.Sandbox.Name, loc.Sandbox.PodUID, runtime.ErrSessionLookupUnavailable))
 	}
-	// A launcher still running an earlier generation of this role runs a process the supervisor has
-	// already given up on: it is stopped before the new generation starts, so two generations of a
-	// role never run side by side.
+	// A launcher still running an earlier generation of this claim's slot runs a process the
+	// supervisor has already given up on: it is stopped before the new generation starts, so two
+	// generations of a slot, one agent's, never run side by side.
 	if state, connected := r.launchers.state(spec.Claim, string(pod.UID)); connected && state.Child != nil && state.Child.Generation < spec.Generation {
 		stale := state.Child.Generation
 		if err := r.launchers.stop(starting, spec.Claim, string(pod.UID), r.stopFrame(stale)); err != nil {
 			return fail(fmt.Sprintf("stop its earlier generation %d", stale), err)
 		}
 	}
-	if err := r.recordAddresses(starting, s, spec.Role, spec.Generation, l.enrolls(r)); err != nil {
+	if err := r.recordAddresses(starting, s, slotOf(spec.Claim), spec.Generation, l.enrolls(r)); err != nil {
 		return fail("record the addresses its generation is handed", err)
 	}
 	// The check's digest is decided against the exact launcher's served tarball. For a kept pod
@@ -487,7 +497,17 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 	}
 	// The start sent carries what this launch learned from the cluster since prepare measured it,
 	// so it is measured again here: a frame no launcher reads is refused as the prompt it is, which
-	// supervise charges nothing, rather than failing in the writer as a charged launch failure.
+	// supervise charges nothing, rather than failing in the writer as a charged launch failure. A
+	// launch into a pod it keeps writes its slot's credential first, for the App of the step its
+	// claim does now, and its start names it, which the launcher waits for: no Secret is written
+	// for such a launch otherwise (writeLauncherSecrets runs for a pod a launch builds).
+	if !replace {
+		credential, err := r.writeLaunchCredential(starting, pod, spec)
+		if err != nil {
+			return fail("write its slot's github credential", err)
+		}
+		l.gitHubCredential = credential
+	}
 	command := launcherCommand(l, r)
 	if err := l.checkStartFrame(command); err != nil {
 		return fail("measure its start frame", err)
@@ -498,6 +518,14 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 	r.nameSession(loc, l)
 	r.join(loc)
 	return loc, nil
+}
+
+// livePod is whether pod is the live pod of the Sandbox read as s: the Sandbox running, the pod
+// its own, not ended, its init containers passed. A launch replaces only such a pod by ending the
+// roles in it (suspendDisplacing), and PodLacksRole answers only for one.
+func livePod(s *sandbox, pod *corev1.Pod) bool {
+	_, initExit := failedInit(pod)
+	return s.mode() != modeSuspended && ownedBy(pod, s.UID) && !terminal(pod) && initExit == nil
 }
 
 // keptBy is what the live pod podUID of the Sandbox read as s was built with, for the role l starts
@@ -591,10 +619,11 @@ func boundRanOut(parent, bounded context.Context, bound time.Duration, err error
 // creates carries no record. And only a try whose Sandbox ensureSandbox found standing sends it,
 // for the same reason, so that try never spends the 3 calls of the wait for a Sandbox being
 // deleted. It thus spends 14 calls at the most, the cache's ensure apart, under the 17.
-// Per launcher role of the pod (relaunchRoleCalls, claim.Roles for an issue pod, the most any pod
-// has): launcherBound's Secret Get (1); writeLauncherSecrets' credential mint and its upsert's Get,
-// Delete and Create (4); bindLauncherSecrets' Get and Update, and both again on a conflict (4).
-var relaunchCalls = relaunchPodCalls + relaunchRoleCalls*len(claim.Roles)
+// Per launcher role of the pod (relaunchRoleCalls, times roles, the most roles any pod of the
+// runtime has: its issue roles, Legion's six and each role the deployment defines): launcherBound's
+// Secret Get (1); writeLauncherSecrets' credential mint and its upsert's Get, Delete and Create
+// (4); bindLauncherSecrets' Get and Update, and both again on a conflict (4).
+func relaunchCalls(roles int) int { return relaunchPodCalls + relaunchRoleCalls*roles }
 
 const (
 	relaunchPodCalls  = 17 + cacheEnsureCalls
@@ -613,10 +642,10 @@ const (
 // ensureSandbox's wait for a Sandbox being deleted, awaitPodGone and awaitNewPod, the boot timeout
 // each; provision's waits on its repository's cache (cacheWaits); awaitRoleLauncher's backstop;
 // the termination grace the start frame has past the launcher deadline — and of its relaunchCalls
-// calls at apiTimeout each.
-func launchBound(bootTimeout, startBound, provisionBound, terminationGrace time.Duration) time.Duration {
+// calls, for a pod of roles roles, at apiTimeout each.
+func launchBound(bootTimeout, startBound, provisionBound, terminationGrace time.Duration, roles int) time.Duration {
 	waits := 3*bootTimeout + cacheWaits(bootTimeout) + launcherBackstop(startBound, bootTimeout, provisionBound) + terminationGrace
-	return waits + time.Duration(relaunchCalls)*apiTimeout
+	return waits + time.Duration(relaunchCalls(roles))*apiTimeout
 }
 
 // cacheWaits is the most a launch try's provision waits on its repository's cache: the cache's
@@ -1223,7 +1252,11 @@ func (r *Runtime) waitedOut(ctx context.Context, s *sandbox) string {
 // The Secret holds the role's own directories, where the pod projects only the ones every role
 // holds (l.gitHubDirs, gitHubBundles): a key outside that projection is written and never read,
 // and the refresher keeps it current with the rest (refreshGitHubCredential), so the role's next
-// pod projects it the moment every role's bundle holds it.
+// pod projects it the moment every role's bundle holds it. Each Secret records the role its slot's
+// process runs as (launchedRoleAnnotation): the launching claim's role for its own slot, and
+// nothing, an empty record, for every other slot, whose process went with the pod this one
+// replaces, so the refresher renders those for their claims' stored roles until each one's
+// launch records its own.
 func (r *Runtime) writeLauncherSecrets(ctx context.Context, s *sandbox, l *launch) error {
 	bundles, err := r.gitHubBundles(ctx, l)
 	if err != nil {
@@ -1244,8 +1277,17 @@ func (r *Runtime) writeLauncherSecrets(ctx context.Context, s *sandbox, l *launc
 			rendered := bundle.Dirs[dir]
 			data[GitHubHostsKey(dir)], data[GitHubConfigKey(dir)] = []byte(rendered.Hosts), []byte(rendered.Config)
 		}
+		meta := r.secretMeta(s, *l, roleSecretName(s.Name, role))
+		launched := ""
+		if role == slotOf(l.spec.Claim) {
+			launched = launchedRecord(l.spec.Generation, l.spec.Role)
+		}
+		if meta.Annotations == nil {
+			meta.Annotations = map[string]string{}
+		}
+		meta.Annotations[launchedRoleAnnotation] = launched
 		if err := r.upsertSecret(ctx, corev1.Secret{
-			ObjectMeta: r.secretMeta(s, *l, roleSecretName(s.Name, role)),
+			ObjectMeta: meta,
 			Type:       corev1.SecretTypeOpaque,
 			Data:       data,
 		}); err != nil {
@@ -1304,16 +1346,32 @@ func (r *Runtime) gitHubBundles(ctx context.Context, l *launch) (map[claim.Role]
 	l.gitHubDirs, l.gitHubDefault = nil, ""
 	bundles := make(map[claim.Role]ghconfig.Bundle, len(l.roles))
 	held := make(map[claim.Role][]string, len(l.roles))
+	// Each slot holds the App of the step its claim does now (slotAppRole): the launching claim's
+	// spec names its own, and each other slot's comes from the stored claims. A build that cannot
+	// read them mints each other slot for its own name: no other claim runs in a pod being built,
+	// and each one's next launch writes its slot's credential for its role, as the refresher does
+	// within a minute.
+	holders, err := r.slotHolders(ctx)
+	if err != nil {
+		r.log.Warn("sandbox runtime: a pod's build cannot read the stored claims; its other slots hold their own names' Apps until their launches",
+			"sandbox", l.name, "err", err)
+		holders = map[slotKey]slotHolder{}
+	}
+	holders[slotKey{sandbox: l.name, slot: slotOf(l.spec.Claim)}] = slotHolder{token: l.spec.Claim, role: l.spec.Role, generation: l.spec.Generation}
 	memo := appauth.NewBundles(r.gitHubCredential)
-	for i, role := range l.roles {
+	for i, slot := range l.roles {
 		minting, cancel := call(ctx)
 		var bundle ghconfig.Bundle
 		var err error
-		if role == claim.RoleController {
+		if slot == claim.RoleController {
 			bundle, err = r.controllerCredential(minting, "")
 		} else {
-			bundle, err = memo.Bundle(minting, role, l.spec.Repository)
+			var role claim.Role
+			if role, err = r.slotAppRole(minting, holders, l.name, slot, ""); err == nil {
+				bundle, err = memo.Bundle(minting, role, l.spec.Repository)
+			}
 		}
+		role := slot
 		cancel()
 		switch {
 		case role == claim.RoleController && errors.Is(err, runtime.ErrNoGitHubOwner):

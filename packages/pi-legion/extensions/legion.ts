@@ -353,12 +353,7 @@ export default function legionExtension(pi: PiApi): void {
     ) {
       return;
     }
-    const request = sessionActivityRequest({
-      project: process.env.LEGION_PROJECT,
-      claim,
-      report,
-    });
-    if (request === undefined) return;
+    const request = sessionActivityRequest({ claim, report });
     lastActivity = report;
     try {
       await roleDaemon().activity(request);
@@ -470,7 +465,7 @@ export default function legionExtension(pi: PiApi): void {
       }),
       exits: createStallExits({
         stateDir: requiredEnvironment(process.env, "LEGION_STATE_DIR"),
-        session,
+        claim: paneClaim,
         now: Date.now,
         log: logger,
       }),
@@ -930,8 +925,9 @@ export default function legionExtension(pi: PiApi): void {
   };
 
   // The session the tool answers for: a claim's (a root architect's, a sub-architect's or a phase
-  // worker's, keyed by its role) or the claimed controller's; a `task` subagent holds neither and
-  // is refused, as is a session whose boot has not registered yet.
+  // worker's, under the claim token its registration was answered with, on the role its step is on
+  // now) or the claimed controller's; a `task` subagent holds neither and is refused, as is a
+  // session whose boot has not registered yet.
   let legionToolRegistered = false;
   const registerLegionTool = (): void => {
     if (legionToolRegistered) return;
@@ -954,17 +950,19 @@ export default function legionExtension(pi: PiApi): void {
         controllerGrant: (sessionId) => controllerSession.mintGrant(sessionId),
         onPhaseCompleted,
         onUpdateAnswered,
-        // The pane's own environment: its workspace and issue; PATH's jj, the one its shell runs;
-        // and the Dispatch pi-envoy's session reads (Oh My Pi's rule, in the same process), which
-        // the pane's `dispatch handoff-write` wrote the record to.
-        handoffReport: (phase, role) =>
+        // The pane's own environment: its workspace and issue, from which the working copy and the
+        // branch of the claim's step are read; PATH's jj, the one its shell runs; and the Dispatch
+        // pi-envoy's session reads (Oh My Pi's rule, in the same process), which the pane's
+        // `dispatch handoff-write` wrote the record to.
+        env: process.env,
+        handoffReport: (step, role) =>
           paneHandoffReport(
             sessionConfigFile("omp", process.env),
             process.env,
             process.cwd(),
             currentSessionID()
-          )(phase, role),
-        branchHead: () => findPushedBranchHead({ env: process.env }),
+          )(step, role),
+        branchHead: (step) => findPushedBranchHead({ step }),
         resolveDocument: async (issue, reference) => {
           // The file pi-envoy's session reads: Oh My Pi's rule, in the same process.
           const config = activeDispatchSettings(

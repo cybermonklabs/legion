@@ -227,7 +227,7 @@ func (r *inFlightRig) wentOn(issue *inFlightIssue) error {
 }
 
 // launchesOf is every launch of a claim of issue the daemon has made, in order.
-func (r *inFlightRig) launchesOf(issue string) []fake.Call {
+func (r *stepRecordsRig) launchesOf(issue string) []fake.Call {
 	var launches []fake.Call
 	for _, call := range r.rt.Calls() {
 		if (call.Method == "Spawn" || call.Method == "Resume") && call.Spec.Issue == issue {
@@ -364,9 +364,12 @@ func (r *inFlightRig) seedInFlight(issue *inFlightIssue, seeded phase.Phase, sta
 	exec("the design gate of "+key, `insert into design_gates (issue, artifact_id, latest_version, approved_version, ever_opened, step)
 		values ($1, $2, 1, 1, true, 'spec')`, key, "spec-"+key)
 	order := slices.Index(phase.Order, seeded)
+	// A slot's index is unique across every project's slots (slots_index_key), and the package's
+	// tests share one run database (testdb.RunDatabaseFor), so a slot another test left may hold
+	// any index: the seed takes the one after the highest that stands.
 	if record.PhaseKeepsSlot(seeded) {
-		exec("the slot of "+key, `insert into slots (issue, index, admitted_at) values ($1, $2, now() - interval '1 day')`,
-			key, slices.Index(inFlightTitles, issue.title)+1)
+		exec("the slot of "+key, `insert into slots (issue, index, admitted_at)
+			select $1, coalesce(max(index), -1) + 1, now() - interval '1 day' from slots`, key)
 	}
 	if order > slices.Index(phase.Order, phase.Implementing) {
 		exec("the pull request of "+key, `insert into pull_requests (issue, repo, number, branch, head_sha, head_updated_at,

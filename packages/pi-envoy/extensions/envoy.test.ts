@@ -21016,9 +21016,10 @@ console.log(JSON.stringify(args));
     );
   }
 
-  // The daemon sends a role's every task and notice to its role topic, which reaches a session only
-  // over NATS: a claim with inbound off would hold the role and report ready while every delivery
-  // to it goes nowhere. It refuses before any listener call, so nothing is registered or claimed.
+  // The daemon sends a claim's every task and notice to the role topic of its claim token, which
+  // reaches a session only over NATS: a claim with inbound off would hold the topic and report
+  // ready while every delivery to it goes nowhere. It refuses before any listener call, so nothing
+  // is registered or claimed.
   for (const { slug, name, configure } of [
     {
       slug: "seed-refused",

@@ -9,8 +9,10 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 )
 
-// basePush records that a pull request's base branch moved (intake.BasePush): the push Envoy
-// publishes for a branch that is no issue's, which is the shape of a branch pull requests sit on.
+// basePush records that a pull request's base branch moved. Two facts are such a push: the push
+// Envoy publishes for a branch that is no issue's, which is the shape of a branch pull requests sit
+// on (intake.BasePush), and a push on an issue's or a task's branch (intake.Push), on which the pull
+// request of a task that needs that task is based, walked here after the push's own handling.
 // GitHub recomputes whether each head on that base still merges into it, and sends no event for the
 // pull request itself while it does, so a head the record holds as clean can already be behind or
 // dirty with nothing in the record saying so. Recording the commit the push left the base at says

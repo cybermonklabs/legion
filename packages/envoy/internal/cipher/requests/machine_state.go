@@ -512,8 +512,9 @@ type enrollmentRow struct {
 	// empty for none and for every pod but a person's pod, which names them as a session does.
 	Projects []string
 	// Claim is what a pod's launcher stated the pod runs for (enrollments.claim), "" for none:
-	// for the Legion daemon, the role claim token whose issue's assignee is asked for a shared
-	// secret's request (claimAssignee). The live-enrollment read (enrollment) fills it.
+	// for the Legion daemon, the claim token of one agent of an issue, whose issue's assignee is
+	// asked for a shared secret's request (claimAssignee). The live-enrollment read (enrollment)
+	// fills it.
 	Claim string
 	// Restricted is whether Dispatch called the person this enrollment was made for a restricted
 	// member when the caller asked, before any transaction (restrictedOperator): Create and every

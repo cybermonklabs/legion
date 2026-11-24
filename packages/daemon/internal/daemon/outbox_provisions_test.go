@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -365,4 +367,71 @@ func hostWorkspace(t *testing.T, stateDir, repo, issue string) {
 		t.Fatal(err)
 	}
 	jj("workspace", "add", "--name", filepath.Base(located.Dir), located.Dir, "-R", located.Clone)
+}
+
+// The store lock of a repository's shared clone is also the clone's lock across processes
+// (workspace.CloneLock), which a pane's shim holds while it adds a task's working copy to the
+// clone: the daemon's provisions and removals of the repository wait for it. The holder here is a
+// CloneLock of this process, which a flock excludes as another process's would; the store lock is
+// seen waiting on it in the kernel's own list of locks, and is taken once it lets go.
+func TestTheStoreLockOfACloneWaitsForTheClonesLockAcrossProcesses(t *testing.T) {
+	t.Parallel()
+	clone := filepath.Join(t.TempDir(), "repos", "github.com", "acme", "widgets")
+	if err := os.MkdirAll(filepath.Join(clone, ".git"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	shim := workspace.CloneLock(clone)
+	shim.Lock()
+	held := true
+	defer func() {
+		if held {
+			shim.Unlock()
+		}
+	}()
+	var locks provisionLocks
+	store, release := locks.stores.take(clone)
+	defer release()
+	taken := make(chan struct{})
+	go func() {
+		store.Lock()
+		close(taken)
+	}()
+	deadline := time.Now().Add(time.Minute)
+	for !waitsOnAFlock(t, os.Getpid()) {
+		select {
+		case <-taken:
+			store.Unlock()
+			t.Fatal("the store lock was taken while the clone's lock across processes was held")
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the store lock neither waited on a flock nor was taken within a minute")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	shim.Unlock()
+	held = false
+	select {
+	case <-taken:
+		store.Unlock()
+	case <-time.After(time.Minute):
+		t.Fatal("the store lock was not taken within a minute of the clone's lock being let go")
+	}
+}
+
+// waitsOnAFlock is whether the process pid waits for a flock, as the kernel lists it: a line of
+// /proc/locks whose lock is marked `->`, a request blocked behind another's.
+func waitsOnAFlock(t *testing.T, pid int) bool {
+	t.Helper()
+	locks, err := os.ReadFile("/proc/locks")
+	if err != nil {
+		t.Fatalf("read the kernel's list of locks: %v", err)
+	}
+	for _, line := range strings.Split(string(locks), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) > 5 && fields[1] == "->" && fields[2] == "FLOCK" && fields[5] == strconv.Itoa(pid) {
+			return true
+		}
+	}
+	return false
 }

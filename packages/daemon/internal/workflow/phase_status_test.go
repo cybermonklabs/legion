@@ -24,6 +24,7 @@ func TestEachPhaseShowsItsOwnDispatchStatus(t *testing.T) {
 		phase.Implementing:   "in_progress",
 		phase.Testing:        "testing",
 		phase.Reviewing:      "needs_review",
+		phase.Step:           "in_progress",
 		phase.Accepting:      "needs_review",
 		phase.Retro:          "retro",
 		phase.Merging:        "retro",

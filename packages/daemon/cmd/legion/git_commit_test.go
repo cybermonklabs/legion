@@ -487,8 +487,9 @@ func TestGitWrapperTrailerKnowsAPathThatNamesADescriptor(t *testing.T) {
 }
 
 // Each environment of c-git-trailers step 6 gives the lines the session that the dispatch command
-// acts as and the role decide: the role line only for a Legion role, and the session line only
-// for the id of the host's variable, and only where it is a valid id.
+// acts as and the role decide: the role line only for a Legion role (one of the role grammar, so
+// a role a deployment defines too), and the session line only for the id of the host's variable,
+// and only where it is a valid id.
 func TestGitWrapperTrailerTakesTheSessionDispatchActsAs(t *testing.T) {
 	git := fixturegit.CompiledGit(t)
 	legion := trailerLegion(t)
@@ -499,7 +500,9 @@ func TestGitWrapperTrailerTakesTheSessionDispatchActsAs(t *testing.T) {
 		lines []string
 	}{
 		{"LEGION_ROLE unset", []string{"DISPATCH_HOST=omp", "DISPATCH_SESSION_ID=dispatch-id"}, []string{"Omp-Session: dispatch-id"}},
-		{"LEGION_ROLE=bogus", []string{"DISPATCH_HOST=omp", "DISPATCH_SESSION_ID=dispatch-id", "LEGION_ROLE=bogus"}, []string{"Omp-Session: dispatch-id"}},
+		{"LEGION_ROLE=Bogus, outside the role grammar", []string{"DISPATCH_HOST=omp", "DISPATCH_SESSION_ID=dispatch-id", "LEGION_ROLE=Bogus"}, []string{"Omp-Session: dispatch-id"}},
+		{"LEGION_ROLE=checker, a role a deployment defines", []string{"DISPATCH_HOST=omp", "DISPATCH_SESSION_ID=dispatch-id", "LEGION_ROLE=checker"},
+			[]string{"Omp-Session: dispatch-id", "Legion-Role: checker"}},
 		{"LEGION_ROLE=controller", []string{"DISPATCH_HOST=omp", "DISPATCH_SESSION_ID=dispatch-id", "LEGION_ROLE=controller"},
 			[]string{"Omp-Session: dispatch-id", "Legion-Role: controller"}},
 		{"CLAUDE_CODE_SESSION_ID beside DISPATCH_SESSION_ID", []string{"DISPATCH_HOST=omp", "DISPATCH_SESSION_ID=dispatch-id", "CLAUDE_CODE_SESSION_ID=claude-id", "LEGION_ROLE=implementer"},

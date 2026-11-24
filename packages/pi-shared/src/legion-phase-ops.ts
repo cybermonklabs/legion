@@ -1,4 +1,4 @@
-import { type LegionRole, zodSchemaApi } from "@legion/contracts";
+import { type LegionStepRole, zodSchemaApi } from "@legion/contracts";
 import {
   LEGION_PHASE_BACKWARD_TARGETS,
   LEGION_PLAN_RATING_LEAST,
@@ -6,7 +6,6 @@ import {
   LEGION_PLAN_REASON_MAX,
   LegionInstant,
   type LegionIssue,
-  type LegionPhase,
   legionPlanRatingLoneField,
   legionPlanRatingScale,
   legionPlanReasonRules,
@@ -18,7 +17,7 @@ import {
   type LegionDaemonClient,
   retryWhileDaemonRestarts,
 } from "./daemon-client";
-import type { HandoffReport } from "./handoff-record";
+import { type HandoffReport, type StepCopy, stepCopy } from "./handoff-record";
 
 /** The claim a session registered, as the phase ops need it, and as the claim boot
  * (`legion-claim-core`) records it: its own id, the daemon's answer for tree, issue and role, the
@@ -30,7 +29,8 @@ export interface ClaimCapability {
   readonly sessionID: string;
   readonly tree: string;
   readonly issue: string;
-  readonly role: LegionRole;
+  /** One of Legion's six or a role of the deployment (contract 221). */
+  readonly role: LegionStepRole;
   readonly secret: string;
   readonly claimToken: string;
   readonly generation: number;
@@ -131,17 +131,18 @@ const planReason = legionPlanReasonRules(z.string({ error: PLAN_REASON_REQUIRED 
   long: `handoff_complete's plan_reason holds at most ${PLAN_REASON_MOST} characters`,
 });
 
-/** The refusal of a `return_to` that is not the place of a step. */
-const RETURN_TO_REFUSAL =
-  "handoff_complete's return_to is a whole number of 1 or more: the place of a step of your task, 1 for its first";
+/** `op`'s `return_to`: the step of the issue's running task that a step that failed, or a move
+ * back, names for its task to return to, by its place in the task, 1 for its first (the
+ * `returnTo` of `LegionHandoffCompleteRequest` and of `LegionPhaseBackwardRequest`, which goes on
+ * the wire). Anything else is refused naming the operation. */
+function returnTo(op: "handoff_complete" | "request_backward_move") {
+  const error = `${op}'s return_to is a whole number of 1 or more: the place of a step of your task, 1 for its first`;
+  return z.number({ error }).int({ error }).min(1, { error });
+}
 
-/** `handoff_complete`'s `return_to`: the step of the issue's running task that a step that failed
- * names for its task to return to, by its place in the task, 1 for its first
- * (`LegionHandoffCompleteRequest`'s `returnTo`, which goes on the wire). */
-const returnTo = z
-  .number({ error: RETURN_TO_REFUSAL })
-  .int({ error: RETURN_TO_REFUSAL })
-  .min(1, { error: RETURN_TO_REFUSAL });
+/** The refusal of a `task` on `request_backward_move` that is no task id: not a string, or blank. */
+const BACKWARD_TASK_REFUSAL =
+  "request_backward_move's task is the id of a task of the issue's plan, as a is";
 
 /** The refusal of the fields `refused` that `op` does not take: each named, then once the fields
  * `op` takes (`takes`), so the agent's next call can be right. The one wording every `legion`
@@ -202,7 +203,7 @@ export const PhaseOpArguments = z.discriminatedUnion(
       wake_at: nextLook.optional(),
       plan_rating: planRating.optional(),
       plan_reason: planReason.optional(),
-      return_to: returnTo.optional(),
+      return_to: returnTo("handoff_complete").optional(),
     })
       // A rating of the plan carries its reason, and the daemon takes neither alone
       // (PLAN_RATING_INPUT, the contract's `legionPlanRatingLoneField`): one without the other is
@@ -235,6 +236,17 @@ export const PhaseOpArguments = z.discriminatedUnion(
             : "request_backward_move requires to",
       }),
       reason: requiredString("request_backward_move", "reason"),
+      // The step the move returns to, by its place in the task: the daemon takes the place and
+      // refuses a `to` that is not the phase that step runs as.
+      return_to: returnTo("request_backward_move").optional(),
+      // The task of the issue's plan the move is of (contract 224): an architect names the task it
+      // returns from accepting where two or more stand there, and a phase worker may name the task
+      // of its own step. The daemon judges it (TASK_REQUIRED, TASK_NOT_AT_PHASE, TASK_NOT_GRANTS);
+      // a blank one is refused here.
+      task: z
+        .string({ error: BACKWARD_TASK_REFUSAL })
+        .refine((value) => value.trim() !== "", { error: BACKWARD_TASK_REFUSAL })
+        .optional(),
     }),
     // The signal carries one field of the agent's: the round its update message named, which the
     // daemon takes the answer for and no other. The claim says who answers, and the plugin
@@ -325,15 +337,15 @@ export const PHASE_OP_SENTENCES = {
     "That contract is null where the daemon stated none, where the daemon refused the health route and where no answer reached this process at all, and a note of its own says which. " +
     "The two numbers can differ, and the answer shows both. " +
     "Report the version this call answers, never the one at the plugin's path on the image. " +
-    "In a pod, an Oh My Pi role relaunched onto the daemon's contract loads the build that relaunch installed under the role's own state home, " +
+    "In a pod, an Oh My Pi role relaunched onto the daemon's contract loads the build that relaunch installed under its agent's own state home, " +
     "and a Claude Code role installs no plugin: it loads its pod image's own claude-envoy. " +
     "read_build reads no project state. ",
 } as const;
 
 /**
  * What a worker whose completion is refused HANDOFF_STALE_ENTRY does, word for word the text the
- * daemon ends that refusal with (`staleEntryInstruction` in
- * `packages/daemon/internal/api/handoff.go`), so the worker reads one instruction in its tool and
+ * daemon ends that refusal with (`StaleEntryInstruction` in
+ * `packages/daemon/internal/intake/facts.go`), so the worker reads one instruction in its tool and
  * in the refusal. The daemon's golden test writes its constant to
  * `packages/contracts/fixtures/daemon-api/stale-entry.json`, and `legion-phase-ops.test.ts` holds
  * the description below to that file.
@@ -363,7 +375,7 @@ export function legionToolDescription(host: {
     "the daemon accepts a completion only from the role working the issue's current phase, " +
     "or a role's first completion of the phase it left, which it records and which moves nothing, " +
     "and the checking role's report on a look of its closed issue's production check) reports this phase complete: `summary` (two sentences for the " +
-    "architect), `verdict` pass|fail from the tester alone on a phase completion (the daemon refuses a verdict from " +
+    "architect), `verdict` pass|fail from the tester or a role of the deployment on a phase completion (the daemon refuses a verdict from " +
     "any other role there) and pass|pending|fail on a production check report (pending: production does not carry the merge " +
     "yet, or carries it with a requirement only the deploy can show still unobserved and a look still to follow; on the check's last look, only for an issue with no such requirement). " +
     "A tester's fail may name `return_to`, the place of a step of the task its issue runs, 1 for its first: the step the task goes back " +
@@ -392,7 +404,9 @@ export function legionToolDescription(host: {
     "HANDOFF_STALE_ENTRY (this completion is of a phase entry behind the one your role's phases row names, because the phase was entered " +
     `again while your turn ran, and nothing was recorded. ${STALE_ENTRY_INSTRUCTION}), the implementer's completion of implementing with no open ` +
     "pull request on `legion/<issue>` and none recorded " +
-    "merged (HANDOFF_NO_PULL_REQUEST: open it; one naming a closed pull request is the architect's to decide); a refused completion changed " +
+    "merged (HANDOFF_NO_PULL_REQUEST: open it; one naming a closed pull request is the architect's to decide), and one whose open pull " +
+    "request is against another branch than its task's base (HANDOFF_PULL_REQUEST_BASE: set the base the refusal names with " +
+    "`gh pr edit`); a refused completion changed " +
     "nothing, so fix what it names and complete again. " +
     "ready_for_update answers the daemon's update message on this issue's pod: `round` is the round id that message names, and the " +
     "daemon takes your answer for that round alone. Push every commit you want kept to the issue branch " +
@@ -412,7 +426,8 @@ export function legionToolDescription(host: {
  * (`legion.daemonApiVersion`, which the client states on every request as `pluginContract` and
  * `read_build` answers beside the daemon's own). It is the host's manifest and never a path on
  * the image: an Oh My Pi role's relaunch onto the daemon's contract installs the plugin pair
- * fresh under the role's state home, so the build at `/opt/legion/pi-legion` is another one. A
+ * fresh under the state home of its claim's agent, which is the same whatever role the agent's
+ * step is on, so the build at `/opt/legion/pi-legion` is another one. A
  * Claude Code role in a pod installs no plugin, and its build is its image's own claude-envoy. */
 export interface PluginBuild {
   readonly name: string;
@@ -441,19 +456,22 @@ export interface PhaseOpRuntime {
   readonly claim: ClaimCapability;
   /** The build this process loaded, which `read_build` answers with (`pluginBuildOf`). */
   readonly build: PluginBuild;
-  /** What a completion by `role` reports beside its summary while the issue stands at `phase`
-   * (`findHandoffReport` with the pane's environment and Dispatch): the newest record of the
-   * phase the role works or, once the issue has moved on, of the phase it left, or `@-` alone where
-   * that left phase has none or the implementer's left record names no head. Throws naming the remedy when the phase the role works has no
-   * handoff record, Dispatch does not answer, or, while the issue stands in implementing, the
-   * implementer's record names no head, the commit its workspace stands on is not pushed, or its
-   * record's head is not that pushed commit. */
-  readonly handoffReport: (phase: LegionPhase, role: LegionRole) => Promise<HandoffReport>;
-  /** The head of `legion/<issue>@origin` the `ready_for_update` signal reports
-   * (`findPushedBranchHead` with the pane's environment): `""` when the branch is not there. A
-   * throw leaves the head out of the signal, which is still sent, and the throw's message goes
-   * to the agent in the answer's `note`. */
-  readonly branchHead: () => Promise<string>;
+  /** The pane's environment: LEGION_WORKSPACE and LEGION_ISSUE, from which the working copy and
+   * the branch of the step this session's agent runs are read (`stepCopy`). */
+  readonly env: NodeJS.ProcessEnv;
+  /** What a completion by `role` of `step` reports beside its summary (`findHandoffReport` with
+   * the pane's environment and Dispatch): the newest record of the phase the role works or, once
+   * the step has moved on, of the phase it left, or `@-` alone where that left phase has none or
+   * the implementer's left record names no head. Throws naming the remedy when the phase the role
+   * works has no handoff record, Dispatch does not answer, or, while the step stands in
+   * implementing, the implementer's record names no head, the commit its working copy stands on
+   * is not pushed, or its record's head is not that pushed commit. */
+  readonly handoffReport: (step: StepCopy, role: LegionStepRole) => Promise<HandoffReport>;
+  /** The head of `step`'s branch at origin the `ready_for_update` signal reports
+   * (`findPushedBranchHead`): `""` when the branch is not there. A throw leaves the head out of
+   * the signal, which is still sent, and the throw's message goes to the agent in the answer's
+   * `note`. */
+  readonly branchHead: (step: StepCopy) => Promise<string>;
   /** How `handoff_complete` waits out a daemon restart (`retryWhileDaemonRestarts`): the host's
    * sentence to the agent, and a test's clock. */
   readonly restart?: DaemonRestartRetry;
@@ -485,6 +503,18 @@ async function recordFrom(daemon: LegionDaemonClient, issue: string): Promise<Le
   const record = await daemon.record(issue);
   if (record === undefined) throw new Error(`The daemon has no record for ${issue}`);
   return record;
+}
+
+/** The agent a claim's token names: everything after the issue's part, `legion-<project>-<issue
+ * project>-<number>-`, which the daemon's `claim.Token.Cut` reads by the same fields and which
+ * equals the `agent` of the task whose step that agent runs. `""` for a token that names no agent,
+ * the controller's among them. */
+const CLAIM_AGENT = /^legion-[^-]+-[^-]+-[^-]+-([a-z][a-z0-9-]{0,31})$/;
+
+/** The step `claim`'s agent runs in `record` (`stepCopy`), read from the pane's environment. */
+function claimStep(runtime: PhaseOpRuntime, record: LegionIssue): StepCopy {
+  const agent = CLAIM_AGENT.exec(runtime.claim.claimToken)?.[1] ?? "";
+  return stepCopy(runtime.env, record, agent === "controller" ? "" : agent);
 }
 
 const ROOT_COMPLETION_REFUSAL =
@@ -663,6 +693,8 @@ export async function executePhaseOp(
         to: args.to,
         reason: args.reason,
         ...(issue === undefined ? {} : { issue }),
+        ...(args.return_to === undefined ? {} : { returnTo: args.return_to }),
+        ...(args.task === undefined ? {} : { task: args.task.trim() }),
       });
       return {};
     }
@@ -670,16 +702,18 @@ export async function executePhaseOp(
       // The claim authenticates the signal, as it does `claims/ready`: no grant is minted. The
       // round is the agent's own word, read from the update message it answers, and the daemon
       // takes the answer for that round alone — an answer for a round its claim has left is
-      // refused naming both. The head is the plugin's to resolve, and a branch not yet on the
-      // remote is left out. A workspace whose jj cannot answer leaves it out too, and is told so:
-      // the round ends before its bound only once every claim of the pod has answered, no turn
-      // runs and no claim's activity report holds it (the daemon's `roundEnd.holding`), so a
-      // worker whose lookup fails must still be able to answer. The daemon verifies no head, so
-      // the missing one costs the record a line and the round nothing.
+      // refused naming both. The head is the plugin's to resolve: that of the branch of the step
+      // the claim's agent runs, read from the issue's record (`claimStep`), and a branch not yet
+      // on the remote is left out. A record the daemon does not answer, or a working copy whose
+      // jj cannot answer, leaves it out too, and is told so: the round ends before its bound only
+      // once every claim of the pod has answered, no turn runs and no claim's activity report
+      // holds it (the daemon's `roundEnd.holding`), so a worker whose lookup fails must still be
+      // able to answer. The daemon verifies no head, so the missing one costs the record a line
+      // and the round nothing.
       let head = "";
       let failure: string | undefined;
       try {
-        head = await runtime.branchHead();
+        head = await runtime.branchHead(claimStep(runtime, await recordFrom(daemon, claim.issue)));
       } catch (error) {
         failure = error instanceof Error ? error.message : String(error);
       }
@@ -949,9 +983,10 @@ async function completeHandoff(
       "handoff_complete's wake_at is a production check's pending report alone; a phase completion carries none"
     );
   }
-  // The record and the commit are found before the grant is minted. The phase is the issue
-  // record's, the role the claim's.
-  const report = await runtime.handoffReport(record.phase, claim.role);
+  // The record and the commit are found before the grant is minted. The step is the one the
+  // claim's agent runs in the issue's record (`claimStep`), whose phase the completion is of, and
+  // the role is the claim's.
+  const report = await runtime.handoffReport(claimStep(runtime, record), claim.role);
   return daemon.handoffComplete({
     grantId: await mintClaimGrant(daemon, claim),
     summary: args.summary,

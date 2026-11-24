@@ -6,10 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net"
 	"net/http"
 	"strconv"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -207,8 +210,8 @@ func prepareSandbox(cfg config.Config, o overrides, reads sandboxReads, p *plan)
 	p.launchRounds = &launchRounds{}
 	opts := reads.opts
 	opts.RoundPodEnds = p.launchRounds.ends
-	p.newRuntime = sandboxRuntime(reads.client, opts, p.repositories.servesRepository, p.repositories.serving, cfg.RepositoryRenames, p.installed, p.left, o.githubAPI,
-		p.memoryGuardKills, p.volumeReports)
+	p.newRuntime = sandboxRuntime(reads.client, opts, p.repositories.servesRepository, p.repositories.serving, cfg.RepositoryRenames, p.installed, p.left,
+		opts.DeploymentApps, o.githubAPI, p.memoryGuardKills, p.volumeReports)
 	p.clusterCheck = boot.clusterCheck
 	p.claimsCheck = func(ctx context.Context, st *store.Store) error {
 		legacy, err := st.HasLegacySandboxClaims(ctx, p.project)
@@ -415,6 +418,7 @@ func sandboxOptions(cfg config.Config, k config.Kubernetes, project, dispatchTok
 		ControllerSlackChannels: cfg.Projects[cfg.Project].SlackChannels,
 		Tools:                   workerImageTools,
 		Pod:                     sandbox.Pod(k.Pod),
+		DeploymentApps:          deploymentApps(cfg.Roles),
 		RoleConfigFiles:         cfg.RoleConfigFiles,
 		ProviderKeys:            providerSecretKeys(cfg.ProviderKeys),
 		LaunchSecrets:           launchSecretNames(cfg, lookup),
@@ -605,8 +609,9 @@ func requirements(key string, reservation config.Reservation) (corev1.ResourceRe
 // sandboxRuntime builds the Agent Sandbox runtime, whose informers run for ctx (supervision's
 // lifetime), over the worker stream and with the workflow's App tokens as every pod's provisioning
 // token source (the implement App's, minted for the repository's owner) and every tree role's gh
-// bundle (gitHubCredential, a directory for each owner the role's App is installed on, read from
-// GitHub at every bundle, and one for each owner a configured rename moved a repository away
+// bundle (gitHubCredential, minted as the App the role acts as, deployed naming the App of each
+// role the deployment defines, a directory for each owner the role's App is installed on, read
+// from GitHub at every bundle, and one for each owner a configured rename moved a repository away
 // from while served answers the name it moved to is served), with the
 // controller's own bundle beside it
 // (appauth.ControllerCredential), which a controller's launch and its refresh both ask by owner,
@@ -641,8 +646,8 @@ func requirements(key string, reservation config.Reservation) (corev1.ResourceRe
 // it has (plan.volumeReports). One that is never filled refuses every report it is given with
 // errVolumeReportsUnbound, which the launcher session logs.
 func sandboxRuntime(rc *rest.Config, opts sandbox.Options, served func(ghrepo.Repository) bool,
-	serving func(ghrepo.Repository) ghrepo.Repository, renames ghrepo.Renames, installed *appauth.Installed, left *appauth.LeftOut, githubAPI string, kills *memoryGuardKills,
-	reports *volumeTrimReports) runtimeFactory {
+	serving func(ghrepo.Repository) ghrepo.Repository, renames ghrepo.Renames, installed *appauth.Installed, left *appauth.LeftOut,
+	deployed appauth.DeploymentApps, githubAPI string, kills *memoryGuardKills, reports *volumeTrimReports) runtimeFactory {
 	return func(ctx context.Context, listener *stream.Listener, address string, apps appauth.Source,
 		_ func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, cached func() []ghrepo.Repository) (runtime.Runtime, error) {
 		opts.Conns, opts.StreamURL, opts.Store, opts.CacheRepositories = listener, address, st, cached
@@ -687,7 +692,7 @@ func sandboxRuntime(rc *rest.Config, opts sandbox.Options, served func(ghrepo.Re
 			// every launch's addressing reads its role's App's owners out of beside the drift
 			// check.
 			opts.Tokens = newImplementTokens(apps, serving)
-			opts.GitHubCredential = appauth.GitHubCredential(apps, served, renames, installed, left, opts.Log)
+			opts.GitHubCredential = appauth.GitHubCredential(apps, served, renames, installed, left, deployed, opts.Log)
 			opts.ControllerCredential = appauth.ControllerCredential(apps, served, renames, installed, left, opts.Log)
 			opts.GitHubDirs = func(repo ghrepo.Repository, roles []appauth.AppRole) []string {
 				return appauth.GitHubDirs(served, renames, installed, left, roles, repo)
@@ -707,9 +712,39 @@ func sandboxRuntime(rc *rest.Config, opts sandbox.Options, served func(ghrepo.Re
 // (runtime.SavedWorkspaceBundle). A bundle is project's only where project records its issue
 // (store.Store.TakeWorkspaceBundleForRestore): on a database shared with another project's
 // daemon, a bundle of that project's issue is that daemon's, whatever pod of this daemon asks.
+//
+// The pod is sent the working copy of each task whose branch a task of the plan the issue runs
+// now holds (record.PlanTask.BranchOf), and of no other: a task a later version of the plan
+// removed has no working copy to come back to, so its copy lives at most as long as the disk of
+// the pod that made it, which the daemon does not reach (the outbox's removeTaskCopy). Its commits
+// stay heads of the bundle with the rest of the saved work. The plan is read before the take, which
+// spends the bundle's one attempt, so a read that fails sends nothing and leaves the attempt.
 func savedWorkspaceBundle(st *store.Store, project string) runtime.SavedWorkspaceBundle {
+	records := record.NewStore()
 	return func(ctx context.Context, issue, podUID string, podCreated time.Time) (runtime.WorkspaceBundle, runtime.WorkspaceBundleTake, error) {
-		return st.TakeWorkspaceBundleForRestore(ctx, project, issue, podUID, podCreated)
+		held := map[string]bool{}
+		if err := store.TransactWith(ctx, st.Pool(), pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+			recorded, err := records.Issue(ctx, tx, issue)
+			if err != nil || recorded == nil {
+				return err
+			}
+			stored, err := records.Plan(ctx, tx, issue, recorded.Generation)
+			if err != nil || stored == nil {
+				return err
+			}
+			for _, task := range stored.Tasks {
+				held[task.BranchOf(issue)] = true
+			}
+			return nil
+		}); err != nil {
+			return runtime.WorkspaceBundle{}, runtime.WorkspaceBundleNone, fmt.Errorf("read the plan of %s for the restore of its saved work: %w", issue, err)
+		}
+		bundle, take, err := st.TakeWorkspaceBundleForRestore(ctx, project, issue, podUID, podCreated)
+		if err != nil {
+			return bundle, take, err
+		}
+		maps.DeleteFunc(bundle.WorkingCopies, func(branch, _ string) bool { return !held[branch] })
+		return bundle, take, nil
 	}
 }
 
@@ -757,7 +792,8 @@ func (m *memoryGuardKills) bind(pool *store.Pool, handlers []intake.Handler) {
 }
 
 // killed applies one kill of issue's pod as one intake fact (runtime.MemoryGuardKilled), crediting
-// it to token, the role whose connection carried the report, and to podUID, the pod that launcher
+// it to token, the claim of the slot whose launcher connection carried the report (a claim token
+// names its agent, whatever role the agent's step is on), and to podUID, the pod that launcher
 // runs in, both the session's and never the report's. It runs on the launcher's own frame loop
 // under that loop's bounded context, so an apply that cannot be made is returned to the launcher
 // session, which logs it and drops the report. Every launcher's frame loop runs beside the others
@@ -768,7 +804,7 @@ func (m *memoryGuardKills) bind(pool *store.Pool, handlers []intake.Handler) {
 // The event id is the kill's own identity, the guard's id and its sequence
 // (memoryGuardKillEventID), and never the daemon's receipt: a launcher that wrote a report on a
 // connection it then lost sends it again on the next, and ApplyFact applies one id once, so the
-// role is told of one kill once however often its report arrives.
+// claim is told of one kill once however often its report arrives.
 func (m *memoryGuardKills) killed(ctx context.Context, issue string, token claim.Token, podUID string, report shimwire.LauncherMemoryKill) error {
 	return m.apply(ctx, report, intake.MemoryGuardKill{Issue: issue, Token: token, PodUID: podUID, Report: report}, issue, podUID)
 }

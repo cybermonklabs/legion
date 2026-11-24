@@ -277,13 +277,26 @@ func TestABootNamesTheClaimsNothingWillWake(t *testing.T) {
 		t.Fatalf("the boot's line = %v, want an error for project %s naming %q to resume, %q as suspended workers, %q to retry and %q needing a workflow start",
 			line, cfg.Project, resume, workers, retry, workflowStart)
 	}
+	// Each entry names its claim's token (contract 222's `strandedClaims.*.token`): two claims of
+	// one issue can hold one role, so the issue and the role do not name the claim.
+	project, err := claim.ProjectToken(cfg.Project)
+	if err != nil {
+		t.Fatalf("the project token of %s: %v", cfg.Project, err)
+	}
+	stranded := func(issue string, role claim.Role, state supervise.ClaimState) map[string]string {
+		token, err := claim.NewToken(project, issue, role)
+		if err != nil {
+			t.Fatalf("the token of %s's %s: %v", issue, role, err)
+		}
+		return map[string]string{"issue": issue, "role": string(role), "state": string(state), "token": string(token)}
+	}
 	wantWire := []map[string]string{
-		{"issue": implementing, "role": "architect", "state": "suspended"},
-		{"issue": implementing, "role": "implementer", "state": "suspended"},
-		{"issue": reviewing, "role": "reviewer", "state": "failed"},
-		{"issue": tested, "role": "tester", "state": "suspended"},
-		{"issue": planning, "role": "architect", "state": "failed"},
-		{"issue": retired, "role": "tester", "state": "retired"},
+		stranded(implementing, claim.RoleArchitect, supervise.StateSuspended),
+		stranded(implementing, claim.RoleImplementer, supervise.StateSuspended),
+		stranded(reviewing, claim.RoleReviewer, supervise.StateFailed),
+		stranded(tested, claim.RoleTester, supervise.StateSuspended),
+		stranded(planning, claim.RoleArchitect, supervise.StateFailed),
+		stranded(retired, claim.RoleTester, supervise.StateRetired),
 	}
 	if got := strandedOnTheWire(t, bootState(t, d)); !reflect.DeepEqual(got, wantWire) {
 		t.Fatalf("strandedClaims = %v, want %v", got, wantWire)
@@ -481,7 +494,7 @@ func TestStateSnapshotKeepsStrandedClaimsConsistentWithWorkerStates(t *testing.T
 	}
 	worker := state.Issues[issue].Workers[claim.RoleImplementer].Claim
 	tester := state.Issues[retiredIssue].Workers[claim.RoleTester].Claim
-	wantStranded := []api.StrandedClaim{{Issue: retiredIssue, Role: claim.RoleTester, State: string(supervise.StateRetired)}}
+	wantStranded := []api.StrandedClaim{{Issue: retiredIssue, Role: claim.RoleTester, State: string(supervise.StateRetired), Token: retired.Token}}
 	if worker.State != string(supervise.StateIdle) || tester.State != string(supervise.StateRetired) ||
 		!reflect.DeepEqual(state.StrandedClaims, wantStranded) {
 		t.Fatalf("snapshot state = implementer %s, tester %s, stranded %v; want the idle implementer the snapshot saw, a retired tester and %v",

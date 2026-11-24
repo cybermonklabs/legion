@@ -934,7 +934,8 @@ pod_shape_verdict "$work/pod-watch-wrong-shape.json" | sed 's/^/control /'`);
 });
 
 // The pod-watch-verdict checkpoint's matching (pod_watch_verdict, never_scheduled_deaths): the
-// daemon names a dead process by its claim, whose last word is its role, and its incarnation,
+// daemon names a dead process by its claim, whose last word is its agent's name, here the role the
+// agent is named for, since no step of this run is keyed, and its incarnation,
 // `<pod uid>/<generation>`; the driver records an action by pod uid, with the role for a kill
 // (driver_action). A `kill-role` accounts for a death of the role it killed, any generation, in
 // its pod and no other role's; a `delete-pod` or `close` for a death of any role in its pod. Neither

@@ -40,6 +40,10 @@ type decodedMessage struct {
 	// refused settlement is not poison, since no redelivery reads it otherwise, so the consumer
 	// acknowledges it and logs it once per event id (consumeMessage).
 	Refused *checksRefusal
+	// NoHeadRepo is set for a pull request event of an issue's branch that names no head
+	// repository (decodePullRequest), and Fact is nil when it is set: no pull request is recorded
+	// from it, and the consumer counts and logs those (consumeMessage).
+	NoHeadRepo bool
 }
 
 // settlementRead is what a checks settlement's payload gives of the three fields a settlement is
@@ -127,6 +131,7 @@ func decodeMessage(subject, project string, repositories []ghrepo.Repository, da
 	var err error
 	var legacy bool
 	var refused *checksRefusal
+	var noHeadRepo bool
 	switch {
 	case subject == legionWakeSubject:
 		if envelope.Source != "envoy" {
@@ -142,14 +147,15 @@ func decodeMessage(subject, project string, repositories []ghrepo.Repository, da
 		if envelope.Source != "github" {
 			return decodedMessage{}, fmt.Errorf("GitHub subject has envelope source %q", envelope.Source)
 		}
-		fact, unread, refused, err = decodeGitHubFact(subject, repositories, envelope.Payload)
+		fact, unread, refused, noHeadRepo, err = decodeGitHubFact(subject, repositories, envelope.Payload)
 	default:
 		return decodedMessage{}, fmt.Errorf("unsupported durable subject %q", subject)
 	}
 	if err != nil {
 		return decodedMessage{}, err
 	}
-	return decodedMessage{Source: envelope.Source, EventID: envelope.factID(), Fact: fact, Unread: unread, LegacyName: legacy, Refused: refused}, nil
+	return decodedMessage{Source: envelope.Source, EventID: envelope.factID(), Fact: fact, Unread: unread, LegacyName: legacy, Refused: refused,
+		NoHeadRepo: noHeadRepo}, nil
 }
 
 func (e envoyEnvelope) valid() error {
@@ -653,10 +659,12 @@ func isJSONObject(raw json.RawMessage) bool {
 // could not read (unread). refused is set only for a checks settlement of a heard repository that
 // decodeChecks dropped: a payload that is no object, names a repository this daemon does not hear,
 // or is of another kind is no checks settlement of this daemon, and is no fact in silence.
-func decodeGitHubFact(subject string, repositories []ghrepo.Repository, payload string) (fact Fact, unread []string, refused *checksRefusal, err error) {
+// noHeadRepo is set only for a pull request event of an issue's branch, of a heard repository,
+// that names no head repository (decodePullRequest).
+func decodeGitHubFact(subject string, repositories []ghrepo.Repository, payload string) (fact Fact, unread []string, refused *checksRefusal, noHeadRepo bool, err error) {
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(payload), &raw); err != nil || raw == nil {
-		return nil, nil, nil, nil
+		return nil, nil, nil, false, nil
 	}
 	// The payload names the event's repository; the subject's segments cannot, since a name may hold
 	// a dot. Only the event of a repository GitHub intake hears (ConsumerSpec.Repositories, as
@@ -667,16 +675,16 @@ func decodeGitHubFact(subject string, repositories []ghrepo.Repository, payload 
 	repo, _ := rawString(raw, "repo")
 	at := slices.IndexFunc(repositories, func(heard ghrepo.Repository) bool { return strings.EqualFold(heard.String(), repo) })
 	if at < 0 {
-		return nil, nil, nil, nil
+		return nil, nil, nil, false, nil
 	}
 	repository := repositories[at]
 	kind, ok := rawString(raw, "kind")
 	if !ok {
-		return nil, nil, nil, nil
+		return nil, nil, nil, false, nil
 	}
 	switch kind {
 	case "pr":
-		fact, err = decodePullRequest(repository, raw)
+		fact, noHeadRepo, err = decodePullRequest(repository, raw)
 	case "review":
 		fact, unread, err = decodeReview(repository, raw)
 	case "push":
@@ -689,24 +697,47 @@ func decodeGitHubFact(subject string, repositories []ghrepo.Repository, payload 
 	}
 	// Comments, and every other kind, route to the current role but do not change the durable
 	// workflow record.
-	return fact, unread, refused, err
+	return fact, unread, refused, noHeadRepo, err
 }
 
 // decodePullRequest decodes a pull request's lifecycle event on an issue's branch
-// (claim.BranchIssue). One on any other branch is no fact, read before anything else of the
-// event, so it is acknowledged without a transaction: the workflow records a pull request only on
-// an issue's branch (PullRequestOpened), and every later event applies only to a recorded one. A
+// (claim.BranchIssue) whose head is that branch of the event's repository itself. One on any other
+// branch is no fact, read before anything else of the event, so it is acknowledged without a
+// transaction: the workflow records a pull request only on an issue's branch that a task of the
+// issue holds (PullRequestOpened), and every later event applies only to a recorded one. A
 // repository the daemon hears whose other pull requests open and move many times a minute would
 // otherwise cost the daemon one transaction under the fact lock (ApplyFact) for every one, all of
 // them changing nothing. Every action carries head_ref.
-func decodePullRequest(repository ghrepo.Repository, raw map[string]json.RawMessage) (Fact, error) {
+//
+// One whose head is a branch of another repository - a fork's, which anyone may open and whose
+// branch may carry any name, an issue's or a task's among them - is no fact either, whatever its
+// branch: it is no issue's, and the workflow records it on no issue. The listener names the
+// repository of the head (head_repo, GitHub's head.repo.full_name), the event's own for a branch
+// of it, compared as GitHub compares names, without case; it leaves the field out once GitHub no
+// longer has the fork, and an event without it names no head of this repository.
+//
+// An event without it is no fact, and noHeadRepo says so, for the consumer to log
+// (consumeMessage): a listener of an earlier release than headRepoListenerRelease sends no
+// head_repo at all, and behind it this daemon records no pull request. Nothing in the payload
+// tells that listener's event from a current listener's of a fork GitHub no longer has: the
+// listener writes no empty field (packages/envoy/internal/contracts/normalize.go, payloadJSON),
+// and head_repo is the one field of a pull request's payload the later release added. A
+// head_repo that names another repository, a fork GitHub has, is no such event.
+func decodePullRequest(repository ghrepo.Repository, raw map[string]json.RawMessage) (fact Fact, noHeadRepo bool, err error) {
 	branch, _ := rawString(raw, "head_ref")
 	if _, isIssueBranch := claim.BranchIssue(branch); !isIssueBranch {
-		return nil, nil
+		return nil, false, nil
+	}
+	headRepo, _ := rawString(raw, "head_repo")
+	if headRepo == "" {
+		return nil, true, nil
+	}
+	if !strings.EqualFold(headRepo, repository.String()) {
+		return nil, false, nil
 	}
 	number, action, ok := githubIdentity(raw)
 	if !ok {
-		return nil, nil
+		return nil, false, nil
 	}
 	repo := repository.String()
 	sha, _ := rawString(raw, "head_sha")
@@ -719,35 +750,35 @@ func decodePullRequest(repository ghrepo.Repository, raw map[string]json.RawMess
 	case "opened", "reopened":
 		// A reopened pull request is open again, recorded as when it opened.
 		if sha == "" {
-			return nil, nil
+			return nil, false, nil
 		}
 		url, _ := rawString(raw, "url")
-		return PullRequestOpened{Repo: repo, Number: number, Branch: branch, HeadSHA: sha, Base: base, Body: body, URL: url, UpdatedAt: updatedAt,
-			Reopened: action == "reopened"}, nil
+		return PullRequestOpened{Repo: repo, Number: number, Branch: branch, HeadSHA: sha, HeadRepo: headRepo, Base: base, Body: body, URL: url,
+			UpdatedAt: updatedAt, Reopened: action == "reopened"}, false, nil
 	case "synchronize":
 		if sha == "" {
-			return nil, nil
+			return nil, false, nil
 		}
 		before, _ := rawString(raw, "before")
 		sender, _ := rawString(raw, "sender")
 		return PullRequestSynchronized{Repo: repo, Number: number, Branch: branch, Before: before, Sender: sender, HeadSHA: sha, Base: base, Body: body,
-			UpdatedAt: updatedAt}, nil
+			UpdatedAt: updatedAt}, false, nil
 	case "closed":
 		merged, _ := rawString(raw, "merged")
 		if merged == "true" {
 			mergeSHA, _ := rawString(raw, "merge_commit_sha")
-			return PullRequestMerged{Repo: repo, Number: number, MergeSHA: mergeSHA, HeadSHA: sha}, nil
+			return PullRequestMerged{Repo: repo, Number: number, MergeSHA: mergeSHA, HeadSHA: sha}, false, nil
 		}
-		return PullRequestClosed{Repo: repo, Number: number, HeadSHA: sha, UpdatedAt: updatedAt}, nil
+		return PullRequestClosed{Repo: repo, Number: number, HeadSHA: sha, UpdatedAt: updatedAt}, false, nil
 	case "dequeued":
 		// A removal from the merge queue is told at the head it left the queue at. One the
 		// listener sends with no head names none, so it is no fact, as a synchronize with none is no fact.
 		if sha == "" {
-			return nil, nil
+			return nil, false, nil
 		}
-		return PullRequestDequeued{Repo: repo, Number: number, HeadSHA: sha}, nil
+		return PullRequestDequeued{Repo: repo, Number: number, HeadSHA: sha}, false, nil
 	default:
-		return nil, nil
+		return nil, false, nil
 	}
 }
 
@@ -784,11 +815,13 @@ func decodeReview(repository ghrepo.Repository, raw map[string]json.RawMessage) 
 		CommitID: commitID, HeadSHA: headSHA, Author: author, Body: body, BodyTruncated: bodyTruncated == "true"}, unread, nil
 }
 
-// decodePush decodes a push to a branch: to an issue's branch (claim.BranchIssue) it is the Push
-// the workflow applies to the pull request it records there, and to any other branch it is a
-// BasePush, the only notice the daemon gets that a pull request's base moved. GitHub recomputes
-// whether each head on a base still merges into it when the base moves and sends no event for the
-// pull request itself, so a head the record holds as clean goes behind or dirty unheard.
+// decodePush decodes a push to a branch: to an issue's branch, or a task's (claim.BranchIssue), it
+// is the Push the workflow applies to the pull request it records there, and to any other branch it
+// is a BasePush. Each is the notice the daemon gets that a pull request's base moved: the workflow
+// applies a Push as a push to a base as well, since the pull request of a task that needs another
+// is based on that task's branch. GitHub recomputes whether each head on a base still merges into
+// it when the base moves and sends no event for the pull request itself, so a head the record holds
+// as clean goes behind or dirty unheard.
 //
 // A base push costs the daemon one transaction under the fact lock (ApplyFact), which a heard
 // repository that other automation pushes to many times a minute pays per push; the cost is paid

@@ -1,5 +1,5 @@
 import { beforeAll, describe, expect, it, mock } from "bun:test";
-import { symlinkSync } from "node:fs";
+import { mkdirSync, symlinkSync } from "node:fs";
 import path from "node:path";
 import { hostAgentRegistryMock } from "@legion/pi-shared/test/host-registry";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
@@ -17,19 +17,23 @@ const ROOT_TRANSCRIPT =
   "/sessions/-legion-default/2026-08-30T03-47-40-329Z_01a050c7-b4a9-7000-a539-240e20271441.jsonl";
 const ROOT_ID = "01a050c7-b4a9-7000-a539-240e20271441";
 
-// The pane's workspace reaches `attributionInputs` as the daemon set it; jj matches a scope
-// against the root it resolved, so a link's own path must never reach the overlay. The path is
-// reserved here and the directory made in the `beforeAll` the fixture registers, so a `bun test
-// -t <pattern>` that selects no row of this file makes nothing and leaves nothing behind; the
-// link is made in a hook of this file's own, which Bun runs after the fixture's.
+// The pane's workspace reaches `attributionInputs` as the daemon set it, and the overlay is
+// scoped to that workspace's jj repository; jj matches a scope against the real path of the
+// repository it loaded, so a link's own path must never reach the overlay. The path is reserved
+// here and the directory made in the `beforeAll` the fixture registers, so a `bun test -t
+// <pattern>` that selects no row of this file makes nothing and leaves nothing behind; the link
+// and the workspace's store are made in a hook of this file's own, which Bun runs after the
+// fixture's.
 const REAL_WORKSPACE = temporaryDirectory("claim-session-ws", { real: true });
 const WORKSPACE = path.join(REAL_WORKSPACE, "link");
+const REPOSITORY = path.join(REAL_WORKSPACE, ".jj", "repo");
 beforeAll(() => {
+  mkdirSync(REPOSITORY, { recursive: true });
   symlinkSync(REAL_WORKSPACE, WORKSPACE);
 });
 
 describe("attributionInputs", () => {
-  it("reads the session id, the state directory, the trailer key and the workspace", () => {
+  it("reads the session id, the state directory, the trailer key and the workspace's repository", () => {
     expect(
       attributionInputs(ROOT_TRANSCRIPT, {
         LEGION_STATE_DIR: "/state",
@@ -40,23 +44,23 @@ describe("attributionInputs", () => {
       sessionId: ROOT_ID,
       stateDir: "/state",
       issueKey: "ACME-7",
-      workspace: REAL_WORKSPACE,
+      repository: REPOSITORY,
     });
   });
 
-  // jj matches a `[[--scope]]` against the workspace root it resolved, and a path that does not
-  // resolve matches nothing and says nothing: the trailer is then the session line alone.
+  // jj matches a `[[--scope]]` against the real path of the repository it loaded, and a path that
+  // does not resolve matches nothing and says nothing: the trailer is then the session line alone.
   it.each([
     ["no LEGION_WORKSPACE", undefined],
     ["an empty LEGION_WORKSPACE", ""],
     ["a workspace that does not exist", "/no/such/workspace"],
-  ])("takes no workspace from %s", (_name, workspace) => {
+  ])("takes no repository from %s", (_name, workspace) => {
     expect(
       attributionInputs(ROOT_TRANSCRIPT, {
         LEGION_STATE_DIR: "/state",
         LEGION_ISSUE_TRAILER: "ACME-7",
         ...(workspace === undefined ? {} : { LEGION_WORKSPACE: workspace }),
-      }).workspace
+      }).repository
     ).toBeUndefined();
   });
 

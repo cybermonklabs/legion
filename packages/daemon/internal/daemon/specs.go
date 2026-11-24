@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/experiment"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/notify"
+	stepplan "github.com/sjawhar/legion/daemon/internal/plan" // the package's own `plan` type holds the bare name
 	"github.com/sjawhar/legion/daemon/internal/prompts"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -39,6 +40,10 @@ type specs struct {
 	instructions string
 	secrets      map[string]string
 	prompts      *prompts.Composer
+	// roles are the roles the deployment defines (config.Config.Roles), in the file's order:
+	// each launches with its own prompt file (prompts.ComposeStep) and its model, and the owner's
+	// addressing lists them in this order. Nil is a deployment that defines none.
+	roles []config.Role
 	// variants is every arm of a declared experiment the claim's unit was drawn into and that
 	// reaches the claim's role, in the order the project's file declares the experiments, and
 	// the daemon's own copies of the instructions those arms name (launchVariants, over the
@@ -228,6 +233,11 @@ func (s specs) workerSpawnSpec(ctx context.Context, c supervise.Claim) (runtime.
 		return runtime.SpawnSpec{}, fmt.Errorf("the addressing of %s: %w", c.Token, err)
 	}
 	addressing := addressingFragment(s.project, c, architect, spec.Repository, spec.DefaultBranch, s.ownersOf(c.Role))
+	// Every architect owns a plan, whose steps name the roles this sentence lists; it stands
+	// before the tree architect's design-gate line, which ends that addressing.
+	if c.Role == claim.RoleArchitect {
+		addressing += " " + DeploymentRolesFragment(s.roles)
+	}
 	if claim.IsTreeArchitect(c.Role, c.Issue, c.Tree) {
 		addressing += " " + DesignGateFragment(s.designSteps)
 	}
@@ -265,6 +275,11 @@ func (s specs) workerSpawnSpec(ctx context.Context, c supervise.Claim) (runtime.
 	// cooldowns are merged into whatever map the launch holds by then. The stall limits are
 	// merged after the fork, onto every launch (SpawnSpec).
 	passthrough(spec.Env, refusalCooldownVariables...)
+	// A role the deployment defines runs the model its settings give it; Legion's roles name none
+	// and run the profile's own (runtime.SpawnSpec.Model).
+	if role, defined := s.roleOf(c.Role); defined && !claim.IsBuiltin(c.Role) {
+		spec.Model = role.Model
+	}
 	return spec, nil
 }
 
@@ -459,7 +474,10 @@ func (s specs) controllerSpawnSpec() (runtime.SpawnSpec, error) {
 }
 
 // rolePromptPaths keeps an explicit operator prompt as a narrow test override. Every ordinary
-// claim uses the role prompts daemon boot snapshotted below its state directory (prompts.New).
+// claim uses the role prompts daemon boot snapshotted below its state directory (prompts.New):
+// Legion's roles their composed parts (prompts.Composer.Compose), a role the deployment defines
+// its own prompt file between the headless mechanics and Legion's worker part
+// (prompts.Composer.ComposeStep). A role neither names is refused, with no prompt.
 func (s specs) rolePromptPaths(c supervise.Claim) ([]string, error) {
 	override := rolePromptPath(s.stateDir, c.Token)
 	if _, err := os.Stat(override); err == nil {
@@ -470,11 +488,28 @@ func (s specs) rolePromptPaths(c supervise.Claim) ([]string, error) {
 	if s.prompts == nil {
 		return nil, errors.New("the daemon prompt bundle was not constructed at boot")
 	}
-	parts, err := s.prompts.Compose(c.Role, claim.IsTreeRoot(c.Issue, c.Tree))
-	if err != nil {
-		return nil, err
+	if claim.IsBuiltin(c.Role) {
+		parts, err := s.prompts.Compose(c.Role, claim.IsTreeRoot(c.Issue, c.Tree))
+		if err != nil {
+			return nil, err
+		}
+		return parts.RolePromptPaths, nil
 	}
-	return parts.RolePromptPaths, nil
+	role, defined := s.roleOf(c.Role)
+	if !defined {
+		return nil, fmt.Errorf("the role prompt of %s: the deployment defines no role %s", c.Token, c.Role)
+	}
+	return s.prompts.ComposeStep(role.PromptFile).RolePromptPaths, nil
+}
+
+// roleOf is the role of the deployment named name, and whether the deployment defines one.
+func (s specs) roleOf(name claim.Role) (config.Role, bool) {
+	for _, role := range s.roles {
+		if role.Name == name {
+			return role, true
+		}
+	}
+	return config.Role{}, false
 }
 
 // AddressingFragment is addressingFragment for a claim whose owner is its tree's architect, a pane
@@ -509,8 +544,11 @@ func AddressingFragment(project string, c supervise.Claim, repo ghrepo.Repositor
 // Oh My Pi resume the session by its id itself, through a pod launcher older than the lookup
 // (c.AgentResumeGeneration equal to c.Generation, which only that launch's copy has), is told that
 // its workspace may have been recreated: that launcher reads no row of the session, so its word
-// that the workspace was not recreated was not checked (dispatch://INFRA-4108 R3). The guidance is
-// that of the plugin's own notice of a recreated workspace
+// that the workspace was not recreated was not checked (dispatch://INFRA-4108 R3). Such a workspace
+// holds what was pushed to the claim's own branch, which the sentence names: the branch of the task
+// its pending delivery is of (supervise.Delivery.Branch), and the issue's own where that names none
+// or the claim holds no delivery, as the replacement of an abandoned session is told (supervise's
+// abandonedTask). The guidance is that of the plugin's own notice of a recreated workspace
 // (packages/pi-shared/src/workspace-recreated.ts). Each sentence that names a session quotes its id
 // as a Go string (%q), as the workflow's message of a forgotten session does: the id is what an
 // agent's registration chose, and the quotes bound it in a text the agent reads.
@@ -543,12 +581,16 @@ func addressingFragment(project string, c supervise.Claim, architect claim.Token
 			"the turns, tool calls and subagents of your earlier work are gone, and only what you pushed and committed survives. " + readFirst
 	}
 	if c.AgentResumeGeneration != 0 && c.AgentResumeGeneration == c.Generation {
+		branch := claim.IssueBranch(c.Issue)
+		if c.Pending != nil && c.Pending.Branch != "" {
+			branch = c.Pending.Branch
+		}
 		fragment += fmt.Sprintf(" This launch has Oh My Pi resume the session %q by its id itself. The pod's launcher is older than this release and did not read "+
 			"when that session was last written, so its word that your workspace was not recreated was not checked: your workspace may have been recreated "+
 			"since the session last ran. If it was, it holds what was pushed to %s (the repository's default branch if nothing was), and anything you had not "+
 			"pushed is gone. Before you continue, check the workspace against what you remember doing, and read the last handoff recorded on %s again with "+
 			"`dispatch handoff-read --issue %s --phase <word>`; Dispatch keeps it, whatever the workspace holds.",
-			c.Session, claim.IssueBranch(c.Issue), c.Issue, c.Issue)
+			c.Session, branch, c.Issue, c.Issue)
 	}
 	if repo.IsZero() {
 		return fragment
@@ -638,6 +680,31 @@ func DesignGateFragment(steps []record.DesignStep) string {
 func ProductionCheckFragment(check claim.Role) string {
 	return "Production check: " + config.Project{ProductionCheck: check}.ProductionCheckWord() + "."
 }
+
+// DeploymentRolesFragment is the sentence every architect is told after its addressing: the roles
+// a step of its plan may name, each with the type of its step — Legion's five (BuiltinRoles,
+// whose types it reads), then each role the deployment defines (roles, config.Config.Roles) in the
+// file's order, `<name> (<type>)`, with ` with the model <model>` where the role's settings give
+// one, the model its agent starts with. It is exported for the rigs under packages/pi-legion,
+// which restate it, as AddressingFragment is.
+func DeploymentRolesFragment(roles []config.Role) string {
+	builtin := stepplan.BuiltinRoles()
+	entries := make([]string, 0, len(stepRoleOrder)+len(roles))
+	for _, name := range stepRoleOrder {
+		entries = append(entries, fmt.Sprintf("%s (%s)", name, builtin[name].Type))
+	}
+	for _, role := range roles {
+		entry := fmt.Sprintf("%s (%s)", role.Name, role.Type)
+		if role.Model != "" {
+			entry += " with the model " + role.Model
+		}
+		entries = append(entries, entry)
+	}
+	return "The roles of this deployment, each with the type of its step: " + strings.Join(entries, ", ") + "."
+}
+
+// stepRoleOrder is the order the owner is told Legion's five roles of a step in: the line's own.
+var stepRoleOrder = []string{"planner", "implementer", "tester", "reviewer", "acceptance"}
 
 // SlackChannelsFragment names the project's Slack channels, the list the controller answers
 // mentions from: its plugin subscribes to each one's mention topic itself, while the session holds

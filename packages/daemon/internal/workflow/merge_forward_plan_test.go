@@ -42,7 +42,7 @@ func plannedConflictIssue(t *testing.T, at phase.Phase, pr record.PullRequest, s
 		place = record.TaskPlace{Kind: record.PlaceMerge}
 	}
 	seedRecord(t, pool, func(tx pgx.Tx) error {
-		return record.NewStore().MoveTask(t.Context(), tx, "LEGION-208", 1, "a", place, record.TaskRunning)
+		return seedMove(t.Context(), tx, "LEGION-208", 1, "a", place, record.TaskRunning)
 	})
 	return pool
 }
@@ -139,8 +139,11 @@ func TestAMergeForwardAsksTheReviewerOnlyOfATaskWithAReviewerStep(t *testing.T) 
 // `implementer tester`, asks again in testing, with the tester's hold and the checks-red notice.
 func TestAnAskOfImplementingIsAskedAgainOnlyBeforeTheReview(t *testing.T) {
 	requiresCI := &record.BaseRules{Required: []string{"ci"}}
+	// Each step of these plans is worked by its role's first agent, whose claim is the role's own
+	// token, as is the merge's (stepToken), so each message names the claim seededClaim gives.
 	ask := func(role claim.Role, step record.MergeForwardStep, at phase.Phase, why record.ConflictWhy) record.MergeForwardMessage {
-		return record.MergeForwardMessage{Role: role, Step: step, Head: conflictHead, Base: "main", Phase: at, PullRequest: 42, Why: why}
+		return record.MergeForwardMessage{Role: role, Claim: seededClaim(t, at, role), Step: step, Head: conflictHead, Base: "main", Phase: at,
+			PullRequest: 42, Why: why}
 	}
 	inImplementing := ask(claim.RoleImplementer, record.MergeForwardAsk, phase.Implementing, record.ConflictCheckNotGreen)
 	for _, tc := range []struct {

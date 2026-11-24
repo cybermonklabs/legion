@@ -3,7 +3,9 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
+	"maps"
 	"net/http"
 	"slices"
 	"strings"
@@ -13,6 +15,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -202,6 +205,35 @@ func TestTheGitIdentityOfATreeRecordedBeforeAConfiguredRenameIsMintedForTheOwner
 				t.Fatalf("the identity of an adoption of %s = %+v, %v; want %+v", recorded, adopted, err, want)
 			}
 		})
+	}
+}
+
+// A role the deployment defines commits as the bot of the App its github_app setting names, and
+// the map the workflow reads is built from the settings' roles (deploymentApps): the checker,
+// set to implement, commits as the implement App's bot and the critic, which names review, as
+// the review App's. A role nothing defines gets no identity: the mint is refused before any
+// lease is asked for.
+func TestTheGitIdentityOfADeploymentRoleIsItsAppsBot(t *testing.T) {
+	t.Parallel()
+	recorded := ghrepo.MustParse("sjawhar/legion")
+	tc := transferStates[0]
+	owner := ghrepo.MustParse(tc.want).Owner()
+	apps := deploymentApps([]config.Role{
+		{Name: "checker", Type: "testing", GitHubApp: config.RoleAppImplement},
+		{Name: "critic", Type: "review", GitHubApp: config.RoleAppReview},
+	})
+	if want := (appauth.DeploymentApps{"checker": appauth.Implement, "critic": appauth.Review}); !maps.Equal(apps, want) {
+		t.Fatalf("deploymentApps = %v, want %v", apps, want)
+	}
+	w := &workflowRuntime{tokens: identityTokens{}, repositories: renamedRepositories(tc.served, tc.renames), deployed: apps}
+	for role, app := range map[claim.Role]string{"checker": "implement", "critic": "review"} {
+		want := runtime.GitIdentity{Name: "legion-" + app + "[bot] of " + owner, Email: owner + "@users.noreply.github.com"}
+		if got, err := w.identity(context.Background(), role, recorded); err != nil || got != want {
+			t.Errorf("the identity of %s = %+v, %v; want %+v", role, got, err, want)
+		}
+	}
+	if got, err := w.identity(context.Background(), "ghost", recorded); !errors.Is(err, appauth.ErrRoleNotDefined) {
+		t.Errorf("the identity of ghost = %+v, %v; want an error that is appauth.ErrRoleNotDefined", got, err)
 	}
 }
 

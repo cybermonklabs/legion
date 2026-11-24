@@ -123,7 +123,11 @@ func resumeTaskOf(t testing.TB, pool *store.Pool, engine *workflow.Engine, key s
 	if err != nil || issue == nil {
 		t.Fatalf("read the record of %s: %+v, %v", key, issue, err)
 	}
-	task, err := engine.ResumeTask(ctx, tx, *issue)
+	s, err := engine.PromotedScope(ctx, tx, *issue, workflow.RoleFor(issue.Phase))
+	if err != nil {
+		t.Fatalf("read the scope of %s for its resume task: %v", key, err)
+	}
+	task, err := engine.ResumeTask(ctx, tx, s)
 	if err != nil {
 		t.Fatalf("compose the resume task of %s: %v", key, err)
 	}

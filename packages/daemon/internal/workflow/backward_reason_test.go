@@ -122,11 +122,11 @@ func TestABackwardReasonIsMeasuredAsItsPost(t *testing.T) {
 	if err := dispatchbody.Check(reason); err != nil {
 		t.Fatalf("the reason alone = %v, want Dispatch taking it", err)
 	}
-	if code, _ := backwardReasonRefusal(phase.Testing, phase.Implementing, reason); code != "BACKWARD_REASON_TOO_LONG" {
+	if code, _ := backwardReasonRefusal(phase.Testing, phase.Implementing, claim.RoleTester, reason); code != "BACKWARD_REASON_TOO_LONG" {
 		t.Fatalf("the reason's post refuses as %q, want BACKWARD_REASON_TOO_LONG", code)
 	}
 	shorter := strings.TrimSuffix(strings.Repeat("y\n\n", dispatchbody.ItemBlocks-1), "\n\n")
-	if code, why := backwardReasonRefusal(phase.Testing, phase.Implementing, shorter); code != "" {
+	if code, why := backwardReasonRefusal(phase.Testing, phase.Implementing, claim.RoleTester, shorter); code != "" {
 		t.Fatalf("a reason one block shorter refuses as %q (%s), want it taken", code, why)
 	}
 }

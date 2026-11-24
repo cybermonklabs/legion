@@ -63,11 +63,12 @@ func writeClaudeMCPConfig(configDir string, launch ClaudeLaunch) (string, error)
 }
 
 // claudeInnerCommand is the command the shim runs for a Claude Code role: the agent command
-// claudelaunch.Argv builds from the pane's boot-resolved paths, ending in
-// `--append-system-prompt-file` on promptFile, every word quoted for the pane's shell.
-func claudeInnerCommand(legion string, launch ClaudeLaunch, mcpConfig, session string, resume bool, promptFile string) string {
+// claudelaunch.Argv builds from the pane's boot-resolved paths, naming model where it is not ""
+// (the spec's, runtime.SpawnSpec.Model), ending in `--append-system-prompt-file` on promptFile,
+// every word quoted for the pane's shell.
+func claudeInnerCommand(legion string, launch ClaudeLaunch, mcpConfig, session string, resume bool, promptFile, model string) string {
 	paths := claudelaunch.Paths{Legion: legion, Claude: launch.Binary, PluginDir: launch.PluginDir}
-	return shellprefix.Command(claudelaunch.Argv(paths, mcpConfig, session, resume, promptFile))
+	return shellprefix.Command(claudelaunch.Argv(paths, mcpConfig, session, resume, promptFile, model))
 }
 
 // claudeEnvironment are the -e pairs a Claude Code pane carries beside every pane's: tmux's form of
@@ -92,8 +93,8 @@ func (claudeLauncher) SessionsDir(spec runtime.SpawnSpec, host Host, _ map[strin
 }
 
 // Launch is the inner command and the extra -e pairs of a Claude Code launch: the claim's
-// directory made, its MCP configuration written, the session it starts or continues, and
-// promptFile as the system prompt.
+// directory made, its MCP configuration written, the model the spec names, the session it starts
+// or continues, and promptFile as the system prompt.
 func (l claudeLauncher) Launch(spec runtime.SpawnSpec, host Host, promptFile string) (inner string, pairs []string, err error) {
 	configDir := ClaudeConfigDir(host.StateDir, spec.Claim)
 	if err := os.MkdirAll(configDir, 0o700); err != nil {
@@ -112,6 +113,6 @@ func (l claudeLauncher) Launch(spec runtime.SpawnSpec, host Host, promptFile str
 	if err != nil {
 		return "", nil, fmt.Errorf("spawn %s: %w", spec.Claim, err)
 	}
-	return claudeInnerCommand(host.Legion, l.launch, mcpConfig, session, resume, promptFile),
+	return claudeInnerCommand(host.Legion, l.launch, mcpConfig, session, resume, promptFile, spec.Model),
 		claudeEnvironment(configDir), nil
 }

@@ -160,3 +160,16 @@ func (c *Composer) Compose(role claim.Role, isRoot bool) (Parts, error) {
 	}
 	return Parts{RolePromptPaths: slices.Clone(paths)}, nil
 }
+
+// ComposeStep is the prompt of a step of a role the deployment defines: the headless mechanics
+// every phase worker is told (shared's mechanics/headless.md), then promptFile, the role's own
+// prompt (`roles.<name>.prompt_file`), then this daemon's part every phase worker ends with
+// (worker-common.md, Legion's own words, the SEPARATE-POD line among them). The runtime appends
+// addressing and deployment instructions after these paths, as it does to Compose's.
+func (c *Composer) ComposeStep(promptFile string) Parts {
+	return Parts{RolePromptPaths: []string{
+		filepath.Join(c.sharedDir, "mechanics", "headless.md"),
+		promptFile,
+		filepath.Join(c.goDir, "worker-common.md"),
+	}}
+}

@@ -25,8 +25,8 @@ func TestAGitHubFactFromAnotherRepositoryChangesNothing(t *testing.T) {
 	updated := time.Date(2026, 10, 16, 12, 0, 0, 0, time.UTC)
 	for _, recorded := range []string{"acme/widgets", "acme/other"} {
 		facts := []intake.Fact{
-			intake.PullRequestOpened{Repo: "acme/other", Number: 42, Branch: "legion/LEGION-209", HeadSHA: "other-head", UpdatedAt: updated},
-			intake.PullRequestOpened{Repo: "acme/other", Number: 42, Branch: "legion/LEGION-209", HeadSHA: "other-head", UpdatedAt: updated, Reopened: true},
+			intake.PullRequestOpened{Repo: "acme/other", Number: 42, Branch: "legion/LEGION-209", HeadSHA: "other-head", HeadRepo: "acme/other", UpdatedAt: updated},
+			intake.PullRequestOpened{Repo: "acme/other", Number: 42, Branch: "legion/LEGION-209", HeadSHA: "other-head", HeadRepo: "acme/other", UpdatedAt: updated, Reopened: true},
 			intake.PullRequestSynchronized{Repo: "acme/other", Number: 42, Branch: "legion/LEGION-209", HeadSHA: "other-head", UpdatedAt: updated},
 			intake.Push{Repo: "acme/other", Branch: "legion/LEGION-209", Before: "head", After: "other-head"},
 			intake.PullRequestReview{Repo: "acme/other", Number: 42, ID: 7, State: "approved", CommitID: "head", HeadSHA: "head", Author: testReviewApp, SubmittedAt: updated},
@@ -64,11 +64,11 @@ func TestAPullRequestInAnotherSpellingOfTheIssuesRepositoryIsItsOwn(t *testing.T
 	seedIssue(t, pool, record.Issue{Key: "LEGION-209", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-208", Project: "LEGION", Title: "child", Parent: &parent,
 		Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "V", LastDispatchSeq: 1})
 	applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))("opened", intake.PullRequestOpened{
-		Repo: "Acme/Widgets", Number: 42, Branch: "legion/LEGION-209", HeadSHA: "head", UpdatedAt: time.Date(2026, 10, 16, 12, 0, 0, 0, time.UTC)})
+		Repo: "Acme/Widgets", Number: 42, Branch: "legion/LEGION-209", HeadSHA: "head", HeadRepo: "Acme/Widgets", UpdatedAt: time.Date(2026, 10, 16, 12, 0, 0, 0, time.UTC)})
 	var pr *record.PullRequest
 	seedRecord(t, pool, func(tx pgx.Tx) error {
 		var err error
-		pr, err = record.NewStore().PullRequest(context.Background(), tx, "LEGION-209")
+		pr, err = record.NewStore().MergePullRequest(context.Background(), tx, "LEGION-209")
 		return err
 	})
 	if pr == nil || pr.Number != 42 || pr.Repo != "Acme/Widgets" {
@@ -137,7 +137,7 @@ func TestAGitHubFactNamingARenamedRepositoryAppliesToTheTreeRecordedUnderItsOldN
 			name:   "a pull request opened",
 			prRepo: func(string) string { return "" },
 			fact: func(repo string) intake.Fact {
-				return intake.PullRequestOpened{Repo: repo, Number: 42, Branch: "legion/LEGION-209", HeadSHA: headOne, UpdatedAt: renamedUpdated}
+				return intake.PullRequestOpened{Repo: repo, Number: 42, Branch: "legion/LEGION-209", HeadSHA: headOne, HeadRepo: repo, UpdatedAt: renamedUpdated}
 			},
 			want: func(t *testing.T, repo string, after recordSnapshot) {
 				t.Helper()
@@ -368,7 +368,7 @@ func snapshot(t *testing.T, pool *pgxpool.Pool) recordSnapshot {
 		if got.Issue, err = records.Issue(context.Background(), tx, "LEGION-209"); err != nil {
 			return err
 		}
-		if got.PR, err = records.PullRequest(context.Background(), tx, "LEGION-209"); err != nil {
+		if got.PR, err = records.MergePullRequest(context.Background(), tx, "LEGION-209"); err != nil {
 			return err
 		}
 		if got.Phases, err = records.Phases(context.Background(), tx, "LEGION-209"); err != nil {

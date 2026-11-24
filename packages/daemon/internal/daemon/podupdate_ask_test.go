@@ -31,9 +31,11 @@ const (
 )
 
 // askRunner is an outbox runner as hook_prompt_test.go's unit case builds one — a project, a
-// publisher and a log — with the claim supervisor the executor reads the round from. Each role in
-// rounds gets a claim on LEGION-208 in the round given, "" for no round; a role not in rounds has
-// no claim this daemon supervises.
+// record, a publisher and a log — with the claim supervisor the executor reads the round from. A
+// row that names no claim reads the claim of its role's worker from the issue's phases rows, which
+// the record holds none of, so it is the role's own claim. Each role in rounds gets a claim on
+// LEGION-208 in the round given, "" for no round; a role not in rounds has no claim this daemon
+// supervises.
 func askRunner(t *testing.T, publisher notify.Publisher, rounds map[claim.Role]string) (*outbox, *syncBuffer) {
 	t.Helper()
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
@@ -44,7 +46,7 @@ func askRunner(t *testing.T, publisher notify.Publisher, rounds map[claim.Role]s
 		}
 	}
 	logs := &syncBuffer{}
-	return &outbox{project: "legion", notices: publisher, supervisor: sup, log: jsonLogger(logs)}, logs
+	return &outbox{project: "legion", pool: isolatedOutboxPool(t), records: record.NewStore(), notices: publisher, supervisor: sup, log: jsonLogger(logs)}, logs
 }
 
 // askRow is the ask of askedRound to role, as row id.
@@ -188,11 +190,11 @@ type wakeCountingTrees struct {
 	takes int
 }
 
-func (w *wakeCountingTrees) TakePodWake(ctx context.Context, project, issue string, token claim.Token, kind string, at time.Time, mark int64) (bool, error) {
+func (w *wakeCountingTrees) TakePodWake(ctx context.Context, project, issue string, token claim.Token, role claim.Role, kind string, at time.Time, mark int64) (bool, error) {
 	w.mu.Lock()
 	w.takes++
 	w.mu.Unlock()
-	return w.outboxTrees.TakePodWake(ctx, project, issue, token, kind, at, mark)
+	return w.outboxTrees.TakePodWake(ctx, project, issue, token, role, kind, at, mark)
 }
 
 func (w *wakeCountingTrees) taken() int {
@@ -254,7 +256,7 @@ func TestPodUpdateAskWakesNoReleasedPod(t *testing.T) {
 	if got := rig.machine.Claim(); !got.Released() || got.UpdateTaskedAt != nil {
 		t.Errorf("the claim after the ask = %s by %s, asked at %v; want it still released and not asked", got.State, got.SuspendedBy, got.UpdateTaskedAt)
 	}
-	if _, _, open, err := rig.st.OpenPodResume(ctx, "legion", rig.issue.Key, claim.RoleImplementer); err != nil || open {
+	if _, _, open, err := rig.st.OpenPodResume(ctx, "legion", rig.issue.Key, claim.RoleImplementer, rig.token); err != nil || open {
 		t.Errorf("the role's open resume after the ask = %t, %v; want none", open, err)
 	}
 }

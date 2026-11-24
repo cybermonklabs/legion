@@ -176,7 +176,7 @@ func TestTheStateWithTheControllersClaimGolden(t *testing.T) {
 // its incarnation `<pod uid>/<generation>`.
 func sandboxLocator(token claim.Token, sandbox, podUID string, generation uint64) *runtime.Locator {
 	container := runtime.IssuePodContainer
-	if role, _ := token.Role(); role == claim.RoleController {
+	if token.IsController() {
 		container = runtime.ControllerPodContainer
 	}
 	return &runtime.Locator{

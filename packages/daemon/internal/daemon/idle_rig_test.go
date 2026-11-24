@@ -324,8 +324,10 @@ func (r *idleWakeRig) address() string {
 	return r.built.address
 }
 
-// podReady starts the pod's launchers, for the roles the rig gave the issue a claim, and records
-// where each launcher writes its generations so the role process can be handed its boot token.
+// podReady starts the pod's launchers, for the roles the rig gave the issue a claim — the
+// implementer, and each role the rig's configuration defines (cfg.Roles), which no other test of
+// the rig defines — and records where each launcher writes its generations so the role process
+// can be handed its boot token.
 func (r *idleWakeRig) podReady(pod, uid string, roles map[string]string) {
 	key := pod
 	for _, issue := range r.issues {
@@ -335,7 +337,7 @@ func (r *idleWakeRig) podReady(pod, uid string, roles map[string]string) {
 	}
 	wanted := map[string]string{}
 	for role, token := range roles {
-		if role == string(claim.RoleImplementer) {
+		if role == string(claim.RoleImplementer) || slices.ContainsFunc(r.cfg.Roles, func(defined config.Role) bool { return string(defined.Name) == role }) {
 			wanted[role] = token
 		}
 	}
@@ -581,7 +583,11 @@ func (r *idleWakeRig) newRuntime(ctx context.Context, listener *stream.Listener,
 	opts.SavedWorkspaceBundle, opts.WorkspaceBundleRestored = savedWorkspaceBundle(st, opts.Project), st.DeleteRestoredWorkspaceBundle
 	opts.Tokens = idleRigTokens{}
 	opts.GitHubCredential = func(_ context.Context, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
-		rendered := ghconfig.Render("ghs_idle_rig", string(appauth.AppRoleFor(role)), time.Now().Add(time.Hour))
+		app, err := appauth.AppRoleFor(role, opts.DeploymentApps)
+		if err != nil {
+			return ghconfig.Bundle{}, err
+		}
+		rendered := ghconfig.Render("ghs_idle_rig", string(app), time.Now().Add(time.Hour))
 		owner := strings.ToLower(repo.Owner())
 		return ghconfig.Bundle{Default: owner, Dirs: map[string]ghconfig.Rendered{owner: rendered}}, nil
 	}
@@ -653,9 +659,10 @@ func (idleRigTokens) Token(context.Context, ghrepo.Repository) (string, error) {
 	return "idle-rig-provision", nil
 }
 
-// launch waits until the issue's pod runs its role: its process registered, and its claim ready,
-// working or idle. The session's first activity report comes just after the ready and is not
-// waited for (quiet says what that leaves for a stop made at once). The daemon starts the
+// launch waits until the issue's pod runs its role, registered, ready and having told the daemon
+// it runs no background work (its claim's activity report, reported): the state the idle rule
+// releases. A claim stopped or suspended before that first report is quiet's to move as well
+// (quiet says why). The daemon starts the
 // implementer of an admitted issue whose phase is its own, so nothing here asks for the launch; a
 // claim still suspended is nudged with the operator's resume, which is what a boot that left it
 // suspended needs.
@@ -668,9 +675,9 @@ func (r *idleWakeRig) launch(issue idleRigIssue) {
 	}()
 	token := r.token(issue)
 	var nudged time.Time
-	idleRigEventually(r.t, idleRigPodWait, "the pod of "+issue.key+" running its role, registered and ready", func() bool {
+	idleRigEventually(r.t, idleRigPodWait, "the pod of "+issue.key+" running its role, registered, ready and reported", func() bool {
 		state := r.api.claim(token)
-		if idleRigWorking(state.State) && r.agents.role(issue.key, string(issue.role)).Registered > 0 {
+		if idleRigWorking(state.State) && r.agents.role(issue.key, string(issue.role)).Registered > 0 && r.reported(token) {
 			return true
 		}
 		if state.State == string(supervise.StateSuspended) && time.Since(nudged) > 3*time.Second {
@@ -679,6 +686,17 @@ func (r *idleWakeRig) launch(issue idleRigIssue) {
 		}
 		return false
 	})
+}
+
+// reported is whether the claim token has an activity report (activity_at), which its role
+// process sends once it is ready (idleRigRoleProcess.reportActivity).
+func (r *idleWakeRig) reported(token claim.Token) bool {
+	r.t.Helper()
+	var reported bool
+	if err := r.pool.QueryRow(context.Background(), `select activity_at is not null from claims where token = $1`, string(token)).Scan(&reported); err != nil {
+		r.t.Fatalf("read whether %s has reported its activity: %v", token, err)
+	}
+	return reported
 }
 
 // diagnose is what a failure of the rig prints: the launchers' own log and the last of the
@@ -702,7 +720,7 @@ func idleRigWorking(state string) bool {
 	return false
 }
 
-// token is the claim token of the issue's role.
+// token is the claim token of the agent named for the issue's role, the role's own claim.
 func (r *idleWakeRig) token(issue idleRigIssue) claim.Token {
 	r.t.Helper()
 	token, err := claim.NewToken(r.project, issue.key, issue.role)
@@ -761,7 +779,7 @@ func (r *idleWakeRig) newAdoptions(issue idleRigIssue) []idleRigAdoption {
 // quiet back-dates when every claim of the project was last written, so the next pass of the
 // daemon's idle tick reads a pod that has done nothing for longer than the idle period. Every row
 // is moved, a row whose session has reported nothing (activity_at null) among them: an operator's
-// stop that lands before the session's first report (launch does not wait for it) leaves such a
+// stop that lands before the session's first report (before launch has read it) leaves such a
 // row on a retired claim, and the release of a pod no claim owns measures the period against that
 // row as against any other (pods.IdleView.QuietSince). Left out, the row kept the moment of the
 // stop, so that release waited the idle period out on the wall clock, which is longer than the
@@ -1095,9 +1113,9 @@ const (
 	// two of those starts.
 	idleRigListenerReportWait = 90 * time.Second
 	// idleRigPodWait bounds a pod up and running its role: the Sandbox, its launcher, the role
-	// process and its registration. It bounds a pod coming back for a wake too, which is the same
-	// work again, and a send that is retried until a live session takes it, which waits on that
-	// same pod.
+	// process, its registration and its first report. It bounds a pod coming back for a wake
+	// too, which is the same work again, and a send that is retried until a live session takes
+	// it, which waits on that same pod.
 	idleRigPodWait = 150 * time.Second
 	// idleRigReleaseWait bounds the release of every pod of the rig by one pass of the idle
 	// tick: a launch undone for every pod of the rig at once, and so the longest span here.

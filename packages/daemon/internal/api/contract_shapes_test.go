@@ -340,7 +340,11 @@ func stateCarryingTheRestOfTheShape(t *testing.T) State {
 			}}},
 		},
 		LastPause: &last,
-		Settings:  SettingsOf(loadSettingsFile(t, shapeSettingsFile)),
+		// The file defines one role of the deployment and one type of its own, so the body carries
+		// every field of `settings.roles` and `settings.role_types`.
+		Settings: SettingsOf(loadSettingsFileWith(t, shapeSettingsFile+
+			"roles: {checker: {type: testing, prompt_file: checker.md, model: checker-model, github_app: review}}\nrole_types: [security]\n",
+			map[string]string{"checker.md": "You check the change.\n"})),
 	}
 }
 
@@ -353,13 +357,13 @@ func stateCarryingTheRestOfTheShape(t *testing.T) State {
 // The values are written here, and not read from the table: a value the table gains with no body
 // that carries it is then red in that census, and an edit of the table alone cannot carry it
 // here too. Issue i of the body carries value i of each list, and a list shorter than the longest
-// starts again at its first value, so the twelve issues carry every value of every list. Each
+// starts again at its first value, so the thirteen issues carry every value of every list. Each
 // issue's architect carries a failure, a pending cause and a held task, as a worker does. No
 // other body carries them on an architect, so without this body no record describes those keys
 // at their architect paths, and the value comparison reads no value there. Each issue also carries
 // a merge wait with every key of one, whose `mergeState` and `toldState` take value i of the
-// merge states, so the twelve issues carry all eight words at both key paths. The project's pause
-// waits on the stop of one claim of each role, so `paused.waitsOn.*.role` carries every role,
+// merge states, so the thirteen issues carry all eight words at both key paths. The project's
+// pause waits on the stop of one claim of each role, so `paused.waitsOn.*.role` carries every role,
 // where populatedState's pause waits on an implementer alone. Its repositories block names five
 // live repositories, both role Apps installed on each, whose caches stand in the five states a
 // cache can be in, so `repositories.live.*.cache.state` carries every word of that field, which
@@ -372,11 +376,11 @@ func stateCarryingTheRestOfTheShape(t *testing.T) State {
 func stateCarryingEveryDeclaredValue(t *testing.T) State {
 	t.Helper()
 	at := time.Date(2026, 9, 22, 9, 30, 0, 0, time.UTC)
-	// The workflow's phases, which `heldFrom` and `pendingTask.phase` take, with `integrating`,
-	// which the plugin's enumeration names and no phase.Phase constant spells.
+	// The workflow's phases, which `heldFrom` and `pendingTask.phase` take, step among them, with
+	// `integrating`, which the plugin's enumeration names and no phase.Phase constant spells.
 	phaseWords := []phase.Phase{phase.Admitted, phase.AwaitingPerson, phase.Planning, phase.Implementing,
-		phase.Testing, phase.Reviewing, phase.Accepting, phase.Retro, phase.Merging, "integrating", phase.Done,
-		phase.Held}
+		phase.Testing, phase.Reviewing, phase.Step, phase.Accepting, phase.Retro, phase.Merging, "integrating",
+		phase.Done, phase.Held}
 	causeWords := []supervise.FailureCause{supervise.CauseLaunchRefused, supervise.CauseDied,
 		supervise.CauseNeverRegistered, supervise.CauseStalePlugin, supervise.CausePromptRetiresExhausted,
 		supervise.CauseProviderError, supervise.CauseUnrecorded}
@@ -433,7 +437,7 @@ func stateCarryingEveryDeclaredValue(t *testing.T) State {
 		key := fmt.Sprintf("VALUES-%d", i+1)
 		keys = append(keys, key)
 		// The architect's task is queued for the phase after the one the issue was held from, and
-		// the worker's for that phase itself, so each view carries every phase over the twelve.
+		// the worker's for that phase itself, so each view carries every phase over the thirteen.
 		// The worker's cause starts three words further along the list than the architect's.
 		architect := claimView("ses_architect_"+key, updateWords[i%len(updateWords)], i, phaseWords[(i+1)%len(phaseWords)])
 		issues[key] = Issue{
@@ -469,7 +473,7 @@ func stateCarryingEveryDeclaredValue(t *testing.T) State {
 			Why:            &WhyView{State: whyWords[i%len(whyWords)], Reason: "The body carries this state."},
 			MemoryGroup:    groupWords[i%len(groupWords)],
 			MemoryDrawMode: string(modeWords[i%len(modeWords)]),
-			// One arm of the architect-stalled reading on each issue, so the twelve carry all three.
+			// One arm of the architect-stalled reading on each issue, so the thirteen carry all three.
 			ArchitectStalls: []record.ArchitectStallArm{stallWords[i%len(stallWords)]},
 		}
 		if i < len(roleWords) {
@@ -479,7 +483,7 @@ func stateCarryingEveryDeclaredValue(t *testing.T) State {
 				Claim: claim.Token("legion-values-" + key + "-" + string(roleWords[i])), Issue: key, Role: roleWords[i], AskedAt: at})
 		}
 	}
-	// The thirteen held words over the twelve issues, the last word on the first issue again.
+	// The thirteen held words over the thirteen issues, one word on each.
 	held := make([]HeldIssue, 0, len(heldWords))
 	for i, reason := range heldWords {
 		held = append(held, HeldIssue{Issue: keys[i%len(keys)], Reason: reason})
@@ -692,12 +696,12 @@ func answerFixtures(t *testing.T) map[AnswerID]answerFixture {
 			Pause: ended, Released: 3,
 		}}},
 		// The plan-register golden's own value (TestOwnerPlanRouteGoldens): one task with the
-		// steps its block names.
+		// steps its block names, which the version added.
 		AnswerPlanRegister: {roots: typesOf(PlanRegisterResponse{}), bodies: []any{PlanRegisterResponse{Plan: registeredPlan(plan.Plan{
 			ArtifactID: "8f14e45f-ceea-467f-a0e6-1d8b2f8c9d11",
 			Version:    4,
 			Tasks:      []plan.Task{{ID: "a", Steps: []plan.Step{{Role: "implementer"}, {Role: "reviewer"}}}},
-		})}}},
+		}, []string{"a"})}}},
 	}
 }
 
@@ -915,13 +919,24 @@ func enumeratedPathsOf(fields []EnumeratedField, id AnswerID) []string {
 	return paths
 }
 
+// enumeratedPathsAt is enumeratedPathsOf at one contract: the key paths of the fields the table
+// declares enumerated for one answer, less a field that is no enumeration from its Until up at
+// such a contract, whose values a reader there takes by a grammar (domainsOf holds no domain of
+// it there either).
+func enumeratedPathsAt(fields []EnumeratedField, id AnswerID, contract int) []string {
+	return enumeratedPathsOf(slices.DeleteFunc(slices.Clone(fields), func(field EnumeratedField) bool {
+		return field.Until != 0 && contract >= field.Until
+	}), id)
+}
+
 // domainsOf is what one contract admits at each enumerated field of one answer: the values whose
-// arrival is at or below it, sorted, by the field's key path (valueDomainRule). An answer with no
-// declared field reads as an empty map, never nil, so every record writes `domains`.
+// arrival is at or below it, sorted, by the field's key path (valueDomainRule). A field that is no
+// enumeration from its Until up has no domain at such a contract. An answer with no declared
+// field reads as an empty map, never nil, so every record writes `domains`.
 func domainsOf(fields []EnumeratedField, id AnswerID, contract int) map[string][]string {
 	domains := map[string][]string{}
 	for _, field := range fields {
-		if field.Answer != id {
+		if field.Answer != id || field.Until != 0 && contract >= field.Until {
 			continue
 		}
 		admitted := []string{}
@@ -1124,7 +1139,7 @@ func carriedShapes(t *testing.T, caller callerKind) map[shapeKey]answerShape {
 			}
 			paths, carried := collectedShape(t,
 				servedBodies(t, caller, handlers, states, answer.ID, fixture, contract, placed),
-				shapes[answer.ID], enumeratedPathsOf(EnumeratedFields, answer.ID))
+				shapes[answer.ID], enumeratedPathsAt(EnumeratedFields, answer.ID, contract))
 			values := make(map[string][]string, len(carried))
 			for path, carriedHere := range carried {
 				values[path] = slices.Sorted(maps.Keys(carriedHere))

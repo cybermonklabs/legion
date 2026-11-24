@@ -116,7 +116,8 @@ func (r *idleRig) awaitedWake(t *testing.T) {
 // nothing has closed, each as one line, so a test can compare what a release found with what it
 // left. A teardown that armed a backstop would have cancelled the open ones of the issue first
 // (outbox.armBackstops), and the open resume is what tells the daemon a pod is already coming
-// back for that role (migration 20261105183200, one open resume per role).
+// back for that claim (migration 20261122074350, one open resume per claim; this resume names no
+// claim, as the release before wrote it, so it holds its role).
 func (r *idleRig) podWakes(t *testing.T) []string {
 	t.Helper()
 	ctx := context.Background()
@@ -252,7 +253,7 @@ func TestAnIssueWithNoLiveClaimHasItsSandboxReleased(t *testing.T) {
 			t.Fatalf("teardowns asked = %v, want the release's alone: the issue stays in the workflow", asked)
 		}
 		if len(bundled) != 0 {
-			t.Fatalf("the bundle was asked of %v, want no role: no shim is left to build one", bundled)
+			t.Fatalf("the bundle was asked of %v, want no claim: no shim is left to build one", bundled)
 		}
 		if rig.bundled(t) {
 			t.Fatal("the release saved a bundle, which no role of this pod is coming back for")
@@ -616,9 +617,10 @@ func TestAnUnownedReleaseLeavesAKeptSuspendedSandboxAlone(t *testing.T) {
 	}
 }
 
-// issueSandboxSecrets are the seven Secrets an issue's Sandbox owns, named as the sandbox runtime
-// names them: the provisioning Secret `<sandbox>-boot` (secretName) and the Secret
-// `<sandbox>-<role>-boot` of each of the issue's six roles (roleSecretName).
+// issueSandboxSecrets are the Secrets an issue's Sandbox owns where the deployment defines no role,
+// as here, named as the sandbox runtime names them: the provisioning Secret `<sandbox>-boot`
+// (secretName) and the Secret `<sandbox>-<slot>-boot` of each of its six slots (roleSecretName),
+// one for each of Legion's six roles, each the slot of the agent named for that role.
 func issueSandboxSecrets(sandbox string) []string {
 	secrets := []string{sandbox + "-boot"}
 	for _, role := range claim.Roles {

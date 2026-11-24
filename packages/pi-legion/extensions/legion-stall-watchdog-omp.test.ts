@@ -7,6 +7,7 @@ import { temporaryDirectories } from "@legion/test-fixtures/temporary-directorie
 import {
   ARCHITECT_TOPIC,
   BOUND_MS,
+  CLAIM_TOKEN,
   childOf,
   cleanup,
   conversation,
@@ -297,7 +298,7 @@ test.skipIf(skip)(
     expect(await first.exited).toBe(STALL_EXIT_CODE);
     expect(JSON.parse(await readFile(exitsFile(state), "utf8"))).toMatchObject({
       exits: 1,
-      who: `${ISSUE.toLowerCase()}-${ROLE}`,
+      who: CLAIM_TOKEN,
     });
 
     // The daemon relaunches the claim in the same pod, so the next worker reads that count back

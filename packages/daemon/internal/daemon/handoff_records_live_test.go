@@ -640,7 +640,8 @@ func (r *handoffRecordsLive) waitPhase(key string, want phase.Phase) api.Issue {
 	return last
 }
 
-// token is the claim token of role on issue, as the daemon spells it.
+// token is the claim token of the agent named for role on issue, the role's own claim
+// (claim.NewToken), as the daemon spells it.
 func (r *handoffRecordsLive) token(issue string, role claim.Role) claim.Token {
 	r.t.Helper()
 	token, err := claim.NewToken(r.project, issue, role)
@@ -1228,7 +1229,7 @@ func handoffRecordsDaemonGitHub(t *testing.T, branch string, number int) string 
 		case r.Method == http.MethodGet && isRepository && len(parts) == 2:
 			_, _ = io.WriteString(w, `{"full_name":"`+parts[0]+"/"+parts[1]+`","default_branch":"main"}`)
 		case r.Method == http.MethodGet && isRepository && len(parts) == 3 && parts[2] == "pulls":
-			_, _ = fmt.Fprintf(w, `[{"number":%d,"state":"open","head":{"ref":%q,"sha":"head-child"},"base":{"ref":"main"},"updated_at":"2026-10-28T00:00:00Z"}]`, number, branch)
+			_, _ = fmt.Fprintf(w, `[{"number":%d,"state":"open","head":{"ref":%q,"sha":"head-child","repo":{"full_name":%q}},"base":{"ref":"main"},"updated_at":"2026-10-28T00:00:00Z"}]`, number, branch, parts[0]+"/"+parts[1])
 		default:
 			w.WriteHeader(http.StatusNotFound)
 			_, _ = io.WriteString(w, `{"message":"Not Found"}`)

@@ -245,7 +245,7 @@ func (p *liveIssueProof) publishSynchronize(before, head, sender string) {
 	p.t.Helper()
 	fields := map[string]string{
 		"action": "synchronize", "kind": "pr", "repo": liveRepo, "number": strconv.Itoa(p.number),
-		"head_sha": head, "base_ref": p.base, "head_ref": "legion/" + p.key, "title": p.title,
+		"head_sha": head, "base_ref": p.base, "head_ref": "legion/" + p.key, "head_repo": liveRepo, "title": p.title,
 		"url":        "https://github.com/" + liveRepo + "/pull/" + strconv.Itoa(p.number),
 		"updated_at": time.Now().UTC().Format(time.RFC3339),
 	}

@@ -312,10 +312,24 @@ func (a *Admission) tellStalledTrees(ctx context.Context, tx pgx.Tx, issues []re
 	if err != nil {
 		return err
 	}
+	// The step a stop ended is no running step, and the notice names its role all the same, read
+	// from the plan rows of each member its stopped task holds (record.Store.StoppedStep).
+	stoppedSteps := map[string]claim.Role{}
+	for _, root := range unsent {
+		for _, member := range members[root.Key] {
+			step, ok, err := a.store.StoppedStep(ctx, tx, member)
+			if err != nil {
+				return err
+			}
+			if ok {
+				stoppedSteps[member.Key] = step.Role
+			}
+		}
+	}
 	for _, root := range unsent {
 		measure := quiet[root.Key]
 		notice := record.ControllerNotice{Kind: record.TreeStalledNotice,
-			Reason: stalledTreeReason(root.Key, measure, members[root.Key], requests)}
+			Reason: stalledTreeReason(root.Key, measure, members[root.Key], requests, stoppedSteps)}
 		told, err := a.wakeController(ctx, tx, notice, root.Key, a.now())
 		if err != nil {
 			return fmt.Errorf("tell the controller that the tree of %s has stopped: %w", root.Key, err)
@@ -379,14 +393,17 @@ func (a *Admission) tellStalledTrees(ctx context.Context, tx pgx.Tx, issues []re
 // working states are never read; and a tree another claim keeps at work is at work whatever its
 // worker in ready is, so that worker is not judged either.
 //
-// What it costs: at most one batched read of the runs of those claims' issues' phase workers
-// (phaseWorkers, record.Store.RoleRuns, the read the tick's silent list makes for the same
-// rule), made only where some claim is left to judge, and walks of the pass's own records and
-// of the claims quietTrees already read. It makes no read per tree or per issue, and the caller
-// builds it at most once per pass, at the first of its two readers the pass reaches. The run is
-// read inside the pass's own transaction, as the claims were. It reads no phase row
-// (workflow.PhaseWorkerOwedTurn), which the tick's list adds to leave out a worker owed no turn:
-// such a worker is stopped all the more, and R6 names SilentPhaseWorker alone.
+// What it costs: at most three batched reads, made only where some claim is left to judge: the
+// phases rows of those claims' issues, which name the claim of the worker on each phase's step
+// (phaseWorkers, workerEntries, record.WorkerClaimOf), the plans of those issues, which each
+// worker's copy is read on (workerPlans), and the runs of those workers
+// (record.Store.RoleRuns), the reads the tick's silent list makes for the same rule; and walks of
+// the pass's own records and of the claims quietTrees already read. It makes no read per tree or
+// per issue, and the caller builds it at most once per pass, at the first of its two readers the
+// pass reaches. Both are read inside the pass's own transaction, as the claims were. It reads no
+// phase row for the owed turn (workflow.PhaseWorkerOwedTurn), which the tick's list adds to leave
+// out a worker owed no turn: such a worker is stopped all the more, and R6 names
+// SilentPhaseWorker alone.
 func (a *Admission) workingTrees(ctx context.Context, tx pgx.Tx, issues []record.Issue, facts record.LineFacts,
 	claims []record.TreeClaim, now time.Time,
 ) (map[string]struct{}, error) {
@@ -826,14 +843,17 @@ func (a *Admission) everyIssueWaitsByDesign(members []record.Issue, holds lineHo
 
 // stalledTreeReason is what a stalled-tree notice tells the project's controller: the root, how
 // long the tree has been quiet, and, for each member of the tree (record.TreeMember), the phase
-// its record carries — `held` for a held issue — the role whose turn that issue's standing is
-// (workflow.RoleFor over record.StandsAt, which is the phase a held issue was held from) or
-// that the phase has no role, and the state of its pull request. It ends by telling the
-// controller to read the tree and decide. An issue standing at admitted is told as a phase no
-// role works, as it was before workflow.RoleFor named the architect there: that answer is for
-// the readers that start, resume or report the architect, and this notice keeps the words it
-// had (dispatch://INFRA-2614 R2). Accepting was the architect's before as well, so an issue
-// standing there names the architect, as it did.
+// its record carries — `held` for a held issue — the role of each running step where that issue
+// stands (record.Issue.RunningAt over record.StandsAt, which is the phase a held issue was held
+// from, and which at step is the role of the running step), whose turn its standing is, or that
+// the phase has no role, and the state of its pull request. It ends by telling the controller to
+// read the tree and decide. An issue standing at admitted is told as a phase no role works, as it
+// was before workflow.RoleFor named the architect there: that answer is for the readers that
+// start, resume or report the architect, and this notice keeps the words it had
+// (dispatch://INFRA-2614 R2). Accepting was the architect's before as well, so an issue standing
+// there names the architect, as it did. A stopped task's step is no running step, and a member held
+// for its stopped task names the role of the step the stop ended all the same: stopped holds that
+// role by the member's key, which the caller reads from the plan rows (record.StoppedStep).
 //
 // The membership is the measure's own and is read from the one predicate, so the notice names
 // exactly the issues whose stillness was measured: a root, whatever its own status says, and
@@ -847,19 +867,32 @@ func (a *Admission) everyIssueWaitsByDesign(members []record.Issue, holds lineHo
 // table (requests, keyed by issue), because the state a stopped tree is most often in is a
 // merged one — the tree whose work landed and whose roles then stopped — which no list of the
 // open pull requests could answer.
-func stalledTreeReason(root string, measure record.TreeQuiet, members []record.Issue, requests map[string]record.PullRequest) string {
+func stalledTreeReason(root string, measure record.TreeQuiet, members []record.Issue, requests map[string]record.PullRequest,
+	stopped map[string]claim.Role,
+) string {
 	var reason strings.Builder
 	fmt.Fprintf(&reason, "%s has stopped. The tree has been quiet for %.1f hours. No agent of the tree is at work.",
 		root, measure.Quiet.Hours())
 	for _, member := range members {
 		fmt.Fprintf(&reason, "\n%s is in %s. ", member.Key, member.Phase)
-		// The architect works admitted (workflow.RoleFor), and this notice says what it said
-		// before that: no role works an issue standing there (dispatch://INFRA-2614 R2).
+		// The architect works admitted, and this notice says what it said before that: no role
+		// works an issue standing there (dispatch://INFRA-2614 R2).
 		standsAt := record.StandsAt(member)
-		if role := workflow.RoleFor(standsAt); role != "" && standsAt != phase.Admitted {
-			fmt.Fprintf(&reason, "The %s has the turn. ", role)
-		} else {
+		var roles []claim.Role
+		for _, step := range member.RunningAt(standsAt) {
+			if !slices.Contains(roles, step.Role) {
+				roles = append(roles, step.Role)
+			}
+		}
+		if role, ok := stopped[member.Key]; ok && len(roles) == 0 {
+			roles = append(roles, role)
+		}
+		if len(roles) == 0 || standsAt == phase.Admitted {
 			reason.WriteString("No role works this phase. ")
+			roles = nil
+		}
+		for _, role := range roles {
+			fmt.Fprintf(&reason, "The %s has the turn. ", role)
 		}
 		if pr, recorded := requests[member.Key]; recorded {
 			fmt.Fprintf(&reason, "Pull request %d is %s.", pr.Number, pr.State)

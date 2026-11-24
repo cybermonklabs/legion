@@ -31,10 +31,13 @@ import (
 // an awaiting-person hand-back and answer, two child re-entries, boot/tick reconciliation, and a
 // pass of the idle tick with release on: no suspend, no issue-suspend, no step stop and no idle
 // release may appear at any layer. The release (INFRA-945) and the owner's stop of a task are the
-// two exceptions that act on an issue still in the workflow, so they are the ones this case has to
-// keep out, and each is told from every other stop by its own kind and op: an `issue_release` row
-// and `supervise` rows whose op is `release`, and a `supervise` row whose op is `step_stop`,
-// against the `issue_suspend` row and the `suspend` op of a stop that ends a claim's phase.
+// two exceptions written as rows that act on an issue still in the workflow, so they are the ones
+// this case has to keep out, and each is told from every other stop by its own kind and op: an
+// `issue_release` row and `supervise` rows whose op is `release`, and a `supervise` row whose op
+// is `step_stop`, against the `issue_suspend` row and the `suspend` op of a stop that ends a
+// claim's phase. The one other suspension of an open issue's claim, the start of a step of
+// another role than its claim holds (the outbox's reroleForStep), writes no row of its own and is
+// never asked here: every claim of this tree is named for its role and runs its role's steps.
 func TestAnOpenIssueThatIsWorkingHasNoClaimStopped(t *testing.T) {
 	t.Parallel()
 	const (
@@ -232,7 +235,8 @@ func TestAnOpenIssueThatIsWorkingHasNoClaimStopped(t *testing.T) {
 	}
 	assertOpen("boot, tick, and outbox drain")
 
-	// The idle release is the one exception that acts on an issue still in the workflow, so a
+	// The idle release is the one exception written as rows that acts on an issue still in the
+	// workflow, so a
 	// pass of the tick with release on has to leave this tree as it found it: every pod here took
 	// a turn a moment ago, so none of them is idle. The inputs the rule reads outside the issue
 	// record are all given to it — the Envoy listener reporting itself ready, the pods on the
@@ -261,11 +265,14 @@ func TestAnOpenIssueThatIsWorkingHasNoClaimStopped(t *testing.T) {
 }
 
 // TestOpenIssueSuspensionInvariantKeepsTheExceptions enumerates every stop an open issue's claims
-// may take: the tree move that carries a child, the three statuses that take an issue out of the
-// workflow, the owner's stop of a task, and the idle release (INFRA-945). The stop of a task and
-// the release leave the issue in the workflow: the release brings its pod back at the next wake
-// for one of its roles, and the stopped task's issue stays held until a later version of its plan
-// starts the task again. Each is told from the others by the kind and op it writes.
+// may take as a row of its own: the tree move that carries a child, the three statuses that take
+// an issue out of the workflow, the owner's stop of a task, and the idle release (INFRA-945). The
+// stop of a task and the release leave the issue in the workflow: the release brings its pod back
+// at the next wake for one of its claims, and the stopped task's issue stays held until a later
+// version of its plan starts the task again. Each is told from the others by the kind and op it
+// writes. The start of a step of another role than its claim holds suspends that claim too, at
+// its turn's end, and resumes it on its session in the step's role (the outbox's reroleForStep):
+// it writes no row of its own, so no kind or op tells it, and its tests are the re-role's.
 // TestTheStoreRecordsWhoSuspendedAClaim covers the operator's real
 // POST /legion/v1/operator/claims/{token}/suspend route, and
 // TestAnOpenIssueThatIsWorkingHasNoClaimStopped that an open issue whose pod is working takes
@@ -289,6 +296,9 @@ func TestOpenIssueSuspensionInvariantKeepsTheExceptions(t *testing.T) {
 			child := record.Issue{Key: "LEGION-821", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: root.Key, Parent: &parent, Title: "child", Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "B"}
 			putOutboxIssue(t, pool, records, root)
 			putOutboxIssue(t, pool, records, child)
+			// The child ran each role, so the daemon's store holds a claim of each, which the leave
+			// reads (record.Store.IssueClaims).
+			storeRoleClaims(t, pool, root.Key, child.Key)
 			if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 				return records.PutSlot(ctx, tx, record.Slot{Issue: root.Key, Index: 0, AdmittedAt: time.Now()})
 			}); err != nil {
@@ -388,7 +398,8 @@ func TestOpenIssueSuspensionInvariantKeepsTheExceptions(t *testing.T) {
 	// had no turn in progress and no turn due for the idle period, so every live claim of it is
 	// suspended with the source `released` and its session kept. It writes neither the `suspend`
 	// op of a stop that ends a phase nor the `issue_close` of an issue that left the workflow,
-	// but its own: one `release` supervise row per live role, then the `issue_release` teardown.
+	// but its own: one `release` supervise row per live claim, naming it, then the
+	// `issue_release` teardown.
 	t.Run("idle release", func(t *testing.T) {
 		ctx := context.Background()
 		rig := newIdleRig(t)

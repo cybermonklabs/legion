@@ -43,6 +43,9 @@ type PodResume struct {
 	Issue   string
 	// Role is the role the wake was for.
 	Role string
+	// Claim is the token of the claim the wake brought back (pod_resumes.claim), "" for a resume
+	// the release before 20261121183336 wrote, which is each claim of its role's.
+	Claim string
 	// Kind names the wake: a daemon delivery, a CI settlement, a role message, an agent message
 	// or the backstop.
 	Kind string

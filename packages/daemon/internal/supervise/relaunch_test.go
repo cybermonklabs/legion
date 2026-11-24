@@ -290,7 +290,7 @@ func TestARelaunchSentenceGivesWayToTheAbandonedSession(t *testing.T) {
 
 	first := h.wantPrompts(1)[0]
 	sent := first.Message
-	if want := abandonedTask(h.claim(), true) + "implement the plan"; sent != want {
+	if want := abandonedTask(h.claim(), "", true) + "implement the plan"; sent != want {
 		t.Fatalf("the fresh session's first task was sent as %q, want %q", sent, want)
 	}
 	if strings.Contains(sent, "Your previous process ended") || strings.Contains(sent, "Your process ended") {
@@ -350,7 +350,7 @@ func TestARelaunchSentenceIsNotToldToAFreshSession(t *testing.T) {
 		if relaunchTask(first.DeliveryID) {
 			t.Fatalf("the fresh agent was sent %s, want its task", first.DeliveryID)
 		}
-		want := abandonedTask(h.claim(), true) + "implement the plan"
+		want := abandonedTask(h.claim(), "", true) + "implement the plan"
 		if first.Message != want {
 			t.Fatalf("the fresh agent's first prompt is %q, want %q: the abandoned session's sentence alone in front of the task", first.Message, want)
 		}
@@ -454,9 +454,9 @@ func TestARelaunchSentenceOfTheFreshProcessFollowsTheAbandonedSentence(t *testin
 				t.Fatalf("the claim records the abandoned session %+v, want it still to tell", h.claim().Abandoned)
 			}
 			next := h.wantPrompts(base + 1)[base]
-			want := abandonedTask(h.claim(), false) + RelaunchSentence(ended)
+			want := abandonedTask(h.claim(), "", false) + RelaunchSentence(ended)
 			if tc.task != "" {
-				want = abandonedTask(h.claim(), false) + relaunchSentence(ended, true) + "\n\n" + tc.task
+				want = abandonedTask(h.claim(), "", false) + relaunchSentence(ended, true) + "\n\n" + tc.task
 			}
 			if next.Message != want {
 				t.Fatalf("the next prompt is %q, want %q: the abandoned session's sentence, then the fresh process's record", next.Message, want)
@@ -485,7 +485,7 @@ func TestARelaunchSentenceOfTheFreshProcessFollowsTheAbandonedSentence(t *testin
 func TestARelaunchSentenceGoesAloneWhenTheHeldTaskIsDropped(t *testing.T) {
 	h := newBareHarness(t)
 	holds := true
-	h.deps.PhaseHolds = func(context.Context, string, phase.Phase, uint64) (bool, error) { return holds, nil }
+	h.deps.PhaseHolds = func(context.Context, Claim, Delivery) (bool, error) { return holds, nil }
 	if err := h.store.PutClaim(h.ctx, queuedClaim()); err != nil {
 		t.Fatal(err)
 	}

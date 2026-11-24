@@ -22,6 +22,7 @@ var roleForAnswers = map[phase.Phase]claim.Role{
 	phase.Implementing:   claim.RoleImplementer,
 	phase.Testing:        claim.RoleTester,
 	phase.Reviewing:      claim.RoleReviewer,
+	phase.Step:           "",
 	phase.Accepting:      claim.RoleArchitect,
 	phase.Retro:          claim.RoleImplementer,
 	phase.Merging:        claim.RoleMerger,

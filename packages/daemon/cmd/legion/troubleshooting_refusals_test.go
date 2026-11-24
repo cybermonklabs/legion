@@ -93,7 +93,7 @@ var refusalFixtures = map[string]func(t *testing.T) string{
 	"omp_invocation is not used when runtime is kubernetes: …": func(t *testing.T) string {
 		return refusalFile{kubernetes: true, top: "omp_invocation: omp\n"}.refuse(t)
 	},
-	"worker_backends.architect is claude (Claude Code), which runs only planner, implementer, tester, reviewer, merger: …": func(t *testing.T) string {
+	"worker_backends.architect is claude (Claude Code), which runs only planner, implementer, tester, reviewer, merger and each role of the deployment: …": func(t *testing.T) string {
 		return refusalFile{top: "worker_backends: {architect: claude}\n"}.refuse(t)
 	},
 	"worker_backends runs a role on claude, and boot is missing …": func(t *testing.T) string {

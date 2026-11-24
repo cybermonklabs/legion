@@ -44,7 +44,7 @@ type releaseRuntime struct {
 	onImage   bool
 	bundle    runtime.WorkspaceBundle
 	bundleErr error
-	bundled   []claim.Role
+	bundled   []claim.Token
 	suspended int
 	refused   int
 	// teardowns are the issue-level teardowns the daemon asked for, by method and in order,
@@ -92,10 +92,10 @@ func (r *releaseRuntime) IssueSandbox(issue string) (string, bool) {
 	return r.sandboxName, true
 }
 
-func (r *releaseRuntime) BundleWorkspace(_ context.Context, _ string, role claim.Role) (runtime.WorkspaceBundle, error) {
+func (r *releaseRuntime) BundleWorkspace(_ context.Context, _ string, token claim.Token) (runtime.WorkspaceBundle, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.bundled = append(r.bundled, role)
+	r.bundled = append(r.bundled, token)
 	return r.bundle, r.bundleErr
 }
 
@@ -138,10 +138,10 @@ func (r *releaseRuntime) teardownsAsked() []string {
 	return slices.Clone(r.teardowns)
 }
 
-func (r *releaseRuntime) reads() (bundled []claim.Role, suspended int) {
+func (r *releaseRuntime) reads() (bundled []claim.Token, suspended int) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return append([]claim.Role(nil), r.bundled...), r.suspended
+	return append([]claim.Token(nil), r.bundled...), r.suspended
 }
 
 // refusals is how many times the runtime asked the store under its pod lock and was refused.
@@ -558,7 +558,7 @@ func TestABoundaryWhoseClaimRunsNothingStillAnswersADeliveryAroundTheMark(t *tes
 // The take is made here without the resume behind it, which is what both shapes leave in the
 // record: a resume that failed after its take committed, and a daemon that came back up between
 // the two and reads the claim released with the resume open. The wake that meets it takes no wake
-// of its own — the resume already recorded is still the role's one open resume — and brings the
+// of its own — the resume already recorded is still the claim's one open resume — and brings the
 // claim back. No pause held that resume, so the wake says at Warn that it stands open with no
 // process behind it (logRefusedByOpenResume).
 func TestAWakeResumesAClaimLeftReleasedUnderAnOpenResume(t *testing.T) {
@@ -571,11 +571,11 @@ func TestAWakeResumesAClaimLeftReleasedUnderAnOpenResume(t *testing.T) {
 		t.Fatalf("the claim after the release = %s by %s, want it released", got.State, got.SuspendedBy)
 	}
 
-	taken, err := rig.st.TakePodWake(ctx, "legion", rig.issue.Key, rig.token, pods.WakeDelivery, time.Now().UTC(), 0)
+	taken, err := rig.st.TakePodWake(ctx, "legion", rig.issue.Key, rig.token, claim.RoleImplementer, pods.WakeDelivery, time.Now().UTC(), 0)
 	if err != nil || !taken {
 		t.Fatalf("take the wake whose resume never ran = %t, %v; want it taken", taken, err)
 	}
-	resume, pause, open, err := rig.st.OpenPodResume(ctx, "legion", rig.issue.Key, claim.RoleImplementer)
+	resume, pause, open, err := rig.st.OpenPodResume(ctx, "legion", rig.issue.Key, claim.RoleImplementer, rig.token)
 	if err != nil || !open || pause != 0 {
 		t.Fatalf("the open resume after that take = %d, pause %d, %t, %v; want the one it recorded, which no pause held", resume, pause, open, err)
 	}
@@ -599,7 +599,7 @@ func TestAWakeResumesAClaimLeftReleasedUnderAnOpenResume(t *testing.T) {
 	}
 	// The heal takes no wake of its own: the resume the first take recorded is still the one
 	// open, so the records hold one resume of this release rather than two.
-	again, _, open, err := rig.st.OpenPodResume(ctx, "legion", rig.issue.Key, claim.RoleImplementer)
+	again, _, open, err := rig.st.OpenPodResume(ctx, "legion", rig.issue.Key, claim.RoleImplementer, rig.token)
 	if err != nil || !open || again != resume {
 		t.Fatalf("the open resume after the heal = %d, %t, %v; want the first take's %d", again, open, err, resume)
 	}
@@ -617,10 +617,10 @@ func TestAWakeResumesAClaimLeftReleasedUnderAnOpenResume(t *testing.T) {
 
 // A pod that has had no turn in progress and no turn due for the idle period is released while
 // its issue is still in the workflow: the decision writes the save of the workspace's unpushed
-// work, one `release` row per live role behind it, and the teardown last. Each claim goes to
-// suspended with the source `released` keeping its phase and the task it holds, the bundle is
-// saved before any role process is stopped — only a shim can build it — and the Sandbox teardown
-// runs last.
+// work, one `release` row per live claim behind it, each naming its claim, and the teardown last.
+// Each claim goes to suspended with the source `released` keeping its phase and the task it holds,
+// the bundle is saved before any claim's process is stopped — only a shim can build it — and the
+// Sandbox teardown runs last.
 func TestAnIdleIssuesPodIsReleasedWithItsClaimsKeepingTheirPhaseAndTask(t *testing.T) {
 	t.Parallel()
 	rig := newIdleRig(t)
@@ -662,8 +662,8 @@ func TestAnIdleIssuesPodIsReleasedWithItsClaimsKeepingTheirPhaseAndTask(t *testi
 	}
 
 	bundled, suspended := rig.rt.reads()
-	if len(bundled) != 1 || bundled[0] != claim.RoleImplementer {
-		t.Fatalf("bundle asked of %v, want the pod's one live role", bundled)
+	if len(bundled) != 1 || bundled[0] != rig.token {
+		t.Fatalf("bundle asked of %v, want the pod's one live claim %s", bundled, rig.token)
 	}
 	if suspended != 1 {
 		t.Fatalf("Sandbox teardowns = %d, want one", suspended)
@@ -935,8 +935,8 @@ func TestACancelOfAnIssueThatLeftTheWorkflowLetsItsCloseDeleteTheSandbox(t *test
 	ctx := context.Background()
 	engine := workflow.New(rig.issues, workflow.Config{Project: "LEGION", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(),
 		Linger: time.Hour}, quietLogger())
-	// The cancel names the roles it queued a resume for, which is the one place that set is
-	// read after the fact: a resume the lane has already run leaves no row behind.
+	// The cancel names the claims it queued a resume for, by token, which is the one place that
+	// set is read after the fact: a resume the lane has already run leaves no row behind.
 	logs := &syncBuffer{}
 	rig.runner.log = slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	rig.runner.handlers = []intake.Handler{engine}

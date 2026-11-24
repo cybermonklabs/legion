@@ -107,18 +107,18 @@ func committedLines() []committedLine {
 					Version: 1, Mark: record.EventMark{Seq: 4, At: reviewedAt}}, []intake.Handler{admission.engine, admission}
 			},
 			wrote: func(t *testing.T, pool *pgxpool.Pool) bool { return len(childrenFirstNotices(t, pool, cfRoot)) == 1 }},
-		{name: "an orphan the record holds as a child", line: `msg="admission orphan" issue=LEGION-STRAY`,
+		{name: "an orphan the record holds as a child", line: `msg="admission orphan" issue=LEGION-260`,
 			seed: func(t *testing.T, pool *pgxpool.Pool, log *slog.Logger) (string, intake.Fact, []intake.Handler) {
 				admission := newAdmission(t, 1, log)
 				gone := "LEGION-GONE"
-				putIssue(t, pool, record.Issue{Key: "LEGION-STRAY", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
-					Project: testProject, Title: "LEGION-STRAY", Tree: gone, Parent: &gone, Phase: phase.Admitted, Generation: 1,
+				putIssue(t, pool, record.Issue{Key: "LEGION-260", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
+					Project: testProject, Title: "LEGION-260", Tree: gone, Parent: &gone, Phase: phase.Admitted, Generation: 1,
 					Status: "backlog", Rank: "B", LastDispatchSeq: 1})
-				return "dispatch", intake.DispatchIssue{Key: "LEGION-STRAY", ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated",
-					Status: "todo", Title: "LEGION-STRAY", Parent: gone, Rank: "B", HandedOver: handed}, []intake.Handler{engineStub{}, admission}
+				return "dispatch", intake.DispatchIssue{Key: "LEGION-260", ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated",
+					Status: "todo", Title: "LEGION-260", Parent: gone, Rank: "B", HandedOver: handed}, []intake.Handler{engineStub{}, admission}
 			},
 			wrote: func(t *testing.T, pool *pgxpool.Pool) bool {
-				return issue(t, pool, "LEGION-STRAY").Tree == "LEGION-STRAY"
+				return issue(t, pool, "LEGION-260").Tree == "LEGION-260"
 			}},
 		{name: "an orphan the record does not hold", line: `msg="admission orphan" issue=LEGION-ORPHAN`,
 			seed: func(t *testing.T, pool *pgxpool.Pool, log *slog.Logger) (string, intake.Fact, []intake.Handler) {

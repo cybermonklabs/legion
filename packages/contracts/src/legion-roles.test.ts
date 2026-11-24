@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import projectTokens from "../fixtures/project-tokens.json";
 import {
   controllerToken,
+  isStepRole,
   LEGION_ROLES,
   legionProjectToken,
   parseRoleToken,
@@ -61,9 +62,43 @@ describe("role token grammar", () => {
     );
   });
 
-  test("rejects a token for another project or an unknown role", () => {
+  // A token's last part, the agent's name, is read by its fields since the roles of a deployment
+  // (contract 221), so a token that ends in no Legion role but in a name of the step grammar,
+  // `operator`, parses with that name as its `role`.
+  test("rejects a token for another project, the controller as an issue's role, or a role outside the grammar", () => {
     expect(parseRoleToken("other", controllerToken("omp"))).toBeUndefined();
-    expect(parseRoleToken("omp", "legion-omp-legion-42-operator")).toBeUndefined();
+    expect(parseRoleToken("omp", "legion-omp-legion-42-operator")).toEqual({
+      project: "omp",
+      issue: "LEGION-42",
+      role: "operator",
+    });
+    expect(parseRoleToken("omp", "legion-omp-legion-42-controller")).toBeUndefined();
+    expect(parseRoleToken("omp", `legion-omp-legion-42-${"a".repeat(33)}`)).toBeUndefined();
+    expect(parseRoleToken("omp", "legion-omp-legion-42-")).toBeUndefined();
+  });
+
+  test("a role token of a deployment role parses by its fields", () => {
+    expect(parseRoleToken("acme", "legion-acme-acme-1-code-checker")).toEqual({
+      project: "acme",
+      issue: "ACME-1",
+      role: "code-checker",
+    });
+    // The Go daemon's claim.NewToken spells the same token for the same role.
+    expect(roleToken("acme", "ACME-1", "checker")).toBe("legion-acme-acme-1-checker");
+    expect(() => roleToken("acme", "ACME-1", "controller")).toThrow(
+      "Invalid Legion role: controller"
+    );
+  });
+});
+
+describe("isStepRole", () => {
+  test("isStepRole is each role of the step grammar but the controller", () => {
+    for (const role of ["implementer", "merger", "checker", "code-checker"]) {
+      expect(isStepRole(role), role).toBeTrue();
+    }
+    for (const role of ["controller", "Checker", "", "a".repeat(33)]) {
+      expect(isStepRole(role), role).toBeFalse();
+    }
   });
 });
 

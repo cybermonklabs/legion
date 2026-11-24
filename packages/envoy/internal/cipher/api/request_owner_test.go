@@ -341,13 +341,13 @@ func TestARequestOfAnEnrollmentWithNoOwnerIsItsAlone(t *testing.T) {
 	ts.wantCancelled(t, asker, created.RequestID)
 }
 
-// TestTwoSlotsOfAPodThatStatesNoClaimCannotReadOrCancelEachOther: every role process of an issue
-// pod enrols under the pod's one uid, each in a slot of its own (<role>-g<generation>). A pod
-// whose launcher states no claim, which is every pod while the broker runs this code and the
-// daemon does not yet send one, is its own pod's, and each slot of it is its own slot's, so one
-// role of the pod is refused NOT_YOURS on the other's request on both routes, as each slot of a
-// pod holds its own requests (docs/site/src/content/docs/broker/concepts.md). A second
-// enrollment of the same slot, the role process enrolled again, reads its slot's request.
+// TestTwoSlotsOfAPodThatStatesNoClaimCannotReadOrCancelEachOther: every process of an issue pod
+// enrols under the pod's one uid, each in a slot of its own (<agent>-g<generation>, the slot of
+// its claim's agent). A pod whose launcher states no claim, which is every pod while the broker
+// runs this code and the daemon does not yet send one, is its own pod's, and each slot of it is
+// its own slot's, so one process of the pod is refused NOT_YOURS on the other's request on both
+// routes, as each slot of a pod holds its own requests (docs/site/src/content/docs/broker/concepts.md).
+// A second enrollment of the same slot, the same process enrolled again, reads its slot's request.
 func TestTwoSlotsOfAPodThatStatesNoClaimCannotReadOrCancelEachOther(t *testing.T) {
 	ts := newTestServer(t)
 	daemon := ts.serviceLogin(t)

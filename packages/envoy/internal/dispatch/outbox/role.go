@@ -882,8 +882,8 @@ func (f *roleForward) keep(ctx context.Context, deps Deps, sender bus.Sender, it
 // past what this batch has handed to that same holder, with no walk's claim outstanding there
 // (keptCopyLeadsTheLane), because a drain sends a lane strictly in order from its cursor on: a
 // handover made while older copies of the role are still on the lane would overtake them, and
-// since a role token names one tree role of one issue those copies are that issue's own, so its
-// holder would take a later event of it before its earlier ones. Leaving such a copy to the
+// since a role token is the claim token of one agent of one issue those copies are that issue's
+// own, so its holder would take a later event of it before its earlier ones. Leaving such a copy to the
 // drain costs nothing: the claim that landed under the keep starts a drain of its own, which
 // finds the copies before it and this one behind them and sends the lot in order, so nothing on
 // that lane waits for the sweep either. A lane the copy just kept is alone on is the race above,

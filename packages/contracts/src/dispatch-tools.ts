@@ -2486,8 +2486,9 @@ export const dispatchToolSpecs = [
       "<step> <kind> <role> <type> attempt <attempt> <agent> <model> <started_at> <ended_at> " +
       "<result>`. kind is step, retro or merge. step is the step's place in its task, from 1, " +
       "and 0 for a retro or a merge. attempt counts the runs of the same task, step and kind, " +
-      "from 1. agent is the claim of the role that ran the step, and model is the model that " +
-      "answered it, as provider/model. result is passed, failed or stopped. A field with no " +
+      "from 1. agent is the claim token of the agent that ran the step, which names that agent " +
+      "and not always the step's role, and model is the model that answered it, as " +
+      "provider/model. result is passed, failed or stopped. A field with no " +
       "value prints -, and a run that has not ended prints running for its end and its result. " +
       "A closed issue's steps read too. An issue that no step ran on and that has no plan prints " +
       "0 steps in 0 tasks, and a key Dispatch does not hold fails as dispatch read fails for it, " +

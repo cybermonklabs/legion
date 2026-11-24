@@ -32,8 +32,8 @@ const (
 // secondToken and thirdToken are the other claims a paced claim is paced against: the pacing is a
 // property of the daemon's whole queue, so no test of it has one claim only.
 const (
-	secondToken claim.Token = "legion-LEGION-209-tester"
-	thirdToken  claim.Token = "legion-LEGION-209-reviewer"
+	secondToken claim.Token = "legion-legion-legion-209-tester"
+	thirdToken  claim.Token = "legion-legion-legion-209-reviewer"
 )
 
 // pacedDeps sets a machine's pacing to one limiter of rate wakes a minute in bursts of one,
@@ -488,7 +488,7 @@ func TestTheControllersClaimLaunchesAtOnce(t *testing.T) {
 // waveToken is the token of the nth claim of a wave: a daemon that must wake forty claims at
 // once is what the pacing exists for, and each of them is a claim of its own.
 func waveToken(n int) claim.Token {
-	return claim.Token(fmt.Sprintf("legion-LEGION-209-worker-%02d", n))
+	return claim.Token(fmt.Sprintf("legion-legion-legion-209-worker-%02d", n))
 }
 
 // stalePluginClaim is c as a live worker of an earlier release, which is what a plugin wave finds:

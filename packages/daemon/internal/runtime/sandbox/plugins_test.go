@@ -27,7 +27,7 @@ func testPlugins() *runtime.PluginInstall {
 // An installing launch's agent argv (launcherCommand) becomes `/bin/sh -c '<script>' legion-start
 // 0 <agent argv…>`: with no setup command the count is 0, the agent argv rides after it as
 // legion-start's own positional parameters, never quoted into the script, and the script names
-// both sources, the generation directory under the role's state home, and the contract, runs the
+// both sources, the generation directory under the slot's state home, and the contract, runs the
 // install in a subshell on stderr, ends `exec "$@"`, and the agent argv it wraps carries the two
 // installed --extension roots rather than the image's. The install carries `--backend=copyfile`,
 // which keeps bun from hardlinking the installed plugin files out of the role's bun install
@@ -245,7 +245,7 @@ func TestStartArgvIsAgentUnchangedWithoutPluginsOrSetup(t *testing.T) {
 // into the generation's own directory, before the agent execs. Nothing else makes either — both
 // are on the issue's volume, which the image cannot prepare, and the image carries the pin and no
 // Claude Code — and Claude Code is told the directory as CLAUDE_CONFIG_DIR rather than asked to
-// create it. The install block names the role's install root, clears its earlier generations,
+// create it. The install block names the slot's install root, clears its earlier generations,
 // copies the image's pin, takes the bounded flock on the issue's npm cache, runs `npm ci` with
 // scripts off from the committed lockfile, has a failure branch that exits, and holds the
 // installed binary to the pin. The agent argv the script wraps names that generation's binary. An

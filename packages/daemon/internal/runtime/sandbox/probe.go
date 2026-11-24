@@ -1362,7 +1362,8 @@ type probeSpec struct {
 // GKE Autopilot places a pod carrying that one on a node of its own whenever possible, so each
 // boot's probe would ask for a node, and a probe minutes long and already retried on failure
 // (kubeletFailure, ImageProbe.Retry) gains nothing from a seven-day eviction window.
-// For each role role_config_files names (Options.RoleConfigFiles), in the workflow's order, it
+// For each role role_config_files names (Options.RoleConfigFiles), in the order of the runtime's
+// roles (roleConfigRoles: Legion's, each role of the deployment, then the controller), it
 // passes that role's overlays (--role-config-files), and for every workflow role one value per
 // arm the project declares that names overlays (Options.ExperimentVariants), that arm's files
 // after the role's own — never for the controller, which runs in no tree and so is in no arm:
@@ -1400,7 +1401,7 @@ func (r *Runtime) probeManifest(name string, p ImageProbe, shutdown time.Time) p
 	// mounts lack refuses the boot here, naming the role and the file, rather than that role's Oh
 	// My Pi at its first launch. One value per role per arm, deduplicated, and the role's own
 	// files alone for a role no arm reaches (runtime.RoleOverlayValues).
-	for _, role := range roleConfigRoles {
+	for _, role := range r.roleConfigRoles() {
 		for _, value := range runtime.RoleOverlayValues(role, r.roleConfigFiles[role], r.experimentVariants) {
 			command = append(command, bootprobe.RoleConfigFilesFlag, bootprobe.RoleConfigFilesValue(string(role), value.Files))
 		}

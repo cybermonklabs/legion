@@ -1460,24 +1460,32 @@ func TestConfigCheckRefusesARequestItCannotRender(t *testing.T) {
 // legion.yaml", or, absent that, this binary's linked pair, "from the binary"; absent both, the
 // gap (TestConfigCheckReportsTheConfigurationsCapabilityGaps's pluginsGap). When
 // worker_backends runs any role on Claude Code, the line gains one sentence naming those roles,
-// whose plugin is the worker image's and never an install.
+// whose plugin is the worker image's and never an install: Legion's phase workers in the order
+// the workflow reaches them, then each role of the deployment in the file's order.
 func TestConfigCheckNamesTheResolvedPluginPair(t *testing.T) {
 	legionState(t)
 	const claudeSentence = ". Claude Code runs implementer, tester, whose plugin is the worker image's: " +
 		"a plugin-contract change for such a role is answered by a new image, not by an install."
 	const claudeRoles = "worker_backends: {implementer: claude, tester: claude}\n"
-	for _, tc := range []struct{ name, extra, legion, envoy, want string }{
-		{"the file's own pair", "    plugins: {pi_legion: 9.7.0, pi_envoy: 9.6.1}\n", "", "",
+	const checkerRole = "roles: {checker: {type: testing, prompt_file: checker.md, model: checker-model}}\n"
+	for _, tc := range []struct{ name, extra, legion, envoy, roles, want string }{
+		{"the file's own pair", "    plugins: {pi_legion: 9.7.0, pi_envoy: 9.6.1}\n", "", "", "",
 			"plugins: @sjawhar/pi-legion 9.7.0 @sjawhar/pi-envoy 9.6.1 (from legion.yaml)\n"},
-		{"the binary's linked pair, the file setting none", "", "9.7.0", "9.6.1",
+		{"the binary's linked pair, the file setting none", "", "9.7.0", "9.6.1", "",
 			"plugins: @sjawhar/pi-legion 9.7.0 @sjawhar/pi-envoy 9.6.1 (from the binary)\n"},
-		{"the file's pair wins over the binary's", "    plugins: {pi_legion: 9.7.1, pi_envoy: 9.6.2}\n", "9.7.0", "9.6.1",
+		{"the file's pair wins over the binary's", "    plugins: {pi_legion: 9.7.1, pi_envoy: 9.6.2}\n", "9.7.0", "9.6.1", "",
 			"plugins: @sjawhar/pi-legion 9.7.1 @sjawhar/pi-envoy 9.6.2 (from legion.yaml)\n"},
-		{"the Claude Code roles' plugin is the image's", "    plugins: {pi_legion: 9.7.0, pi_envoy: 9.6.1}\n" + claudeRoles, "", "",
+		{"the Claude Code roles' plugin is the image's", "    plugins: {pi_legion: 9.7.0, pi_envoy: 9.6.1}\n" + claudeRoles, "", "", "",
 			"plugins: @sjawhar/pi-legion 9.7.0 @sjawhar/pi-envoy 9.6.1 (from legion.yaml)" + claudeSentence + "\n"},
-		{"the Claude Code roles are named beside the gap too", claudeRoles, "", "",
+		{"the Claude Code roles are named beside the gap too", claudeRoles, "", "", "",
 			"plugins: none — set runtime.kubernetes.plugins or run a release build; " +
 				"a daemon that knows none relaunches no process on another plugin contract" + claudeSentence + "\n"},
+		{"a role of the deployment on Claude Code is named", checkerRole + "worker_backends: {implementer: claude, checker: claude}\n", "", "",
+			"roles.checker: type testing, model checker-model, App review, prompt <dir>/checker.md\n",
+			"plugins: none — set runtime.kubernetes.plugins or run a release build; " +
+				"a daemon that knows none relaunches no process on another plugin contract" +
+				". Claude Code runs implementer, checker, whose plugin is the worker image's: " +
+				"a plugin-contract change for such a role is answered by a new image, not by an install.\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			linkedLegion, linkedEnvoy := piLegionVersion, piEnvoyVersion
@@ -1485,11 +1493,15 @@ func TestConfigCheckNamesTheResolvedPluginPair(t *testing.T) {
 			piLegionVersion, piEnvoyVersion = tc.legion, tc.envoy
 
 			config := kubernetesCheckConfig(t, tc.extra)
+			dir := filepath.Dir(config)
+			if err := os.WriteFile(filepath.Join(dir, "checker.md"), []byte("You check the change.\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
 			var out, errb bytes.Buffer
 			code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
 
 			secretsGap := "capability secrets is open: runtime.kubernetes.agent_secrets is not configured; to record a decision, add to legion.yaml: capabilities.decided.secrets: \"<reason>\"\n"
-			want := demoCheckConfigOK + secretsGap + defaultCacheLine + tc.want
+			want := demoCheckConfigOK + strings.ReplaceAll(tc.roles, "<dir>", dir) + secretsGap + defaultCacheLine + tc.want
 			if code != 0 || out.String() != want || errb.Len() != 0 {
 				t.Fatalf("exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
 			}
@@ -2423,13 +2435,18 @@ func TestPlainStateNamesTheClaimsNothingWillWake(t *testing.T) {
 	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
 		`"admission":{"cap":2,"active":[],"waiting":[]},"issues":{},"pendingStatusWrites":[]`
 	// The claims as the operator routes serve them, which is the one surface that names a
-	// suspender: the released implementer of LEGION-208 beside the tester an operator suspended.
+	// suspender: the released implementer of LEGION-208 beside the tester an operator suspended,
+	// and two claims of LEGION-212 that hold the role tester, the tester's own, which an operator
+	// suspended, and key a's, named implementer, on its tester step, which the release suspended.
+	// The command reads each suspender by the claim's token.
 	operatorClaims := `{"claims":[` +
 		`{"token":"legion-legion-legion-208-implementer","issue":"LEGION-208","role":"implementer","state":"suspended","suspendedBy":"released","pluginContract":48},` +
-		`{"token":"legion-legion-legion-209-tester","issue":"LEGION-209","role":"tester","state":"suspended","suspendedBy":"operator","pluginContract":48}]}`
-	released := `[{"issue":"LEGION-208","role":"implementer","state":"suspended"},` +
-		`{"issue":"LEGION-209","role":"tester","state":"suspended"},` +
-		`{"issue":"LEGION-210","role":"reviewer","state":"failed"}]`
+		`{"token":"legion-legion-legion-209-tester","issue":"LEGION-209","role":"tester","state":"suspended","suspendedBy":"operator","pluginContract":48},` +
+		`{"token":"legion-legion-legion-212-tester","issue":"LEGION-212","role":"tester","state":"suspended","suspendedBy":"operator","pluginContract":48},` +
+		`{"token":"legion-legion-legion-212-implementer","issue":"LEGION-212","role":"tester","state":"suspended","suspendedBy":"released","pluginContract":48}]}`
+	released := `[{"issue":"LEGION-208","role":"implementer","state":"suspended","token":"legion-legion-legion-208-implementer"},` +
+		`{"issue":"LEGION-209","role":"tester","state":"suspended","token":"legion-legion-legion-209-tester"},` +
+		`{"issue":"LEGION-210","role":"reviewer","state":"failed","token":"legion-legion-legion-210-reviewer"}]`
 	// The phrase `legion state` puts before the claims a workflow start brings back
 	// (main.go's strandedPhrases), which names a retired claim beside a failed one and the acts
 	// that queue such a start (INFRA-1480).
@@ -2465,6 +2482,24 @@ func TestPlainStateNamesTheClaimsNothingWillWake(t *testing.T) {
 			name: "no bearer to read the suspensions with", stranded: released,
 			want: "claims nothing will wake: 3 — suspended workers, each brought back as its suspendedBy calls for (legion claims list --json) LEGION-208 implementer, LEGION-209 tester; " +
 				workflowStart + " LEGION-210 reviewer\n",
+		},
+		// Two claims of one role on one issue: each takes the move its own suspender calls for,
+		// read by its token, and neither takes the other's. The role's own claim is named by its
+		// issue and role, and key a's agent, named for another role, by its token beside them.
+		{
+			name: "two claims of one role on one issue", bearer: true,
+			stranded: `[{"issue":"LEGION-212","role":"tester","state":"suspended","token":"legion-legion-legion-212-tester"},` +
+				`{"issue":"LEGION-212","role":"tester","state":"suspended","token":"legion-legion-legion-212-implementer"}]`,
+			want: "claims nothing will wake: 2 — suspended workers, each brought back as its suspendedBy calls for (legion claims list --json) LEGION-212 tester; " +
+				"released, woken over ten minutes ago and the pod never came back LEGION-212 tester (claim legion-legion-legion-212-implementer)\n",
+		},
+		// Without a bearer both read as suspended workers, one move, and the two are named apart.
+		{
+			name: "two claims of one role on one issue in one move",
+			stranded: `[{"issue":"LEGION-212","role":"tester","state":"suspended","token":"legion-legion-legion-212-tester"},` +
+				`{"issue":"LEGION-212","role":"tester","state":"suspended","token":"legion-legion-legion-212-implementer"}]`,
+			want: "claims nothing will wake: 2 — suspended workers, each brought back as its suspendedBy calls for (legion claims list --json) " +
+				"LEGION-212 tester, LEGION-212 tester (claim legion-legion-legion-212-implementer)\n",
 		},
 		// INFRA-1480: a retired claim needs the same workflow start a failed worker does, and the
 		// operator claim list still names the one a release suspended before its close retired it

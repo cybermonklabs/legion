@@ -95,16 +95,17 @@ func TestTheReclaimParagraphNamesEveryDirectoryTheRendererPutsOnTheIssueVolume(t
 	}
 }
 
-// documentedPath is dir as the paragraph spells it. A per-role or per-issue directory reaches the
-// prose as a placeholder, since no document can name every role and every issue, so its segment is
+// documentedPath is dir as the paragraph spells it. A per-agent or per-issue directory reaches the
+// prose as a placeholder, since no document can name every agent and every issue, so its segment is
 // rewritten to the form the paragraph uses rather than matched loosely, and an unrelated path that
-// happens to share a prefix cannot stand in for it. The role's state home is rewritten wherever it
-// opens the path, not only as the whole of it: a backend puts its own directories under it (Claude
-// Code's CLAUDE_CONFIG_DIR, claudeConfigDir), and those reach the prose under `<role>` as well.
+// happens to share a prefix cannot stand in for it. The state home of the claim's slot, the agent's
+// whatever role its step is on, is rewritten wherever it opens the path, not only as the whole of
+// it: a backend puts its own directories under it (Claude Code's CLAUDE_CONFIG_DIR,
+// claudeConfigDir), and those reach the prose under `<agent>` as well.
 func documentedPath(dir, issue string, role claim.Role) string {
 	home := roleStateHome(role)
 	if rest, under := strings.CutPrefix(dir, home); under && (rest == "" || strings.HasPrefix(rest, "/")) {
-		return path.Dir(home) + "/<role>" + rest
+		return path.Dir(home) + "/<agent>" + rest
 	}
 	if dir == uvPythonDir(issue) {
 		return path.Dir(dir) + "/<issue>"

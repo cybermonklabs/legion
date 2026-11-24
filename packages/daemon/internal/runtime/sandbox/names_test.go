@@ -11,9 +11,9 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 )
 
-// A Sandbox is named for its issue: each role suffix is stripped before the token becomes a
-// DNS-1123 label. The locator golden pins the short case, whose claim token carries an upper-case
-// issue key.
+// A Sandbox is named for its issue: the agent's name each claim token ends in is stripped before
+// the token becomes a DNS-1123 label. The locator golden pins the short case, whose claim token
+// carries an upper-case issue key.
 func TestSandboxNameIsTheIssueAsALabel(t *testing.T) {
 	for token, want := range map[claim.Token]string{
 		"legion-omp-LEGION-208-tester":       "legion-omp-legion-208",
@@ -47,7 +47,8 @@ func TestSandboxNameOfALongTokenIsAnIssuePrefixAndHash(t *testing.T) {
 
 // An issue's volume claim is `issue-<issue Sandbox>`: what the controller names the claim it makes
 // from the Sandbox's `issue` template (`<template>-<sandbox>`), and what the issue's pod mounts.
-// Every role claim of the issue names the same claim, and the controller's claim its own.
+// Every claim of the issue, one for each of its agents, names the same claim, and the
+// controller's claim its own.
 func TestIssueClaimNameIsTheControllersClaimName(t *testing.T) {
 	for token, want := range map[claim.Token]string{
 		rootToken:       "issue-legion-legion-legion-208",

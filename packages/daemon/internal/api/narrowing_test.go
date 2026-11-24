@@ -567,6 +567,51 @@ func TestTheRecordFieldsContractIsNotAboveTheDaemonsOwn(t *testing.T) {
 	}
 }
 
+// A caller below the contract that added each issue's tasks is served every issue without
+// `tasks`, and the daemon's log names what it took: a plugin built before the reader that drops a
+// key it does not know reads an issue as a strict object and would refuse the whole state over
+// the key. A caller one contract below states that contract, as every plugin from
+// shapedAnswersContract on does, and is served at the recorded contract below it. A caller at
+// the contract is served the tasks as the state holds them, and the log names no drop of them.
+// The line is named here as a literal, for the reason the assignments line above is: a strip
+// written beside the table's loop would leave every subtest that reads the table green.
+//
+// The fault it catches is a caller below the contract served a key it refuses, or served it
+// without a line that says so (its control: the state without the narrowing's row).
+func TestACallerBelowTheContractIsServedNoTasks(t *testing.T) {
+	const dropped = "the issues' tasks"
+	if tasksContract > DaemonAPIVersion {
+		t.Fatalf("tasksContract = %d, above DaemonAPIVersion %d: no caller could be served the tasks", tasksContract, DaemonAPIVersion)
+	}
+	state := populatedState(t)
+	issues := maps.Clone(state.Issues)
+	planned := issues["LEGION-208"]
+	planned.Tasks = []TaskView{{ID: "a", State: string(record.TaskRunning), Needs: []string{}, Kind: record.PlaceStep,
+		Phase: string(phase.Implementing), Branch: "legion/LEGION-208", Position: 1, Role: string(claim.RoleImplementer),
+		Agent: "implementer", Counts: TaskCountsView{Pass: 1}}}
+	issues["LEGION-208"] = planned
+	state.Issues = issues
+
+	below := tasksContract - 1
+	body, narrowings := stateNarrowedStating(t, state, statePodAddr+":41000", podClaims(below), below)
+	for key, view := range issueViews(t, body) {
+		if tasks, carried := view["tasks"]; carried {
+			t.Errorf("issue %s served to a caller at %d carries `tasks` %v, the key contract %d added", key, below, tasks, tasksContract)
+		}
+	}
+	if !slices.ContainsFunc(narrowings, func(line narrowingLine) bool { return line.Dropped == dropped }) {
+		t.Errorf("a caller at %d was served no line saying it dropped %q; the daemon wrote %+v", below, dropped, narrowings)
+	}
+
+	body, narrowings = stateNarrowedStating(t, state, statePodAddr+":41000", podClaims(tasksContract), tasksContract)
+	if tasks := issueViews(t, body)["LEGION-208"]["tasks"]; tasks == nil {
+		t.Errorf("LEGION-208 served to a caller at %d carries no `tasks`: %s", tasksContract, body)
+	}
+	if slices.ContainsFunc(narrowings, func(line narrowingLine) bool { return line.Dropped == dropped }) {
+		t.Errorf("a caller at %d was told the daemon dropped %q, which it served: %+v", tasksContract, dropped, narrowings)
+	}
+}
+
 // capabilityRowServed is the capability row named name of a state body (capabilityRowsServed),
 // and whether the body carries such a row at all.
 func capabilityRowServed(t *testing.T, body []byte, name capabilities.Name) (map[string]any, bool) {

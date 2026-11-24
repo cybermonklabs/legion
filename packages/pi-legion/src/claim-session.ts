@@ -37,8 +37,8 @@ export interface ClaimSession {
  * What this pane's jj attribution overlay is written from
  * (`exportJjSessionAttribution`, `@legion/pi-shared/jj-attribution`): the Oh My Pi session id read
  * off the transcript (undefined for a subagent's, which owns no claim), the state directory the
- * daemon names, and the pane's own key, workspace and role (`paneAttributionOptions`, which holds
- * the rule both harnesses read those three variables by).
+ * daemon names, and the pane's own key, the repository of its workspace and its role
+ * (`paneAttributionOptions`, which holds the rule both harnesses read those three variables by).
  */
 export function attributionInputs(
   sessionFile: string,

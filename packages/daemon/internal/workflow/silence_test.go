@@ -151,7 +151,12 @@ func seedSilence(t *testing.T, pool *pgxpool.Pool, rec silenceRecord) record.Iss
 	}
 	if rec.queuedStart {
 		seedRecord(t, pool, func(tx pgx.Tx) error {
-			task, err := testEngine(config.DesignGateRootIssues, nil).ResumeTask(t.Context(), tx, issue)
+			engine := testEngine(config.DesignGateRootIssues, nil)
+			s, err := firstScope(t.Context(), tx, engine, issue)
+			if err != nil {
+				return err
+			}
+			task, err := engine.ResumeTask(t.Context(), tx, s)
 			if err != nil {
 				return err
 			}

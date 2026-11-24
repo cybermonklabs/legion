@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"slices"
 	"strconv"
@@ -937,7 +938,8 @@ func TestTLSProbeJudgesAStepAfterTheTLSCheckByTheDeadline(t *testing.T) {
 }
 
 // A --role-config-files value no role could carry is refused as the flags are read, before any
-// probe runs.
+// probe runs: a name outside the role grammar and the controller, a relative file, a value with no
+// files.
 func TestProbeImageRefusesARoleConfigFilesValueNoRoleCarries(t *testing.T) {
 	omp := imageOmp(t)
 	img := inImage(t, thisBinarysContract, omp)
@@ -945,7 +947,7 @@ func TestProbeImageRefusesARoleConfigFilesValueNoRoleCarries(t *testing.T) {
 		args []string
 		want string
 	}{
-		{[]string{"--role-config-files", "coder=/etc/a.yml"}, `"coder" is not a Legion role`},
+		{[]string{"--role-config-files", "Coder=/etc/a.yml"}, `"Coder" is not a role`},
 		{[]string{"--role-config-files", "tester=a.yml"}, `tester's overlay "a.yml" is not an absolute path`},
 		{[]string{"--role-config-files", "tester"}, `--role-config-files "tester" is not <role>=<file>[:<file>…]`},
 	} {
@@ -958,6 +960,20 @@ func TestProbeImageRefusesARoleConfigFilesValueNoRoleCarries(t *testing.T) {
 		if _, err := os.Stat(seen); !errors.Is(err, fs.ErrNotExist) {
 			t.Errorf("Oh My Pi ran (%s: %v), want no probe", seen, err)
 		}
+	}
+}
+
+// The probe loads no settings, so its flag takes every role the runtime can name to it: a role of
+// the deployment (a name of the role grammar, claim.IsRole) is recorded with its overlays as one of
+// Legion's is.
+func TestProbeImageTakesADeploymentRolesOverlays(t *testing.T) {
+	var flag roleConfigFilesFlag
+	if err := flag.Set("checker=/etc/checker.yml"); err != nil {
+		t.Fatalf("Set(checker=/etc/checker.yml) = %v, want nil", err)
+	}
+	want := roleConfigFilesFlag{{role: "checker", files: []string{"/etc/checker.yml"}}}
+	if !reflect.DeepEqual(flag, want) {
+		t.Errorf("the flag recorded %+v, want %+v", flag, want)
 	}
 }
 

@@ -47,8 +47,9 @@ type launcherCredentials struct {
 const credentialRetry = 10 * time.Second
 
 // LauncherResolver rejects unknown pods from informer state before consulting credentials: a
-// launcher's role must be one of the roles of the kind its pod's labels name (podKindOf), a
-// workflow role of an issue pod or the controller of the project controller's, and its claim is the
+// launcher's role must be one of the roles of the kind its pod's labels name (podKindOf), a role
+// of the runtime's issue roles (Legion's six, then each role the deployment defines) for an issue
+// pod or the controller of the project controller's, and its claim is the
 // one that kind derives (podKind.claimToken). Tokens minted here are cached as hashes; after a
 // restart a known role's Secret is read once however often its launcher says hello
 // (launcherCredential), so a restart's reconnecting launchers cost one read each and
@@ -66,7 +67,7 @@ func (r *Runtime) LauncherResolver() stream.LauncherResolver {
 			return nil, shimwire.LauncherHelloAck{}, "launcher pod is not the current controller-owned pod"
 		}
 		kind, err := podKindOf(view.sandbox.Labels)
-		if err != nil || !slices.Contains(kind.roles(), role) {
+		if err != nil || !slices.Contains(kind.roles(r), role) {
 			return nil, shimwire.LauncherHelloAck{}, "launcher role is not one of its pod's roles"
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), apiTimeout)
@@ -282,10 +283,10 @@ func (r *Runtime) cacheLauncherCredential(s *sandbox, secret *corev1.Secret) {
 }
 
 // forgetLauncherCredentials drops what is held of every launcher role's Secret of the Sandbox named
-// name, once that Sandbox is deleted: whichever roles its pod ran, no other Sandbox's Secret has a
-// name of its.
+// name (launcherRoles: a role the deployment defines among them), once that Sandbox is deleted:
+// whichever roles its pod ran, no other Sandbox's Secret has a name of its.
 func (r *Runtime) forgetLauncherCredentials(name string) {
-	for _, role := range launcherRoles {
+	for _, role := range r.launcherRoles() {
 		r.launcherAuth.forget(roleSecretName(name, role))
 	}
 }

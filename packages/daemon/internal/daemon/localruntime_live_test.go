@@ -644,7 +644,7 @@ func (r *localRuntime) ReconcileOrphans(ctx context.Context, known []runtime.Kno
 
 // AdoptWorkingCopy is nothing to do: this proof's workers commit nothing, and their working
 // directory is no jj workspace.
-func (r *localRuntime) AdoptWorkingCopy(context.Context, runtime.Locator, runtime.GitIdentity) error {
+func (r *localRuntime) AdoptWorkingCopy(context.Context, runtime.Locator, runtime.GitIdentity, string) error {
 	return nil
 }
 

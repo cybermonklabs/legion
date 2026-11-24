@@ -10,6 +10,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/claudelaunch"
 	"github.com/sjawhar/legion/daemon/internal/launcher"
 	"github.com/sjawhar/legion/daemon/internal/ompdirs"
@@ -136,9 +137,10 @@ func podVariables(pod Pod, launchSecrets []string, exchange bool) map[string]set
 // issue's workspace or a repository cache;
 // a mount at, under, or above a path Legion mounts, the image owns (imageOwnedPaths), or a tool
 // runs from hides it or is hidden by it; and a mount at, under, or above xdgStateHome
-// (/home/legion/.local/state), the path Legion reserves in the image's home directory: no role's
-// agent keeps its Oh My Pi state there any more — each role has a separate state home, under the
-// issue's scratch on its volume (roleStateHome), which legionMountPaths already fences through
+// (/home/legion/.local/state), the path Legion reserves in the image's home directory: no
+// agent keeps its Oh My Pi state there any more — each slot of the pod has a separate state home,
+// its agent's, under the issue's scratch on its volume (roleStateHome), which legionMountPaths
+// already fences through
 // TreeRoot — and the image makes nothing there either, but Legion names it to the issue pod's
 // workspace-init (xdgEnvironment), so an operator's mount over it is refused here, at
 // `legion config check`, rather than left to surprise someone in a pod. (An operator's
@@ -151,14 +153,16 @@ func podVariables(pod Pod, launchSecrets []string, exchange bool) map[string]set
 // providers Secret's key that holds the session database's URL (Store.DSNSecretKey, which the
 // postgres store alone has: under cloudsql-iam each pod signs in as itself, or as the service
 // account it impersonates, and mounts no session key at all), which the shim would export into Oh
-// My Pi's environment under the provider key's name. launchSecrets are the secrets every launch's
+// My Pi's environment under the provider key's name. roles are every role whose launcher a pod of
+// the deployment can run (the runtime's issue roles, then the controller), whose own volumes the
+// operator's may not name. launchSecrets are the secrets every launch's
 // spec carries, by name, and providersSecrets those of them the providers Secret carries, none of
 // which may be the session database's URL key. exchange is whether the deployment names an
 // exchange audience (runtime.kubernetes.agent_secrets.exchange_audience): only then are the
 // exchange identity's variables (exchangeOwned), volume and mount path Legion's, and refused; a
 // deployment that names none keeps them the operator's, as before the key existed. configure runs
 // it, and the daemon before its boot and for `legion config check`.
-func CheckPod(pod Pod, providerKeys map[string]string, tools Tools, launchSecrets, providersSecrets []string, store ompsessions.Store, exchange bool) error {
+func CheckPod(pod Pod, roles []claim.Role, providerKeys map[string]string, tools Tools, launchSecrets, providersSecrets []string, store ompsessions.Store, exchange bool) error {
 	sessionDSNKey := store.DSNSecretKey()
 	if slices.Contains(providersSecrets, sessionDSNKey) {
 		return fmt.Errorf("runtime.kubernetes.session_dsn_secret %s is the providers Secret's key the pod mounts as the launch secret %s: name a key of its own for the session database's URL",
@@ -178,7 +182,7 @@ func CheckPod(pod Pod, providerKeys map[string]string, tools Tools, launchSecret
 	if value, set := pod.Env["DISPATCH_PUBLIC_URL"]; set && !dashboardURL(value) {
 		return fmt.Errorf("runtime.kubernetes.pod.env sets DISPATCH_PUBLIC_URL to %+q, which is not an http or https URL with no userinfo, a host that is a DNS name of ASCII letters, digits and hyphens, a dotted-quad IPv4 address or a bracketed IPv6 address, and any port from 1 to 65535: boot accepts only a dashboard address every agent's dispatch command reads", value)
 	}
-	volumes := legionVolumeNames(exchange)
+	volumes := legionVolumeNames(roles, exchange)
 	for i, volume := range pod.Volumes {
 		if slices.Contains(volumes, volume.Name) {
 			return fmt.Errorf("runtime.kubernetes.pod.volumes[%d].name %s is a volume Legion puts in every pod", i, volume.Name)

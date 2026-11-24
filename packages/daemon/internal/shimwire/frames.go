@@ -22,6 +22,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/redact"
 )
 
@@ -205,6 +206,10 @@ type LauncherHello struct {
 	LeakCheckTag       string `json:"leakCheckTag,omitempty"`
 	LeakCheckInstalled bool   `json:"leakCheckInstalled,omitempty"`
 	ResumesBySession   bool   `json:"resumesBySession,omitempty"`
+	// CredentialWait says this launcher starts a child only once its slot's gh files hold the
+	// credential its start names (LauncherStart.GitHubCredential). A launcher of an image before
+	// that wait sends no member.
+	CredentialWait bool `json:"credentialWait,omitempty"`
 }
 
 // LauncherHelloAck admits a launcher to receive child process commands, and hands it the
@@ -628,9 +633,11 @@ type LauncherState struct {
 // repeated request is idempotent only when its payload, Files included, is unchanged. Files are
 // the generation's credentials, the boot token among them: the launcher writes each, owner-only
 // and exclusively, into a fresh directory for this generation in its own memory-backed storage
-// before the child starts, and removes the directory when the child ends — so a role started in a
-// running pod never waits on the kubelet to propagate a Secret. Argv and Env name those files by
-// path; no credential is ever in Argv, Env, or an error.
+// before the child starts, and removes the directory when the child ends — so these credentials
+// never wait on the kubelet to propagate a Secret. Only the slot's gh files do: a start into a pod
+// the daemon kept names in GitHubCredential what they must hold, and the launcher starts the child
+// only once they hold it. Argv and Env name those files by path; no credential is ever in Argv,
+// Env, or an error.
 //
 // ResumeFile is the session file the child resumes. ResumeSession is the id of a session the
 // child resumes where the daemon knows no file of it: the launcher looks the id up in the session
@@ -653,6 +660,20 @@ type LauncherStart struct {
 	// knows the agent's process by it (internal/launcher's sessionPeer). It is empty for a
 	// Claude Code launch, whose agent writes no session itself.
 	AgentExecutable string `json:"agentExecutable,omitempty"`
+	// GitHubCredential is what the slot's gh files must hold before the child starts, set by a
+	// launch into a pod it keeps, which wrote the slot's credential just before: the kubelet then
+	// projects the slot's Secret anew within its sync period, and a child started before that
+	// would act as the App the files held. Absent for a launch that built its pod, whose Secret was
+	// written before the pod started.
+	GitHubCredential *LauncherGitHubCredential `json:"gitHubCredential,omitempty"`
+}
+
+// LauncherGitHubCredential names the credential a start's slot gh files must hold: HostsFile is
+// the default owner's hosts.yml, relative to the slot's gh directory, and TokenDigest the hex
+// SHA-256 of the token the daemon wrote into it.
+type LauncherGitHubCredential struct {
+	HostsFile   string `json:"hostsFile"`
+	TokenDigest string `json:"tokenDigest"`
 }
 
 // GenerationDir is the directory under a launcher's private directory that holds one generation's
@@ -880,13 +901,18 @@ type ToolExecutionEnd struct {
 // when the shim's grace runs out. The shim acts on it and never forwards it.
 type Shutdown struct{}
 
-// AdoptWorkingCopy asks the shim to run the working-copy adoption in its own workspace under the
-// given jj identity. The daemon names the identity and the budget, never a command or a path.
+// AdoptWorkingCopy asks the shim to run the working-copy adoption under the given jj identity, in
+// the working copy of the task whose branch Branch is. The daemon names the identity, the branch
+// and the budget, never a command or a path: the shim derives the working copy's directory from
+// its own workspace and the branch. Branch "" is the issue's own working copy, the shim's own
+// workspace, and is left off the wire, so a shim built before the key reads such a frame as it
+// always has.
 type AdoptWorkingCopy struct {
 	ID        string `json:"id"`
 	JJUser    string `json:"jjUser"`
 	JJEmail   string `json:"jjEmail"`
 	TimeoutMs int    `json:"timeoutMs"`
+	Branch    string `json:"branch,omitempty"`
 }
 
 // AdoptWorkingCopyResult answers AdoptWorkingCopy (worker-shim.ts:332-341).
@@ -896,10 +922,11 @@ type AdoptWorkingCopyResult struct {
 	Error string `json:"error,omitempty"`
 }
 
-// BundleWorkspace asks the shim to bundle the unpushed work of the workspace it runs in, so the
-// daemon can keep it while the released pod, its disk and that workspace go. The daemon names the
-// issue, the largest bundle it will take and the budget, never a command or a path: the shim
-// builds the bundle with the jj and git of the workspace it already works in.
+// BundleWorkspace asks the shim to bundle the unpushed work of the workspace it runs in and of each
+// task's working copy beside it, so the daemon can keep it while the released pod, its disk and
+// those working copies go. The daemon names the issue, the largest bundle it will take and the
+// budget, never a command or a path: the shim builds the bundle with the jj and git of the
+// workspace it already works in.
 type BundleWorkspace struct {
 	ID        string `json:"id"`
 	Issue     string `json:"issue"`
@@ -907,22 +934,29 @@ type BundleWorkspace struct {
 	TimeoutMs int    `json:"timeoutMs"`
 }
 
-// BundleWorkspaceResult answers BundleWorkspace with the bundle and the three facts a restore
-// needs beside it: the commit the working copy sat on, the heads the bundle carries, and each
-// local bookmark that pointed into the saved set. A bundle larger than the request's MaxBytes is
-// refused rather than sent, with SizeBytes naming what it would have been, so the caller can stop
-// the release and record why. The result crosses the shim's lane as an rpc_chunk sequence when it
-// is larger than one line.
+// BundleWorkspaceResult answers BundleWorkspace with the bundle and the facts a restore needs
+// beside it: the commit the working copy sat on, the heads the bundle carries, each local bookmark
+// that pointed into the saved set, and the working-copy commit of each task's working copy beside
+// the issue's own, by the task's branch. A bundle larger than the request's MaxBytes is refused
+// rather than sent, with SizeBytes naming what it would have been, so the caller can stop the
+// release and record why. The result crosses the shim's lane as an rpc_chunk sequence when it is
+// larger than one line.
 type BundleWorkspaceResult struct {
-	ID        string            `json:"id"`
-	OK        bool              `json:"ok"`
-	Error     string            `json:"error,omitempty"`
-	SizeBytes int               `json:"sizeBytes"`
-	Bundle    []byte            `json:"bundle,omitempty"`
-	Head      string            `json:"head,omitempty"`
-	Tips      []string          `json:"tips,omitempty"`
-	Bookmarks map[string]string `json:"bookmarks,omitempty"`
-	At        time.Time         `json:"at"`
+	ID            string            `json:"id"`
+	OK            bool              `json:"ok"`
+	Error         string            `json:"error,omitempty"`
+	SizeBytes     int               `json:"sizeBytes"`
+	Bundle        []byte            `json:"bundle,omitempty"`
+	Head          string            `json:"head,omitempty"`
+	Tips          []string          `json:"tips,omitempty"`
+	Bookmarks     map[string]string `json:"bookmarks,omitempty"`
+	WorkingCopies map[string]string `json:"workingCopies,omitempty"`
+	At            time.Time         `json:"at"`
+}
+
+// Saved is the saved work the result carries, in the shape the launcher_bundle slices carry it.
+func (f BundleWorkspaceResult) Saved() WorkspaceBundle {
+	return WorkspaceBundle{Bundle: f.Bundle, Head: f.Head, Tips: f.Tips, Bookmarks: f.Bookmarks, WorkingCopies: f.WorkingCopies, At: f.At}
 }
 
 // WorkspaceWork asks the shim whether the workspace it runs in holds work that no branch or tag
@@ -1038,14 +1072,18 @@ type LauncherLeakCheckResult struct {
 }
 
 // WorkspaceBundle is the saved work the LauncherBundle slices carry: the git bundle's own bytes,
-// the commit the working copy sat on, the heads the bundle carries and each local bookmark that
-// pointed into the saved set. It is no frame of its own — it is the body a sequence rebuilds.
+// the commit the working copy sat on, the heads the bundle carries, each local bookmark that
+// pointed into the saved set, and the working-copy commit of each task's working copy, keyed by
+// the task's branch (legion/<KEY>.<part>). It is no frame of its own — it is the body a sequence
+// rebuilds. A bundle a shim of an earlier release saved names no working copy of a task, and its
+// restore puts back the issue's working copy alone.
 type WorkspaceBundle struct {
-	Bundle    []byte            `json:"-"`
-	Head      string            `json:"head"`
-	Tips      []string          `json:"tips,omitempty"`
-	Bookmarks map[string]string `json:"bookmarks,omitempty"`
-	At        time.Time         `json:"at"`
+	Bundle        []byte            `json:"-"`
+	Head          string            `json:"head"`
+	Tips          []string          `json:"tips,omitempty"`
+	Bookmarks     map[string]string `json:"bookmarks,omitempty"`
+	WorkingCopies map[string]string `json:"workingCopies,omitempty"`
+	At            time.Time         `json:"at"`
 }
 
 // RPCChunk is one slice of a logical frame too large for a single line. Data is base64 of the
@@ -1312,7 +1350,8 @@ func (f Hello) Validate() error {
 
 // Validate refuses an adoption request the shim would refuse. The daemon is its only sender, so
 // a malformed one is a bug to name rather than a condition to paper over
-// (worker-shim.ts:171-180).
+// (worker-shim.ts:171-180). A branch is "" or one claim.BranchTask reads as an issue's or a task's,
+// since the shim derives a directory from it.
 func (f AdoptWorkingCopy) Validate() error {
 	switch {
 	case f.ID == "":
@@ -1321,6 +1360,11 @@ func (f AdoptWorkingCopy) Validate() error {
 		return fmt.Errorf("%w: adopt-working-copy carries no jj identity", ErrMalformedFrame)
 	case f.TimeoutMs <= 0:
 		return fmt.Errorf("%w: adopt-working-copy timeoutMs is %d", ErrMalformedFrame, f.TimeoutMs)
+	}
+	if f.Branch != "" {
+		if _, _, ok := claim.BranchTask(f.Branch); !ok {
+			return fmt.Errorf("%w: adopt-working-copy branch %q is no branch of an issue or of a task of one", ErrMalformedFrame, f.Branch)
+		}
 	}
 	return nil
 }

@@ -22,25 +22,27 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
-// A role process's addresses are fixed when it is launched, and a daemon restarted with its key
+// A slot's process's addresses are fixed when it is launched, and a daemon restarted with its key
 // changed hands other ones (handedAddresses): the worker stream is fixed for the issue pod's life,
 // in the pod's one container's launcher command, and the other five for one generation's life, in the
 // start command the launcher keeps to itself. So the stream is read from the pod spec, and each
-// role's five are recorded on the issue Sandbox when the daemon starts a generation, one annotation
-// per role, which a later daemon reads from its informer cache (evaluate).
+// slot's five are recorded on the issue Sandbox when the daemon starts a generation, one annotation
+// per slot, the slot being the name of the claim's agent whatever role its step is on (slotOf), so
+// a re-roled claim's record never overwrites the record of that role's own claim. A later daemon
+// reads the records from its informer cache (evaluate).
 //
 // A record names each address without its credentials — its scheme, host and port, `xxxxx@` when it
 // carries userinfo, never its path, query or fragment — and holds the sha256 of its whole value,
 // which is what is compared. The raw values travel only in the start command, so a URL's
 // credentials never land in a cluster object.
 
-// addressesAnnotation is the Sandbox annotation that records the addresses role's running
-// generation was started with.
+// addressesAnnotation is the Sandbox annotation that records the addresses the running generation
+// of slot role (the agent's name, slotOf) was started with.
 func addressesAnnotation(role claim.Role) string {
 	return "legion.dev/addresses-" + string(role)
 }
 
-// addressRecord is one role generation's recorded addresses.
+// addressRecord is one slot generation's recorded addresses.
 type addressRecord struct {
 	Generation uint64            `json:"generation"`
 	Addresses  []recordedAddress `json:"addresses"`
@@ -110,9 +112,9 @@ func (r *Runtime) recordFor(role claim.Role, generation uint64, enrolled bool) (
 	return string(encoded), nil
 }
 
-// recordAddresses records on s, the issue Sandbox as read, the addresses a generation of role
-// started now with the enrollment decision enrolled is handed: a merge patch of role's one
-// annotation, so the other roles' records stand.
+// recordAddresses records on s, the issue Sandbox as read, the addresses a generation in slot role
+// (the claim's agent's name, slotOf) started now with the enrollment decision enrolled is handed: a
+// merge patch of that slot's one annotation, so the other slots' records stand.
 // The patch carries s's uid, which the API server refuses to change on a live object, so a Sandbox
 // deleted and recreated in between is never written. It runs before the generation's start command
 // is sent, so a generation that runs has its record.
@@ -153,12 +155,13 @@ func describeMoved(moved []movedAddress) string {
 	return strings.Join(named, "; ")
 }
 
-// movedEnvironment compares role's recorded generation with the addresses a generation launched
-// now in pod, the live pod that generation runs in, is handed, one movedAddress for each that
-// moved, its held name the record's. The pod is what decides the broker: a generation in a pod
+// movedEnvironment compares the recorded generation of slot role (slotOf) with the addresses a
+// generation launched now in pod, the live pod that generation runs in, is handed, one
+// movedAddress for each that moved, its held name the record's. The pod is what decides the
+// broker: a generation in a pod
 // that carries no enrollment is handed no broker URL now, as it was handed none when it started
 // (Runtime.enrollsIn), so moving the broker's URL leaves such a generation alive and its pod to
-// its update round. A Sandbox with no record of role, or a record of another generation, has
+// its update round. A Sandbox with no record of the slot, or a record of another generation, has
 // nothing to compare: a generation started before records existed is never read as stale for want
 // of one. A record that cannot be read is an error, which proves nothing about the generation's
 // addresses: evaluate reads it as stale, and the relaunch that follows writes a fresh one.
@@ -219,10 +222,13 @@ func earlierLayout(names []string) bool {
 // legionContainers are the names among names Legion gives a container: a launcher role's (the
 // earlier layout's) or the one container of either pod this runtime builds. The rest were added to
 // the running pod by another controller (a mesh's injected sidecar, say), which never writes the
-// Sandbox's template, so only a pod's own containers are read through it.
+// Sandbox's template, so only a pod's own containers are read through it. The launcher roles here
+// are the earlier layout's fixed set, Legion's six and the controller (earlierLayout), never a
+// role of the deployment: no role of the deployment ever had a container of that layout.
 func legionContainers(names []string) []string {
 	return slices.DeleteFunc(slices.Clone(names), func(name string) bool {
-		return name != runtime.IssuePodContainer && !slices.Contains(launcherRoles, claim.Role(name))
+		role := claim.Role(name)
+		return name != runtime.IssuePodContainer && role != claim.RoleController && !slices.Contains(claim.Roles, role)
 	})
 }
 
@@ -522,7 +528,13 @@ func (r *Runtime) movedGhDirs(pod *corev1.Pod, role claim.Role) (movedAddress, b
 			handed: "the same directories beside the configured renames the wrappers route by"}, true
 	}
 	repo, _ := fetchRepository(pod)
-	served := ghOwnerDirs(r.gitHubDirs(repo, podAppRoles(podKindFor(role))))
+	apps, err := podAppRoles(r, podKindFor(role))
+	if err != nil {
+		// A pod holding a role that acts as no App cannot be told what it lacks: it is read as
+		// moved, naming why, rather than kept on a set of directories nobody can compute.
+		return movedAddress{where: name, held: ghDirsName(held), handed: err.Error()}, true
+	}
+	served := ghOwnerDirs(r.gitHubDirs(repo, apps))
 	lacking := slices.ContainsFunc(served, func(dir string) bool {
 		_, found := slices.BinarySearch(owned, dir)
 		return !found
@@ -570,27 +582,36 @@ func ghProjectionOf(pod *corev1.Pod, role claim.Role) (ghProjection, bool) {
 	return projected, true
 }
 
-// podAppRoles are the GitHub Apps a pod of kind holds a bundle of, each named once
-// (appauth.AppRoleFor): both of them for an issue pod, whose six roles run as one or the other,
-// and the review App alone for the project controller's. It is what the record of the
-// directories a mint found GitHub refuses is read for (movedGhDirs, appauth.LeftOut).
-func podAppRoles(kind podKind) []appauth.AppRole {
+// podAppRoles are the GitHub Apps a pod of kind holds a bundle of under r, each named once
+// (appauth.AppRoleFor over the runtime's deploymentApps, its kind's roles under r): both of them
+// for an issue pod, whose roles run as one or the other, and the review App alone for the project
+// controller's. It is what the record of the directories a mint found GitHub refuses is read for
+// (movedGhDirs, appauth.LeftOut). A role of the pod that acts as no App is AppRoleFor's error.
+func podAppRoles(r *Runtime, kind podKind) ([]appauth.AppRole, error) {
 	apps := make([]appauth.AppRole, 0, len(appauth.Roles))
-	for _, role := range kind.roles() {
-		if app := appauth.AppRoleFor(role); !slices.Contains(apps, app) {
+	for _, role := range kind.roles(r) {
+		app, err := appauth.AppRoleFor(role, r.deploymentApps)
+		if err != nil {
+			return nil, err
+		}
+		if !slices.Contains(apps, app) {
 			apps = append(apps, app)
 		}
 	}
-	return apps
+	return apps, nil
 }
 
-// PodAppRoles is podAppRoles of the pod role runs in (podKindFor): both Apps for a workflow role,
-// whose issue pod projects the directories every role's bundle holds and no more (gitHubBundles,
-// volumes), and the review App alone for the project controller. A role's container holds only
-// the directories of that projection, so a caller that says which owners a role's token reaches
-// in a pod of this runtime reads them for these Apps together (internal/daemon's plan.appOwners),
-// as the drift check does (movedGhDirs).
-func PodAppRoles(role claim.Role) []appauth.AppRole { return podAppRoles(podKindFor(role)) }
+// PodAppRoles is podAppRoles of the pod role runs in (podKindFor) under a deployment that defines
+// deployed: both Apps for a workflow role, whose issue pod projects the directories every role's
+// bundle holds and no more (gitHubBundles, volumes), and the review App alone for the project
+// controller; an issue pod's roles are Legion's and each role of deployed (issueRolesOf), each
+// acting as its App. A role's container holds only the directories of that projection, so a
+// caller that says which owners a role's token reaches in a pod of this runtime reads them for
+// these Apps together (internal/daemon's plan.appOwners), as the drift check does (movedGhDirs).
+// A role of the pod that acts as no App is AppRoleFor's error.
+func PodAppRoles(role claim.Role, deployed appauth.DeploymentApps) ([]appauth.AppRole, error) {
+	return podAppRoles(&Runtime{issueRoles: issueRolesOf(deployed), deploymentApps: deployed}, podKindFor(role))
+}
 
 // ghOwnerDirs is the owner directories of a gh directory set, in the order they come: the names
 // holding no slash, where a repository's directory a pod launched before INFRA-2543 projects is
@@ -642,7 +663,7 @@ func (r *Runtime) movedRoleOverlays(pod corev1.PodSpec, role claim.Role) (movedA
 	if !ok {
 		return movedAddress{}, false
 	}
-	for _, named := range roleConfigRoles {
+	for _, named := range r.roleConfigRoles() {
 		if podContainer(named) != podContainer(role) {
 			continue
 		}

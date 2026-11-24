@@ -77,8 +77,9 @@ func TestAReadmittedRootWithAHandBackNeitherWaitsOnAPersonNorLeavesTheWorkflow(t
 // seedSuspendedArchitect records the architect claim of root's generation as the close of that
 // generation leaves it: suspended by the daemon, holding the task it was given and confirmed,
 // which is the one state in which its root owes it nothing (workflow's owed, decideAwait's rule
-// 5). The claim is keyed by project, issue and role alone, so the generation names the task's
-// run rather than the row.
+// 5). The claim is keyed by its token, which names the project, the issue and the agent (the
+// architect, named for its role) and no generation, so the generation names the task's run rather
+// than the row.
 func seedSuspendedArchitect(t *testing.T, pool *pgxpool.Pool, root string, generation uint64) {
 	t.Helper()
 	token := awaitingArchitect(t, root)

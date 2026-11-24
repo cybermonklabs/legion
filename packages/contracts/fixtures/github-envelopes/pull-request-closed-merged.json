@@ -7,6 +7,7 @@
     "base_ref": "main",
     "body": "Exercise the listener with a merged close.",
     "head_ref": "acceptance-driver",
+    "head_repo": "example-org/example-repo",
     "head_sha": "2222222222222222222222222222222222222222",
     "kind": "pr",
     "merge_commit_sha": "3333333333333333333333333333333333333333",

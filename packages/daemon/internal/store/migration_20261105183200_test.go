@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/pods"
 )
 
@@ -140,7 +141,7 @@ func TestTheOpenResumesTheIndexRefusesAreClosedBy20261105183200(t *testing.T) {
 
 	// What closing is for: the role of the stale resume can be woken again, and the one whose
 	// resume is still open cannot.
-	taken, err := store.TakePodWake(ctx, "legion", "LEGION-209", "legion-legion-legion-209-implementer",
+	taken, err := store.TakePodWake(ctx, "legion", "LEGION-209", "legion-legion-legion-209-implementer", claim.RoleImplementer,
 		pods.WakeBackstop, at.Add(time.Hour), 0)
 	if err != nil {
 		t.Fatalf("take LEGION-209's backstop wake: %v", err)
@@ -148,7 +149,7 @@ func TestTheOpenResumesTheIndexRefusesAreClosedBy20261105183200(t *testing.T) {
 	if !taken {
 		t.Error("LEGION-209's implementer could not be woken after the migration: its stale resume still refuses every wake")
 	}
-	if taken, err := store.TakePodWake(ctx, "legion", "LEGION-208", releasedToken,
+	if taken, err := store.TakePodWake(ctx, "legion", "LEGION-208", releasedToken, claim.RoleImplementer,
 		pods.WakeBackstop, at.Add(time.Hour), 0); err != nil {
 		t.Fatalf("take LEGION-208's backstop wake: %v", err)
 	} else if taken {

@@ -49,10 +49,11 @@ type createEnrollmentBody struct {
 	// session whose list names that project. Absent or empty names none.
 	Projects []string `json:"projects"`
 	// A pod a launcher enrols only, optional: what the pod runs for, which every later process of
-	// it states again (the Legion daemon sends the role claim token, legion-<project>-<issue>-<role>,
-	// matching ^[a-z][a-z0-9-]{0,127}$, else 400 INVALID_CLAIM). A request the pod makes belongs to
-	// that claim, so the next pod of the claim reads and cancels it and takes the grants a dormant
-	// pod of it left (enroll.ownerKey).
+	// it states again (the Legion daemon sends the claim token of the agent the process runs for,
+	// legion-<project>-<issue>-<agent>, the same whatever role the agent's step is on, matching
+	// ^[a-z][a-z0-9-]{0,127}$, else 400 INVALID_CLAIM). A request the pod makes belongs to that
+	// claim, so the next pod of the claim reads and cancels it and takes the grants a dormant pod
+	// of it left (enroll.ownerKey).
 	Claim string `json:"claim"`
 }
 

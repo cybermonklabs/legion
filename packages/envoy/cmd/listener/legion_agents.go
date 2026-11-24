@@ -236,7 +236,7 @@ func legionAgentReadContext(r *http.Request) (context.Context, context.CancelFun
 }
 
 // legionAgentErrorStatus is the status a registry failure answers: a session moved to another issue
-// or role is a 409, an invalid name or entry a 400 naming the rule (and, in a batch, the entry's
+// or claim is a 409, an invalid name or entry a 400 naming the rule (and, in a batch, the entry's
 // index), a batch past legionagents.MaxBatch a 413, a key NATS refuses as writeNATSError answers it
 // (a 413 too large, a 400 otherwise), and anything else a read or write the bucket did not answer, a
 // 503 to retry.

@@ -303,7 +303,7 @@ func olderDaemonsLadderStep(d *Delivery) {
 // restores the claim holding the ask, owed and unconfirmed, with no wait armed for it, and the
 // claim's next send is where it reads the ask (sendPending). Sending it would put the older
 // daemon's words in front of the worker again, words that can tell it that the end of its turn
-// answers the round; the drop frees the slot, and the round's ask is the sweep's, on the role's
+// answers the round; the drop frees the slot, and the round's ask is the sweep's, on the claim's
 // topic.
 func TestAQuestionTheLadderKeptForAnOlderDaemonIsDroppedRatherThanSentAgain(t *testing.T) {
 	h := newBareHarness(t)

@@ -47,9 +47,7 @@ func TestTheTmuxBootGateRefusesARoleOverlayOhMyPiCannotParse(t *testing.T) {
 	script := "#!/bin/sh\nIFS=:\nfor f in $PI_CONFIG_FILES; do case \"$f\" in *malformed*)\n" +
 		"  echo \"error: Failed to parse config overlay $f: SyntaxError\" >&2; exit 1;; esac; done\n" +
 		"echo '{\"value\": false}'\n"
-	if err := os.WriteFile(omp, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	writeExecutable(t, omp, script, 0o755)
 	operator, good, malformed := filepath.Join(dir, "operator.yml"), filepath.Join(dir, "fallback.yml"), filepath.Join(dir, "malformed.yml")
 	for _, file := range []string{operator, good, malformed} {
 		if err := os.WriteFile(file, []byte("{}\n"), 0o644); err != nil {
@@ -58,18 +56,24 @@ func TestTheTmuxBootGateRefusesARoleOverlayOhMyPiCannotParse(t *testing.T) {
 	}
 	image := capabilities.Image{Launch: omp, Env: []string{"PATH=" + os.Getenv("PATH")}, WorkDir: dir}
 	cfg := config.Config{Runtime: config.Runtime{Name: "tmux", Tmux: &config.Tmux{PiConfigFiles: []string{operator}}}}
+	checker := []config.Role{{Name: "checker", Type: "testing", PromptFile: filepath.Join(dir, "checker.md")}}
 	for _, tc := range []struct {
 		name  string
+		roles []config.Role
 		files map[claim.Role][]string
 		want  string
 	}{
-		{"no key", nil, ""},
-		{"a file Oh My Pi starts on", map[claim.Role][]string{claim.RoleImplementer: {good}}, ""},
-		{"a file Oh My Pi cannot parse", map[claim.Role][]string{claim.RoleImplementer: {good}, claim.RoleTester: {good, malformed}},
+		{"no key", nil, nil, ""},
+		{"a file Oh My Pi starts on", nil, map[claim.Role][]string{claim.RoleImplementer: {good}}, ""},
+		{"a file Oh My Pi cannot parse", nil, map[claim.Role][]string{claim.RoleImplementer: {good}, claim.RoleTester: {good, malformed}},
 			"boot gate: role_config_files.tester: the tester's Oh My Pi would not start: Oh My Pi refuses " + malformed +
+				": error: Failed to parse config overlay " + malformed + ": SyntaxError"},
+		{"a deployment role's file Oh My Pi cannot parse", checker, map[claim.Role][]string{"checker": {good, malformed}},
+			"boot gate: role_config_files.checker: the checker's Oh My Pi would not start: Oh My Pi refuses " + malformed +
 				": error: Failed to parse config overlay " + malformed + ": SyntaxError"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			cfg.Roles = tc.roles
 			cfg.RoleConfigFiles = tc.files
 			err := checkPaneRoleOverlays(context.Background(), cfg, image, quietLogger())
 			if (tc.want == "" && err != nil) || (tc.want != "" && (err == nil || err.Error() != tc.want)) {

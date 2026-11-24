@@ -24,25 +24,30 @@ func PlanID(issue string, generation uint64) string {
 	return uuid.NewSHA1(planRecordNamespace, []byte(fmt.Sprintf("%s/%d", issue, generation))).String()
 }
 
-// planNode is the plan node of issue's run: the plan w walks, as Dispatch records it under
-// the run's one id (PlanID). Its source is the version in force's (record.PlanVersion.Source):
-// owner, with the document and the version of it Legion took, or default, the project's default
-// steps, with neither. Its task is the run's one task, with its steps in order, each a role or
-// `role:key` (plan.Step.String), and the tasks it needs, each by the id register_plan resolved
+// planNode is the plan node of issue's run: the plan walks walk, one walk for each task in task id
+// order (walksOf on stored, the plan of the run), as Dispatch records it under the run's one id
+// (PlanID). Its source is the version in force's (record.PlanVersion.Source): owner, with the
+// document and the version of it Legion took, or default, the project's default steps, with
+// neither. It holds each task of the plan, with its steps in order, each a role or `role:key`
+// (plan.Step.String), and the tasks it needs, each by the id register_plan resolved
 // (record.PlanTask.Needs), [] where it needs none: the one record of the needs that Dispatch
-// serves. The node is written at the start of the work and again, whole, at each later version
-// Legion takes (planGiven): Dispatch replaces all four fields for a version above the one it
-// holds. Both read w with its plan rows: the start's first step writes them (planFirstStep), and a
-// version taken is one. A run with no plan rows walks today's line, so its node is the task
-// default of todaysSteps, which needs none: a hand-over's carry of an orphan that ran before plans
-// (WritePlan).
-func planNode(issue record.Issue, w Walk) record.PlanRecord {
+// serves, which refuses a need naming a task the node does not hold. The node is written at the
+// start of the work and again, whole, at each later version Legion takes (planGiven): Dispatch
+// replaces all four fields for a version above the one it holds. A run with no plan rows (stored
+// nil) walks today's line, so its node is the task default of todaysSteps, which needs none, from
+// the source default: a hand-over's carry of an orphan that ran before plans (WritePlan).
+func planNode(issue record.Issue, stored *record.StoredPlan) record.PlanRecord {
 	node := record.PlanRecord{ID: PlanID(issue.Key, issue.Generation), Generation: issue.Generation, Source: record.PlanSourceDefault}
-	needs := append([]string{}, w.Needs...)
-	if w.Version.Source == record.PlanSourceOwner {
-		node.Source, node.PlanDocument = record.PlanSourceOwner, &record.PlanDocument{ArtifactID: w.Version.ArtifactID, Version: w.Version.Version}
+	if stored != nil && stored.Version.Source == record.PlanSourceOwner {
+		version := stored.Version
+		node.Source, node.PlanDocument = record.PlanSourceOwner, &record.PlanDocument{ArtifactID: version.ArtifactID, Version: version.Version}
 	}
-	node.Tasks = []record.PlanRecordTask{{ID: w.Task, Steps: plan.Words(namedSteps(w.Steps)), Needs: &needs}}
+	walks := walksOf(issue.Key, stored)
+	node.Tasks = make([]record.PlanRecordTask, len(walks))
+	for i, w := range walks {
+		needs := append([]string{}, w.Needs...)
+		node.Tasks[i] = record.PlanRecordTask{ID: w.Task, Steps: plan.Words(namedSteps(w.Steps)), Needs: &needs}
+	}
 	return node
 }
 
@@ -78,22 +83,79 @@ func (e *Engine) passOverEarlierOwners(ctx context.Context, tx pgx.Tx, issue rec
 // its start (CarryPlan without carried): each task waits at no act, and the transition starts the
 // first step of its line. Where the owner gave none, the run takes the project's default steps
 // (defaultRows). Nothing is passed over in silence, and the plan the run takes is the one the
-// telling names (tellPassedOver).
-func (e *Engine) planFirstStep(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
+// telling names (tellPassedOver). The run is not carried, so the open pull requests of an earlier
+// run that no task of the plan holds close (closeEarlierPullRequests). Each task takes its branch
+// at its start (Engine.start, through startTaskCopy), and it answers the plan the step settled,
+// which the gate's opening starts its ready tasks on (startReady): the generation's own rows as
+// read, which the step keeps as they are, else the rows it wrote, read again.
+func (e *Engine) planFirstStep(ctx context.Context, tx pgx.Tx, issue record.Issue) (*record.StoredPlan, error) {
 	earlier, err := e.passOverEarlierOwners(ctx, tx, issue)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	stored, err := e.store.Plan(ctx, tx, issue.Key, issue.Generation)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if stored == nil {
 		if stored, err = e.store.OwnersNewestPlan(ctx, tx, issue); err != nil {
-			return err
+			return nil, err
 		}
 	}
-	return e.takeFirstPlan(ctx, tx, issue, stored, earlier)
+	if err := e.takeFirstPlan(ctx, tx, issue, stored, earlier); err != nil {
+		return nil, err
+	}
+	if err := e.closeEarlierPullRequests(ctx, tx, issue); err != nil {
+		return nil, err
+	}
+	if stored != nil && stored.Version.Generation == issue.Generation {
+		return stored, nil
+	}
+	return e.store.Plan(ctx, tx, issue.Key, issue.Generation)
+}
+
+// notCarriedComment is what the first step of a run that is not carried writes on each pull
+// request of an earlier run of its issue it closes (closeEarlierPullRequests).
+const notCarriedComment = "The issue's run started its plan again; the work of this pull request is not carried."
+
+// closeEarlierPullRequests closes, at the first step of issue's run, each open pull request of an
+// earlier run of the issue that no task of the plan the step settled holds (record.PullRequest.Task,
+// read on that plan): a run that reaches its first step is not carried, so it starts each task from
+// its start (record.Store.CarryPlan without carried) and does not go on with that work. Each is
+// closed as the merge of the task that merges closes the others (record.TaskPullRequestsClose),
+// with notCarriedComment, and its row is deleted in this transaction, so no later fact of it moves
+// a task of the new run; its branch stays given (record.Store.RecordBranchGiven), so no task of the
+// issue takes it, with its commits, again. Before its first task starts a plan of several holds
+// none of them, so each closes; the one task of a plan of one holds the issue's own branch
+// (record.StoredPlan.TasksOfBranch), so the pull request open there is kept, and the issue goes on
+// on it as it always did. An issue no earlier run of which ran a step holds no pull request of an
+// earlier run (record.Store.EarlierRunOf), and nothing of it closes.
+func (e *Engine) closeEarlierPullRequests(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
+	ran, err := e.store.EarlierRunOf(ctx, tx, issue)
+	if err != nil || !ran {
+		return err
+	}
+	prs, err := e.store.TaskPullRequests(ctx, tx, issue.Key)
+	if err != nil {
+		return err
+	}
+	var closed []int
+	for _, pr := range prs {
+		if pr.State != record.PullRequestOpen || pr.Task != "" {
+			continue
+		}
+		if err := e.store.RecordBranchGiven(ctx, tx, issue.Key, issue.Generation, pr.Branch); err != nil {
+			return err
+		}
+		if err := e.store.DeletePullRequest(ctx, tx, issue.Key, pr.Branch); err != nil {
+			return err
+		}
+		closed = append(closed, pr.Number)
+	}
+	if len(closed) == 0 {
+		return nil
+	}
+	return e.enqueue(ctx, tx, issue.Key, record.TaskPullRequestsClose{Generation: issue.Generation, Numbers: closed, Comment: notCarriedComment})
 }
 
 // takeFirstPlan writes stored, the plan the first step of issue's run walks, at the run's
@@ -124,16 +186,19 @@ func (e *Engine) defaultRows(issue record.Issue) (record.PlanVersion, []record.P
 	version := record.PlanVersion{Issue: issue.Key, Generation: issue.Generation, Source: record.PlanSourceDefault, GivenAt: e.now()}
 	task := record.PlanTask{Issue: issue.Key, Generation: issue.Generation, Task: defaultTask, BlockText: "The project's default steps.",
 		StepsByDefault: true, State: record.TaskWaiting}
-	return version, []record.PlanTask{task}, planSteps(issue.Key, issue.Generation, defaultTask, e.cfg.DefaultSteps)
+	return version, []record.PlanTask{task}, record.NameAgents(nil, planSteps(e.cfg.Deployment, issue.Key, issue.Generation, defaultTask, e.cfg.DefaultSteps))
 }
 
 // planSteps is steps as the rows of the steps of task of issue's plan at generation: each at its
-// place from 1, with its agent key and the type of its role.
-func planSteps(issue string, generation uint64, task string, steps []plan.Step) []record.PlanStep {
+// place from 1, with its agent key and the type its role has in d, the engine's deployment
+// (Config.Deployment), so a role the deployment defines is stored with its own type. It is the
+// one writer of a stored step's type, which the step record names and the return of a failed
+// step, the count of a review round and the commit of a review step read.
+func planSteps(d plan.Deployment, issue string, generation uint64, task string, steps []plan.Step) []record.PlanStep {
 	rows := make([]record.PlanStep, len(steps))
 	for i, step := range steps {
 		rows[i] = record.PlanStep{Issue: issue, Generation: generation, Task: task, Position: i + 1, Role: step.Role,
-			Type: builtinDeployment.Roles[step.Role].Type, AgentKey: step.Key}
+			Type: d.Roles[step.Role].Type, AgentKey: step.Key}
 	}
 	return rows
 }
@@ -168,30 +233,32 @@ func describeVersion(version record.PlanVersion) string {
 	return fmt.Sprintf("version %d of document %s, given by %s", version.Version, version.ArtifactID, version.GivenBy)
 }
 
-// WritePlan queues the plan node of issue's run (planNode), the plan it carries out, read from its
-// walk, where the run's work starts: at the run's move out of admitted (transition's
-// TriggerGateOpened, which queues it on the walk it read, writePlanOn), after the first step has
-// settled the plan (planFirstStep), and at a hand-over's carry, which re-admits an orphan at a new
-// generation in the phase it ran in elsewhere (admit's readmit), so that run never leaves admitted,
-// after the carry has written its plan rows (record.Store.CarryPlan). A record key that is no
-// issue key writes nothing (recordsSteps), and reads no walk.
+// WritePlan queues the plan node of issue's run (planNode), the plan it carries out, read from the
+// walk of each of its tasks (walks), where the run's work starts: at the run's move out of
+// admitted (startReady at the gate's opening, after the first task's status, which queues it on the
+// plan it read, writePlanOn, and the transition's TriggerGateOpened for a run with no plan rows),
+// after a version of the plan taken once the work started (afterVersion), and at a hand-over's
+// carry, which re-admits an orphan at a new generation in the phase it ran in elsewhere (admit's
+// readmit), so that run never leaves admitted, after the carry has written its plan rows
+// (record.Store.CarryPlan). A record key that is no issue key writes nothing (recordsSteps), and
+// reads no walk.
 func (e *Engine) WritePlan(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
 	if !recordsSteps(issue) {
 		return nil
 	}
-	w, err := e.walk(ctx, tx, issue)
+	stored, err := e.store.Plan(ctx, tx, issue.Key, issue.Generation)
 	if err != nil {
 		return err
 	}
-	return e.writePlanOn(ctx, tx, issue, w)
+	return e.writePlanOn(ctx, tx, issue, stored)
 }
 
-// writePlanOn is WritePlan on w, the walk of issue's run as its caller read it.
-func (e *Engine) writePlanOn(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk) error {
+// writePlanOn is WritePlan on stored, the plan of issue's run as its caller read it.
+func (e *Engine) writePlanOn(ctx context.Context, tx pgx.Tx, issue record.Issue, stored *record.StoredPlan) error {
 	if !recordsSteps(issue) {
 		return nil
 	}
-	return e.enqueue(ctx, tx, issue.Key, planNode(issue, w))
+	return e.enqueue(ctx, tx, issue.Key, planNode(issue, stored))
 }
 
 // rateRetro writes the rating the retro of issue's run gave the plan onto that retro's record, in
@@ -204,12 +271,9 @@ func (e *Engine) writePlanOn(ctx context.Context, tx pgx.Tx, issue record.Issue,
 // end's. Dispatch sets each field once, so the end and the rating merge in either order. The
 // retro's step comes from stepAt, which every writer of a step's record takes, so a record key that
 // is no issue key writes nothing.
-func (e *Engine) rateRetro(ctx context.Context, tx pgx.Tx, issue record.Issue, rating record.PlanRating) error {
-	w, err := e.walk(ctx, tx, issue)
-	if err != nil {
-		return err
-	}
-	step, recorded := stepAt(w, issue, phase.Retro)
+func (e *Engine) rateRetro(ctx context.Context, tx pgx.Tx, s TaskScope, rating record.PlanRating) error {
+	issue, w := s.issue, s.walk
+	step, recorded := stepAt(w, issue, placeNamed(record.TaskPlace{Kind: record.PlaceRetro}, phase.Retro))
 	if !recorded {
 		return nil
 	}
@@ -241,13 +305,10 @@ func planHold(issue record.Issue, stored bool) bool {
 // from and an escalation would overwrite the reason, so each is refused with what starts the work
 // again: for a stopped task a later version of its plan (RetryOfStoppedTask), for a parent held
 // for its children why it still waits (heldParentWait's refusal).
-func (e *Engine) planHoldRefusal(ctx context.Context, tx pgx.Tx, issue record.Issue) (*intake.Refusal, error) {
-	if issue.Phase != phase.Held || issue.Hold == nil {
+func (e *Engine) planHoldRefusal(ctx context.Context, tx pgx.Tx, s TaskScope) (*intake.Refusal, error) {
+	issue, w := s.issue, s.walk
+	if issue.Phase != phase.Held || issue.Hold == nil || !planHold(issue, w.Stored) {
 		return nil, nil
-	}
-	w, err := e.walk(ctx, tx, issue)
-	if err != nil || !planHold(issue, w.Stored) {
-		return nil, err
 	}
 	if record.HeldForChildren(issue) {
 		wait, err := e.heldParentWaitOf(ctx, tx, issue)
@@ -283,7 +344,8 @@ const (
 // for its children at its retro, and a stopped task at the step the stop ended, whose own role's
 // report is the run the stop ended and is no left phase's, so a run of a left phase is never also
 // that run.
-func (e *Engine) pastReportOf(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.HandoffComplete, reported phase.Phase) (pastReport, error) {
+func (e *Engine) pastReportOf(ctx context.Context, tx pgx.Tx, s TaskScope, fact intake.HandoffComplete, reported phase.Phase) (pastReport, error) {
+	issue := s.issue
 	left, err := e.leftItsPhase(ctx, tx, issue, fact.Role, fact.Claim)
 	switch {
 	case err != nil:
@@ -291,9 +353,8 @@ func (e *Engine) pastReportOf(ctx context.Context, tx pgx.Tx, issue record.Issue
 	case left:
 		return leftPhaseReported, nil
 	case record.HeldFor(issue, record.HoldTaskStopped) && issue.Hold.From == reported:
-		w, err := e.walk(ctx, tx, issue)
-		if err != nil || !planHold(issue, w.Stored) {
-			return noRunReported, err
+		if !planHold(issue, s.walk.Stored) {
+			return noRunReported, nil
 		}
 		return stoppedStepReported, nil
 	}
@@ -311,16 +372,15 @@ func (e *Engine) pastReportOf(ctx context.Context, tx pgx.Tx, issue record.Issue
 // (HANDOFF_NOT_CURRENT_PHASE); and one of a step other than the one the stop ended. The refusal
 // writes nothing itself: the caller answers it after the lingering tree's and keeps the report's
 // handoff record (spendLateHandoff).
-func (e *Engine) lateReport(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.HandoffComplete, reported phase.Phase, past pastReport) (*intake.Refusal, error) {
-	if past != stoppedStepReported {
+func (e *Engine) lateReport(ctx context.Context, tx pgx.Tx, s TaskScope, fact intake.HandoffComplete, reported phase.Phase, past pastReport) (*intake.Refusal, error) {
+	issue, w := s.issue, s.walk
+	if past != stoppedStepReported || !w.Stored {
 		return nil, nil
 	}
-	w, err := e.walk(ctx, tx, issue)
-	if err != nil || !w.Stored {
-		return nil, err
-	}
-	at, _ := w.PlaceOf(reported)
-	if at.Kind != record.PlaceStep {
+	// The report is of the role's own step, so of two steps that run as step, only the one the stop
+	// ended (the task keeps its place at its stop) is late.
+	at, ok := w.placeOfRole(fact.Role)
+	if !ok || at != w.Place || at.Kind != record.PlaceStep {
 		return nil, nil
 	}
 	ran, err := e.ranUnreported(ctx, tx, issue, fact.Role, fact.Claim)

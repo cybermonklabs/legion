@@ -41,3 +41,43 @@ func TestTheAddressingTellsAFreshAgentThatItsSessionWasLost(t *testing.T) {
 		}
 	}
 }
+
+// A launch that has Oh My Pi resume the session by its id through an older pod launcher is told
+// that its workspace may have been recreated, holding what was pushed to the claim's own branch:
+// the branch of the task its pending delivery is of (supervise.Delivery.Branch), and the issue's
+// own for a delivery that names none or a claim that holds none. For an agent on a task's own
+// branch, legion/LEGION-209.b, the issue's branch is another task's.
+//
+// The fault it catches is a resumed agent of a task told that its workspace holds the issue's
+// branch (its control: the sentence naming claim.IssueBranch, under which the agent of b is told
+// legion/LEGION-209).
+func TestTheRecreatedWorkspaceSentenceNamesTheClaimsOwnBranch(t *testing.T) {
+	t.Parallel()
+	token, err := claim.NewToken("legion", "LEGION-209", claim.RoleTester)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resumed := supervise.Claim{Token: token, Project: "legion", Tree: "LEGION-208", Issue: "LEGION-209", Role: claim.RoleTester,
+		Generation: 4, AgentResumeGeneration: 4}
+	for _, tc := range []struct {
+		name    string
+		pending *supervise.Delivery
+		branch  string
+	}{
+		{"a task on its own branch", &supervise.Delivery{ID: "outbox:7", Task: "test it", Branch: "legion/LEGION-209.b"}, "legion/LEGION-209.b"},
+		{"a task on the issue's branch", &supervise.Delivery{ID: "outbox:7", Task: "test it"}, "legion/LEGION-209"},
+		{"a claim that holds no delivery", nil, "legion/LEGION-209"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := resumed
+			c.Pending = tc.pending
+			told, err := AddressingFragment("legion", c, ghrepo.Repository{}, "", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if want := "it holds what was pushed to " + tc.branch + " ("; !strings.Contains(told, want) {
+				t.Errorf("the resumed agent is told %q, want it to say %q", told, want)
+			}
+		})
+	}
+}

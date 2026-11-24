@@ -263,7 +263,13 @@ func (s *server) controllerGitHubCredential(w http.ResponseWriter, r *http.Reque
 		s.writeFailure(w, r, http.StatusBadGateway, "GITHUB_TOKEN_FAILED", "GitHub token exchange failed")
 		return
 	}
-	installed, _ := read.Owners(appauth.AppRoleFor(claim.RoleController))
+	app, err := appauth.AppRoleFor(claim.RoleController, nil)
+	if err != nil {
+		s.logRequestFailure(r, err, "api: the controller's GitHub App")
+		s.writeFailure(w, r, http.StatusInternalServerError, "GITHUB_TOKEN_SOURCE_UNAVAILABLE", err.Error())
+		return
+	}
+	installed, _ := read.Owners(app)
 	if installed == nil {
 		installed = []string{}
 	}

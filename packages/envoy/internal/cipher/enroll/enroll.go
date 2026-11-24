@@ -211,10 +211,10 @@ type Enrollment struct {
 	// carries it to a successor.
 	Projects []string
 	// Claim is what a pod's launcher states the pod runs for, kept as enrollments.claim: for the
-	// Legion daemon, the role claim token (legion-<project>-<issue>-<role>), which every role
-	// generation and every replacement pod of that role states again. "" states none. It is only
-	// for a pod a launcher enrols (ErrInvalidClaim), and it is what a pod's owner is read from
-	// (ownerKey).
+	// Legion daemon, the claim token of one agent of an issue (legion-<project>-<issue>-<agent>),
+	// which every generation and every replacement pod of that agent states again, whatever role
+	// its step is on. "" states none. It is only for a pod a launcher enrols (ErrInvalidClaim), and
+	// it is what a pod's owner is read from (ownerKey).
 	Claim string
 	// carry is the principal the enrollment's grants follow, as enrollments.carry_principal
 	// records it, and name the principal its session name is held under (bindSessionName). The
@@ -1120,7 +1120,7 @@ func namePrincipal(cred Credential, in Enrollment) *string {
 }
 
 // claimPattern is the shape a claim takes (ErrInvalidClaim): a Legion claim token,
-// legion-<project>-<issue>-<role>, fits it, and nothing that could read as another kind of owner
+// legion-<project>-<issue>-<agent>, fits it, and nothing that could read as another kind of owner
 // does, since it holds no slash and no colon.
 var claimPattern = regexp.MustCompile(`^[a-z][a-z0-9-]{0,127}$`)
 
@@ -1155,12 +1155,12 @@ const claimOwnerPrefix = "claim:"
 //     credential proved naming one machine and its key (exchange.MachineSubject), so two machines
 //     of one fleet are two owners;
 //   - a pod that states no claim is its own pod's, machine:<service>/<pod uid>, and a slot of it
-//     is that slot's, machine:<service>/<pod uid>/<slot>. Every role process of an issue pod
-//     enrols under the pod's one uid in a slot of its own (<role>-g<generation>), so without the
-//     slot one role would read and cancel another's requests, which each slot holds alone. A slot
-//     holds no slash (record.ValidSlot), and a machine's subject holds a '#' before its key's
-//     thumbprint (exchange.MachineSubject), which neither a pod uid nor a slot holds, so no two of
-//     these spell one owner.
+//     is that slot's, machine:<service>/<pod uid>/<slot>. Every process of an issue pod enrols
+//     under the pod's one uid in a slot of its own (<agent>-g<generation>, the slot of its claim's
+//     agent), so without the slot one process would read and cancel another's requests, which
+//     each slot holds alone. A slot holds no slash (record.ValidSlot), and a machine's subject
+//     holds a '#' before its key's thumbprint (exchange.MachineSubject), which neither a pod uid
+//     nor a slot holds, so no two of these spell one owner.
 //
 // Anything else, and every row from before migration 0035, records none, and a request of an
 // enrollment with no owner is that enrollment's alone. Unlike carryPrincipal, an owner needs no

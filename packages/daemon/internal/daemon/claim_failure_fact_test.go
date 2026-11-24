@@ -91,7 +91,7 @@ func TestTheHeldNoticeNamesTheFailure(t *testing.T) {
 		t.Fatal("the failed planner carries no sentence, so the fact below proves nothing of the one the daemon applies")
 	}
 
-	want := intake.ClaimFailed{Issue: issue, Role: claim.RolePlanner, Reason: failed.Failure,
+	want := intake.ClaimFailed{Issue: issue, Role: claim.RolePlanner, Claim: planner, Reason: failed.Failure,
 		Cause: supervise.CauseStalePlugin, Budgets: supervise.Budgets{LaunchFailures: 2}, Limits: limits}
 	var applied []intake.ClaimFailed
 	testwait.Eventually(t, "the planner's failure to reach the workflow", func() bool {

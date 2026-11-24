@@ -626,6 +626,25 @@ func TestALauncherStartNamingASessionMustNameOneResumeOfIt(t *testing.T) {
 	}
 }
 
+// An adoption names its working copy only as a branch of an issue or of a task of one, the issue's
+// own working copy being "": a branch of any other shape is refused, so the shim never derives a
+// directory from it.
+func TestAnAdoptionFrameRefusesABranchThatIsNoTasks(t *testing.T) {
+	frame := AdoptWorkingCopy{ID: "r4", JJUser: "legion", JJEmail: "l@example.com", TimeoutMs: 1}
+	for _, branch := range []string{"", "legion/INFRA-1", "legion/INFRA-1.d", "legion/INFRA-1.b.2"} {
+		frame.Branch = branch
+		if err := frame.Validate(); err != nil {
+			t.Errorf("an adoption of branch %q: Validate = %v, want none", branch, err)
+		}
+	}
+	for _, branch := range []string{"main", "legion/INFRA-1.d/../x", "legion/infra-1", "legion/INFRA-1.D"} {
+		frame.Branch = branch
+		if err := frame.Validate(); !errors.Is(err, ErrMalformedFrame) {
+			t.Errorf("an adoption of branch %q: Validate = %v, want ErrMalformedFrame", branch, err)
+		}
+	}
+}
+
 func TestHello2RoundTripsWithAndWithoutAnIdentity(t *testing.T) {
 	identity := &AgentSecretsHello{Thumbprint: "NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs", PodToken: "eyJhbGciOiJSUzI1NiJ9.e30.sig"}
 	for name, frame := range map[string]Hello2{

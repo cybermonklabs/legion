@@ -490,7 +490,7 @@ func (r *podUpdateRig) heldStartRequest(role claim.Role) supervise.RequestRuleRe
 // it shows that a let-out decides no keep of the pod (podHolds.owes reads none).
 func (r *podUpdateRig) writeLetOut(role claim.Role, letOut time.Time) {
 	r.t.Helper()
-	if moved, err := r.st.SetResumeClock(r.ctx, podUpdateProject, podUpdateIssue, role, letOut); err != nil || !moved {
+	if moved, err := r.st.SetResumeClock(r.ctx, podUpdateProject, podUpdateIssue, role, r.tokens[role], letOut); err != nil || !moved {
 		r.t.Fatalf("write the let-out of the %s's launch = %t, %v; want the clock of its open resume moved", role, moved, err)
 	}
 }
@@ -559,7 +559,7 @@ func (r *podUpdateRig) stampsResumes() {
 func (r *podUpdateRig) awaitResumeReady(role claim.Role) {
 	r.t.Helper()
 	testwait.Eventually(r.t, fmt.Sprintf("the ready of the %s stamped on its open resume", role), func() bool {
-		id, _, open, err := r.st.OpenPodResume(r.ctx, podUpdateProject, podUpdateIssue, role)
+		id, _, open, err := r.st.OpenPodResume(r.ctx, podUpdateProject, podUpdateIssue, role, r.tokens[role])
 		if err != nil || !open {
 			r.t.Fatalf("read the open resume of the %s = %t, %v; want the resume of its held wake open", role, open, err)
 		}

@@ -118,7 +118,7 @@ func (s *server) claimCompact(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	answer, ok := s.compact(w, r, target.machine, target.token)
+	answer, ok := s.compact(w, target.request, target.machine, target.token)
 	if !ok {
 		return
 	}

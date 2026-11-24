@@ -27,7 +27,7 @@ import (
 func TestTheBundleReachesEveryOwnerTheAppIsInstalledOn(t *testing.T) {
 	served := servesOneOf("cybermonklabs/legion", "sjawhar/oh-my-pi", "sjawhar/tools")
 	credential := GitHubCredential(sourceOf(ownerTokens{}, installedOnOwners("cybermonklabs", "sjawhar")), served,
-		ghrepo.MustRenames(legionRename), nil, nil, quietBundleLog())
+		ghrepo.MustRenames(legionRename), nil, nil, nil, quietBundleLog())
 	bundle, err := credential(context.Background(), claim.RoleImplementer, ghrepo.MustParse("sjawhar/oh-my-pi"))
 	if err != nil {
 		t.Fatalf("credential: %v", err)

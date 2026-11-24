@@ -45,7 +45,11 @@ func TestALateFailNamingAStepOffItsTasksLineIsRefusedNotFailed(t *testing.T) {
 		if err := store.PutPlan(ctx, tx, v, []record.PlanTask{task}, steps); err != nil {
 			return err
 		}
-		return store.MoveTask(ctx, tx, root, 1, "a", record.TaskPlace{Kind: record.PlaceStep, Position: 1}, record.TaskRunning)
+		if err := store.MoveTask(ctx, tx, root, 1, "a", record.TaskPlace{Kind: record.PlaceStep, Position: 1}, record.TaskRunning); err != nil {
+			return err
+		}
+		// The move writes the wait of a start for its join; this seed stands for a task whose join ended.
+		return store.SetStepWait(ctx, tx, root, 1, "a", record.StepWaitNone, nil)
 	}); err != nil {
 		t.Fatalf("seed the plan of %s: %v", root, err)
 	}

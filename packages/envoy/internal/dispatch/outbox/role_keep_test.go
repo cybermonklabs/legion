@@ -561,9 +561,9 @@ func TestACopyKeptForARoleClaimedUnderTheKeepReachesThatHolderBeforeTheIssuesNex
 // that claimed the role under the keep takes a lane strictly in order from its cursor, and only
 // the role's own drain hands it over (cmd/listener/role_keep.go, walkKeptRole). A handover of the
 // copy just kept would overtake the copies before it - it is made a few round trips after the
-// claim, while that claim's drain is still on its first reads - and since a role token names one
-// tree role of one issue, those are this issue's own earlier events: the holder would see its
-// later event first. The copies waiting there are also why nothing is lost by leaving this one:
+// claim, while that claim's drain is still on its first reads - and since a role token is the
+// claim token of one agent of one issue, those are this issue's own earlier events: the holder
+// would see its later event first. The copies waiting there are also why nothing is lost by leaving this one:
 // the claim's drain finds them and this one behind them and sends the lot, without waiting for
 // the listener's sweep.
 //

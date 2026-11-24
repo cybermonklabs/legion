@@ -333,7 +333,7 @@ func (e *enrollmentRecorder) calls() int {
 func (e *enrollmentRecorder) enrolledAs(token claim.Token) []string {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	role, _ := token.Role()
+	_, role, _ := token.Cut()
 	var sessions []string
 	for _, p := range e.enrollments {
 		if strings.HasPrefix(p.Slot, string(role)+"-g") {

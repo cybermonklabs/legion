@@ -5,9 +5,9 @@
 // names (FromBlocks), and compares two versions (ChangedTasks); it holds no store and calls
 // nothing.
 //
-// It imports internal/phase alone, so both the configuration loader, which reads a project's
-// default steps with this grammar and these checks, and the workflow, which walks the line they
-// make (Line), can import it.
+// It imports internal/phase and internal/claim alone, which import no other package of the daemon
+// but claim, so both the configuration loader, which reads a project's default steps with this
+// grammar and these checks, and the workflow, which walks the line they make (Line), can import it.
 package plan
 
 import (
@@ -24,7 +24,7 @@ import (
 // nothing else.
 type Type string
 
-// The types Legion's list starts with; a deployment adds its own in a later release.
+// The types Legion's list starts with; a deployment adds its own in its `role_types`.
 const (
 	TypeDesign         Type = "design"
 	TypePlanning       Type = "planning"
@@ -45,6 +45,27 @@ func (s Step) String() string {
 	return s.Role + ":" + s.Key
 }
 
+// Agent is who does one step: the owner of the task (Key "owner"), the agent of a key (Key set,
+// Task "" and Place 0), or, for a step with no key, an agent of that step alone (Key "", Task and
+// Place set). Two steps have one agent exactly when their Agent values are equal, so the steps of
+// one key are one agent in any task, and a return to a step with no key finds the agent it had.
+type Agent struct {
+	Key   string
+	Task  string
+	Place int
+}
+
+// AgentOf is the agent of step place (from 1) of task, whose step is s.
+func AgentOf(task string, place int, s Step) Agent {
+	if s.Key != "" {
+		return Agent{Key: s.Key}
+	}
+	return Agent{Task: task, Place: place}
+}
+
+// Owner says whether a is the owner of its task.
+func (a Agent) Owner() bool { return a.Key == "owner" }
+
 // DefaultTask is the id of the one task of an issue whose owner gives no plan, which runs the
 // project's default steps.
 const DefaultTask = "default"
@@ -55,11 +76,18 @@ type Task struct {
 	ID string
 	// Needs are the tasks this task needs, each by its id, in the order the block writes them:
 	// FromBlocks reads each `needs` word, a reference to a block or a word, as the id of the task
-	// it names, and keeps a word that names no task in Unresolved.
+	// it names, keeps a word that names no task in Unresolved, and keeps a `dispatch://` reference
+	// that is not of the plan's issue in OutsideIssue.
 	Needs []string
 	// Unresolved are the `needs` words that name no task of the plan, in the block's order, as
 	// FromBlocks leaves them; Validate refuses each one.
 	Unresolved []string
+	// OutsideIssue are the `needs` words that are `dispatch://` references not of the plan's
+	// issue, in the block's order, as FromBlocks leaves them: each one into another issue, and each
+	// one that starts with no issue key (a project's document, an agent's, or no key at all). Only
+	// a document of the plan's issue holds the plan, a task needs only tasks of its own plan, and an
+	// issue waits for another issue by a link between the two issues. Validate refuses each one.
+	OutsideIssue []string
 	// PartOf is `part_of` and Owner is `owner`, each as the block writes it, "" when unset.
 	PartOf, Owner string
 	// Merges is `merges`: true unless the block leaves the attribute out or writes `false`.
@@ -94,12 +122,11 @@ func Sinks(tasks []Task) []string {
 	return sinks
 }
 
-// RoleDef is a role a step can name: its name, its type, and the phase of today's line it runs as
-// in this release, where each step is a phase.
+// RoleDef is a role a step can name: its name and the type of the work it does. How a step of the
+// role runs is decided by its name alone (RunsAs).
 type RoleDef struct {
-	Name  string
-	Type  Type
-	Phase phase.Phase
+	Name string
+	Type Type
 }
 
 // Plan is one version of an owner's plan document as Legion reads it.
@@ -113,18 +140,18 @@ type Plan struct {
 	RoleBlocks []string
 }
 
-// Deployment is what the deployment gives a plan: the roles a step can name, by name. In this
-// release that is BuiltinRoles alone.
+// Deployment is what the deployment gives a plan: the roles a step can name, by name, which are
+// Legion's own (BuiltinRoles) and each role the deployment's settings define.
 type Deployment struct{ Roles map[string]RoleDef }
 
 // Refusal is one reason Legion does not take a plan: the task it names, "" for a cause of the
 // whole plan, and the reason as the owner reads it.
 type Refusal struct{ Task, Reason string }
 
-// BuiltinRoles is Legion's own roles of a step, each with its type and the phase it runs as: the
-// planner, the implementer, the tester, the reviewer and acceptance, the owner's reading of the
-// finished work. The architect, the merger and the controller are no roles of a step. The answer
-// is a fresh map, so a caller that changes it leaves the next caller's answer whole.
+// BuiltinRoles is Legion's own roles of a step, each with its type: the planner, the implementer,
+// the tester, the reviewer and acceptance, the owner's reading of the finished work. The
+// architect, the merger and the controller are no roles of a step. The answer is a fresh map, so a
+// caller that changes it leaves the next caller's answer whole.
 func BuiltinRoles() map[string]RoleDef {
 	roles := make(map[string]RoleDef, len(builtinRoles))
 	for _, role := range builtinRoles {
@@ -133,14 +160,34 @@ func BuiltinRoles() map[string]RoleDef {
 	return roles
 }
 
-// builtinRoles is BuiltinRoles in the order of today's line, which is the order Supported holds a
-// task's steps to in this release.
+// builtinRoles is BuiltinRoles, listed in the order of today's line. No check reads the order: a
+// task names its steps in any order (Supported).
 var builtinRoles = []RoleDef{
-	{Name: "planner", Type: TypePlanning, Phase: phase.Planning},
-	{Name: "implementer", Type: TypeImplementation, Phase: phase.Implementing},
-	{Name: "tester", Type: TypeTesting, Phase: phase.Testing},
-	{Name: "reviewer", Type: TypeReview, Phase: phase.Reviewing},
-	{Name: "acceptance", Type: TypeReview, Phase: phase.Accepting},
+	{Name: "planner", Type: TypePlanning},
+	{Name: "implementer", Type: TypeImplementation},
+	{Name: "tester", Type: TypeTesting},
+	{Name: "reviewer", Type: TypeReview},
+	{Name: "acceptance", Type: TypeReview},
+}
+
+// RunsAs is the phase a step of role runs as: each of Legion's five roles of a step its own phase,
+// and every other role, one the deployment defines, the phase step, where the role that works the
+// step is the one the plan names for it. It reads the role's name and nothing else, never its
+// type: a role of the deployment whose type is review still runs as step.
+func RunsAs(role string) phase.Phase {
+	switch role {
+	case "planner":
+		return phase.Planning
+	case "implementer":
+		return phase.Implementing
+	case "tester":
+		return phase.Testing
+	case "reviewer":
+		return phase.Reviewing
+	case "acceptance":
+		return phase.Accepting
+	}
+	return phase.Step
 }
 
 // nameWord is the grammar of a role and of a key.
@@ -176,14 +223,17 @@ func StepsOf(t Task, defaults []Step) []Step {
 	return nil
 }
 
-// Line is the phases a task walks in this release, where each step runs as the phase of its
-// role: the steps' phases in their order, then Legion's own retro and merge, which no plan names
-// and no plan leaves out. A role d does not define has no phase and stands in the line as
-// "", which no row of the workflow moves into, so the caller walks only a plan Validate took.
-func Line(steps []Step, d Deployment) []phase.Phase {
+// Line is the phases a task walks: the phase each step runs as (RunsAs), in the steps' order, then
+// Legion's own retro and merge where the task merges, which no plan names. The work of an issue
+// merges once, at the end of the one task no task needs (Sinks), so that task alone has a retro
+// and a merge, and a task another task needs is done at its last step.
+func Line(steps []Step, merges bool) []phase.Phase {
 	line := make([]phase.Phase, 0, len(steps)+2)
 	for _, step := range steps {
-		line = append(line, d.Roles[step.Role].Phase)
+		line = append(line, RunsAs(step.Role))
+	}
+	if !merges {
+		return line
 	}
 	return append(line, phase.Retro, phase.Merging)
 }

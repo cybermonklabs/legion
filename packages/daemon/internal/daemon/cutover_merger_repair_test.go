@@ -769,7 +769,11 @@ func (r *cutoverRig) startOrOweMark(t *testing.T) bool {
 	if err := r.records.PutIssue(ctx, tx, control); err != nil {
 		t.Fatalf("record the control issue: %v", err)
 	}
-	task, err := r.engine.ResumeTask(ctx, tx, control)
+	s, err := r.engine.PromotedScope(ctx, tx, control, claim.RoleMerger)
+	if err != nil {
+		t.Fatalf("read the control issue's scope for its merger: %v", err)
+	}
+	task, err := r.engine.ResumeTask(ctx, tx, s)
 	if err != nil {
 		t.Fatalf("compose the control issue's resume task: %v", err)
 	}
@@ -811,7 +815,7 @@ func (r *cutoverRig) await(t *testing.T, what string, condition func() bool) {
 	testwait.WithinPolling(t, testwait.Bounded(t, cutoverWait, time.Second), cutoverPoll, what, condition)
 }
 
-// token is role's claim token on issue.
+// token is the claim token of the agent named for role on issue, the role's own claim.
 func (r *cutoverRig) token(t *testing.T, issue string, role claim.Role) claim.Token {
 	t.Helper()
 	token, err := claim.NewToken(r.project, issue, role)

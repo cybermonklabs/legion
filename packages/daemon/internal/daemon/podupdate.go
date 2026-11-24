@@ -1224,14 +1224,14 @@ func (s *supervision) tellIssueOfRound(ctx context.Context, issue, round, body, 
 
 // workspaceRead is what a round's one read of its issue's workspace answered before the pod's
 // replacement (readRoundWorkspace): the round it was made for, who made the replacement (by,
-// roundReplacer), the role whose process made it, and what it found or the error it failed with.
+// roundReplacer), the claim whose process made it, and what it found or the error it failed with.
 // notMade is why no read was made, and it is set with the round alone, or with the round and a
 // replacer that no process ran under (processlessRead). Only a read that was made is kept
 // (podUpdateWorkspace).
 type workspaceRead struct {
 	round   string
 	by      roundReplacer
-	role    claim.Role
+	claim   claim.Token
 	work    runtime.WorkspaceWork
 	err     error
 	notMade string
@@ -1304,15 +1304,10 @@ func (s *supervision) readRoundWorkspace(ctx context.Context, issue, round strin
 	if !ok {
 		return workspaceRead{round: round, notMade: noWorkspaceReaderRead}
 	}
-	read := workspaceRead{round: round}
-	if role, named := process.Claim.Role(); !named {
-		read.err = fmt.Errorf("the claim %s names no role to read the workspace through", process.Claim)
-	} else {
-		limited, done := context.WithTimeout(ctx, s.plan.orphanSweep)
-		read.role = role
-		read.work, read.err = reader.WorkspaceWork(limited, issue, role)
-		done()
-	}
+	read := workspaceRead{round: round, claim: process.Claim}
+	limited, done := context.WithTimeout(ctx, s.plan.orphanSweep)
+	read.work, read.err = reader.WorkspaceWork(limited, issue, process.Claim)
+	done()
 	s.keepWorkspaceRead(issue, read)
 	return read
 }
@@ -1368,13 +1363,13 @@ func (r workspaceRead) attrs() []any {
 	case r.notMade != "":
 		return []any{"workspaceRead", "not made", "workspaceNotReadBecause", r.notMade}
 	case r.err != nil:
-		return []any{"workspaceRead", "failed", "workspaceReadBy", r.role, "workspaceReadError", r.err.Error()}
+		return []any{"workspaceRead", "failed", "workspaceReadBy", r.claim, "workspaceReadError", r.err.Error()}
 	}
 	found := "found no work"
 	if r.work.HoldsWork() {
 		found = "found work"
 	}
-	return []any{"workspaceRead", found, "workspaceReadBy", r.role, "workspaceHead", r.work.Head,
+	return []any{"workspaceRead", found, "workspaceReadBy", r.claim, "workspaceHead", r.work.Head,
 		"workspaceChanged", r.work.Changed, "workspaceCommits", r.work.Commits, "workspaceCommitCount", r.work.Count}
 }
 
@@ -2747,7 +2742,7 @@ func (s *supervision) askRound(ctx context.Context, issue string, group []superv
 	text := supervise.UpdateTask(round, roundReasons(group, round), *bound)
 	rows := make([]record.OutboxPayload, len(asking))
 	for i, c := range asking {
-		rows[i] = record.UpdateAsk{Role: c.Role, Round: round, Pod: pod, Text: text}
+		rows[i] = record.UpdateAsk{Role: c.Role, Claim: c.Token, Round: round, Pod: pod, Text: text}
 	}
 	written, err := s.enqueue(ctx, issue, rows...)
 	if err != nil {

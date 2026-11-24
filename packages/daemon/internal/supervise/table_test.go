@@ -496,7 +496,7 @@ func TestARowCannotMoveTheClaimOutsideTheStatesItNames(t *testing.T) {
 
 func TestAnEventForAnotherClaimIsAnError(t *testing.T) {
 	h := newHarness(t)
-	other := claim.Token("legion-LEGION-209-tester")
+	other := claim.Token("legion-legion-legion-209-tester")
 	for _, ev := range []Event{
 		RequestSpawn{Claim: other},
 		StreamHello{Claim: other, Generation: 1},

@@ -117,7 +117,7 @@ func newTransferGitHub(t *testing.T, serving string) *transferGitHub {
 			return
 		}
 		_, _ = fmt.Fprintf(w, `[{"number":42,"state":"open","html_url":"https://github.com/%s/legion/pull/42","body":"Dispatch: LEGION-208",`+
-			`"head":{"ref":"legion/LEGION-208","sha":%q},"base":{"ref":"main"}}]`, g.serving, headSHA)
+			`"head":{"ref":"legion/LEGION-208","sha":%q,"repo":{"full_name":"%s/legion"}},"base":{"ref":"main"}}]`, g.serving, headSHA, g.serving)
 	}})
 	return g
 }

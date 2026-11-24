@@ -218,8 +218,8 @@ func TestALiveRoundReadsTheWorkspaceBesideTheLaunchAPauseOwesThatForgotItsSessio
 	rig.clockAt(podUpdateBound)
 	replaced := rig.awaitReplacement(1, "through the tester's process at the bound")
 	rig.wantForgottenLaunch()
-	if through, _ := replaced[0].Pod.Claim.Role(); through != claim.RoleTester {
-		t.Fatalf("the pod was replaced through the %s, want the tester, the one role whose process runs in the pod", through)
+	if through := replaced[0].Pod.Claim; through != rig.tokens[claim.RoleTester] {
+		t.Fatalf("the pod was replaced through %s, want the tester's claim, the one whose process runs in the pod", through)
 	}
 
 	lines := loggedLines(t, rig.logs.String(), podUpdateReplacedLine)
@@ -227,8 +227,8 @@ func TestALiveRoundReadsTheWorkspaceBesideTheLaunchAPauseOwesThatForgotItsSessio
 		t.Fatalf("the replacement was logged %d times, want once: %+v", len(lines), lines)
 	}
 	commits, _ := lines[0]["workspaceCommits"].([]any)
-	if lines[0]["workspaceRead"] != "found work" || lines[0]["workspaceReadBy"] != string(claim.RoleTester) || len(commits) != 1 || commits[0] != passedOverCommit {
-		t.Fatalf("the replacement's line names the read %+v, want one made through the tester that found the commit %s", lines[0], passedOverCommit)
+	if lines[0]["workspaceRead"] != "found work" || lines[0]["workspaceReadBy"] != string(rig.tokens[claim.RoleTester]) || len(commits) != 1 || commits[0] != passedOverCommit {
+		t.Fatalf("the replacement's line names the read %+v, want one made through the tester's claim that found the commit %s", lines[0], passedOverCommit)
 	}
 	wantField(t, lines[0], "notWaitedFor", reviewer)
 

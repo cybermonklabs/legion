@@ -32,7 +32,7 @@ func reviewApprovedNow(t *testing.T, pool *pgxpool.Pool, engine *Engine, key str
 		if err != nil {
 			return err
 		}
-		pr, err := engine.store.PullRequest(ctx, tx, key)
+		pr, err := engine.store.MergePullRequest(ctx, tx, key)
 		if err != nil {
 			return err
 		}
@@ -40,7 +40,11 @@ func reviewApprovedNow(t *testing.T, pool *pgxpool.Pool, engine *Engine, key str
 		if err != nil {
 			return err
 		}
-		return engine.transition(ctx, tx, *issue, TriggerReviewApproved, "", reviewer, pr, "")
+		s, err := firstScope(ctx, tx, engine, *issue)
+		if err != nil {
+			return err
+		}
+		return engine.transition(ctx, tx, s, TriggerReviewApproved, record.TaskPlace{}, reviewer, pr, "")
 	})
 
 }
@@ -55,9 +59,9 @@ func defaultAtReviewing(t *testing.T, pool *pgxpool.Pool, engine *Engine) (recor
 	if task := taskOf(t, pool, engine, root.Key); task.Task != defaultTask {
 		t.Fatalf("the first step of %s with no owner's plan stored task %q, want the default rows", root.Key, task.Task)
 	}
-	move(t, pool, engine, root.Key, TriggerPlannerCompleted, "", record.PhaseRow{})
-	move(t, pool, engine, root.Key, TriggerImplementationReady, "", record.PhaseRow{})
-	move(t, pool, engine, root.Key, TriggerTesterPassed, "", record.PhaseRow{})
+	move(t, pool, engine, root.Key, TriggerPlannerCompleted, record.TaskPlace{}, record.PhaseRow{})
+	move(t, pool, engine, root.Key, TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{})
+	move(t, pool, engine, root.Key, TriggerTesterPassed, record.TaskPlace{}, record.PhaseRow{})
 	reviewer := seedPhaseWorker(t, pool, root.Key, claim.RoleReviewer, "")
 	assertWalksAt(t, pool, engine, root.Key, phase.Reviewing, record.TaskPlace{Kind: record.PlaceStep, Position: 4})
 	return root, reviewer
@@ -69,8 +73,8 @@ func ownerAtReviewing(t *testing.T, pool *pgxpool.Pool, engine *Engine) (record.
 	t.Helper()
 	root := stepRoot(t, pool, phase.Admitted)
 	seedStepsPlan(t, pool, root.Key, root.Generation, "implementer", "reviewer", "acceptance:owner")
-	move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
-	move(t, pool, engine, root.Key, TriggerImplementationReady, "", record.PhaseRow{})
+	move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
+	move(t, pool, engine, root.Key, TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{})
 	reviewer := seedPhaseWorker(t, pool, root.Key, claim.RoleReviewer, "")
 	assertWalksAt(t, pool, engine, root.Key, phase.Reviewing, record.TaskPlace{Kind: record.PlaceStep, Position: 2})
 	return root, reviewer
@@ -201,8 +205,8 @@ func TestAFirstReportAfterItsRunsEventIsTakenOnTheEndedStep(t *testing.T) {
 		reviewRequestsChanges(t, pool, engine, root.Key)
 		// Round 1's first report, which case b holds to its answer.
 		applyFacts(t, pool, engine)("round-1", reportOf(claim.RoleReviewer, reviewer, "review-1"))
-		move(t, pool, engine, root.Key, TriggerImplementationReady, "", record.PhaseRow{})
-		move(t, pool, engine, root.Key, TriggerTesterPassed, "", record.PhaseRow{})
+		move(t, pool, engine, root.Key, TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{})
+		move(t, pool, engine, root.Key, TriggerTesterPassed, record.TaskPlace{}, record.PhaseRow{})
 		assertWalksAt(t, pool, engine, root.Key, phase.Reviewing, record.TaskPlace{Kind: record.PlaceStep, Position: 4})
 		again := applyFacts(t, pool, engine)("round-1-again", reportOf(claim.RoleReviewer, reviewer, "review-1"))
 		if again.Refusal == nil || again.Refusal.Code != "HANDOFF_NOT_NEW" {

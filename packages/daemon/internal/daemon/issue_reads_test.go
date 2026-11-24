@@ -31,7 +31,7 @@ func TestThePerIssueReadFollowsAStaleRecordedHead(t *testing.T) {
 	pool := isolatedOutboxPool(t)
 	seedCapture(t, pool, phase.Testing, "testing", record.PhaseRow{Issue: "CAPTURE-1", Role: claim.RoleTester, Claim: "test-claim"})
 	w := readRuntime(pool, pullRequestStandIn(t, "pushed", read, &atomic.Int32{}).URL, quietLogger())
-	if _, err := w.readIssuePullRequest(context.Background(), "CAPTURE-1"); err != nil {
+	if _, err := w.readIssuePullRequest(context.Background(), "CAPTURE-1", ""); err != nil {
 		t.Fatalf("read the issue's pull request: %v", err)
 	}
 	_, pr := capturePhase(t, pool)
@@ -45,7 +45,7 @@ func TestThePerIssueReadFollowsAStaleRecordedHead(t *testing.T) {
 	// further: the read is safe to run twice. What that second read does apply is the
 	// mergeability fact every answering read applies, whose read time is what moved
 	// (applyMergeability).
-	if _, err := w.readIssuePullRequest(context.Background(), "CAPTURE-1"); err != nil {
+	if _, err := w.readIssuePullRequest(context.Background(), "CAPTURE-1", ""); err != nil {
 		t.Fatalf("read the issue's pull request again: %v", err)
 	}
 	if got := headReads(t, pool, "head-read"); got != 1 {
@@ -65,7 +65,7 @@ func TestThePerIssueReadFindsThePullRequestOfTheIssuesBranch(t *testing.T) {
 	seedUnrecorded(t, pool, "handoff")
 	var listed atomic.Int32
 	w := readRuntime(pool, pullRequestStandIn(t, "handoff", opened, &listed).URL, quietLogger())
-	if _, err := w.readIssuePullRequest(context.Background(), "CAPTURE-1"); err != nil {
+	if _, err := w.readIssuePullRequest(context.Background(), "CAPTURE-1", ""); err != nil {
 		t.Fatalf("read the issue's pull request: %v", err)
 	}
 	got, pr := capturePhase(t, pool)
@@ -98,7 +98,7 @@ func TestThePerIssueReadTellsTheArchitectOfAMissingPullRequest(t *testing.T) {
 	t.Cleanup(server.Close)
 	w := readRuntime(pool, server.URL, quietLogger())
 	for range 2 {
-		if _, err := w.readIssuePullRequest(context.Background(), "CAPTURE-1"); err != nil {
+		if _, err := w.readIssuePullRequest(context.Background(), "CAPTURE-1", ""); err != nil {
 			t.Fatalf("read the issue's pull request: %v", err)
 		}
 	}
@@ -120,7 +120,7 @@ func TestAHandoffCompletionReadsThatIssuesPullRequestAlone(t *testing.T) {
 	seedSecondIssue(t, pool)
 	github := newIssueReadStandIn(t, read)
 	w := readRuntime(pool, github.URL, quietLogger())
-	w.handedOff = newWakeSet[string]()
+	w.handedOff = newHandedOffSet()
 	ctx, cancel := context.WithCancel(context.Background())
 	stopped := make(chan struct{})
 	go func() {
@@ -132,7 +132,7 @@ func TestAHandoffCompletionReadsThatIssuesPullRequestAlone(t *testing.T) {
 		<-stopped
 	}()
 
-	w.handoffCompleted("CAPTURE-1")
+	w.handoffCompleted("CAPTURE-1", "")
 	deadline := time.Now().Add(20 * time.Second)
 	for {
 		if _, pr := capturePhase(t, pool); pr.HeadSHA == "pushed" {
@@ -152,7 +152,7 @@ func TestAHandoffCompletionReadsThatIssuesPullRequestAlone(t *testing.T) {
 	var other *record.PullRequest
 	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
-		other, err = record.NewStore().PullRequest(context.Background(), tx, "CAPTURE-2")
+		other, err = record.NewStore().MergePullRequest(context.Background(), tx, "CAPTURE-2")
 		return err
 	}); err != nil {
 		t.Fatalf("read CAPTURE-2's pull request: %v", err)
@@ -198,7 +198,7 @@ func newIssueReadStandIn(t *testing.T, updated time.Time) *issueReadStandIn {
 	stand := &issueReadStandIn{read: map[string]int{}}
 	pull := func(number int, issue string) string {
 		return `{"number":` + strconv.Itoa(number) + `,"state":"open","html_url":"https://github.com/acme/widgets/pull/` + strconv.Itoa(number) + `",` +
-			`"body":"Dispatch: ` + issue + `","base":{"ref":"main"},"head":{"ref":"legion/` + issue + `","sha":"pushed"},` +
+			`"body":"Dispatch: ` + issue + `","base":{"ref":"main"},"head":{"ref":"legion/` + issue + `","sha":"pushed","repo":{"full_name":"acme/widgets"}},` +
 			`"updated_at":"` + updated.Format(time.RFC3339) + `","mergeable":true}`
 	}
 	stand.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

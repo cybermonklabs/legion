@@ -27,6 +27,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/prompts"
 	recordpkg "github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
@@ -1384,6 +1385,57 @@ func TestRunRelaunchesAStaleAddressChargingNothing(t *testing.T) {
 	}
 	if c := d.claim(token); c.Budgets.LaunchFailures != 0 {
 		t.Errorf("the stale address was charged: %+v", c.Budgets)
+	}
+}
+
+// Every architect is told, in its addressing, the roles a step of its plan may name with the type
+// of each: Legion's five, then each role the deployment defines in the file's order, with the
+// model its agent starts with where the settings give one. A root architect's addressing still
+// ends with its design gate's line, then the project's production check (ProductionCheckFragment),
+// which every architect is told last; no other launch is told the roles.
+func TestTheOwnersPromptListsTheDeploymentsRoles(t *testing.T) {
+	t.Parallel()
+	composer, err := prompts.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	const legion = "The roles of this deployment, each with the type of its step: planner (planning), implementer (implementation), tester (testing), reviewer (review), acceptance (review)"
+	deployed := []config.Role{
+		{Name: "checker", Type: "testing", PromptFile: "/etc/legion/checker.md", Model: "checker-model"},
+		{Name: "audit", Type: "security", PromptFile: "/etc/legion/audit.md"},
+	}
+	gate := DesignGateFragment(config.DesignGateRootIssues.Steps())
+	addressing := func(roles []config.Role, issue string, role claim.Role) string {
+		t.Helper()
+		token, err := claim.NewToken("s1", issue, role)
+		if err != nil {
+			t.Fatal(err)
+		}
+		s := specs{stateDir: t.TempDir(), project: "s1", prompts: composer, roles: roles,
+			designSteps: config.DesignGateRootIssues.Steps()}
+		spec, err := s.SpawnSpec(context.Background(), supervise.Claim{Token: token, Issue: issue, Tree: "S1-1", Role: role})
+		if err != nil {
+			t.Fatalf("the %s's spawn spec on %s: %v", role, issue, err)
+		}
+		return spec.Prompt.Addressing
+	}
+
+	want := legion + ", checker (testing) with the model checker-model, audit (security)."
+	root := addressing(deployed, "S1-1", claim.RoleArchitect)
+	if !strings.Contains(root, want) {
+		t.Errorf("the root architect's addressing = %q, want it to hold %q", root, want)
+	}
+	if check := " " + gate + " " + ProductionCheckFragment(""); !strings.HasSuffix(root, check) {
+		t.Errorf("the root architect's addressing = %q, want it to end with %q", root, check)
+	}
+	if sub := addressing(deployed, "S1-2", claim.RoleArchitect); !strings.Contains(sub, want) {
+		t.Errorf("a sub-architect's addressing = %q, want it to hold %q", sub, want)
+	}
+	if none := addressing(nil, "S1-2", claim.RoleArchitect); !strings.Contains(none, legion+".") {
+		t.Errorf("an architect's addressing under a deployment that defines no role = %q, want it to hold %q", none, legion+".")
+	}
+	if tester := addressing(deployed, "S1-2", claim.RoleTester); strings.Contains(tester, "The roles of this deployment") {
+		t.Errorf("a tester's addressing = %q, want no list of the deployment's roles", tester)
 	}
 }
 

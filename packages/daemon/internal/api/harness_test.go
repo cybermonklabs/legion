@@ -87,9 +87,25 @@ type testSupervisor struct {
 	// stepErr is what the step read answers instead of the store's record, for a test about a
 	// refused read (refuseStep); nil while the store answers.
 	stepErr error
+	// beforeCreate and beforeMachine, when set, run once, before the next Create and the next
+	// Machine lookup: a test about a route whose read of the record a fact overtakes commits that
+	// fact there, between the route's read and the claim it acts on.
+	beforeCreate, beforeMachine func()
+}
+
+// once takes the hook *at, clearing it, under the supervisor's lock, so it runs on one call alone.
+func (s *testSupervisor) once(at *func()) func() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	hook := *at
+	*at = nil
+	return hook
 }
 
 func (s *testSupervisor) Machine(token claim.Token) (*supervise.Machine, bool) {
+	if hook := s.once(&s.beforeMachine); hook != nil {
+		hook()
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	m, ok := s.machines[token]
@@ -97,6 +113,9 @@ func (s *testSupervisor) Machine(token claim.Token) (*supervise.Machine, bool) {
 }
 
 func (s *testSupervisor) Create(ctx context.Context, c supervise.Claim, rolePrompt string) (*supervise.Machine, bool, error) {
+	if hook := s.once(&s.beforeCreate); hook != nil {
+		hook()
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if m, ok := s.machines[c.Token]; ok {

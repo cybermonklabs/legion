@@ -3,7 +3,6 @@ package config
 import (
 	"fmt"
 	"math"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -18,8 +17,9 @@ import (
 // stallBackstopKey is the per-role bound of the daemon's own stall backstop: how long after a
 // claim's recorded last step (supervise.StepRecord) the daemon ends the turn that step belongs to
 // and brings the session back with its task still owed (internal/daemon's backstopStalledTurns).
-// It is a mapping of a Legion role to a decimal number of hours, the shape `worker_backends` and
-// `role_config_files` give a per-role key, and like them it may name the controller.
+// It is a mapping of a role, Legion's or one of `roles`, to a decimal number of hours, the shape
+// `worker_backends` and `role_config_files` give a per-role key, and like `role_config_files` it
+// may name the controller.
 const stallBackstopKey = "worker_stall_backstop_hours"
 
 // StallLimits are the three numbers of the worker's own stall watch as this daemon's environment
@@ -322,12 +322,12 @@ func saturatingSum(parts ...time.Duration) time.Duration {
 	return sum
 }
 
-// readStallBackstops is `worker_stall_backstop_hours`: a mapping of a Legion role
-// (RoleConfigRoles, the controller among them) to the number of hours the daemon's backstop waits
+// readStallBackstops is `worker_stall_backstop_hours`: a mapping of a role (RoleConfigRoles, the
+// controller among them, or a role of `roles`) to the number of hours the daemon's backstop waits
 // after that role's last recorded step, a decimal among them as every other hours key is
 // (readHours). 0 is the backstop off for that role and is the one reason this key reads its own
 // numbers rather than calling readHours, which refuses 0 because every key it serves arms a timer
-// that a zero would fire at once. A role named twice, a name that is not a Legion role, a value
+// that a zero would fire at once. A role named twice, no role's name (isRoleConfigName), a value
 // that is no number and a negative value are each refused naming the entry.
 func readStallBackstops(value *yaml.Node, key string) (map[claim.Role]time.Duration, error) {
 	if value.Tag == "!!null" {
@@ -340,7 +340,7 @@ func readStallBackstops(value *yaml.Node, key string) (map[claim.Role]time.Durat
 	for i := 0; i+1 < len(value.Content); i += 2 {
 		roleNode, hoursNode := value.Content[i], value.Content[i+1]
 		role := claim.Role(roleNode.Value)
-		if !slices.Contains(RoleConfigRoles, role) {
+		if !isRoleConfigName(role) {
 			return nil, fmt.Errorf("%s names %q, which is not a Legion role (%s)", key, roleNode.Value, runtime.JoinRoles(RoleConfigRoles))
 		}
 		if _, seen := bounds[role]; seen {
@@ -376,7 +376,7 @@ func readStallBackstops(value *yaml.Node, key string) (map[claim.Role]time.Durat
 // message names which of the two numbers the floor was reckoned from, since neither is in the
 // file the operator is reading. 0 is the backstop off for that role and is refused nothing.
 func checkStallBackstops(cfg Config) error {
-	for _, role := range RoleConfigRoles {
+	for _, role := range cfg.roleConfigRoles() {
 		bound, named := cfg.WorkerStallBackstops[role]
 		if !named || bound == 0 {
 			continue

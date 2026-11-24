@@ -34,6 +34,17 @@ func SecretsDir(stateDir string) string { return filepath.Join(stateDir, "secret
 // SecretFilePath is the secret file name in SecretsDir: `<state_dir>/secrets/<name>`.
 func SecretFilePath(stateDir, name string) string { return filepath.Join(SecretsDir(stateDir), name) }
 
+// SecretFileName is the name of the file a claim's secret is written to in SecretsDir,
+// `<claim>-<name lowercased>`: the one spelling of it, which the tmux runtime writes a pane's
+// secrets by (secretFiles) and the daemon's prune reads a claim's files back by (ownedBy), so the
+// two cannot drift.
+func SecretFileName(token claim.Token, name string) string {
+	return string(token) + "-" + strings.ToLower(name)
+}
+
+// GHConfigDirName is the name of a claim's gh directory in SecretsDir, `<claim>-gh` (GHConfigDir).
+func GHConfigDirName(token claim.Token) string { return string(token) + "-gh" }
+
 // GitHubCredential is the daemon's one function a runtime calls for a role's GitHub credential
 // files: a gh bundle (ghconfig.Bundle), one directory of gh files per owner account the role's
 // GitHub App is installed on, each holding that account's installation lease minted at the
@@ -76,7 +87,7 @@ var ErrNoGitHubOwner = errors.New("the App is installed on no account, so there 
 // (ghconfig.Dir) is the pane's GH_CONFIG_DIR. A pod has no use for it: there the files are a
 // Secret volume the manifest mounts.
 func GHConfigDir(stateDir string, token claim.Token) string {
-	return SecretFilePath(stateDir, string(token)+"-gh")
+	return SecretFilePath(stateDir, GHConfigDirName(token))
 }
 
 // ValidateSpawnSpec is the refusal every runtime makes before anything touches its disk, its
@@ -113,7 +124,7 @@ func ValidateSpawnSpec(spec SpawnSpec, runtimeOwned map[string]bool) error {
 		return refuse("%v", err)
 	}
 	if !backend.Runs(spec.Role) {
-		return refuse("the %s does not run on %s (%s), which runs only %s: %s", spec.Role, Of(spec.Backend), backend.Name, JoinRoles(backend.Roles), backend.Why)
+		return refuse("the %s does not run on %s (%s), which runs only %s: %s", spec.Role, Of(spec.Backend), backend.Name, backend.RunsWhat(), backend.Why)
 	}
 	for _, name := range slices.Sorted(maps.Keys(spec.Env)) {
 		switch {
@@ -140,7 +151,7 @@ func ValidateSpawnSpec(spec SpawnSpec, runtimeOwned map[string]bool) error {
 }
 
 // validateClaimShape is a workflow claim's launch: on an issue of a tree, with a role, under the
-// token those derive.
+// token of one agent of that issue.
 func validateClaimShape(spec SpawnSpec, refuse func(string, ...any) error) error {
 	for _, field := range []struct{ name, value string }{
 		{"project", spec.Project}, {"tree", spec.Tree}, {"issue", spec.Issue},
@@ -160,16 +171,21 @@ func validateClaimShape(spec SpawnSpec, refuse func(string, ...any) error) error
 	if !claim.IsRole(spec.Role) {
 		return refuse("%q is not a role", spec.Role)
 	}
-	// The token is what every runtime names the claim's workspace, Secret and pod after, and it is
-	// derived from the project, issue and role rather than carried beside them. A spec whose token
-	// is another claim's would run this claim's work under that claim's name, on its workspace and
-	// beside its credentials.
-	token, err := claim.NewToken(spec.Project, spec.Issue, spec.Role)
+	// The token is what every runtime names the claim's workspace, Secret and pod after: the token
+	// of one agent of the spec's issue (claim.AgentToken), whose name need not be the spec's role,
+	// since an agent runs the steps of each role its key names. A spec whose token is another
+	// issue's would run this issue's work under that claim's name, on its workspace and beside its
+	// credentials. A token that names no agent is held to the token of the role's own agent.
+	name := claim.Agent(spec.Role)
+	if _, agent, ok := spec.Claim.Cut(); ok {
+		name = agent
+	}
+	token, err := claim.AgentToken(spec.Project, spec.Issue, name)
 	if err != nil {
 		return refuse("%w", err)
 	}
 	if token != spec.Claim {
-		return refuse("the claim token of %s/%s/%s is %s", spec.Project, spec.Issue, spec.Role, token)
+		return refuse("the claim token of %s/%s/%s is %s", spec.Project, spec.Issue, name, token)
 	}
 	// Each runtime provisions the issue's workspace at the repository's default branch, by name.
 	if !spec.Repository.IsZero() && spec.DefaultBranch == "" {

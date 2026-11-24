@@ -186,7 +186,7 @@ func TestAnIssuePodServesItsOwnTestPostgres(t *testing.T) {
 		t.Errorf("the controller is told %s=%q, want nothing", launcher.TestPGVariable, value)
 	}
 	// An operator may not point that name anywhere, whether or not this deployment serves one.
-	refused := CheckPod(Pod{Env: map[string]string{launcher.TestPGVariable: "postgres://x@127.0.0.1:5433/postgres"}}, nil,
+	refused := CheckPod(Pod{Env: map[string]string{launcher.TestPGVariable: "postgres://x@127.0.0.1:5433/postgres"}}, append(slices.Clone(claim.Roles), claim.RoleController), nil,
 		testOptions().Tools, []string{"ENVOY_TOKEN"}, nil, postgresStore, false)
 	if refused == nil || !strings.Contains(refused.Error(), launcher.TestPGVariable) {
 		t.Errorf("CheckPod with %s in the pod env = %v, want it refused", launcher.TestPGVariable, refused)
@@ -451,10 +451,10 @@ func TestAnEndedPodOfTheEarlierLayoutReportsTheRolesOwnContainer(t *testing.T) {
 	}
 }
 
-// A role's locator in an issue pod names the pod's one container, `roles`, so the role whose
-// enrollment, address record and launcher are read is the claim's: an enrolled pod holding the
-// role's own key directory is alive, and a generation the role's record says was told a moved
-// daemon URL is stale.
+// A claim's locator in an issue pod names the pod's one container, `roles`, so the slot whose
+// enrollment, address record and launcher are read is the claim's (slotOf, its agent's name,
+// whatever role its step is on): an enrolled pod holding the slot's own key directory is alive,
+// and a generation the slot's record says was told a moved daemon URL is stale.
 func TestAnIssuePodsRoleIsReadFromItsClaimNotItsContainer(t *testing.T) {
 	broker := func(o *Options) {
 		o.AgentSecrets = &AgentSecrets{URL: "https://secrets.internal.example", Audience: "agent-secrets", TokenExpiry: time.Hour}
@@ -531,7 +531,7 @@ func TestTheRolesContainerEndingEndsEveryRole(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Probe %s: %v", token, err)
 		}
-		role, _ := token.Role()
+		_, role, _ := token.Cut()
 		if obs.Kind != runtime.Gone || !strings.Contains(obs.Detail, "container roles terminated (OOMKilled, exit code 137)") ||
 			!strings.Contains(obs.Detail, "last lines of "+string(role)) || strings.Contains(obs.Detail, "fake logs") {
 			t.Fatalf("%s: %s %q, want Gone naming the container's end and quoting only %s's lines", token, obs.Kind, obs.Detail, role)
@@ -811,7 +811,7 @@ func TestARolesQuoteIsItsOwnLinesOfTheSharedLog(t *testing.T) {
 	if got := roleLines(log, claim.RoleMerger, 3); got != "" {
 		t.Errorf("roleLines of a role with no lines = %q, want none", got)
 	}
-	if got, want := containerLines(log, 3), "launcher: connected\ntesters: not mine either"; got != want {
+	if got, want := containerLines(log, 3, claim.Roles), "launcher: connected\ntesters: not mine either"; got != want {
 		t.Errorf("containerLines = %q, want %q", got, want)
 	}
 }
@@ -953,7 +953,7 @@ func TestCheckPodRefusesAMountARolesNamespaceHides(t *testing.T) {
 		"/var/run/legion/gh", "/var/run/legion/gh/x", "/var/run/legion/private", "/var/run/legion/state", "/var/run/legion/agent-secrets",
 		"/var/run/legion/home", "/var/run/legion/home/.config",
 	} {
-		if err := CheckPod(mountAt(path), nil, testOptions().Tools, nil, nil, ompsessions.Store{}, false); err == nil {
+		if err := CheckPod(mountAt(path), append(slices.Clone(claim.Roles), claim.RoleController), nil, testOptions().Tools, nil, nil, ompsessions.Store{}, false); err == nil {
 			t.Errorf("a mount at %s passed, want it refused", path)
 		}
 	}
@@ -961,7 +961,7 @@ func TestCheckPodRefusesAMountARolesNamespaceHides(t *testing.T) {
 		"/tmp/cache", "/var/tmp/cache", "/run/lock/operator", "/var/lock/operator", "/dev/shm/operator", "/run/shm/operator", "/home/legion/.cache/operator",
 		"/run/operator", "/var/run/operator",
 	} {
-		if err := CheckPod(mountAt(path), nil, testOptions().Tools, nil, nil, ompsessions.Store{}, false); err != nil {
+		if err := CheckPod(mountAt(path), append(slices.Clone(claim.Roles), claim.RoleController), nil, testOptions().Tools, nil, nil, ompsessions.Store{}, false); err != nil {
 			t.Errorf("a mount at %s was refused: %v; role-init carries it back", path, err)
 		}
 	}
@@ -984,12 +984,12 @@ func TestCheckPodRefusesAMountAtOrUnderARolesOwnDevices(t *testing.T) {
 		"/dev/pts": "/dev/pts", "/dev/pts/operator": "/dev/pts", "/dev/mqueue": "/dev/mqueue", "/dev/mqueue/x": "/dev/mqueue",
 		"/dev/ptmx": "/dev/ptmx", "/proc": "/proc", "/proc/sys": "/proc", "/proc/self/fd": "/proc",
 	} {
-		err := CheckPod(mountAt(path), nil, testOptions().Tools, nil, nil, ompsessions.Store{}, false)
+		err := CheckPod(mountAt(path), append(slices.Clone(claim.Roles), claim.RoleController), nil, testOptions().Tools, nil, nil, ompsessions.Store{}, false)
 		if err == nil || !strings.Contains(err.Error(), "overlaps "+device+", which every role's namespace in an issue pod replaces with a filesystem of its own") {
 			t.Errorf("a mount at %s = %v, want it refused naming %s", path, err, device)
 		}
 	}
-	if err := CheckPod(mountAt("/dev/operator"), nil, testOptions().Tools, nil, nil, ompsessions.Store{}, false); err != nil {
+	if err := CheckPod(mountAt("/dev/operator"), append(slices.Clone(claim.Roles), claim.RoleController), nil, testOptions().Tools, nil, nil, ompsessions.Store{}, false); err != nil {
 		t.Errorf("a mount at /dev/operator was refused: %v; role-init replaces nothing there", err)
 	}
 }

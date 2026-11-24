@@ -3,20 +3,20 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"math/rand/v2"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
-	"regexp"
 	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
-	"github.com/sjawhar/envoy/internal/legionagents"
+	"github.com/sjawhar/envoy/internal/legionclaim"
 )
 
 // putRoleHoldersAs sends PUT /api/v1/issues/{key}/role-holders over the deployment's bearer, the
@@ -181,9 +181,10 @@ func TestARoleHoldersPublicationRefusesWhatIsNoSet(t *testing.T) {
 	issue := roleHolderIssue(t, handler)
 
 	refused := map[string]map[string]any{
-		"no holders":          {"actor": daemonSessionOf("ACME")},
-		"the role controller": {"holders": []issueRoleHolder{{Role: "controller", Session: "ses-a"}}, "actor": daemonSessionOf("ACME")},
-		"the role ci":         {"holders": []issueRoleHolder{{Role: "ci", Session: "ses-a"}}, "actor": daemonSessionOf("ACME")},
+		"no holders":              {"actor": daemonSessionOf("ACME")},
+		"the role controller":     {"holders": []issueRoleHolder{{Role: "controller", Session: "ses-a"}}, "actor": daemonSessionOf("ACME")},
+		"a role with a capital":   {"holders": []issueRoleHolder{{Role: "Checker", Session: "ses-a"}}, "actor": daemonSessionOf("ACME")},
+		"a role of 33 characters": {"holders": []issueRoleHolder{{Role: "c" + strings.Repeat("h", 32), Session: "ses-a"}}, "actor": daemonSessionOf("ACME")},
 		"a role named twice": {"holders": []issueRoleHolder{
 			{Role: "tester", Session: "ses-a"}, {Role: "tester", Session: "ses-b"},
 		}, "actor": daemonSessionOf("ACME")},
@@ -218,6 +219,57 @@ func TestAClosedIssueTakesItsRoleHolders(t *testing.T) {
 
 	publishRoleHolders(t, handler, issue, []issueRoleHolder{{Role: "tester", Session: "ses-a"}})
 	requireHeldRole(t, database, issue, "ses-a", "tester")
+}
+
+// A role the deployment defines holds a role of an issue as Legion's six do (legionclaim.IsRole):
+// a set naming checker and linter beside the tester is stored whole, and the read the results route
+// makes finds the checker's session. A role is a name of the role grammar, so one of 32 characters
+// is taken too. The set reads back with Legion's six in the order the workflow reaches them, then
+// every other role by name. The controller, a name with a capital and a name of 33 characters are
+// each refused 400 INVALID_ROLE_HOLDER naming the grammar, and the stored set stays as it was.
+func TestARoleTheDeploymentDefinesHoldsARoleOfAnIssue(t *testing.T) {
+	t.Parallel()
+	handler, database, _ := newTestServer(t, testServerOptions{})
+	issue := roleHolderIssue(t, handler)
+	longest := "a" + strings.Repeat("b", 31)
+
+	published := publishRoleHolders(t, handler, issue, []issueRoleHolder{
+		{Role: "linter", Session: "ses-l"}, {Role: "checker", Session: "ses-c"}, {Role: "tester", Session: "ses-t"}, {Role: longest, Session: "ses-32"},
+	})
+	want := []issueRoleHolder{{Role: "tester", Session: "ses-t"}, {Role: longest, Session: "ses-32"},
+		{Role: "checker", Session: "ses-c"}, {Role: "linter", Session: "ses-l"}}
+	pairs := func(answer issueRoleHolders) []issueRoleHolder {
+		got := []issueRoleHolder{}
+		for _, holder := range answer.Holders {
+			got = append(got, issueRoleHolder{Role: holder.Role, Session: holder.Session})
+		}
+		return got
+	}
+	if got := pairs(published); !slices.Equal(got, want) {
+		t.Fatalf("the publish answered %#v, want %#v", got, want)
+	}
+	if got := pairs(readRoleHolders(t, handler, issue)); !slices.Equal(got, want) {
+		t.Fatalf("the read answered %#v, want %#v", got, want)
+	}
+	requireHeldRole(t, database, issue, "ses-c", "checker")
+
+	for name, role := range map[string]string{
+		"the controller":          "controller",
+		"a name with a capital":   "Checker",
+		"a name of 33 characters": "c" + strings.Repeat("h", 32),
+	} {
+		response := putRoleHoldersAs(t, handler, issue, map[string]any{
+			"holders": []issueRoleHolder{{Role: "tester", Session: "ses-t2"}, {Role: role, Session: "ses-x"}},
+			"actor":   daemonSessionOf("ACME"),
+		})
+		code, message := refusalOf(t, response)
+		if response.Code != http.StatusBadRequest || code != "INVALID_ROLE_HOLDER" || !strings.Contains(message, legionclaim.RolePattern) {
+			t.Errorf("%s: status=%d body=%s, want 400 INVALID_ROLE_HOLDER naming the role grammar", name, response.Code, response.Body.String())
+		}
+	}
+	if got := pairs(readRoleHolders(t, handler, issue)); !slices.Equal(got, want) {
+		t.Fatalf("after the refusals the read answered %#v, want the stored set %#v", got, want)
+	}
 }
 
 // The set reads back in the order the workflow reaches the roles, whatever order the publication
@@ -374,18 +426,21 @@ func TestASessionThatIsNoSessionIDIsRefused(t *testing.T) {
 	}
 }
 
-// The contract names the roles in the enum of each shape, which a tag must spell. The route refuses
-// every role that legionagents.Roles does not name, so the two lists must be the same.
-func TestTheRoleHolderShapesNameTheLegionRoles(t *testing.T) {
+// The contract spells a role as the route takes it, a name of the role grammar, in the `pattern` of
+// each shape, and lists no enum of roles: the route takes a role the deployment defines, which no
+// list names. The tag must spell the pattern legionclaim.IsRole matches.
+func TestTheRoleHolderShapesSpellTheRoleGrammar(t *testing.T) {
 	t.Parallel()
-	want := strings.Join(legionagents.Roles, ",")
 	for _, shape := range []any{issueRoleHolder{}, issueRoleHolderRecord{}} {
 		field, ok := reflect.TypeOf(shape).FieldByName("Role")
 		if !ok {
 			t.Fatalf("%T has no Role", shape)
 		}
-		if got := field.Tag.Get("enum"); got != want {
-			t.Errorf("%T.Role names the roles %q, want %q", shape, got, want)
+		if got, want := field.Tag.Get("pattern"), legionclaim.RolePattern; got != want {
+			t.Errorf("%T.Role spells the pattern %q, want %q", shape, got, want)
+		}
+		if enum, listed := field.Tag.Lookup("enum"); listed {
+			t.Errorf("%T.Role lists the roles %q, want no enum: a role the deployment defines is a role of an issue", shape, enum)
 		}
 	}
 }
@@ -434,35 +489,28 @@ func TestTheContractRequiresTheRoleAndTheSessionOfEachHolder(t *testing.T) {
 	}
 }
 
-// The table's own check on role is a second copy of the six roles
-// (20261116163813_issue_role_holders). The route refuses a role legionagents.Roles does not name
-// before the write, so a seventh role added to Roles without a migration would pass the route and
-// meet the check, a 500. This reads the check the migrated database holds and compares its roles,
-// in order, with Roles.
-func TestTheRoleHoldersTableChecksTheLegionRoles(t *testing.T) {
+// The table's own check on role holds the role grammar the route takes (legionclaim.IsRole), so a
+// row the route writes is never refused by the table, a 500, and a row written past the route is
+// held to the same rule: a role the deployment defines and a name of 32 characters are stored, and
+// the controller, a name with a capital and a name of 33 characters are refused by the check.
+func TestTheRoleHoldersTableChecksTheRoleGrammar(t *testing.T) {
 	t.Parallel()
-	_, database, _ := newTestServer(t, testServerOptions{})
-	rows, err := database.Pool.Query(context.Background(), `
-		select pg_get_constraintdef(c.oid)
-		from pg_constraint c
-		join pg_attribute a on a.attrelid = c.conrelid and a.attnum = any(c.conkey)
-		where c.conrelid = 'issue_role_holders'::regclass and c.contype = 'c' and a.attname = 'role'
-	`)
-	if err != nil {
-		t.Fatalf("read the check on issue_role_holders.role: %v", err)
+	handler, database, _ := newTestServer(t, testServerOptions{})
+	issue := roleHolderIssue(t, handler)
+	insert := func(role, session string) error {
+		_, err := database.Pool.Exec(context.Background(),
+			`insert into issue_role_holders (issue_key, role, session) values ($1, $2, $3)`, issue, role, session)
+		return err
 	}
-	defs, err := pgx.CollectRows(rows, pgx.RowTo[string])
-	if err != nil {
-		t.Fatalf("read the check on issue_role_holders.role: %v", err)
+	for role, session := range map[string]string{"checker": "ses-c", "a" + strings.Repeat("b", 31): "ses-32"} {
+		if err := insert(role, session); err != nil {
+			t.Errorf("the table refused the role %q: %v", role, err)
+		}
 	}
-	if len(defs) != 1 {
-		t.Fatalf("issue_role_holders.role carries %d checks %q, want the one that names the roles", len(defs), defs)
-	}
-	named := []string{}
-	for _, match := range regexp.MustCompile(`'([^']*)'::text`).FindAllStringSubmatch(defs[0], -1) {
-		named = append(named, match[1])
-	}
-	if !slices.Equal(named, legionagents.Roles) {
-		t.Fatalf("the check %q names the roles %q, want legionagents.Roles %q", defs[0], named, legionagents.Roles)
+	for _, role := range []string{"controller", "Checker", "c" + strings.Repeat("h", 32)} {
+		var refusal *pgconn.PgError
+		if err := insert(role, "ses-x"); !errors.As(err, &refusal) || refusal.Code != "23514" {
+			t.Errorf("the table answered the role %q with %v, want its check refusing it (23514)", role, err)
+		}
 	}
 }

@@ -18,17 +18,20 @@ import (
 )
 
 // podKind is which of the runtime's two pods a Sandbox runs: an issue pod (issuePod), which runs
-// every workflow role of one issue on a disk its own pod owns, or its Sandbox owns where the pod
-// keeps its volume (keptVolume), and provisions the issue's workspace, or the project controller's
-// pod (controllerPod, `controller: daemon`), which runs the controller alone on the volume its
-// Sandbox owns and provisions nothing. prepare decides a
+// every role of the runtime's issue pods (Legion's six, then each role the deployment defines) on
+// a disk its own pod owns, or its Sandbox owns where the pod keeps its volume (keptVolume), and
+// provisions the issue's workspace, or the project controller's pod (controllerPod, `controller:
+// daemon`), which runs the controller alone on the volume its Sandbox owns and provisions
+// nothing. prepare decides a
 // launch's kind once, from its claim, and a stored Sandbox's kind is the one its labels name
 // (podKindOf). Building a pod asks the launch's kind for every facet the two build differently;
 // supervision — relaunch's check of the running pod, the launchers, Probe, Suspend and the
 // address records — asks a kind only its roles.
 type podKind interface {
-	// roles are the pod's launcher roles, each with a launcher token and role Secret of its own.
-	roles() []claim.Role
+	// roles are the pod's launcher roles under r, each with a launcher token and role Secret of
+	// its own: the runtime's issue roles for an issue pod (Runtime.issueRoles), the controller for
+	// the controller's pod.
+	roles(r *Runtime) []claim.Role
 	// claimToken is the claim of a launcher of role, one of roles, on a pod of this kind of project,
 	// issue being the issue key its Secrets carry (secretAnnotations).
 	claimToken(project, issue string, role claim.Role) (claim.Token, error)
@@ -139,15 +142,16 @@ func storedOwnsKeptVolume(u *unstructured.Unstructured) bool {
 	return false
 }
 
-// issuePod is an issue's pod: every workflow role of the issue, working in the issue's workspace
-// on the issue's disk (disk), in one container whose PID 1 is one `legion launcher` holding a
-// connection of each role's own (launcherContainer). The disk is the pod's own generic ephemeral
-// volume, created with the pod and deleted with it, or, where the pod keeps its volume
-// (keptVolume), a claim that the issue's Sandbox owns, which outlives the pod. Two init containers
-// provision that workspace from the issue's repository.
+// issuePod is an issue's pod: every role of the runtime's issue roles (Legion's six, then each role
+// the deployment defines, Runtime.issueRoles), working in the issue's workspace on the issue's
+// disk (disk), in one container whose PID 1 is one `legion launcher` holding a connection of each
+// role's own (launcherContainer). The disk is the pod's own generic ephemeral volume, created with
+// the pod and deleted with it, or, where the pod keeps its volume (keptVolume), a claim that the
+// issue's Sandbox owns, which outlives the pod. Two init containers provision that workspace from
+// the issue's repository.
 type issuePod struct{}
 
-func (issuePod) roles() []claim.Role { return claim.Roles }
+func (issuePod) roles(r *Runtime) []claim.Role { return r.issueRoles }
 
 func (issuePod) container() string { return runtime.IssuePodContainer }
 
@@ -497,8 +501,9 @@ func (issuePod) agentEnv(l launch) []corev1.EnvVar {
 // GITHUB_TOKEN and GH_HOST are set to the empty string, which gh ignores, so no value the image or
 // an operator's rc file could leave in the environment outranks the files: a non-empty GH_TOKEN
 // would. No other tool path or helper is told: the agent's git and jj are the image's on PATH, and
-// the helper is the clone's own configuration. Every launcher role, the controller's included,
-// reads its own App's gh bundle at GHConfigDir, so this is appended once for every kind.
+// the helper is the clone's own configuration. Every launcher slot, the controller's included,
+// reads at GHConfigDir the gh bundle its Secret holds — the App of the role its process was
+// launched as (slotAppRole) — so this is appended once for every kind.
 func ghAgentEnv(l launch) []corev1.EnvVar {
 	return []corev1.EnvVar{
 		{Name: "GH_CONFIG_DIR", Value: ghconfig.Dir(GHConfigDir, l.gitHubDefault)},
@@ -563,7 +568,7 @@ func (issuePod) provision(ctx context.Context, r *Runtime, l *launch, s *sandbox
 // runtime.kubernetes.storage_class in either (diskSpec).
 type controllerPod struct{}
 
-func (controllerPod) roles() []claim.Role { return []claim.Role{claim.RoleController} }
+func (controllerPod) roles(*Runtime) []claim.Role { return []claim.Role{claim.RoleController} }
 
 func (controllerPod) container() string { return runtime.ControllerPodContainer }
 

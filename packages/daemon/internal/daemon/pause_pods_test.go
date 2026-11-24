@@ -116,7 +116,8 @@ func TestTheStuckWarningReadsTheStuckClockAndPassesOverAPausedProject(t *testing
 	for _, issue := range []string{"LEGION-208", "OTHERPROJECT-5"} {
 		recordPodWake(t, w.idleStore, store.PodResume{Project: "legion", Issue: issue,
 			Role: string(claim.RoleImplementer), Kind: pods.WakeBackstop, At: woke})
-		if _, err := w.idleStore.SetResumeClock(ctx, "legion", issue, claim.RoleImplementer, letOut); err != nil {
+		token := claim.Token("legion-legion-" + strings.ToLower(issue) + "-implementer")
+		if _, err := w.idleStore.SetResumeClock(ctx, "legion", issue, claim.RoleImplementer, token, letOut); err != nil {
 			t.Fatalf("start the stuck clock of %s at the let-out: %v", issue, err)
 		}
 	}
@@ -634,7 +635,7 @@ func (r *podUpdateRig) underLaunchTurn(hold func(func()), what string, act func(
 func (r *podUpdateRig) takeHeldWakeUnderLaunchTurn(hold func(func()), role claim.Role, pause int64) {
 	r.t.Helper()
 	r.underLaunchTurn(hold, fmt.Sprintf("a replacement to take the wake of the %s under the pod's launch turn", role), func() {
-		taken, err := r.st.TakePodWake(r.ctx, podUpdateProject, podUpdateIssue, r.tokens[role], pods.WakeDelivery, r.clock.Now(), pause)
+		taken, err := r.st.TakePodWake(r.ctx, podUpdateProject, podUpdateIssue, r.tokens[role], role, pods.WakeDelivery, r.clock.Now(), pause)
 		if err != nil || !taken {
 			r.t.Fatalf("take the wake of the %s that the pause held = %t, %v; want it taken", role, taken, err)
 		}
@@ -859,7 +860,7 @@ func TestAPodlessRoundIsNotKeptForAPauseResumeWhoseRoleCameUp(t *testing.T) {
 		rig.awaitClaim(stopped, "the daemon's suspension to let its process go", func(c supervise.Claim) bool {
 			return c.State == supervise.StateSuspended && c.Locator == nil
 		})
-		if _, _, open, err := rig.st.OpenPodResume(rig.ctx, podUpdateProject, podUpdateIssue, stopped); err != nil || !open {
+		if _, _, open, err := rig.st.OpenPodResume(rig.ctx, podUpdateProject, podUpdateIssue, stopped, rig.tokens[stopped]); err != nil || !open {
 			t.Fatalf("the %s's resume is open = %t, %v; want it open: no first turn stamped it and nothing closed it", stopped, open, err)
 		}
 

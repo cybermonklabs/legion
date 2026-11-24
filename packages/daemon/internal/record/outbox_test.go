@@ -73,6 +73,8 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 		DesignGatesPublish{Issue: "LEGION-208", Gates: []DesignGateDocument{{Step: DesignStepCriteria, ArtifactID: "artifact-criteria", Holds: new(false)}, {Step: DesignStepSpec, ArtifactID: "artifact-208", Holds: new(true)}}},
 		RoleHoldersPublish{Issue: "LEGION-208"},
 		IssueBranch{Generation: 2},
+		TaskCopyRemove{Generation: 2, Task: "b", Branch: "legion/LEGION-208.b"},
+		TaskCopyRemove{Generation: 2, Task: "b", Branch: "legion/LEGION-208.b.2"},
 		SuperviseRequest{Op: "issue_close", Tree: "LEGION-208", Role: claim.RoleTester, Generation: 3, Reason: "LEGION-209 is done"},
 		IssueSuspend{Tree: "LEGION-208", Generation: 3, TreeGeneration: 7},
 		SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 3, Task: "Production check of LEGION-208", CheckLook: 2, CheckOpenedAt: now},
@@ -272,11 +274,11 @@ func TestPersonHandoverPendingCountsOnlyMarkedStatusRows(t *testing.T) {
 // both the count of lanes and the count of kinds.
 func TestEveryOutboxKindIsInExactlyOneLane(t *testing.T) {
 	every := []OutboxKind{OutboxKindDispatchStatus, OutboxKindDispatchMessage, OutboxKindNotice, OutboxKindControllerNotice, OutboxKindSupervise,
-		OutboxKindGateSeed, OutboxKindLingerClose, OutboxKindIssueSuspend, OutboxKindWorkspaceRemove, OutboxKindIssueBranch,
+		OutboxKindGateSeed, OutboxKindLingerClose, OutboxKindIssueSuspend, OutboxKindWorkspaceRemove, OutboxKindIssueBranch, OutboxKindTaskBranch,
 		OutboxKindCheckWake, OutboxKindCheckLook, OutboxKindCheckBound, OutboxKindRoleMessage, OutboxKindHookPrompt, OutboxKindUpdateAsk,
 		OutboxKindIssueBundle, OutboxKindIssueRelease, OutboxKindGatedStepsPublish, OutboxKindClaimRelease, OutboxKindDesignGatesPublish,
 		OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval, OutboxKindDesignChanges, OutboxKindRoleHoldersPublish, OutboxKindStepRecord,
-		OutboxKindConflictConfirm, OutboxKindMergeForward, OutboxKindPlanRecord}
+		OutboxKindConflictConfirm, OutboxKindMergeForward, OutboxKindPlanRecord, OutboxKindTaskPullRequestsClose, OutboxKindTaskCopyRemove}
 	oracle := []OutboxLane{LaneBoard, LaneClaim, LaneDocuments, LaneLifecycle, LaneRecord, LaneRoleMessage}
 	if got := OutboxLanes(); !reflect.DeepEqual(got, oracle) {
 		t.Errorf("OutboxLanes() = %v, want the lanes %v in name order", got, oracle)
@@ -323,18 +325,28 @@ func TestEveryOutboxKindIsHeldOrNotHeldByAPause(t *testing.T) {
 		OutboxKindMergeQueueRemoval: "every row",
 		// A merge forward's message goes to one role of the issue and wakes a released one, as a
 		// hook prompt does (main's dispatch://INFRA-4374).
-		OutboxKindMergeForward:       "every row",
-		OutboxKindCheckWake:          "every row",
-		OutboxKindCheckLook:          "every row",
-		OutboxKindCheckBound:         "every row",
-		OutboxKindControllerNotice:   "",
-		OutboxKindDispatchStatus:     "",
-		OutboxKindDispatchMessage:    "",
-		OutboxKindGateSeed:           "",
-		OutboxKindLingerClose:        "",
-		OutboxKindIssueSuspend:       "",
-		OutboxKindWorkspaceRemove:    "",
-		OutboxKindIssueBranch:        "",
+		OutboxKindMergeForward:     "every row",
+		OutboxKindCheckWake:        "every row",
+		OutboxKindCheckLook:        "every row",
+		OutboxKindCheckBound:       "every row",
+		OutboxKindControllerNotice: "",
+		OutboxKindDispatchStatus:   "",
+		OutboxKindDispatchMessage:  "",
+		OutboxKindGateSeed:         "",
+		OutboxKindLingerClose:      "",
+		OutboxKindIssueSuspend:     "",
+		OutboxKindWorkspaceRemove:  "",
+		OutboxKindIssueBranch:      "",
+		// A task's branch row makes the branch on GitHub at the joined work of its needs, as the
+		// issue's branch row makes the issue's, and launches no role and hands none a task: the
+		// start that waits for it is a supervise start, which the pause holds.
+		OutboxKindTaskBranch: "",
+		// The close of the other tasks' pull requests after the issue's merge writes GitHub as the
+		// implement App and launches no role and hands none a task.
+		OutboxKindTaskPullRequestsClose: "",
+		// The removal of a removed task's working copy deletes a directory of the daemon's host and
+		// launches no role and hands none a task.
+		OutboxKindTaskCopyRemove:     "",
 		OutboxKindIssueBundle:        "",
 		OutboxKindIssueRelease:       "",
 		OutboxKindGatedStepsPublish:  "",
@@ -489,7 +501,7 @@ func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 		{name: "a hook prompt to an architect", payload: HookPrompt{Hook: "back-to-implementing", Role: claim.RoleArchitect, From: phase.Reviewing, To: phase.Implementing, Count: 1, Prompt: "Read the thread."}, reason: "never to an architect"},
 		{name: "a hook prompt to no role", payload: HookPrompt{Hook: "back-to-implementing", From: phase.Reviewing, To: phase.Implementing, Count: 1, Prompt: "Read the thread."}, reason: "never to an architect"},
 		{name: "a hook prompt to the controller", payload: HookPrompt{Hook: "back-to-implementing", Role: claim.RoleController, From: phase.Reviewing, To: phase.Implementing, Count: 1, Prompt: "Read the thread."}, reason: "never to an architect"},
-		{name: "a hook prompt on a move forward", payload: HookPrompt{Hook: "back-to-implementing", Role: claim.RoleReviewer, From: phase.Implementing, To: phase.Reviewing, Count: 1, Prompt: "Read the thread."}, reason: "is no move back"},
+		{name: "a hook prompt of a phase to itself", payload: HookPrompt{Hook: "back-to-implementing", Role: claim.RoleReviewer, From: phase.Reviewing, To: phase.Reviewing, Count: 1, Prompt: "Read the thread."}, reason: `a hook prompt names the move back that fired it; "reviewing" to "reviewing" is no move back`},
 		{name: "a hook prompt on a phase outside the forward line", payload: HookPrompt{Hook: "back-to-implementing", Role: claim.RoleImplementer, From: phase.Held, To: phase.Implementing, Count: 1, Prompt: "Read the thread."}, reason: "is no move back"},
 		{name: "a hook prompt that counted nothing", payload: HookPrompt{Hook: "back-to-implementing", Role: claim.RoleImplementer, From: phase.Reviewing, To: phase.Implementing, Prompt: "Read the thread."}, reason: "its count is one or more"},
 		{name: "a hook prompt counting backward", payload: HookPrompt{Hook: "back-to-implementing", Role: claim.RoleImplementer, From: phase.Reviewing, To: phase.Implementing, Count: -1, Prompt: "Read the thread."}, reason: "its count is one or more"},
@@ -525,6 +537,12 @@ func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 		{name: "a merge-forward landed with no head that landed", payload: MergeForwardMessage{Role: claim.RoleTester, Step: MergeForwardLanded, Head: "c0de", Base: "main", Phase: phase.Testing, PullRequest: 42}, reason: "a merge-forward landed or review names the head that landed"},
 		{name: "a merge-forward review with no head that landed", payload: MergeForwardMessage{Role: claim.RoleReviewer, Step: MergeForwardReview, Head: "c0de", Base: "main", Phase: phase.Accepting, PullRequest: 42}, reason: "a merge-forward landed or review names the head that landed"},
 		{name: "a check look bound without a look", payload: CheckLook{}, reason: "check look bound requires the look it bounds"},
+		{name: "a task copy's removal of no branch", payload: TaskCopyRemove{Generation: 2, Task: "b"}, reason: taskCopyRemoveRefusal},
+		{name: "a task copy's removal of the issue's own branch", payload: TaskCopyRemove{Generation: 2, Task: "a", Branch: "legion/LEGION-208"}, reason: taskCopyRemoveRefusal},
+		{name: "a task copy's removal of another issue's task", payload: TaskCopyRemove{Generation: 2, Task: "b", Branch: "legion/LEGION-209.b"}, reason: taskCopyRemoveRefusal},
+		{name: "a task copy's removal of a branch of no task", payload: TaskCopyRemove{Generation: 2, Task: "b", Branch: "legion/LEGION-208.b/../x"}, reason: taskCopyRemoveRefusal},
+		{name: "a task copy's removal of no task", payload: TaskCopyRemove{Generation: 2, Branch: "legion/LEGION-208.b"}, reason: "names the task the plan removed"},
+		{name: "a task copy's removal of no generation", payload: TaskCopyRemove{Task: "b", Branch: "legion/LEGION-208.b"}, reason: "names the task the plan removed"},
 		{name: "unsupported payload", payload: unsupportedOutboxPayload{}, reason: "unknown outbox payload"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -668,7 +686,7 @@ func TestDecodeOutboxPayloadRefusesInvalidRows(t *testing.T) {
 		{name: "a check bound with a field", row: OutboxRow{ID: 41, Kind: OutboxKindCheckBound, Payload: json.RawMessage(`{"look":1}`)}, reason: "unknown field"},
 		{name: "a role message with no body", row: OutboxRow{ID: 48, Kind: OutboxKindRoleMessage, Payload: json.RawMessage(`{"role":"legion.sjawhar-legion.LEGION-208.architect"}`)}, reason: "role message requires body"},
 		{name: "a hook prompt to an architect", row: OutboxRow{ID: 55, Kind: OutboxKindHookPrompt, Payload: json.RawMessage(`{"hook":"back-to-implementing","role":"architect","from":"reviewing","to":"implementing","count":1,"counts":{"reviewing-implementing":1},"prompt":"Read the thread."}`)}, reason: "never to an architect"},
-		{name: "a hook prompt on a move forward", row: OutboxRow{ID: 56, Kind: OutboxKindHookPrompt, Payload: json.RawMessage(`{"hook":"back-to-implementing","role":"reviewer","from":"implementing","to":"reviewing","count":1,"counts":{},"prompt":"Read the thread."}`)}, reason: "is no move back"},
+		{name: "a hook prompt of a phase to itself", row: OutboxRow{ID: 56, Kind: OutboxKindHookPrompt, Payload: json.RawMessage(`{"hook":"back-to-implementing","role":"reviewer","from":"reviewing","to":"reviewing","count":1,"counts":{},"prompt":"Read the thread."}`)}, reason: `a hook prompt names the move back that fired it; "reviewing" to "reviewing" is no move back`},
 		{name: "a hook prompt with an unknown field", row: OutboxRow{ID: 57, Kind: OutboxKindHookPrompt, Payload: json.RawMessage(`{"hook":"back-to-implementing","role":"implementer","from":"reviewing","to":"implementing","count":1,"counts":{"reviewing-implementing":1},"prompt":"Read the thread.","cap":2}`)}, reason: "unknown field"},
 		{name: "an update ask with no round", row: OutboxRow{ID: 58, Kind: OutboxKindUpdateAsk, Payload: json.RawMessage(`{"role":"tester","pod":"9d3f0c7a","text":"Push your work."}`)}, reason: "names the round it asks for"},
 		{name: "an update ask with an unknown field", row: OutboxRow{ID: 59, Kind: OutboxKindUpdateAsk, Payload: json.RawMessage(`{"role":"tester","round":"pod:9d3f0c7a","pod":"9d3f0c7a","text":"Push your work.","reasons":"image a, now b"}`)}, reason: "unknown field"},
@@ -688,6 +706,10 @@ func TestDecodeOutboxPayloadRefusesInvalidRows(t *testing.T) {
 		{name: "a retro's stored rating without its reason", row: OutboxRow{ID: 63, Kind: OutboxKindStepRecord, Payload: json.RawMessage(`{"id":"` + stepRecordID +
 			`","task":"default","step":0,"kind":"retro","role":"implementer","type":"","agent":"legion-leg-leg-1-implementer","generation":1,"rating":3}`)},
 			reason: "its reason or neither"},
+		{name: "a stored task copy's removal of the issue's own branch", row: OutboxRow{ID: 67, Kind: OutboxKindTaskCopyRemove, Issue: "LEGION-208",
+			Payload: json.RawMessage(`{"generation":2,"task":"a","branch":"legion/LEGION-208"}`)}, reason: taskCopyRemoveRefusal},
+		{name: "a task copy's removal with an unknown field", row: OutboxRow{ID: 68, Kind: OutboxKindTaskCopyRemove, Issue: "LEGION-208",
+			Payload: json.RawMessage(`{"generation":2,"task":"b","branch":"legion/LEGION-208.b","dir":"/tmp"}`)}, reason: "unknown field"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := DecodeOutboxPayload(tc.row)
@@ -701,6 +723,10 @@ func TestDecodeOutboxPayloadRefusesInvalidRows(t *testing.T) {
 // checkLookRefusal is the validation's words for a supervise row whose check look is not a start
 // of the implementer or the tester with no phase.
 const checkLookRefusal = "a supervise check look names a start of the implementer or the tester with no phase"
+
+// taskCopyRemoveRefusal is the validation's words for a task copy's removal whose branch is not
+// the branch of a task of the row's issue other than the issue's own.
+const taskCopyRemoveRefusal = "a task copy's removal names the branch of a task of its issue other than the issue's own"
 
 // newsOnlyRefusal is the validation's words for a supervise row marked a news-only start that is
 // not a start of no task and no entry naming the phase of the holder it tells, or none for an
@@ -1135,6 +1161,8 @@ func TestAPublishedNoticeIsStillAValidOutboxPayload(t *testing.T) {
 		{Kind: "retro-held", Role: claim.RoleImplementer, Phase: phase.Retro,
 			Reason: "LEGION-208 passed its last step, and Legion holds it before its retro while these issues beneath it are still in the workflow: LEGION-209. A parent is accepted only once no issue beneath it is still in the workflow. Run each one to done, or end it; Legion starts the retro when the last one leaves. " +
 				StatusNotTakenYet + " " + EndChildRule},
+		{Kind: "task-join-failed", Role: claim.RoleArchitect,
+			Reason: "task d of LEGION-208 waits for the join of its needs: GitHub has no branch legion/LEGION-208.c of its need c. Push that branch again, or stop the task with stop_task."},
 		{Kind: VolumeNearFullNotice, Role: claim.RoleArchitect,
 			Reason: "the volume LEGION-208's roles share on pod pod-uid was still above its low mark when the sweep ended",
 			Volume: &VolumeNearFull{PodUID: "pod-uid", Trimmer: "trim-1", Episode: 2, RaisedBy: "rise",

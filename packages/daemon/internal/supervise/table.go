@@ -43,11 +43,12 @@ type StreamTurnStart struct {
 type StreamTurnEnd struct{ Claim claim.Token }
 
 // IssueTurnEnded is a turn ending on another claim of this claim's issue, posted by the daemon to
-// every other claim of the issue once that turn's own machine has recorded its end. The roles of
-// an issue work one jj workspace, so a phase task this claim is holding rather than adopt that
-// working copy under an open turn (sendPending) may go now. It carries no fact of its own — the
-// send asks again which claims are in a turn — so one posted for a turn another role began
-// meanwhile simply holds again.
+// every other claim of the issue once that turn's own machine has recorded its end. The roles that
+// work one working copy share one jj workspace, so a phase task this claim is holding rather than
+// adopt a working copy under an open turn there (sendPending) may go now. It carries no fact of
+// its own — the send asks again which claims are in a turn in that working copy — so one posted
+// for a turn another role began meanwhile, or for a turn in another working copy, simply holds
+// again or changes nothing.
 type IssueTurnEnded struct{ Claim claim.Token }
 
 // StreamToolStep is one tool call of the agent's turn beginning or ending, as the stream read
@@ -257,8 +258,8 @@ type StallBackstop struct {
 // so the action is idempotent: the first post of a round records the round, its reasons and its
 // clock, and each later post of the same round changes nothing. The round's terms are fixed when
 // it opens, so the ask a role reads and the record an operator reads name the same reasons. The
-// machine asks the role nothing: the sweep enqueues the round's ask to the role's own Envoy topic
-// (record.UpdateAsk), and the outbox marks it on the claim once it reached a session
+// machine asks the role nothing: the sweep enqueues the round's ask to the Envoy topic of this
+// claim (record.UpdateAsk.Claim), and the outbox marks it on the claim once it reached a session
 // (Machine.PublishUpdateAsk).
 type PodUpdateOpen struct {
 	Claim   claim.Token
@@ -271,8 +272,8 @@ type PodUpdateOpen struct {
 // the moment the round ends at the latest: the round's recorded opening (Claim.UpdateOpenedAt)
 // plus pod_update_grace_minutes. The sweep (internal/daemon) builds the text from the round's
 // record, so the text names one moment for every role of the round, and the text rides
-// record.UpdateAsk to the role's own Envoy topic. That message can arrive in the middle of a
-// turn, so the text tells the role to act now rather than after the turn.
+// record.UpdateAsk to the Envoy topic of the claim it asks. That message can arrive in the middle
+// of a turn, so the text tells the role to act now rather than after the turn.
 //
 // The text names the round's own id, and the role passes it back in its answer
 // (PodUpdateSignalled): an answer counts only for the round whose ask the role read, so the id
@@ -395,6 +396,9 @@ type RequestSpawn struct {
 	// launches is the fault the pacing exists to fix, and a wake let through by default would
 	// put it back one caller at a time.
 	Exempt bool
+	// Start is the work a workflow start spawns the claim for, which the spawn judges again under
+	// the machine's lock before it launches (StartWork); the zero value is judged by nothing.
+	Start StartWork
 }
 
 // RequestRegister is the agent's registration, already authenticated by its boot token: the
@@ -484,6 +488,8 @@ type ResumePause struct {
 type RequestRuleResume struct {
 	Claim  claim.Token
 	Reason string
+	// Start is the work a workflow start resumes the claim for, judged as RequestSpawn's is.
+	Start StartWork
 }
 
 // RequestStop ends one claim. The tree's root claim is not one it can end: a root ends only with
@@ -528,6 +534,8 @@ type RequestOperatorClose struct{ Claim claim.Token }
 type RequestRetry struct {
 	Claim        claim.Token
 	FreshSession bool
+	// Start is the work a workflow start retries the claim for, judged as RequestSpawn's is.
+	Start StartWork
 }
 
 // RequestOperatorRetry is the operator relaunching a claim through the API: the retry RequestRetry
@@ -613,6 +621,10 @@ type RequestDeliver struct {
 	// is what holds those rows until the delivery tells them (Delivery.Kept). Empty for a task
 	// that names none.
 	Kept []byte
+	// Branch is the GitHub branch of the task whose step the start of this task starts, from the
+	// start row (record.SuperviseRequest.Branch), "" for the issue's own: the delivery carries it
+	// and its adoption takes that task's working copy (Delivery.Branch).
+	Branch string
 	// News is what the task carries of news of the approved design, as the start that queued it
 	// read it from the record (record.DeliveryNews, encoded JSON), carried onto the delivery and
 	// persisted with it, since the delivery's confirmation is what raises it as taken
@@ -2511,7 +2523,11 @@ func noTurn(m *Machine, ctx context.Context, _ Event) error {
 }
 
 func spawn(m *Machine, ctx context.Context, ev Event) error {
-	return m.revive(ctx, exemptWake(ev), nil)
+	start := ev.(RequestSpawn).Start
+	if err := m.startHolds(ctx, start); err != nil {
+		return err
+	}
+	return m.revive(ctx, exemptWake(ev), start, nil)
 }
 
 // register records the session the agent became, once every name of it is held to this claim
@@ -2642,7 +2658,7 @@ func resume(m *Machine, ctx context.Context, ev Event) error {
 	if err := m.resumeRefusal(ctx, "resume"); err != nil {
 		return err
 	}
-	return m.revive(ctx, exemptWake(ev), nil)
+	return m.revive(ctx, exemptWake(ev), StartWork{}, nil)
 }
 
 // resumeRefusal is a RefusedError when a suspended claim's recorded session is one it does not
@@ -2686,17 +2702,21 @@ func (m *Machine) resumeRefusal(ctx context.Context, request string) error {
 // failed claim is never resumed by rule. A claim recording a session it does not hold is not
 // resumed by rule either (resumeRefusal): it stays suspended, and the line says why.
 func resumeByRule(m *Machine, ctx context.Context, ev Event) error {
-	rule := ev.(RequestRuleResume).Reason
+	resume := ev.(RequestRuleResume)
+	rule := resume.Reason
 	if !m.claim.RuleMayResume() {
 		m.log.Info("supervise: not resumed by rule: its suspension holds until the operator resumes it", "rule", rule, "suspendedBy", m.claim.SuspendedBy)
 		return nil
+	}
+	if err := m.startHolds(ctx, resume.Start); err != nil {
+		return err
 	}
 	if err := m.resumeRefusal(ctx, "resume by rule"); err != nil {
 		m.log.Info("supervise: not resumed by rule: the claim records a session it does not hold", "rule", rule, "error", err)
 		return nil
 	}
 	m.log.Info("supervise: resuming by rule", "rule", rule, "suspendedBy", m.claim.SuspendedBy)
-	return m.revive(ctx, exemptWake(ev), nil)
+	return m.revive(ctx, exemptWake(ev), resume.Start, nil)
 }
 
 // retry is a failed or retired claim given another run: its budgets start over, and its session,
@@ -2726,6 +2746,15 @@ func resumeByRule(m *Machine, ctx context.Context, ev Event) error {
 // own, or a parked wake's recheck when its turn comes — finds the record already cleared on the
 // live machine, while the store still holds it as AdmitClaim wrote it, until the next persist.
 func retry(m *Machine, ctx context.Context, ev Event) error {
+	// The workflow's retry names the work it brings the claim back for, judged before anything of
+	// the claim changes; the operator's names none.
+	var start StartWork
+	if r, ok := ev.(RequestRetry); ok {
+		start = r.Start
+	}
+	if err := m.startHolds(ctx, start); err != nil {
+		return err
+	}
 	if fresh, why := freshSession(ev, m.claim, m.deps.Limits.LaunchFailures); fresh {
 		// A session the claim does not hold is left behind only once its role no longer leads
 		// to the process under it (mayForget); the retry is refused, and the claim left as it
@@ -2745,7 +2774,7 @@ func retry(m *Machine, ctx context.Context, ev Event) error {
 		// (resumeRefusal), before the budgets start over.
 		return err
 	}
-	return m.revive(ctx, exemptWake(ev), func() {
+	return m.revive(ctx, exemptWake(ev), start, func() {
 		m.claim.Budgets, m.claim.PendingCause = Budgets{}, ""
 		m.claim.Failure, m.claim.FailureCause, m.claim.FailedAt = "", "", time.Time{}
 		m.claim.LeakCheckCause = ""
@@ -2759,8 +2788,10 @@ func retry(m *Machine, ctx context.Context, ev Event) error {
 // reviveArchitect, for example) — and for a phase worker whose issue works no phase of its role,
 // which the route has already established before it reaches the machine (api's retryStart starts
 // the phase itself for every other one).
-// The daemon's controller has a retry of its own, its keeper, so it alone is refused. A claim's
-// role never changes, so the refusal cannot race the decision it guards.
+// The daemon's controller has a retry of its own, its keeper, so it alone is refused. The refusal
+// reads the claim's role inside the machine's decision, which no re-role runs beside (Rerole holds
+// the same lock), and the controller's claim holds no step and is never re-roled, so the refusal
+// cannot race the decision it guards.
 //
 // It relaunches the session the claim records, unless the retry asks for a new one
 // (RequestOperatorRetry.FreshSession) or the provider refused that session out of the claim's
@@ -2971,7 +3002,7 @@ func deliverResuming(m *Machine, ctx context.Context, ev Event) error {
 	if err := m.queue(ctx, d); err != nil {
 		return err
 	}
-	return m.revive(ctx, d.ID == "", nil)
+	return m.revive(ctx, d.ID == "", StartWork{}, nil)
 }
 
 // exit is the agent reporting its own end. A worker's or sub-architect's claim ends with it and is
@@ -3012,8 +3043,8 @@ func exit(m *Machine, ctx context.Context, ev Event) error {
 // (dispatch://INFRA-2981 R9), so the ask the sweep publishes and the record an operator reads name
 // the same reasons for one round id, however the drift the sweep reads moves while the round runs.
 //
-// The machine asks the role nothing. The sweep enqueues the round's ask to the role's own Envoy
-// topic once the claim records the round (internal/daemon's openPodUpdate, record.UpdateAsk), and
+// The machine asks the role nothing. The sweep enqueues the round's ask to the Envoy topic of this
+// claim once the claim records the round (internal/daemon's openPodUpdate, record.UpdateAsk), and
 // the outbox marks the claim asked once that publish reached a session (Machine.PublishUpdateAsk):
 // an ask that reached none marks nothing, so a later sweep asks again. A suspended claim is not
 // revived for the ask, and its machine records the round all the same. A suspension by the daemon
@@ -3066,8 +3097,9 @@ func openPodUpdate(m *Machine, ctx context.Context, ev Event) error {
 
 // updateTaskPrefix starts the delivery id of every ask an update round queued as a task, which
 // only an older daemon did; the round and a fresh word of that ask's own complete it
-// (updateTaskID). This daemon publishes the round's ask to the role's Envoy topic instead
-// (record.UpdateAsk), so an id of this shape is one a restored claim brings back from the store.
+// (updateTaskID). This daemon publishes the round's ask to the Envoy topic of the claim it asks
+// instead (record.UpdateAsk), so an id of this shape is one a restored claim brings back from the
+// store.
 const updateTaskPrefix = "update:"
 
 // updateTaskID is a delivery id of one ask of round, and names no other ask of it. A rotation
@@ -3332,17 +3364,17 @@ func podUpdateSignalled(m *Machine, ctx context.Context, ev Event) error {
 // does next.
 //
 // What it does next is never "answer the round named here". A round that replaced another is
-// asked of the role only at a later sweep (internal/daemon's openPodUpdate publishes once the
+// asked of the claim only at a later sweep (internal/daemon's openPodUpdate publishes once the
 // claim records the round), so the id this refusal prints is one whose words the worker may not
 // have read, and an answer given for it would be counted for a round the worker was never asked
 // (podUpdateSignalled is the one guard that stops exactly that). So the worker is told how the
-// daemon asks — once per round, as a message on the role's own topic — and to answer the round
-// the newest such message names, or to end its turn where no message names the claim's round.
-// For a claim the daemon is asking nothing of, it is told so.
+// daemon asks — once per round, as a message on its own role topic, the topic of its claim — and
+// to answer the round the newest such message names, or to end its turn where no message names the
+// claim's round. For a claim the daemon is asking nothing of, it is told so.
 func foreignRoundRefusal(c Claim, answered string) error {
 	in, next := fmt.Sprintf("%q", c.UpdateRound), fmt.Sprintf(
-		"The daemon asks each role one time in each update round. "+
-			"The daemon sends that ask as a message on the role's own topic. "+
+		"The daemon asks you one time in each update round. "+
+			"The daemon sends that ask as a message on your role topic. "+
 			"Answer with the round that the newest such message names. "+
 			"If no such message names round %q, the daemon has nothing to ask you now. End your turn",
 		c.UpdateRound)

@@ -528,10 +528,10 @@ func releaseMarked(t *testing.T, st *Store) bool {
 }
 
 // resumeRow is the row a cancel queues to bring one claim back, as the daemon's own builder
-// writes it (outbox.releaseResume): the `start` of that role at the generation the cancel read.
-func resumeRow(role claim.Role, generation uint64) (IdleReleaseRow, error) {
+// writes it (outbox.releaseResume): the `start` of that claim at the generation the cancel read.
+func resumeRow(token claim.Token, role claim.Role, generation uint64) (IdleReleaseRow, error) {
 	return IdleReleaseRow{Kind: "supervise", Payload: []byte(fmt.Sprintf(
-		`{"op":"start","tree":%q,"role":%q,"generation":%d}`, rootIssue, role, generation))}, nil
+		`{"op":"start","tree":%q,"role":%q,"claim":%q,"generation":%d}`, rootIssue, role, token, generation))}, nil
 }
 
 // releasedClaim is one claim of the root issue the daemon's release left suspended as
@@ -604,7 +604,7 @@ func TestACancelKeepsTheMarkUntilItsResumesAreQueued(t *testing.T) {
 	}
 
 	refused := errors.New("the resume could not be encoded")
-	if _, err := st.CancelIssueRelease(ctx, "legion", rootIssue, func(claim.Role, uint64) (IdleReleaseRow, error) {
+	if _, err := st.CancelIssueRelease(ctx, "legion", rootIssue, func(claim.Token, claim.Role, uint64) (IdleReleaseRow, error) {
 		return IdleReleaseRow{}, refused
 	}, record.OutOfWorkflow, ReleaseCancelPause{At: time.Now()}); !errors.Is(err, refused) {
 		t.Fatalf("a cancel whose resume could not be built = %v, want %v", err, refused)
@@ -659,7 +659,7 @@ func TestACancelDeletesTheBundleItsReleaseSavedInTheSameTransaction(t *testing.T
 	}
 
 	refused := errors.New("the resume could not be encoded")
-	if _, err := st.CancelIssueRelease(ctx, "legion", rootIssue, func(claim.Role, uint64) (IdleReleaseRow, error) {
+	if _, err := st.CancelIssueRelease(ctx, "legion", rootIssue, func(claim.Token, claim.Role, uint64) (IdleReleaseRow, error) {
 		return IdleReleaseRow{}, refused
 	}, record.OutOfWorkflow, ReleaseCancelPause{At: time.Now()}); !errors.Is(err, refused) {
 		t.Fatalf("a cancel whose resume could not be built = %v, want %v", err, refused)
@@ -846,7 +846,7 @@ func TestAWakeTakenAfterTheMarkCancelsTheRelease(t *testing.T) {
 			// records its own row as the lane does (outbox.recordPodRelease), because a resume
 			// is recorded against the release it ends and a wake reads the newest one.
 			recordRelease(t, st, at.Add(-2*time.Hour))
-			if taken, err := st.TakePodWake(ctx, "legion", rootIssue, "legion-legion-legion-208-architect",
+			if taken, err := st.TakePodWake(ctx, "legion", rootIssue, "legion-legion-legion-208-architect", claim.RoleArchitect,
 				pods.WakeDelivery, at.Add(-time.Hour), 0); err != nil || !taken {
 				t.Fatalf("take the wake before the mark = %t, %v; want it taken", taken, err)
 			}
@@ -859,7 +859,7 @@ func TestAWakeTakenAfterTheMarkCancelsTheRelease(t *testing.T) {
 				t.Fatalf("record the implementer's suspension: %v", err)
 			}
 			if tc.woken {
-				if taken, err := st.TakePodWake(ctx, "legion", rootIssue, "legion-legion-legion-208-architect",
+				if taken, err := st.TakePodWake(ctx, "legion", rootIssue, "legion-legion-legion-208-architect", claim.RoleArchitect,
 					pods.WakeDelivery, at, 0); err != nil || !taken {
 					t.Fatalf("take the wake after the mark = %t, %v; want it taken", taken, err)
 				}

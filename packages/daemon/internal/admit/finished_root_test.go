@@ -120,14 +120,14 @@ func TestAMergedRootWaitsForItsChildrenAndClosesWhenTheLastLeaves(t *testing.T) 
 			t.Fatalf("%s after its root's merge = %#v, want it untouched in %s's tree", key, got, finishedRoot)
 		}
 	}
-	if result, err := intake.ApplyFact(context.Background(), pool, "github", "follow-up-opened", intake.PullRequestOpened{Repo: "acme/widgets", Number: 2, Branch: "legion/LEGION-1", HeadSHA: "follow-up", UpdatedAt: fixedNow.Add(time.Hour)}, engine, admission); err != nil || result.Refusal != nil {
+	if result, err := intake.ApplyFact(context.Background(), pool, "github", "follow-up-opened", intake.PullRequestOpened{Repo: "acme/widgets", Number: 2, Branch: "legion/LEGION-1", HeadSHA: "follow-up", HeadRepo: "acme/widgets", UpdatedAt: fixedNow.Add(time.Hour)}, engine, admission); err != nil || result.Refusal != nil {
 		t.Fatalf("open a follow-up pull request from %s's branch = %+v, %v", finishedRoot, result.Refusal, err)
 	}
 	if got := issue(t, pool, finishedRoot); got.Phase != phase.Merging {
 		t.Fatalf("the merged root once a follow-up pull request opened = %#v, want it still in merging", got)
 	}
 	inTx(t, pool, func(tx pgx.Tx) {
-		pr, err := record.NewStore().PullRequest(context.Background(), tx, finishedRoot)
+		pr, err := record.NewStore().MergePullRequest(context.Background(), tx, finishedRoot)
 		if err != nil || pr == nil || pr.Number != 1 || pr.State != record.PullRequestMerged {
 			t.Fatalf("the root's pull request once a follow-up opened = %+v, %v, want #1 merged", pr, err)
 		}
@@ -244,7 +244,7 @@ func TestAHandedOverChildCarriesItsPhaseGateAndPullRequest(t *testing.T) {
 				if err != nil || gate == nil || gate.ArtifactID != artifact || gate.LatestVersion != 2 || gate.ApprovedVersion == nil || *gate.ApprovedVersion != 2 {
 					t.Fatalf("carried gate = %#v, %v", gate, err)
 				}
-				pr, err := records.PullRequest(context.Background(), tx, child)
+				pr, err := records.MergePullRequest(context.Background(), tx, child)
 				if err != nil || pr == nil || pr.HeadSHA != "head-42" || pr.State != tc.prState || pr.Generation != 2 {
 					t.Fatalf("carried pull request = %#v, %v", pr, err)
 				}
@@ -351,7 +351,7 @@ func TestAHandedOverChildWithNoGateToCarryIsNotMarkedCarried(t *testing.T) {
 		if gates, err := records.GatesOf(context.Background(), tx, child); err != nil || len(gates) != 0 {
 			t.Fatalf("gates = %#v, %v; want none, since the old root had none", gates, err)
 		}
-		if pr, err := records.PullRequest(context.Background(), tx, child); err != nil || pr == nil || pr.HeadSHA != "head-42" || pr.Generation != 2 {
+		if pr, err := records.MergePullRequest(context.Background(), tx, child); err != nil || pr == nil || pr.HeadSHA != "head-42" || pr.Generation != 2 {
 			t.Fatalf("pull request = %#v, %v; want it carried at generation 2", pr, err)
 		}
 		if handedRoot, err := records.HandedOverRoot(context.Background(), tx, child); err != nil || handedRoot == nil || handedRoot.Generation != 2 || handedRoot.GateCarried {
@@ -716,7 +716,7 @@ func TestAStrandedMidRunChildHandedToLegionByAPersonCarriesItsState(t *testing.T
 	}
 	inTx(t, pool, func(tx pgx.Tx) {
 		records := record.NewStore()
-		pr, err := records.PullRequest(ctx, tx, child.Key)
+		pr, err := records.MergePullRequest(ctx, tx, child.Key)
 		if err != nil || pr == nil || pr.State != record.PullRequestOpen || pr.HeadSHA != "head-42" {
 			t.Fatalf("pull request = %#v, %v; want open at head-42", pr, err)
 		}

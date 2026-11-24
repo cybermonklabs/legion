@@ -504,11 +504,11 @@ func TestABackstopReadTwiceFiresOnce(t *testing.T) {
 	}
 }
 
-// R5: an architect gets no backstop. OpenPhaseRole is the one statement of "the worker of the
-// open phase" — which role a release arms a backstop for, which role a CI settlement wakes, and
-// which live claim has a phase reminder armed in it — and it answers none for a phase the
-// architect works and none for a phase no role works. Admitted and accepting are the two the
-// architect works (phase.RoleFor).
+// R5: an architect gets no backstop. OpenStepsOf is the one statement of "the steps that take
+// work" — whose workers' claims a release and a pause's stop arm a backstop for (OpenWorkers, the
+// outbox's armBackstops) and which roles a CI settlement wakes — and for an issue with no plan rows
+// it answers none for a phase the architect works and none for a phase no role works. Admitted
+// and accepting are the two the architect works (phase.RoleFor).
 func TestAnArchitectGetsNoBackstop(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -523,8 +523,18 @@ func TestAnArchitectGetsNoBackstop(t *testing.T) {
 		{name: "done", p: phase.Done},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := OpenPhaseRole(tc.p); got != tc.want {
-				t.Fatalf("OpenPhaseRole(%s) = %q, want %q", tc.p, got, tc.want)
+			issue := record.Issue{Phase: tc.p}
+			issue.Running = record.RunningOf(issue, false, nil)
+			var got []claim.Role
+			for _, step := range OpenStepsOf(issue) {
+				got = append(got, step.Role)
+			}
+			var want []claim.Role
+			if tc.want != "" {
+				want = []claim.Role{tc.want}
+			}
+			if !slices.Equal(got, want) {
+				t.Fatalf("the roles of the steps that take work at %s = %q, want %q", tc.p, got, want)
 			}
 		})
 	}

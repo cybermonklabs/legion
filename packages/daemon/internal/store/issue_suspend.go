@@ -14,7 +14,8 @@ import (
 
 // IssueClose is one workflow close of an issue, as its issue_suspend outbox row names it: the run
 // it closed (the issue's generation and its tree root's) and the row, written after the close's
-// per-role stops. A later start supersedes it even within the same generation.
+// stops of each claim (one for each stored claim of the issue, and one by role for each role whose
+// worker claim is none of those). A later start supersedes it even within the same generation.
 type IssueClose struct {
 	Issue, Tree                     string
 	IssueGeneration, TreeGeneration uint64

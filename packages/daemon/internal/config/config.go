@@ -9,13 +9,17 @@
 // also refuses what a pod could not run with: the `runtime.kubernetes` block's own values, and the
 // keys outside it every pod needs.
 //
-// Load reads the file and nothing it names: a path key (`instructions`, `envoy_token_file`,
-// `nats_nkey_seed_file`, `nats_daemon_nkey_seed_file`, `operator_token_file`,
+// Load reads the file and nothing it names but a role's prompt file: a path key (`instructions`,
+// `envoy_token_file`, `nats_nkey_seed_file`, `nats_daemon_nkey_seed_file`, `operator_token_file`,
 // `hooks[].prompt_file`, `runtime.kubernetes.kubeconfig`) is resolved
 // against the file's directory and kept as a path. What sits at that path is read at boot, by
 // ReadSecretPointer, ReadDeploymentInstructions, ReadHookPrompt, and the runtime's client, so a
 // configuration loads on a machine that has none of the files it names; `legion config check`
 // then reads them as boot does (daemon.CheckStart).
+// A role's `prompt_file` (`roles.<name>.prompt_file`) is resolved and kept as a path too, and Load
+// also reads it, refusing one the daemon cannot read; `legion config check` reads it as Load does
+// (CheckRolePrompts), and LoadForValidation, which the commands that only name the daemon run,
+// does not.
 package config
 
 import (
@@ -37,6 +41,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
+	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shim"
 )
@@ -236,6 +241,12 @@ type Config struct {
 	ControllerLaunch ControllerLaunch
 	// Capabilities is the `capabilities` block; the zero value with none.
 	Capabilities Capabilities
+	// Roles is `roles`: the roles the deployment defines of its own, in the file's order, each
+	// with its type, prompt file, model and GitHub App (Role); nil while the file defines none.
+	Roles []Role
+	// RoleTypes is `role_types`: the types of a step the deployment adds to Legion's five, in the
+	// file's order; nil while the file names none.
+	RoleTypes []plan.Type
 	// WorkerBackends is `worker_backends`: the phase-worker roles that run on a backend other than
 	// Oh My Pi, by role; a role it leaves out runs on Oh My Pi (BackendFor).
 	WorkerBackends map[claim.Role]runtime.Backend
@@ -362,7 +373,7 @@ var tossedKeys = map[string]string{
 // prints, so the operator reads what the refusal would have said and the daemon runs.
 var warnedKeys = map[string]string{
 	"max_fix_attempts":        "nothing counts fix attempts any more, no CI verdict sends work back on its own (what a settlement names is told to the roles that work the issue), and the architect decides when to stop; remove max_fix_attempts from legion.yaml, where review_round_cap is the one cap left that blocks a pull request (dispatch://INFRA-956 R4)",
-	"pod_update_retask_hours": "no update round asks a worker again, since the round publishes its ask once to each role's topic rather than queueing it as a task, and the round ends at its bound whatever the roles answer; remove pod_update_retask_hours from legion.yaml, where pod_update_grace_minutes is the round's one bound (dispatch://INFRA-2981 R7)",
+	"pod_update_retask_hours": "no update round asks a worker again, since the round publishes its ask once to the topic of each claim it asks rather than queueing it as a task, and the round ends at its bound whatever the claims answer; remove pod_update_retask_hours from legion.yaml, where pod_update_grace_minutes is the round's one bound (dispatch://INFRA-2981 R7)",
 	"pod_update_notice_hours": "the controller is told of an update round that outlives its bound once that bound has passed, on no clock of its own; remove pod_update_notice_hours from legion.yaml, where pod_update_grace_minutes, measured from the round's opening, is that bound (dispatch://INFRA-2981 R6)",
 }
 
@@ -435,6 +446,8 @@ type fileConfig struct {
 	Capabilities             *Capabilities
 	Durations                map[string]int
 	Counts                   map[string]int
+	Roles                    []Role
+	RoleTypes                []plan.Type
 	WorkerBackends           map[claim.Role]runtime.Backend
 	RoleConfigFiles          map[claim.Role][]string
 	WorkerStallBackstops     map[claim.Role]time.Duration
@@ -483,8 +496,16 @@ func load(path string, env func(string) string, resolveAppKeys bool) (Config, er
 		return Config{}, err
 	}
 	cfg, err := resolve(file, env, filepath.Dir(path))
-	if err != nil || !resolveAppKeys || file.GitHubApps == nil {
+	if err != nil || !resolveAppKeys {
 		return cfg, err
+	}
+	// The daemon's own load reads each role's prompt file, which a check of the file reads too
+	// (CheckRolePrompts) and the commands that only name the daemon do not.
+	if err := CheckRolePrompts(cfg.Roles); err != nil {
+		return Config{}, err
+	}
+	if file.GitHubApps == nil {
+		return cfg, nil
 	}
 	apps, err := ResolveGitHubApps(cfg.GitHubApps)
 	if err != nil {
@@ -1094,6 +1115,9 @@ func resolve(file fileConfig, env func(string) string, configDir string) (Config
 	if err := resolveStage3(file, configDir, &cfg); err != nil {
 		return Config{}, err
 	}
+	if err := resolveRoles(file, configDir, &cfg); err != nil {
+		return Config{}, err
+	}
 	if err := resolveControllerLaunch(file, &cfg); err != nil {
 		return Config{}, err
 	}
@@ -1134,6 +1158,10 @@ func resolve(file fileConfig, env func(string) string, configDir string) (Config
 		return Config{}, err
 	}
 	cfg.Hooks = settleHooks(file.Hooks, configDir)
+	// Every key whose names it judges is set by now.
+	if err := checkDeploymentRoleKeys(cfg); err != nil {
+		return Config{}, err
+	}
 	if cfg.Runtime.Name == "kubernetes" {
 		if err := checkPodReachable(cfg); err != nil {
 			return Config{}, err

@@ -1,0 +1,23 @@
+-- 20261123200630_plan_added.up.sql — the tasks each version of an owner's plan added.
+--
+-- issue_plans.added is record.PlanVersion.Added: the ids of the tasks a version added over the
+-- version in force when the workflow took it, in the plan's order, every task of a generation's
+-- first version. register_plan answers them (`plan.added`), and a give of a version the store
+-- holds is the version already taken, whose handler does not run again: intake.ApplyFact reads
+-- this column, since by then the version in force can be the version itself or a later one, over
+-- which the version adds none. Every version the upgrade finds reads none: the release before
+-- recorded nothing of what a version added, and only a give of such a version again reads it.
+--
+-- There is no down file. This directory keeps none, so the way back is the transaction that ends
+-- this header, its last paragraph (migrations.WayBack), run with the daemon stopped, before the
+-- earlier image is pinned, through psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1, before the way back
+-- of any earlier migration. The release before names the column in no statement, so the block
+-- drops it, and deletes its version row, which is owed to the roll-forward, so that it runs this
+-- file again. What the way back costs is what each version taken added: a registration given
+-- again after the roll-forward answers none.
+--
+-- begin;
+-- alter table issue_plans drop column if exists added;
+-- delete from schema_version where version = 20261123200630;
+-- commit;
+alter table issue_plans add column added text[] not null default '{}';

@@ -46,7 +46,11 @@ func promotesTheReviewer(t *testing.T, pool *pgxpool.Pool, engine *Engine, at ti
 	clockReads(engine, at)
 	member := issueRecord(t, pool, "LEGION-208")
 	applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
-		return engine.StartPromotedWorker(ctx, tx, *member, claim.RoleReviewer)
+		s, err := firstScope(ctx, tx, engine, *member)
+		if err != nil {
+			return err
+		}
+		return engine.StartPromotedWorker(ctx, tx, s, claim.RoleReviewer)
 	})
 }
 
@@ -88,7 +92,7 @@ func TestAReviewFromBeforeAReadmissionAppliedBeforeThePromotionMovesNoCommit(t *
 		t.Fatalf("after the late approval the reviewer's row reads the reviewed commit %q, want none: the approval was submitted before the re-admission cleared the generation", got)
 	}
 	promotesTheReviewer(t, pool, engine, entered.Add(3*time.Hour))
-	want := "Continue child. Issue: LEGION-208. Phase: reviewing. Working copy: branch legion/LEGION-208. Resume the existing phase work." + reviewedPartOf("none") + reviewEntryPartOf(reviewerRow(t, pool).Entry)
+	want := "Continue child. Issue: LEGION-208. Phase: reviewing. Working copy: branch legion/LEGION-208. Pull request: #42. Resume the existing phase work." + reviewedPartOf("none") + reviewEntryPartOf(reviewerRow(t, pool).Entry)
 	if task := reviewerRow(t, pool).EntryTask; task != want {
 		t.Fatalf("the promoted reviewer's first task = %q, want %q: the first review of the new generation reads the whole change", task, want)
 	}

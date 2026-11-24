@@ -28,8 +28,8 @@ func RepositoryAPI(endpoint string, repository ghrepo.Repository) string {
 }
 
 // Client calls GitHub with an installation token. Its API is a repository's REST base
-// (RepositoryAPI), which Get, Post, GetPages and GetListPages take paths under; an empty endpoint
-// is api.github.com.
+// (RepositoryAPI), which Get, Post, Patch, GetPages and GetListPages take paths under; an empty
+// endpoint is api.github.com.
 type Client struct {
 	Token string
 	API   string
@@ -37,25 +37,41 @@ type Client struct {
 
 // Get reads path under the client's REST base into into. An answer other than 2xx is an *Answer.
 func (c Client) Get(ctx context.Context, path string, into any) error {
-	_, _, err := c.call(ctx, http.MethodGet, c.API+path, nil, into)
+	_, _, _, err := c.call(ctx, http.MethodGet, c.API+path, nil, into)
 	return err
 }
 
 // Post sends body, as JSON, to path under the client's API, and reads GitHub's answer into into
 // when into is not nil. An answer other than 2xx is an *Answer.
 func (c Client) Post(ctx context.Context, path string, body, into any) error {
+	_, err := c.send(ctx, http.MethodPost, path, body, into)
+	return err
+}
+
+// Patch sends body, as JSON, to path under the client's API with PATCH, and reads GitHub's answer
+// into into when into is not nil. An answer other than 2xx is an *Answer.
+func (c Client) Patch(ctx context.Context, path string, body, into any) error {
+	_, err := c.send(ctx, http.MethodPatch, path, body, into)
+	return err
+}
+
+// PostStatus is Post that answers GitHub's 2xx status too, for a write GitHub answers with one of
+// two statuses that mean two things: POST /merges is 201 with the merge commit, or 204, which
+// carries no body, when the base holds the head already. A 204 reads nothing into into. An answer
+// other than 2xx is an *Answer, and the status 0.
+func (c Client) PostStatus(ctx context.Context, path string, body, into any) (int, error) {
 	return c.send(ctx, http.MethodPost, path, body, into)
 }
 
-// send sends body, as JSON, to path under the client's API with method, and reads GitHub's answer
-// into into when into is not nil.
-func (c Client) send(ctx context.Context, method, path string, body, into any) error {
+// send sends body, as JSON, to path under the client's API with method, reads GitHub's answer
+// into into when into is not nil, and answers GitHub's 2xx status.
+func (c Client) send(ctx context.Context, method, path string, body, into any) (int, error) {
 	encoded, err := json.Marshal(body)
 	if err != nil {
-		return fmt.Errorf("encode %s %s: %w", method, path, err)
+		return 0, fmt.Errorf("encode %s %s: %w", method, path, err)
 	}
-	_, _, err = c.call(ctx, method, c.API+path, encoded, into)
-	return err
+	status, _, _, err := c.call(ctx, method, c.API+path, encoded, into)
+	return status, err
 }
 
 // Budget is the GitHub rate-limit budget a call spends: the REST API's core budget, or GitHub's
@@ -128,7 +144,7 @@ func getPages[T any](ctx context.Context, c Client, path, field string) ([]T, er
 		if field != "" {
 			into = &object
 		}
-		next, _, err := c.call(ctx, http.MethodGet, target, nil, into)
+		_, next, _, err := c.call(ctx, http.MethodGet, target, nil, into)
 		if err != nil {
 			return nil, err
 		}
@@ -154,17 +170,18 @@ func getPages[T any](ctx context.Context, c Client, path, field string) ([]T, er
 }
 
 // call sends method to target, with body as JSON when it is not nil, reads a 2xx answer into into
-// when into is not nil, and returns the next page's URL its Link header names ("" for none) and
-// GitHub's response headers. An answer other than 2xx is an *Answer; when it is a rate limit, it
+// when into is not nil and the answer is not a 204, which carries no body, and returns GitHub's
+// 2xx status, the next page's URL its Link header names ("" for none) and GitHub's response
+// headers. An answer other than 2xx is an *Answer, and the status 0; when it is a rate limit, it
 // names the budget spent, the REST API's core budget when GitHub names no other.
-func (c Client) call(ctx context.Context, method, target string, body []byte, into any) (string, http.Header, error) {
+func (c Client) call(ctx context.Context, method, target string, body []byte, into any) (int, string, http.Header, error) {
 	var payload io.Reader
 	if body != nil {
 		payload = bytes.NewReader(body)
 	}
 	request, err := http.NewRequestWithContext(ctx, method, target, payload)
 	if err != nil {
-		return "", nil, err
+		return 0, "", nil, err
 	}
 	request.Header.Set("Authorization", "Bearer "+c.Token)
 	request.Header.Set("Accept", "application/vnd.github+json")
@@ -173,20 +190,21 @@ func (c Client) call(ctx context.Context, method, target string, body []byte, in
 	}
 	response, err := http.DefaultClient.Do(request)
 	if err != nil {
-		return "", nil, err
+		return 0, "", nil, err
 	}
 	defer response.Body.Close()
 	answer, err := io.ReadAll(response.Body)
 	if err != nil {
-		return "", response.Header, err
+		return 0, "", response.Header, err
 	}
 	if response.StatusCode < 200 || response.StatusCode > 299 {
-		return "", response.Header, c.refusal(method, request.URL, response, answer)
+		return 0, "", response.Header, c.refusal(method, request.URL, response, answer)
 	}
-	if into == nil {
-		return nextPage(response.Header.Get("Link")), response.Header, nil
+	next := nextPage(response.Header.Get("Link"))
+	if into == nil || response.StatusCode == http.StatusNoContent {
+		return response.StatusCode, next, response.Header, nil
 	}
-	return nextPage(response.Header.Get("Link")), response.Header, json.Unmarshal(answer, into)
+	return response.StatusCode, next, response.Header, json.Unmarshal(answer, into)
 }
 
 // refusal is response, GitHub's answer other than 2xx to method at target, as the *Answer its

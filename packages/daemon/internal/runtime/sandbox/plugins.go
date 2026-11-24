@@ -11,8 +11,9 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
 
-// pluginsRoot is where a role's installed plugin generations live, under the role's state home
-// (roleStateHome): <role state home>/legion-plugins. Not the Oh My Pi profile's plugin directory
+// pluginsRoot is where a slot's installed plugin generations live, under the slot's state home,
+// its agent's whatever role its step is on (roleStateHome): <slot state home>/legion-plugins. Not
+// the Oh My Pi profile's plugin directory
 // (ompProfileDir+"/plugins") and nowhere extension discovery reads, so an installed pair never
 // loads twice (the boot gate's pod lane refuses an image where it would).
 func pluginsRoot(stateHome string) string {
@@ -142,7 +143,7 @@ func installLockWait(boot time.Duration, intervals int) int {
 }
 
 // installBlock is the part of the start wrapper an installing launch runs first (LEGION-164): it
-// drops any earlier generation's install under the role's plugins root (one role's directory is
+// drops any earlier generation's install under the slot's plugins root (one slot's directory is
 // never another's, and no earlier generation of it should ever run beside this one), installs the
 // exact pair the daemon named at this generation's own directory, and checks that the installed
 // pi-legion declares this daemon's contract (pluginCheckScript). It runs in a subshell, so its cd
@@ -270,9 +271,9 @@ if [ "$n" -gt 0 ]; then
 fi
 `
 
-// claudeCodeRoot is where a Claude role's installed Claude Code generations live, beside its
-// plugin generations (pluginsRoot) under its own state home: <role state home>/legion-claude-code,
-// on the issue's volume, writable by the pod's uid and no other role's.
+// claudeCodeRoot is where a Claude agent's installed Claude Code generations live, beside its
+// plugin generations (pluginsRoot) under its slot's state home: <slot state
+// home>/legion-claude-code, on the issue's volume, writable by the pod's uid and no other slot's.
 func claudeCodeRoot(stateHome string) string {
 	return stateHome + "/legion-claude-code"
 }
@@ -340,7 +341,7 @@ if (got.split(/\s+/)[0] !== want) {
 // It has installBlock's shape, for installBlock's reasons. It runs in a subshell with its stdout
 // on stderr, since the shim reads the child's stdout as the RPC frame stream, and its cd into the
 // generation's directory ends with it. It first drops every earlier generation's install under the
-// role's root (claudeCodeRoot), so an old generation's copy — some hundreds of megabytes — never
+// slot's root (claudeCodeRoot), so an old generation's copy — some hundreds of megabytes — never
 // accumulates on the issue's volume. It copies the image's package.json and package-lock.json
 // (claudeCodePin) into the generation's directory and runs `npm ci --ignore-scripts --omit=dev`
 // there: the lockfile pins @anthropic-ai/claude-code exactly and carries the sha512 integrity of

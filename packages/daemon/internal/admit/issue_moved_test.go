@@ -97,7 +97,7 @@ func TestTheRecordKeepsWhenAnIssueLastMoved(t *testing.T) {
 	// the one helper every pull request write in the workflow goes through.
 	now = at(2)
 	applyMovement(t, pool, admission, engine, "github", "pull-request-opened", intake.PullRequestOpened{
-		Repo: "acme/widgets", Number: 7, Branch: claim.IssueBranch(movedIssue), HeadSHA: "a1", UpdatedAt: at(2)})
+		Repo: "acme/widgets", Number: 7, Branch: claim.IssueBranch(movedIssue), HeadSHA: "a1", HeadRepo: "acme/widgets", UpdatedAt: at(2)})
 	assertMoved("a GitHub event of its pull request", at(2))
 
 	// A recorded handoff: the tester records its phase's handoff and reports no verdict, so the
@@ -292,7 +292,7 @@ func TestTheRecordKeepsWhenAnIssueLastMoved(t *testing.T) {
 		intake.PullRequestSynchronized{Repo: "acme/widgets", Number: 7, Branch: claim.IssueBranch(movedIssue),
 			HeadSHA: "a1", UpdatedAt: at(26)})
 	inTx(t, pool, func(tx pgx.Tx) {
-		pr, err := record.NewStore().PullRequest(ctx, tx, movedIssue)
+		pr, err := record.NewStore().MergePullRequest(ctx, tx, movedIssue)
 		if err != nil || pr == nil {
 			t.Fatalf("read the pull request of %s = %+v, %v", movedIssue, pr, err)
 		}
@@ -327,7 +327,7 @@ func TestTheRecordKeepsWhenAnIssueLastMoved(t *testing.T) {
 		intake.PullRequestChecks{Repo: "acme/widgets", Number: 7, HeadSHA: "a1", Generation: 1, Snapshot: "settled-a1",
 			CheckRuns: []record.AttemptRun{{Name: "unit", ID: 70}}, Failing: []string{}, Cancelled: []string{}})
 	inTx(t, pool, func(tx pgx.Tx) {
-		pr, err := record.NewStore().PullRequest(ctx, tx, movedIssue)
+		pr, err := record.NewStore().MergePullRequest(ctx, tx, movedIssue)
 		if err != nil || pr == nil {
 			t.Fatalf("read the pull request of %s = %+v, %v", movedIssue, pr, err)
 		}
@@ -359,7 +359,7 @@ func TestTheRecordKeepsWhenAnIssueLastMoved(t *testing.T) {
 		t.Helper()
 		var got record.PullRequest
 		inTx(t, pool, func(tx pgx.Tx) {
-			pr, err := record.NewStore().PullRequest(ctx, tx, movedIssue)
+			pr, err := record.NewStore().MergePullRequest(ctx, tx, movedIssue)
 			if err != nil || pr == nil {
 				t.Fatalf("read the pull request of %s = %+v, %v", movedIssue, pr, err)
 			}
@@ -664,7 +664,11 @@ func TestTheRecordKeepsWhenAnIssueLastMoved(t *testing.T) {
 		now = started
 		inTx(t, pool, func(tx pgx.Tx) {
 			fact := engine.OpenFact(ctx)
-			if err := engine.StartPromotedWorker(fact, tx, issue(t, pool, issueKey), claim.RoleImplementer); err != nil {
+			s, err := engine.PromotedScope(fact, tx, issue(t, pool, issueKey), claim.RoleImplementer)
+			if err != nil {
+				t.Fatalf("read the scope of %s's implementer: %v", issueKey, err)
+			}
+			if err := engine.StartPromotedWorker(fact, tx, s, claim.RoleImplementer); err != nil {
 				t.Fatalf("start the implementer of %s again: %v", issueKey, err)
 			}
 			if err := engine.SettleFact(fact, tx); err != nil {
@@ -805,7 +809,7 @@ func TestTheRecordKeepsWhenAnIssueLastMoved(t *testing.T) {
 			t.Helper()
 			var got record.PullRequest
 			inTx(t, pool, func(tx pgx.Tx) {
-				pr, err := record.NewStore().PullRequest(ctx, tx, issueKey)
+				pr, err := record.NewStore().MergePullRequest(ctx, tx, issueKey)
 				if err != nil || pr == nil {
 					t.Fatalf("read the pull request of %s = %+v, %v", issueKey, pr, err)
 				}
@@ -820,7 +824,7 @@ func TestTheRecordKeepsWhenAnIssueLastMoved(t *testing.T) {
 		base := movedAt(t, pool, issueKey).Add(time.Minute)
 		now = base
 		applyMovement(t, pool, admission, engine, "github", "pull-request-opened-"+issueKey, intake.PullRequestOpened{
-			Repo: "acme/widgets", Number: 8, Branch: claim.IssueBranch(issueKey), HeadSHA: "a1", UpdatedAt: base})
+			Repo: "acme/widgets", Number: 8, Branch: claim.IssueBranch(issueKey), HeadSHA: "a1", HeadRepo: "acme/widgets", UpdatedAt: base})
 		now = base.Add(time.Minute)
 		applyMovement(t, pool, admission, engine, "github", "pull-request-synchronized-"+issueKey, intake.PullRequestSynchronized{
 			Repo: "acme/widgets", Number: 8, Branch: claim.IssueBranch(issueKey), Before: "a0", Sender: "legion-implementer[bot]",

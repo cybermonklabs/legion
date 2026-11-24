@@ -120,10 +120,11 @@ func replacedOverPassedOverClaims(t *testing.T, script func(*podUpdateRig)) (*po
 	if replaced[0].Pod.Locator == nil || podOf(replaced[0].Pod.Locator) != podUpdatePod {
 		t.Fatalf("the pod was replaced through %+v, want a process in pod %s", replaced[0].Pod, podUpdatePod)
 	}
-	through, _ := replaced[0].Pod.Claim.Role()
+	through := replaced[0].Pod.Claim
 	reads := rig.rt.CallsOf("WorkspaceWork")
-	if reads[0].Issue != podUpdateIssue || reads[0].Role != through || !slices.Contains(passedOverWorkers, through) {
-		t.Fatalf("the workspace was read as %+v, want the issue %s read through the %s, whose process the pod is replaced through",
+	if reads[0].Issue != podUpdateIssue || reads[0].Claim != through ||
+		!slices.ContainsFunc(passedOverWorkers, func(role claim.Role) bool { return rig.tokens[role] == through }) {
+		t.Fatalf("the workspace was read as %+v, want the issue %s read through %s, a worker's claim whose process the pod is replaced through",
 			reads[0], podUpdateIssue, through)
 	}
 
@@ -421,8 +422,8 @@ func TestAnUpdateRoundReadsTheWorkspaceOncePerRound(t *testing.T) {
 		rig.rt.FailReplacePod(nil)
 		rig.awaitReplacement(2, "once the runtime replaces it")
 		reads := rig.rt.CallsOf("WorkspaceWork")
-		if len(reads) != 1 || reads[0].Role != claim.RoleImplementer {
-			t.Fatalf("the workspace was read %+v, want one read through the implementer, the one role whose process is in the pod", reads)
+		if len(reads) != 1 || reads[0].Claim != rig.tokens[claim.RoleImplementer] {
+			t.Fatalf("the workspace was read %+v, want one read through the implementer's claim, the one whose process is in the pod", reads)
 		}
 		messages := rig.messages()
 		if len(messages) != 1 || !strings.Contains(messages[0], passedOverCommit) || !strings.Contains(messages[0], "architect (suspended)") {

@@ -69,6 +69,7 @@ func childCheckRig(t *testing.T) checkRig {
 	t.Helper()
 	rig := newCheckRig(t)
 	seedMergingChild(t, rig.pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Implementing, Generation: 7, Status: "in_progress", Rank: "U", LastDispatchSeq: 1})
+	seedRoleClaims(t, rig.pool, "LEGION-208", "LEGION-209")
 	rig.apply("merged", intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 43, MergeSHA: "merge-43"})
 	return rig
 }
@@ -538,6 +539,7 @@ func TestTheBoundsLookIsToldTheBoundTheCheckOpenedWith(t *testing.T) {
 // applies.
 func TestTheTreesCloseWaitsForAnOpenCheckAndRunsOnceItCloses(t *testing.T) {
 	rig := rootCheckRig(t)
+	seedRoleClaims(t, rig.pool, "LEGION-208", "LEGION-209")
 	rig.clock.now = checkOpened.Add(time.Hour)
 	expiry := intake.LingerExpired{Issue: "LEGION-208", Generation: 7}
 	_, err := intake.ApplyFact(context.Background(), rig.pool, "outbox", "linger:LEGION-208:7", expiry, rig.engine, admissionStub{})
@@ -621,6 +623,7 @@ func TestTheBootSweepClosesMigratedMergedIssuesAndLeavesARootWithARunningChild(t
 	seedPR(t, rig.pool, record.PullRequest{State: record.PullRequestMerged, Issue: "LEGION-304", Repo: "sjawhar/legion", Number: 4, Branch: "legion/LEGION-304", HeadSHA: "h4", Failing: []string{}})
 	seedIssue(t, rig.pool, record.Issue{Key: "LEGION-305", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-305", Project: "LEGION", Title: "open", Phase: phase.Merging, Generation: 1, Status: "retro", Rank: "E"})
 	seedPR(t, rig.pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-305", Repo: "sjawhar/legion", Number: 5, Branch: "legion/LEGION-305", HeadSHA: "h5", Failing: []string{}})
+	seedRoleClaims(t, rig.pool, "LEGION-301", "LEGION-302", "LEGION-303", "LEGION-304", "LEGION-305")
 
 	rig.apply("boot", intake.DaemonBooted{Boot: 1})
 	phases := map[string]phase.Phase{}

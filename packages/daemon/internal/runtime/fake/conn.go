@@ -23,9 +23,12 @@ type Prompt struct {
 	Message    string
 }
 
-// Adoption is one working-copy adoption the daemon asked the agent's side to perform.
+// Adoption is one working-copy adoption the daemon asked the agent's side to perform: the
+// identity, the branch of the task whose working copy it is ("" for the issue's own) and the
+// budget.
 type Adoption struct {
 	Identity runtime.GitIdentity
+	Branch   string
 	Timeout  time.Duration
 }
 
@@ -130,10 +133,10 @@ func (c *Conn) Shutdown(_ context.Context) error {
 	return c.failures["Shutdown"]
 }
 
-func (c *Conn) AdoptWorkingCopy(_ context.Context, id runtime.GitIdentity, timeout time.Duration) error {
+func (c *Conn) AdoptWorkingCopy(_ context.Context, id runtime.GitIdentity, branch string, timeout time.Duration) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.adoptions = append(c.adoptions, Adoption{Identity: id, Timeout: timeout})
+	c.adoptions = append(c.adoptions, Adoption{Identity: id, Branch: branch, Timeout: timeout})
 	return c.failures["AdoptWorkingCopy"]
 }
 

@@ -13,7 +13,7 @@ import (
 // ClaimRequest is what either of the controller's two claim recoveries names: the claim on Role
 // of Issue, under the caller's controller grant. Role is a workflow role or `architect`; the
 // project controller is no role here, so the controller's own claim cannot be named at all
-// (claim.IsRole, whose six roles the controller is not one of). The fresh session and the
+// (claim.IsRole, which refuses the controller). The fresh session and the
 // compaction take the same three members, so they take one type (controllerClaim).
 type ClaimRequest struct {
 	GrantID string `json:"grantId"`
@@ -142,13 +142,15 @@ var freshSessionOp = controllerOp{
 }
 
 // controllerTarget is the claim a controller's recovery named, read and authenticated: the
-// machine to run the effect on, and the issue and role the caller spelled, which the route logs
-// as the controller named them.
+// machine to run the effect on, the issue and role the caller spelled, which the route logs as the
+// controller named them, and request, the caller's request carrying the step's standing, which the
+// effect runs on (controllerClaim).
 type controllerTarget struct {
 	machine *supervise.Machine
 	token   claim.Token
 	issue   string
 	role    claim.Role
+	request *http.Request
 }
 
 // controllerClaim is the door both of the controller's claim recoveries come through
@@ -157,9 +159,18 @@ type controllerTarget struct {
 // operator. It answers every refusal of the body, the grant and the lookup itself, and reports
 // false when it has; only the effect behind it differs between the two.
 //
-// The controller is refused its own claim here and nowhere else: the token is built from the
-// issue and the role, and no issue's role spells the controller's token (claim.ControllerToken),
-// so a role this check takes can never name it.
+// The controller is refused its own claim here and nowhere else: the token is the claim of the
+// agent that works the role's step of the issue (workerToken), which the issue's role names, and
+// no issue's role spells the controller's token (claim.ControllerToken), so a role this check takes
+// can never name it.
+//
+// That claim is read before any lock the effect's acts take, so the effect runs on a request
+// carrying its standing (worksStep, supervise.Standing): the effect's first act on the machine
+// judges again under the machine's lock that the record still names the claim on the role's step,
+// and a step that moved to another claim before it is refused there with nothing of the claim
+// changed (operatorFailure, compact's refusal of a claim not taken). A move after that act finds
+// the effect under way, and the phase's restart the fresh session applies names the claim, so a
+// step entered for another claim since is not restarted (restartWorkedPhase).
 func (s *server) controllerClaim(w http.ResponseWriter, r *http.Request, op controllerOp) (controllerTarget, bool) {
 	var req ClaimRequest
 	if !s.readBody(w, r, &req, s.redeemIdentityCheck) || !s.requireFailureFields(w, r,
@@ -177,7 +188,7 @@ func (s *server) controllerClaim(w http.ResponseWriter, r *http.Request, op cont
 			roleList(), op.notTheController))
 		return controllerTarget{}, false
 	}
-	token, err := claim.NewToken(s.project, req.Issue, role)
+	token, err := s.workerToken(r.Context(), req.Issue, role)
 	if err != nil {
 		s.logFailure("api: build the claim token of "+op.name, "issue", req.Issue, "role", req.Role, "error", err)
 		s.writeFailure(w, r, http.StatusInternalServerError, "CLAIM_TOKEN_FAILED", err.Error())
@@ -196,7 +207,8 @@ func (s *server) controllerClaim(w http.ResponseWriter, r *http.Request, op cont
 		s.writeFailure(w, r, http.StatusNotFound, "NO_CLAIM", "no claim "+string(token))
 		return controllerTarget{}, false
 	}
-	return controllerTarget{machine: m, token: token, issue: req.Issue, role: role}, true
+	judged := r.WithContext(supervise.Standing(r.Context(), s.worksStep(req.Issue, role, token)))
+	return controllerTarget{machine: m, token: token, issue: req.Issue, role: role, request: judged}, true
 }
 
 // claimFreshSession is the controller's door onto the fresh session (freshSession). The effect
@@ -209,7 +221,7 @@ func (s *server) claimFreshSession(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	_, notRestarted, started, ok := s.freshSession(w, r, target.machine, target.token)
+	_, notRestarted, started, ok := s.freshSession(w, target.request, target.machine, target.token)
 	if !ok {
 		return
 	}
@@ -223,13 +235,14 @@ func (s *server) claimFreshSession(w http.ResponseWriter, r *http.Request) {
 	s.writeAnswer(w, r, AnswerFreshSession, http.StatusOK, FreshSessionResponse{PhaseNotRestarted: notRestarted})
 }
 
-// roleList names the roles a claim can be on, in the order the workflow reaches them.
+// roleList names the roles a claim can be on: Legion's six, in the order the workflow reaches
+// them, and each role the deployment defines, which a claim of an issue's step is on.
 func roleList() string {
 	names := make([]string, 0, len(claim.Roles))
 	for _, role := range claim.Roles {
 		names = append(names, string(role))
 	}
-	return strings.Join(names, ", ")
+	return strings.Join(names, ", ") + ", or a role of this deployment"
 }
 
 // freshSession is the one fresh-session effect, which `legion claims retry --fresh-session`

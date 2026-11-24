@@ -1,6 +1,10 @@
 package runtime
 
-import "time"
+import (
+	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/shimwire"
+)
 
 // MaxWorkspaceBundleBytes is the largest bundle a release carries. A bundle above it stops the
 // release, which is recorded with its reason and leaves the pod where it is: the work a role has
@@ -17,7 +21,9 @@ const MaxWorkspaceBundleBytes = 40 << 20
 // Head is the commit the bundle's working copy sat on, Bookmarks maps each local bookmark that
 // points into the saved set to its commit, and Tips names the heads the bundle carries, so the
 // restore can make each visible again: a bundle that only unbundles leaves every saved head out of
-// jj's view, since jj's visible heads live in .jj/repo, which dies with the pod.
+// jj's view, since jj's visible heads live in .jj/repo, which dies with the pod. WorkingCopies
+// maps the branch of each task whose working copy sat beside the issue's own to that working
+// copy's commit, which the restore puts a workspace back on.
 type WorkspaceBundle struct {
 	// Bundle is the git bundle's bytes.
 	Bundle []byte
@@ -27,6 +33,9 @@ type WorkspaceBundle struct {
 	Tips []string
 	// Bookmarks maps a local bookmark name to the commit id it pointed at.
 	Bookmarks map[string]string
+	// WorkingCopies maps a task's branch (legion/<KEY>.<part>) to the commit id its working copy
+	// sat on. A bundle a shim of an earlier release saved holds none.
+	WorkingCopies map[string]string
 	// At is when the shim took the bundle.
 	At time.Time
 	// Release is the id of the release that saved the row this bundle was read from, which the
@@ -49,6 +58,20 @@ type WorkspaceBundle struct {
 
 // Size is the bundle's length in bytes, which the release records and the 40 MiB bound reads.
 func (b WorkspaceBundle) Size() int { return len(b.Bundle) }
+
+// BundleOf is the saved work a shim answered, as the daemon keeps it: the one place the wire's
+// members become this type's, so no member is dropped on the way in (stream.Conn.BundleWorkspace).
+// Release and PodUID are the daemon's own and are filled after.
+func BundleOf(b shimwire.WorkspaceBundle) WorkspaceBundle {
+	return WorkspaceBundle{Bundle: b.Bundle, Head: b.Head, Tips: b.Tips, Bookmarks: b.Bookmarks, WorkingCopies: b.WorkingCopies, At: b.At}
+}
+
+// Wire is the saved work as the launcher_bundle slices carry it to the launcher that restores it:
+// the one place this type's members become the wire's, so no member is dropped on the way out
+// (internal/runtime/sandbox's bundleFrames).
+func (b WorkspaceBundle) Wire() shimwire.WorkspaceBundle {
+	return shimwire.WorkspaceBundle{Bundle: b.Bundle, Head: b.Head, Tips: b.Tips, Bookmarks: b.Bookmarks, WorkingCopies: b.WorkingCopies, At: b.At}
+}
 
 // WorkspaceBundleTake is what one pod's ask of an issue's saved bundle did to that bundle
 // (store.Store.TakeWorkspaceBundleForRestore). A bundle is offered to one pod only — the first

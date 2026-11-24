@@ -108,7 +108,7 @@ func TestAFactReadsAsManyRowsWhateverNumberOfFinishedRecordsTheProjectKeeps(t *t
 		name, source string
 		fact         intake.Fact
 	}{
-		{"a pull request opened", "github", intake.PullRequestOpened{Repo: "acme/widgets", Number: 7, Branch: branch, HeadSHA: "a1", Body: "Dispatch: " + runningChild(0),
+		{"a pull request opened", "github", intake.PullRequestOpened{Repo: "acme/widgets", Number: 7, Branch: branch, HeadSHA: "a1", HeadRepo: "acme/widgets", Body: "Dispatch: " + runningChild(0),
 			URL: "https://github.com/acme/widgets/pull/7", UpdatedAt: fixedNow}},
 		{"a push to it", "github", intake.PullRequestSynchronized{Repo: "acme/widgets", Number: 7, Branch: branch, HeadSHA: "a2", UpdatedAt: fixedNow.Add(time.Minute)}},
 		{"its checks settled", "github", intake.PullRequestChecks{Repo: "acme/widgets", Number: 7, HeadSHA: "a2", CheckRuns: []intake.CheckRun{{Name: "unit", ID: 70}},

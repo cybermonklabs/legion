@@ -654,7 +654,9 @@ func upgradeRollForwardSweepsTheLostTask(t *testing.T, st *store.Store, w *workf
 // operator comes back to, declares as well. It is a copy because neither release's own type is
 // in the tree. Judging the payloads the strip leaves by this shape answers for 0b297211 too:
 // that release's decoder knows every key this struct knows and freshSession besides, so a
-// payload this one accepts it accepts.
+// payload this one accepts it accepts. A row this branch's release queued can carry `claim`
+// besides, which the way back of 20261117213545_plan_step_agent takes off before this rollback
+// runs (its header), so no payload this shape judges carries it.
 type preEntrySuperviseRequest struct {
 	Op            record.SuperviseOp    `json:"op"`
 	Tree          string                `json:"tree"`

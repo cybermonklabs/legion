@@ -38,11 +38,15 @@ func TestALingeringTreesMergeEndsTheMergeStep(t *testing.T) {
 	}
 	seedChildPR(t, pool, record.PullRequestMerged)
 	onStored(t, pool, engine, "LEGION-209", func(ctx context.Context, tx pgx.Tx, member record.Issue) error {
-		pr, err := engine.store.PullRequest(ctx, tx, "LEGION-209")
+		pr, err := engine.store.MergePullRequest(ctx, tx, "LEGION-209")
 		if err != nil {
 			return err
 		}
-		return engine.closeMergedTelling(ctx, tx, member, pr)
+		s, err := firstScope(ctx, tx, engine, member)
+		if err != nil {
+			return err
+		}
+		return engine.closeMergedTelling(ctx, tx, s, pr)
 	})
 	var ends []record.StepRecord
 	for _, w := range stepWrites(t, pool, "LEGION-209") {

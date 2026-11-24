@@ -101,7 +101,7 @@ func redRecord(state record.PullRequestState, head string, at time.Time) *record
 // request on its branch is at head with updated_at at and the record does not hold it open (the
 // daemon's issuePullRequest): a reopen when the record holds #42 closed.
 func readOpened(head string, at time.Time, reopened bool) intake.Fact {
-	return intake.PullRequestOpened{Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208", HeadSHA: head,
+	return intake.PullRequestOpened{Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208", HeadSHA: head, HeadRepo: "sjawhar/legion",
 		URL: "https://github.com/sjawhar/legion/pull/42", UpdatedAt: at, Reopened: reopened}
 }
 
@@ -289,7 +289,7 @@ func latePullRequest(t *testing.T, pool *pgxpool.Pool) record.PullRequest {
 	var got *record.PullRequest
 	seedRecord(t, pool, func(tx pgx.Tx) error {
 		var err error
-		got, err = record.NewStore().PullRequest(t.Context(), tx, "LEGION-208")
+		got, err = record.NewStore().MergePullRequest(t.Context(), tx, "LEGION-208")
 		return err
 	})
 	if got == nil {

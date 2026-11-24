@@ -308,7 +308,7 @@ func TestPaneVariablesNamesNoOverlayOfLegionsOwn(t *testing.T) {
 // A spec the runtime cannot honour exactly is refused before anything touches the disk or tmux:
 // the shared refusal against tmux's own runtime-owned and composed variables
 // (runtime.ValidateSpawnSpec over ownedNames, tested with its own table, which also holds the
-// claim token to the one its coordinates derive), then
+// claim token to the token of an agent of the spec's issue), then
 // what is tmux's alone: a pane's workspace is provisioned on the daemon's host, never recovered
 // from a ref, and the controller's marker is the runtime's to set. A spec that sets a composed
 // name is refused too: the pane would carry two pairs of it, and the one the agent's process

@@ -151,12 +151,16 @@ func TestAStoppedStepsRoleStaysStoppedWhenItsIssueLeavesItsTree(t *testing.T) {
 	}
 	apply("handover:"+childKey, intake.Handover{Issue: childKey, Tree: rootKey, Generation: 1})
 	var carried *record.Issue
+	var stopped claim.Role
 	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
-		carried, err = records.Issue(ctx, tx, childKey)
+		if carried, err = records.Issue(ctx, tx, childKey); err != nil || carried == nil {
+			return err
+		}
+		stopped, err = workflow.StoppedStepRole(ctx, records, tx, *carried)
 		return err
-	}); err != nil || carried == nil || carried.Tree != childKey || carried.Generation != 2 || workflow.StoppedStepRole(*carried) != claim.RoleImplementer {
-		t.Fatalf("the handed-over child = %+v, %v; want its own tree at generation 2, held for its stopped task", carried, err)
+	}); err != nil || carried == nil || carried.Tree != childKey || carried.Generation != 2 || stopped != claim.RoleImplementer {
+		t.Fatalf("the handed-over child = %+v (its stopped step's role %q), %v; want its own tree at generation 2, held for its stopped task", carried, stopped, err)
 	}
 	// The promotion brings back the held member's roles that have run, the stopped step's among them.
 	var restarts int

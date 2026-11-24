@@ -25,7 +25,8 @@ import (
 // issue's own record when it runs.
 //
 // Each parking row asserts the whole set of rows the departure queued, not the release alone: the
-// park suspends every role of what it parks, and queues the suspension and, for a root, the
+// park suspends each claim of what it parks (one row per stored claim, and one by role for each
+// role no stored claim works), and queues the suspension and, for a root, the
 // linger's close. That set is how the test shows the release was added to the park and replaced
 // nothing. No row disarms a pull request, since the daemon changes no merge setting of any
 // (dispatch://INFRA-714 R2).
@@ -137,6 +138,7 @@ func TestLeaveQueuesTheClaimRelease(t *testing.T) {
 				Tree: "LEGION-208", Project: "LEGION", Title: "child", Parent: &parent, Phase: phase.Implementing, Generation: 7, Status: "in_progress", Rank: "V", LastDispatchSeq: 1}
 			seedIssue(t, pool, root)
 			seedIssue(t, pool, child)
+			seedRoleClaims(t, pool, root.Key, child.Key)
 			seedPhase(t, pool, record.PhaseRow{Issue: root.Key, Role: claim.RoleImplementer, Claim: "implementer"})
 			seedPhase(t, pool, record.PhaseRow{Issue: child.Key, Role: claim.RoleImplementer, Claim: "child-implementer"})
 			seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: root.Key, Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208", HeadSHA: "head-42", Failing: []string{}})

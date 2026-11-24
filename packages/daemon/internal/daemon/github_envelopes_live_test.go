@@ -73,7 +73,7 @@ func (p *liveProof) publishSynchronizeOf(number int, issue, head, base, title st
 	p.t.Helper()
 	payload, err := json.Marshal(map[string]string{
 		"action": "synchronize", "kind": "pr", "repo": liveRepo, "number": strconv.Itoa(number),
-		"head_sha": head, "base_ref": base, "head_ref": claim.IssueBranch(issue),
+		"head_sha": head, "base_ref": base, "head_ref": claim.IssueBranch(issue), "head_repo": liveRepo,
 		"title":      title,
 		"url":        "https://github.com/" + liveRepo + "/pull/" + strconv.Itoa(number),
 		"updated_at": updated.Format(time.RFC3339),

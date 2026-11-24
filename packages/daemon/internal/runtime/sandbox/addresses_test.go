@@ -1,6 +1,7 @@
 package sandbox
 
 import (
+	"errors"
 	"slices"
 	"strings"
 	"testing"
@@ -9,6 +10,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 )
 
@@ -175,6 +177,47 @@ func TestAMovedAddressIsDescribedAsItHoldsThenWhatItIsHandedNow(t *testing.T) {
 	want := "--connect tcp://192.0.2.5:13371, now tcp://192.0.2.7:13371; ENVOY_URL (unset), now https://envoy.internal.example"
 	if got := describeMoved(moved); got != want {
 		t.Fatalf("describeMoved = %q, want %q", got, want)
+	}
+}
+
+// podWithRoles is an issue pod whose launcher roles are the ones given, as a pod of a deployment
+// that defines roles of its own holds them.
+type podWithRoles struct {
+	issuePod
+	launched []claim.Role
+}
+
+func (p podWithRoles) roles(*Runtime) []claim.Role { return p.launched }
+
+// deployedRuntime is a runtime of a deployment that defines the roles of deployed, as
+// configureProber sets its issue roles and its map.
+func deployedRuntime(deployed appauth.DeploymentApps) *Runtime {
+	return &Runtime{issueRoles: issueRolesOf(deployed), deploymentApps: deployed}
+}
+
+// The Apps a pod holds a bundle of are the Apps its roles act as, each named once, a role of the
+// deployment's acting as the App its setting names (appauth.AppRoleFor). A role that neither
+// Legion nor the deployment defines is an error, never a pod read as holding fewer Apps than its
+// roles act as.
+func TestAPodsAppsAreItsRolesAppsAndARoleNobodyDefinesIsAnError(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		kind     podKind
+		deployed appauth.DeploymentApps
+		want     []appauth.AppRole
+	}{
+		{"an issue pod", issuePod{}, nil, []appauth.AppRole{appauth.Review, appauth.Implement}},
+		{"the controller's pod", controllerPod{}, nil, []appauth.AppRole{appauth.Review}},
+		{"a pod of a review role and a deployment role set to implement", podWithRoles{launched: []claim.Role{claim.RoleArchitect, "checker"}},
+			appauth.DeploymentApps{"checker": appauth.Implement}, []appauth.AppRole{appauth.Review, appauth.Implement}},
+	} {
+		if apps, err := podAppRoles(deployedRuntime(tc.deployed), tc.kind); err != nil || !slices.Equal(apps, tc.want) {
+			t.Errorf("%s: podAppRoles = %v, %v; want %v", tc.name, apps, err, tc.want)
+		}
+	}
+	apps, err := podAppRoles(deployedRuntime(nil), podWithRoles{launched: []claim.Role{claim.RoleArchitect, "checker"}})
+	if !errors.Is(err, appauth.ErrRoleNotDefined) || apps != nil {
+		t.Errorf("podAppRoles of a pod holding checker, which nothing defines = %v, %v; want no Apps and an error that is appauth.ErrRoleNotDefined", apps, err)
 	}
 }
 

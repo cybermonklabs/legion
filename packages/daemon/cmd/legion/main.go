@@ -189,13 +189,18 @@ func pluginsLine(cfg config.Config) string {
 		line = fmt.Sprintf("plugins: @sjawhar/pi-legion %s @sjawhar/pi-envoy %s (from %s)",
 			pair.PiLegion, pair.PiEnvoy, pluginsSourceWords(source))
 	}
-	// The roles Claude Code may run at all (runtime.Backends), in the order the workflow reaches
-	// them: a role worker_backends puts on it is always one of them, since the loader refuses any
-	// other.
+	// The roles Claude Code runs here: Legion's phase workers that worker_backends puts on it, in
+	// the order the workflow reaches them, then each role of the deployment it puts there, in the
+	// file's order; the loader refuses any other.
 	var claude []string
 	for _, role := range runtime.Backends[runtime.BackendClaude].Roles {
 		if cfg.BackendFor(role) == runtime.BackendClaude {
 			claude = append(claude, string(role))
+		}
+	}
+	for _, role := range cfg.Roles {
+		if cfg.BackendFor(role.Name) == runtime.BackendClaude {
+			claude = append(claude, string(role.Name))
 		}
 	}
 	if len(claude) == 0 {
@@ -225,7 +230,10 @@ func pluginsLine(cfg config.Config) string {
 // Then two lines per project, in key order: one naming its `production_check` and what the word
 // decides (productionCheckLine), so an operator reads back which projects open a production
 // check at a merge, and one naming its `default_steps` (defaultStepsLine), so an operator reads
-// back the steps an issue runs when its owner gives no plan. After them, one line per configured
+// back the steps an issue runs when its owner gives no plan. Then one line per role the
+// deployment defines in `roles`, in the file's order (roleLine): its type, its model, the GitHub
+// App it works as and its prompt file, which the check reads as the start does
+// (config.CheckRolePrompts). After them, one line per configured
 // repository rename
 // (`repository_renames`), so an operator reads back what the daemon will treat as one repository
 // before a transfer moves the events onto the new name; a file that configures none prints no
@@ -258,6 +266,9 @@ func pluginsLine(cfg config.Config) string {
 func checkConfig(configPath string, stdout, stderr io.Writer) int {
 	cfg, err := config.LoadForValidation(configPath, nil)
 	if err == nil {
+		err = config.CheckRolePrompts(cfg.Roles)
+	}
+	if err == nil {
 		applyLinkedPlugins(&cfg)
 	}
 	paneNatsUser, daemonNatsUser := "", ""
@@ -282,6 +293,9 @@ func checkConfig(configPath string, stdout, stderr io.Writer) int {
 	for _, key := range slices.Sorted(maps.Keys(cfg.Projects)) {
 		fmt.Fprintln(stdout, productionCheckLine(key, cfg.Projects[key]))
 		fmt.Fprintln(stdout, defaultStepsLine(key, cfg.Projects[key]))
+	}
+	for _, role := range cfg.Roles {
+		fmt.Fprintln(stdout, roleLine(role))
 	}
 	for _, rename := range cfg.RepositoryRenames.Pairs() {
 		fmt.Fprintf(stdout, "repository rename: %s and %s are one repository wherever the daemon compares a name; keep the pair configured for as long as any record names %s\n",
@@ -334,6 +348,17 @@ func productionCheckLine(key string, project config.Project) string {
 	}
 	return fmt.Sprintf("projects.%s.production_check: %s — a merge that closes one of its issues opens %s",
 		key, project.ProductionCheckWord(), effect)
+}
+
+// roleLine is `legion config check`'s line for one role of `roles`: its type, its model (the
+// overlay's default where the file names none), the GitHub App it works as and its prompt file as
+// the loader resolved it.
+func roleLine(role config.Role) string {
+	model := role.Model
+	if model == "" {
+		model = "the overlay's default"
+	}
+	return fmt.Sprintf("roles.%s: type %s, model %s, App %s, prompt %s", role.Name, role.Type, model, role.GitHubApp, role.PromptFile)
 }
 
 // defaultStepsLine is `legion config check`'s line for one project's `default_steps`: the steps
@@ -1251,9 +1276,11 @@ var strandedPhrases = map[api.StrandedMove]string{
 }
 
 // strandedSummary is the one line an operator reads for the claims nothing will wake: how many,
-// and each by issue and role under the move that brings it back (api.StrandedClaim.Move, which the
-// boot's log line groups by too). A suspended phase worker's move is the troubleshooting page's "A
-// tree does not move after a restart" for its suspendedBy, which `legion claims list --json` shows;
+// and each by its name (api.StrandedClaim.Name: its issue and role, and its token beside them for
+// the claim of an agent named for another role) under the move that brings it back
+// (api.StrandedClaim.Move, which the boot's log line groups by too). A suspended phase worker's
+// move is the troubleshooting page's "A tree does not move after a restart" for its suspendedBy,
+// which `legion claims list --json` shows;
 // a released one is a pod whose wake was taken and whose replacement never took a turn, which is
 // the daemon's own log of that wake to read, not a suspension to lift.
 func strandedSummary(stranded []api.StrandedClaim, suspended api.Suspenders) string {
@@ -1302,14 +1329,20 @@ type entryBehind struct {
 // past its architect's phases are its phase worker's, which the line names for no root. The
 // numbers are named for the role a phase worker works on any other issue, which is
 // dispatch://INFRA-2800's line; a role of the architect's, a child at admitted among them, which
-// phase.RoleFor names the architect's phase, is named for nothing. An issue whose current phase
-// names no role at all carries neither number and is never named for them: the projection writes
-// them only where phase.RoleFor names a role, and that is the role this reads back for the line.
+// phase.RoleFor names the architect's phase, is named for nothing. At step the role is the one
+// that runs the issue's step, which the state names (api.Issue.StepRole) and no phase does, and
+// so is the role of an issue held from step, which carries no number as every held issue does. An
+// issue whose current phase names no role at all carries neither number and is never named for
+// them: the projection writes them only where a role works the issue's phase, and that is the role
+// this reads back for the line.
 func entriesBehind(issues map[string]api.Issue) []entryBehind {
 	var behind []entryBehind
 	for _, key := range slices.Sorted(maps.Keys(issues)) {
 		issue := issues[key]
 		role := phase.RoleFor(issue.Phase)
+		if issue.Phase == phase.Step || issue.Phase == phase.Held && issue.HeldFrom == string(phase.Step) {
+			role = legionclaim.Role(issue.StepRole)
+		}
 		if legionclaim.IsTreeRoot(key, issue.Tree) {
 			if len(issue.ArchitectStalls) == 0 {
 				continue
@@ -1394,8 +1427,10 @@ func wakesWaitingSummary(wakes []api.WakeWaiting) string {
 // operator claim routes serve it, and this reads them with the bearer --operator-token-file
 // names, on the daemon op already names. Without that flag, and when the daemon refuses the
 // bearer or answers nothing, the lookup is empty and every stranded claim reads as the plain
-// suspension it is, which `legion claims list --json` tells apart. The state is the operator's
-// one unguarded read, so nothing here fails the command.
+// suspension it is, which `legion claims list --json` tells apart. The lookup is by claim token,
+// which each stranded claim of the state carries, so two claims of one role on one issue each
+// read their own suspender. The state is the operator's one unguarded read, so nothing here fails
+// the command.
 func strandedSuspenders(ctx context.Context, op operator, stranded []api.StrandedClaim) api.Suspenders {
 	if len(stranded) == 0 || op.bearer == "" {
 		return nil

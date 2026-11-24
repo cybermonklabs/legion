@@ -36,8 +36,8 @@ const evictedPodEnd = "Evicted: " + evictionMessage
 const budgetRanOut = "deaths with work outstanding ran out"
 
 // roleLogTail is the tail of the log the runtime quotes at the end of a death's detail
-// (sandbox's roleLog): the role's own last lines with the launcher's prefix dropped, then the
-// container's own under the line that introduces them.
+// (sandbox's roleLog): the last lines of the claim's slot, the slot of its agent, with the
+// launcher's prefix dropped, then the container's own under the line that introduces them.
 const roleLogTail = "   Compiling widgets v0.4.1 (/legion/workspaces/acme/widgets/legion-208)\n" +
 	"error: failed to write /legion/scratch/target/debug/deps/libwidgets-3f2a9c.rlib: No space left on device (os error 28)\n" +
 	"error: could not compile `widgets` (lib) due to 1 previous error\n" +
@@ -47,8 +47,9 @@ const roleLogTail = "   Compiling widgets v0.4.1 (/legion/workspaces/acme/widget
 // evictedDeath is a claim's stored account of its process's last death when the cluster evicted
 // its pod, in the shape the runtime writes it (supervise.Claim.LastDeathCause): supervise's
 // deathCause puts the verdict before the detail sandbox's Runtime.ended writes, which is the pod
-// and its phase, the pod's reason and the kubelet's message, the container's end, and role's
-// last lines of the log. Neither function is reachable from this package, so the shape is
+// and its phase, the pod's reason and the kubelet's message, the container's end, and the slot's
+// last lines of the log, the slot being the agent's (here the role's own name, the agent named for
+// it). Neither function is reachable from this package, so the shape is
 // copied from the two.
 func evictedDeath(role claim.Role) string {
 	return "gone: pod legion-legion-208 (uid 8a1f) Failed: " + evictedPodEnd +

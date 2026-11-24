@@ -49,8 +49,8 @@ var sessionIDRule = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)
 // takes DISPATCH_SESSION_ID. Host claude takes ENVOY_SESSION_ID, else CLAUDE_CODE_SESSION_ID. Any
 // other host, or no host, gives no line.
 //
-// Legion-Role holds LEGION_ROLE when it is one of the roles a claim can be on, or the
-// controller's role.
+// Legion-Role holds LEGION_ROLE when it is one of the roles a claim can be on (claim.IsRole: any
+// role of the role grammar, so a role a deployment defines too), or the controller's role.
 func gitTrailers(env map[string]string) []gitTrailer {
 	var lines []gitTrailer
 	host := env["DISPATCH_HOST"]

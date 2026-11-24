@@ -468,7 +468,12 @@ test("a session never publishes to the role its own session holds", async () => 
   // A sub-architect is a phase worker whose own claim is its issue's live architect.
   const rig = tellerRig({
     session: { kind: "phase-worker", role: "architect", tree: "INFRA-1000", issue: "INFRA-1300" },
-    claim: claimOf({ issue: "INFRA-1300", role: "architect", sessionID: "ses_sub" }),
+    claim: claimOf({
+      claimToken: "legion-legion-infra-1300-architect",
+      issue: "INFRA-1300",
+      role: "architect",
+      sessionID: "ses_sub",
+    }),
   });
   rig.state = {
     issues: {
@@ -490,6 +495,41 @@ test("a session never publishes to the role its own session holds", async () => 
     kind: "none",
     why: "the controller's own session is the owner, so its evidence is its transcript and its log",
   });
+});
+
+// A session's own token is the one the daemon registered its claim with, which names its agent;
+// the claim's role is the role of the step it runs now. So a session whose claim is its issue's
+// architect still never tells itself while it runs another role's step, and a claim of the agent
+// implementer that runs a tester's step tells its issue's architect. The fault: the own token
+// spelled from the claim's role (`…-infra-2-tester`), a claim the session does not hold, which
+// misses the architect role the session does hold and publishes to it.
+test("a session's own token is the one it registered, whatever role its claim holds now", () => {
+  expect(
+    stallNoticeTopic({
+      session: { kind: "phase-worker", role: "tester", tree: "INFRA-1", issue: "INFRA-2" },
+      claim: claimOf({
+        claimToken: "legion-p-infra-2-architect",
+        tree: "INFRA-1",
+        issue: "INFRA-2",
+        role: "tester",
+      }),
+      project: "p",
+      liveArchitect: true,
+    })
+  ).toEqual({ kind: "topic", topic: "notifications.role.legion-p-infra-1-architect" });
+  expect(
+    stallNoticeTopic({
+      session: { kind: "phase-worker", role: "tester", tree: "INFRA-1", issue: "INFRA-1" },
+      claim: claimOf({
+        claimToken: "legion-p-infra-1-implementer",
+        tree: "INFRA-1",
+        issue: "INFRA-1",
+        role: "tester",
+      }),
+      project: "p",
+      liveArchitect: true,
+    })
+  ).toEqual({ kind: "topic", topic: "notifications.role.legion-p-infra-1-architect" });
 });
 
 // A listener answers a notice whose key another sender's message already holds with that

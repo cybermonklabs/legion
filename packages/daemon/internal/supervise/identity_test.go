@@ -186,7 +186,7 @@ func TestTheControllersTaskReachesItWithNoWorkingCopyAdopted(t *testing.T) {
 
 // testerToken and testerClaim are the tester of the implementer's own issue (queuedClaim): two
 // roles of one issue, and so of the one jj workspace its roles share.
-const testerToken claim.Token = "legion-LEGION-209-tester"
+const testerToken claim.Token = "legion-legion-legion-209-tester"
 
 func testerClaim() Claim {
 	return Claim{
@@ -224,8 +224,8 @@ func TestATesterPhaseTaskWaitsForTheImplementersTurnToEnd(t *testing.T) {
 			h := newHarnessOf(t, testerClaim())
 			h.deps.Identity = func(context.Context, claim.Role, string) (runtime.GitIdentity, error) { return bot, nil }
 			implementing := true
-			h.deps.IssueInTurn = func(issue string, except claim.Token) (claim.Token, bool) {
-				if issue != testerClaim().Issue || except != testerToken || !implementing {
+			h.deps.IssueInTurn = func(issue string, except claim.Token, branch string) (claim.Token, bool) {
+				if issue != testerClaim().Issue || except != testerToken || branch != "" || !implementing {
 					return "", false
 				}
 				return testToken, true
@@ -274,7 +274,7 @@ func TestADeliveryThatIsNoPhaseTaskAdoptsNothingAndWaitsForNoTurn(t *testing.T) 
 		return runtime.GitIdentity{Name: "legion-implementer[bot]", Email: "7+legion-implementer[bot]@users.noreply.github.com"}, nil
 	}
 	reads := 0
-	h.deps.IssueInTurn = func(string, claim.Token) (claim.Token, bool) {
+	h.deps.IssueInTurn = func(string, claim.Token, string) (claim.Token, bool) {
 		reads++
 		return testerToken, true
 	}

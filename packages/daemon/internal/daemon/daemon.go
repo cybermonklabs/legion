@@ -1,7 +1,7 @@
 // Package daemon runs one legion: it opens the store its configuration names, brings the schema
-// forward, records the boot, supervises every role claim — the worker stream the shims dial, the
-// runtime their processes run under, one machine per claim — serves the API, and stops in the
-// order the durable record needs.
+// forward, records the boot, supervises every claim, one agent of an issue or the controller —
+// the worker stream the shims dial, the runtime their processes run under, one machine per claim —
+// serves the API, and stops in the order the durable record needs.
 package daemon
 
 import (
@@ -42,7 +42,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/natsauth"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/omplaunch"
-	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/projection"
 	"github.com/sjawhar/legion/daemon/internal/promptrefs"
 	"github.com/sjawhar/legion/daemon/internal/prompts"
@@ -890,7 +889,7 @@ type plan struct {
 	// phaseHolds, rootHears, rootTask, designNews and treeClosable are the workflow's answers to
 	// the supervisor's predicates; nil without a workflow, where every delivery is sent as it was
 	// queued and every tree closes.
-	phaseHolds   func(ctx context.Context, issue string, p phase.Phase, generation uint64) (bool, error)
+	phaseHolds   func(ctx context.Context, c supervise.Claim, d supervise.Delivery) (bool, error)
 	rootHears    func(ctx context.Context, c supervise.Claim, d supervise.Delivery) (bool, error)
 	rootTask     func(ctx context.Context, c supervise.Claim, d supervise.Delivery) (string, []byte, []byte, error)
 	designNews   func(ctx context.Context, c supervise.Claim, d supervise.Delivery) (string, []byte, error)
@@ -1038,12 +1037,21 @@ type plan struct {
 // none, and its addressing names no owner. GitHubDirs itself names nothing until a bundle of
 // those Apps is built, since no pod may be compared against the boot's read, so it is not what
 // this asks.
-func (p plan) appOwners(runtimeName string) func(claim.Role) []string {
+//
+// deployed is the App of each role the deployment defines (deploymentApps): such a role's own App
+// is the one its github_app names, and an issue pod runs those roles beside Legion's. A role that
+// acts as no App (appauth.ErrRoleNotDefined) holds no bundle, so its addressing names no owner.
+func (p plan) appOwners(runtimeName string, deployed appauth.DeploymentApps) func(claim.Role) []string {
 	return func(role claim.Role) []string {
-		app := appauth.AppRoleFor(role)
+		app, err := appauth.AppRoleFor(role, deployed)
+		if err != nil {
+			return nil
+		}
 		apps := []appauth.AppRole{app}
 		if runtimeName == "kubernetes" {
-			apps = sandbox.PodAppRoles(role)
+			if apps, err = sandbox.PodAppRoles(role, deployed); err != nil {
+				return nil
+			}
 		}
 		owners, read := p.installed.Owners(app)
 		for _, other := range apps {
@@ -1228,7 +1236,8 @@ func prepareTmux(cfg config.Config, log *slog.Logger, o overrides, dispatchToken
 }
 
 // checkPaneRoleOverlays is the boot gate's read of the overlays each role names beyond the
-// operator's own, as that role's pane will start Oh My Pi: its PI_CONFIG_FILES,
+// operator's own (overlayRoles: Legion's, then each role the deployment defines), as that role's
+// pane will start Oh My Pi: its PI_CONFIG_FILES,
 // runtime.tmux.pi_config_files then the role's own files (role_config_files) and, for a workflow
 // role of a project that declares an arm naming overlays, that arm's files after them
 // (runtime.RoleOverlayValues, which the image probe's manifest builds its values with too), each
@@ -1252,7 +1261,7 @@ func checkPaneRoleOverlays(ctx context.Context, cfg config.Config, image capabil
 	}
 	declared := experiment.DeclaredVariants(cfg.ExperimentsDeclared())
 	reads := capabilities.OverlayReads{}
-	for _, role := range config.RoleConfigRoles {
+	for _, role := range overlayRoles(cfg) {
 		own := cfg.RoleConfigFiles[role]
 		ownField := "role_config_files." + string(role)
 		for _, value := range runtime.RoleOverlayValues(role, own, declared) {
@@ -1313,14 +1322,15 @@ func launchVariants(st *store.Store, declared []config.Experiment, stateDir stri
 // tmuxRuntime builds the tmux runtime over the worker stream: the listener is its connection
 // directory, and the listener's address is the `--connect` every pane's shim is started with;
 // providerEnvDir, when set, is the `--provider-env-dir` beside it. The workflow's App tokens, when
-// the daemon has them, are every tree pane's gh bundle (appauth.GitHubCredential) and the
-// controller pane's own (appauth.ControllerCredential), which its refresh asks by the default
-// owner its launch recorded, both built over the owner accounts each App is installed on, which
-// the bundle reads at every build (appauth.Manager.InstalledOwners: from GitHub each time under
-// the App's JWT; in token mode the App's token_command's release of every installation, which may
-// be that of a run that finished up to appauth's finishedRunKeep before) and no repository list
-// bounds, and over served, the rename rule's answer of whether a repository is served
-// (repositories.servesRepository), with gh, the real gh boot resolved
+// the daemon has them, are every tree pane's gh bundle (appauth.GitHubCredential, minted as the
+// App the pane's role acts as, a role the deployment defines acting as the App its github_app
+// names: deploymentApps) and the controller pane's own (appauth.ControllerCredential), which its
+// refresh asks by the default owner its launch recorded, both built over the owner accounts each
+// App is installed on, which the bundle reads at every build (appauth.Manager.InstalledOwners:
+// from GitHub each time under the App's JWT; in token mode the App's token_command's release of
+// every installation, which may be that of a run that finished up to appauth's finishedRunKeep
+// before) and no repository list bounds, and over served, the rename rule's answer of whether a
+// repository is served (repositories.servesRepository), with gh, the real gh boot resolved
 // (daemonTools), the one each pane's `legion gh` runs, and the repository each claim's issue
 // works (claimRepository over the workflow's repository), which a pane adopted after a restart
 // holds its write token for; a daemon with no GitHub Apps hands the runtime none, and its panes
@@ -1339,9 +1349,10 @@ func tmuxRuntime(cfg config.Config, project string, launchers map[runtime.Backen
 			// projects nothing and nothing compares one against left — a directory left out
 			// of one pane's bundle is left out of the next pane's by the mint, not by a
 			// record — so the addressing is this runtime's one reader of it.
-			opts.GitHubCredential, opts.GH = appauth.GitHubCredential(tokens, served, cfg.RepositoryRenames, installed, left, log), gh
+			opts.GitHubCredential, opts.GH = appauth.GitHubCredential(tokens, served, cfg.RepositoryRenames, installed, left, deploymentApps(cfg.Roles), log), gh
 			opts.ControllerCredential = appauth.ControllerCredential(tokens, served, cfg.RepositoryRenames, installed, left, log)
 			opts.ClaimRepository = claimRepository(st.ClaimIssue, repository)
+			opts.ClaimRole = st.ClaimRole
 		}
 		rt, err := tmux.New(opts)
 		if err != nil {
@@ -1790,8 +1801,9 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		Store:   pruning(gateLaunch(tokens.Recording(st), p.checkLaunch), runtime.SecretsDir(cfg.StateDir), log),
 		Specs: specs{
 			stateDir: cfg.StateDir, project: p.project, instructions: p.instructions, secrets: p.secrets, prompts: p.prompts,
+			roles:    cfg.Roles,
 			identity: p.identity, repository: p.launchRepository, owner: p.owner,
-			appOwners:   p.appOwners(cfg.Runtime.Name),
+			appOwners:   p.appOwners(cfg.Runtime.Name, deploymentApps(cfg.Roles)),
 			designSteps: cfg.Gates.Steps(), productionCheck: cfg.Projects[cfg.Project].ProductionCheck, slackChannels: cfg.Projects[cfg.Project].SlackChannels,
 			runtimeName: cfg.Runtime.Name, plugins: p.plugins,
 			commitIssueTrailerRepos: cfg.Projects[cfg.Project].CommitIssueTrailerRepos, same: p.repositories.same,
@@ -2254,7 +2266,7 @@ func (s *supervision) endPluginRounds(claims []supervise.Claim) {
 // contract is as unreachable by an install as one below it, and the next bump would walk exactly
 // that claim to failed. Nothing here can move such a worker's plugin; a new image can, which is
 // what the pod round replaces the pod for. So it is left running and is asked its round like any
-// other worker, on its role's own Envoy topic (supervision.openPodUpdate). staleRegistration
+// other worker, on the Envoy topic of its claim (supervision.openPodUpdate). staleRegistration
 // accepts such a registration and charges it nothing, for the same reason
 // (supervise.Deps.NoPluginInstall).
 //
@@ -2780,7 +2792,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 	var tokens appauth.Source
 	var grants *credential.Grants
 	var claimReady func(supervise.Claim)
-	var handoffCompleted func(string)
+	var handoffCompleted func(issue, task string)
 	var roleHoldersChanged func(context.Context, supervise.Claim) error
 	var prepare func(context.Context, intake.DispatchIssue) (intake.DispatchIssue, error)
 	var unread func(string) bool
@@ -2849,6 +2861,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		OperatorToken:      p.operatorToken,
 		Controller:         st,
 		Steps:              cfg.Gates.Steps(),
+		Deployment:         cfg.Deployment(),
 		ControllerLaunched: keeper != nil,
 		PluginRelaunchable: p.pluginRelaunchable,
 		NoPluginInstall:    func(c supervise.Claim) bool { return noPluginInstall(cfg, c) },
@@ -2863,7 +2876,6 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		PrepareRepository:  prepare,
 		RepositoryUnread:   unread,
 		AwaitRecovery:      await,
-		RoleFor:            phase.RoleFor,
 		Record:             records,
 		Dispatch:           client,
 		Tokens:             tokens,

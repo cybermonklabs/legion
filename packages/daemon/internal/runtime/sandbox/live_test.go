@@ -12,9 +12,10 @@
 // Oh My Pi, and it appends its own role, pod uid and generation to a marker file on the issue pod's
 // own disk, and sleeps. That disk is the pod's own ephemeral volume and dies with it (INFRA-80), so
 // the marker proves a role's identity within one pod and nothing across pods. Within the pod it is
-// shared: SandboxName (see names.go) is one name for all six of an issue's role claims, so one issue
-// pod's resident roles each append their own launches to the same file, and a check reads only its
-// own claim's lines back out of it (roleIncarnations); a pod replacement leaves a fresh, empty one.
+// shared: SandboxName (see names.go) is one name for every claim of an issue, each named for its
+// agent, so one issue pod's resident slots each append their own launches to the same file, and a
+// check reads only its own claim's lines back out of it (roleIncarnations); a pod replacement
+// leaves a fresh, empty one.
 // Continuity across a pod replacement is the session table's instead. Every runtime of the run keeps
 // sessions in the scratch Postgres the script started (session_store postgres, liveSessionsSecretKey),
 // the harness records each claim's session there as `legion sessions import` copies one

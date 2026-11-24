@@ -3,7 +3,6 @@ import path from "node:path";
 import { sanitizeToken } from "@legion/contracts";
 import { messageFor } from "@legion/envoy-client/errors";
 import type { StallWatchdogExits, StallWatchdogLog } from "@legion/pi-shared/stall-watchdog";
-import type { LegionSessionKind } from "./classify";
 
 /**
  * The third step of the stall ladder (INFRA-1274, R4) is the only one that costs the process, and
@@ -25,19 +24,22 @@ import type { LegionSessionKind } from "./classify";
  * (`src/claim-session.ts:43`). Under Kubernetes it is the pod's own, so a pod replacement resets
  * this count while the daemon's death budget is not reset — the two bounds are deliberately not
  * the same bound. Under tmux several panes share one state directory, so the file is named for
- * the claim it counts: a phase worker's issue and role, a root architect's tree, the controller.
- * One worker's exits therefore never spend another's budget, and a relaunch of the same claim in
- * the same pod reads its own count back.
+ * the claim it counts, by the claim's token: the claim of one agent of an issue, which can work a
+ * step of another role than its name beside that role's own claim, and keeps its token when it
+ * moves to another role's step. One claim's exits therefore never spend another's budget, two
+ * claims of one role keep two counts, and a relaunch of the same claim in the same pod reads its
+ * own count back, whatever role it was relaunched on.
  *
  * **Written and flushed before the process ends.** Both halves are synchronous and the write ends
  * with `fsync`, because the caller ends the process the moment the write answers: a count still
  * sitting in this process's buffers would be a count the relaunched worker never reads.
  *
  * **A file that cannot be read or written ends nothing.** A missing file is a worker that has
- * ended itself no times, which is every first stall. A file that cannot be read, and one holding
- * anything but a count this module wrote, answer `undefined`; a write that fails answers false.
- * The detector ends no process in either case and tells the owner instead, because a worker that
- * cannot count its own exits would end itself without bound.
+ * ended itself no times, which is every first stall. A file that cannot be read, one holding
+ * anything but a count this module wrote, and a session whose claim is not registered yet, so
+ * that no file names it, answer `undefined`; a write that fails, or that has no claim to name,
+ * answers false. The detector ends no process in either case and tells the owner instead, because
+ * a worker that cannot count its own exits would end itself without bound.
  */
 
 /** What one worker's counter file holds. A record rather than a bare number, so a person reading
@@ -47,52 +49,44 @@ export interface StallExitsRecord {
   readonly exits: number;
   /** When that count was written, ISO 8601. */
   readonly at: string;
-  /** The claim the count belongs to, as the file name spells it. */
+  /** The token of the claim the count belongs to, as the file name spells it. */
   readonly who: string;
 }
 
-/** The counter file this session's claim counts in, under `stateDir`. */
-export function stallExitsFile(stateDir: string, session: LegionSessionKind): string {
-  return path.join(stateDir, `legion-stall-exits-${stallExitsOwner(session)}.json`);
-}
-
-/**
- * The claim a count belongs to, as one path segment: a phase worker's issue and role, a root
- * architect's tree, the controller. A session that is no Legion role counts under one name of its
- * own; the plugin's entry arms this watch for Legion sessions only, so nothing in production
- * writes that file.
- */
-function stallExitsOwner(session: LegionSessionKind): string {
-  switch (session.kind) {
-    case "controller":
-      return "controller";
-    case "root-architect":
-      return `${sanitizeToken(session.tree)}-architect`;
-    case "phase-worker":
-      return `${sanitizeToken(session.issue)}-${sanitizeToken(session.role)}`;
-    case "not-legion":
-      return "session";
-  }
+/** The counter file of the claim `claimToken` counts in, under `stateDir`. */
+export function stallExitsFile(stateDir: string, claimToken: string): string {
+  return path.join(stateDir, `legion-stall-exits-${sanitizeToken(claimToken)}.json`);
 }
 
 export interface StallExitsDeps {
   /** `LEGION_STATE_DIR`, this worker's own state directory (`src/claim-session.ts:43`). */
   readonly stateDir: string;
-  /** This session's Legion identity (`classifySession`), which names the file. */
-  readonly session: LegionSessionKind;
+  /** This session's registered claim, read at each count (the plugin's `paneClaim`): its token
+   * names the file. `undefined` while no claim is registered. */
+  readonly claim: () => { readonly claimToken: string } | undefined;
   /** The clock the record's moment is taken from. */
   readonly now: () => number;
   readonly log: StallWatchdogLog;
 }
 
 /** The detector's `StallWatchdogExits`: this worker's own stall exits, counted in its state
- * directory. */
+ * directory under its claim's token. */
 export function createStallExits(deps: StallExitsDeps): StallWatchdogExits {
-  const who = stallExitsOwner(deps.session);
-  const file = stallExitsFile(deps.stateDir, deps.session);
+  const fileOf = (): { readonly who: string; readonly file: string } | undefined => {
+    const who = deps.claim()?.claimToken;
+    return who === undefined || who === ""
+      ? undefined
+      : { who, file: stallExitsFile(deps.stateDir, who) };
+  };
 
   return {
     read: (): number | undefined => {
+      const counted = fileOf();
+      if (counted === undefined) {
+        deps.log.warn("legion: the stall watch has no registered claim to count its exits under");
+        return undefined;
+      }
+      const { file } = counted;
       let text: string;
       try {
         text = readFileSync(file, "utf8");
@@ -114,6 +108,14 @@ export function createStallExits(deps: StallExitsDeps): StallWatchdogExits {
     },
 
     write: (count: number): boolean => {
+      const counted = fileOf();
+      if (counted === undefined) {
+        deps.log.warn("legion: the stall watch has no registered claim to count its exits under", {
+          count,
+        });
+        return false;
+      }
+      const { who, file } = counted;
       const record: StallExitsRecord = {
         exits: count,
         at: new Date(deps.now()).toISOString(),

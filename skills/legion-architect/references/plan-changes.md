@@ -10,6 +10,8 @@ Your role prompt says what `stop_task` does, what holds a stopped task and what 
 
 - After `VERSION_NOT_IN_DISPATCH`, upload that version to Dispatch first.
 
+- A later version that leaves the block of a running or held task as it is but moves the branch its pull request is based on is refused (`PLAN_REFUSED`, naming the task and both bases): stop that task with `stop_task` first.
+
 ## The notices
 
 - **`task-stopped`:** Legion stopped the task and holds the issue.

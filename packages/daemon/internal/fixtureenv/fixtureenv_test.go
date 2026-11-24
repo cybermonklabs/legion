@@ -178,7 +178,7 @@ func TestIsolatedDropsTheProcesssRepositoryWorkspaceAndCredential(t *testing.T) 
 	}
 }
 
-// A state home the process names, as a Legion pod names one for each role, reaches no command run
+// A state home the process names, as a Legion pod names one for each slot, its agent's, reaches no command run
 // under Isolated: Isolated and Home each hold one XDG_STATE_HOME, under the test's home. The leak
 // guard caches the repositories it found public there and reads that cache before it asks GitHub,
 // so on the runner's state home a test's invented repository can be answered public from what an

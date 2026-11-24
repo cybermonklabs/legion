@@ -18,6 +18,7 @@ import (
 	"strconv"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
@@ -294,18 +295,28 @@ func shapeAnswer(id AnswerID, body any, restore, strip int) (any, tookOff) {
 		default:
 			panic(fmt.Sprintf("api: the %s answer was written a %T, which its row cannot shape", id, body))
 		}
+	case AnswerPlanRegister:
+		registered, isRegistered := body.(PlanRegisterResponse)
+		if !isRegistered {
+			panic(fmt.Sprintf("api: the %s answer was written a %T, which its row cannot shape", id, body))
+		}
+		// AnswerPlanRegister arrived whole at OwnerPlanContract, and the plan's `added` and each
+		// task's `needs` arrived at tasksContract, so a caller below it is served neither
+		// (withoutNeedsOrAdded).
+		if strip < tasksContract {
+			registered = withoutNeedsOrAdded(registered)
+		}
+		return registered, took
 	case AnswerHealth, AnswerRegister, AnswerRegisterController, AnswerNoContent,
 		AnswerGrant, AnswerHandoffComplete, AnswerEmptyObject, AnswerFreshSession,
-		AnswerCompact, AnswerTurnOutcome, AnswerWaveRelease, AnswerProjectPause, AnswerProjectResume,
-		AnswerPlanRegister:
+		AnswerCompact, AnswerTurnOutcome, AnswerWaveRelease, AnswerProjectPause, AnswerProjectResume:
 		// The identity, one row each: every contract this daemon serves one of these answers
 		// reads the body it writes. No key has arrived on any of them since that answer arrived.
 		// One key has gone: AnswerHandoffComplete lost its `note` at stateMachineContract, and
 		// no reader from ServingFloor to 85 requires it, so no stand-in is written for it
-		// (version.go's 86). AnswerTurnOutcome arrived whole at stateMachineContract,
-		// AnswerProjectPause and AnswerProjectResume arrived whole at pauseContract, and
-		// AnswerPlanRegister arrived whole at OwnerPlanContract, so no older contract records any
-		// of the four at all.
+		// (version.go's 86). AnswerTurnOutcome arrived whole at stateMachineContract, and
+		// AnswerProjectPause and AnswerProjectResume arrived whole at pauseContract, so no older
+		// contract records any of the three at all.
 		return body, took
 	case answerUnparsed:
 		// The identity too, and for a reason of its own: no plugin parses these bodies, so no
@@ -317,15 +328,18 @@ func shapeAnswer(id AnswerID, body any, restore, strip int) (any, tookOff) {
 }
 
 // tookOff is what one shaping of the state took off that body: the rows of stateNarrowings and
-// of valueStrips that moved it, each by its place in its own table. stateFor fills it, with
-// shapeIssue for each issue of the state, on the one application it makes, and recordShaping
-// writes a line for each row that is set, so the log names what the body served lost and
-// nothing it did not carry.
+// of valueStrips that moved it, each by its place in its own table, and the claims a band left
+// out of it. stateFor fills it, with shapeIssue for each issue of the state, on the one
+// application it makes, and recordShaping writes a line for each row that is set and for each
+// claim left out, so the log names what the body served lost and nothing it did not carry.
 type tookOff struct {
 	// bands is one entry per row of stateNarrowings and values one per row of valueStrips, each
 	// nil until a row of its own table moves the body.
 	bands  []bool
 	values []bool
+	// left is each claim a band left out of the body, `<role> of <issue>`, by the band's place in
+	// stateNarrowings (stateNarrowing.left); nil until a band leaves one out.
+	left map[int][]string
 }
 
 // band is whether the row of stateNarrowings at place moved the body.
@@ -407,6 +421,14 @@ func stateFor(state State, restore, strip int, took *tookOff) State {
 	}
 	for place, narrowing := range stateNarrowings {
 		if narrowing.state != nil && strip < narrowing.contract {
+			if narrowing.left != nil && took != nil {
+				if left := narrowing.left(state); len(left) > 0 {
+					if took.left == nil {
+						took.left = map[int][]string{}
+					}
+					took.left[place] = left
+				}
+			}
 			state = applyBand(took, place, narrowing.state, state)
 		}
 	}
@@ -473,6 +495,11 @@ func shapeIssue(issue Issue, restore, strip int, took *tookOff) Issue {
 // string (TestANarrowedBodySaysSo).
 const narrowedTheState = "api: narrowed the state to the caller's plugin contract"
 
+// leftAClaimOut is the message of the line the daemon writes for each claim a band leaves out of
+// the body (stateNarrowing.left): a stranded claim, a waiting wake or a pause stop of a role the
+// deployment defines, which a caller below deploymentRolesContract cannot parse.
+const leftAClaimOut = "api: left a claim of a role of the deployment out of the state for the caller's plugin contract"
+
 // stateNarrowing is one band of the serving-down: the contract that added its keys to this
 // route, what that band takes off the state's own keys, what it takes off each issue of the
 // state, and what the log line names as dropped. `state` is nil for a band whose keys are all
@@ -490,11 +517,16 @@ const narrowedTheState = "api: narrowed the state to the caller's plugin contrac
 // reports a move on every body it sets the flag on, and each such key is one the body carries
 // whatever it holds (MarshalJSON writes it on every body but the one the flag is set on). A band
 // that finds nothing to take reports nothing, and no two whole bodies are compared.
+//
+// `left` is each claim the band's state half leaves out of the body, `<role> of <issue>`, read
+// from the state before that half runs, and recordShaping writes one line for each
+// (leftAClaimOut). It is nil for a band that leaves no claim out.
 type stateNarrowing struct {
 	contract int
 	state    func(State) (State, bool)
 	issue    func(Issue) (Issue, bool)
 	dropped  string
+	left     func(State) []string
 }
 
 // stateNarrowings is every band of the state's shape, lowest contract first, which is the order
@@ -521,6 +553,14 @@ type stateNarrowing struct {
 // repositoryAppsContract is below repositoriesLiveContract too, so the first is never served
 // alone. A band that read what another left, or put back a key another takes out, would not be
 // sound on these terms, and this table would be the wrong shape for it.
+//
+// deploymentRolesContract's band touches keys earlier bands take whole: it serves an issue's
+// `heldFrom` and a pending task's `phase` of step as implementing, which recordFieldsContract's
+// band takes off, and drops the entries of `wakesWaiting` and of a pause's `waitsOn` of a role of
+// the deployment, which wakesWaitingContract's and pauseContract's bands take off whole. A caller
+// below both is served none of them whichever runs first, and the claims its log names as left out
+// (leftDeploymentRoles) are read after the earlier bands ran, so they are the claims the body would
+// have carried.
 //
 // The value strips are no rows of this table: they follow restore rather than strip, and take a
 // value rather than a key a contract added, which are questions this table's one number cannot
@@ -567,6 +607,12 @@ var stateNarrowings = []stateNarrowing{
 		dropped: "lowestPluginContract and the claim views' updateState and wake"},
 	{contract: repositoriesLiveContract, state: withoutRepositoriesLive,
 		dropped: "repositories.live, served as contract 152's owners, mapped, refused and withoutWebhookApp"},
+	{contract: deploymentRolesContract, state: withoutDeploymentRoleClaims, issue: withoutDeploymentRoles,
+		left: leftDeploymentRoles,
+		dropped: "the phase step (served as implementing), the issues' stepRole and startWaitsForPod, and the " +
+			"stranded claims, waiting wakes and pause stops of a deployment's roles"},
+	{contract: strandedTokenContract, state: withoutStrandedTokens, dropped: "the stranded claims' token"},
+	{contract: tasksContract, issue: withoutTasks, dropped: "the issues' tasks"},
 }
 
 // valueStrip is one strip of a value from the state: what it takes off the state's own values,
@@ -603,11 +649,13 @@ var valueStrips = []valueStrip{
 // recordShaping writes the daemon's own record of what it left out of the state it answered: one
 // line for each band of stateNarrowings that took something off this body, and one for each
 // value strip that took something off it, naming the caller, the pod it asked from, the contract
-// that band or strip followed, the contract this daemon declares and what left the body. The pod
-// is empty for a caller the header placed, which no pod answers for. A band or a strip that found
-// nothing to take writes no line: it left the body as it was, and a line for it would say
-// something went that the body never carried. The caller chooses the volume of these lines on a
-// route that authenticates nobody, which is why a band that moved nothing stays quiet.
+// that band or strip followed, the contract this daemon declares and what left the body. Before a
+// band's line it writes one line for each claim that band left out of the body (leftAClaimOut),
+// naming the claim. The pod is empty for a caller the header placed, which no pod answers for. A
+// band or a strip that found nothing to take writes no line: it left the body as it was, and a
+// line for it would say something went that the body never carried. The caller chooses the
+// volume of these lines on a route that authenticates nobody, which is why a band that moved
+// nothing stays quiet.
 //
 // The body itself cannot carry the record, which is why the daemon's log holds it: a key added
 // to a body served down is exactly what the serving-down exists to prevent, so an absent fact
@@ -633,6 +681,10 @@ func (s *server) recordShaping(r *http.Request, id AnswerID, at placement, took 
 	for place, narrowing := range stateNarrowings {
 		if !took.band(place) {
 			continue
+		}
+		for _, left := range took.left[place] {
+			s.log.Info(leftAClaimOut, "caller", r.RemoteAddr, "pod", at.pod,
+				"pluginContract", at.contract, "claim", left)
 		}
 		s.log.Info(narrowedTheState, "caller", r.RemoteAddr, "pod", at.pod,
 			"pluginContract", at.contract, "daemonApiVersion", DaemonAPIVersion,
@@ -961,8 +1013,9 @@ const repositoryAppsContract = 152
 // a strict schema and would refuse the whole body for a key it does not name, and one built
 // after strips the key instead, so each band keeps the body its own contract's record describes.
 // The pause's codes are values of the refusal's `code`, which no reader enumerates. The one
-// enumerated field it added is `paused.waitsOn.*.role` (answers.go's pauseStopRoles), whose values
-// fieldArrivals.heldBack decides as every other field's.
+// enumerated field it added is `paused.waitsOn.*.role`, which a reader below
+// deploymentRolesContract reads with an enumeration of Legion's six roles, so a stop of a role of
+// the deployment is left out of the body served it (withoutDeploymentRoleClaims).
 //
 // It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
 // that constant, and the contract the keys arrived at stays where it is.
@@ -1007,12 +1060,147 @@ const repositoriesLiveContract = 202
 //
 // It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
 // that constant, and the contract the word arrived at stays where it is. It moves only with
-// dispatch://INFRA-4036's own number, which is why the last entry of answers.go's
-// SupportedContracts names it rather than its number:
-// TestSupportedContractsAreTheNumberedEntriesFromTheFloorUp holds that list to version.go's
-// entry headers, so a renumber that moves dispatch://INFRA-4036's entry and leaves this
-// constant behind names a contract no entry declares and fails there.
+// dispatch://INFRA-4036's own number, which is why answers.go's SupportedContracts names it
+// rather than its number: TestSupportedContractsAreTheNumberedEntriesFromTheFloorUp holds that
+// list to version.go's entry headers, so a renumber that moves dispatch://INFRA-4036's entry and
+// leaves this constant behind names a contract no entry declares and fails there.
 const cachesSourceContract = 213
+
+// deploymentRolesContract is the daemon contract that added the roles a deployment defines to the
+// state (version.go's 221): the phase step, each issue's `stepRole` and `startWaitsForPod`, and
+// the stranded claims, waiting wakes and pause stops of a role outside Legion's six. A plugin
+// below it reads an issue's `phase`, its `heldFrom` and a pending task's `phase` with an
+// enumeration that names no step, and the `role` of a stranded claim, of a waiting wake and of a
+// pause stop with an enumeration of the six, and refuses the whole body for another value. So a
+// caller below it is served the state without them (withoutDeploymentRoles,
+// withoutDeploymentRoleClaims), and the daemon logs each claim it left out (leftDeploymentRoles).
+//
+// It is one band, which follows strip, though it takes values as well as keys, where a value
+// strip follows restore (fieldArrivals.heldBack). The two numbers are one below this contract:
+// a caller that states its contract is served at that number on both sides, and a pod's reckoning
+// counts only claims below shapedAnswersContract (podContracts), so every caller whose strip is
+// below this contract has its restore below it too, and no reader that refuses step or a role of
+// the deployment is served one.
+//
+// It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
+// that constant, and the contract these keys and values arrived at stays where it is. It moves
+// only with this change's own number, and answers.go's SupportedContracts names the constant
+// rather than its number for that reason.
+const deploymentRolesContract = 221
+
+// strandedTokenContract is the daemon contract that added each stranded claim's token to the
+// state (version.go's 222, `strandedClaims.*.token`): two claims of one issue can hold one role,
+// so the issue and the role no longer name one claim.
+//
+// It is a literal of its own and never DaemonAPIVersion, for the reason deploymentRolesContract
+// gives, and answers.go's SupportedContracts names the constant rather than its number for that
+// reason.
+const strandedTokenContract = 222
+
+// tasksContract is the daemon contract that added each issue's tasks to the state (version.go's
+// 224, `issues.<key>.tasks`): each task of the issue's plan with where it stands, the act at its
+// place, what the step there waits for, its own pull request and its own counts (TaskView).
+//
+// It is a literal of its own and never DaemonAPIVersion, for the reason deploymentRolesContract
+// gives, and it is the last number of answers.go's SupportedContracts, which names the constant
+// rather than its number for that reason.
+const tasksContract = 224
+
+// withoutDeploymentRoles is the issue as a caller below deploymentRolesContract reads it: an issue
+// at step is at work, so it is served as implementing — its Dispatch status is in_progress, as
+// step's is; it keeps its slot and is at work, as step does; none of the phases an older
+// controller reads as past review or as a wait describes it; and every plan this daemon takes
+// holds an implementer — and it stays in `issues` and in `admission.active`, which the daemon
+// computes before any narrowing. A hold from step is served as a hold from implementing, a pending
+// task at step as one at implementing, and `stepRole` and `startWaitsForPod` are cleared. An
+// issue's workers keep the deployment role's key, which such a caller reads as a record keyed by
+// any string. The views it changes are copied (withEachClaimView), so the state the source
+// answered is left as it was.
+func withoutDeploymentRoles(issue Issue) (Issue, bool) {
+	moved := issue.Phase == phase.Step || issue.HeldFrom == string(phase.Step) || issue.StepRole != "" ||
+		len(issue.StartWaitsForPod) > 0
+	if issue.Phase == phase.Step {
+		issue.Phase = phase.Implementing
+	}
+	if issue.HeldFrom == string(phase.Step) {
+		issue.HeldFrom = string(phase.Implementing)
+	}
+	issue.StepRole, issue.StartWaitsForPod = "", nil
+	issue, views := withEachClaimView(issue, func(view ClaimView) ClaimView {
+		if view.PendingTask == nil || view.PendingTask.Phase != phase.Step {
+			return view
+		}
+		pending := *view.PendingTask
+		pending.Phase = phase.Implementing
+		view.PendingTask = &pending
+		return view
+	})
+	return issue, moved || views
+}
+
+// withoutDeploymentRoleClaims is the state with no stranded claim, waiting wake or pause stop of
+// a role outside Legion's six, each of which a caller below deploymentRolesContract cannot parse
+// (leftDeploymentRoles names each). A list that names no such claim is left as the source
+// answered it; one that does is copied before an entry is dropped, so the state the source
+// answered is left as it was, and stays non-nil, as `strandedClaims`, `wakesWaiting` and a pause's
+// `waitsOn` are never null on the wire.
+func withoutDeploymentRoleClaims(state State) (State, bool) {
+	moved := false
+	if slices.ContainsFunc(state.StrandedClaims, func(c StrandedClaim) bool { return !claim.IsBuiltin(c.Role) }) {
+		stranded := make([]StrandedClaim, 0, len(state.StrandedClaims))
+		for _, c := range state.StrandedClaims {
+			if claim.IsBuiltin(c.Role) {
+				stranded = append(stranded, c)
+			}
+		}
+		state.StrandedClaims, moved = stranded, true
+	}
+	if slices.ContainsFunc(state.WakesWaiting, func(wake WakeWaiting) bool { return !claim.IsBuiltin(wake.Role) }) {
+		wakes := make([]WakeWaiting, 0, len(state.WakesWaiting))
+		for _, wake := range state.WakesWaiting {
+			if claim.IsBuiltin(wake.Role) {
+				wakes = append(wakes, wake)
+			}
+		}
+		state.WakesWaiting, moved = wakes, true
+	}
+	if state.Paused != nil && slices.ContainsFunc(state.Paused.WaitsOn, func(stop PauseStopView) bool { return !claim.IsBuiltin(stop.Role) }) {
+		paused := *state.Paused
+		paused.WaitsOn = make([]PauseStopView, 0, len(state.Paused.WaitsOn))
+		for _, stop := range state.Paused.WaitsOn {
+			if claim.IsBuiltin(stop.Role) {
+				paused.WaitsOn = append(paused.WaitsOn, stop)
+			}
+		}
+		state.Paused, moved = &paused, true
+	}
+	return state, moved
+}
+
+// leftDeploymentRoles is each claim withoutDeploymentRoleClaims leaves out of the body, `<role> of
+// <issue>`: every stranded claim, every waiting wake and every pause stop of a role outside
+// Legion's six, in the state's order, the stranded first and the pause's stops last.
+func leftDeploymentRoles(state State) []string {
+	var left []string
+	for _, c := range state.StrandedClaims {
+		if !claim.IsBuiltin(c.Role) {
+			left = append(left, fmt.Sprintf("%s of %s", c.Role, c.Issue))
+		}
+	}
+	for _, wake := range state.WakesWaiting {
+		if !claim.IsBuiltin(wake.Role) {
+			left = append(left, fmt.Sprintf("%s of %s", wake.Role, wake.Issue))
+		}
+	}
+	if state.Paused != nil {
+		for _, stop := range state.Paused.WaitsOn {
+			if !claim.IsBuiltin(stop.Role) {
+				left = append(left, fmt.Sprintf("%s of %s", stop.Role, stop.Issue))
+			}
+		}
+	}
+	return left
+}
 
 // withoutGatedSteps is the issue with no `gatedSteps`, the field gatedStepsContract added to the
 // state; nothing else of that contract is on the route. The field is `omitempty`, and a root of a
@@ -1352,6 +1540,51 @@ func withoutUnadmittedStrandedStates(state State, restore int) (State, bool) {
 	}
 	state.StrandedClaims = stranded
 	return state, true
+}
+
+// withoutStrandedTokens is state whose stranded claims carry no `token`, the key
+// strandedTokenContract added: a plugin before INFRA-1048 reads a stranded claim as a strict
+// object and refuses the whole state over a key it does not know, and a later plugin below the
+// contract strips it. A state with no token to take is returned as it is, with no copy made.
+// Otherwise the entries are copied, so the state the source answered is left as it was.
+func withoutStrandedTokens(state State) (State, bool) {
+	if !slices.ContainsFunc(state.StrandedClaims, func(c StrandedClaim) bool { return c.Token != "" }) {
+		return state, false
+	}
+	stranded := make([]StrandedClaim, len(state.StrandedClaims))
+	for i, c := range state.StrandedClaims {
+		c.Token = ""
+		stranded[i] = c
+	}
+	state.StrandedClaims = stranded
+	return state, true
+}
+
+// withoutTasks is the issue with no `tasks`, the one field tasksContract added to an issue: a
+// plugin built before the reader that drops a key it does not know reads an issue as a strict
+// object and refuses the whole state over the key, and a later plugin below the contract strips
+// it. The field is `omitempty` and absent from an issue with no plan rows, so the band reports a
+// move only for an issue that carries a task.
+func withoutTasks(issue Issue) (Issue, bool) {
+	moved := len(issue.Tasks) > 0
+	issue.Tasks = nil
+	return issue, moved
+}
+
+// withoutNeedsOrAdded is register_plan's answer with no `added` on the plan and no `needs` on any
+// task, the two fields tasksContract added to it. The reader of OwnerPlanContract parses the plan
+// and each task as plain zod objects, which drop a key they do not name (legion-api.ts's
+// LegionPlanRegisterResponse), so it would read the body either way; the band serves each contract
+// below tasksContract the body its record describes. The tasks are copied, so the body the route
+// wrote keeps its own.
+func withoutNeedsOrAdded(registered PlanRegisterResponse) PlanRegisterResponse {
+	tasks := make([]RegisteredTask, len(registered.Plan.Tasks))
+	for i, task := range registered.Plan.Tasks {
+		task.Needs = nil
+		tasks[i] = task
+	}
+	registered.Plan.Tasks, registered.Plan.Added = tasks, nil
+	return registered
 }
 
 // withoutUnadmittedWaitAnswer is the issue whose wait carries no `answeredAt` and no

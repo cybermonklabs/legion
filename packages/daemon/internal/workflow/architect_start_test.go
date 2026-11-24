@@ -46,9 +46,12 @@ var closings = []string{freshClosing, carriedClosing, carriedOwnClosing, carried
 // specGated is a deployment that gates the spec step alone.
 var specGated = []record.DesignStep{record.DesignStepSpec}
 
-// rootAt is the root every case of this file stands on, standing in p.
+// rootAt is the root every case of this file stands on, standing in p, with no plan rows and the
+// running step the store reads with such a root (record.RunningOf).
 func rootAt(p phase.Phase) record.Issue {
-	return record.Issue{Key: "LEGION-208", Tree: "LEGION-208", Generation: 2, Phase: p}
+	root := record.Issue{Key: "LEGION-208", Tree: "LEGION-208", Generation: 2, Phase: p}
+	root.Running = record.RunningOf(root, false, nil)
+	return root
 }
 
 // admittedRoot is that root at the phase every tree the workflow opens stands in.
@@ -608,6 +611,7 @@ func TestTheArchitectTaskOfACarriedRootInMergingReadsWhetherItsPullRequestMerged
 			pool := migratedPool(t)
 			root := architectEntryRoot()
 			root.Phase, root.Generation, root.Status = phase.Merging, 2, "retro"
+			root.Running = record.RunningOf(root, false, nil)
 			seedIssue(t, pool, root)
 			seedRecord(t, pool, func(tx pgx.Tx) error {
 				return record.NewStore().PutHandedOverRoot(ctx, tx, record.HandedOverRoot{Issue: root.Key, Generation: root.Generation})

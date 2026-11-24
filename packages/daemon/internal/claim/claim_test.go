@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -259,7 +260,7 @@ func TestNewTokenIsTheShippedRoleToken(t *testing.T) {
 	}{
 		{"a lowercase issue key", "legion", "legion-208", RoleTester, `"legion-208"`},
 		{"an issue key with no number", "legion", "LEGION", RoleTester, `"LEGION"`},
-		{"a role no agent holds", "legion", "LEGION-208", Role("operator"), `"operator"`},
+		{"a role outside the grammar", "legion", "LEGION-208", Role("Operator"), `"Operator"`},
 		{"a project that is not a token", "Legion", "LEGION-208", RoleTester, `"Legion"`},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
@@ -271,6 +272,62 @@ func TestNewTokenIsTheShippedRoleToken(t *testing.T) {
 				t.Errorf("the refusal does not name %s: %v", testCase.wantFragment, err)
 			}
 		})
+	}
+}
+
+// A deployment defines roles of its own, so a claim can be on a role outside Legion's six: a name
+// of Dispatch's role grammar for a step, `^[a-z][a-z0-9-]{0,31}$`. Its token has the shape of every
+// role token, and the agent after the issue's part, the role's name, may hold a "-" of its own. The
+// controller is no such role, and neither is a name outside the grammar.
+func TestATokenOfADeploymentRole(t *testing.T) {
+	if token, err := NewToken("acme", "ACME-1", Role("checker")); err != nil || token != "legion-acme-acme-1-checker" {
+		t.Errorf("NewToken(acme, ACME-1, checker) = %q, %v; want legion-acme-acme-1-checker", token, err)
+	}
+	for token, want := range map[Token]struct {
+		issue string
+		agent Agent
+	}{
+		"legion-acme-acme-1-checker":      {"legion-acme-acme-1", "checker"},
+		"legion-acme-acme-1-code-checker": {"legion-acme-acme-1", "code-checker"},
+		"legion-acme-acme-1-tester":       {"legion-acme-acme-1", Agent(RoleTester)},
+	} {
+		if issue, agent, ok := token.Cut(); !ok || issue != want.issue || agent != want.agent {
+			t.Errorf("%s.Cut() = %q, %q, %t; want %q, %q, true", token, issue, agent, ok, want.issue, want.agent)
+		}
+	}
+	for _, token := range []Token{"legion-acme-acme-1-controller", "legion-acme-acme-1-Checker", "legion-acme-acme-1", "legion-acme-acme-1-"} {
+		if issue, agent, ok := token.Cut(); ok {
+			t.Errorf("%s.Cut() = %q, %q; want no agent", token, issue, agent)
+		}
+	}
+	if !Token("legion-acme-controller").IsController() {
+		t.Errorf("legion-acme-controller.IsController() = false, want the controller")
+	}
+	for _, role := range []Role{RoleController, "Checker", "a::b", "", "1checker", Role("c" + strings.Repeat("x", 32))} {
+		if token, err := NewToken("acme", "ACME-1", role); err == nil {
+			t.Errorf("NewToken(acme, ACME-1, %q) = %q, want a refusal", role, token)
+		}
+	}
+}
+
+// A claim can be on one of Legion's six or on any name of the role grammar but the controller's;
+// IsBuiltin takes the six alone.
+func TestARoleIsLegionsOrANameOfTheRoleGrammar(t *testing.T) {
+	for _, role := range append(slices.Clone(Roles), "checker", "code-checker", "c", Role("c"+strings.Repeat("x", 31))) {
+		if !IsRole(role) {
+			t.Errorf("IsRole(%q) = false, want true", role)
+		}
+		if want := slices.Contains(Roles, role); IsBuiltin(role) != want {
+			t.Errorf("IsBuiltin(%q) = %t, want %t", role, !want, want)
+		}
+	}
+	for _, role := range []Role{RoleController, "", "Checker", "1checker", "-checker", "a::b", "code_checker", Role("c" + strings.Repeat("x", 32))} {
+		if IsRole(role) {
+			t.Errorf("IsRole(%q) = true, want false", role)
+		}
+		if IsBuiltin(role) {
+			t.Errorf("IsBuiltin(%q) = true, want false", role)
+		}
 	}
 }
 
@@ -301,22 +358,99 @@ func TestTheControllerRoleIsTheControllersOwnAndNoWorkflowRole(t *testing.T) {
 	}
 }
 
-// A token names its role: a workflow role's token the role it ends in, and the controller's token
-// the controller, which Cut does not split. Anything else names no role, a token that only looks
-// like the controller's included.
-func TestATokenNamesItsRoleTheControllersIncluded(t *testing.T) {
-	for token, want := range map[Token]Role{
-		"legion-legion-legion-208-tester":    RoleTester,
-		"legion-legion-legion-208-architect": RoleArchitect,
-		ControllerToken("legion"):            RoleController,
+// A token names the controller or an agent: the controller's token is the controller's, which Cut
+// does not split, and a workflow token's agent is the name it ends in. A token that only looks like
+// the controller's is neither.
+func TestATokenNamesTheControllerOrItsAgent(t *testing.T) {
+	for token, want := range map[Token]Agent{
+		"legion-legion-legion-208-tester":    "tester",
+		"legion-legion-legion-208-architect": "architect",
 	} {
-		if role, ok := token.Role(); !ok || role != want {
-			t.Errorf("%s.Role() = %q, %t; want %q", token, role, ok, want)
+		if _, agent, ok := token.Cut(); !ok || agent != want || token.IsController() {
+			t.Errorf("%s names the agent %q (%t), controller %t; want the agent %q", token, agent, ok, token.IsController(), want)
 		}
 	}
-	for _, token := range []Token{"legion-legion-legion-208", "legion--controller", "legion-a-b-controller", "other-legion-controller", "legion-Legion-controller"} {
-		if role, ok := token.Role(); ok {
-			t.Errorf("%s.Role() = %q, want none", token, role)
+	if !ControllerToken("legion").IsController() {
+		t.Errorf("%s is not the controller's", ControllerToken("legion"))
+	}
+	for _, token := range []Token{"legion--controller", "legion-a-b-controller", "other-legion-controller", "legion-Legion-controller"} {
+		if token.IsController() {
+			t.Errorf("%s is the controller's, want none", token)
 		}
+	}
+}
+
+// A claim is one agent of an issue, and its token ends in the agent's name, which can be a name no
+// role has (`implementer-2`). Cut gives that name whole, with the issue's part before it, and the
+// token of a role is the token of the agent named for that role.
+func TestATokenEndsInItsAgent(t *testing.T) {
+	token, err := AgentToken("legion", "INFRA-12", Agent("implementer"))
+	if err != nil || token != "legion-legion-infra-12-implementer" {
+		t.Fatalf("AgentToken = %q, %v", token, err)
+	}
+	issue, agent, ok := Token("legion-legion-infra-12-implementer-2").Cut()
+	if !ok || issue != "legion-legion-infra-12" || agent != "implementer-2" {
+		t.Fatalf("Cut = %q %q %v, want the issue part and implementer-2", issue, agent, ok)
+	}
+	same, _ := NewToken("legion", "INFRA-12", RoleTester)
+	if byAgent, _ := AgentToken("legion", "INFRA-12", Agent(RoleTester)); same != byAgent {
+		t.Fatalf("NewToken %q and AgentToken %q differ for a role", same, byAgent)
+	}
+	if _, agent, ok := ControllerToken("legion").Cut(); ok {
+		t.Errorf("Cut of the controller's token = %q, want none: it names no issue", agent)
+	}
+}
+
+// NewToken is the token of a role's agent, and it still refuses a name that is no role: its callers
+// read that refusal as "no claim of this key". A deployment's role can be any name of the role
+// grammar, an agent's name such as `implementer-2` among them, so the controller's name is the one
+// name of the grammar that is no role. AgentToken takes any name of the agent grammar but that one.
+// The controller's token is told apart from an issue's by IsController, which reads no role.
+func TestNewTokenKeepsItsRefusalOfANameThatIsNoRole(t *testing.T) {
+	if token, err := NewToken("legion", "INFRA-12", RoleController); err == nil || err.Error() != `claim token: "controller" is not a role` {
+		t.Errorf("NewToken(controller) = %q, %v; want the refusal of a name that is no role", token, err)
+	}
+	if token, err := AgentToken("legion", "INFRA-12", Agent(RoleController)); err == nil {
+		t.Errorf("AgentToken(controller) = %q, want a refusal: the controller names no agent of an issue", token)
+	}
+	if token, err := AgentToken("legion", "INFRA-12", Agent("implementer-2")); err != nil || token != "legion-legion-infra-12-implementer-2" {
+		t.Errorf("AgentToken(implementer-2) = %q, %v; want legion-legion-infra-12-implementer-2", token, err)
+	}
+	if !ControllerToken("legion").IsController() {
+		t.Error("ControllerToken(legion).IsController() = false, want true")
+	}
+	if Token("legion-legion-infra-12-implementer").IsController() {
+		t.Error("an issue's token IsController() = true, want false")
+	}
+}
+
+// An agent's name has the role grammar of a deployment: a lowercase letter, then at most 31
+// lowercase letters, digits or dashes. AgentToken refuses any other name, and the issue and the
+// project as NewToken does.
+func TestAgentTokenRefusesANameOutsideTheAgentGrammar(t *testing.T) {
+	for _, testCase := range []struct {
+		name, project, issue string
+		agent                Agent
+		wantFragment         string
+	}{
+		{"no name", "legion", "INFRA-12", "", `""`},
+		{"a name that starts with a digit", "legion", "INFRA-12", "2-implementer", `"2-implementer"`},
+		{"an uppercase name", "legion", "INFRA-12", "Implementer", `"Implementer"`},
+		{"a name of 33 bytes", "legion", "INFRA-12", Agent("a" + strings.Repeat("b", 32)), `"a` + strings.Repeat("b", 32) + `"`},
+		{"a lowercase issue key", "legion", "infra-12", "implementer", `"infra-12"`},
+		{"a project that is not a token", "Legion", "INFRA-12", "implementer", `"Legion"`},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			token, err := AgentToken(testCase.project, testCase.issue, testCase.agent)
+			if err == nil {
+				t.Fatalf("AgentToken = %q, want a refusal", token)
+			}
+			if !strings.Contains(err.Error(), testCase.wantFragment) {
+				t.Errorf("the refusal does not name %s: %v", testCase.wantFragment, err)
+			}
+		})
+	}
+	if token, err := AgentToken("legion", "INFRA-12", Agent("a"+strings.Repeat("b", 31))); err != nil {
+		t.Errorf("AgentToken of a name of 32 bytes = %q, %v; want it taken", token, err)
 	}
 }

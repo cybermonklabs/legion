@@ -261,8 +261,10 @@ func tellOfProviderErrors(t *testing.T, pool *pgxpool.Pool, admission *Admission
 // turns fail, and the machine tells at exactly the sixth turn in a row and not again until a
 // turn with no error puts that run back to zero, so a second claim's notice dropped behind the
 // first claim's would never be sent at all. Two claims of one issue — its architect and its
-// worker — are two such claims, so the issue alone is not the key. One claim that keeps failing
-// still tells once: a second notice for the same issue and role finds the first one waiting.
+// worker — are two such claims, so the issue alone is not the key. These notices name no claim,
+// as a row the release before wrote names none, so each is keyed by its issue and role, and one
+// claim that keeps failing still tells once: a second notice for the same issue and role finds
+// the first one waiting.
 func TestEachClaimsProviderErrorsNoticeStandsWhileAnothersWaits(t *testing.T) {
 	pool := migratedPool(t)
 	admission := quiet(t, 2)
@@ -282,6 +284,40 @@ func TestEachClaimsProviderErrorsNoticeStandsWhileAnothersWaits(t *testing.T) {
 		notice("LEGION-209", claim.RoleImplementer),
 		notice("LEGION-210", claim.RoleImplementer),
 		notice("LEGION-209", claim.RoleArchitect),
+	})
+}
+
+// Two claims can hold one role of an issue: a keyed agent on a step of another role, here the
+// agent `implementer` on the tester's step, beside the tester's own claim from an earlier version
+// of the plan. Each is a claim of its own whose turns can keep failing, so the notice names its
+// claim and the claim is the key: each of the two gets its notice, and the same claim failing
+// again finds its own notice waiting.
+func TestTwoClaimsOfOneRoleEachGetTheirProviderErrorsNotice(t *testing.T) {
+	pool := migratedPool(t)
+	admission := quiet(t, 2)
+	registerController(t, pool)
+	const keyed, own = claim.Token("legion-legion-legion-209-implementer"), claim.Token("legion-legion-legion-209-tester")
+	notice := func(token claim.Token) record.ControllerNotice {
+		return record.ControllerNotice{Kind: record.ProviderErrorsNotice, Role: claim.RoleTester, Claim: token,
+			Reason: "6 turns in a row ended in a provider error"}
+	}
+	tell := func(token claim.Token) {
+		t.Helper()
+		ctx := context.Background()
+		if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+			return admission.TellController(ctx, tx, notice(token), "LEGION-209")
+		}); err != nil {
+			t.Fatalf("tell the controller of %s's provider errors: %v", token, err)
+		}
+	}
+
+	tell(keyed)
+	tell(own)
+	tell(keyed)
+
+	assertControllerNotices(t, pool, []effect{
+		{kind: record.OutboxKindControllerNotice, issue: "LEGION-209", payload: notice(keyed)},
+		{kind: record.OutboxKindControllerNotice, issue: "LEGION-209", payload: notice(own)},
 	})
 }
 

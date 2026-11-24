@@ -10,7 +10,7 @@ import (
 // 46), the op a worker answers the update round over its pod with. A claim whose registration
 // declared a contract below it has no op to answer that round's ask with: the op list is a
 // closed enum compiled into the plugin, and a Claude Code role's plugin is its image's own,
-// never installed. Such a claim is asked all the same, on its role's own Envoy topic
+// never installed. Such a claim is asked all the same, on its own Envoy topic
 // (internal/daemon's openPodUpdate), and the round over it ends at its bound whether or not it
 // answers, so its pod is replaced like any other. The end of a turn is no answer, at any
 // contract: an ask an older daemon queued as a task is answered with the op or not at all.

@@ -26,17 +26,21 @@ const (
 	Implementing   Phase = "implementing"
 	Testing        Phase = "testing"
 	Reviewing      Phase = "reviewing"
-	Accepting      Phase = "accepting"
-	Retro          Phase = "retro"
-	Merging        Phase = "merging"
-	Done           Phase = "done"
-	Held           Phase = "held"
+	// Step is a step of a role the deployment defines: none of Legion's own roles works it, and
+	// the role that does is the one the issue's plan names for the step it stands at, so RoleFor
+	// names none.
+	Step      Phase = "step"
+	Accepting Phase = "accepting"
+	Retro     Phase = "retro"
+	Merging   Phase = "merging"
+	Done      Phase = "done"
+	Held      Phase = "held"
 )
 
 // All is every phase, in the transition table's order.
 var All = []Phase{
-	Admitted, AwaitingPerson, Planning, Implementing, Testing, Reviewing, Accepting, Retro, Merging,
-	Done, Held,
+	Admitted, AwaitingPerson, Planning, Implementing, Testing, Reviewing, Step, Accepting, Retro,
+	Merging, Done, Held,
 }
 
 // Order is the line an issue walks forward, and the only phases a move back is read against. It
@@ -64,44 +68,67 @@ func MovesBack(from, to Phase) bool {
 	return toIndex >= 0 && toIndex < slices.Index(Order, from)
 }
 
-// BackwardPairs is every move back the daemon counts, each written "<from>-<to>". It is the whole
-// vocabulary the two readers named on Order share: the engine counts each move under its pair in
-// this list, and the config loader refuses a hook naming a pair that is not in it. The answer is
-// a fresh slice, so a caller that sorts or trims it leaves the next caller's answer whole.
+// BackwardPairs is every move back of today's line, Order, each written "<from>-<to>": each
+// phase of Order paired with every phase before it, 21 pairs. They are the first part of
+// MovePairs, in this order, and the backward rows of a line in today's order (workflow's
+// backwardRows). The answer is a fresh slice, so a caller that sorts or trims it leaves the next
+// caller's answer whole.
 func BackwardPairs() []string {
 	return slices.Clone(backwardPairs)
 }
 
-// ParsePair reads one "<from>-<to>" pair and answers ok only for a pair BackwardPairs holds. The
-// check is against that set, not against MovesBack alone, because the set is the smaller of the
-// two: MovesBack answers for the whole triangle over Order, where a row and a count know only the
-// pairs the workflow carries. Phase words hold "_" and never "-", so the one "-" of a pair in the
-// set splits it.
+// MovePairs is every move the daemon counts, each written "<from>-<to>": BackwardPairs first, in
+// their order, then the 21 forward pairs, each phase of Order paired with every phase after it,
+// then the pairs of step: step to each phase of Order, each phase of Order to step, and step-step.
+// A task in another order than today's moves back by its own order (workflow's Walk.MovesBack),
+// so the move back of one task, testing to reviewing, is a forward pair of Order. A step of a role
+// the deployment defines runs as step wherever it stands in its task, so a move back may leave or
+// reach step, and one from such a step to an earlier one is step-step, the one pair of a phase
+// with itself. It is the whole vocabulary the readers of a move share: the engine counts a move
+// back under its pair, the config loader refuses a hook naming a pair outside it, and the outbox
+// refuses a hook prompt of a move outside it (record.HookPrompt). The answer is a fresh slice.
+func MovePairs() []string {
+	return slices.Clone(movePairs)
+}
+
+// IsMovePair says whether from-to is a pair MovePairs holds: two different phases of Order and
+// step, or step-step.
+func IsMovePair(from, to Phase) bool {
+	return movePairSet[Pair(from, to)]
+}
+
+// ParsePair reads one "<from>-<to>" pair and answers ok only for a pair MovePairs holds: two
+// different phases of Order and step, or step-step. Phase words hold "_" and never "-", so the
+// one "-" of a pair in the set splits it.
 func ParsePair(text string) (from, to Phase, ok bool) {
-	if !backwardPairSet[text] {
+	if !movePairSet[text] {
 		return "", "", false
 	}
 	fromText, toText, _ := strings.Cut(text, "-")
 	return Phase(fromText), Phase(toText), true
 }
 
-// Pair spells one move back: "<from>-<to>". It is the one spelling the counts of
-// record.PhaseRow.BackwardMoves stand under, the words BackwardPairs answers, and the word a
-// hook's `moves` names a move by (config's readHookMoves). The three are one vocabulary, so the
-// spelling is written here and nowhere else.
+// Pair spells one move: "<from>-<to>". It is the one spelling the counts of
+// record.PhaseRow.BackwardMoves stand under, the words MovePairs answers, and the word a hook's
+// `moves` names a move by (config's readHookMoves). The three are one vocabulary, so the spelling
+// is written here and nowhere else.
 func Pair(from, to Phase) string {
 	return string(from) + "-" + string(to)
 }
 
-// backwardPairs is built once, in the order the workflow's backward rows are generated: each
-// phase of Order paired with every phase before it, 21 pairs. There is no pair beyond them,
-// since the merger merges the head it read and the daemon closes the issue from the merged pull
-// request: no phase of this workflow waits for a merge somebody else makes
+// backwardPairs is built once, in the order the backward rows of today's line are generated: each
+// phase of Order paired with every phase before it, 21 pairs. There is no pair beyond the pairs
+// of Order, since the merger merges the head it read and the daemon closes the issue from the
+// merged pull request: no phase of this workflow waits for a merge somebody else makes
 // (dispatch://INFRA-714).
 var backwardPairs = buildBackwardPairs()
 
-// backwardPairSet is backwardPairs keyed for the lookup ParsePair makes.
-var backwardPairSet = buildBackwardPairSet()
+// movePairs is built once: backwardPairs, then each phase of Order paired with every phase after
+// it, then step to each phase of Order, each phase of Order to step, and step-step, 57 pairs.
+var movePairs = buildMovePairs()
+
+// movePairSet is movePairs keyed for the lookups ParsePair and IsMovePair make.
+var movePairSet = buildMovePairSet()
 
 func buildBackwardPairs() []string {
 	pairs := make([]string, 0, len(Order)*(len(Order)-1)/2)
@@ -113,9 +140,26 @@ func buildBackwardPairs() []string {
 	return pairs
 }
 
-func buildBackwardPairSet() map[string]bool {
-	set := make(map[string]bool, len(backwardPairs))
-	for _, text := range backwardPairs {
+func buildMovePairs() []string {
+	pairs := make([]string, 0, len(Order)*(len(Order)-1)+2*len(Order)+1)
+	pairs = append(pairs, backwardPairs...)
+	for fromIndex, from := range Order {
+		for _, to := range Order[fromIndex+1:] {
+			pairs = append(pairs, Pair(from, to))
+		}
+	}
+	for _, to := range Order {
+		pairs = append(pairs, Pair(Step, to))
+	}
+	for _, from := range Order {
+		pairs = append(pairs, Pair(from, Step))
+	}
+	return append(pairs, Pair(Step, Step))
+}
+
+func buildMovePairSet() map[string]bool {
+	set := make(map[string]bool, len(movePairs))
+	for _, text := range movePairs {
 		set[text] = true
 	}
 	return set
@@ -128,7 +172,7 @@ func buildBackwardPairSet() map[string]bool {
 // `handoff_complete` reads and names (packages/pi-shared/src/handoff-record.ts). The writer is the
 // role the workflow starts on the phase (RoleFor, whose tests tie the two). Retro and merging
 // write none, and report the commit they stand on; accepting is the architect's sign-off, no
-// handoff at all.
+// handoff at all; and step, whose role the deployment defines, writes none either.
 func Handoff(p Phase) (word string, writer claim.Role, ok bool) {
 	switch p {
 	case Planning:
@@ -147,8 +191,9 @@ func Handoff(p Phase) (word string, writer claim.Role, ok bool) {
 // RoleFor is the role that works a phase: the one a transition starts, and the one whose handoff
 // record the `legion` tool's `handoff_complete` reads for a phase with a handoff (Handoff, whose
 // writer a test holds to this; packages/pi-shared/src/handoff-record.ts). A phase no role works —
-// awaiting_person, done, held — has none. Admitted and accepting are the architect's, and neither
-// phase starts a worker. On a root both are its own architect's. On a child both are the
+// awaiting_person, done, held — has none, and neither has step, whose role is the one the issue's
+// plan names rather than one of the phase's. Admitted and accepting are the architect's, and
+// neither phase starts a worker. On a root both are its own architect's. On a child both are the
 // architect that owns it: its own while that claim holds its role, else the one above. At
 // admitted that is the one above, since the child's own architect has not started yet or a leave
 // suspended or retired it, unless a person set the child back to todo while it ran or was held:
@@ -185,9 +230,10 @@ func RoleFor(p Phase) claim.Role {
 // LeftBy is the phase role has left when the issue, standing at at, no longer stands in a phase
 // that role works: RoleFor read the other way round, the one phase each role works, and, for the
 // implementer, which works two, implementing while the issue stands before retro and retro once
-// it stands past it. A completion that arrives after the issue moved on without its role is of
-// this phase (Of). The architect works admitted and accepting, signs accepting off and completes
-// nothing, so it leaves no phase here.
+// it stands past it. A role the deployment defines works step alone, so step is the phase it has
+// left wherever the issue stands. A completion that arrives after the issue moved on without its
+// role is of this phase (Of). The architect works admitted and accepting, signs accepting off and
+// completes nothing, so it leaves no phase here, and neither does a name that is no role.
 func LeftBy(role claim.Role, at Phase) Phase {
 	switch role {
 	case claim.RolePlanner:
@@ -203,6 +249,9 @@ func LeftBy(role claim.Role, at Phase) Phase {
 			return Retro
 		}
 		return Implementing
+	}
+	if claim.IsRole(role) && !claim.IsBuiltin(role) {
+		return Step
 	}
 	return ""
 }

@@ -80,7 +80,7 @@ func deliveredTask(t *testing.T, pool *pgxpool.Pool, path string) string {
 func TestEachTaskOfTheReviewerInReviewingEndsNamingItsEntry(t *testing.T) {
 	const withCommit, withNone = "a row with a commit", "a row with none"
 	both := []string{withCommit, withNone}
-	resume := "Continue root. Issue: LEGION-208. Phase: reviewing. Working copy: branch legion/LEGION-208. Resume the existing phase work."
+	resume := "Continue root. Issue: LEGION-208. Phase: reviewing. Working copy: branch legion/LEGION-208. Pull request: #42. Resume the existing phase work."
 	for _, tc := range []struct {
 		name string
 		// rows is each kind of row the path is run for: one that holds a commit, one that holds
@@ -126,7 +126,7 @@ func TestEachTaskOfTheReviewerInReviewingEndsNamingItsEntry(t *testing.T) {
 					readmitsTheTree(t, pool, engine, engine.now().Add(time.Hour))
 					outboxRan(t, pool)
 					promotesTheReviewer(t, pool, engine, engine.now().Add(time.Hour))
-					return pool, "Continue child. Issue: LEGION-208. Phase: reviewing. Working copy: branch legion/LEGION-208. Resume the existing phase work."
+					return pool, "Continue child. Issue: LEGION-208. Phase: reviewing. Working copy: branch legion/LEGION-208. Pull request: #42. Resume the existing phase work."
 				}
 				// A carried hand-over keeps its rows and the commit with them (admit's readmit
 				// returns before the clear), and its promotion raises the reviewer's entry.
@@ -136,7 +136,11 @@ func TestEachTaskOfTheReviewerInReviewingEndsNamingItsEntry(t *testing.T) {
 				carried.Generation++
 				seedIssue(t, pool, *carried)
 				applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
-					return engine.StartPromotedWorker(ctx, tx, *carried, claim.RoleReviewer)
+					s, err := firstScope(ctx, tx, engine, *carried)
+					if err != nil {
+						return err
+					}
+					return engine.StartPromotedWorker(ctx, tx, s, claim.RoleReviewer)
 				})
 				return pool, resume
 			},
@@ -148,7 +152,11 @@ func TestEachTaskOfTheReviewerInReviewingEndsNamingItsEntry(t *testing.T) {
 				row, issue := reviewerRow(t, pool), issueRecord(t, pool, "LEGION-208")
 				outboxRan(t, pool)
 				applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
-					return engine.SendOwedEntry(ctx, tx, *issue, claim.RoleReviewer, row)
+					s, err := firstScope(ctx, tx, engine, *issue)
+					if err != nil {
+						return err
+					}
+					return engine.SendOwedEntry(ctx, tx, s, claim.RoleReviewer, row)
 				})
 				return pool, strings.TrimSuffix(row.EntryTask, reviewedPartOf(commitNamed(row))+reviewEntryPartOf(row.Entry))
 			},
@@ -189,7 +197,11 @@ func TestEachTaskOfTheReviewerInReviewingEndsNamingItsEntry(t *testing.T) {
 				row, issue := reviewerRow(t, pool), issueRecord(t, pool, "LEGION-208")
 				outboxRan(t, pool)
 				applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
-					return engine.repairSilence(ctx, tx, *issue, *issue, record.RoleRun{Claim: &record.RoleClaim{GivenEntry: row.Entry}}, row,
+					s, err := firstScope(ctx, tx, engine, *issue)
+					if err != nil {
+						return err
+					}
+					return engine.repairSilence(ctx, tx, s, *issue, record.RoleRun{Claim: &record.RoleClaim{GivenEntry: row.Entry}}, row,
 						intake.WorkerSilent{Issue: "LEGION-208", Role: claim.RoleReviewer, Generation: 1, LastStep: reviewTestedAt, Bound: time.Hour},
 						reviewTestedAt.Add(2*time.Hour))
 				})
@@ -220,9 +232,13 @@ func TestEachTaskOfTheReviewerInReviewingEndsNamingItsEntry(t *testing.T) {
 				}
 				outboxRan(t, pool)
 				applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
-					return engine.SendOwedEntry(ctx, tx, *issue, claim.RoleReviewer, row)
+					s, err := firstScope(ctx, tx, engine, *issue)
+					if err != nil {
+						return err
+					}
+					return engine.SendOwedEntry(ctx, tx, s, claim.RoleReviewer, row)
 				})
-				return pool, "Continue child. Issue: LEGION-208. Phase: reviewing. Working copy: branch legion/LEGION-208. Resume the existing phase work."
+				return pool, "Continue child. Issue: LEGION-208. Phase: reviewing. Working copy: branch legion/LEGION-208. Pull request: #42. Resume the existing phase work."
 			},
 		},
 	} {
@@ -348,7 +364,11 @@ func TestAnOwedEntryIsSentAsStoredAfterTheRowsReviewedCommitMoved(t *testing.T) 
 			}
 			outboxRan(t, pool)
 			applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
-				return engine.SendOwedEntry(ctx, tx, *issue, claim.RoleReviewer, row)
+				s, err := firstScope(ctx, tx, engine, *issue)
+				if err != nil {
+					return err
+				}
+				return engine.SendOwedEntry(ctx, tx, s, claim.RoleReviewer, row)
 			})
 			if delivered := deliveredTask(t, pool, tc.name); delivered != stored {
 				t.Fatalf("the owed entry is delivered as %q, want the stored task %q word for word: the row's commit moved to %s since", delivered, stored, tc.moved)
@@ -419,7 +439,11 @@ func bootResumesTheReviewer(t *testing.T, pool *pgxpool.Pool, engine *Engine) {
 	row, issue := reviewerRow(t, pool), issueRecord(t, pool, "LEGION-208")
 	outboxRan(t, pool)
 	applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
-		_, err := engine.startSuspendedOwner(ctx, tx, suspendedOwner{issue: *issue, root: *issue, role: claim.RoleReviewer,
+		s, err := firstScope(ctx, tx, engine, *issue)
+		if err != nil {
+			return err
+		}
+		_, err = engine.startSuspendedOwner(ctx, tx, suspendedOwner{scope: s, root: *issue, role: claim.RoleReviewer,
 			run: record.RoleRun{Claim: &record.RoleClaim{GivenEntry: row.Entry}}}, row)
 		return err
 	})
@@ -499,7 +523,7 @@ func wakes(t *testing.T, pool *pgxpool.Pool, engine *Engine, role claim.Role, se
 		return WakeTask(kind, fmt.Sprintf("the backstop armed for LEGION-208's %s came due", role), StoppedByRelease)
 	}
 	applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
-		released, found, err := engine.cfg.Pods.ReleasedClaimOfRole(ctx, tx, "LEGION-208", role)
+		released, found, err := engine.cfg.Pods.ReleasedClaimByToken(ctx, tx, token)
 		if err != nil || !found {
 			return fmt.Errorf("read the released %s claim: found %t, %v", role, found, err)
 		}

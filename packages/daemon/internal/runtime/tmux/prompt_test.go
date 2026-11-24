@@ -1,6 +1,7 @@
 package tmux
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -33,13 +34,27 @@ func writeLaunchPrompt(t *testing.T, spec runtime.SpawnSpec, host Host) string {
 // `model_change` for its resolved model, which later launches without the flag read.
 func TestInnerCommand(t *testing.T) {
 	const promptFile = "/state/secrets/legion-omp-legion-42-architect-system-prompt.md"
-	if got, want := innerCommand(nil, "/opt/oh-my-pi/18.0.3/omp", "", promptFile),
+	if got, want := innerCommand(nil, "/opt/oh-my-pi/18.0.3/omp", "", "", promptFile),
 		"/opt/oh-my-pi/18.0.3/omp --model @default --mode rpc --append-system-prompt "+promptFile; got != want {
 		t.Errorf("fresh: got %q, want %q", got, want)
 	}
-	if got, want := innerCommand([]string{"env", "K=v", "--"}, "/opt/oh-my-pi/18.0.3/omp", "/state/trees/x/.omp/s 1.jsonl", "/state dir/secrets/p-system-prompt.md"),
+	if got, want := innerCommand([]string{"env", "K=v", "--"}, "/opt/oh-my-pi/18.0.3/omp", "", "/state/trees/x/.omp/s 1.jsonl", "/state dir/secrets/p-system-prompt.md"),
 		"env 'K=v' -- /opt/oh-my-pi/18.0.3/omp --model @default --resume='/state/trees/x/.omp/s 1.jsonl' --mode rpc --append-system-prompt '/state dir/secrets/p-system-prompt.md'"; got != want {
 		t.Errorf("resumed: got %q, want %q", got, want)
+	}
+}
+
+// A launch whose spec names the model of its role names that model where every other launch names
+// @default, quoted for the pane's shell as one word, so a role of the deployment runs the model
+// its settings give it.
+func TestALaunchNamesTheModelOfItsRole(t *testing.T) {
+	const promptFile = "/state/secrets/legion-omp-legion-42-checker-system-prompt.md"
+	got := innerCommand(nil, "/opt/omp", "checker-model", "", promptFile)
+	if !strings.Contains(got, " --model checker-model --mode rpc") || strings.Contains(got, "@default") {
+		t.Errorf("innerCommand with the model checker-model = %q, want it to hold %q and no @default", got, " --model checker-model --mode rpc")
+	}
+	if quoted := innerCommand(nil, "/opt/omp", "a b;c", "", promptFile); !strings.Contains(quoted, " --model 'a b;c'") {
+		t.Errorf("innerCommand with the model a b;c = %q, want it to hold %q", quoted, " --model 'a b;c'")
 	}
 }
 

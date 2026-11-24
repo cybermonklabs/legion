@@ -2,10 +2,12 @@ package projection
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"maps"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -28,6 +30,9 @@ type projectionStore struct {
 	pullRequests map[string]*record.PullRequest
 	checks       []record.ProductionCheck
 	held         []record.HeldRow
+	// waitingForPod is each issue's roles whose start waits for its pod
+	// (record.Store.StartsWaitingForPod).
+	waitingForPod map[string][]claim.Role
 	// mirror is what Dispatch says each issue of the project waits on, as the store lists it: by
 	// key, which is the order the state's `blocked` is judged from. DispatchIssuesOf serves the rows
 	// of the keys asked for and of what they wait on, as the real store does.
@@ -44,12 +49,26 @@ type projectionStore struct {
 	// in experiment order, as record.Store.Assignments answers them.
 	assignments map[string][]record.Assignment
 	// planTasks is the task of each issue that has plan rows at its generation, as
-	// record.Store.PlanTasksOf answers them.
+	// record.Store.PlanTasksOf answers them; acts is the act each of an issue's tasks stands at,
+	// by key, as record.Store.TaskActs answers it.
 	planTasks []record.PlanTask
+	acts      map[string][]record.RunningStep
+	// stopped is the step the stop of each issue's task ended, by key, as record.Store.StoppedStep
+	// answers it for an issue its stopped task holds.
+	stopped map[string]record.RunningStep
 }
 
 func (s projectionStore) PlanTasksOf(context.Context, pgx.Tx, string) ([]record.PlanTask, error) {
 	return s.planTasks, nil
+}
+
+func (s projectionStore) StoppedStep(_ context.Context, _ pgx.Tx, issue record.Issue) (record.RunningStep, bool, error) {
+	step, ok := s.stopped[issue.Key]
+	return step, ok && record.HeldFor(issue, record.HoldTaskStopped), nil
+}
+
+func (s projectionStore) TaskActs(_ context.Context, _ pgx.Tx, issue record.Issue) ([]record.RunningStep, error) {
+	return s.acts[issue.Key], nil
 }
 
 func (s projectionStore) Assignments(context.Context, pgx.Tx, string) (map[string][]record.Assignment, error) {
@@ -90,11 +109,23 @@ func (projectionStore) PendingStatusWrites(context.Context, pgx.Tx, string) ([]r
 func (s projectionStore) HeldRows(context.Context, pgx.Tx, string, string, time.Time) ([]record.HeldRow, error) {
 	return s.held, nil
 }
+func (s projectionStore) StartsWaitingForPod(context.Context, pgx.Tx, string) (map[string][]claim.Role, error) {
+	return s.waitingForPod, nil
+}
 func (s projectionStore) Phases(_ context.Context, _ pgx.Tx, issue string) ([]record.PhaseRow, error) {
 	return s.phases[issue], nil
 }
-func (s projectionStore) PullRequest(_ context.Context, _ pgx.Tx, issue string) (*record.PullRequest, error) {
+
+// MergePullRequest is each issue's one pull request the fake holds, which is its merge's, and
+// TaskPullRequests that same row as the issue's only one.
+func (s projectionStore) MergePullRequest(_ context.Context, _ pgx.Tx, issue string) (*record.PullRequest, error) {
 	return s.pullRequests[issue], nil
+}
+func (s projectionStore) TaskPullRequests(_ context.Context, _ pgx.Tx, issue string) ([]record.PullRequest, error) {
+	if pr := s.pullRequests[issue]; pr != nil {
+		return []record.PullRequest{*pr}, nil
+	}
+	return nil, nil
 }
 func (s projectionStore) GatesOf(_ context.Context, _ pgx.Tx, issue string) (map[record.DesignStep]record.DesignGate, error) {
 	return s.gates[issue], nil
@@ -1250,5 +1281,137 @@ func TestProjectShowsWhatAReviewRoundWaitsOnFromGitHub(t *testing.T) {
 		if wait := got.Issues[tc.key].MergeWait; wait != nil {
 			t.Fatalf("%s's mergeWait = %+v, want none: %s", tc.key, wait, tc.why)
 		}
+	}
+}
+
+// An issue at step is worked by the role of its running step, which no phase names
+// (phase.RoleFor answers none for step), so the served issue names that role (`stepRole`, the
+// role of record.Issue.RunningAt(step)) and carries that role's entry and the entry its claim was
+// given, as an issue at testing carries its tester's; a child at step carries that role's
+// handshake too, as a child at testing carries its tester's. An issue held from step names the
+// role too, as it names `heldFrom`, and carries neither number, as every held issue does; so does
+// one its stopped task holds there, whose step is no running step and is read from the plan rows
+// (record.Store.StoppedStep). An issue at a phase of Legion's names no `stepRole`: its phase names
+// the role.
+func TestTheServedStateNamesTheRunningDeploymentRole(t *testing.T) {
+	const project, checker = "LEGION", claim.Role("checker")
+	checkerStep := record.RunningStep{Task: "a", Place: record.TaskPlace{Kind: record.PlaceStep, Position: 2}, Role: checker,
+		Phase: phase.Step, Agent: claim.Agent(checker)}
+	issue := func(key string, p phase.Phase) record.Issue {
+		return record.Issue{Key: key, Project: project, Tree: key, Phase: p, Status: "in_progress",
+			Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Rank: key, Running: []record.RunningStep{checkerStep}}
+	}
+	held := issue("LEGION-71", phase.Held)
+	held.Hold = &record.Hold{From: phase.Step, Reason: record.HoldEscalated}
+	held.Running[0].Held = true
+	child := issue("LEGION-73", phase.Step)
+	child.Tree, child.Generation = "LEGION-70", 1
+	atTesting := issue("LEGION-72", phase.Testing)
+	atTesting.Running = record.RunningOf(atTesting, false, nil)
+	stopped := issue("LEGION-74", phase.Held)
+	stopped.Hold, stopped.Running = &record.Hold{From: phase.Step, Reason: record.HoldTaskStopped}, nil
+	queuedAt, confirmedAt := projectedAt.Add(-20*time.Minute), projectedAt.Add(-15*time.Minute)
+	store := projectionStore{
+		issues: []record.Issue{issue("LEGION-70", phase.Step), held, atTesting, child, stopped},
+		phases: map[string][]record.PhaseRow{
+			"LEGION-70": {
+				{Issue: "LEGION-70", Role: claim.RoleImplementer, Claim: "legion-70-implementer", Entry: 2},
+				{Issue: "LEGION-70", Role: checker, Claim: "legion-70-checker", Entry: 3},
+			},
+			"LEGION-71": {{Issue: "LEGION-71", Role: checker, Claim: "legion-71-checker", Entry: 4}},
+			"LEGION-72": {{Issue: "LEGION-72", Role: claim.RoleTester, Claim: "legion-72-tester", Entry: 2}},
+			"LEGION-73": {{Issue: "LEGION-73", Role: checker, Claim: "legion-73-checker", Entry: 2}},
+		},
+		stopped: map[string]record.RunningStep{"LEGION-74": checkerStep},
+	}
+	claims := []supervise.Claim{
+		{Token: "legion-70-implementer", Issue: "LEGION-70", Role: claim.RoleImplementer, State: supervise.StateIdle,
+			Session: "ses_implementer_70", GivenEntry: 2},
+		{Token: "legion-70-checker", Issue: "LEGION-70", Role: checker, State: supervise.StateSuspended,
+			Session: "ses_checker_70", GivenEntry: 1},
+		{Token: "legion-71-checker", Issue: "LEGION-71", Role: checker, State: supervise.StateSuspended,
+			Session: "ses_checker_71", GivenEntry: 1},
+		{Token: "legion-72-tester", Issue: "LEGION-72", Role: claim.RoleTester, State: supervise.StateWorking,
+			Session: "ses_tester_72", GivenEntry: 2},
+		{Token: "legion-73-checker", Issue: "LEGION-73", Role: checker, State: supervise.StateWorking,
+			Session: "ses_checker_73", GivenEntry: 2,
+			Handshake: supervise.EntryHandshake{Entry: 2, Generation: 1, QueuedAt: queuedAt, ConfirmedAt: confirmedAt}},
+	}
+
+	got, err := Project(context.Background(), Inputs{Store: store, Project: project, Claims: claims, Now: projectedAt})
+	if err != nil {
+		t.Fatalf("Project: %v", err)
+	}
+	for _, want := range []struct {
+		key                    string
+		stepRole, heldFrom     string
+		phaseEntry, givenEntry int64
+	}{
+		// The checker's own row and claim, not the implementer's that ran the step before.
+		{key: "LEGION-70", stepRole: "checker", phaseEntry: 3, givenEntry: 1},
+		{key: "LEGION-71", stepRole: "checker", heldFrom: "step"},
+		{key: "LEGION-72", phaseEntry: 2, givenEntry: 2},
+		{key: "LEGION-73", stepRole: "checker", phaseEntry: 2, givenEntry: 2},
+		{key: "LEGION-74", stepRole: "checker", heldFrom: "step"},
+	} {
+		view, known := got.Issues[want.key]
+		if !known {
+			t.Fatalf("%s is in no issue of the projected state; this test proves nothing", want.key)
+		}
+		document := wire(t, view)
+		served, carried := document["stepRole"]
+		if want.stepRole == "" && carried {
+			t.Errorf("%s is served stepRole %v, want no stepRole: its phase names its role", want.key, served)
+		}
+		if want.stepRole != "" && served != want.stepRole {
+			t.Errorf("%s is served stepRole %v, want %q: %s", want.key, served, want.stepRole, canonical(t, document))
+		}
+		if view.HeldFrom != want.heldFrom || view.PhaseEntry != want.phaseEntry || view.GivenEntry != want.givenEntry {
+			t.Errorf("%s is projected held from %q with entry %d given %d, want held from %q with entry %d given %d",
+				want.key, view.HeldFrom, view.PhaseEntry, view.GivenEntry, want.heldFrom, want.phaseEntry, want.givenEntry)
+		}
+	}
+	if view := got.Issues["LEGION-73"]; view.EntryQueuedAt == nil || !view.EntryQueuedAt.Equal(queuedAt) ||
+		view.EntryConfirmedAt == nil || !view.EntryConfirmedAt.Equal(confirmedAt) {
+		t.Errorf("the child LEGION-73 at step carries the handshake queued %v confirmed %v, want its checker's, queued %s confirmed %s",
+			view.EntryQueuedAt, view.EntryConfirmedAt, queuedAt, confirmedAt)
+	}
+}
+
+// The served issue names the role of each start that waits because the issue's pod lacks the slot
+// of the start's claim or the role of its step: such a start may have no claim to show yet, and
+// its start row waits on its backoff, which no other part of the state lists. An issue with no
+// such start names none, and its JSON holds no such key.
+func TestTheServedIssueNamesTheRoleWhoseStartWaitsForItsPod(t *testing.T) {
+	store := projectionStore{
+		issues: []record.Issue{
+			{Key: "LEGION-208", Project: "LEGION", Tree: "LEGION-208", Status: "in_progress", Phase: phase.Implementing},
+			{Key: "LEGION-209", Project: "LEGION", Tree: "LEGION-209", Status: "in_progress", Phase: phase.Implementing},
+		},
+		waitingForPod: map[string][]claim.Role{"LEGION-208": {"checker"}},
+	}
+	got, err := Project(context.Background(), Inputs{Store: store, Project: "LEGION", Now: projectedAt})
+	if err != nil {
+		t.Fatalf("Project: %v", err)
+	}
+	if waiting := got.Issues["LEGION-208"].StartWaitsForPod; !slices.Equal(waiting, []string{"checker"}) {
+		t.Errorf("LEGION-208's startWaitsForPod = %v, want [checker]", waiting)
+	}
+	if waiting := got.Issues["LEGION-209"].StartWaitsForPod; waiting != nil {
+		t.Errorf("LEGION-209's startWaitsForPod = %v, want none", waiting)
+	}
+	waiting, err := json.Marshal(got.Issues["LEGION-208"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(waiting), `"startWaitsForPod":["checker"]`) {
+		t.Errorf("LEGION-208's JSON = %s, want it to hold \"startWaitsForPod\":[\"checker\"]", waiting)
+	}
+	other, err := json.Marshal(got.Issues["LEGION-209"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(other), "startWaitsForPod") {
+		t.Errorf("LEGION-209's JSON = %s, want no startWaitsForPod key", other)
 	}
 }

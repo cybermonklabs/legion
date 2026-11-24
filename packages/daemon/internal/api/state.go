@@ -682,6 +682,18 @@ type Issue struct {
 	Key        string      `json:"key"`
 	Generation uint64      `json:"generation"`
 	Phase      phase.Phase `json:"phase"`
+	// StepRole is the role that works the issue's running step where the issue stands at step or
+	// its hold took it out of step (the first of record.Issue.RunningAt(step) in task id order, or
+	// the step a stop of its task ended, record.Store.StoppedStep): a role of the deployment, which
+	// no phase names, so the phase alone does not say who works the issue. Absent at every other
+	// phase, whose role the phase names (phase.RoleFor).
+	StepRole string `json:"stepRole,omitempty"`
+	// StartWaitsForPod are the roles of the starts that wait because the issue's live pod lacks
+	// the slot of the start's claim or the role of its step, the pod having been built before the
+	// deployment defined that name (record.Store.StartsWaitingForPod): a start that creates its
+	// claim has none to show yet, and only the pod's update round or its release lets it start.
+	// Absent where none waits.
+	StartWaitsForPod []string `json:"startWaitsForPod,omitempty"`
 	// Status is the status the daemon means the issue to have and writes to Dispatch
 	// (record.Issue.Status). It is not the status Dispatch shows: that is
 	// record.Issue.DispatchStatus, which this state does not carry. The two differ while a status
@@ -789,7 +801,8 @@ type Issue struct {
 	MemoryDrawMode string     `json:"memoryDrawMode,omitempty"`
 	MemoryDrawnAt  *time.Time `json:"memoryDrawnAt,omitempty"`
 	// PhaseEntry is the number of the phase entry the role of the issue's current phase stands on
-	// (record.PhaseRow.Entry, the role phase.RoleFor names for that phase), and GivenEntry the
+	// (record.PhaseRow.Entry, the role phase.RoleFor names for that phase, and at step the role
+	// of the running step, StepRole), and GivenEntry the
 	// entry of the last task that role's claim was queued (supervise.Claim.GivenEntry). The daemon
 	// sends the entry's own work to a role whose given number is below the entry its row names, on
 	// every admission pass and on a sweep of its own each minute (workflow.OwedEntry, admit's
@@ -866,6 +879,71 @@ type Issue struct {
 	// holds an answer for, so the wire never carries an empty list, and absent from every issue of
 	// the body the route serves a caller below 141 (shapeIssue, withoutAssignments).
 	Assignments []AssignmentView `json:"assignments,omitempty"`
+	// Tasks is each task of the issue's plan, in task id order (TaskView): one for each row of the
+	// plan of the issue's generation, a plan of one task among them. Absent for an issue with no
+	// plan rows at its generation, which walks today's line as one task no plan names, and absent
+	// from every issue of the body the route serves a caller below tasksContract (shapeIssue,
+	// withoutTasks).
+	Tasks []TaskView `json:"tasks,omitempty"`
+}
+
+// TaskView is one task of an issue's plan as the state shows it: where the task stands
+// (record.PlanTask), the act at its place, what the step there waits for, its own pull request and
+// its own counts of returns.
+//
+// State is the task's state (record.TaskState). Needs is the ids of the tasks it needs, `[]` for
+// none. Kind and Position are its place (record.TaskPlace): `step` with the step's place from 1,
+// `retro` or `merge`, and both absent for a task at no act, which has not started. Phase is the
+// phase of that place, the phase an issue of that one task stands in (workflow's issuePhaseOf):
+// the phase the step's role runs as, `retro` or `merging`, and `done` for a task that is done or
+// left the workflow; absent at no act. Branch is the GitHub branch the task works on
+// (record.PlanTask.BranchOf), absent for a task that has not started, whose first start gives it
+// one. Role and Agent are the role and the agent that work the act at its place
+// (record.RunningStep's), for a task that is running, held or stopped; absent for a task that is
+// waiting, done or left, which no one works, and Agent absent for a step of the key owner, whose
+// claim names no agent of the issue. HoldReason is why a held task is held, absent for a failed
+// claim its owner has not decided (record.PlanTask.HoldReason), and StoppedReason why a stopped
+// task was stopped, which a task that left the workflow stopped keeps. Wait is what the step at a
+// running task's place waits for before its start is delivered, `join` or `agent`
+// (record.StepWait), absent where its start was delivered; WaitsFor names, for a step that waits
+// for its agent, that agent and the step it runs (AgentStepView). PullRequest and MergeWait are the
+// task's own pull request and what its review round waits on from GitHub, built as the issue's own
+// are, from the task's row (record.Store.TaskPullRequests). Counts are the task's own counts of
+// returns (record.PlanTask.Counts).
+type TaskView struct {
+	ID            string           `json:"id"`
+	State         string           `json:"state"`
+	Needs         []string         `json:"needs"`
+	Kind          string           `json:"kind,omitempty"`
+	Phase         string           `json:"phase,omitempty"`
+	Branch        string           `json:"branch,omitempty"`
+	Position      int              `json:"position,omitempty"`
+	Role          string           `json:"role,omitempty"`
+	Agent         string           `json:"agent,omitempty"`
+	HoldReason    string           `json:"holdReason,omitempty"`
+	StoppedReason string           `json:"stoppedReason,omitempty"`
+	Wait          string           `json:"wait,omitempty"`
+	WaitsFor      *AgentStepView   `json:"waitsFor,omitempty"`
+	PullRequest   *PullRequestView `json:"pullRequest,omitempty"`
+	MergeWait     *MergeWaitView   `json:"mergeWait,omitempty"`
+	Counts        TaskCountsView   `json:"counts"`
+}
+
+// AgentStepView is the agent a step waits for and the running step that agent works
+// (record.Issue.StepOfAgent): its task and the step's place from 1. Task and Position are absent
+// where the agent works no delivered step, as when a step of another task has waited for it
+// longer; Position alone is absent where the agent works a retro.
+type AgentStepView struct {
+	Agent    string `json:"agent"`
+	Task     string `json:"task,omitempty"`
+	Position int    `json:"position,omitempty"`
+}
+
+// TaskCountsView is a task's own counts of returns (record.ReturnCounts): the passes it has made
+// through its steps and its review rounds.
+type TaskCountsView struct {
+	Pass   int `json:"pass"`
+	Rounds int `json:"rounds"`
 }
 
 // AssignmentView is one experiment's answer for an issue as the state shows it
@@ -914,7 +992,8 @@ func (i Issue) MarshalJSON() ([]byte, error) {
 	return json.Marshal(out)
 }
 
-// ClaimView is one role claim as the record holds it: the session its agent registered as, where
+// ClaimView is one claim as the record holds it, the claim of one agent of an issue under its
+// token, on the role of the step its agent runs now: the session its agent registered as, where
 // it is in its life (`supervise.ClaimState`), its locator, and the capability report its session
 // sent on a `claims/ready` of its own while it ran (LEGION-663, INFRA-927). The locator is the
 // runtime's own nested shape —
@@ -1262,9 +1341,11 @@ type HandoffRecordView struct {
 	Version int    `json:"version"`
 }
 
-// PullRequestView is the issue's pull request as the daemon observes it from GitHub.
-// ReviewDecision is the latest review round's decision (changes_requested or approved), the one
-// the workflow ends the round on when the reviewer completes. It shows from the review that
+// PullRequestView is a pull request of the issue as the daemon observes it from GitHub: on the
+// issue its merge's, the pull request of the task that merges, and on each task (TaskView) that
+// task's own. ReviewDecision is the latest review round's decision (changes_requested or
+// approved), the one the workflow ends the round on when the reviewer completes, and only where
+// the reviewer's round was of this pull request's task. It shows from the review that
 // decided it until the next round opens or a new generation clears it, so a request for changes
 // stays through implementing and testing, and an approval through retro and every phase after
 // it; absent until a review in a round decides.
@@ -1629,26 +1710,31 @@ type HeldOutboxRow struct {
 }
 
 // StrandedClaim is one claim nothing will wake — a worker of its issue's phase, or its tree's
-// architect, in a tree that runs — named by its issue, its role and its state; the issue's own
-// entry under `issues` carries the rest. Its state, its role and who suspended it say the move
-// that brings it back (Move), and that suspender is no field of it: every plugin parses this
-// body with the schema of the contract it was built at, and a session whose plugin predates
-// INFRA-1048 refuses the whole state over a key it does not know — a daemon that relaunches no
-// stale session (spec R10) would break every such pod the moment a claim is stranded. A plugin
-// built after it strips the key instead, which loses the field rather than the state, and the
-// drift gate in packages/contracts names it at the next golden write. It is served on the
-// operator claim routes, which no plugin calls (OperatorClaim.SuspendedBy), so a reader hands
-// Move the suspender it holds: the daemon's own boot the claim's (SuspendersOf), `legion state`
-// the operator claim list's.
+// architect, in a tree that runs — named by its issue, its role, its state and its claim token;
+// the issue's own entry under `issues` carries the rest. Two claims of one issue can hold one
+// role, a keyed agent's on another role's step among them, so the token is what tells them apart;
+// a caller below strandedTokenContract, which knows no `token`, is served each entry without it
+// (shaping.go's withoutStrandedTokens).
+// Its state, its role and who suspended it say the move that brings it back (Move), and that
+// suspender is no field of it: every plugin parses this body with the schema of the contract it
+// was built at, and a session whose plugin predates INFRA-1048 refuses the whole state over a key
+// it does not know — a daemon that relaunches no stale session (spec R10) would break every such
+// pod the moment a claim is stranded. A plugin built after it strips the key instead, which loses
+// the field rather than the state, and the drift gate in packages/contracts names it at the next
+// golden write. It is served on the operator claim routes, which no plugin calls
+// (OperatorClaim.SuspendedBy), so a reader hands Move the suspender it holds, by the claim's
+// token: the daemon's own boot the claim's (SuspendersOf), `legion state` the operator claim
+// list's.
 type StrandedClaim struct {
-	Issue string     `json:"issue"`
-	Role  claim.Role `json:"role"`
-	State string     `json:"state"`
+	Issue string      `json:"issue"`
+	Role  claim.Role  `json:"role"`
+	State string      `json:"state"`
+	Token claim.Token `json:"token,omitempty"`
 }
 
-// Suspenders is who suspended each claim, by the key its issue and role make: the fact a
-// stranded claim's move turns on, which the state body does not carry.
-type Suspenders map[string]string
+// Suspenders is who suspended each claim, by its claim token: the fact a stranded claim's move
+// turns on, which the state body does not carry.
+type Suspenders map[claim.Token]string
 
 // SuspendersOf is who suspended each suspended claim of stranded, as the daemon's own boot reads
 // it from the claims themselves. A failed claim carries no suspension.
@@ -1656,7 +1742,7 @@ func SuspendersOf(stranded []supervise.Claim) Suspenders {
 	by := make(Suspenders, len(stranded))
 	for _, c := range stranded {
 		if c.State == supervise.StateSuspended {
-			by[strandedKey(c.Issue, c.Role)] = string(c.SuspendedBy)
+			by[c.Token] = string(c.SuspendedBy)
 		}
 	}
 	return by
@@ -1668,19 +1754,14 @@ func SuspendersOf(stranded []supervise.Claim) Suspenders {
 func SuspendersOfOperatorClaims(claims []OperatorClaim) Suspenders {
 	by := make(Suspenders, len(claims))
 	for _, c := range claims {
-		by[strandedKey(c.Issue, c.Role)] = c.SuspendedBy
+		by[c.Token] = c.SuspendedBy
 	}
 	return by
 }
 
-// Of is who suspended c, "" when nobody did or when this lookup does not name it.
+// Of is who suspended c, by its token, "" when nobody did or when this lookup does not name it.
 func (s Suspenders) Of(c StrandedClaim) string {
-	return s[strandedKey(c.Issue, c.Role)]
-}
-
-// strandedKey names one claim of a tree in both lookups: an issue runs one claim of a role.
-func strandedKey(issue string, role claim.Role) string {
-	return issue + " " + string(role)
+	return s[c.Token]
 }
 
 // StrandedMove is the move that brings a stranded claim back (StrandedClaim.Move). Its value is the
@@ -1756,14 +1837,15 @@ func (c StrandedClaim) Move(suspendedBy string) StrandedMove {
 func StrandedClaimsOf(stranded []supervise.Claim) []StrandedClaim {
 	claims := make([]StrandedClaim, len(stranded))
 	for i, c := range stranded {
-		claims[i] = StrandedClaim{Issue: c.Issue, Role: c.Role, State: string(c.State)}
+		claims[i] = StrandedClaim{Issue: c.Issue, Role: c.Role, State: string(c.State), Token: c.Token}
 	}
 	return claims
 }
 
-// StrandedByMove is each stranded claim named `<issue> <role>`, grouped by its Move under
-// suspended, each group in stranded's order; every move has a group, empty when no claim takes
-// it.
+// StrandedByMove is each stranded claim by its name (StrandedClaim.Name), grouped by its Move under
+// suspended, which it reads by the claim's token, so two claims of one role on one issue each take
+// their own move; each group is in stranded's order, and every move has a group, empty when no
+// claim takes it.
 func StrandedByMove(stranded []StrandedClaim, suspended Suspenders) map[StrandedMove][]string {
 	grouped := make(map[StrandedMove][]string, len(StrandedMoves()))
 	for _, move := range StrandedMoves() {
@@ -1771,9 +1853,22 @@ func StrandedByMove(stranded []StrandedClaim, suspended Suspenders) map[Stranded
 	}
 	for _, c := range stranded {
 		move := c.Move(suspended.Of(c))
-		grouped[move] = append(grouped[move], strandedKey(c.Issue, c.Role))
+		grouped[move] = append(grouped[move], c.Name())
 	}
 	return grouped
+}
+
+// Name is the claim as the boot's line and `legion state` name it: `<issue> <role>` for the role's
+// own claim, whose token the issue and the role spell (and for an entry that names no token), and
+// `<issue> <role> (claim <token>)` for the claim of an agent named for another role, which holds
+// the role for its step. Two claims of one role on one issue are then named apart, and the token
+// is what `legion claims` takes.
+func (c StrandedClaim) Name() string {
+	named := c.Issue + " " + string(c.Role)
+	if _, agent, ok := c.Token.Cut(); ok && string(agent) != string(c.Role) {
+		return named + " (claim " + string(c.Token) + ")"
+	}
+	return named
 }
 
 // WakeWaiting is one wake the daemon's pacing holds until its turn, as the state names it

@@ -52,10 +52,11 @@ func (r *outbox) conflictConfirm(ctx context.Context, row record.OutboxRow, payl
 	if r.readPullRequest == nil || r.applyMergeability == nil || r.mergeStateWait == nil || r.queueMergeStateFollow == nil {
 		return errors.New("conflict confirm executor has no read of a pull request from GitHub")
 	}
-	issue, pr, err := issueRecord(ctx, r.pool, r.records, row.Issue)
+	recorded, err := issueRecord(ctx, r.pool, r.records, row.Issue, "")
 	if err != nil {
 		return err
 	}
+	issue, pr := recorded.issue, recorded.numbered(payload.Number)
 	attributes := []any{"row", row.ID, "issue", row.Issue, "pullRequest", payload.Number, "head", payload.Head}
 	if left := conflictReadLeft(issue, pr, payload); left != "" {
 		r.log.Info("outbox conflict confirm finished without a read", append(attributes, "why", left)...)

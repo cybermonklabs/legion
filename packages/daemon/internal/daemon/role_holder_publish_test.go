@@ -181,6 +181,28 @@ func TestTheExecutorPublishesTheLiveSetAtRunTime(t *testing.T) {
 	}
 }
 
+// A live claim of a role the deployment defines is published beside Legion's six: the checker's
+// session is in the set the daemon sends, with the tester's, in the order of the claims' roles.
+// The control is a retired claim of another role of the deployment, the linter's, which leaves the
+// set as a retired claim of one of Legion's roles does: the set is the live claims, whatever their
+// role.
+func TestTheExecutorPublishesTheSessionOfARoleTheDeploymentDefines(t *testing.T) {
+	t.Parallel()
+	const issue = "LEGION-208"
+	r := newRoleHoldersRig(t)
+	r.seedClaim(issue, claim.RoleTester, "ses-t", supervise.StateWorking, time.Minute)
+	r.seedClaim(issue, "checker", "ses-c", supervise.StateReady, time.Minute)
+	r.seedClaim(issue, "linter", "ses-l", supervise.StateRetired, time.Minute)
+
+	r.enqueue(issue)
+	want := []roleHoldersPublished{{Issue: issue, Holders: []dispatch.RoleHolder{
+		{Role: "checker", Session: "ses-c"}, {Role: "tester", Session: "ses-t"},
+	}}}
+	if got := r.published(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("published %+v, want %+v", got, want)
+	}
+}
+
 // The publication names only a session its claim holds (plan E's t-e-54): a live claim that records
 // a session held for another claim, held for none, or held by no row at all — which the boot finds
 // where a daemon from before the hold ran, and suspends, but not before a working claim's turn

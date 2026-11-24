@@ -1,7 +1,8 @@
 import { execFile } from "node:child_process";
+import * as path from "node:path";
 import { promisify } from "node:util";
-import { DISPATCH_KEY_PATTERN, type LegionRole } from "@legion/contracts";
-import type { LegionPhase } from "@legion/contracts/legion-api";
+import { DISPATCH_KEY_PATTERN, type LegionRole, type LegionStepRole } from "@legion/contracts";
+import { LEGION_PHASES, type LegionIssue, type LegionPhase } from "@legion/contracts/legion-api";
 import { DispatchClient, DispatchServiceError } from "@legion/envoy-client/dispatch-http";
 import { messageFor } from "@legion/envoy-client/errors";
 import {
@@ -16,11 +17,12 @@ import { staleGitLockNote } from "./git-lock";
  * The daemon reads the record back from Dispatch and holds it to the issue, the phase, the version
  * and the claim's session; this module compares no session itself.
  *
- * The phase a completion is of is the issue's (from its record) when the session's role works
- * it, and otherwise the phase the role left (`completedPhase`), where the daemon records a
- * completion that arrives once the issue moved on: the reviewer's, whose review moves the issue
- * on before it completes, is one. A file-backed phase of the role's own (`FILE_BACKED`) ends with
- * a handoff record on the issue, which the worker writes with `dispatch handoff-write`; its
+ * The phase a completion is of is its step's (`StepCopy`, from the issue's record) when the
+ * session's role works it, and otherwise the phase the role left (`completedPhase`), where the
+ * daemon records a completion that arrives once the step moved on: the reviewer's, whose review
+ * moves the issue on before it completes, is one. A file-backed phase of the role's own
+ * (`FILE_BACKED`) ends with a handoff record on the issue, which the worker writes with
+ * `dispatch handoff-write`; its
  * completion reports the newest record of the phase's word, `handoffId` and `handoffVersion`,
  * read from Dispatch here. No record of the phase the role works is refused naming the command
  * that writes one. A Dispatch that does not answer, or refuses the read, is refused with its
@@ -28,17 +30,17 @@ import { staleGitLockNote } from "./git-lock";
  * file-backed role's handoff body carries `head`, the 40-character lower-case commit the work
  * that handoff reports was done against, and the daemon takes a completion of an earlier phase
  * entry only at the head the record holds. It is read from the record and never from the
- * workspace, because a sibling role's push moves `legion/<issue>@origin` under a worker whose
+ * workspace, because a sibling role's push moves the step's branch at origin under a worker whose
  * evidence is older. A record whose body does not parse, holds no `head`, or holds one of another
  * shape reports no commit for the planner, the tester and the reviewer, whose completion still
  * goes; the daemon refuses it `HANDOFF_STALE_ENTRY` when it is of an earlier phase entry, and
  * `HANDOFF_HEAD_MERGED_FORWARD` when it is of testing or reviewing once a merge forward of the
  * issue's pull request has landed, since a completion naming no commit says nothing about a head.
  *
- * While the issue stands in implementing, the phase the implementer works, its round is the
- * commit its workspace stands on, `@-`, so its record and its branch are held to that commit:
- * `@-` must be on `legion/<issue>@origin` in the pane's jj, at the branch's tip or behind it, and
- * the head the record names must be `@-` itself, which puts that head on the branch too. A record
+ * While the step stands in implementing, the phase the implementer works, its round is the
+ * commit its working copy stands on, `@-`, so its record and its branch are held to that commit:
+ * `@-` must be on the step's branch at origin in the pane's jj, at the branch's tip or behind it,
+ * and the head the record names must be `@-` itself, which puts that head on the branch too. A record
  * naming no readable head is refused naming what to write. A workspace whose `@-` the branch does
  * not carry is refused naming the push, and saying that the record's head must name that pushed
  * commit, since a round that forgot its push wrote its record against the branch's tip at origin,
@@ -71,9 +73,16 @@ import { staleGitLockNote } from "./git-lock";
  * issue's production check resolves neither: `legion-phase-ops.ts` never asks this module for
  * one.
  *
- * The module also reads the head of `legion/<issue>@origin` that a `ready_for_update` signal
+ * The module also reads the head of the step's branch at origin that a `ready_for_update` signal
  * reports (`findPushedBranchHead`), with the same jj and the same revset the completion's push
  * check uses.
+ *
+ * Every one of these reads is of the step this session's agent runs (`stepCopy`): its working
+ * copy, its branch and its phase. Of an issue whose record serves its tasks, that is the task the
+ * agent's step is of, whose working copy sits beside the issue's own (LEGION_WORKSPACE, where the
+ * agent's process started) and whose branch is its own; of an issue served no tasks, and for an
+ * agent at no step of them, it is LEGION_WORKSPACE, `legion/<issue>` and the issue's phase, as
+ * before tasks.
  */
 
 /** Runs the pane's jj with `args` against the workspace at `cwd` and answers its trimmed stdout;
@@ -103,11 +112,12 @@ export interface HandoffReport {
 }
 
 export interface HandoffReportInput {
-  /** The issue's phase, from its record (`read_record`'s `phase`). */
-  readonly phase: LegionPhase;
-  /** The session's claim role. */
-  readonly role: LegionRole;
-  /** The pane's environment: `LEGION_WORKSPACE` and `LEGION_ISSUE`. */
+  /** The step the completion is of (`stepCopy`): its working copy, its branch and its phase. */
+  readonly step: StepCopy;
+  /** The session's claim role: one of Legion's six or a role of the deployment. */
+  readonly role: LegionStepRole;
+  /** The pane's environment: `LEGION_ISSUE`, whose handoff records are read, and
+   * `LEGION_WORKSPACE`, which a refusal names where the step is the issue's own. */
   readonly env: NodeJS.ProcessEnv;
   /** The pane's Dispatch (`paneLatestHandoff`). */
   readonly latestHandoff: LatestHandoff;
@@ -173,18 +183,18 @@ export function paneLatestHandoff(
   };
 }
 
-/** What a completion by `role` reports in the pane while the issue stands at `phase`
- * (`findHandoffReport` with the pane's environment `env` and its Dispatch,
- * `paneLatestHandoff(file, env, cwd, session)`), as each harness's `legion` tool asks it. */
+/** What a completion by `role` of `step` reports in the pane (`findHandoffReport` with the
+ * pane's environment `env` and its Dispatch, `paneLatestHandoff(file, env, cwd, session)`), as each
+ * harness's `legion` tool asks it. */
 export function paneHandoffReport(
   file: SessionConfigFile,
   env: NodeJS.ProcessEnv,
   cwd: string,
   session: string
-): (phase: LegionPhase, role: LegionRole) => Promise<HandoffReport> {
-  return (phase, role) =>
+): (step: StepCopy, role: LegionStepRole) => Promise<HandoffReport> {
+  return (step, role) =>
     findHandoffReport({
-      phase,
+      step,
       role,
       env,
       latestHandoff: paneLatestHandoff(file, env, cwd, session),
@@ -214,6 +224,165 @@ function issueBranch(env: NodeJS.ProcessEnv, purpose: string): { issue: string; 
     );
   }
   return { issue, bookmark: `legion/${issue}` };
+}
+
+/** The working copy, the branch and the phase of the step that this session's agent runs. */
+export interface StepCopy {
+  /** The directory of the step's working copy. `""` only for the issue's own step where
+   * LEGION_WORKSPACE is not set: each read of that working copy refuses it as it always has
+   * (`requiredWorkspace`), and a completion that reads none, a record's, still goes. */
+  readonly workspace: string;
+  /** The step's branch, its working copy's jj bookmark: `legion/<issue>`, or a task's own. */
+  readonly bookmark: string;
+  /** The phase the step stands in, which a completion of it is of. */
+  readonly phase: LegionPhase;
+}
+
+const FOR_STEP = "the working copy of this session's step cannot be found";
+
+/**
+ * The step that this session's agent, `agent`, runs in the issue `record` serves, as a completion
+ * and an update signal read it. Of a record that serves the issue's tasks (`tasks`, contract 224)
+ * it is the task whose `agent` is `agent` and whose step is at work: a running task whose step
+ * waits for nothing, or a held one. Its branch is the task's, its working copy the directory the
+ * daemon's `workspace.TaskDir` derives from LEGION_WORKSPACE and that branch (`taskDir`), and its
+ * phase the task's, `held` for a held task, as the daemon's completion route reads a completion of
+ * one (`handoffPosition`). Otherwise the step is the issue's own: LEGION_WORKSPACE as it stands,
+ * `legion/<issue>` and the issue's phase. That is the answer for a record that serves no tasks — a
+ * daemon below contract 224, or an issue with no plan rows — and for an agent at no step of the
+ * record's tasks, whose completion the daemon then decides: of a plan of one task as before tasks,
+ * and of a plan of several as a completion of no phase of it (`HANDOFF_NOT_CURRENT_PHASE`).
+ *
+ * A step that waits for the join of its task's needs or for its agent is no running step: nothing
+ * of it was delivered (the daemon's `Issue.Running` holds delivered steps alone). So an agent with
+ * a step at work and a step that waits has one step here, the one at work, whichever task comes
+ * first in task id order. A stopped task is served with the agent of the act it stopped at and no
+ * wait, and that agent runs no step of it (the daemon's `Issue.StepOfAgent` reads running and held
+ * tasks alone). The daemon keeps at most one step at work for an agent, and the first in task id
+ * order is taken.
+ *
+ * A step of a task with no LEGION_WORKSPACE is refused, since no rule gives its working copy; the
+ * issue's own step keeps LEGION_WORKSPACE as it stands, and each read of that working copy refuses
+ * a missing one as it always has (`requiredWorkspace`).
+ */
+export function stepCopy(
+  env: NodeJS.ProcessEnv,
+  record: Pick<LegionIssue, "phase" | "tasks">,
+  agent: string
+): StepCopy {
+  const task = record.tasks?.find(
+    (task) =>
+      task.agent === agent &&
+      (task.state === "held" || (task.state === "running" && task.wait === undefined))
+  );
+  // biome-ignore lint/complexity/useLiteralKeys: claude-envoy's tsconfig refuses dot access
+  const issueWorkspace = env["LEGION_WORKSPACE"] ?? "";
+  if (task === undefined) {
+    const { bookmark } = issueBranch(env, FOR_STEP);
+    return { workspace: issueWorkspace, bookmark, phase: record.phase };
+  }
+  if (issueWorkspace === "") throw new Error(`LEGION_WORKSPACE is not set, so ${FOR_STEP}`);
+  const branch = task.branch ?? "";
+  return {
+    workspace: taskDir(issueWorkspace, branch),
+    bookmark: branch === "" ? issueBranch(env, FOR_STEP).bookmark : branch,
+    phase: task.state === "held" ? "held" : stepPhase(branch, task.phase),
+  };
+}
+
+/** The phase a served step stands in: a running task's `phase`, one of the phases this plugin
+ * knows. A phase the daemon serves that this plugin does not know is refused by name. */
+function stepPhase(branch: string, phase: string | undefined): LegionPhase {
+  const known = LEGION_PHASES.find((each) => each === phase);
+  if (known === undefined) {
+    throw new Error(
+      `the daemon serves the step on ${branch} at phase ${JSON.stringify(phase ?? "")}, which this plugin does not know, so ${FOR_STEP}`
+    );
+  }
+  return known;
+}
+
+/** The words of a task's slug's shape that no slug may be, each for the reason the daemon's
+ * `claim.notSlugs` gives: `lock` ends no git ref, `removing` is where a removed working copy is
+ * renamed to, and `join` names a join branch. */
+const NOT_SLUGS: readonly string[] = ["lock", "removing", "join"];
+
+/** Whether `part`, a task's branch after `legion/<issue>.`, is a slug or a later give of one, as
+ * the daemon's `claim.isTaskPart` reads it: a slug is a lower-case letter or digit, then at most
+ * 39 lower-case letters, digits and hyphens, and none of `NOT_SLUGS`; a later give is a slug, a
+ * dot and the give's number, 2 or more with no leading zero. */
+function isTaskPart(part: string): boolean {
+  const isSlug = (slug: string) =>
+    /^[a-z0-9][a-z0-9-]{0,39}$/.test(slug) && !NOT_SLUGS.includes(slug);
+  const later = /^([^.]+)\.([2-9]|[1-9][0-9]+)$/.exec(part);
+  return isSlug(part) || (later !== null && isSlug(later[1] ?? ""));
+}
+
+/** An owner and a repository name as GitHub serves them, as the daemon's `ghrepo.Parse` reads
+ * them. */
+const OWNER_NAME = /^[A-Za-z0-9][A-Za-z0-9_-]{0,38}$/;
+const REPOSITORY_NAME = /^[A-Za-z0-9._-]{1,100}$/;
+
+/**
+ * The directory of the working copy of the task whose branch is `branch`, by the rule of the
+ * daemon's `workspace.TaskDir`, which `packages/contracts/fixtures/daemon-api/task-dirs.json` holds
+ * this function to case by case: `issueWorkspace` itself for `""` and for the issue's own branch,
+ * and otherwise the directory beside it named for the branch without `legion/`, in lower case.
+ * `issueWorkspace` must be an issue's working copy as the daemon lays one out,
+ * `<state>/workspaces/<owner>/<repository>/<issue key in lower case>`, and `branch` a branch of
+ * that issue or of a task of it, so neither names a directory outside the issue's working copies.
+ */
+function taskDir(issueWorkspace: string, branch: string): string {
+  const repositoryDir = path.posix.dirname(issueWorkspace);
+  const ownerDir = path.posix.dirname(repositoryDir);
+  const workspacesDir = path.posix.dirname(ownerDir);
+  const owner = path.posix.basename(ownerDir);
+  const repository = path.posix.basename(repositoryDir);
+  const name = path.posix.basename(issueWorkspace);
+  const laidOut =
+    OWNER_NAME.test(owner) &&
+    REPOSITORY_NAME.test(repository) &&
+    repository !== "." &&
+    repository !== ".." &&
+    !repository.endsWith(".git") &&
+    name !== "." &&
+    name !== ".." &&
+    path.posix.join(
+      path.posix.dirname(workspacesDir),
+      "workspaces",
+      owner,
+      repository,
+      name.toLowerCase()
+    ) === issueWorkspace;
+  if (!laidOut) {
+    throw new Error(
+      `LEGION_WORKSPACE ${JSON.stringify(issueWorkspace)} is no issue's working copy as the daemon lays one out, <state>/workspaces/<owner>/<repository>/<issue key in lower case>, so ${FOR_STEP}`
+    );
+  }
+  if (branch === "") return issueWorkspace;
+  const [key = "", ...rest] = branch.startsWith("legion/")
+    ? branch.slice("legion/".length).split(".")
+    : [];
+  const part = rest.join(".");
+  if (!DISPATCH_KEY_PATTERN.test(key) || (rest.length > 0 && !isTaskPart(part))) {
+    throw new Error(
+      `the daemon serves this session's step on ${JSON.stringify(branch)}, which is no branch of an issue or of a task of one, so ${FOR_STEP}`
+    );
+  }
+  if (key.toLowerCase() !== name) {
+    throw new Error(
+      `the daemon serves this session's step on ${branch}, a branch of ${key}, and LEGION_WORKSPACE ${issueWorkspace} is the working copy of another issue, so ${FOR_STEP}`
+    );
+  }
+  return path.posix.join(repositoryDir, (rest.length > 0 ? `${key}.${part}` : key).toLowerCase());
+}
+
+/** The directory of `step`'s working copy, or an error naming what the caller cannot do without
+ * it (`purpose`, a clause after `so`): only the issue's own step has none, where LEGION_WORKSPACE
+ * is not set (`StepCopy.workspace`). */
+function requiredWorkspace(step: StepCopy, purpose: string): string {
+  if (step.workspace === "") throw new Error(`LEGION_WORKSPACE is not set, so ${purpose}`);
+  return step.workspace;
 }
 
 /** The revset of `<bookmark>@origin`: the branch head as the remote has it, which the
@@ -246,19 +415,20 @@ function recordHead(body: string): string | undefined {
   return typeof head === "string" && RECORD_HEAD.test(head) ? head : undefined;
 }
 
-/** The head of `legion/<issue>@origin`, as `ready_for_update` reports it: the commit the pane's
- * jj reads for the issue branch at the remote, and `""` when the branch is not on the remote at
- * all — a planner before its first push has none, which is no error. */
+/** The head of `step`'s branch at origin, as `ready_for_update` reports it: the commit the pane's
+ * jj reads for that branch at the remote, and `""` when the branch is not on the remote at all — a
+ * planner before its first push has none, which is no error. */
 export async function findPushedBranchHead(input: {
-  readonly env: NodeJS.ProcessEnv;
+  readonly step: StepCopy;
   readonly jj?: JjRunner;
 }): Promise<string> {
-  const { env } = input;
+  const { step } = input;
   const jj = input.jj ?? pathJj;
-  const purpose = "ready_for_update cannot find the branch head to report";
-  const workspace = requiredVariable(env, "LEGION_WORKSPACE", purpose);
-  const { bookmark } = issueBranch(env, purpose);
-  return jj(["log", "-r", pushedBranch(bookmark), "--no-graph", "-T", "commit_id"], workspace);
+  const workspace = requiredWorkspace(
+    step,
+    "ready_for_update cannot find the branch head to report"
+  );
+  return jj(["log", "-r", pushedBranch(step.bookmark), "--no-graph", "-T", "commit_id"], workspace);
 }
 
 /**
@@ -271,9 +441,11 @@ export async function findPushedBranchHead(input: {
  * merger each work one phase, which is the answer wherever the issue stands; the implementer
  * works implementing and retro, and has left retro once the issue stands past it in the
  * workflow's order (`phase.MovesBack(at, retro)`, which merging alone answers) and implementing
- * anywhere else; the architect leaves no phase, so its answer is the issue's.
+ * anywhere else; the architect leaves no phase, so its answer is the issue's; and a role of the
+ * deployment works `step` (`phase.LeftBy`), which ends with no handoff record, so its completion
+ * reports the commit the workspace stands on.
  */
-function completedPhase(role: LegionRole, at: LegionPhase): LegionPhase {
+function completedPhase(role: LegionStepRole, at: LegionPhase): LegionPhase {
   switch (role) {
     case "planner":
       return "planning";
@@ -288,25 +460,29 @@ function completedPhase(role: LegionRole, at: LegionPhase): LegionPhase {
       return at === "merging" ? "retro" : "implementing";
     case "architect":
       return at;
+    default:
+      return "step";
   }
 }
 
-/** The report of a completion that names no record: the commit the workspace stands on, `@-`. */
-async function standingReport(env: NodeJS.ProcessEnv, jj: JjRunner): Promise<HandoffReport> {
-  return { commit: await jj(STANDING, requiredVariable(env, "LEGION_WORKSPACE", FOR_HANDOFF)) };
+/** The report of a completion that names no record: the commit `step`'s working copy stands on,
+ * `@-`. */
+async function standingReport(step: StepCopy, jj: JjRunner): Promise<HandoffReport> {
+  return { commit: await jj(STANDING, requiredWorkspace(step, FOR_HANDOFF)) };
 }
 
-/** What a completion by `role` reports while the issue stands at `phase`: the report of the phase
- * the completion is of (`completedPhase`). */
+/** What a completion by `role` of its step reports: the report of the phase the completion is of
+ * (`completedPhase`), read in the step's working copy and on its branch. */
 export async function findHandoffReport(input: HandoffReportInput): Promise<HandoffReport> {
-  const { role, env } = input;
+  const { step, role, env } = input;
   const jj = input.jj ?? pathJj;
-  const of = completedPhase(role, input.phase);
+  const of = completedPhase(role, step.phase);
   const handoff = FILE_BACKED[of];
-  if (handoff === undefined || handoff.role !== role) return standingReport(env, jj);
-  // Whether the role works the issue's phase; a phase it left is the module doc's left-phase rule.
-  const works = of === input.phase;
-  const { issue, bookmark } = issueBranch(env, FOR_HANDOFF);
+  if (handoff === undefined || handoff.role !== role) return standingReport(step, jj);
+  // Whether the role works its step's phase; a phase it left is the module doc's left-phase rule.
+  const works = of === step.phase;
+  const { issue } = issueBranch(env, FOR_HANDOFF);
+  const { bookmark } = step;
   let record: LatestHandoffRecord;
   try {
     record = await input.latestHandoff(issue, handoff.word);
@@ -317,7 +493,7 @@ export async function findHandoffReport(input: HandoffReportInput): Promise<Hand
       error.code === "HANDOFF_NOT_FOUND"
     ) {
       // A left phase with no record sends `@-` alone (the module doc's left-phase rule).
-      if (!works) return standingReport(env, jj);
+      if (!works) return standingReport(step, jj);
       throw new Error(
         `${issue} has no ${handoff.word} handoff in Dispatch: write it with \`dispatch handoff-write --issue ${issue} --phase ${handoff.word} --body-file <file>\`, then complete again`
       );
@@ -334,23 +510,28 @@ export async function findHandoffReport(input: HandoffReportInput): Promise<Hand
   const head = recordHead(record.body);
   // A left phase's record goes as it stands, and an implementer's left record that names no
   // readable head goes as `@-` alone (the module doc's left-phase rule). Only the implementer's
-  // round, while the issue stands in implementing, runs the workspace checks.
+  // round, while its step stands in implementing, runs the workspace checks.
   if (role !== "implementer" || !works) {
     if (head !== undefined) return { commit: head, ...report };
     if (role !== "implementer") return report;
-    return standingReport(env, jj);
+    return standingReport(step, jj);
   }
 
-  // In implementing, the implementer's round is the commit its workspace stands on, `@-`:
-  // `legion/<issue>@origin` must carry that commit, at the branch's tip or behind it, and the
-  // record must name it. A record that names no readable head is refused before the workspace is
-  // read, since the record is what has to change.
+  // In implementing, the implementer's round is the commit its working copy stands on, `@-`: the
+  // step's branch at origin must carry that commit, at the branch's tip or behind it, and the
+  // record must name it. A record that names no readable head is refused before the working copy
+  // is read, since the record is what has to change. A refusal names the jj of the step's working
+  // copy: the issue's own by the variable the pane's shell holds, where a command run in it needs
+  // none, and a task's by its directory, which no variable names.
+  // biome-ignore lint/complexity/useLiteralKeys: claude-envoy's tsconfig refuses dot access
+  const own = step.workspace === (env["LEGION_WORKSPACE"] ?? "");
+  const at = own ? "" : ` -R ${JSON.stringify(step.workspace)}`;
   if (head === undefined) {
     throw new Error(
-      `the newest ${handoff.word} handoff of ${issue} (version ${record.version}) names no head: write the handoff again with \`head\` set to the 40-character lower-case commit you pushed as \`@-\`, as \`jj -R "$LEGION_WORKSPACE" log -r @- --no-graph -T commit_id\` prints it once the push succeeded (\`dispatch handoff-write --issue ${issue} --phase ${handoff.word} --body-file <file>\`), then complete again`
+      `the newest ${handoff.word} handoff of ${issue} (version ${record.version}) names no head: write the handoff again with \`head\` set to the 40-character lower-case commit you pushed as \`@-\`, as \`jj${own ? ' -R "$LEGION_WORKSPACE"' : at} log -r @- --no-graph -T commit_id\` prints it once the push succeeded (\`dispatch handoff-write --issue ${issue} --phase ${handoff.word} --body-file <file>\`), then complete again`
     );
   }
-  const workspace = requiredVariable(env, "LEGION_WORKSPACE", FOR_HANDOFF);
+  const workspace = requiredWorkspace(step, FOR_HANDOFF);
   const stands = await jj(STANDING, workspace);
   // The branch's tip at origin when `@-` is on it, and nothing when it is not. A round that forgot
   // its push and wrote its record against the branch's tip at origin is refused here, and told of
@@ -362,7 +543,7 @@ export async function findHandoffReport(input: HandoffReportInput): Promise<Hand
   );
   if (tip === "") {
     throw new Error(
-      `the commit this workspace stands on, ${stands}, is not on ${bookmark}@origin: push it with \`jj bookmark set ${bookmark} -r @- && jj git push --bookmark ${bookmark}\`; the handoff's \`head\` must name that pushed commit, and the newest ${handoff.word} handoff of ${issue} (version ${record.version}) names ${head}, so when that is another commit, write the handoff again with \`head\` set to ${stands} (\`dispatch handoff-write --issue ${issue} --phase ${handoff.word} --body-file <file>\`); then complete again`
+      `the commit this workspace stands on, ${stands}, is not on ${bookmark}@origin: push it with \`jj${at} bookmark set ${bookmark} -r @- && jj${at} git push --bookmark ${bookmark}\`; the handoff's \`head\` must name that pushed commit, and the newest ${handoff.word} handoff of ${issue} (version ${record.version}) names ${head}, so when that is another commit, write the handoff again with \`head\` set to ${stands} (\`dispatch handoff-write --issue ${issue} --phase ${handoff.word} --body-file <file>\`); then complete again`
     );
   }
   // `@-` is pushed, so the record must name it: any other head, on the branch or not, is not the

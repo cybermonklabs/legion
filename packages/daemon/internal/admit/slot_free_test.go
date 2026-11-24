@@ -28,11 +28,11 @@ func TestAReleasedSlotNoWaitingRootTakesWakesTheController(t *testing.T) {
 		pool := migratedPool(t)
 		admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(io.Discard, nil)))
 		registerController(t, pool)
-		seedSlotted(t, pool, "LEGION-ACTIVE", "A")
+		seedSlotted(t, pool, "LEGION-750", "A")
 
-		apply(t, pool, admission, "phase-done", intake.DispatchIssue{Key: "LEGION-ACTIVE", ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "in_progress", Title: "active", Rank: "A", HandedOver: handed}, engineStub{store: record.NewStore(), done: "LEGION-ACTIVE"})
+		apply(t, pool, admission, "phase-done", intake.DispatchIssue{Key: "LEGION-750", ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "in_progress", Title: "active", Rank: "A", HandedOver: handed}, engineStub{store: record.NewStore(), done: "LEGION-750"})
 		assertSlots(t, pool, nil)
-		assertControllerNotices(t, pool, slotFree("LEGION-ACTIVE"))
+		assertControllerNotices(t, pool, slotFree("LEGION-750"))
 	})
 	t.Run("two roots a human parked, in one fact", func(t *testing.T) {
 		pool := migratedPool(t)
@@ -53,11 +53,11 @@ func TestAReleasedSlotNoWaitingRootTakesWakesTheController(t *testing.T) {
 		pool := migratedPool(t)
 		admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(io.Discard, nil)))
 		registerController(t, pool)
-		seedSlotted(t, pool, "LEGION-ACTIVE", "A")
+		seedSlotted(t, pool, "LEGION-750", "A")
 
-		reconcileWithPosition(t, pool, admission, []dispatch.IssueSummary{{Key: "LEGION-ACTIVE", ResolvedRepo: "acme/widgets", Title: "LEGION-ACTIVE", Status: "icebox", Rank: "A", LastSeq: 2, HandedOver: true}}, 1, 1, true)
+		reconcileWithPosition(t, pool, admission, []dispatch.IssueSummary{{Key: "LEGION-750", ResolvedRepo: "acme/widgets", Title: "LEGION-750", Status: "icebox", Rank: "A", LastSeq: 2, HandedOver: true}}, 1, 1, true)
 		assertSlots(t, pool, nil)
-		assertControllerNotices(t, pool, slotFree("LEGION-ACTIVE"))
+		assertControllerNotices(t, pool, slotFree("LEGION-750"))
 	})
 }
 
@@ -67,10 +67,10 @@ func TestAReleasedSlotNoWaitingRootTakesWakesTheController(t *testing.T) {
 func TestAFreeSlotWakesTheControllerOnlyAtTheReleaseThatLeftItFree(t *testing.T) {
 	pool := migratedPool(t)
 	admission := newAdmission(t, 2, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	seedSlotted(t, pool, "LEGION-ACTIVE", "A")
+	seedSlotted(t, pool, "LEGION-750", "A")
 
-	apply(t, pool, admission, "rename", intake.DispatchIssue{Key: "LEGION-ACTIVE", ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "in_progress", Title: "renamed", Rank: "A", HandedOver: handed}, engineStub{})
-	assertSlots(t, pool, []record.Slot{{Issue: "LEGION-ACTIVE", Index: 0, AdmittedAt: fixedNow}})
+	apply(t, pool, admission, "rename", intake.DispatchIssue{Key: "LEGION-750", ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "in_progress", Title: "renamed", Rank: "A", HandedOver: handed}, engineStub{})
+	assertSlots(t, pool, []record.Slot{{Issue: "LEGION-750", Index: 0, AdmittedAt: fixedNow}})
 	assertControllerNotices(t, pool, nil)
 }
 

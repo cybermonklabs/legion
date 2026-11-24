@@ -148,8 +148,8 @@ func TestReleaseAppliesAHeldRunningStatusBeforeUnslottedRepair(t *testing.T) {
 	pool := migratedPool(t)
 	admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, Clock: func() time.Time { return fixedNow }}, nil)
-	seedWaiting(t, pool, "LEGION-HELD", "A")
-	waiting := issue(t, pool, "LEGION-HELD")
+	seedWaiting(t, pool, "LEGION-754", "A")
+	waiting := issue(t, pool, "LEGION-754")
 	waiting.LastDispatchSeq = 1
 	putIssue(t, pool, waiting)
 
@@ -188,9 +188,9 @@ func TestReleasingAnUnslottedRootDropsTheStatusWritesQueuedBeforeIt(t *testing.T
 	admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, Clock: func() time.Time { return fixedNow }}, nil)
 	seedSlotted(t, pool, "LEGION-RUN", "A")
-	seedWaiting(t, pool, "LEGION-CLEANUP", "B")
+	seedWaiting(t, pool, "LEGION-753", "B")
 	inTx(t, pool, func(tx pgx.Tx) {
-		row, err := record.NewOutboxRow("LEGION-CLEANUP", record.OrdinaryStatusWrite("todo", "backlog", ""), fixedNow)
+		row, err := record.NewOutboxRow("LEGION-753", record.OrdinaryStatusWrite("todo", "backlog", ""), fixedNow)
 		if err != nil {
 			t.Fatalf("build the queued status write: %v", err)
 		}
@@ -199,13 +199,13 @@ func TestReleasingAnUnslottedRootDropsTheStatusWritesQueuedBeforeIt(t *testing.T
 		}
 	})
 
-	apply(t, pool, admission, "taken", intake.DispatchIssue{Key: "LEGION-CLEANUP", ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "in_progress", Title: "LEGION-CLEANUP", Rank: "B", HandedOver: true}, engine)
+	apply(t, pool, admission, "taken", intake.DispatchIssue{Key: "LEGION-753", ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "in_progress", Title: "LEGION-753", Rank: "B", HandedOver: true}, engine)
 
-	if got := issue(t, pool, "LEGION-CLEANUP"); got.Phase != phase.Done || got.Status != "in_progress" {
-		t.Fatalf("LEGION-CLEANUP after the in_progress = %#v, want it out of the workflow", got)
+	if got := issue(t, pool, "LEGION-753"); got.Phase != phase.Done || got.Status != "in_progress" {
+		t.Fatalf("LEGION-753 after the in_progress = %#v, want it out of the workflow", got)
 	}
 	for _, effect := range effects(t, pool) {
-		if _, ok := effect.payload.(record.StatusWrite); ok && effect.issue == "LEGION-CLEANUP" {
+		if _, ok := effect.payload.(record.StatusWrite); ok && effect.issue == "LEGION-753" {
 			t.Fatalf("status write %#v still queued for the released root, want it dropped", effect.payload)
 		}
 	}

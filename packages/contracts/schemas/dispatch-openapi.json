@@ -23326,14 +23326,7 @@
       "IssueRoleHolder": {
         "properties": {
           "role": {
-            "enum": [
-              "architect",
-              "planner",
-              "implementer",
-              "tester",
-              "reviewer",
-              "merger"
-            ],
+            "pattern": "^[a-z][a-z0-9-]{0,31}$",
             "type": "string"
           },
           "session": {
@@ -23353,14 +23346,7 @@
             "type": "string"
           },
           "role": {
-            "enum": [
-              "architect",
-              "planner",
-              "implementer",
-              "tester",
-              "reviewer",
-              "merger"
-            ],
+            "pattern": "^[a-z][a-z0-9-]{0,31}$",
             "type": "string"
           },
           "session": {

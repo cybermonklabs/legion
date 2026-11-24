@@ -209,7 +209,7 @@ func TestAResumeTakesTheReleaseItSawWith20261111181500(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			inTx(t, store, func(tx pgx.Tx) error {
-				answered, err := records.ClosePodGoneResume(ctx, tx, tc.issue, claim.RoleImplementer)
+				answered, err := records.ClosePodGoneResume(ctx, tx, tc.issue, claim.Token("legion-legion-"+strings.ToLower(tc.issue)+"-implementer"), claim.RoleImplementer)
 				if err != nil {
 					t.Fatalf("the heal of %s: %v", tc.issue, err)
 				}

@@ -2655,8 +2655,9 @@ func TestTheControllersTerminalStatesNeverReachTheWorkflow(t *testing.T) {
 }
 
 // The answer supervise asks for before it sends a queued task: is the issue still in the phase
-// and run the task was queued for. The role is not what is compared — one role runs several
-// phases — and a task of no phase never reaches this answer at all, which is supervise's own rule.
+// and run the task was queued for. Away from the phase step the role is not what is compared — one
+// role runs several phases — and a task of no phase never reaches this answer at all, which is
+// supervise's own rule. The step is TestPhaseHoldsAnswersFromTheRoleOfTheRunningStep's.
 func TestPhaseHoldsAnswersFromTheIssuesCurrentPhase(t *testing.T) {
 	t.Parallel()
 	pool := isolatedOutboxPool(t)
@@ -2689,7 +2690,8 @@ func TestPhaseHoldsAnswersFromTheIssuesCurrentPhase(t *testing.T) {
 		{name: "an issue the workflow never recorded", issue: "LEGION-999", queuedFor: phase.Implementing, generation: 1, want: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := holds(context.Background(), tc.issue, tc.queuedFor, tc.generation)
+			got, err := holds(context.Background(), supervise.Claim{Issue: tc.issue, Role: claim.RoleImplementer},
+				supervise.Delivery{Phase: tc.queuedFor, Generation: tc.generation})
 			if err != nil {
 				t.Fatalf("phaseHolds: %v", err)
 			}
@@ -2703,7 +2705,8 @@ func TestPhaseHoldsAnswersFromTheIssuesCurrentPhase(t *testing.T) {
 		Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-208", Project: "LEGION", Title: "phase holds",
 		Phase: phase.Testing, Generation: 2, Status: "testing", Rank: "00000",
 	})
-	implementing, err := holds(context.Background(), "LEGION-208", phase.Implementing, 2)
+	implementing, err := holds(context.Background(), supervise.Claim{Issue: "LEGION-208", Role: claim.RoleImplementer},
+		supervise.Delivery{Phase: phase.Implementing, Generation: 2})
 	if err != nil {
 		t.Fatalf("phaseHolds after the phase moved: %v", err)
 	}
@@ -3031,12 +3034,16 @@ func TestAClosedTreeSetBackToTodoRelaunchesItsArchitect(t *testing.T) {
 	// takes its closed shape only afterwards.
 	putOutboxIssue(t, pool, records, root)
 	sup, runtime := newOutboxSupervisor(t, "legion", t.TempDir())
+	// The claims are stored as the daemon stores them, where the linger's close reads every stored
+	// claim of the tree (record.Store.IssueClaims) and the tree's cleanup waits for each to retire.
+	st := outboxTreeStore(t, pool, root.Key)
+	sup.deps.Store, sup.store = st, st
 	provisioned, removed := 0, 0
 	engine := workflow.New(records, workflow.Config{Project: "legion", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, quietLogger())
 	admission := admit.New(records, engine, 2, "legion", quietLogger())
 	runner := &outbox{
 		dispatchProject: "LEGION",
-		pool:            pool, records: records, supervisor: sup, trees: outboxTreeStore(t, pool, root.Key), tokens: outboxTokens{}, project: "legion", stateDir: t.TempDir(),
+		pool:            pool, records: records, supervisor: sup, trees: st, tokens: outboxTokens{}, project: "legion", stateDir: t.TempDir(),
 		githubAPI: newBranchGitHub(t, nil, branchExists).url,
 		dispatch:  &outboxDispatch{issue: dispatch.Issue{Key: root.Key, Status: "todo"}}, handlers: []intake.Handler{engine, admission},
 		now: func() time.Time { return time.Now().Add(time.Hour) }, log: quietLogger(),

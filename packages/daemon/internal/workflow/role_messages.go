@@ -4,7 +4,10 @@ import (
 	"context"
 	"slices"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
 // roleRecipient is one role a message is addressed to: issue, whose role it is - an architect's is
@@ -18,16 +21,21 @@ type roleRecipient struct {
 }
 
 // addressedRole is a recipient the daemon can name: the claim token whose role topic the message
-// is published to, and the issue its outbox row belongs to.
+// is published to, the role of the recipient that named it first, and the issue its outbox row
+// belongs to. The role is the recipient's and never read off the token, which names the claim's
+// agent: a keyed agent's token can end in another role's name.
 type addressedRole struct {
 	token claim.Token
+	role  claim.Role
 	issue string
 }
 
 // addressRoles is the one collection the daemon's role messages are addressed by (tellChecks,
-// tellGateMoved, mergeForward, mergeForwardLanded): the claim token of each recipient, in the
-// order given and each token once, so a role named twice - the implementer that also holds the
-// phase - is told once. A recipient with no role is a phase no worker holds, and is nobody.
+// tellGateMoved, mergeForward, mergeForwardLanded): the claim of the worker on each recipient's
+// role's step (record.WorkerClaim over the recipient issue's phases rows, read in tx), in the order
+// given and each token once, so a role named twice - the implementer that also holds the phase,
+// two roles one keyed agent works - is told once. A recipient with no role is a phase no worker
+// holds, and is nobody.
 //
 // unnamable is the policy for a recipient whose claim token cannot be built, and the one thing the
 // four senders choose of how the collection runs: nil ends the collection with that error, and so
@@ -36,7 +44,7 @@ type addressedRole struct {
 // pass nil, so a holder they cannot name rolls their fact back. tellGateMoved, whose message is
 // secondary to the record the transaction writes, passes a function that logs (logUnnamable),
 // since aborting would roll the gate's move back for a name the daemon could not spell.
-func (e *Engine) addressRoles(project string, recipients []roleRecipient, unnamable func(roleRecipient, error) error) ([]addressedRole, error) {
+func (e *Engine) addressRoles(ctx context.Context, tx pgx.Tx, project string, recipients []roleRecipient, unnamable func(roleRecipient, error) error) ([]addressedRole, error) {
 	projectToken, err := claim.ProjectToken(project)
 	if err != nil {
 		return nil, err
@@ -46,7 +54,12 @@ func (e *Engine) addressRoles(project string, recipients []roleRecipient, unnama
 		if recipient.role == "" {
 			continue
 		}
-		token, err := claim.NewToken(projectToken, recipient.issue, recipient.role)
+		// A failed read is the transaction's failure, never a holder the daemon could not name.
+		rows, err := e.store.Phases(ctx, tx, recipient.issue)
+		if err != nil {
+			return nil, err
+		}
+		token, err := record.WorkerClaim(projectToken, recipient.issue, recipient.role, rows)
 		if err != nil {
 			if unnamable == nil {
 				return nil, err
@@ -59,7 +72,7 @@ func (e *Engine) addressRoles(project string, recipients []roleRecipient, unnama
 		if slices.ContainsFunc(addressed, func(a addressedRole) bool { return a.token == token }) {
 			continue
 		}
-		addressed = append(addressed, addressedRole{token: token, issue: recipient.row})
+		addressed = append(addressed, addressedRole{token: token, role: recipient.role, issue: recipient.row})
 	}
 	return addressed, nil
 }

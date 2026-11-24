@@ -110,9 +110,10 @@ type Conn interface {
 	GetState(ctx context.Context) (ConnState, error)
 	// Shutdown asks the agent to end its own process — the graceful half of a stop.
 	Shutdown(ctx context.Context) error
-	// AdoptWorkingCopy makes the agent's side set the author of its working copy, for a
-	// workspace the daemon cannot reach itself.
-	AdoptWorkingCopy(ctx context.Context, id GitIdentity, timeout time.Duration) error
+	// AdoptWorkingCopy makes the agent's side set the author of the working copy of the task
+	// whose branch is branch ("" for the issue's own), for a workspace the daemon cannot reach
+	// itself.
+	AdoptWorkingCopy(ctx context.Context, id GitIdentity, branch string, timeout time.Duration) error
 	// Compact asks Oh My Pi to compact its session's context, writing the summary to
 	// customInstructions, and returns when it answers or bound runs out. Nil is a session
 	// compacted. A compaction Oh My Pi refused or skipped — a session too small, one already

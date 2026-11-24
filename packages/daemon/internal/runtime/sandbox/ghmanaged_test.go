@@ -33,7 +33,7 @@ func servingManagedUser(o *Options) {
 	served := servesOneOf(func() []ghrepo.Repository { return []ghrepo.Repository{ghrepo.MustParse("sjawhar/legion-smoke")} })
 	installed, left := appauth.NewInstalled(), appauth.NewLeftOut()
 	apps := sourceOf(refusingOwnerTokens{refuse: new(atomic.Bool)}, installedOnOwners{managedUser, "sjawhar"})
-	o.GitHubCredential = appauth.GitHubCredential(apps, served, ghrepo.Renames{}, installed, left, o.Log)
+	o.GitHubCredential = appauth.GitHubCredential(apps, served, ghrepo.Renames{}, installed, left, o.DeploymentApps, o.Log)
 	o.GitHubDirs = func(repo ghrepo.Repository, roles []appauth.AppRole) []string {
 		return appauth.GitHubDirs(served, ghrepo.Renames{}, installed, left, roles, repo)
 	}
@@ -66,7 +66,7 @@ func TestAManagedUsersIssueLaunchesWithItsOwnersDirectory(t *testing.T) {
 	if got := string(secret.Data[GitHubDefaultKey]); got != managedUser {
 		t.Errorf("the tester's Secret records the default %q, want %s", got, managedUser)
 	}
-	want := "ghs_" + string(appauth.AppRoleFor(claim.RoleTester)) + "_" + managedUser + "_write"
+	want := "ghs_" + string(appOf(t, claim.RoleTester)) + "_" + managedUser + "_write"
 	if token, err := ghconfig.TokenFromHosts(secret.Data[GitHubHostsKey(managedUser)]); err != nil || token != want {
 		t.Errorf("the tester's Secret holds %q (%v) for %s, want %q, that owner's own lease", token, err, managedUser, want)
 	}
@@ -105,7 +105,11 @@ func TestAManagedUsersGhKeysReadBackAsItsDirectoryAndItsPodHasNotDrifted(t *test
 	if projected, _ := ghProjectionOf(pod, claim.RoleTester); !slices.Contains(projected.dirs, managedUser) {
 		t.Errorf("the tester's projection reads as the directories %q, want %s among them", projected.dirs, managedUser)
 	}
-	if served := g.r.gitHubDirs(managedIssue, podAppRoles(podKindFor(claim.RoleTester))); !slices.Contains(served, managedUser) {
+	apps, err := podAppRoles(g.r, podKindFor(claim.RoleTester))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if served := g.r.gitHubDirs(managedIssue, apps); !slices.Contains(served, managedUser) {
 		t.Fatalf("the daemon serves %q, want %s among them: the drift check would compare nothing of that owner's", served, managedUser)
 	}
 	if named := ghDriftReasons(t, g, loc, claim.RoleTester); len(named) != 0 {

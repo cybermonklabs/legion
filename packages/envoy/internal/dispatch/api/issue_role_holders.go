@@ -13,7 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
-	"github.com/sjawhar/envoy/internal/legionagents"
+	"github.com/sjawhar/envoy/internal/legionclaim"
 )
 
 // An issue's role holders are the sessions that hold its Legion roles, one session for each role
@@ -57,24 +57,26 @@ import (
 // fact, and an event would feed the daemon's intake with facts that it caused. The write takes a
 // closed issue, because the tester's production check runs after the close.
 
-// issueRoleHolder is one pair of a publication: a Legion role and the session that holds it. Both
-// are required: the route refuses a pair that leaves either out.
+// issueRoleHolder is one pair of a publication: a role of the issue and the session that holds it.
+// Both are required: the route refuses a pair that leaves either out. The role is one of Legion's
+// six or a role the deployment defines, a name of the role grammar but the controller's
+// (legionclaim.IsRole), so the shape spells the grammar and lists no roles.
 type issueRoleHolder struct {
-	Role    string `json:"role" required:"true" enum:"architect,planner,implementer,tester,reviewer,merger"`
+	Role    string `json:"role" required:"true" pattern:"^[a-z][a-z0-9-]{0,31}$"`
 	Session string `json:"session" required:"true"`
 }
 
 // issueRoleHolderRecord is one stored pair, with the time Dispatch first stored it. A publication
 // that names the same pair again keeps that time.
 type issueRoleHolderRecord struct {
-	Role       string    `json:"role" enum:"architect,planner,implementer,tester,reviewer,merger"`
+	Role       string    `json:"role" pattern:"^[a-z][a-z0-9-]{0,31}$"`
 	Session    string    `json:"session"`
 	RecordedAt time.Time `json:"recorded_at"`
 }
 
-// issueRoleHolders is the stored set both routes answer: the issue and its holders in the order of
-// legionagents.Roles, which is the order the workflow reaches the roles. An issue where no session
-// holds a role answers [].
+// issueRoleHolders is the stored set both routes answer: the issue and its holders, Legion's six in
+// the order of legionclaim.Roles, which is the order the workflow reaches them, then every role the
+// deployment defines by name. An issue where no session holds a role answers [].
 type issueRoleHolders struct {
 	Issue   string                  `json:"issue"`
 	Holders []issueRoleHolderRecord `json:"holders"`
@@ -113,21 +115,21 @@ func heldRole(ctx context.Context, q queryer, issueKey, session string) (string,
 	return role, err
 }
 
-// issueRoleHoldersStatement reads an issue and its stored set, $1 the issue's key and $2 the roles
-// in workflow order, which is the order the set is answered in. The left join answers one row with
-// no holder for an issue where no session holds a role, and no row for a key that no issue
-// carries, so one statement says both.
+// issueRoleHoldersStatement reads an issue and its stored set, $1 the issue's key and $2 Legion's
+// roles in workflow order, which is the order the set is answered in, every other role after them
+// by name. The left join answers one row with no holder for an issue where no session holds a
+// role, and no row for a key that no issue carries, so one statement says both.
 const issueRoleHoldersStatement = `
 	select i.key, h.role, h.session, h.recorded_at
 	from issues i
 	left join issue_role_holders h on h.issue_key = i.key
 	where i.key = $1
-	order by array_position($2::text[], h.role)
+	order by array_position($2::text[], h.role) nulls last, h.role
 `
 
 // readIssueRoleHolders answers the stored set of issueKey, and false when no issue carries the key.
 func readIssueRoleHolders(ctx context.Context, q queryer, issueKey string) (issueRoleHolders, bool, error) {
-	rows, err := q.Query(ctx, issueRoleHoldersStatement, issueKey, legionagents.Roles)
+	rows, err := q.Query(ctx, issueRoleHoldersStatement, issueKey, legionclaim.Roles)
 	if err != nil {
 		return issueRoleHolders{}, false, err
 	}
@@ -165,14 +167,15 @@ func writeRoleHoldersIssueNotFound(w http.ResponseWriter, key string) {
 // at most 2704 bytes, so no body reaches the index with a session it cannot hold.
 const maxRoleHolderSessionBytes = 256
 
-// putIssueRoleHolders publishes the session of each Legion role of an issue. The daemon sends the
-// issue's whole set, so the transaction deletes each stored pair that the body does not name, then
-// inserts the pairs that are not stored yet. A pair that changed is deleted before the insert, so
-// the insert meets neither key of the table, and a pair that did not change keeps its recorded_at.
-// The body is checked whole before the transaction opens: each role is one of the six, once, and
-// each session is a session id (text.IsSessionID) of at most maxRoleHolderSessionBytes, once. A
-// body that fails is 400 INVALID_ROLE_HOLDER and stores nothing, so no body gives a 500 from a
-// check or an index of the table. Six distinct roles bound the set at six holders.
+// putIssueRoleHolders publishes the session of each role of an issue. The daemon sends the issue's
+// whole set, so the transaction deletes each stored pair that the body does not name, then inserts
+// the pairs that are not stored yet. A pair that changed is deleted before the insert, so the insert
+// meets neither key of the table, and a pair that did not change keeps its recorded_at. The body is
+// checked whole before the transaction opens: each role is a role of an issue
+// (legionclaim.IsRole: one of Legion's six or a role the deployment defines), once, and each
+// session is a session id (text.IsSessionID) of at most maxRoleHolderSessionBytes, once. A body
+// that fails is 400 INVALID_ROLE_HOLDER and stores nothing, so no body gives a 500 from a check or
+// an index of the table, whose check takes the same roles.
 func (s *server) putIssueRoleHolders(w http.ResponseWriter, r *http.Request) {
 	var input issueRoleHoldersInput
 	if err := decodeJSON(r, &input); err != nil {
@@ -200,9 +203,10 @@ func (s *server) putIssueRoleHolders(w http.ResponseWriter, r *http.Request) {
 	roles := make([]string, len(holders))
 	sessions := make([]string, len(holders))
 	for index, holder := range holders {
-		if !slices.Contains(legionagents.Roles, holder.Role) {
+		if !legionclaim.IsRole(holder.Role) {
 			writeError(w, "INVALID_ROLE_HOLDER", http.StatusBadRequest, fmt.Sprintf(
-				"%s is not a Legion role. A role is architect, planner, implementer, tester, reviewer or merger.", holder.Role))
+				"%s is no role of an issue. A role is a name of %s other than controller: one of %s, or a role the deployment defines.",
+				holder.Role, legionclaim.RolePattern, strings.Join(legionclaim.Roles, ", ")))
 			return
 		}
 		if slices.Contains(roles[:index], holder.Role) {

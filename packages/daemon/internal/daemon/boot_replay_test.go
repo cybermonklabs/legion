@@ -198,14 +198,14 @@ func TestAReplayOfHundredsOfUnappliedFactsBesideLiveFailuresOutlastsItsBudget(t 
 	for _, c := range replayed {
 		var fact intake.Fact = intake.ClaimReady{Issue: c.Issue, Role: c.Role, Launch: c.Generation}
 		if c.State == supervise.StateFailed {
-			fact = intake.ClaimFailed{Issue: c.Issue, Role: c.Role, Reason: c.Failure, Cause: c.FailureCause, Budgets: c.Budgets, Limits: replayLimits}
+			fact = intake.ClaimFailed{Issue: c.Issue, Role: c.Role, Claim: c.Token, Reason: c.Failure, Cause: c.FailureCause, Budgets: c.Budgets, Limits: replayLimits}
 		}
 		if got := handler.applied(fact); got != 1 {
 			t.Fatalf("replayed %#v was applied %d times, want once", fact, got)
 		}
 	}
 	for _, c := range failing {
-		fact := intake.ClaimFailed{Issue: c.Issue, Role: c.Role, Reason: c.Failure, Cause: c.FailureCause, Budgets: c.Budgets, Limits: replayLimits}
+		fact := intake.ClaimFailed{Issue: c.Issue, Role: c.Role, Claim: c.Token, Reason: c.Failure, Cause: c.FailureCause, Budgets: c.Budgets, Limits: replayLimits}
 		if handler.applied(fact) != 1 {
 			t.Fatalf("live %#v was applied %d times, want once", fact, handler.applied(fact))
 		}

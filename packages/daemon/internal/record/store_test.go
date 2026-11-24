@@ -83,11 +83,13 @@ func issueFixture(key string) Issue {
 	}
 }
 
-// written is got with the movement taken off, after holding it to what PutIssue promises of that
-// column: moved_at is not null and no write of the record names it (PutIssue's own carve-out,
-// which keeps a stale copy from writing a movement away), so a row read back always carries the
-// moment it was written, which no fixture can name. Every comparison below is of the fields
-// PutIssue writes, so the movement is checked here, once, and left out of them.
+// written is got with the movement and the running steps taken off, after holding it to what
+// PutIssue promises of that column: moved_at is not null and no write of the record names it
+// (PutIssue's own carve-out, which keeps a stale copy from writing a movement away), so a row read
+// back always carries the moment it was written, which no fixture can name. The running steps are
+// read from the plan rows and PutIssue writes nothing of them (Issue.Running; each read of them
+// is held by TestAnIssueReadsEachOfItsRunningSteps). Every comparison below is of the fields
+// PutIssue writes, so the movement is checked here, once, and both are left out of them.
 func written(t *testing.T, got *Issue) *Issue {
 	t.Helper()
 	if got == nil {
@@ -98,6 +100,7 @@ func written(t *testing.T, got *Issue) *Issue {
 	}
 	bare := *got
 	bare.MovedAt = time.Time{}
+	bare.Running = nil
 	return &bare
 }
 
@@ -426,7 +429,7 @@ func TestStoreRoundTripsEveryRecord(t *testing.T) {
 		if !reflect.DeepEqual(phases, []PhaseRow{phase}) {
 			t.Fatalf("phases = %#v, want %#v", phases, []PhaseRow{phase})
 		}
-		gotPR, err := records.PullRequest(ctx, tx, issue.Key)
+		gotPR, err := records.MergePullRequest(ctx, tx, issue.Key)
 		must(t, err)
 		if !samePullRequest(*gotPR, pr) {
 			t.Fatalf("pull request = %#v, want %#v", gotPR, pr)
@@ -495,7 +498,7 @@ func TestARowFromBeforeRepeatsReadsAsMovesNotPushed(t *testing.T) {
 		must(t, err)
 	})
 	inTx(t, st, func(tx pgx.Tx) {
-		got, err := records.PullRequest(ctx, tx, issue.Key)
+		got, err := records.MergePullRequest(ctx, tx, issue.Key)
 		must(t, err)
 		if want := []Move{{Before: "9f", SHA: "a0"}, {Before: "a0", SHA: "b1"}}; !reflect.DeepEqual(got.Moves, want) {
 			t.Fatalf("moves = %#v, want %#v", got.Moves, want)
@@ -535,7 +538,7 @@ func TestAPullRequestKeepsASkippedRunAndItsWordThroughTheStore(t *testing.T) {
 		must(t, records.PutPullRequest(ctx, tx, pr))
 	})
 	inTx(t, st, func(tx pgx.Tx) {
-		got, err := records.PullRequest(ctx, tx, issue.Key)
+		got, err := records.MergePullRequest(ctx, tx, issue.Key)
 		must(t, err)
 		if got == nil || !samePullRequest(*got, pr) {
 			t.Fatalf("pull request = %#v, want %#v: the skipped run and each word read back whole", got, pr)
@@ -550,7 +553,7 @@ func TestAPullRequestKeepsASkippedRunAndItsWordThroughTheStore(t *testing.T) {
 		must(t, err)
 	})
 	inTx(t, st, func(tx pgx.Tx) {
-		got, err := records.PullRequest(ctx, tx, issue.Key)
+		got, err := records.MergePullRequest(ctx, tx, issue.Key)
 		must(t, err)
 		want := pr
 		want.CheckRuns = []AttemptRun{{Name: "docs", ID: 117, Head: "b1", Conclusion: RunSucceeded}, {Name: "lint", ID: 110, Head: "b1", Conclusion: RunSucceeded}}
@@ -979,7 +982,7 @@ func TestClearGenerationResetsAnOpenPullRequestsCheckSettlement(t *testing.T) {
 		must(t, records.ClearGeneration(ctx, tx, issue.Key, time.Now().UTC()))
 	})
 	inTx(t, st, func(tx pgx.Tx) {
-		got, err := records.PullRequest(ctx, tx, issue.Key)
+		got, err := records.MergePullRequest(ctx, tx, issue.Key)
 		must(t, err)
 		if got == nil {
 			t.Fatal("the open pull request is gone, want it kept")
@@ -2342,9 +2345,9 @@ func TestRecordMigrationCreatesTheRequiredColumns(t *testing.T) {
 			"moved_at", "tree_stalled_told_at", "released_for_wait_at"},
 		"phases":            {"issue", "role", "claim", "handoff_commit", "pass", "rounds", "conflict_rounds", "backward_moves", "cap_told", "verdict", "summary", "last_handoff", "decision", "completed_at", "merge_note", "entry", "entry_task", "entry_verbatim", "entry_raised_at", "entry_moved_back", "handoff_record", "handoff_version", "reviewed_head", "step_task", "step_place"},
 		"pull_requests":     {"issue", "repo", "number", "branch", "base", "base_moved", "head_sha", "head_updated_at", "failing", "cancelled", "fix_attempts", "blocked_attempts", "check_runs", "generation", "snapshot", "statuses", "pushes", "head_moves", "head_counted", "head_run", "planned_red", "review_seen", "review_seen_at", "state", "checked_head", "required", "required_workflows", "required_workflows_head", "mergeability", "merge_state", "state_read_at", "conflicting_head", "merge_sha", "conflict_read", "merge_forward"},
-		"issue_plans":       {"issue", "generation", "version", "source", "artifact_id", "given_by", "given_at"},
-		"plan_tasks":        {"issue", "generation", "task", "plan_version", "block_text", "needs", "part_of", "owner_role", "merges", "steps_by_default", "state", "stopped_reason", "running_kind", "position", "pass", "rounds", "conflict_rounds", "backward_moves", "cap_told"},
-		"plan_steps":        {"issue", "generation", "task", "position", "role", "type", "agent_key"},
+		"issue_plans":       {"issue", "generation", "version", "source", "artifact_id", "given_by", "given_at", "added"},
+		"plan_tasks":        {"issue", "generation", "task", "plan_version", "block_text", "needs", "part_of", "owner_role", "merges", "steps_by_default", "state", "stopped_reason", "running_kind", "position", "pass", "rounds", "conflict_rounds", "backward_moves", "cap_told", "branch", "join_conflicts", "hold_reason", "step_wait", "step_wait_since", "start_reason", "join_unmerged"},
+		"plan_steps":        {"issue", "generation", "task", "position", "role", "type", "agent_key", "agent"},
 		"production_checks": {"issue", "project", "tree", "repo", "pr_number", "merge_sha", "opened_at", "bound_at", "role", "looks", "look_open", "look_wake_at", "last_wake_kind", "last_wake_detail", "last_wake_at", "wake_at", "last", "closed_at", "outcome"},
 		"design_gates":      {"issue", "step", "artifact_id", "latest_version", "approved_version", "approved_seq", "approved_at", "told_changes_version", "told_changes_reason", "told_changes_seq", "told_changes_at", "ever_opened"},
 		"root_asks":         {"issue", "ask", "kind", "artifact", "open", "seq", "waiting_on", "waiting_on_seq", "closed_by", "closed_seq", "by_tree", "person_seq", "person_answer_seq", "declined", "declined_note", "declined_words"},
@@ -2421,7 +2424,7 @@ func TestReviewOrderMigrationCarriesTheReviewersMarkToThePullRequest(t *testing.
 	must(t, err)
 	records := NewStore()
 	inTx(t, st, func(tx pgx.Tx) {
-		pr, err := records.PullRequest(ctx, tx, "LEGION-208")
+		pr, err := records.MergePullRequest(ctx, tx, "LEGION-208")
 		must(t, err)
 		if pr == nil || pr.ReviewSeen.ID != 12 || !pr.ReviewSeen.SubmittedAt.IsZero() {
 			t.Fatalf("pull request after 0019 = %+v, want the reviewer's mark 12 with no submission time", pr)
@@ -2489,12 +2492,12 @@ func TestCheckedHeadMigrationKeepsARecordedVerdictStandingForItsHead(t *testing.
 	_, err = st.Migrate(ctx)
 	must(t, err)
 	inTx(t, st, func(tx pgx.Tx) {
-		pr, err := NewStore().PullRequest(ctx, tx, "LEGION-208")
+		pr, err := NewStore().MergePullRequest(ctx, tx, "LEGION-208")
 		must(t, err)
 		if pr == nil || pr.CheckedHead != "head" || len(pr.CheckRuns) != 1 {
 			t.Fatalf("pull request after 0028 = %+v, want checked head \"head\" with its settlement", pr)
 		}
-		unsettled, err := NewStore().PullRequest(ctx, tx, "LEGION-209")
+		unsettled, err := NewStore().MergePullRequest(ctx, tx, "LEGION-209")
 		must(t, err)
 		if unsettled == nil || unsettled.CheckedHead != "" {
 			t.Fatalf("never-settled pull request after 0028 = %+v, want no checked head", unsettled)

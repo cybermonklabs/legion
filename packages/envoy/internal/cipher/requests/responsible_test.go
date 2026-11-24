@@ -25,8 +25,9 @@ const (
 	// package's own (approvers_test.go, withheld_test.go).
 	alice = "alice@example.com"
 	dave  = "dave@example.com"
-	// legionPlanner is the role claim token the Legion daemon's launcher states for the planner of
-	// issue ACME-1 (packages/daemon/internal/claim.NewToken), which B4's enrollments.claim keeps.
+	// legionPlanner is the claim token the Legion daemon's launcher states for the planner agent
+	// of issue ACME-1 (packages/daemon/internal/claim.AgentToken), which B4's enrollments.claim
+	// keeps.
 	legionPlanner = "legion-acme-acme-1-planner"
 )
 
@@ -267,18 +268,25 @@ func TestTheFirstResponsiblePersonWins(t *testing.T) {
 	requireListedFor(t, m, *req.RecordID, alice, []string{alice, carol, bob}, alice)
 }
 
-// TestIssueKeyOfClaim reads a Dispatch issue key out of a Legion role claim token and nothing
-// else: the controller's token and a token that ends in no role name no issue.
+// TestIssueKeyOfClaim reads a Dispatch issue key out of a Legion claim token of an issue and
+// nothing else. The token ends in its agent's name, the role of the agent's first step, which is
+// one of Legion's six or a role the deployment defines (`checker`, `code-checker`, `janitor`), so
+// any name of the role grammar names the issue. The controller's token, a token with no name
+// after its number, the name `controller` after an issue's number, and a token whose issue part
+// is not one name no issue.
 func TestIssueKeyOfClaim(t *testing.T) {
 	for claim, want := range map[string]string{
-		"legion-acme-acme-12-planner":    "ACME-12",
-		"legion-widget-widget-12-merger": "WIDGET-12",
-		"legion-acme-acme7-3-architect":  "ACME7-3",
-		"legion-acme-controller":         "",
-		"legion-acme-acme-12":            "",
-		"legion-acme-acme-12-janitor":    "",
-		"legion-acme-12-planner":         "",
-		"":                               "",
+		"legion-acme-acme-12-planner":      "ACME-12",
+		"legion-widget-widget-12-merger":   "WIDGET-12",
+		"legion-acme-acme7-3-architect":    "ACME7-3",
+		"legion-acme-acme-12-checker":      "ACME-12",
+		"legion-acme-acme-12-code-checker": "ACME-12",
+		"legion-acme-acme-12-janitor":      "ACME-12",
+		"legion-acme-controller":           "",
+		"legion-acme-acme-12-controller":   "",
+		"legion-acme-acme-12":              "",
+		"legion-acme-12-planner":           "",
+		"":                                 "",
 	} {
 		if got := issueKeyOfClaim(claim); got != want {
 			t.Errorf("issueKeyOfClaim(%q) = %q; want %q", claim, got, want)

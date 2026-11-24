@@ -1,4 +1,4 @@
-import { isLegionRole, LEGION_ROLES, type LegionRole } from "@legion/contracts";
+import { isLegionRole, isStepRole, LEGION_ROLES, type LegionStepRole } from "@legion/contracts";
 import { useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 
@@ -23,12 +23,14 @@ import { AgentName } from "../refs/AgentName";
 import { Timestamp } from "../refs/Timestamp";
 
 /** The tab's three sections, in the order the reader meets them. Each holds the server's own
- *  order, which the contract states: the registry's agents first, by role in workflow order and
- *  then newest first, then the rest newest first, and people newest first. */
+ *  order, which the contract states: the registry's agents first, by role (the six in workflow
+ *  order, then every role the deployment defines, by name) and then newest first, then the rest
+ *  newest first, and people newest first. */
 export interface CollaboratorSections {
-  /** Legion agents by role in workflow order (`LEGION_ROLES`), each role's newest first. */
+  /** Legion agents by role: the six in workflow order (`LEGION_ROLES`), then each role the
+   *  deployment defines by name, each role's newest first. */
   readonly legion: readonly {
-    readonly role: LegionRole;
+    readonly role: LegionStepRole;
     readonly agents: readonly IssueCollaboratorLegionAgent[];
   }[];
   /** Every other agent session, the most recently active first. */
@@ -38,25 +40,30 @@ export interface CollaboratorSections {
 }
 
 export function collaboratorSections(collaborators: IssueCollaborators): CollaboratorSections {
-  /** Whether this row is held by a role this build knows, which is what puts it in a Legion
-   *  section: a row with no Legion record, and one naming a role `LEGION_ROLES` does not hold,
-   *  both belong to `others`. */
+  /** Whether this row is held by a role of an issue, which is what puts it in a Legion section:
+   *  one of the six or a role the deployment defines (`isStepRole`). A row with no Legion record,
+   *  and one naming a role outside that grammar, both belong to `others`. */
   const known = (agent: IssueCollaboratorAgent): agent is IssueCollaboratorLegionAgent =>
-    agent.legion !== null && isLegionRole(agent.legion.role);
+    agent.legion !== null && isStepRole(agent.legion.role);
   // The document types every list as nullable, though this handler always sends `[]`.
   const agents = collaborators.agents ?? [];
   const legion = agents.filter(known);
+  // Each role the deployment defines that the list holds, by name, the order the server lists
+  // them in after the six.
+  const deploymentRoles = [
+    ...new Set(legion.map((agent) => agent.legion.role).filter((role) => !isLegionRole(role))),
+  ].sort();
   return {
     // A section is the role's slice of the server's list, in the order it sent them: the server
     // ordered the registry's agents by role and then newest first, so a filter is the whole of
-    // this. `LEGION_ROLES` decides which sections there are and where each one sits, which is
-    // the same workflow order; a role nobody worked has no section.
-    legion: LEGION_ROLES.flatMap((role) => {
+    // this. The roles decide which sections there are and where each one sits, which is the same
+    // order; a role nobody worked has no section.
+    legion: [...LEGION_ROLES, ...deploymentRoles].flatMap((role) => {
       const roleAgents = legion.filter((agent) => agent.legion.role === role);
       return roleAgents.length === 0 ? [] : [{ agents: roleAgents, role }];
     }),
-    // Every session no Legion section holds, so a registry entry naming a role this build does
-    // not know is listed rather than dropped from the page. The server's order again.
+    // Every session no Legion section holds, so a registry entry naming a role outside the grammar
+    // is listed rather than dropped from the page. The server's order again.
     others: agents.filter((agent) => !known(agent)),
     people: collaborators.people ?? [],
   };

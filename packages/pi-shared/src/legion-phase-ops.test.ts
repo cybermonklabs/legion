@@ -10,7 +10,7 @@ import { z } from "zod";
 import { PlanRatingCases } from "../../contracts/src/plan-rating-cases";
 import { stateAtPhase } from "../test/daemon-state";
 import { createLegionDaemonClient } from "./daemon-client";
-import type { HandoffReport } from "./handoff-record";
+import { findHandoffReport, type HandoffReport, type StepCopy } from "./handoff-record";
 import {
   type ClaimCapability,
   executePhaseOp,
@@ -52,6 +52,13 @@ const REPORT = {
 
 /** This build's own package, as a host passes it in (`PhaseOpRuntime.build`). */
 const BUILD = { name: "@sjawhar/pi-legion", version: "18.14.1", pluginContract: CONTRACT } as const;
+
+/** The pane's environment, as a host passes it in (`PhaseOpRuntime.env`): LEGION-208's own working
+ * copy, laid out as the daemon lays one out, and its key. */
+const PANE_ENV = {
+  LEGION_WORKSPACE: "/state/workspaces/acme/widgets/legion-208",
+  LEGION_ISSUE: "LEGION-208",
+};
 
 /** `/legion/v1/issues/<key>/record`, and the key it names. */
 const RECORD_ROUTE = /^\/legion\/v1\/issues\/([^/]+)\/record$/;
@@ -130,8 +137,9 @@ function runtime(
     }),
     claim,
     build: BUILD,
-    handoffReport: async (phase, role) => {
-      lookups.push(`${phase} ${role}`);
+    env: PANE_ENV,
+    handoffReport: async (step, role) => {
+      lookups.push(`${step.phase} ${role}`);
       return report;
     },
     branchHead: async () => {
@@ -156,6 +164,7 @@ test("the phase ops' fields, as a host declares them, are every field of every o
       return_to: { type: "integer", minimum: 1 },
       to: { enum: [...LEGION_PHASE_BACKWARD_TARGETS] },
       reason: { type: "string" },
+      task: { type: "string" },
       round: { type: "string" },
     },
     required: ["op"],
@@ -580,6 +589,278 @@ test("the description tells the tester its fail may name the step its task retur
   }
 });
 
+/** The claim of a role of the deployment, `checker`, on LEGION-208 (contract 221). */
+const checker: ClaimCapability = {
+  ...implementer,
+  role: "checker",
+  claimToken: "legion-legion-legion-208-checker",
+};
+
+// Contract 221: a role of the deployment ends its step with its verdict and the commit its
+// workspace stands on, `@-`; it writes no handoff record, so none is looked up in Dispatch.
+test("a deployment role's completion sends its verdict and the commit it stands on, and no handoff record", async () => {
+  const standing = "c".repeat(40);
+  const looked: string[] = [];
+  const { ops, routes, posted } = runtime(checker, stateAtPhase("step"));
+  const pane: PhaseOpRuntime = {
+    ...ops,
+    handoffReport: (step, role) =>
+      findHandoffReport({
+        step,
+        role,
+        env: PANE_ENV,
+        jj: async () => standing,
+        latestHandoff: async (issue, word) => {
+          looked.push(`${issue} ${word}`);
+          throw new Error("a deployment role's step writes no handoff record");
+        },
+      }),
+  };
+  await expect(
+    executePhaseOp(pane, { op: "handoff_complete", summary: "Checked.", verdict: "pass" })
+  ).resolves.toEqual(daemonFixture("handoff-complete.json"));
+  expect(looked).toEqual([]);
+  expect(routes).toEqual([
+    "/legion/v1/issues/LEGION-208/record",
+    "/legion/v1/grants",
+    "/legion/v1/handoff/complete",
+  ]);
+  expect(posted.at(-1)).toEqual({
+    grantId: "grant-for-one-command",
+    summary: "Checked.",
+    verdict: "pass",
+    commit: standing,
+  });
+});
+
+// The daemon's record of LEGION-208 serves its tasks: b's review step is at work under the agent
+// `reviewer` while the issue stands in implementing, the phase of its first running task. A
+// completion by the session whose claim token ends in that agent is of b's step.
+test("handoff_complete reports the step its claim's agent runs, as the issue's record serves it", async () => {
+  const reviewer: ClaimCapability = {
+    ...implementer,
+    sessionID: "ses_reviewer",
+    role: "reviewer",
+    claimToken: "legion-legion-legion-208-reviewer",
+  };
+  const { ops, posted } = runtime(reviewer);
+  const steps: StepCopy[] = [];
+  await expect(
+    executePhaseOp(
+      {
+        ...ops,
+        handoffReport: async (step) => {
+          steps.push(step);
+          return REPORT;
+        },
+      },
+      { op: "handoff_complete", summary: "Approved." }
+    )
+  ).resolves.toEqual(daemonFixture("handoff-complete.json"));
+  expect(steps).toEqual([
+    {
+      workspace: "/state/workspaces/acme/widgets/legion-208.b",
+      bookmark: "legion/LEGION-208.b",
+      phase: "reviewing",
+    },
+  ]);
+  expect(posted.at(-1)).toMatchObject({ summary: "Approved.", ...REPORT });
+});
+
+// Agent k has a step that waits, task c's, and one at work, task d's; its update signal reports
+// the head of d's branch.
+test("ready_for_update reports the head of the branch of the step its claim's agent runs", async () => {
+  const k: ClaimCapability = { ...implementer, claimToken: "legion-legion-legion-208-k" };
+  const state = daemonFixture("state.json");
+  const posted: { route: string; body: unknown }[] = [];
+  const stub = (async (input, init) => {
+    const route = new URL(input.toString()).pathname;
+    posted.push({
+      route,
+      body: typeof init?.body === "string" ? JSON.parse(init.body) : undefined,
+    });
+    const named = RECORD_ROUTE.exec(route);
+    if (named !== null) return recordAnswer(decodeURIComponent(named[1] ?? ""), state);
+    return new Response(null, { status: 204 });
+  }) as typeof fetch;
+  const head = "4e8b1a359f1c0a7d4b2e6f8a3c5d1e7b9a0f2c4d";
+  const steps: StepCopy[] = [];
+  await expect(
+    executePhaseOp(
+      {
+        daemon: createLegionDaemonClient("http://daemon.test", {
+          pluginContract: CONTRACT,
+          fetch: stub,
+        }),
+        claim: k,
+        build: BUILD,
+        env: PANE_ENV,
+        handoffReport: async () => {
+          throw new Error("no handoff report expected");
+        },
+        branchHead: async (step) => {
+          steps.push(step);
+          return head;
+        },
+      },
+      { op: "ready_for_update", round: "plugin:45" }
+    )
+  ).resolves.toEqual({});
+  expect(steps).toEqual([
+    {
+      workspace: "/state/workspaces/acme/widgets/legion-208.d",
+      bookmark: "legion/LEGION-208.d",
+      phase: "implementing",
+    },
+  ]);
+  expect(posted.at(-1)).toEqual({
+    route: "/legion/v1/claims/ready-for-update",
+    body: {
+      claimToken: "legion-legion-legion-208-k",
+      sessionId: "ses_implementer",
+      secret: "U2VjcmV0",
+      generation: 5,
+      round: "plugin:45",
+      head,
+    },
+  });
+});
+
+test("ready_for_update signals without a head when the daemon does not answer the issue's record, and says so", async () => {
+  const posted: string[] = [];
+  const stub = (async (input) => {
+    const route = new URL(input.toString()).pathname;
+    posted.push(route);
+    if (RECORD_ROUTE.test(route)) {
+      return Response.json(
+        { code: "RECORD_UNAVAILABLE", error: "could not read the issue record" },
+        { status: 500 }
+      );
+    }
+    return new Response(null, { status: 204 });
+  }) as typeof fetch;
+  const answer = (await executePhaseOp(
+    {
+      daemon: createLegionDaemonClient("http://daemon.test", {
+        pluginContract: CONTRACT,
+        fetch: stub,
+      }),
+      claim: implementer,
+      build: BUILD,
+      env: PANE_ENV,
+      handoffReport: async () => {
+        throw new Error("no handoff report expected");
+      },
+      branchHead: async () => {
+        throw new Error("no branch-head lookup expected without a step");
+      },
+    },
+    { op: "ready_for_update", round: "plugin:46" }
+  )) as { note?: string };
+  expect(answer.note).toStartWith(
+    "The daemon has your ready_for_update signal. The signal reports no branch head, because the branch-head lookup failed."
+  );
+  expect(answer.note).toContain("could not read the issue record");
+  expect(posted).toEqual([
+    "/legion/v1/issues/LEGION-208/record",
+    "/legion/v1/claims/ready-for-update",
+  ]);
+});
+
+// Contract 221: a move back may name the step it returns to, `return_to`, which goes on the wire
+// as the daemon's `returnTo`, as a failed completion's does; a move that names none sends none.
+test("request_backward_move sends return_to as returnTo", async () => {
+  const { ops, routes, posted } = runtime(checker, stateAtPhase("step"));
+  await expect(
+    executePhaseOp(ops, {
+      op: "request_backward_move",
+      to: "step",
+      reason: "The check needs the earlier checker's report again.",
+      return_to: 2,
+    })
+  ).resolves.toEqual({});
+  expect(routes).toEqual(["/legion/v1/grants", "/legion/v1/phase/backward"]);
+  expect(posted.at(-1)).toEqual({
+    grantId: "grant-for-one-command",
+    to: "step",
+    reason: "The check needs the earlier checker's report again.",
+    returnTo: 2,
+  });
+  await executePhaseOp(ops, { op: "request_backward_move", to: "implementing", reason: "Red." });
+  expect(posted.at(-1)).not.toHaveProperty("returnTo");
+  await expect(
+    executePhaseOp(ops, { op: "request_backward_move", to: "step", reason: "r", return_to: 0 })
+  ).rejects.toThrow(
+    "request_backward_move's return_to is a whole number of 1 or more: the place of a step of your task, 1 for its first"
+  );
+});
+
+// Contract 224: a move back may name the task of the issue's plan it is of, `task`, which goes on
+// the wire as the daemon's own `task`: an architect's names the task it returns from accepting
+// where two or more tasks stand there, and a phase worker's may name the task of its own step. A
+// move that names none sends none, and a blank one is refused before any request.
+test("request_backward_move sends the task it names as task", async () => {
+  const architect = runtime({ ...implementer, role: "architect" });
+  await expect(
+    executePhaseOp(architect.ops, {
+      op: "request_backward_move",
+      issue: "LEGION-208",
+      to: "implementing",
+      reason: "Task b's change misses its spec.",
+      task: "b",
+    })
+  ).resolves.toEqual({});
+  expect(architect.routes).toEqual(["/legion/v1/grants", "/legion/v1/phase/backward"]);
+  expect(architect.posted.at(-1)).toEqual({
+    grantId: "grant-for-one-command",
+    to: "implementing",
+    reason: "Task b's change misses its spec.",
+    issue: "LEGION-208",
+    task: "b",
+  });
+  const worker = runtime();
+  await executePhaseOp(worker.ops, {
+    op: "request_backward_move",
+    to: "implementing",
+    reason: "Red.",
+    task: " a ",
+  });
+  expect(worker.posted.at(-1)).toEqual({
+    grantId: "grant-for-one-command",
+    to: "implementing",
+    reason: "Red.",
+    task: "a",
+  });
+  await executePhaseOp(worker.ops, {
+    op: "request_backward_move",
+    to: "implementing",
+    reason: "Red.",
+  });
+  expect(worker.posted.at(-1)).not.toHaveProperty("task");
+  const sent = worker.routes.length;
+  for (const task of [" ", 7]) {
+    await expect(
+      executePhaseOp(worker.ops, {
+        op: "request_backward_move",
+        to: "implementing",
+        reason: "r",
+        task,
+      })
+    ).rejects.toThrow(
+      "request_backward_move's task is the id of a task of the issue's plan, as a is"
+    );
+  }
+  expect(worker.routes).toHaveLength(sent);
+});
+
+// Contract 221: the daemon takes a verdict from a role of the deployment too, and the one
+// description every role reads says so.
+test("the description gives a verdict to the tester or a role of the deployment", () => {
+  expect(legionToolDescription({ envoyPublish: "envoy_publish" })).toContain(
+    "`verdict` pass|fail from the tester or a role of the deployment on a phase completion"
+  );
+});
+
 // Workers named their own issue on handoff_complete and left it off read_record, and both were
 // refused: 1,515 failed calls in the 48 h to 2026-11-10 17:40Z in INFRA's sessions alone
 // (dispatch://INFRA-2824). A read that names no issue now reads the claim's own, a read that names
@@ -786,8 +1067,9 @@ function closedRuntime(
     }),
     claim,
     build: BUILD,
-    handoffReport: async (phase, role) => {
-      throw new Error(`no handoff report expected for the ${role} at ${phase}`);
+    env: PANE_ENV,
+    handoffReport: async (step, role) => {
+      throw new Error(`no handoff report expected for the ${role} at ${step.phase}`);
     },
     branchHead: async () => {
       throw new Error("no branch-head lookup expected");
@@ -1023,6 +1305,7 @@ test("request_backward_move names the issue an architect returns from accepting,
     }),
     claim,
     build: BUILD,
+    env: PANE_ENV,
     handoffReport: async () => REPORT,
     branchHead: async () => {
       throw new Error("no branch-head lookup expected");
@@ -1378,6 +1661,7 @@ function recordsRuntime(records: unknown, asOf = "2026-11-01T18:00:00Z") {
     }),
     claim: implementer,
     build: BUILD,
+    env: PANE_ENV,
     handoffReport: async () => {
       throw new Error("no handoff report expected");
     },
@@ -1725,31 +2009,35 @@ test("the pod hours of a release that suspended no role do not grow with the clo
 
 test("ready_for_update answers for the round its task named, with the branch head, and leaves the head out when the branch is not on the remote", async () => {
   const posted: { route: string; body: unknown }[] = [];
+  const state = daemonFixture("state.json");
   const stub = (async (input, init) => {
     const route = new URL(input.toString()).pathname;
     posted.push({
       route,
       body: typeof init?.body === "string" ? JSON.parse(init.body) : undefined,
     });
+    const named = RECORD_ROUTE.exec(route);
+    if (named !== null) return recordAnswer(decodeURIComponent(named[1] ?? ""), state);
     return new Response(null, { status: 204 });
   }) as typeof fetch;
   const head = "9f1c0a7d4b2e6f8a3c5d1e7b9a0f2c4d6e8b1a35";
   const round = "pod:9d3f0c7a-2b41-4a39-9f6b-6c1d0a7e5b22";
-  const runtimeFor = (branchHead: () => Promise<string>): PhaseOpRuntime => ({
+  const runtimeFor = (branchHead: (step: StepCopy) => Promise<string>): PhaseOpRuntime => ({
     daemon: createLegionDaemonClient("http://daemon.test", {
       pluginContract: CONTRACT,
       fetch: stub,
     }),
     claim: implementer,
     build: BUILD,
+    env: PANE_ENV,
     handoffReport: async () => {
       throw new Error("no handoff report expected");
     },
     branchHead,
   });
-  // The claim authenticates the signal, so no grant is minted: the one request is the signal.
-  // The round is the agent's own word, read from the update message it answers, and it travels as
-  // it was given.
+  // The claim authenticates the signal, so no grant is minted: the requests are the read of the
+  // issue's record, whose step names the branch, and the signal. The round is the agent's own
+  // word, read from the update message it answers, and it travels as it was given.
   await expect(
     executePhaseOp(
       runtimeFor(async () => head),
@@ -1757,6 +2045,7 @@ test("ready_for_update answers for the round its task named, with the branch hea
     )
   ).resolves.toEqual({});
   expect(posted).toEqual([
+    { route: "/legion/v1/issues/LEGION-208/record", body: undefined },
     {
       route: "/legion/v1/claims/ready-for-update",
       body: {
@@ -1792,7 +2081,7 @@ test("ready_for_update answers for the round its task named, with the branch hea
       { op: "ready_for_update", round, head }
     )
   ).rejects.toThrow(new Error('ready_for_update does not accept field "head"; it takes round'));
-  expect(posted).toHaveLength(2);
+  expect(posted).toHaveLength(4);
 });
 
 // The answer counts for the round the worker read and for no other, so the daemon refuses one
@@ -1813,6 +2102,7 @@ test("ready_for_update with no round is refused before any daemon request", asyn
     }),
     claim: implementer,
     build: BUILD,
+    env: PANE_ENV,
     handoffReport: async () => {
       throw new Error("no handoff report expected");
     },
@@ -1830,11 +2120,15 @@ test("ready_for_update with no round is refused before any daemon request", asyn
 
 test("ready_for_update signals without a head when the branch-head lookup fails, and says so", async () => {
   const posted: { route: string; body: unknown }[] = [];
+  const state = daemonFixture("state.json");
   const stub = (async (input, init) => {
+    const route = new URL(input.toString()).pathname;
     posted.push({
-      route: new URL(input.toString()).pathname,
+      route,
       body: typeof init?.body === "string" ? JSON.parse(init.body) : undefined,
     });
+    const named = RECORD_ROUTE.exec(route);
+    if (named !== null) return recordAnswer(decodeURIComponent(named[1] ?? ""), state);
     return new Response(null, { status: 204 });
   }) as typeof fetch;
   const failure =
@@ -1850,6 +2144,7 @@ test("ready_for_update signals without a head when the branch-head lookup fails,
         }),
         claim: implementer,
         build: BUILD,
+        env: PANE_ENV,
         handoffReport: async () => {
           throw new Error("no handoff report expected");
         },
@@ -1866,6 +2161,7 @@ test("ready_for_update signals without a head when the branch-head lookup fails,
       `one. Repair what the lookup's message names before your next jj command. The lookup said: ${failure}`,
   });
   expect(posted).toEqual([
+    { route: "/legion/v1/issues/LEGION-208/record", body: undefined },
     {
       route: "/legion/v1/claims/ready-for-update",
       body: {
@@ -1889,6 +2185,7 @@ function opsOver(stub: typeof fetch): PhaseOpRuntime {
     }),
     claim: implementer,
     build: BUILD,
+    env: PANE_ENV,
     handoffReport: async () => {
       throw new Error("no handoff report expected");
     },

@@ -44,7 +44,8 @@ const sandboxNamespace = "legion"
 // Running Sandbox with no pod gets the pod its podTemplate describes, Ready, with the owner
 // reference and labels the controller gives it; a Suspended Sandbox's pod is deleted; a Sandbox's
 // Service is made when it asks for one and removed with it. Each pod it reports Ready starts the
-// pod's processes through onPodReady — in this rig, a real `legion launcher` per role.
+// pod's processes through onPodReady — in this rig, a real `legion launcher` per slot, one slot for
+// each role name, the slot of the agent named for that role.
 type issueSandboxAPI struct {
 	// url is the server a test served the API on (serve), empty until one did.
 	url     string
@@ -66,7 +67,8 @@ type issueSandboxAPI struct {
 	deletes map[string]metav1.DeleteOptions
 	created []string
 	// onPodReady runs, off the API's lock, for every pod the controller created and reported
-	// Ready, with the pod's own uid and each of its roles' launcher tokens; onPodGone for every
+	// Ready, with the pod's own uid and each of its slots' launcher tokens, a slot being named for
+	// the agent that runs in it; onPodGone for every
 	// pod it deleted. Both are the rig's.
 	onPodReady func(pod, uid string, roles map[string]string)
 	onPodGone  func(pod string)
@@ -247,8 +249,9 @@ func (a *issueSandboxAPI) reconcile() {
 	}
 }
 
-// launcherTokensLocked is every role of the pod with the launcher token the daemon wrote into its
-// role Secret: the pod's own view of <roles-dir>/<role>/launcher/LAUNCHER_TOKEN.
+// launcherTokensLocked is every slot of the pod, named for the agent that runs in it, with the
+// launcher token the daemon wrote into its slot's Secret: the pod's own view of
+// <roles-dir>/<slot>/launcher/LAUNCHER_TOKEN.
 func (a *issueSandboxAPI) launcherTokensLocked(pod string) map[string]string {
 	roles := map[string]string{}
 	for name, object := range a.objects["secrets"] {
@@ -256,7 +259,7 @@ func (a *issueSandboxAPI) launcherTokensLocked(pod string) map[string]string {
 		if !ok {
 			continue
 		}
-		// A role's Secret is named <sandbox>-<role>-boot (runtime/sandbox's roleSecretName).
+		// A slot's Secret is named <sandbox>-<slot>-boot (runtime/sandbox's roleSecretName).
 		role, ok = strings.CutSuffix(role, "-boot")
 		if !ok {
 			continue
@@ -748,7 +751,7 @@ func (a *issueSandboxAPI) replace(w http.ResponseWriter, r *http.Request, kind k
 }
 
 // patch applies the runtime's JSON patch (a Sandbox's operatingMode and labels, each with its
-// `test` preconditions) or a JSON merge patch (a role's address record, a suspension naming a
+// `test` preconditions) or a JSON merge patch (a slot's address record, a suspension naming a
 // displaced pod), as outbox_issue_suspend_test.go's stand-in does.
 func (a *issueSandboxAPI) patch(w http.ResponseWriter, r *http.Request, kind kubeResource, name string) {
 	body, err := io.ReadAll(r.Body)

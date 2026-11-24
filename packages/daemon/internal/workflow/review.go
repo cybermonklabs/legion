@@ -37,7 +37,7 @@ import (
 // begins with the settlement's identity (intake.SettlementIdentity), by which it is matched to
 // the listener's line that published the settlement, and is written once for each identity
 // (logDroppedSettlement).
-func (e *Engine) checks(ctx context.Context, tx pgx.Tx, fact intake.PullRequestChecks, woken claim.Role) (intake.Result, error) {
+func (e *Engine) checks(ctx context.Context, tx pgx.Tx, fact intake.PullRequestChecks, woken []claim.Role) (intake.Result, error) {
 	pr, err := e.pullRequest(ctx, tx, fact.Repo, fact.Number)
 	if err != nil {
 		return intake.Result{}, err
@@ -298,10 +298,11 @@ func (e *Engine) mergeability(ctx context.Context, tx pgx.Tx, fact intake.PullRe
 			return intake.Result{}, err
 		}
 	}
-	issue, err := e.store.Issue(ctx, tx, pr.Issue)
-	if err != nil || issue == nil {
+	scope, err := e.issueOfPullRequest(ctx, tx, *pr)
+	if err != nil || scope == nil {
 		return intake.Result{}, err
 	}
+	issue := &scope.issue
 	if decide {
 		green := classify.GreenContexts(*pr)
 		if why := classify.ConflictNeedsMerge(*issue, fact.Rules, green); why != "" {
@@ -320,7 +321,7 @@ func (e *Engine) mergeability(ctx context.Context, tx pgx.Tx, fact intake.PullRe
 				"required", required, "green", green)
 		}
 	}
-	return intake.Result{}, e.reaskRound(ctx, tx, *issue, pr, prior, byMergeState)
+	return intake.Result{}, e.reaskRound(ctx, tx, *scope, pr, prior, byMergeState)
 }
 
 // settledChecks is what the CI settlement standing for the pull request's head says: the head it
@@ -511,30 +512,34 @@ func namedStatuses(statuses []record.CommitStatus) string {
 
 // tellChecks tells the roles that work the issue what the settlement now standing for the pull
 // request's head says (settledChecks), and moves nothing: the daemon passes the CI result on, and
-// the worker that holds the phase decides whether to re-run, wait or fix
-// (dispatch://INFRA-714/spec R1). One message goes to three roles - the worker holding the issue's
-// phase, the implementer, whose code the checks ran on, and the architect that owns the issue
-// (owningArchitect) - each on its own role topic (record.RoleMessage), the way the daemon reaches
-// a role holder with a message. In merging the implementer is not told: the merge and what breaks
-// it are the merger's to decide, and the merger asks the implementer when it needs it
-// (cybermonklabs/legion#4979). A held issue keeps the worker of Hold.From (record.StandsAt).
-// A role named twice, the implementer holding the phase, is told once, and a phase no worker holds
-// names none (addressRoles). told is what the settlement
-// standing for the head said before this one, so a second settlement of the same head that leaves
-// the same conclusions tells nobody again, and so does a settlement that stands for no head. Linger
-// holds a member of a closed tree where it stood (record.TreeLingers): every role of the tree is
-// suspended there, so the settlement is recorded and nobody is told.
+// the worker that holds the step decides whether to re-run, wait or fix
+// (dispatch://INFRA-714/spec R1). One message goes to the claim of each worker that works the
+// pull request's branch - the worker of each step that takes work of each task whose branch the
+// pull request is on (checksSteps, every step of an issue of one task), the implementer, whose
+// code the checks ran on, and the architect that owns the issue (owningArchitect) - each on the
+// role topic of that claim (record.RoleMessage), the way the daemon reaches a role holder with a
+// message. A held issue keeps the worker of Hold.From (record.StandsAt). In merging the
+// implementer is not told: the merge and what breaks it are the merger's to decide, and the merger
+// asks the implementer when it needs it (cybermonklabs/legion#4979). A claim named twice, the
+// implementer holding a step or one keyed agent working two of the roles, is told once, and an
+// issue with no step that takes work names no worker of a step (addressRoles): a held or stopped
+// task's step and a step that waits are none of them.
+// told is what the settlement standing for the head said before this one, so a second settlement
+// of the same head that leaves the same conclusions tells nobody again, and so does a settlement
+// that stands for no head. Linger holds a member of a closed tree where it stood
+// (record.TreeLingers): every claim of the tree is suspended there, so the settlement is recorded
+// and nobody is told.
 //
 // A role whose released pod this same settlement woke is told nothing: its wake task already
 // names the settlement (WakeTask with pods.WakeChecks), and a message about the same settlement
 // would reach it as a second wake of one release, described to the worker as something somebody
-// published to its role topic. woken is that role, "" when the settlement woke nobody, and every
-// other role — a live one, and one the wake did not reach — is told as before.
+// published to its role topic. woken is each such role, none when the settlement woke nobody, and
+// every other role — a live one, and one the wake did not reach — is told as before.
 //
 // A holder this daemon cannot name is an error here, and with it the settlement's whole
 // transaction: the settlement moves no issue, so there is nothing kept by telling the rest, and
 // the next settlement of the head asks again.
-func (e *Engine) tellChecks(ctx context.Context, tx pgx.Tx, pr *record.PullRequest, told string, woken claim.Role) error {
+func (e *Engine) tellChecks(ctx context.Context, tx pgx.Tx, pr *record.PullRequest, told string, woken []claim.Role) error {
 	settled := settledChecks(*pr)
 	if settled == "" || settled == told {
 		return nil
@@ -548,28 +553,37 @@ func (e *Engine) tellChecks(ctx context.Context, tx pgx.Tx, pr *record.PullReque
 	}
 	// The architect told is the one that owns the issue now (owningArchitect): the issue's own
 	// while its claim holds its role, else the nearest one above it that does, else the tree
-	// root's. A phase the architect itself holds (accepting) is that same architect's acceptance,
+	// root's. A step the architect itself holds (accepting) is that same architect's acceptance,
 	// so it is told once, as the owner; and an architect this settlement woke would be the issue's
 	// own released claim, which holds its role and so is that owner too.
 	recipients := []roleRecipient{}
-	if woken != claim.RoleArchitect {
+	if !slices.Contains(woken, claim.RoleArchitect) {
 		owner, err := e.owningArchitect(ctx, tx, *issue)
 		if err != nil {
 			return err
 		}
 		recipients = append(recipients, roleRecipient{issue: owner, role: claim.RoleArchitect, row: issue.Key})
 	}
-	roles := []claim.Role{RoleFor(record.StandsAt(*issue))}
-	if !record.StandsIn(*issue, phase.Merging) {
+	steps, err := e.checksSteps(ctx, tx, *issue, *pr)
+	if err != nil {
+		return err
+	}
+	roles := []claim.Role{}
+	merging := false
+	for _, step := range steps {
+		roles = append(roles, step.Role)
+		merging = merging || step.Phase == phase.Merging
+	}
+	if !merging {
 		roles = append(roles, claim.RoleImplementer)
 	}
 	for _, role := range roles {
-		if role == claim.RoleArchitect || role == woken {
+		if role == claim.RoleArchitect || slices.Contains(woken, role) {
 			continue
 		}
 		recipients = append(recipients, roleRecipient{issue: issue.Key, role: role, row: issue.Key})
 	}
-	addressed, err := e.addressRoles(issue.Project, recipients, nil)
+	addressed, err := e.addressRoles(ctx, tx, issue.Project, recipients, nil)
 	if err != nil {
 		return err
 	}
@@ -580,6 +594,28 @@ func (e *Engine) tellChecks(ctx context.Context, tx pgx.Tx, pr *record.PullReque
 		}
 	}
 	return nil
+}
+
+// checksSteps is the steps whose workers tellChecks tells of a settlement of pr's checks: the steps
+// of issue that take work of each task whose branch pr is on (openStepsOfPullRequest), the steps a
+// settlement wakes. A held issue takes none of them, so for it they are its running steps at the
+// phase its hold is from (record.StandsAt, record.Issue.RunningAt) of each such task: a hold of
+// the issue keeps that phase's work where it stood, so its worker still needs the CI result. A
+// stopped task's step and a step that waits are never among them, and a held task's step only
+// where it stands at the phase its issue's own hold is from. Every step of a run with no plan rows
+// is pr's.
+func (e *Engine) checksSteps(ctx context.Context, tx pgx.Tx, issue record.Issue, pr record.PullRequest) ([]record.RunningStep, error) {
+	at := record.StandsAt(issue)
+	if at == issue.Phase {
+		return e.openStepsOfPullRequest(ctx, tx, issue, pr)
+	}
+	held := issue.RunningAt(at)
+	stored, err := e.store.Plan(ctx, tx, issue.Key, issue.Generation)
+	if err != nil || stored == nil {
+		return held, err
+	}
+	tasks := stored.TasksOfBranch(issue.Key, pr.Branch)
+	return slices.DeleteFunc(held, func(step record.RunningStep) bool { return !slices.Contains(tasks, step.Task) }), nil
 }
 
 // owningArchitect is the key of the issue whose architect owns issue now: the end of the owner
@@ -764,17 +800,17 @@ func (e *Engine) ReviewerSession(ctx context.Context, tx pgx.Tx, issue string) (
 	return session, err
 }
 
-// reviewersClaim is the claim the daemon starts issue's reviewer under (reviewerToken) and the
+// reviewersClaim is the claim of the worker on issue's reviewer's step (workerClaim) and the
 // session the claims record holds for it (record.Store.ClaimSession), the session of that claim's
 // current launch: the one reading of who issue's reviewer is, for every judgement of a review-App
-// review (byReviewer). It finds the claim by that token, never by the claim the reviewer's row
-// names: the completion handler is the one writer of record.PhaseRow.Claim, and the reviewer
-// submits the review of its first round before it completes, so read from the row no session
-// would be recorded in round 1, and no review-App review, the reviewer's own among them, could
-// decide that round. The session is "" when the claim has no row or records none: the outbox makes
-// the claim with none, and only the registration of the reviewer's agent writes one.
+// review (byReviewer). The claim is the one the reviewer's entry wrote on its row (Engine.stepToken,
+// enter), which the entry writes before the round's first review, so a review of round 1 is judged
+// on the reviewer's own claim too; a row with no step, and an issue with no plan rows, reads as the
+// reviewer role's own token, as before. The session is "" when the claim has no row or records
+// none: the outbox makes the claim with none, and only the registration of the reviewer's agent
+// writes one.
 func (e *Engine) reviewersClaim(ctx context.Context, tx pgx.Tx, issue record.Issue) (claim.Token, string, error) {
-	token, err := reviewerToken(issue)
+	token, err := e.workerClaim(ctx, tx, issue, claim.RoleReviewer)
 	if err != nil {
 		return "", "", err
 	}
@@ -796,10 +832,11 @@ func (e *Engine) review(ctx context.Context, tx pgx.Tx, fact intake.PullRequestR
 	if err != nil || pr == nil {
 		return intake.Result{}, err
 	}
-	issue, err := e.store.Issue(ctx, tx, pr.Issue)
-	if err != nil || issue == nil {
+	scope, err := e.issueOfPullRequest(ctx, tx, *pr)
+	if err != nil || scope == nil {
 		return intake.Result{}, err
 	}
+	issue := &scope.issue
 	reviewer, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleReviewer)
 	if err != nil {
 		return intake.Result{}, err
@@ -868,7 +905,7 @@ func (e *Engine) review(ctx context.Context, tx pgx.Tx, fact intake.PullRequestR
 				return intake.Result{}, err
 			}
 		}
-		_, err := e.settleRound(ctx, tx, *issue, reviewer, pr, before, by)
+		_, err := e.settleRound(ctx, tx, *scope, reviewer, pr, before, by)
 		return intake.Result{}, err
 	}
 	// Deciding reviews are ordered by when they were submitted, then by GitHub's review id
@@ -920,7 +957,7 @@ func (e *Engine) review(ctx context.Context, tx pgx.Tx, fact intake.PullRequestR
 	if err := e.store.PutPhase(ctx, tx, reviewer); err != nil {
 		return intake.Result{}, err
 	}
-	_, err = e.settleRound(ctx, tx, *issue, reviewer, pr, before, by)
+	_, err = e.settleRound(ctx, tx, *scope, reviewer, pr, before, by)
 	return intake.Result{}, err
 }
 
@@ -1218,8 +1255,8 @@ func undecidedReason(row record.PhaseRow, pr record.PullRequest) string {
 // reads no CI result: a settlement that arrived while the implementer worked moved nothing and
 // moves nothing now, since the roles were told what it said when it arrived (checks,
 // dispatch://INFRA-714/spec R1).
-func (e *Engine) implementationReady(ctx context.Context, tx pgx.Tx, issue record.Issue, row record.PhaseRow, pr *record.PullRequest) error {
-	return e.transition(ctx, tx, issue, TriggerImplementationReady, "", row, pr, "")
+func (e *Engine) implementationReady(ctx context.Context, tx pgx.Tx, s TaskScope, row record.PhaseRow, pr *record.PullRequest) error {
+	return e.transition(ctx, tx, s, TriggerImplementationReady, record.TaskPlace{}, row, pr, "")
 }
 
 // settleRound acts on what issue's review round comes to (reviewRound, with row its reviewer's and
@@ -1229,24 +1266,25 @@ func (e *Engine) implementationReady(ctx context.Context, tx pgx.Tx, issue recor
 // two causes a review decides, that is the round having been stuck the same way (stuckAs) before
 // that fact, which is before: each caller passes the round as its own fact found it, so a round
 // stuck at a head the architect was told of is told once and no fact about the same head tells it
-// again. The issue stays in reviewing, and the notice names the reviewer's role topic, which the
-// architect asks the decision on. Linger holds a member of a closed tree where it stood
-// (record.TreeLingers), and leaves no mark: nothing was told, so the head is told when the tree
+// again. The issue stays in reviewing, and the notice names the topic of the claim of the worker on
+// the reviewer's step, which the architect asks the decision on. Linger holds a member of a closed
+// tree where it stood (record.TreeLingers), and leaves no mark: nothing was told, so the head is told when the tree
 // runs again.
 //
 // A round GitHub will not merge from (stuckMergeState) is the one cause the reviewer cannot
 // decide, and the whole of its path - its own dedup, its own message to the reviewer, a notice
 // with no topic - is tellStuckMergeState's, which this asks for once.
-func (e *Engine) settleRound(ctx context.Context, tx pgx.Tx, issue record.Issue, row record.PhaseRow, pr *record.PullRequest, before round, by string) (bool, error) {
+func (e *Engine) settleRound(ctx context.Context, tx pgx.Tx, s TaskScope, row record.PhaseRow, pr *record.PullRequest, before round, by string) (bool, error) {
+	issue := s.issue
 	r := e.reviewRound(issue, row, pr)
 	switch r.outcome {
 	case roundRejected:
 		if lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree); err != nil || lingers {
 			return false, err
 		}
-		return true, e.transition(ctx, tx, issue, TriggerReviewRejected, "", row, pr, row.Decision.Body)
+		return true, e.transition(ctx, tx, s, TriggerReviewRejected, record.TaskPlace{}, row, pr, row.Decision.Body)
 	case roundApproved:
-		return true, e.transition(ctx, tx, issue, TriggerReviewApproved, "", row, pr, "")
+		return true, e.transition(ctx, tx, s, TriggerReviewApproved, record.TaskPlace{}, row, pr, "")
 	case roundStuck:
 		if r.cause == stuckMergeState {
 			return false, e.tellStuckMergeState(ctx, tx, issue, row, r, by)
@@ -1259,7 +1297,7 @@ func (e *Engine) settleRound(ctx context.Context, tx pgx.Tx, issue record.Issue,
 		if lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree); err != nil || lingers {
 			return false, err
 		}
-		reviewer, err := reviewerToken(issue)
+		reviewer, err := e.workerClaim(ctx, tx, issue, claim.RoleReviewer)
 		if err != nil {
 			return false, err
 		}
@@ -1294,7 +1332,7 @@ func (e *Engine) tellStuckMergeState(ctx context.Context, tx pgx.Tx, issue recor
 	if lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree); err != nil || lingers {
 		return err
 	}
-	reviewer, err := reviewerToken(issue)
+	reviewer, err := e.workerClaim(ctx, tx, issue, claim.RoleReviewer)
 	if err != nil {
 		return err
 	}
@@ -1308,16 +1346,6 @@ func (e *Engine) tellStuckMergeState(ctx context.Context, tx pgx.Tx, issue recor
 	}
 	return e.notice(ctx, tx, issue.Key, record.Notice{Kind: "review-stuck", Role: claim.RoleReviewer, Phase: phase.Reviewing,
 		Summary: by, Reason: r.reason})
-}
-
-// reviewerToken is the claim token of issue's reviewer, whose role topic the architect is given
-// to ask the decision on and whose role a message addresses.
-func reviewerToken(issue record.Issue) (claim.Token, error) {
-	project, err := claim.ProjectToken(issue.Project)
-	if err != nil {
-		return "", err
-	}
-	return claim.NewToken(project, issue.Key, claim.RoleReviewer)
 }
 
 // told says whether the notice a round GitHub will not merge from would write has already gone
@@ -1407,10 +1435,11 @@ func (e *Engine) askMergeStateFor(ctx context.Context, tx pgx.Tx, pr *record.Pul
 	if e.cfg.ReadMergeState == nil || pr.State != record.PullRequestOpen {
 		return nil
 	}
-	issue, err := e.store.Issue(ctx, tx, pr.Issue)
-	if err != nil || issue == nil {
+	scope, err := e.issueOfPullRequest(ctx, tx, *pr)
+	if err != nil || scope == nil {
 		return err
 	}
+	issue := &scope.issue
 	owed := classify.MergeStateReadOwed(*issue, fact)
 	if !owed {
 		// The round's own answer matters only where the fact and the phase owe no read: every
@@ -1431,9 +1460,11 @@ func (e *Engine) askMergeStateFor(ctx context.Context, tx pgx.Tx, pr *record.Pul
 
 // recordPass counts task one more pass through the implementing, testing and reviewing stretch,
 // which every move back into an earlier phase opens, counts the move itself under its own pair,
-// and fires the deployment's hooks that stand on the move (fireWorkBackHooks). The counts are the
-// task's (record.Store.ReturnCounts): on its plan_tasks row for an issue with plan rows, and on the
-// implementer's phases row for an issue with none, where they lived before plans.
+// and answers the backward-move counts the deployment's hooks that stand on the move fire on,
+// which the transition fires once its start is written (fireWorkBackHooks), each prompt naming the
+// task (taskLabel). The counts are the task's (record.Store.ReturnCounts): on its plan_tasks row
+// for an issue with plan rows, and on the implementer's phases row for an issue with none, where
+// they lived before plans.
 //
 // The pass bounds nothing: it is the counter the handoff completion key carries
 // (api/handoff.go), and its whole job is to make a completion at a commit an earlier pass
@@ -1444,35 +1475,61 @@ func (e *Engine) askMergeStateFor(ctx context.Context, tx pgx.Tx, pr *record.Pul
 // review requesting changes opens (recordRound): a hook standing on that count would never see a
 // tester's fail or a worker's own move back.
 //
-// A move the record holds as a conflict with the base raises no pair and fires no hook: nobody
-// sent the work back, so there is no move of a kind for a hook to count, and the pass it still
-// raises is the completion key's alone. Everything is written in the move's own transaction, so
-// a move the record holds and a prompt nobody wrote cannot happen, and nothing here holds the
-// move back: the transition starts the next role whatever a hook said.
-func (e *Engine) recordPass(ctx context.Context, tx pgx.Tx, issue record.Issue, task string, from, to phase.Phase, pr *record.PullRequest) error {
+// A move the record holds as a conflict with the base raises no pair and fires no hook, and
+// answers nil: nobody sent the work back, so there is no move of a kind for a hook to count, and
+// the pass it still raises is the completion key's alone. Everything is written in the move's own
+// transaction, so a move the record holds and a prompt nobody wrote cannot happen, and nothing here
+// holds the move back: the transition starts the next role whatever a hook said.
+func (e *Engine) recordPass(ctx context.Context, tx pgx.Tx, issue record.Issue, task string, from, to phase.Phase, pr *record.PullRequest) (map[string]int, error) {
 	counts, err := e.store.ReturnCounts(ctx, tx, issue.Key, issue.Generation, task)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	counts.Pass++
 	if pr != nil && classify.ConflictRound(*pr) {
-		return e.store.PutReturnCounts(ctx, tx, issue.Key, issue.Generation, task, counts)
+		return nil, e.store.PutReturnCounts(ctx, tx, issue.Key, issue.Generation, task, counts)
 	}
 	if counts.BackwardMoves == nil {
 		counts.BackwardMoves = make(map[string]int, 1)
 	}
 	counts.BackwardMoves[phase.Pair(from, to)]++
 	if err := e.store.PutReturnCounts(ctx, tx, issue.Key, issue.Generation, task, counts); err != nil {
-		return err
+		return nil, err
 	}
-	return e.fireWorkBackHooks(ctx, tx, issue.Key, from, to, counts.BackwardMoves, pr)
+	return counts.BackwardMoves, nil
 }
 
-// recordRound counts task one more review round, which only a review that requested changes
-// ends, and tells the architect once for each value review_round_cap holds. The counts are the
-// task's, where recordPass keeps them. The move's own pair and the deployment's hooks are counted
-// where every backward move passes (recordPass), so a round and a move are counted apart: this
-// one is the cap's, and everything it writes it writes in the move's own transaction.
+// taskLabel is what a notice or a prompt about the returns of w's task puts before its reason:
+// `task <id>: ` for a run with plan rows, which can hold more than one task, so its owner reads
+// whose returns they were, and "" for a run with none, which has no task to name and reads as it
+// did before plans.
+func taskLabel(w Walk) string {
+	if !w.Stored {
+		return ""
+	}
+	return "task " + w.Task + ": "
+}
+
+// taskSentence is what a message on the issue about the returns of w's task ends with: ` Task:
+// <id>.`, the sentence a step's task names its task by (standingText), for a run with plan rows,
+// which can hold more than one task, and "" for a run with none, which reads as it did before
+// plans. The message keeps its fixed start, which a reader of a fleet greps the cap's messages and
+// the hooks' firings out by, where a notice or a prompt puts the task before its reason (taskLabel).
+func taskSentence(w Walk) string {
+	if !w.Stored {
+		return ""
+	}
+	return fmt.Sprintf(" %s: %s.", planTaskLabel, w.Task)
+}
+
+// recordRound counts w's task one more review round, which only a review that requested changes
+// ends, and tells the architect once for each value review_round_cap holds, its notice naming the
+// task (taskLabel). The counts are the task's, where recordPass keeps them. The move's own pair and
+// the deployment's hooks are counted where every backward move passes (recordPass), so a round and
+// a move are counted apart: this one is the cap's, and everything it writes it writes in the move's
+// own transaction. The cap's message on the issue keeps its fixed start, which a reader of a fleet
+// counts the cap by, and ends naming the task (taskSentence); the notice to the architect names the
+// task before its reason.
 //
 // What the cap reads is Rounds less the rounds a conflict with the base caused
 // (classify.ConflictRound, record.ReturnCounts.ConflictRounds). A round opened while the record
@@ -1496,7 +1553,8 @@ func (e *Engine) recordPass(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 //
 // Nothing here holds the move back: the transition starts the next role whatever the counts read. A write that fails is still an error of the move's transaction, as
 // every other write of that transaction is, and is returned rather than swallowed.
-func (e *Engine) recordRound(ctx context.Context, tx pgx.Tx, issue record.Issue, task string, pr *record.PullRequest) error {
+func (e *Engine) recordRound(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, pr *record.PullRequest) error {
+	task := w.Task
 	counts, err := e.store.ReturnCounts(ctx, tx, issue.Key, issue.Generation, task)
 	if err != nil {
 		return err
@@ -1519,10 +1577,10 @@ func (e *Engine) recordRound(ctx context.Context, tx pgx.Tx, issue record.Issue,
 	if tell {
 		message := fmt.Sprintf("Issue reached review_round_cap=%d: %d rounds counted, %d conflict rounds not counted.",
 			e.cfg.ReviewRoundCap, counted, counts.ConflictRounds)
-		if err := e.enqueue(ctx, tx, issue.Key, record.MessagePost{Body: message}); err != nil {
+		if err := e.enqueue(ctx, tx, issue.Key, record.MessagePost{Body: message + taskSentence(w)}); err != nil {
 			return err
 		}
-		if err := e.notice(ctx, tx, issue.Key, record.Notice{Kind: "pr-blocked", Role: claim.RoleArchitect, Reason: message}); err != nil {
+		if err := e.notice(ctx, tx, issue.Key, record.Notice{Kind: "pr-blocked", Role: claim.RoleArchitect, Reason: taskLabel(w) + message}); err != nil {
 			return err
 		}
 	}

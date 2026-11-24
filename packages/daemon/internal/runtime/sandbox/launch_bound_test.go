@@ -174,12 +174,12 @@ func TestALaunchTryItsContextEndsIsChargedNothing(t *testing.T) {
 // options.
 func TestLaunchBoundSumsTheTrysWaitsAndCalls(t *testing.T) {
 	boot, provision, grace := 120*time.Second, 280*time.Minute, 10*time.Second
-	if relaunchCalls != 85 || cacheEnsureCalls != 14 {
-		t.Fatalf("relaunchCalls = %d, want 85: %d per try (%d of them the repository cache's ensure) and %d per each of %d roles", relaunchCalls, relaunchPodCalls, cacheEnsureCalls, relaunchRoleCalls, len(claim.Roles))
+	if relaunchCalls(len(claim.Roles)) != 85 || cacheEnsureCalls != 14 {
+		t.Fatalf("relaunchCalls = %d, want 85: %d per try (%d of them the repository cache's ensure) and %d per each of %d roles", relaunchCalls(len(claim.Roles)), relaunchPodCalls, cacheEnsureCalls, relaunchRoleCalls, len(claim.Roles))
 	}
 	cache := 5*boot + 14*apiTimeout
 	waits := 3*boot + cache + (boot + boot + provision + 2*recheckInterval) + grace
-	if got, want := launchBound(boot, boot, provision, grace), waits+85*apiTimeout; got != want || want != 5*time.Hour+49*time.Minute+41*time.Second {
+	if got, want := launchBound(boot, boot, provision, grace, len(claim.Roles)), waits+85*apiTimeout; got != want || want != 5*time.Hour+49*time.Minute+41*time.Second {
 		t.Fatalf("launchBound = %s, want %s (5h49m41s)", got, want)
 	}
 	production := testOptions()
@@ -188,19 +188,19 @@ func TestLaunchBoundSumsTheTrysWaitsAndCalls(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := r.LaunchBound(); got != launchBound(boot, boot, provision, grace) || got < boot+r.ProvisionBound()+grace || got <= 280*time.Minute {
-		t.Fatalf("LaunchBound at the production defaults = %s, want %s, at least %s and past 280m", got, launchBound(boot, boot, provision, grace), boot+r.ProvisionBound()+grace)
+	if got := r.LaunchBound(); got != launchBound(boot, boot, provision, grace, len(claim.Roles)) || got < boot+r.ProvisionBound()+grace || got <= 280*time.Minute {
+		t.Fatalf("LaunchBound at the production defaults = %s, want %s, at least %s and past 280m", got, launchBound(boot, boot, provision, grace, len(claim.Roles)), boot+r.ProvisionBound()+grace)
 	}
 	kept := production
 	kept.Sandbox = SandboxConfig{Type: SandboxMicroVM, MicroVM: keptMicroVM()}
 	if r, err = configure(kept); err != nil {
 		t.Fatal(err)
 	}
-	if got, want := r.LaunchBound(), launchBound(boot, keptVolumeAttachWait, provision, grace); got != want || want != 5*time.Hour+54*time.Minute+41*time.Second {
+	if got, want := r.LaunchBound(), launchBound(boot, keptVolumeAttachWait, provision, grace, len(claim.Roles)); got != want || want != 5*time.Hour+54*time.Minute+41*time.Second {
 		t.Fatalf("LaunchBound with keep_volume on = %s, want %s (5h54m41s)", got, want)
 	}
 	g := newRig(t, nil)
-	if got, want := g.r.LaunchBound(), launchBound(g.opts.BootTimeout, g.opts.BootTimeout, g.r.ProvisionBound(), g.opts.TerminationGrace); got != want {
+	if got, want := g.r.LaunchBound(), launchBound(g.opts.BootTimeout, g.opts.BootTimeout, g.r.ProvisionBound(), g.opts.TerminationGrace, len(claim.Roles)); got != want {
 		t.Fatalf("the rig's LaunchBound = %s, want %s", got, want)
 	}
 }
@@ -259,13 +259,13 @@ func TestAReplacingLaunchMakesNoMoreCallsThanTheBoundCounts(t *testing.T) {
 	frames := len(g.sent(reviewer.Claim))
 	calls := len(requests) + int(mints.Load()) + int(renders.Load()) + int(reads.Load()) + frames
 	t.Logf("the replacing try made %d calls: %d requests, %d mints, %d credential renders, %d store reads, %d launcher frames; relaunchCalls is %d",
-		calls, len(requests), mints.Load(), renders.Load(), reads.Load(), frames, relaunchCalls)
-	if calls > relaunchCalls {
+		calls, len(requests), mints.Load(), renders.Load(), reads.Load(), frames, relaunchCalls(len(claim.Roles)))
+	if calls > relaunchCalls(len(claim.Roles)) {
 		var listed []string
 		for _, a := range requests {
 			listed = append(listed, a.String())
 		}
-		t.Fatalf("the replacing try made %d bounded calls, more than the %d relaunchCalls counts; its requests:\n%s", calls, relaunchCalls, strings.Join(listed, "\n"))
+		t.Fatalf("the replacing try made %d bounded calls, more than the %d relaunchCalls counts; its requests:\n%s", calls, relaunchCalls(len(claim.Roles)), strings.Join(listed, "\n"))
 	}
 	// One credential per App role of the pod, not per claim role: a bundle is the App role and
 	// the repository and nothing else, so the launch builds one for each of its two Apps and

@@ -118,15 +118,15 @@ func TestTheRecordsOfAnOwnersPlanAreItsTaskAndSteps(t *testing.T) {
 		engine := returnEngine()
 		root := stepRoot(t, pool, phase.Admitted)
 		seedStepsPlan(t, pool, root.Key, root.Generation, "implementer", "reviewer")
-		move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
-		move(t, pool, engine, root.Key, TriggerImplementationReady, "", record.PhaseRow{})
+		move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
+		move(t, pool, engine, root.Key, TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{})
 		reviewRequestsChanges(t, pool, engine, root.Key)
-		move(t, pool, engine, root.Key, TriggerImplementationReady, "", record.PhaseRow{})
-		move(t, pool, engine, root.Key, TriggerReviewApproved, "", record.PhaseRow{})
+		move(t, pool, engine, root.Key, TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{})
+		move(t, pool, engine, root.Key, TriggerReviewApproved, record.TaskPlace{}, record.PhaseRow{})
 		assertWalksAt(t, pool, engine, root.Key, phase.Retro, record.TaskPlace{Kind: record.PlaceRetro})
 		seedPR(t, pool, record.PullRequest{State: record.PullRequestMerged, Issue: root.Key, Repo: "sjawhar/legion", Number: 42,
 			Branch: "legion/LEGION-208", HeadSHA: "head", MergeSHA: "merge", Failing: []string{}})
-		move(t, pool, engine, root.Key, TriggerRetroCompleted, "", record.PhaseRow{})
+		move(t, pool, engine, root.Key, TriggerRetroCompleted, record.TaskPlace{}, record.PhaseRow{})
 
 		retro := walkedWrite{start: true, task: "a", kind: record.PlaceRetro, role: "implementer", attempt: 1}
 		merge := walkedWrite{start: true, task: "a", kind: record.PlaceMerge, role: "merger", attempt: 1}
@@ -151,8 +151,8 @@ func TestTheRecordsOfAnOwnersPlanAreItsTaskAndSteps(t *testing.T) {
 		engine := returnEngine()
 		root := stepRoot(t, pool, phase.Admitted)
 		seedStepsPlan(t, pool, root.Key, root.Generation, "implementer", "reviewer")
-		move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
-		move(t, pool, engine, root.Key, TriggerImplementationReady, "", record.PhaseRow{})
+		move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
+		move(t, pool, engine, root.Key, TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{})
 		if result := applyFacts(t, pool, engine)("stop", ownersStop(t, root, "a")); result.Refusal != nil {
 			t.Fatalf("the owner's stop was refused: %+v", result.Refusal)
 		}
@@ -167,9 +167,9 @@ func TestTheRecordsOfAnOwnersPlanAreItsTaskAndSteps(t *testing.T) {
 		engine := returnEngine()
 		root := stepRoot(t, pool, phase.Admitted)
 		seedStepsPlan(t, pool, root.Key, root.Generation, "implementer", "reviewer")
-		move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
-		move(t, pool, engine, root.Key, TriggerImplementationReady, "", record.PhaseRow{})
-		move(t, pool, engine, root.Key, TriggerReviewApproved, "", record.PhaseRow{})
+		move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
+		move(t, pool, engine, root.Key, TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{})
+		move(t, pool, engine, root.Key, TriggerReviewApproved, record.TaskPlace{}, record.PhaseRow{})
 		applyRefusingNothing(t, pool, engine, intake.HandoffComplete{Generation: 1, Issue: root.Key, Role: claim.RoleImplementer,
 			Claim: "implement-claim", Summary: "retro done", Commit: "head", PlanRating: &record.PlanRating{Rating: 2, Reason: "The plan held no tester."}})
 		var rated []record.StepRecord
@@ -199,7 +199,7 @@ func assertNoPlanRowsRunTodaysSteps(t *testing.T, engine *Engine) {
 	t.Helper()
 	pool := migratedPool(t)
 	stepRoot(t, pool, phase.Implementing)
-	move(t, pool, engine, "LEGION-208", TriggerImplementationReady, "", record.PhaseRow{})
+	move(t, pool, engine, "LEGION-208", TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{})
 	assertStepWrites(t, pool, "LEGION-208", 1, []walkedWrite{
 		{task: defaultTask, kind: record.PlaceStep, step: 2, role: "implementer", typ: "implementation", result: "passed", attempt: 0},
 		{start: true, task: defaultTask, kind: record.PlaceStep, step: 3, role: "tester", typ: "testing", attempt: 1},
@@ -239,15 +239,15 @@ func TestEachPhaseRowNamesItsStep(t *testing.T) {
 		engine := returnEngine()
 		root := stepRoot(t, pool, phase.Admitted)
 		seedStepsPlan(t, pool, root.Key, root.Generation, "implementer", "reviewer")
-		move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
+		move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
 		assertRowsName(t, pool, engine, root.Key, "after the implementer's start", map[claim.Role]string{claim.RoleImplementer: "a/1"})
-		move(t, pool, engine, root.Key, TriggerImplementationReady, "", record.PhaseRow{})
+		move(t, pool, engine, root.Key, TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{})
 		assertRowsName(t, pool, engine, root.Key, "after the reviewer's start",
 			map[claim.Role]string{claim.RoleReviewer: "a/2", claim.RoleImplementer: "a/1"})
-		move(t, pool, engine, root.Key, TriggerReviewApproved, "", record.PhaseRow{})
+		move(t, pool, engine, root.Key, TriggerReviewApproved, record.TaskPlace{}, record.PhaseRow{})
 		assertRowsName(t, pool, engine, root.Key, "at the retro",
 			map[claim.Role]string{claim.RoleImplementer: "a/0", claim.RoleReviewer: "a/2"})
-		move(t, pool, engine, root.Key, TriggerRetroCompleted, "", record.PhaseRow{})
+		move(t, pool, engine, root.Key, TriggerRetroCompleted, record.TaskPlace{}, record.PhaseRow{})
 		assertPhase(t, pool, phase.Merging)
 		assertRowsName(t, pool, engine, root.Key, "at the merge", map[claim.Role]string{claim.RoleMerger: "a/0", claim.RoleImplementer: "a/0"})
 	})
@@ -256,11 +256,11 @@ func TestEachPhaseRowNamesItsStep(t *testing.T) {
 		pool := migratedPool(t)
 		engine := returnEngine()
 		root := stepRoot(t, pool, phase.Implementing)
-		move(t, pool, engine, root.Key, TriggerImplementationReady, "", record.PhaseRow{})
-		move(t, pool, engine, root.Key, TriggerTesterPassed, "", record.PhaseRow{})
-		move(t, pool, engine, root.Key, TriggerReviewApproved, "", record.PhaseRow{})
-		move(t, pool, engine, root.Key, TriggerSignOff, "", record.PhaseRow{})
-		move(t, pool, engine, root.Key, TriggerRetroCompleted, "", record.PhaseRow{})
+		move(t, pool, engine, root.Key, TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{})
+		move(t, pool, engine, root.Key, TriggerTesterPassed, record.TaskPlace{}, record.PhaseRow{})
+		move(t, pool, engine, root.Key, TriggerReviewApproved, record.TaskPlace{}, record.PhaseRow{})
+		move(t, pool, engine, root.Key, TriggerSignOff, record.TaskPlace{}, record.PhaseRow{})
+		move(t, pool, engine, root.Key, TriggerRetroCompleted, record.TaskPlace{}, record.PhaseRow{})
 		assertPhase(t, pool, phase.Merging)
 		assertRowsName(t, pool, engine, root.Key, "at the merge of an issue with no plan rows", map[claim.Role]string{
 			claim.RoleTester: "/0", claim.RoleReviewer: "/0", claim.RoleImplementer: "/0", claim.RoleMerger: "/0"})
@@ -279,11 +279,11 @@ func TestTheStartAndTheEndOfARunHaveOneIDAcrossABoot(t *testing.T) {
 		pool := migratedPool(t)
 		root := stepRoot(t, pool, phase.Admitted)
 		seedStepsPlan(t, pool, key, root.Generation, "implementer", "reviewer")
-		move(t, pool, returnEngine(), key, TriggerGateOpened, "", record.PhaseRow{})
-		move(t, pool, returnEngine(), key, TriggerImplementationReady, "", record.PhaseRow{})
+		move(t, pool, returnEngine(), key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
+		move(t, pool, returnEngine(), key, TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{})
 		between(pool)
 		// The boot: a new engine on a new store over the same database.
-		move(t, pool, returnEngine(), key, TriggerReviewApproved, "", record.PhaseRow{})
+		move(t, pool, returnEngine(), key, TriggerReviewApproved, record.TaskPlace{}, record.PhaseRow{})
 		for _, w := range stepWrites(t, pool, key) {
 			if w.Task != "a" || w.Kind != record.PlaceStep || w.Step != 2 {
 				continue

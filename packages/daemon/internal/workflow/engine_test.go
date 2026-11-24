@@ -146,7 +146,7 @@ func TestAReopenedPullRequestTakesItsNewHeadAndKeepsItsReview(t *testing.T) {
 	engine := testEngine(config.DesignGateRootIssues, nil)
 
 	if _, err := intake.ApplyFact(ctx, pool, "github", "reopened", intake.PullRequestOpened{
-		Repo: "acme/widgets", Number: 7, Branch: "legion/LEGION-208", HeadSHA: "new",
+		Repo: "acme/widgets", Number: 7, Branch: "legion/LEGION-208", HeadSHA: "new", HeadRepo: "acme/widgets",
 		UpdatedAt: time.Date(2026, 9, 25, 0, 0, 0, 0, time.UTC), Reopened: true,
 	}, engine, admissionStub{}); err != nil {
 		t.Fatalf("ApplyFact reopened: %v", err)
@@ -217,7 +217,7 @@ func TestImplementationReachesTestingWhenHandoffAndPullRequestArriveInEitherOrde
 				}
 			}
 			pullRequest := func() {
-				if _, err := intake.ApplyFact(ctx, pool, "github", "opened", intake.PullRequestOpened{Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208", HeadSHA: "head"}, engine, admissionStub{}); err != nil {
+				if _, err := intake.ApplyFact(ctx, pool, "github", "opened", intake.PullRequestOpened{Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208", HeadSHA: "head", HeadRepo: "sjawhar/legion"}, engine, admissionStub{}); err != nil {
 					t.Fatalf("ApplyFact pull request: %v", err)
 				}
 			}
@@ -482,6 +482,7 @@ func TestTheCloseLingersOnceAndExpiryStopsTreeAndRemovesEveryWorkspace(t *testin
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Merging, Generation: 7, Status: "retro", Rank: "U"})
 	parent := "LEGION-208"
 	seedIssue(t, pool, record.Issue{Key: "LEGION-209", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "child", Parent: &parent, Phase: phase.Merging, Generation: 3, Status: "retro", Rank: "V", LastDispatchSeq: 1})
+	seedRoleClaims(t, pool, "LEGION-208", "LEGION-209")
 	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleMerger, Claim: "merger", HandoffCommit: "head"})
 	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-209", Role: claim.RoleImplementer, Claim: "child-implementer"})
 	seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208", HeadSHA: "head", Failing: []string{}})
@@ -605,9 +606,10 @@ func assertOutboxCount(t *testing.T, pool *pgxpool.Pool, kind string, want int) 
 }
 
 // Every forward row short of the close applies through intake with its status, start and notice,
-// and none suspends the worker whose phase it ends: a role stays live from its first assignment
-// until its issue closes. (The merge's row is the close itself, which suspends the tree:
-// TestTheCloseLingersOnceAndExpiryStopsTreeAndRemovesEveryWorkspace.)
+// and none suspends the worker whose phase it ends: a claim named for its role, as each here is,
+// stays live from its first assignment until its issue closes (only a step of another role than a
+// keyed agent's claim holds suspends that claim, to re-role it). (The merge's row is the close
+// itself, which suspends the tree: TestTheCloseLingersOnceAndExpiryStopsTreeAndRemovesEveryWorkspace.)
 func TestRemainingForwardRowsApplyThroughIntake(t *testing.T) {
 	// The root's architect, whose sign-off the route names it by; the seeded issue has no run of a
 	// step the record counts, so its route reads none.
@@ -726,7 +728,9 @@ func assertStartTasksNamePhase(t *testing.T, pool *pgxpool.Pool, want phase.Phas
 }
 
 // Every backward edge applies through intake, and the worker that asked for it is not stopped: its
-// assignment ends with the move, and the start of the phase it moved to delivers the next one.
+// assignment ends with the move, and the start of the phase it moved to delivers the next one
+// (each claim here is named for its role; a keyed agent's claim is suspended at its turn's end
+// only where the step it moves to is of another role than it holds).
 // Every move a backward row serves applies, and counts the implementer one pass, as every move
 // back to an earlier phase does; the review rounds stand, since no review requested changes. A
 // move onto accepting starts no worker: the architect that owns the issue, whose phase it is, is

@@ -233,7 +233,7 @@ func TestADecisionWhileARootWaitsForItsSlotIsNamedAtItsStart(t *testing.T) {
 	pool := migratedPool(t)
 	var logged bytes.Buffer
 	admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(&logged, nil)))
-	seedSlotted(t, pool, "LEGION-BUSY", "A")
+	seedSlotted(t, pool, "LEGION-751", "A")
 	parkedRoot(t, pool)
 	readmitRoot(t, pool, admission)
 	if tasks := architectStartTasks(t, pool); len(tasks) != 0 {
@@ -254,8 +254,8 @@ func TestADecisionWhileARootWaitsForItsSlotIsNamedAtItsStart(t *testing.T) {
 		`msg="workflow: a person's decision on a tree waiting for its slot is kept for its architect's start"`) != 1 {
 		t.Fatalf("log %q; want the person's reply logged as kept once and no parked-tree line", logged.String())
 	}
-	apply(t, pool, admission, "busy-parked", intake.DispatchIssue{Key: "LEGION-BUSY", ResolvedRepo: "acme/widgets", Seq: 7, Type: "issue.updated",
-		Status: "backlog", Title: "LEGION-BUSY", Rank: "A", HandedOver: true}, admission.engine)
+	apply(t, pool, admission, "busy-parked", intake.DispatchIssue{Key: "LEGION-751", ResolvedRepo: "acme/widgets", Seq: 7, Type: "issue.updated",
+		Status: "backlog", Title: "LEGION-751", Rank: "A", HandedOver: true}, admission.engine)
 	tasks := architectStartTasks(t, pool)
 	if len(tasks) != 1 || tasks[0] != architectStart(t, pool, admission, "LEGION-ROOT",
 		"While nobody in LEGION-ROOT's tree could hear it, a person decided on the tree: "+

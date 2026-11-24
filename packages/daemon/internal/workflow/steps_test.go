@@ -32,7 +32,7 @@ func TestStepOfIsTodaysSequence(t *testing.T) {
 	today := todaysWalk()
 	steps := 0
 	for _, p := range phase.Order {
-		place, role, typ, ok := placeOnWalk(today, p)
+		place, role, typ, ok := placeOnWalk(today, standingIn(p))
 		w, stepPhase := want[p]
 		if ok != stepPhase {
 			t.Fatalf("the step of %s on today's walk: ok = %v, want %v", p, ok, stepPhase)
@@ -51,7 +51,7 @@ func TestStepOfIsTodaysSequence(t *testing.T) {
 		}
 	}
 	for _, p := range []phase.Phase{phase.Admitted, phase.Held, phase.Done, phase.AwaitingPerson} {
-		if _, _, _, ok := placeOnWalk(today, p); ok {
+		if _, _, _, ok := placeOnWalk(today, standingIn(p)); ok {
 			t.Errorf("%s is a step of today's walk; that phase runs none", p)
 		}
 	}
@@ -94,7 +94,7 @@ func TestEndOfReadsTheTrigger(t *testing.T) {
 // (retryPhase, closeMerged).
 func TestTheEndOfAMoveReadsWhereTheIssueStands(t *testing.T) {
 	review := record.PhaseRow{Role: claim.RoleReviewer, HandoffRecord: "6f1d2c3b-review"}
-	end := endOfTransition(todaysWalk(), TriggerReviewRejected, phase.Reviewing, phase.Implementing, review)
+	end := endOfTransition(todaysWalk(), TriggerReviewRejected, phase.Reviewing, standingIn(phase.Implementing), review)
 	if end.Result != ResultFailed || end.ReturnedTo == nil || *end.ReturnedTo != 2 || end.Report != review.HandoffRecord {
 		t.Errorf("the end of the review = %+v (returned to %v), want failed, returned to place 2, naming report %s",
 			end, end.ReturnedTo, review.HandoffRecord)

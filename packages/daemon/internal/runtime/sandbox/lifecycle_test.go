@@ -428,20 +428,21 @@ func (t *versionedTracker) Patch(gvr schema.GroupVersionResource, obj k8sruntime
 	return t.ObjectTracker.Patch(gvr, obj, ns, opts...)
 }
 
-// Adoption goes over the claim's connection, to the recorded process only.
+// Adoption goes over the claim's connection, to the recorded process only, naming the branch of
+// the task whose working copy it is.
 func TestAdoptWorkingCopyAsksTheRecordedProcess(t *testing.T) {
 	g := newRig(t, nil)
 	conn := fake.NewConn()
 	g.conns.Register(workerToken, conn)
 	loc := g.spawn(workerSpec(t))
 	id := runtime.GitIdentity{Name: "legion-implement[bot]", Email: "1+legion-implement[bot]@users.noreply.github.com"}
-	if err := g.r.AdoptWorkingCopy(g.ctx, loc, id); err != nil {
+	if err := g.r.AdoptWorkingCopy(g.ctx, loc, id, "legion/INFRA-1.d"); err != nil {
 		t.Fatal(err)
 	}
-	if adoptions := conn.Adoptions(); len(adoptions) != 1 || adoptions[0].Identity != id {
-		t.Fatalf("adoptions %+v", adoptions)
+	if adoptions := conn.Adoptions(); len(adoptions) != 1 || adoptions[0].Identity != id || adoptions[0].Branch != "legion/INFRA-1.d" {
+		t.Fatalf("adoptions %+v, want one of %s for legion/INFRA-1.d", adoptions, id.Name)
 	}
-	if err := g.r.AdoptWorkingCopy(g.ctx, sandboxLocator(workerToken, "uid-pod-stale"), id); err == nil {
+	if err := g.r.AdoptWorkingCopy(g.ctx, sandboxLocator(workerToken, "uid-pod-stale"), id, ""); err == nil {
 		t.Fatal("a stale locator's adoption was asked")
 	}
 }

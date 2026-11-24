@@ -74,7 +74,7 @@ var roleCoverFlags = []struct {
 }{
 	{
 		flag: "roles-dir", what: "roles directory",
-		usage: "the container-level per-role root: each role's launcher token, gh bundle and private, state and agent-secrets directories under <dir>/<role>",
+		usage: "the container-level per-slot root: each slot's launcher token, gh bundle and private, state and agent-secrets directories under <dir>/<slot>, a slot being named for the agent that runs in it",
 		def:   func() string { return "" },
 		at:    func(c *RoleCover) *string { return &c.RolesDir },
 	},

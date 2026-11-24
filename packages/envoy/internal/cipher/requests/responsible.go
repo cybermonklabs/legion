@@ -8,13 +8,12 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"regexp"
-	"strings"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/exchange"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/record"
+	"github.com/sjawhar/envoy/internal/legionclaim"
 )
 
 // Assignees answers the person a Dispatch issue is assigned to, "" for an issue nobody is. The
@@ -37,21 +36,17 @@ const assigneeBound = 3 * time.Second
 // documents it.
 const AssigneeUnreadMessage = "broker: the assignee of a Legion pod's issue could not be read; its request is listed for everyone"
 
-// claimToken is a Legion role claim token, legion-<project>-<issue project, lowercased>-<issue
-// number>-<role> (packages/daemon/internal/claim.NewToken). A project token holds no "-", so the
-// issue's project and number are the two groups. The controller's token, legion-<project>-
-// controller, names no issue and does not match.
-var claimToken = regexp.MustCompile(`^legion-[a-z0-9]+-([a-z][a-z0-9]*)-([0-9]+)-(architect|planner|implementer|tester|reviewer|merger)$`)
-
 // issueKeyOfClaim is the Dispatch issue key a pod's claim (enrollments.claim) names, such as
-// ACME-7 for legion-acme-acme-7-planner, and "" for a claim that is no Legion role
-// claim token.
+// ACME-7 for legion-acme-acme-7-planner, and "" for a claim that is no Legion claim token of an
+// issue: a token split as the daemon's claim.Token.Cut splits it, whose agent's name is any name
+// of the role grammar but controller (legionclaim.CutClaimToken, Envoy's one split of a claim
+// token, which depends on nothing but the standard library).
 func issueKeyOfClaim(claim string) string {
-	match := claimToken.FindStringSubmatch(claim)
-	if match == nil {
+	_, issue, _, ok := legionclaim.CutClaimToken(claim)
+	if !ok {
 		return ""
 	}
-	return strings.ToUpper(match[1]) + "-" + match[2]
+	return issue
 }
 
 // responsiblePerson is whose Inbox lists a request req's enrollment e made for a shared

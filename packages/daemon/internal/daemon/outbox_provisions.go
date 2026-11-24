@@ -3,6 +3,8 @@ package daemon
 import (
 	"context"
 	"sync"
+
+	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
 // provisionConcurrency is how many workspace checkouts the outbox's provisions run at once
@@ -26,16 +28,19 @@ const provisionConcurrency = 16
 // checked out provision it once, and a removal never runs under its issue's provision. Each
 // repository's shared clone has one store lock (stores, by clone directory), which
 // workspace.Provision holds for every command on the clone but the checkout, and workspace.Remove
-// for every step but the delete of the workspace's files. A provision takes its issue's turn, then
-// its store lock, and lets the lock go before it waits for a checkout place; a removal takes its
-// issue's turn, then its store lock. Nothing that holds a place waits on a store lock or a turn,
-// and nothing that holds a store lock waits on a turn or a place, so no two wait on each other.
-// The zero value is ready to use.
+// for every step but the delete of the workspace's files; it takes the clone's lock across
+// processes too (workspace.CloneLock), which a pane's shim holds while it adds a task's working
+// copy to the same clone. A provision takes its issue's turn, then its store lock, and lets the
+// lock go before it waits for a checkout place; a removal takes its issue's turn, then its store
+// lock. Nothing that holds a place waits on a store lock or a turn, and nothing that holds a store
+// lock waits on a turn or a place, so no two wait on each other. A shim holds the clone's lock for
+// the commands that add one working copy and waits on nothing of the daemon's while it does. The
+// zero value is ready to use.
 type provisionLocks struct {
 	mu     sync.Mutex
 	slots  chan struct{}
 	issues keyedLocks
-	stores keyedLocks
+	stores cloneLocks
 }
 
 // slot waits for one of the provisionConcurrency checkout places, or for ctx to end, and returns
@@ -62,15 +67,56 @@ type keyedLocks struct {
 	locks map[string]*keyedLock
 }
 
-// keyedLock is one key's mutex and the number of its current users.
+// keyedLock is one key's mutex and the number of its current users, and the key's lock across
+// processes when it has one (cloneLocks), taken after the mutex and let go before it.
 type keyedLock struct {
 	sync.Mutex
-	users int
+	users  int
+	across tryLocker
+}
+
+// tryLocker is a lock that can also be taken only when it is free: a key's lock across processes.
+type tryLocker interface {
+	sync.Locker
+	TryLock() bool
+}
+
+func (l *keyedLock) Lock() {
+	l.Mutex.Lock()
+	if l.across != nil {
+		l.across.Lock()
+	}
+}
+
+// TryLock takes the key's mutex and its lock across processes when both are free, and reports
+// whether it did; it waits for neither, and holds neither when it answers false.
+func (l *keyedLock) TryLock() bool {
+	if !l.Mutex.TryLock() {
+		return false
+	}
+	if l.across != nil && !l.across.TryLock() {
+		l.Mutex.Unlock()
+		return false
+	}
+	return true
+}
+
+func (l *keyedLock) Unlock() {
+	if l.across != nil {
+		l.across.Unlock()
+	}
+	l.Mutex.Unlock()
 }
 
 // take is key's mutex, not locked, and the release that ends this use of it: once a key's last
 // user releases it, the key's entry goes.
 func (k *keyedLocks) take(key string) (*keyedLock, func()) {
+	return k.takeAcross(key, nil)
+}
+
+// takeAcross is take for a key that has a lock across processes: across makes it when the key's
+// entry is made, nil for none.
+func (k *keyedLocks) takeAcross(key string, across func(key string) tryLocker) (*keyedLock, func()) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	if k.locks == nil {
@@ -79,6 +125,9 @@ func (k *keyedLocks) take(key string) (*keyedLock, func()) {
 	lock := k.locks[key]
 	if lock == nil {
 		lock = &keyedLock{}
+		if across != nil {
+			lock.across = across(key)
+		}
 		k.locks[key] = lock
 	}
 	lock.users++
@@ -89,4 +138,13 @@ func (k *keyedLocks) take(key string) (*keyedLock, func()) {
 			delete(k.locks, key)
 		}
 	}
+}
+
+// cloneLocks is the store lock of each shared clone, by its directory: a keyedLock whose lock
+// across processes is the clone's (workspace.CloneLock). The zero value is ready to use.
+type cloneLocks struct{ keyedLocks }
+
+// take is clone's store lock, not locked, and the release that ends this use of it.
+func (c *cloneLocks) take(clone string) (*keyedLock, func()) {
+	return c.takeAcross(clone, func(clone string) tryLocker { return workspace.CloneLock(clone) })
 }

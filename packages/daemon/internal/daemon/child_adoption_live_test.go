@@ -313,7 +313,8 @@ func (r *childAdoptionLive) runsInTheArchitectsTree(key string) {
 	r.note("drove POST /legion/v1/children/rerun of %s by %s's architect: %d %s — %s", key, r.tree, status, failure.Code, failure.Error)
 }
 
-// token is the claim token of role on issue, as the daemon spells it.
+// token is the claim token of the agent named for role on issue, the role's own claim
+// (claim.NewToken), as the daemon spells it.
 func (r *childAdoptionLive) token(issue string, role claim.Role) claim.Token {
 	r.t.Helper()
 	token, err := claim.NewToken(r.project, issue, role)

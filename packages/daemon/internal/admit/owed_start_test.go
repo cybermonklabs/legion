@@ -135,12 +135,13 @@ func midPhaseChild(t *testing.T, pool *pgxpool.Pool, root, key string, stands ph
 // (record.KeepsSlot), so its start is claimable as soon as the branch row ahead of it is run.
 //
 // The promotion writes everything but the tasks in the fact's own transaction: the root's new
-// generation and Dispatch status, each child's branch row, and a task-less start of each role of
-// a member that holds a claim row, the durable record that the role has run (startMidPhaseMembers),
-// so the sessions a member has are brought back and answer while its work waits. Each child of
-// this fixture has run one role, the one whose phase it stands in, so no task-less start is
-// written for either of them. Each child then has exactly one start, the phase worker's, which
-// carries that phase's task, and nothing names its worker as a claim nothing will wake.
+// generation and Dispatch status, each child's branch row, and a task-less start of each other
+// stored claim of a member, naming it with its stored role, a claim row being the durable record
+// that the claim has run (startMidPhaseMembers), so the sessions a member has are brought back and
+// answer while its work waits. Each child of this fixture has run one claim, its phase worker's,
+// so no task-less start is written for either of them. Each child then has exactly one start, the
+// phase worker's, which carries that phase's task, and nothing names its worker as a claim
+// nothing will wake.
 //
 // Two assertions of the table in internal/workflow (owed_start_test.go) read differently here,
 // and the rule is the re-admission's. The re-admission cleared the work each role's entry named

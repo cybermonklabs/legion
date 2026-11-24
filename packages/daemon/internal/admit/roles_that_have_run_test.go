@@ -14,13 +14,15 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
-// A re-admitted tree brings back the roles of its members that have run, and no others. The claim
-// row is what says a role has run: a re-admission clears the generation's facts and never a claim
-// (record.ClearTreeGeneration touches pull_requests, design_gates, phases and issues), and a
-// claim's token carries no generation (claim.NewToken), so the row outlives the generation that
-// wrote it — which is why every state here asserts that the rows it seeded are still there after
-// the re-admission. A role that holds none has never run, and a session started for it would hold
-// no transcript and no task, so nothing but a message could ever wake it: it is not started at all.
+// A re-admitted tree brings back the claims of its members that have run, and no others, each on
+// a start that names it. The claim row is what says a claim has run: a re-admission clears the
+// generation's facts and never a claim (record.ClearTreeGeneration touches pull_requests,
+// design_gates, phases and issues), and a claim's token carries no generation (claim.AgentToken),
+// so the row outlives the generation that wrote it — which is why every state here asserts that
+// the rows it seeded are still there after the re-admission. A role that no stored claim holds
+// gets no start of its own: whatever ran it ran in a stored claim, a keyed agent's or its own,
+// and that claim comes back under its own token; a session started for the role's own claim
+// would hold no transcript and no task, so nothing but a message could ever wake it.
 //
 // The four states are the member mid-phase, the member in a phase with no worker of its own, the
 // re-admitted root itself, and the member whose phase worker never ran.
@@ -103,13 +105,13 @@ func TestAReAdmissionStartsOnlyRolesThatHaveRun(t *testing.T) {
 		}
 	}
 
-	// assertNeverStarted is the rule: a role that holds no claim row has never run, and a
-	// re-admission starts it with nothing.
+	// assertNeverStarted is the rule: a role that no stored claim holds gets no start of its own
+	// from a re-admission, since only a stored claim has run.
 	assertNeverStarted := func(t *testing.T, rows map[claim.Role]midPhaseStart, roles ...claim.Role) {
 		t.Helper()
 		for _, role := range roles {
 			if row, started := rows[role]; started {
-				t.Fatalf("the %s of %s was started with %+v, want no start row at all: it holds no claim row, so it has never run", role, member, row)
+				t.Fatalf("the %s of %s was started with %+v, want no start row at all: no stored claim holds that role, so no claim of it has run", role, member, row)
 			}
 		}
 	}

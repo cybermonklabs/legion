@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/intake"
 
+	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/pods"
@@ -164,7 +166,7 @@ func TestABackstopThatCameDueWhileTheDaemonWasDownFiresAfterItStarts(t *testing.
 	ctx := context.Background()
 	due := time.Now().UTC().Add(-time.Hour).Truncate(time.Millisecond)
 	if err := w.idleStore.ArmPodBackstop(ctx, store.PodWakeBackstop{Project: "legion", Issue: "LEGION-208",
-		Role: claim.RoleImplementer, DueAt: due}); err != nil {
+		Claim: mustClaimToken(t, "LEGION-208", claim.RoleImplementer), Role: claim.RoleImplementer, DueAt: due}); err != nil {
 		t.Fatalf("arm the backstop: %v", err)
 	}
 
@@ -185,6 +187,88 @@ func TestABackstopThatCameDueWhileTheDaemonWasDownFiresAfterItStarts(t *testing.
 	restarted.fireDueBackstops(ctx, time.Now().UTC())
 	if applied.facts != 1 {
 		t.Fatalf("facts applied by a second pass = %d, want the backstop fired once", applied.facts)
+	}
+}
+
+// The release of an issue's pod arms the backstop of the worker of each of the issue's open
+// steps, and at step that worker is the role of the running step, read with the issue
+// (workflow.OpenStepsOf): the released checker of an issue at step 2 of `implementer checker` gets
+// the backstop, and the released implementer of the step before it gets none. The checker's claim
+// must serve the issue's current run, as a phase worker's must: one serving an earlier run gets
+// none. The issue
+// is read as the release's teardown reads it before it arms (outbox.issue, releaseIssue), so its
+// running role comes from its plan rows.
+func TestTheReleaseOfAPodAtStepArmsTheDeploymentRolesBackstop(t *testing.T) {
+	t.Parallel()
+	const key, checker = "LEGION-208", claim.Role("checker")
+	for _, c := range []struct {
+		name    string
+		serving uint64
+		want    []string
+	}{
+		{"a checker serving the current run", 2, []string{string(checker)}},
+		{"a checker serving an earlier run", 1, nil},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			ctx := context.Background()
+			pool := isolatedOutboxPool(t)
+			records := record.NewStore()
+			putOutboxIssue(t, pool, records, record.Issue{Key: key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
+				Project: "LEGION", Tree: key, Title: "root", Phase: phase.Step, Generation: 2, Status: "in_progress", Rank: "U", LastDispatchSeq: 1})
+			if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
+				v := record.PlanVersion{Issue: key, Generation: 2, Version: 1, ArtifactID: "plan-artifact", Source: record.PlanSourceOwner,
+					GivenBy: mustClaimToken(t, key, claim.RoleArchitect), GivenAt: time.Now().UTC()}
+				task := record.PlanTask{Issue: key, Generation: 2, Task: "a", PlanVersion: 1, BlockText: "Build the widget.", State: record.TaskWaiting}
+				steps := []record.PlanStep{
+					{Issue: key, Generation: 2, Task: "a", Position: 1, Role: "implementer", Type: "implementation"},
+					{Issue: key, Generation: 2, Task: "a", Position: 2, Role: string(checker), Type: "testing"},
+				}
+				if err := records.PutPlan(ctx, tx, v, []record.PlanTask{task}, steps); err != nil {
+					return err
+				}
+				if err := records.MoveTask(ctx, tx, key, 2, "a", record.TaskPlace{Kind: record.PlaceStep, Position: 2}, record.TaskRunning); err != nil {
+					return err
+				}
+				// The move writes the wait of a start for its join; this seed stands for a task whose join ended.
+				return records.SetStepWait(ctx, tx, key, 2, "a", record.StepWaitNone, nil)
+			}); err != nil {
+				t.Fatalf("seed the plan of %s at the checker's step: %v", key, err)
+			}
+			st := outboxTreeStore(t, pool, key)
+			for _, released := range []struct {
+				role    claim.Role
+				serving uint64
+			}{{claim.RoleImplementer, 2}, {checker, c.serving}} {
+				if err := st.PutClaim(ctx, supervise.Claim{Token: mustClaimToken(t, key, released.role), Project: "legion", Tree: key,
+					Issue: key, Role: released.role, TreeEpoch: 1, Generation: 2, ServingGeneration: released.serving,
+					State: supervise.StateSuspended, SuspendedBy: supervise.SuspendedByReleased,
+					Session: "ses-" + string(released.role), SessionFile: "/tmp/" + string(released.role) + ".jsonl",
+					PluginContract: api.DaemonAPIVersion}); err != nil {
+					t.Fatalf("seed the released %s: %v", released.role, err)
+				}
+			}
+			runner := &outbox{pool: pool, records: records, project: "legion", dispatchProject: "LEGION", trees: st,
+				backstop: time.Hour, log: quietLogger(), now: time.Now}
+
+			issue, err := runner.issue(ctx, key)
+			if err != nil {
+				t.Fatalf("read %s as the teardown does: %v", key, err)
+			}
+			if err := runner.armBackstops(ctx, issue); err != nil {
+				t.Fatalf("arm the backstops of %s's release: %v", key, err)
+			}
+			rows, err := pool.Query(ctx, `select role from pod_wake_backstops where issue = $1 and not fired order by role`, key)
+			if err != nil {
+				t.Fatalf("read the backstops of %s: %v", key, err)
+			}
+			armed, err := pgx.CollectRows(rows, pgx.RowTo[string])
+			if err != nil {
+				t.Fatalf("read the backstops of %s: %v", key, err)
+			}
+			if !slices.Equal(armed, c.want) {
+				t.Fatalf("the release of %s's pod armed the backstops of %v, want %v", key, armed, c.want)
+			}
+		})
 	}
 }
 
@@ -209,7 +293,8 @@ func TestADueBackstopWakesItsPodsLifecycleLaneOnce(t *testing.T) {
 			putOutboxIssue(t, pool, record.NewStore(), record.Issue{Key: pauseIssue, Repo: "acme/widgets", DefaultBranch: "main",
 				GitHubRepo: "acme/widgets", Project: "LEGION", Tree: pauseIssue, Title: "Workflow", Phase: phase.Implementing,
 				Generation: 1, Status: "in_progress", Rank: "U", LastDispatchSeq: 5})
-			if err := w.idleStore.PutClaim(ctx, supervise.Claim{Token: mustClaimToken(t, pauseIssue, claim.RoleImplementer),
+			implementer := mustClaimToken(t, pauseIssue, claim.RoleImplementer)
+			if err := w.idleStore.PutClaim(ctx, supervise.Claim{Token: implementer,
 				Project: "legion", Tree: pauseIssue, Issue: pauseIssue, Role: claim.RoleImplementer, Generation: 1, ServingGeneration: 1,
 				State: supervise.StateSuspended, SuspendedBy: supervise.SuspendedByReleased, Session: "ses-implementer"}); err != nil {
 				t.Fatalf("store the released implementer: %v", err)
@@ -223,8 +308,9 @@ func TestADueBackstopWakesItsPodsLifecycleLaneOnce(t *testing.T) {
 				Roles: []string{string(claim.RoleImplementer)}, At: woke.Add(time.Minute)}); err != nil {
 				t.Fatalf("record the pod's release: %v", err)
 			}
+			// A backstop is the claim's it wakes (PodWakeBackstop.Claim): here the released implementer's.
 			if err := w.idleStore.ArmPodBackstop(ctx, store.PodWakeBackstop{Project: "legion", Issue: pauseIssue,
-				Role: claim.RoleImplementer, DueAt: time.Now().UTC().Add(-time.Minute)}); err != nil {
+				Claim: implementer, Role: claim.RoleImplementer, DueAt: time.Now().UTC().Add(-time.Minute)}); err != nil {
 				t.Fatalf("arm the backstop: %v", err)
 			}
 			podRecords, err := w.idleStore.PodRecordsOf("LEGION")
@@ -274,6 +360,95 @@ func TestADueBackstopWakesItsPodsLifecycleLaneOnce(t *testing.T) {
 			}
 			want(1, "after the backstop fired")
 		})
+	}
+}
+
+// A backstop is the claim's it wakes. The release of a pod at step arms the backstop of the claim
+// the record gives the running step (record.WorkerClaim): here the agent of a key on the checker's
+// step, whose token names the implementer, beside the checker's own claim of an earlier version of
+// the plan, both released. A wake of that other claim, and a `suspend` row that stops it, each take
+// that claim over and leave the worker's backstop due: nothing else brings the worker back while it
+// waits on a deploy run.
+func TestAWakeOrAStopOfAnotherClaimOfTheRoleLeavesTheWorkersBackstop(t *testing.T) {
+	t.Parallel()
+	const key, checker = "LEGION-208", claim.Role("checker")
+	ctx := context.Background()
+	runner, sup, pool := runnerIn(t, phase.Step, "in_progress", &outboxPublisher{}, quietLogger())
+	runner.backstop = time.Hour
+	records := record.NewStore()
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
+		v := record.PlanVersion{Issue: key, Generation: 1, Version: 1, ArtifactID: "plan-artifact", Source: record.PlanSourceOwner,
+			GivenBy: mustClaimToken(t, key, claim.RoleArchitect), GivenAt: time.Now().UTC()}
+		task := record.PlanTask{Issue: key, Generation: 1, Task: "a", PlanVersion: 1, BlockText: "Build the widget.", State: record.TaskWaiting}
+		steps := []record.PlanStep{
+			{Issue: key, Generation: 1, Task: "a", Position: 1, Role: "implementer", Type: "implementation"},
+			{Issue: key, Generation: 1, Task: "a", Position: 2, Role: string(checker), Type: "testing"},
+		}
+		if err := records.PutPlan(ctx, tx, v, []record.PlanTask{task}, steps); err != nil {
+			return err
+		}
+		if err := records.MoveTask(ctx, tx, key, 1, "a", record.TaskPlace{Kind: record.PlaceStep, Position: 2}, record.TaskRunning); err != nil {
+			return err
+		}
+		// The move writes the wait of a start for its join; this seed stands for a task whose join ended.
+		return records.SetStepWait(ctx, tx, key, 1, "a", record.StepWaitNone, nil)
+	}); err != nil {
+		t.Fatalf("seed the plan of %s at the checker's step: %v", key, err)
+	}
+	worker, other := mustClaimToken(t, key, claim.RoleImplementer), mustClaimToken(t, key, checker)
+	if _, err := pool.Exec(ctx, `insert into phases (issue, role, claim, handoff_commit, rounds, pass, verdict, summary,
+		step_task, step_place) values ($1, $2, $3, '', 0, 0, '', '', 'a', 2)`, key, string(checker), string(worker)); err != nil {
+		t.Fatalf("name the keyed agent on the checker's step: %v", err)
+	}
+	// Each claim is the supervisor's, which the suspend row reaches, and the store's, which the
+	// release's arming reads (ReleasedClaimsIn).
+	st := runner.trees.(*store.Store)
+	for _, token := range []claim.Token{worker, other} {
+		released := supervise.Claim{Token: token, Project: "legion", Tree: key, Issue: key, Role: checker,
+			Generation: 1, ServingGeneration: 1, State: supervise.StateSuspended, SuspendedBy: supervise.SuspendedByReleased,
+			Session: "ses-" + string(token), SessionFile: t.TempDir() + "/session.jsonl"}
+		if _, _, err := sup.Create(ctx, released, ""); err != nil {
+			t.Fatalf("create the released claim %s: %v", token, err)
+		}
+		if err := st.PutClaim(ctx, released); err != nil {
+			t.Fatalf("store the released claim %s: %v", token, err)
+		}
+	}
+	due := func() int {
+		t.Helper()
+		var n int
+		if err := pool.QueryRow(ctx, `select count(*) from pod_wake_backstops where issue = $1 and not fired`, key).Scan(&n); err != nil {
+			t.Fatalf("count the backstops of %s: %v", key, err)
+		}
+		return n
+	}
+	issue, err := runner.issue(ctx, key)
+	if err != nil {
+		t.Fatalf("read %s as the teardown does: %v", key, err)
+	}
+	if err := runner.armBackstops(ctx, issue); err != nil {
+		t.Fatalf("arm the backstops of %s's release: %v", key, err)
+	}
+	if got := due(); got != 1 {
+		t.Fatalf("backstops armed by the release = %d, want the step's worker's one", got)
+	}
+
+	if taken, err := runner.trees.TakePodWake(ctx, "legion", key, other, checker, pods.WakeAgentMessage, time.Now(), 0); err != nil || !taken {
+		t.Fatalf("the wake of the checker's own claim = %t, %v; want it taken", taken, err)
+	}
+	if got := due(); got != 1 {
+		t.Fatalf("backstops due after the wake of the checker's own claim = %d, want the worker's still due", got)
+	}
+	if err := runner.execute(ctx, mustOutboxRow(t, key, record.SuperviseRequest{Op: "suspend", Tree: key, Role: checker,
+		Claim: other, Generation: 1, Reason: "the tree was parked"}, time.Now())); err != nil {
+		t.Fatalf("the suspend of the checker's own claim: %v", err)
+	}
+	if got := due(); got != 1 {
+		t.Fatalf("backstops due after the suspend of the checker's own claim = %d, want the worker's still due", got)
+	}
+	var armedFor string
+	if err := pool.QueryRow(ctx, `select claim from pod_wake_backstops where issue = $1 and not fired`, key).Scan(&armedFor); err != nil || armedFor != string(worker) {
+		t.Fatalf("the open backstop is armed for %q, %v; want the step's worker %s", armedFor, err, worker)
 	}
 }
 

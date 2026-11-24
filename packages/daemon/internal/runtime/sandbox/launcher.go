@@ -99,6 +99,11 @@ type launcherSession struct {
 	// and resume the file it finds (shimwire.LauncherHello.ResumesBySession). A launcher built
 	// before it could says nothing, and relaunch names it no session by its id alone.
 	resumesBySession bool
+	// credentialWait is whether this launcher's hello said it starts a child only once its slot's
+	// gh files hold the credential the start names (shimwire.LauncherHello.CredentialWait). A
+	// launcher of an image before that wait says nothing, and a re-role into its slot waits for
+	// the pod's update round (Runtime.SlotWaitsForCredential).
+	credentialWait bool
 
 	mu      sync.Mutex
 	conn    net.Conn
@@ -125,12 +130,14 @@ func newLaunchers(setting leakguard.Setting, leakCheck LeakCheckReader, saved ru
 
 // accept registers a launcher connection of the pod of issue, created at podCreated, whose
 // Sandbox owns the issue's kept volume since keptSince (the zero time for a pod on a volume of its
-// own). The newest authenticated connection for a role wins: a half-open predecessor is closed so
+// own). The newest authenticated connection for a slot, by the slot's token, wins: two claims of one
+// role run in two slots, each with its own launcher. A half-open predecessor is closed so
 // its pending requests fail instead of waiting forever.
 func (d *launchers) accept(token claim.Token, issue string, podCreated, keptSince time.Time, hello shimwire.LauncherHello) *launcherSession {
 	s := &launcherSession{owner: d, token: token, issue: issue, podCreated: podCreated, keptSince: keptSince, id: hello.LauncherID, podUID: hello.PodUID,
 		ready: make(chan struct{}), waiters: map[string]chan shimwire.Frame{},
-		leakCheckTag: hello.LeakCheckTag, leakCheckInstalled: hello.LeakCheckInstalled, resumesBySession: hello.ResumesBySession}
+		leakCheckTag: hello.LeakCheckTag, leakCheckInstalled: hello.LeakCheckInstalled, resumesBySession: hello.ResumesBySession,
+		credentialWait: hello.CredentialWait}
 	d.mu.Lock()
 	old := d.sessions[token]
 	d.sessions[token] = s
@@ -270,6 +277,26 @@ func (d *launchers) resumesBySession(token claim.Token, podUID string) bool {
 	session.mu.Lock()
 	defer session.mu.Unlock()
 	return !session.closed && session.resumesBySession
+}
+
+// credentialWaits is the uid of the pod the launcher of token, a slot's token, connected from, and
+// whether its hello said it starts a child only once the slot's gh files hold the start's
+// credential (launcherSession.credentialWait). It answers "" and true where no launcher of the slot
+// is connected: the launch then builds or waits for a pod, and a pod this release builds runs
+// launchers that wait.
+func (d *launchers) credentialWaits(token claim.Token) (string, bool) {
+	d.mu.Lock()
+	session := d.sessions[token]
+	d.mu.Unlock()
+	if session == nil {
+		return "", true
+	}
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	if session.closed {
+		return "", true
+	}
+	return session.podUID, session.credentialWait
 }
 
 func (d *launchers) await(ctx context.Context, token claim.Token, podUID string) (*launcherSession, error) {
@@ -818,9 +845,7 @@ func (d *launchers) volumeReported(s *launcherSession, report shimwire.LauncherV
 // which another bundle of the same issue never is, since another release is another sequence
 // (internal/launcher's bundleRestore.receive).
 func bundleFrames(issue string, b runtime.WorkspaceBundle) ([]shimwire.LauncherBundle, error) {
-	return shimwire.SplitWorkspaceBundle("restore-"+issue, b.Release, shimwire.WorkspaceBundle{
-		Bundle: b.Bundle, Head: b.Head, Tips: b.Tips, Bookmarks: b.Bookmarks, At: b.At,
-	})
+	return shimwire.SplitWorkspaceBundle("restore-"+issue, b.Release, b.Wire())
 }
 
 // bundleWaiter names the request one slice's answer belongs to, of a launcher_bundle sequence or
@@ -900,7 +925,8 @@ func (r *Runtime) bindLauncherSecrets(ctx context.Context, s *sandbox, l launch,
 }
 
 // launcherBound reports whether pod is one whose launchers this runtime bound: the Secret of every
-// role of l's pod, its launcher roles, exists, is the Sandbox's, binds pod by uid, and records its
+// role the pod was built with (templateRoles: a pod is judged by its own roles, never by a role the
+// deployment defined after it) exists, is the Sandbox's, binds pod by uid, and records its
 // gh bundle's default owner (GitHubDefaultKey, empty for a controller whose project has no GitHub
 // owner), which every role of one pod shares and l takes as its gitHubDefault, every agent's
 // GH_CONFIG_DIR. A running pod an older runtime made (one worker container, no launchers, or one
@@ -913,7 +939,11 @@ func (r *Runtime) bindLauncherSecrets(ctx context.Context, s *sandbox, l launch,
 // credential (cacheLauncherCredential), so the launcher a kept pod's launch waits for is not
 // refused for a read of its own that failed earlier (credentialRetry).
 func (r *Runtime) launcherBound(ctx context.Context, s *sandbox, pod *corev1.Pod, l *launch) (bool, error) {
-	for _, role := range l.roles {
+	roles := templateRoles(s)
+	if len(roles) == 0 {
+		return false, nil
+	}
+	for _, role := range roles {
 		name := roleSecretName(s.Name, role)
 		secret, err := r.kube.CoreV1().Secrets(r.namespace).Get(ctx, name, metav1.GetOptions{})
 		switch {
@@ -1018,18 +1048,18 @@ func launcherCommand(l launch, r *Runtime) shimwire.LauncherStart {
 	}
 	files[bootTokenKey] = l.spec.BootToken
 	files[runtime.SystemPromptFile] = l.prompt
-	claudeDir := ""
+	claudeDir, stateHome := "", roleStateHome(slotOf(l.spec.Claim))
 	if l.runsClaude() {
-		claudeDir = claudeConfigDir(l.spec.Role)
+		claudeDir = claudeConfigDir(slotOf(l.spec.Claim))
 		files[claudeMCPFile] = l.claude.mcp
 	}
 	agent := l.agentArgv(r.agent)
-	agentArgv := startArgv(roleStateHome(l.spec.Role), l.spec.Generation, l.spec.Plugins, claudeDir, r.setup,
+	agentArgv := startArgv(stateHome, l.spec.Generation, l.spec.Plugins, claudeDir, r.setup,
 		agent, installLockWait(r.bootTimeout, r.registrationIntervals))
 	command := shimwire.LauncherStart{
 		ID: "start-" + fmt.Sprint(l.spec.Generation), Generation: l.spec.Generation,
 		Argv: append(shim, append([]string{"--"}, agentArgv...)...), Env: values, Files: files,
-		ResumeFile: l.spec.ResumeSessionFile,
+		ResumeFile: l.spec.ResumeSessionFile, GitHubCredential: l.gitHubCredential,
 	}
 	if !l.spec.ResumeByAgent {
 		command.ResumeSession = l.spec.ResumeSession

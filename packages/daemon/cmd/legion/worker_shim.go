@@ -138,12 +138,12 @@ func runWorkerShim(ctx context.Context, cmd *cobra.Command, given workerShimFlag
 // then the directories environ's TMPDIR, cache and data homes and Go and bun caches name, which
 // are the issue's shared scratch and its shared Go caches, none of which anything else makes — a
 // role told a temporary directory nothing created cannot run — and Oh My Pi's profile directory
-// under the XDG_STATE_HOME the runtime names for this role, the one directory of the set that is
-// this role's alone, without which Oh My Pi would not read the variable and its browser broker's
-// lock would be the name every role of the pod takes; then the image's gh extensions linked into
-// gh's extension directory under the data home, where gh reads them and nothing else puts them
-// (podsafety.EnsureGhExtensions). A directory or link that cannot be made is a refusal to start,
-// naming it, as a providers key that cannot be read is.
+// under the XDG_STATE_HOME the runtime names for this agent's slot, the one directory of the set
+// that is this agent's alone whatever role its step is on, without which Oh My Pi would not read
+// the variable and its browser broker's lock would be the name every agent of the pod takes; then
+// the image's gh extensions linked into gh's extension directory under the data home, where gh
+// reads them and nothing else puts them (podsafety.EnsureGhExtensions). A directory or link that
+// cannot be made is a refusal to start, naming it, as a providers key that cannot be read is.
 func podSafeEnvironment(environ []string) ([]string, error) {
 	environ = podsafety.Apply(environ)
 	if err := podsafety.EnsureScratch(environ); err != nil {

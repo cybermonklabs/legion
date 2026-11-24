@@ -8,11 +8,13 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"testing"
 	"time"
 
@@ -41,7 +43,8 @@ func goldenPath(name string) string {
 }
 
 // settingsFixtureFile is the maximal kubernetes legion.yaml the state golden and the settings tests
-// share: every key the loader models is set, and every value a credential, its source or its file
+// share: every key the loader models is set but `roles` and `role_types`, which
+// `internal/api/settings_test.go` pins, and every value a credential, its source or its file
 // could be is a planted fixture a test can look for in the wire bytes (a PEM that is no key, a DSN
 // password that opens nothing, `*_file` paths, the kubeconfig, the session DSN secret's key, each
 // provider key's store key, the pod's env values, volume, Secret and ServiceAccount names, userinfo
@@ -197,7 +200,20 @@ state_dir: /var/lib/legion
 // reading no environment, so the resolved values are the file's and the defaults alone.
 func loadSettingsFile(t *testing.T, body string) config.Config {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "legion.yaml")
+	return loadSettingsFileWith(t, body, nil)
+}
+
+// loadSettingsFileWith is loadSettingsFile with each of files, by name, written first in the
+// directory of the legion.yaml, where a relative path the file names resolves.
+func loadSettingsFileWith(t *testing.T, body string, files map[string]string) config.Config {
+	t.Helper()
+	dir := t.TempDir()
+	for name, contents := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(contents), 0o600); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	path := filepath.Join(dir, "legion.yaml")
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatalf("write legion.yaml: %v", err)
 	}
@@ -302,8 +318,11 @@ func populatedState(t *testing.T) State {
 			StartedAt:     time.Date(2026, 9, 22, 9, 15, 2, 0, time.UTC),
 		},
 		Admission: Admission{
-			Cap:    5,
-			Active: []string{"LEGION-208", "LEGION-210", "LEGION-212", "LEGION-218", "LEGION-219"},
+			// The state lists `active` by slot index (record.Store.Slots), so each issue's `slot`
+			// below is its place in it, 0 to 6: the lowest index free at the pass that took it
+			// (admit's nextSlotIndex), at a moment before anything its own record says it did since.
+			Cap:    7,
+			Active: []string{"LEGION-208", "LEGION-210", "LEGION-212", "LEGION-218", "LEGION-219", "LEGION-240", "LEGION-241"},
 			// The line is two long and carries one member of each of its two parts, in the order
 			// the line publishes them: LEGION-212, the root a person answered, stands at 1 in the
 			// part whose work came back, which takes the free slots first, and LEGION-211, a root
@@ -314,12 +333,16 @@ func populatedState(t *testing.T) State {
 			// started it (record.KeepsSlot), so its `holdsSlot` is true and its sentence ends in
 			// the holder's clause rather than in one about queuing for a free slot. LEGION-218 and
 			// LEGION-219 are the two reviewing roots whose round waits on GitHub's merge state, and
-			// each holds a slot of its own, which the cap counts.
+			// each holds a slot of its own, which the cap counts. LEGION-240 holds one at step, and
+			// LEGION-241, held from step when its checker's claim failed, keeps the one that step
+			// held, since the slot rule reads where a hold is from (record.KeepsSlot, StandsAt), as
+			// LEGION-210, held from implementing, keeps its own.
 			Waiting: []string{"LEGION-212", "LEGION-211"},
 			// The roots of the live trees, which the slots no longer name: LEGION-207 closed,
 			// LEGION-214 is held with its Legion label off and so stands in no live tree, and every
-			// other root of the fixture is a tree of its own, each named below.
-			Trees: []string{"LEGION-208", "LEGION-210", "LEGION-211", "LEGION-212", "LEGION-218", "LEGION-219"},
+			// other root of the fixture is a tree of its own, each named below, LEGION-240 and
+			// LEGION-241 among them.
+			Trees: []string{"LEGION-208", "LEGION-210", "LEGION-211", "LEGION-212", "LEGION-218", "LEGION-219", "LEGION-240", "LEGION-241"},
 			// LEGION-211 is the waiting root admission skips, so it is in `waiting` too;
 			// LEGION-209 is a child of LEGION-208's tree the workflow holds at `admitted`, which
 			// no waiting line carries. Both are listed, by issue key, with what each waits on —
@@ -513,6 +536,37 @@ func populatedState(t *testing.T) State {
 					Index:      0,
 					AdmittedAt: time.Date(2026, 9, 21, 18, 42, 11, 0, time.UTC),
 				},
+				// The tasks of this root's plan, each with every key a task can carry between
+				// them (internal/projection's taskView). a is the task that merges: its owner
+				// stopped it to add the tasks it now needs, so it keeps its place and its pull
+				// request, which is the issue's own, the merge's. b's reviewer approved b's own
+				// pull request, whose round waits on GitHub. c's step waits for its agent k, which
+				// runs d's first step. e is held, its owner having escalated a failed claim. The
+				// issue stands at implementing, the first phase of a running task in today's order.
+				Tasks: []TaskView{
+					{ID: "a", State: string(record.TaskStopped), Needs: []string{"b", "c", "d", "e"}, Kind: record.PlaceStep,
+						Phase: string(phase.Implementing), Branch: "legion/LEGION-208", Position: 1, Role: string(claim.RoleImplementer),
+						Agent: "implementer", StoppedReason: "its owner stopped it to add the tasks it needs",
+						PullRequest: &PullRequestView{Repo: "acme/widgets", Number: 1247, Head: "5b3d9e2c8f1a47d06b2e5c9f3a8d1e4b7c0f6a29",
+							State: "open", MergeState: "blocked", ReviewDecision: "changes_requested"},
+						Counts: TaskCountsView{Pass: 3, Rounds: 2}},
+					{ID: "b", State: string(record.TaskRunning), Needs: []string{}, Kind: record.PlaceStep, Phase: string(phase.Reviewing),
+						Branch: "legion/LEGION-208.b", Position: 2, Role: string(claim.RoleReviewer), Agent: "reviewer",
+						PullRequest: &PullRequestView{Repo: "acme/widgets", Number: 1251, Head: "8e1f4c7a2d9b63e05f1a8c4d7b2e9f6a3c0d5b18",
+							State: "open", MergeState: "blocked", ReviewDecision: "approved"},
+						MergeWait: &MergeWaitView{WaitsOn: "8e1f4c7a2d9b63e05f1a8c4d7b2e9f6a3c0d5b18", MergeState: "blocked",
+							StateReadAt: &stuckStateReadAt, HeadUpdatedAt: &waitingHeadUpdatedAt, CheckRuns: 2},
+						Counts: TaskCountsView{Pass: 1}},
+					{ID: "c", State: string(record.TaskRunning), Needs: []string{}, Kind: record.PlaceStep, Phase: string(phase.Implementing),
+						Branch: "legion/LEGION-208.c", Position: 1, Role: string(claim.RoleImplementer), Agent: "k",
+						Wait: string(record.StepWaitAgent), WaitsFor: &AgentStepView{Agent: "k", Task: "d", Position: 1}},
+					{ID: "d", State: string(record.TaskRunning), Needs: []string{}, Kind: record.PlaceStep, Phase: string(phase.Implementing),
+						Branch: "legion/LEGION-208.d", Position: 1, Role: string(claim.RoleImplementer), Agent: "k",
+						Counts: TaskCountsView{Pass: 1}},
+					{ID: "e", State: string(record.TaskHeld), Needs: []string{}, Kind: record.PlaceStep, Phase: string(phase.Implementing),
+						Branch: "legion/LEGION-208.e", Position: 1, Role: string(claim.RoleImplementer), Agent: "implementer-2",
+						HoldReason: string(record.HoldEscalated), Counts: TaskCountsView{Pass: 1}},
+				},
 			},
 			"LEGION-210": {
 				Key:           "LEGION-210",
@@ -554,6 +608,10 @@ func populatedState(t *testing.T) State {
 				// Nobody has registered this root's spec, so its one gated step carries no
 				// document, no version and no approval, and holds the tree's work.
 				GatedSteps: []GatedStepView{{Step: record.DesignStepSpec, Status: GatedStepUnregistered}},
+				Slot: &SlotView{
+					Index:      1,
+					AdmittedAt: time.Date(2026, 9, 21, 19, 5, 26, 0, time.UTC),
+				},
 				// Its implementer failed while implementing and nothing will wake that claim, so
 				// the issue's one rendered answer is the stopped claim rather than a queue
 				// (`why`, api.WhyClaimStopped).
@@ -699,6 +757,49 @@ func populatedState(t *testing.T) State {
 			// `label_off`, which record.HeldReasonOf answers for that shape (measured against the
 			// ladder, not assumed). Its tree is no live tree and no draw reached it, so it carries
 			// no memory group.
+			// LEGION-240 stands at step: its task runs the step of checker, a role the deployment
+			// defines, which the phase alone does not name (`stepRole`). It holds a slot and is at
+			// work (deploymentRolesContract), but its pod was built before the deployment defined
+			// the checker, so the checker's start waits for that pod's update round or its release
+			// (record.Store.StartsWaitingForPod): the issue names the checker in `startWaitsForPod`
+			// and no claim of the checker exists yet, so it carries no worker.
+			// LEGION-241 is held from that step, its checker's claim failed, so its hold names the
+			// phase it left and the role of that step, and the failed claim stays its worker, keyed
+			// by the role of the deployment, as LEGION-210's failed implementer stays its own.
+			"LEGION-240": {
+				Key:              "LEGION-240",
+				Generation:       1,
+				Phase:            phase.Step,
+				StepRole:         "checker",
+				Status:           "in_progress",
+				Tree:             "LEGION-240",
+				Repo:             "acme/widgets",
+				DefaultBranch:    "main",
+				Workers:          map[claim.Role]PhaseView{},
+				StartWaitsForPod: []string{"checker"},
+				Slot: &SlotView{
+					Index:      5,
+					AdmittedAt: time.Date(2026, 9, 22, 8, 36, 5, 0, time.UTC),
+				},
+			},
+			"LEGION-241": {
+				Key:           "LEGION-241",
+				Generation:    1,
+				Phase:         phase.Held,
+				HeldFrom:      string(phase.Step),
+				StepRole:      "checker",
+				Status:        "in_progress",
+				Tree:          "LEGION-241",
+				Repo:          "acme/widgets",
+				DefaultBranch: "main",
+				Workers: map[claim.Role]PhaseView{
+					"checker": {Claim: ClaimView{Session: "ses_checker_241", State: "failed"}},
+				},
+				Slot: &SlotView{
+					Index:      6,
+					AdmittedAt: time.Date(2026, 9, 22, 8, 39, 47, 0, time.UTC),
+				},
+			},
 			"LEGION-214": {
 				Key:           "LEGION-214",
 				Generation:    1,
@@ -819,6 +920,10 @@ func populatedState(t *testing.T) State {
 					ApprovedVersion: &reviewApproval,
 					Status:          GatedStepApproved,
 				}},
+				Slot: &SlotView{
+					Index:      3,
+					AdmittedAt: time.Date(2026, 9, 22, 8, 14, 52, 0, time.UTC),
+				},
 			},
 			"LEGION-219": {
 				Key:           "LEGION-219",
@@ -873,6 +978,10 @@ func populatedState(t *testing.T) State {
 					ApprovedVersion: &stuckApproval,
 					Status:          GatedStepApproved,
 				}},
+				Slot: &SlotView{
+					Index:      4,
+					AdmittedAt: time.Date(2026, 9, 19, 10, 27, 44, 0, time.UTC),
+				},
 			},
 		},
 		// LEGION-208's lifecycle lane is running row 801; the supervise row queued after it came due
@@ -893,9 +1002,10 @@ func populatedState(t *testing.T) State {
 		// passes over every claim of both. The `why` of LEGION-211 and LEGION-212 is the
 		// projection's reading of this list.
 		StrandedClaims: []StrandedClaim{
-			{Issue: "LEGION-210", Role: claim.RoleImplementer, State: "failed"},
-			{Issue: "LEGION-211", Role: claim.RoleImplementer, State: "suspended"},
-			{Issue: "LEGION-212", Role: claim.RoleTester, State: "retired"},
+			{Issue: "LEGION-210", Role: claim.RoleImplementer, State: "failed", Token: "legion-legion-legion-210-implementer"},
+			{Issue: "LEGION-211", Role: claim.RoleImplementer, State: "suspended", Token: "legion-legion-legion-211-implementer"},
+			{Issue: "LEGION-212", Role: claim.RoleTester, State: "retired", Token: "legion-legion-legion-212-tester"},
+			{Issue: "LEGION-241", Role: "checker", State: "failed", Token: "legion-legion-legion-241-checker"},
 		},
 		// A wave going out at the pace its operator set, with one wake of each lane still held:
 		// LEGION-207's implementer, working its production check in the pod the daemon keeps,
@@ -997,7 +1107,9 @@ func populatedState(t *testing.T) State {
 				Repo: "acme/legacy", Sandbox: "legion-legion-cache-acme-legacy-0a1b2c3d", State: "starting", RetainedUntil: time.Date(2026, 10, 23, 9, 0, 0, 0, time.UTC),
 			}},
 		},
-		// The resolved maximal kubernetes file, so the fixture pins every key `settings` can carry.
+		// The resolved maximal kubernetes file, so the fixture pins every key `settings` can carry
+		// but `roles` and `role_types`, which the resolved maximal file sets none of and
+		// TestSettingsOfAKubernetesConfigurationNamesEveryKeyAndNoSecret (settings_test.go) pins.
 		Settings: SettingsOf(settingsFixtureConfig(t)),
 		// The three durable consumers the daemon opens, in the order Lag answers them
 		// (intake.Consumers.Lag): the Dispatch consumer is caught up; the GitHub consumer has 412
@@ -1085,6 +1197,8 @@ func populatedState(t *testing.T) State {
 	// read. LEGION-219's head was read again a minute before this state, and that read only
 	// confirmed what the record held, which moves no tree (workflow's pullRequestNews), so its
 	// tree has been still for more than a day although its read stamp is a minute old.
+	// LEGION-240 last moved when it entered step, and LEGION-241 when its checker's claim failed
+	// and the hold took it out of step; the failed claim carries no step record.
 	quietReadAt := time.Date(2026, 9, 22, 9, 18, 0, 0, time.UTC)
 	quietMoved := map[string]time.Time{
 		"LEGION-208": implementerStep.At,
@@ -1093,6 +1207,8 @@ func populatedState(t *testing.T) State {
 		"LEGION-212": time.Date(2026, 9, 22, 9, 3, 0, 0, time.UTC),
 		"LEGION-218": waitingApprovedAt,
 		"LEGION-219": newest(stuckApprovedAt, stuckFirstBlockedAt),
+		"LEGION-240": time.Date(2026, 9, 22, 8, 52, 16, 0, time.UTC),
+		"LEGION-241": time.Date(2026, 9, 22, 9, 4, 39, 0, time.UTC),
 	}
 	for key, issue := range state.Issues {
 		movedAt, measured := quietMoved[issue.Tree]
@@ -1126,6 +1242,113 @@ func TestStateGolden(t *testing.T) {
 	state := populatedState(t)
 	state.Contract = &ContractView{Daemon: DaemonAPIVersion, Caller: DaemonAPIVersion}
 	golden(t, "state.json", state)
+}
+
+// The populated state is written by hand, as a state the daemon serves, so its admission block
+// holds to the rules the daemon's own pass builds that block by. An issue that holds a slot or
+// waits in the line stands in a live tree, so its tree is one `trees` names (record.LiveRoots: a
+// root at work has its lifecycle open, and a root in the line is queued). Every issue the
+// state records that has not finished stands in `active`, `waiting` or `held`, since the held
+// list is every candidate that stands in neither of the other two (record.HeldList). And
+// `active` and each issue's `slot` are read from the same slot rows (internal/projection's
+// slotViews), in the order of their index, which the slots table keeps unique and never negative
+// (record.Store.Slots): so an issue carries a slot view exactly when `active` names it, and
+// `active` lists its issues by that index, each a different one, each slot with the moment the
+// pass took it (admit's PutSlot of the pass's now). Each issue the state records in a tree
+// `trees` names carries that tree's quiet time, and no other issue carries one
+// (internal/projection's quietTrees): one pair for the whole tree, each pair read at the one
+// instant the state is measured at, unless its movement stands at or after that instant and it
+// reads 0 (record.QuietTrees). A golden that breaks any of these rules shows every reader of
+// state.json a state the daemon never serves.
+func TestTheStateGoldensAdmissionNamesEveryIssueItHolds(t *testing.T) {
+	state := populatedState(t)
+	admission := state.Admission
+	trees := map[string]bool{}
+	for _, tree := range admission.Trees {
+		trees[tree] = true
+	}
+	named := map[string]bool{}
+	for _, list := range [][]string{admission.Active, admission.Waiting} {
+		for _, key := range list {
+			named[key] = true
+			issue, recorded := state.Issues[key]
+			if !recorded {
+				t.Errorf("the admission names %s in a slot or in the line, and the state records no such issue", key)
+				continue
+			}
+			if !trees[issue.Tree] {
+				t.Errorf("%s holds a slot or waits in the line in the tree of %s, which `trees` does not name: %v", key, issue.Tree, admission.Trees)
+			}
+		}
+	}
+	for _, row := range admission.Held {
+		named[row.Issue] = true
+	}
+	for key, issue := range state.Issues {
+		if issue.Phase != phase.Done && !named[key] {
+			t.Errorf("%s stands at %s, and the admission names it in none of `active`, `waiting` and `held`", key, issue.Phase)
+		}
+	}
+	active := map[string]bool{}
+	previous, previousKey := -1, ""
+	for _, key := range admission.Active {
+		active[key] = true
+		issue, recorded := state.Issues[key]
+		if !recorded {
+			continue
+		}
+		if issue.Slot == nil {
+			t.Errorf("%s stands in `active`, and its issue carries no `slot`", key)
+			continue
+		}
+		if issue.Slot.AdmittedAt.IsZero() {
+			t.Errorf("%s holds slot %d, and its `slot` names no moment it took it", key, issue.Slot.Index)
+		}
+		if issue.Slot.Index <= previous {
+			t.Errorf("%s holds slot %d after %s at slot %d in `active`, which lists the slots by their index, each a different one from 0", key, issue.Slot.Index, previousKey, previous)
+		}
+		previous, previousKey = issue.Slot.Index, key
+	}
+	for key, issue := range state.Issues {
+		if issue.Slot != nil && !active[key] {
+			t.Errorf("%s carries slot %d, and `active` does not name it", key, issue.Slot.Index)
+		}
+	}
+	type quiet struct {
+		movedAt time.Time
+		hours   float64
+	}
+	treeQuiet := map[string]quiet{}
+	var readAt time.Time
+	for _, key := range slices.Sorted(maps.Keys(state.Issues)) {
+		issue := state.Issues[key]
+		measured := issue.TreeMovedAt != nil || issue.QuietHours != nil
+		if !trees[issue.Tree] || issue.Phase == Unrecorded {
+			if measured {
+				t.Errorf("%s carries a quiet time, and its tree %q is no live tree of a record: %v", key, issue.Tree, admission.Trees)
+			}
+			continue
+		}
+		if issue.TreeMovedAt == nil || issue.QuietHours == nil {
+			t.Errorf("%s stands in the live tree of %s, and carries no whole quiet time (treeMovedAt %v, quietHours %v)", key, issue.Tree, issue.TreeMovedAt, issue.QuietHours)
+			continue
+		}
+		pair := quiet{movedAt: *issue.TreeMovedAt, hours: *issue.QuietHours}
+		if first, seen := treeQuiet[issue.Tree]; seen && (!first.movedAt.Equal(pair.movedAt) || first.hours != pair.hours) {
+			t.Errorf("%s carries the quiet time moved %s, quiet %g hours, and another issue of the tree of %s carries moved %s, quiet %g hours",
+				key, pair.movedAt.Format(time.RFC3339), pair.hours, issue.Tree, first.movedAt.Format(time.RFC3339), first.hours)
+		}
+		treeQuiet[issue.Tree] = pair
+		if pair.hours == 0 {
+			continue
+		}
+		at := pair.movedAt.Add(time.Duration(pair.hours * float64(time.Hour))).Round(time.Millisecond)
+		if readAt.IsZero() {
+			readAt = at
+		} else if !at.Equal(readAt) {
+			t.Errorf("%s's quiet time is read at %s, and the state's other quiet times at %s", key, at, readAt)
+		}
+	}
 }
 
 // The state route's body for a caller whose plugin is at the contract before
@@ -1335,11 +1558,14 @@ func (s stubPauses) Paused() (int64, bool) { return s.paused, s.paused != 0 }
 
 // pauseRouteAnswer is what the operator's route at target answers with svc behind it (nil for a
 // daemon with no pause service), held to want and decoded strictly into into, so a key the Go type
-// does not name fails here before it reaches a fixture.
+// does not name fails here before it reaches a fixture. The server reads a record of its own: the
+// operator's spawn reads the claim of the agent on the role's step before the pause refuses it, so
+// the refusal names the claim the spawn would have reached.
 func pauseRouteAnswer(t *testing.T, svc PauseService, target string, body any, want int, into any) {
 	t.Helper()
 	quiet := slog.New(slog.NewTextHandler(io.Discard, nil))
-	handler := NewServer("127.0.0.1", 8437, Options{Project: testProject, OperatorToken: testOperatorToken, Pause: svc, Log: quiet}).Handler
+	handler := NewServer("127.0.0.1", 8437, Options{Project: testProject, OperatorToken: testOperatorToken, Pause: svc, Log: quiet,
+		Pool: testStore(t).Pool(), Record: record.NewStore()}).Handler
 	var reader io.Reader
 	if body != nil {
 		encoded, err := json.Marshal(body)
@@ -1771,10 +1997,10 @@ func TestTask310RouteGoldens(t *testing.T) {
 }
 
 // The two routes of the owner's plan (contract 219) each have a fixture, named for its route as
-// the routes above are. register_plan answers the plan it took, each task with the steps its block
-// names as the plan writes them (registeredPlan), and stop_task answers the empty object of a
-// fact route. `@legion/contracts` parses both, so a field the daemon adds to either is caught
-// there.
+// the routes above are. register_plan answers the plan it took, the tasks its version added and
+// each task with the steps its block names as the plan writes them (registeredPlan), and stop_task
+// answers the empty object of a fact route. `@legion/contracts` parses both, so a field the daemon
+// adds to either is caught there.
 func TestOwnerPlanRouteGoldens(t *testing.T) {
 	golden(t, "plan-register.json", PlanRegisterResponse{Plan: registeredPlan(plan.Plan{
 		ArtifactID: "8f14e45f-ceea-467f-a0e6-1d8b2f8c9d11",
@@ -1783,7 +2009,7 @@ func TestOwnerPlanRouteGoldens(t *testing.T) {
 			ID:    "a",
 			Steps: []plan.Step{{Role: "implementer"}, {Role: "reviewer"}},
 		}},
-	})})
+	}, []string{"a"})})
 	golden(t, "task-stop.json", EmptyResponse{})
 }
 

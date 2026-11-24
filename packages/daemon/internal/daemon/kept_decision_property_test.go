@@ -1653,12 +1653,12 @@ func (r *keptRun) handsOverEveryMember() bool {
 }
 
 // pullRequestOpen is whether the record holds an open pull request for key, which is the one fact
-// the narrow rule reads that record.Issue does not carry (record.Store.PullRequest).
+// the narrow rule reads that record.Issue does not carry (record.Store.MergePullRequest).
 func (r *keptRun) pullRequestOpen(key string) bool {
 	var pr *record.PullRequest
 	if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
-		pr, err = r.records.PullRequest(r.ctx, tx, key)
+		pr, err = r.records.MergePullRequest(r.ctx, tx, key)
 		return err
 	}); err != nil {
 		r.fatalf("read the pull request of %s: %v", key, err)

@@ -1,12 +1,12 @@
 import { z } from "zod";
 import { goBlankPattern } from "./go-blank";
+import { legionStepRole as stepRole } from "./legion-claim-recovery";
 import {
   DISPATCH_KEY_PATTERN,
   GATED_STEPS,
   LEGION_PLAN_RATING_LEAST,
   LEGION_PLAN_RATING_MOST,
   LEGION_PLAN_REASON_MAX,
-  LEGION_ROLES,
 } from "./legion-roles";
 
 /**
@@ -51,12 +51,13 @@ export const LegionInstant = timestamp.regex(
 );
 
 /** `api.Phase` — the state an admitted issue sits in, in the transition table's own order. Not
- * the role working it: `workers` is keyed by role (`LEGION_ROLES`). `awaiting_person` is a root
- * that keeps its admission slot while its architect waits on a person's answer (`waitingOn` on
- * the issue record). `accepting` is the architect's acceptance between the reviewer's approval and
- * retro: no worker runs it. The merger merges in `merging`, and the daemon closes the issue when
- * it reads that merge (`done`); the production check after the close is no phase (`check` on the
- * issue record). */
+ * the role working it: `workers` is keyed by role, each of `LEGION_ROLES` or a role of the
+ * deployment. `awaiting_person` is a root that keeps its admission slot while its architect waits
+ * on a person's answer (`waitingOn` on the issue record). `step` runs each step of a role the
+ * deployment defines, which the issue names in `stepRole` (contract 221). `accepting` is the
+ * architect's acceptance between the reviewer's approval and retro: no worker runs it. The merger
+ * merges in `merging`, and the daemon closes the issue when it reads that merge (`done`); the
+ * production check after the close is no phase (`check` on the issue record). */
 export const LEGION_WORKFLOW_PHASES = [
   "admitted",
   "awaiting_person",
@@ -64,6 +65,7 @@ export const LEGION_WORKFLOW_PHASES = [
   "implementing",
   "testing",
   "reviewing",
+  "step",
   "accepting",
   "retro",
   "merging",
@@ -72,14 +74,15 @@ export const LEGION_WORKFLOW_PHASES = [
   "held",
 ] as const;
 
-/** The `api.PhaseBackwardRequest` targets contract-12's daemon accepts. Future state-only phases
- * join this list only with their daemon transition. */
+/** The `api.PhaseBackwardRequest` targets contract-12's daemon accepts, and `step` since contract
+ * 221. Future state-only phases join this list only with their daemon transition. */
 export const LEGION_PHASE_BACKWARD_TARGETS = [
   "admitted",
   "planning",
   "implementing",
   "testing",
   "reviewing",
+  "step",
   "accepting",
   "retro",
   "merging",
@@ -466,6 +469,65 @@ const legionMergeWaitView = z.object({
   toldState: legionMergeState.optional(),
 });
 
+/** `api.AgentStepView` — the agent a task's step waits for, and the running step that agent works
+ * (contract 224): that step's task and its place from 1. `task` and `position` are absent where
+ * the agent works no delivered step, as when a step of another task has waited for it longer, and
+ * `position` alone is absent where the agent works a retro. No plugin code reads it
+ * (LEGION_ANSWER_READS), so every field is optional. */
+const legionAgentStepView = z.object({
+  agent: nonEmptyString.optional(),
+  task: nonEmptyString.optional(),
+  position: z.number().int().positive().optional(),
+});
+
+/** `api.TaskView` — one task of an issue's plan (contract 224): where it stands, the act at its
+ * place, what the step there waits for, its own pull request and its own counts of returns.
+ * `state` is `waiting`, `running`, `held`, `done`, `stopped` or `left`; `needs` the ids of the
+ * tasks it needs, empty for none; `kind` and `position` its place (`step` with the step's place
+ * from 1, `retro` or `merge`), both absent at no act, for a task that has not started; `phase`
+ * the phase of that act, `done` for a task that is done or left, absent at no act; `branch` the
+ * GitHub branch it works on, absent until its first start gives it one; `role` and `agent` the
+ * role and the agent that work its act, for a task that is running, held or stopped, `agent`
+ * absent for a step of the key owner; `holdReason` why a held task is held, absent for a failed
+ * claim its owner has not decided, and `stoppedReason` why a stopped task was stopped, which a task
+ * that left stopped keeps; `wait` what the step at a running task's place waits for before its
+ * start is delivered, `join` or `agent`, absent where it was delivered, with `waitsFor` naming
+ * the agent of a step that waits for its agent. `pullRequest` and `mergeWait` are the task's own,
+ * built as the issue's are, and the issue's own are its merge's; they reuse the issue's views
+ * with each enumeration read as a plain string. Every word of a task is a plain string, so a value
+ * a later daemon adds is read rather than refused and no field here is one the daemon's table of
+ * enumerated fields must declare. The daemon always writes `id`, `state`, `needs` and `counts`.
+ * The plugin reads `state`, `phase`, `branch`, `agent` and `wait`, to find the step its
+ * session's agent runs (`stepCopy`, `packages/pi-shared/src/handoff-record.ts`), and names them in
+ * LEGION_ANSWER_READS. Every field stays optional, so a task served without one is still read. */
+const legionTaskView = z.object({
+  id: nonEmptyString.optional(),
+  state: nonEmptyString.optional(),
+  needs: z.array(nonEmptyString).optional(),
+  kind: nonEmptyString.optional(),
+  phase: nonEmptyString.optional(),
+  branch: nonEmptyString.optional(),
+  position: z.number().int().positive().optional(),
+  role: stepRole.optional(),
+  agent: nonEmptyString.optional(),
+  holdReason: nonEmptyString.optional(),
+  stoppedReason: nonEmptyString.optional(),
+  wait: nonEmptyString.optional(),
+  waitsFor: legionAgentStepView.optional(),
+  pullRequest: legionPullRequestView
+    .extend({ state: nonEmptyString.optional(), mergeState: nonEmptyString.optional() })
+    .optional(),
+  mergeWait: legionMergeWaitView
+    .extend({ mergeState: nonEmptyString.optional(), toldState: nonEmptyString.optional() })
+    .optional(),
+  counts: z
+    .object({
+      pass: z.number().int().nonnegative().optional(),
+      rounds: z.number().int().nonnegative().optional(),
+    })
+    .optional(),
+});
+
 /** `api.GateView` — the design gate; `approvedVersion` is null until a human approves one, and
  * the gate is open exactly when it equals `currentVersion`. */
 const legionGateView = z.object({
@@ -657,14 +719,16 @@ const legionPendingStatusWrite = z.object({
 });
 
 /** `api.StrandedClaim` — one claim nothing will wake (`workflow.Stranded`): a worker of its issue's
- * phase, or its tree's architect, in a tree that runs, named by its issue, its role and its state;
- * the issue's entry under `issues` carries the rest. Its state, role and suspension say the move
- * that brings it back (`api.StrandedClaim.Move`). A `retired` entry is a claim a close or a stop
- * retired while its tree runs: only a start of the phase it owns relaunches it, and no rule the
- * daemon runs queues that start, so nothing will wake it either. That state arrived with contract
- * 56, and a pod whose claims record a contract below it is served this report without its retired
- * entries (`api`'s `stateFor`, `withoutUnadmittedStrandedStates`) rather than being made to
- * refuse the whole state over a third value its enum does not name.
+ * phase, or its tree's architect, in a tree that runs, named by its issue, its role, its state and
+ * its claim `token`; the issue's entry under `issues` carries the rest. Two claims of one issue can
+ * hold one role, a keyed agent's on another role's step among them, so the token is what tells them
+ * apart, and a reader of who suspended a claim reads it by that token. Its state, role and
+ * suspension say the move that brings it back (`api.StrandedClaim.Move`). A `retired` entry is a
+ * claim a close or a stop retired while its tree runs: only a start of the phase it owns relaunches
+ * it, and no rule the daemon runs queues that start, so nothing will wake it either. That state
+ * arrived with contract 56, and a pod whose claims record a contract below it is served this
+ * report without its retired entries (`api`'s `stateFor`, `withoutUnadmittedStrandedStates`)
+ * rather than being made to refuse the whole state over a third value its enum does not name.
  *
  * Who suspended a suspended one is not here and must never be added: a session parses this body
  * with the schema of the contract its plugin was built at, and a Kubernetes deployment relaunches
@@ -674,8 +738,9 @@ const legionPendingStatusWrite = z.object({
  * ("no session-facing response carries suspendedBy" in legion-api.test.ts). */
 const legionStrandedClaim = z.object({
   issue: issueKey.optional(),
-  role: z.enum(LEGION_ROLES).optional(),
+  role: stepRole.optional(),
   state: z.enum(["suspended", "failed", "retired"]).optional(),
+  token: nonEmptyString.optional(),
 });
 
 /** `api.HeldOutboxRow` — one due lifecycle outbox row its issue's lifecycle lane cannot run yet,
@@ -708,7 +773,7 @@ const legionHeldOutboxRow = z.object({
 const legionWakeWaiting = z.object({
   claim: nonEmptyString.optional(),
   issue: issueKey.optional(),
-  role: z.enum(LEGION_ROLES).optional(),
+  role: stepRole.optional(),
   ...legionPacedWake,
   dueAt: timestamp,
 });
@@ -736,6 +801,12 @@ const legionIssue = z.object({
   key: nonEmptyString.optional(),
   generation: z.number().int().nonnegative().optional(),
   phase: z.enum(LEGION_PHASES),
+  /** The role of the deployment that works the issue's running step, where the issue stands at
+   * `step` or its hold took it out of `step` (contract 221): no phase names such a role, so the
+   * phase alone does not say who works the issue. Absent at every other phase, whose role the
+   * phase names, and from every issue of the body the route serves a caller before 221, which is
+   * served an issue at `step` as `implementing`. */
+  stepRole: stepRole.optional(),
   status: nonEmptyString.optional(),
   /** The key of the root of the issue's tree, equal to `key` on a root (contract 51). A child
    * holds an admission slot of its own, so neither `admission.active` nor `admission.waiting`
@@ -909,6 +980,14 @@ const legionIssue = z.object({
    * from an issue no experiment holds an answer for, and from every issue of the body the route
    * serves a caller before 141, so a reader takes it as optional. */
   assignments: z.array(legionAssignment).optional(),
+  /** The roles whose start waits for the issue's pod, which runs no process of theirs yet
+   * (`api.Issue.StartWaitsForPod`): absent for an issue no start waits on. */
+  startWaitsForPod: z.array(nonEmptyString).optional(),
+  /** Each task of the issue's plan, in task id order (`legionTaskView`, contract 224): one for each
+   * task of the plan of its generation, a plan of one task among them. Absent for an issue with no
+   * plan rows, and from every issue of the body the route serves a caller before 224
+   * (`api.shapeIssue`, `withoutTasks`), which is why a reader takes it as optional. */
+  tasks: z.array(legionTaskView).optional(),
 });
 
 /** `api.DaemonInfo` — the running daemon: its project, its store's schema, and its boot history.
@@ -1252,7 +1331,7 @@ const legionEndedPause = z.object({
 const legionPauseStop = z.object({
   claim: nonEmptyString.optional(),
   issue: issueKey,
-  role: z.enum(LEGION_ROLES),
+  role: stepRole,
   askedAt: timestamp.optional(),
 });
 
@@ -1379,7 +1458,7 @@ export const LegionRegisterResponse = z.object({
   claimToken: nonEmptyString,
   tree: nonEmptyString,
   issue: nonEmptyString,
-  role: z.enum(LEGION_ROLES),
+  role: stepRole,
   generation: z.number().int().positive(),
   secret: nonEmptyString,
   promptAgents: z.array(nonEmptyString),
@@ -1537,9 +1616,10 @@ const legionReleaseRecord = z.object({
 });
 
 /** `api.ResumeRecord` — one wake of a released pod and what it cost: the release it ended (0 when
- * no release row is recorded for it), the role it was for, what woke it, when the wake reached the
- * daemon, and `podReadyAt` and `firstTurnAt`, each absent until it is observed. `stuck` is a wake
- * that went ten minutes with no turn of the woken role. `pause` is the project pause that held
+ * no release row is recorded for it), the role of the claim it brought back, what woke it, when
+ * the wake reached the daemon, and `podReadyAt` and `firstTurnAt`, the first turn of that claim,
+ * each absent until it is observed. `stuck` is a wake that went ten minutes with no turn of the
+ * claim it brought back. `pause` is the project pause that held
  * the wake (contract 178), absent on a wake no pause held: a held wake pairs with no release, so
  * its `release` is 0, and its time to the first turn measures the pause, so a reader of these
  * records counts it apart (`releaseRecords` in `packages/pi-shared/src/legion-phase-ops.ts`).
@@ -1712,7 +1792,7 @@ export const LegionOperatorClaimResponse = z.object({
   token: nonEmptyString,
   tree: nonEmptyString,
   issue: nonEmptyString,
-  role: z.enum(LEGION_ROLES),
+  role: stepRole,
   generation: z.number().int().nonnegative(),
   state: z.enum(LEGION_CLAIM_STATES),
   session: z.string(),
@@ -1864,18 +1944,27 @@ const legionAnsweredPause = z.object({
 /** `api.PlanRegisterResponse`, the plan register_plan took (contract 219): the version given and
  * each of its tasks, its id and the steps its block names as the plan writes them (`role` or
  * `role:key`). A task whose block names none runs the project's default steps, which the workflow
- * reads when the task's work starts, so it is answered with no step: an empty list, never null. A
- * plan the daemon does not take is answered `409 PLAN_REFUSED`, whose `error` holds every reason
- * in order; the body's `reasons` lists them by task, which `LegionErrorResponse` strips. The
- * reader takes every field as optional, since no plugin code reads one: the `legion` tool hands
- * the answer to its agent whole. */
+ * reads when the task's work starts, so it is answered with no step: an empty list, never null.
+ * Contract 224 adds each task's `needs`, the ids of the tasks it needs as register_plan resolved
+ * them, an empty list for none, never null, and the plan's `added`, the ids of the tasks the
+ * version adds over the version in force, in the plan's order: every task of a generation's first
+ * version, an empty list for a version that adds none, never null, and the same list for a
+ * registration given again. A plan the daemon does not take is answered `409 PLAN_REFUSED`, whose
+ * `error` holds every reason in order; the body's `reasons` lists them by task, which
+ * `LegionErrorResponse` strips. The reader takes every field as optional, since no plugin code
+ * reads one: the `legion` tool hands the answer to its agent whole. */
 export const LegionPlanRegisterResponse = z.object({
   plan: z
     .object({
       version: z.number().int().positive().optional(),
+      added: z.array(nonEmptyString).optional(),
       tasks: z
         .array(
-          z.object({ id: nonEmptyString.optional(), steps: z.array(nonEmptyString).optional() })
+          z.object({
+            id: nonEmptyString.optional(),
+            steps: z.array(nonEmptyString).optional(),
+            needs: z.array(nonEmptyString).optional(),
+          })
         )
         .optional(),
     })
@@ -1999,6 +2088,11 @@ export function legionPlanRatingLoneField(
  * role does not work report the commit the workspace stands on instead, the merger's reports the
  * head the merger merged, and a check report carries neither commit nor record (the look pushed
  * nothing), so all three are optional here, and the daemon requires each where it applies.
+ * The daemon refuses the implementer's completion of implementing when no pull request is open on
+ * its task's branch and none is recorded merged (`HANDOFF_NO_PULL_REQUEST`), and, for an issue with
+ * plan rows, a plan of one task among them, when the open one is against another branch than the
+ * base the plan gives that task (`HANDOFF_PULL_REQUEST_BASE`, contract 224); an issue with no plan
+ * rows is held to no base. Either refusal records nothing.
  * `verdict` is `pass`
  * or `fail` for the tester's completion, `pass`, `pending` or `fail` for a check report
  * (`CHECK_VERDICT_REQUIRED`), and the empty string for every other completion; it stays a string
@@ -2098,6 +2192,16 @@ export const LegionPhaseBackwardRequest = z.strictObject({
   to: z.enum(LEGION_PHASE_BACKWARD_TARGETS),
   reason: nonEmptyString,
   issue: nonEmptyString.optional(),
+  /** The step of the running task the move returns to, by its place, 1 for its first (contract
+   * 221): the daemon judges it as it judges a failed step's `returnTo`, and `to` must be the phase
+   * that step runs as. */
+  returnTo: z.number().int().positive().optional(),
+  /** The task of the issue's plan the move is of (contract 224): an architect's move that names
+   * none is of the one task at `accepting`, and the daemon answers `409 TASK_REQUIRED` where two or
+   * more stand there and `409 TASK_NOT_AT_PHASE` for a named task that does not; a phase worker's
+   * move is of the task of its own step, and a task it names must be that one
+   * (`TASK_NOT_GRANTS`). */
+  task: nonEmptyString.optional(),
 });
 
 /** `api.PhaseRetryRequest`, the retry-or-escalate decision of the architect that owns a held issue.
@@ -2105,12 +2209,16 @@ export const LegionPhaseBackwardRequest = z.strictObject({
  * the task the restarted role is given and into the daemon's own log line for the release, and
  * an escalation sends it to the controller in the held notice, beside the cause that hold
  * already names. A request that names none is unchanged: the restarted role is told the
- * daemon's own words, and the escalation's notice carries no such field. */
+ * daemon's own words, and the escalation's notice carries no such field. `task` names the held
+ * task of the issue's plan the decision is of (contract 224): a request that names none is of the
+ * one held task, and the daemon answers `409 TASK_REQUIRED` where two or more are held and
+ * `409 TASK_NOT_AT_PHASE` for a named task that is not held. */
 export const LegionPhaseRetryRequest = z.strictObject({
   grantId: nonEmptyString,
   issue: nonEmptyString,
   decision: z.enum(["retry", "escalate"]),
   reason: nonEmptyString.optional(),
+  task: nonEmptyString.optional(),
 });
 
 /** `api.EscalateRequest`, the architect's report to the controller. */
@@ -2130,10 +2238,14 @@ export const LegionEscalateRequest = z.strictObject({
  * contract 51 it is also refused while an issue beneath that one is still in the workflow
  * (`SIGNOFF_CHILD_IN_WORKFLOW`, naming them): children are accepted and merged before their
  * parent, since a parent is accepted only once no issue beneath it is still in the workflow
- * (dispatch://INFRA-980). */
+ * (dispatch://INFRA-980). `task` names the task of the issue's plan it accepts (contract 224): a
+ * sign-off that names none is of the one task at `accepting`, and the daemon answers
+ * `409 TASK_REQUIRED` where two or more stand there and `409 TASK_NOT_AT_PHASE` for a named task
+ * that does not. */
 export const LegionSignOffRequest = z.strictObject({
   grantId: nonEmptyString,
   issue: nonEmptyString,
+  task: nonEmptyString.optional(),
 });
 
 /** `api.RootCloseRequest`, a root architect's close of its tree before the tree's first phase starts,
@@ -2181,7 +2293,10 @@ export const LegionTaskStopRequest = z.strictObject({
   task: nonEmptyString,
 });
 /** What plugin code takes the value of in one issue's record: `legion-phase-ops.ts` reads the
- * issue's phase and its open check for `handoff_complete`, `phase-reminder.ts` and
+ * issue's phase and its open check for `handoff_complete`, and `handoff-record.ts` reads each
+ * task's state, phase, branch, agent and wait for the step a completion or an update signal is
+ * of (`stepCopy`), `phase-reminder.ts` reads the phase
+ * and, at `step`, the issue's `stepRole`, `phase-reminder.ts` and
  * `pi-legion/src/stall-evidence.ts` read the architect's claim state, and the controller's
  * `read_state` summary (`pi-legion/src/tools.ts`) reads each issue's status, hold reason, slot,
  * design gate, and the state and both turn times of the architect's claim and of every worker's.
@@ -2195,6 +2310,7 @@ export const LegionTaskStopRequest = z.strictObject({
  * makes one of them required for the state makes it required on the record route too. */
 const ISSUE_RECORD_READS = [
   "phase",
+  "stepRole",
   "status",
   "holdReason",
   "architect",
@@ -2217,6 +2333,12 @@ const ISSUE_RECORD_READS = [
   "slot.index",
   "slot.admittedAt",
   "slot.lentTo",
+  "tasks",
+  "tasks[].state",
+  "tasks[].phase",
+  "tasks[].branch",
+  "tasks[].agent",
+  "tasks[].wait",
 ] as const;
 
 /**

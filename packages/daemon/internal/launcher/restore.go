@@ -3,9 +3,12 @@ package launcher
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"maps"
 	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -18,9 +21,9 @@ import (
 )
 
 // restoreBudget bounds the pod's one restore: an unbundle of a pack of unpushed commits, one jj
-// import, a bookmark per saved bookmark and one jj edit. A restore that cannot finish in it is
-// one the roles start without, with a notice of what was lost, rather than one the pod waits
-// longer for.
+// import, a bookmark per saved bookmark, one jj edit, and a workspace add and a jj edit per task's
+// working copy. A restore that cannot finish in it is one the roles start without, with a notice
+// of what was lost, rather than one the pod waits longer for.
 const restoreBudget = 5 * time.Minute
 
 // restoreRefPrefix is where the restore's temporary branches live. A bundle that only unbundles
@@ -276,8 +279,9 @@ func (r *bundleRestore) sent(report *shimwire.LauncherRestored) {
 	}
 }
 
-// restoreWorkspace puts one saved bundle back into the workspace at dir and answers the notice of
-// what it restored, or of what was lost and why. start starts each of its jj and git commands
+// restoreWorkspace puts one saved bundle back into the workspace at dir, and each task's working
+// copy the save named beside it (restoreTaskCopies), and answers the notice of what it restored,
+// or of what was lost and why. start starts each of its jj and git commands
 // (procgroup.Starter). release is the idle release whose save built the bundle, which the notice
 // of a failure names: that is the bundle an operator reads out of the daemon's database, since the
 // daemon records one restore attempt per bundle and sends it to no pod again. A restore that fails
@@ -376,13 +380,81 @@ func restoreWorkspace(ctx context.Context, start procgroup.Starter, dir string, 
 	if _, err := run(workspace.RefUpdates("delete", restoreRefHeadPrefix, b.Tips), "git", "--git-dir="+gitDir, "update-ref", "--stdin"); err != nil {
 		return lost(err.Error())
 	}
+	copied, uncopied := restoreTaskCopies(run, dir, b.WorkingCopies)
 	notice := fmt.Sprintf("the released workspace's saved work is restored: %d head(s), %d bookmark(s) and the working copy on %s, saved at %s",
 		len(b.Tips), len(b.Bookmarks)-len(skipped), b.Head, b.At.UTC().Format(time.RFC3339))
 	if len(skipped) > 0 {
 		notice += fmt.Sprintf("; jj would not take %d bookmark name(s), which are not set: %s",
 			len(skipped), strings.Join(skipped, ", "))
 	}
+	if len(copied) > 0 {
+		notice += "; the working copy of each of the tasks " + strings.Join(copied, ", ") + " is back on its saved commit"
+	}
+	if len(uncopied) > 0 {
+		notice += "; the working copy of each of the tasks " + strings.Join(uncopied, "; ") +
+			" is not put back, and its commits are visible heads of the clone: the adoption of that task's next step makes it again from the task's branch"
+	}
 	return true, notice
+}
+
+// restoreTaskCopies puts the working copy of each task the save named back beside the issue's
+// working copy dir, in the order of their branches, and answers the branches it put back and,
+// with the reason, those it did not. Each is what provisioning makes of a task's working copy
+// (workspace.ProvisionTask): a workspace of the issue's clone at the directory workspace.TaskDir
+// names for the branch, named for that directory, recorded as created now, with its git worktree
+// entry locked; here it sits on the commit the save named, which the bundle has made a visible
+// head with the rest of the saved work. A working copy that cannot be put back costs that
+// workspace alone and never the issue's working copy restored before it: its commits are in the
+// clone already.
+func restoreTaskCopies(run func(stdin []byte, args ...string) (string, error), dir string, copies map[string]string) (copied, uncopied []string) {
+	if len(copies) == 0 {
+		return nil, nil
+	}
+	// Each task's working copy is a workspace of the issue's clone: when that clone cannot be
+	// read, none of them is put back, and each is named with that one reason.
+	issue, unread := workspace.WorkspaceOf(dir)
+	for _, branch := range slices.Sorted(maps.Keys(copies)) {
+		err := unread
+		if err == nil {
+			err = restoreTaskCopy(run, issue, branch, copies[branch])
+		}
+		if err != nil {
+			uncopied = append(uncopied, branch+" ("+oneLine(err.Error())+")")
+			continue
+		}
+		copied = append(copied, branch)
+	}
+	return copied, uncopied
+}
+
+// restoreTaskCopy puts back the working copy of the task whose branch is branch, on commit,
+// beside issue's working copy (restoreTaskCopies). A directory already there is left as it is:
+// the restore makes working copies and never writes over one.
+func restoreTaskCopy(run func(stdin []byte, args ...string) (string, error), issue workspace.Workspace, branch, commit string) error {
+	dir, err := workspace.TaskDir(issue.Dir, branch)
+	if err != nil {
+		return err
+	}
+	if dir == issue.Dir {
+		return fmt.Errorf("%s is the issue's own branch, whose working copy is %s", branch, issue.Dir)
+	}
+	if _, err := os.Lstat(dir); err == nil {
+		return fmt.Errorf("%s is there already", dir)
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	if _, err := run(nil, "jj", "workspace", "add", "-R", issue.Dir, "--name", filepath.Base(dir), "--revision", commit, dir); err != nil {
+		return err
+	}
+	if err := workspace.RecordCreated(dir, time.Now()); err != nil {
+		return err
+	}
+	// The add made the workspace a new commit on top of the saved one; the edit puts the working
+	// copy on the saved commit itself, with the edit it holds, and jj abandons the empty one.
+	if _, err := run(nil, "jj", "edit", "-R", dir, commit); err != nil {
+		return err
+	}
+	return workspace.LockGitWorktree(issue.Clone, dir)
 }
 
 // restoreRefHeadPrefix is where the restore's temporary branches live while jj imports them: one

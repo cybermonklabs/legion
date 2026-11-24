@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"slices"
 	"strings"
@@ -296,6 +297,23 @@ func TestPodShapeEncodesEqualConfigurationsIdentically(t *testing.T) {
 	}}}
 	if drifted := podShapeDrift(built, podShape(otherwise, issuePod{}, nil)); len(drifted) > 0 {
 		t.Errorf("podShapeDrift = %q, want nothing: the same amounts spelled otherwise are the same configuration", drifted)
+	}
+
+	// A runtime whose deployment defines no role of its own records no roles at all: its
+	// annotation is byte for byte the one the release before the roles of a deployment wrote, so
+	// no pod of the fleet drifts at that release.
+	before, err := json.Marshal(struct {
+		Image     string                      `json:"image"`
+		Resources corev1.ResourceRequirements `json:"resources"`
+		Volumes   []corev1.Volume             `json:"volumes,omitempty"`
+		Mounts    []corev1.VolumeMount        `json:"mounts,omitempty"`
+		Disk      string                      `json:"disk"`
+	}{first.image, first.resources.Issue, first.pod.Volumes, first.pod.VolumeMounts, first.volumeSize.String()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := podShape(first, issuePod{}, nil); got != string(before) || strings.Contains(got, `"roles"`) {
+		t.Errorf("the shape of a runtime with no deployment role = %s, want the release before's %s, with no roles key", got, before)
 	}
 }
 

@@ -1,11 +1,11 @@
-import { isLegionRole, type LegionRole } from "@legion/contracts";
+import { isStepRole, type LegionStepRole } from "@legion/contracts";
 import { holdSecret } from "@legion/contracts/held-secrets";
 import { readSecretFile } from "@legion/envoy-client/secret-file";
 
 export type LegionSessionKind =
   | { kind: "controller" }
   | { kind: "root-architect"; tree: string }
-  | { kind: "phase-worker"; role: LegionRole; tree: string; issue: string }
+  | { kind: "phase-worker"; role: LegionStepRole; tree: string; issue: string }
   | { kind: "not-legion" };
 
 export function classifySession(env: NodeJS.ProcessEnv): LegionSessionKind {
@@ -14,14 +14,15 @@ export function classifySession(env: NodeJS.ProcessEnv): LegionSessionKind {
   }
 
   // The controller marker is LEGION_CONTROLLER alone. `legion controller start` also sets
-  // LEGION_ROLE=controller on that process, but "controller" is not a LegionRole and this
-  // extension never reads LEGION_ROLE for it — one signal, checked once, so the two markers can
-  // never disagree in practice.
+  // LEGION_ROLE=controller on that process, but "controller" is no claim's role of an issue and
+  // this extension never reads LEGION_ROLE for it — one signal, checked once, so the two markers
+  // can never disagree in practice.
   if (env.LEGION_CONTROLLER === "1") return { kind: "controller" };
 
   if (env.LEGION_ROLE === undefined) return { kind: "not-legion" };
 
-  if (!isLegionRole(env.LEGION_ROLE)) {
+  // A phase worker's role is one of Legion's six or a role of the deployment (contract 221).
+  if (!isStepRole(env.LEGION_ROLE)) {
     throw new Error(`LEGION_ROLE "${env.LEGION_ROLE}" is not a Legion role`);
   }
   const tree = requiredEnvironment(env, "LEGION_TREE");

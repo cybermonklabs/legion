@@ -30,7 +30,7 @@ import (
 // every other claim of the tree.
 func newClaimsCommand(stdout, stderr io.Writer) *cobra.Command {
 	return group(&cobra.Command{Use: "claims", Short: "the operator's hand on the daemon's claims"},
-		claimsCommand("spawn", "create a claim on a role of an issue and launch it", claimsSpawn, stdout, stderr),
+		claimsCommand("spawn", "launch the claim that works a role's step of an issue, creating it where none is stored", claimsSpawn, stdout, stderr),
 		claimsCommand("deliver", "give a claim a task", claimsDeliver, stdout, stderr),
 		claimsCommand("suspend", "suspend a claim, once the turn its agent is in ends", claimsSuspend, stdout, stderr),
 		claimsCommand("resume", "resume a suspended claim", claimRequest("resume"), stdout, stderr),
@@ -285,7 +285,9 @@ func quotedOrNone(value string) string {
 	return strconv.Quote(value)
 }
 
-// claimsSpawn creates the claim on --role of --issue, in the tree --tree roots, and launches it.
+// claimsSpawn launches the claim that works --role's step of --issue now, in the tree --tree
+// roots: the claim of the agent the step names, a keyed agent on a step of another role included,
+// or the role's own where no step names one, created where none is stored.
 // --prompt-file is an optional operator override; omitted, the daemon composes the role's shared
 // and Go-specific parts. --task is its first delivery, sent once the agent is ready.
 func claimsSpawn(c *claimsCall) action {

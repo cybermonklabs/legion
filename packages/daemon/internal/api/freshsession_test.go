@@ -33,8 +33,8 @@ import (
 )
 
 // freshSessionHarness is the one daemon both doors are driven against: the operator's bearer and
-// a controller grant on the same server, with the workflow's facts recorded and the role of each
-// phase known (phase.RoleFor), which the start of a phase worker whose process is gone reads.
+// a controller grant on the same server, with the workflow's facts recorded. The start of a phase
+// worker whose process is gone reads the role that works the issue's phase from the issue itself.
 func freshSessionHarness(t *testing.T, handler intake.Handler) *harness {
 	t.Helper()
 	return freshSessionHarnessStopping(t, handler, context.Background(), NewRouteDecisions())
@@ -49,7 +49,7 @@ func freshSessionHarnessStopping(t *testing.T, handler intake.Handler, stopping 
 	h.handler = NewServer("127.0.0.1", 8437, Options{
 		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken, Controller: h.store,
 		Pool: h.store.Pool(), Record: record.NewStore(), Releaser: h.runtime, Trees: h.store,
-		Handlers: []intake.Handler{handler}, RoleFor: phase.RoleFor,
+		Handlers: []intake.Handler{handler},
 		Stopping: stopping, Decisions: decisions,
 	}).Handler
 	return h
@@ -837,7 +837,7 @@ func TestTheControllersFreshSessionRefusesTheRoleController(t *testing.T) {
 		ClaimRequest{GrantID: grant.GrantID, Issue: "LEGION-209", Role: "controller"}, nil)
 
 	refusedSaying(t, recorder, http.StatusBadRequest, "INVALID_ROLE",
-		"role must be one of architect, planner, implementer, tester, reviewer, merger; "+
+		"role must be one of architect, planner, implementer, tester, reviewer, merger, or a role of this deployment; "+
 			"the project's controller is none of them, and its own claim takes no fresh session")
 }
 
@@ -1014,7 +1014,7 @@ func podPlacedHarness(t *testing.T, claims []supervise.Claim) *harness {
 	h.handler = NewServer("127.0.0.1", 8437, Options{
 		Supervisor: podSupervisor{testSupervisor: h.supervisor, claims: claims}, BootTokens: h.tokens, Project: testProject,
 		OperatorToken: testOperatorToken, Controller: h.store, Pool: h.store.Pool(), Record: record.NewStore(), Releaser: h.runtime,
-		Trees: h.store, Handlers: []intake.Handler{&phaseRestarter{}}, RoleFor: phase.RoleFor,
+		Trees: h.store, Handlers: []intake.Handler{&phaseRestarter{}},
 		CallerPod: func(addr netip.Addr) (string, bool) {
 			return statePodUID, addr == netip.MustParseAddr("192.0.2.1")
 		},

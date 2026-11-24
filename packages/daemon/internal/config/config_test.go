@@ -1554,8 +1554,8 @@ func TestLoadRefuses(t *testing.T) {
 		},
 		{
 			name: "a hook naming a move the daemon does not count",
-			body: aHook("{name: stuck, on: work_back, every: 1, moves: [planning-merging], roles: [tester], prompt: Words.}"),
-			want: `hooks[0].moves names "planning-merging", which is no move back the daemon counts: a move is written "<from>-<to>", both of them workflow phases, and the phase it goes to before the phase it leaves`,
+			body: aHook("{name: stuck, on: work_back, every: 1, moves: [testing-testing], roles: [tester], prompt: Words.}"),
+			want: `hooks[0].moves names "testing-testing", which is no move the daemon counts: a move is written "<from>-<to>", two workflow phases, which differ but in step-step`,
 		},
 		{
 			name: "a hook with both prompt and prompt_file",
@@ -1765,7 +1765,7 @@ func TestLoadClassifiesEveryShippedKey(t *testing.T) {
 		},
 		{
 			key: "pod_update_retask_hours", line: "pod_update_retask_hours: 1", class: warned,
-			want: "setting pod_update_retask_hours changes nothing: no update round asks a worker again, since the round publishes its ask once to each role's topic rather than queueing it as a task, and the round ends at its bound whatever the roles answer; remove pod_update_retask_hours from legion.yaml, where pod_update_grace_minutes is the round's one bound (dispatch://INFRA-2981 R7)",
+			want: "setting pod_update_retask_hours changes nothing: no update round asks a worker again, since the round publishes its ask once to the topic of each claim it asks rather than queueing it as a task, and the round ends at its bound whatever the claims answer; remove pod_update_retask_hours from legion.yaml, where pod_update_grace_minutes is the round's one bound (dispatch://INFRA-2981 R7)",
 		},
 		{
 			key: "pod_update_notice_hours", line: "pod_update_notice_hours: 4", class: warned,

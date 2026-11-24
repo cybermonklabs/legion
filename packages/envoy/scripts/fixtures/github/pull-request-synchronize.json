@@ -13,7 +13,10 @@
     },
     "head": {
       "sha": "2222222222222222222222222222222222222222",
-      "ref": "acceptance-driver"
+      "ref": "acceptance-driver",
+      "repo": {
+        "full_name": "example-org/example-repo"
+      }
     },
     "base": {
       "ref": "main"

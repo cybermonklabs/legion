@@ -146,11 +146,12 @@ type LoginState struct {
 // recorded at spawn, the thumbprint and projected token the shim's hello carried, and the
 // agent's session id — "" before the agent registered, which the broker records as null. The
 // broker picks a request's approver at request time, so the enrollment names none.
-// Slot names one of several pod enrollments when an issue pod holds role processes side by side
-// (`<role>-g<generation>`); empty is the pod's one identity. Claim is the role claim token the
-// process runs for, which every later generation and replacement pod of the role states again, so
-// the broker files the pod's requests under that claim rather than under this one enrollment;
-// empty states none.
+// Slot names one of several pod enrollments when an issue pod holds processes of several claims
+// side by side (`<agent>-g<generation>`, the slot of the claim's agent); empty is the pod's one
+// identity. Claim is the claim token of the agent the process runs for, which every later
+// generation and replacement pod of that agent states again, whatever role its step is on, so the
+// broker files the pod's requests under that claim rather than under this one enrollment; empty
+// states none.
 type PodEnrollment struct {
 	PodUID, Slot, Thumbprint, PodToken, Session, Claim string
 }

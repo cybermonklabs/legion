@@ -10,6 +10,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
+	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
@@ -288,8 +289,18 @@ var topLevelKeys = func() []keyDescriptor {
 			},
 		},
 		{
+			Name: rolesKey, Default: "the deployment defines no role: a plan's steps name Legion's own roles alone", RequiredBy: "no",
+			Description: "The roles the deployment defines of its own, which a step of a plan names as it names Legion's: each key a role's name, a word of `a-z`, `0-9` and `-` that starts with a letter, at most 32 characters and none of Legion's own names (`architect`, `planner`, `implementer`, `tester`, `reviewer`, `merger`, `controller`, `acceptance`), each value the role's `type`, `prompt_file`, `model` and `github_app`.",
+			Read:        reads(readRoles, func(f *fileConfig, v []Role) { f.Roles = v }),
+		},
+		{
+			Name: roleTypesKey, Default: "a role's type is one of Legion's five: `design`, `planning`, `implementation`, `testing`, `review`", RequiredBy: "no",
+			Description: "The types of a step the deployment adds to Legion's five, which a role of `roles` may then have: each a word of `a-z`, `0-9` and `-` that starts with a letter, at most 32 characters, none of the five and named once.",
+			Read:        reads(readRoleTypes, func(f *fileConfig, v []plan.Type) { f.RoleTypes = v }),
+		},
+		{
 			Name: "worker_backends", Default: "every role runs on Oh My Pi", RequiredBy: "no",
-			Description: "The issue roles that run on Claude Code instead of Oh My Pi: each key a phase worker's role (`planner`, `implementer`, `tester`, `reviewer`, `merger`), each value `omp` or `claude`; the architect and the controller always run on Oh My Pi.",
+			Description: "The issue roles that run on Claude Code instead of Oh My Pi: each key a phase worker's role (`planner`, `implementer`, `tester`, `reviewer`, `merger`) or a role of `roles`, each value `omp` or `claude`; the architect and the controller always run on Oh My Pi.",
 			Read:        reads(readWorkerBackends, func(f *fileConfig, v map[claim.Role]runtime.Backend) { f.WorkerBackends = v }),
 		},
 		{
@@ -490,11 +501,21 @@ var nestedKeys = []memberGroup{
 		{Name: "every", Default: "none: a hook that names no `every` is refused", RequiredBy: "yes",
 			Description: "How many of the moves it counts fire the hook: it fires when those counts, added up, are a whole multiple of this number."},
 		{Name: "roles", Default: "none: a hook that names no `roles` is refused", RequiredBy: "yes",
-			Description: "The roles its words are put in front of, at least one of implementer, tester, reviewer, planner and merger; the architect is refused, since the daemon's own wake to an architect is a notice."},
+			Description: "The roles its words are put in front of, at least one, each one of implementer, tester, reviewer, planner and merger or a role of `roles`; the architect is refused, since the daemon's own wake to an architect is a notice."},
 		{Name: "prompt", Default: "the words come from `prompt_file`", RequiredBy: "when the hook names no `prompt_file`: a hook carries the words it puts in front of its roles",
 			Description: "The words themselves, written in the file."},
 		{Name: "prompt_file", Default: "the words come from `prompt`", RequiredBy: "when the hook names no `prompt`: a hook carries the words it puts in front of its roles",
 			Description: "A file the words are read from at boot, resolved against the directory of the file that set it, as `instructions` is; a missing, unreadable or empty one refuses the boot."},
+	}},
+	{Path: rolesKey + ".<NAME>", Members: []member{
+		{Name: "type", Default: "none: a role that names no type is refused", RequiredBy: "yes",
+			Description: "The type of the role's steps: one of `design`, `planning`, `implementation`, `testing` and `review`, or a type `role_types` names."},
+		{Name: "prompt_file", Default: "none: a role that names no prompt file is refused", RequiredBy: "yes",
+			Description: "The file of the prompt the role's agent starts with, the deployment's own words for it, resolved against the directory of the file that set it, as a hook's `prompt_file` is; one the daemon cannot read refuses its start."},
+		{Name: "model", Default: "the model the role's agent's own settings choose", RequiredBy: "no",
+			Description: "The model the role's agent runs, any non-empty string."},
+		{Name: "github_app", Default: "`review`", RequiredBy: "no",
+			Description: "The GitHub App the role works as, `implement` or `review`."},
 	}},
 	{Path: "capabilities", Members: []member{
 		{Name: "decided", Default: "every capability the deployment leaves open is reported open", RequiredBy: "no",

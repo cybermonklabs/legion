@@ -571,6 +571,51 @@ test("no reminder is sent once the daemon has failed this role's claim", async (
   ]);
 });
 
+// Contract 221: a role of the deployment works the phase `step`, which no role's phase names, so
+// the record check reads the issue's `stepRole`: the checker is reminded while its own step runs,
+// and not while the step of another role of the deployment runs.
+test("a role of the deployment is reminded at step while the issue's stepRole is its own", async () => {
+  const checker = {
+    ...implementer,
+    role: "checker",
+    claimToken: "legion-legion-legion-208-checker",
+  };
+  for (const [stepRole, reminds] of [
+    ["checker", true],
+    ["linter", false],
+  ] as const) {
+    const debugged: string[] = [];
+    // Only the fields the record check reads, cast as `claimFailed` above is.
+    const record = {
+      phase: "step",
+      stepRole,
+      workers: { [stepRole]: { claim: { state: "working" } } },
+    } as unknown as LegionIssue;
+    const reminder = createPhaseReminder({
+      sendReminder: () => {},
+      armTimer: () => {},
+      saveEntry: () => {},
+      claim: () => checker,
+      readRecord: async () => record,
+      publisher: () => undefined,
+      project: "legion",
+      limits: DEFAULT_STALL_LIMITS,
+      log: { debug: (message) => debugged.push(message), warn: () => {} },
+    });
+    reminder.apply({ kind: "assignment" });
+    const continuation = await reminder.settle(said("Checked."));
+    if (reminds) {
+      expect(continuation, `stepRole ${stepRole}`).toBeString();
+      expect(debugged).toEqual([]);
+    } else {
+      expect(continuation, `stepRole ${stepRole}`).toBeUndefined();
+      expect(debugged).toEqual([
+        "legion: this role no longer works this phase; no reminder is sent",
+      ]);
+    }
+  }
+});
+
 // The wait a `ready_for_update` answer creates is `awaiting-update`, and nothing is armed in it:
 // the daemon is what wakes the worker, with the task it held behind the round, once the round
 // has replaced the pod. A timer fired in that wait would steer a real turn into the worker

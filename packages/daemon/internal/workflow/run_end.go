@@ -91,10 +91,12 @@ func (e *Engine) OpenFact(ctx context.Context) context.Context {
 
 // SettleFact settles the record the fact left, once its last handler has applied it, in its
 // transaction (intake.Settler): first each parent held before its retro whose tree the fact wrote
-// an issue of is released where nothing beneath it is open (releaseHeldParents), and then each run
+// an issue of is released where nothing beneath it is open (releaseHeldParents), then each run
 // the fact left over ends (runOver): the runs of each issue the fact touched, the released parents
 // among them, and of each member of a tree whose root the fact wrote and which lingers, or whose
-// linger it closed. A second settle of one fact settles nothing.
+// linger it closed. Then each agent the fact freed goes to the step that waited longest for it
+// (handOnAgents), and last each step whose join nothing joins at its issue's generation is joined
+// there (joinAgain). A second settle of one fact settles nothing.
 func (e *Engine) SettleFact(ctx context.Context, tx pgx.Tx) error {
 	runs, ok := ctx.Value(factRunsKey{}).(*factRuns)
 	if !ok || runs.settled {
@@ -104,14 +106,213 @@ func (e *Engine) SettleFact(ctx context.Context, tx pgx.Tx) error {
 	if err := e.releaseHeldParents(ctx, tx, record.IssuesWritten(ctx)); err != nil {
 		return err
 	}
-	return e.settleRuns(ctx, tx, runs, record.IssuesWritten(ctx), nil)
+	if err := e.settleRuns(ctx, tx, runs, record.IssuesWritten(ctx), nil); err != nil {
+		return err
+	}
+	if err := e.handOnAgents(ctx, tx, record.IssuesWritten(ctx)); err != nil {
+		return err
+	}
+	return e.joinAgain(ctx, tx, record.IssuesWritten(ctx))
+}
+
+// handOnAgents is the one place an agent a step of another task waits for is handed on, after each
+// move and each start of the fact: so a move that frees an agent and a move that puts a step of the
+// same agent at its task's place, in one fact, each had their own start first (Engine.start), and
+// the step a move made ready in the same act waits behind the steps that waited longer. For each
+// issue the fact wrote whose plan holds several tasks, each step of a running task that waits for
+// its agent, the one that waited longest first (by the moment its wait began, then by task id), is
+// started through Engine.start where no running step of the issue holds its agent, which starts it
+// in that agent's session. An issue of a tree that lingers starts nothing, as no move does there,
+// and an issue the record does not hold has no step to start: the hand-on goes on to the next.
+func (e *Engine) handOnAgents(ctx context.Context, tx pgx.Tx, keys []string) error {
+	var order []string
+	for _, key := range keys {
+		if !slices.Contains(order, key) {
+			order = append(order, key)
+		}
+	}
+	for _, key := range order {
+		issue, err := e.store.Issue(ctx, tx, key)
+		if err != nil {
+			return err
+		}
+		if issue == nil {
+			continue
+		}
+		stored, err := e.store.Plan(ctx, tx, key, issue.Generation)
+		if err != nil {
+			return err
+		}
+		waiting := agentWaiters(stored)
+		if len(waiting) == 0 {
+			continue
+		}
+		lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree)
+		if err != nil {
+			return err
+		}
+		if lingers {
+			continue
+		}
+		for _, id := range waiting {
+			if err := e.handOn(ctx, tx, key, id); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// joinAgain is the one place the join of a task's needs is queued again: for each issue the fact
+// wrote, each step of a running task that waits for its join (record.StepWaitJoin) and whose join
+// no task_branch row of the issue's generation makes (record.Store.TaskBranchQueued) goes to
+// Engine.start, the start of every step, which joins its needs at that generation. Each start of a
+// task queues its join in the transaction that moves it, so such a step is one whose join was
+// queued at a generation the issue has left: admission's re-admission carries a running task, its
+// wait among it, to the next generation, and the row of the generation it left finishes without
+// acting (the outbox's taskBranch), so nothing else would end the wait. An issue of a tree that
+// lingers joins nothing, as no move starts anything there.
+func (e *Engine) joinAgain(ctx context.Context, tx pgx.Tx, keys []string) error {
+	var order []string
+	for _, key := range keys {
+		if !slices.Contains(order, key) {
+			order = append(order, key)
+		}
+	}
+	for _, key := range order {
+		issue, err := e.store.Issue(ctx, tx, key)
+		if err != nil {
+			return err
+		}
+		if issue == nil {
+			continue
+		}
+		stored, err := e.store.Plan(ctx, tx, key, issue.Generation)
+		if err != nil {
+			return err
+		}
+		var unjoined []string
+		for _, row := range planTasksOf(stored) {
+			if row.State != record.TaskRunning || row.StepWait != record.StepWaitJoin {
+				continue
+			}
+			queued, err := e.store.TaskBranchQueued(ctx, tx, key, issue.Generation, row.Task)
+			if err != nil {
+				return err
+			}
+			if !queued {
+				unjoined = append(unjoined, row.Task)
+			}
+		}
+		if len(unjoined) == 0 {
+			continue
+		}
+		lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree)
+		if err != nil {
+			return err
+		}
+		if lingers {
+			continue
+		}
+		for _, id := range unjoined {
+			now, err := e.store.Issue(ctx, tx, key)
+			if err != nil {
+				return err
+			}
+			s, err := e.ScopeOf(ctx, tx, *now, id)
+			if err != nil {
+				return err
+			}
+			if err := e.startAfterWait(ctx, tx, s, "workflow: the join of a step's task is queued again at its issue's generation",
+				"generation", now.Generation); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// planTasksOf is each task of stored, none for no plan.
+func planTasksOf(stored *record.StoredPlan) []record.PlanTask {
+	if stored == nil {
+		return nil
+	}
+	return stored.Tasks
+}
+
+// startAfterWait starts the step at the place of w's task, of view, the copy of the issue read for
+// that task (view), whose start waited for its join or for its agent, through Engine.start, the
+// start of every step: at the end of its join (taskJoined), at its join again at the issue's
+// generation (joinAgain) and at the hand-on of its freed agent (handOn). Its task is told where its
+// work stands and its own pull request (standingPart). Where the start that waited was a start
+// again of the task at its first step or a move back (Walk.StartReason), the task is told why, and
+// its entry counts as a move back, as that start's own would have had it waited for nothing
+// (restartTask, transition). said is the log line, which names the issue, the task, its place and
+// role, and args.
+func (e *Engine) startAfterWait(ctx context.Context, tx pgx.Tx, s TaskScope, said string, args ...any) error {
+	w, view := s.walk, s.issue
+	role := w.RoleAt(w.Place)
+	if err := e.clearHandoff(ctx, tx, view.Key, role); err != nil {
+		return err
+	}
+	reason := w.StartReason
+	e.logOnCommit(ctx, said, append([]any{"issue", view.Key, "tree", view.Tree, "task", w.Task, "place", placeWords(w.Place), "role", role,
+		"reason", reason}, args...)...)
+	return e.start(ctx, tx, s, role, taskPull{}, func(at Standing) string {
+		return task(view, at, record.PhaseRow{}, reason)
+	}, reason != "")
+}
+
+// agentWaiters is each task of stored, the plan of a run, in the state running whose step waits for
+// its agent, the one that waited longest first: by the moment its wait began, then by task id.
+// None for no plan; a plan of one task has no step of another task to wait behind, so none either.
+func agentWaiters(stored *record.StoredPlan) []string {
+	if stored == nil {
+		return nil
+	}
+	var waiting []record.PlanTask
+	for _, row := range stored.Tasks {
+		if row.State == record.TaskRunning && row.StepWait == record.StepWaitAgent && row.StepWaitSince != nil {
+			waiting = append(waiting, row)
+		}
+	}
+	slices.SortStableFunc(waiting, func(a, b record.PlanTask) int { return a.StepWaitSince.Compare(*b.StepWaitSince) })
+	ids := make([]string, len(waiting))
+	for i, row := range waiting {
+		ids[i] = row.Task
+	}
+	return ids
+}
+
+// handOn starts the step of task id of the issue keyed key that waits for its agent, where no
+// running step of the issue holds that agent, read again for that task (view): each start before
+// it in the same settle changed the issue's running steps. It starts as every step that waited
+// starts (startAfterWait).
+func (e *Engine) handOn(ctx context.Context, tx pgx.Tx, key, id string) error {
+	issue, err := e.store.Issue(ctx, tx, key)
+	if err != nil || issue == nil {
+		return err
+	}
+	s, err := e.ScopeOf(ctx, tx, *issue, id)
+	if err != nil {
+		return err
+	}
+	w := s.walk
+	agent := w.AgentAt(w.Place)
+	if w.State != record.TaskRunning || w.Wait != record.StepWaitAgent || agent == "" {
+		return nil
+	}
+	if _, busy := issue.StepOfAgent(agent); busy {
+		return nil
+	}
+	return e.startAfterWait(ctx, tx, s, "workflow: a freed agent starts the step that waited for it", "agent", agent)
 }
 
 // nameMoveEnd names the end of the run issue stands in on w, the walk of its run, that a move on
-// trigger into to ends: the table's own result for the trigger, the step the work returns to, and
-// the report handoff names (endOfTransition). The move names it on the issue as it stood, before
-// the write that moves it.
-func (e *Engine) nameMoveEnd(ctx context.Context, w Walk, issue record.Issue, trigger TriggerKind, to phase.Phase, handoff record.PhaseRow) error {
+// trigger into to, the place of the move's row, ends: the table's own result for the trigger, the
+// step the work returns to, and the report handoff names (endOfTransition). The move names it on
+// the issue as it stood, before the write that moves it.
+func (e *Engine) nameMoveEnd(ctx context.Context, w Walk, issue record.Issue, trigger TriggerKind, to stepSite, handoff record.PhaseRow) error {
 	step, ok := standingStep(w, issue)
 	if !ok {
 		return nil
@@ -239,20 +440,28 @@ func (e *Engine) settleRuns(ctx context.Context, tx pgx.Tx, runs *factRuns, keys
 			stood = *now
 		}
 		// The run's own walk, at its generation, names the phase its place is the step of, so the
-		// end is written for the step of that run's plan, whichever run the issue stands in now.
+		// end is written for the step of that run's plan, whichever run the issue stands in now:
+		// the walk of the run's task, read on its scope (scopeOrNoPlan).
 		stood.Generation, stood.Hold = row.Generation, nil
-		w, err := e.walk(ctx, tx, stood)
+		ranPlan, err := e.store.Plan(ctx, tx, stood.Key, stood.Generation)
 		if err != nil {
 			return err
 		}
+		ran, onPlan := scopeOrNoPlan(stood, ranPlan, row.Place.Task)
+		stood, w := ran.issue, ran.walk
+		stood.Hold = nil
 		var onWalk bool
-		if stood.Phase, onWalk = phaseAt(w, row.Place); !onWalk {
+		if onPlan {
+			stood.Phase, onWalk = phaseAt(w, row.Place)
+		}
+		if !onWalk {
 			if err := e.endOffWalk(ctx, tx, row, runs.endOf(run)); err != nil {
 				return err
 			}
 			continue
 		}
-		if err := e.endStep(ctx, tx, stood, w, runs.endOf(run)); err != nil {
+		site := placeNamed(record.TaskPlace{Kind: row.Place.Kind, Position: row.Place.Place}, stood.Phase)
+		if err := e.endStep(ctx, tx, stood, w, site, runs.endOf(run)); err != nil {
 			return err
 		}
 	}
@@ -288,10 +497,12 @@ type issueReader func(key string) (*record.Issue, error)
 
 // runOver is the end rule, the one answer to whether run is over. now is its issue as it stands
 // (nil for none), restarted whether a start of its place is about to begin, and read how its tree's
-// root is read. A run is over when its issue has no record, or stands at another place on the walk
-// of its run or in another generation (standingStep, which an issue its plan holds stands in no
-// step of); when a start of its place begins; or when its tree's root lingers, unless it is a
-// merge that can still land in that linger (mergeCanLand, whose closed lingers runs holds).
+// root is read. A run is over when its issue has no record, or the task of its run stands at
+// another place on the walk of its run or in another generation (standingStep, on the copy of the
+// issue read for that task, viewOn, which a task its plan no longer holds has none of, and which a
+// task its plan holds stands in no step of); when a start of its place begins; or when its tree's
+// root lingers, unless it is a merge that can still land in that linger (mergeCanLand, whose
+// closed lingers runs holds).
 func (e *Engine) runOver(ctx context.Context, tx pgx.Tx, runs *factRuns, run runAt, now *record.Issue, restarted bool, read issueReader) (bool, error) {
 	if restarted || now == nil {
 		return true, nil
@@ -299,11 +510,16 @@ func (e *Engine) runOver(ctx context.Context, tx pgx.Tx, runs *factRuns, run run
 	if now.Generation != run.generation {
 		return true, nil
 	}
-	w, err := e.walk(ctx, tx, *now)
+	stored, err := e.store.Plan(ctx, tx, now.Key, now.Generation)
 	if err != nil {
 		return false, err
 	}
-	if step, ok := standingStep(w, *now); !ok || step.place != run.place {
+	s, onPlan := scopeOrNoPlan(*now, stored, run.place.Task)
+	view, w := s.issue, s.walk
+	if !onPlan {
+		return true, nil
+	}
+	if step, ok := standingStep(w, view); !ok || step.place != run.place {
 		return true, nil
 	}
 	root := now
@@ -315,23 +531,20 @@ func (e *Engine) runOver(ctx context.Context, tx pgx.Tx, runs *factRuns, run run
 	if root == nil || !root.Lingers() {
 		return false, nil
 	}
-	if !awaitsMerge(*now) {
+	if !awaitsMerge(view) {
 		return true, nil
 	}
-	canLand, err := e.mergeCanLand(ctx, tx, runs, *now, *root)
+	canLand, err := e.mergeCanLand(ctx, tx, runs, view, *root)
 	return !canLand, err
 }
 
-// uncountedRunOpen is the boot's answer (OpenUncountedRuns) to whether issue, as read reads its
-// tree, stands in an open run that no start of this release counted, and that run: issue
-// stands in a step whose runs are recorded on the walk of its run (standingStep), the end rule does
-// not hold that run over (runOver), its tree is not the operator's, which runs no step of the
-// workflow (record.OperatorHoldsTree), and its generation started a run (generationStarted).
-func (e *Engine) uncountedRunOpen(ctx context.Context, tx pgx.Tx, runs *factRuns, issue record.Issue, read issueReader) (runAt, bool, error) {
-	w, err := e.walk(ctx, tx, issue)
-	if err != nil {
-		return runAt{}, false, err
-	}
+// uncountedRunOpen is the boot's answer (OpenUncountedRuns) to whether s's copy, as read reads its
+// tree, stands in an open run that no start of this release counted, and that run: the copy stands
+// in a step whose runs are recorded on the walk of its task (standingStep), the end rule does not
+// hold that run over (runOver), its tree is not the operator's, which runs no step of the workflow
+// (record.OperatorHoldsTree), and its generation started a run (generationStarted).
+func (e *Engine) uncountedRunOpen(ctx context.Context, tx pgx.Tx, runs *factRuns, s TaskScope, read issueReader) (runAt, bool, error) {
+	issue, w := s.issue, s.walk
 	step, ok := standingStep(w, issue)
 	if !ok {
 		return runAt{}, false, nil
@@ -385,7 +598,7 @@ func (e *Engine) mergeCanLand(ctx context.Context, tx pgx.Tx, runs *factRuns, me
 	if record.Lingering(root, e.now()) && !runs.closed[root.Tree] {
 		return true, nil
 	}
-	pr, err := e.store.PullRequest(ctx, tx, member.Key)
+	pr, err := e.store.MergePullRequest(ctx, tx, member.Key)
 	if err != nil {
 		return false, err
 	}
@@ -400,10 +613,11 @@ func (e *Engine) mergeCanLand(ctx context.Context, tx pgx.Tx, runs *factRuns, me
 }
 
 // phaseAt is the phase whose step runs at place on w, the walk of the run: of its line (Walk.Line,
-// phase.Order for a run with no plan rows), the phase whose step (placeOnWalk) is at place.
+// phase.Order for a run with no plan rows), the phase of the position whose step (placeOnWalk) is
+// at place, so of two steps that run as step, each its own.
 func phaseAt(w Walk, place record.StepPlace) (phase.Phase, bool) {
-	for _, p := range w.Line {
-		if at, _, _, ok := placeOnWalk(w, p); ok && at == place {
+	for at, p := range w.Line {
+		if step, _, _, ok := placeOnWalk(w, placeNamed(placeAt(w.Line, at), p)); ok && step == place {
 			return p, true
 		}
 	}

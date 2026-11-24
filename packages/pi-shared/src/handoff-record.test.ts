@@ -1,10 +1,14 @@
 import { afterEach, expect, test } from "bun:test";
-import { writeFileSync } from "node:fs";
-import { lstat, mkdtemp, realpath, rm, utimes, writeFile } from "node:fs/promises";
+import { readFileSync, writeFileSync } from "node:fs";
+import { lstat, mkdir, mkdtemp, realpath, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { LEGION_ROLES, type LegionRole } from "@legion/contracts";
-import { LEGION_PHASES, type LegionPhase } from "@legion/contracts/legion-api";
+import {
+  LEGION_PHASES,
+  LegionIssueRecordResponse,
+  type LegionPhase,
+} from "@legion/contracts/legion-api";
 import { forgetBrokerClients } from "@legion/envoy-client/broker-credential";
 import { DispatchServiceError } from "@legion/envoy-client/dispatch-http";
 import { fakeLatestHandoff } from "@legion/envoy-client/test/fake-dispatch";
@@ -16,6 +20,7 @@ import {
   versionControlIdentity,
   versionControlNames,
 } from "@legion/test-fixtures/version-control-environment";
+import { z } from "zod";
 import {
   findHandoffReport,
   findPushedBranchHead,
@@ -24,6 +29,8 @@ import {
   type LatestHandoff,
   paneLatestHandoff,
   pathJj,
+  type StepCopy,
+  stepCopy,
 } from "./handoff-record";
 
 const ISSUE = "LEGION-208";
@@ -41,6 +48,11 @@ const body = (head?: unknown) =>
 const RECORD = { id: "5b1f0c2e-9d7a-4c3b-8e61-2f4a9d0c7b13", version: 3, body: body(HEAD) };
 
 const env = { LEGION_WORKSPACE: "/workspaces/LEGION-208", LEGION_ISSUE: ISSUE };
+
+/** The step of a pane at `phase` whose issue's record serves no tasks (`stepCopy`): the issue's
+ * own, its working copy LEGION_WORKSPACE, its branch `legion/<issue>` and its phase the issue's. */
+const issueStep = (phase: LegionPhase, paneEnv: NodeJS.ProcessEnv = env): StepCopy =>
+  stepCopy(paneEnv, { phase }, "");
 
 /** A jj that answers the report's commands — the commit the workspace stands on, `STANDING`, and
  * the branch's tip at origin, `TIP`, when the branch carries `STANDING`, which it does unless
@@ -69,7 +81,13 @@ test("the implementer's round reports the newest implement record and the pushed
   const { jj, calls } = fakeJj();
   const { latestHandoff, reads } = recordingDispatch(PUSHED_RECORD);
   await expect(
-    findHandoffReport({ phase: "implementing", role: "implementer", env, jj, latestHandoff })
+    findHandoffReport({
+      step: issueStep("implementing"),
+      role: "implementer",
+      env,
+      jj,
+      latestHandoff,
+    })
   ).resolves.toEqual({ commit: STANDING, handoffId: RECORD.id, handoffVersion: RECORD.version });
   expect(reads).toEqual(["LEGION-208 implement"]);
   // The commit reported is the head the record names, which is the commit the workspace stands
@@ -89,7 +107,9 @@ test("every file-backed role reports the head its phase's record names", async (
   ] as const) {
     const { jj, calls } = fakeJj();
     const { latestHandoff, reads } = recordingDispatch();
-    await expect(findHandoffReport({ phase, role, env, jj, latestHandoff })).resolves.toEqual({
+    await expect(
+      findHandoffReport({ step: issueStep(phase), role, env, jj, latestHandoff })
+    ).resolves.toEqual({
       commit: HEAD,
       handoffId: RECORD.id,
       handoffVersion: RECORD.version,
@@ -124,7 +144,9 @@ test("a record naming no head, or one of another shape, leaves those three witho
     ] as const) {
       const { jj, calls } = fakeJj();
       const { latestHandoff } = recordingDispatch({ ...RECORD, body: text });
-      await expect(findHandoffReport({ phase, role, env, jj, latestHandoff })).resolves.toEqual({
+      await expect(
+        findHandoffReport({ step: issueStep(phase), role, env, jj, latestHandoff })
+      ).resolves.toEqual({
         handoffId: RECORD.id,
         handoffVersion: RECORD.version,
       });
@@ -146,7 +168,29 @@ test("every other completion reports the commit the workspace stands on, and rea
   ] as const) {
     const { jj, calls } = fakeJj();
     const { latestHandoff, reads } = recordingDispatch();
-    await expect(findHandoffReport({ phase, role, env, jj, latestHandoff })).resolves.toEqual({
+    await expect(
+      findHandoffReport({ step: issueStep(phase), role, env, jj, latestHandoff })
+    ).resolves.toEqual({
+      commit: STANDING,
+    });
+    expect(calls).toEqual([["log", "-r", "@-", "--no-graph", "-T", "commit_id"]]);
+    expect(reads).toEqual([]);
+  }
+});
+
+// Contract 221: a role of the deployment completes the step it works, `step`, which ends with no
+// handoff record, so it reports the commit its workspace stands on wherever its issue stands.
+test("a role of the deployment reports the commit the workspace stands on, and reads no record", async () => {
+  for (const [phase, role] of [
+    ["step", "checker"],
+    ["step", "code-checker"],
+    ["testing", "checker"],
+  ] as const) {
+    const { jj, calls } = fakeJj();
+    const { latestHandoff, reads } = recordingDispatch();
+    await expect(
+      findHandoffReport({ step: issueStep(phase), role, env, jj, latestHandoff })
+    ).resolves.toEqual({
       commit: STANDING,
     });
     expect(calls).toEqual([["log", "-r", "@-", "--no-graph", "-T", "commit_id"]]);
@@ -162,7 +206,7 @@ test("a reviewer whose review moved its issue on reports its own newest review r
     const { jj, calls } = fakeJj();
     const { latestHandoff, reads } = recordingDispatch();
     await expect(
-      findHandoffReport({ phase, role: "reviewer", env, jj, latestHandoff })
+      findHandoffReport({ step: issueStep(phase), role: "reviewer", env, jj, latestHandoff })
     ).resolves.toEqual({ commit: HEAD, handoffId: RECORD.id, handoffVersion: RECORD.version });
     expect(reads).toEqual(["LEGION-208 review"]);
     expect(calls).toEqual([]);
@@ -173,7 +217,7 @@ test("a tester whose issue moved on to reviewing reports its own newest test rec
   const { jj, calls } = fakeJj();
   const { latestHandoff, reads } = recordingDispatch();
   await expect(
-    findHandoffReport({ phase: "reviewing", role: "tester", env, jj, latestHandoff })
+    findHandoffReport({ step: issueStep("reviewing"), role: "tester", env, jj, latestHandoff })
   ).resolves.toEqual({ commit: HEAD, handoffId: RECORD.id, handoffVersion: RECORD.version });
   expect(reads).toEqual(["LEGION-208 test"]);
   expect(calls).toEqual([]);
@@ -257,6 +301,7 @@ const COMPLETIONS: Readonly<Record<LegionRole, Readonly<Record<LegionPhase, Comp
     implementing: row({ record: "plan" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
     testing: row({ record: "plan" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
     reviewing: row({ record: "plan" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
+    step: row({ record: "plan" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
     accepting: row({ record: "plan" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
     retro: row({ record: "plan" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
     merging: row({ record: "plan" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
@@ -272,6 +317,7 @@ const COMPLETIONS: Readonly<Record<LegionRole, Readonly<Record<LegionPhase, Comp
     implementing: row({ thrown: PUSH_IT }, "@- and origin", "no request"),
     testing: row({ record: "implement" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
     reviewing: row({ record: "implement" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
+    step: row({ record: "implement" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
     accepting: row({ record: "implement" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
     retro: row("@-", "@-", "200"),
     merging: row("@-", "@-", "409 HANDOFF_NOT_CURRENT_PHASE"),
@@ -287,6 +333,7 @@ const COMPLETIONS: Readonly<Record<LegionRole, Readonly<Record<LegionPhase, Comp
     implementing: row({ record: "test" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
     testing: row({ record: "test" }, "nothing", "200"),
     reviewing: row({ record: "test" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
+    step: row({ record: "test" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
     accepting: row({ record: "test" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
     retro: row({ record: "test" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
     merging: row({ record: "test" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
@@ -302,6 +349,7 @@ const COMPLETIONS: Readonly<Record<LegionRole, Readonly<Record<LegionPhase, Comp
     implementing: row({ record: "review" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
     testing: row({ record: "review" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
     reviewing: row({ record: "review" }, "nothing", "200"),
+    step: row({ record: "review" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
     accepting: row({ record: "review" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
     retro: row({ record: "review" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
     merging: row({ record: "review" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
@@ -317,6 +365,7 @@ const COMPLETIONS: Readonly<Record<LegionRole, Readonly<Record<LegionPhase, Comp
     implementing: row("@-", "@-", "409 HANDOFF_NOT_CURRENT_PHASE"),
     testing: row("@-", "@-", "409 HANDOFF_NOT_CURRENT_PHASE"),
     reviewing: row("@-", "@-", "409 HANDOFF_NOT_CURRENT_PHASE"),
+    step: row("@-", "@-", "409 HANDOFF_NOT_CURRENT_PHASE"),
     accepting: row("@-", "@-", "409 HANDOFF_NOT_CURRENT_PHASE"),
     retro: row("@-", "@-", "409 HANDOFF_NOT_CURRENT_PHASE"),
     merging: row("@-", "@-", "200"),
@@ -332,6 +381,7 @@ const COMPLETIONS: Readonly<Record<LegionRole, Readonly<Record<LegionPhase, Comp
     implementing: row("@-", "@-", "409 ACCEPTANCE_IS_SIGN_OFF"),
     testing: row("@-", "@-", "409 ACCEPTANCE_IS_SIGN_OFF"),
     reviewing: row("@-", "@-", "409 ACCEPTANCE_IS_SIGN_OFF"),
+    step: row("@-", "@-", "409 ACCEPTANCE_IS_SIGN_OFF"),
     accepting: row("@-", "@-", "409 ACCEPTANCE_IS_SIGN_OFF"),
     retro: row("@-", "@-", "409 ACCEPTANCE_IS_SIGN_OFF"),
     merging: row("@-", "@-", "409 ACCEPTANCE_IS_SIGN_OFF"),
@@ -421,7 +471,7 @@ test("every role in every phase: a phase the issue has left runs no workspace ch
       const { jj, asked } = siblingWorkspace();
       const dispatch = everyRecord();
       const report = await findHandoffReport({
-        phase,
+        step: issueStep(phase),
         role,
         env,
         jj,
@@ -543,7 +593,7 @@ test("an implementer whose left implement phase has no record, or a record namin
       return { id, version, body: record.body };
     });
     const report = await findHandoffReport({
-      phase,
+      step: issueStep(phase),
       role: "implementer",
       env,
       jj,
@@ -589,7 +639,7 @@ test("no record of the phase the role works, or a Dispatch that does not answer,
     const { jj } = fakeJj();
     const { latestHandoff } = fakeLatestHandoff(answer);
     await expect(
-      findHandoffReport({ phase: "testing", role: "tester", env, jj, latestHandoff })
+      findHandoffReport({ step: issueStep("testing"), role: "tester", env, jj, latestHandoff })
     ).rejects.toThrow(new Error(message));
   }
   // A phase the role left is refused the same way when Dispatch does not answer, or refuses the
@@ -598,7 +648,7 @@ test("no record of the phase the role works, or a Dispatch that does not answer,
     const { jj, calls } = fakeJj();
     const { latestHandoff } = fakeLatestHandoff(answer);
     await expect(
-      findHandoffReport({ phase: "held", role: "tester", env, jj, latestHandoff })
+      findHandoffReport({ step: issueStep("held"), role: "tester", env, jj, latestHandoff })
     ).rejects.toThrow(new Error(message));
     expect(calls).toEqual([]);
   }
@@ -618,7 +668,9 @@ test("a phase the role left with no record reports @- and no record, for the dae
     const { latestHandoff, reads } = fakeLatestHandoff(async () => {
       throw new DispatchServiceError("HANDOFF_NOT_FOUND", 404, `no handoff for ${word}`);
     });
-    await expect(findHandoffReport({ phase, role, env, jj, latestHandoff })).resolves.toEqual({
+    await expect(
+      findHandoffReport({ step: issueStep(phase), role, env, jj, latestHandoff })
+    ).resolves.toEqual({
       commit: STANDING,
     });
     expect(reads).toEqual([`LEGION-208 ${word}`]);
@@ -635,7 +687,13 @@ test("an implementer whose @- is not on its branch at origin is refused naming t
     const { jj, calls } = fakeJj(false);
     const { latestHandoff } = recordingDispatch({ ...RECORD, body: body(named) });
     await expect(
-      findHandoffReport({ phase: "implementing", role: "implementer", env, jj, latestHandoff })
+      findHandoffReport({
+        step: issueStep("implementing"),
+        role: "implementer",
+        env,
+        jj,
+        latestHandoff,
+      })
     ).rejects.toThrow(
       new Error(
         `the commit this workspace stands on, ${STANDING}, is not on legion/LEGION-208@origin: push it with \`jj bookmark set legion/LEGION-208 -r @- && jj git push --bookmark legion/LEGION-208\`; the handoff's \`head\` must name that pushed commit, and the newest implement handoff of LEGION-208 (version 3) names ${named}, so when that is another commit, write the handoff again with \`head\` set to ${STANDING} (\`dispatch handoff-write --issue LEGION-208 --phase implement --body-file <file>\`); then complete again`
@@ -656,7 +714,13 @@ test("an implementer whose pushed @- its record does not name is refused naming 
     const { jj, calls } = fakeJj();
     const { latestHandoff } = recordingDispatch({ ...RECORD, body: body(named) });
     await expect(
-      findHandoffReport({ phase: "implementing", role: "implementer", env, jj, latestHandoff })
+      findHandoffReport({
+        step: issueStep("implementing"),
+        role: "implementer",
+        env,
+        jj,
+        latestHandoff,
+      })
     ).rejects.toThrow(
       new Error(
         `the newest implement handoff of LEGION-208 (version 3) names ${named} as its head, not the commit this workspace stands on, ${STANDING}, which legion/LEGION-208@origin carries: write the handoff again with \`head\` set to ${STANDING} (\`dispatch handoff-write --issue LEGION-208 --phase implement --body-file <file>\`), then complete again`
@@ -674,7 +738,13 @@ test("an implementer whose record names no readable head is refused naming what 
     const { jj, calls } = fakeJj();
     const { latestHandoff } = recordingDispatch({ ...RECORD, body: text });
     await expect(
-      findHandoffReport({ phase: "implementing", role: "implementer", env, jj, latestHandoff })
+      findHandoffReport({
+        step: issueStep("implementing"),
+        role: "implementer",
+        env,
+        jj,
+        latestHandoff,
+      })
     ).rejects.toThrow(
       new Error(
         'the newest implement handoff of LEGION-208 (version 3) names no head: write the handoff again with `head` set to the 40-character lower-case commit you pushed as `@-`, as `jj -R "$LEGION_WORKSPACE" log -r @- --no-graph -T commit_id` prints it once the push succeeded (`dispatch handoff-write --issue LEGION-208 --phase implement --body-file <file>`), then complete again'
@@ -690,21 +760,23 @@ test("the workspace and a well-formed issue key are required before jj or Dispat
   const { latestHandoff, reads } = recordingDispatch();
   await expect(
     findHandoffReport({
-      phase: "retro",
+      step: issueStep("retro", { ...env, LEGION_WORKSPACE: undefined }),
       role: "implementer",
       env: { ...env, LEGION_WORKSPACE: undefined },
       jj,
       latestHandoff,
     })
   ).rejects.toThrow("LEGION_WORKSPACE is not set");
+  const badKey = { ...env, LEGION_ISSUE: "LEGION-208#x" };
   await expect(
-    findHandoffReport({
-      phase: "implementing",
-      role: "implementer",
-      env: { ...env, LEGION_ISSUE: "LEGION-208#x" },
-      jj,
-      latestHandoff,
-    })
+    (async () =>
+      findHandoffReport({
+        step: issueStep("implementing", badKey),
+        role: "implementer",
+        env: badKey,
+        jj,
+        latestHandoff,
+      }))()
   ).rejects.toThrow('LEGION_ISSUE "LEGION-208#x" is not a Dispatch issue key like LEGION-1');
   expect(calls).toEqual([]);
   expect(reads).toEqual([]);
@@ -716,7 +788,7 @@ test("a failing jj surfaces its command and stderr", async () => {
   };
   const { latestHandoff } = recordingDispatch();
   await expect(
-    findHandoffReport({ phase: "retro", role: "implementer", env, jj, latestHandoff })
+    findHandoffReport({ step: issueStep("retro"), role: "implementer", env, jj, latestHandoff })
   ).rejects.toThrow(
     'jj log -r @- --no-graph -T commit_id failed: Error: There is no jj repo in "."'
   );
@@ -731,7 +803,7 @@ test("the branch head is the issue bookmark at origin, and empty when the remote
       calls.push([...args]);
       return head;
     };
-    return findPushedBranchHead({ env, jj });
+    return findPushedBranchHead({ step: issueStep("implementing"), jj });
   };
   await expect(answer(TIP)).resolves.toBe(TIP);
   expect(calls).toEqual([["log", "-r", REMOTE, "--no-graph", "-T", "commit_id"]]);
@@ -740,15 +812,263 @@ test("the branch head is the issue bookmark at origin, and empty when the remote
 
   // The issue key names the branch, and a worker sets its own environment.
   await expect(
-    findPushedBranchHead({ env: { ...env, LEGION_ISSUE: "../x" }, jj: async () => TIP })
+    (async () =>
+      findPushedBranchHead({
+        step: issueStep("implementing", { ...env, LEGION_ISSUE: "../x" }),
+        jj: async () => TIP,
+      }))()
   ).rejects.toThrow(new Error('LEGION_ISSUE "../x" is not a Dispatch issue key like LEGION-1'));
   await expect(
-    findPushedBranchHead({ env: { ...env, LEGION_WORKSPACE: "" }, jj: async () => TIP })
+    findPushedBranchHead({
+      step: issueStep("implementing", { ...env, LEGION_WORKSPACE: "" }),
+      jj: async () => TIP,
+    })
   ).rejects.toThrow(
     new Error(
       "LEGION_WORKSPACE is not set, so ready_for_update cannot find the branch head to report"
     )
   );
+});
+
+/** LEGION-208's own working copy as the daemon lays one out (`workspace.Location`), which the
+ * working copy of each other task of the issue sits beside, named for its branch. */
+const LAID_OUT = "/state/workspaces/acme/widgets/legion-208";
+const laidOutEnv = { LEGION_WORKSPACE: LAID_OUT, LEGION_ISSUE: ISSUE };
+
+/** A task of LEGION-208's plan as the record route serves it (`api.TaskView`), `fields` over the
+ * fields every served task carries. */
+const servedTask = (id: string, fields: Record<string, unknown>) => ({
+  id,
+  needs: [],
+  kind: "step",
+  position: 1,
+  counts: { pass: 0, rounds: 0 },
+  ...fields,
+});
+
+/** LEGION-208's record at `phase`, serving `tasks`, read as the plugin reads the record route. */
+const servedRecord = (phase: LegionPhase, tasks: readonly Record<string, unknown>[]) =>
+  LegionIssueRecordResponse.parse({ key: ISSUE, phase, tasks });
+
+test("a reviewer of a task that stands behind the issue's phase reports its own step", async () => {
+  // Task a's implementer works implementing, so the issue stands there, at the phase of its first
+  // running task; task b's reviewer works b's review, the step this session runs.
+  const record = servedRecord("implementing", [
+    servedTask("a", {
+      state: "running",
+      phase: "implementing",
+      branch: "legion/LEGION-208",
+      role: "implementer",
+      agent: "implementer",
+    }),
+    servedTask("b", {
+      state: "running",
+      phase: "reviewing",
+      branch: "legion/LEGION-208.b",
+      role: "reviewer",
+      agent: "reviewer",
+    }),
+  ]);
+  const step = stepCopy(laidOutEnv, record, "reviewer");
+  const asked: string[] = [];
+  const jj: JjRunner = async (args, cwd) => {
+    asked.push(`${cwd}: jj ${args.join(" ")}`);
+    return STANDING;
+  };
+  // The reviewer works its own step's phase, so a review record it has not written yet is its to
+  // write, not a left phase whose @- goes to the daemon.
+  const missing = fakeLatestHandoff(async () => {
+    throw new DispatchServiceError("HANDOFF_NOT_FOUND", 404, "no handoff for review");
+  });
+  await expect(
+    findHandoffReport({
+      step,
+      role: "reviewer",
+      env: laidOutEnv,
+      jj,
+      latestHandoff: missing.latestHandoff,
+    })
+  ).rejects.toThrow(
+    new Error(
+      "LEGION-208 has no review handoff in Dispatch: write it with `dispatch handoff-write --issue LEGION-208 --phase review --body-file <file>`, then complete again"
+    )
+  );
+  expect(asked).toEqual([]);
+  // Written, the reviewing record goes with the head it names, and no working copy is read.
+  const { latestHandoff, reads } = recordingDispatch();
+  await expect(
+    findHandoffReport({ step, role: "reviewer", env: laidOutEnv, jj, latestHandoff })
+  ).resolves.toEqual({ commit: HEAD, handoffId: RECORD.id, handoffVersion: RECORD.version });
+  expect(reads).toEqual(["LEGION-208 review"]);
+  expect(asked).toEqual([]);
+  expect(step).toEqual({
+    workspace: `${LAID_OUT}.b`,
+    bookmark: "legion/LEGION-208.b",
+    phase: "reviewing",
+  });
+});
+
+/** The daemon's `workspace.TaskDir` on each case of its fixture: the directory, or a refusal. */
+const TaskDirs = z.object({
+  cases: z.array(
+    z.strictObject({
+      name: z.string(),
+      workspace: z.string(),
+      branch: z.string(),
+      dir: z.string().optional(),
+      refused: z.literal(true).optional(),
+    })
+  ),
+});
+
+test("the directory of each branch is the daemon's", () => {
+  // The daemon's TestTheTaskDirFixture writes TaskDir's answer to each case
+  // (packages/daemon/internal/workspace/taskdir_fixture_test.go).
+  const { cases } = TaskDirs.parse(
+    JSON.parse(
+      readFileSync(
+        path.resolve(import.meta.dir, "../../contracts/fixtures/daemon-api/task-dirs.json"),
+        "utf8"
+      )
+    )
+  );
+  // A fixture of answers alone, or of refusals alone, would hold this side to half the rule.
+  expect(cases.filter((each) => each.dir !== undefined).length).toBeGreaterThan(0);
+  expect(cases.filter((each) => each.refused === true).length).toBeGreaterThan(0);
+  const wrong: string[] = [];
+  for (const each of cases) {
+    const record = servedRecord("implementing", [
+      servedTask("a", {
+        state: "running",
+        phase: "implementing",
+        role: "implementer",
+        agent: "implementer",
+        ...(each.branch === "" ? {} : { branch: each.branch }),
+      }),
+    ]);
+    const paneEnv = { LEGION_WORKSPACE: each.workspace, LEGION_ISSUE: "WIDGETS-42" };
+    let answer: string;
+    try {
+      answer = stepCopy(paneEnv, record, "implementer").workspace;
+    } catch {
+      answer = "a refusal";
+    }
+    const daemon = each.dir ?? "a refusal";
+    if (answer !== daemon) {
+      wrong.push(
+        `${each.name}: the step on ${JSON.stringify(each.branch)} beside ${each.workspace} is at ${answer}, and TaskDir answers ${daemon}`
+      );
+    }
+  }
+  expect(wrong).toEqual([]);
+});
+
+test("an agent with a step at work and a step that waits completes the step at work", () => {
+  // Task a comes before task m in task id order, and its step waits, for its agent k or for the
+  // join of its needs: no step of it was delivered, so k's step is m's.
+  for (const wait of [
+    { wait: "agent", waitsFor: { agent: "k", task: "m", position: 1 } },
+    { wait: "join" },
+  ]) {
+    const record = servedRecord("implementing", [
+      servedTask("a", {
+        state: "running",
+        phase: "implementing",
+        branch: "legion/LEGION-208.a",
+        role: "implementer",
+        agent: "k",
+        ...wait,
+      }),
+      servedTask("m", {
+        state: "running",
+        phase: "testing",
+        branch: "legion/LEGION-208.m",
+        role: "tester",
+        agent: "k",
+      }),
+    ]);
+    expect(stepCopy(laidOutEnv, record, "k")).toEqual({
+      workspace: `${LAID_OUT}.m`,
+      bookmark: "legion/LEGION-208.m",
+      phase: "testing",
+    });
+  }
+});
+
+test("the agent of a stopped task runs no step of it, and reads the issue's own working copy", () => {
+  // The daemon serves a stopped task with the role and the agent of the act it stopped at, and no
+  // wait (projection's taskView); its agent runs no step of it, as record.Issue.StepOfAgent reads
+  // running and held tasks alone.
+  const record = servedRecord("implementing", [
+    servedTask("a", {
+      state: "running",
+      phase: "implementing",
+      branch: "legion/LEGION-208",
+      role: "implementer",
+      agent: "implementer",
+    }),
+    servedTask("x", {
+      state: "stopped",
+      phase: "testing",
+      branch: "legion/LEGION-208.x",
+      role: "tester",
+      agent: "tester",
+      stoppedReason: "its owner stopped it",
+    }),
+  ]);
+  expect(stepCopy(laidOutEnv, record, "tester")).toEqual({
+    workspace: LAID_OUT,
+    bookmark: "legion/LEGION-208",
+    phase: "implementing",
+  });
+});
+
+test("a held task's step stands in held, as the daemon reads a completion of it", () => {
+  // The daemon's own record of LEGION-208 (internal/api's TestIssueRecordGolden): its task e is
+  // held, with implementer-2 at its implementing step, and the completion route reads that task's
+  // completion as one of an issue in held (handoffPosition).
+  const record = LegionIssueRecordResponse.parse(
+    JSON.parse(
+      readFileSync(
+        path.resolve(import.meta.dir, "../../contracts/fixtures/daemon-api/issue-record.json"),
+        "utf8"
+      )
+    )
+  );
+  expect(record.tasks?.find((task) => task.id === "e")).toMatchObject({
+    state: "held",
+    phase: "implementing",
+    agent: "implementer-2",
+  });
+  expect(stepCopy(laidOutEnv, record, "implementer-2")).toEqual({
+    workspace: `${LAID_OUT}.e`,
+    bookmark: "legion/LEGION-208.e",
+    phase: "held",
+  });
+});
+
+test("a step of a task is refused where LEGION_WORKSPACE is not set, since no rule gives its directory", () => {
+  const record = servedRecord("implementing", [
+    servedTask("b", {
+      state: "running",
+      phase: "implementing",
+      branch: "legion/LEGION-208.b",
+      role: "implementer",
+      agent: "implementer-2",
+    }),
+  ]);
+  expect(() => stepCopy({ LEGION_ISSUE: ISSUE }, record, "implementer-2")).toThrow(
+    new Error(
+      "LEGION_WORKSPACE is not set, so the working copy of this session's step cannot be found"
+    )
+  );
+  // The issue's own step keeps LEGION_WORKSPACE as it stands, and each read of its working copy
+  // refuses a missing one as it always has (the tests above).
+  expect(stepCopy({ LEGION_ISSUE: ISSUE }, record, "reviewer")).toEqual({
+    workspace: "",
+    bookmark: "legion/LEGION-208",
+    phase: "implementing",
+  });
 });
 
 const scratch: string[] = [];
@@ -778,7 +1098,12 @@ test("the pane's Dispatch reads the phase's newest record as the session's confi
   };
   const latestHandoff = paneLatestHandoff(file, paneEnv, root, "pane-session", dispatch);
   const report = () =>
-    findHandoffReport({ phase: "reviewing", role: "reviewer", env: paneEnv, latestHandoff });
+    findHandoffReport({
+      step: issueStep("reviewing", paneEnv),
+      role: "reviewer",
+      env: paneEnv,
+      latestHandoff,
+    });
 
   answers.push(
     Response.json({
@@ -817,7 +1142,7 @@ test("the pane's Dispatch reads the phase's newest record as the session's confi
   // A pane whose Dispatch is off says so, and asks nothing.
   const off = paneLatestHandoff(file, env, root, "pane-session", dispatch);
   await expect(
-    findHandoffReport({ phase: "reviewing", role: "reviewer", env, latestHandoff: off })
+    findHandoffReport({ step: issueStep("reviewing"), role: "reviewer", env, latestHandoff: off })
   ).rejects.toThrow(
     /^handoff_complete could not read LEGION-208's newest review handoff from Dispatch: Dispatch is off for this pane: .*Dispatch is off; complete again once Dispatch answers$/
   );
@@ -993,7 +1318,7 @@ test.skipIf(withoutJj)(
     const { latestHandoff } = fakeLatestHandoff(async () => ({ ...RECORD, body: body(head) }));
     const report = () =>
       findHandoffReport({
-        phase: "implementing",
+        step: issueStep("implementing", paneEnv),
         role: "implementer",
         env: paneEnv,
         jj: pathJj,
@@ -1065,7 +1390,7 @@ test.skipIf(withoutJj)(
     head = change;
     await expect(
       findHandoffReport({
-        phase: "retro",
+        step: issueStep("retro", paneEnv),
         role: "implementer",
         env: paneEnv,
         jj: pathJj,
@@ -1159,7 +1484,7 @@ test.skipIf(withoutJj)(
     const { latestHandoff } = fakeLatestHandoff(async () => ({ ...RECORD, body: body(commit) }));
     await expect(
       findHandoffReport({
-        phase: "implementing",
+        step: issueStep("implementing", paneEnv),
         role: "implementer",
         env: paneEnv,
         jj: pathJj,
@@ -1197,6 +1522,106 @@ test.skipIf(withoutJj)(
       )
     );
     expect((await lstat(lock)).isFile()).toBe(true);
+  },
+  60_000
+);
+
+// A second task of an issue works in a working copy of its own, a jj workspace of the clone the
+// issue's is a workspace of, on a branch of its own: the completion of that task's implementer is
+// held to its own `@-` and its own branch at origin, and its update signal reports that branch's
+// head, whatever the issue's own working copy, where its process started, stands on.
+test.skipIf(withoutJj)(
+  "the implementer of a second task completes on its own branch",
+  async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "legion-handoff-task-"));
+    scratch.push(root);
+    const childEnv = isolatedHome(root);
+    const state = path.join(root, "state");
+    const clone = path.join(state, "repos", "github.com", "acme", "widgets");
+    const workspaces = path.join(state, "workspaces", "acme", "widgets");
+    const issueCopy = path.join(workspaces, "legion-208");
+    const taskCopy = path.join(workspaces, "legion-208.b");
+    const origin = path.join(root, "origin.git");
+    await Bun.spawn(["git", "init", "--bare", "--quiet", origin], { env: childEnv }).exited;
+    await mkdir(clone, { recursive: true });
+    await mkdir(workspaces, { recursive: true });
+    await jj(clone, childEnv, "git", "init");
+    await jj(clone, childEnv, "git", "remote", "add", "origin", origin);
+    await jj(clone, childEnv, "workspace", "add", "--name", "legion-208", issueCopy);
+    await jj(clone, childEnv, "workspace", "add", "--name", "legion-208.b", taskCopy);
+    const standing = (copy: string) =>
+      jj(copy, childEnv, "log", "-r", "@-", "--no-graph", "-T", "commit_id");
+
+    // Task a pushed its first change on the issue's own branch, and stands on a later one it has
+    // not pushed.
+    await writeFile(path.join(issueCopy, "a.txt"), "a\n");
+    await jj(issueCopy, childEnv, "describe", "-m", "task a: the change");
+    await jj(issueCopy, childEnv, "new");
+    const pushedA = await standing(issueCopy);
+    await jj(issueCopy, childEnv, "bookmark", "set", "legion/LEGION-208", "-r", "@-");
+    await jj(issueCopy, childEnv, "git", "push", "--bookmark", "legion/LEGION-208");
+    await writeFile(path.join(issueCopy, "a.txt"), "a, more\n");
+    await jj(issueCopy, childEnv, "describe", "-m", "task a: more");
+    await jj(issueCopy, childEnv, "new");
+
+    // Task b's round: its change, not pushed yet, which its record names.
+    await writeFile(path.join(taskCopy, "b.txt"), "b\n");
+    await jj(taskCopy, childEnv, "describe", "-m", "task b: the change");
+    await jj(taskCopy, childEnv, "new");
+    const changeB = await standing(taskCopy);
+    expect(changeB).toMatch(/^[0-9a-f]{40}$/);
+
+    const paneEnv = { ...versionControlIdentity, LEGION_WORKSPACE: issueCopy, LEGION_ISSUE: ISSUE };
+    const record = servedRecord("implementing", [
+      servedTask("a", {
+        state: "running",
+        phase: "implementing",
+        branch: "legion/LEGION-208",
+        role: "implementer",
+        agent: "implementer",
+      }),
+      servedTask("b", {
+        state: "running",
+        phase: "implementing",
+        branch: "legion/LEGION-208.b",
+        role: "implementer",
+        agent: "implementer-2",
+      }),
+    ]);
+    const step = stepCopy(paneEnv, record, "implementer-2");
+    const { latestHandoff } = fakeLatestHandoff(async () => ({ ...RECORD, body: body(changeB) }));
+    const report = () =>
+      findHandoffReport({ step, role: "implementer", env: paneEnv, jj: pathJj, latestHandoff });
+
+    // Not pushed: refused naming the push of task b's branch, in task b's working copy.
+    await expect(report()).rejects.toThrow(
+      `the commit this workspace stands on, ${changeB}, is not on legion/LEGION-208.b@origin: push it with \`jj -R ${JSON.stringify(taskCopy)} bookmark set legion/LEGION-208.b -r @- && jj -R ${JSON.stringify(taskCopy)} git push --bookmark legion/LEGION-208.b\``
+    );
+
+    // Pushed: the report names task b's commit, and the update signal task b's branch head.
+    await jj(taskCopy, childEnv, "bookmark", "set", "legion/LEGION-208.b", "-r", "@-");
+    await jj(taskCopy, childEnv, "git", "push", "--bookmark", "legion/LEGION-208.b");
+    await expect(report()).resolves.toEqual({
+      commit: changeB,
+      handoffId: RECORD.id,
+      handoffVersion: RECORD.version,
+    });
+    await expect(findPushedBranchHead({ step, jj: pathJj })).resolves.toBe(changeB);
+    expect(step).toEqual({
+      workspace: taskCopy,
+      bookmark: "legion/LEGION-208.b",
+      phase: "implementing",
+    });
+
+    // Task a's implementer, in the same issue at the same moment, reads its own: the issue's
+    // working copy and branch.
+    const stepA = stepCopy(paneEnv, record, "implementer");
+    expect(stepA).toEqual({
+      workspace: issueCopy,
+      bookmark: "legion/LEGION-208",
+      phase: "implementing",
+    });
+    await expect(findPushedBranchHead({ step: stepA, jj: pathJj })).resolves.toBe(pushedA);
   },
   60_000
 );

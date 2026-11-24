@@ -221,6 +221,11 @@ type Options struct {
 	ControllerSlackChannels []string
 	// Pod is the operator's pod configuration, added to every worker pod and to the probe pod.
 	Pod Pod
+	// DeploymentApps is each role the deployment defines in its settings (`roles`) with the
+	// GitHub App it acts as (the daemon's deploymentApps). Its roles, sorted by name, follow
+	// Legion's six in the runtime's issue roles (issueRolesOf), and each takes overlays
+	// (RoleConfigFiles) as one of Legion's does. Nil is a deployment that defines no role.
+	DeploymentApps appauth.DeploymentApps
 	// RoleConfigFiles is the operator's `role_config_files`: absolute paths of Oh My Pi settings
 	// overlays a role alone names in PI_CONFIG_FILES, by role, after the operator's own (Pod.Env's
 	// PI_CONFIG_FILES), so each outranks those (mainEnvironment, roleOperatorEnv), and the shim
@@ -287,9 +292,9 @@ type Options struct {
 	// token (controllerPod.launcherContainer).
 	SessionStore ompsessions.Store
 	// Agent is the command the shim wraps, before the Oh My Pi arguments the runtime appends
-	// (`--extension <envoy plugin> --extension <legion plugin> --model @default`, `--resume`,
-	// `--mode rpc`, `--append-system-prompt <the generation's prompt file>`); Oh My Pi itself when
-	// nil.
+	// (`--extension <envoy plugin> --extension <legion plugin> --model <the spec's model, or
+	// @default>`, `--resume`, `--mode rpc`, `--append-system-prompt <the generation's prompt
+	// file>`); Oh My Pi itself when nil.
 	Agent []string
 	// Setup is the deployment's setup command (runtime.kubernetes.setup), an argv each role runs
 	// before each start of its Oh My Pi — after a stale-plugin relaunch's install, in the role's
@@ -365,6 +370,10 @@ type Options struct {
 	// controller's, which acts as the review App. Required: configure refuses nil as it refuses a
 	// nil Tokens.
 	GitHubCredential runtime.GitHubCredential
+	// ActsAs answers the role whose App a claim's slot holds while the claim does work other than
+	// its stored role's (runtime.ActsAs), which runtime.SlotRole reads at each write of a slot's gh
+	// files. Optional: nil gives every slot its claim's stored role.
+	ActsAs runtime.ActsAs
 	// ControllerCredential is the daemon's function for the controller's own gh bundle
 	// (appauth.ControllerCredential). The refresher asks it for the owner the Secret holds
 	// (refreshGitHubCredential); a launch asks for none, taking the first owner, which is the

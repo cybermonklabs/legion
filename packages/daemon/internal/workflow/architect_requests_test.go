@@ -41,7 +41,7 @@ func walkTargetTo(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, 
 	firstStep(t, pool, engine, key)
 	switch at {
 	case phase.Accepting:
-		move(t, pool, engine, key, TriggerImplementationReady, "", record.PhaseRow{})
+		move(t, pool, engine, key, TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{})
 	case phase.Held:
 		holdFrom(t, pool, key, phase.Implementing)
 	}
@@ -141,8 +141,8 @@ func TestAnArchitectsRequestIsJudgedOnTheRecordItsFactReads(t *testing.T) {
 		}
 		if request.at == phase.Accepting {
 			windows = append(windows, requestWindow{"a move back sent the work back and accepting started again", func(t *testing.T, pool *pgxpool.Pool, engine *Engine) {
-				move(t, pool, engine, "LEGION-211", TriggerBackward, phase.Implementing, record.PhaseRow{})
-				move(t, pool, engine, "LEGION-211", TriggerImplementationReady, "", record.PhaseRow{})
+				move(t, pool, engine, "LEGION-211", TriggerBackward, stepPlace(1), record.PhaseRow{})
+				move(t, pool, engine, "LEGION-211", TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{})
 			}, func(_, _ record.Issue, nowEntry record.StepEntry, fact intake.Fact) *intake.Refusal {
 				return fact.(intake.EnteredRequest).StaleEntry(nowEntry)
 			}})

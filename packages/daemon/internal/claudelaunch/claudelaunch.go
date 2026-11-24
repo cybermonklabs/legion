@@ -46,21 +46,24 @@ const MCPServer = "legion"
 // as text; the default, `updates`, writes a thinking block with no text in it), with every
 // permission granted (a headless worker has no one to ask), only the MCP server mcpConfig names
 // (an operator's own servers never load), the claude-envoy plugin and the generated Legion
-// plugin for their skills, agents and the `dispatch` command, the session — `--session-id`
-// for a fresh one, `--resume` to continue the one ResumeSession read — and the system prompt,
-// `--append-system-prompt-file` naming the file promptFile the runtime wrote it to.
+// plugin for their skills, agents and the `dispatch` command, the model where the launch names one
+// (`--model`, a role of the deployment's `model`; "" names none, and Claude Code runs its own
+// default), the session — `--session-id` for a fresh one, `--resume` to continue the one
+// ResumeSession read — and the system prompt, `--append-system-prompt-file` naming the file
+// promptFile the runtime wrote it to. The model comes right before the session, so the last four
+// words are always the session and the prompt file.
 //
 // The prompt rides a file, under either runtime, for the reason an Oh My Pi launch's does
 // (runtime.SystemPromptFile). Claude Code sends the whole file as its appended system prompt and
 // refuses to start on one that is missing ("Append
 // system prompt file not found"), measured on 2.1.310, the worker image's pin
 // (docker/claude-code), and on 2.1.311, `.claude-code-pin`'s.
-func Argv(paths Paths, mcpConfig, session string, resume bool, promptFile string) []string {
+func Argv(paths Paths, mcpConfig, session string, resume bool, promptFile, model string) []string {
 	flag := "--session-id"
 	if resume {
 		flag = "--resume"
 	}
-	return []string{
+	argv := []string{
 		paths.Legion, "claude-bridge", "--", paths.Claude,
 		"-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
 		"--replay-user-messages",
@@ -69,9 +72,11 @@ func Argv(paths Paths, mcpConfig, session string, resume bool, promptFile string
 		"--strict-mcp-config", "--mcp-config", mcpConfig,
 		"--plugin-dir", paths.PluginDir,
 		"--plugin-dir", filepath.Join(paths.PluginDir, "legion"),
-		flag, session,
-		"--append-system-prompt-file", promptFile,
 	}
+	if model != "" {
+		argv = append(argv, "--model", model)
+	}
+	return append(argv, flag, session, "--append-system-prompt-file", promptFile)
 }
 
 // MCPConfig is the worker's MCP document, the JSON `--mcp-config` reads: the claude-envoy server
@@ -139,8 +144,9 @@ func IsSessionID(id string) bool {
 
 // Transcript is the session id of file when file is a transcript Claude Code writes —
 // `<CLAUDE_CONFIG_DIR>/projects/<cwd>/<session>.jsonl`, wherever that configuration directory is —
-// and ok false for any other path. A pod keeps a role's configuration directory on the issue's
-// volume and a tmux pane the claim's under the daemon's state directory, and a reader of a recorded
+// and ok false for any other path. A pod keeps a slot's configuration directory, its claim's
+// agent's, on the issue's volume and a tmux pane the claim's under the daemon's state directory,
+// and a reader of a recorded
 // session is told neither, so the shape is the whole test: no Oh My Pi session file, named for a
 // timestamp and a counter, has it.
 func Transcript(file string) (session string, ok bool) {

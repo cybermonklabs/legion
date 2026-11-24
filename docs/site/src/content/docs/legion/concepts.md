@@ -532,7 +532,8 @@ Legion uses GitHub's own review mechanisms rather than labels:
   writes the words to each role the hook names, between its own
   header — the hook and the move — and its own counts of the moves back, and posts
   `Legion hook <name> fired at <N> moves back: <from> to <to>. Prompted: <role>, <role>.` on the
-  issue. It gates nothing: the phase the move opened starts its worker whether a hook fired or
+  issue, which ends `Task: <id>.` for an issue with a plan, whose counts are the task's. It gates
+  nothing: the phase the move opened starts its worker whether a hook fired or
   not, and a role that reads the words answers in its own turn. A deployment that writes no
   `hooks:` key runs one shipped hook, which prompts the implementer, the tester and the reviewer
   every fifth move back of any kind to say what is in their way.

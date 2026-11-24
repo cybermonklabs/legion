@@ -175,7 +175,7 @@ func TestEachRefusalIsOnlyTheSentinelOfTheCommandItRefused(t *testing.T) {
 			drive: func(h *harness, p *peer) error {
 				conn := h.conn()
 				result := async(func() error {
-					return conn.AdoptWorkingCopy(context.Background(), identity, time.Second)
+					return conn.AdoptWorkingCopy(context.Background(), identity, "", time.Second)
 				})
 				request := p.expect(shimwire.TypeAdoptWorkingCopy).(shimwire.AdoptWorkingCopy)
 				p.send(shimwire.AdoptWorkingCopyResult{ID: request.ID, OK: false, Error: staleLock})
@@ -190,7 +190,7 @@ func TestEachRefusalIsOnlyTheSentinelOfTheCommandItRefused(t *testing.T) {
 			drive: func(h *harness, p *peer) error {
 				conn := h.conn()
 				result := async(func() error {
-					return conn.AdoptWorkingCopy(context.Background(), identity, time.Second)
+					return conn.AdoptWorkingCopy(context.Background(), identity, "", time.Second)
 				})
 				request := p.expect(shimwire.TypeAdoptWorkingCopy).(shimwire.AdoptWorkingCopy)
 				p.send(shimwire.Response{ID: request.ID, Command: shimwire.TypeAdoptWorkingCopy,
@@ -213,7 +213,7 @@ func TestEachRefusalIsOnlyTheSentinelOfTheCommandItRefused(t *testing.T) {
 			drive: func(h *harness, p *peer) error {
 				conn := h.conn()
 				result := async(func() error {
-					return conn.AdoptWorkingCopy(context.Background(), identity, time.Second)
+					return conn.AdoptWorkingCopy(context.Background(), identity, "", time.Second)
 				})
 				p.expect(shimwire.TypeAdoptWorkingCopy)
 				p.conn.Close()
@@ -871,7 +871,7 @@ func TestAdoptWorkingCopyAsksTheShimAndReadsItsResult(t *testing.T) {
 	conn := h.conn()
 	identity := runtime.GitIdentity{Name: "legion-bot", Email: "bot@legion.dev"}
 
-	result := async(func() error { return conn.AdoptWorkingCopy(context.Background(), identity, 3*time.Second) })
+	result := async(func() error { return conn.AdoptWorkingCopy(context.Background(), identity, "", 3*time.Second) })
 	request := p.expect(shimwire.TypeAdoptWorkingCopy).(shimwire.AdoptWorkingCopy)
 	if request.JJUser != "legion-bot" || request.JJEmail != "bot@legion.dev" || request.TimeoutMs != 3000 || request.ID == "" {
 		t.Fatalf("adopt-working-copy frame = %#v", request)
@@ -881,7 +881,7 @@ func TestAdoptWorkingCopyAsksTheShimAndReadsItsResult(t *testing.T) {
 		t.Fatalf("AdoptWorkingCopy: %v", err)
 	}
 
-	result = async(func() error { return conn.AdoptWorkingCopy(context.Background(), identity, 3*time.Second) })
+	result = async(func() error { return conn.AdoptWorkingCopy(context.Background(), identity, "", 3*time.Second) })
 	request = p.expect(shimwire.TypeAdoptWorkingCopy).(shimwire.AdoptWorkingCopy)
 	p.send(shimwire.AdoptWorkingCopyResult{ID: request.ID, OK: false, Error: "jj metaedit exited 1"})
 	err := awaitResult(t, result)
@@ -890,8 +890,40 @@ func TestAdoptWorkingCopyAsksTheShimAndReadsItsResult(t *testing.T) {
 		t.Fatalf("AdoptWorkingCopy = %v, want a RefusedError carrying the shim's error", err)
 	}
 
-	if err := conn.AdoptWorkingCopy(context.Background(), runtime.GitIdentity{}, time.Second); err == nil {
+	if err := conn.AdoptWorkingCopy(context.Background(), runtime.GitIdentity{}, "", time.Second); err == nil {
 		t.Fatal("AdoptWorkingCopy sent a frame with no identity")
+	}
+}
+
+// The adoption names the branch of the task whose working copy the shim adopts, on the wire:
+// `"branch":"legion/INFRA-1.d"`. The issue's own working copy, "", is a frame with no branch key,
+// the line a shim built before the key reads as it always has.
+func TestAnAdoptionFrameCarriesItsBranch(t *testing.T) {
+	h := startListener(t, harnessOptions{})
+	p := h.connect(testToken)
+	conn := h.conn()
+	identity := runtime.GitIdentity{Name: "legion-bot", Email: "bot@legion.dev"}
+	for _, branch := range []string{"legion/INFRA-1.d", ""} {
+		result := async(func() error { return conn.AdoptWorkingCopy(context.Background(), identity, branch, 3*time.Second) })
+		request := p.expect(shimwire.TypeAdoptWorkingCopy).(shimwire.AdoptWorkingCopy)
+		p.send(shimwire.AdoptWorkingCopyResult{ID: request.ID, OK: true})
+		if err := awaitResult(t, result); err != nil {
+			t.Fatalf("AdoptWorkingCopy(%q): %v", branch, err)
+		}
+		var line string
+		for _, written := range p.lines() {
+			if strings.Contains(written, `"id":"`+request.ID+`"`) {
+				line = written
+			}
+		}
+		switch {
+		case line == "":
+			t.Fatalf("no line of the wire carries the adoption %s", request.ID)
+		case branch != "" && !strings.Contains(line, `"branch":"`+branch+`"`):
+			t.Errorf("the adoption of %s went on the wire as %s, which names no branch %s", branch, line, branch)
+		case branch == "" && strings.Contains(line, `"branch"`):
+			t.Errorf("the adoption of the issue's own working copy went on the wire as %s, want no branch key", line)
+		}
 	}
 }
 

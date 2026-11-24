@@ -1,13 +1,17 @@
 {
   "plan": {
     "version": 4,
+    "added": [
+      "a"
+    ],
     "tasks": [
       {
         "id": "a",
         "steps": [
           "implementer",
           "reviewer"
-        ]
+        ],
+        "needs": []
       }
     ]
   }

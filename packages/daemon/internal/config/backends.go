@@ -20,10 +20,11 @@ func (c Config) BackendFor(role claim.Role) runtime.Backend {
 }
 
 // Backends are the backends the daemon launches agents on, each once, in the order the workflow
-// reaches the first role on it: every issue role's (BackendFor), then the controller's when the
-// daemon launches it. Boot resolves each one's launch (readTmux).
+// reaches the first role on it: every issue role's (BackendFor), each role of `roles` among them,
+// in the file's order (issueRoles), then the controller's when the daemon launches it. Boot
+// resolves each one's launch (readTmux).
 func (c Config) Backends() []runtime.Backend {
-	roles := slices.Clone(claim.Roles)
+	roles := c.issueRoles()
 	if c.ControllerLaunch == ControllerLaunchDaemon {
 		roles = append(roles, claim.RoleController)
 	}
@@ -37,8 +38,10 @@ func (c Config) Backends() []runtime.Backend {
 }
 
 // readWorkerBackends is `worker_backends`: a mapping of an issue role to the backend it runs on
-// (runtime.Backends). A role named twice, a name that is not an issue role, a backend there is no
-// entry for, and a backend that does not run the role are each refused naming the entry.
+// (runtime.Backends). A role named twice, a name that is no role a claim can be on
+// (claim.IsRole), a backend there is no entry for, and a backend that does not run the role are
+// each refused naming the entry; a name that is neither one of Legion's roles nor a role of
+// `roles` is checkDeploymentRoleKeys', once both keys are read.
 func readWorkerBackends(value *yaml.Node, key string) (map[claim.Role]runtime.Backend, error) {
 	if value.Tag == "!!null" {
 		return nil, nil
@@ -51,7 +54,7 @@ func readWorkerBackends(value *yaml.Node, key string) (map[claim.Role]runtime.Ba
 	for i := 0; i+1 < len(value.Content); i += 2 {
 		roleNode, backendNode := value.Content[i], value.Content[i+1]
 		role := claim.Role(roleNode.Value)
-		if !slices.Contains(claim.Roles, role) {
+		if !claim.IsRole(role) {
 			return nil, fmt.Errorf("%s names %q, which is not an issue role (%s)", key, roleNode.Value, runtime.JoinRoles(claim.Roles))
 		}
 		if _, seen := backends[role]; seen {
@@ -67,7 +70,7 @@ func readWorkerBackends(value *yaml.Node, key string) (map[claim.Role]runtime.Ba
 		case !ok:
 			return nil, fmt.Errorf("%s.%s must be one of %s (got %q)", key, role, names, name)
 		case !info.Runs(role):
-			return nil, fmt.Errorf("%s.%s is %s (%s), which runs only %s: %s", key, role, backend, info.Name, runtime.JoinRoles(info.Roles), info.Why)
+			return nil, fmt.Errorf("%s.%s is %s (%s), which runs only %s: %s", key, role, backend, info.Name, info.RunsWhat(), info.Why)
 		}
 		backends[role] = backend
 	}

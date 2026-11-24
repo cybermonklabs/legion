@@ -774,3 +774,114 @@ func TestAPhaseTaskWaitsForASendInFlightOnAnotherClaimOfItsIssue(t *testing.T) {
 		t.Fatalf("adoptions = %+v, want one more, for the tester's App", made)
 	}
 }
+
+// Each task of a plan of several tasks works a working copy of its own, its branch's
+// (supervise.Delivery.Branch), so a turn holds only the adoptions of the working copy it works:
+// while the implementer works task c's step, in its turn or with its send in flight, a phase task
+// of the issue's own working copy is adopted and sent at once, and one of c's working copy still
+// waits. A turn of a message, which adopts nothing, works no known working copy and holds them
+// all, and so does a turn whose task a newer one replaced: the turn still works the copy of the
+// task it took, which the claim no longer holds. Before, any turn of the issue held every
+// adoption, so the reviewer of a task that holds the issue's own branch waited for the whole of
+// another task's implementation.
+//
+// The fault: a turn that holds the adoption of a working copy it does not work, which stalls a task
+// for the length of another task's step. The controls are the cases of the same working copy, of
+// the message and of the replaced task, which must still wait.
+func TestAPhaseTaskWaitsOnlyForATurnInTheWorkingCopyItAdopts(t *testing.T) {
+	t.Parallel()
+	const taskC = "legion/LEGION-209.c"
+	for _, tc := range []struct {
+		name string
+		// inFlight is the implementer's send held at its prompt, where its turn has not started.
+		inFlight bool
+		// message makes the implementer's task a message of no phase, which adopts nothing.
+		message bool
+		// replaced is a newer task of task e's working copy taking the place of the task whose turn
+		// the implementer is in.
+		replaced bool
+		// branch is the branch of the reviewer's task, and held whether it must wait.
+		branch string
+		held   bool
+	}{
+		{name: "a turn in another task's working copy", branch: ""},
+		{name: "a send in flight to another task's working copy", inFlight: true, branch: ""},
+		{name: "a turn in the same task's working copy", branch: taskC, held: true},
+		{name: "a send in flight to the same task's working copy", inFlight: true, branch: taskC, held: true},
+		{name: "a turn of a message", message: true, branch: "", held: true},
+		{name: "a turn whose task a newer one replaced", replaced: true, branch: "", held: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newIssueRig(t)
+			gated := newGatedPrompt()
+			implementer, writing := rig.ready(claim.RoleImplementer, gated)
+			reviewerConn := fake.NewConn()
+			reviewer, waiting := rig.ready(claim.RoleReviewer, reviewerConn)
+			// The implementer's send is let through once, here for a turn or at the test's end.
+			var release sync.Once
+			letThrough := func() {
+				release.Do(func() { close(gated.release) })
+				writing.Wait()
+			}
+			defer letThrough()
+
+			at := phase.Implementing
+			if tc.message {
+				at = ""
+			}
+			if err := writing.Handle(rig.ctx, supervise.RequestDeliver{Claim: implementer, Task: "implement task c", ID: "outbox:1",
+				Phase: at, Generation: 1, Branch: taskC}); err != nil {
+				t.Fatalf("deliver the implementer's task: %v", err)
+			}
+			select {
+			case <-gated.entered:
+			case <-time.After(10 * time.Second):
+				t.Fatal("the implementer's send never reached its prompt")
+			}
+			if !tc.inFlight {
+				letThrough()
+				if err := writing.Handle(rig.ctx, supervise.StreamTurnStart{Claim: implementer}); err != nil {
+					t.Fatalf("the implementer's turn start: %v", err)
+				}
+				if view := writing.View(); view.State != supervise.StateWorking {
+					t.Fatalf("the implementer is %s after its turn started, want working", view.State)
+				}
+				if tc.replaced {
+					if err := writing.Handle(rig.ctx, supervise.RequestDeliver{Claim: implementer, Task: "implement task e", ID: "outbox:3",
+						Phase: phase.Implementing, Generation: 1, Branch: "legion/LEGION-209.e"}); err != nil {
+						t.Fatalf("deliver the implementer's newer task: %v", err)
+					}
+					writing.Wait()
+					if pending := writing.View().Pending; pending == nil || pending.ID != "outbox:3" {
+						t.Fatalf("the implementer holds %+v after the newer task, want it pending in the place of the one its turn took", pending)
+					}
+				}
+			} else if view := writing.View(); !view.SendInFlight {
+				t.Fatalf("the implementer is %s with no send in flight, want its send held at its prompt", view.State)
+			}
+			adoptions := rig.adoptions()
+
+			if err := waiting.Handle(rig.ctx, supervise.RequestDeliver{Claim: reviewer, Task: "review the task", ID: "outbox:2",
+				Phase: phase.Reviewing, Generation: 1, Branch: tc.branch}); err != nil {
+				t.Fatalf("deliver the reviewer's task: %v", err)
+			}
+			waiting.Wait()
+
+			prompts, made := reviewerConn.Prompts(), rig.rt.CallsOf("AdoptWorkingCopy")
+			if tc.held {
+				if len(prompts) != 0 || len(made) != adoptions {
+					t.Fatalf("the reviewer was prompted %+v after %d adoptions, want its task held, adopting nothing, while the implementer works %s",
+						prompts, len(made)-adoptions, taskC)
+				}
+				return
+			}
+			// A reviewer's task ends with the daemon's sentences of its review round.
+			if len(prompts) != 1 || !strings.HasPrefix(prompts[0].Message, "review the task") {
+				t.Fatalf("the reviewer was prompted %+v while the implementer works %s, want its own task sent at once", prompts, taskC)
+			}
+			if len(made) != adoptions+1 || made[adoptions].Identity.Name != "legion-reviewer[bot]" || made[adoptions].Branch != tc.branch {
+				t.Fatalf("adoptions = %+v, want one more, of the reviewer's App on the issue's own working copy", made)
+			}
+		})
+	}
+}

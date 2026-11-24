@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"slices"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
@@ -231,7 +232,7 @@ func readTmux(cfg config.Config, lookup func(string) (string, bool), getenv func
 // quotes, and every arm of the `experiments` key, `experiments.memory` included, in the
 // experiments' words.
 func checkRoleConfigFiles(cfg config.Config) error {
-	for _, role := range config.RoleConfigRoles {
+	for _, role := range overlayRoles(cfg) {
 		for _, file := range cfg.RoleConfigFiles[role] {
 			if err := podsafety.CheckOverlay(file); err != nil {
 				return fmt.Errorf("role_config_files.%s names %s, which the %s's Oh My Pi could not read: %w", role, file, role, err)
@@ -252,6 +253,17 @@ func checkRoleConfigFiles(cfg config.Config) error {
 		}
 	}
 	return nil
+}
+
+// overlayRoles are the roles whose role_config_files the boot reads: Legion's
+// (config.RoleConfigRoles, the controller among them), then each role of `roles` in the file's
+// order, so an overlay of a role the deployment defines is read at boot as one of Legion's is.
+func overlayRoles(cfg config.Config) []claim.Role {
+	roles := slices.Clone(config.RoleConfigRoles)
+	for _, role := range cfg.Roles {
+		roles = append(roles, role.Name)
+	}
+	return roles
 }
 
 // CheckStart is `legion config check`'s reading of what boot reads before it writes

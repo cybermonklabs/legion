@@ -16,6 +16,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/capabilities"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
@@ -372,7 +373,12 @@ func valueStripCases() map[string]valueStripCase {
 				every, _ := strandedServed(t, whole)
 				var kept []map[string]string
 				for _, entry := range every {
-					if entry["state"] != string(supervise.StateRetired) {
+					// The pod is below deploymentRolesContract too, so a claim of a role outside
+					// Legion's six is no entry of its body either (shaping.go's
+					// withoutDeploymentRoleClaims), and below strandedTokenContract, so no entry
+					// carries its `token` (withoutStrandedTokens).
+					if entry["state"] != string(supervise.StateRetired) && claim.IsBuiltin(claim.Role(entry["role"])) {
+						delete(entry, "token")
 						kept = append(kept, entry)
 					}
 				}
@@ -548,6 +554,11 @@ func valueStripCases() map[string]valueStripCase {
 					want := hold
 					if hold[0] == string(record.HoldTaskStopped) || hold[0] == string(record.HoldForChildren) {
 						want[0] = ""
+					}
+					// The pod is below deploymentRolesContract too, so a hold from step is served as
+					// one from implementing (shaping.go's withoutDeploymentRoles).
+					if hold[1] == string(phase.Step) {
+						want[1] = string(phase.Implementing)
 					}
 					if served[key] != want {
 						t.Errorf("the {%d, %d} pod is served %s held %q, want %q: the strip takes the reason the pod's %d process refuses and nothing else",
@@ -1062,10 +1073,10 @@ func TestTheServedContractsOfACallerBelowTheFloor(t *testing.T) {
 // its own is an answer this names and that does not, which is a programming error rather than a
 // body served unshaped.
 //
-// Each row is handed a body its own route could write, because the four rows whose shape has
-// moved shape a State, an Issue, the release records and a refusal and panic on anything else: a
-// row handed the wrong type would fail here as an answer with no row does, and never serve that
-// body unshaped.
+// Each row is handed a body its own route could write, because the five rows whose shape has
+// moved shape a State, an Issue, the release records, a refusal and register_plan's answer and
+// panic on anything else: a row handed the wrong type would fail here as an answer with no row
+// does, and never serve that body unshaped.
 func TestShapeAnswerShapesEveryAnswer(t *testing.T) {
 	state := populatedState(t)
 	for _, answer := range Answers {
@@ -1120,6 +1131,26 @@ func TestShapeAnswerShapesEveryAnswer(t *testing.T) {
 				if shaped, _ := shapeAnswer(AnswerRefusal, refused, ServingFloor, ServingFloor); shaped != any(refused.Failure) {
 					t.Errorf("a PauseFailure was shaped to %+v at the floor, want its Failure alone", shaped)
 				}
+			case AnswerPlanRegister:
+				needs := []string{"a"}
+				registered := PlanRegisterResponse{Plan: RegisteredPlan{Version: 2, Tasks: []RegisteredTask{{ID: "b", Steps: []string{}, Needs: &needs}}}}
+				body, _ := shapeAnswer(AnswerPlanRegister, registered, OwnerPlanContract, OwnerPlanContract)
+				shaped, isRegistered := body.(PlanRegisterResponse)
+				if !isRegistered {
+					t.Fatalf("register_plan's answer was shaped to %T, want a PlanRegisterResponse", body)
+				}
+				if shaped.Plan.Tasks[0].Needs != nil {
+					t.Errorf("register_plan's answer served at %d carries a task's `needs`, which tasksContract added", OwnerPlanContract)
+				}
+				if registered.Plan.Tasks[0].Needs == nil {
+					t.Error("the shaping wrote the task of the body the route built: the tasks are copied before one is written")
+				}
+				for _, contract := range []int{tasksContract, DaemonAPIVersion} {
+					body, _ := shapeAnswer(AnswerPlanRegister, registered, contract, contract)
+					if kept, ok := body.(PlanRegisterResponse); !ok || kept.Plan.Tasks[0].Needs == nil || !slices.Equal(*kept.Plan.Tasks[0].Needs, needs) {
+						t.Errorf("register_plan's answer served at %d = %+v, want each task's `needs` kept", contract, body)
+					}
+				}
 			default:
 				body := map[string]string{"shape": "unmoved"}
 				if shaped, _ := shapeAnswer(answer.ID, body, ServingFloor, ServingFloor); !reflectEqualBody(shaped, body) {
@@ -1130,11 +1161,11 @@ func TestShapeAnswerShapesEveryAnswer(t *testing.T) {
 	}
 }
 
-// The four rows that shape a body of their own panic on a body of another type, as a row that
+// The five rows that shape a body of their own panic on a body of another type, as a row that
 // does not exist panics: a route that wrote a State under AnswerIssueRecord would otherwise
 // have it served unshaped and in silence.
 func TestShapeAnswerPanicsOnABodyItsRowCannotShape(t *testing.T) {
-	for _, id := range []AnswerID{AnswerState, AnswerIssueRecord, AnswerReleaseRecords, AnswerRefusal} {
+	for _, id := range []AnswerID{AnswerState, AnswerIssueRecord, AnswerReleaseRecords, AnswerRefusal, AnswerPlanRegister} {
 		t.Run(string(id), func(t *testing.T) {
 			defer func() {
 				if recover() == nil {

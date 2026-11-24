@@ -27,8 +27,13 @@ type silentRun struct {
 	now   time.Time
 }
 
-// answer is the rule's answer for this run.
+// answer is the rule's answer for this run. The issue has no plan rows, so a run that names no
+// running steps reads the one the store reads with such an issue (record.RunningOf), at the phase
+// the run's change left it in.
 func (s silentRun) answer() bool {
+	if s.issue.Running == nil {
+		s.issue.Running = record.RunningOf(s.issue, false, nil)
+	}
 	return SilentPhaseWorker(s.issue, s.root, s.gate, s.role, s.run, s.bound, s.now)
 }
 

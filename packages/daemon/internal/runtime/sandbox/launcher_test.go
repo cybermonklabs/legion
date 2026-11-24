@@ -363,7 +363,7 @@ func TestRejectedLauncherHellosDoNotSpendKubernetesRequests(t *testing.T) {
 
 // A Claude Code launch's start command carries one file beside its credentials and the system
 // prompt file every launch carries: the MCP document its agent command reads, naming the image's
-// bun and the claude-envoy server it runs, with the plugin's data under the role's own Claude Code
+// bun and the claude-envoy server it runs, with the plugin's data under the slot's own Claude Code
 // directory. It travels in Files and not in the spec's secrets, which would point a `<NAME>_FILE`
 // variable at it and be refused for its name besides. An Oh My Pi launch carries no such file.
 func TestAClaudeLaunchCarriesItsMCPDocumentAsALauncherFile(t *testing.T) {

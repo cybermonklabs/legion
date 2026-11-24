@@ -335,6 +335,10 @@ test("a state from a daemon a release ahead parses without its unknown top-level
         daemon: client,
         claim,
         build: { name: "@sjawhar/pi-shared", version: "0.0.0", pluginContract: CONTRACT },
+        env: {
+          LEGION_WORKSPACE: "/state/workspaces/acme/widgets/legion-208",
+          LEGION_ISSUE: "LEGION-208",
+        },
         handoffReport: async () => ({ commit: "a".repeat(40) }),
         branchHead: async () => {
           throw new Error("no branch-head lookup expected");

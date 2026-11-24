@@ -18,7 +18,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/bootprobe"
 	"github.com/sjawhar/legion/daemon/internal/capabilities"
-	"github.com/sjawhar/legion/daemon/internal/config"
+	legionclaim "github.com/sjawhar/legion/daemon/internal/claim" // main_test.go's `claim` helper holds the bare name
 	"github.com/sjawhar/legion/daemon/internal/daemon"
 	"github.com/sjawhar/legion/daemon/internal/launcher"
 	"github.com/sjawhar/legion/daemon/internal/natsauth"
@@ -348,8 +348,10 @@ type roleOverlays struct {
 // roleConfigFilesFlag is every --role-config-files value, in the order given, one entry per
 // occurrence: a role is named once per whole PI_CONFIG_FILES tail it starts on, so a deployment
 // that declares two arms naming overlays passes that role one value per arm, and each is read on
-// its own — the union of two arms is a configuration no launch produces. A name that is no
-// Legion role, and a file that is not an absolute path, are refused as the flag is read.
+// its own — the union of two arms is a configuration no launch produces. The probe loads no
+// settings, so the flag knows a role by its name alone: a name of the role grammar (claim.IsRole:
+// one of Legion's or a role the deployment defines) or the controller. Any other name, and a file
+// that is not an absolute path, are refused as the flag is read.
 type roleConfigFilesFlag []roleOverlays
 
 func (f *roleConfigFilesFlag) String() string {
@@ -368,12 +370,8 @@ func (f *roleConfigFilesFlag) Set(value string) error {
 	if err != nil {
 		return err
 	}
-	known := false
-	for _, legionRole := range config.RoleConfigRoles {
-		known = known || string(legionRole) == role
-	}
-	if !known {
-		return fmt.Errorf("%q is not a Legion role", role)
+	if !legionclaim.IsRole(legionclaim.Role(role)) && legionclaim.Role(role) != legionclaim.RoleController {
+		return fmt.Errorf("%q is not a role", role)
 	}
 	for _, file := range files {
 		if !filepath.IsAbs(file) {

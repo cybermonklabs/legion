@@ -139,9 +139,13 @@ export async function gone(pane: StallPane, pid: number): Promise<void> {
   );
 }
 
-/** The counter file one claim counts its own stall exits in, under `stateDir`. */
+/** The token of the claim the stand-in daemon registers the pane under. */
+export const CLAIM_TOKEN = `legion-${PROJECT}-${ISSUE.toLowerCase()}-${ROLE}`;
+
+/** The counter file the pane's claim counts its own stall exits in, under `stateDir`: the file is
+ * named for the claim's token. */
 export function exitsFile(stateDir: string): string {
-  return stallExitsFile(stateDir, { kind: "phase-worker", role: ROLE, tree: TREE, issue: ISSUE });
+  return stallExitsFile(stateDir, CLAIM_TOKEN);
 }
 
 /**
@@ -408,7 +412,7 @@ export async function startPane(options: PaneOptions): Promise<StallPane> {
     if (url.pathname === "/legion/v1/claims/register") {
       return Response.json({
         ...registered,
-        claimToken: `legion-${PROJECT}-${ISSUE.toLowerCase()}-${ROLE}`,
+        claimToken: CLAIM_TOKEN,
         tree: TREE,
         issue: ISSUE,
         role: ROLE,

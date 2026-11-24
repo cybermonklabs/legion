@@ -1046,8 +1046,8 @@ while :; do /bin/sleep 600 & wait; done
 	}
 }
 
-// The container's log holds every line whole and behind its own role's prefix: the launcher's own
-// line for a role never glues onto a line that role's child has not finished, and a generation
+// The container's log holds every line whole and behind its own slot's prefix: the launcher's own
+// line for a slot never glues onto a line that slot's child has not finished, and a generation
 // that exits mid-line has that line written out on its own once it is gone, so the next
 // generation's first line starts a line of its own rather than finishing it (`fatalready`).
 func TestTheContainersLogKeepsEveryLineWholeAcrossGenerations(t *testing.T) {

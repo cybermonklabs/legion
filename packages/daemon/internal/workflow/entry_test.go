@@ -32,9 +32,10 @@ const seededEntryTask = "Continue root. Issue: LEGION-208. Phase: testing."
 // again.
 var seededRaisedAt = time.Date(2026, 9, 20, 0, 0, 0, 0, time.UTC)
 
-// Every start that hands a role work it was not on raises that role's phase entry by one, writes
-// the work of that entry and the moment it was raised on the role's phases row, and carries the
-// number on the start's payload, all in the transition's own transaction. The issue's run cannot
+// Every start that hands a claim work it was not on raises its phase entry, writes the work of that
+// entry and the moment it was raised on the role's phases row, and carries the number on the
+// start's payload, all in the transition's own transaction: one above the row's own entry and above
+// the highest entry of each row that names the same claim. The issue's run cannot
 // do this work: one run holds every phase entry, so the testing phase the tester is given after a
 // failed round and an implementing pass has to be told from the testing phase before it by
 // something the run does not carry (api/handoff.go).
@@ -79,7 +80,7 @@ func TestEveryPhaseStartRaisesTheRolesEntryAndWritesItsTask(t *testing.T) {
 		HandoffRecord: "implement-1", HandoffVersion: 1})
 	assertPhase(t, pool, phase.Testing)
 	if got := entryOfStart(t, pool, claim.RoleTester, engine.now()); got != 1 {
-		t.Fatalf("the tester's first start is of entry %d, want 1: each role counts the entries it is handed", got)
+		t.Fatalf("the tester's first start is of entry %d, want 1: an entry counts the entries handed on the rows of the step's claim, the tester's own here", got)
 	}
 	// The implementer's own entry is its row's still: a completion keeps it, and only its next
 	// start raises it.
@@ -230,7 +231,11 @@ func TestThePromotionsStartRaisesTheEntryAndWritesItsTask(t *testing.T) {
 	engine := testEngine(config.DesignGateRootIssues, nil)
 
 	applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
-		return engine.StartPromotedWorker(ctx, tx, issue, claim.RoleImplementer)
+		s, err := firstScope(ctx, tx, engine, issue)
+		if err != nil {
+			return err
+		}
+		return engine.StartPromotedWorker(ctx, tx, s, claim.RoleImplementer)
 	})
 
 	starts := superviseRowsOf(t, pool, entryIssue, "start")
@@ -327,7 +332,11 @@ func TestTheWorkAnEntryNamesIsSentOnce(t *testing.T) {
 			seedPhase(t, pool, merger)
 
 			seedRecord(t, pool, func(tx pgx.Tx) error {
-				return engine.SendOwedEntry(t.Context(), tx, issue, claim.RoleMerger, merger)
+				s, err := firstScope(t.Context(), tx, engine, issue)
+				if err != nil {
+					return err
+				}
+				return engine.SendOwedEntry(t.Context(), tx, s, claim.RoleMerger, merger)
 			})
 
 			starts := superviseRowsOf(t, pool, entryIssue, "start")
@@ -417,7 +426,11 @@ func phaseResumeTask(t *testing.T, pool *pgxpool.Pool, engine *Engine, key strin
 	if err != nil || issue == nil {
 		t.Fatalf("read %s for its resume task: the record holds it %t, error %v", key, issue != nil, err)
 	}
-	task, err := engine.ResumeTask(ctx, tx, *issue)
+	s, err := firstScope(ctx, tx, engine, *issue)
+	if err != nil {
+		t.Fatalf("read the scope of %s for its resume task: %v", key, err)
+	}
+	task, err := engine.ResumeTask(ctx, tx, s)
 	if err != nil {
 		t.Fatalf("compose %s's resume task: %v", key, err)
 	}

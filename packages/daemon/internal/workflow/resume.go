@@ -7,7 +7,6 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
-	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
@@ -61,13 +60,18 @@ import (
 // for the issue's admission slot in a phase up to the review and for none past it. A role a start
 // already covers (StartFor) gets no second.
 //
-// The sweep runs first so the resume reads the trees it closed as lingering. The owners' read
+// The sweep runs first so the resume reads the trees it closed as lingering. The stop of each task
+// a step of a role the deployment no longer defines still has to run (stopLostRoles) comes next,
+// so the resume finds those issues held and starts no lost role. The owners' read
 // (suspendedPhaseOwners) comes next, and the status repair runs on the issues and running roots
 // that read holds, before any start. The read writes nothing, and the repair writes none of the
 // pull requests, claims and queued starts the read takes beside the issues, so the read answers
 // what it would answer after the repair.
 func (e *Engine) booted(ctx context.Context, tx pgx.Tx, _ intake.DaemonBooted) (intake.Result, error) {
 	if err := e.sweepMerged(ctx, tx); err != nil {
+		return intake.Result{}, err
+	}
+	if err := e.stopLostRoles(ctx, tx); err != nil {
 		return intake.Result{}, err
 	}
 	owners, err := e.suspendedPhaseOwners(ctx, tx)
@@ -78,7 +82,7 @@ func (e *Engine) booted(ctx context.Context, tx pgx.Tx, _ intake.DaemonBooted) (
 		return intake.Result{}, err
 	}
 	for _, owner := range owners.suspended {
-		issue, held := owner.issue, owner.run.Claim
+		issue, held := owner.scope.issue, owner.run.Claim
 		if !held.SuspendedBy.ByRule() || !StartFor(owner.run, owner.root, issue.Generation, issue.Phase) {
 			continue
 		}
@@ -103,11 +107,14 @@ func (e *Engine) booted(ctx context.Context, tx pgx.Tx, _ intake.DaemonBooted) (
 
 // suspendedOwner is a claim that owns its issue's unfinished phase in a running tree and stands
 // suspended (suspendedPhaseOwners), with what a start of it is weighed against and built from:
-// the issue; its tree root, which StartFor and OwedEntry read; the role that works the phase;
-// that role's claim token; and the role's queued rows and claim at the issue's generation, whose
-// Claim is never nil.
+// the scope of the owner's step's task (ScopeOfStep), whose copy of the issue is the issue every
+// reader of the owner reads, and on which the start the boot gives the claim is built; its tree
+// root, which StartFor and OwedEntry read; the role that works the phase; the claim of the agent
+// that works that role's step (Engine.workerClaim), which is the role's own token on an issue with
+// no plan rows; and that claim's queued rows and state at the issue's generation, whose Claim is
+// never nil.
 type suspendedOwner struct {
-	issue record.Issue
+	scope TaskScope
 	root  record.Issue
 	role  claim.Role
 	token claim.Token
@@ -133,8 +140,10 @@ type phaseOwners struct {
 // the boot reads its phase workers by a read of its own (admit's phaseWorkers) and sends only the
 // work of an entry a claim stands behind (owedEntryRoles). It writes nothing.
 //
-// The phase's owner is the role that works the issue's phase (phase.RoleFor) on an issue in the
-// workflow whose tree is running — this generation of it, by the one rule every reader of that
+// The phase's owners are the workers of the issue's steps that take work (OpenStepsOf: each
+// running step that is not held and is no architect's, at step the role the plan gives it) on an
+// issue in the workflow whose tree is
+// running — this generation of it, by the one rule every reader of that
 // question asks (record.RunningRoots, record.TreeRuns): its lifecycle stands open under the
 // workflow, its root does not linger, and its root is not itself waiting in the line for the
 // tree to be opened. A lingering tree's claims stay suspended until re-admission runs the tree
@@ -172,8 +181,8 @@ func (e *Engine) suspendedPhaseOwners(ctx context.Context, tx pgx.Tx) (phaseOwne
 	}
 	owners := phaseOwners{issues: issues, running: record.RunningRoots(issues, facts)}
 	for _, issue := range issues {
-		role := phase.RoleFor(issue.Phase)
-		if role == "" || role == claim.RoleArchitect || record.OutOfWorkflow(issue.Status) {
+		steps := OpenStepsOf(issue)
+		if len(steps) == 0 || record.OutOfWorkflow(issue.Status) {
 			continue
 		}
 		root, ok := byKey[issue.Tree]
@@ -195,22 +204,31 @@ func (e *Engine) suspendedPhaseOwners(ctx context.Context, tx pgx.Tx) (phaseOwne
 		if finished {
 			continue
 		}
-		project, err := claim.ProjectToken(issue.Project)
-		if err != nil {
-			return phaseOwners{}, err
+		// Each running step's worker is an owner of its own, read on the copy of the issue its step
+		// is given its work on (StepCopy), and one claim that works two of them is answered once.
+		seen := map[claim.Token]bool{}
+		for _, step := range steps {
+			token, err := e.workerClaim(ctx, tx, issue, step.Role)
+			if err != nil {
+				return phaseOwners{}, err
+			}
+			if seen[token] {
+				continue
+			}
+			seen[token] = true
+			run, err := e.store.RoleRun(ctx, tx, token, issue.Key, step.Role, issue.Generation)
+			if err != nil {
+				return phaseOwners{}, err
+			}
+			if held := run.Claim; held == nil || held.State != supervise.StateSuspended {
+				continue
+			}
+			standing, err := ScopeOfStep(ctx, e.store, tx, issue, step)
+			if err != nil {
+				return phaseOwners{}, err
+			}
+			owners.suspended = append(owners.suspended, suspendedOwner{scope: standing, root: root, role: step.Role, token: token, run: run})
 		}
-		token, err := claim.NewToken(project, issue.Key, role)
-		if err != nil {
-			return phaseOwners{}, err
-		}
-		run, err := e.store.RoleRun(ctx, tx, token, issue.Key, role, issue.Generation)
-		if err != nil {
-			return phaseOwners{}, err
-		}
-		if held := run.Claim; held == nil || held.State != supervise.StateSuspended {
-			continue
-		}
-		owners.suspended = append(owners.suspended, suspendedOwner{issue: issue, root: root, role: role, token: token, run: run})
 	}
 	return owners, nil
 }
@@ -238,19 +256,21 @@ func (e *Engine) suspendedPhaseOwners(ctx context.Context, tx pgx.Tx) (phaseOwne
 // the resume task's start sets it here.
 func (e *Engine) startSuspendedOwner(ctx context.Context, tx pgx.Tx, owner suspendedOwner, row record.PhaseRow) (behind bool, err error) {
 	if OwedEntry(owner.run, owner.root, row.Entry) {
-		return true, e.sendOwedEntry(ctx, tx, owner.issue, owner.role, row, startMarks{ruleResume: true})
+		return true, e.sendOwedEntry(ctx, tx, owner.scope, owner.role, row, startMarks{ruleResume: true})
 	}
-	resume, err := e.ResumeTask(ctx, tx, owner.issue)
+	resume, err := e.ResumeTask(ctx, tx, owner.scope)
 	if err != nil {
 		return false, err
 	}
-	return false, e.started(ctx, tx, owner.issue, owner.role, resume, 0, startMarks{resumeTask: true, ruleResume: true, reasserts: true})
+	return false, e.started(ctx, tx, owner.scope, owner.role, resume, 0, startMarks{resumeTask: true, ruleResume: true, reasserts: true})
 }
 
 // sweepMerged closes every issue of the project that awaits a merge GitHub already reported
-// (booted). Each is re-read before its close: a child's close may have closed the merged issues
-// above it (closeAwaitingMerge), and a root's close lingers the tree its children then close
-// under. A root whose tree still runs is left where it stands by closeMerged, which owns that
+// (booted): the merge of the pull request of its task that merges (record.Store.MergePullRequest).
+// Each is re-read before its close, for that task (issueOfPullRequest), so an issue whose plan
+// holds several tasks closes as that task's merge closes it: a child's close may have closed the
+// merged issues above it (closeAwaitingMerge), and a root's close lingers the tree its children then
+// close under. A root whose tree still runs is left where it stands by closeMerged, which owns that
 // rule, and the sweep tells nobody of the wait: a restart must not repeat the architect's
 // notice, and a root can now wait for days across many boots.
 func (e *Engine) sweepMerged(ctx context.Context, tx pgx.Tx) error {
@@ -262,21 +282,22 @@ func (e *Engine) sweepMerged(ctx context.Context, tx pgx.Tx) error {
 		if !awaitsMerge(listed) {
 			continue
 		}
-		pr, err := e.store.PullRequest(ctx, tx, listed.Key)
+		pr, err := e.store.MergePullRequest(ctx, tx, listed.Key)
 		if err != nil || pr == nil || pr.State != record.PullRequestMerged {
 			if err != nil {
 				return err
 			}
 			continue
 		}
-		issue, err := e.store.Issue(ctx, tx, listed.Key)
-		if err != nil || issue == nil || !awaitsMerge(*issue) {
+		scope, err := e.issueOfPullRequest(ctx, tx, *pr)
+		if err != nil || scope == nil || !awaitsMerge(scope.issue) {
 			if err != nil {
 				return err
 			}
 			continue
 		}
-		waiting, err := e.closeMerged(ctx, tx, *issue, pr)
+		issue := &scope.issue
+		waiting, err := e.closeMerged(ctx, tx, *scope, pr)
 		if err != nil {
 			return err
 		}

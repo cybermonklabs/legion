@@ -404,7 +404,11 @@ func (r *controllerSandboxRig) runtimeFor(cfg config.Config) runtimeFactory {
 		opts.Conns, opts.StreamURL, opts.Store = listener, address, st
 		opts.Tokens = idleRigTokens{}
 		opts.GitHubCredential = func(_ context.Context, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
-			rendered := ghconfig.Render("ghs_controller_sandbox", string(appauth.AppRoleFor(role)), time.Now().Add(time.Hour))
+			app, err := appauth.AppRoleFor(role, opts.DeploymentApps)
+			if err != nil {
+				return ghconfig.Bundle{}, err
+			}
+			rendered := ghconfig.Render("ghs_controller_sandbox", string(app), time.Now().Add(time.Hour))
 			owner := strings.ToLower(repo.Owner())
 			return ghconfig.Bundle{Default: owner, Dirs: map[string]ghconfig.Rendered{owner: rendered}}, nil
 		}

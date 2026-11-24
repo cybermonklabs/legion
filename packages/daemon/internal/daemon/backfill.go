@@ -96,7 +96,7 @@ func fillRepositories(ctx context.Context, pool *store.Pool, records record.Stor
 			return err
 		}
 		for _, issue := range unfilled {
-			pull, err := records.PullRequest(ctx, tx, issue.Key)
+			pull, err := records.MergePullRequest(ctx, tx, issue.Key)
 			if err != nil {
 				return err
 			}

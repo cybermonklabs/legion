@@ -268,7 +268,7 @@ func redeliveredPullRequestOpened() []byte {
 			"number": redeliveredNumber, "title": "Widgets", "body": "Dispatch: " + redeliveredIssue,
 			"user":     map[string]any{"login": "implementer", "type": "User"},
 			"html_url": "https://github.com/" + redeliveredRepo + "/pull/" + strconv.Itoa(redeliveredNumber),
-			"head":     map[string]any{"sha": redeliveredHead, "ref": "legion/" + redeliveredIssue},
+			"head":     map[string]any{"sha": redeliveredHead, "ref": "legion/" + redeliveredIssue, "repo": map[string]any{"full_name": redeliveredRepo}},
 			"base":     map[string]any{"sha": strings.Repeat("0", 40), "ref": "main"},
 			"merged":   false, "merge_commit_sha": nil, "merged_by": nil, "updated_at": "2026-10-28T09:00:00Z",
 		},

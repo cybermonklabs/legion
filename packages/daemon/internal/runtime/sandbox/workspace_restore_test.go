@@ -37,9 +37,13 @@ func savedWorkspaceBundle() runtime.WorkspaceBundle {
 		Head:      "f2f134541b30dfa5160a5d1ce5e17b76c967c661",
 		Tips:      []string{"da4f9f492e9f8349389c243743e0a000cd1c676f"},
 		Bookmarks: map[string]string{"legion/" + testTree: "dffe88ae2f793e13436cef3921adc988433fbd4e"},
-		At:        rigNow.Add(-time.Minute),
-		Release:   testRelease,
-		PodUID:    "pod-the-release-took-the-work-off",
+		WorkingCopies: map[string]string{
+			"legion/" + testTree + ".d":   "0a8f0aee63b13682fefe975ba0cc51da6f2ba9e9",
+			"legion/" + testTree + ".b.2": "c3d2b1a0f9e8d7c6b5a4938271605f4e3d2c1b0a",
+		},
+		At:      rigNow.Add(-time.Minute),
+		Release: testRelease,
+		PodUID:  "pod-the-release-took-the-work-off",
 	}
 }
 
@@ -132,9 +136,10 @@ func TestASavedWorkspaceBundleReachesThePodsLauncherBeforeItStartsAnyRole(t *tes
 	if !bytes.Equal(read.Bundle, saved.Bundle) {
 		t.Fatalf("the bundle crossed as %d bytes, want the %d saved", len(read.Bundle), len(saved.Bundle))
 	}
-	if read.Head != saved.Head || !slices.Equal(read.Tips, saved.Tips) || !maps.Equal(read.Bookmarks, saved.Bookmarks) {
-		t.Fatalf("the bundle crossed as head %s, tips %v and bookmarks %v, want %s, %v and %v",
-			read.Head, read.Tips, read.Bookmarks, saved.Head, saved.Tips, saved.Bookmarks)
+	if read.Head != saved.Head || !slices.Equal(read.Tips, saved.Tips) || !maps.Equal(read.Bookmarks, saved.Bookmarks) ||
+		!maps.Equal(read.WorkingCopies, saved.WorkingCopies) {
+		t.Fatalf("the bundle crossed as head %s, tips %v, bookmarks %v and working copies %v, want %s, %v, %v and %v",
+			read.Head, read.Tips, read.Bookmarks, read.WorkingCopies, saved.Head, saved.Tips, saved.Bookmarks, saved.WorkingCopies)
 	}
 	if !read.At.Equal(saved.At) {
 		t.Fatalf("the bundle crossed as taken at %s, want %s", read.At, saved.At)

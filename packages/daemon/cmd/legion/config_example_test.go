@@ -471,3 +471,44 @@ func checkShippedExample(t *testing.T, edit func(string) string) string {
 	}
 	return config
 }
+
+// A role the deployment defines in `roles` gets one line of `legion config check` after
+// the projects' lines: its type, its model, the GitHub App it works as (the review App, since the
+// file names none) and its prompt file as the loader resolved it beside the file.
+func TestCheckConfigPrintsEachRoleOfTheDeployment(t *testing.T) {
+	config := stageShippedExample(t, func(example string) string {
+		return example + "\nroles: {checker: {type: testing, prompt_file: checker.md, model: checker-model}}\n"
+	})
+	prompt := filepath.Join(filepath.Dir(config), "checker.md")
+	if err := os.WriteFile(prompt, []byte("You check the change.\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var out, errb bytes.Buffer
+	code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
+
+	projectLines := productionCheckTesterLine("WIDGETS") + defaultStepsTodayLine("WIDGETS")
+	roleLine := "roles.checker: type testing, model checker-model, App review, prompt " + prompt + "\n"
+	want := strings.Replace(shippedExampleCheckOK, projectLines, projectLines+roleLine, 1)
+	if code != 0 || out.String() != want {
+		t.Fatalf("legion config check with a role = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
+	}
+}
+
+// A role whose prompt file the daemon cannot read refuses its start (config.Load), so the check
+// of the file refuses it too, naming the key and the path, rather than pass a file the start then
+// refuses.
+func TestCheckConfigRefusesARolesPromptFileItCannotRead(t *testing.T) {
+	config := stageShippedExample(t, func(example string) string {
+		return example + "\nroles: {checker: {type: testing, prompt_file: checker.md}}\n"
+	})
+	prompt := filepath.Join(filepath.Dir(config), "checker.md")
+
+	var out, errb bytes.Buffer
+	code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
+
+	want := "legion config check: roles.checker.prompt_file " + prompt + " cannot be read: "
+	if code != 1 || out.String() != "" || !strings.HasPrefix(errb.String(), want) {
+		t.Fatalf("legion config check with no prompt file = %d, stdout %q, stderr %q; want 1 and a refusal starting %q", code, out.String(), errb.String(), want)
+	}
+}

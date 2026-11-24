@@ -117,8 +117,9 @@ var ProtectedPaths = []string{
 	// The pod's feed, which workspace-fetch wrote and every other container mounts read-only
 	// (sandbox.FeedDir).
 	VolumeRoot + "/feed",
-	// XDG_STATE_HOME's parent: one state home per role (roleStateHome), holding Oh My Pi's
-	// profile, its logs and the browser broker's lock, none of it a cache.
+	// XDG_STATE_HOME's parent: one state home per slot, the agent's whatever role its step is on
+	// (roleStateHome), holding Oh My Pi's profile, its logs and the browser broker's lock, none
+	// of it a cache.
 	VolumeRoot + "/scratch/state",
 	// XDG_DATA_HOME, where a tool keeps what it is meant to keep rather than what it can fetch
 	// again.

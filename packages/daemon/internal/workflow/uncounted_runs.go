@@ -15,9 +15,10 @@ import (
 // now (uncountedRunOpen: this release's end rule does not hold it over, its tree is not the
 // operator's, and its generation started a run) gets an open row there
 // (record.Store.OpenUncountedStep), with the agent and the moment its start would have named
-// (upgradedStart). So a member of a lingering or closed tree, and every issue of a tree whose root
-// waits for the promotion that opens it — a root a hand-over carried in, and the members of a tree
-// admitted again — get none. It queues no record: the run reaches Dispatch with its end,
+// (upgradedStart). An issue whose plan holds several tasks is read for each of them (viewsOf), each
+// task's step its own. So a member of a lingering or closed tree, and every issue of a tree whose
+// root waits for the promotion that opens it — a root a hand-over carried in, and the members of a
+// tree admitted again — get none. It queues no record: the run reaches Dispatch with its end,
 // as an uncounted run's end does (endStep). From then on it is an open run like any other: the
 // settle ends it (settleRuns), and the record names its agent (record.RunsAStepOn), so a fact that
 // agent's request applies waits for the agent's stream first. A place whose row is open or ended
@@ -48,41 +49,44 @@ func (e *Engine) OpenUncountedRuns(ctx context.Context, tx pgx.Tx) (int, error) 
 	booting := &factRuns{}
 	opened := 0
 	for _, issue := range issues {
-		w, err := e.walk(ctx, tx, issue)
+		scopes, err := e.scopes(ctx, tx, issue)
 		if err != nil {
 			return 0, err
 		}
-		step, ok := standingStep(w, issue)
-		if !ok || counted[runAt{issue: issue.Key, place: step.place}] {
-			continue
-		}
-		_, open, err := e.uncountedRunOpen(ctx, tx, booting, issue, read)
-		if err != nil {
-			return 0, err
-		}
-		if !open {
-			continue
-		}
-		agent, startedAt, err := e.upgradedStart(ctx, tx, issue, step.at)
-		if err != nil {
-			return 0, err
-		}
-		first, err := e.store.OpenUncountedStep(ctx, tx, issue.Key, step.place, func(starts int64) record.StepRecord {
-			write := stepWrite(issue, step.place, step.role, step.typ, string(agent), starts)
-			if !startedAt.IsZero() {
-				write.StartedAt = new(startedAt)
+		for _, s := range scopes {
+			view := s.issue
+			step, ok := standingStep(s.walk, view)
+			if !ok || counted[runAt{issue: issue.Key, place: step.place}] {
+				continue
 			}
-			return write
-		})
-		if err != nil {
-			return 0, err
+			_, open, err := e.uncountedRunOpen(ctx, tx, booting, s, read)
+			if err != nil {
+				return 0, err
+			}
+			if !open {
+				continue
+			}
+			agent, startedAt, err := e.upgradedStart(ctx, tx, s, step.at)
+			if err != nil {
+				return 0, err
+			}
+			first, err := e.store.OpenUncountedStep(ctx, tx, issue.Key, step.place, func(starts int64) record.StepRecord {
+				write := stepWrite(view, step.place, step.role, step.typ, string(agent), starts)
+				if !startedAt.IsZero() {
+					write.StartedAt = new(startedAt)
+				}
+				return write
+			})
+			if err != nil {
+				return 0, err
+			}
+			// The pass read this place's row as missing or uncounted in this transaction, under the
+			// lock every fact applies under, so the store opens it: a refusal is a broken read.
+			if !first {
+				return 0, fmt.Errorf("open the uncounted run of %s at %+v: the store holds it counted, which this pass read as not", issue.Key, step.place)
+			}
+			opened++
 		}
-		// The pass read this place's row as missing or uncounted in this transaction, under the
-		// lock every fact applies under, so the store opens it: a refusal is a broken read.
-		if !first {
-			return 0, fmt.Errorf("open the uncounted run of %s at %+v: the store holds it counted, which this pass read as not", issue.Key, step.place)
-		}
-		opened++
 	}
 	return opened, nil
 }

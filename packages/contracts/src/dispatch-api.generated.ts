@@ -5545,15 +5545,13 @@ export interface components {
       truncated: boolean;
     };
     IssueRoleHolder: {
-      /** @enum {string} */
-      role: "architect" | "planner" | "implementer" | "tester" | "reviewer" | "merger";
+      role: string;
       session: string;
     };
     IssueRoleHolderRecord: {
       /** Format: date-time */
       recorded_at: string;
-      /** @enum {string} */
-      role: "architect" | "planner" | "implementer" | "tester" | "reviewer" | "merger";
+      role: string;
       session: string;
     };
     IssueRoleHolders: {

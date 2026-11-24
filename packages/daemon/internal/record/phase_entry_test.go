@@ -14,9 +14,10 @@ import (
 // stands. The task goes because it is the old generation's, cleared with that generation's
 // handoffs (ClearGeneration): the tree runs again, and what the role is owed is whatever its
 // promotion hands it, not the task of a run that ended. The number stays because it counts the
-// entries the role has been handed on this issue and nothing of a re-admission unhands one: the
-// promotion raises it again (workflow's StartPromotedWorker), so the entry the new work is sent
-// under is above every entry a completion still in flight could name.
+// entries handed on the role's row of this issue, numbered across the rows that name the same
+// claim, and nothing of a re-admission unhands one: the promotion raises it again (workflow's
+// StartPromotedWorker), so the entry the new work is sent under is above every entry a completion
+// still in flight could name.
 func TestClearGenerationClearsTheEntryTaskAndLeavesTheEntry(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)

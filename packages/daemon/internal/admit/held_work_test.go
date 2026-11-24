@@ -50,6 +50,8 @@ func planByOwner(t *testing.T, pool *pgxpool.Pool, key string, place record.Task
 		for _, put := range []error{
 			records.PutPlan(ctx, tx, v, []record.PlanTask{task}, steps),
 			records.MoveTask(ctx, tx, key, stored.Generation, "a", place, record.TaskRunning),
+			// The move writes the wait of a start for its join; this seed stands for a task whose join ended.
+			records.SetStepWait(ctx, tx, key, stored.Generation, "a", record.StepWaitNone, nil),
 		} {
 			if put != nil {
 				t.Fatalf("seed the plan of %s: %v", key, put)

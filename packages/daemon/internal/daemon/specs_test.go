@@ -26,6 +26,69 @@ import (
 // role is told its App reaches no owner.
 func noAppOwners(claim.Role) []string { return nil }
 
+// A role the deployment defines launches with its own prompt file between the headless mechanics
+// and Legion's worker part (prompts.ComposeStep), so it is told the SEPARATE-POD line every phase
+// worker is told, and with the model its settings give it; one of Legion's roles names no model;
+// a role the deployment does not define is refused, with no prompt and no panic.
+func TestADeploymentRoleLaunchesWithItsPromptAndModel(t *testing.T) {
+	t.Parallel()
+	composer, err := prompts.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	promptFile := dir + "/checker.md"
+	if err := os.WriteFile(promptFile, []byte("You are the checker. Run the checks and report pass or fail.\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := specs{stateDir: t.TempDir(), project: "s1", prompts: composer,
+		roles: []config.Role{{Name: "checker", Type: "testing", PromptFile: promptFile, Model: "checker-model"}}}
+	launch := func(role claim.Role) (runtime.SpawnSpec, error) {
+		token, err := claim.NewToken("s1", "S1-2", role)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return s.SpawnSpec(context.Background(), supervise.Claim{Token: token, Issue: "S1-2", Tree: "S1-1", Role: role})
+	}
+
+	spec, err := launch("checker")
+	if err != nil {
+		t.Fatalf("the checker's spawn spec: %v", err)
+	}
+	if spec.Model != "checker-model" {
+		t.Errorf("the checker's model = %q, want checker-model", spec.Model)
+	}
+	merger, err := composer.Compose(claim.RoleMerger, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{merger.RolePromptPaths[0], promptFile, composer.Part("worker-common.md")}
+	if !slices.Equal(spec.Prompt.RolePromptPaths, want) {
+		t.Errorf("the checker's role prompt paths = %q, want %q", spec.Prompt.RolePromptPaths, want)
+	}
+	prompt, err := runtime.ComposePrompt(spec.Prompt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	own, line := strings.Index(prompt, "Run the checks and report pass or fail."), strings.Index(prompt, "SEPARATE-POD <ISSUE> <task> <reason>")
+	if own < 0 || line < own || !strings.Contains(prompt, "Legion starts no pod for this line") {
+		t.Errorf("the checker's composed prompt holds its own text at %d and the SEPARATE-POD line at %d, want the text first and the line after it, with %q",
+			own, line, "Legion starts no pod for this line")
+	}
+
+	tester, err := launch(claim.RoleTester)
+	if err != nil {
+		t.Fatalf("the tester's spawn spec: %v", err)
+	}
+	if tester.Model != "" {
+		t.Errorf("the tester's model = %q, want none: Legion's roles run the profile's @default", tester.Model)
+	}
+
+	if _, err := launch("ghost"); err == nil || !strings.Contains(err.Error(), "the deployment defines no role ghost") {
+		t.Errorf("the ghost's spawn spec = %v, want the refusal %q", err, "the deployment defines no role ghost")
+	}
+}
+
 // A tree's root architect is told the design-gate steps its deployment gates after its
 // addressing, the "Design gate steps" line its shared role prompt reads, and its composed role
 // prompt carries what those steps ask of it: one registration for each step, on that step's own
@@ -303,7 +366,13 @@ func TestAWorkersAddressingNamesItsRepositoryAndItsAppsReach(t *testing.T) {
 	// The owners named are the role's own App's: an implementer's and a reviewer's addressing
 	// differ where their Apps' installations do, which is what the clause promises and what the
 	// owners of the repositories the project's records name could not say (INFRA-2543 R6).
-	s.appOwners = func(role claim.Role) []string { return []string{string(appauth.AppRoleFor(role)) + "-owner"} }
+	s.appOwners = func(role claim.Role) []string {
+		app, err := appauth.AppRoleFor(role, nil)
+		if err != nil {
+			t.Fatalf("the App of %s: %v", role, err)
+		}
+		return []string{string(app) + "-owner"}
+	}
 	if got, want := launch(), own+"your role's GitHub App is installed on the owner implement-owner, and its token reaches every repository of that owner."; !strings.HasSuffix(got, want) {
 		t.Fatalf("the implementer's addressing = %q, want it to end with %q", got, want)
 	}

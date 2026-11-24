@@ -64,6 +64,11 @@ func slottedKey(i int) string { return fmt.Sprintf("LEGION-%d", 1000+i) }
 // whether a controller is registered to be told, and marks what it reads in one statement for the
 // whole pass (record.Store.TellArchitectsStalled), so a root that stays stalled costs no statement
 // of its own.
+//
+// The count holds as well where every slotted root is at work, its plan holding three tasks of
+// which two run a step: the selection of the workers of those steps (phaseWorkersOf) reads each
+// on the copy its step is given its work on, from the plans of every candidate read in one batch
+// (record.Store.PlansOf), so a root at work costs no statement of its own.
 func TestAFactAsksAsManyStatementsWhateverNumberOfSlotsIsHeld(t *testing.T) {
 	facts := []struct {
 		name string
@@ -75,11 +80,16 @@ func TestAFactAsksAsManyStatementsWhateverNumberOfSlotsIsHeld(t *testing.T) {
 		{"an observation of an issue Legion does not record", intake.DispatchIssue{Key: "LEGION-9", Seq: 5, Type: "issue.updated", Status: "backlog",
 			Title: "someone else's", Rank: "Z", ResolvedRepo: "acme/widgets"}},
 	}
-	run := func(t *testing.T, held int, stalled bool) ([]int64, *pgxpool.Pool) {
+	run := func(t *testing.T, held int, stalled, atWork bool) ([]int64, *pgxpool.Pool) {
 		t.Helper()
 		pool := migratedPool(t)
 		for i := range held {
-			seedSlotted(t, pool, slottedKey(i), fmt.Sprintf("A%04d", i))
+			if !atWork {
+				seedSlotted(t, pool, slottedKey(i), fmt.Sprintf("A%04d", i))
+				continue
+			}
+			seedSlottedInPhase(t, pool, testProject, slottedKey(i), fmt.Sprintf("A%04d", i), phase.Implementing, nil)
+			putThreeTasks(t, pool, slottedKey(i))
 		}
 		counter := &statementCounter{}
 		counted := countedPool(t, pool, counter)
@@ -113,18 +123,25 @@ func TestAFactAsksAsManyStatementsWhateverNumberOfSlotsIsHeld(t *testing.T) {
 	}
 
 	const slotsHeld = 40
-	few, _ := run(t, 1, false)
-	many, pool := run(t, slotsHeld, false)
+	few, _ := run(t, 1, false, false)
+	many, pool := run(t, slotsHeld, false, false)
 	for i, tc := range facts {
 		if many[i] != few[i] {
 			t.Errorf("%s: %d statements with %d slots held, %d with 1; want as many", tc.name, many[i], slotsHeld, few[i])
 		}
 	}
-	fewStalled, _ := run(t, 1, true)
-	manyStalled, _ := run(t, slotsHeld, true)
+	fewStalled, _ := run(t, 1, true, false)
+	manyStalled, _ := run(t, slotsHeld, true, false)
 	for i, tc := range facts {
 		if manyStalled[i] != fewStalled[i] {
 			t.Errorf("%s: %d statements with %d stalled roots told already, %d with 1; want as many", tc.name, manyStalled[i], slotsHeld, fewStalled[i])
+		}
+	}
+	fewAtWork, _ := run(t, 1, false, true)
+	manyAtWork, _ := run(t, slotsHeld, false, true)
+	for i, tc := range facts {
+		if manyAtWork[i] != fewAtWork[i] {
+			t.Errorf("%s: %d statements with %d slotted roots at work, %d with 1; want as many", tc.name, manyAtWork[i], slotsHeld, fewAtWork[i])
 		}
 	}
 

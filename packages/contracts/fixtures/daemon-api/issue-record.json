@@ -180,5 +180,118 @@
       "mode": "random",
       "drawnAt": "2026-09-21T18:42:11Z"
     }
+  ],
+  "tasks": [
+    {
+      "id": "a",
+      "state": "stopped",
+      "needs": [
+        "b",
+        "c",
+        "d",
+        "e"
+      ],
+      "kind": "step",
+      "phase": "implementing",
+      "branch": "legion/LEGION-208",
+      "position": 1,
+      "role": "implementer",
+      "agent": "implementer",
+      "stoppedReason": "its owner stopped it to add the tasks it needs",
+      "pullRequest": {
+        "repo": "acme/widgets",
+        "number": 1247,
+        "head": "5b3d9e2c8f1a47d06b2e5c9f3a8d1e4b7c0f6a29",
+        "state": "open",
+        "mergeState": "blocked",
+        "reviewDecision": "changes_requested"
+      },
+      "counts": {
+        "pass": 3,
+        "rounds": 2
+      }
+    },
+    {
+      "id": "b",
+      "state": "running",
+      "needs": [],
+      "kind": "step",
+      "phase": "reviewing",
+      "branch": "legion/LEGION-208.b",
+      "position": 2,
+      "role": "reviewer",
+      "agent": "reviewer",
+      "pullRequest": {
+        "repo": "acme/widgets",
+        "number": 1251,
+        "head": "8e1f4c7a2d9b63e05f1a8c4d7b2e9f6a3c0d5b18",
+        "state": "open",
+        "mergeState": "blocked",
+        "reviewDecision": "approved"
+      },
+      "mergeWait": {
+        "waitsOn": "8e1f4c7a2d9b63e05f1a8c4d7b2e9f6a3c0d5b18",
+        "mergeState": "blocked",
+        "stateReadAt": "2026-09-22T09:16:12Z",
+        "headUpdatedAt": "2026-09-22T08:58:40Z",
+        "checkRuns": 2
+      },
+      "counts": {
+        "pass": 1,
+        "rounds": 0
+      }
+    },
+    {
+      "id": "c",
+      "state": "running",
+      "needs": [],
+      "kind": "step",
+      "phase": "implementing",
+      "branch": "legion/LEGION-208.c",
+      "position": 1,
+      "role": "implementer",
+      "agent": "k",
+      "wait": "agent",
+      "waitsFor": {
+        "agent": "k",
+        "task": "d",
+        "position": 1
+      },
+      "counts": {
+        "pass": 0,
+        "rounds": 0
+      }
+    },
+    {
+      "id": "d",
+      "state": "running",
+      "needs": [],
+      "kind": "step",
+      "phase": "implementing",
+      "branch": "legion/LEGION-208.d",
+      "position": 1,
+      "role": "implementer",
+      "agent": "k",
+      "counts": {
+        "pass": 1,
+        "rounds": 0
+      }
+    },
+    {
+      "id": "e",
+      "state": "held",
+      "needs": [],
+      "kind": "step",
+      "phase": "implementing",
+      "branch": "legion/LEGION-208.e",
+      "position": 1,
+      "role": "implementer",
+      "agent": "implementer-2",
+      "holdReason": "escalated",
+      "counts": {
+        "pass": 1,
+        "rounds": 0
+      }
+    }
   ]
 }

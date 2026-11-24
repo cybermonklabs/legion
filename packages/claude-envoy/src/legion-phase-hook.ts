@@ -434,14 +434,12 @@ export function createPhaseHookEndpoint(deps: PhaseHookDeps): PhaseHookEndpoint 
    */
   const sendActivity = async (claim: ClaimCapability, backgroundWork: boolean): Promise<void> => {
     const request = sessionActivityRequest({
-      project: configuredValue(deps.env["LEGION_PROJECT"]),
       claim,
       report: sessionActivity(
         backgroundWork ? [CLAUDE_BACKGROUND_TASK_KIND] : [],
         reminder.phaseWake(),
       ),
     })
-    if (request === undefined) return
     try {
       await deps.reportActivity(request)
     } catch (error) {

@@ -253,9 +253,13 @@ func (s *Store) IssueReleaseStop(ctx context.Context, project, issue string, row
 			return err
 		}
 		if !overtaken && row == mark.boundary {
+			// A start that waits because the pod lacks the slot of its claim or the role of its
+			// step is no work the pod was given (startWaitsForPodRow): the idle rule's Waiting
+			// leaves it out too.
 			if err := tx.QueryRow(ctx, `select exists (
-				select 1 from outbox where issue = $1 and `+idleWaitingRow+` and (id < $3 or id > $4))`,
-				issue, idleWaitingKinds, mark.first, mark.last).Scan(&overtaken); err != nil {
+				select 1 from outbox where issue = $1 and `+idleWaitingRow+` and (id < $3 or id > $4)
+					and not `+fmt.Sprintf(startWaitsForPodRow, "$5")+`)`,
+				issue, idleWaitingKinds, mark.first, mark.last, pods.StartWaitsForPodPrefix).Scan(&overtaken); err != nil {
 				return err
 			}
 		}

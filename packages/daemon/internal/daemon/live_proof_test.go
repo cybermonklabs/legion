@@ -60,7 +60,8 @@ const liveSettle = 3 * time.Second
 // liveProof is what a run of a live proof holds whatever it proves: the booted daemon, the
 // configuration it was booted with, a JetStream client of the script's broker, the Dispatch and
 // Envoy listener stand-ins the steps read the daemon's own writes back from, and the daemon's own
-// store, which seeds the fixture.
+// store, which seeds the fixture. logPath, when set, is the file the booted daemon's log is
+// written to in place of the one liveDaemonLogEnv names (log).
 type liveProof struct {
 	t       *testing.T
 	cfg     config.Config
@@ -71,6 +72,7 @@ type liveProof struct {
 	st      *store.Store
 	records record.Store
 	project string
+	logPath string
 }
 
 // newLiveProof is newLiveProofOn over the broker liveNATSURLEnv names, which boot refuses to run
@@ -115,11 +117,14 @@ func newLiveProofOn(t *testing.T, natsURL string) liveProof {
 	return p
 }
 
-// log is where the booted daemon writes its own log: the file liveDaemonLogEnv names, appended to
-// across a restart, and nowhere when it names none.
+// log is where the booted daemon writes its own log: the file logPath names, else the file
+// liveDaemonLogEnv names, appended to across a restart, and nowhere when neither names one.
 func (p *liveProof) log() *slog.Logger {
 	p.t.Helper()
-	path := os.Getenv(liveDaemonLogEnv)
+	path := p.logPath
+	if path == "" {
+		path = os.Getenv(liveDaemonLogEnv)
+	}
 	if path == "" {
 		return quietLogger()
 	}
@@ -184,12 +189,14 @@ func (p *liveProof) publish(subject, source, eventID, payload string) string {
 
 // publishMergeOf publishes GitHub's merge of the pull request numbered number, issue's, at head
 // onto base, as Envoy relays a GitHub pull-request event closed with merged true (intake's
-// decodePullRequest reads it), and returns its event id. The merge commit is named for the head.
+// decodePullRequest reads it), and returns its event id. The merge commit is named for the head,
+// and the head is a branch of the repository itself (head_repo): the decode makes no fact of a
+// fork's pull request, or of one whose event names no head repository.
 func (p *liveProof) publishMergeOf(number int, issue, head, base string) string {
 	p.t.Helper()
 	payload, err := json.Marshal(map[string]string{
 		"action": "closed", "kind": "pr", "repo": liveRepo, "number": strconv.Itoa(number), "merged": "true",
-		"merge_commit_sha": "merge-" + head, "head_sha": head, "base_ref": base, "head_ref": claim.IssueBranch(issue),
+		"merge_commit_sha": "merge-" + head, "head_sha": head, "base_ref": base, "head_ref": claim.IssueBranch(issue), "head_repo": liveRepo,
 		"updated_at": time.Now().UTC().Format(time.RFC3339),
 	})
 	if err != nil {

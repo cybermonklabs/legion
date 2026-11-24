@@ -404,7 +404,7 @@ func factMarks() Handler {
 func pullRequestOpenedEnvelope(t *testing.T, number int) []byte {
 	t.Helper()
 	return envelopeJSON(t, fmt.Sprintf("pr-opened-%d", number), "github", fmt.Sprintf(`{"action":"opened","author":"author","base_ref":"main",`+
-		`"body":"Dispatch: LEGION-208","head_ref":"legion/LEGION-208","head_sha":"head-%d","kind":"pr","merged":"false","number":"%d",`+
+		`"body":"Dispatch: LEGION-208","head_ref":"legion/LEGION-208","head_repo":"sjawhar/legion","head_sha":"head-%d","kind":"pr","merged":"false","number":"%d",`+
 		`"repo":"sjawhar/legion","title":"a pull request","updated_at":"2026-09-23T00:00:00Z","url":"https://github.com/sjawhar/legion/pull/%d"}`,
 		number, number, number))
 }

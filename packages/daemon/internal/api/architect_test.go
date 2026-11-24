@@ -56,6 +56,15 @@ type factRecorder struct {
 	mu      sync.Mutex
 	facts   []intake.Fact
 	refusal *intake.Refusal
+	// told is each issue and task the completion route's hook was told of (HandoffCompleted), in
+	// order.
+	told []toldCompletion
+}
+
+// toldCompletion is one call of the completion route's hook: the issue, and the task of the plan
+// whose step completed ("" for an issue with no plan rows).
+type toldCompletion struct {
+	issue, task string
 }
 
 func (r *factRecorder) Apply(_ context.Context, _ pgx.Tx, fact intake.Fact) (intake.Result, error) {
@@ -69,6 +78,20 @@ func (r *factRecorder) recorded() []intake.Fact {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return append([]intake.Fact(nil), r.facts...)
+}
+
+// completed is the completion route's hook (Options.HandoffCompleted), which records what it is told.
+func (r *factRecorder) completed(issue, task string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.told = append(r.told, toldCompletion{issue: issue, task: task})
+}
+
+// completions is each call of the completion route's hook, in order.
+func (r *factRecorder) completions() []toldCompletion {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]toldCompletion(nil), r.told...)
 }
 
 type statusWrite struct {
@@ -464,7 +487,7 @@ func TestArchitectAndPhaseRoutesApplyTheRequiredFacts(t *testing.T) {
 
 	retryGrant := architect.grant(t)
 	retry := h.request(http.MethodPost, "/legion/v1/phase/retry", map[string]any{
-		"grantId": retryGrant, "issue": "LEGION-209", "decision": "retry",
+		"grantId": retryGrant, "issue": "LEGION-209", "decision": "retry", "task": "b",
 	}, nil)
 	if retry.Code != http.StatusOK {
 		t.Fatalf("phase retry = %d: %s", retry.Code, retry.Body)
@@ -472,7 +495,7 @@ func TestArchitectAndPhaseRoutesApplyTheRequiredFacts(t *testing.T) {
 
 	signoffGrant := architect.grant(t)
 	signoff := h.request(http.MethodPost, "/legion/v1/signoff", map[string]any{
-		"grantId": signoffGrant, "issue": "LEGION-208",
+		"grantId": signoffGrant, "issue": "LEGION-208", "task": "a",
 	}, nil)
 	if signoff.Code != http.StatusOK {
 		t.Fatalf("signoff = %d: %s", signoff.Code, signoff.Body)
@@ -506,10 +529,10 @@ func TestArchitectAndPhaseRoutesApplyTheRequiredFacts(t *testing.T) {
 		t.Fatalf("gate fact = %#v", got[0])
 	}
 	if fact, ok := got[1].(intake.RetryOrEscalate); !ok || fact.Issue != "LEGION-209" ||
-		fact.Decision != intake.RetryDecision {
+		fact.Decision != intake.RetryDecision || fact.Task != "b" {
 		t.Fatalf("retry fact = %#v", got[1])
 	}
-	if fact, ok := got[2].(intake.SignOff); !ok || fact.Issue != "LEGION-208" {
+	if fact, ok := got[2].(intake.SignOff); !ok || fact.Issue != "LEGION-208" || fact.Task != "a" {
 		t.Fatalf("signoff fact = %#v", got[2])
 	}
 	if fact, ok := got[3].(intake.BackwardMove); !ok || fact.Issue != "LEGION-208" ||

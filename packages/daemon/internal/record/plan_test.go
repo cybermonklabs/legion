@@ -36,8 +36,8 @@ func ownersPlan(issue string, generation uint64, version int, givenBy claim.Toke
 		State: TaskWaiting,
 	}}
 	steps := []PlanStep{
-		{Issue: issue, Generation: generation, Task: "a", Position: 1, Role: planStepOne, Type: "implementation", AgentKey: "fast"},
-		{Issue: issue, Generation: generation, Task: "a", Position: 2, Role: "reviewer", Type: "review"},
+		{Issue: issue, Generation: generation, Task: "a", Position: 1, Role: planStepOne, Type: "implementation", AgentKey: "fast", Agent: "implementer"},
+		{Issue: issue, Generation: generation, Task: "a", Position: 2, Role: "reviewer", Type: "review", Agent: "reviewer"},
 	}
 	return v, tasks, steps
 }
@@ -100,6 +100,38 @@ func TestPlanRowsRoundTrip(t *testing.T) {
 		must(t, err)
 		if recorded != nil {
 			t.Fatalf("%s is recorded as %#v, want no record: the fixture must hold a plan of an issue the daemon has not recorded", unrecorded, recorded)
+		}
+	})
+}
+
+// PlanStepsOf is every plan_steps row of an issue, of every generation, each with the name of its
+// agent, ordered by generation, task and place: what the naming of a version's agents reads before
+// the version is written, so a key keeps the name an earlier generation gave it. Another issue's
+// rows are not among them.
+func TestPlanStepsOfReadsEveryGenerationsStepsWithTheirNames(t *testing.T) {
+	st := migratedStore(t)
+	ctx := context.Background()
+	issue := issueFixture(planIssue)
+	issue.Generation = 2
+	first, firstTasks, firstSteps := ownersPlan(planIssue, 1, 1, planOwner, planGivenAt)
+	second, secondTasks, secondSteps := ownersPlan(planIssue, 2, 1, planOwner, planGivenAt.Add(time.Hour))
+	secondTasks[0].Task = "b"
+	for i := range secondSteps {
+		secondSteps[i].Task = "b"
+	}
+	secondSteps[0].Agent = "implementer-of-b"
+	other, otherTasks, otherSteps := ownersPlan(unrecorded, 2, 1, otherOwner, planGivenAt)
+	inTx(t, st, func(tx pgx.Tx) {
+		must(t, NewStore().PutIssue(ctx, tx, issue))
+		putPlan(t, tx, second, secondTasks, secondSteps)
+		putPlan(t, tx, first, firstTasks, firstSteps)
+		putPlan(t, tx, other, otherTasks, otherSteps)
+	})
+	inTx(t, st, func(tx pgx.Tx) {
+		got, err := NewStore().PlanStepsOf(ctx, tx, planIssue)
+		must(t, err)
+		if want := append(append([]PlanStep{}, firstSteps...), secondSteps...); !reflect.DeepEqual(got, want) {
+			t.Fatalf("the steps of %s = %#v, want every generation's, in order: %#v", planIssue, got, want)
 		}
 	})
 }
@@ -665,6 +697,65 @@ func TestPlanTasksOfReadsEachIssuesTaskAtItsGenerationInOneQuery(t *testing.T) {
 	})
 }
 
+// PlansOf reads the plan of each issue it is given at the issue's own generation, each as Plan
+// reads it — its highest version, every task and every step — in Plan's three statements whatever
+// the number of issues, which the admission pass reads beside every issue it weighs. An issue whose
+// plan rows are of an older generation gives no entry, and neither does one with no plan rows; a
+// read where no issue has a version asks one statement, and a read of no issue asks none. The
+// control is a read of each issue on its own (Plan in a loop), which asks three statements an issue.
+func TestPlansOfReadsEachIssuesPlanAtItsGenerationInThreeStatements(t *testing.T) {
+	st := migratedStore(t)
+	ctx := context.Background()
+	records := NewStore()
+	current, second, older, none := issueFixture(planIssue), issueFixture("LEGION-210"), issueFixture("LEGION-209"), issueFixture("LEGION-211")
+	firstV, firstTasks, firstSteps := ownersPlan(current.Key, current.Generation, 1, planOwner, planGivenAt)
+	newestV, newestTasks, newestSteps := ownersPlan(current.Key, current.Generation, 2, planOwner, planGivenAt.Add(time.Minute))
+	newestTasks[0].BlockText = "Build the widget again."
+	secondV, secondTasks, secondSteps := ownersPlan(second.Key, second.Generation, 1, planOwner, planGivenAt)
+	secondTasks = append(secondTasks, PlanTask{Issue: second.Key, Generation: second.Generation, Task: "b", PlanVersion: 1, BlockText: "Build the base.",
+		OwnerRole: "architect", State: TaskWaiting})
+	secondSteps = append(secondSteps, PlanStep{Issue: second.Key, Generation: second.Generation, Task: "b", Position: 1, Role: planStepOne,
+		Type: "implementation", Agent: "implementer-b"})
+	inTx(t, st, func(tx pgx.Tx) {
+		for _, issue := range []Issue{current, second, older, none} {
+			must(t, records.PutIssue(ctx, tx, issue))
+		}
+		putPlan(t, tx, firstV, firstTasks, firstSteps)
+		putPlan(t, tx, newestV, newestTasks, newestSteps)
+		putPlan(t, tx, secondV, secondTasks, secondSteps)
+		olderV, olderTasks, olderSteps := ownersPlan(older.Key, older.Generation-1, 1, planOwner, planGivenAt)
+		putPlan(t, tx, olderV, olderTasks, olderSteps)
+	})
+	inTx(t, st, func(tx pgx.Tx) {
+		counting := &queryCountingTx{Tx: tx}
+		got, err := records.PlansOf(ctx, counting, []Issue{current, second, older, none})
+		must(t, err)
+		if counting.statements != 3 || len(got) != 2 {
+			t.Fatalf("the plans of four issues = %d entries in %d statements, want the two at their generation in three", len(got), counting.statements)
+		}
+		for _, issue := range []Issue{current, second} {
+			if want := readPlan(t, tx, issue.Key, issue.Generation); !reflect.DeepEqual(got[issue.Key], want) {
+				t.Fatalf("the plan of %s read with others = %+v, want %+v, as Plan reads it alone", issue.Key, got[issue.Key], want)
+			}
+		}
+		if want := storedOf(newestV, newestTasks, newestSteps); !reflect.DeepEqual(got[current.Key], want) {
+			t.Fatalf("the plan of %s = %+v, want its highest version, %+v", current.Key, got[current.Key], want)
+		}
+		counting = &queryCountingTx{Tx: tx}
+		empty, err := records.PlansOf(ctx, counting, []Issue{older, none})
+		must(t, err)
+		if len(empty) != 0 || counting.statements != 1 {
+			t.Fatalf("the plans of two issues with no plan rows at their generation = %+v in %d statements, want none in one", empty, counting.statements)
+		}
+		counting = &queryCountingTx{Tx: tx}
+		nothing, err := records.PlansOf(ctx, counting, nil)
+		must(t, err)
+		if len(nothing) != 0 || counting.statements != 0 {
+			t.Fatalf("the plans of no issue = %+v in %d statements, want none in none", nothing, counting.statements)
+		}
+	})
+}
+
 // Where a task stands names the place a step runs at, for the count of its starts and for its
 // record (record.StepPlace, the key of step_starts): the task, the kind and the place, in the words
 // the count of starts already writes (workflow's placeOnWalk), so the start the walk counts for a task at
@@ -733,29 +824,6 @@ func TestReturnCountsLiveOnTheTaskOrOnTheImplementersRow(t *testing.T) {
 	defer func() { _ = tx.Rollback(ctx) }()
 	if _, err := records.ReturnCounts(ctx, tx, planIssue, 1, "z"); err == nil {
 		t.Fatalf("the counts of a task the plan does not hold were read, want them refused")
-	}
-}
-
-// The task a run with plan rows is on is its plan's one task, whatever that task's state: this
-// release's plans hold one (plan.Supported). A plan that holds none, or more than one, names no
-// task, and says how many it holds.
-func TestThePlansTaskIsItsOneTask(t *testing.T) {
-	v := PlanVersion{Issue: "LEGION-212", Generation: 1}
-	stopped := PlanTask{Issue: "LEGION-212", Generation: 1, Task: "a", State: TaskStopped}
-	if got, err := (&StoredPlan{Version: v, Tasks: []PlanTask{stopped}}).Task(); err != nil || !reflect.DeepEqual(got, stopped) {
-		t.Fatalf("the task of a plan of one task = %+v, %v; want %+v", got, err, stopped)
-	}
-	for _, tc := range []struct {
-		tasks []PlanTask
-		want  string
-	}{
-		{nil, "the plan of LEGION-212 at generation 1 holds 0 tasks, and this release walks one"},
-		{[]PlanTask{{Task: "a", State: TaskWaiting}, {Task: "b", State: TaskRunning}},
-			"the plan of LEGION-212 at generation 1 holds 2 tasks, and this release walks one"},
-	} {
-		if got, err := (&StoredPlan{Version: v, Tasks: tc.tasks}).Task(); err == nil || err.Error() != tc.want || !reflect.DeepEqual(got, PlanTask{}) {
-			t.Errorf("the task of a plan of %d tasks = %+v, %v; want no task and %q", len(tc.tasks), got, err, tc.want)
-		}
 	}
 }
 

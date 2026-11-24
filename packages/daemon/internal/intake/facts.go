@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -544,6 +545,12 @@ type PullRequestOpened struct {
 	Number  int
 	Branch  string
 	HeadSHA string
+	// HeadRepo is the repository the pull request's head branch lives in, as GitHub names it
+	// (head.repo.full_name; the listener's head_repo): Repo itself for a branch of the repository,
+	// another for a fork's, and empty when GitHub no longer has it (a deleted fork) or the source
+	// read none. The workflow records a pull request only when this is Repo, since anyone may open a
+	// fork's pull request and name its head an issue's branch or a task's.
+	HeadRepo string
 	// Base is the branch the pull request merges into (the listener's `base_ref`, GitHub's
 	// base.ref), empty from a listener that predates the field; the workflow records it so a push
 	// onto that branch finds the pull request again (record.PullRequest.Base).
@@ -570,7 +577,7 @@ func (PullRequestOpened) namedIssue() (string, bool) { return "", false }
 // or a record that changed since (a new generation removes a closed one the opened was declined
 // against), makes a new one.
 func OpenedRead(project, repo, branch string, pull githubrest.PullRequest, generation uint64, recorded *record.PullRequest) (PullRequestOpened, string) {
-	fact := PullRequestOpened{Repo: repo, Number: pull.Number, Branch: branch, HeadSHA: pull.Head.SHA, Body: pull.Body,
+	fact := PullRequestOpened{Repo: repo, Number: pull.Number, Branch: branch, HeadSHA: pull.Head.SHA, HeadRepo: pull.HeadRepository(), Body: pull.Body,
 		URL: pull.HTMLURL, UpdatedAt: pull.UpdatedAt, Reopened: recorded != nil && recorded.Number == pull.Number}
 	against := "none"
 	if recorded != nil {
@@ -965,6 +972,12 @@ type HandoffComplete struct {
 	Issue string
 	Role  claim.Role
 	Claim claim.Token
+	// Task is the task of the issue's plan the completion is of: of a plan of several tasks, the
+	// task of the step the claim's agent runs (record.Issue.StepOfAgent), which the route reads;
+	// "" for a plan of one task and for an issue with no plan rows, whose completion is of the
+	// issue's one task as before. The workflow reads the completion on the copy of the issue read
+	// for that task (workflow's handoffView).
+	Task string
 	// Generation is the run whose task the worker took, which the daemon reads from the claim —
 	// the delivery whose turn is running, or the run the claim is left serving once that turn
 	// ends. A child taken back to todo can leave the prior run's worker live: its completion names
@@ -1005,6 +1018,14 @@ type HandoffComplete struct {
 	// name is the workflow's to judge against the task's steps. 0 on every other completion, which
 	// returns to the step the workflow reads from the steps' types.
 	ReturnTo int
+	// Entry is the entry of the role's phase the completing claim serves (the claim's
+	// ServingEntry, or the held task's on the route's fallback): the one value the route's entry
+	// fence reads. The workflow judges it again on the role's phases row under the fact's lock,
+	// with the same rule (EntryFence), and holds a review step's commit to it (R11): only a
+	// completion of the entry that stands, on a row that holds that entry's task, moves the step's
+	// reviewed commit. 0 where the claim serves no entry, which is judged by neither and moves no
+	// commit.
+	Entry int64
 }
 
 func (f HandoffComplete) namedIssue() (string, bool) { return f.Issue, true }
@@ -1013,7 +1034,8 @@ func (f HandoffComplete) namedIssue() (string, bool) { return f.Issue, true }
 // architect's request from accepting (Requester claim.RoleArchitect, api's phaseBackward): the
 // claim of the architect, the issue's generation and the run of the step the issue stood in
 // (record.Store.OpenStep) as its route read them, which the workflow judges again under the fact
-// lock (ArchitectRequest, EnteredRequest). A phase worker's move carries none of the three.
+// lock (ArchitectRequest, EnteredRequest). A phase worker's move carries none of the three, and
+// carries PhaseEntry instead, which the architect's move does not: each check reads its own field.
 type BackwardMove struct {
 	Issue      string
 	Requester  claim.Role
@@ -1022,6 +1044,28 @@ type BackwardMove struct {
 	By         claim.Token
 	Generation uint64
 	Entry      record.StepEntry
+	// ReturnTo is the step of the issue's running task the move names as the one it returns to:
+	// its place in the task, 1 for its first. A move that names one goes to that place, judged as
+	// a failed step's returnTo is (workflow's returnStep), and its To must be the phase that step
+	// runs as. 0 names none, and the move goes to the one earlier place of its task that runs as
+	// To.
+	ReturnTo int
+	// PhaseEntry is, for a phase worker's move, the entry of the requester's phases row its claim
+	// serves (supervise.Claim.ServingEntry, the entry of the task its turn is on), which the route
+	// sets for a phase worker's grant alone (api's phaseBackward): the move is the decision of a
+	// turn on that entry's task. The workflow judges it on the requester's phases row under the
+	// fact's lock (workflow's backward) and refuses the move, unspent, where the row stands on a
+	// later entry: the phase was handed to the role again after that turn took its task, and the
+	// move would send the new entry's work back on a reason written about the work before it. It is
+	// not Entry: Entry is the run of accepting the architect's route read, judged against the run
+	// that stands (record.Store.OpenStep), which a worker's turn behind its entry can match. 0 for
+	// the architect's move and for a claim that serves no entry, which nothing of an entry judges.
+	PhaseEntry int64
+	// Task is the task of the issue's plan the move is of: of a plan of several tasks, the task
+	// the architect names, or the one task at accepting where it names none (workflow's actView),
+	// and for a phase worker's move the task of the step its claim's agent runs, which the route
+	// reads (api's phaseBackward). "" for a plan of one task and an issue with no plan rows.
+	Task string
 }
 
 func (f BackwardMove) namedIssue() (string, bool) { return f.Issue, true }
@@ -1041,12 +1085,24 @@ const (
 // (api's phaseRetry): its claim and the issue's generation its route read, which the workflow
 // judges again under the fact lock (ArchitectRequest). The operator's retry of a held claim
 // (`legion claims retry`, api's retryClaim) is no architect's request, and carries neither.
+//
+// Claim is the claim a caller retrying the phase for one claim read as the worker on the held
+// phase's step (api's restartWorkedPhase), and "" for the architect's own decision, which names
+// none: a retry that names one is refused where the step is another claim's when it applies.
+//
+// Task is the task of the issue's plan the decision is of, "" where it names none: the held task
+// of a plan of several tasks whose other tasks run on (workflow's heldView). A decision that names
+// none is of the one held task; with two or more held it is refused (TaskRequired), and a named
+// task that is not held is refused too (TaskNotAtPhase). Of a plan of one task, or of none, it is
+// the decision on the issue's hold as before, whatever task it names.
 type RetryOrEscalate struct {
 	Issue      string
 	Decision   RetryOrEscalateDecision
 	Reason     string
 	By         claim.Token
 	Generation uint64
+	Claim      claim.Token
+	Task       string
 }
 
 func (f RetryOrEscalate) namedIssue() (string, bool) { return f.Issue, true }
@@ -1062,10 +1118,16 @@ func (f RetryOrEscalate) namedIssue() (string, bool) { return f.Issue, true }
 // claim in a new session rather than resuming the one it recorded (supervise's RequestRetry). It
 // rides the fact so that the session is forgotten inside the retry decision itself, which means a
 // restart the workflow refuses leaves the claim's session where the operator still has it.
+//
+// Claim is the claim the caller retries, which it read as the worker on Role's step, and the
+// restart is refused where the step is another claim's when the fact applies: the start it would
+// queue hands the step's entry to whichever claim the role's row names, and that claim's step,
+// entered for it since, is no step of the claim the caller asked about. "" names none.
 type RestartPhase struct {
 	Issue        string
 	Role         claim.Role
 	FreshSession bool
+	Claim        claim.Token
 }
 
 func (f RestartPhase) namedIssue() (string, bool) { return f.Issue, true }
@@ -1073,12 +1135,17 @@ func (f RestartPhase) namedIssue() (string, bool) { return f.Issue, true }
 // SignOff records the architect's post-production-check approval: the claim of the architect, and
 // the issue's generation and the run of the step it stood in (record.Store.OpenStep, the run of
 // accepting) as the route read them (api's signOff), which the workflow judges again under the
-// fact lock (ArchitectRequest, EnteredRequest).
+// fact lock (ArchitectRequest, EnteredRequest). Task is the task of the issue's plan it accepts,
+// "" for none named: of a plan of several tasks, a sign-off that names none is of the one task at
+// accepting, refused TASK_REQUIRED where two or more stand there, and one that names a task not at
+// accepting is refused TASK_NOT_AT_PHASE (workflow's actView); of a plan of one task, or none, it
+// is the issue's sign-off as before.
 type SignOff struct {
 	Issue      string
 	By         claim.Token
 	Generation uint64
 	Entry      record.StepEntry
+	Task       string
 }
 
 func (f SignOff) namedIssue() (string, bool) { return f.Issue, true }
@@ -1144,12 +1211,17 @@ func (f GateRegistered) namedIssue() (string, bool) { return f.Issue, true }
 // PLAN_STALE_GENERATION, a plan given at generation 0 among them once the daemon recorded the
 // issue and its first step took a plan. It stores the plan (workflow's planGiven) where its task
 // has not started, and applies the rules of a later version. It answers PLAN_REFUSED
-// (RunningTaskChanged, or StartedBeforePlans for an issue that ran before Legion took plans),
+// (RunningTaskChanged; StartedTaskBaseMoved; StartedBeforePlans for an issue that ran before
+// Legion took plans; or AgentUnnamed for a version in which a fresh agent would need the name of
+// its role that another agent of the plan holds from an earlier version, refused before anything
+// is written),
 // PLAN_VERSION_OLD, PLAN_DOCUMENT_CHANGED, TASK_DONE (FinishedTask, ChangeOfTask),
 // PLAN_STALE_GENERATION, ISSUE_OUTSIDE_TREE and TREE_LINGERING, and it leaves each of those
 // refusals unspent (Result.Unspent). The route names one registration by the issue, the
 // generation, the document and the version, so a version refused while its task ran is the same
-// fact when the owner gives it again after stop_task, and must apply then.
+// fact when the owner gives it again after stop_task, and must apply then. Whether a give is one
+// already applied is the record's to say, not its id's (ApplyFact): a give is a duplicate where
+// the store holds its version, and applies where a first step passed that version over since.
 type PlanGiven struct {
 	Issue      string
 	Generation uint64
@@ -1174,6 +1246,30 @@ type TaskStopped struct {
 }
 
 func (f TaskStopped) namedIssue() (string, bool) { return f.Issue, true }
+
+// TaskJoined is the end of the join of one task's needs (record.TaskBranch): the outbox made the
+// task's branch, Branch, on GitHub at the work of Needs, the task's needs in their order as its row
+// read them, at Generation, and GitHub refused as a conflict the merge of each need in Conflicts
+// into the branch the join is made on: the task's join branch where it has one
+// (record.StoredPlan.BaseOf), else Branch. Unmerged says GitHub refused as a conflict the merge of
+// that join branch into Branch, which the task's own work there makes at a start again; it is false
+// for a task with no join branch. The workflow ends the wait of the task's step for its join and
+// starts that step, where the step waits for this join: the task, running at Generation, on Branch
+// with Needs. Any other end of a join changes nothing, so a row that a stop and a later version of
+// the task left behind, whose start again queued a join of its own, starts nothing. The outbox
+// names it by the issue, the generation, the task and the row (internal/daemon's taskBranch), so a
+// row that runs again applies one fact.
+type TaskJoined struct {
+	Issue      string
+	Generation uint64
+	Task       string
+	Branch     string
+	Needs      []string
+	Conflicts  []string
+	Unmerged   bool
+}
+
+func (f TaskJoined) namedIssue() (string, bool) { return f.Issue, true }
 
 // ArchitectRequest is a fact an architect's request applies to one issue (Request). Its route
 // judged the requester and read the issue before the fact lock (api's architectForIssue,
@@ -1333,8 +1429,12 @@ func (f CloseRoot) Message() string {
 // cluster did — and because it is persisted on the claim, so the boot's replay of a failure no
 // daemon applied reports the same end (the daemon's replayTerminal).
 type ClaimFailed struct {
-	Issue        string
-	Role         claim.Role
+	Issue string
+	Role  claim.Role
+	// Claim is the claim that failed, whose name is its agent's (claim.Token.Cut): of an issue
+	// whose plan holds several tasks, the step that agent runs is the one the failure holds
+	// (workflow's viewOfAgent). It is "" for a fact built without it, which names no agent.
+	Claim        claim.Token
 	Reason       string
 	Death        string
 	StartFailure string
@@ -1356,9 +1456,10 @@ type ClaimFailed struct {
 func (f ClaimFailed) namedIssue() (string, bool) { return f.Issue, true }
 
 // SessionLost is a claim that forgot its recorded session: its worker now runs a fresh agent that
-// has read none of its own earlier work (supervise's startFresh). Detail is why, as the supervisor
-// said it. It is told on the issue, to its architect and to the controller, because a worker that
-// silently lost its memory looks like one that is merely slow.
+// has read none of its own earlier work (supervise's startFresh). Claim is that claim, whose name
+// is its agent's, and Role the role of the step it runs. Detail is why, as the supervisor said it.
+// It is told on the issue, to its architect and to the controller, because a worker that silently
+// lost its memory looks like one that is merely slow.
 //
 // Cause is why the claim forgot the session; empty reads as gone (supervise.SessionLossGone).
 // Session is the session the claim forgot (supervise.AbandonedSession.Session), which the
@@ -1366,6 +1467,7 @@ func (f ClaimFailed) namedIssue() (string, bool) { return f.Issue, true }
 type SessionLost struct {
 	Issue   string
 	Role    claim.Role
+	Claim   claim.Token
 	Detail  string
 	Cause   supervise.SessionLoss
 	Session string
@@ -1389,17 +1491,19 @@ func (f SessionStoreFault) namedIssue() (string, bool) { return f.Issue, true }
 // MemoryGuardKill is one process an issue pod's memory guard ended with SIGKILL because the pod
 // was near its memory limit, or, in a microVM pod, one that the pod's own kernel stopped because
 // the pod ran out of memory (the report's Cause, shimwire.MemoryKillCauseKernel, or
-// shimwire.MemoryKillCauseKernelProtected for a process that runs the role's session), as the pod's
-// launcher reported it on the connection of the role whose process it was
+// shimwire.MemoryKillCauseKernelProtected for a process that runs the claim's session), as the
+// pod's launcher reported it on the connection of the slot whose process it was, the slot of a
+// claim's agent
 // (shimwire.LauncherMemoryKill). It is never decoded from an event: the launcher's frame reaches
 // the runtime, and the daemon's Kubernetes wiring applies one fact per report under the id
 // `memory-guard-kill:<guard>:<sequence>`, which names the kill once, so a report the launcher sent
 // twice is applied once (INFRA-3557). For the kernel's kill, <guard> is the id of the launcher's
 // guest watch (memoryguard.Guest).
 //
-// Issue, Token and PodUID are the launcher session's own (the issue its pod is of, the claim of
-// the role the connection authenticated for, and that pod), never anything the report says.
-// The workflow tells that role, on its own role topic, which of its processes was ended and why,
+// Issue, Token and PodUID are the launcher session's own (the issue its pod is of, the claim the
+// connection authenticated for, its slot's agent's whatever role that agent's step is on, and that
+// pod), never anything the report says. The workflow tells that claim, on the role topic of its
+// token, which of its processes was ended and why,
 // in the note the report's Cause chooses (workflow's memoryGuardKill).
 type MemoryGuardKill struct {
 	Issue  string
@@ -1643,13 +1747,17 @@ const (
 )
 
 // PodBackstopDue is one armed backstop of a released pod coming due (the pod_wake_backstops row
-// at its due_at): the phase worker it names is woken whatever else did or did not happen since
-// the release. It is never decoded from an event — the daemon's own pass reads the due rows and
-// applies one fact per row, under the row's id, so a backstop that came due while the daemon was
-// down fires once after it starts.
+// at its due_at): the claim it was armed for (Claim), the worker of the open phase at its release,
+// is woken where it stands released (ReleasedClaimByToken), whatever else did or did not happen
+// since the release, and a backstop of an issue the record no longer holds does nothing. Role is
+// the role that claim held then; a backstop the release before armed names no claim, and wakes the
+// claim of the worker on Role's step. It is never decoded from an event — the daemon's own pass
+// reads the due rows and applies one fact per row, under the row's id, so a backstop that came due
+// while the daemon was down fires once after it starts.
 type PodBackstopDue struct {
 	ID    int64
 	Issue string
+	Claim claim.Token
 	Role  claim.Role
 }
 
@@ -1692,15 +1800,24 @@ type Handler interface {
 }
 
 // Result carries a refusal that is durable: handlers finish and the transaction commits. Duplicate
-// reports that the event id was already processed, so no handler ran and nothing changed.
+// reports that the fact was already applied, so no handler ran and nothing changed: an event id
+// already processed, and for a PlanGiven a version the record holds (ApplyFact), whatever its id.
 //
 // Unspent is a handler leaving the event unmarked, so the same id applies again when it is next
 // sent (ApplyFact). A handler sets it only for a refusal whose cause can clear while the fact's
 // id stays the same, and writes nothing where it sets it.
+//
+// Added is set for a PlanGiven alone, the one fact whose route answers what the apply wrote (api's
+// registerPlan): the ids of the tasks the version adds over the version in force, in the plan's
+// order, every task of a generation's first version, and [] where it adds none. The workflow's
+// apply answers them over the version in force it read in its own transaction; for a duplicate,
+// ApplyFact answers what that apply recorded on the version (record.Postgres.PlanVersionHeld). It
+// is nil for every other fact and for a refusal.
 type Result struct {
 	Refusal   *Refusal
 	Duplicate bool
 	Unspent   bool
+	Added     []string
 }
 
 // Refusal is a committed API response or JetStream log record, never a transaction failure.
@@ -1716,8 +1833,11 @@ type Refusal struct {
 
 // PlanRefused is the 409 PLAN_REFUSED refusal of a plan the owner gave, with one reason for each
 // cause: register_plan answers it for a plan that plan.Supported or plan.Validate refuses, and
-// the workflow for a version that changes or removes a running task (RunningTaskChanged). The
-// message holds every reason in its order, so a reader of the sentence alone reads every cause.
+// the workflow for a version that changes or removes a running or held task (RunningTaskChanged,
+// HeldTaskChanged), one that needs the task that merges where it merges (NeedOfMergingTask), one
+// that moves the base of a running or held task (StartedTaskBaseMoved), or one whose agent this
+// release cannot name (AgentUnnamed). The message holds every reason in its order, so a reader of
+// the sentence alone reads every cause.
 func PlanRefused(reasons []plan.Refusal) *Refusal {
 	texts := make([]string, len(reasons))
 	for i, reason := range reasons {
@@ -1730,6 +1850,44 @@ func PlanRefused(reasons []plan.Refusal) *Refusal {
 // removes task, which is running: the owner stops it first.
 func RunningTaskChanged(task string) plan.Refusal {
 	return plan.Refusal{Task: task, Reason: fmt.Sprintf("task %s is running: stop it with stop_task before you change it.", task)}
+}
+
+// HeldTaskChanged is the reason a later version of the plan is refused when it changes or removes
+// task, which is held where at says (`step <i> (<role>)`, or its retro or merge): its owner retries
+// or escalates the hold, or stops the task, first.
+func HeldTaskChanged(task, at string) plan.Refusal {
+	return plan.Refusal{Task: task, Reason: fmt.Sprintf(
+		"task %s is held at %s: retry or escalate its hold with retry_or_escalate, or stop it with stop_task, before you change it.", task, at)}
+}
+
+// NeedOfMergingTask is the reason a later version of the plan is refused when it gives task a
+// need of merging, the task whose work is the issue's that merges, which stands at its at (retro
+// or merge) or is done: the work of the issue merges there, and this release does not carry out
+// a need of it then.
+func NeedOfMergingTask(task, merging, at string) plan.Refusal {
+	return plan.Refusal{Task: task, Reason: fmt.Sprintf(
+		"task %s needs task %s, which stands at its %s, where the work of the issue merges. This release of Legion does not carry it out yet.", task, merging, at)}
+}
+
+// StartedTaskBaseMoved is the reason a later version of the plan is refused when it moves the
+// base of task, the branch its pull request is based on (the workflow reads it from the plan), from
+// base to next while task has started and is not stopped: it is running or held. The task started
+// on base, and its later steps would be told next, which no start of it made: a version that adds
+// the first task that needs the task that merges moves that task's base to its join branch, and one
+// that removes the one task that needed a task moves its base to the default branch. Its owner
+// stops it first.
+func StartedTaskBaseMoved(task, base, next string) plan.Refusal {
+	return plan.Refusal{Task: task, Reason: fmt.Sprintf(
+		"task %s has started on the base %s, and this version would base it on %s: stop it with stop_task before you change its base.", task, base, next)}
+}
+
+// AgentUnnamed is the reason a version of the plan is refused when the agent of step place of task,
+// a fresh agent of its own, would take name, its role's, which another agent of the plan holds from
+// an earlier version (record.NameAgents). This release runs one agent of each role for an issue,
+// so such a version is refused as a plan before anything is written, never as an error of the write.
+func AgentUnnamed(task string, place int, name string) plan.Refusal {
+	return plan.Refusal{Task: task, Reason: fmt.Sprintf("step %d of task %s needs an agent of its own, and another agent of this plan holds the name %s of its role "+
+		"from an earlier version; this release runs one agent of each role for an issue. This release of Legion does not carry it out yet.", place, task, name)}
 }
 
 // PlanVersionOld is the 409 PLAN_VERSION_OLD refusal of version given of issue's plan document,
@@ -1876,6 +2034,26 @@ func TaskAwaitsPerson(issue, task string) *Refusal {
 		"%s waits on a person before its first step, and Legion cannot stop task %s there. To change the task, give a later version of the plan with register_plan; to stop it, call stop_task again once the person has answered. This stop changed nothing.", issue, task)}
 }
 
+// TaskRequired is the 409 TASK_REQUIRED refusal of an owner's call on issue that names no task
+// where tasks, two or more tasks of its plan in id order, each stand at at, the act the call
+// answers: the call does not say which of them it is of, so it changed nothing.
+func TaskRequired(issue string, tasks []string, at phase.Phase) *Refusal {
+	return &Refusal{Status: 409, Code: "TASK_REQUIRED", Message: fmt.Sprintf(
+		"tasks %s of %s each stand at %s: name the task with task.", strings.Join(tasks, ", "), issue, at)}
+}
+
+// TaskNotAtPhase is the 409 TASK_NOT_AT_PHASE refusal of an owner's call on issue that names task,
+// which stands at stands, the phase its own place derives, and not at at, the act the call
+// answers; stands is "" for a task the issue's plan does not hold. It changed nothing.
+func TaskNotAtPhase(issue, task string, stands, at phase.Phase) *Refusal {
+	if stands == "" {
+		return &Refusal{Status: 409, Code: "TASK_NOT_AT_PHASE", Message: fmt.Sprintf(
+			"the plan of %s holds no task %s, so it stands at no %s.", issue, task, at)}
+	}
+	return &Refusal{Status: 409, Code: "TASK_NOT_AT_PHASE", Message: fmt.Sprintf(
+		"task %s of %s stands at %s, not at %s.", task, issue, stands, at)}
+}
+
 // RetryOfStoppedTask is the 409 TASK_STOPPED refusal of a release of issue's hold — the
 // architect's retry or escalation, the operator's restart — where the issue is held because task
 // was stopped for reason, the stop reason the task stores (record.PlanTask.StoppedReason): by its
@@ -1956,6 +2134,203 @@ func ChildNotAdoptable(key, tree, reason string) *Refusal {
 // (api's handoffComplete), so a worker reads the same words from either.
 func NotCurrentPhase(role claim.Role, p phase.Phase, issue string) *Refusal {
 	return &Refusal{Status: 409, Code: "HANDOFF_NOT_CURRENT_PHASE", Message: fmt.Sprintf("the %s does not run phase %s of %s; this completion changed nothing", role, p, issue)}
+}
+
+// EntryFence is the one rule a phase completion's entry is held to, and the refusal it answers,
+// nil when the completion goes on. Two judges ask it, each on its own read of the role's phases
+// row: the completion route on its read, before the fact (api's answerCompletion), which is the
+// early refusal, and the workflow's handoff on the row the fact's own transaction reads (workflow's
+// Engine.handoff), which refuses a completion of an entry raised between the two reads. entry is
+// the entry the claim's worker is on (HandoffComplete.Entry), current the entry the role's phases
+// row names (record.PhaseRow.Entry), and movedBack whether the move that raised it was a move back
+// (record.PhaseRow.EntryMovedBack); issue is the record as the same read holds it, pr the pull
+// request it holds, and pending the claim's queued task, which only the route reads.
+//
+// Like a completion of a run that is over (HANDOFF_STALE_GENERATION), a completion of a phase
+// entry the issue's phase has moved past is refused, and for the reason the run alone cannot
+// carry: every phase entry of one run carries that run, so a turn that outlived its phase — the
+// daemon ends no turn when a phase ends — would otherwise complete the next entry of the same
+// phase with the work of the entry before. The two numbers differ exactly while the worker is
+// still on the earlier entry, because a second delivery is refused while one is pending, so the
+// claim serves the first entry while the row already names the second. Every refusal is written
+// before anything is recorded under the completion's key.
+//
+// Either number zero is nothing to compare, as an empty assignment was before the entry replaced
+// it: a daemon upgraded in place has roles no start has stamped, whose row answers 0, and workers
+// that confirmed no task carrying an entry, whose claim answers 0 (supervise.Claim.ServingEntry).
+// A completion level with its row's entry is not this rule's: the workflow decides it, and records
+// one that arrives after the daemon moved the issue on by an event (workflow's leftItsPhase), or,
+// for a task its owner or a failed step stopped, refuses it as the report of the step the stop
+// ended (workflow's lateReport).
+//
+// Where the two differ, the rule first asks whether the role works the phase the issue stands in,
+// a running step of the role standing there (record.Issue.RunningAt), because the entry it
+// compares is the role's own row's, which stays where the role's last phase left it. A claim can
+// still serve an earlier entry after the issue has left the role's phase: a
+// taken completion always moves the phase on, so a behind completion taken here leaves its claim
+// serving the entry it was behind on, and an issue can leave the phase again before a turn that
+// outlived an earlier entry reports. A completion from such a claim — the taken one sent again
+// after a dropped connection, as pi-shared's retryWhileDaemonRestarts sends it, one naming a newer
+// record, or one of an entry before the one the role was handed and left unreported — meets this
+// rule in another role's phase, where StaleEntry's words would tell the worker that the task of
+// the entry the phase is on is owed to it and comes by itself. That task is queued for the phase
+// the issue has left, and is dropped rather than sent (supervise's phaseHolds), so a worker that
+// obeyed would wait for a task nobody sends. Such a completion is answered
+// HANDOFF_NOT_CURRENT_PHASE instead (NotCurrentPhase), the code every worker's prompt names for a
+// completion of a phase it no longer works, and is recorded nowhere: the row keeps the run it
+// stands on.
+//
+// A completion at admitted is answered so too, whichever role sends it. Admitted is the
+// architect's own phase (phase.RoleFor), and the architect completes nothing (workflow's handoff
+// refuses it ACCEPTANCE_IS_SIGN_OFF), so the guard keeps the answer a completion at admitted had
+// while no role was named for that phase (dispatch://INFRA-2614, R2), now that a root's architect
+// holds an entry there.
+//
+// An entry above the row's is refused with the entry below it (unraisedEntry), though the record
+// should never produce it: the transition raises the row's entry in the transaction that composes
+// that entry's task, so no delivery can carry an entry the row does not already name, and a row's
+// entry only rises. An entry behind the row's is refused (StaleEntry) unless BehindEntryClause
+// takes it.
+func EntryFence(issue record.Issue, role claim.Role, entry, current int64, movedBack bool, commit string, pr *record.PullRequest, pending *supervise.Delivery) *Refusal {
+	if entry == 0 || current == 0 || entry == current {
+		return nil
+	}
+	p := issue.Phase
+	if p == phase.Admitted || !slices.ContainsFunc(issue.RunningAt(p), func(step record.RunningStep) bool { return step.Role == role }) {
+		return NotCurrentPhase(role, p, issue.Key)
+	}
+	if entry > current {
+		return &Refusal{Status: 409, Code: StaleEntryCode, Message: unraisedEntry(issue.Key, role, p, current, entry)}
+	}
+	// The role works p, so the record p ends with, if any, is this role's (phase.Handoff).
+	_, _, recordBacked := phase.Handoff(p)
+	if clause := BehindEntryClause(recordBacked, commit, pr, movedBack); clause != "" {
+		return StaleEntry(issue.Key, role, p, current, entry, pending, clause)
+	}
+	return nil
+}
+
+// unraisedEntry is the refusal of a completion of a phase entry above the one the role's phases
+// row names, the other side of StaleEntry: the record should never produce it, since the
+// transition raises the row's entry in the transaction that composes that entry's task, so no
+// task the daemon hands out carries an entry the row does not already name. It is said rather
+// than taken, because a daemon that recorded it would be recording a completion of work no
+// transition ever wrote. It names neither a queued task nor an owed one, as StaleEntry does:
+// there is no later entry for the worker to wait for, and what the worker does is tell the
+// architect.
+func unraisedEntry(issue string, role claim.Role, p phase.Phase, current, serving int64) string {
+	return fmt.Sprintf("this completion is of entry %d of phase %s of %s, and the %s's phases row is on entry %d: the daemon raises that entry in the transaction that composes the entry's task, so no task it hands out carries an entry above it. Nothing was recorded; end this turn without completing and tell the architect",
+		serving, p, issue, role, current)
+}
+
+// StaleEntryCode is the code of a completion refused for its phase entry: one of an entry behind
+// the one the role's phases row names (StaleEntry), and one of an entry above it (unraisedEntry).
+const StaleEntryCode = "HANDOFF_STALE_ENTRY"
+
+// StaleEntryInstruction is what StaleEntry tells the worker to do, after the clause that names the
+// entries. It is one text with the sentence the `legion` tool's description gives for
+// StaleEntryCode (STALE_ENTRY_INSTRUCTION in `packages/pi-shared/src/legion-phase-ops.ts`), so a
+// worker reads the same words in the refusal and in its tool: api's TestStaleEntryInstructionGolden
+// writes both values to `packages/contracts/fixtures/daemon-api/stale-entry.json`, and
+// pi-shared's own test holds the description to that file.
+const StaleEntryInstruction = "End this turn without completing. The task of the entry the phase is on is owed to this claim, and the daemon sends it by itself. That task is work of its own: do what it asks at the head it names and complete it with a handoff of its own, never this completion's record, commit or verdict"
+
+// BehindEntryClause decides a completion of a phase entry the issue has moved past, one found
+// behind the role's phases row (EntryFence), and says what decided it: it answers "" where the
+// completion is taken, and otherwise the clause StaleEntry carries of what decided the refusal,
+// the one place that wording lives.
+//
+// recordBacked says the phase ends with a Dispatch handoff record this role writes
+// (phase.Handoff), which is what makes the completion readable as this phase's own answer: the
+// record names the phase it is of, and the refusals below the fence hold the completion to it —
+// the record is this issue's, of the phase's word, at the version reported (api's handoffRecord,
+// HANDOFF_RECORD_MISMATCH), and is not the one the role named for its previous phase (the
+// workflow's HANDOFF_NOT_NEW). Retro, merging and step end with no record at all, so a completion
+// of theirs carries nothing that says which entry's work it is, whatever its commit reads, and it
+// is refused. Its clause says that and names no head, because no head such a completion reported
+// on could have taken it — a clause naming the two heads would answer a worker refused at the very
+// head the record holds with the one reading under which a completion is taken. The move that
+// raised the entry is left unsaid there too: the missing record refuses that completion whatever
+// the move was.
+//
+// pr is the pull request the daemon's record holds for the issue, nil when it holds none; its
+// head is the record's own and never GitHub's: the rule answers from what the daemon holds, so a
+// GitHub that is slow, rate-limited or unreachable decides no completion.
+//
+// The completion is taken when the commit it names is that head, a verdict on the head the record
+// holds. What a worker reports is a fact about a head, not about an entry: when the phase was
+// entered again at that same head, the work the current entry's task asks for is the work this
+// completion did, and refusing it would have the worker do the same work again at the same head
+// for the same answer. A completion naming no commit says nothing about a head, and one at any
+// other commit is a verdict on a head the record has left — the head the entry before this one was
+// for among them.
+//
+// Unless the move that entered the phase again moved it back (movedBack). The architect's move
+// back and the reviewer's request for changes send the work back at the head that is already
+// there, so the two heads read alike and the heads alone would take this completion — over an
+// entry that exists to have the work done again, which the verdict of the entry before it is
+// exactly what must not stand in for. The record says which it was, written onto the entry by the
+// transition that raised it, so the rule reads the move rather than guessing at it from the heads
+// (record.PhaseRow.EntryMovedBack, which says why no count can tell it either).
+//
+// Otherwise the clause is the commit the completion gave, or that it gave none, against the head
+// the record holds for the issue, or that it holds no pull request at all; and, where movedBack,
+// that the entry the phase stands on was raised by a move back, which is what refuses this
+// completion whatever those two heads read.
+func BehindEntryClause(recordBacked bool, commit string, pr *record.PullRequest, movedBack bool) string {
+	if !recordBacked {
+		return "this phase ends with no handoff record this role writes, so nothing this completion names says which entry's work it is"
+	}
+	head := ""
+	if pr != nil {
+		head = pr.HeadSHA
+	}
+	if !movedBack && commit != "" && commit == head {
+		return ""
+	}
+	gave := "this completion names no commit"
+	if commit != "" {
+		gave = "this completion is at commit " + commit
+	}
+	holds := "the record holds no pull request for the issue"
+	if head != "" {
+		holds = "the pull request the record holds is at head " + head
+	}
+	clause := gave + " while " + holds
+	if movedBack {
+		clause += ", and the move that handed the phase out again moved the issue back, which asks for this phase's work to be done again, so no verdict on either head answers for it"
+	}
+	return clause
+}
+
+// StaleEntry is the 409 HANDOFF_STALE_ENTRY refusal of a completion of a phase entry the issue's
+// phase has moved past: the role was given this phase's work again — the issue left the phase and
+// came back, or the phase ended under the worker and another role's round sent it here — and the
+// turn reporting this completion is on the earlier entry, current - serving entries behind. It
+// names the queued task of the entry the phase hands the role now when the claim already holds it
+// (pending, which only the completion route reads; the workflow passes nil), as api's
+// staleCompletion does for a run. Either way that entry's task is owed to this claim and comes by
+// itself: the claim is behind the entry its phases row names, which is what the admission pass
+// sends the row's own work for (record.PhaseRow.EntryTask, workflow's SendOwedEntry), so the
+// worker waits for that task rather than asking anyone for it. Both judges write it only for a
+// role that works the phase the issue stands in, so a worker reads the same words from either.
+//
+// Where staleCompletion sends the same completion again — a run's completion is the right work,
+// arrived early — this one does not, and that is the whole difference between the two: an entry
+// is new only because the phase was entered again, so the task it hands the role is work of its
+// own. A head that starts conflicting with its base takes the issue back to implementing, and
+// the testing entry the implementer's merge forward then raises is for a new head, so a verdict
+// reported for the head before it would stand as that new head's. The worker does the new
+// task's work and writes a handoff of its own for it, which StaleEntryInstruction says.
+//
+// clause says what refused this completion (BehindEntryClause).
+func StaleEntry(issue string, role claim.Role, p phase.Phase, current, serving int64, pending *supervise.Delivery, clause string) *Refusal {
+	stale := fmt.Sprintf("%s handed the %s phase %s again: this completion is of entry %d, which is %d behind the entry %d the phase is on, and %s; nothing was recorded",
+		issue, role, p, serving, current-serving, current, clause)
+	if pending != nil && pending.Entry == current {
+		stale = fmt.Sprintf("%s, and your turn began before the daemon's task for entry %d (%s) reached this session", stale, current, pending.ID)
+	}
+	return &Refusal{Status: 409, Code: StaleEntryCode, Message: stale + ". " + StaleEntryInstruction}
 }
 
 // LateReportOfStoppedTask is the 409 TASK_STOPPED refusal of a report of step, run by role, of task
@@ -2042,6 +2417,22 @@ func ApplyFact(ctx context.Context, pool store.TxPool, source, eventID string, f
 		if err := recordStreamPosition(ctx, tx); err != nil {
 			return err
 		}
+		// A plan's give is a duplicate where the record holds its version, and only there: a give
+		// of a version that a first step passed over since (workflow's passOverEarlierOwners) has
+		// the id of the give that was passed over, and applies; a give of a version the record holds
+		// under an id never marked (a version carried to the generation the give names) is the
+		// version already taken. The id is marked either way, as a release before reads it.
+		if given, ok := fact.(PlanGiven); ok {
+			added, held, err := record.NewStore().PlanVersionHeld(ctx, tx, given.Issue, given.Generation, given.Plan.ArtifactID, given.Plan.Version)
+			if err != nil {
+				return err
+			}
+			if held {
+				result = Result{Duplicate: true, Added: added}
+				return nil
+			}
+			fresh = true
+		}
 		if !fresh {
 			result = Result{Duplicate: true}
 			return nil
@@ -2064,6 +2455,9 @@ func ApplyFact(ctx context.Context, pool store.TxPool, source, eventID string, f
 				result.Refusal = candidate.Refusal
 			}
 			result.Unspent = result.Unspent || candidate.Unspent
+			if candidate.Added != nil {
+				result.Added = candidate.Added
+			}
 		}
 		if err := settle(ctx, tx); err != nil {
 			return err

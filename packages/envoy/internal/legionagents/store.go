@@ -165,8 +165,9 @@ func (s *Store) Get(ctx context.Context, sessionID string) (Agent, error) {
 	return agents[slices.IndexFunc(agents, func(agent Agent) bool { return agent.SessionID == sessionID })], nil
 }
 
-// ByRoleToken answers every session of the role token, newest first, each with its replacement:
-// the first is the role's current holder. A token no session holds answers none.
+// ByRoleToken answers every session of the role token, one agent's claim token, newest first, each
+// with its replacement: the first is the claim's current session. A token no session holds answers
+// none.
 func (s *Store) ByRoleToken(ctx context.Context, token string) ([]Agent, error) {
 	if err := ValidateRoleToken(token); err != nil {
 		return nil, err
@@ -178,8 +179,9 @@ func (s *Store) ByRoleToken(ctx context.Context, token string) ([]Agent, error) 
 	return succession(entries), nil
 }
 
-// ByIssue answers every session of the issue, by role in workflow order (Roles), then newest
-// first, each with its replacement within its role token. An issue no session worked answers none.
+// ByIssue answers every session of the issue, by role in workflow order (legionclaim.Roles), then
+// newest first, each with its replacement within its role token. An issue no session worked
+// answers none.
 func (s *Store) ByIssue(ctx context.Context, issue string) ([]Agent, error) {
 	if err := ValidateIssue(issue); err != nil {
 		return nil, err
@@ -311,10 +313,12 @@ type prepared struct {
 }
 
 // prepare is entry as the registry will store it: refused with a *ConflictError when the session
-// is recorded for another Legion project, issue or role, and carrying the recorded_at of its first
-// write, or now when this is its first. earlier holds the entries a batch prepared before this one,
-// which its writes will have stored by the time this one's are made; the revision such an entry
-// carries is stale by then, so this one's claim reads the key again (write).
+// is recorded for another Legion project, issue or claim token, and carrying the recorded_at of
+// its first write, or now when this is its first. A write of a recorded session on another role's
+// step is no conflict: its role changes as its agent's steps do, and its keys stay where they
+// are. earlier holds the entries a batch prepared before this one, which its writes will have
+// stored by the time this one's are made; the revision such an entry carries is stale by then, so
+// this one's claim reads the key again (write).
 func (s *Store) prepare(ctx context.Context, entry Entry, earlier map[string]prepared) (prepared, error) {
 	current, found := earlier[entry.SessionID]
 	if !found {
@@ -332,7 +336,7 @@ func (s *Store) prepare(ctx context.Context, entry Entry, earlier map[string]pre
 		return prepared{entry: entry}, nil
 	}
 	if !sameSession(current.entry, entry) {
-		return prepared{}, &ConflictError{SessionID: entry.SessionID, Issue: current.entry.Issue, Role: current.entry.Role}
+		return prepared{}, &ConflictError{SessionID: entry.SessionID, Issue: current.entry.Issue, RoleToken: current.entry.RoleToken}
 	}
 	entry.RecordedAt = current.entry.RecordedAt
 	return prepared{entry: entry, revision: current.revision}, nil
@@ -343,8 +347,8 @@ func (s *Store) prepare(ctx context.Context, entry Entry, earlier map[string]pre
 // create for a session the bucket holds no key for, an update at that revision for a recorded one.
 // So of two writes moving one session to different issues only one claims it, and the index keys,
 // which every listing reads, are written only by the write that holds the session key. A claim
-// another write moved the key under is read again: a session now recorded for another issue or role
-// is a *ConflictError, and one recorded for the same one is claimed again at the new revision. A
+// another write moved the key under is read again: a session now recorded for another issue or
+// claim is a *ConflictError, and one recorded for the same one is claimed again at the new revision. A
 // write that ends after its claim leaves the session key alone, which refuses a move as any recorded
 // session does, and which the same write sent again completes: every write of a recorded session
 // writes its index keys again. Validate's bounds keep every key well inside what NATS takes, so no

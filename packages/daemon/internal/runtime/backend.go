@@ -26,9 +26,13 @@ const (
 type BackendInfo struct {
 	// Name is the harness as an operator reads it in a refusal or a log line.
 	Name string
-	// Roles are the roles it may run; nil is every role. `worker_backends` (config) and every
-	// launch (ValidateSpawnSpec) are held to it.
+	// Roles are Legion's roles it may run; nil is every role. `worker_backends` (config) and every
+	// launch (ValidateSpawnSpec) are held to it, and to StepRoles.
 	Roles []claim.Role
+	// StepRoles is whether it also runs each role a deployment defines: a role of a claim
+	// (claim.IsRole) that is none of Legion's six (claim.IsBuiltin), which leaves out the
+	// controller.
+	StepRoles bool
 	// Why is the reason it runs no other role, the rest of the refusal of one it does not run.
 	Why string
 	// Runtimes are the runtimes that launch it, by their configuration names (`runtime:`).
@@ -39,16 +43,17 @@ type BackendInfo struct {
 }
 
 // Backends is every harness a launch can run on. Oh My Pi runs every role under either runtime,
-// and Claude Code the phase workers under either: the worker image carries Claude Code's pin and
-// its Legion plugin, and a pod installs the pinned release at launch (sandbox.claudeCodeBlock),
-// while a pane resolves the host's own binary. It is told claude-mechanics.md, the role prompts'
-// Oh My Pi tool names as Claude Code names them. A harness is added here, as a tmux Launcher
-// (runtime/tmux), and as a boot resolver (daemon's launchers.go).
+// and Claude Code the phase workers and each role of the deployment under either: the worker image
+// carries Claude Code's pin and its Legion plugin, and a pod installs the pinned release at launch
+// (sandbox.claudeCodeBlock), while a pane resolves the host's own binary. It is told
+// claude-mechanics.md, the role prompts' Oh My Pi tool names as Claude Code names them. A harness
+// is added here, as a tmux Launcher (runtime/tmux), and as a boot resolver (daemon's launchers.go).
 var Backends = map[Backend]BackendInfo{
 	BackendOmp: {Name: "OMP", Runtimes: []string{"tmux", "kubernetes"}},
 	BackendClaude: {
-		Name:  "Claude Code",
-		Roles: []claim.Role{claim.RolePlanner, claim.RoleImplementer, claim.RoleTester, claim.RoleReviewer, claim.RoleMerger},
+		Name:      "Claude Code",
+		Roles:     []claim.Role{claim.RolePlanner, claim.RoleImplementer, claim.RoleTester, claim.RoleReviewer, claim.RoleMerger},
+		StepRoles: true,
 		Why: "the architect's loop and the controller's are proven only on Oh My Pi, " +
 			"and Claude Code runs the phase workers, whose loops Legion's live proofs cover",
 		Runtimes:   []string{"tmux", "kubernetes"},
@@ -83,9 +88,19 @@ func LookupBackend(backend Backend) (BackendInfo, error) {
 	return info, nil
 }
 
-// Runs is whether the backend may run role.
+// Runs is whether the backend may run role: one of its Roles (every role where it names none), or,
+// where it runs StepRoles, a role the deployment defines.
 func (b BackendInfo) Runs(role claim.Role) bool {
-	return b.Roles == nil || slices.Contains(b.Roles, role)
+	return b.Roles == nil || slices.Contains(b.Roles, role) || b.StepRoles && claim.IsRole(role) && !claim.IsBuiltin(role)
+}
+
+// RunsWhat is what a refusal of a role the backend does not run says it runs: its Roles, followed
+// by " and each role of the deployment" where it runs StepRoles.
+func (b BackendInfo) RunsWhat() string {
+	if b.StepRoles {
+		return JoinRoles(b.Roles) + " and each role of the deployment"
+	}
+	return JoinRoles(b.Roles)
 }
 
 // LaunchedBy is whether the runtime the configuration names runtime launches the backend.

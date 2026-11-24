@@ -1331,18 +1331,18 @@ records on every enrollment when it is made, from what the enrolling box proved 
 claim its launcher states (`enroll.go`, `ownerKey`).
 That owner is the person, for a box of theirs and for their sign-in on a machine; the Legion claim
 under the account the launcher's own login proved, for a pod the Legion daemon enrols, which states
-the role's claim token (`legion-<project>-<issue>-<role>`) for every generation and every
-replacement pod of the role; and the machine itself, by the subject its credential proved, for a
-machine's own session.
+the claim token of one agent of an issue (`legion-<project>-<issue>-<agent>`) for every generation
+and every replacement pod of that agent, whatever role its step is on; and the machine itself, by
+the subject its credential proved, for a machine's own session.
 Every project's daemon logs in as the same service under an account of its own, so a daemon whose
 pod states another project's claim token is another owner and takes nothing of that claim's.
-A pod that states no claim is its own pod's, and each slot of it, one role process of an issue pod,
-is its own slot's, so the roles of one pod read none of each other's requests.
+A pod that states no claim is its own pod's, and each slot of it, one process of an issue pod, is
+its own slot's, so the processes of one pod read none of each other's requests.
 Any enrollment of the same owner reads the request (`agent-secrets status`) and cancels it
 (`agent-secrets cancel`), and every other one is refused `NOT_YOURS`
 (`packages/envoy/internal/cipher/requests/machine_read.go`, `OwnerAndState` and `Machine.owner`):
 a person reads their request from another box, the next pod of a claim cancels what the pod before
-it asked for, and a second machine of the same fleet, or another role of the same issue, reads
+it asked for, and a second machine of the same fleet, or another agent of the same issue, reads
 neither.
 A request of a private Dispatch project, by a secret's project tag, a project a credential it has
 had names, or an issue key its reason names, is read and cancelled, apart from the enrollment it

@@ -198,11 +198,12 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 	// The issue record with every field set. It stands in another project than the pass's, so
 	// the admission line — which is no part of the issue record — puts nothing of its own on the
 	// view, and under a root of its own tree, so the hold's reason is served: the reason is
-	// suppressed by its tree's linger, not by its own.
+	// suppressed by its tree's linger, not by its own. Its hold took it out of step, so the role
+	// of its running step, which no phase names, is served beside the phase the hold left.
 	issue := record.Issue{
 		Key: held, Tree: root, Project: "OTHER", Title: "the held child", Parent: &parent,
 		Phase: phase.AwaitingPerson, Generation: 3, Status: "in_progress", Rank: "00042",
-		LingerUntil: &lingerUntil, Hold: &record.Hold{From: phase.Implementing, Reason: record.HoldEscalated},
+		LingerUntil: &lingerUntil, Hold: &record.Hold{From: phase.Step, Reason: record.HoldEscalated},
 		LastDispatchSeq: 91,
 		HandedOver:      true, TakenBack: true, DispatchStatus: "needs_review",
 		Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
@@ -212,6 +213,8 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 			AnsweredAt: &answeredAt, AnsweredBy: record.AnsweredByAsk,
 		},
 		HandoutSeq: 88, DeclaredSeq: 89, DeclaredAt: declaredAt,
+		Running: []record.RunningStep{{Task: "a", Place: record.TaskPlace{Kind: record.PlaceStep, Position: 2}, Role: "checker",
+			Phase: phase.Step, Agent: "checker", Held: true}},
 	}
 	// The root the child reads its tree's facts from. It does not linger, a linger of the tree
 	// being what suppresses the hold's reason.
@@ -288,9 +291,15 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 		},
 	}
 
+	// The issue's plan holds one task, a, held where its running step stands, so the view serves
+	// the task with the act of that step (api.Issue.Tasks), the running step the table serves
+	// under `tasks`.
 	store := projectionStore{
 		issues:      []record.Issue{tree, issue},
 		assignments: map[string][]record.Assignment{root: {drawn}},
+		planTasks: []record.PlanTask{{Issue: held, Generation: 3, Task: "a", State: record.TaskHeld,
+			Place: issue.Running[0].Place, HoldReason: record.HoldEscalated}},
+		acts: map[string][]record.RunningStep{held: issue.Running},
 	}
 	state, err := Project(context.Background(), Inputs{
 		Store: store, Project: "LEGION",
@@ -375,15 +384,17 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 		// `workers` is written on every issue, empty rather than null, and is built from the
 		// phases and the claims rather than from the issue record. `assignments` and the three
 		// memory fields are built from the assignment record, which has a table of its own
-		// (api.AssignmentRecordFields, the subtest below).
+		// (api.AssignmentRecordFields, the subtest below). `stepRole` is a reading of the running
+		// steps beside `tasks`, the key the table serves them under (Running): the role of the
+		// first at step.
 		servedKeys(t, "record.Issue", document, api.IssueRecordFields,
-			[]string{"workers", "assignments", "memoryGroup", "memoryDrawMode", "memoryDrawnAt"})
+			[]string{"workers", "assignments", "memoryGroup", "memoryDrawMode", "memoryDrawnAt", "stepRole"})
 
 		want := wire(t, map[string]any{
 			"key": issue.Key, "tree": issue.Tree, "phase": issue.Phase,
 			"generation": issue.Generation, "status": issue.Status,
 			"lingerUntil": issue.LingerUntil,
-			"holdReason":  issue.Hold.Reason, "heldFrom": issue.Hold.From,
+			"holdReason":  issue.Hold.Reason, "heldFrom": issue.Hold.From, "stepRole": issue.Running[0].Role,
 			"repo": issue.Repo, "defaultBranch": issue.DefaultBranch,
 			"ancestry": issue.Ancestry,
 			"waitingOn": map[string]any{
@@ -397,6 +408,12 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 			"assignments": []map[string]any{{
 				"experiment": drawn.Experiment, "variant": drawn.Variant,
 				"mode": drawn.Mode, "drawnAt": drawn.DrawnAt,
+			}},
+			"tasks": []map[string]any{{
+				"id": "a", "state": record.TaskHeld, "needs": []string{}, "kind": issue.Running[0].Place.Kind,
+				"phase": issue.Running[0].Phase, "branch": claim.IssueBranch(held), "position": issue.Running[0].Place.Position,
+				"role": issue.Running[0].Role, "agent": issue.Running[0].Agent, "holdReason": record.HoldEscalated,
+				"counts": map[string]any{"pass": 0, "rounds": 0},
 			}},
 		})
 		if got, wanted := canonical(t, document), canonical(t, want); got != wanted {

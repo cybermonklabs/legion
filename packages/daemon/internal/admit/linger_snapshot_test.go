@@ -25,35 +25,35 @@ func TestReleaseAppliesASnapshotThatLeavesTheWorkflowThroughTheEngineNotOnlyTheR
 	pool := migratedPool(t)
 	admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	putIssue(t, pool, record.Issue{
-		Key: "LEGION-PARK", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: testProject, Title: "park", Tree: "LEGION-PARK", Phase: phase.Implementing,
+		Key: "LEGION-756", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: testProject, Title: "park", Tree: "LEGION-756", Phase: phase.Implementing,
 		Generation: 1, Status: "in_progress", Rank: "A", HandedOver: true, LastDispatchSeq: 1,
 	})
 	inTx(t, pool, func(tx pgx.Tx) {
-		if err := record.NewStore().PutSlot(context.Background(), tx, record.Slot{Issue: "LEGION-PARK", Index: 0, AdmittedAt: fixedNow}); err != nil {
+		if err := record.NewStore().PutSlot(context.Background(), tx, record.Slot{Issue: "LEGION-756", Index: 0, AdmittedAt: fixedNow}); err != nil {
 			t.Fatalf("seed slot: %v", err)
 		}
 	})
 
 	reconcileWithPosition(t, pool, admission, []dispatch.IssueSummary{
-		{Key: "LEGION-PARK", ResolvedRepo: "acme/widgets", Title: "park", Status: "backlog", Rank: "A", HandedOver: true, LastSeq: 2},
+		{Key: "LEGION-756", ResolvedRepo: "acme/widgets", Title: "park", Status: "backlog", Rank: "A", HandedOver: true, LastSeq: 2},
 	}, 10, 0, false)
 	if !admission.Held() {
 		t.Fatal("Held() = false after seeding a behind parked record, want it held")
 	}
-	if got := issue(t, pool, "LEGION-PARK"); got.Phase != phase.Implementing || got.LingerUntil != nil {
-		t.Fatalf("LEGION-PARK while held = %#v, want it untouched until release", got)
+	if got := issue(t, pool, "LEGION-756"); got.Phase != phase.Implementing || got.LingerUntil != nil {
+		t.Fatalf("LEGION-756 while held = %#v, want it untouched until release", got)
 	}
 
 	if _, err := intake.ApplyFact(context.Background(), pool, "dispatch", "position-reached", intake.DispatchConsumerPosition{AckFloorStream: 10}, engineStub{}, admission); err != nil {
 		t.Fatalf("ApplyFact position-reached: %v", err)
 	}
 
-	got := issue(t, pool, "LEGION-PARK")
+	got := issue(t, pool, "LEGION-756")
 	if got.Phase != phase.Done || got.LingerUntil == nil {
-		t.Fatalf("released LEGION-PARK = %#v, want phase done with a linger armed (the engine's own beginLinger), not just the record's status moved", got)
+		t.Fatalf("released LEGION-756 = %#v, want phase done with a linger armed (the engine's own beginLinger), not just the record's status moved", got)
 	}
 	if got.Status != "backlog" {
-		t.Fatalf("released LEGION-PARK status = %q, want backlog (the snapshot's own status, still recorded)", got.Status)
+		t.Fatalf("released LEGION-756 status = %q, want backlog (the snapshot's own status, still recorded)", got.Status)
 	}
 	assertSlots(t, pool, nil)
 	var sawLingerClose bool
@@ -63,7 +63,7 @@ func TestReleaseAppliesASnapshotThatLeavesTheWorkflowThroughTheEngineNotOnlyTheR
 		}
 	}
 	if !sawLingerClose {
-		t.Fatal("no linger_close queued for released LEGION-PARK, want the tree's own linger deadline armed")
+		t.Fatal("no linger_close queued for released LEGION-756, want the tree's own linger deadline armed")
 	}
 }
 
@@ -75,11 +75,11 @@ func TestReconcileAppliesASnapshotThatLeavesTheWorkflowThroughTheEngineWhenTheCo
 	pool := migratedPool(t)
 	admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	putIssue(t, pool, record.Issue{
-		Key: "LEGION-PARK2", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: testProject, Title: "park2", Tree: "LEGION-PARK2", Phase: phase.Implementing,
+		Key: "LEGION-757", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: testProject, Title: "park2", Tree: "LEGION-757", Phase: phase.Implementing,
 		Generation: 1, Status: "in_progress", Rank: "A", HandedOver: true, LastDispatchSeq: 1,
 	})
 	inTx(t, pool, func(tx pgx.Tx) {
-		if err := record.NewStore().PutSlot(context.Background(), tx, record.Slot{Issue: "LEGION-PARK2", Index: 0, AdmittedAt: fixedNow}); err != nil {
+		if err := record.NewStore().PutSlot(context.Background(), tx, record.Slot{Issue: "LEGION-757", Index: 0, AdmittedAt: fixedNow}); err != nil {
 			t.Fatalf("seed slot: %v", err)
 		}
 	})
@@ -87,15 +87,15 @@ func TestReconcileAppliesASnapshotThatLeavesTheWorkflowThroughTheEngineWhenTheCo
 	// idle true: caughtUp regardless of target, so Reconcile applies this summary immediately
 	// rather than deferring it.
 	reconcileWithPosition(t, pool, admission, []dispatch.IssueSummary{
-		{Key: "LEGION-PARK2", ResolvedRepo: "acme/widgets", Title: "park2", Status: "done", Rank: "A", HandedOver: true, LastSeq: 2},
+		{Key: "LEGION-757", ResolvedRepo: "acme/widgets", Title: "park2", Status: "done", Rank: "A", HandedOver: true, LastSeq: 2},
 	}, 10, 10, true)
 	if admission.Held() {
 		t.Fatal("Held() = true after an idle, caught-up reconcile; want nothing held")
 	}
 
-	got := issue(t, pool, "LEGION-PARK2")
+	got := issue(t, pool, "LEGION-757")
 	if got.Phase != phase.Done || got.LingerUntil == nil {
-		t.Fatalf("reconciled LEGION-PARK2 = %#v, want phase done with a linger armed", got)
+		t.Fatalf("reconciled LEGION-757 = %#v, want phase done with a linger armed", got)
 	}
 	assertSlots(t, pool, nil)
 	var sawLingerClose bool
@@ -105,7 +105,7 @@ func TestReconcileAppliesASnapshotThatLeavesTheWorkflowThroughTheEngineWhenTheCo
 		}
 	}
 	if !sawLingerClose {
-		t.Fatal("no linger_close queued for the reconciled LEGION-PARK2, want the tree's own linger deadline armed")
+		t.Fatal("no linger_close queued for the reconciled LEGION-757, want the tree's own linger deadline armed")
 	}
 }
 

@@ -86,6 +86,96 @@ func TestANeedThatNamesNoTaskIsRefused(t *testing.T) {
 	}
 }
 
+// A task can need only a task of its own plan, and an issue waits for another issue by a
+// blocked_by link between the two, so a need written as a reference into another issue (an issue
+// key after `dispatch://` that is not the plan's) is kept out of the task's needs, whatever task of
+// this plan its block id would name, and Validate refuses it for good, once for each such word,
+// with a reason of its own that names the word and that issue. Every other word is read as before:
+// a reference into the plan's own issue by its block id, so a block of another document of that
+// issue that is no task gets the refusal of a need of no task, and a word with no `dispatch://` as
+// a block of the plan's own document. The fault is a reference into another issue read as the task
+// of this plan its block id names, which Validate takes (d needs a); the control is the read
+// without the check of the issue, under which the first four cases fail.
+func TestANeedIntoAnotherIssueIsRefused(t *testing.T) {
+	d := Deployment{Roles: BuiltinRoles()}
+	into := func(word string) Refusal {
+		return Refusal{Task: "d", Reason: "task d needs " + word + ", which names another issue, ACME-2: a task can need only a task of this plan, " +
+			"and an issue waits for another issue by a blocked_by link between the two."}
+	}
+	other := "dispatch://ACME-2/artifact/plan-md#b-a"
+	for _, tc := range []struct {
+		name  string
+		block Block
+		needs []string
+		want  []Refusal
+	}{
+		{name: "a reference to a task of another issue's plan", block: taskNeeding("d", other), want: []Refusal{into(other)}},
+		{name: "that reference pinned and written twice, beside a task of this plan", block: taskNeeding("d", other+"@v2", needWord("a"), other+"@v2"),
+			needs: []string{"a"}, want: []Refusal{into(other + "@v2")}},
+		{name: "a reference to a block of another issue that is no task here", block: taskNeeding("d", "dispatch://ACME-2/spec#b-r1"),
+			want: []Refusal{into("dispatch://ACME-2/spec#b-r1")}},
+		{name: "another issue itself", block: taskNeeding("d", "dispatch://ACME-2"), want: []Refusal{into("dispatch://ACME-2")}},
+		{name: "a block of another document of the plan's issue that is no task", block: taskNeeding("d", "dispatch://ACME-1/spec#b-r1"),
+			want: []Refusal{{Task: "d", Reason: "task d needs dispatch://ACME-1/spec#b-r1, which names no task of this plan."}}},
+		{name: "a reference with no dispatch://, to the plan's own document", block: taskNeeding("d", "plan-md#b-a"), needs: []string{"a"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := planOf(t, 1, taskNeeding("a"), tc.block)
+			if got := p.Tasks[1].Needs; !reflect.DeepEqual(got, tc.needs) {
+				t.Fatalf("d needs %q, want %q", got, tc.needs)
+			}
+			if got := validated(t, p, d); !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("Validate =\n%+v\nwant\n%+v", got, tc.want)
+			}
+		})
+	}
+}
+
+// A need written as a `dispatch://` reference names a task of this plan only when the reference is
+// of the plan's own issue, whose document alone holds the plan, so a reference that starts with no
+// issue key (a block of a project's document or of an agent's, a key that is no issue key, or no
+// key at all) is kept out of the task's needs, whatever task of this plan its block id would name,
+// and Validate refuses it for good, once for each such word, in the block's order beside a
+// reference into another issue, with a reason of its own that names the word. The fault is such a
+// reference read as the task of this plan its block id names, which Validate takes (d needs a);
+// the control is the read that keeps out only a reference that starts with another issue's key,
+// under which every case fails.
+func TestANeedOfNoIssueIsRefused(t *testing.T) {
+	d := Deployment{Roles: BuiltinRoles()}
+	ofNoIssue := func(word string) Refusal {
+		return Refusal{Task: "d", Reason: "task d needs " + word + ", which names no issue: a task can need only a task of this plan, " +
+			"and a reference to one starts with the plan's issue key."}
+	}
+	project, noKey := "dispatch://ACME/artifact/notes-md#b-a", "dispatch://#b-a"
+	agent, lowerCase := "dispatch://agent/session-1/artifact/notes-md#b-a", "dispatch://acme-1/artifact/plan-md#b-a"
+	other := "dispatch://ACME-2/artifact/plan-md#b-a"
+	for _, tc := range []struct {
+		name  string
+		block Block
+		needs []string
+		want  []Refusal
+	}{
+		{name: "a block of a project's document", block: taskNeeding("d", project), want: []Refusal{ofNoIssue(project)}},
+		{name: "a reference with no key at all", block: taskNeeding("d", noKey), want: []Refusal{ofNoIssue(noKey)}},
+		{name: "a block of an agent's document", block: taskNeeding("d", agent), want: []Refusal{ofNoIssue(agent)}},
+		{name: "the plan's issue key in lower case", block: taskNeeding("d", lowerCase), want: []Refusal{ofNoIssue(lowerCase)}},
+		{name: "a pinned one written twice, in the block's order beside another issue and a task of this plan",
+			block: taskNeeding("d", project+"@v2", other, needWord("a"), project+"@v2"), needs: []string{"a"},
+			want: []Refusal{ofNoIssue(project + "@v2"), {Task: "d", Reason: "task d needs " + other + ", which names another issue, ACME-2: " +
+				"a task can need only a task of this plan, and an issue waits for another issue by a blocked_by link between the two."}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := planOf(t, 1, taskNeeding("a"), tc.block)
+			if got := p.Tasks[1].Needs; !reflect.DeepEqual(got, tc.needs) {
+				t.Fatalf("d needs %q, want %q", got, tc.needs)
+			}
+			if got := validated(t, p, d); !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("Validate =\n%+v\nwant\n%+v", got, tc.want)
+			}
+		})
+	}
+}
+
 // A task that needs itself through other tasks never starts, so Validate refuses each set of
 // tasks that need each other for good, once, with one cycle of the set: the shortest from its
 // first task in id order back to that task, each task's needs taken in the order its block writes
@@ -157,20 +247,18 @@ func TestAnEndedContextStopsTheCheckOfCycles(t *testing.T) {
 
 // The work of an issue merges as one change, at the end of the one task that no task needs, so
 // a plan with more than one such task is refused as not carried out yet, naming them in id order.
-// A plan whose tasks all lead to one task is not refused for it (it is still refused for its
-// several tasks, until this release runs them). The fault is two tasks whose work would each
-// merge by itself, taken; the control is Supported without the refusal, whose answer to a and b
-// lacks the second reason.
+// A plan whose tasks all lead to one task is taken. The fault is two tasks whose work would each
+// merge by itself, taken; the control is Supported without the refusal, whose answer to a and b is
+// none.
 func TestTwoTasksThatNoTaskNeedsAreNotCarriedOutYet(t *testing.T) {
 	two := planOf(t, 1, taskNeeding("b"), taskNeeding("a"))
 	if got := Sinks(two.Tasks); !reflect.DeepEqual(got, []string{"a", "b"}) {
 		t.Fatalf("Sinks(b, a) = %q, want [a b], in id order", got)
 	}
 	want := []Refusal{
-		{Task: "", Reason: "the plan has 2 tasks (b, a), and this release runs one task for each issue." + yet},
 		{Task: "", Reason: "the plan has 2 tasks that no task needs (a, b), and the work of each would merge by itself." + yet},
 	}
-	if got := Supported(two); !reflect.DeepEqual(got, want) {
+	if got := Supported(two, builtin); !reflect.DeepEqual(got, want) {
 		t.Fatalf("Supported(a, b) =\n%+v\nwant\n%+v", got, want)
 	}
 
@@ -178,13 +266,7 @@ func TestTwoTasksThatNoTaskNeedsAreNotCarriedOutYet(t *testing.T) {
 	if got := Sinks(aToE.Tasks); !reflect.DeepEqual(got, []string{"e"}) {
 		t.Fatalf("Sinks(the plan of tasks a to e) = %q, want [e]", got)
 	}
-	got := Supported(aToE)
-	if len(got) == 0 || got[0].Reason != "the plan has 5 tasks (a, b, c, d, e), and this release runs one task for each issue."+yet {
-		t.Fatalf("Supported(the plan of tasks a to e) = %+v, want the refusal of its five tasks first", got)
-	}
-	for _, refusal := range got {
-		if strings.Contains(refusal.Reason, "no task needs") {
-			t.Fatalf("Supported(the plan of tasks a to e) = %+v, want no refusal of tasks that no task needs: e alone is one", got)
-		}
+	if got := Supported(aToE, builtin); len(got) != 0 {
+		t.Fatalf("Supported(the plan of tasks a to e) = %+v, want none: e alone is a task that no task needs", got)
 	}
 }

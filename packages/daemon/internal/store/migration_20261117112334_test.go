@@ -47,7 +47,7 @@ func TestAPullRequestRecordedBefore20261117112334HasNoStatuses(t *testing.T) {
 	var pr *record.PullRequest
 	if err := Transact(ctx, store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		var err error
-		pr, err = record.NewStore().PullRequest(ctx, tx, "LEGION-208")
+		pr, err = record.NewStore().MergePullRequest(ctx, tx, "LEGION-208")
 		return err
 	}); err != nil || pr == nil {
 		t.Fatalf("read the pull request after 20261117112334: %+v, %v", pr, err)

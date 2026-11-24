@@ -245,7 +245,7 @@ func TestTheImageProbeReadsEveryWorkflowRolesMemoryOverlays(t *testing.T) {
 		t.Fatalf("the probe of a deployment that names no overlay at all is told %q", base)
 	}
 	roleOnly := slices.Clone(base)
-	for _, role := range roleConfigRoles {
+	for _, role := range memoryRuntime(t, nil).roleConfigRoles() {
 		if files := roleFiles[role]; len(files) > 0 {
 			roleOnly = append(roleOnly, bootprobe.RoleConfigFilesFlag, bootprobe.RoleConfigFilesValue(string(role), files))
 		}

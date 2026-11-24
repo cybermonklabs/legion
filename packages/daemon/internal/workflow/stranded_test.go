@@ -30,7 +30,24 @@ type strandedStore struct {
 	roleRunsCalls int
 }
 
-func (s *strandedStore) Issues(context.Context, pgx.Tx) ([]record.Issue, error) { return s.issues, nil }
+// Issues is the fixture's issues as the store reads them: each has no plan rows, so one that names
+// no running steps reads the one step of its phase (record.RunningOf), at the phase and the hold
+// the test left it with.
+func (s *strandedStore) Issues(context.Context, pgx.Tx) ([]record.Issue, error) {
+	issues := make([]record.Issue, len(s.issues))
+	for i, issue := range s.issues {
+		if issue.Running == nil {
+			issue.Running = record.RunningOf(issue, false, nil)
+		}
+		issues[i] = issue
+	}
+	return issues, nil
+}
+
+// StoppedStep is the store's answer for an issue of no plan rows: no step a stop ended.
+func (s *strandedStore) StoppedStep(context.Context, pgx.Tx, record.Issue) (record.RunningStep, bool, error) {
+	return record.RunningStep{}, false, nil
+}
 
 func (s *strandedStore) Slots(context.Context, pgx.Tx) ([]record.Slot, error) { return s.slots, nil }
 

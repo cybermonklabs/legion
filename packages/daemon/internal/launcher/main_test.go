@@ -8,6 +8,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
+	"github.com/sjawhar/legion/daemon/internal/testpg"
 )
 
 // helperChildVariables are the markers this package's helper children are re-executed with: the
@@ -67,6 +68,9 @@ var guardKeep []string
 // argv a shim has (roleShim). The test framework would read that argument as no test flag and run
 // every test, so TestMain runs the stand-in before anything else, and only in a process that
 // carries the test's marker (sessionPeerShim).
+//
+// The tests run under testpg.Main, which drops the migrated template database that a test of a
+// restore through the daemon's store clones (testpg.CloneStore).
 func TestMain(m *testing.M) {
 	for name, helper := range mainHelpers {
 		if os.Getenv(name) != "" {
@@ -89,7 +93,7 @@ func TestMain(m *testing.M) {
 			os.Exit(1)
 		}
 	}
-	os.Exit(m.Run())
+	os.Exit(testpg.Main("legion_launcher_test", m.Run))
 }
 
 // No test of this package can reach the workspace of the pod it runs in. The first two cases fail

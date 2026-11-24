@@ -315,11 +315,12 @@ func (w *workflowRuntime) mergeStateWait() time.Duration {
 // readMergeState reads issue's pull request from GitHub once (one GET /pulls/{number}) and applies
 // what it says about merging that head into its base (applyMergeability, the same fact the
 // per-issue read applies), answering GitHub's merge state as that read found it and the head the
-// record held the pull request at when it read. An issue whose record holds no open pull request is
-// read from nothing and answers record.MergeStateUnread and no head: the state belongs to a pull
-// request, and there is none. So does one whose record stands at another head than head, when head
-// is not "": a read after the ladder names the head it follows (followMergeState), and a climb
-// names none and reads the head the record holds.
+// record held the pull request at when it read. The pull request is the issue's open one at head,
+// whichever task's it is, and for a head of "" the one the per-issue read judges
+// (issueRecords.pullRequest): a read after the ladder names the head it follows
+// (followMergeState), and a climb names none and reads the head the record holds. An issue whose
+// record holds no such open pull request is read from nothing and answers record.MergeStateUnread
+// and no head: the state belongs to a pull request, and there is none.
 //
 // The fact names the head GitHub answered for, which the engine records the answer against only
 // while the record still stands at it (workflow's mergeability): this ladder reads GitHub with no
@@ -327,11 +328,15 @@ func (w *workflowRuntime) mergeStateWait() time.Duration {
 // answers is GitHub's state for the head it read, and the push the record took is itself a fact
 // that asks for a read of the head it left (workflow's askMergeState).
 func (w *workflowRuntime) readMergeState(ctx context.Context, issue, head string) (record.MergeState, string, error) {
-	_, recorded, err := issueRecord(ctx, w.pool, w.records, issue)
+	stored, err := issueRecord(ctx, w.pool, w.records, issue, "")
 	if err != nil {
 		return record.MergeStateUnread, "", err
 	}
-	if recorded == nil || recorded.State != record.PullRequestOpen || (head != "" && recorded.HeadSHA != head) {
+	recorded := stored.pullRequest()
+	if head != "" {
+		recorded = stored.openAt(head)
+	}
+	if recorded == nil || recorded.State != record.PullRequestOpen {
 		return record.MergeStateUnread, "", nil
 	}
 	read, cancel := context.WithTimeout(ctx, issueRead)

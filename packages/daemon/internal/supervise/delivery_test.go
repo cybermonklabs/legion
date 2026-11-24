@@ -661,7 +661,7 @@ func TestALateForeignTurnResendsTheTaskUnlessTheIssueLeftThePhase(t *testing.T) 
 			// The issue is in the task's phase while it is delivered; by the time the late turn
 			// ends the daemon may have advanced past it.
 			holds := true
-			h.deps.PhaseHolds = func(context.Context, string, phase.Phase, uint64) (bool, error) { return holds, nil }
+			h.deps.PhaseHolds = func(context.Context, Claim, Delivery) (bool, error) { return holds, nil }
 			c := queuedClaim()
 			if err := h.store.PutClaim(h.ctx, c); err != nil {
 				t.Fatal(err)
@@ -1276,7 +1276,7 @@ func TestDroppingATaskForItsPhaseAlsoDropsTheQuestionARestartLeft(t *testing.T) 
 		t.Fatalf("seed the restored delivery: %v", err)
 	}
 	h.conns.Register(testToken, h.conn)
-	h.deps.PhaseHolds = func(context.Context, string, phase.Phase, uint64) (bool, error) { return false, nil }
+	h.deps.PhaseHolds = func(context.Context, Claim, Delivery) (bool, error) { return false, nil }
 	h.start(restored)
 
 	// The issue has left the phase the restored task was queued for: it is dropped.
@@ -1312,7 +1312,7 @@ func TestDroppingATaskAsksWhetherTheAgentIsStillInATurn(t *testing.T) {
 	}
 	h.conns.Register(testToken, h.conn)
 	h.conn.SetStreaming(true) // the agent is in a turn an earlier daemon saw start
-	h.deps.PhaseHolds = func(context.Context, string, phase.Phase, uint64) (bool, error) { return false, nil }
+	h.deps.PhaseHolds = func(context.Context, Claim, Delivery) (bool, error) { return false, nil }
 	h.start(restored)
 
 	h.must(RequestReady{Claim: testToken, Generation: restored.Generation, Session: session})

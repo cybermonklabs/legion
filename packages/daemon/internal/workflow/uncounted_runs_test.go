@@ -183,7 +183,7 @@ func TestTheBootOpensTheRunOfEachIssueInAStepNoStartCounted(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
 			stepRoot(t, pool, phase.Implementing)
-			move(t, pool, stepEngine(nil), "LEGION-208", TriggerImplementationReady, "", record.PhaseRow{})
+			move(t, pool, stepEngine(nil), "LEGION-208", TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{})
 			raised := stepClock.Add(30 * time.Minute)
 			execSQL(t, pool, `update phases set entry_raised_at = $1 where issue = 'LEGION-208' and role = 'tester'`, raised)
 			if tc.uncounted {
@@ -235,7 +235,7 @@ func TestTheBootOpensTheRunOfEachIssueInAStepNoStartCounted(t *testing.T) {
 				t.Fatalf("a second boot opened %d runs and left the row %+v; want none and the row unchanged", again, readStepStartRow(t, pool, "LEGION-208", testing3))
 			}
 
-			move(t, pool, stepEngine(nil), "LEGION-208", TriggerTesterPassed, "", record.PhaseRow{})
+			move(t, pool, stepEngine(nil), "LEGION-208", TriggerTesterPassed, record.TaskPlace{}, record.PhaseRow{})
 			after := stepWrites(t, pool, "LEGION-208")[written:]
 			if len(after) != 2 {
 				t.Fatalf("writes after the move = %+v, want the end of the tester's run and the start of reviewing", after)

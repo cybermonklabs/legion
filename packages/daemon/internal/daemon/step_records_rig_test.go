@@ -139,7 +139,8 @@ func newStepRecordsRigWith(t *testing.T, proof liveProof, dispatch *scratchDispa
 
 // walkTitles is the title of each issue of a run, in order. Dispatch refuses a new issue whose
 // title is a near copy of an open one's (POSSIBLE_DUPLICATE), so no two share a word that counts.
-var walkTitles = []string{"One issue walks to done", "A second change rates its plan", "Third piece merges after its retro", "Fourth job refused unrated"}
+var walkTitles = []string{"One issue walks to done", "A second change rates its plan", "Third piece merges after its retro", "Fourth job refused unrated",
+	"Fifth ticket runs reordered"}
 
 // on moves the walk's steps to issue key of the run.
 func (r *stepRecordsRig) on(key string) {
@@ -740,8 +741,9 @@ type stepClaimant struct {
 	bootToken string
 	prompts   chan shimwire.Prompt
 	mu        sync.Mutex
-	// model is the model the agent's answers name, `<provider>/<model>`: stepRecordsModel until
-	// its test gives the agent another.
+	// model is the model the agent's answers name, as Oh My Pi's message_end names it: the model
+	// its launch's spec named (runtime.SpawnSpec.Model, a role of the deployment's own model), and
+	// stepRecordsModel for a launch that named none, until its test gives the agent another.
 	model string
 	// sh is the shim's connection to the daemon now running, which a restart replaces.
 	sh *shim
@@ -772,7 +774,11 @@ func (r *stepRecordsRig) workerOf(issue string, role claim.Role) *stepClaimant {
 	r.built.mu.Lock()
 	address := r.built.address
 	r.built.mu.Unlock()
-	c := &stepClaimant{r: r, token: token, issue: issue, tree: r.key, role: role, session: "ses_" + string(role) + "_" + randomSuffix(t)[:6], model: stepRecordsModel,
+	model := launch.Model
+	if model == "" {
+		model = stepRecordsModel
+	}
+	c := &stepClaimant{r: r, token: token, issue: issue, tree: r.key, role: role, session: "ses_" + string(role) + "_" + randomSuffix(t)[:6], model: model,
 		bootToken: launch.BootToken, sh: dialShim(t, address, launch.BootToken), prompts: make(chan shimwire.Prompt, 8)}
 	status, body := r.d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
 		BootToken: launch.BootToken, SessionID: c.session, OmpSessionFile: "/sessions/" + c.session + ".jsonl",
@@ -912,13 +918,15 @@ func (c *stepClaimant) send(frame shimwire.Frame) {
 
 // take waits for the daemon's next task of this claim and starts the turn that works it, its
 // model answering first: the claim's machine reads a connection's frames in order, so once the
-// turn's start shows the claim working, the answer before it has been read too.
-func (c *stepClaimant) take() {
+// turn's start shows the claim working, the answer before it has been read too. It answers the
+// prompt that carried the task, which a walk reads where it holds what the claim was told.
+func (c *stepClaimant) take() shimwire.Prompt {
 	c.r.t.Helper()
 	prompt := c.receive()
 	c.answer()
 	c.send(shimwire.AgentStart{DeliveryID: prompt.DeliveryID})
 	c.waitState(supervise.StateWorking)
+	return prompt
 }
 
 // receive waits for the daemon's next task of this claim, the prompt the pane has acknowledged
@@ -966,12 +974,17 @@ func (c *stepClaimant) waitState(state supervise.ClaimState) {
 	}
 }
 
-// answer is the agent's model (c.model, `<provider>/<model>`) answering, which Oh My Pi's
-// message_end names as message.provider and message.model.
+// answer is the agent's model answering, as Oh My Pi's message_end names it: c.model, the model its
+// launch's spec named, as message.provider and message.model. A model that names no provider, as a
+// role's `model` setting may (checker-model), is message.model alone, which the daemon records as
+// it is (superviseEvent).
 func (c *stepClaimant) answer() {
 	t := c.r.t
 	t.Helper()
-	provider, model, _ := strings.Cut(c.model, "/")
+	provider, model, named := strings.Cut(c.model, "/")
+	if !named {
+		provider, model = "", c.model
+	}
 	frame, err := json.Marshal(map[string]any{"type": "message_end", "message": map[string]any{"role": "assistant", "provider": provider, "model": model}})
 	if err != nil {
 		t.Fatal(err)
@@ -1140,6 +1153,6 @@ func (p stepRecordsPull) answer() string {
 	if p.merged {
 		state, merged, mergeable = "closed", true, "unknown"
 	}
-	return fmt.Sprintf(`{"number":%d,"state":%q,"merged":%t,"merge_commit_sha":%q,"mergeable":true,"mergeable_state":%q,"head":{"ref":%q,"sha":%q},"base":{"ref":"main"},"updated_at":"2026-11-17T00:00:00Z"}`,
-		p.number, state, merged, "merge-"+stepRecordsHead, mergeable, p.branch, stepRecordsHead)
+	return fmt.Sprintf(`{"number":%d,"state":%q,"merged":%t,"merge_commit_sha":%q,"mergeable":true,"mergeable_state":%q,"head":{"ref":%q,"sha":%q,"repo":{"full_name":%q}},"base":{"ref":"main"},"updated_at":"2026-11-17T00:00:00Z"}`,
+		p.number, state, merged, "merge-"+stepRecordsHead, mergeable, p.branch, stepRecordsHead, liveRepo)
 }

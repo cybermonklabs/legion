@@ -251,9 +251,7 @@ func idleRigLegionTool(t *testing.T, dir string) string {
 	path := filepath.Join(dir, "legion")
 	script := "#!/bin/sh\nexec " + shellQuote(self) + " -test.run='^TestIdleRigRoleProcess$' " +
 		"-test.timeout=0 -test.count=1 \"$@\"\n"
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatalf("write the rig's legion stand-in: %v", err)
-	}
+	writeExecutable(t, path, script, 0o755)
 	return path
 }
 
@@ -267,8 +265,6 @@ func shellQuote(value string) string {
 func idleRigAgentTool(t *testing.T, dir string) []string {
 	t.Helper()
 	path := filepath.Join(dir, "omp")
-	if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
-		t.Fatalf("write the rig's omp stand-in: %v", err)
-	}
+	writeExecutable(t, path, "#!/bin/sh\nexit 0\n", 0o755)
 	return []string{path}
 }

@@ -245,19 +245,20 @@ func TestLegionAgentRoutesRefuseWhatTheRegistryDoesNotTake(t *testing.T) {
 	}
 }
 
-// A session belongs to one issue and role for good: a write moving it, alone or in a batch, is a
-// 409 naming what it is recorded for, and nothing changes.
+// A session belongs to one claim of one issue for good, whatever role its agent's step is on: a
+// write moving it to another issue or claim, alone or in a batch, is a 409 naming what it is
+// recorded for, and nothing changes.
 func TestLegionAgentRoutesRefuseMovingASession(t *testing.T) {
 	l := newLegionListener(t, setupPublishTestClient(t))
 	l.want(t, http.StatusOK, http.MethodPut, "/v1/legion/agents/sessions/ses-tester", legionEntry("ses-tester", "INFRA-448", "tester", "2026-10-26T03:15:00Z"))
 	got := l.want(t, http.StatusConflict, http.MethodPut, "/v1/legion/agents/sessions/ses-tester", legionEntry("ses-tester", "INFRA-449", "tester", "2026-10-26T03:15:00Z"))
-	if strings.TrimSpace(got) != `{"error":"legion agent ses-tester is recorded for INFRA-448 tester"}` {
+	if strings.TrimSpace(got) != `{"error":"legion agent ses-tester is recorded for INFRA-448 as legion-infra-infra-448-tester"}` {
 		t.Fatalf("409 body = %s", got)
 	}
 	got = l.want(t, http.StatusConflict, http.MethodPut, "/v1/legion/agents", `{"entries":[`+
 		legionEntry("ses-reviewer", "INFRA-448", "reviewer", "2026-10-26T04:00:00Z")+`,`+
-		legionEntry("ses-tester", "INFRA-448", "reviewer", "2026-10-26T03:15:00Z")+`]}`)
-	if !strings.Contains(got, "entries[1]: legion agent ses-tester is recorded for INFRA-448 tester") {
+		legionEntry("ses-tester", "INFRA-449", "tester", "2026-10-26T03:15:00Z")+`]}`)
+	if !strings.Contains(got, "entries[1]: legion agent ses-tester is recorded for INFRA-448 as legion-infra-infra-448-tester") {
 		t.Fatalf("batch 409 body = %s", got)
 	}
 	if ids := legionIDs(t, l.want(t, http.StatusOK, http.MethodGet, "/v1/legion/agents?issue=INFRA-448", "")); !slices.Equal(ids, []string{"ses-tester"}) {
@@ -337,7 +338,7 @@ func TestABatchFailureAnswersItsOwnStatusWithWhatItWrote(t *testing.T) {
 	}{
 		{"a key NATS refuses", fmt.Errorf("write legion agent key role.x: %w", bus.ErrInvalidSubject), http.StatusBadRequest, ""},
 		{"a key too long", fmt.Errorf("write legion agent key role.x: %w", bus.ErrTooLarge), http.StatusRequestEntityTooLarge, ""},
-		{"a session another write claimed", &legionagents.ConflictError{SessionID: "ses-raced", Issue: "INFRA-448", Role: "tester"}, http.StatusConflict, ""},
+		{"a session another write claimed", &legionagents.ConflictError{SessionID: "ses-raced", Issue: "INFRA-448", RoleToken: "legion-infra-infra-448-tester"}, http.StatusConflict, ""},
 		{"a write the bucket did not answer", errors.New("nats: timeout"), http.StatusServiceUnavailable, "1"},
 	} {
 		recorder := httptest.NewRecorder()

@@ -17,13 +17,13 @@ import (
 func walkTodaysLineTo(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, at phase.Phase) {
 	t.Helper()
 	firstStep(t, pool, engine, key)
-	move(t, pool, engine, key, TriggerPlannerCompleted, "", record.PhaseRow{})
+	move(t, pool, engine, key, TriggerPlannerCompleted, record.TaskPlace{}, record.PhaseRow{})
 	if at == phase.Held {
 		holdFrom(t, pool, key, phase.Implementing)
 	} else {
-		move(t, pool, engine, key, TriggerImplementationReady, "", record.PhaseRow{})
-		move(t, pool, engine, key, TriggerTesterPassed, "", record.PhaseRow{})
-		move(t, pool, engine, key, TriggerReviewApproved, "", record.PhaseRow{})
+		move(t, pool, engine, key, TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{})
+		move(t, pool, engine, key, TriggerTesterPassed, record.TaskPlace{}, record.PhaseRow{})
+		move(t, pool, engine, key, TriggerReviewApproved, record.TaskPlace{}, record.PhaseRow{})
 	}
 	if got := issueOf(t, pool, engine, key); got.Phase != at {
 		t.Fatalf("premise: %s stands in %s after its walk, want %s", key, got.Phase, at)
@@ -66,10 +66,10 @@ func TestAnArchitectsRequestOnARunWithNoPlanRowsIsJudgedOnTheRecordItsFactReads(
 		}
 		if request.at == phase.Accepting {
 			windows = append(windows, window{"a move back sent the work back and accepting started again in the same generation", func(t *testing.T, pool *pgxpool.Pool, engine *Engine) {
-				move(t, pool, engine, "LEGION-208", TriggerBackward, phase.Implementing, record.PhaseRow{})
-				move(t, pool, engine, "LEGION-208", TriggerImplementationReady, "", record.PhaseRow{})
-				move(t, pool, engine, "LEGION-208", TriggerTesterPassed, "", record.PhaseRow{})
-				move(t, pool, engine, "LEGION-208", TriggerReviewApproved, "", record.PhaseRow{})
+				move(t, pool, engine, "LEGION-208", TriggerBackward, stepPlace(2), record.PhaseRow{})
+				move(t, pool, engine, "LEGION-208", TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{})
+				move(t, pool, engine, "LEGION-208", TriggerTesterPassed, record.TaskPlace{}, record.PhaseRow{})
+				move(t, pool, engine, "LEGION-208", TriggerReviewApproved, record.TaskPlace{}, record.PhaseRow{})
 			}, codes[request.name].entry, func(fact intake.Fact, _ record.Issue, nowEntry record.StepEntry) *intake.Refusal {
 				return fact.(intake.EnteredRequest).StaleEntry(nowEntry)
 			}})
@@ -82,7 +82,7 @@ func TestAnArchitectsRequestOnARunWithNoPlanRowsIsJudgedOnTheRecordItsFactReads(
 				// reviewer's approval ends into accepting, or held from implementing.
 				if request.at == phase.Accepting {
 					stepRoot(t, pool, phase.Reviewing)
-					move(t, pool, engine, "LEGION-208", TriggerReviewApproved, "", record.PhaseRow{})
+					move(t, pool, engine, "LEGION-208", TriggerReviewApproved, record.TaskPlace{}, record.PhaseRow{})
 				} else {
 					stepRoot(t, pool, phase.Implementing)
 					holdFrom(t, pool, "LEGION-208", phase.Implementing)

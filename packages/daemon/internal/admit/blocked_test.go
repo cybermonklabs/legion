@@ -88,8 +88,8 @@ func TestABlockerThatIsNotDoneHoldsTheRoot(t *testing.T) {
 	for _, status := range []string{"backlog", "icebox", "in_progress", "todo"} {
 		t.Run("a blocker in "+status, func(t *testing.T) {
 			pool := migratedPool(t)
-			seedWaiting(t, pool, "LEGION-ROOT", "A")
-			seedMirror(t, pool, "LEGION-ROOT", "todo", "LEGION-BLOCKER")
+			seedWaiting(t, pool, "LEGION-758", "A")
+			seedMirror(t, pool, "LEGION-758", "todo", "LEGION-BLOCKER")
 			seedMirror(t, pool, "LEGION-BLOCKER", status)
 
 			tick(t, pool, quiet(t, 1), "tick")
@@ -99,8 +99,8 @@ func TestABlockerThatIsNotDoneHoldsTheRoot(t *testing.T) {
 	}
 	t.Run("a blocker the daemon has no record of", func(t *testing.T) {
 		pool := migratedPool(t)
-		seedWaiting(t, pool, "LEGION-ROOT", "A")
-		seedMirror(t, pool, "LEGION-ROOT", "todo", "LEGION-UNKNOWN")
+		seedWaiting(t, pool, "LEGION-758", "A")
+		seedMirror(t, pool, "LEGION-758", "todo", "LEGION-UNKNOWN")
 
 		tick(t, pool, quiet(t, 1), "tick")
 
@@ -118,11 +118,11 @@ func TestTheRootIsAdmittedOnItsLastBlockersCloseExactlyAsAnUnblockedOneIs(t *tes
 	seed := func(t *testing.T, pool *pgxpool.Pool, blockerStatus string) {
 		t.Helper()
 		seedSlotted(t, pool, "LEGION-OTHER", "A")
-		seedWaiting(t, pool, "LEGION-ROOT", "B")
+		seedWaiting(t, pool, "LEGION-758", "B")
 		putIssue(t, pool, record.Issue{Key: "LEGION-BLOCKER", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
 			Project: testProject, Title: "the blocker", Tree: "LEGION-OTHER", Parent: new("LEGION-OTHER"), Phase: phase.Implementing,
 			Generation: 1, Status: blockerStatus, Rank: "C", LastDispatchSeq: 1})
-		seedMirror(t, pool, "LEGION-ROOT", "todo", "LEGION-BLOCKER")
+		seedMirror(t, pool, "LEGION-758", "todo", "LEGION-BLOCKER")
 		seedMirror(t, pool, "LEGION-BLOCKER", blockerStatus)
 	}
 
@@ -144,7 +144,7 @@ func TestTheRootIsAdmittedOnItsLastBlockersCloseExactlyAsAnUnblockedOneIs(t *tes
 	if got, want := effects(t, subject), effects(t, control); !reflect.DeepEqual(got, want) {
 		t.Fatalf("the admission of the unblocked root wrote %#v, want the rows a control admission writes, %#v", got, want)
 	}
-	if got, want := withoutMovement(issue(t, subject, "LEGION-ROOT")), withoutMovement(issue(t, control, "LEGION-ROOT")); !reflect.DeepEqual(got, want) {
+	if got, want := withoutMovement(issue(t, subject, "LEGION-758")), withoutMovement(issue(t, control, "LEGION-758")); !reflect.DeepEqual(got, want) {
 		t.Fatalf("the admitted root = %#v, want the record a control admission leaves, %#v", got, want)
 	}
 	if got, want := slots(t, subject), slots(t, control); !reflect.DeepEqual(got, want) {
@@ -160,7 +160,7 @@ func TestTheRootIsAdmittedOnItsLastBlockersCloseExactlyAsAnUnblockedOneIs(t *tes
 // leaves the root waiting on a blocker that is not done — before it closed. Neither event records
 // the blocker.
 func TestTheCloseOfABlockerLegionKeepsNoRecordOfAdmitsTheRoot(t *testing.T) {
-	const root, blocker = "LEGION-ROOT", "LEGION-OUTSIDE"
+	const root, blocker = "LEGION-758", "LEGION-OUTSIDE"
 	moved := func(seq int64, status string) intake.DispatchIssue {
 		return intake.DispatchIssue{Key: blocker, ResolvedRepo: "acme/widgets", Seq: seq, Type: "issue.updated",
 			Status: status, Title: "someone else's work", Rank: "Z"}
@@ -202,7 +202,7 @@ func TestTheCloseOfABlockerLegionKeepsNoRecordOfAdmitsTheRoot(t *testing.T) {
 // after that promotion: with one slot the admitted root takes it and the controller is not woken
 // for a slot that is no longer free; with two the slot still free after it wakes the controller.
 func TestEveryFactOfAnIssueLegionKeepsNoRecordOfIsALook(t *testing.T) {
-	const root, blocker, observed = "LEGION-ROOT", "LEGION-BLOCKER", "LEGION-OUTSIDE"
+	const root, blocker, observed = "LEGION-758", "LEGION-BLOCKER", "LEGION-OUTSIDE"
 	todoNotice := []effect{{kind: record.OutboxKindControllerNotice, issue: observed, payload: record.ControllerNotice{Kind: record.TodoNotice}}}
 	for _, tc := range []struct {
 		name    string
@@ -253,11 +253,11 @@ func TestEveryFactOfAnIssueLegionKeepsNoRecordOfIsALook(t *testing.T) {
 func TestABlockerAddedToAWaitingRootStopsItAndTakenOffLetsItThrough(t *testing.T) {
 	pool := migratedPool(t)
 	admission := quiet(t, 1)
-	seedWaiting(t, pool, "LEGION-ROOT", "A")
-	seedMirror(t, pool, "LEGION-ROOT", "todo")
+	seedWaiting(t, pool, "LEGION-758", "A")
+	seedMirror(t, pool, "LEGION-758", "todo")
 	root := func(seq int64, waits ...string) intake.DispatchIssue {
-		return intake.DispatchIssue{Key: "LEGION-ROOT", ResolvedRepo: "acme/widgets", Seq: seq, Type: "issue.updated",
-			Status: "todo", Title: "LEGION-ROOT", Rank: "A", HandedOver: handed, Blockers: waits}
+		return intake.DispatchIssue{Key: "LEGION-758", ResolvedRepo: "acme/widgets", Seq: seq, Type: "issue.updated",
+			Status: "todo", Title: "LEGION-758", Rank: "A", HandedOver: handed, Blockers: waits}
 	}
 
 	applyMirrored(t, pool, admission, "blocked", root(2, "LEGION-UNKNOWN"), engineStub{})
@@ -265,7 +265,7 @@ func TestABlockerAddedToAWaitingRootStopsItAndTakenOffLetsItThrough(t *testing.T
 	assertEffects(t, pool, nil)
 
 	applyMirrored(t, pool, admission, "unblocked", root(3), engineStub{})
-	assertSlots(t, pool, []record.Slot{{Issue: "LEGION-ROOT", Index: 0, AdmittedAt: fixedNow}})
+	assertSlots(t, pool, []record.Slot{{Issue: "LEGION-758", Index: 0, AdmittedAt: fixedNow}})
 }
 
 // A blocked root is still the live tree of its children: it keeps its place in the waiting line
@@ -274,19 +274,19 @@ func TestABlockerAddedToAWaitingRootStopsItAndTakenOffLetsItThrough(t *testing.T
 func TestAChildOfABlockedRootIsRecordedUnderItAndNotAsARootOfItsOwn(t *testing.T) {
 	pool := migratedPool(t)
 	admission := quiet(t, 1)
-	seedWaiting(t, pool, "LEGION-ROOT", "A")
-	seedMirror(t, pool, "LEGION-ROOT", "todo", "LEGION-UNKNOWN")
+	seedWaiting(t, pool, "LEGION-758", "A")
+	seedMirror(t, pool, "LEGION-758", "todo", "LEGION-UNKNOWN")
 
 	applyMirrored(t, pool, admission, "child-todo", intake.DispatchIssue{
 		Key: "LEGION-CHILD", ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "todo",
-		Title: "a child", Parent: "LEGION-ROOT", Rank: "B"}, admission.engine)
+		Title: "a child", Parent: "LEGION-758", Rank: "B"}, admission.engine)
 
 	child := issue(t, pool, "LEGION-CHILD")
-	if child.Tree != "LEGION-ROOT" || child.Parent == nil || *child.Parent != "LEGION-ROOT" || child.Phase != phase.Admitted {
-		t.Fatalf("the child = tree %s parent %v in %s, want it recorded under LEGION-ROOT at admitted", child.Tree, child.Parent, child.Phase)
+	if child.Tree != "LEGION-758" || child.Parent == nil || *child.Parent != "LEGION-758" || child.Phase != phase.Admitted {
+		t.Fatalf("the child = tree %s parent %v in %s, want it recorded under LEGION-758 at admitted", child.Tree, child.Parent, child.Phase)
 	}
 	assertSlots(t, pool, nil)
-	assertWaiting(t, pool, []string{"LEGION-ROOT"})
+	assertWaiting(t, pool, []string{"LEGION-758"})
 }
 
 // A blocked root takes no slot, so the slot stands free: the controller is woken about it and may
@@ -472,7 +472,7 @@ func TestATreeTakenBackAfterItsLingerStartsAgainWhateverItsLinksSay(t *testing.T
 // like any other root, and the blocker it still waits on keeps it on the waiting line with no
 // slot. Its round trip out of the workflow must not turn it into a tree taken back.
 func TestABlockedRootThatLeftTheQueueAndCameBackIsStillChecked(t *testing.T) {
-	const root, blocker = "LEGION-ROOT", "LEGION-BLOCKER"
+	const root, blocker = "LEGION-758", "LEGION-BLOCKER"
 	pool := migratedPool(t)
 	admission := quiet(t, 1)
 	seedWaiting(t, pool, root, "A")
@@ -729,7 +729,7 @@ func TestATreeThatRanAndCameBackIsAdmittedOnTheMarkItsRunEarned(t *testing.T) {
 // is done. A waiting root and a held child with exactly the same links are held throughout, and
 // both are named, before the gate opens and after.
 func TestNoIssueIsBothUnstartedAndUnreported(t *testing.T) {
-	const slotted, waiting, child, blocker = "LEGION-208", "LEGION-ROOT", "LEGION-209", "LEGION-BLOCKER"
+	const slotted, waiting, child, blocker = "LEGION-208", "LEGION-758", "LEGION-209", "LEGION-BLOCKER"
 	pool := migratedPool(t)
 	admission := quiet(t, 1)
 	seedSlotted(t, pool, slotted, "A")

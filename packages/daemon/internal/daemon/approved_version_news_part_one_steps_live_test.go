@@ -412,7 +412,7 @@ func (r *versionNewsLive) publishMerged(member *versionNewsIssue) {
 	payload, err := json.Marshal(map[string]string{
 		"action": "closed", "kind": "pr", "repo": r.repo, "number": strconv.Itoa(member.pr), "merged": "true",
 		"merge_commit_sha": "merge-" + strings.ToLower(member.key), "head_sha": versionNewsHead(member.key), "base_ref": "main",
-		"head_ref": "legion/" + member.key, "title": "Approved version news " + member.key,
+		"head_ref": "legion/" + member.key, "head_repo": r.repo, "title": "Approved version news " + member.key,
 		"url": "https://github.com/" + r.repo + "/pull/" + strconv.Itoa(member.pr), "updated_at": time.Now().UTC().Format(time.RFC3339),
 	})
 	if err != nil {

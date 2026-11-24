@@ -64,9 +64,9 @@ func (h heldWork) stand(t *testing.T, pool *pgxpool.Pool, issue record.Issue) re
 	seedRecord(t, pool, func(tx pgx.Tx) error {
 		store := record.NewStore()
 		if h.reason == record.HoldForChildren {
-			return store.MoveTask(t.Context(), tx, issue.Key, issue.Generation, "a", record.TaskPlace{Kind: record.PlaceRetro}, record.TaskRunning)
+			return seedMove(t.Context(), tx, issue.Key, issue.Generation, "a", record.TaskPlace{Kind: record.PlaceRetro}, record.TaskRunning)
 		}
-		if err := store.MoveTask(t.Context(), tx, issue.Key, issue.Generation, "a", record.TaskPlace{Kind: record.PlaceStep, Position: 2}, record.TaskRunning); err != nil {
+		if err := seedMove(t.Context(), tx, issue.Key, issue.Generation, "a", record.TaskPlace{Kind: record.PlaceStep, Position: 2}, record.TaskRunning); err != nil {
 			return err
 		}
 		return store.StopTask(t.Context(), tx, issue.Key, issue.Generation, "a", "task a of "+issue.Key+" was stopped by its owner")
@@ -75,8 +75,8 @@ func (h heldWork) stand(t *testing.T, pool *pgxpool.Pool, issue record.Issue) re
 }
 
 // A stopped task and a parent held for its children stand in held, and each path that
-// brings an issue back to work picks the role it gives work to by the role of the issue's phase,
-// which held has none of (phase.RoleFor, OpenPhaseRole). So none of these paths gives either one
+// brings an issue back to work picks the steps it gives work to by the issue's running steps that
+// take work (OpenStepsOf), which a held issue has none of. So none of these paths gives either one
 // work: the ready of a claim (readyWorkerTask), the boot's resume by rule (booted, through
 // suspendedPhaseOwners), the silence repair (workerSilent, through phaseWorkerRecord), and the CI
 // settlement's wake of a released pod (wakeOnSettlement). The fifth path, a re-admission's

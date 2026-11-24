@@ -36,6 +36,10 @@ The root's architect ran out of launches or prompts. When the root's `phase` is 
 
 The daemon ended a stalled turn of the tree's architect, took the turn off its claim, or took back its task without ending the turn; the notice says what became of the process and what the owed task waits on. Do nothing, unless it names the failed end (its `worker-died` follows) or a stop the runtime did not confirm, which is a finding for a person, as are repeated stalls of one architect.
 
+## `pod-wait-held`
+
+The start of `role` waits for the issue's pod, which was made before the deployment defined the role of that start's step or the slot of its claim (a keyed agent's slot is the role of its first step; under `idle_minutes: 0` the `reason` names which), and nothing ends the wait until an operator acts: the daemon replaces such a pod only through its update round or its release, and neither comes. When `reason` names claims an operator suspended, the daemon releases no pod while that operator holds a claim of it: `dispatch ask` the operator who suspended the claim whether to resume it or stop it. When `reason` says the idle release is off (`idle_minutes: 0`) and no role runs in the pod, no update round opens over it: `dispatch ask` the operator what to do, quoting `reason`, which names the pod, the waiting role and that the pod's disk can hold work a role did not push. Never propose that anyone delete the pod. The daemon tells you once for each such wait.
+
 ## `provider-errors`
 
 Six turns of `role` in a row ended in a provider error; the daemon keeps prompting. Name the run and its model in the day's report, and `envoy_publish` the key, role and reason to the architect that owns the issue (for a child's own architect, the one above it). When one claim stays stuck, `compact` it; `fresh_session` it only when a later notice says it is still refused. A dead role (`CLAIM_NOT_RUNNING`) takes `fresh_session`.

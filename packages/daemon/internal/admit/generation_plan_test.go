@@ -510,6 +510,19 @@ func TestAPlanGivenBeforeTheIssueIsRecordedWaitsThroughTheRootsReadmission(t *te
 			pool := migratedPool(t)
 			admission := newAdmission(t, 2, slog.New(slog.NewTextHandler(io.Discard, nil)))
 			lingeringRoot(t, pool)
+			// Each role of the root ran, so each holds a stored claim: the linger's close writes one
+			// row for each stored claim of each member (the workflow's lingerExpired).
+			for _, role := range claim.Roles {
+				token, err := claim.NewToken("legion", pathsRoot, role)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := pool.Exec(context.Background(), `insert into claims (token, project, tree, issue, role, generation, session, session_file,
+					state, launch_failures, prompt_failures, prompt_retires, uncertain_streak)
+					values ($1, 'legion', $2, $2, $3, 1, '', '', 'suspended', 0, 0, 0, 0)`, string(token), pathsRoot, string(role)); err != nil {
+					t.Fatalf("store the %s's claim of %s: %v", role, pathsRoot, err)
+				}
+			}
 			var waiting *record.StoredPlan
 			if tc.given {
 				waiting = seedOwnersPlan(t, pool, pathsChild, pathsRoot, 0, record.PlanTask{State: record.TaskWaiting})

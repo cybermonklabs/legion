@@ -24,3 +24,21 @@ func TestClaimIssueIsTheIssueTheClaimIsOn(t *testing.T) {
 		t.Errorf("ClaimIssue of a token no claim holds = %q, want a refusal", got)
 	}
 }
+
+// A claim's role is its stored role, the role of the step its agent does now, which is not the
+// name its token ends in for a keyed agent on a step of another role; a token no claim holds is
+// refused.
+func TestClaimRoleIsTheClaimsStoredRole(t *testing.T) {
+	ctx := context.Background()
+	s := migratedStore(t)
+	if err := s.PutClaim(ctx, supervise.Claim{Token: "legion-legion-legion-209-implementer", Project: "legion", Tree: "LEGION-208", Issue: "LEGION-209",
+		Role: claim.RoleTester, State: supervise.StateIdle}); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := s.ClaimRole(ctx, "legion-legion-legion-209-implementer"); err != nil || got != claim.RoleTester {
+		t.Errorf("ClaimRole = %q, %v; want tester", got, err)
+	}
+	if got, err := s.ClaimRole(ctx, "legion-legion-legion-999-implementer"); err == nil {
+		t.Errorf("ClaimRole of a token no claim holds = %q, want a refusal", got)
+	}
+}

@@ -328,12 +328,12 @@ func writeFreshTree(task *strings.Builder, start ArchitectStart) {
 // has already ended (PhaseFinished: merging, its pull request merged) starts no worker: the
 // promotion that opens the root's tree passes it over (admit's startMidPhaseMembers) and the merge
 // ended the work, and the root stands in it until the rest of its tree has left the workflow,
-// when the daemon closes it (closeMerged, closeAwaitingMerge). Otherwise it turns on the role
-// that works the phase (phase.RoleFor): the worker of a phase a worker works is started by the
-// daemon — by that promotion where the carry put the root there, by the transition that moved it
-// where it moved on — accepting is the architect's own phase, and a phase no role works, which is
-// held or a wait on a person, starts no worker until the architect retries it or the person
-// answers.
+// when the daemon closes it (closeMerged, closeAwaitingMerge). Otherwise it turns on the running
+// steps of the root at that phase (record.Issue.RunningAt: at step the root's running steps of the
+// roles its plan names): the worker of a step a worker works is started by the daemon — by that
+// promotion where the carry put the root there, by the transition that moved it where it moved on
+// — accepting is the architect's own phase, and a phase no step runs at, which is held or a wait
+// on a person, starts no worker until the architect retries it or the person answers.
 func writeCarriedPhase(task *strings.Builder, start ArchitectStart) {
 	gate := ", and that hand-over brought no design gate"
 	if start.GateCarried {
@@ -348,10 +348,11 @@ func writeCarriedPhase(task *strings.Builder, start ArchitectStart) {
 			"there until the rest of its tree has left the workflow, when the daemon closes it.")
 		return
 	}
-	switch phase.RoleFor(start.Root.Phase) {
-	case "":
+	running := start.Root.RunningAt(start.Root.Phase)
+	switch {
+	case len(running) == 0:
 		task.WriteString(" No worker works that phase, so the daemon starts none for it.")
-	case claim.RoleArchitect:
+	case running[0].Role == claim.RoleArchitect:
 		task.WriteString(" That phase is your own, so the daemon starts no worker for it.")
 	default:
 		task.WriteString(" The daemon starts that phase's own worker itself.")

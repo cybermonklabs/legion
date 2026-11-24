@@ -199,6 +199,13 @@ var settingsEmitted = map[string]string{
 	"Hook.Every":                                     "hooks[].every",
 	"Hook.Roles":                                     "hooks[].roles",
 	"Hook.PromptFile":                                "hooks[].prompt_file (the path alone, never the words the file holds)",
+	"Config.Roles":                                   "roles (a list in the file's order, each with its name)",
+	"Config.RoleTypes":                               "role_types",
+	"Role.Name":                                      "roles[].name (the mapping key the role is defined under)",
+	"Role.Type":                                      "roles[].type",
+	"Role.PromptFile":                                "roles[].prompt_file (the path alone, never the words the file holds)",
+	"Role.Model":                                     "roles[].model",
+	"Role.GitHubApp":                                 "roles[].github_app (`review` where the file names none)",
 }
 
 // settingsExcluded is every config field SettingsOf leaves out, by `<Type>.<Field>`, and why: a
@@ -343,13 +350,18 @@ var settingsForbiddenKeys = []string{
 // exercises is an exemption nobody has read.
 var settingsPathKeys = map[string]string{
 	"settings.hooks[].prompt_file": "the file a hook's words are read from, the deployment's own prose for its agents, carried as a path exactly as `instructions` is",
+	"settings.roles[].prompt_file": "the file a role of the deployment starts with as its prompt, the deployment's own prose for its agents, carried as a path exactly as a hook's `prompt_file` is",
 }
 
-// The maximal kubernetes file resolves to a settings block whose top-level, runtime.kubernetes and
-// github_apps.implement key sets are exactly the modelled ones, whose bytes carry none of the
-// planted secrets, sources, paths or pod pieces, no credential-shaped key and no null.
+// The maximal kubernetes file, with a role of the deployment and a type of its own appended,
+// resolves to a settings block whose top-level, runtime.kubernetes and github_apps.implement key
+// sets are exactly the modelled ones, whose bytes carry none of the planted secrets, sources, paths
+// or pod pieces, no credential-shaped key and no null. The role's prompt file is written beside
+// the file, since the loader reads it.
 func TestSettingsOfAKubernetesConfigurationNamesEveryKeyAndNoSecret(t *testing.T) {
-	settings := SettingsOf(settingsFixtureConfig(t))
+	settings := SettingsOf(loadSettingsFileWith(t, settingsFixtureFile+
+		"roles: {checker: {type: testing, prompt_file: checker.md, model: checker-model}}\nrole_types: [security]\n",
+		map[string]string{"checker.md": "You check the change.\n"}))
 	encoded, err := json.Marshal(settings)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
@@ -370,7 +382,7 @@ func TestSettingsOfAKubernetesConfigurationNamesEveryKeyAndNoSecret(t *testing.T
 		"worker_background_hours",
 		"pod_update_max_open_rounds", "pod_update_rounds_per_minute", "review_round_cap",
 		"controller", "capabilities", "worker_backends", "role_config_files", "repository_renames",
-		"hooks",
+		"hooks", "roles", "role_types",
 	}
 	top := keysOf(t, encoded)
 	assertKeys(t, "settings", top, wantTop)
@@ -411,6 +423,25 @@ func TestSettingsOfAKubernetesConfigurationNamesEveryKeyAndNoSecret(t *testing.T
 	assertKeys(t, "settings.projects.WIDGETS", keysOf(t, projects["WIDGETS"]), []string{
 		"slack_channels", "memory", "experiments", "production_check", "default_steps", "deploys",
 	})
+	// The role rides as one entry of a list in the file's order, with its name, and its prompt
+	// file as the loader resolved it beside the file; the type rides as the file writes it.
+	var roles []json.RawMessage
+	if err := json.Unmarshal(top["roles"], &roles); err != nil || len(roles) != 1 {
+		t.Fatalf("settings.roles = %s (%v), want one role", top["roles"], err)
+	}
+	role := keysOf(t, roles[0])
+	assertKeys(t, "settings.roles[0]", role, []string{"name", "type", "model", "github_app", "prompt_file"})
+	for key, want := range map[string]string{"name": `"checker"`, "type": `"testing"`, "model": `"checker-model"`, "github_app": `"review"`} {
+		if got := string(role[key]); got != want {
+			t.Errorf("settings.roles[0].%s = %s, want %s", key, got, want)
+		}
+	}
+	if got := string(role["prompt_file"]); !strings.HasSuffix(got, `/checker.md"`) || !strings.HasPrefix(got, `"/`) {
+		t.Errorf("settings.roles[0].prompt_file = %s, want the absolute path of checker.md beside the file", got)
+	}
+	if got := string(top["role_types"]); got != `["security"]` {
+		t.Errorf("settings.role_types = %s, want [\"security\"]", got)
+	}
 
 	// (c) Nothing planted reaches the wire, and no key of a credential's shape does either.
 	for _, planted := range settingsFixturePlanted {

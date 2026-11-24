@@ -38,9 +38,9 @@ func TestAStepTheEarlierReleaseStartedEndsInARecordOfItsOwn(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
 			stepRoot(t, pool, phase.Implementing)
-			move(t, pool, stepEngine(nil), "LEGION-208", TriggerImplementationReady, "", record.PhaseRow{})
+			move(t, pool, stepEngine(nil), "LEGION-208", TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{})
 			if !tc.open {
-				move(t, pool, stepEngine(nil), "LEGION-208", TriggerTesterFailed, "", record.PhaseRow{})
+				move(t, pool, stepEngine(nil), "LEGION-208", TriggerTesterFailed, record.TaskPlace{}, record.PhaseRow{})
 			}
 			before := len(stepWrites(t, pool, "LEGION-208"))
 			// The rollback's moment is the database's clock when the way back runs.
@@ -59,11 +59,12 @@ func TestAStepTheEarlierReleaseStartedEndsInARecordOfItsOwn(t *testing.T) {
 					if err != nil {
 						return err
 					}
-					w, err := engine.walk(ctx, tx, *issue)
+					s, err := firstScope(ctx, tx, engine, *issue)
 					if err != nil {
 						return err
 					}
-					return engine.recordPass(ctx, tx, *issue, w.Task, phase.Testing, phase.Implementing, nil)
+					_, err = engine.recordPass(ctx, tx, *issue, s.walk.Task, phase.Testing, phase.Implementing, nil)
+					return err
 				})
 			}
 			execSQL(t, pool, `update issues set phase = 'testing' where key = 'LEGION-208'`)
@@ -89,7 +90,7 @@ func TestAStepTheEarlierReleaseStartedEndsInARecordOfItsOwn(t *testing.T) {
 			}
 
 			before = len(stepWrites(t, pool, "LEGION-208"))
-			move(t, pool, stepEngine(nil), "LEGION-208", TriggerTesterPassed, "", record.PhaseRow{})
+			move(t, pool, stepEngine(nil), "LEGION-208", TriggerTesterPassed, record.TaskPlace{}, record.PhaseRow{})
 			after := stepWrites(t, pool, "LEGION-208")[before:]
 			// The run this release counted has its end; nothing after the roll forward names it.
 			for _, w := range after {
@@ -122,7 +123,7 @@ func TestAMembersMergeRunsOnThroughARootReadmittedAcrossARollback(t *testing.T) 
 	seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-209", Repo: "sjawhar/legion", Number: 43,
 		Branch: "legion/LEGION-209", HeadSHA: "head-43", Failing: []string{}})
 	engine := stepEngine(nil)
-	move(t, pool, engine, "LEGION-209", TriggerRetroCompleted, "", record.PhaseRow{})
+	move(t, pool, engine, "LEGION-209", TriggerRetroCompleted, record.TaskPlace{}, record.PhaseRow{})
 	apply := applyFacts(t, pool, engine)
 	apply("park-root", intake.DispatchIssue{Key: root.Key, ResolvedRepo: "sjawhar/legion", Seq: 2, Type: "issue.updated",
 		Status: "backlog", Title: "root", Rank: "U"})

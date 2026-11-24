@@ -18,8 +18,9 @@ import (
 )
 
 // countedClaim is the implementer's claim of the issue these tests count, on its phases row and
-// live in the state they project, so the state shows the implementer's view.
-const countedClaim = "implement-claim"
+// live in the state they project, so the state shows the implementer's view. It is the claim each
+// implementer entry writes on that row (Engine.stepToken): the implementer's own token.
+const countedClaim = "legion-legion-legion-208-implementer"
 
 // countedReturns is what three reviews that requested changes and two failed tests count, at
 // review_round_cap 3 (stepEngine): five passes, three rounds, the cap told at 3, and each move
@@ -31,8 +32,8 @@ var countedReturns = record.ReturnCounts{Pass: 5, Rounds: 3, CapTold: 3,
 func testsFail(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, times int) {
 	t.Helper()
 	for range times {
-		move(t, pool, engine, key, TriggerImplementationReady, "", record.PhaseRow{})
-		move(t, pool, engine, key, TriggerTesterFailed, "", record.PhaseRow{})
+		move(t, pool, engine, key, TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{})
+		move(t, pool, engine, key, TriggerTesterFailed, record.TaskPlace{}, record.PhaseRow{})
 	}
 }
 
@@ -41,9 +42,9 @@ func testsFail(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, tim
 func reviewsReject(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, times int) {
 	t.Helper()
 	for range times {
-		move(t, pool, engine, key, TriggerImplementationReady, "", record.PhaseRow{})
-		move(t, pool, engine, key, TriggerTesterPassed, "", record.PhaseRow{})
-		move(t, pool, engine, key, TriggerReviewRejected, "", record.PhaseRow{})
+		move(t, pool, engine, key, TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{})
+		move(t, pool, engine, key, TriggerTesterPassed, record.TaskPlace{}, record.PhaseRow{})
+		move(t, pool, engine, key, TriggerReviewRejected, record.TaskPlace{}, record.PhaseRow{})
 	}
 }
 
@@ -113,7 +114,7 @@ func TestAnIssueWithPlanRowsCountsOnItsTask(t *testing.T) {
 	root := stepRoot(t, pool, phase.Admitted)
 	seedPhase(t, pool, record.PhaseRow{Issue: root.Key, Role: claim.RoleImplementer, Claim: countedClaim})
 	seedStepsPlan(t, pool, root.Key, root.Generation, "implementer", "tester", "reviewer")
-	move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
+	move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
 	testsFail(t, pool, engine, root.Key, 2)
 	reviewsReject(t, pool, engine, root.Key, 3)
 

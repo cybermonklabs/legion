@@ -39,7 +39,7 @@ import (
 )
 
 // steps names each write as the relaunch sequence reads: "create sandbox", "suspend", "run",
-// "create secret", "update secret", "delete secret", and "record addresses", the role's address
+// "create secret", "update secret", "delete secret", and "record addresses", the slot's address
 // record written before its generation starts (recordAddresses).
 func steps(t *testing.T, writes []action, sandboxName string) []string {
 	t.Helper()
@@ -71,10 +71,10 @@ func expectSteps(t *testing.T, got []string, want ...string) {
 	}
 }
 
-// A first launch creates the issue Sandbox Suspended, writes the init-only and every role-private
-// Secret — each role's holding its launcher token and the two gh files of its own App's token,
-// hosts.yml parsing back to that token — then sets it Running. The returned locator addresses only
-// the requested role process in the shared pod.
+// A first launch creates the issue Sandbox Suspended, writes the init-only and every slot's private
+// Secret — the launching claim's slot, here the tester's own, holding its launcher token and the
+// two gh files of the App of the role it launches as, hosts.yml parsing back to that token — then
+// sets it Running. The returned locator addresses only the requested process in the shared pod.
 func TestSpawnCreatesTheIssueSandboxAndRoleLocator(t *testing.T) {
 	g := newRig(t, nil)
 	spec := workerSpec(t)

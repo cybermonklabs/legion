@@ -76,7 +76,10 @@ func TestTheOutboxKeepsNothingForTheRoleOfAClaimThatDoesNotHoldItsSession(t *tes
 	hook := record.HookPrompt{Hook: "back-to-implementing", Role: claim.RoleTester, From: phase.Testing, To: phase.Implementing,
 		Count: 1, Counts: map[string]int{"testing-implementing": 1}, Prompt: "Read the tester's thread before you write anything."}
 	for i, issue := range []string{"LEGION-942", "LEGION-941"} {
-		row := mustOutboxRow(t, issue, hook, time.Now())
+		// Each prompt names the claim of the tester's step, as the workflow writes it (fireHook).
+		named := hook
+		named.Claim = mustClaimToken(t, issue, claim.RoleTester)
+		row := mustOutboxRow(t, issue, named, time.Now())
 		row.ID = int64(80 + i)
 		if err := runner.execute(ctx, row); err != nil {
 			t.Fatalf("execute %s's hook prompt row: %v", issue, err)

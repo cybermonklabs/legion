@@ -111,7 +111,7 @@ func newReadRenameGitHub(t *testing.T, repo string) *readRenameGitHub {
 		}
 		g.mu.Unlock()
 		pull := map[string]any{"number": 86, "state": "open", "merged": false, "mergeable_state": "clean",
-			"head": map[string]any{"sha": "code", "ref": "legion/CAPTURE-1"},
+			"head": map[string]any{"sha": "code", "ref": "legion/CAPTURE-1", "repo": map[string]any{"full_name": g.repo}},
 			"base": map[string]any{"ref": "main", "sha": "base"}}
 		w.Header().Set("Content-Type", "application/json")
 		if strings.HasPrefix(r.URL.Path, "/repos/") && strings.Contains(r.URL.Path, "/pulls") && r.URL.RawQuery != "" {

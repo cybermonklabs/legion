@@ -114,7 +114,7 @@ func TestALateSynchronizeOnlyNamesTheMoveAWaitingArrivalTook(t *testing.T) {
 			var pr *record.PullRequest
 			seedRecord(t, pool, func(tx pgx.Tx) error {
 				var err error
-				pr, err = record.NewStore().PullRequest(t.Context(), tx, "LEGION-208")
+				pr, err = record.NewStore().MergePullRequest(t.Context(), tx, "LEGION-208")
 				return err
 			})
 			want := "head-c"
@@ -232,7 +232,7 @@ func probePullRequest(t *testing.T, pool *pgxpool.Pool) record.PullRequest {
 	var pr *record.PullRequest
 	seedRecord(t, pool, func(tx pgx.Tx) error {
 		var err error
-		pr, err = record.NewStore().PullRequest(t.Context(), tx, "LEGION-208")
+		pr, err = record.NewStore().MergePullRequest(t.Context(), tx, "LEGION-208")
 		return err
 	})
 	if pr == nil {

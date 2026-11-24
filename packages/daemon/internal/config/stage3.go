@@ -1,7 +1,6 @@
 package config
 
 import (
-	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -314,10 +313,10 @@ func readProject(value *yaml.Node, key string) (Project, []string, error) {
 }
 
 // readDefaultSteps is a project's `default_steps`: a list of steps, each entry one step in the
-// plan's grammar (plan.ParseSteps). The loader holds the list to the checks a plan of the one
-// task `default` with those steps passes (plan.Supported, then plan.Validate against Legion's own
-// roles), and refuses an empty list, so the steps a task with none runs are steps this release
-// carries out. A refusal names the key, then gives every reason of both checks.
+// plan's grammar (plan.ParseSteps). It refuses an empty list and an entry that is not one step,
+// and judges nothing of the steps themselves: the roles and types they may name are the
+// deployment's (`roles`, `role_types`), read in any order beside this key, so
+// checkDeploymentRoleKeys judges them once the whole file is read.
 func readDefaultSteps(value *yaml.Node, key string) ([]plan.Step, error) {
 	words, err := readStrings(value, key)
 	if err != nil {
@@ -336,21 +335,6 @@ func readDefaultSteps(value *yaml.Node, key string) ([]plan.Step, error) {
 			return nil, fmt.Errorf("%s names %q, which is not one step: each entry of the list is one step", key, word)
 		}
 		steps = append(steps, parsed[0])
-	}
-	task := plan.Plan{Tasks: []plan.Task{{ID: plan.DefaultTask, Steps: steps}}}
-	// The loader serves no request whose end could stop the check, and a plan of one task with no
-	// need has no cycle to look for, so the check runs to its end.
-	invalid, err := plan.Validate(context.Background(), task, plan.Deployment{Roles: plan.BuiltinRoles()})
-	if err != nil {
-		return nil, fmt.Errorf("%s: %w", key, err)
-	}
-	refusals := append(plan.Supported(task), invalid...)
-	if len(refusals) > 0 {
-		reasons := make([]string, len(refusals))
-		for i, refusal := range refusals {
-			reasons[i] = refusal.Reason
-		}
-		return nil, fmt.Errorf("%s: %s", key, strings.Join(reasons, " "))
 	}
 	return steps, nil
 }

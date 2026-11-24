@@ -55,9 +55,10 @@ import (
 // issue's scratch is `/legion/scratch` (scratchRoot) on its volume, and the roles of the issue
 // share it: one temporary directory, one cache home, one data home and one bun install cache,
 // `/legion/scratch/{tmp,cache,data,bun/install/cache}`, every role told the same four
-// (roleEnvironment). The one directory of it that is one per role is its state home,
-// `/legion/scratch/state/<role>` (roleStateHome), which keeps one role's browser broker lock from
-// blocking its siblings'. The go command's two caches are the issue's too, one pair every role of
+// (roleEnvironment). The one directory of it that is one per slot is its state home,
+// `/legion/scratch/state/<slot>` (roleStateHome), the slot being the name of the agent that runs
+// in it whatever role its step is on, which keeps one agent's browser broker lock from blocking
+// its siblings'. The go command's two caches are the issue's too, one pair every role of
 // it is told, `/legion/go/build` and `/legion/go/mod` (goBuildCache, goModCache) under
 // `/legion/go`, a top-level directory of the volume beside the workspaces, the repositories,
 // feedSubPath and uv's own (uvPythonRoot, uvCacheDir). The pod's ephemeral storage bounds none of
@@ -451,11 +452,11 @@ const (
 // asked for, its Service's.
 const maxNameLength = 63
 
-// SandboxName is the Sandbox and pod name for an issue, or for the project controller. The six role
-// claims of an issue share it, and its one container; their generations live in each process
-// locator instead. A role claim's token always ends in one fixed role word, so cutting it
-// (claim.Token.Cut) preserves the project and issue token even where an issue name has hyphens.
-// The controller's token (claim.ControllerToken) ends in no workflow role and names its Sandbox
+// SandboxName is the Sandbox and pod name for an issue, or for the project controller. Every claim
+// of an issue shares it, and its one container; their generations live in each process locator
+// instead. Every claim token of an issue starts with the issue's part, and cutting it
+// (claim.Token.Cut) gives that part whole, whatever the agent's name and even where an issue name
+// has hyphens. The controller's token (claim.ControllerToken) names no issue and names its Sandbox
 // whole, `legion-<project>-controller`, which no issue's can be: an issue's part always ends in
 // `-<digits>`, and one past dnsName's length in a dash and eight hex digits.
 func SandboxName(t claim.Token) string {
@@ -466,11 +467,15 @@ func SandboxName(t claim.Token) string {
 	return dnsName(pod, maxNameLength)
 }
 
-// launcherRoles is every role a launcher can run: the six workflow roles of an issue pod, and the
-// controller of the project controller's pod. Each has a role Secret of its own in its pod.
-var launcherRoles = append(slices.Clone(claim.Roles), claim.RoleController)
+// launcherRoles is every role a launcher of the runtime can run: every role of its issue pods
+// (issueRoles: Legion's six, then each role the deployment defines), and the controller of the
+// project controller's pod. Each has a role Secret of its own in its pod.
+func (r *Runtime) launcherRoles() []claim.Role {
+	return append(slices.Clone(r.issueRoles), claim.RoleController)
+}
 
-// issueSandboxName is SandboxName of issue's role claims, from the issue key. project need not
+// issueSandboxName is SandboxName of the claims of issue, one name for every agent of it, from the
+// issue key. project need not
 // already be a claim.ProjectToken (the caller's own Options.Project, the legion.dev/project
 // label's value, may carry characters one drops); it goes through ProjectToken here before
 // naming a claim.

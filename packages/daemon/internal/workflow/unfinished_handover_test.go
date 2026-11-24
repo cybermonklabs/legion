@@ -237,6 +237,7 @@ const (
 func TestLingerHandsOver(t *testing.T) {
 	t.Run("a parked root hands over the member whose merge nothing else will make", func(t *testing.T) {
 		pool, logged, apply := handsOverFixture(t)
+		seedRoleClaims(t, pool, handsOverParkedAtTheMerge, handsOverWorking)
 		apply("a-person-parks-the-root", intake.DispatchIssue{Key: handsOverRoot, ResolvedRepo: "sjawhar/legion", Seq: 2,
 			Type: "issue.updated", Status: "backlog", Title: "root", Rank: "U"})
 		recordTheStatusAMoveShows(t, pool, handsOverRoot, "backlog")

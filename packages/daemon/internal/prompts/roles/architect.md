@@ -115,13 +115,14 @@ once, release every child that should run, and move each other child as the `chi
 of `skill://legion-architect/references/wake-routing.md` says. Wait between event-driven wakes; do
 not poll or manufacture progress. The daemon starts every phase of each released child itself, in
 the order of the steps of the child's plan, or of the project's default steps where you gave none,
-each phase worker as its own process with that child's context already in its environment; a role
-it starts again resumes the same session, and it starts in a new session, which has read none of
-its own earlier work, only once supervise's `forgetSession` has dropped that one. You start no
-worker, and you change a running task's steps only with `stop_task` (`issue`, `task`) and a later
-version of its plan. Each released child gets its own architect when the daemon starts its first
-phase, and that architect owns the child while it holds its role; while it does not hold its role,
-which the daemon's `holdsRole` decides, the child's notices come to you
+each phase worker as its own process with that child's context already in its environment; an
+agent it starts again resumes that agent's session, whatever role its next step is on, and it
+starts in a new session, which has read none of its own earlier work, only once supervise's
+`forgetSession` has dropped that one. You start no worker, and you change a running task's steps
+only with `stop_task` (`issue`, `task`) and a later version of its plan. Each released child gets
+its own architect when the daemon starts its first phase, and that architect owns the child while
+it holds its role; while it does not hold its role, which the daemon's `holdsRole` decides, the
+child's notices come to you
 (`skill://legion-architect/references/wake-routing.md`).
 
 ## Escalation

@@ -1098,16 +1098,24 @@ func TestTheServingRunBackfillsForARelaunchingClaim(t *testing.T) {
 // outbox_kind_check with a kind of its own belongs in it too, as dispatch://INFRA-3274's
 // 20261114031356, the role-holders publication's 20261116165926, the step record's
 // 20261117000528, the plan record's 20261117023932, dispatch://INFRA-4374's 20261119003157
-// (conflict_confirm and merge_forward) and dispatch://INFRA-175's 20261119203047 do: the case of a
-// database main migrated applies a version left out of the list before the list's own rewrites of
-// that check, which do not name the later kind, so the row seeded of that kind fails the upgrade.
-// So does one that reads a column a version of the list adds, as t-e-54's 20261116144907 reads
-// claims.abandoned_session (20261029121200): applied before that version, it fails on the missing
-// column. 20261119203047 is the last migration that writes outbox_kind_check: it stands above
-// main's 20261119003157, which writes it too, and main's 20261111090000, 20261111091500 and
-// 20261116144907 write none. The cache trimmer's two, 20261111090000 and 20261111091500, read no
-// column a version of the list adds either, so neither is in the list. Any other version left out
-// makes the cases below weaker, never red, which is why the comment says where the list comes
+// (conflict_confirm and merge_forward), dispatch://INFRA-175's 20261119203047 (design_changes),
+// the copies of a plan's tasks' 20261121165047 (task_branch), the pull requests by task's
+// 20261122122826 (task_pull_requests_close) and the removal of a removed task's working copy's
+// 20261123072431 (task_copy_remove) do: the case of a database main migrated applies a version
+// left out of the list before the list's own rewrites of that check, which do not name the later
+// kind, so the row seeded of that kind fails the upgrade. So does one that reads a column a
+// version of the list adds, as t-e-54's 20261116144907 reads claims.abandoned_session
+// (20261029121200): applied before that version, it fails on the missing column. So does a
+// migration that changes a table a version of the list creates, as 20261117213545 adds a column to
+// 20261117034837's plan_steps and 20261123200630 one to its issue_plans: left out, it is applied as
+// main's, before that table exists; and
+// one that replaces an index a version of the list creates, as 20261122074350 replaces
+// 20261105183200's pod_resumes_one_open_per_role. 20261123072431 is the last migration that writes
+// outbox_kind_check: it stands above the design news's 20261119203047 and main's 20261119003157,
+// which write it too, and main's 20261111090000, 20261111091500 and 20261116144907 write none.
+// The cache trimmer's two, 20261111090000 and 20261111091500, read no column a version of the list
+// adds either, so neither is in the list. Any other version left out makes the cases below
+// weaker, never red, which is why the comment says where the list comes
 // from.
 var thisRelease = map[int]bool{
 	20261029120000: true, 20261029120100: true, 20261029120200: true, 20261029120300: true,
@@ -1117,7 +1125,9 @@ var thisRelease = map[int]bool{
 	20261108152000: true, 20261108190000: true, 20261109130413: true, 20261111181500: true,
 	20261113082214: true, 20261113110610: true, 20261114031356: true, 20261116144907: true,
 	20261116165926: true, 20261117000528: true, 20261117004117: true, 20261117023932: true,
-	20261117034837: true, 20261117064152: true, 20261119003157: true, 20261119203047: true,
+	20261117034837: true, 20261117064152: true, 20261117204629: true, 20261117213545: true,
+	20261117224125: true, 20261119003157: true, 20261119203047: true, 20261121165047: true,
+	20261122074350: true, 20261122122826: true, 20261123072431: true, 20261123200630: true,
 }
 
 const idleRelease = 20261101222956
@@ -1141,9 +1151,11 @@ var retiredOutboxKinds = []record.OutboxKind{"ready_merge", "auto_merge_disable"
 // fresh database the rewrite with the highest version is the last word, so a kind that only a
 // lower one names is refused there: design_changes would be, had its 20261119203047 stood below
 // the role-holders kind's 20261116165926 or the merge forward's 20261119003157, whose lists leave
-// it out, and step_record, plan_record, conflict_confirm and merge_forward are, unless the design
-// news's list, which runs after the step record's 20261117000528, the plan record's 20261117023932
-// and the merge forward's 20261119003157, names them too.
+// it out, and is, unless each of the task copies' three lists above it (20261121165047,
+// 20261122122826 and 20261123072431) names it too; and step_record, plan_record, conflict_confirm
+// and merge_forward are, unless the design news's list, which runs after the step record's
+// 20261117000528, the plan record's 20261117023932 and the merge forward's 20261119003157, names
+// them too.
 func TestTheOutboxCheckAdmitsEveryKindWhicheverOrderTheMigrationsRan(t *testing.T) {
 	all, err := migrations.All()
 	if err != nil {

@@ -67,7 +67,7 @@ func (r *mainPathRig) wakeByRoleMessage(report string) string {
 // holds it.
 func (r *mainPathRig) queueReleaseResume() entryStartRow {
 	r.t.Helper()
-	row, err := r.runner.releaseResume(r.key, r.key)(claim.RoleArchitect, r.issue().Generation)
+	row, err := r.runner.releaseResume(r.key, r.key)(r.token, claim.RoleArchitect, r.issue().Generation)
 	if err != nil {
 		r.t.Fatalf("build the release's resume: %v", err)
 	}

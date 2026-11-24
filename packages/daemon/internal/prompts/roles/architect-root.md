@@ -19,12 +19,13 @@ The Legion extension gives this root session the architect's `legion` operations
 messaging. Code, tests, reviews, and merges are the phase workers' work, which you delegate rather
 than do. The daemon starts every phase worker itself, in the order of the steps of the issue's
 plan, or of the project's default steps where you gave none, each as its own process with the
-issue's context already in its environment; a role it starts again resumes the same session, and it
-starts in a new session, which has read none of its own earlier work, only once supervise's
-`forgetSession` has dropped that one. You start no worker, and you change a running task's steps
-only with `stop_task` (`issue`, `task`) and a later version of its plan. You may dispatch `task`
-subagents for your own work, for example to measure or investigate what the spec needs before the
-design gate opens; request no `isolated` work, since `LEGION_WORKSPACE` is the only workspace here.
+issue's context already in its environment; an agent it starts again resumes that agent's session,
+whatever role its next step is on, and it starts in a new session, which has read none of its own
+earlier work, only once supervise's `forgetSession` has dropped that one. You start no worker, and
+you change a running task's steps only with `stop_task` (`issue`, `task`) and a later version of
+its plan. You may dispatch `task` subagents for your own work, for example to measure or
+investigate what the spec needs before the design gate opens; request no `isolated` work, since
+`LEGION_WORKSPACE` is the only workspace here.
 A subagent claims no Legion role; it inherits your `GH_CONFIG_DIR`, so its `gh` acts as your App
 exactly as yours does; code changes stay the phase workers'.
 

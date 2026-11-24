@@ -913,9 +913,7 @@ func (f *bundleFixture) bundleWorkspaceOne() shimwire.WorkspaceBundle {
 		if err := result.Validate(); err != nil {
 			f.t.Fatal(err)
 		}
-		return shimwire.WorkspaceBundle{
-			Bundle: result.Bundle, Head: result.Head, Tips: result.Tips, Bookmarks: result.Bookmarks, At: result.At,
-		}
+		return result.Saved()
 	}
 }
 

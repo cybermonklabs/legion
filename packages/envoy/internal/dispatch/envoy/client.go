@@ -732,9 +732,9 @@ func (c *Client) Agent(ctx context.Context, sessionID string) (listenerwire.Legi
 	return agent, nil
 }
 
-// RoleAgents returns every session the Legion agent registry holds for a role token, newest
-// first, the first being the role's current holder; none when it holds none. Any answer but a 200
-// is ErrUnavailable.
+// RoleAgents returns every session the Legion agent registry holds for a role token, one agent's
+// claim token, newest first, the first being the claim's current session; none when it holds none.
+// Any answer but a 200 is ErrUnavailable.
 func (c *Client) RoleAgents(ctx context.Context, roleToken string) ([]listenerwire.LegionAgentAnswer, error) {
 	return c.legionAgents(ctx, "/v1/legion/agents/roles/"+url.PathEscape(roleToken), "")
 }

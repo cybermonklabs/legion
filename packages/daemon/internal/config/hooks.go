@@ -150,8 +150,10 @@ func readHookEvery(value *yaml.Node, field string) (int, error) {
 }
 
 // readHookRoles is a hook's `roles`: the roles its words are put in front of, at least one, each
-// a Legion role of an issue. The architect is refused: the daemon's own wake to an architect is a
-// notice it writes itself, and a hook writes none.
+// a role of an issue: a Legion role, or a name of the role grammar (claim.IsRole), which
+// checkDeploymentRoleKeys holds to a role of `roles` once every key is read. The architect is
+// refused: the daemon's own wake to an architect is a notice it writes itself, and a hook writes
+// none.
 func readHookRoles(value *yaml.Node, field string) ([]claim.Role, error) {
 	key := field + ".roles"
 	if value == nil {
@@ -167,7 +169,7 @@ func readHookRoles(value *yaml.Node, field string) ([]claim.Role, error) {
 	roles := make([]claim.Role, 0, len(named))
 	for _, name := range named {
 		role := claim.Role(name)
-		if !slices.Contains(claim.Roles, role) {
+		if !claim.IsRole(role) {
 			return nil, fmt.Errorf("%s names %q, which is not a Legion role (%s)", key, name, runtime.JoinRoles(claim.Roles))
 		}
 		if role == claim.RoleArchitect {
@@ -179,10 +181,14 @@ func readHookRoles(value *yaml.Node, field string) ([]claim.Role, error) {
 }
 
 // readHookMoves is a hook's `moves`: the moves back it selects, each written "<from>-<to>" as the
-// daemon counts them (phase.BackwardPairs). The key left out, and the word `any`, each select
-// every move back, which is the empty list this answers. The empty list in the file is refused
-// instead: it selects nothing, so the hook could never fire, and the operator meant `any` or
-// meant to name a move.
+// daemon counts them (phase.MovePairs): two workflow phases, which differ but in step-step. A task
+// moves back by its own order, which need not be today's, so the move back of one task
+// (testing-reviewing, where its review comes before its test) is a forward move of another. A step
+// of a role the deployment defines runs as step, so a move may leave or reach step, and the move
+// back from one such step to another is step-step; any other phase paired with itself is no move.
+// The key left out, and the word `any`, each select every move back, which is the empty list this
+// answers. The empty list in the file is refused instead: it selects nothing, so the hook could
+// never fire, and the operator meant `any` or meant to name a move.
 func readHookMoves(value *yaml.Node, field string) ([]string, error) {
 	key := field + ".moves"
 	if value == nil {
@@ -203,7 +209,7 @@ func readHookMoves(value *yaml.Node, field string) ([]string, error) {
 	}
 	for _, move := range moves {
 		if _, _, ok := phase.ParsePair(move); !ok {
-			return nil, fmt.Errorf("%s names %q, which is no move back the daemon counts: a move is written \"<from>-<to>\", both of them workflow phases, and the phase it goes to before the phase it leaves", key, move)
+			return nil, fmt.Errorf("%s names %q, which is no move the daemon counts: a move is written \"<from>-<to>\", two workflow phases, which differ but in step-step", key, move)
 		}
 	}
 	return moves, nil

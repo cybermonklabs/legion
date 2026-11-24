@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/google/uuid"
@@ -65,36 +66,65 @@ type standing struct {
 	at    phase.Phase
 }
 
-// standingStep is the step issue stands in on w, the walk of its run: stepAt the phase it stands
-// in (record.StandsAt, so a held issue's is the step of the phase its hold is from). Every writer
+// standingStep is the step issue stands in on w, the walk of its run: stepAt where it stands
+// (record.StandsAt, so a held issue's is the step of the phase its hold is from). Every writer
 // of a step's record takes the step it found, or, for a phase the issue has left, stepAt's
 // (reportEndedStep). An issue its plan holds stands in no step (planHold): a stopped task's run
 // ended with its stop, and a parent held for its children has not started its retro, so the end
-// rule ends the run each stood in (runOver) and no start is made for either.
+// rule ends the run each stood in (runOver) and no start is made for either. Nor does a task whose
+// step waits (Walk.Wait), for its agent or its join: nothing of that step has started, so no run of
+// it is opened, at the boot either (OpenUncountedRuns), and its start opens one when it is delivered.
 func standingStep(w Walk, issue record.Issue) (standing, bool) {
-	if planHold(issue, w.Stored) {
+	if planHold(issue, w.Stored) || w.Wait != record.StepWaitNone {
 		return standing{}, false
 	}
-	return stepAt(w, issue, record.StandsAt(issue))
+	return stepAt(w, issue, standingIn(record.StandsAt(issue)))
 }
 
-// stepAt is the one place that decides the step issue runs at phase at on w, the walk of its run,
-// and whether its runs are recorded (placeOnWalk), and false for a phase that runs no step —
-// admitted, awaiting a person, held, done, a phase the walk's line does not hold — or a record key
-// that is no issue key (recordsSteps).
-func stepAt(w Walk, issue record.Issue, at phase.Phase) (standing, bool) {
-	place, role, typ, ok := placeOnWalk(w, at)
-	return standing{place: place, role: role, typ: typ, at: at}, ok && recordsSteps(issue)
+// stepSite is the place a caller of stepAt asks for, made by standingIn or placeNamed, with the
+// phase at, which that place runs as. The zero stepSite is no place: stepAt answers false for it.
+type stepSite struct {
+	at    phase.Phase
+	place record.TaskPlace
+	named bool
 }
 
-// placeOnWalk is the step the run whose walk is w runs while its issue stands in at: the place its
-// count of starts is kept under, whose Place is its place in the task, its role and its type: the
-// step of its one task at the place at holds on the task's line (stepOfWalk), under the task's id.
-// An owner's plan of `implementer reviewer` records its implementer at step 1 of its own task and
-// has no step 3, 4 or 5, and a run with no plan rows runs today's steps of the task default
-// (todaysSteps), so an issue that ran before plan rows keeps the ids of its records.
-func placeOnWalk(w Walk, at phase.Phase) (place record.StepPlace, role stepRole, typ plan.Type, ok bool) {
-	stands, ok := w.PlaceOf(at)
+// standingIn is where the task stands while its issue stands in at (Walk.placeIn): on a stored
+// walk the task's own place where it runs as at, so of two steps that run as step the one the
+// task stands at, and on a walk with no plan rows the place of at on today's line.
+func standingIn(at phase.Phase) stepSite { return stepSite{at: at} }
+
+// placeNamed is a place the caller names, which runs as at: place on a stored walk; on a walk with
+// no plan rows, whose line holds each phase once, the place of at on today's line, so an issue
+// that ran before plan rows keeps the ids of its records.
+func placeNamed(place record.TaskPlace, at phase.Phase) stepSite {
+	return stepSite{at: at, place: place, named: true}
+}
+
+// stepAt is the one place that decides the step issue runs at site on w, the walk of its run, and
+// whether its runs are recorded (placeOnWalk), and false for no place and for a phase that runs no
+// step — admitted, awaiting a person, held, done, a phase the walk's line does not hold — or a
+// record key that is no issue key (recordsSteps).
+func stepAt(w Walk, issue record.Issue, site stepSite) (standing, bool) {
+	place, role, typ, ok := placeOnWalk(w, site)
+	return standing{place: place, role: role, typ: typ, at: site.at}, ok && recordsSteps(issue)
+}
+
+// placeOnWalk is the step the run whose walk is w runs at site: the place its count of starts is
+// kept under, whose Place is its place in the task, its role and its type: the step of its one
+// task at the site's place on the task's line (stepOfWalk), under the task's id. An owner's plan
+// of `implementer reviewer` records its implementer at step 1 of its own task and has no step 3,
+// 4 or 5, of two steps that run as step it is the one the site names, and a run with no plan rows
+// runs today's steps of the task default (todaysSteps), so an issue that ran before plan rows
+// keeps the ids of its records.
+func placeOnWalk(w Walk, site stepSite) (place record.StepPlace, role stepRole, typ plan.Type, ok bool) {
+	if site == (stepSite{}) {
+		return record.StepPlace{}, "", "", false
+	}
+	stands, ok := site.place, site.named
+	if !site.named || !w.Stored {
+		stands, ok = w.placeIn(site.at)
+	}
 	if !ok {
 		return record.StepPlace{}, "", "", false
 	}
@@ -123,14 +153,14 @@ const (
 )
 
 // endOf is how a transition on trigger ends the step it moves the issue out of. A move back a role
-// or a report asked for — the tester's fail, a review's request for changes, a role's or the
-// architect's backward move — ends it failed and returns the work to the step the issue moves
-// into, which the record names. Every other move ends the step passed and returns nowhere. A head
-// that conflicts with its base moves no issue (dispatch://INFRA-4374), so it ends no step: the
-// run goes on through the merge forward.
+// or a report asked for — the tester's fail, a review's request for changes, the fail of a step
+// that runs as step, a role's or the architect's backward move — ends it failed and returns the
+// work to the step the issue moves into, which the record names. Every other move ends the step
+// passed and returns nowhere. A head that conflicts with its base moves no issue
+// (dispatch://INFRA-4374), so it ends no step: the run goes on through the merge forward.
 func endOf(trigger TriggerKind) (result StepResult, returns bool) {
 	switch trigger {
-	case TriggerTesterFailed, TriggerReviewRejected, TriggerBackward:
+	case TriggerTesterFailed, TriggerReviewRejected, TriggerStepFailed, TriggerBackward:
 		return ResultFailed, true
 	}
 	return ResultPassed, false
@@ -191,20 +221,20 @@ func (e *Engine) startStep(ctx context.Context, tx pgx.Tx, issue record.Issue, s
 	return e.enqueue(ctx, tx, issue.Key, write)
 }
 
-// endStep writes the end of the run of the step before stands in (record.StandsAt, so a held issue
-// ends the step of the phase its hold is from) on w, the walk of that run, before being the issue
-// as it stood in that run. It writes the end of each run a step of its walk holds, and the fact's
-// settle is its one caller (settleRuns), which decides that an open run is over and reads w at the
-// run's own generation, so the end of a run the fact left names the step of that run's plan; a
-// run no step of that walk holds is ended from its kept start instead (endOffWalk). The record is
-// the one its start wrote: the same generation and the count of starts unchanged, and the agent
-// and the moment that start wrote, so the two writes agree whichever reaches Dispatch first. A
-// run no start of this release counted has an open row from the daemon's boot
-// (OpenUncountedRuns), which wrote the count and the agent its start would have named, so its end
-// is written the same way. endRun writes it. A phase that runs no step writes nothing, and neither
-// does a record key that is no issue key (recordsSteps).
-func (e *Engine) endStep(ctx context.Context, tx pgx.Tx, before record.Issue, w Walk, end StepEnd) error {
-	step, ok := standingStep(w, before)
+// endStep writes the end of the run of the step at site on w, the walk of that run, before being
+// the issue as it stood in that run. It writes the end of each run a step of its walk holds, and
+// the fact's settle is its one caller (settleRuns), which decides that an open run is over, reads
+// w at the run's own generation and names the run's own place (placeNamed), so the end of a run
+// the fact left names the step of that run's plan, and of two steps that run as step, the one the
+// run stood at, wherever the task stands now; a run no step of that walk holds is ended from its
+// kept start instead (endOffWalk). The record is the one its start wrote: the same generation and
+// the count of starts unchanged, and the agent and the moment that start wrote, so the two writes
+// agree whichever reaches Dispatch first. A run no start of this release counted has an open row
+// from the daemon's boot (OpenUncountedRuns), which wrote the count and the agent its start would
+// have named, so its end is written the same way. endRun writes it. A phase that runs no step
+// writes nothing, and neither does a record key that is no issue key (recordsSteps).
+func (e *Engine) endStep(ctx context.Context, tx pgx.Tx, before record.Issue, w Walk, site stepSite, end StepEnd) error {
+	step, ok := stepAt(w, before, site)
 	if !ok {
 		return nil
 	}
@@ -244,26 +274,31 @@ func (e *Engine) endRun(ctx context.Context, tx pgx.Tx, issue string, place reco
 	return true, e.enqueue(ctx, tx, issue, write)
 }
 
-// reportEndedStep writes report, the handoff a role's completion of at named, onto the record of
+// reportEndedStep writes report, the handoff role's completion of at named, onto the record of
 // the run of at's step that ended before that completion landed: a review the review event moved
 // on, whose end the transition wrote with no report, since the reviewer had not completed yet. A
 // record's report is the handoff the ending role's completion named, whichever of the two lands
-// first. The run is the latest of at's place on the walk of issue's run (stepAt), ended, since the
-// issue has left at and no start of it came since (handoff's current). The write carries the run's
-// identity and the report alone, and Dispatch writes each field once, so it and the end merge in
-// either order (record.StepRecord). A completion that names no handoff writes nothing, and neither
-// does a place whose latest run is not marked ended (record.RunEnded) — none ran, one is open, or
-// one an earlier release started after a rollback, whose record this release has not written — nor
-// a record key that is no issue key.
-func (e *Engine) reportEndedStep(ctx context.Context, tx pgx.Tx, issue record.Issue, at phase.Phase, report string) error {
+// first. The run is the latest of the place of role's step on the walk of issue's run (stepAt): of
+// at's place where at stands once in the line, and of the step role runs at step, where two steps
+// can run, ended, since the issue has left it and no start of it came since (handoff's current).
+// The write carries the run's identity and the report alone, and Dispatch writes each field once,
+// so it and the end merge in either order (record.StepRecord). A completion that names no handoff
+// writes nothing, and neither does a place whose latest run is not marked ended (record.RunEnded)
+// — none ran, one is open, or one an earlier release started after a rollback, whose record this
+// release has not written — nor a record key that is no issue key.
+func (e *Engine) reportEndedStep(ctx context.Context, tx pgx.Tx, s TaskScope, at phase.Phase, role claim.Role, report string) error {
 	if report == "" {
 		return nil
 	}
-	w, err := e.walk(ctx, tx, issue)
-	if err != nil {
-		return err
+	issue, w := s.issue, s.walk
+	place, ok := w.PlaceOf(at)
+	if at == phase.Step {
+		place, ok = w.placeOfRole(role)
 	}
-	step, ok := stepAt(w, issue, at)
+	if !ok {
+		return nil
+	}
+	step, ok := stepAt(w, issue, placeNamed(place, at))
 	if !ok {
 		return nil
 	}
@@ -290,10 +325,15 @@ func recordsSteps(issue record.Issue) bool { return claim.IsIssueKey(issue.Key) 
 // GitHub had already made when the issue reached merging, which started no merger: an entry never
 // raised, or one raised before the retro's completion that brought the issue there, the one move
 // into merging (the table's retro row), which is an earlier visit's.
-func (e *Engine) upgradedStart(ctx context.Context, tx pgx.Tx, issue record.Issue, at phase.Phase) (claim.Token, time.Time, error) {
-	worker := phase.RoleFor(at)
+func (e *Engine) upgradedStart(ctx context.Context, tx pgx.Tx, s TaskScope, at phase.Phase) (claim.Token, time.Time, error) {
+	issue := s.issue
+	// The worker of the step the issue stands in at at: its running step there (record.Issue.RunningAt).
+	var worker claim.Role
+	if running := issue.RunningAt(at); len(running) > 0 {
+		worker = running[0].Role
+	}
 	if worker == claim.RoleArchitect {
-		agent, err := e.startAgent(ctx, tx, issue, at)
+		agent, err := e.startAgent(ctx, tx, s, at)
 		return agent, time.Time{}, err
 	}
 	row, err := e.phaseRow(ctx, tx, issue.Key, worker)
@@ -310,14 +350,15 @@ func (e *Engine) upgradedStart(ctx context.Context, tx pgx.Tx, issue record.Issu
 			return "", time.Time{}, nil
 		}
 	}
-	agent, err := stepClaim(issue, issue.Key, worker)
+	agent, err := e.placeToken(s, at, worker)
 	return agent, row.EntryRaisedAt.UTC(), err
 }
 
-// startAgent is the agent a start of the step issue stands in at names: for accepting, the
-// architect that owns issue now (acceptingAgent), nobody for a merge GitHub has already made,
-// where no merger starts, and the claim of the phase's worker otherwise.
-func (e *Engine) startAgent(ctx context.Context, tx pgx.Tx, issue record.Issue, at phase.Phase) (claim.Token, error) {
+// startAgent is the agent a start of the step s's copy stands in at names: for accepting, the
+// architect that owns the issue now (acceptingAgent), nobody for a merge GitHub has already made,
+// where no merger starts, and the agent of the step's place otherwise (placeToken).
+func (e *Engine) startAgent(ctx context.Context, tx pgx.Tx, s TaskScope, at phase.Phase) (claim.Token, error) {
+	issue := s.issue
 	switch at {
 	case phase.Accepting:
 		return e.acceptingAgent(ctx, tx, issue)
@@ -329,7 +370,48 @@ func (e *Engine) startAgent(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 			return "", err
 		}
 	}
-	return stepClaim(issue, issue.Key, phase.RoleFor(at))
+	// The worker of the step the issue stands in at at: its running step there (record.Issue.RunningAt).
+	var worker claim.Role
+	if running := issue.RunningAt(at); len(running) > 0 {
+		worker = running[0].Role
+	}
+	return e.placeToken(s, at, worker)
+}
+
+// placeToken is the claim token of the agent of the work s's copy stands in at, read on the walk
+// of s's task (stepToken), and role's own token where the walk holds no place for at.
+func (e *Engine) placeToken(s TaskScope, at phase.Phase, role claim.Role) (claim.Token, error) {
+	issue, w := s.issue, s.walk
+	place, ok := w.placeIn(at)
+	if !ok {
+		return stepClaim(issue, issue.Key, role)
+	}
+	return e.stepToken(issue, w, place, role)
+}
+
+// stepToken is the claim token of the agent that does the work of place on w, issue's walk, whose
+// role is role: the one function that makes the token of a step's agent, which each entry takes
+// (enter) and writes to the step's phases row (record.PhaseRow.Claim) and to its step record
+// (startStep). A step of the key owner is the tree's architect's, as the accepting step's is
+// (startAgent). Where AgentAt names an agent, it is that agent's token (claim.AgentToken), so the
+// steps of one key are one claim; where it names none — the merge, and every place of a run with no
+// plan rows — it is the role's own token (R20).
+func (e *Engine) stepToken(issue record.Issue, w Walk, place record.TaskPlace, role claim.Role) (claim.Token, error) {
+	if w.Stored && place.Kind == record.PlaceStep && place.Position >= 1 && place.Position <= len(w.Steps) {
+		step := w.Steps[place.Position-1]
+		if plan.AgentOf(w.Task, place.Position, plan.Step{Role: step.Role, Key: step.AgentKey}).Owner() {
+			return stepClaim(issue, issue.Tree, claim.RoleArchitect)
+		}
+	}
+	name := w.AgentAt(place)
+	if name == "" {
+		return stepClaim(issue, issue.Key, role)
+	}
+	project, err := claim.ProjectToken(issue.Project)
+	if err != nil {
+		return "", err
+	}
+	return claim.AgentToken(project, issue.Key, name)
 }
 
 // acceptingAgent is the agent of issue's accepting step: the claim of the architect that owns
@@ -388,12 +470,12 @@ func (e *Engine) ownArchitectStarting(ctx context.Context, tx pgx.Tx, issue reco
 // names: a move into accepting, whose role is the architect, for which start starts no worker, or
 // into a merge GitHub has already made, which nobody runs and whose close ends it (transition), and
 // admission's promotion of a member whose worker it does not start (StartStepRecord).
-func (e *Engine) startNamedStep(ctx context.Context, tx pgx.Tx, issue record.Issue, step standing) error {
-	agent, err := e.startAgent(ctx, tx, issue, step.at)
+func (e *Engine) startNamedStep(ctx context.Context, tx pgx.Tx, s TaskScope, step standing) error {
+	agent, err := e.startAgent(ctx, tx, s, step.at)
 	if err != nil {
 		return err
 	}
-	return e.startStep(ctx, tx, issue, step, agent)
+	return e.startStep(ctx, tx, s.issue, step, agent)
 }
 
 // stepClaim is the claim token of role on key, in issue's project.
@@ -422,27 +504,30 @@ func (e *Engine) readAgent(ctx context.Context, tx pgx.Tx, agent claim.Token) St
 }
 
 // endOfTransition is how a transition on trigger ends the step from, where the issue stood, moving
-// it into to with handoff as the completion's row: endOf's result, the place of to's step on w,
-// the walk of the issue's run, where the work goes back (placeOnWalk), and the handoff record
-// handoff names when its role is the role of from's phase. Its one caller names it for the step it
-// found the issue in (nameMoveEnd), so from runs a step, whose phase has a role, and a completion
+// it into to with handoff as the completion's row: endOf's result, the place of the step at to on
+// w, the walk of the issue's run, where the work goes back (placeOnWalk; to is the place the
+// transition's row moves the task to), and the handoff record handoff names when its role is the
+// role whose step the move ends (Walk.endingRole). Its callers name it for the step they found the
+// issue in (nameMoveEnd, stopUnreturned), so from runs a step, which has a role, and a completion
 // of no role names no report.
-func endOfTransition(w Walk, trigger TriggerKind, from, to phase.Phase, handoff record.PhaseRow) StepEnd {
+func endOfTransition(w Walk, trigger TriggerKind, from phase.Phase, to stepSite, handoff record.PhaseRow) StepEnd {
 	result, returns := endOf(trigger)
 	end := StepEnd{Result: result}
 	if into, _, _, ok := placeOnWalk(w, to); returns && ok {
 		end.ReturnedTo = new(into.Place)
 	}
-	if handoff.Role == phase.RoleFor(from) {
+	if handoff.Role == w.endingRole(from) {
 		end.Report = handoff.HandoffRecord
 	}
 	return end
 }
 
-// StartStepRecord writes the start of the step issue stands in on the walk of its run
-// (standingStep), under the agent that step names (startNamedStep): admission's promotion of a
-// member whose phase worker it does not start (admit's startMidPhaseMembers), whose step starts
-// again all the same. A step whose latest run is still open at the issue's own generation goes
+// StartStepRecord writes the start of the step each task of issue stands in, on that task's own
+// walk (standingStep over viewsOf), under the agent that step names (startNamedStep): admission's
+// promotion of a member whose phase worker it does not start (admit's startMidPhaseMembers), whose
+// step starts again all the same. An issue whose plan holds several tasks has no one walk, and
+// each of its running tasks stands at a step of its own; an issue of one task, or of no plan rows,
+// is its one view. A step whose latest run is still open at the issue's own generation goes
 // on, and nothing is written: a role the promotion found already started for this run
 // (workflow.StartFor), or a member held from merging whose tree is admitted again, whose merge
 // step the linger left open (beginLinger) and whose retry goes on with it. A second start there
@@ -454,22 +539,31 @@ func endOfTransition(w Walk, trigger TriggerKind, from, to phase.Phase, handoff 
 // step (standingStep): its stopped task runs again only when a later version of the plan starts
 // the task at its first step, and a parent held for its children has started no retro.
 func (e *Engine) StartStepRecord(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
-	w, err := e.walk(ctx, tx, issue)
+	scopes, err := e.scopes(ctx, tx, issue)
 	if err != nil {
 		return err
 	}
-	step, ok := standingStep(w, issue)
-	if !ok {
-		return nil
-	}
-	runs, err := e.store.StepRuns(ctx, tx, []string{issue.Key})
-	if err != nil {
-		return err
-	}
-	for _, run := range runs {
-		if run.Place == step.place && run.Run == record.RunOpen && run.Generation == issue.Generation {
-			return nil
+	var runs []record.IssueStepRun
+	read := false
+	for _, s := range scopes {
+		step, ok := standingStep(s.walk, s.issue)
+		if !ok {
+			continue
+		}
+		if !read {
+			if runs, err = e.store.StepRuns(ctx, tx, []string{issue.Key}); err != nil {
+				return err
+			}
+			read = true
+		}
+		if slices.ContainsFunc(runs, func(run record.IssueStepRun) bool {
+			return run.Place == step.place && run.Run == record.RunOpen && run.Generation == issue.Generation
+		}) {
+			continue
+		}
+		if err := e.startNamedStep(ctx, tx, s, step); err != nil {
+			return err
 		}
 	}
-	return e.startNamedStep(ctx, tx, issue, step)
+	return nil
 }

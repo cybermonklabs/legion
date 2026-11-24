@@ -484,7 +484,7 @@ func TestDecodeCapturedProducerEnvelopes(t *testing.T) {
 			name:    "pull request opened",
 			subject: "notifications.github.sjawhar.legion.pr.42",
 			file:    "github/pr-opened.json",
-			want: PullRequestOpened{Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208", Base: "main", HeadSHA: "head-captured", Body: "Dispatch: LEGION-208",
+			want: PullRequestOpened{Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208", Base: "main", HeadSHA: "head-captured", HeadRepo: "sjawhar/legion", Body: "Dispatch: LEGION-208",
 				URL: "https://github.com/sjawhar/legion/pull/42", UpdatedAt: updatedAt},
 		},
 		{
@@ -968,10 +968,11 @@ func TestConsumePreparesAnIssueEventsRepositoryBeforeApplyingIt(t *testing.T) {
 // fact the golden carries: the two sides spell a repository's subject segments alike, a dotted name
 // included. The golden push, which is to main, decodes to the BasePush of that base, and the same
 // push to an issue's branch decodes to its Push. A pull request event decodes to a fact only on an
-// issue's branch, so the golden pull requests, on a branch of their own, decode to none, and the
-// same event on an issue's branch decodes to its fact. The push golden's fact is compared whole
-// with the golden's own payload, so a listener change that stops sending a key the daemon reads
-// fails here.
+// issue's branch whose head is a branch of the event's repository (head_repo), so the golden pull
+// requests, on a branch of their own, decode to none, and the same event on an issue's branch
+// decodes to its fact: a listener change that stops sending head_repo fails here. The push golden's
+// fact is compared whole with the golden's own payload, so a listener change that stops sending a
+// key the daemon reads fails here.
 func TestEnvoyGoldenSubjectsReachTheirRepositorysConsumer(t *testing.T) {
 	goldens, err := filepath.Glob(filepath.Join("..", "..", "..", "contracts", "fixtures", "github-envelopes", "*.json"))
 	if err != nil || len(goldens) == 0 {

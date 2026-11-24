@@ -75,10 +75,12 @@ func strandedReleaseWakes(wakes []ReleasedWake, now time.Time) map[releasedRole]
 // does not linger and the root is not itself waiting in the line, the rule record.TreeRuns applies
 // — nothing will wake it, and it is suspended, failed or retired and one of:
 //
-//   - A worker of its issue's phase: the role phase.RoleFor gives the phase its worker works
-//     (record.Issue.WorkingPhase), which a held issue keeps from the phase it left. Only a start
-//     of that phase brings back a failed or a retired worker, so either is stranded once no such
-//     start is queued (StartFor, the rule promotion reads). A suspended one is stranded when an
+//   - A worker of its issue's step: the role of one of its issue's running steps
+//     (record.Issue.Running), held or not, each at the phase its place derives, which for a held
+//     issue is the phase it left (record.Issue.WorkingPhase; at step the role the plan gives the
+//     step). Only a start of that phase brings back a failed or a retired worker, so either is
+//     stranded once no such start is queued (StartFor, the rule promotion reads): the phase of
+//     its step, and of a held issue the issue's own. A suspended one is stranded when an
 //     operator suspended it, or when its suspension was recorded before migration 0038 (unknown)
 //     and no start is queued for it: the boot resumes neither, and a start queued for an unknown
 //     one resumes it. The daemon resumes one it or its own exit suspended by rule (supervise's
@@ -212,13 +214,27 @@ func Stranded(ctx context.Context, tx pgx.Tx, s record.Store, project string, st
 		// child's next first phase start. One that its own exit retired is reported nowhere, as
 		// Stranded's comment says.
 		var current phase.Phase
+		at := slices.IndexFunc(issue.Running, func(step record.RunningStep) bool { return step.Role == c.Role })
+		works := at >= 0
+		if !works && record.HeldFor(issue, record.HoldTaskStopped) {
+			// A stopped task's step is no running step, and its worker is the worker of the step
+			// the stop ended (record.Store.StoppedStep), held there with its issue.
+			stopped, ok, err := s.StoppedStep(ctx, tx, issue)
+			if err != nil {
+				return nil, err
+			}
+			works = ok && stopped.Role == c.Role
+		}
 		switch {
 		case claim.IsTreeArchitect(c.Role, issue.Key, issue.Tree):
-		case c.Role != claim.RoleArchitect && phase.RoleFor(issue.WorkingPhase()) == c.Role:
+		case c.Role != claim.RoleArchitect && works:
 			if c.State == supervise.StateSuspended && c.SuspendedBy.ByRule() {
 				continue
 			}
 			current = issue.Phase
+			if at >= 0 && !issue.Running[at].Held {
+				current = issue.Running[at].Phase
+			}
 		default:
 			continue
 		}

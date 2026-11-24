@@ -18,6 +18,10 @@ export const LEGION_ROLES = [
 
 export type LegionRole = (typeof LEGION_ROLES)[number];
 
+/** The role of a phase worker's claim: one of Legion's six, or a role the deployment defines in its
+ * settings' `roles` (contract 221), a name of the step grammar (`isStepRole`). */
+export type LegionStepRole = LegionRole | string;
+
 /** The design-gate steps a Legion deployment can gate, each naming one document of a root issue
  * a person must approve before the tree's work runs: `decisions` names the issue's decisions
  * document, `criteria` its Verification document, `spec` its primary document.
@@ -46,18 +50,31 @@ export const LEGION_PLAN_REASON_MAX = 2000;
 export interface ParsedRoleToken {
   project: string;
   issue: IssueKey;
-  role: LegionRole;
+  role: LegionStepRole;
 }
 
 const ENVOY_ROLE_TOKEN = /^[a-z0-9][a-z0-9_-]*$/;
 const PROJECT_TOKEN = /^[a-z0-9]+$/;
 /** A Dispatch issue key: uppercase project, then a numeric suffix — `IssueKey`'s sole shape. */
 export const DISPATCH_KEY_PATTERN = /^([A-Z][A-Z0-9]*)-([0-9]+)$/;
-const DISPATCH_ROLE_PART =
-  /^([a-z0-9]+)-([0-9]+)-(architect|planner|implementer|tester|reviewer|merger)$/;
+/** The issue part of a claim token, `<issue project>-<number>`, and the agent's name after it, the
+ * role of the agent's first step. Neither part of the issue holds a `-`, so the name is everything
+ * after the second one, and may hold a `-` of its own (`code-checker`); the Go daemon's
+ * `claim.Token.Cut` reads it by the same fields. */
+const DISPATCH_ROLE_PART = /^([a-z0-9]+)-([0-9]+)-(.+)$/;
+/** The role grammar of Dispatch's step record, which each of Legion's six matches; the Go daemon's
+ * `claim.IsRole` reads the same. */
+const STEP_ROLE = /^[a-z][a-z0-9-]{0,31}$/;
 
 export function isLegionRole(role: string): role is LegionRole {
   return LEGION_ROLES.some((candidate) => candidate === role);
+}
+
+/** Whether a claim of an issue can be on `role`: each of Legion's six, and each role a deployment
+ * defines, a name of `^[a-z][a-z0-9-]{0,31}$`. The controller is none: its claim holds no issue.
+ * The one definition of a role of the step grammar; the Go daemon's `claim.IsRole` is its twin. */
+export function isStepRole(role: string): role is LegionStepRole {
+  return role !== "controller" && STEP_ROLE.test(role);
 }
 
 /**
@@ -112,11 +129,17 @@ export function assertLegionProjectToken(project: string): void {
   }
 }
 
-export function roleToken(project: string, issue: IssueKey, role: LegionRole): string {
+/** The claim token of the agent named for `role` on `issue`, byte for byte the Go daemon's
+ * `claim.NewToken`: the role's own claim, which a step of no key runs in. A keyed agent's token
+ * ends in its own name, the role of its first step, whatever role its step is on now. A role
+ * outside the step grammar (`isStepRole`), the controller's among them, is refused as Go refuses
+ * it. */
+export function roleToken(project: string, issue: IssueKey, role: LegionStepRole): string {
   assertLegionProjectToken(project);
 
   const dispatchMatch = DISPATCH_KEY_PATTERN.exec(issue);
   if (!dispatchMatch) throw new Error(`Invalid IssueKey: ${issue}`);
+  if (!isStepRole(role)) throw new Error(`Invalid Legion role: ${role}`);
   const [, dispatchProject, number] = dispatchMatch;
   return `legion-${project}-${dispatchProject?.toLowerCase()}-${number}-${role}`;
 }
@@ -139,8 +162,10 @@ export function roleTopic(token: string): string {
   return `${ROLE_TOPIC_PREFIX}${token}`;
 }
 
-/** A Dispatch issue key encodes as `<project>-<number>-<role>`; its project component is already
- * `[A-Z][A-Z0-9]*`, so lowercasing it needs no further escaping. */
+/** A claim token of an issue ends `<issue project>-<number>-<agent>`; its project component is
+ * already `[A-Z][A-Z0-9]*`, so lowercasing it needs no further escaping. The agent's name, which
+ * the answer's `role` holds, is read by its fields (`DISPATCH_ROLE_PART`), and a name outside the
+ * step grammar parses as no claim's. */
 export function parseRoleToken(
   project: string,
   token: string
@@ -156,7 +181,7 @@ export function parseRoleToken(
   const dispatchMatch = DISPATCH_ROLE_PART.exec(rest);
   if (!dispatchMatch) return undefined;
   const [, dispatchProject, numberPart, role] = dispatchMatch;
-  if (!dispatchProject || !numberPart || !role || !isLegionRole(role)) return undefined;
+  if (!dispatchProject || !numberPart || !role || !isStepRole(role)) return undefined;
   return {
     project,
     issue: `${dispatchProject.toUpperCase()}-${numberPart}`,

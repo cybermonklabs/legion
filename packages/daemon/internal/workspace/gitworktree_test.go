@@ -19,7 +19,7 @@ import (
 // unreadableOwnEntry lays out a workspace whose .git names its own worktree entry, and that entry
 // with a gitdir naming the workspace that this process may not open: case C of
 // gitWorktreeEntries' table, whose cause is the open's own permission denied. It answers the
-// workspace, the entry, and the error lockGitWorktree and removeGitWorktree answer for it.
+// workspace, the entry, and the error LockGitWorktree and removeGitWorktree answer for it.
 func unreadableOwnEntry(t *testing.T) (located Workspace, entry, want string) {
 	t.Helper()
 	located, err := Location(t.TempDir(), ghrepo.MustParse("acme/widgets"), "infra-1")
@@ -59,12 +59,12 @@ func unreadableOwnEntry(t *testing.T) (located Workspace, entry, want string) {
 func TestLockGitWorktreeRefusesItsEntryWhenItsGitdirCannotBeRead(t *testing.T) {
 	located, entry, want := unreadableOwnEntry(t)
 	want += "; provisioning cannot lock it. Remove the workspace so the next provisioning adds it again"
-	err := lockGitWorktree(located.Clone, located.Dir)
+	err := LockGitWorktree(located.Clone, located.Dir)
 	if err == nil || err.Error() != want {
-		t.Fatalf("lockGitWorktree answered %v, want %q", err, want)
+		t.Fatalf("LockGitWorktree answered %v, want %q", err, want)
 	}
 	if _, err := os.Lstat(filepath.Join(entry, "locked")); !os.IsNotExist(err) {
-		t.Fatalf("lockGitWorktree wrote a lock into an entry it could not read (%v)", err)
+		t.Fatalf("LockGitWorktree wrote a lock into an entry it could not read (%v)", err)
 	}
 }
 

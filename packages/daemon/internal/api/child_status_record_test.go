@@ -57,6 +57,14 @@ func statusHarness(t *testing.T) (*harness, []intake.Handler, *statusRecorder) {
 	h.recordIssue(record.Issue{Key: statusChild, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: statusRoot, Parent: &root,
 		Project: testDispatchProject, Title: "the child", Phase: phase.Planning, Generation: 1, Status: "in_progress", DispatchStatus: "in_progress",
 		Rank: "B", LastDispatchSeq: 4})
+	// The child's planner runs, so its claim is stored: a park writes one stop for each stored claim
+	// of the child (the workflow's everyClaim).
+	if _, err := h.store.Pool().Exec(context.Background(), `insert into claims (token, project, tree, issue, role, generation, session, session_file,
+		state, launch_failures, prompt_failures, prompt_retires, uncertain_streak)
+		values ($1, 'legion', $2, $3, 'planner', 1, '', '', 'working', 0, 0, 0, 0)`,
+		"legion-legion-legion-209-planner", statusRoot, statusChild); err != nil {
+		t.Fatalf("store the child's planner claim: %v", err)
+	}
 	approved := 1
 	if err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.PutSlot(context.Background(), tx, record.Slot{Issue: statusRoot, Index: 0, AdmittedAt: time.Date(2026, 9, 23, 12, 0, 0, 0, time.UTC)}); err != nil {

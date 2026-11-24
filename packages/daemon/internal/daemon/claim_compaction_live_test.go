@@ -266,7 +266,8 @@ func (r *claimCompactionLive) pane(token claim.Token) *compactPane {
 	return held
 }
 
-// token is the claim token of role on key, as the daemon spells it.
+// token is the claim token of the agent named for role on key, the role's own claim
+// (claim.NewToken), as the daemon spells it.
 func (r *claimCompactionLive) token(key string, role claim.Role) claim.Token {
 	r.t.Helper()
 	token, err := claim.NewToken(r.project, key, role)

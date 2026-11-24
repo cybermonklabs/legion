@@ -168,13 +168,23 @@ func (h *harness) stop() []Event {
 }
 
 // peer is a shim stand-in on the far side of one real connection: it writes raw lines and
-// reads the daemon's frames back.
+// reads the daemon's frames back, keeping each line as it came off the wire (lines).
 type peer struct {
 	t      *testing.T
 	conn   net.Conn
 	frames chan shimwire.Frame
 	closed chan struct{}
 	writer *shimwire.Writer
+
+	mu  sync.Mutex
+	raw []string
+}
+
+// lines is every line the daemon has written so far, as it came off the wire.
+func (p *peer) lines() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return slices.Clone(p.raw)
 }
 
 func dial(t *testing.T, addr string) *peer {
@@ -207,6 +217,9 @@ func dial(t *testing.T, addr string) *peer {
 				t.Errorf("the daemon wrote a line that is not a frame: %v", err)
 				return
 			}
+			p.mu.Lock()
+			p.raw = append(p.raw, string(line))
+			p.mu.Unlock()
 			p.frames <- frame
 		}
 	}()

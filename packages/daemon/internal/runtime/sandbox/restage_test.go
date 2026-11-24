@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"context"
+	"maps"
 	"slices"
 	"strings"
 	"testing"
@@ -452,11 +453,11 @@ const repositoryDirectory = "acme/widgets"
 func projectARepositoryDirectory(t *testing.T, g *rig, r *Runtime, name string) {
 	t.Helper()
 	projectGhItems(t, g, r, name, ghItemsFor(slices.Sorted(slices.Values(append(slices.Clone(staticDirs), repositoryDirectory)))...))
-	for _, role := range podKindFor(claim.RoleTester).roles() {
+	for _, role := range podKindFor(claim.RoleTester).roles(r) {
 		if g.secret(roleSecretName(name, role)) == nil {
 			continue
 		}
-		rendered := ghconfig.Render(staticOwnerToken(role, "acme"), string(appauth.AppRoleFor(role)), staticCredentialExpiry)
+		rendered := ghconfig.Render(staticOwnerToken(role, "acme"), string(appOf(t, role)), staticCredentialExpiry)
 		editSecret(g, roleSecretName(name, role), func(secret *corev1.Secret) {
 			secret.Data[GitHubHostsKey(repositoryDirectory)] = []byte(rendered.Hosts)
 			secret.Data[GitHubConfigKey(repositoryDirectory)] = []byte(rendered.Config)
@@ -470,7 +471,7 @@ func projectARepositoryDirectory(t *testing.T, g *rig, r *Runtime, name string) 
 // r reads to hold it.
 func projectGhItems(t *testing.T, g *rig, r *Runtime, name string, items []corev1.KeyToPath) {
 	t.Helper()
-	roles := podKindFor(claim.RoleTester).roles()
+	roles := podKindFor(claim.RoleTester).roles(r)
 	project := func(spec *corev1.PodSpec) {
 		for i, volume := range spec.Volumes {
 			for _, role := range roles {
@@ -608,7 +609,7 @@ func servedOwnerDirs(t *testing.T, repos []ghrepo.Repository) []string {
 	served := servesOneOf(listed)
 	renames := ghrepo.MustRenames(smokeRename)
 	installed := appauth.NewInstalled()
-	credential := appauth.GitHubCredential(sourceOf(&namedLeases{}, installedOnServed{repos: listed}), served, renames, installed, nil, nil)
+	credential := appauth.GitHubCredential(sourceOf(&namedLeases{}, installedOnServed{repos: listed}), served, renames, installed, nil, nil, nil)
 	for _, role := range []claim.Role{claim.RoleImplementer, claim.RoleReviewer} {
 		if _, err := credential(context.Background(), role, recordedSmoke); err != nil {
 			t.Fatalf("the %s's bundle: %v", role, err)
@@ -1070,19 +1071,44 @@ func TestAClaimMidLaunchWithAStaleStreamIsReported(t *testing.T) {
 	}
 }
 
-// Recording a generation's addresses costs one API write per role start: a role started in a
-// running issue pod sends the Sandbox one patch, of that role's annotation alone, and nothing else.
+// Recording a generation's addresses costs one API write per start: a claim started in a running
+// issue pod sends the Sandbox one patch, of its slot's annotation alone. The first start
+// of a claim in a slot of that pod also records, once, on the slot's Secret the role its process
+// runs as (launchedRoleAnnotation), which the refresher renders the slot for, and changes nothing
+// else of the Secret: the pod's build recorded no launch in that slot. A later start of the same
+// claim in the same role writes the patch alone.
 func TestARoleStartedInARunningPodWritesOnlyItsAddressRecord(t *testing.T) {
 	g := newRig(t, nil)
 	g.spawn(rootSpec(t))
+	slot := roleSecretName(SandboxName(workerToken), claim.RoleTester)
+	before := g.secret(slot).DeepCopy()
 	g.clearActions()
-	g.spawn(workerSpec(t))
+	spec := workerSpec(t)
+	g.spawn(spec)
 	writes := g.writes()
-	if len(writes) != 1 || writes[0].verb != "patch" || writes[0].resource != "sandboxes" || writes[0].name != SandboxName(workerToken) {
-		t.Fatalf("a start in a running pod wrote %v, want one patch of its Sandbox", writes)
+	if len(writes) != 2 || writes[0].verb != "patch" || writes[0].resource != "sandboxes" || writes[0].name != SandboxName(workerToken) ||
+		writes[1].verb != "update" || writes[1].resource != "secrets" || writes[1].name != slot {
+		t.Fatalf("a first start in a running pod wrote %v, want one patch of its Sandbox and one update of its slot's Secret", writes)
 	}
 	if body := writes[0].patch; !strings.Contains(body, addressesAnnotation(claim.RoleTester)) || strings.Contains(body, addressesAnnotation(claim.RoleArchitect)) {
 		t.Errorf("the patch %s is not the tester's record alone", body)
+	}
+	after := g.secret(slot)
+	if want := launchedRecord(spec.Generation, claim.RoleTester); !maps.EqualFunc(after.Data, before.Data, slices.Equal) || after.Annotations[launchedRoleAnnotation] != want {
+		t.Errorf("the slot's Secret holds %v with the record %q, want its data unchanged and the record %q",
+			slices.Sorted(maps.Keys(after.Data)), after.Annotations[launchedRoleAnnotation], want)
+	}
+	delete(after.Annotations, launchedRoleAnnotation)
+	delete(before.Annotations, launchedRoleAnnotation)
+	if !maps.Equal(after.Annotations, before.Annotations) {
+		t.Errorf("the slot's Secret has the annotations %v, want %v beside the record", after.Annotations, before.Annotations)
+	}
+	g.clearActions()
+	spec.Generation++
+	g.spawn(spec)
+	writes = g.writes()
+	if len(writes) != 1 || writes[0].verb != "patch" || writes[0].resource != "sandboxes" || writes[0].name != SandboxName(workerToken) {
+		t.Fatalf("a later start of the same role wrote %v, want one patch of its Sandbox", writes)
 	}
 	t.Logf("one role start: %d write, %d bytes of patch body", len(writes), len(writes[0].patch))
 }

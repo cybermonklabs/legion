@@ -29,7 +29,8 @@ import (
 // refused is never kept: its refusal is read again on the next call, as it was before there were
 // copies.
 //
-// The copies are under the role's own state directory, $XDG_STATE_HOME/legion-gh/help, one for
+// The copies are under the agent's own state directory, $XDG_STATE_HOME/legion-gh/help (in a pod,
+// its slot's state home, whatever role its step is on), one for
 // each command path and each set of the variables ghHelpEnvDigest reads. They are written as files
 // of mode 0600 in a directory of mode 0700 (ghStateDir, ghReplaceFile), and a copy is read only
 // where neither it nor its directory is a link and the user this process runs as owns both, with

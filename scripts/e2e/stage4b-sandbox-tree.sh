@@ -723,9 +723,10 @@ claim_moved_or_held() {
   daemon_state | jq -e --arg issue "$1" --arg role "$2" --arg uid "$3" '.issues[$issue] |
     .phase == "held" or (((if $role == "architect" then .architect else .workers[$role].claim end).locator.sandbox.podUid // "") as $n | $n != "" and $n != $uid)' >/dev/null
 }
-# A phase worker stays live from its role's first assignment until its issue closes. record_resident
-# ISSUE ROLE keeps the session, composed process incarnation, container and pod uid it first
-# registered with; resident_kept requires every one still match.
+# A phase worker stays live from its first assignment until its issue closes: this run gives no
+# plan, so no step is keyed and no claim is re-roled. record_resident ISSUE ROLE keeps the
+# session, composed process incarnation, container and pod uid it first registered with;
+# resident_kept requires every one still match.
 record_resident() {
   local kept="$work/resident-$1-$2.json"
   [ -s "$kept" ] && return 0
@@ -927,14 +928,15 @@ roles_exec() {
 
 # ---- each role's GitHub credential: the gh files its namespaces alone bind (LEGION-631) ----------
 
-# A role's GitHub App tokens are a gh bundle at /var/run/legion/gh in its own namespaces
-# (LEGION_GH_OWNERS_DIR), one directory per owner of the project, projected from its role Secret
-# into its directory of the roles container's roles directory, bound there by its role-init alone,
-# and rewritten in place by the daemon as a lease turns over; its GH_CONFIG_DIR is the directory of
-# the run's repository's owner, which holds its App's write token. The checks read that hosts.yml
-# through sha256 (gh_hosts_hash) and read the token itself into a shell variable only
-# (gh_hosts_token), never into the evidence or a note; `pod_viewer` is what the role's plain gh
-# says it is, which only that App's token answers.
+# A slot's GitHub App tokens, the App of the role its process was launched as (here the role the
+# slot's agent is named for, since no step of this run is keyed), are a gh bundle at
+# /var/run/legion/gh in its own namespaces (LEGION_GH_OWNERS_DIR), one directory per owner of the
+# project, projected from its slot's Secret into its directory of the roles container's roles
+# directory, bound there by its role-init alone, and rewritten in place by the daemon as a lease
+# turns over; its GH_CONFIG_DIR is the directory of the run's repository's owner, which holds its
+# App's write token. The checks read that hosts.yml through sha256 (gh_hosts_hash) and read the
+# token itself into a shell variable only (gh_hosts_token), never into the evidence or a note;
+# `pod_viewer` is what the role's plain gh says it is, which only that App's token answers.
 gh_owners_dir=/var/run/legion/gh
 gh_config_dir=$gh_owners_dir/$(tr '[:upper:]' '[:lower:]' <<<"${repo%%/*}")
 gh_hosts_hash() { pod_exec "$1" "$2" sh -c "sha256sum $gh_config_dir/hosts.yml | cut -d' ' -f1"; }
@@ -1012,7 +1014,8 @@ operator_gh() {
   env GH_CONFIG_DIR="$dir" GH_TOKEN= GITHUB_TOKEN= GH_HOST= "$real_gh" "$@"
 }
 # gh_log_line MSG POD ROLE prints the daemon's newest credential log line with MSG (`written` or
-# `refreshed`) for the role's Secret, as the daemon logs it (sandbox runtime: github credential …).
+# `refreshed`) for the Secret of ROLE's slot, named for its agent, which here is the role, as the
+# daemon logs it (sandbox runtime: github credential …).
 gh_log_line() {
   jq -R -s -c --arg msg "sandbox runtime: github credential $1" --arg sandbox "$2" --arg role "$3" \
     '[split("\n")[] | fromjson? | select(.msg == $msg and .sandbox == $sandbox and .role == $role)] | last // empty' "$daemon_log" | grep .
@@ -1920,7 +1923,8 @@ hold_end_charged() {
 # pod_watch_verdict WATCH ACTIONS DAEMONLOG prints every pod of the run the node ended (Evicted, or
 # a container OOMKilled), and every claim process the daemon found dead (`supervise: process died`)
 # that no driver action ended, and exits 1 when there is any. The daemon names the dead process by
-# its claim, whose last word is its role, and its incarnation, `<pod uid>/<generation>`; the driver
+# its claim, whose last word is its agent's name, here the role the agent is named for, since this
+# run gives no plan and keys no step, and its incarnation, `<pod uid>/<generation>`; the driver
 # records an action by pod uid (driver_action). A `kill-role` ended one role, so it accounts
 # for a death of that role, of any generation, in its pod and no other role's; a `delete-pod` or
 # `close` ended the whole pod, so it accounts for a death of any role in it. A record line in any
@@ -2180,12 +2184,13 @@ shape_problems() {
       ([$s.initContainers[]? | select(.name != "workspace-fetch") | .volumeMounts[]? | select(.mountPath == "/var/run/legion/provision")] | if length > 0 then "the provision volume is mounted outside workspace-fetch" else empty end),
       ([$c.volumeMounts[]? | select(.mountPath == "/var/run/legion/provision")] | if length > 0 then "the roles container mounts the provision volume" else empty end),
       ([$s.initContainers[]? | select(.name == "workspace-init") | .volumeMounts[]? | select(.name == "feed" and .readOnly != true)] | if length > 0 then "workspace-init mounts the feed writable" else empty end),
-      # Each role holds its GitHub App tokens in a gh volume of its own (LEGION-631): gh-<role>
-      # projects the two gh keys of each owner in that role Secret as <owner>/hosts.yml and
-      # <owner>/config.yml, and the one renames key of the bundle as renames.txt in the root, which
-      # both wrappers route a moved repository by (INFRA-2543), read-only under
-      # the role directory of the roles directory, which only
-      # that role namespace binds back at LEGION_GH_OWNERS_DIR; no init container mounts one; the
+      # Each slot holds the GitHub App tokens of the role its process was launched as, here the
+      # role its agent is named for, in a gh volume of its own (LEGION-631): gh-<slot> projects the
+      # two gh keys of each owner in that slot Secret as <owner>/hosts.yml and <owner>/config.yml,
+      # and the one renames key of the bundle as renames.txt in the root, which both wrappers route
+      # a moved repository by (INFRA-2543), read-only under the slot directory of the roles
+      # directory, which only that slot namespace binds back at LEGION_GH_OWNERS_DIR; no init
+      # container mounts one; the
       # clone helper is legion git-credential; and no process namespace is shared with another pod.
       # An <owner> is a lowercased login, as the directory of a bundle is (ghconfig.IsOwner), and
       # the `_<shortcode>` a managed user ends in is part of one, so a key of any other shape is
@@ -4535,8 +4540,9 @@ pass
 begin github-credential
 # Each role's GitHub App token is a file its plain gh and git read (LEGION-631): the implementer's
 # namespaces hold the implement App's hosts.yml under /var/run/legion/gh, the reviewer's the review
-# App's, each bound there by that role's role-init from its own gh-<role> volume of its own role
-# Secret, which the pod's one `roles` container mounts under the role's directory of the roles
+# App's, each bound there by that slot's role-init from its own gh-<slot> volume of its own slot
+# Secret (each slot named for its agent, here the role, since no step of this run is keyed),
+# which the pod's one `roles` container mounts under the slot's directory of the roles
 # directory. Neither reads the other's: inside a role's namespaces the roles directory is covered
 # empty and /proc lists the role's own processes alone, so no path reaches a sibling's files, and
 # what the role sees at /var/run/legion/gh is its own directory's (the hashes match the container's
@@ -5574,8 +5580,8 @@ begin address-moved-env-same-pod
 # The daemon restarts with one address it hands its role processes respelled: envoy_url with its
 # host upper-cased (upper_host), the same Envoy listener, so only the ENVOY_URL each role generation
 # is handed differs, and the worker stream and the API stay where they were. The issue Sandbox
-# records, per role, the sha256 of each address that role's running generation was started with
-# (annotation legion.dev/addresses-<role>), so the runtime reports every live role stale_address
+# records, per slot, the slot of each claim's agent, the sha256 of each address that slot's running
+# generation was started with (annotation legion.dev/addresses-<slot>), so the runtime reports every live role stale_address
 # naming ENVOY_URL alone, and its claim's supervisor relaunches it at once through its launch path
 # (docs/kubernetes.md, "A pod whose address moved"): its next generation in the same issue pod, whose
 # launcher dials the unchanged stream, resuming the same session, told the new spelling, with no

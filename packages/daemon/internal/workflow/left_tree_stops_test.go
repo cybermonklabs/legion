@@ -15,8 +15,10 @@ import (
 )
 
 // An adoption moves a member of a closed tree into a live one. The move queues the old tree's
-// suspend of every role at the member's old generation. The outbox decides whether each role's
-// claim still stands in that tree when its row runs.
+// suspend of every stored claim of the member at its old generation, one row naming each claim
+// (everyClaim), whatever tree or state it holds, and one row naming no claim for each role whose
+// step's claim it named none of, which reaches a claim that comes up after the move. The outbox
+// decides whether each claim still stands in that tree when its row runs.
 func TestAnAdoptionQueuesTheOldTreesStopOfEachClaimItLeavesThere(t *testing.T) {
 	const closedRoot, member, liveRoot = "LEGION-207", "LEGION-208", "LEGION-300"
 	pool := migratedPool(t)
@@ -63,16 +65,23 @@ func TestAnAdoptionQueuesTheOldTreesStopOfEachClaimItLeavesThere(t *testing.T) {
 		got = append(got, decodeSupervise(t, row))
 	}
 	reason := member + " left tree " + closedRoot
+	named := func(role claim.Role) claim.Token {
+		token, err := claim.NewToken("legion", member, role)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return token
+	}
 	want := []record.SuperviseRequest{
-		{Op: "suspend", Tree: closedRoot, Role: claim.RoleArchitect, Generation: 3, Reason: reason},
+		{Op: "suspend", Tree: closedRoot, Role: claim.RoleArchitect, Claim: named(claim.RoleArchitect), Generation: 3, Reason: reason},
+		{Op: "suspend", Tree: closedRoot, Role: claim.RoleImplementer, Claim: named(claim.RoleImplementer), Generation: 3, Reason: reason},
+		{Op: "suspend", Tree: closedRoot, Role: claim.RoleReviewer, Claim: named(claim.RoleReviewer), Generation: 3, Reason: reason},
+		{Op: "suspend", Tree: closedRoot, Role: claim.RoleTester, Claim: named(claim.RoleTester), Generation: 3, Reason: reason},
 		{Op: "suspend", Tree: closedRoot, Role: claim.RolePlanner, Generation: 3, Reason: reason},
-		{Op: "suspend", Tree: closedRoot, Role: claim.RoleImplementer, Generation: 3, Reason: reason},
-		{Op: "suspend", Tree: closedRoot, Role: claim.RoleTester, Generation: 3, Reason: reason},
-		{Op: "suspend", Tree: closedRoot, Role: claim.RoleReviewer, Generation: 3, Reason: reason},
 		{Op: "suspend", Tree: closedRoot, Role: claim.RoleMerger, Generation: 3, Reason: reason},
 	}
 	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("the adoption queued supervise rows %+v for %s; want the old tree's suspend of every role, including the reviewer already in another tree: %+v",
+		t.Fatalf("the adoption queued supervise rows %+v for %s; want the old tree's suspend of every stored claim, naming it, the reviewer already in another tree included: %+v",
 			got, member, want)
 	}
 }

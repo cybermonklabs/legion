@@ -27,8 +27,10 @@ var firedHook = record.HookPrompt{Hook: "back-to-implementing", Role: claim.Role
 
 // A hook prompt is the deployment's own words for the round a move back opened, and the role the
 // hook named is who they were written for: the row publishes its own message — the daemon's facts
-// of the firing and then the hook's words — to that role's Envoy topic, under the row's own key and
-// with keep, so the listener keeps it for a role no live session holds, and the row ends there.
+// of the firing and then the hook's words — to the Envoy topic of the claim the row names, or, for
+// a row like this one that names none, of the worker on that role's step, here the role's own
+// claim, under the row's own key and with keep, so the listener keeps it for a claim no live
+// session holds, and the row ends there.
 func TestAHookPromptReachesItsRolesOwnTopicAndEndsTheRow(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -173,7 +175,11 @@ func TestAHookPromptFollowsAnOperatorsResumeOfItsParkedWakeWithinTheBound(t *tes
 func TestAHookPromptRetriesEveryFailureButNoHolder(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	row := mustOutboxRow(t, "LEGION-208", firedHook, time.Now())
+	// The prompt names the claim of the implementer's step, as the workflow writes it (fireHook):
+	// this runner has no record to read the step from.
+	named := firedHook
+	named.Claim = mustClaimToken(t, "LEGION-208", claim.RoleImplementer)
+	row := mustOutboxRow(t, "LEGION-208", named, time.Now())
 	row.ID = 61
 	publisher := &outboxPublisher{}
 	runner := &outbox{project: "legion", notices: publisher, log: quietLogger()}

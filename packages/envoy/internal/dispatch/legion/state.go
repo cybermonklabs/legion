@@ -87,8 +87,8 @@ type Slot struct {
 	Index int `json:"index"`
 }
 
-// Claim is one role's claim, in the one field Dispatch observes: where it is in its life
-// (supervise.ClaimState).
+// Claim is one claim of an issue as the daemon's state reports it, the architect's or a phase
+// worker's, in the one field Dispatch observes: where it is in its life (supervise.ClaimState).
 type Claim struct {
 	State string `json:"state"`
 }

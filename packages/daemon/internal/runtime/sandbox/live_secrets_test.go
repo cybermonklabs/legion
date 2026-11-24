@@ -53,12 +53,14 @@ func (r *liveRig) ensureEnrolled(c *liveClaim) (string, error) {
 	return r.enroll(c, regs[len(regs)-1])
 }
 
+// agentSecretsSlot is the broker's slot of c's process as the daemon spells it (supervise's
+// enrollmentSlot): the slot of c's agent, the name its token ends in, and the generation.
 func agentSecretsSlot(c *liveClaim) string {
-	return fmt.Sprintf("%s-g%d", c.role, c.loc.Sandbox.Generation)
+	return fmt.Sprintf("%s-g%d", slotOf(c.token), c.loc.Sandbox.Generation)
 }
 
-// enroll is the daemon's enrollment of c's role process: the identity its hello carried, the
-// actual pod UID separate from its composed process incarnation, the role-generation slot and a
+// enroll is the daemon's enrollment of c's process: the identity its hello carried, the
+// actual pod UID separate from its composed process incarnation, the agent-generation slot and a
 // session id the harness mints (the stub agent registers none). It carries no issue: each secret's
 // owner and tier tags pick a request's approver at request time, never at enrollment. The id goes
 // to the shim over the claim's connection. An enrollment the harness holds for an earlier

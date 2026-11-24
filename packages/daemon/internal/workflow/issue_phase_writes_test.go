@@ -43,7 +43,7 @@ func tryInTx(t *testing.T, pool *pgxpool.Pool, engine *Engine, write func(ctx co
 func forgeTaskPlace(t *testing.T, pool *pgxpool.Pool, key string, generation uint64, place record.TaskPlace) {
 	t.Helper()
 	seedRecord(t, pool, func(tx pgx.Tx) error {
-		return record.NewStore().MoveTask(t.Context(), tx, key, generation, "a", place, record.TaskRunning)
+		return seedMove(t.Context(), tx, key, generation, "a", place, record.TaskRunning)
 	})
 }
 
@@ -53,48 +53,22 @@ func forgeTaskPlace(t *testing.T, pool *pgxpool.Pool, key string, generation uin
 // place and the phase that place stands in. Each fixture puts the task elsewhere through the store
 // alone, since no write of the workflow can leave the two apart. The writers that move the task
 // before they write (transition and its hold before the retro, closeMerged, leave and
-// beginLinger) or that refuse a task elsewhere themselves (startHeldRetro) write the phase the
-// place gives, so no fixture makes them disagree.
+// beginLinger), that write a task's copy (putScope: the retry of a hold and the hold of a stop,
+// whose copy stands where its task stands, so its write cannot disagree with it) or that refuse a
+// task elsewhere themselves (startHeldRetro, and claimFailed, whose failed role runs no step at the
+// issue's phase while its task stands elsewhere) write the phase the place gives, so no fixture
+// makes them disagree: claimFailed's refusal, which writes no hold and tells the architect, is the
+// last case.
 func TestAWriteOfAPhaseThatDisagreesWithItsTasksPlaceIsRefused(t *testing.T) {
-	reviewing := record.TaskPlace{Kind: record.PlaceStep, Position: 3}
 	implementing := record.TaskPlace{Kind: record.PlaceStep, Position: 1}
 	for _, tc := range []struct {
 		name       string
 		at         phase.Phase
-		heldFrom   phase.Phase
 		generation uint64
 		place      record.TaskPlace
 		write      func(ctx context.Context, tx pgx.Tx, engine *Engine, issue record.Issue) error
 		refusal    string
 	}{
-		{
-			name: "the hold of a failed claim (claimFailed)", at: phase.Implementing, generation: 1, place: reviewing,
-			write: func(ctx context.Context, tx pgx.Tx, engine *Engine, issue record.Issue) error {
-				_, err := engine.claimFailed(ctx, tx, intake.ClaimFailed{Issue: issue.Key, Role: claim.RoleImplementer})
-				return err
-			},
-			refusal: "put LEGION-208 at generation 1: it stands in held from implementing, and its task a is running at {Kind:step Position:3}, which stands in reviewing",
-		},
-		{
-			name: "the retry of a hold (retryPhase)", at: phase.Held, heldFrom: phase.Implementing, generation: 1, place: reviewing,
-			write: func(ctx context.Context, tx pgx.Tx, engine *Engine, issue record.Issue) error {
-				_, err := engine.retryPhase(ctx, tx, issue, phase.Implementing, "the architect retried the phase", false)
-				return err
-			},
-			refusal: "put LEGION-208 at generation 1: it stands in implementing, and its task a is running at {Kind:step Position:3}, which stands in reviewing",
-		},
-		{
-			name: "the hold of a stop (stopTask)", at: phase.Implementing, generation: 1, place: reviewing,
-			write: func(ctx context.Context, tx pgx.Tx, engine *Engine, issue record.Issue) error {
-				w, err := engine.walk(ctx, tx, issue)
-				if err != nil {
-					return err
-				}
-				_, err = engine.stopTask(ctx, tx, issue, w, stopsBy, stopsBy, stepStopped)
-				return err
-			},
-			refusal: "put LEGION-208 at generation 1: it stands in held from implementing, and its task a is stopped at {Kind:step Position:3}, which stands in reviewing",
-		},
 		{
 			name: "a root's wait on a person (enterAwaiting)", at: phase.Admitted, generation: 1, place: implementing,
 			write: func(ctx context.Context, tx pgx.Tx, engine *Engine, issue record.Issue) error {
@@ -127,9 +101,6 @@ func TestAWriteOfAPhaseThatDisagreesWithItsTasksPlaceIsRefused(t *testing.T) {
 			pool := migratedPool(t)
 			engine := returnEngine()
 			root := stepRoot(t, pool, tc.at)
-			if tc.heldFrom != "" {
-				holdFrom(t, pool, root.Key, tc.heldFrom)
-			}
 			seedStepsPlan(t, pool, root.Key, tc.generation, "implementer", "tester", "reviewer")
 			forgeTaskPlace(t, pool, root.Key, tc.generation, tc.place)
 			before := issueOf(t, pool, engine, root.Key)
@@ -146,6 +117,26 @@ func TestAWriteOfAPhaseThatDisagreesWithItsTasksPlaceIsRefused(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("the hold of a failed claim (claimFailed) refuses a task elsewhere itself", func(t *testing.T) {
+		pool := migratedPool(t)
+		engine := returnEngine()
+		root := stepRoot(t, pool, phase.Implementing)
+		seedStepsPlan(t, pool, root.Key, 1, "implementer", "tester", "reviewer")
+		forgeTaskPlace(t, pool, root.Key, 1, record.TaskPlace{Kind: record.PlaceStep, Position: 3})
+		if err := tryInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
+			_, err := engine.claimFailed(ctx, tx, intake.ClaimFailed{Issue: root.Key, Role: claim.RoleImplementer})
+			return err
+		}); err != nil {
+			t.Fatalf("the failed claim = %v, want no write to refuse: the implementer runs no step at implementing", err)
+		}
+		if after := issueOf(t, pool, engine, root.Key); after.Phase != phase.Implementing || after.Hold != nil {
+			t.Fatalf("%s after the failed claim stands in %s with hold %+v, want implementing and no hold", root.Key, after.Phase, after.Hold)
+		}
+		if notices := noticesOfKind(t, pool, root.Key, "worker-died"); len(notices) != 1 {
+			t.Fatalf("the worker-died notices of %s = %d, want the one that says the implementer works no step there", root.Key, len(notices))
+		}
+	})
 }
 
 // A root that leaves the workflow while the operator runs a tree under its key ends its task as

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/url"
 	"slices"
 	"strings"
 	"time"
@@ -88,13 +87,13 @@ func (w *workflowRuntime) followHead(ctx context.Context, github githubrest.Clie
 	return w.openRecord(ctx, pr)
 }
 
-// openRecord is pr's issue's pull request record as it stands now, which must still be pr's and
-// open.
+// openRecord is the pull request record of pr's task (record.PullRequest.Task) as it stands now,
+// which must still be pr's and open.
 func (w *workflowRuntime) openRecord(ctx context.Context, pr record.PullRequest) (record.PullRequest, error) {
 	var current *record.PullRequest
 	if err := store.TransactWith(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
-		current, err = w.records.PullRequest(ctx, tx, pr.Issue)
+		current, err = w.records.PullRequestOfTask(ctx, tx, pr.Issue, pr.Task)
 		return err
 	}); err != nil {
 		return pr, fmt.Errorf("read the pull request record of %s: %w", pr.Issue, err)
@@ -326,37 +325,23 @@ func (w *workflowRuntime) heardSpelling(repo string) string {
 	return repo
 }
 
-// openPullRequestOn is the open pull request of repo on branch (GET
-// /pulls?head=<owner>:<branch>&state=open), and whether there is one. The list's filter is not
-// taken on trust: a listed pull request counts only when its head.ref is branch, the same identity
-// the webhook path reads (intake's decodePullRequest takes head_ref alone), whichever repository
-// the head lives in. The workflow keeps one pull request per branch and assumes one is open at a
-// time, so of two it takes the first GitHub lists.
+// openPullRequestOn is the open pull request of repo on branch, and whether there is one, as
+// githubrest.Client.OpenPullRequestOn reads it.
 //
 // The repository GitHub serves the recorded one under is what this reads, addresses and filters
 // on (repositories.serving): after a transfer the record keeps the old name, and the head filter
 // names an owner, so a listing made under the recorded name would ask the wrong installation for
 // heads of an owner that holds none and find no pull request at all — which the caller reports as
 // a pull request that has gone missing.
-func (w *workflowRuntime) openPullRequestOn(ctx context.Context, repo, branch string) (githubPullRequest, bool, error) {
+func (w *workflowRuntime) openPullRequestOn(ctx context.Context, repo, branch string) (githubrest.PullRequest, bool, error) {
 	recorded, err := ghrepo.Parse("the issue's repository", repo)
 	if err != nil {
-		return githubPullRequest{}, false, err
+		return githubrest.PullRequest{}, false, err
 	}
 	repository := w.repositories.serving(recorded)
 	github, err := implementClient(ctx, w.tokens, w.githubAPI, repository)
 	if err != nil {
-		return githubPullRequest{}, false, fmt.Errorf("mint the implement App token for %s: %w", repository.Owner(), err)
+		return githubrest.PullRequest{}, false, fmt.Errorf("mint the implement App token for %s: %w", repository.Owner(), err)
 	}
-	var pulls []githubPullRequest
-	query := url.Values{"head": {repository.Owner() + ":" + branch}, "state": {"open"}}
-	if err := github.Get(ctx, "/pulls?"+query.Encode(), &pulls); err != nil {
-		return githubPullRequest{}, false, err
-	}
-	for _, pull := range pulls {
-		if pull.Head.Ref == branch {
-			return pull, true, nil
-		}
-	}
-	return githubPullRequest{}, false, nil
+	return github.OpenPullRequestOn(ctx, repository, branch)
 }

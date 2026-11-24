@@ -62,6 +62,22 @@ func TestTheProjectsDefaultStepsReachTheEngine(t *testing.T) {
 	}
 }
 
+// The engine's deployment is the file's (config.Config.Deployment): Legion's own roles of a step
+// and each role of `roles`, each with its type, which a step of that role is stored with.
+// The package names its resolved configuration plan, so the types are written as their words.
+func TestTheDeploymentReachesTheEngine(t *testing.T) {
+	t.Parallel()
+	cfg := config.Config{Project: "DEMO", Projects: map[string]config.Project{"DEMO": {}},
+		Roles: []config.Role{{Name: "checker", Type: "testing"}}}
+	deployment := engineConfig(cfg, "legion-reviewer[bot]", nil).Deployment
+	if got := deployment.Roles["checker"].Type; got != "testing" {
+		t.Fatalf("the engine's type of checker = %q, want testing", got)
+	}
+	if got := deployment.Roles["implementer"].Type; got != "implementation" {
+		t.Fatalf("the engine's type of implementer = %q, want implementation", got)
+	}
+}
+
 // loginTokens answers each App role's lease, and its login, with the bot login named for it.
 type loginTokens map[appauth.AppRole]string
 

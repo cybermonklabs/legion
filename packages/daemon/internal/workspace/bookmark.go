@@ -69,7 +69,8 @@ var (
 //     branches with it.
 //   - No row at all is an issue whose branch GitHub does not have, such as a merged branch GitHub
 //     deleted. The workspace starts at the repository's default branch (workspace.DefaultBranch),
-//     resolved to one commit first (baseCommit), with the bookmark created on it.
+//     resolved to one commit first (baseCommit), with the bookmark created on it. A task's working
+//     copy names no default branch (ProvisionTask), and with no row is refused by name.
 func createWorkspace(ctx context.Context, run Runner, workspace Workspace, log func(string)) error {
 	cloneDir := workspace.Clone
 	workspaceName := filepath.Base(workspace.Dir)
@@ -121,6 +122,12 @@ func createWorkspace(ctx context.Context, run Runner, workspace Workspace, log f
 		}
 	}
 	fromBase := revision == ""
+	// A task's working copy (ProvisionTask) names no default branch: it starts at the task's
+	// branch, which GitHub has from the task's start, and nowhere else.
+	if fromBase && workspace.DefaultBranch == "" {
+		return fmt.Errorf("Branch %s is neither in the shared clone %s nor on its origin; workspace %s was not created. A task's working copy starts at the task's branch, which the daemon makes on GitHub when the task starts",
+			workspace.Bookmark, cloneDir, workspace.Dir)
+	}
 	if fromBase {
 		if revision, err = baseCommit(ctx, run, workspace); err != nil {
 			return err

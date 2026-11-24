@@ -64,8 +64,9 @@ if (!isLegionRole(role)) {
   console.error(`${role} is not a Legion role`);
   process.exit(2);
 }
-/** Encoded exactly as the daemon encodes it (`legion-<project>-<key>-<role>`, lower-cased),
- * since the worker claims this token on the real Envoy and Envoy rejects uppercase. */
+/** The claim token of the agent named for the role, the role's own claim, encoded exactly as the
+ * daemon encodes it (`legion-<project>-<key>-<agent>`, lower-cased, the agent's name here being
+ * the role), since the worker claims this token on the real Envoy and Envoy rejects uppercase. */
 const ROLE_TOKEN = roleToken(project, issue, role);
 /** The worker's registration secret: random, as the daemon's is, since the pane holds it and
  * scrubs it from every line it prints (`@legion/contracts/held-secrets`). */

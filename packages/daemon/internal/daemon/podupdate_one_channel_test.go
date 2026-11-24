@@ -62,8 +62,8 @@ func (r *podUpdateRig) prompts() map[claim.Role]int {
 // One pod round, over the five kinds of claim a pod holds: a role in a turn, an idle role, the
 // issue's architect, a failed claim and a claim that has left the round's pod. Over ten sweeps,
 // the role-message lane running after each, each asked claim gets exactly one update-ask row, the
-// architect's included, each naming its own role, the round, the pod and the round's one text:
-// the reasons the round opened with and the moment it ends, its opening plus
+// architect's included, each naming that claim and its own role, the round, the pod and the
+// round's one text: the reasons the round opened with and the moment it ends, its opening plus
 // pod_update_grace_minutes. Each row reaches its role's topic once and marks its claim asked. The
 // failed claim and the claim that left the pod are asked nothing, although each records the round
 // with no publish mark. No claim is sent a prompt for the round: the machine queues no task.
@@ -102,8 +102,9 @@ func TestPodUpdateAsksEachRoleOnceOnItsOwnTopicOverTenSweeps(t *testing.T) {
 	rows := map[claim.Role]int{}
 	for _, ask := range rig.asks() {
 		rows[ask.Role]++
-		if ask.Round != podUpdateRound || ask.Pod != podUpdatePod || ask.Text != text {
-			t.Errorf("the ask to the %s = %+v, want round %s of pod %s with the round's text:\n%s", ask.Role, ask, podUpdateRound, podUpdatePod, text)
+		if ask.Round != podUpdateRound || ask.Pod != podUpdatePod || ask.Text != text || ask.Claim != rig.claimOf(ask.Role).Token {
+			t.Errorf("the ask to the %s = %+v, want claim %s asked round %s of pod %s with the round's text:\n%s",
+				ask.Role, ask, rig.claimOf(ask.Role).Token, podUpdateRound, podUpdatePod, text)
 		}
 	}
 	for _, role := range asked {

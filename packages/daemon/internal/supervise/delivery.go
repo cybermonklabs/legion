@@ -82,8 +82,15 @@ type Delivery struct {
 	// look the claim's worker took (Claim.ServingCheck), and the report is of that look rather
 	// than of whichever look the check has reached (api/handoff.go, checkReport). The zero value
 	// is a task of no look: every phase task, an operator's own, a resume.
-	CheckLook   CheckLook
-	Phase       phase.Phase
+	CheckLook CheckLook
+	Phase     phase.Phase
+	// Branch is the GitHub branch of the task whose step this task is of, from the start row that
+	// queued it (record.SuperviseRequest.Branch), and "" for the issue's own branch: every task of
+	// an issue with no plan rows, of the task that holds the issue's branch, and of no start at all.
+	// Each send's adoption takes the working copy of that branch (adopt, Runtime.AdoptWorkingCopy),
+	// and a fresh session after an abandoned one is told to read it (abandonedTask). It is
+	// persisted with the delivery, so a send after a restart of the daemon adopts the same copy.
+	Branch      string
 	QueuedAt    time.Time
 	DeliveredAt time.Time
 	// MarkedBy is the delivery id the marking prompt carried: the prompt whose acknowledgement set
@@ -343,7 +350,7 @@ func (d Delivery) message(c Claim) (string, sentences) {
 	if c.Abandoned.Tells() {
 		// The task's instruction ends the last sentence before the task, so the abandoned
 		// session's carries it only where no record's sentence follows it.
-		prefix, carried.abandoned = abandonedTask(c, !relaunch && !c.EndedWork.Tells()), true
+		prefix, carried.abandoned = abandonedTask(c, d.Branch, !relaunch && !c.EndedWork.Tells()), true
 	}
 	// oldTurn is whether a turn this task was taken back from is the abandoned session's, whose
 	// sentence stands in place of the notes of that turn: an abandoned session still tells, and
@@ -609,7 +616,7 @@ func (m *Machine) queue(ctx context.Context, request RequestDeliver) error {
 	}
 	d := Delivery{ID: id, Task: request.Task, Phase: request.Phase, Generation: request.Generation, Kept: request.Kept,
 		News: request.News, NewsOnly: request.NewsOnly, Entry: request.Entry, CheckLook: request.CheckLook, QueuedAt: m.deps.Clock.Now(),
-		RoundNamed: request.RoundNamed}
+		RoundNamed: request.RoundNamed, Branch: request.Branch}
 	if request.Row > 0 || request.Entry > 0 {
 		// The claim records the row, the entry and its handshake only once the store has them
 		// with the delivery: a write that failed leaves the row undelivered and the entry ungiven,
@@ -722,14 +729,14 @@ func (c Claim) answeredOpenRound() bool {
 
 // openRoundHoldsTask is whether the claim's open round holds the task the claim has pending: the
 // hold above, over a task that is not an ask of this round (updatesRound). This daemon queues no
-// ask of a round as a task: it publishes the ask to the role's Envoy topic (record.UpdateAsk). A
-// task under an `update:` delivery id (updateTaskPrefix) is one an older daemon queued and left
-// in the store. An ask of this round is excepted, because that daemon may have sent it before
-// the worker answered, so the round's hold is not what keeps it from the worker: the restore
-// asks whether the agent holds it (askFirst), and no send of this daemon carries it
-// (sendPending drops it, and the round's end takes it back). An older daemon's ask of another
-// round, on a claim that answered its current round, is not excepted: the answered round holds
-// it, and the sendPending that runs after the round ends drops it. It is built from
+// ask of a round as a task: it publishes the ask to the Envoy topic of the claim it asks
+// (record.UpdateAsk.Claim). A task under an `update:` delivery id (updateTaskPrefix) is one an
+// older daemon queued and left in the store. An ask of this round is excepted, because that
+// daemon may have sent it before the worker answered, so the round's hold is not what keeps it
+// from the worker: the restore asks whether the agent holds it (askFirst), and no send of this
+// daemon carries it (sendPending drops it, and the round's end takes it back). An older daemon's
+// ask of another round, on a claim that answered its current round, is not excepted: the answered
+// round holds it, and the sendPending that runs after the round ends drops it. It is built from
 // sendPending's own hold rather than written out again, so the restore that reads it
 // (NewMachine) can never judge a task held that sendPending would send, or the other way about.
 func (c Claim) openRoundHoldsTask() bool {
@@ -792,17 +799,19 @@ func (c Claim) openRoundHoldsTask() bool {
 // could be worked with. So such a task waits for the credit and then for the replacement
 // process's ready, which is the same wait every other task of that claim is already in.
 //
-// This daemon queues no ask of an update round as a task: it publishes the ask to the role's
-// Envoy topic (record.UpdateAsk). A task under an `update:` delivery id (updateTaskPrefix) is one
-// an older daemon queued, and a claim restored from the store can hold one. Such a task is
-// dropped here and never sent, whichever round it names, the round the claim is in now included.
+// This daemon queues no ask of an update round as a task: it publishes the ask to the Envoy topic
+// of the claim it asks (record.UpdateAsk.Claim). A task under an `update:` delivery id
+// (updateTaskPrefix) is one an older daemon queued, and a claim restored from the store can hold
+// one. Such a task is dropped here and never sent, whichever round it names, the round the claim
+// is in now included.
 // Its text is the older daemon's, and that text can tell the worker that the daemon reads the end
 // of the turn as its answer. This daemon reads no end of a turn as an answer: only the worker's
 // ready_for_update call answers a round. A worker that read that text would end its turn and
-// take the end for its answer, so this daemon never sends it; a role that read it before the
-// deploy gets the round's Envoy ask as well. A claim that has answered its open round reaches no
-// drop here (answeredOpenRound): the task waits for the round's end, which takes back an ask of
-// that round (dropUpdateTask), and the send after the end drops an ask of any other round here.
+// take the end for its answer, so this daemon never sends it; a worker that read it before the
+// deploy gets the round's ask on its claim's Envoy topic as well. A claim that has answered its
+// open round reaches no drop here (answeredOpenRound): the task waits for the round's end, which
+// takes back an ask of that round (dropUpdateTask), and the send after the end drops an ask of any
+// other round here.
 // The delivery id names the round, and keeps it across every take-back (rotateTaskID), so an ask
 // whose turn a death cut off comes back still an ask and is dropped here rather than sent again.
 // That drop and the phase check's are one shape below, and both leave through the answer every
@@ -1013,12 +1022,18 @@ func (m *Machine) sendPending(ctx context.Context) error {
 			return m.confirmCarrying(ctx, news)
 		}
 	}
-	// Every role of an issue works one jj workspace, so a task that adopts its working copy adopts
-	// it for all of them: an adoption run while another role is in a turn moves that role's worker
-	// onto a fresh commit mid-write, and the work it goes on to do lands authored by this role —
-	// a review App's adoption took the implementer's next commit that way (dispatch://INFRA-714).
-	// The task waits for that turn instead. Nothing is written and nothing moves: the delivery is
-	// left exactly as it was, and the hold is decided again, from the claims as they stand then,
+	// Every role that works one working copy works one jj workspace — the issue's own, which
+	// every role of an issue with no plan rows and of the task that holds the issue's branch
+	// works, or the working copy of a task's own branch (Delivery.Branch) — so a task that adopts
+	// a working copy adopts it for every role working there: an adoption run while another role
+	// is in a turn there moves that role's worker onto a fresh commit mid-write, and the work it
+	// goes on to do lands authored by this role — a review App's adoption took the implementer's
+	// next commit that way (dispatch://INFRA-714). The task waits for that turn instead. A turn in
+	// another task's working copy writes nothing in this one, so it holds nothing: the reviewer of
+	// one task is sent its task while the implementer works the step of another. A turn of no
+	// known working copy (ClaimView.Copy) — a message, an operator's task, the agent's own turn —
+	// may work any of them, and holds them all. Nothing is written and nothing moves: the delivery
+	// is left exactly as it was, and the hold is decided again, from the claims as they stand then,
 	// at the next trigger — the turn's end elsewhere on the issue, which the daemon posts here
 	// (IssueTurnEnded), the sweep's observation, the shim's hello, this claim's own ready. That is
 	// what keeps the task from being stranded by a turn that never ends: a claim whose process
@@ -1038,9 +1053,9 @@ func (m *Machine) sendPending(ctx context.Context) error {
 	// with no agent round trip in it. Two sends that start inside each other's tail are what
 	// remains, and no answer read outside the other machine's lock can rule that out.
 	if m.adopts(*p) {
-		if other, inTurn := m.issueInTurn(); inTurn {
+		if other, inTurn := m.issueInTurn(p.Branch); inTurn {
 			m.log.Info("supervise: a claim of this issue is in a turn; the phase task waits rather than adopt the working copy they share",
-				"delivery", p.ID, "issue", m.claim.Issue, "inTurn", other)
+				"delivery", p.ID, "issue", m.claim.Issue, "branch", p.Branch, "inTurn", other)
 			return nil
 		}
 	}
@@ -1337,16 +1352,17 @@ func (m *Machine) relaunchAfterDrop(ctx context.Context) error {
 	return m.sendPending(ctx)
 }
 
-// phaseHolds asks whether the issue is still in the phase and run this task was queued for. A delivery
-// that names no phase is nobody's to drop — an operator's own, an architect's — and is never put
-// to the answer at all, so the exemption this package documents is this package's own rather
-// than a promise every implementation has to keep. A daemon with no workflow configured supplies
-// no answer, and every delivery holds.
+// phaseHolds asks whether the issue is still in the phase and run this task was queued for, and,
+// at the phase step, at the step of this claim's role. A delivery that names no phase is nobody's
+// to drop — an operator's own, an architect's — and is never put to the answer at all, so the
+// exemption this package documents is this package's own rather than a promise every
+// implementation has to keep. A daemon with no workflow configured supplies no answer, and every
+// delivery holds.
 func (m *Machine) phaseHolds(ctx context.Context, d Delivery) (bool, error) {
 	if m.deps.PhaseHolds == nil || d.Phase == "" {
 		return true, nil
 	}
-	holds, err := m.deps.PhaseHolds(ctx, m.claim.Issue, d.Phase, d.Generation)
+	holds, err := m.deps.PhaseHolds(ctx, m.claim, d)
 	if err != nil {
 		return false, fmt.Errorf("read the phase of %s: %w", m.claim.Token, err)
 	}
@@ -1577,17 +1593,18 @@ func (m *Machine) adopts(d Delivery) bool {
 }
 
 // issueInTurn names another claim of this claim's issue whose agent is in a turn now, or whose
-// prompt is on its way to one, when there is such a claim. The answer is the state those claims'
-// machines keep (Deps.IssueInTurn reads StateWorking, which a turn's start sets and its end
-// clears, and the send in flight those machines publish beside it) rather than a second record of
+// prompt is on its way to one, in the working copy of branch (Delivery.Branch) or in none known,
+// when there is such a claim. The answer is the state those claims' machines keep
+// (Deps.IssueInTurn reads StateWorking, which a turn's start sets and its end clears, and the send
+// in flight and the working copy those machines publish beside it) rather than a second record of
 // who is in a turn kept beside them: the machines' own state is the only account that moves with
 // everything that ends a turn — the agent's own end of it, a process found dead, a suspension, a
 // close — where a record of turn times would have to be told of each of those again.
-func (m *Machine) issueInTurn() (claim.Token, bool) {
+func (m *Machine) issueInTurn(branch string) (claim.Token, bool) {
 	if m.deps.IssueInTurn == nil || m.claim.Issue == "" {
 		return "", false
 	}
-	return m.deps.IssueInTurn(m.claim.Issue, m.claim.Token)
+	return m.deps.IssueInTurn(m.claim.Issue, m.claim.Token, branch)
 }
 
 // adopt hands the working copy the role's App identity before the phase task d reaches the agent,
@@ -1613,11 +1630,11 @@ func (m *Machine) adopt(ctx context.Context, role claim.Role, loc *runtime.Locat
 		return fmt.Errorf("%w: the git identity of %s: %w", runtime.ErrIdentityUnavailable, m.claim.Token, err)
 	}
 	started := m.deps.Clock.Now()
-	if err := m.deps.Runtime.AdoptWorkingCopy(ctx, *loc, id); err != nil {
+	if err := m.deps.Runtime.AdoptWorkingCopy(ctx, *loc, id, d.Branch); err != nil {
 		return err
 	}
 	m.log.Info("supervise: the working copy was adopted for the phase task",
-		"delivery", d.ID, "phase", string(d.Phase), "identity", id.Name, "took", m.deps.Clock.Now().Sub(started))
+		"delivery", d.ID, "phase", string(d.Phase), "branch", d.Branch, "identity", id.Name, "took", m.deps.Clock.Now().Sub(started))
 	return nil
 }
 
@@ -1845,12 +1862,15 @@ func interruptedTask(cause string) string {
 // (workflow's namedConclusions): the quotes bound it, and a newline or a quote inside it is
 // escaped rather than ending the sentence that carries it, so no refusal text can read as an
 // instruction of the daemon's own. The abandoned session's id is quoted the same way, with %q.
-func abandonedTask(c Claim, last bool) string {
+func abandonedTask(c Claim, branch string, last bool) string {
 	read := "read the issue"
+	if branch == "" {
+		branch = claim.IssueBranch(c.Issue)
+	}
 	if c.Role != claim.RoleController {
 		read = fmt.Sprintf("read the issue, then your branch %s and the handoff records its phases wrote on "+
 			"the issue, which `dispatch handoff-read --issue %s --phase <word>` reads (%s)",
-			claim.IssueBranch(c.Issue), c.Issue, handoffWords())
+			branch, c.Issue, handoffWords())
 	}
 	sentence := fmt.Sprintf("The session this claim ran before this one, %q, was abandoned where it stood: %q. "+
 		"This session is a new one: the turns, tool calls, subagents and background jobs of that session are "+

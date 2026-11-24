@@ -266,7 +266,8 @@ func (r *admissionIssuesLive) write(what string, body func(tx pgx.Tx) error) {
 	}
 }
 
-// token is the claim token of role on issue, as the daemon spells it.
+// token is the claim token of the agent named for role on issue, the role's own claim
+// (claim.NewToken), as the daemon spells it.
 func (r *admissionIssuesLive) token(issue string, role claim.Role) claim.Token {
 	r.t.Helper()
 	token, err := claim.NewToken(r.project, issue, role)

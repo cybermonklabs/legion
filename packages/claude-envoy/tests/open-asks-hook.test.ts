@@ -629,14 +629,15 @@ function unscopedTable(role?: string): string {
 // the hook writes and the JJ_CONFIG every later Bash command of the session sources. The hook
 // writes it because the pane's claim boot cannot: that boot is the MCP server Claude Code spawns
 // as a child, and a child cannot change its parent's environment. The issue line is scoped to the
-// pane's own workspace, so a commit the same shell makes in another repository carries no issue
-// line. This pane has no LEGION_ROLE, so both tables carry the session line alone.
+// jj repository of the pane's own workspace, so a commit the same shell makes in another
+// repository carries no issue line. This pane has no LEGION_ROLE, so both tables carry the session
+// line alone.
 test("writes the pane's attribution overlay and exports the chain layering it over jj's own config", async () => {
   const scratch = await mkdtemp(join(tmpdir(), "claude-envoy-hook-jj-"))
   const stateDir = join(scratch, "state")
   await mkdir(stateDir)
   const workspace = join(scratch, "workspace")
-  await mkdir(workspace)
+  await mkdir(join(workspace, ".jj", "repo"), { recursive: true })
   const userConfig = join(scratch, "jj-user.toml")
   const bin = await jjDirectory(scratch, `printf '%s\\n' ${JSON.stringify(userConfig)}`)
   const envFile = join(scratch, "session-env.sh")
@@ -663,7 +664,7 @@ test("writes the pane's attribution overlay and exports the chain layering it ov
     )
     expect(await readFile(overlay, "utf8")).toBe(
       unscopedTable() +
-        `\n[[--scope]]\n--when.workspaces = ["${await realpath(workspace)}"]\n` +
+        `\n[[--scope]]\n--when.repositories = ["${await realpath(join(workspace, ".jj", "repo"))}"]\n` +
         `[--scope.templates]\ncommit_trailers = '"Omp-Session: s-1\\nDispatch: ACME-7"'\n`,
     )
   } finally {
@@ -678,7 +679,7 @@ test("writes the pane's role after the session line, in the unscoped table and t
   const stateDir = join(scratch, "state")
   await mkdir(stateDir)
   const workspace = join(scratch, "workspace")
-  await mkdir(workspace)
+  await mkdir(join(workspace, ".jj", "repo"), { recursive: true })
   const userConfig = join(scratch, "jj-user.toml")
   const bin = await jjDirectory(scratch, `printf '%s\\n' ${JSON.stringify(userConfig)}`)
   const envFile = join(scratch, "session-env.sh")
@@ -701,7 +702,7 @@ test("writes the pane's role after the session line, in the unscoped table and t
     )
     expect(await readFile(overlay, "utf8")).toBe(
       unscopedTable("implementer") +
-        `\n[[--scope]]\n--when.workspaces = ["${await realpath(workspace)}"]\n[--scope.templates]\n` +
+        `\n[[--scope]]\n--when.repositories = ["${await realpath(join(workspace, ".jj", "repo"))}"]\n[--scope.templates]\n` +
         `commit_trailers = '"Omp-Session: s-1\\nLegion-Role: implementer\\nDispatch: ACME-7"'\n`,
     )
   } finally {

@@ -1,6 +1,7 @@
 package claudelaunch
 
 import (
+	"slices"
 	"strings"
 	"testing"
 )
@@ -15,7 +16,7 @@ var testPaths = Paths{Legion: "/opt/legion/bin/legion", Claude: "/usr/local/bin/
 // the system prompt as the path of the file the runtime wrote it to, never its text.
 func TestArgv(t *testing.T) {
 	session := "11111111-2222-4333-8444-555555555555"
-	got := Argv(testPaths, "/state/claude-mcp.json", session, false, "/state/system-prompt.md")
+	got := Argv(testPaths, "/state/claude-mcp.json", session, false, "/state/system-prompt.md", "")
 	want := []string{
 		"/opt/legion/bin/legion", "claude-bridge", "--", "/usr/local/bin/claude",
 		"-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
@@ -31,9 +32,25 @@ func TestArgv(t *testing.T) {
 	if strings.Join(got, " ") != strings.Join(want, " ") {
 		t.Errorf("fresh:\n%q\nwant\n%q", got, want)
 	}
-	resumed := Argv(testPaths, "/state/claude-mcp.json", session, true, "/state/system-prompt.md")
+	resumed := Argv(testPaths, "/state/claude-mcp.json", session, true, "/state/system-prompt.md", "")
 	if resume := resumed[len(resumed)-4 : len(resumed)-2]; resume[0] != "--resume" || resume[1] != session {
 		t.Errorf("resumed carries %q before its prompt file, want --resume %s", resume, session)
+	}
+}
+
+// A role whose spec names a model runs it on Claude Code: `--model <model>` comes right before the
+// session flag, so the last four words stay the session and the prompt file; a spec with no model
+// is TestArgv's command, which names none.
+func TestClaudeCodeRunsADeploymentRoleWithItsModel(t *testing.T) {
+	session := "11111111-2222-4333-8444-555555555555"
+	got := Argv(testPaths, "/state/claude-mcp.json", session, false, "/state/system-prompt.md", "checker-model")
+	at := slices.Index(got, "--model")
+	if at < 0 || at+3 >= len(got) || got[at+1] != "checker-model" || got[at+2] != "--session-id" {
+		t.Errorf("Argv with the model checker-model = %q, want --model checker-model right before --session-id", got)
+	}
+	plain := Argv(testPaths, "/state/claude-mcp.json", session, false, "/state/system-prompt.md", "")
+	if slices.Contains(plain, "--model") {
+		t.Errorf("Argv with no model = %q, want no --model", plain)
 	}
 }
 
@@ -51,7 +68,8 @@ func TestEnvironment(t *testing.T) {
 }
 
 // A transcript is recognized by its shape alone, wherever its configuration directory is — a pod
-// role's on the issue's volume and a tmux claim's under the daemon's state directory alike — and
+// slot's, its claim's agent's, on the issue's volume and a tmux claim's under the daemon's state
+// directory alike — and
 // its session id is its name's. An Oh My Pi session file, a transcript name below another
 // directory than a project's, and a project file named for no session id are none.
 func TestTranscript(t *testing.T) {

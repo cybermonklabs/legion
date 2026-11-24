@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { LEGION_ROLES } from "./legion-roles";
+import { isStepRole } from "./legion-roles";
 
 /**
  * The two claim recoveries the controller asks for, `fresh_session` and `compact`: the body they
@@ -13,6 +13,13 @@ import { LEGION_ROLES } from "./legion-roles";
  */
 
 const nonEmptyString = z.string().min(1);
+
+/** The role of a claim of an issue: one of Legion's six or a role of the deployment (contract
+ * 221), a name of the step grammar but the controller's (`isStepRole`). `legion-api.ts` reads its
+ * claims' roles through this one schema too. */
+export const legionStepRole = z.string().refine(isStepRole, {
+  message: "a role of the step grammar, ^[a-z][a-z0-9-]{0,31}$, and not the controller",
+});
 
 /** `api.ClaimRequest`, what either of the controller's two claim recoveries names: the claim on
  * `role` of `issue`, under the caller's controller grant. The project's controller is no role
@@ -69,7 +76,7 @@ const nonEmptyString = z.string().min(1);
 export const LegionClaimRequest = z.strictObject({
   grantId: nonEmptyString,
   issue: nonEmptyString,
-  role: z.enum(LEGION_ROLES),
+  role: legionStepRole,
 });
 
 /** `api.FreshSessionResponse`, what became of a fresh session. It is empty wherever the claim

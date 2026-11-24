@@ -123,7 +123,11 @@ func entryEngine(t *testing.T) *workflow.Engine {
 func startPromoted(ctx context.Context, db store.TxPool, engine *workflow.Engine, issue record.Issue, role claim.Role) error {
 	ctx = engine.OpenFact(ctx)
 	return store.Transact(ctx, db, func(ctx context.Context, tx pgx.Tx) error {
-		if err := engine.StartPromotedWorker(ctx, tx, issue, role); err != nil {
+		s, err := engine.PromotedScope(ctx, tx, issue, role)
+		if err != nil {
+			return err
+		}
+		if err := engine.StartPromotedWorker(ctx, tx, s, role); err != nil {
 			return err
 		}
 		return engine.SettleFact(ctx, tx)
@@ -232,7 +236,12 @@ func TestAppendOnlyStartRowsLoseNoWorkWhenOneIsDeletedBeforeTheLaneRunsIt(t *tes
 
 	issue := readIssue(t, rig.pool, rig.issue.Key)
 	if err := store.Transact(ctx, rig.pool, func(ctx context.Context, tx pgx.Tx) error {
-		return entryEngine(t).SendOwedEntry(ctx, tx, *issue, claim.RoleImplementer, row)
+		engine := entryEngine(t)
+		s, err := engine.PromotedScope(ctx, tx, *issue, claim.RoleImplementer)
+		if err != nil {
+			return err
+		}
+		return engine.SendOwedEntry(ctx, tx, s, claim.RoleImplementer, row)
 	}); err != nil {
 		t.Fatalf("send the implementer the work its entry names: %v", err)
 	}
@@ -377,8 +386,8 @@ func TestAnAppendOnlyStartThatDeliversNothingRecordsOnlyTheEntryItsClaimHolds(t 
 // A re-admission leaves the role's entry where it stood and takes the work of it away: the task
 // is the ended generation's and goes with that generation's handoffs (record.ClearGeneration,
 // which workflow's Adopt and enterChild run for each member), while the number stays, because it
-// counts the entries the role has been handed on this issue and nothing of a re-admission unhands
-// one (record.PhaseRow.Entry and EntryTask).
+// counts the entries handed on the role's row of this issue, numbered across the rows that name
+// the same claim, and nothing of a re-admission unhands one (record.PhaseRow.Entry and EntryTask).
 //
 // What writes the work again is the promotion of the re-admitted tree's member
 // (workflow.Engine.StartPromotedWorker): it raises the entry, writes that entry's task beside the
@@ -529,7 +538,7 @@ func TestAHeldPhasesRetryReachesAWorkerThatFinishedTheEntrysTask(t *testing.T) {
 // What the claim standing below its row then gives the worker is the rest of this case. The
 // tester's completion of entry 1 is refused 409 HANDOFF_STALE_ENTRY with nothing recorded,
 // saying the task of entry 2, the entry the phase is on, is owed to this claim and arrives by
-// itself (api/handoff.go's staleEntry). The admission pass passes over the claim while that task
+// itself (intake.StaleEntry). The admission pass passes over the claim while that task
 // is still worked, and on the first pass after the turn ends and the delivery is retired it sends
 // entry 2's own task (admit's resumeSlottedWorkers, workflow's SendOwedEntry). The worker takes
 // that task, and the completion it reports in its turn is the one the daemon takes: the issue

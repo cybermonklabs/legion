@@ -391,7 +391,9 @@ func gateMovedBody(step record.DesignStep, document string, version int, open bo
 		"stands open again.", version, step, document)
 }
 
-// treeRoleToken is the Envoy role token of one issue's role, the address a role message carries.
+// treeRoleToken is the Envoy role token of one issue's role's own claim, the address a role
+// message carries in these tests, whose issues hold no plan rows: there the worker on each role's
+// step is its role's own claim (addressRoles, record.WorkerClaim).
 func treeRoleToken(t *testing.T, issue string, role claim.Role) string {
 	t.Helper()
 	token, err := claim.NewToken("legion", issue, role)

@@ -44,12 +44,14 @@ const saveTimeout = 10 * time.Second
 const tailWindow = 4096
 
 // resumeLookupTimeout bounds the session table lookup a resume's start waits on, retries included;
-// a test shortens it. A start's whole budget is the proof dial, at most proofTimeout (StopGrace/2),
-// then this lookup: 35 s at the daemon's defaults, inside its wait on the start, its boot timeout
-// plus its stop grace (120 s + 10 s: runtime/sandbox's relaunch), whenever the launcher is connected
-// as that wait begins, which is every relaunch into a running pod. Only a launcher that connects late
-// in a new pod's boot window has less: at least the grace remains, and the proof's half of it is
-// still inside.
+// a test shortens it. A start spends the proof dial, at most proofTimeout (StopGrace/2), and this
+// lookup, 35 s together at the daemon's defaults, and, where the daemon kept the pod, the wait for
+// the slot's gh files to hold the start's credential (awaitGitHubCredential), which only the
+// start's context ends. The daemon's wait on the start bounds them all: its boot timeout plus its
+// stop grace (120 s + 10 s: runtime/sandbox's relaunch), whenever the launcher is connected as that
+// wait begins, which is every relaunch into a running pod. Only a launcher that connects late in a
+// new pod's boot window has less: at least the grace remains, and the proof's half of it is still
+// inside.
 var resumeLookupTimeout = 30 * time.Second
 
 // resumeLookupBackoff is the wait before each retry of a session table lookup that could not reach

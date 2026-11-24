@@ -45,8 +45,8 @@ func stoppedAtTesting(t *testing.T, pool *pgxpool.Pool, engine *Engine) record.I
 func stopsAtTesting(t *testing.T, pool *pgxpool.Pool, engine *Engine, root record.Issue) record.Issue {
 	t.Helper()
 	seedStepsPlan(t, pool, root.Key, root.Generation, "implementer", "tester")
-	move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
-	move(t, pool, engine, root.Key, TriggerImplementationReady, "", record.PhaseRow{})
+	move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
+	move(t, pool, engine, root.Key, TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{})
 	if result := applyFacts(t, pool, engine)("stop", ownersStop(t, root, "a")); result.Refusal != nil {
 		t.Fatalf("the owner's stop was refused: %+v", result.Refusal)
 	}
@@ -258,10 +258,11 @@ func TestATodoOnAStoppedRootStartsItsTaskAtStepOne(t *testing.T) {
 }
 
 // A restart takes the issue out of held into the phase of step 1, as a move takes an issue into a
-// phase (transition), so after its start it does what a move does there (restartTask). It queues
-// the reconcile of the tree's news (queueMovedNews): a hold owes the issue nothing (record.OwedNews
-// names a held issue UntoldHeld), so a version of the design approved while the task was stopped
-// would reach step 1's worker with no change set recorded, which its start cannot carry. The
+// phase (transition), so after its start it does what a move does there (startAtFirstStep). It
+// queues the reconcile of the tree's news (queueMovedNews): a hold owes the issue nothing
+// (record.OwedNews names a held issue UntoldHeld), so a version of the design approved while the
+// task was stopped would reach step 1's worker with no change set recorded, which its start cannot
+// carry. The
 // control is a holder that took the approved version, which is owed nothing and queues no
 // reconcile. And it acts on the pull request's merge forward (mergeForwardOnEntry): a move into
 // implementing drops the record's ask, since the implementer works the head there, so an ask made

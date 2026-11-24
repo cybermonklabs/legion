@@ -1,0 +1,25 @@
+-- 20261122131321_delivery_branch.up.sql — the branch of the task a pending delivery's step is of.
+--
+-- pending_task_deliveries.branch is supervise.Delivery.Branch: the GitHub branch of the task whose
+-- step the delivery's task is of, from the start row that queued it (record.SuperviseRequest.Branch),
+-- and '' for the issue's own branch. Each send's adoption takes the working copy of that branch,
+-- and a restarted daemon sends the delivery it reads back, so the branch is kept with it. Every
+-- delivery the upgrade finds reads '', the issue's own working copy, the only one the release
+-- before adopted.
+--
+-- There is no down file. This directory keeps none, so the way back is the transaction that ends
+-- this header, its last paragraph (migrations.WayBack), run with the daemon stopped, before the
+-- earlier image is pinned, through psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1. The release before
+-- decodes a supervise row strictly (record.DecodeOutboxPayload, DisallowUnknownFields), and a start
+-- row of this release can name its branch, so the block first takes the key off every supervise
+-- row; then it drops the column, which the release before names in no statement, and deletes its
+-- version row, which is owed to the roll-forward, so that it runs this file again. What the way
+-- back costs is the branch of each queued start and pending delivery of a task whose branch is not
+-- the issue's own: the release before sends it in the issue's own working copy.
+--
+-- begin;
+-- update outbox set payload = payload - 'branch' where kind = 'supervise' and payload ? 'branch';
+-- alter table pending_task_deliveries drop column if exists branch;
+-- delete from schema_version where version = 20261122131321;
+-- commit;
+alter table pending_task_deliveries add column branch text not null default '';

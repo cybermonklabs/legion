@@ -19,8 +19,8 @@ func TestAFreshClaimsFirstTurnIsCreditedTheTaskTheDaemonHasNotSentYet(t *testing
 	h := newBareHarness(t)
 	issuePhase := phase.Testing
 	generation := uint64(0)
-	h.deps.PhaseHolds = func(_ context.Context, _ string, p phase.Phase, run uint64) (bool, error) {
-		return p == issuePhase && run == generation, nil
+	h.deps.PhaseHolds = func(_ context.Context, _ Claim, d Delivery) (bool, error) {
+		return d.Phase == issuePhase && d.Generation == generation, nil
 	}
 	h.store.PutClaim(h.ctx, queuedClaim())
 	h.start(queuedClaim())

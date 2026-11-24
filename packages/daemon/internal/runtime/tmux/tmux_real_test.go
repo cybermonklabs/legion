@@ -413,7 +413,7 @@ func (c *stubConn) Shutdown(context.Context) error { return c.writer.WriteFrame(
 
 func (c *stubConn) Sequence() uint64 { return c.seq }
 
-func (c *stubConn) AdoptWorkingCopy(context.Context, runtime.GitIdentity, time.Duration) error {
+func (c *stubConn) AdoptWorkingCopy(context.Context, runtime.GitIdentity, string, time.Duration) error {
 	return errors.New("the stream stub does not adopt working copies")
 }
 
@@ -596,8 +596,8 @@ func (r *rig) mustTmux(args ...string) string {
 // distinguishable from the daemon's, and an Envoy secret.
 func (r *rig) spec(tree, issue string, role claim.Role) runtime.SpawnSpec {
 	r.t.Helper()
-	// The token is the one the claim's coordinates derive, as the daemon mints it and as
-	// runtime.ValidateSpawnSpec holds every spec to.
+	// The token is the role's own agent's (claim.NewToken), as the daemon mints it for a step of no
+	// key; runtime.ValidateSpawnSpec holds every spec to the token of an agent of its issue.
 	derived, err := claim.NewToken(r.project, issue, role)
 	if err != nil {
 		r.t.Fatalf("claim token for %s/%s: %v", issue, role, err)

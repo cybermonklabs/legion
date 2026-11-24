@@ -232,10 +232,75 @@ func TestAppRoleForEveryRole(t *testing.T) {
 		{claim.RoleController, Review},
 	} {
 		t.Run(string(tc.role), func(t *testing.T) {
-			if got := AppRoleFor(tc.role); got != tc.want {
-				t.Errorf("AppRoleFor(%q) = %q, want %q", tc.role, got, tc.want)
+			if got, err := AppRoleFor(tc.role, nil); err != nil || got != tc.want {
+				t.Errorf("AppRoleFor(%q, nil) = %q, %v; want %q", tc.role, got, err, tc.want)
 			}
 		})
+	}
+}
+
+// A role the deployment defines acts as the App its github_app setting names, while each of
+// Legion's own roles keeps its App whatever the deployment's map says, and a role neither Legion
+// nor the deployment defines gets no App at all: it is an error naming the role, never a panic
+// and never a default App.
+func TestADeploymentRolesAppIsItsSetting(t *testing.T) {
+	deployed := DeploymentApps{"checker": Implement, "critic": Review}
+	for _, tc := range []struct {
+		role claim.Role
+		want AppRole
+	}{
+		{"checker", Implement},
+		{"critic", Review},
+		{claim.RoleArchitect, Review},
+		{claim.RolePlanner, Review},
+		{claim.RoleImplementer, Implement},
+		{claim.RoleTester, Review},
+		{claim.RoleReviewer, Review},
+		{claim.RoleMerger, Implement},
+		{claim.RoleController, Review},
+	} {
+		if got, err := AppRoleFor(tc.role, deployed); err != nil || got != tc.want {
+			t.Errorf("AppRoleFor(%q) under %v = %q, %v; want %q", tc.role, deployed, got, err, tc.want)
+		}
+	}
+	if got, err := AppRoleFor(claim.RoleImplementer, DeploymentApps{claim.RoleImplementer: Review}); err != nil || got != Implement {
+		t.Errorf("AppRoleFor(implementer) under a map naming it review = %q, %v; want %q: the deployment never overrides a role of Legion's", got, err, Implement)
+	}
+	got, err := AppRoleFor("ghost", deployed)
+	if !errors.Is(err, ErrRoleNotDefined) || got != "" {
+		t.Fatalf("AppRoleFor(ghost) = %q, %v; want no App and an error that is ErrRoleNotDefined", got, err)
+	}
+	if want := "the role ghost is none of Legion's, and the deployment defines no such role"; err.Error() != want {
+		t.Errorf("AppRoleFor(ghost)'s error reads %q, want %q", err, want)
+	}
+}
+
+// A role the deployment defines gets its gh files minted as the App its github_app setting names,
+// as each of Legion's roles gets its own App's: the checker, set to implement, holds the
+// implement App's write token and the reviewer the review App's. A role nothing defines is
+// refused before any lease is minted.
+func TestADeploymentRolesBundleIsMintedAsItsApp(t *testing.T) {
+	served := servesOneOf("sjawhar/legion")
+	repo := ghrepo.MustParse("sjawhar/legion")
+	deployed := DeploymentApps{"checker": Implement}
+	credential := GitHubCredential(sourceOf(ownerTokens{}, installedEverywhere("sjawhar/legion")), served, ghrepo.Renames{}, nil, nil, deployed, quietBundleLog())
+	for role, app := range map[claim.Role]string{"checker": "implement", claim.RoleReviewer: "review"} {
+		bundle, err := credential(context.Background(), role, repo)
+		if err != nil {
+			t.Fatalf("the bundle of %s: %v", role, err)
+		}
+		if token := bundleTokens(t, bundle)["sjawhar"]; !strings.HasPrefix(token, app+"-token-for-") {
+			t.Errorf("%s's hosts file holds %q, want the %s App's write token, %q…", role, token, app, app+"-token-for-")
+		}
+		if rendered := bundle.Dirs["sjawhar"]; rendered.App != app {
+			t.Errorf("%s's gh files are rendered for the %q App, want %q", role, rendered.App, app)
+		}
+	}
+	var minted []string
+	counted := GitHubCredential(sourceOf(countingTokens{ownerTokens: ownerTokens{}, minted: &minted}, installedEverywhere("sjawhar/legion")), served,
+		ghrepo.Renames{}, nil, nil, deployed, quietBundleLog())
+	if _, err := counted(context.Background(), "ghost", repo); !errors.Is(err, ErrRoleNotDefined) || len(minted) != 0 {
+		t.Errorf("the bundle of ghost = %v, minting %v; want an error that is ErrRoleNotDefined and no mint", err, minted)
 	}
 }
 

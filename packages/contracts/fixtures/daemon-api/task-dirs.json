@@ -1,0 +1,178 @@
+{
+  "cases": [
+    {
+      "name": "no branch",
+      "workspace": "/state/workspaces/acme/widgets/widgets-42",
+      "branch": "",
+      "dir": "/state/workspaces/acme/widgets/widgets-42"
+    },
+    {
+      "name": "the issue's own branch",
+      "workspace": "/state/workspaces/acme/widgets/widgets-42",
+      "branch": "legion/WIDGETS-42",
+      "dir": "/state/workspaces/acme/widgets/widgets-42"
+    },
+    {
+      "name": "a slug's first give",
+      "workspace": "/state/workspaces/acme/widgets/widgets-42",
+      "branch": "legion/WIDGETS-42.b",
+      "dir": "/state/workspaces/acme/widgets/widgets-42.b"
+    },
+    {
+      "name": "a slug's second give",
+      "workspace": "/state/workspaces/acme/widgets/widgets-42",
+      "branch": "legion/WIDGETS-42.b.2",
+      "dir": "/state/workspaces/acme/widgets/widgets-42.b.2"
+    },
+    {
+      "name": "a give past nine",
+      "workspace": "/state/workspaces/acme/widgets/widgets-42",
+      "branch": "legion/WIDGETS-42.b.10",
+      "dir": "/state/workspaces/acme/widgets/widgets-42.b.10"
+    },
+    {
+      "name": "a slug of digits and a hyphen",
+      "workspace": "/state/workspaces/acme/widgets/widgets-42",
+      "branch": "legion/WIDGETS-42.t-0a",
+      "dir": "/state/workspaces/acme/widgets/widgets-42.t-0a"
+    },
+    {
+      "name": "a slug of forty characters",
+      "workspace": "/state/workspaces/acme/widgets/widgets-42",
+      "branch": "legion/WIDGETS-42.ssssssssssssssssssssssssssssssssssssssss",
+      "dir": "/state/workspaces/acme/widgets/widgets-42.ssssssssssssssssssssssssssssssssssssssss"
+    },
+    {
+      "name": "a slug of forty-one characters",
+      "workspace": "/state/workspaces/acme/widgets/widgets-42",
+      "branch": "legion/WIDGETS-42.sssssssssssssssssssssssssssssssssssssssss",
+      "refused": true
+    },
+    {
+      "name": "a branch of another issue",
+      "workspace": "/state/workspaces/acme/widgets/widgets-42",
+      "branch": "legion/WIDGETS-43.b",
+      "refused": true
+    },
+    {
+      "name": "a branch of no issue",
+      "workspace": "/state/workspaces/acme/widgets/widgets-42",
+      "branch": "main",
+      "refused": true
+    },
+    {
+      "name": "a key in lower case",
+      "workspace": "/state/workspaces/acme/widgets/widgets-42",
+      "branch": "legion/widgets-42.b",
+      "refused": true
+    },
+    {
+      "name": "a slug in upper case",
+      "workspace": "/state/workspaces/acme/widgets/widgets-42",
+      "branch": "legion/WIDGETS-42.B",
+      "refused": true
+    },
+    {
+      "name": "a part that leaves the directory",
+      "workspace": "/state/workspaces/acme/widgets/widgets-42",
+      "branch": "legion/WIDGETS-42.d/../x",
+      "refused": true
+    },
+    {
+      "name": "an empty part",
+      "workspace": "/state/workspaces/acme/widgets/widgets-42",
+      "branch": "legion/WIDGETS-42.",
+      "refused": true
+    },
+    {
+      "name": "a slug that begins with a hyphen",
+      "workspace": "/state/workspaces/acme/widgets/widgets-42",
+      "branch": "legion/WIDGETS-42.-b",
+      "refused": true
+    },
+    {
+      "name": "the word lock",
+      "workspace": "/state/workspaces/acme/widgets/widgets-42",
+      "branch": "legion/WIDGETS-42.lock",
+      "refused": true
+    },
+    {
+      "name": "the word removing",
+      "workspace": "/state/workspaces/acme/widgets/widgets-42",
+      "branch": "legion/WIDGETS-42.removing",
+      "refused": true
+    },
+    {
+      "name": "the word join",
+      "workspace": "/state/workspaces/acme/widgets/widgets-42",
+      "branch": "legion/WIDGETS-42.join",
+      "refused": true
+    },
+    {
+      "name": "a later give of the word join",
+      "workspace": "/state/workspaces/acme/widgets/widgets-42",
+      "branch": "legion/WIDGETS-42.join.2",
+      "refused": true
+    },
+    {
+      "name": "a first give written with its number",
+      "workspace": "/state/workspaces/acme/widgets/widgets-42",
+      "branch": "legion/WIDGETS-42.b.1",
+      "refused": true
+    },
+    {
+      "name": "a give written with a leading zero",
+      "workspace": "/state/workspaces/acme/widgets/widgets-42",
+      "branch": "legion/WIDGETS-42.b.02",
+      "refused": true
+    },
+    {
+      "name": "a working copy in upper case",
+      "workspace": "/state/workspaces/acme/widgets/WIDGETS-42",
+      "branch": "legion/WIDGETS-42.b",
+      "refused": true
+    },
+    {
+      "name": "a working copy with a trailing slash",
+      "workspace": "/state/workspaces/acme/widgets/widgets-42/",
+      "branch": "legion/WIDGETS-42.b",
+      "refused": true
+    },
+    {
+      "name": "a working copy outside the directory of workspaces",
+      "workspace": "/state/elsewhere/acme/widgets/widgets-42",
+      "branch": "legion/WIDGETS-42.b",
+      "refused": true
+    },
+    {
+      "name": "a working copy too shallow for the layout",
+      "workspace": "/widgets-42",
+      "branch": "legion/WIDGETS-42.b",
+      "refused": true
+    },
+    {
+      "name": "a working copy of an owner GitHub refuses",
+      "workspace": "/state/workspaces/-acme/widgets/widgets-42",
+      "branch": "legion/WIDGETS-42.b",
+      "refused": true
+    },
+    {
+      "name": "a working copy of a name GitHub refuses",
+      "workspace": "/state/workspaces/acme/wid gets/widgets-42",
+      "branch": "legion/WIDGETS-42.b",
+      "refused": true
+    },
+    {
+      "name": "a working copy of a name ending in .git",
+      "workspace": "/state/workspaces/acme/widgets.git/widgets-42",
+      "branch": "legion/WIDGETS-42.b",
+      "refused": true
+    },
+    {
+      "name": "the working copy of an issue in another repository",
+      "workspace": "/state/workspaces/acme/gadgets/widgets-42",
+      "branch": "legion/WIDGETS-42.b",
+      "dir": "/state/workspaces/acme/gadgets/widgets-42.b"
+    }
+  ]
+}

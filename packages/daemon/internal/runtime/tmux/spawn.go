@@ -125,7 +125,8 @@ func validateSpawnSpec(spec runtime.SpawnSpec, providerKeys []string, operatorEn
 		return err
 	}
 	// The token names the pane's secret files, and it is one file name: the shared validation
-	// above holds it to the one claim.NewToken derives, which has no separator in it.
+	// above holds it to the token of an agent of the spec's issue (claim.AgentToken), which has no
+	// separator in it.
 	token := string(spec.Claim)
 	refuse := func(format string, args ...any) error {
 		return fmt.Errorf("spawn %s: "+format, append([]any{token}, args...)...)
@@ -216,17 +217,18 @@ func sortedKeys(m map[string]string) []string {
 }
 
 // secretFiles are the files a spec's secrets are written to, under `<state_dir>/secrets`: the
-// boot token as `<claim>`, each other secret as `<claim>-<lowercased name>`, so one claim token
-// names every file its pane holds (TmuxRuntime.paneEnvPairs, runtime-tmux.ts; extraSecretName,
-// secrets.ts). The boot token's pointer is LEGION_BOOT_TOKEN_FILE and comes first; the rest follow
-// sorted by name.
+// boot token as `<claim>`, each other secret as `<claim>-<lowercased name>`
+// (runtime.SecretFileName), so one claim token names every file its pane holds
+// (TmuxRuntime.paneEnvPairs, runtime-tmux.ts; extraSecretName, secrets.ts), and the daemon's prune
+// reads them back by the same names. The boot token's pointer is LEGION_BOOT_TOKEN_FILE and comes
+// first; the rest follow sorted by name.
 func secretFiles(stateDir string, spec runtime.SpawnSpec) []runtime.SecretFile {
 	dir := runtime.SecretsDir(stateDir)
 	files := []runtime.SecretFile{{Variable: "LEGION_BOOT_TOKEN", Path: filepath.Join(dir, string(spec.Claim)), Value: spec.BootToken}}
 	for _, name := range sortedKeys(spec.Secrets) {
 		files = append(files, runtime.SecretFile{
 			Variable: name,
-			Path:     filepath.Join(dir, string(spec.Claim)+"-"+strings.ToLower(name)),
+			Path:     filepath.Join(dir, runtime.SecretFileName(spec.Claim, name)),
 			Value:    spec.Secrets[name],
 		})
 	}
@@ -729,7 +731,12 @@ func (r *Runtime) mintGitHubCredential(ctx context.Context, spec runtime.SpawnSp
 	if spec.Role == claim.RoleController {
 		bundle, err = r.controllerCredential(ctx, "")
 	} else {
-		bundle, err = r.gitHubCredential(ctx, spec.Role, spec.Repository)
+		// The pane holds the App of the step its claim does now (runtime.SlotRole), which is the
+		// claim's stored role: the spec's role, which the machine builds from it.
+		var role claim.Role
+		if role, err = runtime.SlotRole(ctx, r.actsAs, spec.Claim, spec.Role); err == nil {
+			bundle, err = r.gitHubCredential(ctx, role, spec.Repository)
+		}
 	}
 	noOwner := spec.Role == claim.RoleController && errors.Is(err, runtime.ErrNoGitHubOwner)
 	if err != nil && !noOwner {
@@ -809,7 +816,7 @@ func (r *Runtime) openPane(ctx context.Context, spec runtime.SpawnSpec, ghDefaul
 		Incarnation: incarnation{pid: report.pid, ticks: ticks}.String(),
 		Tmux:        &runtime.TmuxLocator{Window: report.window, Pane: report.pane},
 	}
-	r.track(loc, key, spec.Repository, ghDefault)
+	r.track(loc, key, spec.Repository, ghDefault, spec.Role)
 	return loc, nil
 }
 

@@ -244,9 +244,9 @@ func (e *Engine) Adopt(ctx context.Context, tx pgx.Tx, issue, root record.Issue,
 // cleared. That generation fences each row of the old tree that compares the issue's generation,
 // but for the old tree's suspend and tree-close rows, which still stop a claim standing in that tree
 // (the daemon outbox's stopInLeftTree); the old tree's workspace removal is fenced by its tree and
-// linger instead (record.WorkspaceRemove). Before
-// that generation is written, StopLeftTree queues the old tree's suspend for every role. A prior
-// old-tree stop can finish without acting, and the new generation can fence an old issue close.
+// linger instead (record.WorkspaceRemove). Before that generation is written, StopLeftTree queues
+// the old tree's suspend of each claim of the issue. A prior old-tree stop can finish without
+// acting, and the new generation can fence an old issue close.
 // A todo record enters the tree admitted on the repository it was first recorded with (enterChild,
 // RecordedFact, recordedResolution), as an unrecorded todo child does. It starts its first phase at
 // the slot the waiting line gives it, or is held at admitted while an unfinished Dispatch issue
@@ -293,7 +293,9 @@ func (e *Engine) moveIntoTree(ctx context.Context, tx pgx.Tx, member, root recor
 	return e.WriteIssue(ctx, tx, member)
 }
 
-// StopLeftTree queues the old tree's suspend of every role left can hold. Every request names
+// StopLeftTree queues the old tree's suspend of each claim left can hold (everyClaim): one row for
+// each stored claim of left, naming it, and one by role for each role left can hold whose worker
+// claim is none of those. Every request names
 // left's tree and generation, so a run of the tree it enters does not read it. The rows remain
 // necessary because the new tree can be held before its first start while a prior old-tree stop
 // already finished without acting. The outbox decides whether a claim still stands in the old tree

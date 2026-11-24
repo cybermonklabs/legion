@@ -569,6 +569,13 @@ func (r *outbox) settleNews(ctx context.Context, row record.OutboxRow, tree stri
 			request := record.SuperviseRequest{Op: "start", Tree: start.issue.Tree, Role: start.role, Generation: start.issue.Generation, News: true}
 			if start.role != claim.RoleArchitect {
 				request.Phase = start.issue.Phase
+				rows, err := r.records.Phases(ctx, tx, start.issue.Key)
+				if err != nil {
+					return err
+				}
+				if request.Branch, err = workflow.StartBranch(ctx, tx, r.records, start.issue, request, rows); err != nil {
+					return err
+				}
 			}
 			queue, err := record.NewOutboxRow(start.issue.Key, request, now)
 			if err != nil {

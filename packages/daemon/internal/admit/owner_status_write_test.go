@@ -301,7 +301,10 @@ func payloadsOf[T record.OutboxPayload](rows []effect) []T {
 	return of
 }
 
-// rolesOf is the role of every supervise request of rows whose op is op, in order.
+// rolesOf is the role of every supervise request of rows whose op is op, in the order claim.Roles
+// lists the roles, a role twice where two requests name it. The daemon queues one request for each
+// claim the issue stores, in the order it reads them, and the assertions here are of which claims
+// a move reaches, not of that order.
 func rolesOf(rows []effect, op record.SuperviseOp) []claim.Role {
 	var roles []claim.Role
 	for _, request := range payloadsOf[record.SuperviseRequest](rows) {
@@ -309,6 +312,9 @@ func rolesOf(rows []effect, op record.SuperviseOp) []claim.Role {
 			roles = append(roles, request.Role)
 		}
 	}
+	slices.SortStableFunc(roles, func(a, b claim.Role) int {
+		return slices.Index(claim.Roles, a) - slices.Index(claim.Roles, b)
+	})
 	return roles
 }
 
@@ -575,16 +581,45 @@ func TestTheOwningArchitectsBacklogThenDoneEndsAtDone(t *testing.T) {
 		t.Fatalf("the outbox after the done = %#v, want the backlog's rows %#v first", rows, first)
 	}
 	reason := ownerChild + " is done"
+	// The daemon queues one issue_close for each role, naming the claim the issue stores of it by
+	// its token (treeClaims: the architect's and the implementer's), in the order it reads them;
+	// the rows are compared in the order claim.Roles lists the roles.
+	var closes, rest []effect
+	for _, row := range rows[len(first):] {
+		if row.kind == record.OutboxKindSupervise {
+			closes = append(closes, row)
+		} else {
+			rest = append(rest, row)
+		}
+	}
+	roleOf := func(row effect) int {
+		request, _ := row.payload.(record.SuperviseRequest)
+		return slices.Index(claim.Roles, request.Role)
+	}
+	slices.SortStableFunc(closes, func(a, b effect) int { return roleOf(a) - roleOf(b) })
 	var want []effect
 	for _, role := range claim.Roles {
+		var token claim.Token
+		for _, stored := range treeClaims() {
+			if stored.issue == ownerChild && stored.role == role {
+				var err error
+				if token, err = claim.NewToken("legion", ownerChild, role); err != nil {
+					t.Fatalf("the %s's claim of %s: %v", role, ownerChild, err)
+				}
+			}
+		}
 		want = append(want, effect{kind: record.OutboxKindSupervise, issue: ownerChild,
-			payload: record.SuperviseRequest{Op: "issue_close", Tree: ownerRoot, Role: role, Generation: 1, Reason: reason}})
+			payload: record.SuperviseRequest{Op: "issue_close", Tree: ownerRoot, Role: role, Claim: token, Generation: 1, Reason: reason}})
 	}
-	want = append(want,
-		effect{kind: record.OutboxKindIssueSuspend, issue: ownerChild, payload: record.IssueSuspend{Tree: ownerRoot, Generation: 1, TreeGeneration: 1}},
-		effect{kind: record.OutboxKindNotice, issue: ownerChild, payload: record.Notice{Kind: "child-closed", Role: claim.RoleArchitect, Reason: reason}})
-	if added := rows[len(first):]; !reflect.DeepEqual(added, want) {
-		t.Fatalf("the rows the done added = %#v, want %#v", added, want)
+	if !reflect.DeepEqual(closes, want) {
+		t.Fatalf("the issue_close rows the done added = %#v, want %#v", closes, want)
+	}
+	wantRest := []effect{
+		{kind: record.OutboxKindIssueSuspend, issue: ownerChild, payload: record.IssueSuspend{Tree: ownerRoot, Generation: 1, TreeGeneration: 1}},
+		{kind: record.OutboxKindNotice, issue: ownerChild, payload: record.Notice{Kind: "child-closed", Role: claim.RoleArchitect, Reason: reason}},
+	}
+	if !reflect.DeepEqual(rest, wantRest) {
+		t.Fatalf("the other rows the done added = %#v, want %#v", rest, wantRest)
 	}
 	if check := rig.check(ownerChild); check != nil {
 		t.Fatalf("the production check of %s = %+v, want none: it has no merged pull request", ownerChild, check)

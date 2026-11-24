@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -21,7 +22,9 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/experiment"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
@@ -398,7 +401,17 @@ func secureBearerEqual(expected [sha256.Size]byte, given string) bool {
 
 // spawn creates the claim — or finds it, when it exists — and posts the launch to its machine,
 // then the task, so a claim the machine will not launch is given no task either. While the project
-// is paused it creates and launches nothing (refusedWhilePaused).
+// is paused it creates and launches nothing (refusedWhilePaused). The claim of the request's issue
+// and role is the claim of the agent that works that role's step now (workerToken), a keyed agent
+// on a step of another role included.
+//
+// That claim is read before any lock the launch takes, so the launch and the task are asked with
+// its standing (worksStep, supervise.Standing): the launch judges again under the machine's lock
+// that the record still names the claim on the role's step. A step that moved to another claim
+// before it is refused with nothing launched and no task given (refuseMovedSpawn), and a claim this
+// request stored for it is retired as the outbox retires a claim it stored for an issue that left
+// the workflow, so no tree's cleanup waits on a claim nothing will run. A move after the launch
+// finds the request under way, and its task goes as it would have before the move.
 func (s *server) spawn(w http.ResponseWriter, r *http.Request) {
 	var req SpawnRequest
 	if !s.readBody(w, r, &req, nil) || !s.requireFields(w, r,
@@ -416,7 +429,7 @@ func (s *server) spawn(w http.ResponseWriter, r *http.Request) {
 		s.refuse(w, r, http.StatusBadRequest, fmt.Sprintf("role %q is not a role", req.Role))
 		return
 	}
-	token, err := claim.NewToken(s.project, req.Issue, req.Role)
+	token, err := s.workerToken(r.Context(), req.Issue, req.Role)
 	if err != nil {
 		s.operatorFailure(w, r, "spawn", token, err)
 		return
@@ -449,12 +462,22 @@ func (s *server) spawn(w http.ResponseWriter, r *http.Request) {
 	// The operator is waiting on this answer, so the wake pacing never holds this launch
 	// (supervise's reserveWake): one person's spawn is not the wave the pacing exists for, and a
 	// route that answered with a claim parked launching would read as a daemon that did nothing.
-	if err := m.Handle(ctx, supervise.RequestSpawn{Claim: token, Exempt: true}); err != nil {
+	judged := supervise.Standing(ctx, s.worksStep(req.Issue, req.Role, token))
+	if err := m.Handle(judged, supervise.RequestSpawn{Claim: token, Exempt: true}); err != nil {
+		if errors.Is(err, supervise.ErrStepLeft) {
+			if created {
+				if err := m.Handle(ctx, supervise.RequestTreeClose{Claim: token}); err != nil {
+					s.logFailure("api: retire a claim the spawn stored for a step that moved", "claim", token, "error", err)
+				}
+			}
+			s.refuseMovedSpawn(w, r, req.Issue, req.Role, token)
+			return
+		}
 		s.operatorFailure(w, r, "spawn", token, err)
 		return
 	}
 	if req.Task != "" {
-		if err := m.Handle(ctx, supervise.RequestDeliver{Claim: token, Task: req.Task}); err != nil {
+		if err := m.Handle(judged, supervise.RequestDeliver{Claim: token, Task: req.Task}); err != nil {
 			s.operatorFailure(w, r, "deliver", token, err)
 			return
 		}
@@ -465,6 +488,57 @@ func (s *server) spawn(w http.ResponseWriter, r *http.Request) {
 	}
 	s.operatorDone(r, token)
 	s.writeUnparsedAnswer(w, r, status, s.operatorAnswer(ctx, m.Claim()))
+}
+
+// workerToken is the claim of the agent that works role's step of issue now (record.WorkerClaim),
+// read from the issue's phases rows in a read-only transaction of its own, as a completion reads
+// its position (handoffPosition): the claim the step's entry wrote on the role's row, and the
+// role's own token where that row runs no step of the plan. The operator's spawn and the
+// controller's recoveries name a claim by its issue and role, and so reach the claim that works
+// that role's step rather than a claim of the role's name that runs none. A daemon built with no
+// record holds no plan rows, so the worker of each step there is the role's own claim.
+func (s *server) workerToken(ctx context.Context, issue string, role claim.Role) (claim.Token, error) {
+	if s.pool == nil || s.records == nil {
+		return record.WorkerClaim(s.project, issue, role, nil)
+	}
+	var token claim.Token
+	err := store.TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		rows, err := s.records.Phases(ctx, tx, issue)
+		if err != nil {
+			return err
+		}
+		token, err = record.WorkerClaim(s.project, issue, role, rows)
+		return err
+	})
+	if err != nil {
+		return "", err
+	}
+	return token, nil
+}
+
+// worksStep is the standing of a request on token, the claim the route read as the worker on
+// role's step of issue (workerToken): it holds while the record names that claim there still, read
+// again where the request's act on the claim is decided (supervise.Standing).
+func (s *server) worksStep(issue string, role claim.Role, token claim.Token) func(context.Context) (bool, error) {
+	return func(ctx context.Context) (bool, error) {
+		now, err := s.workerToken(ctx, issue, role)
+		return now == token, err
+	}
+}
+
+// refuseMovedSpawn answers a spawn whose launch of token, the claim it read as the worker on
+// role's step of issue, found the step another claim's under the machine's lock
+// (supervise.ErrStepLeft): nothing was launched or sent, and the answer names the claim the record
+// names there now, read again here, so the operator can ask again of the step as it stands.
+func (s *server) refuseMovedSpawn(w http.ResponseWriter, r *http.Request, issue string, role claim.Role, token claim.Token) {
+	now, err := s.workerToken(r.Context(), issue, role)
+	if err != nil {
+		s.operatorFailure(w, r, "spawn", token, err)
+		return
+	}
+	s.refuse(w, r, http.StatusConflict, fmt.Sprintf(
+		"spawn refused: the %s's step of %s moved from claim %s to claim %s under the request; nothing was launched or sent, so ask again",
+		role, issue, token, now))
 }
 
 // drawExperiments draws the tree-unit experiments the project declares for tree, for the open
@@ -723,7 +797,9 @@ func (s *server) retryStart(w http.ResponseWriter, r *http.Request, m *supervise
 // claim whose issue works another role's phase or has left the workflow, and any claim on a daemon
 // that records no issues — and its caller starts such a claim another way.
 //
-//   - an issue held for that worker's own role (Options.RoleFor of the phase it is held from) is
+//   - an issue held for that worker's own role (a running step of the role held at the phase the
+//     issue is held from, record.Issue.RunningAt, at step a role the deployment defines, or the
+//     step a stop of its task ended there, workflow.StoppedStepRole) is
 //     retried as its architect's retry_or_escalate retries it (intake.RetryOrEscalate): the phase
 //     it was held from comes back, and its role is started on it;
 //   - an issue standing in that worker's own phase has that phase started again
@@ -739,7 +815,7 @@ func (s *server) retryStart(w http.ResponseWriter, r *http.Request, m *supervise
 // nothing (a lingering tree's members stay where they stood), so it is refused naming the issue
 // rather than reported as a restart.
 func (s *server) restartWorkedPhase(r *http.Request, token claim.Token, c supervise.Claim, fresh bool) (status int, refusal string, restarted bool) {
-	if !isPhaseWorker(c.Role) || s.pool == nil || s.roleFor == nil {
+	if !isPhaseWorker(c.Role) || s.pool == nil {
 		return 0, "", false
 	}
 	if stopping := s.stopRefusal("retry"); stopping != "" {
@@ -750,13 +826,21 @@ func (s *server) restartWorkedPhase(r *http.Request, token claim.Token, c superv
 		s.logRequestFailure(r, err, "api: read the issue of a phase worker to retry", "claim", token)
 		return http.StatusInternalServerError, fmt.Sprintf("could not read %s's record: %v", c.Issue, err), true
 	}
-	if recorded == nil || s.roleFor(recorded.WorkingPhase()) != c.Role {
+	works, err := s.worksPhase(r.Context(), recorded, c.Role)
+	if err != nil {
+		s.logRequestFailure(r, err, "api: read the steps of a phase worker to retry", "claim", token)
+		return http.StatusInternalServerError, fmt.Sprintf("could not read %s's steps: %v", c.Issue, err), true
+	}
+	if !works {
 		return 0, "", false
 	}
 	working := recorded.WorkingPhase()
-	fact := intake.Fact(intake.RestartPhase{Issue: c.Issue, Role: c.Role, FreshSession: fresh})
+	// The fact names the claim it restarts the phase for, which the workflow holds to the claim
+	// on the role's step when it applies (workflow's stepMovedRefusal): a step entered for another
+	// claim since this route read it is that claim's, and is not restarted here.
+	fact := intake.Fact(intake.RestartPhase{Issue: c.Issue, Role: c.Role, FreshSession: fresh, Claim: token})
 	if recorded.Phase == phase.Held {
-		fact = intake.RetryOrEscalate{Issue: c.Issue, Decision: intake.RetryDecision}
+		fact = intake.RetryOrEscalate{Issue: c.Issue, Decision: intake.RetryDecision, Claim: token}
 	}
 	result, err := s.apply(r.Context(), "api", requestFactID("operator/retry"), fact)
 	if err != nil {
@@ -776,6 +860,34 @@ func (s *server) restartWorkedPhase(r *http.Request, token claim.Token, c superv
 	}
 	s.log.Info("api: a retry restarted a phase", "claim", token, "issue", c.Issue, "phase", working)
 	return http.StatusAccepted, "", true
+}
+
+// worksPhase says whether role works a step of recorded at the phase it works
+// (record.Issue.WorkingPhase): a running step of the role stands there, held or not
+// (record.Issue.RunningAt), or the issue is held there for its stopped task and the step the stop
+// ended is the role's (record.StoppedStep). A stopped task's step is no running step, and a retry
+// of its role is the workflow's to refuse with the stop's own answer. A record the daemon does not
+// hold works no step.
+func (s *server) worksPhase(ctx context.Context, recorded *record.Issue, role claim.Role) (bool, error) {
+	if recorded == nil {
+		return false, nil
+	}
+	if slices.ContainsFunc(recorded.RunningAt(recorded.WorkingPhase()), func(step record.RunningStep) bool { return step.Role == role }) {
+		return true, nil
+	}
+	if !record.HeldFor(*recorded, record.HoldTaskStopped) {
+		return false, nil
+	}
+	var works bool
+	err := store.TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		stopped, ok, err := s.records.StoppedStep(ctx, tx, *recorded)
+		works = ok && stopped.Role == role
+		return err
+	})
+	if err != nil {
+		return false, err
+	}
+	return works, nil
 }
 
 // machineRetry is the retry an architect or a phase worker that runs nothing gets from its own
@@ -982,12 +1094,19 @@ func (s *server) list(w http.ResponseWriter, r *http.Request) {
 }
 
 // operatorFailure answers an operator request its machine did not take: 409 with the machine's
-// reason when the claim's state does not allow it, and otherwise a 500 that says what failed — the
-// operator is the one who has to act on a launch the runtime refused.
+// reason when the claim's state does not allow it, 409 when the request's first act found the
+// step it read the claim on moved to another claim (supervise.ErrStepLeft, controllerClaim), with
+// nothing of the claim changed, and otherwise a 500 that says what failed — the operator is the
+// one who has to act on a launch the runtime refused.
 func (s *server) operatorFailure(w http.ResponseWriter, r *http.Request, request string, token claim.Token, err error) {
 	var refused *supervise.RefusedError
-	if errors.As(err, &refused) {
+	switch {
+	case errors.As(err, &refused):
 		s.refuse(w, r, http.StatusConflict, refused.Error())
+		return
+	case errors.Is(err, supervise.ErrStepLeft):
+		s.refuse(w, r, http.StatusConflict, fmt.Sprintf(
+			"%s refused: the step %s was read on is another claim's now, and nothing of %s changed, so ask again: %v", request, token, token, err))
 		return
 	}
 	s.logFailure("api: an operator request failed", "request", request, "claim", token, "error", err)

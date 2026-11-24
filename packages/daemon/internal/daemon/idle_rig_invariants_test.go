@@ -27,9 +27,9 @@ type idleRigSaveWatch struct {
 	observe  func()
 }
 
-func (w *idleRigSaveWatch) BundleWorkspace(ctx context.Context, issue string, role claim.Role) (runtime.WorkspaceBundle, error) {
+func (w *idleRigSaveWatch) BundleWorkspace(ctx context.Context, issue string, token claim.Token) (runtime.WorkspaceBundle, error) {
 	w.observe()
-	return w.bundler.BundleWorkspace(ctx, issue, role)
+	return w.bundler.BundleWorkspace(ctx, issue, token)
 }
 
 func (w *idleRigSaveWatch) ReleaseIssue(ctx context.Context, issue, tree string, authorize func(context.Context) (bool, error)) error {

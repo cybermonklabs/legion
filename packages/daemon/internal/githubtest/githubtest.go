@@ -4,7 +4,11 @@
 // itself, the record it keeps of each request, the bearer gate, the JSON content type and the
 // close — is Server's; what the test proves stays in the test's own handler: its switch, its
 // default arm, and the state it keeps and reads. Unexpected is the default arm of a fake for
-// which any request it did not plan for is a failure.
+// which any request it did not plan for is a failure. GitRepository is a fake repository whose refs
+// and commits are a real bare git repository's, for a test that reads with git what the code under
+// test made on GitHub: its Handler is the arm of the test's switch that answers the reads and
+// writes of that repository's branches, merges included, the compare of two commits, and its pull
+// requests.
 package githubtest
 
 import (

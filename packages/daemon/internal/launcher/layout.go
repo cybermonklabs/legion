@@ -2,10 +2,11 @@ package launcher
 
 // The layout of an issue pod's roles directory (--roles-dir), which the pod builder
 // (internal/runtime/sandbox) mounts and `legion launcher` and its role-init read: one directory per
-// role, holding the role's launcher token projection (RoleLauncherDir, its token file
+// slot (each --role), the slot being named for the agent that runs in it whatever role its step is
+// on, holding the slot's launcher token projection (RoleLauncherDir, its token file
 // LauncherTokenFile), its gh bundle (RoleGHDir), and its own memory-backed private, state and
 // agent-secrets directories (RolePrivateDir, RoleStateDir, RoleAgentSecretsDir); and RoleHomesDir,
-// the one disk directory, which holds each role's home overlay layers, its own temporary
+// the one disk directory, which holds each slot's home overlay layers, its own temporary
 // directories and its own config home (RoleConfigHomeDir). Both sides name these constants, so a
 // renamed directory moves on both.
 const (

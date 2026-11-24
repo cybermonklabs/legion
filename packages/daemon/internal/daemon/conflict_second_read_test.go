@@ -570,7 +570,7 @@ func recordCapture(t *testing.T, pool *store.Pool, change func(*record.PullReque
 		if err := intake.SerializeFacts(ctx, tx); err != nil {
 			return err
 		}
-		pr, err := records.PullRequest(ctx, tx, "CAPTURE-1")
+		pr, err := records.MergePullRequest(ctx, tx, "CAPTURE-1")
 		if err != nil {
 			return err
 		}

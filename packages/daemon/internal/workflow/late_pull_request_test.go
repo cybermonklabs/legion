@@ -64,7 +64,7 @@ func pullRequestAt(t *testing.T, pool *pgxpool.Pool) pullRequestView {
 		t.Fatalf("read the reviewer's decision: %v", err)
 	}
 	seedRecord(t, pool, func(tx pgx.Tx) error {
-		pr, err := record.NewStore().PullRequest(t.Context(), tx, "LEGION-208")
+		pr, err := record.NewStore().MergePullRequest(t.Context(), tx, "LEGION-208")
 		if err != nil || pr == nil {
 			return fmt.Errorf("read pull request: %v", err)
 		}
@@ -79,11 +79,11 @@ func lateSync(head string, at time.Time) intake.Fact {
 }
 
 func lateOpened(head string, at time.Time) intake.Fact {
-	return intake.PullRequestOpened{Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208", HeadSHA: head, UpdatedAt: at}
+	return intake.PullRequestOpened{Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208", HeadSHA: head, HeadRepo: "sjawhar/legion", UpdatedAt: at}
 }
 
 func lateReopened(head string, at time.Time) intake.Fact {
-	return intake.PullRequestOpened{Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208", HeadSHA: head, UpdatedAt: at, Reopened: true}
+	return intake.PullRequestOpened{Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208", HeadSHA: head, HeadRepo: "sjawhar/legion", UpdatedAt: at, Reopened: true}
 }
 
 func lateClosed(head string, at time.Time) intake.Fact {
@@ -202,9 +202,9 @@ func TestACloseOrReopenCarriesItsHead(t *testing.T) {
 // newer one is open.
 func TestALateEventOfAnEarlierPullRequestLeavesTheNewerOne(t *testing.T) {
 	opened43, synced43 := lateApplied.Add(time.Minute), lateApplied.Add(2*time.Minute)
-	pr43 := intake.PullRequestOpened{Repo: "sjawhar/legion", Number: 43, Branch: "legion/LEGION-208", HeadSHA: "head-e", UpdatedAt: opened43}
+	pr43 := intake.PullRequestOpened{Repo: "sjawhar/legion", Number: 43, Branch: "legion/LEGION-208", HeadSHA: "head-e", HeadRepo: "sjawhar/legion", UpdatedAt: opened43}
 	sync43 := intake.PullRequestSynchronized{Repo: "sjawhar/legion", Number: 43, Branch: "legion/LEGION-208", HeadSHA: "head-f", UpdatedAt: synced43}
-	pr41 := intake.PullRequestOpened{Repo: "sjawhar/legion", Number: 41, Branch: "legion/LEGION-208", HeadSHA: "head-a", UpdatedAt: lateApplied.Add(-time.Hour)}
+	pr41 := intake.PullRequestOpened{Repo: "sjawhar/legion", Number: 41, Branch: "legion/LEGION-208", HeadSHA: "head-a", HeadRepo: "sjawhar/legion", UpdatedAt: lateApplied.Add(-time.Hour)}
 	for _, tc := range []struct {
 		name   string
 		seed   record.PullRequestState

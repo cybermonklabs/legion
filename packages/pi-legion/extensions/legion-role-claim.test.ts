@@ -7,7 +7,7 @@ import {
   HEARTBEAT_RETRY_MAX_MS,
   HEARTBEAT_RETRY_MIN_MS,
 } from "@legion/envoy-client/envoy-settings";
-import type { ZodNumberProperty } from "@legion/pi-shared/pi-types";
+import type { ZodNumberProperty, ZodStringProperty } from "@legion/pi-shared/pi-types";
 import { captureEnvironment, type EnvironmentRestore } from "@legion/test-fixtures/environment";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
@@ -239,13 +239,14 @@ test("keeps a Legion role claimant fresh regardless of extension initialization 
     return Response.json({ session_id: sessionID, machine_id: "test", dir: "/tmp", topics: [] });
   }) as typeof fetch;
   const activeTools = ["read", "task", "wait"];
-  const property = (): ZodNumberProperty => ({
+  const property = (): ZodNumberProperty & ZodStringProperty => ({
     optional: property,
     nullable: property,
     describe: property,
     int: property,
     min: property,
     max: property,
+    regex: property,
   });
   const createPi = () => ({
     zod: {

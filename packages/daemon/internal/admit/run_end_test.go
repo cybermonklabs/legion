@@ -198,7 +198,7 @@ func assertNoRunOpenWhereItsIssueNoLongerStands(t *testing.T, pool *pgxpool.Pool
 			}
 			mergeCanLand := false
 			if stands.Key != root.Key && (stands.Phase == phase.Merging || stands.Phase == phase.Held && stands.Hold != nil && stands.Hold.From == phase.Merging) {
-				pr, err := records.PullRequest(ctx, tx, stands.Key)
+				pr, err := records.MergePullRequest(ctx, tx, stands.Key)
 				if err != nil {
 					t.Fatalf("read the pull request of %s: %v", run.issue, err)
 				}
@@ -430,7 +430,7 @@ func TestEveryWayOutOfAStepEndsItsRun(t *testing.T) {
 					t.Logf("%s kept %s in %s with its run open", kind, tc.keeps, record.StandsAt(after))
 					if tc.then != nil {
 						inTx(t, pool, func(tx pgx.Tx) {
-							pr, err := record.NewStore().PullRequest(context.Background(), tx, tc.keeps)
+							pr, err := record.NewStore().MergePullRequest(context.Background(), tx, tc.keeps)
 							if err != nil || pr == nil {
 								t.Fatalf("read the pull request of %s = %v, %v", tc.keeps, pr, err)
 							}
@@ -470,7 +470,7 @@ func zeroFact(t *testing.T, kind string) intake.Fact {
 		intake.CheckReport{}, intake.CheckLookEnded{}, intake.CheckWakeDue{}, intake.CheckBound{},
 		intake.ListenerWake{}, intake.PodBackstopDue{}, intake.WorkerSilent{}, intake.WorkerBackgroundStalled{},
 		intake.ControllerTick{}, intake.ChildAdoption{}, intake.DispatchConsumerPosition{}, intake.EntrySweep{},
-		intake.Handover{}, intake.CloseRoot{}, intake.ControllerMemoryGuardKill{},
+		intake.Handover{}, intake.CloseRoot{}, intake.TaskJoined{}, intake.ControllerMemoryGuardKill{},
 	} {
 		if name := factName(fact); name == kind {
 			return fact

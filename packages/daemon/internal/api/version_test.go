@@ -39,28 +39,48 @@ func TestFailureCausesGolden(t *testing.T) {
 	golden(t, "failure-causes.json", map[string][]supervise.FailureCause{"causes": supervise.FailureCauses})
 }
 
-// The role rows of EnumeratedFields record each role at the contract it arrived at: claimRoles,
-// wakeRoles and pauseStopRoles (answers.go), each read from floorRoles, the six roles named one
-// by one at ServingFloor. A role added to claim.Roles and to none of those lists would be on no
-// row: nothing would record when it arrived, no value strip would hold it back, and a reader of
-// an older contract, whose role enum is strict, would be served it and refuse the whole state. So
-// every role claim.Roles holds must have a value in each of the three lists, at whatever contract
-// it arrived at. A role claim.Roles drops stays in the lists, which are the history of what was
-// served.
-func TestEveryRoleAClaimCanHoldHasARecordedArrival(t *testing.T) {
-	lists := []struct {
-		name   string
-		values []EnumeratedValue
-	}{{"claimRoles", claimRoles}, {"wakeRoles", wakeRoles}, {"pauseStopRoles", pauseStopRoles}}
-	for _, role := range claim.Roles {
-		for _, list := range lists {
-			holds := func(v EnumeratedValue) bool { return v.Value == string(role) }
-			if !slices.ContainsFunc(list.values, holds) {
-				t.Errorf("claim.Roles holds the role %q, which answers.go's %s records at no contract: a reader of an "+
-					"older contract would be served it and refuse the whole state. Record it in %s at the contract it "+
-					"arrives at (valuesFrom(<that contract>, role)), not in floorRoles, which is the floor's, and hold "+
-					"it back below that contract with a value strip (shaping.go's valueStrips)", role, list.name, list.name)
-			}
+// Below deploymentRolesContract a reader reads the `role` of a stranded claim, of a waiting wake
+// and of a pause stop with an enumeration of Legion's six roles, and the band of that contract
+// serves it the claims of claim.Roles alone (shaping.go's withoutDeploymentRoleClaims), whatever
+// roles the deployment defines. From that contract the three fields, and a registration's `role`,
+// take any role of the role grammar (claim.IsRole), which no list of values records
+// (answers.go's enumeratedFields), so no row of EnumeratedFields holds what this test holds. So
+// claim.Roles must be those six, named here one by one: a role added to claim.Roles would pass the
+// band and reach a reader whose enumeration refuses the whole state for it. And the band is held
+// to them: a claim of each of the six is kept in each of the three lists, and a claim of a role
+// of the deployment is dropped from each.
+func TestEveryRoleAnOlderReaderIsServedIsOneItsEnumerationNames(t *testing.T) {
+	olderReaders := []claim.Role{claim.RoleArchitect, claim.RolePlanner, claim.RoleImplementer, claim.RoleTester,
+		claim.RoleReviewer, claim.RoleMerger}
+	if !slices.Equal(claim.Roles, olderReaders) {
+		t.Fatalf("claim.Roles = %v, want the six roles a reader below deploymentRolesContract enumerates, %v: "+
+			"withoutDeploymentRoleClaims keeps every role of claim.Roles, so a role added there is served to a reader "+
+			"that refuses the whole state for it; serve it down below the contract it arrives at", claim.Roles, olderReaders)
+	}
+	state := State{Paused: &PausedView{}}
+	for _, role := range append(slices.Clone(claim.Roles), "checker") {
+		state.StrandedClaims = append(state.StrandedClaims, StrandedClaim{Issue: "LEGION-208", Role: role, State: "failed"})
+		state.WakesWaiting = append(state.WakesWaiting, WakeWaiting{Issue: "LEGION-208", Role: role, Kind: "launch"})
+		state.Paused.WaitsOn = append(state.Paused.WaitsOn, PauseStopView{Issue: "LEGION-208", Role: role})
+	}
+	served, moved := withoutDeploymentRoleClaims(state)
+	if !moved {
+		t.Fatal("withoutDeploymentRoleClaims reports no move on a state carrying a checker's claim in each list")
+	}
+	kept := map[string][]claim.Role{}
+	for _, c := range served.StrandedClaims {
+		kept["strandedClaims"] = append(kept["strandedClaims"], c.Role)
+	}
+	for _, wake := range served.WakesWaiting {
+		kept["wakesWaiting"] = append(kept["wakesWaiting"], wake.Role)
+	}
+	for _, stop := range served.Paused.WaitsOn {
+		kept["paused.waitsOn"] = append(kept["paused.waitsOn"], stop.Role)
+	}
+	for _, list := range []string{"strandedClaims", "wakesWaiting", "paused.waitsOn"} {
+		if !slices.Equal(kept[list], claim.Roles) {
+			t.Errorf("%s served below deploymentRolesContract names %v, want Legion's six %v and no role of the deployment",
+				list, kept[list], claim.Roles)
 		}
 	}
 }

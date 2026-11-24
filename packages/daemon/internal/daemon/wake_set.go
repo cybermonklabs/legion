@@ -13,20 +13,27 @@ import (
 // decision, the commit of a fact's transaction - and a goroutine of the daemon's takes in a
 // batch. Recording is a map write and a non-blocking send, so none of those waits on the work; a
 // key recorded twice before the taker reaches it is one piece of work rather than two, which is
-// what makes a second handoff of the same issue one read and a second fact one ladder.
+// what makes a second handoff of the same task one read and a second fact one ladder.
 //
 // Three readers have one each: the architects whose waiting notices are released
-// (workflowRuntime.readied), the issues whose pull request is read after a handoff (handedOff),
-// and the issues GitHub's merge state is read for (mergeStates).
-type wakeSet[K cmp.Ordered] struct {
-	mu   sync.Mutex
-	keys map[K]bool
-	wake chan struct{}
+// (workflowRuntime.readied), the reads of a task's pull request a handoff asks for (handedOff),
+// and the issues GitHub's merge state is read for (mergeStates). A take answers its keys in the
+// order compare gives them.
+type wakeSet[K comparable] struct {
+	mu      sync.Mutex
+	keys    map[K]bool
+	wake    chan struct{}
+	compare func(a, b K) int
 }
 
-// newWakeSet is an empty set with nothing recorded and no wake pending.
+// newWakeSet is an empty set of ordered keys with nothing recorded and no wake pending.
 func newWakeSet[K cmp.Ordered]() *wakeSet[K] {
-	return &wakeSet[K]{keys: map[K]bool{}, wake: make(chan struct{}, 1)}
+	return newWakeSetBy(cmp.Compare[K])
+}
+
+// newWakeSetBy is newWakeSet for keys that compare orders, such as a key of several fields.
+func newWakeSetBy[K comparable](compare func(a, b K) int) *wakeSet[K] {
+	return &wakeSet[K]{keys: map[K]bool{}, wake: make(chan struct{}, 1), compare: compare}
 }
 
 // add records key and wakes the taker, without blocking: the wake channel holds one wake, and a
@@ -57,7 +64,7 @@ func (s *wakeSet[K]) take(ctx context.Context) ([]K, bool) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	keys := slices.Sorted(maps.Keys(s.keys))
+	keys := slices.SortedFunc(maps.Keys(s.keys), s.compare)
 	clear(s.keys)
 	return keys, true
 }

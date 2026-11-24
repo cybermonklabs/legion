@@ -40,9 +40,23 @@ func TestOmpLauncherLaunchIsInnerCommand(t *testing.T) {
 		if !slices.Equal(pairs, wantPairs) {
 			t.Errorf("Launch(resume %q) carries the pairs %q, want %q", resume, pairs, wantPairs)
 		}
-		if want := innerCommand(prefix, "/opt/oh-my-pi/18.0.3/omp", resume, promptFile); inner != want {
+		if want := innerCommand(prefix, "/opt/oh-my-pi/18.0.3/omp", spec.Model, resume, promptFile); inner != want {
 			t.Errorf("Launch(resume %q) = %q, want %q", resume, inner, want)
 		}
+	}
+}
+
+// The Oh My Pi launcher passes the model its spec names: a role of the deployment whose settings
+// give a model runs it, not the profile's @default.
+func TestTheOmpLauncherNamesTheSpecsModel(t *testing.T) {
+	spec := testSpec()
+	spec.Model = "checker-model"
+	inner, _, err := NewOmpLauncher(nil, "/opt/oh-my-pi/18.0.3/omp").Launch(spec, Host{StateDir: "/state", Legion: "/opt/legion"}, "/state/secrets/p-system-prompt.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(inner, " --model checker-model") || strings.Contains(inner, "@default") {
+		t.Errorf("the launch's command = %q, want it to hold %q and no @default", inner, " --model checker-model")
 	}
 }
 

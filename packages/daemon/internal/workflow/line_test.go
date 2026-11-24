@@ -3,6 +3,8 @@ package workflow
 import (
 	"context"
 	"fmt"
+	"maps"
+	"reflect"
 	"slices"
 	"testing"
 
@@ -43,7 +45,8 @@ func walkOf(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string) Walk {
 		if err != nil || issue == nil {
 			return fmt.Errorf("read %s: %v (recorded %t)", key, err, issue != nil)
 		}
-		w, err = engine.walk(ctx, tx, *issue)
+		s, err := firstScope(ctx, tx, engine, *issue)
+		w = s.walk
 		return err
 	})
 
@@ -70,6 +73,93 @@ func TestAWalkWithNoRowsIsTodaysLine(t *testing.T) {
 	if !w.Stored || w.Task != "a" || !slices.Equal(w.Line, ownersLine) || len(w.Steps) != 2 || w.State != record.TaskWaiting || w.Place != (record.TaskPlace{}) {
 		t.Fatalf("the walk of %s with its run's plan = %+v, want task a on %v, waiting at no act", root.Key, w, ownersLine)
 	}
+}
+
+// A step of a role the deployment defines runs as the phase step, whatever its type: the walk of
+// the stored steps `implementer checker linter`, whose checker does review work and whose linter
+// does work of a type of the deployment's own, is the implementer's phase, step two times, then
+// Legion's own retro and merge. The line is read from each step's role, never from its type.
+func TestAWalkOfDeploymentStepsRunsThemAsStep(t *testing.T) {
+	pool := migratedPool(t)
+	engine := stepEngine(nil)
+	root := stepRoot(t, pool, phase.Implementing)
+	v := record.PlanVersion{Issue: root.Key, Generation: root.Generation, Version: 2, ArtifactID: "plan-artifact", Source: record.PlanSourceOwner,
+		GivenBy: claim.Token(treeRoleToken(t, root.Key, claim.RoleArchitect)), GivenAt: stepClock}
+	task := record.PlanTask{Issue: root.Key, Generation: root.Generation, Task: "a", PlanVersion: 2, BlockText: "Build the widget.", State: record.TaskWaiting}
+	steps := []record.PlanStep{
+		{Issue: root.Key, Generation: root.Generation, Task: "a", Position: 1, Role: "implementer", Type: "implementation"},
+		{Issue: root.Key, Generation: root.Generation, Task: "a", Position: 2, Role: "checker", Type: "review"},
+		{Issue: root.Key, Generation: root.Generation, Task: "a", Position: 3, Role: "linter", Type: "security"},
+	}
+	seedRecord(t, pool, func(tx pgx.Tx) error {
+		return record.NewStore().PutPlan(t.Context(), tx, v, []record.PlanTask{task}, steps)
+	})
+
+	w := walkOf(t, pool, engine, root.Key)
+	want := []phase.Phase{phase.Implementing, phase.Step, phase.Step, phase.Retro, phase.Merging}
+	if !w.Stored || !slices.Equal(w.Line, want) || len(w.Steps) != 3 {
+		t.Fatalf("the walk of %s with the steps implementer checker linter = %+v, want the line %v", root.Key, w, want)
+	}
+}
+
+// A move of the task puts its running step at the place it moves to on the issue the caller holds,
+// so a reader of that issue after the move, in the same transaction, reads the running steps a
+// fresh read of the store gives: the implementer's at the first step, the reviewer's at the
+// second, the implementer's at the retro, which it works, and none at no act, where a task that
+// has not started stands.
+func TestAMoveOfTheTaskSetsTheRoleOfItsStep(t *testing.T) {
+	pool := migratedPool(t)
+	engine := stepEngine(nil)
+	root := stepRoot(t, pool, phase.Implementing)
+	seedOwnersPlan(t, pool, root.Key, root.Generation)
+	applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
+		issue, err := engine.store.Issue(ctx, tx, root.Key)
+		if err != nil || issue == nil {
+			return fmt.Errorf("read %s: %v (recorded %t)", root.Key, err, issue != nil)
+		}
+		s, err := firstScope(ctx, tx, engine, *issue)
+		if err != nil {
+			return err
+		}
+		// The task's start at its first step, as the start that follows its move ends the wait for
+		// a join that move writes: the task holds the issue's own branch and needs none.
+		first := record.TaskPlace{Kind: record.PlaceStep, Position: 1}
+		if err := engine.store.MoveTask(ctx, tx, issue.Key, issue.Generation, s.walk.Task, first, record.TaskRunning); err != nil {
+			return err
+		}
+		if err := engine.store.SetStepWait(ctx, tx, issue.Key, issue.Generation, s.walk.Task, record.StepWaitNone, nil); err != nil {
+			return err
+		}
+		if s, err = firstScope(ctx, tx, engine, *issue); err != nil {
+			return err
+		}
+		for _, move := range []struct {
+			to    phase.Phase
+			place record.TaskPlace
+			role  claim.Role
+		}{
+			{phase.Implementing, record.TaskPlace{Kind: record.PlaceStep, Position: 1}, "implementer"},
+			{phase.Reviewing, record.TaskPlace{Kind: record.PlaceStep, Position: 2}, "reviewer"},
+			{phase.Retro, record.TaskPlace{Kind: record.PlaceRetro}, "implementer"},
+			{phase.Admitted, record.TaskPlace{}, ""},
+		} {
+			if err := engine.moveTask(ctx, tx, &s, move.to, move.place, record.TaskRunning); err != nil {
+				return err
+			}
+			read, err := engine.store.Issue(ctx, tx, root.Key)
+			if err != nil {
+				return err
+			}
+			var want []record.RunningStep
+			if move.role != "" {
+				want = []record.RunningStep{{Task: s.walk.Task, Place: move.place, Role: move.role, Phase: move.to, Agent: claim.Agent(move.role)}}
+			}
+			if !reflect.DeepEqual(s.issue.Running, want) || !reflect.DeepEqual(read.Running, s.issue.Running) {
+				t.Errorf("after the move to %s, the moved issue's running steps = %+v and a fresh read's = %+v, want %+v", move.to, s.issue.Running, read.Running, want)
+			}
+		}
+		return nil
+	})
 }
 
 // taskStands says why key's task does not stand at place in state with issues.phase the phase
@@ -134,7 +224,7 @@ func TestTheTaskPlaceAndThePhaseMoveInOneWrite(t *testing.T) {
 			t.Fatal(err)
 		}
 		for _, m := range moves {
-			move(t, pool, engine, key, m.trigger, "", record.PhaseRow{})
+			move(t, pool, engine, key, m.trigger, record.TaskPlace{}, record.PhaseRow{})
 			if err := taskStands(t, pool, engine, key, m.place, record.TaskRunning, m.phase); err != nil {
 				t.Fatalf("after %s: %v", m.trigger, err)
 			}
@@ -185,7 +275,7 @@ func TestTheTaskPlaceAndThePhaseMoveInOneWrite(t *testing.T) {
 		engine := stepEngine(nil)
 		issue := child(t, pool)
 		seedOwnersPlan(t, pool, issue.Key, issue.Generation)
-		move(t, pool, engine, issue.Key, TriggerGateOpened, "", record.PhaseRow{})
+		move(t, pool, engine, issue.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
 		leaveAs(t, pool, engine, issue.Key, "backlog")
 		if err := taskStands(t, pool, engine, issue.Key, stepOne, record.TaskLeft, phase.Done); err != nil {
 			t.Fatal(err)
@@ -197,7 +287,7 @@ func TestTheTaskPlaceAndThePhaseMoveInOneWrite(t *testing.T) {
 		engine := stepEngine(nil)
 		root := stepRoot(t, pool, phase.Admitted)
 		seedOwnersPlan(t, pool, root.Key, root.Generation)
-		move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
+		move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
 		leaveAs(t, pool, engine, root.Key, "backlog")
 		if err := taskStands(t, pool, engine, root.Key, stepOne, record.TaskLeft, phase.Done); err != nil {
 			t.Fatal(err)
@@ -240,7 +330,7 @@ func TestTheTaskPlaceAndThePhaseMoveInOneWrite(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			pr, err := engine.store.PullRequest(ctx, tx, issue.Key)
+			pr, err := engine.store.MergePullRequest(ctx, tx, issue.Key)
 			if err != nil {
 				return err
 			}
@@ -248,7 +338,11 @@ func TestTheTaskPlaceAndThePhaseMoveInOneWrite(t *testing.T) {
 			if err := engine.store.PutPullRequest(ctx, tx, *pr); err != nil {
 				return err
 			}
-			_, err = engine.closeMerged(ctx, tx, *stored, pr)
+			s, err := firstScope(ctx, tx, engine, *stored)
+			if err != nil {
+				return err
+			}
+			_, err = engine.closeMerged(ctx, tx, s, pr)
 			return err
 		})
 
@@ -288,8 +382,8 @@ func TestABackwardMoveReachesOnlyThePhasesOfTheTasksLine(t *testing.T) {
 	engine := stepEngine(nil)
 	root := stepRoot(t, pool, phase.Admitted)
 	seedOwnersPlan(t, pool, root.Key, root.Generation)
-	move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
-	move(t, pool, engine, root.Key, TriggerImplementationReady, "", record.PhaseRow{})
+	move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
+	move(t, pool, engine, root.Key, TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{})
 	reviewing := record.TaskPlace{Kind: record.PlaceStep, Position: 2}
 	if err := taskStands(t, pool, engine, root.Key, reviewing, record.TaskRunning, phase.Reviewing); err != nil {
 		t.Fatal(err)
@@ -317,4 +411,98 @@ func TestABackwardMoveReachesOnlyThePhasesOfTheTasksLine(t *testing.T) {
 	if err := taskStands(t, pool, engine, root.Key, record.TaskPlace{Kind: record.PlaceStep, Position: 1}, record.TaskRunning, phase.Implementing); err != nil {
 		t.Fatalf("after the move back to implementing: %v", err)
 	}
+}
+
+// A task in another order than today's goes back to a step before it by its own order: with the
+// steps `implementer reviewer tester`, the tester runs after the review, and its move back to
+// reviewing puts the task at the review's step, from which the approval moves it on to the test
+// again and the test's pass to Legion's own retro. Each place moves with issues.phase in one write.
+// The twin: an issue with no plan rows walks today's line, where testing comes before reviewing,
+// so the tester's same move back to reviewing is refused there and moves nothing.
+func TestATaskInAnyOrderGoesBackToAStepBeforeIt(t *testing.T) {
+	pool := migratedPool(t)
+	engine := stepEngine(nil)
+	root := stepRoot(t, pool, phase.Admitted)
+	seedStepsPlan(t, pool, root.Key, root.Generation, "implementer", "reviewer", "tester")
+	stands := func(place record.TaskPlace, want phase.Phase) {
+		t.Helper()
+		if err := taskStands(t, pool, engine, root.Key, place, record.TaskRunning, want); err != nil {
+			t.Fatal(err)
+		}
+	}
+	move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
+	stands(record.TaskPlace{Kind: record.PlaceStep, Position: 1}, phase.Implementing)
+	move(t, pool, engine, root.Key, TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{})
+	stands(record.TaskPlace{Kind: record.PlaceStep, Position: 2}, phase.Reviewing)
+	move(t, pool, engine, root.Key, TriggerReviewApproved, record.TaskPlace{}, record.PhaseRow{})
+	stands(record.TaskPlace{Kind: record.PlaceStep, Position: 3}, phase.Testing)
+
+	result, err := intake.ApplyFact(t.Context(), pool, "api", "tester-back-to-reviewing",
+		intake.BackwardMove{Issue: root.Key, Requester: claim.RoleTester, To: phase.Reviewing, Reason: "the review missed a case"}, engine, admissionStub{})
+	if err != nil {
+		t.Fatalf("the tester's move back to reviewing: %v", err)
+	}
+	if result.Refusal != nil {
+		t.Fatalf("the tester's move back to reviewing was refused: %+v", result.Refusal)
+	}
+	stands(record.TaskPlace{Kind: record.PlaceStep, Position: 2}, phase.Reviewing)
+	move(t, pool, engine, root.Key, TriggerReviewApproved, record.TaskPlace{}, record.PhaseRow{})
+	stands(record.TaskPlace{Kind: record.PlaceStep, Position: 3}, phase.Testing)
+	move(t, pool, engine, root.Key, TriggerTesterPassed, record.TaskPlace{}, record.PhaseRow{})
+	stands(record.TaskPlace{Kind: record.PlaceRetro}, phase.Retro)
+
+	// The twin: an issue with no plan rows, in testing, is refused the same move.
+	todays := migratedPool(t)
+	today := stepRoot(t, todays, phase.Testing)
+	result, err = intake.ApplyFact(t.Context(), todays, "api", "tester-back-to-reviewing",
+		intake.BackwardMove{Issue: today.Key, Requester: claim.RoleTester, To: phase.Reviewing, Reason: "the review missed a case"}, engine, admissionStub{})
+	if err != nil {
+		t.Fatalf("the tester's move back to reviewing with no plan rows: %v", err)
+	}
+	if refusalCode(result) != "BACKWARD_REFUSED" {
+		t.Fatalf("the tester's move back to reviewing with no plan rows = %+v, want BACKWARD_REFUSED", result.Refusal)
+	}
+	if got := issueOf(t, todays, engine, today.Key); got.Phase != phase.Testing {
+		t.Fatalf("after the refused move %s stands in %s, want testing", today.Key, got.Phase)
+	}
+}
+
+// seedTwoDeploymentSteps writes the plan `implementer checker linter` of key's run, checker of the
+// type testing and linter of the type review, with its task running at step at, which runs as
+// step, and the issue standing there.
+func seedTwoDeploymentSteps(t *testing.T, pool *pgxpool.Pool, key string, generation uint64, at int) {
+	t.Helper()
+	seedStepsAt(t, pool, key, generation, at, map[string]string{"checker": "testing", "linter": "review"}, "implementer", "checker", "linter")
+}
+
+// A task moves to the place of the row it takes, not to the first place whose step runs as the
+// row's phase: in `implementer checker linter` both checker and linter run as step, so the
+// checker's pass moves the task from step 2 to step 3, still in step, and the linter's pass moves
+// it on to its retro. A move back from step 3 to step 2 stays in step and is a move back all the
+// same: it counts the task a pass under its pair, step-step.
+func TestATaskMovesToItsRowsPlaceAndCountsItsReturn(t *testing.T) {
+	t.Run("two passes", func(t *testing.T) {
+		pool := migratedPool(t)
+		engine := deploymentEngine()
+		root := stepRoot(t, pool, phase.Step)
+		seedTwoDeploymentSteps(t, pool, root.Key, root.Generation, 2)
+
+		move(t, pool, engine, root.Key, TriggerStepPassed, record.TaskPlace{}, record.PhaseRow{})
+		assertWalksAt(t, pool, engine, root.Key, phase.Step, record.TaskPlace{Kind: record.PlaceStep, Position: 3})
+		move(t, pool, engine, root.Key, TriggerStepPassed, record.TaskPlace{}, record.PhaseRow{})
+		assertWalksAt(t, pool, engine, root.Key, phase.Retro, record.TaskPlace{Kind: record.PlaceRetro})
+	})
+
+	t.Run("a move back from step 3 to step 2", func(t *testing.T) {
+		pool := migratedPool(t)
+		engine := deploymentEngine()
+		root := stepRoot(t, pool, phase.Step)
+		seedTwoDeploymentSteps(t, pool, root.Key, root.Generation, 3)
+
+		move(t, pool, engine, root.Key, TriggerBackward, stepPlace(2), record.PhaseRow{})
+		assertWalksAt(t, pool, engine, root.Key, phase.Step, record.TaskPlace{Kind: record.PlaceStep, Position: 2})
+		if counts := taskCounts(t, pool, engine, root.Key, root.Generation); counts.Pass != 1 || !maps.Equal(counts.BackwardMoves, map[string]int{"step-step": 1}) {
+			t.Fatalf("after the move back from step 3 to step 2 the task counts %+v, want pass 1 and step-step 1", counts)
+		}
+	})
 }

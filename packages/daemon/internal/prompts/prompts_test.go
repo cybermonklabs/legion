@@ -18,6 +18,26 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
+// A step of a role the deployment defines is told the headless mechanics every phase worker is
+// told, then the role's own prompt file, then Legion's own part every phase worker ends with
+// (worker-common.md, which holds the SEPARATE-POD line), in that order.
+func TestComposeStepIsTheHeadlessMechanicsThePromptFileAndWorkerCommon(t *testing.T) {
+	stateDir := t.TempDir()
+	composer, err := New(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	promptFile := filepath.Join(t.TempDir(), "checker.md")
+	want := []string{
+		filepath.Join(stateDir, "prompts", "shared", "mechanics", "headless.md"),
+		promptFile,
+		filepath.Join(stateDir, "prompts", "go", "worker-common.md"),
+	}
+	if got := composer.ComposeStep(promptFile).RolePromptPaths; !slices.Equal(got, want) {
+		t.Errorf("ComposeStep = %q, want %q", got, want)
+	}
+}
+
 // A broken role sequence drops the shared core, uses a root prompt for a child, or makes the Go
 // daemon's instructions win before the shared role instructions. The prompt paths are what every
 // launch concatenates into the one prompt file its agent reads, so their order is the contract. The
@@ -123,8 +143,8 @@ func TestComposeOrdersSharedRolePartsBeforeTheGoDaemonParts(t *testing.T) {
 				// plugin's own refusal text, which survives a rewording of the clauses around it.
 				"the daemon API contract does not describe",
 				// Every role is told the update round's terms (dispatch://INFRA-2981): its ask comes
-				// as a message on the role's own topic, the end of a turn answers nothing, and the
-				// round ends at the moment the ask names whatever the role answers.
+				// as a message on the topic of the claim it asks, the end of a turn answers nothing,
+				// and the round ends at the moment the ask names whatever the claim answers.
 				"The daemon can send an update message to your role topic.",
 				"The end of a turn is no answer",
 				"The round ends at the moment the message names, whether or not you answer.",

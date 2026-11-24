@@ -192,9 +192,10 @@ func (r *reviewRangeLive) controlNoRecordNoCommit() {
 // review App's REQUEST_CHANGES at its first head comes from a session the reviewer's claim did not
 // register - another Legion role posting under the same login. The daemon sets it aside: the issue
 // is still in reviewing, since the review decides nothing, and phases.reviewed_head of its
-// reviewer stays empty. The reviewer's row names no claim before its first completion, so this is
-// the round in which the reviewer's session is read by the claim the daemon starts the reviewer
-// under and not by its row (workflow's reviewersClaim). The walked issue's second check is the
+// reviewer stays empty. The first round is judged on the claim the reviewer's entry wrote on its
+// row before the round's first review, or the reviewer role's own token where its row runs no step
+// of a plan (workflow's reviewersClaim), so this round reads the reviewer's session through that
+// claim before any completion of it. The walked issue's second check is the
 // same first round with the reviewer's own session, which moves the issue back to implementing
 // and records the head, so this check can fail.
 func (r *reviewRangeLive) otherSessionRecordsNoCommit() {
@@ -386,7 +387,7 @@ func (g *reviewRangeGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			_, _ = io.WriteString(w, `[]`)
 			return
 		}
-		_, _ = fmt.Fprintf(w, `[{"number":%d,"state":"open","head":{"ref":%q,"sha":%q},"base":{"ref":"main"},"updated_at":"2026-10-28T00:00:00Z"}]`, pull.number, branch, pull.head)
+		_, _ = fmt.Fprintf(w, `[{"number":%d,"state":"open","head":{"ref":%q,"sha":%q,"repo":{"full_name":%q}},"base":{"ref":"main"},"updated_at":"2026-10-28T00:00:00Z"}]`, pull.number, branch, pull.head, parts[0]+"/"+parts[1])
 	default:
 		w.WriteHeader(http.StatusNotFound)
 		_, _ = io.WriteString(w, `{"message":"Not Found"}`)

@@ -78,13 +78,13 @@ func TestARunOnNoStepOfItsWalkEndsAtTheNextSettle(t *testing.T) {
 				return StepAgent{Session: "s1", Model: "first/first-model"}
 			}
 			seedStepsPlan(t, pool, root.Key, root.Generation, "implementer", "tester")
-			move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
+			move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
 			if dropped {
 				dropPlanRows(t, pool, root.Key)
 				// The roll forward's boot over the store the way back left.
 				rebooted(t, pool)
 			}
-			move(t, pool, engine, root.Key, TriggerImplementationReady, "", record.PhaseRow{})
+			move(t, pool, engine, root.Key, TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{})
 
 			taskA := record.StepPlace{Task: "a", Kind: "step", Place: 1}
 			var ends []string
@@ -182,8 +182,8 @@ func TestAHoldWhosePlanRowsTheWayBackDroppedIsAPlainHold(t *testing.T) {
 			root := stepRoot(t, pool, phase.Admitted)
 			seedStepsPlan(t, pool, root.Key, root.Generation, "implementer", "reviewer")
 			stepChild(t, pool, heldParentChild, phase.Implementing, nil)
-			move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
-			move(t, pool, engine, root.Key, TriggerImplementationReady, "", record.PhaseRow{})
+			move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
+			move(t, pool, engine, root.Key, TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{})
 			approveReview(t, pool, engine)
 			if held := issueOf(t, pool, engine, root.Key); !record.HeldForChildren(held) {
 				t.Fatalf("premise: %s stands in %s hold %+v, want held for children", root.Key, held.Phase, held.Hold)

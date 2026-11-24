@@ -1321,14 +1321,17 @@ Closing the terminal leaves the project without one, and the daemon logs
    and anything the old pod held unpushed is gone. Let the agent push before you suspend it.
 
    **An operator's suspension holds until the operator resumes the claim.** The daemon keeps every
-   role of an open issue live and idle between phases and while the root waits on a person. A child
+   claim of an open issue live and idle between phases and while the root waits on a person. A child
    that left the workflow and is set back to `todo` gets its own architect and the agent of its
-   first step back, on their kept sessions, at its next first phase start, and each other role at
-   the start of its phase. A claim whose session supervise's `forgetSession` has dropped comes back
+   first step back, on their kept sessions, at its next first phase start, and each other agent at
+   the start of its step. A claim whose session supervise's `forgetSession` has dropped comes back
    in a new session instead. The daemon suspends or ends claims only when an issue leaves the
-   workflow, when a claim moves to another tree, or for a production check after the issue is done.
-   A phase start gives its task to that live claim. At boot the daemon
-   resumes by rule a suspended worker that still owns its issue's phase, but never a claim an
+   workflow, when a claim moves to another tree, for a production check after the issue is done,
+   or when an agent's next step is of another role than the one its claim holds: the start of that
+   step suspends the claim at the end of its turn, keeping its session, gives it the step's role
+   and resumes it on the same session. A phase start gives its task to that live claim. At boot
+   the daemon resumes by rule a suspended worker that still owns its issue's phase, but never a
+   claim an
    operator suspended; a start for an operator-suspended claim waits instead. A notice for a root's
    operator-suspended architect waits until the operator resumes it. A notice for a child whose
    own architect an operator suspended goes to the architect above that child. A drain therefore

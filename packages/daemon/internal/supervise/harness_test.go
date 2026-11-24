@@ -20,8 +20,8 @@ import (
 )
 
 const (
-	testToken   claim.Token = "legion-LEGION-209-implementer"
-	rootToken   claim.Token = "legion-LEGION-208-architect"
+	testToken   claim.Token = "legion-legion-legion-209-implementer"
+	rootToken   claim.Token = "legion-legion-legion-208-architect"
 	testBoot                = 120 * time.Second
 	testRPC                 = 5 * time.Second
 	testProbe               = 30 * time.Second

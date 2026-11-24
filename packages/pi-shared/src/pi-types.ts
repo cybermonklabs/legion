@@ -625,9 +625,14 @@ export interface ZodNumberProperty extends ZodProperty {
   readonly int: () => ZodProperty;
 }
 
+/** A string the host's Zod builds: `regex` holds it to a pattern, which its JSON Schema states. */
+export interface ZodStringProperty extends ZodProperty {
+  readonly regex: (pattern: RegExp) => ZodProperty;
+}
+
 export interface PiZod {
   readonly object: (shape: Readonly<Record<string, unknown>>) => unknown;
-  readonly string: () => ZodProperty;
+  readonly string: () => ZodStringProperty;
   readonly number: () => ZodNumberProperty;
   readonly boolean: () => ZodProperty;
   readonly array: (item: unknown) => ZodProperty;

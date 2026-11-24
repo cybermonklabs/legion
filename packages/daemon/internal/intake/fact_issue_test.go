@@ -46,6 +46,7 @@ func TestIssueOfAnswersEachFactThatNamesOneIssue(t *testing.T) {
 		"PodBackstopDue":          PodBackstopDue{Issue: issue},
 		"WorkerSilent":            WorkerSilent{Issue: issue},
 		"WorkerBackgroundStalled": WorkerBackgroundStalled{Issue: issue},
+		"TaskJoined":              TaskJoined{Issue: issue},
 	}
 	namesNone := map[string]Fact{
 		"ChildAdoption":             ChildAdoption{Tree: issue, Children: []AdoptedChild{{Issue: issue}}},

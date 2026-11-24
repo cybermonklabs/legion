@@ -91,10 +91,10 @@ type Runtime interface {
 	// issue Sandbox of a tree whose lifecycle is open or releasing: those are CleanupTree's alone; and
 	// no controller Sandbox whose claim the store holds unretired when the delete is decided.
 	ReconcileOrphans(ctx context.Context, known []Known, grace time.Duration) error
-	// AdoptWorkingCopy hands the agent's working copy the git identity its commits are authored
-	// with, in the place the working copy actually lives (which under a sandbox is not a
-	// directory the daemon can see).
-	AdoptWorkingCopy(ctx context.Context, loc Locator, id GitIdentity) error
+	// AdoptWorkingCopy hands the working copy of the task whose branch is branch ("" for the
+	// issue's own) the git identity its commits are authored with, in the place the working copy
+	// actually lives (which under a sandbox is not a directory the daemon can see).
+	AdoptWorkingCopy(ctx context.Context, loc Locator, id GitIdentity, branch string) error
 	// ProvisionsWorkspaces is whether the runtime provisions each claim's workspace where its
 	// process runs (a pod's init containers, on the issue's own volume). When it does, the daemon
 	// provisions and removes none on its own host.
@@ -220,6 +220,38 @@ type IssuePodReader interface {
 	IssuePod(issue string) (pod string, read bool)
 }
 
+// ErrAwaitsPodUpdate is a launch of a claim into its issue's live pod that was built before the
+// deployment defined the slot the claim runs in (its agent's name) or the role of its step: the pod
+// has no launcher, Secret or volume of that slot, or none of that role's own resources, and a
+// launch that replaced it would end every role in it and delete the issue's disk with everything
+// a role did not push. The launch writes nothing and answers this; the pod's update round, which
+// asks each role in it to push first, or its release replaces it, and the claim starts in the new
+// pod (IssuePodRoles).
+var ErrAwaitsPodUpdate = errors.New("the issue's pod was built before the slot or the role of this launch, and only its update round or its release replaces it")
+
+// IssuePodRoles answers whether the issue's Sandbox holds a live pod whose launcher was built
+// without role, a name the caller asks both as the slot of a claim and as the role of its step
+// (slots are named for roles), and that pod's uid; and whether the launcher of slot in the issue's
+// live pod starts a child only once the slot's gh files hold the start's credential
+// (SlotWaitsForCredential), with the pod's uid where it does not: a launcher of an image before
+// that wait, which a re-role into its slot waits out until the pod's update round or its release.
+// A runtime with no pods (tmux) does not implement it.
+type IssuePodRoles interface {
+	PodLacksRole(issue string, role claim.Role) (pod string, lacks bool)
+	SlotWaitsForCredential(issue string, slot claim.Role) (pod string, waits bool)
+}
+
+// IssuePodImage answers whether the issue's Sandbox holds a live pod built from an image other than
+// the one this runtime launches, and that pod's uid. Such a pod's shim may be of a release before
+// the adoption named a branch, which ignores the branch and adopts in the issue's own working copy,
+// so the start of a step of a task on a branch of its own waits until the pod's update round,
+// which its image drift opens, replaces it (internal/daemon's branchWaitsForItsPod). It reads the
+// image, not the shim's contract, so it answers true for a pod of a later release too. A runtime
+// with no pods (tmux), whose shim is the daemon's own binary, does not implement it.
+type IssuePodImage interface {
+	PodRunsOtherImage(issue string) (pod string, other bool)
+}
+
 // IssuePodReplacer ends the pod of an update round that has no role process in it, asked by the
 // issue alone, and returns when the runtime no longer has that pod. It is ReplacePod for a round
 // with no claim left to name the pod through: every role of the pod is suspended or between
@@ -295,30 +327,32 @@ type IssueVolumeReader interface {
 	IssueKeepsVolume(issue string, since time.Time) bool
 }
 
-// WorkspaceBundler asks one live role's process to bundle the unpushed work of the issue
-// workspace every role of the issue shares, so a release can keep it while the pod, its disk and
+// WorkspaceBundler asks one live claim's process to bundle the unpushed work of the issue
+// workspace every claim of the issue shares, so a release can keep it while the pod, its disk and
 // the workspace on it go. A kept volume does not go: the release keeps the Sandbox that owns it
 // (IssueReleaser), and the pod after the release takes no saved work that volume holds
 // (HeldWorkspaceBundleDrop). The save is still made, because a reset replaces a kept volume, and
-// the save is then the one copy of the unpushed work. The role named must be one whose process
-// runs: the shim builds the bundle with the jj and git of the workspace it already works in. A
-// runtime whose processes share no workspace implements nothing here, and the release of such a
-// pod saves nothing because there is no such pod.
+// the save is then the one copy of the unpushed work. The claim is named by its token, since the
+// agent that works a role's step can run in a claim another role started (a keyed agent): its
+// process must run, as the shim builds the bundle with the jj and git of the workspace it already
+// works in. A runtime whose processes share no workspace implements nothing here, and the release
+// of such a pod saves nothing because there is no such pod.
 type WorkspaceBundler interface {
-	BundleWorkspace(ctx context.Context, issue string, role claim.Role) (WorkspaceBundle, error)
+	BundleWorkspace(ctx context.Context, issue string, token claim.Token) (WorkspaceBundle, error)
 }
 
-// WorkspaceWorkReader asks one live role's process whether the issue workspace every role of the
-// issue shares holds work that no branch or tag on origin holds. It is the read a pod update round
-// makes before it replaces a pod without waiting for every role, so that the replacement can name
-// what goes with the pod, and it is one runtime call so that INFRA-3271 can make the same read with
-// its own reading (spec R1 of INFRA-4109). The role named must be one whose process runs in the
-// issue's pod: its shim reads the workspace with the jj it already works with. The read keeps
-// nothing of the work and saves no bundle; the one thing it writes is jj's snapshot of the working
-// copy (Conn.WorkspaceWork). A runtime whose processes share no workspace implements nothing
-// here.
+// WorkspaceWorkReader asks one live claim's process whether the issue workspace every claim of
+// the issue shares holds work that no branch or tag on origin holds. It is the read a pod update
+// round makes before it replaces a pod without waiting for every role, so that the replacement
+// can name what goes with the pod, and it is one runtime call so that INFRA-3271 can make the same
+// read with its own reading (spec R1 of INFRA-4109). The claim is named by its token, as
+// BundleWorkspace's is, since the agent in a claim need not be the role its name was once read
+// as: its process must run in the issue's pod, as its shim reads the workspace with the jj it
+// already works with. The read keeps nothing of the work and saves no bundle; the one thing it
+// writes is jj's snapshot of the working copy (Conn.WorkspaceWork). A runtime whose processes
+// share no workspace implements nothing here.
 type WorkspaceWorkReader interface {
-	WorkspaceWork(ctx context.Context, issue string, role claim.Role) (WorkspaceWork, error)
+	WorkspaceWork(ctx context.Context, issue string, token claim.Token) (WorkspaceWork, error)
 }
 
 // WorkspaceWork is what one read of an issue's workspace found (WorkspaceWorkReader). Work is a
@@ -542,7 +576,9 @@ func (k Known) Validate() error {
 // `commit_issue_trailer_repos` (which internal/daemon's specs reads); "" for a repository the
 // project does not name, for a launch with no repository, and for the controller, which works
 // neither. Backend is the harness the process runs (`worker_backends`,
-// Backends); "" is Oh My Pi (Of).
+// Backends); "" is Oh My Pi (Of). Model is the model the harness runs, the `model` the settings
+// give a role of the deployment (`roles.<name>.model`); "" is the profile's own: Oh My Pi's
+// `@default` role, and no model named to Claude Code.
 type SpawnSpec struct {
 	Claim             claim.Token
 	Project           string
@@ -563,6 +599,7 @@ type SpawnSpec struct {
 	Variants          []Variant
 	IssueTrailer      string
 	Backend           Backend
+	Model             string
 }
 
 // Variant is one arm of one declared experiment a launch runs in (SpawnSpec.Variants): the
@@ -839,4 +876,32 @@ func (id GitIdentity) Env() map[string]string {
 		"GIT_AUTHOR_NAME": id.Name, "GIT_AUTHOR_EMAIL": id.Email,
 		"GIT_COMMITTER_NAME": id.Name, "GIT_COMMITTER_EMAIL": id.Email,
 	}
+}
+
+// ActsAs answers, for a claim token, the role whose App the claim's slot holds while it does some
+// other work than its stored role's, and false where it gives none: the owner's step is such work,
+// which the daemon's owner function decides. A runtime is given one in its options (nil by
+// default), and SlotRole, the one function that answers a slot's App role, reads it.
+type ActsAs func(ctx context.Context, token claim.Token) (claim.Role, bool, error)
+
+// SlotRole is the role whose App the slot of token holds: the role actsAs gives the token where
+// actsAs is set and gives one, else role, which its caller reads: at a launch, the role of the
+// step the claim is launched for; at a refresh, the role the slot's process was launched as where
+// the slot records that launch for the stored claim's generation or a later one, and otherwise the
+// claim's stored role (the sandbox runtime's slotAppRole, the tmux runtime's paneRole). It is never
+// the slot's name: a keyed agent's slot is named by its agent, and that agent can do a step of
+// another role. Each write of a slot's gh credential asks it, so a re-roled claim's slot holds the
+// App of the role its process was launched as.
+func SlotRole(ctx context.Context, actsAs ActsAs, token claim.Token, role claim.Role) (claim.Role, error) {
+	if actsAs == nil {
+		return role, nil
+	}
+	acting, ok, err := actsAs(ctx, token)
+	if err != nil {
+		return "", fmt.Errorf("the role whose App the slot of %s holds: %w", token, err)
+	}
+	if ok {
+		return acting, nil
+	}
+	return role, nil
 }

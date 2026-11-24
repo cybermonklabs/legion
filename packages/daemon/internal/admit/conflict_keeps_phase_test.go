@@ -83,7 +83,7 @@ func TestAConflictKeepsPhaseAndTakesNoSlot(t *testing.T) {
 		var pr *record.PullRequest
 		inTx(t, pool, func(tx pgx.Tx) {
 			var err error
-			if pr, err = record.NewStore().PullRequest(ctx, tx, key); err != nil {
+			if pr, err = record.NewStore().MergePullRequest(ctx, tx, key); err != nil {
 				t.Fatalf("read the pull request of %s: %v", key, err)
 			}
 		})

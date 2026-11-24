@@ -321,7 +321,7 @@ func TestAPauseStopMadeAgainWritesItsRecordsOnce(t *testing.T) {
 func TestAStopOwedToAClaimRunningAgainRecordsTheStopAlone(t *testing.T) {
 	t.Parallel()
 	r := newPauseRig(t, claim.RoleImplementer, claim.RoleTester)
-	if taken, err := r.st.TakePodWake(r.ctx, "legion", pauseIssue, mustClaimToken(t, pauseIssue, claim.RoleTester),
+	if taken, err := r.st.TakePodWake(r.ctx, "legion", pauseIssue, mustClaimToken(t, pauseIssue, claim.RoleTester), claim.RoleTester,
 		pods.WakeChecks, time.Now(), 0); err != nil || !taken {
 		t.Fatalf("take the tester's wake = %t, %v", taken, err)
 	}
@@ -963,7 +963,7 @@ func TestAWakeStartOfARoleTheDaemonTookOverFinishesWithoutActing(t *testing.T) {
 	released := releasedClaim(t, sup, claim.RoleTester)
 	issue := record.Issue{Key: pauseIssue, Tree: pauseIssue, Generation: 1}
 	wake := func(role claim.Role) record.OutboxRow {
-		return mustOutboxRow(t, pauseIssue, workflow.PauseWakeRow(issue, role, 7), time.Now())
+		return mustOutboxRow(t, pauseIssue, workflow.PauseWakeRow(issue, role, mustClaimToken(t, pauseIssue, role), 7), time.Now())
 	}
 
 	if err := runner.execute(ctx, wake(claim.RoleImplementer)); err != nil {
@@ -1029,5 +1029,96 @@ func TestASuspendRowDropsOnlyTheBackstopOfTheRoleItStops(t *testing.T) {
 	}
 	if got := armed(); len(got) != 0 {
 		t.Fatalf("backstops armed after the issue's close = %v, want none", got)
+	}
+}
+
+// stepPauseChecker is the role of step 2 of the plan seedStepStartPlan gives LEGION-208.
+const stepPauseChecker claim.Role = "checker"
+
+// atTheCheckersStep moves the rig's LEGION-208 to step 2 of `implementer checker linter` at
+// generation 2, the checker's step, worked by the agent of a key: the implementer's claim, re-roled
+// to the checker, which the checker's phases row names (record.WorkerClaim). The checker's own
+// claim, of an earlier version of the plan, stands beside it on the same role. It answers the two
+// claims, the step's worker first, each suspended as released and serving generation 2.
+func (r *pauseRig) atTheCheckersStep() (worker, other supervise.Claim) {
+	r.t.Helper()
+	if _, err := r.pool.Exec(r.ctx, `update issues set phase = 'step', generation = 2 where key = $1`, pauseIssue); err != nil {
+		r.t.Fatalf("move %s to step: %v", pauseIssue, err)
+	}
+	seedStepStartPlan(r.t, r.pool, record.NewStore(), 2)
+	worker = r.claim(claim.RoleImplementer, supervise.StateSuspended)
+	other = r.claim(stepPauseChecker, supervise.StateSuspended)
+	if _, err := r.pool.Exec(r.ctx, `insert into phases (issue, role, claim, handoff_commit, rounds, pass, verdict, summary,
+		step_task, step_place) values ($1, $2, $3, '', 0, 0, '', '', 'a', 2)`, pauseIssue, string(stepPauseChecker), string(worker.Token)); err != nil {
+		r.t.Fatalf("name the keyed agent on the checker's step: %v", err)
+	}
+	for _, c := range []*supervise.Claim{&worker, &other} {
+		c.Role, c.Generation, c.ServingGeneration = stepPauseChecker, 2, 2
+		if err := r.st.PutClaim(r.ctx, *c); err != nil {
+			r.t.Fatalf("seed the released claim %s: %v", c.Token, err)
+		}
+	}
+	return worker, other
+}
+
+// backstopsDue is each claim's role with an open backstop of LEGION-208, by role.
+func (r *pauseRig) backstopsDue() []string {
+	r.t.Helper()
+	rows, err := r.pool.Query(r.ctx, `select role from pod_wake_backstops where issue = $1 and not fired order by role`, pauseIssue)
+	if err != nil {
+		r.t.Fatalf("read the backstops of %s: %v", pauseIssue, err)
+	}
+	armed, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		r.t.Fatalf("read the backstops of %s: %v", pauseIssue, err)
+	}
+	return armed
+}
+
+// The worker of an issue's open step gets a backstop when a pause stops it, and at step that
+// worker is the claim the record gives the running step (workflow.OpenWorkers): here the agent of a
+// key, on the checker's step, whose token names the implementer. The pause's stop of that claim
+// arms its backstop; the stop of the checker's own claim beside it, which works no step, arms none.
+func TestAPauseStopOfAStepsWorkerArmsItsBackstop(t *testing.T) {
+	t.Parallel()
+	r := newPauseRig(t)
+	worker, other := r.atTheCheckersStep()
+	held := r.pauseLegion()
+
+	r.mustStop(other, supervise.PauseStop{Pause: held.ID})
+	if got := r.backstopsDue(); len(got) != 0 {
+		t.Fatalf("backstops after the stop of the checker's own claim = %v, want none: it works no step", got)
+	}
+	r.mustStop(worker, supervise.PauseStop{Pause: held.ID})
+	if got := r.backstopsDue(); len(got) != 1 || got[0] != string(stepPauseChecker) {
+		t.Fatalf("backstops after the stop of the step's worker = %v, want the checker's step's one", got)
+	}
+}
+
+// A cancel of a release made while the project is paused records the claims the release stopped as
+// stopped by the pause, and arms the backstop of the open step's worker as the stop transaction
+// does: at step, the claim the record gives the running step (workflow.OpenWorkers), here the agent
+// of a key, and not the checker's own claim beside it.
+func TestAPausedCancelOfAReleaseArmsTheBackstopOfTheStepsWorker(t *testing.T) {
+	t.Parallel()
+	r := newPauseRig(t)
+	r.atTheCheckersStep()
+	if _, err := r.pool.Exec(r.ctx, `insert into issue_releases
+		(project, issue, generation, first_row, boundary_row, last_row, started_row, role, suspended, marked_at)
+		values ('legion', $1, 2, 18, 20, 22, 0, 'architect', $2, now())`, pauseIssue, []string{string(stepPauseChecker)}); err != nil {
+		t.Fatalf("mark the release of %s: %v", pauseIssue, err)
+	}
+	held := r.pauseLegion()
+	runner := &outbox{pool: r.pool, records: record.NewStore(), project: "legion", dispatchProject: "LEGION", trees: r.st,
+		backstop: time.Hour, log: quietLogger(), now: time.Now}
+
+	if err := runner.cancelRelease(r.ctx, pauseIssue, pauseIssue, workflow.IdleHoldBundleSave, "the save failed"); err != nil {
+		t.Fatalf("cancel the release while paused: %v", err)
+	}
+	if got := r.count(`select count(*) from project_pause_stops where pause_id = $1 and issue = $2`, held.ID, pauseIssue); got != 2 {
+		t.Fatalf("stops the cancel recorded = %d, want both claims of the checker", got)
+	}
+	if got := r.backstopsDue(); len(got) != 1 || got[0] != string(stepPauseChecker) {
+		t.Fatalf("backstops after the paused cancel = %v, want the checker's step's one", got)
 	}
 }

@@ -268,13 +268,13 @@ func (s *Store) OwedLaunchesWithNoIssueRecord(ctx context.Context, held Pause) (
 // ended `stopped`, where that stop ended after issue's newest pod release, whichever pause made it,
 // and 0 otherwise. It is the stop heldMessageOwed reads (internal/daemon's outbox.heldMessageOwed,
 // the one statement of the held role message's debt, R4 of dispatch://INFRA-3759): a role message
-// a pause held is owed to a role a pause stopped until the role's session holds its topic, and a
-// release recorded after the stop ends that debt.
+// a pause held is owed to the claim a pause stopped until that claim's session holds the topic of
+// its token, and a release recorded after the stop ends that debt.
 // A later stop of the claim that is still open, or that ended any other way, is passed over: a
 // cancelled stop stopped nothing, and what a taken-over or failed one signals, the claim's state or
 // a later pod release already says. It reads no ready, unlike StoppingPauseTx: a woken agent says
-// it is ready (supervise.SaidReady) before its plugin claims the role's Envoy topic, and the
-// message is still owed in that gap. project is the project token, as pod_releases holds it.
+// it is ready (supervise.SaidReady) before its plugin claims the Envoy topic of its claim token,
+// and the message is still owed in that gap. project is the project token, as pod_releases holds it.
 func (s *Store) StoppedByAPause(ctx context.Context, project, issue string, token claim.Token) (int64, error) {
 	var pause int64
 	err := TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {

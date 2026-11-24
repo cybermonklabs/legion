@@ -171,8 +171,8 @@ var ClaimRecordFields = []RecordFieldDecision{
 
 // IssueRecordFields is every field of `record.Issue`, in the order the record declares them. No
 // field of it is a secret and none is the operator route's alone, so every entry is served to
-// the agent surfaces or withheld, as bookkeeping or, for ReleasedForWaitAt, MovedAt and
-// TreeStalledToldAt, for the reason its own entry gives.
+// the agent surfaces or withheld, as bookkeeping or, for ReleasedForWaitAt, MovedAt,
+// TreeStalledToldAt and ViewTask, for the reason its own entry gives.
 var IssueRecordFields = []RecordFieldDecision{
 	{Field: "Key", Column: ColumnAgents, Keys: []string{"key"}, Reason: "the issue the whole view is about"},
 	{Field: "Tree", Column: ColumnAgents, Keys: []string{"tree"},
@@ -215,6 +215,10 @@ var IssueRecordFields = []RecordFieldDecision{
 		Reason: "when this one issue last moved reaches no surface of its own: what a reader is served is its whole tree's measure, `treeMovedAt` and `quietHours`, which the projection builds from every member's movement and from their claims' steps (record.QuietTrees) and which no field of one record carries"},
 	{Field: "TreeStalledToldAt", Column: ColumnWithheld,
 		Reason: "the mark that holds one stall to one notice, written on a tree's root as the stalled-tree notice is queued: it is the daemon's own record of what it has already told a controller, and a reader of the state is told the tree's quiet time instead"},
+	{Field: "Running", Column: ColumnAgents, Keys: []string{"tasks"},
+		Reason: "the running steps of the issue's tasks, one for each step whose start was delivered: a task whose step waits for its agent names the running step that agent works (`tasks`, its `waitsFor`), and the role of the first running step at step is served as `stepRole`, which the phase alone does not name"},
+	{Field: "ViewTask", Column: ColumnWithheld,
+		Reason: "the task a copy of the issue is read for while the workflow handles one fact of that task, which no read of the store answers and no record the state is built from carries: each task of the issue is served under `tasks`"},
 }
 
 // AssignmentRecordFields is every field of `record.Assignment`, in the order the record declares

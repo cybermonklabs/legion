@@ -133,25 +133,32 @@ test("a WAITING reply moves the reported wake out by the waiting limit", async (
   expect(reminder.phaseWake()).toEqual({ nextReminderAt: null });
 });
 
-// The claim token the request carries is the one the daemon minted for this claim; a pane with no
-// project cannot spell one, and sends nothing rather than throwing inside a host's hook.
-test("the request is the claim's own, and is left unbuilt when no token can be spelled", () => {
+// The request carries the claim's own token, secret and session, with the report as its activity.
+test("the request is the claim's own", () => {
   const report = sessionActivity([], { nextReminderAt: null }, AT);
 
-  expect(sessionActivityRequest({ project: "legion", claim: implementer, report })).toEqual({
+  expect(sessionActivityRequest({ claim: implementer, report })).toEqual({
     claimToken: "legion-legion-legion-208-implementer",
     sessionId: "ses_implementer",
     secret: "secret",
     activity: report,
   });
-  expect(
-    sessionActivityRequest({ project: undefined, claim: implementer, report })
-  ).toBeUndefined();
-  expect(
-    sessionActivityRequest({
-      project: "legion",
-      claim: { ...implementer, issue: "not an issue key" },
-      report,
-    })
-  ).toBeUndefined();
+});
+
+// A claim's token names its agent, and its role is the role of the step it runs now: a claim of
+// the agent implementer that runs a tester's step reports for its own token. The fault: the token
+// spelled from the role, `…-tester`, a claim the session does not hold, which the daemon refuses.
+test("a session reports its activity for the token it registered, whatever role it holds now", () => {
+  const report = sessionActivity([], { nextReminderAt: null }, AT);
+  const reroled = {
+    ...implementer,
+    claimToken: "legion-p-infra-1-implementer",
+    tree: "INFRA-1",
+    issue: "INFRA-1",
+    role: "tester",
+  } as const;
+
+  expect(sessionActivityRequest({ claim: reroled, report }).claimToken).toBe(
+    "legion-p-infra-1-implementer"
+  );
 });

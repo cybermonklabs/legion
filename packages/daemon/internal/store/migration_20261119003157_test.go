@@ -133,7 +133,7 @@ func TestAPullRequestKeepsItsConflictReadAndMergeForwardFrom20261119003157(t *te
 		var pr *record.PullRequest
 		if err := Transact(ctx, store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 			var err error
-			pr, err = record.NewStore().PullRequest(ctx, tx, issue)
+			pr, err = record.NewStore().MergePullRequest(ctx, tx, issue)
 			return err
 		}); err != nil || pr == nil {
 			t.Fatalf("read the pull request of %s after 20261119003157: %+v, %v", issue, pr, err)

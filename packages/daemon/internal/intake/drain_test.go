@@ -373,7 +373,7 @@ func drainPullRequestEvent(delivery string, number int, action, branch, head str
 	n := strconv.Itoa(number)
 	return drainWebhookEnvelope(delivery, drainSubjectPrefix+".pr."+n, "pr "+action+": "+drainRepo+"#"+n, map[string]string{
 		"kind": "pr", "action": action, "repo": drainRepo, "number": n, "title": "change " + n, "author": "someone",
-		"url": "https://github.com/" + drainRepo + "/pull/" + n, "head_sha": head, "head_ref": branch, "base_ref": "main",
+		"url": "https://github.com/" + drainRepo + "/pull/" + n, "head_sha": head, "head_ref": branch, "head_repo": drainRepo, "base_ref": "main",
 		"merged": "false", "merge_commit_sha": "", "merged_by": "", "updated_at": updated.Format(time.RFC3339), "body": "a change",
 	})
 }

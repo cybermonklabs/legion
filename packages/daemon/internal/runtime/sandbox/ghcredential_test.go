@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
 // secretUpdates are the Secret updates among writes, by name.
@@ -45,12 +46,13 @@ func linesHolding(logged, text string) []string {
 	return held
 }
 
-// The refresher brings a live pod's role Secrets to the current render of each role's credential
-// for the default owner its Secret records, and touches nothing else, the controller's included: a
+// The refresher brings a live pod's slot Secrets to the current render of the credential each slot
+// holds — here every slot runs its own role, so it holds its own name's App — for the default
+// owner its Secret records, and touches nothing else, the controller's included: a
 // Secret whose owners' hosts.yml are already the render is not written, one another Sandbox owns is
 // skipped, one that records no default is logged and left, and a rewrite changes the stale owner's
 // two gh keys alone — the other owner's, the default, the launcher token and the annotations the
-// binding wrote stay — and is logged naming the sandbox, the role, its App, the lease's expiry and
+// binding wrote stay — and is logged naming the sandbox, the slot and its role, its App, the lease's expiry and
 // the owner it rewrote.
 func TestTheRefresherRewritesOnlyTheOwnersWhoseGhFilesAreStale(t *testing.T) {
 	logs := &lockedLog{}
@@ -129,15 +131,15 @@ func TestTheRefresherRewritesOnlyTheOwnersWhoseGhFilesAreStale(t *testing.T) {
 	}
 }
 
-// A lease the daemon re-minted reaches every role of every live pod on the next tick, the
-// controller's included: each role's Secret is rewritten to its own App's new tokens, every
-// owner's. A role whose render fails keeps its last files, logged, while the roles of the
-// pod's other App are refreshed, and so does one whose render holds no directory for the default
-// owner its Secret records.
+// A lease the daemon re-minted reaches every slot of every live pod on the next tick, the
+// controller's included: each slot's Secret, here each slot running its own role, is rewritten to
+// the new tokens of the App it holds, every owner's. A slot whose render fails keeps its last
+// files, logged, while the slots of the pod's other App are refreshed, and so does one whose
+// render holds no directory for the default owner its Secret records.
 //
 // The stand-in answers by App role and repository and by nothing else, as the daemon's own
 // function does (appauth.GitHubCredential): a bundle is that pair, which is why the walk builds
-// one per pair and hands it to every role of it (appauth.Bundles). So the implement App's
+// one per pair and hands it to every slot that holds it (appauth.Bundles). So the implement App's
 // failure is the implementer's and the merger's, and the review App's new lease is the four
 // roles' that run as it; the controller's bundle comes from the function that answers by owner,
 // and a render of it that holds no directory for the owner its Secret records is refused on its
@@ -151,8 +153,11 @@ func TestTheRefresherFollowsAReMintedLeaseIntoEveryRolesSecret(t *testing.T) {
 	g := newRig(t, nil, withOptions(func(o *Options) {
 		o.Log = slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
 		o.GitHubCredential = func(_ context.Context, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
-			app := string(appauth.AppRoleFor(role))
-			if refuse.Load() && appauth.AppRoleFor(role) == appauth.Implement {
+			app, err := appauth.AppRoleFor(role, nil)
+			if err != nil {
+				return ghconfig.Bundle{}, err
+			}
+			if refuse.Load() && app == appauth.Implement {
 				return ghconfig.Bundle{}, errors.New("no installation token: GitHub is down")
 			}
 			owner := strings.ToLower(repo.Owner())
@@ -160,8 +165,8 @@ func TestTheRefresherFollowsAReMintedLeaseIntoEveryRolesSecret(t *testing.T) {
 				owner = "sjawhar"
 			}
 			return ghconfig.Bundle{Default: owner, Dirs: map[string]ghconfig.Rendered{
-				"acme": ghconfig.Render("ghs_"+app+"_"+*lease.Load()+"_read", app, staticCredentialExpiry),
-				owner:  ghconfig.Render("ghs_"+app+"_"+*lease.Load(), app, staticCredentialExpiry),
+				"acme": ghconfig.Render("ghs_"+string(app)+"_"+*lease.Load()+"_read", string(app), staticCredentialExpiry),
+				owner:  ghconfig.Render("ghs_"+string(app)+"_"+*lease.Load(), string(app), staticCredentialExpiry),
 			}}, nil
 		}
 		// The controller's bundle comes from the one function that answers by owner, over the same
@@ -195,7 +200,7 @@ func TestTheRefresherFollowsAReMintedLeaseIntoEveryRolesSecret(t *testing.T) {
 	g.r.refreshGitHubCredentials(g.ctx)
 	var want []string
 	for _, role := range claim.Roles {
-		if appauth.AppRoleFor(role) == appauth.Review {
+		if appOf(t, role) == appauth.Review {
 			want = append(want, roleSecretName(issue, role))
 		}
 	}
@@ -205,10 +210,10 @@ func TestTheRefresherFollowsAReMintedLeaseIntoEveryRolesSecret(t *testing.T) {
 	for _, role := range claim.Roles {
 		secret := g.secret(roleSecretName(issue, role))
 		lease := second
-		if appauth.AppRoleFor(role) == appauth.Implement {
+		if appOf(t, role) == appauth.Implement {
 			lease = first
 		}
-		app := string(appauth.AppRoleFor(role))
+		app := string(appOf(t, role))
 		for owner, expected := range map[string]string{"sjawhar": "ghs_" + app + "_" + lease, "acme": "ghs_" + app + "_" + lease + "_read"} {
 			if token, err := ghconfig.TokenFromHosts(secret.Data[GitHubHostsKey(owner)]); err != nil || token != expected {
 				t.Errorf("%s's %s hosts.yml holds %q (%v), want %q", role, owner, token, err, expected)
@@ -246,7 +251,10 @@ func TestATickBuildsOneBundlePerAppRoleAndRepository(t *testing.T) {
 	g := newRig(t, nil, withOptions(func(o *Options) {
 		o.Log = slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
 		o.GitHubCredential = func(ctx context.Context, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
-			app := appauth.AppRoleFor(role)
+			app, err := appauth.AppRoleFor(role, nil)
+			if err != nil {
+				return ghconfig.Bundle{}, err
+			}
 			asked, _ := built.LoadOrStore(app, new(atomic.Int64))
 			asked.(*atomic.Int64).Add(1)
 			if fail.Load() && app == appauth.Implement {
@@ -299,7 +307,7 @@ func TestAControllerIsRefreshedForTheOwnerItsSecretRecords(t *testing.T) {
 	var asked atomic.Pointer[string]
 	asked.Store(new(string))
 	logs := &lockedLog{}
-	app := string(appauth.AppRoleFor(claim.RoleController))
+	app := string(appOf(t, claim.RoleController))
 	// The project served sjawhar alone when the controller's pod was launched, and has since
 	// gained acme, which sorts before it.
 	bundle := func(dflt string) ghconfig.Bundle {
@@ -843,7 +851,7 @@ func TestTheRefresherKeepsARenamedIssuesWriteLeaseInItsOwnDirectory(t *testing.T
 	installed, left := appauth.NewInstalled(), appauth.NewLeftOut()
 	installs := installedOnServed{repos: listed}
 	g := newRig(t, nil, withOptions(func(o *Options) {
-		o.GitHubCredential = appauth.GitHubCredential(sourceOf(leases, installs), served, renames, installed, left, nil)
+		o.GitHubCredential = appauth.GitHubCredential(sourceOf(leases, installs), served, renames, installed, left, nil, nil)
 		o.ControllerCredential = appauth.ControllerCredential(sourceOf(leases, installs), served, renames, installed, left, nil)
 		o.GitHubDirs = func(repo ghrepo.Repository, roles []appauth.AppRole) []string {
 			return appauth.GitHubDirs(served, renames, installed, left, roles, repo)
@@ -852,7 +860,7 @@ func TestTheRefresherKeepsARenamedIssuesWriteLeaseInItsOwnDirectory(t *testing.T
 	g.spawn(rootSpec(t))
 	issue := SandboxName(rootToken)
 	role := claim.RoleArchitect
-	app := appauth.AppRoleFor(role)
+	app := appOf(t, role)
 	name := roleSecretName(issue, role)
 	write := leaseNamed(app, "cybermonklabs", "write")
 	if repo, named := fetchRepository(g.pod(issue)); !named || repo.String() != recordedSmoke.String() {
@@ -910,6 +918,55 @@ func TestTheRefresherKeepsARenamedIssuesWriteLeaseInItsOwnDirectory(t *testing.T
 	}
 }
 
+// The slot `implementer` of an issue pod holds key a's claim `…-implementer`, which took the role
+// tester for its tester step. The refresh writes that slot's Secret for the review App, the tester's,
+// so its check run is not refused as the implement App's would be; a slot whose claim holds its own
+// name's role keeps its App. The change of App moves no owner directory, so the pod reads no drift
+// and no update round replaces it.
+func TestASlotsGhFilesFollowItsClaimsRole(t *testing.T) {
+	keyed := claim.Token("legion-legion-legion-208-implementer")
+	g := newRig(t, nil, withOptions(func(o *Options) {
+		o.GitHubCredential = func(_ context.Context, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
+			owner := strings.ToLower(repo.Owner())
+			if owner == "" {
+				owner = "sjawhar"
+			}
+			appRole, err := appauth.AppRoleFor(role, nil)
+			if err != nil {
+				return ghconfig.Bundle{}, err
+			}
+			app := string(appRole)
+			return ghconfig.Bundle{Default: owner, Dirs: map[string]ghconfig.Rendered{
+				"acme": ghconfig.Render("ghs_"+app+"_read", app, staticCredentialExpiry),
+				owner:  ghconfig.Render("ghs_"+app, app, staticCredentialExpiry),
+			}}, nil
+		}
+	}))
+	g.spawn(rootSpec(t))
+	issue := SandboxName(rootToken)
+	g.store.mu.Lock()
+	g.store.claims = append(g.store.claims,
+		supervise.Claim{Token: keyed, Project: testProject, Tree: testTree, Issue: testTree, Role: claim.RoleTester},
+		supervise.Claim{Token: otherToken, Project: testProject, Tree: testTree, Issue: testTree, Role: claim.RoleReviewer})
+	g.store.mu.Unlock()
+
+	g.r.refreshGitHubCredentials(g.ctx)
+
+	for slot, want := range map[claim.Role]string{claim.RoleImplementer: "ghs_review", claim.RoleReviewer: "ghs_review", claim.RoleArchitect: "ghs_review"} {
+		secret := g.secret(roleSecretName(issue, slot))
+		if token, err := ghconfig.TokenFromHosts(secret.Data[GitHubHostsKey("sjawhar")]); err != nil || token != want {
+			t.Errorf("the %s slot's hosts.yml holds %q (%v), want %q", slot, token, err, want)
+		}
+	}
+	pod := g.r.storedPod(issue)
+	if pod == nil {
+		t.Fatalf("the issue pod %s is not in the store", issue)
+	}
+	if moved := g.r.driftedInPod(pod, claim.RoleImplementer); len(moved) != 0 {
+		t.Fatalf("the implementer slot reads the drift %+v after its App changed, want none", moved)
+	}
+}
+
 // renamedIssueOnBothOwners launches the issue recorded on the smoke repository's pair's `from`,
 // sjawhar/legion-smoke, under a daemon serving the repository it moved to and another repository
 // of sjawhar's, so the pair resolves while the App is installed on both owners: the case where the
@@ -923,7 +980,7 @@ func renamedIssueOnBothOwners(t *testing.T) (g *rig, pod, name string, app appau
 	}))
 	g.spawn(rootSpec(t))
 	pod = SandboxName(rootToken)
-	return g, pod, roleSecretName(pod, claim.RoleArchitect), appauth.AppRoleFor(claim.RoleArchitect), logs
+	return g, pod, roleSecretName(pod, claim.RoleArchitect), appOf(t, claim.RoleArchitect), logs
 }
 
 // staleGhKeys records dflt as the default of every role's Secret of the issue pod named pod, and
@@ -931,7 +988,7 @@ func renamedIssueOnBothOwners(t *testing.T) (g *rig, pod, name string, app appau
 // the hour its tokens last has passed.
 func staleGhKeys(g *rig, pod, dflt string, dirs ...string) {
 	g.t.Helper()
-	for _, role := range podKindFor(claim.RoleArchitect).roles() {
+	for _, role := range podKindFor(claim.RoleArchitect).roles(g.r) {
 		name := roleSecretName(pod, role)
 		if g.secret(name) == nil {
 			continue
@@ -1135,7 +1192,7 @@ func TestACredentialRefreshGoesOnAfterTheServedNamesMovedTheRoutedDefault(t *tes
 				o.Log = slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
 				o.CacheRepositories = listed
 				o.Tokens = servingTokens{served: served, renames: renames}
-				o.GitHubCredential = appauth.GitHubCredential(sourceOf(leases, installs), served, renames, installed, left, nil)
+				o.GitHubCredential = appauth.GitHubCredential(sourceOf(leases, installs), served, renames, installed, left, nil, nil)
 				o.ControllerCredential = appauth.ControllerCredential(sourceOf(leases, installs), served, renames, installed, left, nil)
 				o.GitHubDirs = func(repo ghrepo.Repository, roles []appauth.AppRole) []string {
 					return appauth.GitHubDirs(served, renames, installed, left, roles, repo)
@@ -1143,7 +1200,7 @@ func TestACredentialRefreshGoesOnAfterTheServedNamesMovedTheRoutedDefault(t *tes
 			}))
 			g.spawn(rootSpec(t))
 			pod := SandboxName(rootToken)
-			roles := podKindFor(claim.RoleArchitect).roles()
+			roles := podKindFor(claim.RoleArchitect).roles(g.r)
 			recorded := tc.launched.routed
 			// pairs is what every role's Secret holds under GitHubPairsKey: the launch's own
 			// here, and after each tick the pairs that tick wrote.
@@ -1176,7 +1233,7 @@ func TestACredentialRefreshGoesOnAfterTheServedNamesMovedTheRoutedDefault(t *tes
 				g.r.refreshGitHubCredentials(g.ctx)
 
 				for _, role := range roles {
-					secret, app := g.secret(roleSecretName(pod, role)), appauth.AppRoleFor(role)
+					secret, app := g.secret(roleSecretName(pod, role)), appOf(t, role)
 					want := map[string]string{"cybermonklabs": leaseNamed(app, "cybermonklabs", "write"), "sjawhar": leaseNamed(app, "sjawhar", "write")}
 					if got := hostsTokens(t, secret, dirs...); !maps.Equal(got, want) {
 						t.Errorf("%s: the tick left %s's directories holding %v, want %v: a live pod's tokens are refreshed whichever directory a bundle built now routes its repository to",

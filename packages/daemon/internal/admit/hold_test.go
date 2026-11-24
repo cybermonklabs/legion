@@ -31,9 +31,9 @@ import (
 func TestReconcileLeavesAnIssueTheStreamHoldsNewerEventsFor(t *testing.T) {
 	pool := migratedPool(t)
 	admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	seedSlotted(t, pool, "LEGION-ACTIVE", "A")
+	seedSlotted(t, pool, "LEGION-750", "A")
 	inTx(t, pool, func(tx pgx.Tx) {
-		stored, err := record.NewStore().Issue(context.Background(), tx, "LEGION-ACTIVE")
+		stored, err := record.NewStore().Issue(context.Background(), tx, "LEGION-750")
 		if err != nil || stored == nil {
 			t.Fatalf("read the seeded issue: (%+v, %v)", stored, err)
 		}
@@ -44,21 +44,21 @@ func TestReconcileLeavesAnIssueTheStreamHoldsNewerEventsFor(t *testing.T) {
 	})
 
 	reconcile(t, pool, admission, []dispatch.IssueSummary{
-		{Key: "LEGION-ACTIVE", ResolvedRepo: "acme/widgets", Title: "active", Status: "done", Rank: "A", LastSeq: 11},
+		{Key: "LEGION-750", ResolvedRepo: "acme/widgets", Title: "active", Status: "done", Rank: "A", LastSeq: 11},
 	})
 
-	if got := issue(t, pool, "LEGION-ACTIVE"); got.Status != "in_progress" {
+	if got := issue(t, pool, "LEGION-750"); got.Status != "in_progress" {
 		t.Fatalf("reconciled status = %q, want in_progress: the stream holds the event that changed it", got.Status)
 	}
-	assertSlots(t, pool, []record.Slot{{Issue: "LEGION-ACTIVE", Index: 0, AdmittedAt: fixedNow}})
+	assertSlots(t, pool, []record.Slot{{Issue: "LEGION-750", Index: 0, AdmittedAt: fixedNow}})
 
 	// The same issue once the Dispatch consumer has actually caught up to the same event: nothing
 	// newer is coming, so the summary — genuinely newer than the record's own sequence — applies
 	// through the engine (level with what is already recorded would instead leave it alone).
 	reconcileWithPosition(t, pool, admission, []dispatch.IssueSummary{
-		{Key: "LEGION-ACTIVE", ResolvedRepo: "acme/widgets", Title: "active", Status: "done", Rank: "A", LastSeq: 11},
+		{Key: "LEGION-750", ResolvedRepo: "acme/widgets", Title: "active", Status: "done", Rank: "A", LastSeq: 11},
 	}, 11, 11, true)
-	if got := issue(t, pool, "LEGION-ACTIVE"); got.Status != "done" {
+	if got := issue(t, pool, "LEGION-750"); got.Status != "done" {
 		t.Fatalf("reconciled status = %q, want done once the consumer has caught up", got.Status)
 	}
 	assertSlots(t, pool, nil)

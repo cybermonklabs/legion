@@ -1,17 +1,22 @@
-// Package claim is the vocabulary of a role claim: the token that names one, the role it is on,
-// and the wire the agent holding it speaks to the daemon.
+// Package claim is the vocabulary of a claim: the token that names one, the agent it names, the
+// role it is on, and the wire the agent holding it speaks to the daemon.
 //
 // It is a leaf on purpose. The runtime, the worker stream, the supervisor, and the API all speak
 // about claims, and each of them is reachable from the others; a `Token` declared in any of them
 // would make one the root of the rest. Nothing here imports another Legion package.
 package claim
 
-// Token names one role claim — one agent on one issue at one generation — and is the key
+// Token names one claim — one agent of one issue, whose name the token ends in — and is the key
 // everything about that agent is filed under: its locator, its stream connection, its pending
-// delivery, its row in the store.
+// delivery, its row in the store. The agent keeps its token across the roles its steps are on.
 type Token string
 
-// Role names the agent that holds a claim on an issue.
+// Agent is the name of one agent of an issue: the last part of its claim token. The agent of a
+// role's work is named for the role, so Agent(role) names it; a name can also be none of Roles.
+type Agent string
+
+// Role names a role a claim can be on: the role of the step its agent runs now, one of Legion's
+// six or a role the deployment defines. A claim takes the role of each step its agent runs.
 type Role string
 
 const (

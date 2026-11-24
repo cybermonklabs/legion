@@ -640,12 +640,12 @@ func TestTheInitContainersPathNamesNoIssueVolumeDirectory(t *testing.T) {
 
 // jj keeps a repository's `--repo` configuration under $XDG_CONFIG_HOME, so what workspace-init
 // sets there reaches the agent's jj only when both containers have one config home, on a volume
-// both mount (#1258 deep review, finding 4); each role's role-init seeds the role's own config
+// both mount (#1258 deep review, finding 4); each slot's role-init seeds the slot's own config
 // home from it (launcher's TestARoleRunsInNamespacesOfItsOwn). It is in memory, so every
 // pod's starts empty and nothing an agent wrote reaches workspace-init's jj. The config home is
 // the one home the two agree on: a role's cache and data homes are the issue's scratch's on the
-// issue's volume and its state home a directory per role there
-// (TestTheIssuesRolesShareOneScratchAndOneGoCachePair,
+// issue's volume and its state home a directory per slot there, named for the agent that runs in
+// it (TestTheIssuesRolesShareOneScratchAndOneGoCachePair,
 // TestEachRolesAgentIsToldAStateHomeOfItsOwn), while the setup containers keep the image's home
 // directory ones, so nothing of the issue's scratch reaches a container that holds the
 // provisioning token or provisions the issue's clone.
@@ -778,7 +778,7 @@ func TestEveryRolesGitStartsNoPlantedFsmonitorOrHook(t *testing.T) {
 	if got := ran(); !strings.Contains(got, "fsmonitor") || !strings.Contains(got, "pre-commit") || !strings.Contains(got, "post-commit") {
 		t.Fatalf("without the role's pairs the planted programs ran %q, want the fsmonitor and both hooks: the plant is not live", got)
 	}
-	for _, role := range launcherRoles {
+	for _, role := range r.launcherRoles() {
 		env := slices.Clone(base)
 		for name, value := range envOf(workerOf(t, r, roleSpec(t, role))) {
 			if strings.HasPrefix(name, "GIT_CONFIG_") {
@@ -888,10 +888,11 @@ func mustRead(t *testing.T, path string) []byte {
 // The roles of one issue pod share the pod's network namespace, the workspace path, the
 // Oh My Pi profile path and the rest of the issue's scratch, and Oh My Pi's browser broker lock is
 // an abstract unix socket named from the lock path under its state root: one state root would
-// make it one name across every role of the pod, the first role's lock blocking every other role's
-// broker.
-// So each role's agent is told a XDG_STATE_HOME of its own, its own directory under the scratch's
-// `state` (`/legion/scratch/state/<role>`), differing from every other role's, and the
+// make it one name across every agent of the pod, the first agent's lock blocking every other
+// agent's broker.
+// So the agent of each slot is told a XDG_STATE_HOME of its own, its slot's directory under the
+// scratch's `state` (`/legion/scratch/state/<slot>`, the slot being the agent's name whatever role
+// its step is on), differing from every other slot's, and the
 // controller's agent one by the same rule; workspace-init, which runs alone, keeps the plain
 // home-directory state home. The value is on the issue's volume, deliberately: Oh My Pi's logs,
 // Chromium's profiles and the installed plugin generation are charged to neither the pod's memory
@@ -900,8 +901,8 @@ func mustRead(t *testing.T, path string) []byte {
 // outlives its pod).
 // Which mount holds it is the argument above, not housekeeping: a state home reached through a
 // sub-path mount, or one overlapping the workspace or uv's directories, is a directory whose
-// contents are no longer the role's alone, and the broker-lock reasoning quietly stops holding.
-// So each role's value is checked to sit on the issue volume's own mount and to overlap none of
+// contents are no longer the agent's alone, and the broker-lock reasoning quietly stops holding.
+// So each slot's value is checked to sit on the issue volume's own mount and to overlap none of
 // those three, exactly as the shared six are
 // (TestTheIssuesRolesShareOneScratchAndOneGoCachePair).
 func TestEachRolesAgentIsToldAStateHomeOfItsOwn(t *testing.T) {
@@ -910,7 +911,7 @@ func TestEachRolesAgentIsToldAStateHomeOfItsOwn(t *testing.T) {
 		t.Fatal(err)
 	}
 	told := map[string]claim.Role{}
-	for _, role := range launcherRoles {
+	for _, role := range r.launcherRoles() {
 		worker := workerOf(t, r, roleSpec(t, role))
 		env := envOf(worker)
 		got := env["XDG_STATE_HOME"]
@@ -969,11 +970,12 @@ func roleSpec(t *testing.T, role claim.Role) runtime.SpawnSpec {
 // cache is a module zip or go.mod the go command has verified against a known hash (`go help
 // module-auth`) in a directory it then makes read-only, which only `go build -modcacherw` leaves
 // writable; a pair is 751 MiB of build cache and 375 MiB of module cache for this repository, so
-// six roles with a pair each would hold five redundant copies, about 5.5 GiB spent on nothing.
+// the six roles of a pod with a pair each would hold five redundant copies, about 5.5 GiB spent
+// on nothing, and each role of the deployment one more.
 // Each directory is held by the issue volume's own mount, exactly as uv's are
 // (TestUvKeepsItsPythonsAndCacheOnTheIssueVolume), and overlaps neither the workspace nor uv's
 // directories, and no two of the six are one directory. The state home is the one thing of the
-// scratch that stays one per role, for the browser broker's lock
+// scratch that stays one per slot, the agent's, for the browser broker's lock
 // (TestEachRolesAgentIsToldAStateHomeOfItsOwn).
 func TestTheIssuesRolesShareOneScratchAndOneGoCachePair(t *testing.T) {
 	r, err := configure(goldenOptions())
@@ -988,7 +990,7 @@ func TestTheIssuesRolesShareOneScratchAndOneGoCachePair(t *testing.T) {
 		{"GOCACHE", TreeRoot + "/go/build"},
 		{"GOMODCACHE", TreeRoot + "/go/mod"},
 	}
-	for _, role := range launcherRoles {
+	for _, role := range r.launcherRoles() {
 		main := workerOf(t, r, roleSpec(t, role))
 		env := envOf(main)
 		told := map[string]string{}
@@ -1052,9 +1054,10 @@ func TestEveryRoleIsToldTheLeakCheckItsPodInstalls(t *testing.T) {
 // So each name on the shim's list, plus XDG_STATE_HOME, which the shim makes elsewhere
 // (podsafety.EnsureStateHome, which makes Oh My Pi's profile directory under it), is set to an
 // absolute path on the issue's volume — the issue's shared scratch for four of them, the issue's
-// Go caches for two, and the role's state home, one per role, for the last — and, the other way, every
+// Go caches for two, and the slot's state home, one per slot, for the last — and, the other way,
+// every
 // variable the runtime sets to a path on that volume is on that list, bar the three it names for
-// a reason of their own, so neither a new directory of the issue's scratch nor a new per-role one
+// a reason of their own, so neither a new directory of the issue's scratch nor a new per-slot one
 // can appear that nothing makes.
 func TestTheRuntimeTellsTheShimEveryScratchDirectoryItMakes(t *testing.T) {
 	r, err := configure(goldenOptions())
@@ -2251,7 +2254,7 @@ func TestLegionsOwnNamesAreWhatItsPodsCarry(t *testing.T) {
 				got     []string
 				carried map[string]bool
 			}{
-				{"legionVolumeNames", legionVolumeNames(exchange), volumes},
+				{"legionVolumeNames", legionVolumeNames(append(slices.Clone(claim.Roles), claim.RoleController), exchange), volumes},
 				{"legionMountPaths", legionMountPaths(exchange), mounts},
 				{"the names a spec may not set", slices.Collect(maps.Keys(r.specOwned())), env},
 			} {
@@ -3403,7 +3406,7 @@ func TestTextSurvivesTheKubeletsExpansion(t *testing.T) {
 var uuid = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
 
 // A Claude Code role's pod runs Claude Code under `legion claude-bridge`, word for word: the
-// Claude Code this generation's start script installed under the role's state home on the issue's
+// Claude Code this generation's start script installed under the slot's state home on the issue's
 // volume (the image carries none, only the pin it is installed from), the image's claude-envoy
 // root, every permission granted, only the MCP document this generation's launcher writes into its
 // private directory, the claude-envoy plugin and the generated Legion plugin, a fresh session, and
@@ -3473,8 +3476,8 @@ func TestAClaudePodsAgentCommandIsClaudeCodeUnderTheBridge(t *testing.T) {
 }
 
 // A Claude Code role is told where Claude Code keeps its state and that the clock may not prompt
-// it, and an Oh My Pi role is told neither. The directory is the role's own under its state home,
-// so it is no sibling role's. Nothing in the pod turns Claude Code's background tasks off: a task
+// it, and an Oh My Pi role is told neither. The directory is the slot's own under its state home,
+// so it is no other slot's. Nothing in the pod turns Claude Code's background tasks off: a task
 // that finishes wakes a turn of Claude Code's own, which the bridge reports to the daemon as a
 // turn, so the name is not the runtime's and an operator's pod may carry it.
 func TestOnlyAClaudeWorkerIsToldClaudeCodesOwnVariables(t *testing.T) {
@@ -3542,7 +3545,7 @@ func TestAResumingClaudePodContinuesItsTranscriptByItsID(t *testing.T) {
 
 // A Claude claim's recorded session is held to its harness's rule, where the launch resolves it: a
 // transcript of the pod's own Claude Code directory and nothing else, which prepare reads through
-// claudelaunch.ResumeSession as the tmux lane's resume does: one of another role's directory, an
+// claudelaunch.ResumeSession as the tmux lane's resume does: one of another slot's directory, an
 // Oh My Pi session file, or a name that is no session id is refused, and a session of the other
 // harness is refused naming the backend change that left it recorded.
 func TestARecordedSessionIsHeldToItsHarnesssRule(t *testing.T) {
@@ -3594,6 +3597,9 @@ func TestAgentArgvCarriesTheConfiguredModel(t *testing.T) {
 	resuming := workerSpec(t)
 	resuming.Generation, resuming.BootToken, resuming.ResumeSessionFile = 2, "boot-g2", resumeSession
 	resumed := launchOf(t, r, resuming)
+	modelled := workerSpec(t)
+	modelled.Model = "checker-model"
+	named := launchOf(t, r, modelled)
 	for _, tc := range []struct {
 		name string
 		l    launch
@@ -3605,10 +3611,19 @@ func TestAgentArgvCarriesTheConfiguredModel(t *testing.T) {
 		{"a launch that resumes one", resumed, append(slices.Clone(r.agent),
 			"--extension", envoyPlugin, "--extension", legionPlugin, "--model", "@default",
 			"--resume="+resumeSession, "--mode", "rpc", "--append-system-prompt", systemPromptPath(resumed.spec.Generation))},
+		{"a launch whose spec names its role's model", named, append(slices.Clone(r.agent),
+			"--extension", envoyPlugin, "--extension", legionPlugin, "--model", "checker-model",
+			"--mode", "rpc", "--append-system-prompt", systemPromptPath(named.spec.Generation))},
 	} {
 		if got := tc.l.agentArgv(r.agent); !slices.Equal(got, tc.want) {
 			t.Errorf("%s runs %q, want %q", tc.name, got, tc.want)
 		}
+	}
+	modelledClaude := claudeWorkerSpec(t)
+	modelledClaude.Model = "checker-model"
+	if claude := launchOf(t, r, modelledClaude).agentArgv(r.agent); !slices.Contains(claude, "--model") ||
+		claude[slices.Index(claude, "--model")+1] != "checker-model" {
+		t.Errorf("the Claude pod's command for a spec naming its role's model = %q, want it to hold --model checker-model", claude)
 	}
 	if claude := launchOf(t, r, claudeWorkerSpec(t)).agentArgv(r.agent); slices.Contains(claude, "--model") {
 		t.Errorf("the Claude pod's command %q names a model, want claudelaunch's own command", claude)

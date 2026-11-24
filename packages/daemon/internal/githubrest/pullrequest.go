@@ -48,20 +48,32 @@ func (p PullRequest) HeadIn(repository string, renames ghrepo.Renames) bool {
 	return p.Head.Repo != nil && renames.Same(p.Head.Repo.FullName, repository)
 }
 
-// OpenPullRequestOn is the open pull request on branch of the client's repository, whose owner is
-// owner (GET /pulls?head=<owner>:<branch>&state=open), and whether there is one. The list's filter
-// is not taken on trust: a listed pull request counts only when its head.ref is branch, the same
-// identity the webhook path reads (intake's decodePullRequest takes head_ref alone), whichever
-// repository the head lives in. The workflow keeps one pull request per branch and assumes one is
-// open at a time, so of two it takes the first GitHub lists.
-func (c Client) OpenPullRequestOn(ctx context.Context, owner, branch string) (PullRequest, bool, error) {
+// HeadRepository is the repository the pull request's head lives in, as GitHub names it
+// (head.repo.full_name), and "" when GitHub no longer has it (a deleted fork).
+func (p PullRequest) HeadRepository() string {
+	if p.Head.Repo == nil {
+		return ""
+	}
+	return p.Head.Repo.FullName
+}
+
+// OpenPullRequestOn is the open pull request on branch of the client's repository, repository
+// (GET /pulls?head=<owner>:<branch>&state=open), and whether there is one. The list's filter
+// is not taken on trust: a listed pull request counts only when its head is branch of repository
+// itself (head.ref is branch, and HeadIn), as the webhook path counts one (intake's
+// decodePullRequest reads head_ref and head_repo). The filter names an owner only, and the owner of
+// a repository can hold a fork of it, under another name, whose branches may carry any name, an
+// issue's or a task's among them; a fork GitHub no longer has names no repository at all. The
+// workflow keeps one pull request per branch and assumes one is open at a time, so of two it takes
+// the first GitHub lists.
+func (c Client) OpenPullRequestOn(ctx context.Context, repository ghrepo.Repository, branch string) (PullRequest, bool, error) {
 	var pulls []PullRequest
-	query := url.Values{"head": {owner + ":" + branch}, "state": {"open"}}
+	query := url.Values{"head": {repository.Owner() + ":" + branch}, "state": {"open"}}
 	if err := c.Get(ctx, "/pulls?"+query.Encode(), &pulls); err != nil {
 		return PullRequest{}, false, err
 	}
 	for _, pull := range pulls {
-		if pull.Head.Ref == branch {
+		if pull.Head.Ref == branch && pull.HeadIn(repository.String(), ghrepo.Renames{}) {
 			return pull, true, nil
 		}
 	}

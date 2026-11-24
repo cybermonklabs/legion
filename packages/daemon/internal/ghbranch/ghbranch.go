@@ -1,6 +1,7 @@
 // Package ghbranch creates a branch on GitHub through its REST API, the way the daemon makes an
-// issue's branch exist before any role of the issue pushes to it, and reads the repository's
-// default branch, the base every issue's branch starts at.
+// issue's branch exist before any role of the issue pushes to it, merges one branch into another
+// on GitHub, the way a task's branch takes the work of the tasks it needs, and reads the
+// repository's default branch, the base every issue's branch starts at.
 package ghbranch
 
 import (

@@ -26,9 +26,11 @@ var ErrDefaultOwnerNotInstalled = errors.New("is no owner the controller's App i
 
 // GitHubCredential is the one function every role's gh files come from (runtime.GitHubCredential)
 // over source: a bundle whose directories (GitHubDirs, built from the same description) each hold
-// one lease of the role's App, rendered as gh's hosts.yml and config.yml and named for the App and
-// its expiry so a log can say whose token it wrote. A directory is an owner account and nothing
-// smaller, because a lease is: every token this package mints reaches every repository its
+// one lease of the role's App — AppRoleFor over deployed, the roles the deployment defines, so a
+// role of the deployment's acts as the App its github_app names and a role nothing defines is
+// refused before anything is minted — rendered as gh's hosts.yml and config.yml and named for the
+// App and its expiry so a log can say whose token it wrote. A directory is an owner account and
+// nothing smaller, because a lease is: every token this package mints reaches every repository its
 // installation holds and names no repository at all (INFRA-2543), so the installation is the
 // whole of what a role reaches and the bundle holds one directory per owner the role's App is
 // installed on.
@@ -111,9 +113,12 @@ var ErrDefaultOwnerNotInstalled = errors.New("is no owner the controller's App i
 // refresh ask GitHub only when a lease turns over, and one lease is minted per scope however many
 // directories carry it: a configured rename's two owner directories hold the one lease.
 func GitHubCredential(source Source, served func(ghrepo.Repository) bool, renames ghrepo.Renames,
-	installed *Installed, left *LeftOut, log *slog.Logger) runtime.GitHubCredential {
+	installed *Installed, left *LeftOut, deployed DeploymentApps, log *slog.Logger) runtime.GitHubCredential {
 	return func(ctx context.Context, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
-		appRole := AppRoleFor(role)
+		appRole, err := AppRoleFor(role, deployed)
+		if err != nil {
+			return ghconfig.Bundle{}, err
+		}
 		layout, err := installedLayout(ctx, source, appRole, role, served, renames, installed, repo)
 		if err != nil {
 			return ghconfig.Bundle{}, err
@@ -145,10 +150,12 @@ type Bundles struct {
 	built      map[bundleKey]ghconfig.Bundle
 }
 
-// bundleKey is what one bundle of a walk is held under: the App role it is minted as and the
-// repository it is built for, lowercased as GitHub compares a repository's two halves.
+// bundleKey is what one bundle of a walk is held under: the App role it is minted as, or, for a
+// role that is none of Legion's, that role itself, and the repository it is built for, lowercased
+// as GitHub compares a repository's two halves.
 type bundleKey struct {
 	app  AppRole
+	role claim.Role
 	repo string
 }
 
@@ -158,10 +165,18 @@ func NewBundles(credential runtime.GitHubCredential) *Bundles {
 	return &Bundles{credential: credential, built: map[bundleKey]ghconfig.Bundle{}}
 }
 
-// Bundle is role's gh bundle for repo, built once per App role and repository of the walk. A
-// walk is one goroutine, so the memo needs no lock of its own.
+// Bundle is role's gh bundle for repo, built once per App role and repository of the walk. A role
+// that is none of Legion's is held under its own name: the App it acts as is the deployment's
+// setting, which credential reads (GitHubCredential's deployed) and the memo is not handed, so it
+// shares no build with another role, and a role the deployment does not define fails at
+// credential, naming itself. A walk is one goroutine, so the memo needs no lock of its own.
 func (b *Bundles) Bundle(ctx context.Context, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
-	key := bundleKey{app: AppRoleFor(role), repo: strings.ToLower(repo.String())}
+	key := bundleKey{repo: strings.ToLower(repo.String())}
+	if app, err := AppRoleFor(role, nil); err == nil {
+		key.app = app
+	} else {
+		key.role = role
+	}
 	if built, held := b.built[key]; held {
 		return built, nil
 	}
@@ -199,7 +214,10 @@ func (b *Bundles) Bundle(ctx context.Context, role claim.Role, repo ghrepo.Repos
 func ControllerCredential(source Source, served func(ghrepo.Repository) bool, renames ghrepo.Renames,
 	installed *Installed, left *LeftOut, log *slog.Logger) runtime.ControllerCredential {
 	return func(ctx context.Context, defaultOwner string) (ghconfig.Bundle, error) {
-		appRole := AppRoleFor(claim.RoleController)
+		appRole, err := AppRoleFor(claim.RoleController, nil)
+		if err != nil {
+			return ghconfig.Bundle{}, err
+		}
 		layout, err := installedLayout(ctx, source, appRole, claim.RoleController, served, renames, installed, ghrepo.Repository{})
 		if err != nil {
 			return ghconfig.Bundle{}, err

@@ -1,6 +1,7 @@
 // Package sandbox runs each issue in one Agent Sandbox (agents.x-k8s.io/v1beta1 Sandbox,
 // kubernetes-sigs/agent-sandbox v1.0.3). Its pod's one container, `roles`, runs one launcher that
-// serves all six workflow roles, each role's generation in namespaces of its own (`legion launcher
+// serves every role of the issue (Legion's six workflow roles, then each role the deployment
+// defines), each role's generation in namespaces of its own (`legion launcher
 // role-init`), and the roles share the issue's workspace and network. The project controller
 // (`controller: daemon`) runs in a Sandbox of its own whose pod has the controller's launcher
 // alone. The two are the runtime's two kinds of pod (podKind): one supervision path runs both, and
@@ -90,7 +91,14 @@ type Runtime struct {
 	natsURLs                       []string
 	tools                          Tools
 	pod                            Pod
-	roleConfigFiles                map[claim.Role][]string
+	// issueRoles are the runtime's issue roles: Legion's six (claim.Roles), then each role the
+	// deployment defines, sorted by name (issueRolesOf over Options.DeploymentApps).
+	// deploymentApps is that map, the App each role of the deployment acts as. Both are set once
+	// in configureProber and only read after, and no package variable holds either: two runtimes
+	// of one process keep their own.
+	issueRoles      []claim.Role
+	deploymentApps  appauth.DeploymentApps
+	roleConfigFiles map[claim.Role][]string
 	// experimentVariants are every arm of every experiment the project declares
 	// (Options.ExperimentVariants), and variantFiles their overlay files as one list, in that
 	// same order: the union every reader that holds a pod or the deployment and no tree takes,
@@ -116,14 +124,21 @@ type Runtime struct {
 	adoptTimeout            time.Duration
 	tokens                  ProvisionTokens
 	gitHubCredential        runtime.GitHubCredential
-	controllerCredential    runtime.ControllerCredential
-	gitHubDirs              func(repo ghrepo.Repository, roles []appauth.AppRole) []string
-	store                   Store
-	conns                   runtime.Conns
-	launchers               *launchers
-	launcherAuth            launcherCredentials
-	now                     func() time.Time
-	log                     *slog.Logger
+	actsAs                  runtime.ActsAs
+	// launchedApp is, for each slot of each pod (by its Sandbox's name), the App of the last
+	// start this runtime made in it (writeLaunchCredential), which says whether a start's slot gh
+	// files may not hold its credential yet. A runtime that restarted holds it empty. Guarded by
+	// launchedMu.
+	launchedApp          map[slotKey]string
+	launchedMu           sync.Mutex
+	controllerCredential runtime.ControllerCredential
+	gitHubDirs           func(repo ghrepo.Repository, roles []appauth.AppRole) []string
+	store                Store
+	conns                runtime.Conns
+	launchers            *launchers
+	launcherAuth         launcherCredentials
+	now                  func() time.Time
+	log                  *slog.Logger
 	// keptVolumeBound is how long a launch gives a pod with a kept volume to start where the boot
 	// timeout is shorter (startBound): keptVolumeAttachWait, which a test sets short.
 	keptVolumeBound time.Duration
@@ -394,7 +409,8 @@ func configureProber(opts Options) (*Runtime, error) {
 			return refuse("agent secrets: the exchange audience is the Workload Identity pool's, %q, which the metadata endpoint's token holds; the cluster projects one volume per audience", workloadPool)
 		}
 	}
-	if err := CheckPod(opts.Pod, opts.ProviderKeys, opts.Tools, opts.LaunchSecrets, opts.ProvidersSecrets, opts.SessionStore,
+	issueRoles := issueRolesOf(opts.DeploymentApps)
+	if err := CheckPod(opts.Pod, append(slices.Clone(issueRoles), claim.RoleController), opts.ProviderKeys, opts.Tools, opts.LaunchSecrets, opts.ProvidersSecrets, opts.SessionStore,
 		opts.AgentSecrets != nil && opts.AgentSecrets.ExchangeAudience != ""); err != nil {
 		return refuse("%v", err)
 	}
@@ -404,7 +420,7 @@ func configureProber(opts Options) (*Runtime, error) {
 		}
 	}
 	for role, files := range opts.RoleConfigFiles {
-		if !slices.Contains(roleConfigRoles, role) {
+		if role != claim.RoleController && !slices.Contains(issueRoles, role) {
 			return refuse("Oh My Pi overlays for %q, which is not a Legion role", role)
 		}
 		for _, file := range files {
@@ -425,21 +441,23 @@ func configureProber(opts Options) (*Runtime, error) {
 		volumeSize: opts.IssueVolume, scheduling: opts.Scheduling, sandboxConfig: opts.Sandbox, resources: opts.Resources,
 		streamURL: opts.StreamURL, daemonURL: opts.DaemonURL, envoyURL: opts.EnvoyURL, dispatchURL: opts.DispatchURL,
 		dispatchToken: opts.DispatchToken, natsURLs: opts.NATSURLs, tools: opts.Tools, agentSecrets: opts.AgentSecrets,
-		pod: opts.Pod, roleConfigFiles: opts.RoleConfigFiles, experimentVariants: opts.ExperimentVariants,
+		pod: opts.Pod, issueRoles: issueRoles, deploymentApps: opts.DeploymentApps,
+		roleConfigFiles: opts.RoleConfigFiles, experimentVariants: opts.ExperimentVariants,
 		variantFiles: runtime.VariantOverlays(opts.ExperimentVariants),
 		providerKeys: opts.ProviderKeys, providersSecrets: slices.Sorted(slices.Values(opts.ProvidersSecrets)), natsUser: opts.NATSUser,
 		sessionStore: opts.SessionStore, controllerSlackChannels: slices.Clone(opts.ControllerSlackChannels),
 		bootTimeout: opts.BootTimeout, keptVolumeBound: keptVolumeAttachWait, registrationIntervals: opts.RegistrationIntervals,
 		busyBackoff: opts.BusyBackoff, provisionBound: provisionBound, terminationGrace: opts.TerminationGrace,
-		launchBound:   launchBound(opts.BootTimeout, longestStart, provisionBound, opts.TerminationGrace),
+		launchBound:   launchBound(opts.BootTimeout, longestStart, provisionBound, opts.TerminationGrace, len(issueRoles)),
 		probeInterval: opts.ProbeInterval, adoptTimeout: opts.AdoptTimeout, agent: opts.Agent, setup: slices.Clone(opts.Setup),
 		testPostgres: opts.TestPostgres, leakCheck: opts.LeakCheckSetting, roundPodEnds: opts.RoundPodEnds,
 		memoryGuard: opts.MemoryGuard, controllerMemoryGuard: opts.ControllerMemoryGuard, volumeTrim: opts.VolumeTrim,
-		tokens: opts.Tokens, gitHubCredential: opts.GitHubCredential, controllerCredential: opts.ControllerCredential,
+		tokens: opts.Tokens, gitHubCredential: opts.GitHubCredential, actsAs: opts.ActsAs, controllerCredential: opts.ControllerCredential,
 		gitHubDirs: opts.GitHubDirs,
 		store:      opts.Store, conns: opts.Conns, now: opts.Now, log: opts.Log,
 		changed: make(chan struct{}), watch: map[claim.Token]runtime.Locator{}, podTurns: map[string]chan struct{}{}, stranded: map[string]string{},
 		sessions:    map[claim.Token]launchedSession{},
+		launchedApp: map[slotKey]string{},
 		cacheConfig: opts.RepositoryCache, cacheRepositories: opts.CacheRepositories,
 		cacheDial: (&net.Dialer{}).DialContext, occupiedCaches: map[string]bool{}, cacheBearers: map[string]string{},
 	}
@@ -465,9 +483,23 @@ func configureProber(opts Options) (*Runtime, error) {
 	return r, nil
 }
 
-// roleConfigRoles are the roles Options.RoleConfigFiles may name, in the workflow's order: every
-// issue role, then the controller.
-var roleConfigRoles = append(slices.Clone(claim.Roles), claim.RoleController)
+// issueRolesOf is the one rule of the order of an issue pod's roles: Legion's six in the workflow's
+// order (claim.Roles), then each role deployed defines, sorted by name, so every reader of the
+// list and every pod built from it sees the same order whatever order the map gives.
+func issueRolesOf(deployed appauth.DeploymentApps) []claim.Role {
+	return append(slices.Clone(claim.Roles), slices.Sorted(maps.Keys(deployed))...)
+}
+
+// IssueRoles is issueRolesOf exported, the one rule of the order of an issue pod's roles, for the
+// daemon's own reads of the deployment that build no runtime (`legion config check` and the boot's
+// check of the operator's pod, checkOperatorConfig), so they refuse what configure refuses.
+func IssueRoles(deployed appauth.DeploymentApps) []claim.Role { return issueRolesOf(deployed) }
+
+// roleConfigRoles are the roles Options.RoleConfigFiles may name, in the order the image probe is
+// told them: every issue role (issueRoles), then the controller.
+func (r *Runtime) roleConfigRoles() []claim.Role {
+	return append(slices.Clone(r.issueRoles), claim.RoleController)
+}
 
 // checkRequirements is why requirements, what's (an issue pod's, the controller's pod's, or the
 // repository cache's), is not a reservation, or nil when it is one: cpu and memory each limited and
@@ -903,6 +935,19 @@ func podContainer(role claim.Role) string {
 	return runtime.IssuePodContainer
 }
 
+// slotOf is the slot of its pod that token's process runs in, named in the type the pod's code
+// names a slot by (roleVolume, roleDir, roleSecretName): the name of the agent a claim of an issue
+// ends in (claim.Token.Cut), which can be no role, and RoleController for the controller's token.
+// It is the one place that picks a slot, and it reads no role off the token: a claim's role is
+// the one its record holds. A token that is neither has no slot, "".
+func slotOf(token claim.Token) claim.Role {
+	if token.IsController() {
+		return claim.RoleController
+	}
+	_, agent, _ := token.Cut()
+	return claim.Role(agent)
+}
+
 // checkLocator refuses a locator this runtime did not mint.
 func (r *Runtime) checkLocator(loc runtime.Locator) error {
 	if err := loc.Validate(); err != nil {
@@ -1056,17 +1101,18 @@ func (r *Runtime) controllerSandbox(ctx context.Context, token claim.Token) (*sa
 	return s, nil
 }
 
-// AdoptWorkingCopy has the agent's shim set its working copy's author (the shared `jj metaedit
-// --update-author`, run in the pod's own workspace on the issue's volume) over the claim's
-// connection. The recorded process must still be the claim's running pod: the connection is its.
-// That is the one rule for a request a role's shim answers in the issue's workspace
-// (runningProcessConn), and each of its refusals opens with "adopt <claim>'s working copy".
-func (r *Runtime) AdoptWorkingCopy(ctx context.Context, loc runtime.Locator, id runtime.GitIdentity) error {
+// AdoptWorkingCopy has the agent's shim set the author of the working copy of the task whose branch
+// is branch, "" for the issue's own (the shared `jj metaedit --update-author`, run in that working
+// copy on the issue's volume), over the claim's connection. The recorded process must still be the
+// claim's running pod: the connection is its. That is the one rule for a request a role's shim
+// answers in the issue's workspace (runningProcessConn), and each of its refusals opens with
+// "adopt <claim>'s working copy".
+func (r *Runtime) AdoptWorkingCopy(ctx context.Context, loc runtime.Locator, id runtime.GitIdentity, branch string) error {
 	conn, err := r.runningProcessConn(loc)
 	if err != nil {
 		return fmt.Errorf("adopt %s's working copy: %w", loc.Claim, err)
 	}
-	if err := conn.AdoptWorkingCopy(ctx, id, r.adoptTimeout); err != nil {
+	if err := conn.AdoptWorkingCopy(ctx, id, branch, r.adoptTimeout); err != nil {
 		return fmt.Errorf("adopt %s's working copy for %s <%s>: %w", loc.Claim, id.Name, id.Email, err)
 	}
 	return nil
@@ -1074,19 +1120,20 @@ func (r *Runtime) AdoptWorkingCopy(ctx context.Context, loc runtime.Locator, id 
 
 var _ runtime.WorkspaceBundler = (*Runtime)(nil)
 
-// BundleWorkspace has role's shim bundle the unpushed work of the issue workspace every role of
-// the issue shares, over that claim's connection, for a release about to take the pod and its
-// disk away. The role named must be one whose process runs in the issue's own running pod
-// (runningRoleConn): its shim builds the bundle in the workspace it already works in, so a claim
-// with no locator, one whose pod is not the recorded one, and one with no connection are each a
-// refusal rather than an empty bundle.
+// BundleWorkspace has the shim of the claim token names bundle the unpushed work of the issue
+// workspace every claim of the issue shares, over that claim's connection, for a release about to
+// take the pod and its disk away. The claim must be one whose process runs in the issue's own
+// running pod (runningClaimConn): its shim builds the bundle in the workspace it already works in,
+// so a claim with no locator, one whose pod is not the recorded one, and one with no connection are
+// each a refusal rather than an empty bundle. The claim is named by its token rather than derived
+// from a role, since a keyed agent works a step of another role in the claim it started.
 //
-// It is the role's shim that answers, never its launcher, so a release has to ask before it stops
-// the role's process: the idle release's save is a row of its own ahead of its role stops
+// It is the claim's shim that answers, never its launcher, so a release has to ask before it
+// stops the claim's process: the idle release's save is a row of its own ahead of its stops
 // (record.IssueBundle, the daemon's idleReleaseRows), and asking after them refuses with "holds
 // no role process to bundle it".
-func (r *Runtime) BundleWorkspace(ctx context.Context, issue string, role claim.Role) (runtime.WorkspaceBundle, error) {
-	conn, token, loc, err := r.runningRoleConn(ctx, issue, role, "bundle")
+func (r *Runtime) BundleWorkspace(ctx context.Context, issue string, token claim.Token) (runtime.WorkspaceBundle, error) {
+	conn, loc, err := r.runningClaimConn(ctx, issue, token, "bundle")
 	if err != nil {
 		return runtime.WorkspaceBundle{}, err
 	}
@@ -1097,7 +1144,7 @@ func (r *Runtime) BundleWorkspace(ctx context.Context, issue string, role claim.
 	// The shim knows nothing of the pod it runs in, and the row the save writes has to: the pod
 	// this work came off is the one pod the restore refuses by name, so that a role relaunched
 	// in it before the teardown is answered nothing and leaves the bundle's one attempt for the
-	// pod that replaces it (store.TakeWorkspaceBundleForRestore). It is the pod runningRoleConn
+	// pod that replaces it (store.TakeWorkspaceBundleForRestore). It is the pod runningClaimConn
 	// checked, the running pod the claim's locator records.
 	bundle.PodUID = loc.Sandbox.PodUID
 	return bundle, nil
@@ -1105,14 +1152,14 @@ func (r *Runtime) BundleWorkspace(ctx context.Context, issue string, role claim.
 
 var _ runtime.WorkspaceWorkReader = (*Runtime)(nil)
 
-// WorkspaceWork has role's shim read whether the issue workspace every role of the issue shares
-// holds work that no branch or tag on origin holds, over that claim's connection. It makes
-// BundleWorkspace's checks (runningRoleConn): the role named must be one whose process runs in
-// the issue's own running pod, since its shim reads the workspace it already works in, so a claim
-// with no locator, one whose pod is not the recorded one, and one with no connection are each a
-// refusal rather than an answer of no work.
-func (r *Runtime) WorkspaceWork(ctx context.Context, issue string, role claim.Role) (runtime.WorkspaceWork, error) {
-	conn, token, _, err := r.runningRoleConn(ctx, issue, role, "read")
+// WorkspaceWork has the shim of the claim token names read whether the issue workspace every claim
+// of the issue shares holds work that no branch or tag on origin holds, over that claim's
+// connection. It makes BundleWorkspace's checks (runningClaimConn): the claim must be one whose
+// process runs in the issue's own running pod, since its shim reads the workspace it already works
+// in, so a claim with no locator, one whose pod is not the recorded one, and one with no connection
+// are each a refusal rather than an answer of no work.
+func (r *Runtime) WorkspaceWork(ctx context.Context, issue string, token claim.Token) (runtime.WorkspaceWork, error) {
+	conn, _, err := r.runningClaimConn(ctx, issue, token, "read")
 	if err != nil {
 		return runtime.WorkspaceWork{}, err
 	}
@@ -1123,36 +1170,32 @@ func (r *Runtime) WorkspaceWork(ctx context.Context, issue string, role claim.Ro
 	return work, nil
 }
 
-// runningRoleConn finds role's process for a request its shim answers in the issue's workspace
-// (BundleWorkspace, WorkspaceWork), and makes the one rule for such a request
-// (runningProcessConn) of it. It answers the connection to that role's shim, the role's claim and
-// the locator of its process, read from the store. A claim with no locator is a refusal, and so
-// is each refusal of the rule. verb is what the caller does to the workspace ("bundle", "read"),
-// and every refusal opens with it: "<verb> <issue>'s workspace: ", and a claim with no locator
-// holds "no role process to <verb> it".
-func (r *Runtime) runningRoleConn(ctx context.Context, issue string, role claim.Role, verb string) (runtime.Conn, claim.Token, runtime.Locator, error) {
-	token, err := claim.NewToken(r.project, issue, role)
-	if err != nil {
-		return nil, "", runtime.Locator{}, fmt.Errorf("%s %s's workspace: %w", verb, issue, err)
-	}
+// runningClaimConn finds the process of the claim token names for a request its shim answers in
+// the issue's workspace (BundleWorkspace, WorkspaceWork), and makes the one rule for such a request
+// one rule for such a request (runningProcessConn) of it. It answers the connection to that
+// claim's shim and the locator of its process, read from the store. A claim with no locator is a
+// refusal, and so is each refusal of the rule. verb is what the caller does to the workspace
+// ("bundle", "read"), and every refusal opens with it: "<verb> <issue>'s workspace: ", and a claim
+// with no locator holds "no role process to <verb> it".
+func (r *Runtime) runningClaimConn(ctx context.Context, issue string, token claim.Token, verb string) (runtime.Conn, runtime.Locator, error) {
 	claims, err := r.store.Claims(ctx)
 	if err != nil {
-		return nil, "", runtime.Locator{}, fmt.Errorf("%s %s's workspace: %w", verb, issue, err)
+		return nil, runtime.Locator{}, fmt.Errorf("%s %s's workspace: %w", verb, issue, err)
 	}
 	index := slices.IndexFunc(claims, func(c supervise.Claim) bool { return c.Token == token })
 	if index < 0 || claims[index].Locator == nil {
-		return nil, "", runtime.Locator{}, fmt.Errorf("%s %s's workspace: %s holds no role process to %s it", verb, issue, token, verb)
+		return nil, runtime.Locator{}, fmt.Errorf("%s %s's workspace: %s holds no role process to %s it", verb, issue, token, verb)
 	}
 	loc := *claims[index].Locator
 	conn, err := r.runningProcessConn(loc)
 	if err != nil {
-		return nil, "", runtime.Locator{}, fmt.Errorf("%s %s's workspace: %w", verb, issue, err)
+		return nil, runtime.Locator{}, fmt.Errorf("%s %s's workspace: %w", verb, issue, err)
 	}
-	return conn, token, loc, nil
+	return conn, loc, nil
 }
 
 // runningProcessConn is the one rule for a request a role's shim answers in the issue's workspace
-// (AdoptWorkingCopy, and BundleWorkspace and WorkspaceWork through runningRoleConn): the process
+// (AdoptWorkingCopy, and BundleWorkspace and WorkspaceWork through runningClaimConn): the process
 // loc records must run in the issue's own running pod, since the shim of loc's claim works in that
 // workspace. It answers the connection to that claim's shim. A locator this runtime did not mint,
 // a pod that is not the recorded one or not running, and a claim with no connection are each a
@@ -1219,7 +1262,7 @@ func (r *Runtime) ReconcileOrphans(ctx context.Context, known []runtime.Known, g
 	// controllers are the Sandboxes of the known controller claims, which the sweep keeps.
 	controllers := map[string]bool{}
 	for _, k := range known {
-		if role, ok := k.Claim.Role(); ok && role == claim.RoleController {
+		if k.Claim.IsController() {
 			controllers[SandboxName(k.Claim)] = true
 		}
 		if err := k.Validate(); err != nil {

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -97,10 +98,20 @@ func pruneAllBut(dir string, claims []supervise.Claim, log *slog.Logger) {
 	})
 }
 
-// ownedBy reports whether a secret file is one of token's: a claim token ends in its role, so no
-// other claim's token begins with `<token>-`.
+// ownedBy reports whether a secret file is one of token's: the names a launch writes for its
+// claim, and no others. Those are the token itself (the boot token, or the controller's secret),
+// its gh directory (runtime.GHConfigDirName), and the file of each secret a launch can carry
+// (launchSecretVariables, runtime.SecretFileName), a closed set the code lists. A prefix would not
+// do: a claim token ends in its agent's name, which may hold a `-` of its own, so one claim's token
+// can begin another's (`…-code` and `…-code-checker`), and the end of the first would take the
+// running second's files.
 func ownedBy(name string, token claim.Token) bool {
-	return name == string(token) || strings.HasPrefix(name, string(token)+"-")
+	if name == string(token) || name == runtime.GHConfigDirName(token) {
+		return true
+	}
+	return slices.ContainsFunc(launchSecretVariables, func(variable string) bool {
+		return name == runtime.SecretFileName(token, variable)
+	})
 }
 
 // removeSecretFiles removes every file of dir that remove selects, and every directory it selects

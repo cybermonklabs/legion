@@ -3405,9 +3405,9 @@ type HandoffRecordedEventPayload struct {
 // run's start and at its end (PUT /api/v1/issues/{key}/steps/{id}) and as the read of the issue
 // lists it. Task is the plan's task, `default` for an issue whose owner gave no plan; Step is the
 // step's place in the task from 1, and 0 for a retro and a merge, which Kind tells apart. Type is
-// "" for those two kinds, Agent the claim token of the role that ran it ("" for a merge GitHub
-// made), Session the claim's session and Model `<provider>/<model>`, or the model alone where the
-// agent named no provider, each "" where the daemon knew none. Generation is the issue's run, and
+// "" for those two kinds, Agent the claim token of the step's agent, the claim that ran it ("" for
+// a merge GitHub made), Session the claim's session and Model `<provider>/<model>`, or the model
+// alone where the agent named no provider, each "" where the daemon knew none. Generation is the issue's run, and
 // Attempt, which no write stores, the place of this run among the issue's runs of the same task,
 // step and kind, from 1. Result is passed, failed or stopped, "" while the run still runs;
 // ReturnedTo is the place a failed or stopped run returned its task to, 0 being the retro's and

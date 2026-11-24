@@ -7,6 +7,7 @@ import {
   exportJjSessionAttribution,
   JJ_CONFIG_PATH_TIMEOUT_MS,
   paneAttributionOptions,
+  resolvedRepository,
   resolvedWorkspace,
   sessionIdFromTranscript,
   userConfigChain,
@@ -78,7 +79,8 @@ describe("exportJjSessionAttribution", () => {
     expect(unscoped).not.toContain("Legion-Role");
     expect(unscoped).not.toContain("Dispatch");
   }
-  /** A real directory to scope an overlay to, under a scratch directory the afterEach removes. */
+  /** A real directory to stand for the repository an overlay is scoped to, under a scratch
+   * directory the afterEach removes. */
   async function workspace(name = "ws"): Promise<string> {
     const dir = path.join(await stateDir("jj-attribution-ws-"), name);
     await mkdir(dir, { recursive: true });
@@ -137,12 +139,12 @@ describe("exportJjSessionAttribution", () => {
     );
   });
 
-  it("scopes the pair, then the Dispatch line, to the pane's workspace", async () => {
+  it("scopes the pair, then the Dispatch line, to the pane's repository", async () => {
     const dir = await stateDir();
     const ws = await workspace();
     await exportJjSessionAttribution(ROOT_ID, dir, {
       issueKey: "ACME-7",
-      workspace: ws,
+      repository: ws,
       role: "tester",
       env: {},
       resolveBase: async () => "/u/base.toml",
@@ -152,11 +154,11 @@ describe("exportJjSessionAttribution", () => {
       `commit_trailers = '"Omp-Session: ${ROOT_ID}\\nLegion-Role: tester"'`
     );
     expect(unscoped).not.toContain("Dispatch");
-    // The scope, written out once: the pair, then the issue line, for this workspace alone.
+    // The scope, written out once: the pair, then the issue line, for this repository alone.
     expect(scope).toBe(
       [
         "[[--scope]]",
-        `--when.workspaces = ["${ws}"]`,
+        `--when.repositories = ["${ws}"]`,
         "[--scope.templates]",
         `commit_trailers = '"Omp-Session: ${ROOT_ID}\\nLegion-Role: tester\\nDispatch: ACME-7"'`,
         "",
@@ -182,11 +184,26 @@ describe("exportJjSessionAttribution", () => {
     );
   });
 
-  // The role is read from LEGION_ROLE in one place, and only a role name passes it on.
+  // Contract 221: a role of the deployment, `checker`, is a claim's role as Legion's six are, and
+  // its commits carry it as theirs do.
+  it("writes Legion-Role: checker for a role of the deployment", async () => {
+    const dir = await stateDir();
+    await exportJjSessionAttribution(ROOT_ID, dir, {
+      ...paneAttributionOptions({ LEGION_ROLE: "checker" }),
+      env: {},
+      resolveBase: async () => "/u/base.toml",
+    });
+    const lines = (await overlayText(dir)).split("\n");
+    expect(lines).toContain(`commit_trailers = '"Omp-Session: ${ROOT_ID}\\nLegion-Role: checker"'`);
+    expect(lines).toContain(`  "Legion-Role: checker\\n",`);
+  });
+
+  // The role is read from LEGION_ROLE in one place, and only a role name passes it on: a role of
+  // the step grammar (`isStepRole`) or the controller's.
   it.each([
     ["unset", undefined],
     ["empty", ""],
-    ["bogus", "bogus"],
+    ["outside the role grammar", "Bogus"],
     ['x"y', 'x"y'],
   ])("writes the session line alone for LEGION_ROLE %s", async (_name, role) => {
     const dir = await stateDir();
@@ -203,7 +220,7 @@ describe("exportJjSessionAttribution", () => {
   // Containment, as for the issue key: the role is interpolated into a jj template inside a TOML
   // literal, so the writer checks a caller's value again.
   it.each([
-    ["a value that is no role", "bogus"],
+    ["a value outside the role grammar", "Bogus"],
     ["a value holding a double quote", 'x"y'],
     ["a role with a trailing newline", "tester\n"],
   ])("writes the session line alone for %s passed as the role", async (_name, role) => {
@@ -216,26 +233,26 @@ describe("exportJjSessionAttribution", () => {
     await expectSessionLineAlone(dir);
   });
 
-  it("scopes the Dispatch line to the pane's workspace for a key of the accepted shape", async () => {
+  it("scopes the Dispatch line to the pane's repository for a key of the accepted shape", async () => {
     const dir = await stateDir();
     const ws = await workspace();
     const env: NodeJS.ProcessEnv = {};
     await exportJjSessionAttribution(ROOT_ID, dir, {
       issueKey: "ACME-7",
-      workspace: ws,
+      repository: ws,
       env,
       resolveBase: async () => "/u/base.toml",
     });
     const [unscoped, scope] = await overlayTables(dir);
     expect(unscoped).not.toContain("Dispatch");
     const scoped = scope?.split("\n");
-    expect(scoped).toContain(`--when.workspaces = ["${ws}"]`);
+    expect(scoped).toContain(`--when.repositories = ["${ws}"]`);
     expect(scoped).toContain(`commit_trailers = '"Omp-Session: ${ROOT_ID}\\nDispatch: ACME-7"'`);
   });
 
-  // Without a workspace there is nothing to scope the key to, and an unscoped key would stamp
+  // Without a repository there is nothing to scope the key to, and an unscoped key would stamp
   // this deployment's issue into every jj repository the pane's shell commits in.
-  it("writes no scope for an accepted key with no workspace", async () => {
+  it("writes no scope for an accepted key with no repository", async () => {
     const dir = await stateDir();
     const env: NodeJS.ProcessEnv = {};
     await exportJjSessionAttribution(ROOT_ID, dir, {
@@ -246,22 +263,27 @@ describe("exportJjSessionAttribution", () => {
     await expectSessionLineAlone(dir);
   });
 
-  // jj resolves a workspace root before it matches a scope, so the link's own path would match
-  // nothing — and say nothing about it.
-  it("scopes to the real path when the workspace is reached through a symlink", async () => {
+  // jj matches a scope against the real path of the repository it loaded, so a workspace reached
+  // through a symlink, whose `.jj/repo` names the clone's by a relative path as `jj workspace add`
+  // writes it, scopes to the clone's real store.
+  it("scopes to the clone's real store when the workspace is reached through a symlink", async () => {
     const dir = await stateDir();
-    const real = await workspace("real-ws");
-    const link = path.join(path.dirname(real), "link-ws");
-    await symlink(real, link);
+    const root = await workspace("layout");
+    const store = path.join(root, "repos", "widgets", ".jj", "repo");
+    await mkdir(store, { recursive: true });
+    const ws = path.join(root, "workspaces", "acme-7");
+    await mkdir(path.join(ws, ".jj"), { recursive: true });
+    await Bun.write(path.join(ws, ".jj", "repo"), "../../../repos/widgets/.jj/repo");
+    const link = path.join(root, "link-ws");
+    await symlink(ws, link);
     const env: NodeJS.ProcessEnv = {};
     await exportJjSessionAttribution(ROOT_ID, dir, {
-      issueKey: "ACME-7",
-      workspace: resolvedWorkspace(link),
+      ...paneAttributionOptions({ LEGION_ISSUE_TRAILER: "ACME-7", LEGION_WORKSPACE: link }),
       env,
       resolveBase: async () => "/u/base.toml",
     });
     const [, scope] = await overlayTables(dir);
-    expect(scope?.split("\n")).toContain(`--when.workspaces = ["${real}"]`);
+    expect(scope?.split("\n")).toContain(`--when.repositories = ["${await realpath(store)}"]`);
   });
 
   it("writes no scope for a workspace path that does not exist", async () => {
@@ -269,7 +291,7 @@ describe("exportJjSessionAttribution", () => {
     const env: NodeJS.ProcessEnv = {};
     await exportJjSessionAttribution(ROOT_ID, dir, {
       issueKey: "ACME-7",
-      workspace: resolvedWorkspace(path.join(dir, "no-such-workspace")),
+      repository: resolvedRepository(path.join(dir, "no-such-workspace")),
       env,
       resolveBase: async () => "/u/base.toml",
     });
@@ -278,20 +300,20 @@ describe("exportJjSessionAttribution", () => {
 
   // The path goes into a TOML basic string inside an array; a raw quote would end that string
   // and a raw backslash would open an escape, leaving jj a file it refuses.
-  it("escapes a workspace path holding a double quote and a backslash", async () => {
+  it("escapes a repository path holding a double quote and a backslash", async () => {
     const dir = await stateDir();
     const ws = await workspace('ws "quoted\\odd');
     const env: NodeJS.ProcessEnv = {};
     await exportJjSessionAttribution(ROOT_ID, dir, {
       issueKey: "ACME-7",
-      workspace: ws,
+      repository: ws,
       env,
       resolveBase: async () => "/u/base.toml",
     });
     // The last name of the path, `ws "quoted\odd`, with its `"` and its `\` escaped for TOML.
     const [, scope] = await overlayTables(dir);
     expect(scope?.split("\n")).toContain(
-      `--when.workspaces = ["${path.dirname(ws)}/ws \\"quoted\\\\odd"]`
+      `--when.repositories = ["${path.dirname(ws)}/ws \\"quoted\\\\odd"]`
     );
   });
 
@@ -301,12 +323,12 @@ describe("exportJjSessionAttribution", () => {
     ["a newline", "/ws/line\nbreak"],
     ["a tab", "/ws/tab\there"],
     ["a DEL", "/ws/del\u007fhere"],
-  ])("writes no scope for a workspace path holding %s", async (_name, ws) => {
+  ])("writes no scope for a repository path holding %s", async (_name, ws) => {
     const dir = await stateDir();
     const env: NodeJS.ProcessEnv = {};
     await exportJjSessionAttribution(ROOT_ID, dir, {
       issueKey: "ACME-7",
-      workspace: ws,
+      repository: ws,
       env,
       resolveBase: async () => "/u/base.toml",
     });
@@ -330,7 +352,7 @@ describe("exportJjSessionAttribution", () => {
     const env: NodeJS.ProcessEnv = {};
     await exportJjSessionAttribution(ROOT_ID, dir, {
       issueKey,
-      workspace: await workspace(),
+      repository: await workspace(),
       env,
       resolveBase: async () => "/u/base.toml",
     });
@@ -343,7 +365,7 @@ describe("exportJjSessionAttribution", () => {
     const env: NodeJS.ProcessEnv = {};
     const chain = await exportJjSessionAttribution(ROOT_ID, dir, {
       issueKey: "ACME-7",
-      workspace: ws,
+      repository: ws,
       env,
       resolveBase: async () => "/u/base.toml",
     });
@@ -537,6 +559,78 @@ describe("exportJjSessionAttribution", () => {
     },
     60_000
   );
+
+  // Each task of an issue works in a jj workspace of its own beside the issue's, all of one clone,
+  // and the pane's LEGION_WORKSPACE names the issue's alone. So the issue key belongs in a commit
+  // of every working copy of that clone, and in no commit of another repository. Real jj, as the
+  // case above runs it; the workspaces are made before the overlay, as provisioning makes them.
+  it.skipIf(JJ === null && !ON_ACTIONS)(
+    "the issue key is in a commit of each working copy of the issue's clone",
+    async () => {
+      if (JJ === null) throw new Error("no jj on PATH on GitHub Actions (install-jj installs one)");
+      const root = await realpath(await stateDir("jj-attribution-copies-"));
+      const base = path.join(root, "base.toml");
+      await Bun.write(base, 'ui.color = "never"\n');
+      const env: NodeJS.ProcessEnv = {
+        PATH: process.env.PATH ?? "",
+        HOME: root,
+        XDG_CONFIG_HOME: path.join(root, "config"),
+        JJ_CONFIG: base,
+        JJ_USER: "Attribution Test",
+        JJ_EMAIL: "attribution-test@example.invalid",
+      };
+      const jj = async (cwd: string, ...args: string[]): Promise<string> => {
+        const child = Bun.spawn([JJ, ...args], {
+          cwd,
+          env,
+          stdin: "ignore",
+          stdout: "pipe",
+          stderr: "pipe",
+        });
+        const [code, stdout, stderr] = await Promise.all([
+          child.exited,
+          new Response(child.stdout).text(),
+          new Response(child.stderr).text(),
+        ]);
+        if (code !== 0) throw new Error(`jj ${args.join(" ")} in ${cwd} exited ${code}: ${stderr}`);
+        return stdout;
+      };
+      const clone = path.join(root, "repos", "widgets");
+      const own = path.join(root, "workspaces", "acme-7");
+      const task = path.join(root, "workspaces", "acme-7.b");
+      const unrelated = path.join(root, "other");
+      await mkdir(clone, { recursive: true });
+      await mkdir(unrelated);
+      await mkdir(path.dirname(own));
+      await jj(clone, "git", "init");
+      await Bun.write(path.join(clone, "a"), "a\n");
+      await jj(clone, "commit", "-m", "base");
+      await jj(clone, "workspace", "add", own, "--name", "acme-7");
+      await jj(clone, "workspace", "add", task, "--name", "acme-7.b");
+      await jj(unrelated, "git", "init");
+
+      const chain = await exportJjSessionAttribution(ROOT_ID, path.join(root, "state"), {
+        ...paneAttributionOptions({ LEGION_ISSUE_TRAILER: "ACME-7", LEGION_WORKSPACE: own }),
+        env: { ...env, JJ_CONFIG: undefined },
+        resolveBase: async () => base,
+      });
+      if (chain === undefined) throw new Error("the writer exported no chain");
+      env.JJ_CONFIG = chain;
+      const pair = `Omp-Session: ${ROOT_ID}\n`;
+      for (const [name, dir, trailers] of [
+        ["a task's own working copy", task, `${pair}Dispatch: ACME-7\n`],
+        ["the issue's working copy", own, `${pair}Dispatch: ACME-7\n`],
+        ["an unrelated repository", unrelated, pair],
+      ] as const) {
+        await Bun.write(path.join(dir, "work"), `${name}\n`);
+        await jj(dir, "commit", "-m", "work");
+        expect([name, await jj(dir, "log", "--no-graph", "-r", "@-", "-T", "description")]).toEqual(
+          [name, `work\n\n${trailers}`]
+        );
+      }
+    },
+    60_000
+  );
 });
 
 describe("paneAttributionOptions", () => {
@@ -587,6 +681,63 @@ describe("resolvedWorkspace", () => {
 
   it("answers undefined for a path that does not exist", async () => {
     expect(resolvedWorkspace(path.join(await scratch(), "gone"))).toBeUndefined();
+  });
+});
+
+describe("resolvedRepository", () => {
+  const dirs: string[] = [];
+  afterEach(async () => {
+    await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
+  });
+  /** A clone at `repos/widgets` whose own `.jj/repo` is a directory, under a scratch directory. */
+  async function clone(): Promise<{ root: string; store: string }> {
+    const root = await realpath(await mkdtemp(path.join(tmpdir(), "jj-attribution-repo-")));
+    dirs.push(root);
+    const store = path.join(root, "repos", "widgets", ".jj", "repo");
+    await mkdir(store, { recursive: true });
+    return { root, store };
+  }
+  /** A workspace at `workspaces/<name>` whose `.jj/repo` file holds `named`. */
+  async function workspaceNaming(root: string, name: string, named: string): Promise<string> {
+    const ws = path.join(root, "workspaces", name);
+    await mkdir(path.join(ws, ".jj"), { recursive: true });
+    await Bun.write(path.join(ws, ".jj", "repo"), named);
+    return ws;
+  }
+
+  it("is the clone's own store for the clone's workspace", async () => {
+    const { root, store } = await clone();
+    expect(resolvedRepository(path.join(root, "repos", "widgets"))).toBe(store);
+  });
+
+  // `jj workspace add` writes the store's path relative to the workspace's `.jj`.
+  it("is the clone's store for a workspace whose .jj/repo names it by a relative path", async () => {
+    const { root, store } = await clone();
+    expect(
+      resolvedRepository(
+        await workspaceNaming(root, "acme-7.b", "../../../repos/widgets/.jj/repo\n")
+      )
+    ).toBe(store);
+  });
+
+  it("is the clone's store for a workspace whose .jj/repo names it by an absolute path", async () => {
+    const { root, store } = await clone();
+    expect(resolvedRepository(await workspaceNaming(root, "acme-7", store))).toBe(store);
+  });
+
+  it.each([
+    ["an empty file", ""],
+    ["a store that does not exist", "../../../repos/gone/.jj/repo"],
+  ])("is undefined for a workspace whose .jj/repo names %s", async (_name, named) => {
+    const { root } = await clone();
+    expect(resolvedRepository(await workspaceNaming(root, "acme-7", named))).toBeUndefined();
+  });
+
+  it("is undefined for a directory that is no jj workspace, and for none", async () => {
+    const { root } = await clone();
+    expect(resolvedRepository(root)).toBeUndefined();
+    expect(resolvedRepository(path.join(root, "no-such-workspace"))).toBeUndefined();
+    expect(resolvedRepository(undefined)).toBeUndefined();
   });
 });
 

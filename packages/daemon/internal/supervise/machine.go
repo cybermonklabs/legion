@@ -1,4 +1,4 @@
-// Package supervise is process supervision: one state machine per role claim, and the only place
+// Package supervise is process supervision: one state machine per claim, and the only place
 // the runtime's process facts, the worker stream's agent facts, the machine's own timers, and the
 // API's requests meet.
 //
@@ -31,7 +31,6 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/backoff"
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store/storetext"
 	"github.com/sjawhar/legion/daemon/internal/wait"
@@ -169,7 +168,8 @@ const (
 	SessionLossClaudeNoFile SessionLoss = "claude-no-file"
 )
 
-// Claim is one role claim as the supervisor holds and persists it.
+// Claim is one claim, one agent of an issue under its token whatever role its step is on now, as
+// the supervisor holds and persists it.
 type Claim struct {
 	Token      claim.Token
 	Project    string
@@ -647,7 +647,7 @@ type StepRecord struct {
 }
 
 // The two kinds of round Claim.UpdateRound spells, each with what identifies it: a pod's, which
-// every role claim of one issue shares, and one claim's own plugin round. They are here, beside
+// every claim of one issue shares, and one claim's own plugin round. They are here, beside
 // the field, because a round is matched in this package and written in internal/daemon's sweep
 // (openPodUpdate), which recognises the rounds it must carry by them.
 //
@@ -801,11 +801,14 @@ type ClaimView struct {
 	// (fenceOutcome), so its adoption of the working copy or its prompt frame may be running
 	// right now. The claim still reads ready or idle meanwhile, because the turn that prompt asks
 	// for has not started — but the agent is about to be in one, and the adoption the prompt goes
-	// behind is already rewriting the working copy the issue's roles share. So a reader deciding
-	// who may adopt that working copy counts a send in flight as a turn (the daemon's
-	// claimInTurn, supervise's Deps.IssueInTurn): two roles of one issue that each read the other
-	// as idle would otherwise adopt it at the same moment (dispatch://INFRA-314).
+	// behind is already rewriting the working copy it works (Copy). So a reader deciding who may
+	// adopt that working copy counts a send in flight as a turn (the daemon's claimInTurn,
+	// supervise's Deps.IssueInTurn): two roles that each read the other as idle would otherwise
+	// adopt it at the same moment (dispatch://INFRA-314).
 	SendInFlight bool
+	// Copy is the working copy the claim's agent works in its turn, or in the turn its send in
+	// flight starts (workingCopy), which is the one a turn holds the adoptions of.
+	Copy WorkingCopy
 	// WakeWaiting is the wake the pacing holds over this claim until its turn (reserveWake), nil
 	// while none waits. It travels on the published view rather than behind the machine's lock
 	// because none of its readers may wait on the decision in flight, which is the whole reason
@@ -815,6 +818,17 @@ type ClaimView struct {
 	// launch waits (api's relaunchWaits); and the daemon's delivery wake reads it to hold a row
 	// until the turn of a launch that waits over no process (internal/daemon's wakeForDelivery).
 	WakeWaiting *WakeWaiting
+}
+
+// WorkingCopy is the working copy a claim's agent works in its turn, or in the turn its send in
+// flight starts (ClaimView.Copy). It is Known where that turn is a phase task's, whose adoption
+// takes the working copy of its task's branch, Branch (Delivery.Branch, "" for the issue's own);
+// every other turn — a message, a notice, an operator's task, a turn of the agent's own, a turn
+// whose task a newer one has replaced since — is of no known working copy, and may work any of the
+// issue's.
+type WorkingCopy struct {
+	Branch string
+	Known  bool
 }
 
 // treeRoot is whether the claim is its tree's root claim (claim.IsTreeArchitect), which ends only
@@ -970,23 +984,29 @@ type Deps struct {
 	// nothing.
 	Identity func(ctx context.Context, role claim.Role, issue string) (runtime.GitIdentity, error)
 	// IssueInTurn names a claim of issue other than except whose agent is in a turn now, or is
-	// about to be, and reports whether there is one. The roles of an issue work one jj workspace,
-	// so the adoption a phase task makes of its working copy is not a private act: one run while
-	// another role is in a turn moves that role's worker onto a commit of this role's
-	// (dispatch://INFRA-714), and a task that would adopt waits instead (sendPending). The daemon
-	// answers it from the state its machines publish — a claim is StateWorking from its turn's
-	// start to its turn's end, and carries a send in flight from the moment its own prompt and
-	// that prompt's adoption go out (ClaimView.SendInFlight) — which is read without waiting on
-	// any decision in flight (Machine.View). nil holds no delivery back.
-	IssueInTurn func(issue string, except claim.Token) (claim.Token, bool)
-	// PhaseHolds says whether issue is still in phase p on run generation: the workflow enqueues a
-	// task for the phase and run its issue was in, and the outbox refuses to start a role for a
-	// phase the issue has left (daemon/outbox.go), so a delivery queued before the phase or the run
-	// moved on is that same staleness one step later and is dropped rather than sent. It is asked
-	// only about a delivery that names a phase; a task an operator delivered by hand names none and
-	// is never put to it, which the machine decides rather than this answer. generation is 0 for a
-	// task of no run. nil holds every delivery.
-	PhaseHolds func(ctx context.Context, issue string, p phase.Phase, generation uint64) (bool, error)
+	// about to be, in the working copy of branch (Delivery.Branch, "" for the issue's own), and
+	// reports whether there is one. The roles that work one working copy share one jj workspace,
+	// so the adoption a phase task makes of it is not a private act: one run while another role is
+	// in a turn there moves that role's worker onto a commit of this role's
+	// (dispatch://INFRA-714), and a task that would adopt waits instead (sendPending). A turn in
+	// another task's working copy holds nothing of it. The daemon answers it from the state its
+	// machines publish — a claim is StateWorking from its turn's start to its turn's end, carries
+	// a send in flight from the moment its own prompt and that prompt's adoption go out
+	// (ClaimView.SendInFlight), and names the working copy that turn works where it knows it
+	// (ClaimView.Copy) — which is read without waiting on any decision in flight (Machine.View).
+	// nil holds no delivery back.
+	IssueInTurn func(issue string, except claim.Token, branch string) (claim.Token, bool)
+	// PhaseHolds says whether d, a delivery queued for c, is still the work of c's issue: the
+	// workflow enqueues a task for the phase and run its issue was in, and at the phase step, which
+	// every role a deployment defines runs as, for the step of c's role, and the outbox refuses to
+	// start a role for a phase or a step the issue has left (daemon/outbox.go), so a delivery
+	// queued before the phase, the step or the run moved on is that same staleness one step later
+	// and is dropped rather than sent. The same answer judges a start's work before the claim is
+	// brought back for it (StartWork), as a delivery of that phase and run. It is asked only about
+	// a delivery or a start that names a phase; a task an operator delivered by hand names none and
+	// is never put to it, which the machine decides rather than this answer. d's generation is 0
+	// for a task of no run. nil holds every delivery.
+	PhaseHolds func(ctx context.Context, c Claim, d Delivery) (bool, error)
 	// RootHears says whether the root of c's tree has an architect to hear d now: it runs, it does
 	// not linger and it does not wait in `todo` for an admission slot. A root architect's task of
 	// a run names no phase, so no phase ever drops it, and it waits on the claim until that claim
@@ -1066,7 +1086,7 @@ type Deps struct {
 	// and never charged for its stale registration (staleRegistration): the relaunch would keep
 	// the pod, bring the same plugin back and charge the claim toward failed, and a failed claim
 	// cannot push its work. Such a claim is left running, and the update round over its pod is
-	// what carries it: its role is asked the steps of UpdateTask like any other, on its own Envoy
+	// what carries it: it is asked the steps of UpdateTask like any other claim, on its own Envoy
 	// topic (internal/daemon's openPodUpdate), and the replacement brings it up on a new image
 	// (internal/daemon's refreshStalePlugins).
 	NoPluginInstall func(c Claim) bool
@@ -1172,11 +1192,12 @@ type Deps struct {
 	// (reserveWake), the one that lets the launch out at once included, and the let-out of a
 	// launch the pause's gate held once its pause has ended (letOutHeldLaunch). at is the moment
 	// the reservation answered, never before the decision's now. The daemon sets the stuck clock
-	// of the role's open resume to it (store.Store.SetResumeClock on pod_resumes.clock_at, which
-	// never moves a clock back), so a launch that waits its turn in a long queue is not warned
-	// stuck for the wait. It is called inside the machine's decision, so it returns at once and
-	// does its write on a goroutine of its own, as the durable-state report's podResume does in
-	// internal/daemon. nil stamps nothing.
+	// of the claim's own open resume to it, one that names the claim or names none
+	// (store.Store.SetResumeClock on pod_resumes.clock_at, which never moves a clock back), so a
+	// launch that waits its turn in a long queue is not warned stuck for the wait, and another
+	// claim of the same role keeps its clock. It is called inside the machine's decision, so it
+	// returns at once and does its write on a goroutine of its own, as the durable-state report's
+	// podResume does in internal/daemon. nil stamps nothing.
 	WakeLetOut func(token claim.Token, issue string, role claim.Role, at time.Time)
 	// Worker is the context a goroutine the machine starts applies its decision on: a timer that
 	// fires (arm) and a prompt's send (startSend) each call Handle from a goroutine of their own,
@@ -1822,6 +1843,13 @@ func (m *Machine) Handle(ctx context.Context, ev Event) error {
 	// returns ev itself when nothing in it changes, and leaves its bytes as they are.
 	ev = storetext.Strings(ev)
 	if request, suspending := ev.(RequestSuspend); suspending && !m.pauseStopEnded(request) {
+		// A suspension cancels the start in flight before it takes the lock, so a request made on
+		// a reading of the record judges it first (Standing): a start is never cancelled for a
+		// suspension the record no longer asks for. The judgment that decides is the one under
+		// the lock below.
+		if err := judgeStanding(ctx, claimOf(ev), false); err != nil {
+			return err
+		}
 		m.stopStart("a suspension of the claim is waiting for its start")
 	}
 	m.mu.Lock()
@@ -1835,6 +1863,9 @@ func (m *Machine) Handle(ctx context.Context, ev Event) error {
 	m.decide(ev)
 	if token := claimOf(ev); token != m.claim.Token {
 		return fmt.Errorf("supervise: %T for claim %s reached the machine of %s", ev, token, m.claim.Token)
+	}
+	if err := judgeStanding(ctx, m.claim.Token, true); err != nil {
+		return err
 	}
 	// The write a decision owes is made before anything reads or writes the claim again: settle
 	// can retire a delivery, and the repair must write what the failed decision left.
@@ -1943,7 +1974,7 @@ type UpdateAskOutcome int
 const (
 	// UpdateAskDelivered is a publish that reached a session: the claim is marked asked.
 	UpdateAskDelivered UpdateAskOutcome = iota + 1
-	// UpdateAskUndelivered is a publish no live session took, the role's topic having no holder
+	// UpdateAskUndelivered is a publish no live session took, the claim's topic having no holder
 	// (notify.ErrNoHolder): nothing is marked, so the sweep asks the claim again.
 	UpdateAskUndelivered
 	// UpdateAskAlreadyDelivered is an ask of a round an earlier ask of which reached a session:
@@ -2383,12 +2414,29 @@ func (m *Machine) current() Claim {
 	return c
 }
 
+// workingCopy is the working copy the claim's agent works now (WorkingCopy): that of the phase
+// task its send in flight carries, or of the phase task whose turn it is in, which that turn
+// confirmed (confirm) and which goes when the turn ends; and none known for any other send or
+// turn, among them a turn whose task a newer one replaced, which leaves the claim working on an
+// unconfirmed task. The caller holds mu.
+func (m *Machine) workingCopy() WorkingCopy {
+	p := m.claim.Pending
+	if p == nil || !m.adopts(*p) {
+		return WorkingCopy{}
+	}
+	sending := m.send != nil && m.send.id == p.ID
+	if sending || (m.send == nil && m.claim.State == StateWorking && !p.ConfirmedAt.IsZero()) {
+		return WorkingCopy{Branch: p.Branch, Known: true}
+	}
+	return WorkingCopy{}
+}
+
 // publish makes the claim as the machine holds it now the one View reports, with the wake the
 // pacing holds over it, if any: a fresh value each time, since the view is read without mu. A
 // launch the project pause's gate holds is no such wake: it has no moment to run and waits in no
 // pacing (wake.pause), so it is published as none. The caller holds mu.
 func (m *Machine) publish() {
-	view := &ClaimView{Claim: m.current(), Stopping: m.stopping, SendInFlight: m.send != nil}
+	view := &ClaimView{Claim: m.current(), Stopping: m.stopping, SendInFlight: m.send != nil, Copy: m.workingCopy()}
 	if m.wake != nil && m.wake.pause == 0 {
 		view.WakeWaiting = &WakeWaiting{Kind: m.wake.kind, At: m.wake.at}
 	}
@@ -2793,7 +2841,7 @@ func (m *Machine) dropStale(event, fence, got, held string) {
 // cause is why the process the claim still records is let go, which the let-go records with
 // what that process ended (letGo, recordEnd); noEnd for a launch that lets none go.
 func (m *Machine) launch(ctx context.Context, cause string) error {
-	return m.launchAfter(ctx, false, false, cause)
+	return m.launchAfter(ctx, false, false, cause, StartWork{})
 }
 
 // launchAfter is launch, whose first try waits the backoff when charged: the launch follows a
@@ -2830,14 +2878,41 @@ func (m *Machine) launch(ctx context.Context, cause string) error {
 // cause is launch's: why the process the claim still records is let go. It travels with the
 // launch to wherever it runs — here, or at the turn of the wake the gate parks it on, which is
 // when a process the park left running is let go and what it ended is read (launchNow, letGo).
-func (m *Machine) launchAfter(ctx context.Context, charged, exempt bool, cause string) error {
-	again := func(ctx context.Context) error { return m.launchAfter(ctx, charged, exempt, cause) }
+//
+// start is the work a workflow start brings the claim back for (StartWork, revive), the zero
+// StartWork for every other launch. Its caller judged it under this lock already (startHolds),
+// so a launch that runs here is not judged twice; one the gate parks is judged again at its
+// wake's turn, since the wait can be tens of minutes over a wave and the issue can leave the
+// start's work meanwhile. A launch that turn finds left behind starts no process: the claim,
+// written launching with none for the wait (parkWake), is suspended for the daemon with its
+// session kept, and the start of the role's next work resumes it (startLeft).
+func (m *Machine) launchAfter(ctx context.Context, charged, exempt bool, cause string, start StartWork) error {
+	again := func(ctx context.Context) error { return m.launchAfter(ctx, charged, exempt, cause, start) }
 	if err := m.checkLaunch(ctx); err != nil {
 		return m.relaunchRefused(ctx, again, err)
 	}
 	return m.reserveWake(ctx, exempt, func(ctx context.Context) error {
-		return m.launchNow(ctx, charged, exempt, cause)
+		if parked := m.claim.State == StateLaunching && m.claim.Locator == nil; parked {
+			if err := m.startHolds(ctx, start); errors.Is(err, ErrStartLeft) {
+				return m.startLeft(ctx, err)
+			} else if err != nil {
+				return m.relaunchRefused(ctx, again, err)
+			}
+		}
+		return m.launchNow(ctx, charged, exempt, cause, start)
 	}, again)
+}
+
+// startLeft ends a start's launch the pacing parked and whose work the issue left during the wait
+// (launchAfter): the claim records no process, so none is stopped, and it is suspended for the
+// daemon, its session kept, the end a launch the tree's lifecycle refuses over a claim with no
+// process takes too (relaunchRefused). The task the start handed it names a phase and is retired
+// unsent with the suspension (settle), and the start of the role's next work resumes the claim by
+// rule. A suspension for the daemon is no stranded claim of a role that works no step the task
+// stands at (workflow.Stranded).
+func (m *Machine) startLeft(ctx context.Context, err error) error {
+	m.log.Info("supervise: the launch this start's wake held is of work its issue has left; suspending the claim with no process started", "error", err)
+	return m.suspended(ctx, SuspendedByDaemon, nil)
 }
 
 // launchNow is launchAfter past its lifecycle check and its wake gate: the launch itself, and the
@@ -2865,8 +2940,10 @@ func (m *Machine) launchAfter(ctx context.Context, charged, exempt bool, cause s
 // ended is recorded before the first try's write moves the generation and clears the process's
 // activity report (letGo, recordEnd, the store's putClaim). The retries this launch arms — a
 // failed write's here, a session store's that could not answer (startWaitsForStore) — launch a
-// claim that records no process any more, so they pass noEnd.
-func (m *Machine) launchNow(ctx context.Context, charged, exempt bool, cause string) error {
+// claim that records no process any more, so they pass noEnd; they carry start, the work of the
+// start this launch is for, so the retry, which finds the claim launching with no process, judges
+// it again as a parked launch's turn does (launchAfter).
+func (m *Machine) launchNow(ctx context.Context, charged, exempt bool, cause string, start StartWork) error {
 	// The intent is read before it is committed rather than taken, because committing takes it
 	// off the machine (commitPluginRelaunch, takePluginRelaunch) and the retry a failed write
 	// arms must put that same one back where it runs. Reading it without taking it is what the
@@ -2896,7 +2973,7 @@ func (m *Machine) launchNow(ctx context.Context, charged, exempt bool, cause str
 			m.log.Warn("supervise: the launch could not be written; trying it again at the probe interval",
 				"generation", m.claim.Generation, "error", err)
 			m.relaunchLater(m.deps.Timeouts.Probe, m.retryHolding(intent, func(ctx context.Context) error {
-				return m.launchAfter(ctx, charged, exempt, noEnd)
+				return m.launchAfter(ctx, charged, exempt, noEnd, start)
 			}))
 			return err
 		}
@@ -2950,13 +3027,13 @@ func (m *Machine) launchNow(ctx context.Context, charged, exempt bool, cause str
 			m.log.Warn("supervise: the store did not answer the session's hold; trying the launch again at the probe interval, charging nothing",
 				"generation", m.claim.Generation, "error", err)
 			m.relaunchLater(m.deps.Timeouts.Probe, m.retryHolding(intent, func(ctx context.Context) error {
-				return m.launchAfter(ctx, charged, exempt, noEnd)
+				return m.launchAfter(ctx, charged, exempt, noEnd, start)
 			}))
 			return errors.Join(err, m.persist(starting))
 		}
 		m.claim.LastStartFailure = storetext.FarSideError(err.Error())
 		if errors.Is(err, runtime.ErrSessionStore) {
-			return m.startWaitsForStore(starting, err, charged, exempt)
+			return m.startWaitsForStore(starting, err, charged, exempt, start)
 		}
 		var tooLarge *runtime.PromptTooLarge
 		if errors.As(err, &tooLarge) {
@@ -3065,12 +3142,12 @@ const (
 // why the worker is not running. The process the launch let go is let go already, so the retry
 // lets none go (noEnd). The store's error is a far side's text: the line, the claim and the
 // notices carry it as the claim keeps one (storetext.FarSideError, logFarSideError).
-func (m *Machine) startWaitsForStore(ctx context.Context, cause error, charged, exempt bool) error {
+func (m *Machine) startWaitsForStore(ctx context.Context, cause error, charged, exempt bool, start StartWork) error {
 	err := errors.Join(cause, m.stopPrevious(ctx))
 	m.logFarSideError(ctx, slog.LevelError, "supervise: the session store could not answer this start; trying it again every minute, charging nothing",
 		err, "generation", m.claim.Generation, "retry", sessionStoreRetry)
 	m.tellStoreFault(cause)
-	m.relaunchLater(sessionStoreRetry, func(ctx context.Context) error { return m.launchAfter(ctx, charged, exempt, noEnd) })
+	m.relaunchLater(sessionStoreRetry, func(ctx context.Context) error { return m.launchAfter(ctx, charged, exempt, noEnd, start) })
 	return errors.Join(err, m.persist(ctx))
 }
 

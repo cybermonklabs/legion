@@ -45,6 +45,9 @@ type Call struct {
 	Known    []runtime.Known
 	Grace    time.Duration
 	Identity runtime.GitIdentity
+	// Branch is AdoptWorkingCopy's branch: the task's whose working copy it adopts, "" for the
+	// issue's own.
+	Branch string
 	// Tree is CleanupTree's tree.
 	Tree string
 	// Issue is IssuePod's, WorkspaceWork's and ReplaceIssuePod's issue.
@@ -52,8 +55,8 @@ type Call struct {
 	// PodUID is ReplaceIssuePod's pod, and the pod a launch replaced as its round's own
 	// replacement (ReplaceRoundPodAtLaunch, whose Spec is the launch's).
 	PodUID string
-	// Role is WorkspaceWork's role.
-	Role claim.Role
+	// Claim is WorkspaceWork's claim, whose process reads the workspace.
+	Claim claim.Token
 }
 
 // SpawnResult is one scripted answer to Spawn or Resume.
@@ -91,6 +94,10 @@ type Runtime struct {
 	// and watches that context for the caller's cancellation. A non-nil answer is the Resume's,
 	// and nothing is started.
 	OnResume func(ctx context.Context) error
+	// OnAdopt, when set, runs at every AdoptWorkingCopy, after the call is recorded and outside
+	// the fake's lock, with the call's locator, identity and branch: a test makes the working copy
+	// the adoption names, as a shim would. A non-nil answer is the adoption's.
+	OnAdopt func(loc runtime.Locator, id runtime.GitIdentity, branch string) error
 	// OnSpawn, when set, runs at the start of every Spawn, after the call is recorded, with that
 	// call's own context: a test that must act while a launch is still in the runtime blocks here
 	// and watches that context for the caller's cancellation. A non-nil answer is the Spawn's,
@@ -122,6 +129,7 @@ type Runtime struct {
 	drift        map[claim.Token][]string
 	gone         map[claim.Token]bool
 	issuePods    map[string]string
+	otherImages  map[string]bool
 	keptVolumes  map[string]time.Time
 	sessions     map[claim.Token]string
 	work         map[string]runtime.WorkspaceWork
@@ -154,6 +162,7 @@ func NewRuntime() *Runtime {
 		drift:       map[claim.Token][]string{},
 		gone:        map[claim.Token]bool{},
 		issuePods:   map[string]string{},
+		otherImages: map[string]bool{},
 		keptVolumes: map[string]time.Time{},
 		sessions:    map[claim.Token]string{},
 		work:        map[string]runtime.WorkspaceWork{},
@@ -265,6 +274,28 @@ func (r *Runtime) ScriptIssuePod(issue, pod string) {
 	r.issuePods[issue] = pod
 }
 
+// ScriptPodImage says whether the pod uid pod runs an image other than the one the fake launches,
+// the image of an earlier release's pod. Every pod runs the fake's own image until a call names
+// it, and a pod the fake builds in place of a replaced one (launchInto) runs it too.
+func (r *Runtime) ScriptPodImage(pod string, other bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.otherImages[pod] = other
+}
+
+// PodRunsOtherImage satisfies runtime.IssuePodImage: the pod IssuePod answers for issue, where
+// ScriptPodImage said it runs another image, and true; "" and false otherwise. It records no call:
+// the daemon asks it on every try of a start, and a test reads what the start did instead.
+func (r *Runtime) PodRunsOtherImage(issue string) (string, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	now, live := r.podNow(r.issuePods[issue])
+	if !live || now == "" || !r.otherImages[now] {
+		return "", false
+	}
+	return now, true
+}
+
 // ScriptKeptVolume makes every later IssueKeepsVolume of issue answer as the Sandbox runtime
 // answers an issue Sandbox that owns a kept volume, carries no reset mark, has the disk shape that
 // the configuration renders and was made at created: true for a since whose second is after
@@ -319,10 +350,10 @@ func (r *Runtime) FailWorkspaceWork(issue string, err error) { r.fail("Workspace
 
 // WorkspaceWork records its call and answers what FailWorkspaceWork set for the issue, else what
 // ScriptWorkspaceWork set, else no work.
-func (r *Runtime) WorkspaceWork(_ context.Context, issue string, role claim.Role) (runtime.WorkspaceWork, error) {
+func (r *Runtime) WorkspaceWork(_ context.Context, issue string, token claim.Token) (runtime.WorkspaceWork, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.calls = append(r.calls, Call{Method: "WorkspaceWork", Issue: issue, Role: role})
+	r.calls = append(r.calls, Call{Method: "WorkspaceWork", Issue: issue, Claim: token})
 	if err := r.failures["WorkspaceWork:"+issue]; err != nil {
 		return runtime.WorkspaceWork{}, err
 	}
@@ -684,11 +715,17 @@ func copyKnown(k runtime.Known) runtime.Known {
 	return k
 }
 
-func (r *Runtime) AdoptWorkingCopy(_ context.Context, loc runtime.Locator, id runtime.GitIdentity) error {
+// AdoptWorkingCopy records the call and answers its scripted failure, if any; otherwise OnAdopt's
+// answer when it is set, run outside the lock so a hook that calls the fake does not deadlock.
+func (r *Runtime) AdoptWorkingCopy(_ context.Context, loc runtime.Locator, id runtime.GitIdentity, branch string) error {
 	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.calls = append(r.calls, Call{Method: "AdoptWorkingCopy", Locator: loc, Identity: id})
-	return r.failures["AdoptWorkingCopy"]
+	r.calls = append(r.calls, Call{Method: "AdoptWorkingCopy", Locator: loc, Identity: id, Branch: branch})
+	failure, hook := r.failures["AdoptWorkingCopy"], r.OnAdopt
+	r.mu.Unlock()
+	if failure != nil || hook == nil {
+		return failure
+	}
+	return hook(loc, id, branch)
 }
 
 func (r *Runtime) ProvisionsWorkspaces() bool {

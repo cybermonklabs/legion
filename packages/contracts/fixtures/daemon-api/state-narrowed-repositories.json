@@ -7,17 +7,19 @@
     "startedAt": "2026-09-22T09:15:02Z"
   },
   "contract": {
-    "daemon": 219,
+    "daemon": 224,
     "caller": 199
   },
   "admission": {
-    "cap": 5,
+    "cap": 7,
     "active": [
       "LEGION-208",
       "LEGION-210",
       "LEGION-212",
       "LEGION-218",
-      "LEGION-219"
+      "LEGION-219",
+      "LEGION-240",
+      "LEGION-241"
     ],
     "waiting": [
       "LEGION-212",
@@ -29,7 +31,9 @@
       "LEGION-211",
       "LEGION-212",
       "LEGION-218",
-      "LEGION-219"
+      "LEGION-219",
+      "LEGION-240",
+      "LEGION-241"
     ],
     "blocked": [
       {
@@ -377,6 +381,10 @@
           "status": "unregistered"
         }
       ],
+      "slot": {
+        "index": 1,
+        "admittedAt": "2026-09-21T19:05:26Z"
+      },
       "why": {
         "state": "claim_stopped",
         "reason": "Its phase is held and the implementer's claim is stranded at failed, so nothing will wake it."
@@ -558,6 +566,10 @@
           "status": "approved"
         }
       ],
+      "slot": {
+        "index": 3,
+        "admittedAt": "2026-09-22T08:14:52Z"
+      },
       "mergeWait": {
         "waitsOn": "6c2f8a0d4b7e13952a8c0f6d3b5e9172c4a8d063",
         "headUpdatedAt": "2026-09-22T08:58:40Z",
@@ -617,6 +629,10 @@
           "status": "approved"
         }
       ],
+      "slot": {
+        "index": 4,
+        "admittedAt": "2026-09-19T10:27:44Z"
+      },
       "mergeWait": {
         "waitsOn": "0f5a7c2e9b48d1630a7f2c8e4b6d0915a3c7e284",
         "mergeState": "blocked",
@@ -630,6 +646,49 @@
       "givenEntry": 2,
       "treeMovedAt": "2026-09-20T16:42:58Z",
       "quietHours": 40.583888888888886
+    },
+    "LEGION-240": {
+      "key": "LEGION-240",
+      "generation": 1,
+      "phase": "implementing",
+      "status": "in_progress",
+      "tree": "LEGION-240",
+      "repo": "acme/widgets",
+      "defaultBranch": "main",
+      "workers": {},
+      "slot": {
+        "index": 5,
+        "admittedAt": "2026-09-22T08:36:05Z"
+      },
+      "treeMovedAt": "2026-09-22T08:52:16Z",
+      "quietHours": 0.4288888888888889
+    },
+    "LEGION-241": {
+      "key": "LEGION-241",
+      "generation": 1,
+      "phase": "held",
+      "status": "in_progress",
+      "tree": "LEGION-241",
+      "repo": "acme/widgets",
+      "defaultBranch": "main",
+      "heldFrom": "implementing",
+      "workers": {
+        "checker": {
+          "claim": {
+            "session": "ses_checker_241",
+            "state": "failed",
+            "pluginContract": 0
+          },
+          "pass": 0,
+          "rounds": 0
+        }
+      },
+      "slot": {
+        "index": 6,
+        "admittedAt": "2026-09-22T08:39:47Z"
+      },
+      "treeMovedAt": "2026-09-22T09:04:39Z",
+      "quietHours": 0.2225
     }
   },
   "pendingStatusWrites": [],

@@ -26,6 +26,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode"
 
 	"github.com/jackc/pgx/v5"
 
@@ -47,8 +48,9 @@ const (
 	stepRecordsHead = "5e7f00d5a1b2c3d4e5f60718293a4b5c6d7e8f90"
 	// stepRecordsPerson is the account with write access whose reviews decide each round.
 	stepRecordsPerson = "a-person"
-	// stepRecordsModel is the model an agent of the walk answers with until its test gives the
-	// agent another (stepClaimant.model), as Oh My Pi's message_end names it: provider and model.
+	// stepRecordsModel is the model an agent of the walk answers with when its launch's spec names
+	// none, as every launch of Legion's own roles does, until its test gives the agent another
+	// (stepClaimant.model), as Oh My Pi's message_end names it: provider and model.
 	stepRecordsModel = "stand-in/model"
 	// stepRecordsWait bounds each wait of the walk on the daemon, which a loaded machine slows.
 	stepRecordsWait = 2 * time.Minute
@@ -284,6 +286,14 @@ func TestARollbackAndItsRollForwardKeepEveryRecordOfTheWalk(t *testing.T) {
 	if err := r.st.Pool().QueryRow(context.Background(), `select to_regclass('plan_tasks')::text`).Scan(&left); err != nil || left != nil {
 		t.Fatalf("after the way back of the owner's plan the store holds the table %v (%v), want none", left, err)
 	}
+	// The earlier release keys pull_requests by the issue alone, so the walk took the way back of
+	// the pull requests by task, which reads plan_tasks, before the plan's.
+	var key string
+	if err := r.st.Pool().QueryRow(context.Background(), `select string_agg(a.attname::text, ',' order by k.ord) from pg_constraint c
+		cross join lateral unnest(c.conkey) with ordinality k(attnum, ord) join pg_attribute a on a.attrelid = c.conrelid and a.attnum = k.attnum
+		where c.conrelid = 'pull_requests'::regclass and c.contype = 'p'`).Scan(&key); err != nil || key != "issue" {
+		t.Fatalf("after the rollback pull_requests is keyed by %q (%v), want issue: the way back of the pull requests by task did not run", key, err)
+	}
 	r.dispatch.start()
 	r.reboot()
 	// No delivery of the earlier release stands in the store, so the tester's claim still serves
@@ -387,31 +397,111 @@ func (r *stepRecordsRig) rollBackStepRecords() {
 // header gives from `begin;` to `commit;`, with <PROJECT> the run's project. A rollback of the
 // release whose owner's plan picks the steps to any release before it takes that way back too
 // (docs/kubernetes.md, "Rolling back the release whose owner's plan picks the steps"), which drops
-// the plan's tables and columns, so the roll forward creates them again empty.
+// the plan's tables and columns, so the roll forward creates them again empty. Before it, newest
+// first, it takes the way back of each later migration that builds on the plan's tables
+// (buildsOnPlanTables), as a rollback past those releases does: the plan's way back drops the
+// tables they altered or read and leaves their version rows standing, so a roll forward would
+// apply none of them again and the plan's tables would come back without their columns. The name
+// of each step's agent (planStepAgentMigration) is one of them: it adds a column to plan_steps,
+// and left recorded, its version would keep the roll forward from adding the column to the
+// plan_steps it creates again, and every later write of a plan would fail. The pull requests by
+// task (20261122122826) is another: it alters no plan table, but its way back reads plan_tasks to
+// keep each issue's merge row, so it runs while that table stands.
 func (r *stepRecordsRig) rollBackOwnersPlans() {
 	r.t.Helper()
 	all, err := migrations.All()
 	if err != nil {
 		r.t.Fatalf("read the embedded migrations: %v", err)
 	}
-	var block []string
+	plan := slices.IndexFunc(all, func(migration migrations.Migration) bool {
+		return strings.HasSuffix(migration.Name, inFlightPlanMigration)
+	})
+	if plan < 0 {
+		r.t.Fatalf("no embedded migration ends %s", inFlightPlanMigration)
+	}
+	for later := len(all) - 1; later > plan; later-- {
+		if buildsOnPlanTables(all[later].SQL) {
+			r.exec(r.headerWayBack(all[later]))
+		}
+	}
+	r.exec(r.headerWayBack(all[plan]))
+}
+
+// headerTransaction is the way back the header of the embedded migration whose name ends with
+// suffix gives, from its `begin;` to its `commit;`, each line with the comment marker and its
+// indent taken off. It fails the test where no embedded migration ends with suffix, or where its
+// header holds no such block.
+func (r *stepRecordsRig) headerTransaction(suffix string) string {
+	r.t.Helper()
+	all, err := migrations.All()
+	if err != nil {
+		r.t.Fatalf("read the embedded migrations: %v", err)
+	}
 	for _, migration := range all {
-		if !strings.HasSuffix(migration.Name, inFlightPlanMigration) {
+		if strings.HasSuffix(migration.Name, suffix) {
+			return r.headerBlock(migration)
+		}
+	}
+	r.t.Fatalf("no embedded migration ends %s", suffix)
+	return ""
+}
+
+// headerWayBack is the way back migration's header gives from `begin;` to `commit;`, with
+// <PROJECT> the run's project.
+func (r *stepRecordsRig) headerWayBack(migration migrations.Migration) string {
+	r.t.Helper()
+	return strings.ReplaceAll(r.headerBlock(migration), "<PROJECT>", r.cfg.Project)
+}
+
+// headerBlock is the way back migration's header gives, from its `begin;` to its `commit;`, each
+// line with the comment marker and its indent taken off. It fails the test where the header holds
+// no such block.
+func (r *stepRecordsRig) headerBlock(migration migrations.Migration) string {
+	r.t.Helper()
+	var block []string
+	for _, line := range strings.Split(migration.SQL, "\n") {
+		statement, comment := strings.CutPrefix(line, "--")
+		if statement = strings.TrimSpace(statement); !comment || (len(block) == 0 && statement != "begin;") {
 			continue
 		}
-		for _, line := range strings.Split(migration.SQL, "\n") {
-			statement, comment := strings.CutPrefix(line, "--")
-			if statement = strings.TrimSpace(statement); !comment || (len(block) == 0 && statement != "begin;") {
+		if block = append(block, statement); statement == "commit;" {
+			return strings.Join(block, "\n")
+		}
+	}
+	r.t.Fatalf("%s carries no way back from begin; to commit; in its header, read %d lines of it", migration.Name, len(block))
+	return ""
+}
+
+// buildsOnPlanTables says whether sql, a migration, names one of the plan's three tables in a
+// statement of its own or in the way back its header gives (from `-- begin;` to `-- commit;`), and
+// not in the rest of its comments: it alters one or reads one, or its way back reads one, which
+// must then run while the plan's tables stand.
+func buildsOnPlanTables(sql string) bool {
+	wayBack := false
+	for _, line := range strings.Split(sql, "\n") {
+		statement := strings.ToLower(strings.TrimSpace(line))
+		if body, comment := strings.CutPrefix(statement, "--"); comment {
+			switch body = strings.TrimSpace(body); {
+			case body == "begin;", body == "commit;":
+				wayBack = body == "begin;"
+				continue
+			case !wayBack:
 				continue
 			}
-			if block = append(block, statement); statement == "commit;" {
-				r.exec(strings.ReplaceAll(strings.Join(block, "\n"), "<PROJECT>", r.cfg.Project))
-				return
+			statement = body
+		}
+		for _, word := range strings.FieldsFunc(statement, func(r rune) bool { return !unicode.IsLetter(r) && r != '_' }) {
+			if slices.Contains([]string{"issue_plans", "plan_tasks", "plan_steps"}, word) {
+				return true
 			}
 		}
 	}
-	r.t.Fatalf("no embedded migration ending %s carries a way back from begin; to commit;, read %d lines of it", inFlightPlanMigration, len(block))
+	return false
 }
+
+// planStepAgentMigration is the migration that adds plan_steps.agent, the name of each step's
+// agent.
+const planStepAgentMigration = "_plan_step_agent.up.sql"
 
 // The record of a member of a tree: a child's acceptance is the work of the architect that owns
 // the child when its step starts, so the record of its step 5 names that architect, with the

@@ -184,7 +184,7 @@ func TestAPlanGivenIsStoredWhereItsTaskHasNotStarted(t *testing.T) {
 		if !got.GivenAt.Equal(want.GivenAt) {
 			t.Fatalf("version 1 was given at %s, want the engine's clock %s", got.GivenAt, want.GivenAt)
 		}
-		if got.GivenAt = want.GivenAt; got != want {
+		if got.GivenAt = want.GivenAt; !reflect.DeepEqual(got, want) {
 			t.Fatalf("the version in force = %+v, want %+v", got, want)
 		}
 		task := record.PlanTask{Issue: root.Key, Generation: root.Generation, Task: "a", PlanVersion: 1, BlockText: "Build the widget.", State: record.TaskWaiting}
@@ -198,7 +198,7 @@ func TestAPlanGivenIsStoredWhereItsTaskHasNotStarted(t *testing.T) {
 			t.Fatalf("the plan moved %s or queued %d outbox rows, want only the plan stored", root.Key, after.outbox-before.outbox)
 		}
 
-		move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
+		move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
 		if issue := issueOf(t, pool, engine, root.Key); issue.Phase != phase.Implementing {
 			t.Fatalf("%s after its gate opened stands in %s, want implementing, the first step of its owner's plan", root.Key, issue.Phase)
 		}
@@ -260,7 +260,7 @@ func TestAPlanGivenIsStoredWhereItsTaskHasNotStarted(t *testing.T) {
 		if got := stepsOfTask(given.plan, "a"); !slices.Equal(got, []string{"planner/planning", "implementer/implementation", "tester/testing", "reviewer/review", "acceptance:owner/review"}) {
 			t.Fatalf("the steps of a, whose block names none, = %v, want the default steps", got)
 		}
-		move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
+		move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
 		if issue := issueOf(t, pool, engine, root.Key); issue.Phase != phase.Planning {
 			t.Fatalf("%s after its gate opened stands in %s, want planning, the first of the default steps", root.Key, issue.Phase)
 		}
@@ -299,7 +299,7 @@ func TestAPlanGivenIsStoredWhereItsTaskHasNotStarted(t *testing.T) {
 		reason := "LEGION-208 started its work before Legion took plans, so it runs the steps it started with to their end. This plan changed nothing."
 		assertPlanRefusal(t, pool, engine, root.Key, root.Generation, id, result, &intake.Refusal{Status: 409, Code: "PLAN_REFUSED",
 			Message: "Legion refused this plan and recorded nothing: " + reason, Reasons: []plan.Refusal{{Reason: reason}}}, before)
-		move(t, pool, engine, root.Key, TriggerImplementationReady, "", record.PhaseRow{})
+		move(t, pool, engine, root.Key, TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{})
 		if issue := issueOf(t, pool, engine, root.Key); issue.Phase != phase.Testing {
 			t.Fatalf("%s after its implementation was ready stands in %s, want testing, today's line", root.Key, issue.Phase)
 		}
@@ -341,6 +341,67 @@ func TestAPlanGivenIsStoredWhereItsTaskHasNotStarted(t *testing.T) {
 	})
 }
 
+// The apply of a plan answers the tasks its version adds over the version in force it read
+// (intake.Result.Added), in the plan's order, for an issue the daemon has not recorded too, whose
+// plan waits at generation 0: every task of the generation's first version, then the one task a
+// later version adds and no task it keeps.
+//
+// The fault it catches is an apply that answers nothing for such an issue, whose write returns
+// before the work a version starts on a recorded issue (its control: planGiven answering the added
+// tasks only after afterVersion, under which version 1 answers none).
+func TestAPlansApplyAnswersTheTasksItsVersionAdds(t *testing.T) {
+	const child = "LEGION-500"
+	pool := migratedPool(t)
+	engine := returnEngine()
+	a := givenTask(t, "Build the widget.", "implementer:i", "reviewer:r")
+	b := givenTask(t, "Test the widget.", "implementer:i", "reviewer:r")
+	b.ID, b.Needs = "b", []string{"a"}
+	for _, tc := range []struct {
+		version int
+		tasks   []plan.Task
+		want    []string
+	}{
+		{1, []plan.Task{a}, []string{"a"}},
+		{2, []plan.Task{a, b}, []string{"b"}},
+	} {
+		what := fmt.Sprintf("version %d", tc.version)
+		result := applyFacts(t, pool, engine)(planID(child, 0, tc.version), ownersPlan(t, child, 0, tc.version, tc.tasks...))
+		mustTake(t, what, result)
+		if result.Added == nil || !slices.Equal(result.Added, tc.want) {
+			t.Fatalf("%s of unrecorded %s answers added %#v, want %q", what, child, result.Added, tc.want)
+		}
+	}
+}
+
+// A give of a version the store holds applies nothing, whatever its id: under the id the release
+// before named it by (`plan:<issue>:<generation>:<document>:<version>`, api's registerPlan), which
+// the store marked when it took the version, and under an id the store never marked, one that
+// also names the giver, as a route that named a registration so would give it. Each is answered as
+// a duplicate, with the tasks the version added when it was taken, and the store stands as it
+// stood: so a give the release before sent, given again after the upgrade, stores nothing.
+//
+// The fault it catches is a give judged by its id alone (its control: intake.ApplyFact reading the
+// record only for an id it marked, under which the give under an id never marked reaches the
+// apply and is refused 409 PLAN_VERSION_OLD).
+func TestAGiveOfAVersionTheStoreHoldsAppliesNothingWhateverItsID(t *testing.T) {
+	pool := migratedPool(t)
+	engine := returnEngine()
+	recordedAt(t, pool, "LEGION-208", "LEGION-208")
+	given := ownersPlan(t, "LEGION-208", 1, 1, givenTask(t, "Build the widget.", "implementer", "reviewer"))
+	mustTake(t, "version 1", applyFacts(t, pool, engine)(planID("LEGION-208", 1, 1), given))
+	before := planStandingOf(t, pool, engine, "LEGION-208", 1)
+
+	for _, id := range []string{planID("LEGION-208", 1, 1), planID("LEGION-208", 1, 1) + ":" + string(given.GivenBy)} {
+		result := applyFacts(t, pool, engine)(id, given)
+		if want := (intake.Result{Duplicate: true, Added: []string{"a"}}); !reflect.DeepEqual(result, want) {
+			t.Errorf("version 1 given again as %s = %+v, want %+v: the store holds the version", id, result, want)
+		}
+		if after := planStandingOf(t, pool, engine, "LEGION-208", 1); !reflect.DeepEqual(after, before) {
+			t.Errorf("version 1 given again as %s changed LEGION-208:\n before %+v\n after  %+v", id, before, after)
+		}
+	}
+}
+
 // running is the refusal of a version that changes or removes task a while it runs.
 func runningRefusal() *intake.Refusal {
 	reason := "task a is running: stop it with stop_task before you change it."
@@ -367,7 +428,7 @@ func TestALaterVersionChangesOnlyAWaitingOrStoppedTask(t *testing.T) {
 		key, gen := root.Key, root.Generation
 		built := givenTask(t, "Build the widget.", "implementer", "tester", "reviewer")
 		mustTake(t, "version 1", apply(planID(key, gen, 1), ownersPlan(t, key, gen, 1, built)))
-		move(t, pool, engine, key, TriggerGateOpened, "", record.PhaseRow{})
+		move(t, pool, engine, key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
 
 		before := planStandingOf(t, pool, engine, key, gen)
 		id := planID(key, gen, 2)
@@ -505,7 +566,7 @@ func TestARefusedVersionIsTakenWhenGivenAgainAfterTheStop(t *testing.T) {
 	root := stepRoot(t, pool, phase.Admitted)
 	key, gen := root.Key, root.Generation
 	mustTake(t, "version 1", apply(planID(key, gen, 1), ownersPlan(t, key, gen, 1, givenTask(t, "Build the widget.", "implementer", "tester", "reviewer"))))
-	move(t, pool, engine, key, TriggerGateOpened, "", record.PhaseRow{})
+	move(t, pool, engine, key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
 	id, version2 := planID(key, gen, 2), ownersPlan(t, key, gen, 2, givenTask(t, "Build the widget.", "implementer", "reviewer"))
 
 	if result := apply(id, version2); !reflect.DeepEqual(result.Refusal, runningRefusal()) || processed(t, pool, id) {
@@ -568,7 +629,7 @@ func TestAVersionThatReplacesTheStoppedDefaultTaskStartsTheNewTask(t *testing.T)
 		root := stepRoot(t, pool, phase.Admitted)
 		key, gen := root.Key, root.Generation
 		seedDefaultPlan(t, pool, key, gen)
-		move(t, pool, engine, key, TriggerGateOpened, "", record.PhaseRow{})
+		move(t, pool, engine, key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
 		if issue := issueOf(t, pool, engine, key); issue.Phase != phase.Planning {
 			t.Fatalf("%s on the default steps after its gate opened stands in %s, want planning", key, issue.Phase)
 		}
@@ -595,6 +656,8 @@ func TestAVersionThatReplacesTheStoppedDefaultTaskStartsTheNewTask(t *testing.T)
 		prompts := len(hookPrompts(t, pool))
 
 		mustTake(t, "version 1 given again after the stop", apply(id, version1))
+		// The new task a takes a branch of its own, so its start waits for its join: the end of that join.
+		joinsEnd(t, pool, engine, key)
 
 		after := planStandingOf(t, pool, engine, key, gen)
 		if !reflect.DeepEqual(after.versions, []string{"0 default", "1 owner"}) {
@@ -627,10 +690,17 @@ func TestAVersionThatReplacesTheStoppedDefaultTaskStartsTheNewTask(t *testing.T)
 		if starts := roleStartsOf(t, pool, key, claim.RoleImplementer); len(starts) != 1 || starts[0].Phase != phase.Implementing || starts[0].Entry != row.Entry {
 			t.Fatalf("the starts of the implementer = %+v, want one, of implementing at entry %d", starts, row.Entry)
 		}
-		// The start of a's step 1 takes the place of the planner's start the issue still owed
-		// (Store.EnqueueStart): the step of the removed task never starts.
-		if planners := roleStartsOf(t, pool, key, claim.RolePlanner); len(planners) != 0 {
-			t.Fatalf("the planner's starts after version 1 = %+v, want none: the task default is gone", planners)
+		// The start of a's step 1 names the claim of its own step's agent, the implementer's, so it
+		// takes the place of no start of another claim (Store.EnqueueStart): the planner's start
+		// the gate's opening wrote for the removed task, which names the planner's claim, stays
+		// queued at planning, a phase the issue has left, and the outbox's start finishes it
+		// without acting (record.Issue.HoldsQueued), so the step of the removed task never starts.
+		planner, err := claim.AgentToken("legion", key, "planner")
+		if err != nil {
+			t.Fatalf("the planner's claim: %v", err)
+		}
+		if planners := roleStartsOf(t, pool, key, claim.RolePlanner); len(planners) != 1 || planners[0].Claim != planner || planners[0].Phase != phase.Planning {
+			t.Fatalf("the planner's starts after version 1 = %+v, want the one the gate's opening wrote, of planning under the planner's claim %s", planners, planner)
 		}
 		if got := len(hookPrompts(t, pool)); got != prompts {
 			t.Fatalf("version 1 fired %d hook prompts, want none: no step failed", got-prompts)
@@ -722,10 +792,10 @@ func TestTheWalkOfAGivenVersionHoldsAcrossABoot(t *testing.T) {
 		mustTake(t, "version 1", applyFacts(t, pool, engine)(planID(key, gen, 1),
 			ownersPlan(t, key, gen, 1, givenTask(t, "Build the widget.", "implementer", "reviewer"))))
 		moves := []func(){
-			func() { move(t, pool, engine, key, TriggerGateOpened, "", record.PhaseRow{}) },
-			func() { move(t, pool, engine, key, TriggerImplementationReady, "", record.PhaseRow{}) },
-			func() { move(t, pool, engine, key, TriggerReviewApproved, "", record.PhaseRow{}) },
-			func() { move(t, pool, engine, key, TriggerRetroCompleted, "", record.PhaseRow{}) },
+			func() { move(t, pool, engine, key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{}) },
+			func() { move(t, pool, engine, key, TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{}) },
+			func() { move(t, pool, engine, key, TriggerReviewApproved, record.TaskPlace{}, record.PhaseRow{}) },
+			func() { move(t, pool, engine, key, TriggerRetroCompleted, record.TaskPlace{}, record.PhaseRow{}) },
 			func() {
 				if result := applyFacts(t, pool, engine)("merged", intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 42, MergeSHA: merged}); result.Refusal != nil {
 					t.Fatalf("the merge was refused: %+v", result.Refusal)
@@ -765,7 +835,7 @@ func TestTheWalkOfAGivenVersionHoldsAcrossABoot(t *testing.T) {
 		key, gen := root.Key, root.Generation
 		mustTake(t, "version 1", apply(planID(key, gen, 1), ownersPlan(t, key, gen, 1, givenTask(t, "Build the widget.", "implementer", "reviewer"))))
 		mustTake(t, "version 2", apply(planID(key, gen, 2), ownersPlan(t, key, gen, 2, givenTask(t, "Build the widget.", "planner", "implementer", "tester"))))
-		move(t, pool, engine, key, TriggerGateOpened, "", record.PhaseRow{})
+		move(t, pool, engine, key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
 		got := walkStandingOf(t, pool, engine, key, gen)
 		if wantAt := (walkStanding{phase.Planning, record.TaskPlace{Kind: record.PlaceStep, Position: 1}, record.TaskRunning, []string{"1 owner", "2 owner"},
 			[]string{"planner/planning", "implementer/implementation", "tester/testing"}}); !reflect.DeepEqual(got, wantAt) {
@@ -779,7 +849,7 @@ func TestTheWalkOfAGivenVersionHoldsAcrossABoot(t *testing.T) {
 		// It stands in planning with no plan rows, as an issue whose planning started before
 		// Legion took plans stands: every first step of this release writes them (planFirstStep).
 		root := stepRoot(t, pool, phase.Planning)
-		move(t, pool, engine, root.Key, TriggerPlannerCompleted, "", record.PhaseRow{})
+		move(t, pool, engine, root.Key, TriggerPlannerCompleted, record.TaskPlace{}, record.PhaseRow{})
 		if got := walkStandingOf(t, pool, engine, root.Key, root.Generation); !reflect.DeepEqual(got, walkStanding{phase: phase.Implementing}) {
 			t.Fatalf("%s with no plan rows stands at %+v after planning, want implementing with no plan rows", root.Key, got)
 		}

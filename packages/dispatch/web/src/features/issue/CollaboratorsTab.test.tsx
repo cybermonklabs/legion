@@ -1,5 +1,5 @@
 import { expect, spyOn, test } from "bun:test";
-import type { LegionRole } from "@legion/contracts";
+import type { LegionRole, LegionStepRole } from "@legion/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
@@ -10,7 +10,7 @@ import { CollaboratorsTab, collaboratorSections } from "./CollaboratorsTab";
 
 function legionAgent(
   sessionId: string,
-  role: "implementer" | "planner" | "reviewer" | "tester",
+  role: LegionStepRole,
   startedAt: string,
   replacedBy: string | null = null
 ): IssueCollaboratorAgent {
@@ -210,6 +210,42 @@ test("collaboratorSections groups the server's list into the three sections the 
   expect(sections.people.map((person) => person.login)).toEqual(["alice"]);
 });
 
+// A role the deployment defines is a Legion role too: its agents get a section of their own, after
+// the six in workflow order, each such role by name, which is the order the server lists them in.
+// None is left among the other agents.
+test("collaboratorSections puts a deployment role's agents in a Legion section after the six", async () => {
+  const collaborators: IssueCollaborators = {
+    agents: [
+      legionAgent("checker", "checker", "2026-10-26T03:00:00Z"),
+      legionAgent("merger", "merger", "2026-10-26T02:00:00Z"),
+      legionAgent("archivist", "archivist", "2026-10-26T01:00:00Z"),
+    ],
+    issue_key: "CORE-1",
+    legion_registry: "ok",
+    people: [],
+  };
+  const sections = collaboratorSections(collaborators);
+  expect(
+    sections.legion.map(({ agents, role }) => [role, agents.map((agent) => agent.session_id)])
+  ).toEqual([
+    ["merger", ["merger"]],
+    ["archivist", ["archivist"]],
+    ["checker", ["checker"]],
+  ]);
+  expect(sections.others).toEqual([]);
+
+  const tab = renderTab(collaborators);
+  try {
+    const legion = await screen.findByRole("region", { name: "Legion agents" });
+    expect(sessionsIn(within(legion).getByRole("region", { name: "checker" }))).toEqual([
+      "checker",
+    ]);
+    expect(screen.queryByRole("region", { name: "Other agents" })).toBeNull();
+  } finally {
+    tab.restore();
+  }
+});
+
 // What the page does with a registry this build does not understand: a role it has no section
 // for, and a start time no reader here parses. Both come from the Legion daemon through the
 // listener, so neither is this app's to guarantee, and neither may lose a row.
@@ -219,7 +255,7 @@ test("collaboratorSections keeps an agent whose role or timestamps it cannot rea
     legion: {
       replaced_at: null,
       replaced_by: null,
-      role: "archivist" as LegionRole,
+      role: "Archivist" as LegionRole,
       role_token: "legion-archivist",
       started_at: "2026-10-26T00:00:00Z",
     },

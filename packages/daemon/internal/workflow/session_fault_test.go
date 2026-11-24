@@ -34,7 +34,10 @@ func controllerNoticeKinds(t *testing.T, pool *pgxpool.Pool) []string {
 // pod's launcher could not look up by its id, and Oh My Pi did not resume by that id, is told as
 // forgotten, with that reason, and nothing says it was lost (dispatch://INFRA-4108 R3): the
 // notice's kind is part of what the architect and the controller hear, since the outbox publishes
-// each notice as `<kind> on <issue>`.
+// each notice as `<kind> on <issue>`. A keyed agent's claim, whose name is another role's than the
+// step it lost its session on, is named as that agent on its step, with each later step of that
+// agent running in the fresh session, in either cause's words; a claim named by its own role
+// keeps the role's sentence.
 func TestALostSessionIsToldOnTheIssueToItsArchitectAndToTheController(t *testing.T) {
 	const session = "01a1f5de-4835-7667-b005-e99e3e17edd3"
 	for _, row := range []struct {
@@ -66,6 +69,29 @@ func TestALostSessionIsToldOnTheIssueToItsArchitectAndToTheController(t *testing
 				"The tester is running a fresh agent",
 			},
 			denies: []string{"lost", "no session store"},
+		},
+		{
+			name: "not-resumed-by-id of a keyed agent",
+			fact: intake.SessionLost{Issue: "LEGION-209", Role: claim.RoleTester, Cause: "not-resumed-by-id", Session: session,
+				Claim:  claim.Token(token(t, "LEGION-209", claim.RoleImplementer)),
+				Detail: "the pod's launcher could not look the session " + session + " up by its id"},
+			kind: "session-forgotten",
+			says: []string{
+				session,
+				"The agent implementer of LEGION-209, on its tester step, forgot the session it recorded",
+				"The daemon deleted nothing of that session",
+				"Each later step of that agent runs in the fresh session.",
+			},
+			denies: []string{"lost", "The tester of"},
+		},
+		{
+			name: "not-resumed-by-id of a claim named by its role",
+			fact: intake.SessionLost{Issue: "LEGION-209", Role: claim.RoleTester, Cause: "not-resumed-by-id", Session: session,
+				Claim:  claim.Token(token(t, "LEGION-209", claim.RoleTester)),
+				Detail: "the pod's launcher could not look the session " + session + " up by its id"},
+			kind:   "session-forgotten",
+			says:   []string{"The tester of LEGION-209 forgot the session it recorded", "The tester is running a fresh agent"},
+			denies: []string{"lost", "The agent ", "Each later step"},
 		},
 	} {
 		t.Run(row.name, func(t *testing.T) {

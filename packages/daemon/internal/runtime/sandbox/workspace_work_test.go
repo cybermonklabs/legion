@@ -11,12 +11,12 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// The workspace read is asked of the shim of the named role, over that claim's connection, and
+// The workspace read is asked of the shim of the named claim, over that claim's connection, and
 // only where the claim's recorded process runs in the issue's own running pod: a claim with no
 // process, one whose recorded pod is not the running one, and one with no connection are each a
 // refusal naming why, never an answer of no work, and no shim is asked. The answer the shim gives
 // is the runtime's, asked with the read's own budget.
-func TestWorkspaceWorkAsksTheRoleOfTheRunningPod(t *testing.T) {
+func TestWorkspaceWorkAsksTheClaimOfTheRunningPod(t *testing.T) {
 	g := newRig(t, nil)
 	loc := g.spawn(workerSpec(t))
 	stale := sandboxLocator(workerToken, "uid-pod-stale")
@@ -47,7 +47,7 @@ func TestWorkspaceWorkAsksTheRoleOfTheRunningPod(t *testing.T) {
 			if refusal.register {
 				g.conns.Register(workerToken, conn)
 			}
-			got, err := g.r.WorkspaceWork(g.ctx, testTree, claim.RoleTester)
+			got, err := g.r.WorkspaceWork(g.ctx, testTree, workerToken)
 			if err == nil || !strings.Contains(err.Error(), refusal.says) {
 				t.Fatalf("WorkspaceWork = %+v, %v; want a refusal saying %q", got, err, refusal.says)
 			}
@@ -59,7 +59,7 @@ func TestWorkspaceWorkAsksTheRoleOfTheRunningPod(t *testing.T) {
 
 	stored(&loc)
 	g.conns.Register(workerToken, conn)
-	got, err := g.r.WorkspaceWork(g.ctx, testTree, claim.RoleTester)
+	got, err := g.r.WorkspaceWork(g.ctx, testTree, workerToken)
 	if err != nil {
 		t.Fatal(err)
 	}

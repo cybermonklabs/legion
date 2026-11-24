@@ -21,7 +21,8 @@ import (
 // tell which claim at work is a phase worker the daemon names silent (admit's
 // workingTrees, dispatch://INFRA-2560, R6): that judgement is made over the role's run
 // (record.RoleRun), which is keyed by the token, and a claim of an issue is named by nothing
-// else the measure holds, since one issue carries a claim per role.
+// else the measure holds, since an issue carries a claim per agent and two claims can hold one
+// role.
 type TreeClaim struct {
 	Token         claim.Token
 	Issue         string

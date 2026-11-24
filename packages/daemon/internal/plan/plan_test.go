@@ -55,28 +55,71 @@ func TestParseSteps(t *testing.T) {
 	}
 }
 
+// Each step has one agent. The steps of one key are one agent, in any task; a step with no key is
+// an agent of that step alone, the same at each return to it; and the key owner is the owner of
+// the task. The fault: a keyed step given a fresh agent, so implementer:a and tester:a run in two
+// sessions.
+func TestStepsOfOneKeyHaveOneAgent(t *testing.T) {
+	steps, err := ParseSteps("implementer:a tester:a reviewer acceptance:owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := make([]Agent, len(steps))
+	for i, s := range steps {
+		got[i] = AgentOf("t", i+1, s)
+	}
+	if got[0] != got[1] {
+		t.Errorf("implementer:a and tester:a: agents %+v and %+v, want one", got[0], got[1])
+	}
+	if other := AgentOf("u", 2, Step{Role: "reviewer", Key: "a"}); other != got[0] {
+		t.Errorf("reviewer:a of task u: agent %+v, want %+v, the agent of the key a in task t", other, got[0])
+	}
+	if got[2] == got[0] || got[2] != (Agent{Task: "t", Place: 3}) {
+		t.Errorf("reviewer: agent %+v, want a fresh agent of step 3", got[2])
+	}
+	if again := AgentOf("t", 3, steps[2]); again != got[2] {
+		t.Errorf("reviewer again: agent %+v, want %+v, the agent it had", again, got[2])
+	}
+	if !got[3].Owner() || got[0].Owner() || got[2].Owner() {
+		t.Errorf("owner: %v, %v and %v, want only acceptance:owner", got[3].Owner(), got[0].Owner(), got[2].Owner())
+	}
+}
+
 // The default steps walk today's line: the five steps' phases in order, then Legion's own retro
 // and merge.
 func TestLineOfTheDefaultStepsIsTodaysOrder(t *testing.T) {
-	if got := Line(defaultSteps(t), Deployment{Roles: BuiltinRoles()}); !reflect.DeepEqual(got, phase.Order) {
+	if got := Line(defaultSteps(t), true); !reflect.DeepEqual(got, phase.Order) {
 		t.Fatalf("Line(default steps) = %v, want %v", got, phase.Order)
 	}
 	steps, _ := ParseSteps("implementer reviewer")
 	want := []phase.Phase{phase.Implementing, phase.Reviewing, phase.Retro, phase.Merging}
-	if got := Line(steps, Deployment{Roles: BuiltinRoles()}); !reflect.DeepEqual(got, want) {
+	if got := Line(steps, true); !reflect.DeepEqual(got, want) {
 		t.Fatalf("Line(implementer reviewer) = %v, want %v", got, want)
 	}
 }
 
-// Each role of a step in this release is one of Legion's five, with the type and the phase of
-// today's line that it runs as.
+// The work of an issue merges once, at the end of the task no task needs, so only the task that
+// merges walks Legion's retro and merge after its steps: a task another task needs ends at its
+// last step. The fault it catches is a task that does not merge running a retro and a merge of its
+// own (its control: Line appending them whatever merges says).
+func TestALineOfATaskThatDoesNotMergeEndsAtItsLastStep(t *testing.T) {
+	steps, _ := ParseSteps("implementer reviewer")
+	if got, want := Line(steps, false), []phase.Phase{phase.Implementing, phase.Reviewing}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("Line(implementer reviewer, does not merge) = %v, want %v", got, want)
+	}
+	if got, want := Line(steps, true), []phase.Phase{phase.Implementing, phase.Reviewing, phase.Retro, phase.Merging}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("Line(implementer reviewer, merges) = %v, want %v", got, want)
+	}
+}
+
+// Each of Legion's own roles of a step is one of five, with the type of work it does.
 func TestBuiltinRolesAreLegionsFiveStepRoles(t *testing.T) {
 	want := map[string]RoleDef{
-		"planner":     {Name: "planner", Type: TypePlanning, Phase: phase.Planning},
-		"implementer": {Name: "implementer", Type: TypeImplementation, Phase: phase.Implementing},
-		"tester":      {Name: "tester", Type: TypeTesting, Phase: phase.Testing},
-		"reviewer":    {Name: "reviewer", Type: TypeReview, Phase: phase.Reviewing},
-		"acceptance":  {Name: "acceptance", Type: TypeReview, Phase: phase.Accepting},
+		"planner":     {Name: "planner", Type: TypePlanning},
+		"implementer": {Name: "implementer", Type: TypeImplementation},
+		"tester":      {Name: "tester", Type: TypeTesting},
+		"reviewer":    {Name: "reviewer", Type: TypeReview},
+		"acceptance":  {Name: "acceptance", Type: TypeReview},
 	}
 	roles := BuiltinRoles()
 	if !reflect.DeepEqual(roles, want) {
@@ -85,6 +128,26 @@ func TestBuiltinRolesAreLegionsFiveStepRoles(t *testing.T) {
 	delete(roles, "planner")
 	if _, ok := BuiltinRoles()["planner"]; !ok {
 		t.Fatal("a caller that changed one answer of BuiltinRoles changed the next")
+	}
+}
+
+// How a step runs is decided by its role alone: each of Legion's five roles of a step runs as its
+// own phase, and every other role, a role of the deployment, runs as the phase step. No type is
+// read, so a role of the deployment whose type is review still runs as step.
+func TestHowAStepRunsIsItsRolesAndNeverItsType(t *testing.T) {
+	for role, want := range map[string]phase.Phase{
+		"planner": phase.Planning, "implementer": phase.Implementing, "tester": phase.Testing,
+		"reviewer": phase.Reviewing, "acceptance": phase.Accepting,
+		"checker": phase.Step, "linter": phase.Step, "owner": phase.Step,
+	} {
+		if got := RunsAs(role); got != want {
+			t.Errorf("RunsAs(%q) = %q, want %q", role, got, want)
+		}
+	}
+	steps, _ := ParseSteps("implementer checker linter")
+	want := []phase.Phase{phase.Implementing, phase.Step, phase.Step, phase.Retro, phase.Merging}
+	if got := Line(steps, true); !reflect.DeepEqual(got, want) {
+		t.Fatalf("Line(implementer checker linter) = %v, want %v", got, want)
 	}
 }
 
@@ -103,14 +166,14 @@ func TestATaskWithNoStepsRunsTheDefaultSteps(t *testing.T) {
 		t.Fatalf("StepsOf(a task of a sub-owner) = %+v, want no step", got)
 	}
 	for _, attributes := range []map[string]string{nil, {"steps": ""}, {"steps": "  "}} {
-		p, err := FromBlocks("plan-md", 1, []Block{{ID: "a", Type: "plan_task", Attributes: attributes, Text: "Do the change."}})
+		p, err := FromBlocks("ACME-1", "plan-md", 1, []Block{{ID: "a", Type: "plan_task", Attributes: attributes, Text: "Do the change."}})
 		if err != nil {
 			t.Fatalf("FromBlocks(%v): %v", attributes, err)
 		}
 		if len(p.Tasks) != 1 || p.Tasks[0].NamesSteps() || p.Tasks[0].Steps != nil {
 			t.Fatalf("FromBlocks(%v) = %+v, want one task with no steps", attributes, p.Tasks)
 		}
-		if r := Supported(p); len(r) != 0 {
+		if r := Supported(p, Deployment{Roles: BuiltinRoles()}); len(r) != 0 {
 			t.Fatalf("Supported(%v) = %+v, want none", attributes, r)
 		}
 		if r := validated(t, p, Deployment{Roles: BuiltinRoles()}); len(r) != 0 {
@@ -128,7 +191,7 @@ func TestATaskWithNoStepsRunsTheDefaultSteps(t *testing.T) {
 // `plan_role` block is a role the plan defines, named by its id. Every other block is the
 // document's prose and no part of the plan.
 func TestFromBlocksReadsTaskAndRoleBlocks(t *testing.T) {
-	p, err := FromBlocks("plan-md", 3, []Block{
+	p, err := FromBlocks("ACME-1", "plan-md", 3, []Block{
 		{ID: "intro", Type: "paragraph", Text: "Why the issue is split so."},
 		{ID: "d", Type: "plan_task", Attributes: map[string]string{
 			"needs":  "dispatch://ACME-1/artifact/plan-md#b-f1 dispatch://ACME-1/artifact/plan-md#b-c@v2",
@@ -158,7 +221,7 @@ func TestFromBlocksReadsTaskAndRoleBlocks(t *testing.T) {
 	// `merges` is read by its presence: only the word false says the task does not merge, so a
 	// bare attribute is never read as a task that keeps its work back.
 	for value, want := range map[string]bool{"false": false, "": true, "true": true} {
-		p, err := FromBlocks("plan-md", 1, []Block{{ID: "a", Type: "plan_task", Attributes: map[string]string{"merges": value, "steps": "implementer"}}})
+		p, err := FromBlocks("ACME-1", "plan-md", 1, []Block{{ID: "a", Type: "plan_task", Attributes: map[string]string{"merges": value, "steps": "implementer"}}})
 		if err != nil || p.Tasks[0].Merges != want {
 			t.Fatalf("FromBlocks(merges=%q) = %+v, %v, want Merges %v", value, p.Tasks, err, want)
 		}
@@ -166,7 +229,7 @@ func TestFromBlocksReadsTaskAndRoleBlocks(t *testing.T) {
 
 	// The blocks FromBlocks cannot read at all: steps outside the grammar, a task or a role with
 	// no id, and one id on two blocks of the plan.
-	if _, err := FromBlocks("plan-md", 1, []Block{{ID: "a", Type: "plan_task", Attributes: map[string]string{"steps": "implementer Reviewer"}}}); err == nil ||
+	if _, err := FromBlocks("ACME-1", "plan-md", 1, []Block{{ID: "a", Type: "plan_task", Attributes: map[string]string{"steps": "implementer Reviewer"}}}); err == nil ||
 		!strings.Contains(err.Error(), "task a") || !strings.Contains(err.Error(), `"Reviewer"`) {
 		t.Fatalf("FromBlocks(steps outside the grammar) error = %v, want one naming task a and the word", err)
 	}
@@ -176,12 +239,12 @@ func TestFromBlocksReadsTaskAndRoleBlocks(t *testing.T) {
 		"two tasks, one id":         {{ID: "a", Type: "plan_task"}, {ID: "a", Type: "plan_task"}},
 		"a task and a role, one id": {{ID: "a", Type: "plan_task"}, {ID: "a", Type: RoleBlockType}},
 	} {
-		if p, err := FromBlocks("plan-md", 1, blocks); err == nil {
+		if p, err := FromBlocks("ACME-1", "plan-md", 1, blocks); err == nil {
 			t.Errorf("FromBlocks(%s) = %+v, want an error", name, p)
 		}
 	}
 	// A document with no task block is read, as a plan with no task, which Validate refuses.
-	if p, err := FromBlocks("plan-md", 1, []Block{{ID: "intro", Type: "paragraph", Text: "No task here."}}); err != nil || len(p.Tasks) != 0 {
+	if p, err := FromBlocks("ACME-1", "plan-md", 1, []Block{{ID: "intro", Type: "paragraph", Text: "No task here."}}); err != nil || len(p.Tasks) != 0 {
 		t.Fatalf("FromBlocks(no task block) = %+v, %v, want a plan with no task and no error", p, err)
 	}
 }

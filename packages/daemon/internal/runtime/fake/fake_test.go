@@ -56,8 +56,16 @@ func TestRuntimeRecordsEveryCallInOrderWithItsArguments(t *testing.T) {
 		t.Fatalf("reconcile: %v", err)
 	}
 	identity := runtime.GitIdentity{Name: "Legion", Email: "legion@example.com"}
-	if err := fake.AdoptWorkingCopy(ctx, locator, identity); err != nil {
+	var hooked []string
+	fake.OnAdopt = func(loc runtime.Locator, id runtime.GitIdentity, branch string) error {
+		hooked = append(hooked, string(loc.Claim)+" "+id.Name+" "+branch)
+		return nil
+	}
+	if err := fake.AdoptWorkingCopy(ctx, locator, identity, "legion/LEGION-208.d"); err != nil {
 		t.Fatalf("adopt: %v", err)
+	}
+	if want := string(locator.Claim) + " Legion legion/LEGION-208.d"; len(hooked) != 1 || hooked[0] != want {
+		t.Errorf("the adoption hook saw %q, want [%q]", hooked, want)
 	}
 
 	wantMethods := []string{
@@ -93,8 +101,8 @@ func TestRuntimeRecordsEveryCallInOrderWithItsArguments(t *testing.T) {
 		calls[6].Known[1].Claim != suspended || calls[6].Known[1].Locator != nil {
 		t.Errorf("reconcile recorded known %+v", calls[6].Known)
 	}
-	if calls[7].Identity != identity {
-		t.Errorf("adopt recorded identity %+v, want %+v", calls[7].Identity, identity)
+	if calls[7].Identity != identity || calls[7].Branch != "legion/LEGION-208.d" {
+		t.Errorf("adopt recorded identity %+v and branch %q, want %+v and legion/LEGION-208.d", calls[7].Identity, calls[7].Branch, identity)
 	}
 	if of := fake.CallsOf("Release"); len(of) != 2 || of[1].Released.Claim != suspended {
 		t.Errorf("CallsOf(Release): %+v", of)
@@ -407,7 +415,7 @@ func TestConnRecordsWhatTheDaemonAskedOfTheAgent(t *testing.T) {
 	}
 
 	identity := runtime.GitIdentity{Name: "Legion", Email: "legion@example.com"}
-	if err := conn.AdoptWorkingCopy(ctx, identity, 30*time.Second); err != nil {
+	if err := conn.AdoptWorkingCopy(ctx, identity, "", 30*time.Second); err != nil {
 		t.Fatalf("adopt: %v", err)
 	}
 	adoptions := conn.Adoptions()

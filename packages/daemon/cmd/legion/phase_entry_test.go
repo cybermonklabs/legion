@@ -30,20 +30,25 @@ import (
 // numbers, and its worker is not named for the numbers at all. An issue that is not its tree's
 // root is named for its numbers where they differ, as every role a phase worker works is.
 //
-// The role is the one the issue's current phase names (phase.RoleFor): an issue whose phase
-// names no role carries neither number, so the line never names one.
+// The role is the one the issue's current phase names (phase.RoleFor), and at step the role of
+// the running step, which the state names (api.Issue.StepRole): an issue whose phase names no
+// role carries neither number, so the line never names one, and neither does an issue held from
+// step, which names its step's role and carries no number.
 func TestStatePlainNamesTheRolesBehindTheirEntryAndTheRootsTheStateNamesAnArmFor(t *testing.T) {
 	now := time.Now().UTC()
 	at := func(d time.Duration) string { return now.Add(d).Format(time.RFC3339Nano) }
 	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
 		`"admission":{"cap":2,"active":[],"waiting":[]},"pendingStatusWrites":[],"strandedClaims":[]`
-	// LEGION-208's implementer and LEGION-210's reviewer are behind the entry their rows name,
-	// LEGION-209's tester holds the work its row names, and LEGION-211 is held, a phase that
-	// names no role and carries neither number.
+	// LEGION-208's implementer, LEGION-210's reviewer and LEGION-212's checker, the role of its
+	// running step, are behind the entry their rows name, LEGION-209's tester holds the work its
+	// row names, and LEGION-211 and LEGION-213, held from step, are held, a phase that names no
+	// role and carries neither number.
 	workers := `"LEGION-208":{"key":"LEGION-208","generation":1,"phase":"implementing","status":"in_progress","workers":{},"phaseEntry":3,"givenEntry":2},` +
 		`"LEGION-209":{"key":"LEGION-209","generation":1,"phase":"testing","status":"testing","workers":{},"phaseEntry":2,"givenEntry":2},` +
 		`"LEGION-210":{"key":"LEGION-210","generation":2,"phase":"reviewing","status":"needs_review","workers":{},"phaseEntry":5,"givenEntry":4},` +
-		`"LEGION-211":{"key":"LEGION-211","generation":1,"phase":"held","status":"in_progress","workers":{}}`
+		`"LEGION-211":{"key":"LEGION-211","generation":1,"phase":"held","status":"in_progress","workers":{}},` +
+		`"LEGION-212":{"key":"LEGION-212","generation":1,"phase":"step","stepRole":"checker","status":"in_progress","workers":{},"phaseEntry":3,"givenEntry":1},` +
+		`"LEGION-213":{"key":"LEGION-213","generation":1,"phase":"held","heldFrom":"step","stepRole":"checker","status":"in_progress","workers":{}}`
 	// A root whose transition raised an entry the daemon has still to deliver, which reads as
 	// behind and is no failure. Beside it three roots whose fields alone look like each arm — a
 	// task queued twenty minutes ago that no turn confirmed, a failed architect claim, two hours at
@@ -91,10 +96,10 @@ func TestStatePlainNamesTheRolesBehindTheirEntryAndTheRootsTheStateNamesAnArmFor
 		name, issues, want string
 	}{
 		{
-			name:   "two roles behind their entry, by issue key",
+			name:   "three roles behind their entry, one the role of a running step, by issue key",
 			issues: `{"issues":{` + workers + `}}`,
-			want: "roles not given their phase entry, and roots a wake names: 2 — LEGION-208 implementer: entry 3, given 2; " +
-				"LEGION-210 reviewer: entry 5, given 4\n",
+			want: "roles not given their phase entry, and roots a wake names: 3 — LEGION-208 implementer: entry 3, given 2; " +
+				"LEGION-210 reviewer: entry 5, given 4; LEGION-212 checker: entry 3, given 1\n",
 		},
 		{
 			name:   "a root whose entries merely differ, and roots whose fields look stalled while the state names no arm",

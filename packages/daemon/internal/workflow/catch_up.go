@@ -187,14 +187,16 @@ func queuedRowCovers(run record.RoleRun, root record.Issue, current phase.Phase)
 // (dispatch://INFRA-714 R7).
 //
 // The conditions are the ones a resume by rule already uses (resume.go's booted), read for this
-// one claim: the issue is recorded and in the workflow, its phase's role (RoleFor) is this claim's,
-// its tree does not linger, and its phase's own terminating fact has not arrived (PhaseFinished) —
-// a merged root stands in merging for as long as the rest of its tree runs, and its merger must
-// not be handed merging again at every launch. A claim of another project's issue finds no record
-// here, as a claim of an issue nobody records finds none: the daemon's store reads no record of
-// another project (internal/daemon's projectRecords). A claim that holds a task is left alone: it
-// has work, and a second task would be a second prompt for work under way. So is a role a queued
-// row already covers (queuedRowCovers).
+// one claim: the issue is recorded and in the workflow, the worker of one of its steps that take
+// work (OpenStepsOf, at step the role of its running step) is this claim's, its tree does not
+// linger, and its phase's own terminating fact has not arrived (PhaseFinished) — a merged root
+// stands in merging for as long as the rest of its tree runs, and its merger must not be handed
+// merging again at every launch. A claim of another project's issue finds no record here, as a
+// claim of an issue nobody records finds none: the daemon's store reads no record of another
+// project (internal/daemon's
+// projectRecords). A claim that holds a task is left alone: it has work, and a second task would
+// be a second prompt for work under way. So is a role a queued row already covers
+// (queuedRowCovers).
 //
 // The daemon's own delivery of a relaunch's record is no task (supervise.HoldsTask), so a claim
 // that holds that alone is read as holding nothing. The phase's task that this queues takes that
@@ -240,10 +242,20 @@ func (e *Engine) readyWorkerTask(ctx context.Context, tx pgx.Tx, fact intake.Cla
 	if err != nil || issue == nil || record.OutOfWorkflow(issue.Status) {
 		return err
 	}
-	role := RoleFor(issue.Phase)
-	if role == "" || role == claim.RoleArchitect || role != fact.Role {
+	// The ready claim's role works one of the issue's steps that take work (OpenStepsOf): each
+	// running step is given its task on the scope of its step's task (ScopeOfStep), at the phase it
+	// runs as, whichever phase the issue stands in.
+	role := fact.Role
+	open := OpenStepsOf(*issue)
+	at := slices.IndexFunc(open, func(step record.RunningStep) bool { return step.Role == role })
+	if at < 0 {
 		return nil
 	}
+	scope, err := ScopeOfStep(ctx, e.store, tx, *issue, open[at])
+	if err != nil {
+		return err
+	}
+	issue = &scope.issue
 	root, err := e.store.Issue(ctx, tx, issue.Tree)
 	if err != nil || root == nil || root.Lingers() {
 		return err
@@ -252,11 +264,7 @@ func (e *Engine) readyWorkerTask(ctx context.Context, tx pgx.Tx, fact intake.Cla
 	if err != nil || finished {
 		return err
 	}
-	project, err := claim.ProjectToken(issue.Project)
-	if err != nil {
-		return err
-	}
-	token, err := claim.NewToken(project, issue.Key, role)
+	token, err := e.workerClaim(ctx, tx, *issue, role)
 	if err != nil {
 		return err
 	}
@@ -277,19 +285,25 @@ func (e *Engine) readyWorkerTask(ctx context.Context, tx pgx.Tx, fact intake.Cla
 		return err
 	}
 	if OwedEntry(run, *root, row.Entry) {
-		if err := e.SendOwedEntry(ctx, tx, *issue, role, row); err != nil {
+		if err := e.SendOwedEntry(ctx, tx, scope, role, row); err != nil {
 			return err
 		}
 		e.logOnCommit(ctx, "workflow: a ready worker behind the entry its phases row names is sent that entry's work",
 			"issue", issue.Key, "role", role, "phase", issue.Phase, "entry", row.Entry, "launch", fact.Launch)
 		return nil
 	}
-	resume, err := e.ResumeTask(ctx, tx, *issue)
+	resume, err := e.ResumeTask(ctx, tx, scope)
 	if err != nil {
 		return err
 	}
-	if err := e.enqueue(ctx, tx, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: role,
-		Generation: issue.Generation, Phase: issue.Phase, Task: resume, ResumeTask: true}); err != nil {
+	// The level claim's resume is enqueued directly (StartOrOwe says why), built by the one builder
+	// of a phase worker's start (startRequest), so it names the claim of the step's agent as every
+	// other start of the step does.
+	request, err := e.startRequest(scope, role, resume, 0, startMarks{resumeTask: true})
+	if err != nil {
+		return err
+	}
+	if err := e.enqueue(ctx, tx, issue.Key, request); err != nil {
 		return err
 	}
 	e.logOnCommit(ctx, "workflow: a ready worker that holds its issue's phase with nothing pending is given its phase's task",
@@ -360,6 +374,11 @@ func treeCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []rec
 			continue
 		}
 		listed := record.CatchUpIssue{Key: member.Key, Title: member.Title, Phase: member.Phase, Status: member.Status}
+		// The role of the running step at step, the first in task id order where several tasks
+		// run one there (record.CatchUpIssue.StepRole says why one).
+		if at := member.RunningAt(phase.Step); member.Phase == phase.Step && len(at) > 0 {
+			listed.StepRole = at[0].Role
+		}
 		if member.Parent != nil {
 			listed.Parent = *member.Parent
 		}

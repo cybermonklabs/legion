@@ -6,6 +6,8 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+
+	"github.com/sjawhar/legion/daemon/internal/claim"
 )
 
 // The two types of block a plan holds. Every other block of the document is its prose.
@@ -24,14 +26,14 @@ type Block struct {
 	Text       string
 }
 
-// FromBlocks reads one version of the plan document from its blocks: each `plan_task` block is a
-// task and each `plan_role` block a role the plan defines, in the document's order, and every
-// other block is skipped. Each task's needs are the ids of the tasks they name (resolveNeeds), so
-// no plan holds a need as a word. A document with no task block is read as a plan with no task,
-// which Validate refuses. It answers an error only for a block it cannot read at all: a task or a
-// role with no id, one id on two such blocks, and a task whose `steps` is outside the grammar
-// (ParseSteps); the error names the block.
-func FromBlocks(artifactID string, version int, blocks []Block) (Plan, error) {
+// FromBlocks reads one version of the plan document of issue from its blocks: each `plan_task`
+// block is a task and each `plan_role` block a role the plan defines, in the document's order, and
+// every other block is skipped. Each task's needs are the ids of the tasks they name, read against
+// issue (resolveNeeds), so no plan holds a need as a word. A document with no task block is read as
+// a plan with no task, which Validate refuses. It answers an error only for a block it cannot read
+// at all: a task or a role with no id, one id on two such blocks, and a task whose `steps` is
+// outside the grammar (ParseSteps); the error names the block.
+func FromBlocks(issue, artifactID string, version int, blocks []Block) (Plan, error) {
 	p := Plan{ArtifactID: artifactID, Version: version}
 	typeOf := map[string]string{}
 	for _, block := range blocks {
@@ -55,7 +57,7 @@ func FromBlocks(artifactID string, version int, blocks []Block) (Plan, error) {
 		}
 		p.Tasks = append(p.Tasks, task)
 	}
-	return resolveNeeds(p), nil
+	return resolveNeeds(p, issue), nil
 }
 
 // taskOf is one `plan_task` block as a task. `needs` is its words, each kept whole; `merges` is
@@ -79,11 +81,15 @@ func taskOf(block Block) (Task, error) {
 	return task, nil
 }
 
-// resolveNeeds is p with each task's Needs as task ids: each word's id after its last "#b-",
-// decoded as Dispatch encodes a block id (neededID), or the word itself where it holds no "#b-".
-// The ids keep the order the block writes the words in, and a task a block names twice is needed
-// once. A word whose id is no task of p stays in Task.Unresolved, which Validate refuses.
-func resolveNeeds(p Plan) Plan {
+// resolveNeeds is p, the plan of issue, with each task's Needs as task ids: each word's id after its
+// last "#b-", decoded as Dispatch encodes a block id (neededID), or the word itself where it holds
+// no "#b-". The ids keep the order the block writes the words in, and a task a block names twice is
+// needed once. The plan's document is a document of issue (register_plan refuses any other), so a
+// `dispatch://` reference names a task of p only when it is of issue (issueOf): one into another
+// issue, and one that starts with no issue key, names no task of p, whatever its block id, and
+// stays in Task.OutsideIssue; any other word whose id is no task of p stays in Task.Unresolved.
+// Validate refuses both.
+func resolveNeeds(p Plan, issue string) Plan {
 	ids := make(map[string]bool, len(p.Tasks))
 	for _, task := range p.Tasks {
 		ids[task.ID] = true
@@ -91,8 +97,14 @@ func resolveNeeds(p Plan) Plan {
 	tasks := make([]Task, len(p.Tasks))
 	for i, task := range p.Tasks {
 		words := task.Needs
-		task.Needs, task.Unresolved = nil, nil
+		task.Needs, task.Unresolved, task.OutsideIssue = nil, nil, nil
 		for _, word := range words {
+			if of, reference := issueOf(word); reference && of != issue {
+				if !slices.Contains(task.OutsideIssue, word) {
+					task.OutsideIssue = append(task.OutsideIssue, word)
+				}
+				continue
+			}
 			id := neededID(word)
 			switch {
 			case !ids[id]:
@@ -107,6 +119,26 @@ func resolveNeeds(p Plan) Plan {
 	}
 	p.Tasks = tasks
 	return p
+}
+
+// issueOf is the issue a `needs` word names when it is a `dispatch://` reference, as Dispatch reads
+// one (parseDispatch in packages/envoy/internal/dispatch/text): the key the reference starts with,
+// before its first `/` or `#`, when that key is an issue key, and "" for a reference that starts
+// with a project's key, `agent` or anything else, which names no issue. reference says whether the
+// word is a `dispatch://` reference at all: a word with none names a task or a block of the plan's
+// own document. The document a reference of the plan's own issue names is not read: register_plan
+// holds no slug of the plan's document to compare it with.
+func issueOf(word string) (issue string, reference bool) {
+	rest, ok := strings.CutPrefix(word, "dispatch://")
+	if !ok {
+		return "", false
+	}
+	key, _, _ := strings.Cut(rest, "#")
+	key, _, _ = strings.Cut(key, "/")
+	if !claim.IsIssueKey(key) {
+		return "", true
+	}
+	return key, true
 }
 
 // pin is the `@v<N>` that pins a reference to version N, as Dispatch reads one.
