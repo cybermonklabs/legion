@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/redact"
+	"github.com/sjawhar/envoy/internal/urljoin"
 	"github.com/sjawhar/envoy/redirects"
 )
 
@@ -205,14 +206,14 @@ func cloudsqlMetadataToken(ctx context.Context, client *http.Client, tokenURL st
 
 // readCloudSQLSeries is the instance's aligned points of one metric from ws to we, oldest first.
 // It calls projects.timeSeries.list, the API's GET of a project's time series with the filter,
-// the interval and the aggregation as query parameters, following its pages. The route is joined
-// onto the path of base, the -api URL (url.URL.JoinPath), and the read's parameters follow base's
-// own query, which is kept, while its fragment, which no request sends, is dropped: the route
-// appended to base's text would sit inside a query or a fragment, and Cloud Monitoring would be
-// asked another path. A base that does not parse, or whose joined URL does not parse again
-// (url.URL.String can write text url.Parse refuses, such as an IPv6 zone escape), is refused in
-// fixed words: url.Parse's error, which http.NewRequest's carries, quotes the URL whole, user
-// information and query included.
+// the interval and the aggregation as query parameters, following its pages. The route and the
+// read's parameters are joined onto base, the -api URL (urljoin.Join): the route onto its path, the
+// parameters after its own query, which is kept, while its fragment, which no request sends, is
+// dropped: the route appended to base's text would sit inside a query or a fragment, and Cloud
+// Monitoring would be asked another path. A base that does not parse or names no host, or whose
+// joined URL does not parse again (url.URL.String can write text url.Parse refuses, such as an
+// IPv6 zone escape), is refused in fixed words: url.Parse's error, which http.NewRequest's carries,
+// quotes the URL whole, user information and query included.
 //
 // The read is refused by name, never written as a zero: a 403 (an identity that may not read the
 // project's time series), a 404 (no such project or route), any other status, an answer that does
@@ -221,12 +222,7 @@ func cloudsqlMetadataToken(ctx context.Context, client *http.Client, tokenURL st
 // memory is a failed reading (errNoCloudSQLSample), and one with no quota point is a file
 // without the share of the quota.
 func readCloudSQLSeries(ctx context.Context, client *http.Client, base, token, project, metric, databaseID string, ws, we time.Time) ([]cloudsqlPoint, error) {
-	api, err := url.Parse(base)
-	if err != nil {
-		return nil, errors.New("the -api URL does not parse (it is not printed)")
-	}
-	endpoint := api.JoinPath("v3/projects", url.PathEscape(project), "timeSeries")
-	endpoint.Fragment, endpoint.RawFragment = "", ""
+	route := "v3/projects/" + url.PathEscape(project) + "/timeSeries"
 	var points []cloudsqlPoint
 	pageToken := ""
 	for page := 1; ; page++ {
@@ -239,10 +235,9 @@ func readCloudSQLSeries(ctx context.Context, client *http.Client, base, token, p
 		if pageToken != "" {
 			q.Set("pageToken", pageToken)
 		}
-		pageURL := *endpoint
-		pageURL.RawQuery = q.Encode()
-		if api.RawQuery != "" {
-			pageURL.RawQuery = api.RawQuery + "&" + pageURL.RawQuery
+		pageURL, err := urljoin.Join(base, route+"?"+q.Encode())
+		if err != nil {
+			return nil, errors.New("the -api URL does not parse (it is not printed)")
 		}
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, pageURL.String(), nil)
 		if err != nil {

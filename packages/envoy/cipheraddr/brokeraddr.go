@@ -4,8 +4,8 @@
 // prints both wherever a log field, an error or a line on stderr names the broker. An Address
 // prints only what internal/redact's URL prints - the address as written when it is provably a
 // plain http(s) URL, and redact.NotPrinted otherwise - under every fmt verb, as a slog value, and
-// as a field of a struct fmt prints. Its value is read through Raw, to build a request to the
-// broker and, without printing it, by the few checks Raw names.
+// as a field of a struct fmt prints. Join builds a request URL from it; Raw reads its value, for
+// the rest of a request to the broker and, without printing it, for the few checks Raw names.
 //
 // It is a package of its own, outside internal/, because packages/daemon's `legion controller
 // start` holds the address too, and Go's internal-package rule refuses that module every package
@@ -15,11 +15,15 @@ package cipheraddr
 import (
 	"fmt"
 	"log/slog"
+	"net/url"
 
 	"github.com/sjawhar/envoy/internal/redact"
+	"github.com/sjawhar/envoy/internal/urljoin"
 )
 
-// Address is a configured broker address. Its zero value is no address, and prints empty.
+// Address is a configured broker address. Its zero value is no address, and prints empty. A request
+// URL at the address is built by Join, which joins a path onto the address's path and keeps its
+// query, never by appending a path to Raw's text, which would sit inside that query or a fragment.
 //
 // The address sits behind a *string so that fmt cannot print it where it asks the Address for no
 // method: an Address in a struct's unexported field, or under %p, fmt prints field by field through
@@ -41,23 +45,30 @@ func New(raw string) Address {
 }
 
 // Raw is the address as configured, credential included. It builds a request to the broker: its
-// URL, the URL its proof signs, the audience of a request object it carries, and the OAuth
-// endpoints. Five callers read it for anything else, and none of them prints it: the helper's
-// check that a URL it is asked to sign is one of its operator routes (internal/cipher/helper's
-// operatorRoute), agent-secrets-helper's check that an address is set (its serve), the token
-// client's trim of the address it is given (cipherclient.New), agent-secrets' check that a
-// broker whose settings it acts on is https or loopback (requireTrustedBrokerURL), and its check
-// that an id it prints by its shape is no value the address holds (addressHolds). Every caller
-// keeps what it answers out of every output - a log field, an error's text, a line on stderr -
-// since printing it is the leak this type exists to prevent: a message names the address through
-// the Address itself, a request URL built from it through Call, and that request's error through
-// Error or Cause, or through Named where the URL ends in what a caller typed.
+// URL, which Join builds from it (no caller joins a path onto it by hand), the URL its proof signs,
+// the audience of a request object it carries, and the OAuth endpoints. Five callers read it for
+// anything else, and none of them prints it: the helper's check that a URL it is asked to sign is
+// one of its operator routes (internal/cipher/helper's operatorRoute), agent-secrets-helper's
+// check that an address is set (its serve), the token client's trim of the address it is given
+// (cipherclient.New), agent-secrets' check that a broker whose settings it acts on is https or
+// loopback (requireTrustedBrokerURL), and its check that an id it prints by its shape is no value
+// the address holds (addressHolds). Every caller keeps what it answers out of every output - a log
+// field, an error's text, a line on stderr - since printing it is the leak this type exists to
+// prevent: a message names the address through the Address itself, a request URL built from it
+// through Call, and that request's error through Error or Cause, or through Named where the URL
+// ends in what a caller typed.
 func (a Address) Raw() string {
 	if a.raw == nil {
 		return ""
 	}
 	return *a.raw
 }
+
+// Join is the request URL of ref at the address: urljoin.Join of Raw and ref, ref's path joined
+// onto the address's path, the address's query kept ahead of ref's own, its user information, host
+// and port kept and its fragment dropped. An address that does not parse, has no scheme or has no
+// host is urljoin.ErrBase, which quotes no part of it.
+func (a Address) Join(ref string) (*url.URL, error) { return urljoin.Join(a.Raw(), ref) }
 
 // Empty reports whether no address is configured.
 func (a Address) Empty() bool { return a.raw == nil }

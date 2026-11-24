@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 
 	"github.com/sjawhar/envoy/internal/redact"
+	"github.com/sjawhar/envoy/internal/urljoin"
 	"github.com/sjawhar/envoy/redirects"
 )
 
@@ -61,20 +62,20 @@ func (s *HTTPServer) Stopped() bool {
 // Start connects to the MCP server's SSE endpoint, performs the handshake, and subscribes.
 func (s *HTTPServer) Start() error {
 	// 1. Connect to {url}/sse: the configured URL with sse joined onto its path and its query kept
-	// (url.URL.JoinPath), where /sse appended to the URL's text would sit inside a query. The
+	// (urljoin.Join), where /sse appended to the URL's text would sit inside a query. The
 	// configured URL can carry a credential, in its user information, which net/http sends as the
 	// request's Basic Authorization, or in a query value: url.Parse's error quotes it, so a URL that
-	// does not parse, or whose SSE URL does not parse again (url.URL.String can write text url.Parse
-	// refuses, such as an IPv6 zone escape), is refused in the bridge's own words. The SSE URL
-	// prints as redact.URL allows, a failed connect prints through redact.Cause, and the client
-	// follows a redirect only on the server's own origin (redirects.SameOrigin): the server is any
-	// MCP server a person configures, which may move its stream on its own origin (a trailing
-	// slash, say), and a Location naming another host is the answering party's words.
-	configured, err := url.Parse(s.cfg.URL)
+	// does not parse or names no host, or whose SSE URL does not parse again (url.URL.String can
+	// write text url.Parse refuses, such as an IPv6 zone escape), is refused in the bridge's own
+	// words. The SSE URL prints as redact.URL allows, a failed connect prints through redact.Cause,
+	// and the client follows a redirect only on the server's own origin (redirects.SameOrigin): the
+	// server is any MCP server a person configures, which may move its stream on its own origin (a
+	// trailing slash, say), and a Location naming another host is the answering party's words.
+	joined, err := urljoin.Join(s.cfg.URL, "sse")
 	if err != nil {
 		return fmt.Errorf("create SSE request: the configured URL does not parse")
 	}
-	sseURL := configured.JoinPath("sse").String()
+	sseURL := joined.String()
 	shown := redact.URL(sseURL)
 	req, err := http.NewRequest("GET", sseURL, nil)
 	if err != nil {

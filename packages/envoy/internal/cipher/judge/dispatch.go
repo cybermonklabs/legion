@@ -8,9 +8,11 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"path"
 
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/redact"
+	"github.com/sjawhar/envoy/internal/urljoin"
 	"github.com/sjawhar/envoy/redirects"
 )
 
@@ -230,24 +232,22 @@ func (d Dispatch) Ask(ctx context.Context, id string) (Ask, error) {
 	return ask, nil
 }
 
-// get makes one authorized GET of route, joined onto the path of the Dispatch's URL
-// (url.URL.JoinPath) with its query kept and its fragment, which no request sends, dropped: a route
-// appended to the URL's text would sit inside a query or a fragment, and Dispatch would be asked
-// another path. On 200 alone it decodes as much of the answer as into names. It hands back
-// whatever status came, so each caller decides for itself which of them is a failure; a call that
-// was never answered, and a 200 whose body is past maxDispatchAnswer or is not the JSON into
-// expects, is an error. A Dispatch URL that does not parse, or whose joined URL does not parse
-// again (url.URL.String can write text url.Parse refuses, such as an IPv6 zone escape), is refused
-// in the judge's own words: url.Parse's error, which http.NewRequest's carries, quotes the URL
-// whole, user information and query included. BROKER_JUDGE_DISPATCH_URL is held to parse before
-// the broker starts (config.Load); a Dispatch built directly is not.
+// get makes one authorized GET of route, its elements joined as path.Join joins them, onto the path
+// of the Dispatch's URL (urljoin.Join) with its query kept and its fragment, which no request sends,
+// dropped: a route appended to the URL's text would sit inside a query or a fragment, and Dispatch
+// would be asked another path. On 200 alone it decodes as much of the answer as into names. It
+// hands back whatever status came, so each caller decides for itself which of them is a failure; a
+// call that was never answered, and a 200 whose body is past maxDispatchAnswer or is not the JSON
+// into expects, is an error. A Dispatch URL that does not parse or names no host, or whose joined
+// URL does not parse again (url.URL.String can write text url.Parse refuses, such as an IPv6 zone
+// escape), is refused in the judge's own words: url.Parse's error, which http.NewRequest's carries,
+// quotes the URL whole, user information and query included. BROKER_JUDGE_DISPATCH_URL is held to
+// parse before the broker starts (config.Load); a Dispatch built directly is not.
 func (d Dispatch) get(ctx context.Context, token string, into any, route ...string) (int, error) {
-	base, err := url.Parse(d.baseURL)
+	endpoint, err := urljoin.Join(d.baseURL, path.Join(route...))
 	if err != nil {
 		return 0, errors.New("the judge's Dispatch read could not be built: the Dispatch URL does not parse")
 	}
-	endpoint := base.JoinPath(route...)
-	endpoint.Fragment, endpoint.RawFragment = "", ""
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
 	if err != nil {
 		return 0, errors.New("the judge's Dispatch read could not be built: the URL it joined does not parse")
