@@ -21,7 +21,9 @@
 #      has read that connection's close can be routed to the dead replica and is refused at the
 #      hub's authorization timeout (measured), so the check opens the first session only once the
 #      hub lists one envoy-broker-callout connection fewer (both replicas carry that name), inside
-#      the first session's 2 s.
+#      the first session's 2 s. It reads the hub's connection list every CALLOUT_CHECK_POLL_SECONDS
+#      (default 0.02; 0 reads again at once) until it lists one fewer or 2 s have passed since the
+#      kill.
 #
 # Each probe is cmd/natsprobe, run with only the variables it needs: as a session, it trades the
 # pod's exchange token for a broker access token under the session the stack registered the pod
@@ -302,7 +304,7 @@ else
         fi
       fi
       [ "$waited" -ge 2000 ] && break
-      sleep 0.02
+      [ "${CALLOUT_CHECK_POLL_SECONDS:-0.02}" = 0 ] || sleep "${CALLOUT_CHECK_POLL_SECONDS:-0.02}"
     done
     # A list that could not be read at all after the kill says nothing; one read that still named
     # both connections says the hub kept the killed broker, whatever the reads after it answered.

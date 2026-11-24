@@ -16,8 +16,8 @@ package api
 //     and a message's project is written when the row is inserted and updated by no route: no
 //     `update ... set project_key` and no `update ... set issue_key` exists outside the
 //     migrations and the tests, and the three writes that take another issue's project into
-//     account move nothing: a parent and a rank neighbour outside the issue's own project are
-//     refused, while a `blocked_by` target may be an issue of any project, which the write
+//     account move nothing: a rank neighbour outside the issue's own project is refused, while
+//     a parent and a `blocked_by` target may each be an issue of any project, which the write
 //     refuses only to a caller whose credential names one project (`PROJECT_SCOPE`, written
 //     inside the write because this check reads the project of the object the path names and no
 //     key in the body). So the project this check reads before the handler runs is the project
@@ -228,8 +228,10 @@ func (s *server) projectOfMessage(ctx context.Context, q queryer, r *http.Reques
 // projectOfCheckResult is one hop to the project of the issue the result was recorded on,
 // since the check_results table holds no project of its own
 // (store/migrations/20261102122200_check_results.up.sql). It reads issue_key and not
-// check_issue_key: a result recorded on a child against a parent's check belongs to the child,
-// and both issues are of one project anyway, since an issue's parent is of its own project.
+// check_issue_key: a result recorded on a child against a parent's check belongs to the child.
+// The two issues can be of different projects, since an issue's parent may be of another
+// project, so a retraction refuses a scoped caller a check of another project itself
+// (refuseCheckOutsideCallerProject), as the record route does.
 func (s *server) projectOfCheckResult(ctx context.Context, q queryer, r *http.Request) (string, error) {
 	return scanProjectKey(q.QueryRow(ctx, `
 		select coalesce(i.project_key, '')
@@ -237,6 +239,30 @@ func (s *server) projectOfCheckResult(ctx context.Context, q queryer, r *http.Re
 		left join issues i on i.key = c.issue_key
 		where c.id = $1
 	`, r.PathValue("id")))
+}
+
+// refuseCheckOutsideCallerProject refuses a caller whose credential names one project, caller, a
+// check whose issue, checkIssue, is of another project: 403 PROJECT_SCOPE, naming the issue and
+// both projects. The results routes reach such a check through a parent of another project
+// (resolveCheck reads the Verification documents of every issue above the recording one), and a
+// result and its retraction are appended to the check's issue, which the pre-handler check,
+// reading only the path's object, never judged. A caller that names no project (caller "") is
+// let through, as everywhere else. An issue with no row resolves to no project and is refused,
+// failing closed as the pre-handler check does.
+func refuseCheckOutsideCallerProject(ctx context.Context, q queryer, caller, checkIssue string) error {
+	if caller == "" {
+		return nil
+	}
+	project, err := scanProjectKey(q.QueryRow(ctx, `select project_key from issues where key = $1`, checkIssue))
+	if err != nil {
+		return err
+	}
+	if project == caller {
+		return nil
+	}
+	return errorf(http.StatusForbidden, codeProjectScope,
+		"this request's credential may write project %s; the check's issue %s belongs to project %s",
+		caller, checkIssue, project)
 }
 
 // scanProjectKey reads a resolver's one column, answering no project for a target that does not

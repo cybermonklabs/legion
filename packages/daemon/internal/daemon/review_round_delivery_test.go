@@ -37,6 +37,7 @@ import (
 // Each case runs the row through the outbox's start and the claim's send, as the daemon does, and
 // reads the prompt the reviewer's agent is sent.
 func TestTheLastTwoSentencesOfEachTaskTheReviewerIsSentAreTheDaemons(t *testing.T) {
+	t.Parallel()
 	const (
 		unreviewed = "5ab0c1d2e3f405162738495a6b7c8d9e0f1a2b3c"
 		reviewed   = "16973163c4b8a90d2e5f1736a8b0c4d9e2f51637"

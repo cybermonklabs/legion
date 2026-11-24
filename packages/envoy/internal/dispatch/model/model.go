@@ -523,12 +523,13 @@ type ExternalLink struct {
 }
 
 // IssueComponents is an issue's effective component attachment, resolved on
-// read: the nearest ancestor with its own attachment (either mode) decides,
-// and InheritedFrom names it when that ancestor is not the issue itself. Mode
-// "inherit" with no InheritedFrom means no issue on the parent chain chose —
-// the issue is unassigned. IDs is the effective set of live component ids;
-// Unknown the effective member ids a re-import has since retired (kept, never
-// dropped). Reason is set for mode "none".
+// read: the nearest ancestor of the issue's own project with its own
+// attachment (either mode) decides, and InheritedFrom names it when that
+// ancestor is not the issue itself. Mode "inherit" with no InheritedFrom means
+// no issue of its project on the parent chain chose — the issue is unassigned.
+// IDs is the effective set of live component ids; Unknown the effective member
+// ids a re-import has since retired (kept, never dropped). Reason is set for
+// mode "none".
 type IssueComponents struct {
 	Mode          string   `json:"mode"`
 	IDs           []string `json:"ids"`
@@ -620,7 +621,8 @@ type Issue struct {
 	// or not it is any project's default; nil when it inherits.
 	Repo *string `json:"repo"`
 	// ResolvedRepo is the repository the issue targets, resolved on read: its own Repo, else its
-	// nearest ancestor's, else its project's default repository (Project.DefaultRepo), else nil.
+	// nearest ancestor's in its own project, else its project's default repository
+	// (Project.DefaultRepo), else nil.
 	ResolvedRepo      *string    `json:"resolved_repo"`
 	CreatedBy         *Actor     `json:"created_by"`
 	CreatedAt         time.Time  `json:"created_at"`
@@ -1190,9 +1192,10 @@ type ArchitectureTreeComponent struct {
 }
 
 // ArchitectureTreeIssue is an issue counted for a component. Attached is how:
-// "direct" (its own row names the component), "inherited" (an ancestor's row
-// does), or "contained" (its effective set names a component this one
-// contains; Via is that component). When several apply the strongest wins.
+// "direct" (its own row names the component), "inherited" (the row of an
+// ancestor in its own project does), or "contained" (its effective set names
+// a component this one contains; Via is that component). When several apply
+// the strongest wins.
 type ArchitectureTreeIssue struct {
 	Key           string         `json:"key"`
 	Title         string         `json:"title"`
@@ -1213,7 +1216,7 @@ type ArchitectureTreeIssueRef struct {
 }
 
 // ArchitectureTreeNone is an issue declared not architectural, with the reason
-// and, when the declaration is an ancestor's, that ancestor.
+// and, when the declaration is an ancestor's in its own project, that ancestor.
 type ArchitectureTreeNone struct {
 	Key           string  `json:"key"`
 	Title         string  `json:"title"`
@@ -3452,16 +3455,19 @@ type IssueSteps struct {
 }
 
 // PlanTask is one task of a plan: its id, a slug unique in the plan (`default` for the one task of
-// an issue whose owner gave no plan), and its steps in order, each a role or `role:key`.
+// an issue whose owner gave no plan, or whose experiment's group takes none from its owner), and
+// its steps in order, each a role or `role:key`.
 type PlanTask struct {
 	ID    string   `json:"id"`
 	Steps []string `json:"steps"`
 }
 
 // PlanRecord is the plan one run of an issue ran from, as the Legion daemon wrote it when that
-// run's work started (PUT /api/v1/issues/{key}/plans/{id}): its run (Generation), its source, the
-// owner's document and the version of it the plan was read from (both null for the source
-// default, the default steps of an issue whose owner gave none), and its tasks.
+// run's work started and replaced it at each later version of the owner's plan that Legion took
+// (PUT /api/v1/issues/{key}/plans/{id}): its run (Generation), its source, the owner's document
+// and the version of it the plan was read from (both null for the source default, the default
+// steps of an issue whose owner gave none, or whose experiment's group takes none from its
+// owner), and its tasks.
 type PlanRecord struct {
 	ID         string     `json:"id"`
 	Issue      string     `json:"issue"`

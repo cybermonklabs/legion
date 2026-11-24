@@ -79,7 +79,7 @@ func TestSlackHandler(t *testing.T) {
 			wantStatus: 200,
 		},
 		{
-			name:       "url_verification echoes challenge before signature check",
+			name:       "a signed url_verification echoes its challenge",
 			method:     "POST",
 			body:       urlVerification,
 			secret:     "s",
@@ -148,7 +148,7 @@ func TestSlackHandler(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			pub := &mockPublisher{err: tc.publishErr}
-			handler := SlackHandler(tc.secret, pub)
+			handler := SlackHandler(tc.secret, pub, NewBodyBudget(DefaultBodyBudget, nil))
 
 			body := []byte(tc.body)
 			req := httptest.NewRequest(tc.method, "/webhook/slack", strings.NewReader(tc.body))

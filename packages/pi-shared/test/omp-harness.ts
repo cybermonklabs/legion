@@ -17,6 +17,8 @@ import {
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer";
 import type { DeliveryAnswer } from "@legion/envoy-client/transport";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import { loopbackHost } from "@legion/test-fixtures/loopback-host";
+import { readStandinBody } from "@legion/test-fixtures/standin-body";
 import { Terminal } from "@xterm/headless";
 import { linkOmpNatives } from "./omp-natives";
 
@@ -76,11 +78,15 @@ export function serveStandin(
   const requests: Request[] = [];
   const server = Bun.serve({
     port: 0,
-    hostname: "127.0.0.1",
+    // An address of its own, out of reach of a client of another test that still dials this port
+    // at 127.0.0.1 (`loopbackHost`); the clients' URLs are built from `base` below.
+    hostname: loopbackHost(),
     async fetch(request) {
       const url = new URL(request.url);
-      const text = request.method === "POST" ? await request.text() : "";
-      const body = text === "" ? {} : (JSON.parse(text) as Record<string, unknown>);
+      // A body that is no JSON object is refused by name, and is neither recorded nor handed to
+      // `answer` (`readStandinBody`).
+      const { body, refusal } = await readStandinBody(request);
+      if (refusal !== undefined) return refusal;
       requests.push({ path: url.pathname, body });
       return answer(url, body);
     },
@@ -88,7 +94,7 @@ export function serveStandin(
   cleanup.push(async () => {
     await server.stop(true);
   });
-  return { requests, base: `http://127.0.0.1:${server.port}` };
+  return { requests, base: server.url.origin };
 }
 
 /** The stream the stand-in listener's answers and relay frames name, one for every case here. */

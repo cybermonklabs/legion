@@ -1,0 +1,15 @@
+kind: Changed
+body: |-
+    The worker image carries Oh My Pi `18.18.6-sami.20261123-024918` of cybermonklabs/oh-my-pi,
+    which `.omp-pin` names. A background job in a role's shell keeps the shell's variables,
+    positional parameters, functions, aliases and options as they were when the job started, so
+    `for i in 1 2 3; do echo $i & done; wait` prints `1 2 3` in some order, not `3 3 3`. The copy is
+    shared until either side writes, so its memory grows with the number of live background jobs
+    (323 MB with 3,000 live `( : ) &` jobs). That build writes shell frames version 31: a frame
+    stored by an earlier build (version 30) is refused, not restored, and the run that frame named
+    ends with status 255 while the shell's own state stays and new runs work. Its SQL session store
+    makes and checks the same tables, indexes and grants as `18.18.6-sami.20261122-091943`, so a
+    deployment already on that pin needs no owner run before this one.
+time: 2026-11-23T05:51:00Z
+custom:
+    Issue: omp-pin-cut7

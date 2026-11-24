@@ -24,6 +24,7 @@ import (
 // So this states the walk's contract over every form the package reads a key in. Each line of
 // the source below is a form taken from the package, and each key must come back.
 func TestTheQueryKeyWalkSeesEveryFormThisPackageReadsAKeyIn(t *testing.T) {
+	t.Parallel()
 	const source = `package api
 
 import "net/http"

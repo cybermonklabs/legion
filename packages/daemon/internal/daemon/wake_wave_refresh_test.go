@@ -444,6 +444,7 @@ func baselineRootLaunches(t *testing.T) []time.Duration {
 // roots' launches are due behind all of it — and a gate that admits one claim a sweep instead of
 // the rate, which fails assertion 4, since 118 claims then need 118 rounds.
 func TestTheRefreshLaneHoldsOneMinuteOfThePacingWhileAWholeFleetsWaveDrains(t *testing.T) {
+	t.Parallel()
 	baseline := baselineRootLaunches(t)
 
 	cfg := refreshWaveConfig(t)
@@ -853,6 +854,7 @@ func assertMinutesHoldTheRate(t *testing.T, what string, moments []time.Time) {
 // reserveWake): the refreshes then all run in the instant the pass posts them and the first
 // window holds the whole wave.
 func TestNoMinuteOfAFleetsRefreshWaveHoldsMoreThanTheRateAndTheBurst(t *testing.T) {
+	t.Parallel()
 	cfg := waveConfig(t)
 	paceStale := 3 * testWakeRate
 	const paceRoots = 4

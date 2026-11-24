@@ -44,6 +44,7 @@ func (i *endableIdentity) Login(*http.Request) (string, error) {
 // heartbeat is a second, so the client's pong meets the pong deadline on a loaded runner and the
 // socket lasts until the session ends.
 func TestTheEventFeedClosesOnceItsPersonNoLongerResolves(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	broker := events.NewBroker()
 	documents := docs.New(docs.Deps{Store: database, Events: broker})
@@ -76,6 +77,7 @@ func TestTheEventFeedClosesOnceItsPersonNoLongerResolves(t *testing.T) {
 // agent view resolves its person on each heartbeat and closes with 1008 once their session has
 // ended, so the view stops relaying.
 func TestAgentStreamClosesOnceItsViewerNoLongerResolves(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	broker := events.NewBroker()
 	documents := docs.New(docs.Deps{Store: database, Events: broker})
@@ -114,6 +116,7 @@ func TestAgentStreamClosesOnceItsViewerNoLongerResolves(t *testing.T) {
 // sends its own. Each case ends the session the way it ends in production: the hourly membership
 // check finding the person out of the group, and a sign-out.
 func TestDocumentSocketClosesOnceItsPersonNoLongerResolves(t *testing.T) {
+	t.Parallel()
 	const heartbeat = 250 * time.Millisecond
 	for name, end := range map[string]func(*testing.T, *documentSocketRig){
 		"the sign-in pool drops them from the group": func(t *testing.T, rig *documentSocketRig) {
@@ -289,6 +292,7 @@ func newDocumentSocketRig(t *testing.T, heartbeat time.Duration) *documentSocket
 // signed in: their session generation and refresh token are kept, and once the issuer answers the
 // same cookie is served again after one refresh.
 func TestASignInIssuerOutageAnswersTheAPIAndTheDocumentSocket503AndKeepsTheSession(t *testing.T) {
+	t.Parallel()
 	rig := newDocumentSocketRig(t, time.Hour)
 	ctx := context.Background()
 	signedIn, found, err := rig.people.Membership(ctx, rig.email)

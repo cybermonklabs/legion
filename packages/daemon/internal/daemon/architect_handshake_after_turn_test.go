@@ -40,6 +40,7 @@ import (
 // The two later phases are written onto the root's record, as the gate's registration and its
 // approval would leave it.
 func TestTheArchitectHandshakeOutlastsTheTurnThatConfirmedIt(t *testing.T) {
+	t.Parallel()
 	r := newMainPathRig(t, true)
 	r.put(r.waitingRoot())
 	r.admitPass()

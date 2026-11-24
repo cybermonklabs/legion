@@ -533,6 +533,7 @@ func (r *owedWriteRig) owedTurnStart(role claim.Role) {
 // which is what every other claim's event and every read of this claim then waits for
 // (TestNoDecisionWaitsOnTheClaimWhoseWriteTheDatabaseHasNotTaken).
 func TestTheRepairDeadlineEndsADecisionsWaitOnADatabaseThatHasStoppedAnswering(t *testing.T) {
+	t.Parallel()
 	// The bound this row measures, and the bound that catches a wait which is not bounded at all:
 	// the blocked store never answers, so an unbounded decision returns at no time this test
 	// could name. What claimWrite bounds is the write put to that blocked store and nothing
@@ -591,6 +592,7 @@ func TestTheRepairDeadlineEndsADecisionsWaitOnADatabaseThatHasStoppedAnswering(t
 // claim, a read of it, and the stop all wait on, and a decision that waits out the connection's
 // own patience holds every one of them for the length of the outage.
 func TestNoDecisionWaitsOnTheClaimWhoseWriteTheDatabaseHasNotTaken(t *testing.T) {
+	t.Parallel()
 	// claimWrite is what the architect's blocked writes are measured by, and all that it is: the
 	// implementer's writes and this row's own repair reach the real database, which the rig hands
 	// out with the claim-write deadline off it (detachedWrites).
@@ -686,6 +688,7 @@ func TestNoDecisionWaitsOnTheClaimWhoseWriteTheDatabaseHasNotTaken(t *testing.T)
 // it. The next boot reads the stored row, takes the claim up from it, and the claim decides
 // again.
 func TestAnOwedWriteAcrossARestartIsLostAndTheStoredClaimIsTakenUp(t *testing.T) {
+	t.Parallel()
 	rig := newOwedWriteRig(t, unmeasuredClaimWrite, owedRole{claim.RoleArchitect, supervise.StateReady})
 	rig.refuse(claim.RoleArchitect, brokenConnection())
 	rig.owedTurnStart(claim.RoleArchitect)
@@ -738,6 +741,7 @@ func TestAnOwedWriteAcrossARestartIsLostAndTheStoredClaimIsTakenUp(t *testing.T)
 // whatever bound the other rows name. A row taking production's own 5 s default instead would
 // swallow the delay and prove nothing.
 func TestARealWriteTheDatabaseIsSlowToTakeIsNotCutShortByTheRowsBound(t *testing.T) {
+	t.Parallel()
 	const claimWrite = 250 * time.Millisecond
 	const slow = 4 * claimWrite
 	rig := newOwedWriteRig(t, claimWrite, owedRole{claim.RoleArchitect, supervise.StateReady})
@@ -772,6 +776,7 @@ func TestARealWriteTheDatabaseIsSlowToTakeIsNotCutShortByTheRowsBound(t *testing
 // did with the report: written in the transaction that applies the fact, keyed on the claim and
 // the generation the report named (terminalEventID), and never written by anything else.
 func TestTheOwedReportsReachTheDaemonOnceTheRepairLands(t *testing.T) {
+	t.Parallel()
 	rig := newOwedWriteRig(t, unmeasuredClaimWrite, owedRole{claim.RoleArchitect, supervise.StateRegistered})
 	// The daemon's own durable-state path over the rig's real pool, as the workflow installs it
 	// on every machine of its supervisor (workflowRuntime.attach).

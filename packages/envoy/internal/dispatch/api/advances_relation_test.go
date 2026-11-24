@@ -28,6 +28,7 @@ import (
 )
 
 func TestAdvancesRelation(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	ctx := context.Background()
 	createTestProject(t, handler, "CORE")
@@ -248,6 +249,7 @@ func TestAdvancesRelation(t *testing.T) {
 // carried a title, a status and labels leaves every one of them, and the issue's updated_at,
 // exactly as they were.
 func TestAdvancesRelationRevisionIsExactAndRefusesBeforeItWrites(t *testing.T) {
+	t.Parallel()
 	handler, _ := newTestHandlerWithStore(t)
 	createTestProject(t, handler, "CORE")
 	first := createTestPriority(t, handler, map[string]any{"id": "ship-the-thing", "title": "Ship the thing"}, "alice").ID

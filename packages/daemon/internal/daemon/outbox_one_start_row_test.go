@@ -130,6 +130,7 @@ func newOneStartRig(t *testing.T) oneStartRig {
 // Each case drives the executor on the row the transition wrote, as the package's other start
 // cases do, and reads what the claim holds afterwards.
 func TestOneStartRowDoesTheWholeStart(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 
 	t.Run("a role with no claim is created, provisioned, spawned and given the task", func(t *testing.T) {

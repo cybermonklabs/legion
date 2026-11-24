@@ -106,6 +106,22 @@ type listenerDeps struct {
 	// resolve to (the broker's GET /v1/project-repositories, edge_repositories.go), nil on every
 	// listener but an edge one.
 	repositories *edgeRepositories
+	// registrationBudget is the store work budget of POST /v1/interests/subscribe
+	// (subscribeHandler), timed from the request's arrival: zero is sendRequestBudget, which every
+	// listener main builds runs with. It is a seam for a test whose own work runs inside that
+	// budget, as a session's consumer lock it holds while it writes, or a hook a pass calls: such a
+	// test gives the registration what is left of the test binary's deadline here, so the budget
+	// does not count the test's work, which a loaded machine slows as it slows the bus.
+	registrationBudget time.Duration
+}
+
+// registrationBudgetOr is the registration's store work budget (registrationBudget):
+// sendRequestBudget unless a test set one.
+func (d *listenerDeps) registrationBudgetOr() time.Duration {
+	if d.registrationBudget == 0 {
+		return sendRequestBudget
+	}
+	return d.registrationBudget
 }
 
 // kvCache is what the listener asks of each KV-backed cache it keeps.
@@ -839,28 +855,37 @@ type webhookRoute struct {
 	handler func(webhook.Publisher, *cistore.Store) http.Handler
 }
 
+// webhookBodyRefusedMetric counts the webhook deliveries the body budget turned away with a 503
+// (webhook.BodyBudget), by route path, so a sustained fill of the budget shows as a rate.
+const webhookBodyRefusedMetric = "envoy_webhook_body_refused_total"
+
 // webhookRoutes lists the webhook routes the configuration enables. main registers the paths
 // before NATS is up, so they answer 503 while it connects, and builds the handlers once NATS and,
 // for the GitHub route, the CI store are open.
 //
+// Every route reads its bodies against one budget of cfg.BodyBudget bytes, made here once for the
+// listener (webhook.BodyBudget), so what anonymous senders can make the listener hold before any
+// signature is checked is bounded across every route at once, not per route.
+//
 // Every route publishes through the rename publisher, which costs the Slack and the Ghost Wispr
 // routes nothing: a pair names a GitHub repository, and a subject that is not
 // `notifications.github.<owner>.<name>.…` names none, so those two publish exactly as they did.
-func webhookRoutes(cfg *webhook.WebhookConfig) []webhookRoute {
+func webhookRoutes(cfg *webhook.WebhookConfig, refused *metrics.Counter) []webhookRoute {
+	bodies := webhook.NewBodyBudget(cfg.BodyBudget, refused)
 	var routes []webhookRoute
 	if github := cfg.GitHub; github != nil {
 		routes = append(routes, webhookRoute{"/webhook/github", func(publisher webhook.Publisher, ciStore *cistore.Store) http.Handler {
-			return webhook.GitHubHandler(github.Secret, github.MentionTrigger, github.ReviewerAppID, publisher, ciStore)
+			return webhook.GitHubHandler(github.Secret, github.MentionTrigger, github.ReviewerAppID, publisher, ciStore, bodies)
 		}})
 	}
 	if slack := cfg.Slack; slack != nil {
 		routes = append(routes, webhookRoute{"/webhook/slack", func(publisher webhook.Publisher, _ *cistore.Store) http.Handler {
-			return webhook.SlackHandler(slack.Secret, publisher)
+			return webhook.SlackHandler(slack.Secret, publisher, bodies)
 		}})
 	}
 	if ghostWispr := cfg.GhostWispr; ghostWispr != nil {
 		routes = append(routes, webhookRoute{"/webhook/ghostwispr", func(publisher webhook.Publisher, _ *cistore.Store) http.Handler {
-			return webhook.GhostWisprHandler(ghostWispr.Secret, publisher)
+			return webhook.GhostWisprHandler(ghostWispr.Secret, publisher, bodies)
 		}})
 	}
 	return routes
@@ -1123,6 +1148,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	logger.Info(webhook.DescribeBodyBudget(webhookCfg.BodyBudget))
 	// The renames a deployment configures belong beside the other settings lines: an operator who
 	// reads from the top sees from them alone whether ENVOY_GITHUB_REPOSITORY_RENAMES took, and a
 	// value that configures none logs nothing, as every other repository's publishing is unchanged.
@@ -1229,7 +1255,7 @@ func main() {
 	// v1API, which answers the closed gate before apiAuth judges any credential, so a starting
 	// listener spends no request's DPoP proof.
 	webhookGate, v1Gate := newStartingGate("webhook", logger), newStartingGate("v1", logger)
-	hooks := webhookRoutes(webhookCfg)
+	hooks := webhookRoutes(webhookCfg, met.NewCounter(webhookBodyRefusedMetric, "Webhook deliveries answered 503 because their body found no room in the listener's webhook body budget within the route's room wait, by route path"))
 	for _, hook := range hooks {
 		mux.Handle(hook.path, webhookGate)
 	}
@@ -2126,17 +2152,11 @@ func shutdownListener(logger *logging.Logger, parts listenerParts, loops listene
 	// in-flight deliveries without reconnecting, end the retired watchers and delete their
 	// consumers (endListenerKVWatchers, the drain hook main adds), and drain the connection, but
 	// never let a blocked NATS request pin the process after its HTTP listener is gone.
-	if loops.monitorDone != nil {
-		select {
-		case <-loops.monitorDone:
-		case <-shutdownCtx.Done():
-			logger.Warn("self-health monitor still running at shutdown")
-		}
+	if loops.monitorDone != nil && !closedWithin(shutdownCtx, loops.monitorDone) {
+		logger.Warn("self-health monitor still running at shutdown")
 	}
 	for _, done := range loops.kvLoopsDone {
-		select {
-		case <-done:
-		case <-shutdownCtx.Done():
+		if !closedWithin(shutdownCtx, done) {
 			logger.Warn("a KV bucket pass still running at shutdown")
 		}
 	}
