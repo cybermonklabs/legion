@@ -396,8 +396,7 @@ export function legionToolDescription(host: {
     "merged (HANDOFF_NO_PULL_REQUEST: open it; one naming a closed pull request is the architect's to decide); a refused completion changed " +
     "nothing, so fix what it names and complete again. " +
     "ready_for_update answers the daemon's update message on this issue's pod: `round` is the round id that message names, and the " +
-    "daemon takes your answer for that round alone. The reviewer creates no commit and pushes nothing, so each commit " +
-    "and push this description names is not its own, and the merger pushes the merge of the base it made. Push every commit you want kept to the issue branch " +
+    "daemon takes your answer for that round alone. The merger pushes the merge of the base it made. Push every commit you want kept to the issue branch " +
     "first. Then let each subagent and each background job that you started finish, or stop it. Commit and push what it made " +
     "before you answer. The daemon replaces the pod and its disk when the round ends. The round ends at the moment the message " +
     "names. It can end earlier, once every role has answered, no role is in a turn and each role's last report names no running " +
