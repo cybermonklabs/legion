@@ -201,12 +201,11 @@ func (l *stringList) Set(v string) error { *l = append(*l, v); return nil }
 // roomURL is artifact's document websocket at base, at the schema version the dashboard presents,
 // so the room takes the peer's edits rather than holding it read-only. The room's path is joined
 // onto base's path and the schema version follows base's own query, which is kept
-// (urljoin.JoinURL): writing the room's query over base's dropped a configured one
-// (http://host/dispatch?key=K reached /dispatch/ws/doc/<artifact>?schema_version=N and the server
-// was asked without key=K), and appending the path to base's text would have put it inside that
-// query instead. base's fragment, which no request sends, is dropped. urljoin.ErrRef is the only
-// error, and this ref, fixed text with a url.PathEscape element in it, never draws it; a peer that
-// somehow did is refused by the room it could not name, never by a text that quotes base.
+// (urljoin.JoinURL): writing the room's query over base's dropped a configured one, so
+// http://host/dispatch?key=K reached /dispatch/ws/doc/<artifact>?schema_version=N and the server
+// was asked without key=K. base's fragment, which no request sends, is dropped. urljoin.ErrRef is
+// the only error, and this ref, fixed text with a url.PathEscape element in it, never draws it; a
+// peer that somehow did is refused by the room it could not name, never by a text that quotes base.
 func roomURL(base *url.URL, artifact string) (string, error) {
 	ref := "/ws/doc/" + url.PathEscape(artifact) +
 		"?" + url.Values{"schema_version": {strconv.Itoa(pmdoc.SchemaVersion())}}.Encode()
