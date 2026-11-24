@@ -727,7 +727,6 @@ func TestAStartBelowTheStreamsFirstSequenceIsAGap(t *testing.T) {
 // Restarts made at once share their reads of the stream's state, and each still reports a gap
 // exactly when the consumer it kept goes on below the stream's first sequence.
 func TestRestartsAtOnceReportEachGap(t *testing.T) {
-	t.Parallel()
 	owner, consumers := sessionConsumersOnStream(t)
 	ctx := context.Background()
 	const sessions, gone = 24, 10

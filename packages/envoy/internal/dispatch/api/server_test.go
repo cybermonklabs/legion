@@ -241,6 +241,8 @@ type testServerOptions struct {
 	// metrics is the registry the server adds its held-send gauges to (Deps.Metrics); nil is
 	// none, as every test that reads no gauge leaves it.
 	metrics *metrics.Registry
+	// parentStatusRule turns DISPATCH_PARENT_STATUS_RULE on for the server (Deps.ParentStatusRule).
+	parentStatusRule bool
 	// listenerRosterUncached is Deps.ListenerRosterUncached: every read of the listener's session
 	// list asks the listener and stores no copy, as the browser suite's server runs
 	// (DISPATCH_TEST_ROSTER_UNCACHED=1, e2e/run-server.sh). False is the deployment's stored copy.
@@ -409,6 +411,7 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		BuildCommit:            options.buildCommit,
 		OutboxPublishes:        options.outboxPublishes,
 		Metrics:                options.metrics,
+		ParentStatusRule:       ParentStatusRule{on: options.parentStatusRule},
 		ListenerRosterUncached: options.listenerRosterUncached,
 	})
 	if err != nil {

@@ -329,7 +329,7 @@ func TestAnAnswersRowRefusesAMalformedOrFutureAsOf(t *testing.T) {
 			recorder := &cutRecorder{}
 			route.Handler = recorder.handler
 			response := httptest.NewRecorder()
-			served.routeHandler(route, nil).ServeHTTP(response, asOfProbe(route, url.Values{asOfParameter: row.values}.Encode()))
+			served.routeHandler(route, keyedRoute{}).ServeHTTP(response, asOfProbe(route, url.Values{asOfParameter: row.values}.Encode()))
 			if row.wantCut != "" {
 				if response.Code != http.StatusNoContent || !slices.Equal(recorder.runs, []string{row.wantCut}) {
 					t.Fatalf("as_of=%v answered %d %s with its handler's runs seeing the cuts %q, want one run under the cut %s",
