@@ -25,6 +25,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
 	"github.com/sjawhar/envoy/internal/dispatch/redeliver"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // The sweep writes GitHub's text into its lines and its errors: a delivery's GUID, its event and
@@ -668,8 +669,10 @@ var (
 )
 
 // longNextLink is the path and query of a next page link of the listing far past the longest link
-// the client follows (githubapp's nextLinkMaxBytes, 2048 bytes): its cursor is 64 KiB.
-var longNextLink = "/app/hook/deliveries?per_page=100&cursor=" + strings.Repeat("v", 1<<16)
+// the client follows (githubapp's nextLinkMaxBytes, 2048 bytes): its path is 64 KiB. The client
+// names a link it refuses as the rule reads it before it cuts it (the rule keeps a path and drops
+// a query's values), so the length is in the path, where the cut still has 64 KiB to cut.
+var longNextLink = "/app/hook/deliveries/" + strings.Repeat("v", 1<<16) + "?per_page=100"
 
 // inFrontOfGitHub points h's client at a server of the test's own in front of a webhook fake that
 // h holds from then on, and answers the server's origin: front answers every request the client
@@ -819,7 +822,8 @@ func (h *harness) refusedRedelivery(t *testing.T, guid, text string, answer func
 // GitHub's answers to the sweep's own requests are GitHub's text too, and each reaches the sweep
 // in a GitHub call's error: the body of an error status GitHub answers the deliveries listing or a
 // redelivery request with, which may be as long as a response may be (1 MiB); the listing's next
-// page link, which the githubapp client refuses past the longest it follows; a value of a listing
+// page link, which the githubapp client refuses past the longest it follows, and names as the rule
+// reads it before it cuts it; a value of a listing
 // GitHub answers 200 that the client cannot decode, which the decode's error quotes; and a header
 // line of an answer net/http cannot read, which the transport error's cause quotes, whether the
 // answer is to the listing or to a redelivery request. The client cuts each once, where it enters
@@ -866,7 +870,7 @@ func TestTheSweepShowsGitHubsErrorBodyAndNextLinkToABound(t *testing.T) {
 			})
 			h.fail("guid-paged", http.StatusServiceUnavailable, time.Minute)
 			link := origin + longNextLink
-			return h.failedListing(t, "next page link is past the bound", link), link
+			return h.failedListing(t, "next page link is past the bound", redact.Field(link)), link
 		}},
 		{"a redelivery request GitHub refuses with a body past the bound", requireCut, func(t *testing.T, h *harness) ([]sighting, string) {
 			return h.refusedRedelivery(t, "guid-refused", largeRefusal, func(w http.ResponseWriter) {

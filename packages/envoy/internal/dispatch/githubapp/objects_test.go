@@ -31,7 +31,7 @@ var listingCases = []listingCase{
 		name: "check runs",
 		key:  "check_runs",
 		read: func(client *Client) (ObjectPage, error) {
-			return client.CommitCheckRuns(context.Background(), "installation-token", "acme", "web", "c0ffee", 1, "")
+			return client.CommitCheckRuns(context.Background(), "installation-token", "acme", "web", mainCommit, 1, "")
 		},
 		scalars: []string{"id", "name", "head_sha", "status", "conclusion", "html_url", "started_at", "completed_at"},
 		objects: map[string][]string{"app": {"id", "slug"}, "output": {"title", "summary"}},
@@ -44,7 +44,7 @@ var listingCases = []listingCase{
 		name: "check suites",
 		key:  "check_suites",
 		read: func(client *Client) (ObjectPage, error) {
-			return client.CommitCheckSuites(context.Background(), "installation-token", "acme", "web", "c0ffee", 1, "")
+			return client.CommitCheckSuites(context.Background(), "installation-token", "acme", "web", mainCommit, 1, "")
 		},
 		scalars: []string{"id", "head_sha", "status", "conclusion", "updated_at", "latest_check_runs_count"},
 		objects: map[string][]string{"app": {"id", "slug"}},
@@ -57,7 +57,7 @@ var listingCases = []listingCase{
 		name: "commit statuses",
 		key:  "statuses",
 		read: func(client *Client) (ObjectPage, error) {
-			return client.CommitStatuses(context.Background(), "installation-token", "acme", "web", "c0ffee", 1, "")
+			return client.CommitStatuses(context.Background(), "installation-token", "acme", "web", mainCommit, 1, "")
 		},
 		scalars: []string{"context", "state", "created_at", "target_url", "description"},
 		mapping: func(object map[string]any) any {

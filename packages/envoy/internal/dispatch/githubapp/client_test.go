@@ -106,6 +106,10 @@ type fakeGitHub struct {
 	appInstallationsRateLimitOnCall int
 }
 
+// fakeBlobSHA is the SHA the fake names path's blob by in its trees and reads it back by: forty
+// lowercase hex digits, as GitHub's blob SHAs are, which DirFiles refuses any other value than.
+func fakeBlobSHA(path string) string { return fmt.Sprintf("%x", sha256.Sum256([]byte(path)))[:40] }
+
 func (f *fakeGitHub) handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /repos/{owner}/{repo}/installation", func(w http.ResponseWriter, r *http.Request) {
@@ -246,7 +250,7 @@ func (f *fakeGitHub) handler() http.Handler {
 				fmt.Fprintf(w, `{"path":"packages/dispatch/web/src/features/issue/file-%d.tsx","mode":"100644","type":"blob","sha":%q,"size":%d,"url":"https://api.github.com/repos/legion/arch/git/blobs/%s"}`, i, blob, 7*i, blob)
 			}
 			for path := range f.files {
-				fmt.Fprintf(w, `,{"path":%q,"mode":"100644","type":"blob","sha":%q,"size":%d}`, path, "blob-"+path, len(f.files[path]))
+				fmt.Fprintf(w, `,{"path":%q,"mode":"100644","type":"blob","sha":%q,"size":%d}`, path, fakeBlobSHA(path), len(f.files[path]))
 			}
 			fmt.Fprint(w, `]}`)
 			return
@@ -289,7 +293,7 @@ func (f *fakeGitHub) handler() http.Handler {
 			}
 			fmt.Fprintf(digest, "%s %s %s\n", mode, name, f.files[path])
 			entries = append(entries, map[string]any{
-				"path": name, "mode": mode, "type": "blob", "sha": "blob-" + path, "size": size,
+				"path": name, "mode": mode, "type": "blob", "sha": fakeBlobSHA(path), "size": size,
 			})
 		}
 		if err := json.NewEncoder(w).Encode(map[string]any{
@@ -300,8 +304,13 @@ func (f *fakeGitHub) handler() http.Handler {
 	})
 	mux.HandleFunc("GET /repos/{owner}/{repo}/git/blobs/{sha}", func(w http.ResponseWriter, r *http.Request) {
 		requireInstallationToken(r)
-		path := strings.TrimPrefix(r.PathValue("sha"), "blob-")
-		content, ok := f.files[path]
+		path, ok := "", false
+		for named := range f.files {
+			if fakeBlobSHA(named) == r.PathValue("sha") {
+				path, ok = named, true
+			}
+		}
+		content := f.files[path]
 		if !ok || f.missingBlobs[path] {
 			w.WriteHeader(http.StatusNotFound)
 			return
@@ -641,13 +650,13 @@ func TestAnErrorOfAnAnswerWithNoBodyEndsAtItsStatus(t *testing.T) {
 		want: "GET {base}/repos/acme/web/git/trees/c0ffee:docs: status 500",
 	}, {
 		name:   "a file's blob",
-		refuse: "GET /repos/acme/web/git/blobs/b1",
+		refuse: "GET /repos/acme/web/git/blobs/" + mainCommit,
 		status: http.StatusInternalServerError,
 		call: func(ctx context.Context, client *Client) error {
-			_, err := client.DirFiles(ctx, "ghs_test", "acme", "web", Dir{SHA: "t1", Files: []DirFile{{Name: "a.md", Path: "docs/a.md", SHA: "b1", Size: 1}}})
+			_, err := client.DirFiles(ctx, "ghs_test", "acme", "web", Dir{SHA: "t1", Files: []DirFile{{Name: "a.md", Path: "docs/a.md", SHA: mainCommit, Size: 1}}})
 			return err
 		},
-		want: "GET {base}/repos/acme/web/git/blobs/b1 (docs/a.md): status 500",
+		want: "GET {base}/repos/acme/web/git/blobs/" + mainCommit + " (docs/a.md): status 500",
 	}, {
 		name:   "the App webhook's deliveries",
 		refuse: "GET /app/hook/deliveries",

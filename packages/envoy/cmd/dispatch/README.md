@@ -5219,9 +5219,10 @@ Each item below names a path with its method and identity, then its purpose.
 
   - Such a check carries `ci`, `{run, state, case, detail, line}`.
     `state` is `pass`, `fail`, `no_result` or `unread`.
-    `case` is the conclusion that decided it — `success` passes, and `failure`, `timed_out`, `action_required`, `startup_failure`, `stale` and a conclusion this list does not name, as GitHub wrote it, fail — or one of the cases of no result:
+    `case` is the conclusion that decided it — `success` passes, and `failure`, `timed_out`, `action_required`, `startup_failure`, `stale` and a conclusion this list does not name fail — or one of the cases of no result:
     `neutral`, `skipped`, `cancelled`, `not_completed`, `absent` (no run of that name at the head) and `no_head` (Dispatch holds no open or merged pull request head of the issue), each `no_result`, and `github_unreadable` (`unread`: no App key, a token GitHub would not mint, an HTTP error, a rate limit or the deadline).
-    `detail` is one sentence naming the case, at most 2,000 runes; for `github_unreadable` it names GitHub's own answer, a refusal by its status and the `message` of its JSON body, never the body itself and never a token.
+    A conclusion GitHub's documentation does not name prints as `(the conclusion is not one GitHub documents)` in `case`, `detail` and the result's `observed`, and a status it does not name as `(the status is not one GitHub documents)` in `detail`: such a word is the text of whatever answered, which can quote anything.
+    `detail` is one sentence naming the case, at most 2,000 runes; for `github_unreadable` it names GitHub's own answer, a refusal by its status and the `message` of its JSON body, never the body itself and never a token, and the head by its SHA, or by `(the head is not a SHA)` where what Dispatch holds for it is not one.
     `line` is the pull-request body line for the check: `- Check <id> (before_merge): <verdict> at <sha>, from CI run <name>. <the check's words>` for a pass or a fail, and `- Check <id> (before_merge): CI run <name> has no result (<case>)` for every other state; the check's words are kept, and the words cut, as a recorded line's reading is (POST below), so `text` keeps an issue key the line leaves out.
     The run's name is written word for word, its blanks as one, only when the line keeps every word of it; a name holding a word the line drops, such as an issue key or a word holding `_`, reads `the CI run the check names`, and `ci_check` and `run` keep it whole.
 

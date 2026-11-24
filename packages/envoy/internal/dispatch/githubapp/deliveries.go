@@ -40,13 +40,17 @@ type Delivery struct {
 // cursor from page to page and stops at the first attempt older than since. GitHub keeps three
 // days of attempts; nothing older is listed whatever since says. A rate-limited answer is a
 // *RateLimitError. before, when set, runs ahead of each page's request, and its error ends the
-// listing: the sweep uses it to check a shared rate limit before every request.
+// listing: the sweep uses it to check a shared rate limit before every request. The first page's
+// target is the client's own, and every later one is a next page link GitHub answered, which each
+// error and note of its request names as the rule reads it, with the record of the request whose
+// answer named it (answeredTarget).
 func (c *Client) Deliveries(ctx context.Context, since time.Time, before func() error) ([]Delivery, error) {
 	if c == nil {
 		return nil, ErrNoAppKey
 	}
 	var listed []Delivery
 	target := c.base + "/app/hook/deliveries?per_page=100"
+	shown := ShownBody(target)
 	for target != "" {
 		if before != nil {
 			if err := before(); err != nil {
@@ -57,7 +61,7 @@ func (c *Client) Deliveries(ctx context.Context, since time.Time, before func() 
 		if err != nil {
 			return nil, err
 		}
-		body, status, header, err := c.request(ctx, AppScope, http.MethodGet, target, "Bearer "+jwt, mediaTypeJSON, "", nil, responseLimit)
+		body, status, header, err := c.request(ctx, AppScope, http.MethodGet, target, shown, "Bearer "+jwt, mediaTypeJSON, "", nil, responseLimit)
 		if err != nil {
 			return nil, err
 		}
@@ -65,9 +69,9 @@ func (c *Client) Deliveries(ctx context.Context, since time.Time, before func() 
 			return nil, limited
 		}
 		if status != http.StatusOK {
-			return nil, fmt.Errorf("GET %s: %s", ShownBody(target), StatusText(status, body.Words().String()))
+			return nil, fmt.Errorf("GET %s: %s", shown, StatusText(status, body.Words().String()))
 		}
-		next, err := nextLink(header.Get("Link"), c.base)
+		next, nextShown, err := nextLink(body, header.Get("Link"), c.base)
 		if err != nil {
 			return nil, err
 		}
@@ -81,7 +85,7 @@ func (c *Client) Deliveries(ctx context.Context, since time.Time, before func() 
 			}
 			listed = append(listed, delivery)
 		}
-		target = next
+		target, shown = next, nextShown
 	}
 	return listed, nil
 }
@@ -103,7 +107,7 @@ func (c *Client) Redeliver(ctx context.Context, deliveryID int64) error {
 		return err
 	}
 	target := c.base + "/app/hook/deliveries/" + strconv.FormatInt(deliveryID, 10) + "/attempts"
-	body, status, header, err := c.request(ctx, AppScope, http.MethodPost, target, "Bearer "+jwt, mediaTypeJSON, "", nil, responseLimit)
+	body, status, header, err := c.request(ctx, AppScope, http.MethodPost, target, ShownBody(target), "Bearer "+jwt, mediaTypeJSON, "", nil, responseLimit)
 	if err != nil {
 		return err
 	}
@@ -123,13 +127,14 @@ func (c *Client) Redeliver(ctx context.Context, deliveryID int64) error {
 // long GitHub asks for before the next request. GitHub warns that requests made while limited
 // may get the integration banned.
 //
-// Body is GitHub's refusal, the body it answered the request with as the rule prints it
-// (redact.Answer.Words: with every credential the request carried redacted), and the error's text
-// carries it only at a status other than 2xx, as StatusText does: a 2xx body is the data the
-// request asked for, which can be a private repository's, and the text reaches GET /healthz as a
-// cause however a loop wraps it. At a 2xx the text carries wording in Body's place, whoever builds
-// the error: GitHub's wording of the limit, which answeredLimit alone sets, leaving Body empty
-// there.
+// Body is GitHub's refusal, the body it answered the request with, held as GitHub's words with
+// the record of the request (redact.Answer.Words), so it prints only as the rule reads it, with
+// every credential the request carried redacted, under every verb, in JSON and in a log field;
+// the error's text carries it only at a status other than 2xx, as StatusText does: a 2xx body is
+// the data the request asked for, which can be a private repository's, and the text reaches GET
+// /healthz as a cause however a loop wraps it. At a 2xx the text carries wording in Body's place,
+// whoever builds the error: GitHub's wording of the limit, which answeredLimit alone sets, leaving
+// Body empty there.
 //
 // A held error is a limit already recorded for Scope in the limits every process shares
 // (Limits): the request was never sent, Status and Body are empty, Wait is what the recorded
@@ -142,16 +147,19 @@ func (c *Client) Redeliver(ctx context.Context, deliveryID int64) error {
 type RateLimitError struct {
 	Status   int
 	Wait     time.Duration
-	Body     string
+	Body     redact.RemoteText
 	Scope    string
 	Held     bool
 	Recorded time.Time
 	// wording is GitHub's wording of a limit answered at a 2xx status (graphQLLimitWording),
-	// which answeredLimit alone sets.
+	// which answeredLimit alone sets: each part of it already printed by a box that holds the
+	// answer's record, its envelope's words from Decode and each header's value from the answer's
+	// Said, joined as they print. It holds the printed parts rather than one box: the joined text,
+	// read by the rule again as one field, could read as not readable where each part reads clean.
 	wording string
 	// message is the `message` of the answer's JSON, decoded from the answer as it came with the
 	// record of its request (answerMessage), which answeredLimit alone sets: a body past the rule's
-	// reach keeps its message, which Body, the rule's reading of the whole body, may not parse to.
+	// reach keeps its message, which Body, printed as the rule reads the whole body, may not show.
 	message redact.RemoteText
 }
 
@@ -163,8 +171,17 @@ func (e *RateLimitError) Error() string {
 	if e.Status/100 == 2 {
 		return withBody(limitAnswered(e.Status, e.Wait), e.wording)
 	}
-	return withBody(limitAnswered(e.Status, e.Wait), e.Body)
+	return withBody(limitAnswered(e.Status, e.Wait), e.Body.String())
 }
+
+// Format prints Error under the verb, flags, width and precision it is given, as fmt prints that
+// string, so no verb prints this error's fields.
+func (e *RateLimitError) Format(f fmt.State, verb rune) {
+	fmt.Fprintf(f, fmt.FormatString(f, verb), e.Error())
+}
+
+// LogValue is Error, so a structured log field names the error only as a message may.
+func (e *RateLimitError) LogValue() slog.Value { return slog.StringValue(e.Error()) }
 
 // limitAnswered is the text of a limit GitHub answered with status and asked wait for, up to its
 // body: the head of a RateLimitError's text, and of the cause the client notes for such a limit
@@ -173,17 +190,11 @@ func limitAnswered(status int, wait time.Duration) string {
 	return fmt.Sprintf("rate-limited by GitHub (status %d), next request in %s", status, wait)
 }
 
-// Message is the `message` of the JSON GitHub answers a refused request with, as the rule prints
-// it, and "" for a body that is not JSON or names none, as a held error's empty Body does, and so
-// does the empty Body of a 2xx limit that answeredLimit built. A limit answeredLimit built from an
-// answer names the message it decoded from that answer (answerMessage); one built with a Body
-// alone names the message of that text (responseMessage).
-func (e *RateLimitError) Message() string {
-	if !e.message.IsEmpty() {
-		return e.message.String()
-	}
-	return responseMessage([]byte(e.Body))
-}
+// Message is the `message` of the JSON GitHub answers a refused request with, held as GitHub's
+// words with the record of its request (answerMessage), so it prints as the rule reads it; it is
+// empty for a body that is not JSON or names none, for a held error, and for a 2xx limit, whose
+// Body answeredLimit leaves empty. Only answeredLimit sets it.
+func (e *RateLimitError) Message() redact.RemoteText { return e.message }
 
 // AsRateLimit is errors.As(err, &limited) collapsed to one line: delivery's reconcile.go,
 // github_prs.go and intake.go each repeated the same three-line var/errors.As idiom at every
@@ -213,17 +224,17 @@ func RateLimit(status int, header http.Header, body redact.Answer) *RateLimitErr
 }
 
 // answeredLimit is the RateLimitError of a limit GitHub answered with status, header and body, and
-// the one constructor of such an error (RateLimit, GraphQLRateLimit). Its Body is body, GitHub's
-// refusal as the rule prints it, at every status but a 2xx, and at a 2xx it is empty and wording
-// is GitHub's wording of the limit read from the envelope around the data or from header
-// (graphQLLimitWording), since such a body is the data the request asked for and no text of the
-// error may carry it.
+// the one constructor of such an error (RateLimit, GraphQLRateLimit). Its Body is body's words,
+// GitHub's refusal held with its request's record (redact.Answer.Words), at every status but a
+// 2xx, and at a 2xx it is empty and wording is GitHub's wording of the limit read from the
+// envelope around the data or from header (graphQLLimitWording), since such a body is the data the
+// request asked for and no text of the error may carry it.
 func answeredLimit(status int, header http.Header, body redact.Answer) *RateLimitError {
 	limited := &RateLimitError{Status: status, Wait: rateLimitWait(header)}
 	if status/100 == 2 {
 		limited.wording = graphQLLimitWording(header, body)
 	} else {
-		limited.Body = body.Words().String()
+		limited.Body = body.Words()
 		limited.message = answerMessage(body)
 	}
 	return limited
@@ -391,8 +402,10 @@ func readLimitEnvelope(body redact.Answer) (limitEnvelope, bool) {
 // it would name another failure than the one the request met. Where nothing names the limit --
 // the answer that spends the last point carries its data and no error, and the type or phrase can
 // be in that data -- it names the limit by the headers GitHub read it from instead,
-// X-RateLimit-Remaining, X-RateLimit-Reset and Retry-After, each "<name>: <value>" as GitHub sent
-// it, joined the same way. Nothing of `data` is read.
+// X-RateLimit-Remaining, X-RateLimit-Reset and Retry-After, each "<name>: <value>" with the value,
+// GitHub's text from the answer header came with, held with that answer's record (body.Said) so it
+// prints as the rule reads it and with every credential the request carried redacted, joined the
+// same way. Nothing of `data` is read.
 func graphQLLimitWording(header http.Header, body redact.Answer) string {
 	var parts []string
 	var words limitWords
@@ -418,7 +431,7 @@ func graphQLLimitWording(header http.Header, body redact.Answer) string {
 	if len(parts) == 0 {
 		for _, name := range limitHeaders {
 			if value := header.Get(name); value != "" {
-				parts = append(parts, name+": "+value)
+				parts = append(parts, name+": "+body.Said(value).String())
 			}
 		}
 	}
@@ -511,7 +524,8 @@ const shownBodyRunes = 512
 //     (redeliver's bucketErr), is cut whole, with the size of its text (ShownErr).
 //   - A request's target, which a status error names, is cut alone, with the target's size. So is
 //     a next page link in nextLink's refusal. A target holds names Dispatch keeps and text GitHub
-//     gave (a next page link).
+//     gave (a next page link, a default branch), which is cut once the rule has read it
+//     (answeredTarget, CommitOnBranch), so a long one is still cut.
 //   - A time parse error, a JSON type error or a transport error whose text is still longer than
 //     shownErrMost (4,414 bytes) after the cuts above is cut whole, with the size of that text
 //     (ShownErr).
@@ -724,14 +738,18 @@ func NewStatusError(status int, body redact.Answer) *StatusError {
 // nextLinkMaxBytes is the longest next page link nextLink follows. GitHub's links of the deliveries
 // listing are about a hundred bytes. A link is GitHub's text, and once followed it is the target of
 // the next request and of each error that names that request, so a longer one is refused and shown
-// as ShownBody shows GitHub's text.
+// as answeredTarget shows GitHub's text.
 const nextLinkMaxBytes = 2048
 
-// nextLink returns the rel="next" target of an RFC 8288 Link header, refusing one outside the
-// client's API origin, since the next page is fetched with the App's JWT, and one longer than
-// nextLinkMaxBytes. Each refusal names the link as ShownBody shows it, and the error of a link
-// that url.Parse cannot parse as ShownErr shows it, since that error quotes the link again.
-func nextLink(header, base string) (string, error) {
+// nextLink returns the rel="next" target of header, the Link header of answer, and that target as
+// each error and note of its request names it (answeredTarget), refusing one outside the client's
+// API origin, since the next page is fetched with the App's JWT, one that carries user information,
+// which net/http would send as the request's credential, and one longer than nextLinkMaxBytes. A
+// link is GitHub's text, so each refusal names it as answeredTarget prints it, never as ShownBody
+// or ShownErr would: the rule's reading with answer's record, cut. url.Parse's error quotes the
+// link again, so the refusal of a link it cannot parse holds that *url.Error with the link printed
+// so too (refusedLink).
+func nextLink(answer redact.Answer, header, base string) (string, string, error) {
 	for _, part := range strings.Split(header, ",") {
 		segments := strings.Split(part, ";")
 		if len(segments) < 2 {
@@ -747,21 +765,46 @@ func nextLink(header, base string) (string, error) {
 			continue
 		}
 		target := strings.TrimSuffix(strings.TrimPrefix(strings.TrimSpace(segments[0]), "<"), ">")
+		shown := answeredTarget(answer, target)
 		if len(target) > nextLinkMaxBytes {
-			return "", fmt.Errorf("next page link %q is longer than %d bytes", ShownBody(target), nextLinkMaxBytes)
+			return "", "", fmt.Errorf("next page link %q is longer than %d bytes", shown, nextLinkMaxBytes)
 		}
 		parsed, err := url.Parse(target)
 		if err != nil {
-			return "", fmt.Errorf("parse next page link %q: %w", ShownBody(target), ShownErr(err))
+			return "", "", fmt.Errorf("parse next page link %q: %w", shown, refusedLink(err, shown))
+		}
+		if parsed.User != nil {
+			return "", "", fmt.Errorf("next page link %q carries user information", shown)
 		}
 		origin, err := url.Parse(base)
 		if err != nil {
-			return "", fmt.Errorf("parse API base %q: %w", base, err)
+			return "", "", fmt.Errorf("parse API base %q: %w", base, err)
 		}
 		if parsed.Scheme != origin.Scheme || parsed.Host != origin.Host {
-			return "", fmt.Errorf("next page link %q leaves the API origin %s", ShownBody(target), base)
+			return "", "", fmt.Errorf("next page link %q leaves the API origin %s", shown, base)
 		}
-		return target, nil
+		return target, shown, nil
 	}
-	return "", nil
+	return "", "", nil
+}
+
+// answeredTarget is target, a request's target that holds text answer gave (a next page link its
+// Link header names), as each error and note of the request names it: held with the record of the
+// request answer came to (answer.Said), so it prints as the rule reads it with every credential
+// that request carried redacted, then as ShownBody shows GitHub's text, so a long one is still
+// cut.
+func answeredTarget(answer redact.Answer, target string) string {
+	return ShownBody(answer.Said(target).String())
+}
+
+// refusedLink is err, url.Parse's error of a next page link, with the link printed as shown: the
+// *url.Error url.Parse answers, copied with shown for its URL and its cause as ShownErr shows it,
+// so errors.As still reaches a *url.Error that names the link as the refusal does. url.Parse
+// answers no other error; one would print as its class alone (redact.Class).
+func refusedLink(err error, shown string) error {
+	var parse *url.Error
+	if !errors.As(err, &parse) {
+		return redact.Class(err)
+	}
+	return &url.Error{Op: parse.Op, URL: shown, Err: ShownErr(parse.Err)}
 }

@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
+	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/redact/answertest"
 )
 
@@ -38,7 +39,7 @@ func TestAnErrorShowsGitHubsBodyToABound(t *testing.T) {
 	}{
 		{"a status error", "status 500: ", func() error { return refused }},
 		{"a rate limit", "status 403", func() error {
-			return &githubapp.RateLimitError{Status: http.StatusForbidden, Wait: time.Minute, Body: largeRefusal}
+			return &githubapp.RateLimitError{Status: http.StatusForbidden, Wait: time.Minute, Body: redact.NewRemoteText(largeRefusal)}
 		}},
 		{"an installation lookup", "status 500: ", func() error { _, err := failing.Installation(ctx, "acme", "widgets"); return err }},
 		{"a token mint", "status 500: ", func() error { _, err := failing.Token(ctx, 1); return err }},
@@ -51,7 +52,7 @@ func TestAnErrorShowsGitHubsBodyToABound(t *testing.T) {
 		}},
 		{"a blob read", "status 500: ", func() error {
 			_, err := failing.DirFiles(ctx, "ghs_test", "acme", "widgets", githubapp.Dir{
-				SHA: "abc", Files: []githubapp.DirFile{{Name: "a.md", Path: "notes/a.md", SHA: "def", Size: 1}}})
+				SHA: "abc", Files: []githubapp.DirFile{{Name: "a.md", Path: "notes/a.md", SHA: strings.Repeat("d", 40), Size: 1}}})
 			return err
 		}},
 		{"a delivery listing", "status 500: ", func() error { _, err := failing.Deliveries(ctx, time.Now().Add(-time.Hour), nil); return err }},

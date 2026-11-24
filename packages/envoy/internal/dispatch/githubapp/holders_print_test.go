@@ -2,10 +2,12 @@ package githubapp
 
 import (
 	"fmt"
+	"net/http"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/redact"
+	"github.com/sjawhar/envoy/internal/redact/answertest"
 	"github.com/sjawhar/envoy/internal/redact/redacttest"
 )
 
@@ -27,7 +29,7 @@ type statusErrorExported struct {
 }
 
 // rateLimitTwin is RateLimitError's shape had it kept GitHub's text as it came: its Body the body
-// whole, where answeredLimit sets the rule's reading, and its message the probe as a string.
+// whole as a string, where answeredLimit holds the box, and its message the probe as a string.
 type rateLimitTwin struct {
 	Status  int
 	Wait    time.Duration
@@ -42,6 +44,23 @@ type rateLimitExported struct {
 	Wait    time.Duration
 	Body    string
 	Message string
+}
+
+// failedAnswerTwin is failedAnswer's shape had it kept the body send read as a string.
+type failedAnswerTwin struct {
+	method, shown string
+	status        int
+	detail        string
+}
+
+func (f *failedAnswerTwin) Error() string {
+	return f.method + " " + f.shown + ": " + StatusText(f.status, f.detail)
+}
+
+type failedAnswerExported struct {
+	Method, Shown string
+	Status        int
+	Detail        string
 }
 
 func TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement(t *testing.T) {
@@ -89,20 +108,21 @@ func TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement(t *testing.T) {
 			Same:     entryTwin{redacttest.Words, redacttest.Words},
 			Exported: entryTwin{redacttest.Words, redacttest.Words},
 		},
+		// RateLimitError and failedAnswer are each built as the client builds them, from an answer
+		// whose body holds the probe (answeredLimit, send), not from a text already printed.
 		{
 			Name:     "githubapp.RateLimitError",
 			Kind:     "error",
-			Boxed:    &RateLimitError{Status: 429, Wait: time.Minute, Body: redact.NewRemoteText(body).String(), message: words},
-			Same:     &rateLimitTwin{429, time.Minute, body, redacttest.Words},
-			Exported: &rateLimitExported{429, time.Minute, body, redacttest.Words},
+			Boxed:    answeredLimit(http.StatusTooManyRequests, http.Header{}, answertest.Of(http.StatusTooManyRequests, body)),
+			Same:     &rateLimitTwin{http.StatusTooManyRequests, time.Minute, body, redacttest.Words},
+			Exported: &rateLimitExported{http.StatusTooManyRequests, time.Minute, body, redacttest.Words},
 		},
-		// failedAnswer holds the box only behind its limit pointer, which fmt prints as an address
-		// and encoding/json does not read, and its Error prints the limit's Error, which prints no
-		// box: it has no same-shape twin a printer reaches, so its rows use the kind's own.
 		{
-			Name:  "githubapp.failedAnswer",
-			Kind:  "error",
-			Boxed: limitNoted("GET", "https://api.github.com/repos/o/r/pulls", &RateLimitError{Status: 429, Wait: time.Minute, Body: redact.NewRemoteText(body).String(), message: words}),
+			Name:     "githubapp.failedAnswer",
+			Kind:     "error",
+			Boxed:    &failedAnswer{method: http.MethodGet, shown: "https://api.github.com/repos/o/r/pulls", status: http.StatusBadGateway, detail: answertest.Of(http.StatusBadGateway, body).Words()},
+			Same:     &failedAnswerTwin{http.MethodGet, "https://api.github.com/repos/o/r/pulls", http.StatusBadGateway, body},
+			Exported: &failedAnswerExported{http.MethodGet, "https://api.github.com/repos/o/r/pulls", http.StatusBadGateway, body},
 		},
 	} {
 		t.Run(h.Name, func(t *testing.T) { redacttest.PrintTest(t, h) })
