@@ -943,8 +943,12 @@ type plan struct {
 	secrets       map[string]string
 	// nats is the user the daemon's own NATS connection authenticates as (natsConnection); no launch
 	// carries its seed unless it is the pane seed.
-	nats         natsConnection
-	instructions string
+	nats natsConnection
+	// instructions is the path of the daemon's copy of the deployment's instructions, "" when the
+	// configuration names none, and instructionsCopies every copy of an instructions file, which
+	// each launch reads again first (writeInstructionsCopies).
+	instructions       string
+	instructionsCopies *instructionsCopies
 	// dispatchToken is the Dispatch bearer dispatch_token_file names; "" without Dispatch.
 	dispatchToken string
 	// hookPrompts are the words boot read for each hook whose `prompt_file` names a file, by
@@ -1106,22 +1110,9 @@ func prepare(cfg config.Config, log *slog.Logger, o overrides) (plan, error) {
 		return plan{}, fmt.Errorf("construct role prompts: %w", err)
 	}
 
-	instructions := ""
-	if reads.instructions != nil {
-		if instructions, err = config.WriteDeploymentInstructions(reads.instructions, cfg.StateDir, cfg.Project); err != nil {
-			return plan{}, err
-		}
-	}
-
-	// One copy per declared variant that names an instructions file, each under its experiment's
-	// own directory, since two names may hold `-` and neither may hold `/`, and the `memory`
-	// block's arm at the block's own `memory-instructions.md` (config.VariantInstructionsFile,
-	// which is where a launch's arms read the copies back from: experiment.Launch). Boot writes
-	// them before the first pane opens.
-	for _, read := range reads.variantInstructions {
-		if err := config.WriteVariantInstructions(read.contents, cfg.StateDir, cfg.Project, read.experiment, read.variant); err != nil {
-			return plan{}, err
-		}
+	copies, instructions, err := writeInstructionsCopies(cfg, reads, log)
+	if err != nil {
+		return plan{}, err
 	}
 
 	clock := o.clock
@@ -1148,7 +1139,7 @@ func prepare(cfg config.Config, log *slog.Logger, o overrides) (plan, error) {
 	}
 	p := plan{
 		repositories: newRepositories(cfg.Project, cfg.RepositoryRenames), installed: appauth.NewInstalled(), left: appauth.NewLeftOut(),
-		project: reads.project, operatorToken: reads.operatorToken, secrets: reads.secrets, nats: reads.nats, instructions: instructions,
+		project: reads.project, operatorToken: reads.operatorToken, secrets: reads.secrets, nats: reads.nats, instructions: instructions, instructionsCopies: copies,
 		dispatchToken: reads.dispatchToken, hookPrompts: reads.hookPrompts, prompts: composer, roleReferences: prompts.RoleReferences(),
 		tools: reads.tmux.tools, clock: clock, orphanSweep: orphanSweep, controllerRetry: controllerRetry, stopBudget: stop,
 		secretsEnroller: secretsEnroller, secretsRegistrar: secretsRegistrar, secretsLogin: secretsLogin, strandedReported: o.strandedReported,
@@ -1801,7 +1792,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		Conns:   listener,
 		Store:   pruning(gateLaunch(tokens.Recording(st), p.checkLaunch), runtime.SecretsDir(cfg.StateDir), log),
 		Specs: specs{
-			stateDir: cfg.StateDir, project: p.project, instructions: p.instructions, secrets: p.secrets, prompts: p.prompts,
+			stateDir: cfg.StateDir, project: p.project, instructions: p.instructions, copies: p.instructionsCopies, secrets: p.secrets, prompts: p.prompts,
 			identity: p.identity, repository: p.launchRepository, owner: p.owner,
 			appOwners:   p.appOwners(cfg.Runtime.Name),
 			designSteps: cfg.Gates.Steps(), productionCheck: cfg.Projects[cfg.Project].ProductionCheck, slackChannels: cfg.Projects[cfg.Project].SlackChannels,
@@ -2591,109 +2582,6 @@ func (s *supervision) reconcileBootOrphans(ctx context.Context) bool {
 		}
 	}
 	return false
-}
-
-// launchUnfinished starts only claims that remain queued with no locator, each on a goroutine of
-// its own, and returns once every one has: one relaunch never waits out another's launch, which
-// under a Sandbox can take minutes. A still-live old pane can reconnect while reconciliation was
-// uncertain; its hello changes the state before a later retry, and it must never be joined by a
-// second pane. It returns the claims whose release the store did not take, outside the daemon's
-// stop: each is still launch_uncertain, in memory as in the store, and nothing else in this boot
-// releases it, so the caller retries it (relaunchUnfinished). ctx is the relaunches' context; each
-// relaunch derives a context of its own from it.
-func (s *supervision) launchUnfinished(ctx context.Context, tokens []claim.Token) []claim.Token {
-	refused := make([]bool, len(tokens))
-	var launching sync.WaitGroup
-	for i, token := range tokens {
-		m, ok := s.supervisor.Machine(token)
-		if !ok {
-			continue
-		}
-		launching.Add(1)
-		go func() {
-			defer launching.Done()
-			// Each relaunch runs on a goroutine of its own beside the others, so each takes a
-			// hold mark of its own rather than ctx's.
-			refused[i] = s.launchUnfinishedClaim(store.ForConcurrentWorker(ctx), token, m)
-		}()
-	}
-	launching.Wait()
-	var failed []claim.Token
-	for i, token := range tokens {
-		if refused[i] {
-			failed = append(failed, token)
-		}
-	}
-	return failed
-}
-
-// launchUnfinishedClaim releases one unfinished launch and launches it again, both on ctx, and
-// reports whether the store refused the release (launchUnfinished).
-func (s *supervision) launchUnfinishedClaim(ctx context.Context, token claim.Token, m *supervise.Machine) bool {
-	released, err := m.ReleaseUncertainLaunch(ctx)
-	if err != nil {
-		return s.supervisor.decisionFailed(token, "release of an uncertain launch", err,
-			"supervise: release an uncertain launch; retrying at the next orphan sweep")
-	}
-	c := m.Claim()
-	if !released || c.State != supervise.StateQueued || c.Locator != nil {
-		s.log.Info("supervise: unrecorded launch settled without relaunch", "claim", token, "state", c.State)
-		return false
-	}
-	s.log.Warn("supervise: launching again a launch the previous daemon did not finish", "claim", token)
-	spawn := supervise.RequestSpawn{Claim: token}
-	if err := m.Handle(ctx, spawn); err != nil {
-		s.supervisor.decisionFailed(token, fmt.Sprintf("%T", spawn), err, "supervise: launch an unfinished launch again")
-	}
-	return false
-}
-
-// relaunchUnfinished launches tokens' unfinished launches on a goroutine of its own, never on the
-// boot: at once when the boot reconciliation succeeded (reconciled), then on the normal orphan-sweep
-// cadence, until none is left or the daemon stops. A relaunched worker reaches the daemon only once
-// the daemon is up — a Sandbox pod's launcher dials it through its Service, which routes only to a
-// pod whose probes pass, so only once the API answers /healthz, and a shim's hello is resolved only
-// once restoration has closed — so a relaunch the boot waited on could not register: it spent its
-// whole launch budget, launch_failure_limit × worker_boot_timeout_seconds, with the API unanswered.
-//
-// The pre-restart process of such a launch, when one still runs, may now say hello before its
-// relaunch writes the next generation, and be admitted: its claim, launch_uncertain or queued until
-// then, ignores the hello and refuses its registration, and at the next generation the fence drops
-// it. Its connection holds the claim's stream slot only while that process lives, and the relaunch
-// ends it before it starts the next generation: a tmux boot's reconciliation kills every pane no
-// claim records, and a Sandbox relaunch stops its launcher's earlier generation first. Once the next
-// generation is written, the old process's boot token resolves stale.
-//
-// Until the boot reconciliation has succeeded, each sweep retries it first — each reconciliation
-// has the bounded retry above, and only a success releases these claims to launch; once it has, a
-// sweep retries only the releases the store did not take (launchUnfinished), since the
-// reconciliation's proof that no predecessor runs still holds.
-func (s *supervision) relaunchUnfinished(tokens []claim.Token, reconciled bool) {
-	s.wg.Add(1)
-	go func() {
-		defer s.wg.Done()
-		// The relaunches run on a goroutine of their own beside the machines and the orphan sweep,
-		// so this goroutine takes a hold mark of its own.
-		relaunching := store.ForConcurrentWorker(s.supervisor.ctx)
-		if reconciled {
-			tokens = s.launchUnfinished(relaunching, tokens)
-		}
-		ticker := time.NewTicker(s.plan.orphanSweep)
-		defer ticker.Stop()
-		for len(tokens) > 0 {
-			select {
-			case <-s.supervisor.ctx.Done():
-				return
-			case <-ticker.C:
-			}
-			if !reconciled {
-				if reconciled = s.reconcileBootOrphans(relaunching); !reconciled {
-					continue
-				}
-			}
-			tokens = s.launchUnfinished(relaunching, tokens)
-		}
-	}()
 }
 
 // reconcileOrphans ends, every sweep interval, whatever the runtime holds that belongs to none of
