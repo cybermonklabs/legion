@@ -55,7 +55,7 @@ func TestAConditionalGetReadsA304AsTheAnswerItKept(t *testing.T) {
 	}))
 	defer server.Close()
 	etags := NewETags(1 << 20)
-	client := Client{Token: "token", API: server.URL + "/repos/acme/widgets"}
+	client := Client{Token: "token", API: server.URL + "/repos/acme/widgets", Scope: "implement write acme"}
 	conditional := client.WithETags(etags)
 	read := func(c Client) string {
 		t.Helper()
@@ -265,7 +265,8 @@ func TestGraphQLReadsTheDataOrTheErrors(t *testing.T) {
 
 // Clients of two scopes that share one ETags keep their answers apart: a client of one scope
 // sends no ETag another scope's read kept, so it never reads that scope's answer from a 304, and
-// each scope's own second read is conditional on its own first.
+// each scope's own second read is conditional on its own first. A client with no scope reads
+// whole every time, its ETags or not, and keeps nothing: no scope keeps its answers apart.
 func TestTwoScopesKeepTheirConditionalAnswersApart(t *testing.T) {
 	var mu sync.Mutex
 	var sent []string
@@ -303,10 +304,15 @@ func TestTwoScopesKeepTheirConditionalAnswersApart(t *testing.T) {
 	if got := read("implement", "implement write acme"); got != "implement" {
 		t.Fatalf("the implement scope's second read answered %q, want its own kept answer", got)
 	}
+	for range 2 {
+		if got := read("bare", ""); got != "bare" {
+			t.Fatalf("a client with no scope read %q, want its own answer read whole", got)
+		}
+	}
 	mu.Lock()
 	defer mu.Unlock()
-	want := []string{"Bearer implement ", "Bearer review ", `Bearer implement "implement"`}
+	want := []string{"Bearer implement ", "Bearer review ", `Bearer implement "implement"`, "Bearer bare ", "Bearer bare "}
 	if !slices.Equal(sent, want) {
-		t.Fatalf("GitHub was sent %q, want %q: no scope sends another scope's ETag", sent, want)
+		t.Fatalf("GitHub was sent %q, want %q: no scope sends another scope's ETag, and no client without a scope sends one", sent, want)
 	}
 }

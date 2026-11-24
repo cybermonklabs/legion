@@ -38,7 +38,8 @@ func RepositoryAPI(endpoint string, repository ghrepo.Repository) string {
 // (ETags.keep). Nil sends every GET whole. WithETags sets it for one read. Scope names, with no
 // secret, what the token may read - its App, its installation's owner and its permissions - so
 // that clients of two scopes sharing one ETags never answer each other's reads: a token minted
-// again in the same scope keeps the answers kept before it.
+// again in the same scope keeps the answers kept before it. A client with no Scope sends every GET
+// whole, ETags or not, since nothing would keep its answers apart from another client's.
 type Client struct {
 	Token string
 	API   string
@@ -47,7 +48,7 @@ type Client struct {
 }
 
 // WithETags is the client with every GET conditional on what etags kept for its Scope
-// (Client.ETags).
+// (Client.ETags), which a client with no Scope ignores.
 func (c Client) WithETags(etags *ETags) Client {
 	c.ETags = etags
 	return c
@@ -200,7 +201,7 @@ func (c Client) exchange(ctx context.Context, method, target string, body []byte
 		request.Header.Set("Content-Type", "application/json")
 	}
 	var kept etagEntry
-	conditional := method == http.MethodGet && c.ETags != nil
+	conditional := method == http.MethodGet && c.ETags != nil && c.Scope != ""
 	cacheKey := c.Scope + " " + target
 	if conditional {
 		var found bool
@@ -333,6 +334,28 @@ func NamesSecondaryLimit(text string) bool {
 		}
 	}
 	return false
+}
+
+// timeoutMessage is what GitHub says in the body of its answer, a 502, to a GraphQL query that ran
+// out of the time it gives one query: "We couldn't respond to your request in time. Sorry about
+// that. Please try resubmitting your request and contact us if the problem persists."
+const timeoutMessage = "couldn't respond to your request in time"
+
+// NamesTimeout says whether err carries GitHub's answer that a request ran out of the time it
+// gives one: an *Answer, however the caller wrapped it, whose body says so (timeoutMessage).
+func NamesTimeout(err error) bool {
+	var answer *Answer
+	return errors.As(err, &answer) && strings.Contains(strings.ToLower(answer.Body), timeoutMessage)
+}
+
+// Answered says whether err, the outcome of a call, is an answer GitHub gave: nil, the data it
+// answered; an answer other than 2xx (*Answer); or a 200 whose errors name what GitHub could not
+// answer (GraphQLErrors). Anything else - a connection that failed, a deadline that ended the
+// call, a token that could not be minted for it - reached no answer of GitHub's.
+func Answered(err error) bool {
+	var answer *Answer
+	var graphQLErrors GraphQLErrors
+	return err == nil || errors.As(err, &answer) || errors.As(err, &graphQLErrors)
 }
 
 // retryAfter is how long GitHub asks a caller its rate limit answered to wait before calling again,

@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"context"
-	"errors"
 	"math"
 	"sync"
 	"time"
@@ -52,11 +51,11 @@ func (w *workflowRuntime) queryGate(scope string) *queryGate {
 }
 
 // queryShare is the share of the time this daemon's queries of one installation may keep GitHub
-// at work, as the configuration set it (workflowRuntime.graphQLShare, which the loader holds at
-// least config.MinGitHubGraphQLShare and at most 1), and its default for a runtime built with none,
-// as a test's is.
+// at work, as the configuration set it (workflowRuntime.graphQLShare, which the loader already
+// holds at least config.MinGitHubGraphQLShare and at most 1: readShare), or its default when it is
+// zero, as it is for a runtime built with none, a test's.
 func (w *workflowRuntime) queryShare() float64 {
-	if w.graphQLShare >= config.MinGitHubGraphQLShare && w.graphQLShare <= 1 {
+	if w.graphQLShare > 0 {
 		return w.graphQLShare
 	}
 	return config.DefaultGitHubGraphQLShare
@@ -115,14 +114,14 @@ func (g *queryGate) run(ctx context.Context, query func() error) (time.Duration,
 // as soon as the queries did - holds twice the longer of GitHub's wait and the last hold, up to
 // queryHoldMost, as GitHub asks of a client its secondary limit keeps meeting, and never less than
 // GitHub asks. A query GitHub answered without a limit - its data, or any other answer of its own
-// (answeredByGitHub) - ends the backoff; one that got no answer from GitHub at all, a transport
-// failure or its own deadline, leaves the backoff as it stands, since it says nothing of whether
-// GitHub still limits the installation.
+// (githubrest.Answered) - ends the backoff; one that got no answer from GitHub at all - a transport
+// failure, its own deadline, or a token that could not be minted for it - leaves the backoff as it
+// stands, since it says nothing of whether GitHub still limits the installation.
 func (g *queryGate) settle(err error, took time.Duration, now time.Time) {
 	g.next = now.Add(g.pause(took))
 	after, _ := githubrest.RetryAfter(err)
 	if after <= 0 {
-		if answeredByGitHub(err) {
+		if githubrest.Answered(err) {
 			g.held = 0
 		}
 		return
@@ -135,16 +134,6 @@ func (g *queryGate) settle(err error, took time.Duration, now time.Time) {
 	if until := now.Add(hold); until.After(g.hold) {
 		g.hold = until
 	}
-}
-
-// answeredByGitHub says whether err, a query's outcome, is an answer GitHub gave: nil, the data
-// it answered; an answer other than 2xx (*githubrest.Answer); or a 200 whose errors name what
-// GitHub could not answer (githubrest.GraphQLErrors). Anything else - a connection that failed,
-// a deadline that ended the query - reached no answer of GitHub's.
-func answeredByGitHub(err error) bool {
-	var answer *githubrest.Answer
-	var graphQLErrors githubrest.GraphQLErrors
-	return err == nil || errors.As(err, &answer) || errors.As(err, &graphQLErrors)
 }
 
 // pause is how long the gate lets no query go after one that took took: (1 - share) / share of

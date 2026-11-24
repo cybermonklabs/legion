@@ -15,25 +15,31 @@ body: |-
   answers a state, its head moves or it closes. It is read once it is due and never before, in the
   same query as the others due then, and a climb of other pull requests on its base leaves its
   ladder as it is. A climb of one pull request, after a head push, a review round that waits on
-  GitHub or a restart, still reads that pull request alone. Each answer is stamped with the time
-  its own query was answered, so an answer older than one the record holds changes nothing. The
-  query asks GitHub for each pull request's base too, so a pull request moved to another base is
-  recorded and read on that base.
+  GitHub or a restart, still reads that pull request alone, and hands a head GitHub still answers
+  `unknown` for to its base's reads with the pull request its last read held, with no second read
+  of the daemon's database between them; the base's reads keep a pull request whose record they
+  fail to read, and read it at its next turn. Each answer is stamped with the time its own query
+  was answered, so an answer older than one the record holds changes nothing. The query asks
+  GitHub for each pull request's base too, so a pull request moved to another base is recorded and
+  read on that base.
 
   The queries of every base of an installation's repositories go one at a time, and after each
   the next waits (1 - share) / share of the time it took, at most 15 minutes, where share is the
   new `github_graphql_share` key (0.5 by default: a pause as long as the query took). GitHub allows
   an installation 60 seconds of query processing time in 60 seconds, shared by every daemon that
   reads with that installation, so a deployment sets the key near 1 divided by the number of
-  those daemons; a value below 0.01 (one daemon in a hundred) or above 1, and one that is not a
-  finite number, is refused. A rate limit any of the queries meets holds them all as long as
-  GitHub asks (its Retry-After, its reset, or a minute for the secondary limit named by its
-  message alone), before any other query, including a 200 whose errors carry the secondary limit's
-  Retry-After or message. A limit met again less than the last hold's length after that hold
-  ended holds twice the longer of GitHub's wait and the last hold, up to 15 minutes and never less
-  than GitHub asks. The first query GitHub answers without a limit ends that backoff; a query that
-  reaches no answer of GitHub's (a failed connection, its own deadline) leaves it as it stands.
-  Each read is logged as before, and each query logs
+  those daemons: about 0.25 where four daemons share one installation of the implement App. A
+  value below 0.01 (one daemon in a hundred) or above 1, and one that is not a finite number, is
+  refused. Each query carries an installation token minted in its own turn, after the
+  installation's hold and pace, so no hold outlasts the token. A rate limit any of the queries
+  meets holds them all as long as GitHub asks (its Retry-After, its reset, or a minute for the
+  secondary limit named by its message alone), before any other query, including a 200 whose
+  errors carry the secondary limit's Retry-After or message. A limit met again less than the last
+  hold's length after that hold ended holds twice the longer of GitHub's wait and the last hold,
+  up to 15 minutes and never less than GitHub asks. The first query GitHub answers without a limit
+  ends that backoff; a query that reaches no answer of GitHub's (a failed connection, its own
+  deadline, a token that could not be minted) leaves it as it stands. Each read is logged as
+  before, and each query logs
   `github: read the merge state of pull requests on a base by number` with how many pull requests
   it asked for and how many GitHub answered.
 

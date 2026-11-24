@@ -619,8 +619,8 @@ func liveBatchQuery(req *http.Request) ([]int, bool) {
 	return asked, len(asked) > 0
 }
 
-// liveAlias is one pull request a batch's query asks for by number.
-var liveAlias = regexp.MustCompile(`p\d+: pullRequest\(number: (\d+)\)`)
+// liveAlias is one pull request a batch's query asks for by number, under its alias.
+var liveAlias = regexp.MustCompile(`\w+: pullRequest\(number: (\d+)\)`)
 
 // liveBatchNode is one open pull request as the batch query answers it: number at head on branch,
 // on base, GitHub's `mergeable` as GraphQL spells it (MERGEABLE or CONFLICTING), and its merge
@@ -637,8 +637,8 @@ func liveBatchNode(number int, head, branch, base string, mergeable bool, state 
 	return node
 }
 
-// liveBatchAnswer is the batch query's answer to asked: each number nodes holds under its alias, and
-// null for each other.
+// liveBatchAnswer is the batch query's answer to asked: each number nodes holds under its alias
+// (the daemon's pullAlias), and null for each other.
 func liveBatchAnswer(t *testing.T, asked []int, nodes map[int]map[string]any) string {
 	t.Helper()
 	repository := map[string]any{}
@@ -647,7 +647,7 @@ func liveBatchAnswer(t *testing.T, asked []int, nodes map[int]map[string]any) st
 		if found, ok := nodes[number]; ok {
 			node = found
 		}
-		repository[fmt.Sprintf("p%d", number)] = node
+		repository[pullAlias(number)] = node
 	}
 	body, err := json.Marshal(map[string]any{"data": map[string]any{"repository": repository}})
 	if err != nil {

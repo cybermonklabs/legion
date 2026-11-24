@@ -112,7 +112,7 @@ type Config struct {
 	// repository already heard, which costs the daemon one comparison. Nil tells none.
 	HearRepository func(ctx context.Context, repo string)
 	// ReadMergeState is asked, on the commit of a fact of one pull request that owes a read of
-	// GitHub's merge state (askMergeState, through askMergeStateFor), to read it for the pull
+	// GitHub's merge state (askMergeState, by mergeStateOwed), to read it for the pull
 	// request's head: a fact that leaves a review round waiting on GitHub's answer, which is what
 	// moves an approved issue on to its task's next step (accepting, in the default steps); and, by
 	// the gate classify.MergeStateReadOwed, a head move of an issue where a merge forward stands
@@ -123,8 +123,9 @@ type Config struct {
 	ReadMergeState func(issue string)
 	// ReadBaseMergeStates is asked, on the commit of a push to base of repo (basePush), to read
 	// GitHub's merge state for each pull request on that base the push owes a read, by issue: the
-	// same reasons askMergeStateFor reads a fact by (classify.MergeStateReadOwed's base-push reason,
-	// a phase after implementing on the task's line, or a review round waiting on GitHub), named
+	// same reasons askMergeState reads a fact of one pull request by (mergeStateOwed:
+	// classify.MergeStateReadOwed's base-push reason, a phase after implementing on the task's
+	// line, or a review round waiting on GitHub), named
 	// all at once, so that one push makes one batch of reads of its base rather than one read of
 	// each pull request (workflowRuntime.queueBaseMergeStates, GraphQL queries of a few pull
 	// requests each, asked for by number). issues is

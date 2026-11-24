@@ -661,7 +661,7 @@ func (r *mergeWaitReadableLive) publishSynchronize(number int, issue, head strin
 // publishBasePush publishes somebody else's push onto the base branch, as Envoy relays a GitHub
 // push to a branch Legion holds no pull request on (intake's decodePush makes it an intake.BasePush).
 // Its handler walks the open pull requests recorded on that base and asks for a read of each whose
-// round waits on GitHub (workflow's basePush, askMergeStateFor), which is how a step asks the
+// round waits on GitHub (workflow's basePush, mergeStateOwed), which is how a step asks the
 // daemon to read GitHub again without changing anything the round is judged by.
 func (r *mergeWaitReadableLive) publishBasePush() {
 	r.t.Helper()

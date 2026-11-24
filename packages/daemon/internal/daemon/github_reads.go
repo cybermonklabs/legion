@@ -171,14 +171,20 @@ const etagBytes = 16 << 20
 // token for that repository's owner account: the App every read of an issue's own repository is
 // made as, the per-issue reads' and the outbox rows' alike. The token names no repository, so one
 // mint serves every repository of the owner the App is installed on. The mint failure is returned
-// bare, so each caller says in its own words what it was minting the token for. Its Scope names
-// that App, its write permissions and the owner, which the conditional reads key what they keep
-// by (githubrest.Client.Scope).
+// bare, so each caller says in its own words what it was minting the token for. Its Scope
+// (implementScope) names that App, its write permissions and the owner, which the conditional
+// reads key what they keep by (githubrest.Client.Scope).
 func implementClient(ctx context.Context, tokens appauth.Tokens, githubAPI string, repository ghrepo.Repository) (githubrest.Client, error) {
 	lease, err := tokens.Token(ctx, appauth.Implement, repository.Owner())
 	if err != nil {
 		return githubrest.Client{}, err
 	}
-	return githubrest.Client{Token: lease.Token, API: githubrest.RepositoryAPI(githubAPI, repository),
-		Scope: "implement write " + strings.ToLower(repository.Owner())}, nil
+	return githubrest.Client{Token: lease.Token, API: githubrest.RepositoryAPI(githubAPI, repository), Scope: implementScope(repository)}, nil
+}
+
+// implementScope is the Scope of the implement App's client of repository (implementClient): the
+// App, its write permissions and repository's owner, with no secret, so it is known before a token
+// is minted, as the installation's GraphQL gate is found by it (queryChunk).
+func implementScope(repository ghrepo.Repository) string {
+	return "implement write " + strings.ToLower(repository.Owner())
 }

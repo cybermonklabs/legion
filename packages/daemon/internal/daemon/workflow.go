@@ -296,14 +296,15 @@ type workflowRuntime struct {
 	// classify.MergeStateReadOwed a head move in implementing through merging), each the start read
 	// found GitHub still computing (readIssuesAtStart), and each a second read of a conflicting head
 	// left reading no answer (queueMergeStateFollow), that readMergeStates has not started a ladder
-	// for yet; mergeStateQueued is what each of them asked for, the head its ladder hands to the
-	// reads of its base or "" for a climb (queueMergeStateFollow); and mergeStateRunning each issue
-	// whose ladder is still climbing (mergeStateRun), which is why a second fact of an issue already
-	// being read starts no second ladder. mergeStateRetry is how long a ladder waits between reads
-	// of a state GitHub answers `unknown` for, the unit the reads after a ladder wait in, and how
-	// long the outbox's merge-queue read and second conflict read wait before they read again
-	// (mergeStateWait, which attach hands the outbox), mergeStateLadderWait when zero, which a test
-	// shortens (overrides.mergeStateRetry).
+	// for yet; mergeStateQueued is what each of them asked for, the pull request its ladder hands
+	// to the reads of its base, as the read that handed it over held it, or nil for a climb
+	// (queueMergeStateFollow); and mergeStateRunning each issue whose ladder is still climbing
+	// (mergeStateRun), which is why a second fact of an issue already being read starts no second
+	// ladder. mergeStateRetry is how long a ladder waits between reads of a state GitHub answers
+	// `unknown` for, the unit the reads after a ladder wait in, and how long the outbox's
+	// merge-queue read and second conflict read wait before they read again (mergeStateWait, which
+	// attach hands the outbox), mergeStateLadderWait when zero, which a test shortens
+	// (overrides.mergeStateRetry).
 	//
 	// baseReads is each base of a repository whose owed pull requests the daemon reads in batches
 	// (merge_state_batches.go's baseRead): a push to that base owes them a read (queueBaseMergeStates,
@@ -315,7 +316,7 @@ type workflowRuntime struct {
 	// for, baseReadChunk when zero, which a test shortens.
 	mergeStates       *wakeSet[string]
 	mergeStateMu      sync.Mutex
-	mergeStateQueued  map[string]string
+	mergeStateQueued  map[string]*record.PullRequest
 	mergeStateRunning map[string]*mergeStateRun
 	mergeStateRetry   time.Duration
 	baseWake          *wakeSet[string]

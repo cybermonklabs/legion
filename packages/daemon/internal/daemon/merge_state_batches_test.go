@@ -40,7 +40,7 @@ type batchRequest struct {
 }
 
 // askedAlias is one pull request a batch query asks for: its alias and its number.
-var askedAlias = regexp.MustCompile(`p(\d+): pullRequest\(number: (\d+)\)`)
+var askedAlias = regexp.MustCompile(`(\w+): pullRequest\(number: (\d+)\)`)
 
 // readBatchRequest decodes r as a read of acme/widgets's pull requests by number, failing the test
 // (from the stand-in's own goroutine, so with Errorf) for any other request to the GraphQL
@@ -59,10 +59,10 @@ func readBatchRequest(t *testing.T, r *http.Request) []int {
 	}
 	var numbers []int
 	for _, match := range askedAlias.FindAllStringSubmatch(request.Query, -1) {
-		if match[1] != match[2] {
-			t.Errorf("the query asks for pull request %s under the alias p%s", match[2], match[1])
-		}
 		number, _ := strconv.Atoi(match[2])
+		if match[1] != pullAlias(number) {
+			t.Errorf("the query asks for pull request %d under the alias %s, want %s", number, match[1], pullAlias(number))
+		}
 		numbers = append(numbers, number)
 	}
 	return numbers
@@ -83,7 +83,7 @@ func batchAnswer(t *testing.T, asked []int, nodes ...map[string]any) string {
 	repository := map[string]any{}
 	var errs []map[string]any
 	for _, number := range asked {
-		alias := fmt.Sprintf("p%d", number)
+		alias := pullAlias(number)
 		repository[alias] = nil
 		for _, node := range nodes {
 			if node["number"] == number {

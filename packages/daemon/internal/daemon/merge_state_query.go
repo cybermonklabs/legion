@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -18,7 +19,8 @@ const queryTimeoutNear = 9 * time.Second
 
 // queryTimedOut says whether err, a query's failure after took, is the query running out of
 // GitHub's time rather than GitHub failing it: it ran for queryTimeoutNear or longer, its own bound
-// ended it, or GitHub's answer says it could not respond in time. A rate limit is none.
+// ended it, or GitHub's answer says it could not respond in time (githubrest.NamesTimeout). A rate
+// limit is none.
 func queryTimedOut(err error, took time.Duration) bool {
 	if err == nil {
 		return false
@@ -26,8 +28,7 @@ func queryTimedOut(err error, took time.Duration) bool {
 	if after, _ := githubrest.RetryAfter(err); after > 0 {
 		return false
 	}
-	return took >= queryTimeoutNear || errors.Is(err, context.DeadlineExceeded) ||
-		strings.Contains(strings.ToLower(err.Error()), "couldn't respond to your request in time")
+	return took >= queryTimeoutNear || errors.Is(err, context.DeadlineExceeded) || githubrest.NamesTimeout(err)
 }
 
 // baseReadChunk is how many pull requests one GraphQL query of a base's batch asks for, each by
@@ -36,8 +37,8 @@ func queryTimedOut(err error, took time.Duration) bool {
 // requests, a query of every open pull request on main, a hundred to a page with its merge state,
 // answered 502 after about 11 s three times out of three; its twenty oldest asked for by number
 // answered in 7.5 and 8.1 s and once 502 after 10.9 s; ten in 3.6 to 4.9 s; and five in 1.4 to
-// 4.9 s over twelve queries. A query that fails all the same is asked again one pull request at a
-// time (readBase).
+// 4.9 s over twelve queries. A query that runs out of GitHub's time all the same is asked again
+// one pull request at a time (readBase).
 const baseReadChunk = 5
 
 // chunkSize is baseReadChunk, or the size a test sets (workflowRuntime.baseChunk).
@@ -55,16 +56,22 @@ func (w *workflowRuntime) chunkSize() int {
 const pullRequestFields = "number state headRefOid headRefName baseRefName mergeable mergeStateStatus"
 
 // chunkQuery is the GraphQL query of numbers, pull requests of the repository $owner/$name: each
-// asked for by its number under the alias p<number>, so one that GitHub cannot answer leaves the
-// others answered.
+// asked for by its number under its own alias (pullAlias), so one that GitHub cannot answer leaves
+// the others answered.
 func chunkQuery(numbers []int) string {
 	var query strings.Builder
 	query.WriteString("query($owner: String!, $name: String!) {\n  repository(owner: $owner, name: $name) {\n")
 	for _, number := range numbers {
-		fmt.Fprintf(&query, "    p%d: pullRequest(number: %d) { %s }\n", number, number, pullRequestFields)
+		fmt.Fprintf(&query, "    %s: pullRequest(number: %d) { %s }\n", pullAlias(number), number, pullRequestFields)
 	}
 	query.WriteString("  }\n}")
 	return query.String()
+}
+
+// pullAlias is the alias chunkQuery asks for pull request number under, which GitHub answers it
+// under and names in an error of its own about it (queryChunk).
+func pullAlias(number int) string {
+	return "p" + strconv.Itoa(number)
 }
 
 // graphQLPull is one pull request as chunkQuery answers it.
@@ -101,53 +108,87 @@ func (p graphQLPull) githubPullRequest() githubPullRequest {
 	return pull
 }
 
-// queryChunk asks GitHub's GraphQL API for numbers, pull requests of repo, with the implement App's
-// installation token github carries, in one query (chunkQuery) bounded by issueRead, as a REST read
-// of one pull request is, made through that installation's gate (queryGate.run: its rate-limit
-// hold, its pace and one query at a time). It answers each pull request GitHub answered by number,
-// GitHub's word on each it did not (an error of the answer's for that pull request alone, which
-// leaves the others answered), the moment the answer was in hand, and whether a query that failed
-// ran out of GitHub's time (queryTimedOut). A query GitHub refused or answered with no repository
-// at all is an error.
-func (w *workflowRuntime) queryChunk(ctx context.Context, github githubrest.Client, repo ghrepo.Repository, numbers []int) (map[int]graphQLPull, map[int]string, time.Time, bool, error) {
-	query := githubrest.Client{Token: github.Token, API: githubrest.GraphQLEndpoint(w.githubAPI)}
+// chunkAnswer is what one query of a base's batch read (queryChunk): github, the implement App's
+// client of the repository whose token the query was made with, which a CONFLICTING answer's base
+// rules are read with too (applyMergeability); answers, each pull request GitHub answered, by
+// number; unanswered, GitHub's word on each it did not; readAt, the moment the answer was in hand;
+// and, for a query that failed, whether it was never sent because the token could not be minted
+// (unminted) or ran out of GitHub's time (timedOut, queryTimedOut).
+type chunkAnswer struct {
+	github     githubrest.Client
+	answers    map[int]graphQLPull
+	unanswered map[int]string
+	readAt     time.Time
+	unminted   bool
+	timedOut   bool
+}
+
+// queryChunk asks GitHub's GraphQL API for numbers, pull requests of repo, in one query
+// (chunkQuery) bounded by issueRead, as a REST read of one pull request is, made through the gate
+// of the implement App's installation for repo's owner (queryGate.run: its rate-limit hold, its
+// pace and one query at a time). The installation token is minted in the query's own turn, once
+// the gate's hold and pace have passed: a hold can outlast what a lease is promised to have left
+// (appauth's refreshWindow), and a token minted before it could expire while the query waits,
+// which GitHub would answer 401, an answer of its own that ends the gate's backoff (settle). The
+// token cache makes a mint for each query cheap. It answers each pull request GitHub answered by
+// number, GitHub's word on each it did not (an error of the answer's for that pull request alone,
+// which names it by its alias and leaves the others answered), and the moment the answer was in
+// hand. A token that could not be minted, a query GitHub refused and one it answered with no
+// repository at all are errors.
+func (w *workflowRuntime) queryChunk(ctx context.Context, repo ghrepo.Repository, numbers []int) (chunkAnswer, error) {
+	var got chunkAnswer
+	var minted error
+	var took time.Duration
 	var answer struct {
 		Repository map[string]*graphQLPull `json:"repository"`
 	}
-	var readAt time.Time
-	took, err := w.queryGate(github.Scope).run(ctx, func() error {
+	_, err := w.queryGate(implementScope(repo)).run(ctx, func() error {
+		if got.github, minted = implementClient(ctx, w.tokens, w.githubAPI, repo); minted != nil {
+			return minted
+		}
+		query := githubrest.Client{Token: got.github.Token, API: githubrest.GraphQLEndpoint(w.githubAPI)}
 		bounded, cancel := context.WithTimeout(ctx, issueRead)
 		defer cancel()
+		sent := time.Now()
 		err := query.GraphQL(bounded, chunkQuery(numbers), map[string]any{"owner": repo.Owner(), "name": repo.Name()}, &answer)
-		readAt = time.Now().UTC()
+		took = time.Since(sent)
+		got.readAt = time.Now().UTC()
 		return err
 	})
+	if minted != nil {
+		got.unminted = true
+		return got, minted
+	}
 	var partial githubrest.GraphQLErrors
 	if err != nil && !(errors.As(err, &partial) && answer.Repository != nil) {
-		return nil, nil, readAt, queryTimedOut(err, took), fmt.Errorf("read pull requests %v of %s: %w", numbers, repo, err)
+		got.timedOut = queryTimedOut(err, took)
+		return got, fmt.Errorf("read pull requests %v of %s: %w", numbers, repo, err)
 	}
 	if answer.Repository == nil {
-		return nil, nil, readAt, false, fmt.Errorf("read pull requests %v of %s: GitHub answered no repository", numbers, repo)
+		return got, fmt.Errorf("read pull requests %v of %s: GitHub answered no repository", numbers, repo)
 	}
-	answers, unanswered := map[int]graphQLPull{}, map[int]string{}
+	asked := make(map[string]int, len(numbers))
 	for _, number := range numbers {
-		if node := answer.Repository[fmt.Sprintf("p%d", number)]; node != nil {
-			answers[number] = *node
+		asked[pullAlias(number)] = number
+	}
+	got.answers, got.unanswered = map[int]graphQLPull{}, map[int]string{}
+	for alias, number := range asked {
+		if node := answer.Repository[alias]; node != nil {
+			got.answers[number] = *node
 		} else {
-			unanswered[number] = "no answer"
+			got.unanswered[number] = "no answer"
 		}
 	}
 	for _, entry := range partial {
-		if len(entry.Path) >= 2 {
-			var number int
-			if alias, ok := entry.Path[1].(string); ok {
-				if _, err := fmt.Sscanf(alias, "p%d", &number); err == nil {
-					if _, left := unanswered[number]; left {
-						unanswered[number] = entry.Message
-					}
-				}
+		if len(entry.Path) < 2 {
+			continue
+		}
+		alias, _ := entry.Path[1].(string)
+		if number, ok := asked[alias]; ok {
+			if _, left := got.unanswered[number]; left {
+				got.unanswered[number] = entry.Message
 			}
 		}
 	}
-	return answers, unanswered, readAt, false, nil
+	return got, nil
 }

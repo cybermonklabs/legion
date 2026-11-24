@@ -105,11 +105,13 @@ func (w *workflowRuntime) openRecord(ctx context.Context, pr record.PullRequest)
 	return *current, nil
 }
 
-// applyMergeability applies what GitHub's read of a pull request (pull, one GET /pulls/{number})
-// says about merging its head into its base, for every read of the pull request the daemon makes:
-// the per-issue read (readIssuePullRequest), the merge-state ladder (readMergeState), and the
-// outbox's two reads, the merge-queue read (mergeQueueRead) and the second read of a conflicting
-// head (conflictConfirm), whose outbox attach hands this function. Every read that GitHub answers
+// applyMergeability applies what GitHub's read of a pull request (pull: one GET /pulls/{number},
+// or the same pull request as a base's batch query answers it by number, in the shape of that GET,
+// graphQLPull.githubPullRequest) says about merging its head into its base, for every read of the
+// pull request the daemon makes: the per-issue read (readIssuePullRequest), the merge-state ladder
+// of one pull request (readMergeState), the reads of a base's batch (readChunk), and the outbox's
+// two reads, the merge-queue read (mergeQueueRead) and the second read of a conflicting head
+// (conflictConfirm), whose outbox attach hands this function. Every read that GitHub answers
 // applies an intake.PullRequestMergeability fact: GitHub's lazily computed mergeability, its own
 // merge state for the head, the base it names - this read is the one that records the base, both
 // for a pull request whose record has none and as the answer to a push onto its base, which
@@ -118,11 +120,11 @@ func (w *workflowRuntime) openRecord(ctx context.Context, pr record.PullRequest)
 //
 // A read GitHub answered `mergeable: false` (record.MergeabilityConflicting) also reads the base's
 // rules for its required status checks (readBaseRules), with github, the implement App's client
-// of the repository the read of the pull request built (readPullRequest), and the fact carries
-// them (intake.PullRequestMergeability.Rules): a conflict the workflow confirms is decided on them
-// (dispatch://INFRA-4374 R0, workflow's mergeability). Any other answer reads no rules, and its
-// fact carries none. The rules are read before the fact is applied, so no transaction waits on
-// GitHub.
+// of the repository the read of the pull request was made with (readPullRequest, or the query of
+// a base's batch, queryChunk), and the fact carries them (intake.PullRequestMergeability.Rules): a
+// conflict the workflow confirms is decided on them (dispatch://INFRA-4374 R0, workflow's
+// mergeability). Any other answer reads no rules, and its fact carries none. The rules are read
+// before the fact is applied, so no transaction waits on GitHub.
 //
 // A read that only confirms what is recorded applies the fact too, and then the read time is the
 // only thing that moves, which is the point of applying it: a head read a minute ago and found
