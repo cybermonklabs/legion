@@ -64,6 +64,26 @@ const NAMED_SEPARATORS: Readonly<Record<string, string>> = {
   bsol: "\\",
 };
 
+/** The first and the last full-width form of printable ASCII, U+FF01 and U+FF5E: the forms of `!`
+ *  to `~`. Go's `isFullWidth`. */
+const FULL_WIDTH_FIRST = 0xff01;
+const FULL_WIDTH_LAST = 0xff5e;
+
+/** Each full-width form of printable ASCII in a field, {@link FULL_WIDTH_FIRST} to
+ *  {@link FULL_WIDTH_LAST}, which {@link decodeSeparators} reads as that character. */
+const FULL_WIDTH = new RegExp(
+  `[${String.fromCharCode(FULL_WIDTH_FIRST)}-${String.fromCharCode(FULL_WIDTH_LAST)}]`,
+  "g"
+);
+
+/** The printable ASCII character whose full-width form is `code`, which sits 0xFEE0 above it, or
+ *  `undefined` where `code` is no such form. Go's `fromFullWidth`. */
+function fromFullWidth(code: number): string | undefined {
+  return code >= FULL_WIDTH_FIRST && code <= FULL_WIDTH_LAST
+    ? String.fromCharCode(code - 0xfee0)
+    : undefined;
+}
+
 /** One {@link CHARACTER_REFERENCE} as {@link decodeSeparators} reads it: the separator it names,
  *  `&` and the rest of a name that begins with amp, or the reference as it is. Go's
  *  `separatorReference`. */
@@ -82,10 +102,8 @@ function separatorReference(
     }
     // A reference of a full-width separator (`&#xFF0F;`, `&#65295;`) is that separator to a
     // reader of the page too.
-    const ascii = code - 0xfee0;
-    return code >= 0xff01 && code <= 0xff5e && SEPARATORS.includes(String.fromCharCode(ascii))
-      ? String.fromCharCode(ascii)
-      : reference;
+    const ascii = fromFullWidth(code);
+    return ascii !== undefined && SEPARATORS.includes(ascii) ? ascii : reference;
   }
   const separator = Object.hasOwn(NAMED_SEPARATORS, name) ? NAMED_SEPARATORS[name] : undefined;
   if (separator !== undefined && (semicolon || separator === "&")) return separator;
@@ -106,8 +124,8 @@ function separatorReference(
 const REFERENCE_PASSES = 4;
 
 /**
- * `field` as a reader sees it (step 0): each full-width form of printable ASCII (U+FF01 to
- * U+FF5E) as that character, and each character reference of one of {@link SEPARATORS} as that
+ * `field` as a reader sees it (step 0): each full-width form of printable ASCII as that character
+ * ({@link fromFullWidth}), and each character reference of one of {@link SEPARATORS} as that
  * separator, decoded in at most {@link REFERENCE_PASSES} passes that change it; `undefined` where
  * the field still changes on the pass after them. A named reference needs its `;`, as a page's
  * reader takes it, but for `&amp`, which a reader also takes as the start of a longer name
@@ -116,7 +134,7 @@ const REFERENCE_PASSES = 4;
 function decodeSeparators(field: string): string | undefined {
   for (let pass = 0; ; pass++) {
     const decoded = field
-      .replace(/[\uFF01-\uFF5E]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xfee0))
+      .replace(FULL_WIDTH, (c) => fromFullWidth(c.charCodeAt(0)) ?? c)
       .replace(CHARACTER_REFERENCE, separatorReference);
     if (decoded === field) return field;
     if (pass === REFERENCE_PASSES) return undefined;

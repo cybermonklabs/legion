@@ -607,8 +607,8 @@ func decodeSeparators(field string) (string, bool) {
 	}
 }
 
-// fullWidthASCII is s with each full-width form of printable ASCII (U+FF01 to U+FF5E) as that
-// ASCII character; every other byte, one that is not UTF-8 among them, stays as it is.
+// fullWidthASCII is s with each full-width form of printable ASCII (fromFullWidth) as that ASCII
+// character; every other byte, one that is not UTF-8 among them, stays as it is.
 func fullWidthASCII(s string) string {
 	if !strings.ContainsRune(s, utf8.RuneError) && strings.IndexFunc(s, isFullWidth) < 0 {
 		return s
@@ -616,8 +616,8 @@ func fullWidthASCII(s string) string {
 	var b strings.Builder
 	for i := 0; i < len(s); {
 		r, size := utf8.DecodeRuneInString(s[i:])
-		if isFullWidth(r) {
-			b.WriteByte(byte(r - 0xFEE0))
+		if c, ok := fromFullWidth(r); ok {
+			b.WriteByte(c)
 		} else {
 			b.WriteString(s[i : i+size])
 		}
@@ -626,7 +626,18 @@ func fullWidthASCII(s string) string {
 	return b.String()
 }
 
+// isFullWidth reports whether r is the full-width form of a printable ASCII character: U+FF01 to
+// U+FF5E, the forms of '!' to '~' (fromFullWidth).
 func isFullWidth(r rune) bool { return 0xFF01 <= r && r <= 0xFF5E }
+
+// fromFullWidth is the printable ASCII character whose full-width form is r, which sits 0xFEE0
+// above it, and true; or 0 and false where r is no such form (isFullWidth).
+func fromFullWidth(r rune) (byte, bool) {
+	if !isFullWidth(r) {
+		return 0, false
+	}
+	return byte(r - 0xFEE0), true
+}
 
 // separatorReference is ref, one characterReference, as decodeSeparators reads it: the separator
 // it names, "&" and the rest of a name that begins with amp, or ref as it is.
@@ -643,10 +654,10 @@ func separatorReference(ref string) string {
 			return string(rune(v))
 		}
 		// A reference of a full-width separator (&#xFF0F;, &#65295;) is that separator to a reader
-		// of the page too. The range is read while v is still a uint64, so only a full-width value
-		// is narrowed, and its narrowed form is ASCII.
-		if err == nil && 0xFF01 <= v && v <= 0xFF5E && strings.IndexByte(separators, byte(v-0xFEE0)) >= 0 {
-			return string(rune(v - 0xFEE0))
+		// of the page too. ParseUint read v in 32 bits, so rune(v) is v where v fits an int32 and
+		// negative where it does not: only a full-width v narrows to a full-width rune.
+		if c, ok := fromFullWidth(rune(v)); err == nil && ok && strings.IndexByte(separators, c) >= 0 {
+			return string(rune(c))
 		}
 		return ref
 	}
