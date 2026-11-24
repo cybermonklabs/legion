@@ -487,7 +487,7 @@ func TestAClaimsTurnTimesRoundTrip(t *testing.T) {
 
 // A claim's two causes and the time the daemon recorded each are columns of their own, so a
 // restarted daemon reads each cause back beside its time, to the microsecond
-// (dispatch://INFRA-5645). A claim that holds no cause reads back with no time; a cause recorded
+// (#5349). A claim that holds no cause reads back with no time; a cause recorded
 // again with the same text reads back with its new time; and a cause the daemon dropped, as it
 // drops a start failure at its agent's ready, reads back with no time. So does a time the row
 // holds beside an empty cause, which a daemon of the release before the columns leaves when it
@@ -539,7 +539,7 @@ func TestClaimCauseTimesSurviveAReload(t *testing.T) {
 // This release drops the start failure, with its time, at every ready (supervise's ready), so a
 // start failure's time before last_ready is never the time of the failure the row holds: the claim
 // reads that start failure back with no time, and its death's time, which no ready clears, as it
-// stands (dispatch://INFRA-5645).
+// stands (#5349).
 func TestAStartFailureTimeBeforeTheReadyIsReadAsNone(t *testing.T) {
 	ctx := context.Background()
 	store := migratedStore(t)
@@ -572,7 +572,7 @@ func TestAStartFailureTimeBeforeTheReadyIsReadAsNone(t *testing.T) {
 // a row can hold a cause beside the time this release gave the cause before it. A cause that
 // release wrote with text other than the cause the time dates reads back with no time. One it
 // wrote with the same text, a death or a start failure with no ready between, reads back with the
-// older time, which no read can tell from its own (dispatch://INFRA-5645).
+// older time, which no read can tell from its own (#5349).
 func TestACauseAnEarlierReleaseWroteIsReadWithNoTime(t *testing.T) {
 	ctx := context.Background()
 	store := migratedStore(t)

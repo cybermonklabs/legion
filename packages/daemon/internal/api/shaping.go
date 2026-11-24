@@ -297,15 +297,16 @@ func shapeAnswer(id AnswerID, body any, restore, strip int) (any, tookOff) {
 	case AnswerHealth, AnswerRegister, AnswerRegisterController, AnswerNoContent,
 		AnswerGrant, AnswerHandoffComplete, AnswerEmptyObject, AnswerFreshSession,
 		AnswerCompact, AnswerTurnOutcome, AnswerWaveRelease, AnswerProjectPause, AnswerProjectResume,
-		AnswerPlanRegister:
+		AnswerPlanRegister, AnswerIntakeReplay, AnswerIntakeDiscard:
 		// The identity, one row each: every contract this daemon serves one of these answers
 		// reads the body it writes. No key has arrived on any of them since that answer arrived.
 		// One key has gone: AnswerHandoffComplete lost its `note` at stateMachineContract, and
 		// no reader from ServingFloor to 85 requires it, so no stand-in is written for it
 		// (version.go's 86). AnswerTurnOutcome arrived whole at stateMachineContract,
-		// AnswerProjectPause and AnswerProjectResume arrived whole at pauseContract, and
-		// AnswerPlanRegister arrived whole at OwnerPlanContract, so no older contract records any
-		// of the four at all.
+		// AnswerProjectPause and AnswerProjectResume arrived whole at pauseContract,
+		// AnswerPlanRegister arrived whole at OwnerPlanContract, and AnswerIntakeReplay and
+		// AnswerIntakeDiscard arrived whole at intakeGiveUpsContract, so no older contract records
+		// any of the six at all.
 		return body, took
 	case answerUnparsed:
 		// The identity too, and for a reason of its own: no plugin parses these bodies, so no
@@ -575,6 +576,7 @@ var stateNarrowings = []stateNarrowing{
 	{contract: repositoriesLiveContract, state: withoutRepositoriesLive,
 		dropped: "repositories.live, served as contract 152's owners, mapped, refused and withoutWebhookApp"},
 	{contract: assignmentPlanContract, issue: withoutAssignmentPlans, dropped: "the issues' assignments' plan"},
+	{contract: intakeGiveUpsContract, state: withoutIntakeGiveUps, dropped: "intakeGiveUps"},
 	{contract: causeTimesContract, issue: withoutCauseTimes, dropped: "the claim views' lastDeathAt and lastStartFailureAt"},
 }
 
@@ -1016,11 +1018,10 @@ const repositoriesLiveContract = 202
 //
 // It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
 // that constant, and the contract the word arrived at stays where it is. It moves only with
-// dispatch://INFRA-4036's own number, which is why the last entry of answers.go's
-// SupportedContracts names it rather than its number:
-// TestSupportedContractsAreTheNumberedEntriesFromTheFloorUp holds that list to version.go's
-// entry headers, so a renumber that moves dispatch://INFRA-4036's entry and leaves this
-// constant behind names a contract no entry declares and fails there.
+// dispatch://INFRA-4036's own number, which is why answers.go's SupportedContracts names it
+// rather than its number: TestSupportedContractsAreTheNumberedEntriesFromTheFloorUp holds that
+// list to version.go's entry headers, so a renumber that moves dispatch://INFRA-4036's entry and
+// leaves this constant behind names a contract no entry declares and fails there.
 const cachesSourceContract = 213
 
 // assignmentPlanContract is the daemon contract that added each assignment's `plan`, the group an
@@ -1031,13 +1032,32 @@ const cachesSourceContract = 213
 //
 // It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
 // that constant, and the contract the key arrived at stays where it is. It moves only with this
-// change's own number, and it is the last number of answers.go's SupportedContracts, which names
-// the constant rather than its number for that reason.
+// change's own number, and answers.go's SupportedContracts names the constant rather than its
+// number for that reason.
 const assignmentPlanContract = 220
+
+// intakeGiveUpsContract is the daemon contract that added the intake's give-ups (version.go's
+// 228, dispatch://INFRA-1575). It added one key to the state, `intakeGiveUps`: each durable
+// consumer's count of the messages its intake gave up on that no replay or discard has closed,
+// with the newest stream sequence among them, and the newest of those records. It added two
+// answers whole with their routes, the controller's replay and discard of those records
+// (answers.go's AnswerIntakeReplay and AnswerIntakeDiscard), which no contract below it records.
+// A plugin before it is served the state without the key (withoutIntakeGiveUps, its row of
+// stateNarrowings): one built before sjawhar/legion#2788 reads the state with a strict schema
+// and would refuse the whole body for a key it does not name, and one built after strips the key
+// instead, so the band keeps the body its own contract's record describes. The two enumerated
+// fields it added, a give-up's `reason` and a replayed record's `outcome` (answers.go's
+// intakeGiveUpReasons and replayOutcomes), arrived whole with the key and the answer that carry
+// them, so no value strip is needed. The operator's two give-up routes answer the `legion`
+// command, which no plugin parses.
+//
+// It is a literal of its own and never DaemonAPIVersion: the number a later contract takes
+// moves that constant, and the contract the key and the two answers arrived at stays where it is.
+const intakeGiveUpsContract = 228
 
 // causeTimesContract is the daemon contract that added each claim view's `lastDeathAt` and
 // `lastStartFailureAt`, the time the daemon recorded the claim's `lastDeathCause` and its
-// `lastStartFailure` (version.go's 243, dispatch://INFRA-5645). A plugin before it is served
+// `lastStartFailure` (version.go's 243). A plugin before it is served
 // every claim view without the two keys (withoutCauseTimes): its reader strips a key it does not
 // name, so the band is what keeps the times from a caller that did not ask for them rather than
 // what keeps such a caller reading. The two are one band because each dates the cause beside it
@@ -1769,6 +1789,19 @@ func withoutPause(state State) (State, bool) {
 	moved := state.Paused != nil || state.LastPause != nil
 	state.Paused, state.LastPause = nil, nil
 	return state, moved
+}
+
+// withoutIntakeGiveUps is state with no `intakeGiveUps`, the one key intakeGiveUpsContract added
+// to the state; the rest of that contract is two answers of their own routes, which no older
+// plugin calls. The key is left off rather than emptied, because the strict reader before the
+// contract refuses it as surely when its two lists are empty as when they name a give-up, which
+// is why State.MarshalJSON writes the key on every body but this one (State.intakeGiveUpsHidden),
+// as withoutWakesWaiting leaves off `wakesWaiting`. The flag is set on a value of the state's own,
+// so the state the source answered is left as it was. The band reports a move on every body it
+// serves, as withoutWakesWaiting does.
+func withoutIntakeGiveUps(state State) (State, bool) {
+	state.IntakeGiveUps, state.intakeGiveUpsHidden = IntakeGiveUpsView{}, true
+	return state, true
 }
 
 // withoutResumePauses is records with no resume carrying `pause`, the one key pauseContract added

@@ -1,5 +1,5 @@
 -- 20261124073512_claim_cause_times.up.sql — when the daemon recorded a claim's last death cause
--- and its last start failure, and the digest of the cause each time dates (dispatch://INFRA-5645).
+-- and its last start failure, and the digest of the cause each time dates (#5349).
 --
 -- claims.last_death_at is supervise.Claim.LastDeathAt and claims.last_start_failure_at is
 -- supervise.Claim.LastStartFailureAt: the time, by the daemon's clock, at which it recorded the

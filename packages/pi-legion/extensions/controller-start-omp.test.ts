@@ -14,12 +14,14 @@ import { deliverSubject, RelayHeader } from "@legion/envoy-client/consumer-deliv
 import {
   type Block,
   type Cleanup,
+  deleteRelayCapturingStreams,
   deliveryFor,
   type Interactive,
   messageStream,
   newestMessage,
   ompNatsGuard,
   ompRoot,
+  type RelayConnection,
   type Request,
   relayFirstAnswers,
   sendRelayFrame,
@@ -35,7 +37,13 @@ import {
   type Writer,
   writtenLines,
 } from "@legion/test-fixtures/transcript-lines";
-import { connect, type Msg, headers as natsHeaders, StringCodec } from "nats";
+import {
+  connect,
+  type JetStreamManager,
+  type Msg,
+  headers as natsHeaders,
+  StringCodec,
+} from "nats";
 import { z } from "zod";
 import pkg from "../package.json";
 
@@ -942,6 +950,9 @@ async function controllerInbound(nats: string): Promise<ControllerInbound> {
   let noticeFault: Error | undefined;
   const connection = await connect({ servers: nats });
   cleanup.push(() => connection.close());
+  // No stream another suite left on this server may answer the frames
+  // (`deleteRelayCapturingStreams`).
+  await deleteRelayCapturingStreams(connection);
   const codec = StringCodec();
   const noticeSubject = legionControllerNoticeSubject(PROJECT);
   // The stream's sequence: one stream for the whole case, so every frame of it is ordered by the
@@ -1103,6 +1114,9 @@ test.skipIf(natsUrl === undefined && !onActions)(
   async () => {
     const connection = await connect({ servers: natsUrl ?? "" });
     cleanup.push(() => connection.close());
+    // Every half below turns on who answers a relay subject, so none may be a stream that
+    // another suite left on this server (`deleteRelayCapturingStreams`).
+    await deleteRelayCapturingStreams(connection);
     const codec = StringCodec();
     const send = (sid: string) =>
       sendRelayFrame({
@@ -1177,6 +1191,179 @@ test.skipIf(natsUrl === undefined && !onActions)(
     expect(Date.now() - started).toBeGreaterThanOrEqual(RELAY_REFUSAL_MS);
   },
   RELAY_REFUSAL_MS * 2 + 60_000
+);
+
+/**
+ * Whether the NATS server LEGION_TEST_NATS_URL names runs JetStream, which the two cases below need
+ * to make a stream. CI's pi-legion job runs nats:2.10 with no JetStream, where no stream can capture
+ * a relay subject and `deleteRelayCapturingStreams` deletes nothing (the relay case above runs that
+ * path there); a pod's `nats-server -js` runs them.
+ */
+const natsJetStream =
+  natsUrl === undefined
+    ? false
+    : await (async (): Promise<boolean> => {
+        const probe = await connect({ servers: natsUrl });
+        try {
+          await probe.jetstreamManager();
+          return true;
+        } catch (error) {
+          // nats.js answers a server with no JetStream with the code "503".
+          if (error instanceof Error && "code" in error && error.code === "503") return false;
+          throw error;
+        } finally {
+          await probe.close();
+        }
+      })();
+
+/**
+ * A stream of the case's own on one relay subject of its own, which `deleteRelayCapturingStreams`
+ * lists as it lists ENVOY_NOTIFICATIONS (its filter is `deliverSubject("*")`), and which takes no
+ * frame of any other case: a stream on all of `notifications.>` would answer the frames of the
+ * files pi-legion's `bun test --parallel` runs beside this one, which is the failure the helper is
+ * for. Deleted when the case ends, a delete that finds it gone included.
+ */
+function ownRelayStream(
+  manager: JetStreamManager,
+  label: string
+): { readonly name: string; readonly subjects: string[] } {
+  const id = randomUUID();
+  const stream = { name: `${label}_${id}`, subjects: [deliverSubject(`${label}-${id}`)] };
+  cleanup.push(() => deleteIfThere(manager, stream.name));
+  return stream;
+}
+
+/** Deletes `name` if the server holds it, so the case leaves none. */
+async function deleteIfThere(manager: JetStreamManager, name: string): Promise<void> {
+  await manager.streams.delete(name).catch((error: unknown) => {
+    if (!(error instanceof Error && error.message.includes("stream not found"))) throw error;
+  });
+}
+
+/** How often each case below makes its interleaving again before it says the interleaving never
+ * happened. Another case's call of the helper on the same server can take the stream first, which
+ * is no interleaving of this case's own; nothing else makes one try differ from the next. */
+const OWN_STREAM_TRIES = 5;
+
+// pi-legion's `bun test --parallel` runs files side by side, so two cases can call
+// `deleteRelayCapturingStreams` at once on a server that holds a stream capturing a relay subject.
+// Both list it, the first delete takes it, and the second is answered "stream not found". The case
+// makes that interleaving rather than waiting for it to happen: each call's first list is answered
+// only once both calls have theirs. It holds that both calls go on, and that the stream is gone,
+// once the two deletes of it were answered one taken and one "stream not found", which is the
+// interleaving made.
+test.skipIf(!natsJetStream)(
+  "two cases that delete the same stream on the relay subjects at once both go on, and none is left",
+  async () => {
+    const connection = await connect({ servers: natsUrl ?? "" });
+    cleanup.push(() => connection.close());
+    const manager = await connection.jetstreamManager();
+    const stream = ownRelayStream(manager, "TWO_CALLS");
+    for (let attempt = 1; ; attempt += 1) {
+      // A stream another suite left on all of `notifications.>` would refuse this one as an
+      // overlap, and so would this case's own from a try before, so each try starts with none.
+      await deleteRelayCapturingStreams(connection);
+      await manager.streams.add(stream);
+      const listed = Promise.withResolvers<void>();
+      let lists = 0;
+      const deletes: string[] = [];
+      const holding = (): RelayConnection => {
+        let first = true;
+        return {
+          async request(subject, payload, options) {
+            let reply: { readonly data: Uint8Array };
+            try {
+              // The helper's requests carry no header set.
+              reply = await connection.request(subject, payload, {
+                timeout: options?.timeout ?? 5_000,
+              });
+            } catch (error) {
+              // A call that fails before its list must not hold the other call's list forever.
+              listed.resolve();
+              throw error;
+            }
+            if (subject === "$JS.API.STREAM.NAMES" && first) {
+              first = false;
+              lists += 1;
+              if (lists === 2) listed.resolve();
+              await listed.promise;
+            }
+            if (subject === `$JS.API.STREAM.DELETE.${stream.name}`) {
+              deletes.push(new TextDecoder().decode(reply.data));
+            }
+            return reply;
+          },
+        };
+      };
+      const both = await Promise.all([
+        deleteRelayCapturingStreams(holding()),
+        deleteRelayCapturingStreams(holding()),
+      ]);
+      const taken = deletes.filter((answer) => answer.includes('"success":true')).length;
+      const gone = deletes.filter((answer) => answer.includes('"err_code":10059')).length;
+      if (taken === 1 && gone === 1) {
+        expect(both.map((found) => found.includes(stream.name))).toEqual([true, true]);
+        break;
+      }
+      if (attempt === OWN_STREAM_TRIES) {
+        throw new Error(
+          `in ${OWN_STREAM_TRIES} tries the two calls' deletes of ${stream.name} were never answered one taken and one "stream not found" (last: ${JSON.stringify(deletes)}), so the interleaving this case is for never happened`
+        );
+      }
+    }
+    const left: string[] = [];
+    for await (const name of manager.streams.names(stream.subjects[0])) left.push(name);
+    expect(left).toEqual([]);
+  },
+  60_000
+);
+
+// The control of the case above: a stream that captures a relay subject and is there after the
+// deletes fails the call, by name, however its delete was answered. The stream is made again as
+// soon as its delete is answered, before the call lists the streams again.
+test.skipIf(!natsJetStream)(
+  "a stream on the relay subjects made again after its delete fails the call, naming it",
+  async () => {
+    const connection = await connect({ servers: natsUrl ?? "" });
+    cleanup.push(() => connection.close());
+    const manager = await connection.jetstreamManager();
+    const stream = ownRelayStream(manager, "REMADE");
+    for (let attempt = 1; ; attempt += 1) {
+      // A stream another suite left on all of `notifications.>` would refuse this one as an
+      // overlap, and so would this case's own from a try before, so each try starts with none.
+      await deleteRelayCapturingStreams(connection);
+      await manager.streams.add(stream);
+      let remade = false;
+      const remaking: RelayConnection = {
+        async request(subject, payload, options) {
+          const reply = await connection.request(subject, payload, {
+            timeout: options?.timeout ?? 5_000,
+          });
+          if (subject === `$JS.API.STREAM.DELETE.${stream.name}` && !remade) {
+            remade = true;
+            await manager.streams.add(stream);
+          }
+          return reply;
+        },
+      };
+      const outcome = await deleteRelayCapturingStreams(remaking).then(
+        (found) => `went on, having found ${JSON.stringify(found)}`,
+        (error: unknown) => String(error)
+      );
+      if (
+        /the NATS server still holds streams that capture a relay subject: /.test(outcome) &&
+        outcome.includes(stream.name)
+      ) {
+        break;
+      }
+      if (attempt === OWN_STREAM_TRIES) {
+        throw new Error(
+          `in ${OWN_STREAM_TRIES} tries the call never failed on ${stream.name} made again after its delete${remade ? "" : " (the last try never deleted it)"}: ${outcome}`
+        );
+      }
+    }
+  },
+  60_000
 );
 
 test.skipIf(skip)(

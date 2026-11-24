@@ -228,7 +228,7 @@ type Workspace struct {
 // starts included, otherwise starts `git maintenance run --auto --detach`, whose `git gc --auto`
 // outlives the fetch and takes the clone's ref locks, HEAD's among them, while jj is still
 // exporting the refs that fetch moved: jj gives up on such a lock and fails the provision
-// (dispatch://INFRA-5645). git 2.51 made that maintenance let go of the locks, and the image's git
+// (#5349). git 2.51 made that maintenance let go of the locks, and the image's git
 // is older. So no process provisioning starts holds a lock of the clone once it has returned. git
 // would read GIT_CONFIG_PARAMETERS (its `-c`) after the pins, so no process provisioning starts
 // inherits it.

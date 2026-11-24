@@ -148,7 +148,7 @@ func issuePodInitExit(cmd *cobra.Command, err error, stderr io.Writer) int {
 // while this runs but a git or jj the provision itself starts, and each of those holds its locks
 // only while it runs: every git provisioning starts, directly or through jj, reads gc.auto=0 and
 // maintenance.auto=false among its pinned settings (the workspace package's pinnedGitConfig), so
-// no fetch leaves git's automatic maintenance holding a lock behind it (dispatch://INFRA-5645).
+// no fetch leaves git's automatic maintenance holding a lock behind it.
 // So every lock there when this starts is stale and would fail each later write of what it locks
 // (LEGION-731). The kubelet restarts a failed init container on the same pod, and so on the same
 // disk, so a first attempt killed mid-fetch leaves exactly those locks for the retry to clear. An

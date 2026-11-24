@@ -196,7 +196,7 @@ func TestAFailedStartsCauseGoesWhenTheAgentComesUp(t *testing.T) {
 
 // Each cause carries the time the daemon recorded it, and that time moves each time the daemon
 // records a cause of that kind, one whose text is the same as the cause it replaces included, and
-// when the cause is dropped, and at no other time (dispatch://INFRA-5645): a death of an hour ago
+// when the cause is dropped, and at no other time (#5349): a death of an hour ago
 // and one of days ago read the same text, and only the time tells them apart. Here the claim's
 // process dies and its relaunch is refused, twice, a minute apart, with the same death and the same
 // refusal, and no ready between; then its agent comes up, which drops the start failure and its
@@ -264,7 +264,7 @@ func TestAClaimCauseTimeIsRecordedAgainForTheSameText(t *testing.T) {
 
 // The boot's clear of a start failure an earlier release kept past its agent's ready drops the
 // failure's time and digest with it, and leaves a claim whose agent has not been ready since as it
-// stands, time and all (DropStaleStartFailure, dispatch://INFRA-5645).
+// stands, time and all (DropStaleStartFailure, #5349).
 func TestTheBootsClearOfAStaleStartFailureTakesItsTime(t *testing.T) {
 	for _, tc := range []struct {
 		state   ClaimState

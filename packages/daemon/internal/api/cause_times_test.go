@@ -17,7 +17,7 @@ import (
 
 // A claim keeps its death's cause through every later ready, and a cause carried no time, so a
 // reader of the state took a death of days before for the reason a worker is not running now
-// (dispatch://INFRA-5645). Each cause is served beside the time the daemon recorded it.
+// (#5349). Each cause is served beside the time the daemon recorded it.
 
 // causeRecordedAt is the moment the tests below record a cause at, and causeReadyAt the agent's
 // ready an hour later.

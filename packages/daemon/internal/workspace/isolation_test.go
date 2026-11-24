@@ -137,7 +137,7 @@ func TestProvisionRunsNoHookTheTreePlanted(t *testing.T) {
 // each reads gc.auto=0 and maintenance.auto=false among the pins (pinnedGitConfig), so the
 // credentialed fetch starts no `git maintenance run --auto` and no `git gc --auto`, which git 2.47
 // would leave running behind the fetch holding the clone's ref locks while jj exports the refs the
-// fetch moved (dispatch://INFRA-5645). The clone's own configuration asks for it at every fetch:
+// fetch moved (#5349). The clone's own configuration asks for it at every fetch:
 // gc.auto=1 and gc.autoPackLimit=1 make a gc due on any clone, and maintenance.auto=true is what
 // the pin overrules. git's trace2 event target records every git process the second provision
 // starts and every child each of them starts; it is set after advanceRemote, so it holds that

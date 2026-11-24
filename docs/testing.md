@@ -178,6 +178,16 @@ itself, whose tests import its sources by relative path.
   `skipWithout` beside a warning of its own, so a host that has neither reads one line naming both
   (`hostTool` with the variable, in that file and in `harness-stacks.test.ts`).
 
+- A test under `scripts/e2e/lib` gates on a host program with `hostGate` from the same module
+  instead, declaring its gated rows with the gate's own `test` and `describe`: outside CI each
+  gated row skips as with `skipWithout`, naming the program, and under `GITHUB_ACTIONS` each fails
+  by its own name, naming the program, since the job that runs those tests carries every program
+  they need, and a skip there would be a green job with the proof gone (`skipOutsideCI` in
+  `packages/daemon/internal/launcher/rolenamespace_test.go` is the same rule). Its `reason` takes a
+  sentence of the caller's own (a library such as libpq), and its `never` names programs whose
+  absence fails the rows on any host. A single row that never skips for a program calls
+  `requireHostTools` in its body instead: the rows that run python3 do one or the other.
+
 - A test that requires a command to have left in place a signal it was started ignoring, as
   `nohup` starts one ignoring SIGHUP and a shell's `&` job ignoring SIGINT, reads the command's
   `SigIgn` mask with `ignoresSignal` (`@legion/test-fixtures/held-process`): a listener for the
@@ -192,6 +202,15 @@ itself, whose tests import its sources by relative path.
   not once the whole start has succeeded: a start that throws half-way has already made the
   container (`startNats` in `scripts/e2e/lib/nats-stream.test.ts`). Remove it with `docker rm -f
   -v`, and give it the CPU and memory limits "Containers a test starts" below requires.
+
+- Give a Bun process the test starts under a HOME of its own `BUN_RUNTIME_TRANSPILER_CACHE_PATH=0`,
+  unless the row tests that cache. Where neither that variable nor `XDG_CACHE_HOME` names another
+  place, Bun keeps its transpiler cache under HOME, so a child in an empty HOME writes a file and a
+  rename for each module it caches (Bun caches only files above a size floor) before its own code
+  runs: 282 for claude-envoy's channel server. Each is a directory-entry operation on the disk the
+  HOME is on, and on a shared disk under load they made such a start take tens of seconds. With
+  "0" the child transpiles as before and writes nothing (`NO_TRANSPILER_CACHE` in
+  `packages/claude-envoy/tests/transpiler-cache.ts`).
 
 - Two caches stay where their tool puts them, under the user's cache directory, and this is the one
   rule here that holds only under a condition. Oh My Pi's native modules, about 123 MiB a pin, are
@@ -611,12 +630,6 @@ composes with the `TestMain` a package already has
 (`testpg.Main(prefix, func() int { return testnats.Main(m) })`).
 `packages/envoy/internal/dispatch/store/storetest`'s `Open` is the same fixture for Dispatch's
 schema.
-Dispatch's store package cannot import `storetest`, which imports it, and its migration tests each
-need the schema as it stood at some earlier version, so its own tests take
-`openMigratedTestStore(t, version)` (`store_test.go`): a clone of a template migrated through
-that version, built once per version from the nearest template below it, and dropped by the
-package's `TestMain`. A test moving such a database further forward applies only the migrations
-past its version (`migrateAbove`), not the whole history again.
 `testdb.Database` is still there for a test that wants an empty database: `internal/record`'s own tests
 apply part of the migration set by hand and assert what `Migrate` then returns, which a migrated
 clone would not let them do.
@@ -629,6 +642,14 @@ every package of it.
 `internal/daemon`'s tests boot daemons, which migrate the database they are given: each test's
 daemons write in a clone of the package's template (`testDSN`), so a boot there finds the schema
 in place, and the tests run beside each other on databases of their own.
+
+Dispatch's store package cannot import `storetest`, which imports it, and its migration tests each
+need the schema as it stood at some earlier version. Its own tests take
+`openMigratedTestStore(t, version)` (`store_test.go`): a clone of a template migrated through that
+version. A run keeps one template for each version its tests ask for, each built from the nearest
+template below it, and the package's `TestMain` drops them all when the run ends. A test that
+moves its clone further forward applies only the migrations past its version (`migrateAbove`),
+not the whole history again.
 
 A pgx pool a daemon test opens holds four connections, unless `LEGION_TEST_PG_DSN` sets a size of
 its own (`pool_max_conns`), which it keeps. pgx sizes a pool with no size of its own at the greater

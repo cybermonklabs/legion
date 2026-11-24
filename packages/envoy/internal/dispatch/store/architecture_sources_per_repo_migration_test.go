@@ -61,6 +61,7 @@ func architectureState(t *testing.T, store *Store) string {
 // 0. A repository is a source of a project once, every component names a source of its project, and
 // deleting a source deletes its components and their edges.
 func TestMigrationKeepsAProjectsOneSourceAndItsComponents(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := openMigratedTestStore(t, architectureSourcesPerRepoVersion-1)
 	seedSingleSourceProject(t, store)
@@ -136,6 +137,7 @@ func TestMigrationKeepsAProjectsOneSourceAndItsComponents(t *testing.T) {
 // at the schema before the migration: such a component counts 1 while a project's own source's
 // components count nothing, and the migration then refuses to apply over it.
 func TestCensusCountsAComponentWhoseProjectHasNoSource(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := openMigratedTestStore(t, architectureSourcesPerRepoVersion-1)
 	seedSingleSourceProject(t, store)

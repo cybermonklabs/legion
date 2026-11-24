@@ -2091,8 +2091,10 @@ func (s sessionStop) send(session string, goneAt time.Time) {
 // launch_uncertain until the bounded retry succeeds. The relaunches run after hellos are
 // resolved, on a goroutine of their own, so start returns, and the API serves, without waiting for
 // any (relaunchUnfinished): every re-adopted claim on another plugin contract is posted its boot
-// stale-plugin relaunch first (refreshStalePlugins), over every one before any of them is
-// relaunched; a claim a refused attempt leaves stale is retried at the orphan sweep's own cadence
+// stale-plugin relaunch (refreshStalePlugins) before any claim is relaunched, but for one whose
+// record says its process died (recordedDeaths), which is relaunched for that death in the
+// unfinished launches' own pass and order, on this daemon's contract; a claim a refused attempt
+// leaves stale is retried at the orphan sweep's own cadence
 // from then on (reconcileOrphans), not just at this boot pass. A daemon that leaves the controller
 // to its operator first stops the controller's claim an earlier
 // boot under `controller: daemon` left (stopLaunchedController), which leaves it absent or
@@ -2184,9 +2186,19 @@ func (s *supervision) start(boot context.Context, settle func() error) error {
 		s.reconcileOrphans(store.ForConcurrentWorker(s.supervisor.ctx))
 	}()
 	s.endPluginRounds(s.claims)
-	s.refreshStalePlugins(s.claims, "boot")
-	if len(unfinished) > 0 {
-		s.relaunchUnfinished(unfinished, reconciled)
+	// A claim whose record says its process died is relaunched for that death in the boot's pass
+	// over the unfinished launches, in their order (relaunchUnfinished), and that launch is on this
+	// daemon's contract; a stale-plugin relaunch posted to it first would raise its launch outside
+	// that order and leave the turn the pass reserves it spent. The orphan sweep's own stale-plugin
+	// posts pass over a claim whose relaunch waits (parkedWakes), so this is the one post to skip.
+	deaths := recordedDeaths(s.claims)
+	s.refreshStalePlugins(slices.DeleteFunc(slices.Clone(s.claims), func(c supervise.Claim) bool { return slices.Contains(deaths, c.Token) }), "boot")
+	if len(deaths) > 0 {
+		s.log.Info("supervise: the previous daemon found these claims' processes dead and their relaunches waiting; this boot raises each relaunch again",
+			"claims", len(deaths))
+	}
+	if len(unfinished) > 0 || len(deaths) > 0 {
+		s.relaunchUnfinished(unfinished, deaths, reconciled)
 	}
 	return nil
 }
@@ -2706,6 +2718,10 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 	// daemon without one leaves pauses the nil interface, which the API reads as no pause service
 	// and answers every pause and resume PAUSE_UNAVAILABLE.
 	var pauses api.PauseService
+	// The replay and the discard of the intake's give-ups, which a daemon with no workflow runs
+	// no intake for: the API answers their routes 503 then. It is left a nil interface rather than
+	// a nil *intake.GiveUps, which the API would read as an intake.
+	var giveUps api.GiveUps
 	if workflow != nil {
 		records, handlers, client, tokens, grants = workflow.records, workflow.handlers, workflow.dispatch, workflow.apps, workflow.grants
 		claimReady, prepare, unread, await = workflow.claimReady, workflow.prepareObserved, workflow.repositoryUnread, workflow.awaitRecovery
@@ -2715,6 +2731,13 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		consumerLag = workflow.consumers.Lag
 		pauses = workflow.pauses.service
 		architectStalls = workflow.admission.ArchitectStallArms
+		// A replay applies a stored message through the handlers a live delivery runs, on the
+		// consumers' pool and spec, so it is judged as the same message delivered now would be.
+		replays, err := intake.NewGiveUps(workflow.consumers.Records(), workflow.handlers...)
+		if err != nil {
+			return fmt.Errorf("build the replay of the intake's give-ups: %w", err)
+		}
+		giveUps = replays
 	}
 	// Under `controller: daemon` the keeper launches and keeps the project's controller, and takes
 	// its ready. The liveness sweep runs beside it under either mode, never behind it.
@@ -2752,6 +2775,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 			architectStalls: architectStalls,
 		},
 		ConsumerLag:        consumerLag,
+		Intake:             giveUps,
 		CallerPod:          callerPodOf(s.runtime),
 		Ready:              ready.serving,
 		Supervisor:         s.supervisor,

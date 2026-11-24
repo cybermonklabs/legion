@@ -54,8 +54,8 @@ type OperatorClaim struct {
 	// released (its idle pod was released), or unknown (a suspension recorded before migration
 	// 0038); absent otherwise. These routes are the one surface that serves it: a session parses
 	// every body it reads with the schema of its own contract, so a key an older contract does not
-	// know refuses the whole body at a plugin whose answer side predates INFRA-1048, and is dropped
-	// at every plugin after it (api.StrandedClaim).
+	// know refuses the whole body at a plugin whose answer side predates the reader that drops an
+	// unknown key, and is dropped at every plugin after it (api.StrandedClaim).
 	SuspendedBy string `json:"suspendedBy,omitempty"`
 	// SuspensionHeld is a suspension the machine holds for the agent's turn (supervise's
 	// holdSuspension); absent when none is.
