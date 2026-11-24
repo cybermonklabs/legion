@@ -1,0 +1,69 @@
+{
+  "id": 124998,
+  "issue_key": "ACME-1",
+  "artifact_id": null,
+  "project": "ACME",
+  "seq": 78,
+  "type": "comment.created",
+  "actor": {
+    "kind": "session",
+    "id": "01a13325-a08c-7572-acb7-c79d1750edd5",
+    "origin": {
+      "host": "lor",
+      "machine": "lorem ipsum d",
+      "cwd": "lorem ipsum dolor sit amet lorem ipsum ",
+      "tmux": "lorem ipsu",
+      "pane": "lor",
+      "session_title": "lorem ipsum dolor sit amet lor"
+    },
+    "owner": "alice@example.com"
+  },
+  "notify": false,
+  "created_at": "2026-10-30T15:13:13.789379Z",
+  "payload": {
+    "id": "9af5344f-9d9b-4abe-9a8f-a3eb7e13d99f",
+    "body": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor si",
+    "turn": null,
+    "anchor": null,
+    "ask_id": null,
+    "author": {
+      "id": "01a13325-a08c-7572-acb7-c79d1750edd5",
+      "kind": "session",
+      "owner": "alice@example.com",
+      "origin": {
+        "cwd": "lorem ipsum dolor sit amet lorem ipsum ",
+        "host": "lor",
+        "pane": "lor",
+        "tmux": "lorem ipsu",
+        "machine": "lorem ipsum d",
+        "session_title": "lorem ipsum dolor sit amet lor"
+      }
+    },
+    "mentions": [],
+    "reply_to": null,
+    "resolved": false,
+    "edited_at": null,
+    "issue_key": "ACME-1",
+    "created_at": "2026-10-30T15:13:13.792404Z",
+    "deliveries": [],
+    "suggestion": null,
+    "artifact_id": null,
+    "reply_block": null,
+    "resolved_at": null,
+    "resolved_by": null,
+    "artifact_name": "",
+    "thread_logins": [],
+    "suppress_route": false,
+    "references_changed": [
+      {
+        "id": "ACME-2",
+        "kind": "issue"
+      },
+      {
+        "id": "35ba7703-6bc1-4a56-a0db-4592e469a8c5",
+        "ref": "dispatch://ACME-1",
+        "kind": "artifact"
+      }
+    ]
+  }
+}

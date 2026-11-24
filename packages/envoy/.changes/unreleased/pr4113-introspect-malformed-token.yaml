@@ -1,0 +1,3 @@
+kind: Fixed
+body: |-
+  The secrets broker answers an introspection of a malformed access token, such as a live token with a space or a character outside base64url added in front, as not live. It answered `503 DATABASE_UNAVAILABLE` and logged an error as if its database had failed, so Dispatch answered such a request `503 BROKER_UNAVAILABLE` where it now answers `401`.

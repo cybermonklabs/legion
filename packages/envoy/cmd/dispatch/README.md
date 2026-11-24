@@ -4,6 +4,7 @@ Go binary serving the Dispatch dashboard and API.
 People sign in through a Cognito sign-in pool or with Google directly, where the `DISPATCH_SIGNIN_*` settings configure one, and are named by lowercase email;
 the web app's GitHub reads go to GitHub as the GitHub App.
 Dispatch keeps application state in Postgres.
+Its subcommands (`census`, `settings`, `routes`, `openapi`, `rebuild-refs`, `backfill-files` and others) are the `subcommands` table in `cmd/dispatch/subcommands.go`, and an argument it does not know is refused with every one named.
 
 This file uses semantic line breaks: one sentence per line, and a long sentence may break after a clause.
 A blank line separates list items.
@@ -58,6 +59,12 @@ Each item below names a variable, then its purpose.
   A NATS that does not answer at boot, or refuses the credential, refuses nothing:
   the server starts and serves, each of its NATS clients connects in the background and retries forever, and a refused credential is logged at ERROR at most once a minute (Running more than one process, below).
 
+- `NATS_SERVICE_TOKEN_FILE`, `NATS_SERVICE_GOOGLE_AUDIENCE`
+
+  The platform identity token Dispatch presents, as user `service`, to a NATS hub whose connections the auth service in the secrets broker admits: a projected Kubernetes ServiceAccount token in a file, read afresh at each connect, or this VM's Google identity token for that audience.
+  The auth service answers with Dispatch's grant for the account its `BROKER_NATS_SERVICES` entry lists, and that user expires with the token, so the connection moves to a later token ten minutes before the one it presented lapses.
+  Either set beside any other NATS credential variable refuses startup naming both.
+
 - `DISPATCH_TEST_HOOKS`
 
   Set to `1` to mount test-only routes: `POST /api/v1/live/_test/disconnect` closes every open live socket with 1012 (restart), and `POST /api/v1/live/_test/rotate` closes every one with 4001 (`max age`);
@@ -100,7 +107,8 @@ Each item below names a variable, then its purpose.
   Files are stored under `files/sha256/<hash>`, one object however often a file is uploaded; a document's markdown never leaves Postgres.
   The value chooses the store (`files.Open`), and the server and `backfill-files` both open it there, so they never read one value as two stores:
 
-  - `gs://<bucket>` is a Google Cloud Storage bucket, reached through the JSON API with Application Default Credentials (on GKE, the pod's Workload Identity principal; elsewhere `GOOGLE_APPLICATION_CREDENTIALS` or a gcloud login).
+  - `gs://<bucket>` is a Google Cloud Storage bucket, reached through the JSON API with Application Default Credentials (on GKE, the pod's Workload Identity principal;
+    elsewhere `GOOGLE_APPLICATION_CREDENTIALS` or a gcloud login).
     The principal needs `storage.objects.create` and `storage.objects.get` on the bucket and nothing more (`roles/storage.objectCreator` and `roles/storage.objectViewer`):
     an upload reads the key's metadata first and writes nothing when the bucket already holds it, then writes in one request with `ifGenerationMatch=0`, carrying the body's CRC32C and MD5, which GCS checks, so no object is ever overwritten and none is deleted;
     a write that loses that precondition to a concurrent writer of the same key is an object already held.
@@ -118,7 +126,8 @@ Each item below names a variable, then its purpose.
   The version route serves a row still holding bytes from the row and any other from the bucket:
   it opens the object within 30 seconds, sends its headers and `Content-Length` only then, and streams the body at the client's pace, checking it against the row's hash as it goes;
   a bucket that does not answer is 502, a row whose object the bucket does not hold is 500 `FILE_MISSING` (a restore from the bucket's versioning, not a retry), a cleared row on a server with the setting unset is 503, and a body that fails or hashes wrong mid-stream is cut off rather than ended as if whole.
-  `/healthz` reports `files`: null when unset, else whether the bucket answered within two seconds (S3: a `HeadBucket`; Cloud Storage: a metadata read of a key no upload writes, whose absence is a healthy answer, so `storage.objects.get` alone serves it, while a bucket that does not exist or a refused grant fails it);
+  `/healthz` reports `files`: null when unset, else whether the bucket answered within two seconds (S3:
+  a `HeadBucket`; Cloud Storage: a metadata read of a key no upload writes, whose absence is a healthy answer, so `storage.objects.get` alone serves it, while a bucket that does not exist or a refused grant fails it);
   it never decides `ok`, since a bucket outage must not take the one task, and with it documents and asks, down.
   `envoy-dispatch backfill-files` moves the rows uploaded before the bucket, and `--restore` is the rollback ("Moving uploaded files to the bucket", below).
 
@@ -132,10 +141,12 @@ Each item below names a variable, then its purpose.
 
 - `DISPATCH_ANSWERER`, `DISPATCH_AZURE_CHAT_*`, `DISPATCH_CHAT_*`, and the same `DISPATCH_AZURE_TENANT_ID`, `DISPATCH_AZURE_CLIENT_ID` and `DISPATCH_AZURE_FEDERATED_TOKEN_FILE`
 
-  Where the server generates text: `azure` is a chat deployment of an Azure AI Foundry resource, reached with the shared Azure sign-in; `endpoint` is any OpenAI-shaped chat completions service, reached with the bearer token `DISPATCH_CHAT_TOKEN_FILE` names, which is read on every call.
+  Where the server generates text: `azure` is a chat deployment of an Azure AI Foundry resource, reached with the shared Azure sign-in;
+  `endpoint` is any OpenAI-shaped chat completions service, reached with the bearer token `DISPATCH_CHAT_TOKEN_FILE` names, which is read on every call.
   Unset, no model is configured, and the server starts and says so.
   The sign-in is the embedder's too, read by whichever of the two is `azure`, so a deployment may embed on Bedrock and answer on Azure; it is refused only where neither is.
-  `DISPATCH_AZURE_CHAT_SCOPE` is configuration because one Azure AI Foundry resource serves two inference families: the models inference endpoint (`/models`, an `api-version`, scope `https://cognitiveservices.azure.com/.default`) and the Azure OpenAI endpoint (`/openai/v1`, no `api-version`, scope `https://ai.azure.com/.default`), and which of the two a deployment serves is named by that deployment.
+  `DISPATCH_AZURE_CHAT_SCOPE` is configuration because one Azure AI Foundry resource serves two inference families:
+  the models inference endpoint (`/models`, an `api-version`, scope `https://cognitiveservices.azure.com/.default`) and the Azure OpenAI endpoint (`/openai/v1`, no `api-version`, scope `https://ai.azure.com/.default`), and which of the two a deployment serves is named by that deployment.
 
 - `DISPATCH_MAX_LIVE_ROOMS`, `DISPATCH_MAX_DOC_CONNECTIONS`
 
@@ -148,12 +159,11 @@ Each item below names a variable, then its purpose.
   that budget is no setting but one sixteenth of the Go memory limit, at least 64 MiB and at most 1 GiB, and 256 MiB when no limit is set.
   `/debug/vars` (Profiling, below) shows how near each cap a running process is.
 
-`DISPATCH_REPO_PROJECTS` optionally seeds repository-to-project settings at boot with comma-separated `owner/repo=KEY` entries.
-Existing dashboard mappings take precedence over this seed:
-it adds only a repository with no mapping, and announces each one it adds with `settings.repo_project.updated`, as a dashboard write does.
-Dispatch resolves every external issue through the stored mapping, then falls back to `DISPATCH_DEFAULT_PROJECT` when configured.
-An unmapped external repository without a default project is rejected.
-An issue created through the default also gets a `repo:owner/name` label.
+A project's default repository belongs to the project, and no setting holds it:
+`PUT /api/v1/projects/{key}/default-repository` sets or clears it, and so does Settings → Projects (Routes, below).
+An issue imported from GitHub (`POST /api/v1/issues` with `external`) names its project in `project`, as every other create does.
+No setting seeds a default repository or chooses the project of an import.
+A boot that still sets one of the two settings that did is refused, naming what replaced it (`removedSettings` in `cmd/dispatch/settings.go`).
 
 Where browser sign-in is configured, `DISPATCH_SERVER_URL` IS the sign-in callback origin:
 it must equal the URL humans type into their browser, and the sign-in pool's app client must list `<DISPATCH_SERVER_URL>/auth/callback` as a callback URL.
@@ -183,28 +193,51 @@ The server asks the broker what the token is (RFC 7662 introspection on `/v1/oau
 No setting of its own configures it.
 A revoked token therefore stops resolving within five seconds of the introspection that last called it live, not of the revocation:
 an introspection already in flight when the token is revoked is remembered from the moment it completes, and it may take up to five seconds to complete.
-A verified caller acts as the session the token names, for the person it names, or, where the broker names none, for the service the machine holding it belongs to, and `actor` in the body does not decide that session:
+A verified caller acts as the session the token names, for the person it names, or, where the broker names none, for the service it names (the fleet of the machine holding it, or the service a read entry names), and `actor` in the body does not decide that session:
 absent is accepted, one naming the same session is accepted and its `origin` kept, and one naming any other writer is `403 ACTOR_SESSION_MISMATCH` naming the session the token carries.
 A token scoped to one project carries that project on every actor it writes, set from the token and never from the body;
 a token scoped to its person names no single project and carries none.
+A read-only token names no project either.
+Every actor such a write records carries `proven: true`, as a browser's person does, while a session a body names under any other credential carries no `proven`:
+a reader that trusts only a session the server saw proved reads that mark, and a document version's author keeps it only when every write merged into that author carried it.
 Each refusal is its own code and none repeats the token:
 `401 BROKER_TOKEN_NOT_ACTIVE` (the broker does not hold the token live), `401 BROKER_TOKEN_PROOF_INVALID` (the proof did not meet RFC 9449 Section 4.3, a proof presented twice included
 — a proof is single use by its `jti` and target URI), `401 BROKER_TOKEN_KEY_MISMATCH` (a sound proof signed by a key that is not the token's), `401 BROKER_TOKEN_NOT_A_SESSION` (the token is live but is no session's credential:
-it names no session, it names neither a person nor a service, or it was issued to a client other than the exchange a session's token comes from, which a machine login's own access token is
+it names no session, it names neither a person nor a service, it was issued to a client other than the exchange a session's token comes from, which a machine login's own access token is, or its project scope and its OAuth scope are a shape no broker mints (the scope `read` beside the project scope `named` or `person`, or the project scope `none` in any shape but a read-only token's)
 — Dispatch records a write under the session its credential proved, so it acts on none of these rather than letting a body name a session for a credential that names none), `429 BROKER_TOKEN_RATE_LIMITED` (this source address's introspection bucket is empty;
 nothing was asked of the broker) and `503 BROKER_UNAVAILABLE` (the broker answered nothing, so the token was never judged
 — a 503 for the reason `OIDC_ISSUER_UNAVAILABLE` is one).
-A websocket re-resolves its caller every heartbeat from the request that opened it, and for this credential that re-resolution is the broker's introspection answer alone:
+The live socket (`GET /ws/live`) re-resolves its caller every heartbeat from the request that opened it, and for this credential that re-resolution is the broker's introspection answer alone:
 the upgrade's proof authenticated it and cannot be presented a second time.
 Without `DISPATCH_AGENT_SECRETS_URL` there is no such credential, and a `DPoP` presentation is the `401 UNAUTHORIZED` `invalid bearer token` any Authorization header that is not a bearer has always been.
+
+No broker-issued token holds the OAuth scope `approve`, whatever its project scope: one acting for its person holds `person` alone, and every other holds none (`brokerTokenActor`).
+Each such token is made from a file on the machine that holds it, a machine login or a person's sign-in, so whoever copies that file holds it, and `approve` settles what only the person settles.
+So every route whose `scopes` name `approve` (`GET /api/v1`; `x-oauth-scopes` in `dispatch-openapi.json`) refuses every broker-issued token at its scope gate (`gateRouteScopes`), before the handler runs and before anything is relayed to the broker:
+`403 OAUTH_SCOPE_REQUIRED` naming `approve` for a token acting for its person, naming `person` for one that holds no scope, and `403 READ_ONLY_TOKEN` for a read-only token (below).
+The answer to an approval request (`POST /api/v1/asks/{id}/answer`) needs only `person` at that gate, because the ask's kind is known only once its row is read, so a token that holds no scope and a read-only token are refused there as above;
+a token acting for its person passes the gate and is refused inside the answer's transaction (`answerAsk`), once the ask's kind is read and before anything is written, with the same `403 OAUTH_SCOPE_REQUIRED` naming `approve`, and the request stays open.
+The person makes those calls from their browser session, or with a personal token they gave `approve`.
+A decision's Keep (`POST /api/v1/artifacts/{id}/blocks/{block_id}/keep`) needs `approve` because it records that the person agreed with the decision and takes it out of what waits on their review, so a personal token holding `person` alone is refused it too.
+
+A read-only token is the token the broker mints from a read entry (`BROKER_EXCHANGE_READ_ACCOUNTS`).
+It holds the OAuth scope `read` alone and the project scope `none`, names a service and a fixed session, and names no person and no project.
+`brokerTokenVerifier` builds the verifier with `ciphertoken.Options.ServesReadOnly` set, so Dispatch accepts such a token and marks its credential read-only (`model.Credential.ReadOnly`), with no OAuth scope.
+Dispatch serves it on the routes its read list names (`readScopeRoutes` in `internal/dispatch/api/routes_table.go`), today `GET /api/v1/projects/{key}/architecture` alone.
+Every other route of the table, and `GET /ws/live`, answers it `403 READ_ONLY_TOKEN` (`contracts.DispatchReadOnlyToken`, generated from `packages/contracts`) with no `WWW-Authenticate` challenge (`refuseReadOnlyToken`).
+That refusal comes before the route's scopes, the sign-in check, the `Idempotency-Key` and the handler, so a refused request claims no key and writes nothing but the row of its spent DPoP proof, which the token's verification records before the refusal.
+The other mounts outside the table read no broker token: `/ws/doc/{room}` answers such a token `401`, and `/auth/*`, `/api/github/rest/*`, `/healthz`, `/livez` and `/metrics` take no broker token at all.
+`/healthz`, `/livez` and `/metrics` take no credential (`dispatchHandler`), so they answer a request that carries such a token as they answer any other caller, and none of the five makes a write for it.
+The document socket's heartbeat re-checks the browser credential it was admitted with, the sign-in cookie or, under `DISPATCH_IDENTITY=iap`, the IAP assertion its upgrade carried (Identity, above), and nothing the request carries beside it (`api.signInStillResolves`), so a read-only token sent beside a cookie cannot keep that socket open once the cookie ends.
+A service whose verifier does not set the switch, the Envoy listener among them, answers a read-only token `401`, and the NATS auth service, which reads the broker's answer through `ciphertoken.SessionCaller` with the switch off, refuses a connection that presents one as `not_a_session`.
 
 A credential that names one project may write that project and nothing else.
 Every mutating row of the route table declares what its write belongs to (`internal/dispatch/api/routes_table.go`, `writeClasses`;
 a `GET` row declares nothing), in four classes:
 *a project's* — the issue-key rows, the project-key rows, the artifact-id rows, the ask-id rows, the comment-id rows, and the message rows that carry an issue;
 *a project the body names* — the issue create alone, whose project its address does not name, so `createIssue` makes the same check itself once that project is settled;
-*the calling session's* — an agent conversation's own artifact and messages, the two routes a session answers its own delivery on, and the caller-private `me` rows;
-and *the deployment's* — the project create, the repository-to-project map, the delivery settings and session groups, the broadcast, and the credential and machine-login decisions.
+*the calling session's* — an agent conversation's own artifact and messages, the two routes a session answers its own delivery on (or, for a delivery sent for a `role:` route, one sent for a role the listener's role lookup names it the live holder of, which a session that took the role from the one the delivery went to answers it by), and the caller-private `me` rows;
+and *the deployment's* — the project create, a project's default repository, the delivery settings and session groups, the broadcast, and the credential and machine-login decisions.
 `Register` wraps every mutating route in three checks (`internal/dispatch/api/project_scope.go`), which run after the caller is resolved and before the handler, so no route is left to check any of them for itself.
 
 The project check resolves the project the addressed object belongs to
@@ -218,7 +251,7 @@ Each resolver sends the raw path value to Postgres, as the handler behind it doe
 — Postgres's uuid parser takes a hyphen after any group of four digits, and a check that parsed ids in Go admitted those spellings unjudged.
 A deployment-wide write is `403 PROJECT_SCOPE_DEPLOYMENT`, naming the credential's project and the route:
 a credential that may write one project may not create another or change a setting that is not any project's.
-`POST /api/v1/issues` takes its project from the body, or from the repository an external ref names, rather than from its address, so its handler makes the same check, with the same refusal, the moment that project is settled
+`POST /api/v1/issues` takes its project from the body rather than from its address, so its handler makes the same check, with the same refusal, the moment that project is settled
 — before the ref is resolved to an issue already imported, and before anything is written.
 
 The session check holds the rows classed *the calling session's* whose path names a session
@@ -228,14 +261,17 @@ Only a broker-issued token proves a session;
 a cookie, a personal token, a Kubernetes service-account token and the shared token prove none and are untouched, so a person still uploads into the conversation they name.
 
 The sign-in check refuses every write by a credential that names a service and no person
-— an access token the broker issued to a machine nobody has signed in on — `403 SIGN_IN_REQUIRED`, naming that service and `agent-secrets login`, the command that signs a person in on the machine.
+— an access token the broker issued to a machine nobody has signed in on
+— `403 SIGN_IN_REQUIRED`, naming that service and `agent-secrets login`, the command that signs a person in on the machine.
 It stands in front of every mutating route whatever its class, and outermost of the three, so such a caller is told it may make no write at all rather than which project the write it tried belongs to.
 Its reads are untouched: the machine reads everything its session may read, and what it may not do is write, because Dispatch records a write under the person who made it and this credential names none.
 A broker token that does name a person, and every other credential, reaches the handler as before.
+A read-only token names a service and no person too, but it never reaches this check: the read-only refusal above answers it `403 READ_ONLY_TOKEN` first, because signing a person in is no remedy for it.
 
 The project and session checks are a no-op for a credential that carries no project and proves no session
 — a browser cookie, a personal agent token, a Kubernetes service-account token, the shared token, and an access token the broker scoped to a person rather than to one project.
 That is the rule and not a transitional measure: every caller that exists today writes exactly what it wrote before.
+A read-only token carries no project either, and none of the three checks reads it, because the read-only refusal answers it first on every mutating route.
 
 GitHub App credentials come either from the `DISPATCH_APP_*` variables or from `~/.local/share/dispatch/app.json`; the variables take precedence.
 Two of them carry rules beyond their row:
@@ -265,17 +301,19 @@ see that component's README for its inputs, the IAM grant it writes and the one 
 GitHub does not redeliver a webhook delivery that failed.
 When NATS is configured and the App's private key (`DISPATCH_APP_PEM_B64`) is present, Dispatch redelivers them itself, following GitHub's documented approach.
 At start and every two minutes after (Background loops, below:
-each sweep two minutes plus up to a tenth after the last) it lists the App webhook's attempts (`GET /app/hook/deliveries`) and judges each delivery by its GUID, as GitHub's own redelivery script does:
+each sweep at most two minutes, and more than 0.9 of that, after the last) it lists the App webhook's attempts (`GET /app/hook/deliveries`) and judges each delivery by its GUID, as GitHub's own redelivery script does:
 a GUID with an `OK` attempt is delivered, whatever its failures, and it asks GitHub to redeliver each other GUID with an attempt whose status is not `OK` (`POST /app/hook/deliveries/{id}/attempts`).
 Both endpoints accept only an App JWT, which is why Dispatch runs this.
 The webhook the App delivers to is the Envoy listener's `/webhook/github`.
 A redelivery carries the original `X-GitHub-Delivery`, and the listener publishes GitHub envelopes under a JetStream MsgId of it.
 So redelivering a delivery that did reach the stream adds nothing to the stream.
+`DISPATCH_TEST_REDELIVERY_INTERVAL` replaces the sweep's two minutes for an end-to-end test, and a deployment never sets it.
 
 - Every failed delivery is asked for again, whatever status code its failed attempts carry:
   a 5xx, an attempt GitHub could not complete, and a 4xx alike (the listener's 401 for a signature it cannot check, 400 for a body it cannot use, 422 for a publish NATS refused), since what the listener cannot take now it may take later.
   The first request goes on the next sweep.
-  While no attempt is `OK`, the next request is due 2, 4, 8, 16 and 32 minutes after the one before, then every 60 minutes.
+  While no attempt is `OK`, the next request waits a backoff of 2, 4, 8, 16 and 32 minutes after the one before, then 60 minutes each time: one, two, four, eight and sixteen two-minute intervals, then thirty.
+  It is due nine tenths of that backoff after the sweep that made the request before it (`duty.LeasePeriod`), since a sweep comes more than nine tenths of two minutes after the one before: so the sweep that many intervals on makes it at the latest, and the first retry is the next sweep's.
   A redelivery request GitHub refuses (for example 422) delivers nothing and is asked again on the same schedule, as is an accepted request whose redelivery never appears in GitHub's log.
 
 - The sweep stops asking 72 hours after the first failed attempt it saw for the delivery, since GitHub keeps a delivery 72 hours, or when GitHub answers the redelivery request 404 (it no longer has the delivery).
@@ -285,6 +323,8 @@ So redelivering a delivery that did reach the stream adds nothing to the stream.
   No sweep sends GitHub anything until the time GitHub gave (`Retry-After`, or `x-ratelimit-reset` when no requests remain), and at least one minute, doubling while limits follow one another, up to 64 minutes.
   Both live in `github_rate_limits` (migration `0160`), judged by the database's clock:
   GitHub's own wait under the App's scope, `app`, which every process's App calls obey (Running more than one process, below), and the doubling under the sweep's own, `redelivery`, so a limit met on redelivery requests never holds token mints and installation lookups past GitHub's wait.
+  A wait longer than an hour is read as an hour, never as no wait, and a negative `Retry-After` as none (`internal/serverwait`):
+  an hour is GitHub's own longest wait, since it counts its primary rate limits per hour, and a longer one would hold every App call of every process for as long, while one cut to an hour costs at most one more request that GitHub answers with a fresh wait.
   Each sweep reads both again right before every request it sends, so one limit stops every sweeper at its next request;
   a request already sent when another sweeper records a limit is not recalled.
   A sweep that finishes clear of a passed backoff deletes it, unless another sweep struck it meanwhile.
@@ -305,7 +345,7 @@ So redelivering a delivery that did reach the stream adds nothing to the stream.
 
 - Every sweep logs an INFO `msg="webhook redelivery sweep"` line:
   `failed_attempts` (the failed attempts listed), `deliveries` (the deliveries the sweep decided:
-  the GUIDs of the listed failed attempts, plus the open deliveries the listing no longer returns that the index says are due, one whose claim was never answered included), `index_entries` (the entries the index read returned, none in the operator command, which reads no index), and one count per outcome, which add up to `deliveries`.
+  the GUIDs of the listed failed attempts, less any it left out (below), plus the open deliveries the listing no longer returns that the index says are due, one whose claim was never answered included), `index_entries` (the entries the index read returned, none in the operator command, which reads no index), and one count per outcome, which add up to `deliveries`.
   `closed` is a delivery an earlier sweep settled (GitHub recorded it `OK`, or it expired):
   its failed attempt stays listed until it is older than the sweep's look-back, so after a burst of failures is redelivered, the sweeps of the next hour and six minutes count the burst as `closed`.
   `waiting` is a delivery whose next request is not due yet:
@@ -313,6 +353,29 @@ So redelivering a delivery that did reach the stream adds nothing to the stream.
   and in the operator command every open delivery it reads that is not due and not claimed, listed or not.
   `claimed_elsewhere` is a delivery another sweep is asking GitHub for.
   A delivery the sweep's cap of 300 requests left over is not counted; the next sweep takes it.
+
+- A delivery whose GUID the sweep's bucket cannot key is left out of the sweep:
+  a GUID outside the characters a NATS key may hold (letters, digits, `-`, `/`, `_`, `=` and `.`), one holding a space or an empty token, or one so long that its index entry's key passes the bucket's bound for a write (`bus.KeyValue.RefusesWrite`).
+  No sweep could read or write such a delivery's record or index entry, so it would otherwise fail every sweep, or leave every sweep incomplete with its cursor held, for as long as GitHub lists it.
+  Each sweep that lists it logs `level=WARN msg="webhook redelivery left out a delivery whose GUID the bucket cannot key"` with `guid` and `error` (the bucket's refusal), decides the rest, and stays complete.
+
+- A delivery's GUID, event and action are GitHub's text, so every line and error of the sweep shows them, and an index entry's `key`, to a bound (`githubapp.ShownBody`):
+  whole up to 512 characters, and past that the first 512 and `… (<n> bytes)`, where `<n>` is the size of the text.
+  The GitHub App client (`githubapp`) shows a refusal's body in its errors as `githubapp.ShownBody` shows it, and `<n>` is the size of the body.
+  A value of an answer that the client cannot decode, in a time parse error or a JSON type error, is cut alone, and `<n>` is the size of the value.
+  That error still names the time layout, or the field and its Go type.
+  For a valid time with text after it, the time parse error's reason quotes that text (`extra text`).
+  The client cuts that reason alone too, and `<n>` is the size of the reason.
+  An error for a request that GitHub did not answer, or whose answer could not be read or passed the size limit, names the request's URL as `githubapp.ShownBody` shows it, and `<n>` is the size of the URL.
+  A transport error also cuts its cause, so it still names the cause after a long URL, for example `context deadline exceeded`.
+  A line the cause quotes is cut with the cause's text, and `<n>` is the size of the cause's text.
+  `githubapp.ShownErr` cuts whole any other error that quotes GitHub's text, such as an error of the bucket that quotes a key, and `<n>` is the size of the error's text.
+  No error that `githubapp.ShownErr` answers is longer than 4,414 bytes: two texts as `githubapp.ShownBody` shows them, each at most 2,079 bytes, and 256 bytes for the error's own words.
+  A time parse error, a JSON type error or a transport error whose text is still longer after the cuts above is cut whole, and `<n>` is the size of that text.
+  A time value past ASCII can make such a text, since package time writes each of its bytes past ASCII as `\xNN`.
+  The sweep's errors and lines therefore carry that text the same way.
+  A next page link longer than 2048 bytes is refused rather than followed, and shown as `githubapp.ShownBody` shows it.
+  The refusal of a shorter link that cannot be parsed, or that leaves GitHub's API origin, shows the link the same way, and so does an error that names a next page GitHub answered with a status other than 200.
 
 - The running sweep lists the last hour and six minutes (`redeliver.Lookback`, the longest backoff plus three sweep intervals), long enough that a delivery coming due still sees GitHub's answer to its last request in the listing.
   To that it adds the open deliveries the listing no longer returns that its index says are due, one still owed a request and one whose claim has run out alike.
@@ -324,7 +387,8 @@ So redelivering a delivery that did reach the stream adds nothing to the stream.
 The cursor, one record per delivery acted on, one index entry per open delivery, keyed `pending.<YYYYMMDD>.<HH>.<MM>.<GUID>` by the minute that delivery next needs a sweep, and the marker that says when a back-fill last gave every open record an entry live in the JetStream KV bucket `envoy_webhook_redelivery`.
 Its 72-hour TTL matches GitHub's horizon, and an index entry a sweeper died before deleting expires with the records.
 A sweep that meets open records an older build wrote without entries gives each one an entry and then writes the marker, which holds the moment that sweep started, at or before the scan it read the records with.
-Once that moment is further behind than the sweep's look-back, the next sweep reads every record again, so the whole-bucket read costs one sweep an hour at most for as long as those back-fills land: a back-fill that leaves a record unindexed writes no marker, so the sweep after it reads every record again;
+Once that moment is further behind than the sweep's look-back, the next sweep reads every record again, so the whole-bucket read costs one sweep an hour at most for as long as those back-fills land:
+a back-fill that leaves a record unindexed writes no marker, so the sweep after it reads every record again;
 a sweep that reads a cursor an older build wrote — one carrying no mark of this build's — back-fills at once rather than waiting out that hour.
 The server opens the bucket on the first sweep that finds NATS connected, not at boot, so a NATS that is down at boot skips the sweeps until it answers, each logged as failed.
 A compare-and-swap claim, written before the request and replaced by GitHub's answer after it, keeps two Dispatch processes from requesting the same attempt twice, and the operator command honours the same rate limits.
@@ -339,6 +403,8 @@ envoy-dispatch redeliver-webhooks --since 72h --dry-run   # list what would be r
 envoy-dispatch redeliver-webhooks --since 72h             # redeliver under the sweep's rules
 ```
 
+Its table shows each delivery's GUID, event and action as `githubapp.ShownBody` shows them, as the sweep's lines do.
+
 It reads the same App credentials and NATS configuration as the server, and opens the database `DATABASE_URL` names for the rate limits every process shares;
 it migrates nothing, so it runs against a database the server of its release has already migrated.
 It owns nothing on the bus: unlike the server it neither creates nor updates `ENVOY_NOTIFICATIONS`, and it refuses a NATS server that is not the machine it runs on, naming the URL.
@@ -352,8 +418,10 @@ a run against a NATS that requires a user needs `NATS_NKEY_SEED_FILE`.
 ## CI reconcile
 
 The Envoy listener records a check run and a check suite from the webhook GitHub sends it, and the Legion daemon reads the settlement those records produce.
-A webhook that reached no record leaves a head short of a check, and a head short of a check never settles: nothing announces it, and nobody is waiting on anything else.
-So every 5 minutes (`cireconcile.Interval`, Background loops, below) one Dispatch process reads each open pull request's head from GitHub and records every completed check run and completed check suite the listener's record of that head lacks.
+A webhook that reached no record leaves the head's record behind GitHub, and nothing announces it:
+a run whose end it missed holds the head for ever, so the daemon waits for an answer that never comes, and a run it missed whole is absent, so the head settles while GitHub still runs that run and the daemon reads the head as done.
+A commit status reaches no record through a webhook at all: GitHub's `status` event carries a commit and no pull request, and the listener drops it.
+So every 5 minutes (`cireconcile.Interval`, Background loops, below) one Dispatch process reads each open pull request's head from GitHub and records every check run, finished or not, and every completed check suite the listener's record of that head lacks, and, where the App's token holds Commit statuses, the head's commit statuses.
 It runs under the lease `ci-reconcile` with that 5 minutes as its period, so one process serves each period however many run (Running more than one process, below), and its first pass is one interval after the start.
 
 - It is on when NATS is configured and the App's private key (`DISPATCH_APP_PEM_B64`) is present.
@@ -361,30 +429,87 @@ It runs under the lease `ci-reconcile` with that 5 minutes as its period, so one
   It writes through the listener's own CI bucket, `envoy_ci_state`, which every pass binds afresh and none creates:
   the listener stays the one owner of that bucket's TTL and its copies, and a pass that finds no bucket says so and reads GitHub nothing.
 
-- A pass reads every repository `repo_projects` maps, each under the name it is called today — the row's own name, or, where the row names a rename, its `renamed_to` (`refs.CanonicalRepoSQL`) — so a repository mapped under both an old and a new name is read once and a name it was renamed away from is never asked of GitHub, which answers 404 for that name's installation.
+- A pass reads every repository it covers (`cireconcile.covered`): each project's default repository,
+  and each one an issue names as its own `repo`.
+  That is every repository an issue resolves to, since an issue resolves to its own repository, an ancestor's own, or its project's default.
+  Each is read under the name it is called today
+  — its own name, or, where a rename pair's old name is that name, the pair's new name (`refs.CanonicalRepoSQL`, over the pairs the boot read)
+  — so a repository named under both an old and a new name is read once and a name it was renamed away from is never asked of GitHub, which answers 404 for that name's installation.
+  The boot's rename pass writes the new name into both columns (Database migrations, below), so this read changes a name only where a failed pass left the old one.
   It resolves each against GitHub (`GET /repos/{owner}/{repo}`) for the name and id GitHub itself gives it, and deduplicates by that id as well.
-  Every record it writes is keyed by GitHub's own owner and name, never the mapping's, which is stored lower-cased:
-  a record keyed from the mapping would be a second record of the same head on a second settlement subject.
-  A repository GitHub does not answer, or the App is not installed on, is named at WARN under the name the pass read it by, counted and passed over, so mappings renamed onto one repository are skipped once between them.
+  Every record it writes is keyed by GitHub's own owner and name, never the project's or the issue's, which are stored lower-cased:
+  a record keyed from either would be a second record of the same head on a second settlement subject.
+  A repository GitHub does not answer is named at WARN under the name the pass read it by, counted in `defaults_skipped` and passed over, so the names a rename joins into one repository are skipped once between them.
+  A project's default repository the App is not installed on is skipped the same way at every pass (`ci reconcile skipped a repository it holds no token for`), because a default without the App is a fault to mend: install the App, or change the project's default repository.
+  A repository only an issue names that the App is not installed on is no fault: an issue's own repository is any `owner/name`, and Dispatch refuses that issue no work.
+  The pass counts it in `repositories_without_app`, never in `defaults_skipped`, and names it at INFO (`ci reconcile passed over a repository the App is not installed on`) only when it asks GitHub about it.
+  It holds GitHub's answer that the App is not installed for an hour (`cireconcile.AbsentAppRecheck`), for a project's default repository too, so it asks about such a repository once an hour and not once a pass.
+  The cost is that the repair can lag by up to an hour after an operator installs the App on a repository, which is accepted because the live webhook path carries the repository's new events meanwhile.
+  For a project's default repository the hold has a second cost: after an operator installs the App, the WARN and `defaults_skipped` of 1 also stand for up to an hour, until a pass asks GitHub again.
+  The issues half reads the repositories of closed issues too: an open issue that names no repository works in the repository of the nearest issue above it in its own project, whatever the status of that issue.
 
 - A pass reads a repository's open heads in batches, over GraphQL: one query answers twenty open pull requests with every check suite and every check run of each one's head commit (`cireconcile.headsQuery`), and the pass asks for the next twenty with the cursor that answer carries until GitHub says there is no next page.
-  The query asks for the runs of every check type (`filterBy: {checkType: ALL}`), as the REST listing is read with `filter=all`: GitHub's default answers the latest run of each name alone and drops every earlier attempt — on one measured head, 29 of its 32 runs — and an earlier attempt whose completion webhook never arrived is exactly what this pass exists to recover.
+  The query asks for the runs of every check type (`filterBy: {checkType: ALL}`), as the REST listing is read with `filter=all`, so a head read either way is recorded from the same runs: GitHub's default answers the latest run of each name alone — on one measured head, 3 of its 32 runs.
+  The record keeps the newest run of each name whichever is read, so the latest runs alone would now write the same record.
   It orders the pull requests by creation, which is their number order, since a repository hands out numbers as pull requests are opened: that order is what the cursor is a place in.
   Reading the same heads over REST took 1,720 requests and 26 minutes 25 seconds for 833 heads of 16 repositories; the same read in queries is about 53 of them, about 318 points of the App's GraphQL budget and about 178 seconds of GitHub's own processing time.
 
-- What a query cannot answer whole is read over REST exactly as every head was read before: the commit's check runs (`filter=all`) and its check suites, page by page and conditional on the ETags the pass kept.
+- What a query cannot answer whole is read over REST exactly as every head was read before: the commit's check runs (`filter=all`) and its check suites, page by page and conditional on the ETags the pass kept, and its commit statuses where the App's token holds Commit statuses (below).
   Four things fall back that way: a head with more than 30 check suites, a head one of whose suites has more than 60 check runs, a head whose Checks fields GitHub refuses or answers null, and every head of a page GitHub refuses, gives up on, or answers past the 1 MiB response limit.
   For a refused page the pass lists that repository's open pull requests over REST and reads every head from that page onwards: the cursor of the page after it comes only in the answer the pass did not get, so there is no next page to ask for.
   That listing is read in windows of twenty, the size of a query's page, and every page of it is named by a number: one past the last head of the page before it, which the pass has read, and nothing for a repository whose very first page GitHub refused, where the listing is read from its start.
   The page GitHub refused the query for is named that way too, by the page the query answered before it, so a window is always cut at the first open pull request at or above a number rather than at a position, and a pass taking a cursor up reads the listing again and begins where the page began however many pull requests have merged below it since.
   Each head read over REST is named at INFO with the reason, so a head that falls back at every pass says why.
 
-- Each completed run and each completed suite is recorded through the mapping a webhook's own body goes through, whichever read answered it, so a pass over a run the listener already recorded changes no record and publishes no settlement.
+- Each run and each completed suite is recorded through the mapping a webhook's own body goes through, whichever read answered it, so a pass over a run the listener already recorded changes no record and publishes no settlement.
   A query's answer is mapped field by field into that body's shape first: GraphQL's upper-case `status` and `conclusion` lower-cased, its `permalink` as the run's `html_url`, `databaseId` as the id, the suite's `app.databaseId` as the App, the suite's `updatedAt` as its `updated_at`, and the commit's `oid` as the head sha.
-  Only a completed run and a completed suite are recorded:
-  the CI store refuses to settle a head while any check its record holds is queued or running, and nothing takes a check out of a record, so one abandoned queued run would stop that head settling for good.
+  A run GitHub has not finished (queued, in progress, waiting) is recorded too, as its own webhook would have been: a pass that recorded a head's finished runs alone, after the listener missed the webhooks of the rest, would leave the CI store a record of finished checks, and the store would announce `checks settled` for a head whose CI GitHub was still running.
+  The record's ordering keeps such a write from taking the head back: a queued or running run never replaces the same run finished, nor a newer run of its name, so the pass re-arms a settled head only for a run GitHub holds unfinished as the newest of its name, and the head settles again, superseding, once that run ends.
+  A head's runs are one write of its record, one compare-and-swap (`cistore.Writer.RecordRuns`), so they land together or not at all: a write that fails never leaves the record holding some of the head's runs without the rest, such as a passed run without the failed one beside it, which the store would announce as a green head.
+  Each run keeps the record's rules inside that write, exactly as written alone; a failed write is named at WARN, `ci reconcile did not record the check runs of a head`, with `runs`, the repository, the pull request, the head's sha and the error, and the head is read in full again by the next pass.
+  A write that would take the record past its bound is refused whole: the store writes the record as it was, marked Overflowed, so the head never settles, and the pass keeps the head's ETags, since every later pass would meet the same refusal.
+  A head whose run write failed is written nothing more in that pass, no suite and no status: a completed suite written after it would re-arm a record that lacks the runs GitHub holds, and the store would settle the head again on what the record held before.
+  A run GitHub leaves unfinished for ever holds its head for ever, as it does when its own webhook arrives.
+  Only a completed suite is recorded: a suite that is not completed can hold the head as a queued run does (`suiteHolds`, `packages/envoy/internal/cistore/cistore.go`), so one left queued with no run of its own would hold it for ever; a running suite holds the head through its runs.
   A `tester` or `architect` check run counts only from the App `DISPATCH_REVIEWER_APP_ID` names, by the rule the listener's webhook handler calls;
   with that variable unset no verdict check is recorded, and the server says so once at start.
+
+- With `ENVOY_CI_VERIFY=on` on the listener, a head's settlement is published only after a GitHub read that began after the listener asked for one (`packages/envoy/internal/cistore/verify.go`, `cireconcile.Reconciler.Verify`).
+  A record cannot tell "no more checks" from "their webhooks never reached me": on 2026-11-22 the listener answered GitHub 503 for about a minute while NATS moved, a pass then wrote the runs that had finished in that minute, and the store announced `checks settled` on heads whose CI GitHub was still running.
+  When a head is ready to settle and the listener holds its claim, the listener publishes nothing yet: it writes a verify request, the key `verify.<the record's key>` of the CI bucket, naming the settlement episode (the claim's generation), and keeps the KV revision that write got.
+
+- The verify loop (`cireconcile.Reconciler.Verify`) runs every 5 seconds (`cireconcile.VerifyInterval`) in each Dispatch process: it reads the CI bucket's stream identity and lists the requests, each at the revision the bucket holds it at, with no lease; a pass that lists none takes no lease and logs nothing, which is every pass while no listener runs with the setting on.
+  A pass that lists some answers them under the lease `ci-verify`, its own reservation of the lease pool and apart from the pass's own, and reads each head from GitHub: every page of its check runs and check suites, and of its commit statuses where the token holds Commit statuses, with no ETag.
+  It writes what it read by the pass's own rules, the runs in one compare-and-swap, and then writes the request's revision and the stream identity as the record's `verified_rev` and `verified_stream` (`cistore.Writer.MarkVerified`): the revision it read before the GitHub read, kept through every retry of that write and never read again after the GitHub read.
+  `MarkVerified` refuses an answer read in a stream the bucket is no longer held in, since a bucket deleted and created again numbers its revisions from 1 again.
+  A read that fails, a listing that does not end, and a write that does not land write no `verified_rev`; an answer read whole counts even when it is empty.
+  The loop reads a head it failed on again 1 minute later, and after each further failure of the episode waits twice as long, up to 8 minutes (`verifyRetryAfter`); the listener writing the request again does not cut that wait short, and a new episode is read at once.
+  A status listing GitHub refuses costs the answer the head's statuses alone, as in the pass; a rate limit counts as no failure, and only a limit on the App's budget ends the loop's pass; while GitHub still runs a check suite of the head with runs in it, the loop writes what it read and no answer, and reads the head again a minute later, or at once when the listener writes the request again.
+  The loop gives an episode up only for a failure no later read mends, at once: the App not installed on the repository, GitHub's 404, 410 or 403 with no rate limit behind it, a page past the response limit, a listing past 100 pages, or the answer's own write past the record's bound.
+  It logs one ERROR, `ci verify gave up an episode: no later read of the head mends its failure`, deletes the request at its revision, and deletes every later request of that episode unread.
+  A write of what GitHub answered past the record's bound is no failure: the store writes the record marked Overflowed, which never settles, and the listener lets its claim go when it sees that.
+  The loop deletes an answered request only where the key still holds it at that revision (`cistore.Writer.DoneVerifying`), so a request written meanwhile stays for its next read.
+
+- The listener publishes once the record's `verified_rev` is at or past its request's revision and below the record's own revision, its `verified_stream` is the bucket's stream now, the record is still ready to settle on what the read merged in, and the record still carries the exact claim it asked under, with more than 30 seconds of the claim's life left; that check reads the record fresh, and it is the authorization point (`cistore.Store.ClaimStillHeld`).
+  An authorization read that fails keeps the wait and looks again a second later.
+  A run the read found unfinished re-arms the record, which takes the claim's snapshot away, so nothing is published and the head waits for that run; an answer for a claim that has gone authorizes nothing, and the record's next claim writes a request of its own, which no earlier answer reaches.
+  A request unanswered for 2 minutes is written again, with a new revision, and the listener refreshes its claim, which lives 4 minutes with verify on rather than twice the debounce; each rewrite logs `checks verify request unanswered` at WARN.
+  After 5 unanswered requests (10 minutes) the listener gives the episode up: one ERROR, `checks verify gave up; the head is not announced until Dispatch answers a later episode`, the claim released and the record marked (`verify_stopped`, `verify_stops`, `verify_retry_at`).
+  No listener claims the head again for 5 minutes after the first give-up of its snapshot, twice as long after each further one, up to 30 minutes; then a new episode asks, so a head given up in an outage is published once Dispatch answers, with no new observation of it.
+  A new observation, which changes the snapshot, starts an episode at once; a give-up made once the head's last observation is the bucket's TTL (7 days) old is for good, so its record expires.
+  With Dispatch down nothing is published.
+  A wait the listener drops deletes its own request.
+
+- The pass reads the commit statuses of a repository's heads only where the App's token for that repository holds Commit statuses, at read or write (`githubapp.Client.RepositoryTokenWithStatuses`).
+  It reads that from the `permissions` GitHub answers with the token itself (`POST /app/installations/{id}/access_tokens`), not from the installation: the client keeps a token until 5 minutes before it expires, so a token minted before a person approved Commit statuses does not hold it while the installation already does.
+  For such a repository the query asks for the head commit's combined status too (`status { contexts { context state createdAt targetUrl description } }`, `headsQueryWithStatuses`), which adds no connection and no request, and every other repository is sent the query it was sent before the pass read statuses, byte for byte.
+  A head read over REST lists its statuses once its check runs and check suites are recorded: `GET /repos/{owner}/{repo}/commits/{sha}/status`, at `per_page=100`, page by page and conditional on the ETags the pass kept, as the other two listings are.
+  A status in `success`, `failure` or `error` is mapped into the REST shape (`context`, `state`, `created_at`, `target_url`, `description`) and recorded through `contracts.GithubStatusObservation`, and a `pending` or `expected` one is not recorded.
+  The record keeps the newest status of each context (`recordStatus`, `packages/envoy/internal/cistore/cistore.go`), and a query's statuses are part of the head's fingerprint, so a pass in which only a status changed records it.
+  A failed status read costs the head its statuses alone: any `errors` entry at or under the head commit's `status` field of a query's answer, whatever its type, or any failure of the REST status read but a rate limit and the pass's own end, leaves the head's check runs and suites recorded and sends no further status request for that head in that pass.
+  Either failure is named at WARN, `ci reconcile read no commit status of a head`, with the repository, the pull request, the head's sha and the error, and a rate limit stops the pass, as at any read.
+  Deploy the listener first, then each Legion daemon, then Dispatch.
+  A rollback of the listener below the release that records commit statuses goes with a rollback of Dispatch: an earlier listener drops the statuses of each record it writes, and nothing writes them back while GitHub's answer for that head stays the same.
 
 - Every REST page is conditional on the `ETag` of its own last answer, so an unchanged page costs none of the rate limit; a query carries no ETag and is always answered in full.
   A head's ETags are kept only when every page answered and every observation the rules name was recorded, and are dropped when a page failed, when a write a later pass might land did not, and when the record they stand for has gone (the bucket's seven-day TTL, or a delete), so nothing is hidden behind a `304`.
@@ -395,12 +520,15 @@ It runs under the lease `ci-reconcile` with that 5 minutes as its period, so one
 
 - Requests are serial, as GitHub asks a poller for, and queries and REST reads are paced apart by the two budgets GitHub keeps them under.
   After each query the pass waits a third of what that query took, so its queries never take more than 45 seconds of a minute, inside GitHub's secondary limit of 60 seconds of GraphQL processing a minute for the whole App.
-  Before each REST request it leaves the gap it set itself: the requests the last pass learned this one will take — the pages of each listing of each head a query could not answer, and one identity read for each mapped repository — divided into nine tenths of its own deadline.
+  Before each REST request it leaves the gap it set itself: the requests the last pass learned this one will take — the pages of each listing of each head a query could not answer, and one identity read for each repository the pass covers — divided into nine tenths of its own deadline.
   That gap is never below `cireconcile.FastestRequestPace` (100ms, ten requests a second, inside GitHub's secondary limit of 900 points a minute) and never above `cireconcile.RequestPace` (500ms), which is the pace a deployment configures and the slowest the pass reads.
   The first pass of a process knows of no work and reads at the floor, and the pass after it knows the real count.
+  The passes after a pass that its own deadline ended before it reached a head — read one whole or gave one up — read at the floor until one reaches a head.
+  In a process's first cycle such a pass learned no page of any head it listed, so the arithmetic would set the passes after it at the ceiling, and under a short deadline a pass at the ceiling can reach no head either, so no cycle would ever close; later, where the `Reconciler` holds pages from earlier passes, the floor is only the faster of the two answers, never a slower one.
+  Every other way a pass ends with no head reached leaves that floor as it was: a rate limit, even one GitHub answers as the deadline falls; its caller's cancellation or deadline; an order with no head in it.
 
 - A pass is bound at the interval its loop runs it on, so it always ends before the pass after it is due and always logs its one line.
-  The pass walks one stable order — the mapped repositories, and within each its open pull requests by number — from the first repository to the last page of the last one, and keeps a cursor in it.
+  The pass walks one stable order — the repositories a pass covers (`cireconcile.covered`: the projects' default repositories and the ones an issue names as its own), and within each its open pull requests by number — from the first repository to the last page of the last one, and keeps a cursor in it.
   A pass starts at the cursor, reads to the end of the order and ends there rather than beginning the order again, and ends early when its deadline is up or at a rate limit.
   A pass cut short leaves the cursor at the first page or REST head it did not finish, which the pass after it takes up, so no head starves behind the heads the order holds before it; a pass that reaches the end of the order leaves the cursor at the start of it.
   One walk of the order, however many passes it takes, is a cycle, and only the pass that closes a cycle forgets what the cycle no longer lists, by what every pass of that cycle reached.
@@ -413,10 +541,12 @@ It runs under the lease `ci-reconcile` with that 5 minutes as its period, so one
   A rate-limited answer is never a page to read another way: it stops the pass, where a refused page, and a page holding a pull request GitHub answered with no node or no head commit, send that page's heads to the REST fallback.
   The pass records no limit of its own beyond that: the App client records GitHub's own answer, as every process's App call does.
 
-- Every pass logs one INFO `msg="ci reconcile pass"` line: `list_pages`, `heads`, `head_requests`, `heads_not_modified`, `records`, `mappings_skipped`, `heads_too_large`, `rate_limited`, with `rate_limit_scope` and `rate_limit_until` when it stopped at one, and then `heads_known`, `requests`, `pace`, `first_head`, `last_head`, `cycle_complete`, `deadline_reached`, `graphql_queries`, `graphql_points`, `rest_requests`, `rest_not_modified`, `heads_over_rest`, `heads_unchanged` and `duration`.
+- Every pass logs one INFO `msg="ci reconcile pass"` line: `list_pages`, `heads`, `head_requests`, `heads_not_modified`, `records`, `defaults_skipped`, `heads_too_large`, `rate_limited`, with `rate_limit_scope` and `rate_limit_until` when it stopped at one, and then `heads_known`, `requests`, `pace`, `first_head`, `last_head`, `cycle_complete`, `deadline_reached`, `graphql_queries`, `graphql_points`, `rest_requests`, `rest_not_modified`, `heads_over_rest`, `heads_unchanged`, `duration` and `repositories_without_app`.
+  `defaults_skipped` counts the repositories the pass skipped for a fault, each of them named at WARN, so a number above zero is something to mend;
+  `repositories_without_app` counts the repositories only an issue names that the App is not installed on, which is no fault and stays above zero for as long as an issue names one.
   `records` counts the records the pass changed, one for each head whose record a write of the pass changed, never one for each observation it wrote:
-  a head's runs and its suites all write the one record of that head (`cistore.Key`), so a pass that records a head's run and its suite reports 1;
-  a write the CI store refuses for its bound counts for nothing, although it marks the record overflowed.
+  a head's runs, its suites and its statuses all write the one record of that head (`cistore.Key`), so a pass that records a head's run and its suite reports 1;
+  a check write the CI store refuses for its bound counts for nothing, although it marks the record overflowed, and a status write it refuses for its bound counts for nothing and leaves the record as it was.
   `heads` is the heads this pass read whole, either way, and `heads_known` the open heads the cycle's queries listed; `first_head` and `last_head` name the first and the last head the pass read, each `owner/repo#number`, so two lines side by side say how far round the order each pass got;
   `graphql_queries` and `graphql_points` are the queries the pass asked and what GitHub charged them, `rest_requests` the REST reads beside them, `rest_not_modified` how many of those GitHub answered `304`, and `heads_over_rest` the heads a query could not answer whole — a number that climbing says the queries are answering less and less;
   `pace` is the gap it left between REST requests, `deadline_reached` says its own bound ended it, and `cycle_complete` says it reached the end of the order and left the cursor at the start.
@@ -492,6 +622,8 @@ The Go tests start one (`internal/tests3`, SeaweedFS in a container, since MinIO
 
   The issuer's discovery document is read in the background from boot, on the service-account issuer's schedule (above), and an issuer that cannot be reached refuses nothing:
   until the document has been read, `/auth/start` and the callback answer `503 SIGNIN_UNAVAILABLE`, and the rest of Dispatch serves.
+  A callback whose code exchange the issuer's token endpoint answers `5xx`, `408` or `429`, whatever OAuth error its body names, answers with a body cut off before it arrives whole, or does not answer, is `503 SIGNIN_UNAVAILABLE` too: that closed set is the issuer down.
+  Every other answer is the endpoint answering, and the sign-in fails `502`: a `4xx` with or without an OAuth error, a `2xx` that names an error or holds no token, and a `3xx`.
   A sign-in in flight (its state, its nonce, the page it returns to and when it lapses, ten minutes after it started) travels in the browser's `dispatch_oauth_state` cookie, signed under a key derived from the current signing key for that purpose alone, and no process keeps it:
   a sign-in one process started completes on whichever process the issuer's redirect reaches, given one `DISPATCH_SERVER_URL` on every process:
   the exchange must send the callback URL the sign-in started with, and each process builds it from that setting, or without one from the request's `Host`.
@@ -514,6 +646,12 @@ The Go tests start one (`internal/tests3`, SeaweedFS in a container, since MinIO
   the token expired, was revoked or is not the client's), or one whose ID token no longer passes the rule or names another email, ends every session they hold.
   A refresh that fails any other way (the issuer undiscovered, down or slow, a `5xx` or `429`, another OAuth error, or an answer without an ID token that verifies) ends nothing:
   the request that found the confirmation lapsed is refused `503 SIGNIN_UNAVAILABLE`, the sessions and the refresh token are kept, and the first request after the issuer answers again refreshes and is served.
+  A refresh is one request to the issuer's token endpoint, with the client's secret sent the way the issuer's discovery document lists in `token_endpoint_auth_methods_supported`: by HTTP Basic where it names `client_secret_basic` (Google's does), else in the form where it names `client_secret_post`.
+  Each request to the token endpoint has ten seconds, and the whole refresh, which also reads the person's row and, the first time, the discovery document, has fifteen; a refusal ends the sessions when its answer comes within both.
+  An issuer whose document names neither is asked by HTTP Basic and, when that fails, may be asked again in the form, so its refusal can need both requests to answer within the fifteen seconds.
+  The list says what the issuer supports, not what each client may use, so an issuer that holds a client to the one `token_endpoint_auth_method` it registered (RFC 7591 section 2) refuses a client registered for `client_secret_post` alone, under a document that names `client_secret_basic`, with `invalid_client` and no second request in the form: its sign-ins fail, and its refreshes end nothing and are answered `503 SIGNIN_UNAVAILABLE`.
+  A Cognito sign-in pool's token endpoint takes `client_secret_basic` and `client_secret_post` from an app client with a secret, as AWS documents.
+  Google's document names both, which says only what its endpoint supports: a 2026-11-21 probe of the Google Cloud SDK's installed-app client found both accepted, and no web client was probed.
   Logout ends Dispatch's session only, not the issuer's.
 
 - A person is their email, so an address passed from one account to another is one person.
@@ -554,6 +692,36 @@ The Go tests start one (`internal/tests3`, SeaweedFS in a container, since MinIO
   such a build reads `"K1 K0"` as one key, which signs everyone out.
   Removing a key revokes no refresh token at the pool:
   whoever holds a backup and the old key can still redeem the tokens sealed under it until they expire, so after a key leak, sign each person out at the pool.
+
+- `iap` is for a Dispatch behind Google Cloud's Identity-Aware Proxy (IAP), which signs people in at the load balancer in front of it.
+  On each request it lets through IAP adds an assertion it signs, `X-Goog-IAP-JWT-Assertion`, and Dispatch names the person from that assertion alone, never from IAP's unsigned `X-Goog-Authenticated-User-Email` or `X-Goog-Authenticated-User-Id`, which any request that reached Dispatch around IAP can carry.
+  It verifies the assertion as Google documents ([Securing your app with signed headers](https://cloud.google.com/iap/docs/signed-headers-howto)) through `internal/oidc` (`oidc.IAPVerifier`):
+  an ES256 signature by a key of IAP's set at `https://www.gstatic.com/iap/verify/public_key-jwk`, a fixed address, since IAP publishes no discovery document (`oidc.NewKeysAt`), read on the first request and cached as a service-account issuer's set is;
+  the issuer `https://cloud.google.com/iap`;
+  the audience `DISPATCH_IAP_AUDIENCE` (`/projects/<project number>/global/backendServices/<backend service id>` behind a load balancer);
+  and `exp` and `iat` (and an `nbf`, which IAP does not write), each with the 30 seconds of clock skew Google documents; a time that is not a number of seconds from 1970 to 9999 is refused as malformed.
+  Who may use Dispatch is the domain sign-in's rule (`identity.DomainRule`), so `DISPATCH_SIGNIN_DOMAIN` is required:
+  a person is admitted when the assertion's `hd` is that domain and its `sub` names a Google account (`accounts.google.com:<id>`), and is named by the assertion's `email`, lowercased.
+  An assertion carries no `email_verified`; its `email` is the address of the Google account IAP signed in, which Google tells an app to take as the person.
+  `DISPATCH_SIGNIN_ISSUER`, `DISPATCH_SIGNIN_CLIENT_ID`, `DISPATCH_SIGNIN_CLIENT_SECRET` and `DISPATCH_SIGNIN_GROUP` are refused beside it, and so are dev sign-in and `DISPATCH_IAP_AUDIENCE` under any other identity.
+
+- Under `iap`, IAP signs a fresh assertion for every request, so each request is decided on its own:
+  Dispatch keeps no session cookie, refresh token or hourly confirmation for it, and a person IAP or the domain stops admitting is refused from their next request.
+  Each person admitted is recorded in `people`.
+  A request with no assertion, one that fails a check, or one whose person the rule refuses is `401 NO_IDENTITY`;
+  a refused assertion logs `msg="dispatch: IAP assertion refused" reason=<class>` and nothing else, since the error of an assertion nobody signed quotes its own unverified `iss` or `aud`, which its sender chose; a refused person logs `msg="dispatch: IAP person refused" email=<email> hd=<hd> reason=<reason>`, read from an assertion IAP signed; both at WARN.
+  An expired assertion logs `msg="dispatch: IAP assertion expired"` at DEBUG alone (below).
+  Only an assertion IAP signed counts as expired: one past its `exp` whose ES256 signature IAP's key set verifies, for this audience, with an `exp` and an `iat` that hold, and whose person the rule admits (`oidc.IAPExpiredError`, `identity.ErrCredentialExpired`).
+  An expired assertion that is wrong in any other way (a signature IAP's keys do not verify, another key id, RS256, an account the rule refuses, no `iat`) is refused for that, with its WARN line, as a fresh one is: the verifier checks the algorithm, signature, issuer and audience first, with go-oidc's own expiry check off, and reads `exp`, `iat` and `nbf` itself only from a payload that passed them.
+  A key set that cannot be read reaches no verdict, and the request is `503 SIGNIN_UNAVAILABLE`.
+  An unsafe request that carries an assertion is held to Dispatch's origin as one with a session cookie is (`enforceCookieOrigin`), since a browser sends IAP's cookie with another site's request and IAP adds an assertion to it.
+  Dispatch runs no sign-in of its own, so `/auth/start` answers `503 SIGNIN_UNCONFIGURED`, and `POST /auth/logout` signs nobody out of IAP: the next request carries IAP's next assertion.
+
+- Under `iap`, a websocket is the one request whose assertion ages: the live socket and the document socket re-check the assertion their upgrade carried on every heartbeat (15 seconds, `api.whileCallerResolves`), and Google gives an assertion at most ten minutes and the skew.
+  Once that assertion has expired, and IAP's keys still verify it and its person is still admitted, the heartbeat rotates the socket rather than cutting it (`identity.ErrCredentialExpired`):
+  the live socket closes with `4001` (reason `credential expired`), on which the page reopens it at once and shows nothing, and the document socket with `4412` (`DOC_ADMISSION_REVOKED`), on which the provider reconnects.
+  The reopened socket's upgrade carries a fresh assertion, judged again as any upgrade is, so no socket is served past its assertion, and an IAP user's sockets each reopen about every ten minutes.
+  Any other refusal on a heartbeat closes the socket as before, an expired assertion that IAP's keys no longer verify (a key IAP withdrew) or whose person the rule no longer admits included: `1008` on the live socket, and no close frame (`1006`) on the document socket.
 
 - `header:<Header-Name>` is for tests and local harnesses only, never for a production Dispatch deployment.
   It accepts a header value, lowercases it and records the person.
@@ -614,7 +782,7 @@ It refuses a database that already holds a `projects` or an `issues` row, naming
 it writes fixed keys, so a second run over the same rows would fail halfway through.
 
 It calls the server's own indexers over what it writes
-— `refs.IndexBlocks` for each document's latest version, `refs.IndexItem` for each comment's and message's blocks, `refs.IndexAskParts` for each ask's parts (its question, its options and the answer it holds)
+— `refs.PlanBlocks` for each document's latest version, `refs.IndexItem` for each comment's and message's blocks, `refs.PlanAskParts` for each ask's parts (its question, its options and the answer it holds), the two plans run by the seed's own transaction as a batch of their own (`store.RunWrite`), since it joins no write phase of the server's
 — and then settles the state those writes leave owed, so a Dispatch server started on the seeded database rewrites nothing:
 the block index, the item blocks, the task counts, the reference excerpts and the event publication are all already done, and the per-owner `last_seq` counters match the seeded events, so the first comment, ask, message, upload or title edit written to a seeded issue does not fail the unique `(issue_key, seq)`.
 Every ask is written with its `ask.opened` event, in the ask's own transaction as the create route writes it, because every read of an ask resolves that event (`events.OpenedEventIDs`) and fails the whole request when the ask has none, which would answer 500 on the ask lists, the ask read, the Inbox and an issue's `open_asks`.
@@ -667,7 +835,8 @@ Either way the server logs the address it serves on once it serves, as `dispatch
 
 Set `DISPATCH_PPROF_PORT` to a port to serve the Go profiler (`net/http/pprof`) on `127.0.0.1:<port>`, on a mux of its own, apart from the server's routes.
 It binds the loopback address only, so nothing outside the pod reaches it; unset or empty, nothing listens.
-A value that is not a port 1-65535, or a port already taken, refuses startup naming the variable.
+`0` serves it on a port the kernel chooses, which the server logs as `dispatch: pprof listening addr=127.0.0.1:<port>`: a test harness asks for that, since a port it picked and let go of is any program's to take before the server binds it.
+Any other value that is not a port 1-65535, or a port already taken, refuses startup naming the variable.
 The profiler binds before anything connects, so a slow boot can be profiled too.
 The listener closes at once when the process is told to stop, cutting off a profile in flight, so it never delays the shutdown (and the shutdown's own drain cannot be profiled).
 A `gcp:Dispatch` deployment turns it on with the component's `pprofPort` input (`packages/envoy/infra/README.md`), which sets the variable on the `envoy-dispatch` container;
@@ -682,9 +851,7 @@ go tool pprof -seconds 30 http://127.0.0.1:<port>/debug/pprof/profile
 `/debug/pprof/` lists the other profiles (`heap`, `goroutine`, `allocs`, `threadcreate`, `trace`).
 `mutex` and `block` are listed too but record nothing: Dispatch sets no mutex or block sampling rate.
 
-The same port serves the process's `expvar` variables at `/debug/vars` (Go's `cmdline` and
-`memstats` among them), and `dispatch_rooms`, the document rooms' figures, computed afresh on each
-read with no database query (`docs.Service.RoomFigures`):
+The same port serves the process's `expvar` variables at `/debug/vars` (Go's `cmdline` and `memstats` among them), and `dispatch_rooms`, the document rooms' figures, computed afresh on each read with no database query (`docs.Service.RoomFigures`):
 
 ```sh
 curl -s http://127.0.0.1:<port>/debug/vars | jq .dispatch_rooms
@@ -717,8 +884,10 @@ curl -s http://127.0.0.1:<port>/debug/vars | jq .dispatch_rooms
 - `preloads`: the cold sockets' loaded states waiting for their room's load.
 
 - `resident_bytes`: the encoded bytes the resident rooms took, each load and every update since: loaded state only.
-  It leaves out the updates a room parks after it loaded, while they wait for an edit it has not received; parked rows already stored are part of the history a load decodes, so they count.
-  ygo bounds those per room by `MaxPendingItems`, which Dispatch sets to `maxUpdateItems` (1<<20, `internal/dispatch/docs/service.go` `New`): a count of parked items and, separately, of parked delete ranges, not bytes.
+  It leaves out the updates a room parks after it loaded, while they wait for an edit it has not received;
+  parked rows already stored are part of the history a load decodes, so they count.
+  ygo bounds those per room by `MaxPendingItems`, which Dispatch sets to `maxUpdateItems` (1<<20, `internal/dispatch/docs/service.go` `New`):
+  a count of parked items and, separately, of parked delete ranges, not bytes.
 
 - `settlement_wakeups`: the wakes of the waits for a room's appends.
 
@@ -742,7 +911,7 @@ Run the commands from a checkout of this repository with `bun install` run, each
 
 2. `curl -s https://<dispatch>/healthz` prints a body with `"idempotency_keys":true`: this build judges `Idempotency-Key` (Keyed writes, below).
    The field is a fact of the build, so a `503` for a database or NATS that is down carries it too;
-   a body without it is a Dispatch that would make a retried write twice, and the `dispatch` command sends no write again to it.
+   a body without it is a Dispatch that would make a retried write twice, and the `dispatch` command sends a failed write again under its key and asks nothing first, so that build must not serve.
 
 3. `bun scripts/e2e/lib/dispatch-keyed-comment.ts --url https://<dispatch> --bearer-file <token file> --issue <scratch issue>` posts one comment twice under one `Idempotency-Key`, as a page whose first answer was lost asks again.
    It passes when the repeat is Dispatch's stored answer and the issue holds the comment once:
@@ -813,19 +982,36 @@ So the two surfaces a client crosses a roll on, the body it sends and the route 
 **The release that moves live updates to `/ws/live` and keys every write (INFRA-258) deploys with no server of the earlier release running**, because of its API rather than its schema.
 An earlier server ignores the `Idempotency-Key` header and keeps no key, so while both serve one database a write can run twice:
 one an earlier server ran whose answer was lost is run again by its retry on a new server, which holds no key for it, and a retry of one a new server ran runs again on an earlier one.
-The page and the `dispatch` command both retry a write whose answer was lost, and the command's check that Dispatch keeps keys (the key echoed back, or `/healthz`) reads whichever server answered it.
+The page and the `dispatch` command both retry a write whose answer was lost, under its key, and ask nothing first.
 Stop the earlier release, or scale it to zero, before this one serves:
 a Kubernetes Deployment's `strategy: Recreate`, which `envoy-infra:gcp:Dispatch` uses at its default one replica;
 a deployment running more than one replica, which rolls, is scaled to zero first, as for `0117` (Database migrations, below).
 The compose auto-deployer stops the old container before it starts the new one.
 Releases after this one roll again.
 A rollback to an earlier release brings the same hazard back, the other way:
-a tab still open, and a `dispatch` client that saw this release keep keys within the last five minutes (`KEYED_LAYER_MEMORY_MS`), retry a write whose answer was lost against the earlier server, which runs it again.
+a tab still open, and every `dispatch` client, which sends a failed write again under its key and asks nothing first, retry a write whose answer was lost against the earlier server, which runs it again.
 Fix forward instead; if you must roll back, stop this release first, knowing a write in flight at that moment may land twice.
+A rollback to a build whose keyed layer passes a caller it cannot resolve on to the handler, rather than answering that caller itself, brings the double write back too, for every `dispatch` client that sends a failed write again with no `/healthz` read (`packages/envoy-client/README.md`), for as long as that build serves:
+that build can run a keyed write with no key, so a write whose answer was lost, sent again under its key, can land twice.
+Once a deployment's sessions run such a client, do not roll Dispatch back past `b1c42d1d7d` (the first build whose keyed layer answers that caller itself, cybermonklabs/legion#4350); fix forward instead.
 Once `0141_drop_broadcast_idempotency_keys` has applied, a rollback past this release also loses broadcasts:
 the earlier build's broadcast send reads and writes the table `0141` drops, so every broadcast send fails while the rest of that build keeps working.
 A tab opened before the deploy needs a reload:
 `GET /api/v1/events` is gone, so it shows `Live updates unavailable`, and its broadcast body still carries `idempotency_key`, which this release refuses by name (`400 INVALID_JSON`, "idempotency_key is the Idempotency-Key header, not a body member"), so that tab sends no broadcast until it reloads.
+
+**The release that stores a message for a stopped session (INFRA-626) rolls, so for the length of the update an earlier server and a new server both take a model or thinking switch.**
+A switch is the live view's one-line `/model <value>` or `/effort <value>` message, and a new server sends it with `connected_only` whatever its request says when it is a person's own Send or Aside, not one an agent wrote for them, on no issue and no broadcast's copy, the shape the session runs as its own turn (`isSessionSwitch`, `api/messages.go`), so a stopped session refuses it and its attempt records `the session is stopped`:
+stored for a stopped session, the line would change that session's model at an unknown later time.
+Every other message whose body is such a line - an issue message, a mention, a broadcast copy, a BTW, a session's message, one an agent wrote for its person - reaches the session as a card and changes no model, so a new server queues it for a stopped session like any other message.
+A tab opened before the deploy sends the switch without `connected_only`, and a new server holds it to a running session by that rule all the same, so that tab needs no reload for it.
+An earlier server that takes the same switch, until the update ends or for good after a rollback, sends it as that release always did:
+its registry read does not find a session the listener knows only by its record, so it fails that attempt `no live session`, and it sends the switch to a session whose registry entry still stands, for which the listener stores it if that session's process has gone, as it did before this release.
+A tab opened after the deploy sends `connected_only`, which an earlier server ignores, as `decodeJSON` ignores every member a route does not declare (it logs the member and decodes the rest).
+So that earlier server sends the switch as that release always did (above), and the page shows no refusal.
+After a rollback every press is sent that way until the deployment moves forward again.
+An earlier server's delivery sweep resumes an attempt without the flag, since that build does not read the column, so it can send a switch attempt a new server left pending the way the earlier release sends one (above).
+That takes a new server killed mid-send, whose drain therefore never settles the attempt, while an earlier server still serves, in a rolling update or a rollback.
+The earlier server's sweep can then send that attempt once its claim lapses, one to two minutes after the kill (`model.DeliveryClaimLapse`, and the sweep's one pass a minute), unless a new server's sweep takes it first and sends it with the flag.
 
 What the two processes share, and what each keeps to itself:
 
@@ -843,6 +1029,10 @@ What the two processes share, and what each keeps to itself:
   A holder sends nothing once its hold's deadline has passed, a send already waiting for a connection included (`bus.Client.WindowUntil`), so one that freezes and resumes publishes nothing beside the new holder.
   Each owner's events (an issue's, a document's or a project's) keep their order per destination:
   an event goes to a session's subject, or to the owner's topic family, only after every earlier unpublished event of its owner bound there has reached it.
+  The owner's topic family comes first beside that, because a session that follows the topic and is also sent the owner's events on its own subject takes both in stream order:
+  no later event of the owner goes to any session's subject while an earlier one's topic send has not reached the topic family.
+  So while an owner's topic family cannot be published, that owner's sends to session subjects wait too, until the retry that publishes the topic send, and a session that gets nothing from the owner may be waiting on the topic family rather than on its own subject.
+  A failed send to a session's own subject holds back only that subject, and a mention's copies (the API's mention send and a fallback row) are outside this order.
 
 - A batch does not block the next.
   The holder runs up to four side by side, each reading only owners no other batch holds in flight, so an event waiting out the five-second wait for the stream's acknowledgement of a role forward holds back its own owner's later events and nothing else;
@@ -875,8 +1065,12 @@ What the two processes share, and what each keeps to itself:
 
 - A send waits out a listener take-over.
   While the active Envoy listener pod is replaced, its successor refuses connections, answers 502, 503 or 504, or does not hold the session yet;
-  a send that meets one of those (or a receipt timeout) is tried again under the attempt it holds and the same idempotency key, renewing its claim before each try, for up to 12 seconds from its first try, and only then settles `failed` (`api/envoy_resolve.go`, `listenerTakeoverWindow`).
-  A request that sends during a take-over answers up to 12 seconds later, and a send to a session that is really gone reads `failed: no live session` about 12 seconds after it was made.
+  a send that meets one of those (or a receipt timeout, or a 503 coded `maybe_stored`, whose publish the stream never acknowledged) is tried again under the attempt it holds and the same idempotency key, renewing its claim before each try, for up to 12 seconds from its first try, and only then settles `failed` (`api/envoy_resolve.go`, `listenerTakeoverWindow`).
+  A request that sends during a take-over answers up to 12 seconds later, and a mention of a session that is really gone reads `failed: no live session` about 12 seconds after it was made.
+  A targeted message to such a session is queued instead at that moment:
+  when neither the listener's registry nor its known-session store holds the session, Dispatch publishes the message on the session's own subject, `notifications.agent.<session>`, under the dedupe key the listener's send would have used, and records the attempt `queued` (`api/message_queue_publish.go`).
+  The listener gives that copy up after its retry window with the agent wake, and the session reads it when it registers again under its id within the stream's 72 hours.
+  A process with no NATS (`DISPATCH_NATS_DISABLED=1` without test hooks), a failed publish, a role target, a send whose request set `connected_only`, and a model or thinking switch, which is sent `connected_only` whatever its request says, still settle `failed`.
   A process killed during the wait leaves the attempt to the delivery sweep.
 
 - Times that one process writes and another compares come from the database's clock, never a host's:
@@ -900,26 +1094,29 @@ What the two processes share, and what each keeps to itself:
 
 - No leased background loop runs a pass beside another process's pass of the same loop.
   Each pass takes a named session-level advisory lease for its length (`duty.Exclusive`), so a process whose attempt lands inside another's pass finds it held and logs a skip.
-  The twelve timer loops — the delivery reconcile, the architecture import, the webhook redelivery sweep, the CI reconcile pass (lease `ci-reconcile`, beside the redelivery sweep in what it recovers), the hourly document compaction sweep (lease `document-compaction`, first tick at start, with or without NATS), the block index reconciliation, the term-statistics refresh, the repair of closed and reopened issues' asks, the keyed writes' maintenance sweep (lease `suggestion-outcomes`), the document settlement resumption, the prune of the registry of live server processes and the display tree fill (`texttreefill`, lease `text-tree-fill`)
+  The thirteen timer loops — the delivery reconcile, the architecture import, the webhook redelivery sweep, the CI reconcile pass (lease `ci-reconcile`, beside the redelivery sweep in what it recovers), the hourly document compaction sweep (lease `document-compaction`, first tick at start, with or without NATS), the block index reconciliation, the term-statistics refresh, the repair of closed and reopened issues' asks, the keyed writes' maintenance sweep (lease `suggestion-outcomes`), the document settlement resumption, the prune of the registry of live server processes, the Legion sampler's read of each project's daemon (lease `legion-state`, first tick at start, one pass a minute) and the display tree fill (`texttreefill`, lease `text-tree-fill`)
   — also record each pass in `duty_passes` (migration `0115`), in a row per lease and period, so a process whose tick lands between another's passes
   — the ordinary case, since each ticker draws its phase at boot and a rolling update starts the second process minutes after the first
   — finds the period already served and logs the same skip: each runs once per period across the processes.
   A row per lease and period is what keeps two builds whose interval for one loop differs from each running on every tick after the other's pass: the processes at one period make one pass per period between them, whatever the processes at another period do.
-  The two leased woken loops, the reference excerpts and the edit notices, take their lease with no period:
+
+- The two leased woken loops, the reference excerpts and the edit notices, take their lease with no period:
   a process that finds it held tries again until a pass of its own runs, since the other process's pass may have read before the change that woke this one.
   The suggestion outcome sweep takes no lease at all:
   each of its pages holds the `suggestion_outcome_cursor` row `for update`, which serialises two processes by itself (Background loops, below).
   The settlement resumption is leased because a settlement reads the store under the document's lock whichever process runs it, so one process per minute arms every owed settlement.
-  The embeddings `project_key` fill (lease `embeddings-project-key-fill`, `api.RunEmbeddingProjectKeyFill`) is leased and is no loop of a cadence: it is one pass of one to two hours that labels the rows stored before migration `20261109120000`, started once at boot, and it takes its lease with no period because the cursor row of `20261109120100` says when there is nothing left to do, so the process of a roll that finds the lease held logs the skip and fills nothing.
+
+- The embeddings `project_key` fill (lease `embeddings-project-key-fill`, `api.RunEmbeddingProjectKeyFill`) is leased and is no loop of a cadence: it is one pass of one to two hours that labels the rows stored before migration `20261109120000`, started once at boot, and it takes its lease with no period because the cursor row of `20261109120100` says when there is nothing left to do, so the process of a roll that finds the lease held logs the skip and fills nothing.
   That process then tries for the lease again every five minutes until that cursor row reads done, so a holder killed mid-pass costs the labelling one wait rather than lasting until something next boots, and each process's goroutine and its lease-pool connection go back for good once the rows are labelled.
-  Seventeen names are leased in all: those fourteen loops, the CI reconcile among them, one per delivery durable for the intake's take-over, and the fill, and the lease pool holds a connection for each of those callers and for each of the four callers of the two intakes' holds, twenty-one (`store.LeasePoolSize`'s comment in `internal/dispatch/store/pool.go` lists the names; every caller reserves its connection by name at boot and `store.LeaseCallers.Complete` refuses to serve unless the reservations are exactly the pool's size).
-  The delivery live hub, the event-stream relay, the process's shared listener connection, with the document rooms' room sync and the woken loops' wakes on it, and the document rooms' timers stay per-process by design (below), the embedding queue and the task progress reconciliation claim their own work, and the outbox publishes under its hold (above);
+  Nineteen names are leased in all: the fourteen leased loops of the two items above, the CI verify loop (`ci-verify`, taken only by a verify pass that lists a request to answer) and the Legion sampler, the CI reconcile among them, one per delivery durable for the intake's take-over, and the fill, and the lease pool holds a connection for each of those callers, for each of the four callers of the two intakes' holds and for each of the two callers of the keyword fill's hold, twenty-five (`store.LeasePoolSize`'s comment in `internal/dispatch/store/pool.go` lists the names; every caller reserves its connection by name at boot and `store.LeaseCallers.Complete` refuses to serve unless the reservations are exactly the pool's size).
+  The delivery live hub, the event-stream relay, the process's shared listener connection, with the document rooms' room sync and the woken loops' wakes on it, and the document rooms' timers stay per-process by design (below), the embedding queue and the task progress reconciliation claim their own work, the outbox publishes under its hold (above), and the keyword fill writes under a hold of its own (Background loops, below);
   the embedding queue's coverage pass runs in every process with no lease, each of its steps safe beside another process's, and only the processes whose embedder has the one active identity embed or drop a vector (Search, below);
   `cmd/dispatch/main.go` says at the call site which loop is which and why.
 
 - The delivery live hub, the event-stream relay and the events outbox run in every process, each on a `LISTEN` connection of its own (`api/delivery_live_hub.go`, `api/event_stream_relay.go`, `outbox/lease.go`), and the document rooms' room sync shares the process's listener hub with the woken background loops (`docs/room_sync.go`, Background loops, above).
   Each process serves its own browser sockets - the Delivery and Pipeline pages' `GET /ws/delivery`, every SSE stream, every live document - so each needs the notifications and the recomputed views for them, and sharing them would need a cache across the processes.
-  The cost is up to five Postgres connections per process outside the shared pool (`store.listenerConnections`): those three, the shared listener hub and the room sync's NOTIFY sender, the hub's and the relay's held only while something subscribes to them.
+  The cost is up to five Postgres connections per process outside the shared pool (`store.listenerConnections`):
+  those three, the shared listener hub and the room sync's NOTIFY sender, the hub's and the relay's held only while something subscribes to them.
 
 - A Delivery page configuration warning is logged once across the processes.
   Every read judges each deploy run, and a successful run holding none of `production_job_names`, or whose production job lists no step named `production_apply_step_name`, is named in the log;
@@ -947,7 +1144,8 @@ What the two processes share, and what each keeps to itself:
   its state travels in the browser's signed `dispatch_oauth_state` cookie, not in a process (Identity, above), given one `DISPATCH_SERVER_URL` on every process.
 
 - `server.started` names the build every live process serves, once each time that build changes.
-  A process that finds every live process serving one stamped, non-empty commit that the latest row of `server_build_announcements` does not name inserts a row;
+  A process that finds every live process serving one stamped, non-empty commit that is its own and that the latest row of `server_build_announcements` does not name inserts a row, with `tuple_kinds` the relation kinds its build writes as tuples of the node and tuple store (`refs.TupleKinds`, the kinds `graph_edges`' tuple arm renders);
+  a process whose heartbeat lapsed is no live process, so the fleet it reads can agree on another build's commit, and it inserts nothing for that commit, which it would otherwise name with its own build's kinds;
   any process whose bus is connected publishes each row not yet published, with the event id `dispatch-server-started-<commit>-<seq>` and `started_at` the database's time of the announcement.
   Each process looks every 5 seconds, and an advisory lock keeps two from inserting or publishing at once.
   So a roll announces nothing until its last old process is gone, a restart of every process on one commit announces nothing, and a rollback to an earlier commit announces it again.
@@ -1021,7 +1219,8 @@ Postgres is the only channel between the rooms (`docs/room_sync.go`), so the mes
   Every process of this build then closes its rooms of the issue's documents, and their browsers reconnect read-only or read-write as the issue now allows.
   A browser's append also reads the issue's state in its own transaction.
   The append is refused when its room took the edit more than 2 seconds (`closeMargin`) after the close committed.
-  An edit that the room took before then is stored, even when its append reaches the database after the close, and the document settles it when the issue reopens.
+  An edit that the room took before then is stored, even when its append reaches the database after the close.
+  The document's next settlement saves it, whether or not the issue is closed.
   A close through `PATCH` stamps `closed_at` again as its last statement before it commits, so the 2 seconds count from the commit.
   An edit typed while the close's transaction runs is stored, however long the close takes to withdraw the issue's open asks.
   The `issue.closed` event carries the earlier stamp, from the start of the close's transaction.
@@ -1095,12 +1294,12 @@ During the roll that releases this behaviour, processes of the earlier build beh
 Every change this build writes still notifies `dispatch_doc_changed`, which the earlier build reads, and an issue that the earlier build closes still closes this build's rooms through the trigger.
 
 **Each process holds its own connections, so a second process doubles them.**
-Every pool's size is fixed in code (`internal/dispatch/store/pool.go`), and a serving process opens at most 64 + 21 + 8 + 4 + 2 + 2 + 1 + 2 + 2 + 1 + 5 = 112 connections to Postgres (`store.ConnectionsPerProcess`):
+Every pool's size is fixed in code (`internal/dispatch/store/pool.go`), and a serving process opens at most 64 + 25 + 8 + 4 + 2 + 2 + 1 + 2 + 2 + 1 + 5 = 116 connections to Postgres (`store.ConnectionsPerProcess`):
 
 | Pool | Connections | What takes them |
 | --- | --- | --- |
 | Shared (`sharedPoolSize`) | 64 | Requests, settlements, and the document writers that hold a room's lock on a connection of their own (`lockRoom` through `withRoomLock`: snapshots, prunes, deletions). |
-| Leases (`store.LeasePoolSize`) | 21 | The periodic maintenance loops' once-overall leases (`duty.Exclusive`) and the delivery intakes' holds (`duty.Hold`), the embeddings `project_key` fill and the display tree fill among them, one per caller that can be inside a lease or a hold statement at once (`store.LeaseCallers`). |
+| Leases (`store.LeasePoolSize`) | 25 | The periodic maintenance loops' once-overall leases (`duty.Exclusive`), the delivery intakes' holds and the keyword fill's hold (`duty.Hold`) with the fill's batches, the Legion sampler's read of each project's daemon, the CI verify loop's lease, the embeddings `project_key` fill and the display tree fill among them, one per caller that can be inside a lease or a hold statement at once (`store.LeaseCallers`). |
 | Room appends (`roomAppendsPoolSize`) | 8 | The document rooms' batches of browser updates; `application_name=dispatch-room-appends`. |
 | Rooms (`RoomsPoolSize`) | 4 | Document loads; `application_name=dispatch-rooms`. |
 | Compaction (`compactionPoolSize`) | 2 | A document's compaction: the read transaction of the rows it folds, and its write back under the document's lock (`Pool.Compaction`); `application_name=dispatch-compaction`. |
@@ -1111,7 +1310,7 @@ Every pool's size is fixed in code (`internal/dispatch/store/pool.go`), and a se
 | Registry (`registryPoolSize`) | 1 | Held for the life of the process: the heartbeat that stamps its row in the registry of live server processes every 5 seconds (`processes.Register`). |
 | Listeners (`listenerConnections`) | 5 | What the process may hold at once, each on a connection of its own: the events outbox's `LISTEN` on `dispatch_events` and `dispatch_duty_holds`, the shared listener hub the document rooms' room sync and the woken background loops wait on, and the document rooms' NOTIFY sender, each held for the life of the process, and the delivery hub's and the event stream relay's, each held only while something subscribes to them. |
 
-Two processes at their ceiling hold 224, past a default Postgres's `max_connections` of 100, so size the database's limit for both, with whatever else uses that database counted in, before the second process starts.
+Two processes at their ceiling hold 232, past a default Postgres's `max_connections` of 100, so size the database's limit for both, with whatever else uses that database counted in, before the second process starts.
 
 **A connection is closed after its next response once it is 60 seconds old** (`maxConnAge`, `cmd/dispatch/conn_age.go`):
 the server stamps each connection's accept time and answers the first request it reads at that age or later with `Connection: close`, and a request carrying an `Upgrade` header, a websocket handshake, keeps its connection.
@@ -1173,6 +1372,8 @@ So for each surface the two builds share, this is what build N+1 may change whil
   settlement writes no version of it and leaves an approval to carry over to a build that reads it; and the excerpt reconciliation leaves its mentions owed.
   A renderer change (the markdown a tree renders as) and a reference-grammar change (what a body's references parse as) are reader-first too:
   a build whose renderer writes an unchanged document differently writes no new version of it, and a rewrite of a body keeps the reference edges to node kinds this build does not know.
+
+- **Stored documents: the document socket, and ygo's encoding.**
   A page's document socket is writable by the whole fleet's numbers (`internal/dispatch/docs/socket_admission.go`, `authorize`):
   each process registers V, the schema version it reads, and R, the highest `since` among the elements it may create, in `server_processes` (migration `20261101030537_server_processes_schema`).
   A page presents its own V and R as `schema_version` and `schema_creatable`, and is writable on an open issue when its R is at most every live process's V and at most the highest R among the live processes, and its V is at least every live process's R and the highest `since` among the elements the document holds; otherwise it is read-only.
@@ -1181,6 +1382,7 @@ So for each surface the two builds share, this is what build N+1 may change whil
   Every 15 seconds (the registry's live window) each process checks its open document sockets again and closes each writable one the fleet no longer admits with `4412` (reason `DOC_ADMISSION_REVOKED`; `DOCUMENT_ADMISSION_REVOKED_CLOSE_CODE` and `DOCUMENT_ADMISSION_REVOKED_CLOSE_REASON` in `packages/contracts`);
   the close frame goes out once the message the server has in flight on that socket is out, which it waits at most a second for, so a peer too slow to take it in that second gets no close frame at all and reads the end as `1006`;
   the provider reconnects on either, the new socket is admitted again, and the reconnect's sync restores what was in flight, so the second is a bound on the close code a page reads and on nothing else.
+  The same close ends a document socket whose upgrade's IAP assertion has expired (Identity, above), with the same reconnect.
   A change of ygo's own update encoding is the one stored-document change no build can answer and no test here proves: a build that meets history written with an encoding it does not know cannot decode it, and the build that cannot is already serving when the new encoding arrives, so the reader-first rule above has nothing to act on.
   An upgrade of that dependency that changes the encoding is therefore a release deployed with no server of the earlier release running, like the migrations that took that exception, rather than a roll.
   What this build does answer is an element it does not know (`DOC_NEWER_CONTENT`, above) and the encodings two deployed builds already speak, which the two-build documents test drives; neither is the upgrade.
@@ -1231,10 +1433,66 @@ So for each surface the two builds share, this is what build N+1 may change whil
 - **SQL.**
   Expand-then-contract across two releases (Database migrations, below), unchanged.
 
+- **Owner locks.**
+  Both builds' writers of one issue, document or project exclude each other, so a write of either build decides on what the other committed.
+  Each process registers the owner lock protocol it serialises those writers by (`server_processes.owner_lock_protocol`, migration `20261115100924_server_processes_owner_lock_protocol`): a build that takes the owner's row first and holds it to its commit, as every build before that migration does, reads the column's default 0, and a build that takes the owner's advisory lock first (`store.LockOwner`) registers 1.
+  A build at 1 names 1 in the `dashboard_builds` row its boot publishes too (migration `20261115200014_owner_lock_legacy_gate`), and an earlier build's row reads 0.
+  A build that changes how it serialises an owner's writers registers a new protocol and keeps taking what the protocols still live take, the same way.
+
+- **An earlier build in the fleet.**
+  An earlier build is in the fleet while a row of it in `server_processes` has heartbeated within the last 10 minutes (`store.OwnerLockLegacyWindow`, the registry's prune age, `processes.PruneAge`), so until it is deregistered or pruned, or for an hour after it last arrived (`store.OwnerLockMarkWindow`).
+  An earlier build that serves a dashboard arrives at its dashboard publish, the first thing its boot writes and before any write an owner lock guards: a publish that fails ends its boot, which serves nothing.
+  An earlier build that serves no dashboard (its web dist holds no `index.html`, `dashboard.ErrNoBuild`) arrives at its registration instead, after its boot's repairs and background passes have begun writing; the image never runs that way, since it sets `DISPATCH_WEB_DIST` to the web app it ships (`packages/envoy/docker/Dockerfile`).
+  The registration of an earlier build's process, and the return of its lapsed row, arrive too.
+  Each arrival's insert, a row at 0, fires a trigger that takes the owner lock gate, a transaction advisory lock of its own (`store.OwnerLockGateNamespace`), exclusively, and stamps the arrival's time in `owner_lock_legacy_mark`: the trigger `dashboard_builds_owner_lock_legacy_arrival` runs the function `owner_lock_legacy_arrival`, and `server_processes_owner_lock_legacy_arrival` runs `owner_lock_legacy_registration`.
+  The migration stamps that mark too, at the newest earlier publish already in `dashboard_builds` when that is within the hour, so an earlier build whose publish committed before the migration ran, and which has not registered yet, is in the fleet as well; a database no build has published to gets no mark.
+
+- **A writer beside an earlier build.**
+  While an earlier build is in the fleet, a build at 1 takes the owner's row too, right after the advisory lock and before the read the write decides on, and takes no gate.
+  While none is, it tries the gate shared, without waiting, before its first owner lock, in the owner lock's own statement (`public.owner_lock`), reads the fleet again behind it, and takes the advisory lock alone.
+  A try that fails, because an arrival holds the gate or waits for it (Postgres grants no conditional lock request that conflicts with one already waiting), runs that transaction as beside an earlier build: the advisory lock, then the owner's row.
+  So an earlier build's arrival waits for every transaction of this build that holds the gate, every owner lock from the moment the arrival asks for the gate takes the owner's row, and every owner lock after the arrival commits reads the earlier build in the fleet.
+
+- **What the owner lock gate costs.**
+  A write never waits on the gate, and one that starts while an arrival holds or waits for it takes the owner's row, which gives its read phase a transaction id.
+  An arrival waits only for the transactions that already held the gate when it asked for it, and holds the gate from its grant until it commits.
+  A publish waits as long as the earlier build lets it, and every earlier build gives up its publish at 60 seconds and exits; a first publish of a build holds the gate across the upload of its assets, which comes after the insert in every earlier build, and a publish of a build already stored uploads nothing.
+  A registration holds the registry's lock while it waits, and every process's heartbeat takes that lock within a 2-second bound of its own, so its wait for the gate is bounded at 5 seconds (the function's `lock_timeout`), after which its insert fails with `55P03`.
+  Every release before this one then ends a fresh registration's process (read in every tag before this release that registers a process, the 220 from `legion-envoy-v20.0.0` to `legion-envoy-v30.39.0`; a release before migration `0135_server_processes` registers no process at all), which exits 1 before it serves anything, and logs the failed return of a lapsed row as a failed heartbeat and tries it again at its next one; that return is bounded at 2 seconds by its heartbeat's own bound in any case.
+  A 5-second hold of the registry's lock costs each process at most one heartbeat, well inside the 15-second live window, but registrations queue on that lock one at a time, so earlier processes that register at once, each with no dashboard, hold it 5 seconds each, and an earlier build's own wait for that lock has no bound this build can set (below).
+  After an earlier build's boot, a build at 1 takes the owner's row for an hour, as every write did before it moved to the advisory lock, even once the earlier build has stopped.
+
+- **What the fleet does not see.**
+  Three cases are not seen.
+  An earlier build whose boot takes more than an hour from its dashboard publish to its registration is not in the fleet from that hour's end until it registers: every step between the two is bounded at 30 to 60 seconds and its admission at 20, but the seed of the repository projects is not.
+  A process of an earlier build silent past the prune age (10 minutes) - frozen, or cut from the database - has its row pruned and is not in the fleet until a heartbeat's admission of it, whose insert is an arrival, commits.
+  Each such admission waits for the gate at most 2 seconds, its heartbeat's own bound, so a write of this build that holds the gate longer defers it, and that process serves writes in its row-first order meanwhile; production rolls with `Recreate` (above), which stops every process of one release before the other starts, so it does not reach this case.
+  That is the registry's own model: every other decision over the fleet (the signing keys, the embedder, the schema admission) counts a process silent past its live window as gone.
+  A subcommand of an earlier build that an operator runs beside this one neither publishes nor registers, so it is never in the fleet.
+  Of those subcommands, `rebuild-refs` takes issues' and documents' rows `for no key update` (from `legion-envoy-v30.21.1` on), and `backfill-block-ids` and `backfill-anchor-blocks` settle a document they open that owes a settlement, which takes its owner's row and appends its events: run those from a build that carries this change.
+  The others write no owner's row: `census` reads in one read-only transaction, `stored-order` reads, `backfill-files` writes only file versions' bytes, `redeliver-webhooks` writes the shared GitHub rate limits and asks GitHub to deliver again to the serving processes, and `settings`, `routes` and `openapi` open no database.
+  The production deployment runs two of them as Jobs from the image its server is moving to (example-org/deployment, `dispatch/main.go`), and neither writes an owner's row.
+  `census` runs before the server's Deployment moves to that image, and runs again only when the Job's template changes, a new image among them, or after a run that failed (`declareCensusJob`): so a roll forward runs the later build's census beside the earlier server, and a rollback the earlier build's census beside the later server.
+  `backfill-files` runs once the server has rolled out, and only when a file move or restore is set (`declareFileJob`).
+
+- **What the fleet does not see of this build: a lapse.**
+  The registry does not see this build's own processes for a moment when earlier registrations queue: an earlier build takes the registry's lock in its own code, before its insert, so the 5-second bound of its trigger does not bound that wait, and while the lock is held longer than about 10 seconds, two or more such registrations in a row, a heartbeat of this build can find its row past the 15-second live window.
+  Every row of this build then reads as not live for up to that excess, until the heartbeat renews it as lapsed, rejoins with a WARN and runs admission again.
+  Nothing is lost in that time, by what each reader of live rows decides: the schema admission starts from the reading process's own numbers and never narrows; the boot's dashboard prune keeps the 20 builds started last, which every boot of this build renews; the embedder identity and the file-store reads change anything only in a fleet whose processes already disagree, and then they re-queue derived vectors, or keep an upload's bytes in the bucket alone, where a process with no bucket answers 503 until `backfill-files --restore`; the new-version notice, the startup announcer and the CI pass list change only what they show.
+  A lapse drains nothing unless a process whose signing keys differ registers inside it: its admission does not see this build's rows, and each lapsed process of this build is then refused at its next renew, drains and exits 1, and a cookie minted on one side fails on the other.
+  Main carries the same path for any lapse, such as a stalled database; the lapse here needs earlier processes with no dashboard, which the image never runs.
+  This was found by reading the code (`processes.go` `Live`, `admit`, `renew`), not measured.
+
 The two-build test checks this rule (`cmd/dispatch/twobuild_*_test.go`, `go test -tags twobuild
 ./cmd/dispatch`, CI job `dispatch-two-builds`).
 `packages/envoy/scripts/build-dispatch-build.sh` builds the previous release from its commit, and the test runs it beside this tree on one Postgres, cloned at this tree's schema, and one NATS.
-It drives each build's `dispatch` command against the other build's server, reads and edits each build's stored documents and opens their document socket on the other build, and passes messages both ways while it checks that the stream and consumer settings stay as they are.
+It drives each build's `dispatch` command against the other build's server, reads and edits each build's stored documents and opens their document socket on the other build, passes messages both ways while it checks that the stream and consumer settings stay as they are, races a write of each build on one issue, the previous build's committing first, boots the previous build, with its web app, while a write of this tree is between its owner lock and its write, and boots it with no web app while a write of this tree holds the gate longer than the registration's bound, which refuses that registration and keeps every heartbeat of this tree inside the live window.
+It also runs the page admission across the earlier build's departure.
+Beside the previous release, a page of this tree is admitted by that release's numbers, and it stays writable throughout when they are this tree's own.
+The first rollout of the fleet's numbers needs a release before the fleet columns, so `build-dispatch-build.sh` builds the first-rollout build as well, with `--commit edb69e0d7588ec037847182e74a04a343a0664c9` (the release tagged `legion-envoy-v30.20.2`), and the test runs it and holds a page of this tree read-only while that build's process is live and writable once that process has left.
+That tag is lightweight and can move, so the commit is the pin: the test fails a first-rollout build of another commit (`firstRolloutRelease` in `twobuild_harness_test.go`), and the CI job fails when the tag names another commit (`FIRST_ROLLOUT_COMMIT`).
+The same CI job then runs the browser suite's `cross-build.multiprocess` beside each of the two builds, each build's page against the other build's server, and expects the document writable or read-only as the live registry's numbers admit it (`packages/dispatch/e2e/cross-build.multiprocess.e2e.ts`, `pageWritable`).
+In the run beside the first-rollout build, `DISPATCH_E2E_FIRST_ROLLOUT_COMMIT` holds the run to that build's commit and to a registry that reads version 0 while that build is live, so a build of another commit, or a build that registers its schema numbers, fails the run.
 
 Generations and holds protect from the release after the first one that carries them.
 The build before them compares stream and consumer settings with no generation, binds its delivery durable by lookup with no hold, and refuses a request member it does not declare.
@@ -1281,7 +1539,7 @@ The four that run passes (`duty.RunWoken`) start two passes no closer together t
 
 - The embedding queue (`embedqueue.Run`) scans when a write enqueues a row:
   the issue trigger's `embeddings_enqueue` (migration `0151`) and each indexer's `embeddings_enqueue_window` (migration `20261102233625`) notify `dispatch_embeddings` for a new row or a text whose hash changed, and a write that leaves the text as it was notifies nothing.
-  The rows the coverage pass writes wake it in process.
+  The `embeddings` rows the coverage pass writes wake it in process.
   Scans start at least 5 s apart.
   After each scan it reads when the earliest pending row falls due (a failed row's retry, or another process's claim lapsing after its two minutes) and arms one timer for it, never sooner than 5 s away.
   A throttled batch waits 5 s plus its backoff before the next.
@@ -1325,6 +1583,24 @@ The four that run passes (`duty.RunWoken`) start two passes no closer together t
   a read that fails is tried again 30 s later.
   The release before this one polls the row every 30 s and may run beside it during a roll.
 
+- The block schema is one value per process, built from the store's type nodes (`schemanodes.Installer`), installed at boot beside the migration run and again when a supertag or attribute node changes:
+  the triggers of migration `20261109051232` notify `dispatch_block_schema`.
+  A type is data, so a type added by a migration reaches a running server without a restart;
+  a read that fails is tried again 30 s later and leaves the schema in use where it is, and so does a value the install refuses; `schemanodes.Installer` makes both checks, the read's (`schemanodes.Read`) and the install's (`pmdoc.Install`).
+  Migration `20261113230000` is the first type change after `20261109051232` seeded the types: it adds `check`'s `ci_check` attribute node and moves every block type to version 4, the version `pmdoc/schema/blocks.json` declares.
+  Migration `20261123080000` adds `plan_task`'s `steps` attribute node and moves every block type to version 5, the version `pmdoc/schema/blocks.json` declares since #4611.
+  It is the first type change written after the store's backfill (`backfill-graph-store`), which the releases from legion-envoy v34.11.0 on may have run over `graph_nodes` and `graph_tuples`, so it writes both tables by bounded writes alone (below): literal rows, and each block type's supertag node by its primary key, to the whole attributes the earlier type migrations left with the version moved (`TestATypeMigrationAfterTheBackfillIsAdmittedAndLeavesTheFilesSchema`).
+  Each read runs in one read-only transaction at repeatable read, so a migration that commits while it reads is read whole by the next read, never half.
+  A store schema above the version this binary was built for is a store the next release migrated: the process installs it at its own version, with the elements whose `since` is at or below that version and nothing else, and keeps serving, its boot and `/healthz` unaffected, so a release that ships a type migration takes no process of the previous build out of service.
+  A read that moved the schema the process serves first writes the numbers it serves now into its registry row (`processes.Registration.RefreshSchema`), then closes every document socket it holds (`docs.Service.CloseDocumentSockets`); the browser connects again presenting the schema its own build compiled, and that admission decides against the schema installed now.
+  The subcommands that parse or write documents (`backfill-block-ids`, `backfill-anchor-blocks`, `backfill-graph-store`, `rebuild-refs`) install the store's schema too, after their migration run, so they hold documents to the store's types and not to the file this binary embeds.
+  `backfill-files` moves file bytes and parses no document, so it installs no schema.
+
+- The record of GitHub reads, which `/healthz` answers as `github` (Routes, below), is one copy per process (`githubreads.Copy`), read at start and again each time any process writes `github_read_attempts`:
+  the table's row trigger notifies `dispatch_github_read_attempts` (`20261118020802`) with the read's name, and each of the four loops that read GitHub under a lease (the delivery reconcile, the architecture import, the webhook redelivery sweep and the CI reconcile, below) writes its read's row at the end of each pass that asked GitHub anything or met a failure, unless this process's shutdown cut the pass short.
+  The copy is kept only where a GitHub App is configured and holds no timer, and the probe reads it alone, so `github` sends the database no statement;
+  a read that fails is logged at WARN and keeps the copy it had until the next wake, which is a write by any process or the hub's next successful LISTEN.
+
 The two leased woken loops take their lease with no period.
 A process that finds it held tries again
 — every 2 s for the excerpts, every 5 s for the edit notices, plus up to a tenth again
@@ -1333,29 +1609,31 @@ A process that finds it held tries again
 **Boot passes** run once at start:
 
 - The embedding coverage pass (`embedqueue.Cover`, Search below) runs once, with no lease.
-  After it only its identity steps run again:
-  at once when this process's queue first embeds successfully after the pass skipped them for a canary the embedder did not answer, and every `identityRecheckInterval` (10 minutes, plus up to a tenth again) while a run still finds rows of another identity, so a vector an old-configuration process commits during a roll is dropped.
+  Its identity steps and the step that records each issue's inputs (`recordIssueSources`) run again after it:
+  at once when this process's queue first embeds successfully after the pass skipped the identity steps for a canary the embedder did not answer, and every `identityRecheckInterval` (10 minutes, plus up to a tenth again) for as long as the process runs, so a vector an old-configuration process commits during a roll is dropped, and the inputs of an issue edited since the run before are recorded and the coverage report stops building its text.
   Only the process whose embedder has the active identity drops or re-admits anything;
   a process whose identity is not active sends no canary and looks again on the timer, since the identity it is configured with becomes active once no live process carries the one before it.
-  Once a run finds none, the loop holds no timer.
 
 - The task progress reconciliation (`docs.Service.RunTaskProgressReconciliation`) counts every issue whose stored task count is not its latest version's.
   Every version write records its count in its own transaction, so nothing makes new drift while the process runs but a row another writer held during the pass:
   those are retried up to six more passes, the first a second later and doubling to at most a minute, and drift left after them is logged at WARN and left to the next start.
 
 **Timers that stay**, because nothing announces what they would miss
-— a webhook that never arrived, a delivery that failed, a source's branch head, an expired key, a delivery a process that died still owes:
+— a webhook that never arrived (a push to a component source's branch among them, which the architecture import repairs), a delivery that failed, an expired key, a delivery a process that died still owes:
 
 - The delivery reconcile (`delivery.ReconcileInterval`) and the architecture import (`architecture.SyncInterval`) run every 5 minutes through `duty.RunJittered`, the first pass after a random delay within one interval.
   The webhook redelivery sweep (Webhook redelivery, above; `redeliver.Interval`) runs every 2 minutes, its first sweep at start.
-  Each waits the interval plus up to a tenth again after every pass (`duty.Jittered`), drawn afresh every period, so two processes' passes drift apart rather than ticking in step.
+  Each waits the interval less up to a tenth of it after every pass (`duty.JitteredWithin`), drawn afresh every time, so no wait is longer than the interval and two processes' passes drift apart rather than ticking in step.
+  Each hands its lease a period of 0.9 of its interval (`duty.LeasePeriod`), which every wait is longer than, so a lone process's pass is never refused as a period its own last pass served.
   `DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL` replaces the delivery reconcile's 5 minutes for an end-to-end test, and a deployment never sets it.
+  `DISPATCH_TEST_REDELIVERY_INTERVAL` replaces the sweep's 2 minutes for an end-to-end test, and a deployment never sets it.
+  `DISPATCH_TEST_ARCHITECTURE_IMPORT_AT_START=1` runs the architecture import's first pass as the process starts, rather than after the random delay, for an end-to-end test that must see a pass inside its window, as `DISPATCH_TEST_RECONCILE_AT_START=1` does for the delivery reconcile, and a deployment never sets either.
   GitHub has no feed of what these three would miss.
   A reconcile pass re-reads the pull request heads first, whether or not the deployment has delivery settings and outside the deploy repository's permission check (`Reconcile.runOnce`), since every deployment compares a recorded result with those heads;
   every other step of the pass is gated on the settings and on that check, so a deployment with no settings runs the head pass and nothing else.
 
-- The CI reconcile pass (`cireconcile.Interval`, lease `ci-reconcile`) runs every 5 minutes through `duty.RunLeased`, its first pass one interval after the start, and reads each open pull request's head of every repository `repo_projects` maps, recording every completed check run and completed check suite Envoy's listener record of that head lacks.
-  A webhook GitHub never delivered leaves a head short of a check, and a head short of a check never settles, which no notification announces either.
+- The CI reconcile pass (`cireconcile.Interval`, lease `ci-reconcile`) runs every 5 minutes through `duty.RunLeased`, its first pass one interval after the start, and reads each open pull request's head of every project's default repository and every repository an issue names as its own, recording every check run, finished or not, and every completed check suite Envoy's listener record of that head lacks, and the head's commit statuses where the App's token holds Commit statuses (CI reconcile, above).
+  A webhook GitHub never delivered leaves the head's record behind GitHub: the head never settles, or settles while GitHub still runs a check, and no notification announces either.
   It needs NATS, whose `envoy_ci_state` bucket it binds and never creates, and the App private key; without either it is off and says so at start.
   The pass compares a `tester` or `architect` check run's `app.id` against `DISPATCH_REVIEWER_APP_ID`, and with that variable unset records no verdict check at all.
   Its tick records its period in `duty_passes`, so one process serves each period however many run, and `DISPATCH_TEST_CI_RECONCILE_INTERVAL` replaces the 5 minutes for an end-to-end test.
@@ -1369,18 +1647,98 @@ A process that finds it held tries again
   It keeps the lease name the suggestion outcome sweep carried this work under, so during a roll the earlier release's pass and this one still exclude each other on it.
 
 Outside these classes, the document compaction sweep (lease `document-compaction`) runs every hour from a tick at start whether or not NATS is configured, the display tree fill (lease `text-tree-fill`, `texttreefill.Run`) runs every hour from a tick at start and holds its lease for a whole pass, which is as long as it takes to store a tree for every stored text that has none at this build's display-parser version, the outbox's publish scan is woken, never periodic (`outbox.Run`), the settlement resumption still runs every minute, the block index reconciliation (lease `block-index`) runs every 30 s (every 2 s while a batch is full) and the repair of closed and reopened issues' asks (lease `issue-ask-repair`, Database migrations below) every 10 minutes after its boot pass, each recording its passes in `duty_passes` with its period, and the per-feature listeners (the delivery live hub, the event stream relay and the events outbox) keep their own connections and keep-alive pings.
+Each pass of the settlement resumption arms at most 50 owed documents, closed and open issues' alike: first the documents that no pass tried, then the documents that a pass tried, oldest try first.
+The pass records each try in the database (`doc_settlements_pending.tried_at`), so the process that takes the lease next reads the same record.
+
+**The keyword fill** (`textversions.Run`) is a held duty, not a loop woken per pass, and it has none of the three shapes above.
+It writes `search_text_versions`, the keyword table of each past version of the searchable text, from the event log (Search, below).
+One process at a time holds its `duty.Hold`, named `search-text-versions-fill`, and fills the table for as long as it serves.
+A lease taken per pass would move the fill from one process to another at each pass, and the pause below reads only the answers reads of the process that writes.
+The fill starts only after the server listens and the registry of live server processes admits this process (Running more than one process, above).
+So the fill never runs inside a migration, and it never runs in a process that the registry refuses or has not admitted yet.
+A process that the registry has not admitted serves no answers read, so the pause below would read nothing.
+`DISPATCH_SEARCH_FILL=off`, read once at boot, defers the fill: the process starts no fill, takes no hold, writes no row of the table or its cursor, and logs `dispatch: the keyword fill is deferred; this process fills no keyword table` once (`setting=DISPATCH_SEARCH_FILL value=off`).
+The same line says whether each table holds a row: `search_text_versions_rows` and `search_text_versions_fill_rows`, each `none` or `some`, read by `select exists(select 1 from public.<table>)`.
+The read reads no column and stops at the first visible row, but it may scan dead rows before that one; the statement timeout below bounds that.
+Each read runs in a read-only transaction of its own, under three bounds:
+
+- `lock_timeout` of 5 s: Postgres ends a wait for a lock on the table with 55P03.
+
+- `statement_timeout` of 6 s: Postgres ends a read that runs on for any reason with 57014, so no read is left running at the server.
+
+- A client deadline of 10 s for each table, which also covers taking a connection from the pool, a dial or a wait for a free one included.
+  At that deadline pgx closes the connection and asks the server to cancel the statement.
+
+The two reads run one after the other before the server listens, so they delay the boot by at most 20 s in all; a lock on a table alone delays it by about 5 s for that table.
+The read takes ACCESS SHARE on its table and holds it until its transaction rolls back or its connection ends, normally milliseconds after the read; no statement timeout bounds how long it holds it.
+Row writes go on beside it, but a `TRUNCATE` or another statement that wants ACCESS EXCLUSIVE waits behind it for that long.
+A read that fails, a timeout included, gives `unknown` and the error in `search_text_versions_rows_error` or `search_text_versions_fill_rows_error`, and the boot goes on.
+So the boot log alone, with no read of the database, shows whether a process started with the fill off found both tables empty.
+No route reads the table yet (Search, below), so search answers alike with the fill off, and a later boot with it `on` or unset starts the fill from the cursor where it stands.
+`on` and unset start the fill; any other value refuses the boot, naming the variable.
+
+- The hold has the values of the delivery intakes' holds.
+  It lasts 15 s on the database's clock after each renewal, the holder renews it every 5 s, and the holder stops writing 2 s before it lapses.
+  Each other process stands by.
+  A standby tries for the hold at once, each time a hold is released (`dispatch_duty_holds`), and every 10 s.
+  So it takes a released hold at once, and the hold of a holder that died within 25 s.
+  When the process stops, the batch in flight commits or rolls back, and the holder releases its hold before the pool closes.
+
+- The holder runs a pass when it takes the hold, and then each time a commit writes an event (`dispatch_events`).
+  These two wakes are the fill's own, on the shared listener (below).
+  A pass reads the event log's safe horizon once (`events.Horizon`) and writes the rows of the events above the cursor up to that horizon, in id order.
+  While the horizon stands below an id that a read of the horizon saw, the holder reads it again after 1 s, then 2 s, 4 s and 8 s, until the horizon passes that id.
+  A transaction that writes no event ends with no notification, so nothing else wakes the fill for the events that wait behind it.
+  A fill that is caught up holds no timer and sends no statement except the renewal of its hold.
+
+- Before each batch the fill asks `sessionanswers.Latency`, which times the answers reads (`GET /api/v1/agents/{session_id}/answers`) that this process serves.
+  The route times each read from the moment it enters the route's handler chain, as the access-log line times it.
+  The fill pauses while a read that took longer than 800 ms ended within the last 10 s, and while a read has run longer than 800 ms and has not ended.
+  It asks again each second, and it continues when neither condition has held for 10 s.
+  A batch that runs while a read becomes slow commits, and the pause holds back the next batch.
+
+- The cursor row is the one row of `search_text_versions_fill`: every event at or below its `event_id` has its rows.
+  The fill creates the row when it finds none.
+  A new holder, in this process or in another, continues from the cursor, so no event gets its rows twice and no event is missed.
+  Each batch checks the log against the cursor (`events.EventLogWasReset`).
+  When the log was reset, the batch deletes the rows of both tables and writes the cursor row again at event 0 with no reach, in one transaction, and the fill starts again from the first event.
+  An event whose payload the rules cannot read stops the fill at that event.
+  The fill then tries the pass again after 1 s, doubling to a minute, and logs the error each time.
+
+- A batch reads at most 500 events and at most 2 MB of the text its vectors are made from.
+  Each event of a type the rules read counts its payload, and a post whose event cut its body counts the body its present row holds too: the read of the events bounds those.
+  An event that starts a version counts what that version's vector reads besides, measured while the rules decide:
+  an issue's row counts the markdown of the primary document version it names (version 1 for `issue.created`, the version it carries forward for `issue.updated` and `issue.closed`, the named version for `artifact.version`), and a post whose event cut its body counts the whole body the rules give it, where that is longer than its row's.
+  The rules end the batch before the first event that takes it past 2 MB.
+  The title that an `artifact.version`'s row carries forward is not counted, at most 3,000 bytes a row.
+  An event that counts more than 2 MB is a batch alone.
+  A batch is one transaction.
+  It locks the cursor row, checks that `duty_holds` still names this holder live, writes the rows, moves the cursor, stores the reach, and commits.
+  A holder that lost its hold writes nothing.
+  `lock_timeout` is 5 s, and `statement_timeout` is 10 s plus 1 s for each MB the batch counts.
+  `idle_in_transaction_session_timeout` is 10 s, which ends the transaction of a holder frozen inside a batch and frees the cursor row.
+  After each batch the holder rests for as long as the batch ran, so the fill takes at most half of the time of one backend.
+
+- The fill logs when it takes, loses or releases its hold, when it pauses and continues, when it finds a reset log, and when it keeps a cut body.
+  While it catches up, it logs a progress line at most every 30 s.
+  When it is caught up, a pass logs at most once a minute the reach, the lag of the reach behind `now()`, and how many events the cursor is behind the newest event.
+  It takes two connections of the lease pool: `search text versions fill`, for its hold statements, batches and reads, and `search text versions fill hold renewal`.
 
 **One shared listener per process.**
 Every woken loop waits on the process's one `pglisten.Hub`, the shared LISTEN connection the document rooms' room sync is registered on too (named `dispatch-listener <process id>` in `pg_stat_activity`, logged under the owner `dispatch`), which holds one connection from the store's listener pool and LISTENs on every loop's channel beside the room-sync channels.
 A channel is registered only for a loop that will run:
-`dispatch_embeddings` only with an embedder, and `dispatch_delivery_settings` only with NATS and the GitHub App.
+`dispatch_embeddings` only with an embedder, `dispatch_delivery_settings` only with NATS and the GitHub App, and `dispatch_github_read_attempts` only with a GitHub App configured.
 No loop waits for the listener: each runs its boot pass whether or not it has connected, and keeps its due-time timers while it has no connection.
 Postgres does not replay a notification sent while nothing listened, so the hub signals every loop after each successful LISTEN, the first included, and a change made while it was redialing (backing off 1 to 30 s) is caught up then.
 
 **The GitHub intake** (`delivery.Intake`) checks each message's subject before it decodes anything:
-only `notifications.github.<owner>.<repo>.pr.<n>`, with nothing after the number, and `notifications.github.<owner>.<repo>.workflow.<file>.<action>` can carry a kind it handles, and every other subject
-— checks, comments, issues, pushes, job events, `pr.<n>.review` — is acknowledged with no decode.
-A wanted message runs under its key: a pull request under its repository and number, read from the subject, and a workflow run under its payload's `repo` and `run_id`.
+only `notifications.github.<owner>.<repo>.pr.<n>`, with nothing after the number, `notifications.github.<owner>.<repo>.workflow.<file>.<action>` and `notifications.github.<owner>.<repo>.push.branch.<branch>` can carry a kind it handles, and every other subject
+— checks, comments, issues, a push of a tag, job events, `pr.<n>.review` — is acknowledged with no decode.
+A wanted message runs under its key: a pull request under its repository and number, read from the subject, a push of a branch under its repository, read from the subject, and a workflow run under its payload's `repo` and `run_id`.
+The intake hands a push of a branch to the architecture importer, which imports every enabled component source on that repository and branch at once rather than at its next five-minute pass (`delivery.PushImports`, `architecture.Importer.Pushed`).
+The intake runs only while `delivery_settings` holds a row (`Intake.Run`), so a push is imported this way only where delivery is configured, and elsewhere the five-minute pass is a source's only automatic import.
+A push is no delivery fact: a push of a branch calls the importer once, a push of a tag calls nothing, and neither records an `issue.deployed` or moves the Delivery page's event freshness, `last_event_at` (`TestTheIntakeHandsABranchPushToItsImporter`).
+A hand-off that fails is logged at `WARN` (`process event`) and the envelope acknowledged, as `Intake.deliver` does for a handler's error other than `ErrHeadNotStored`, since the importer's five-minute pass imports the source all the same.
 Messages of one key run in delivery order, each after the one before has finished, since each fetches its pull request's or run's current state from GitHub and writes it, and run at once an older fetch could be written over a newer one;
 messages of different keys run at once, at most 4, the durable's `MaxAckPending`.
 Its durable's `AckWait`, `MaxAckPending` and filter subject are unchanged.
@@ -1389,6 +1747,10 @@ a `pull_request` envelope whose pull request's head row could not be stored at a
 No reconcile pass repairs a head row that was never written, since the passes read the rows that exist.
 That hand-back is the process's own answer to the durable rather than the stop's, so it is made only while the process still holds the durable's hold and the hold records the deliver subject the envelope arrived on:
 a process whose hold has lapsed publishes nothing, and the next holder's take-over, which recreates the durable at its ack floor, hands it that envelope once.
+Once the stop has begun, it is withheld too when NATS does not answer within `bus.ConnLockWait` (100 ms) that the connection is connected (`intakeDelivery.handBackOwn`), since a stop waits for the handler that makes it.
+Outside any stop, the hand-back is published; on a reconnecting link between attempts it is refused at once (the bus sets no reconnect buffer) with an INFO line, and the envelope comes back after the durable's ack wait (`intakeAckWait`, 5 min) rather than after 10 s.
+While an attempt holds nats.go's lock, the publish waits until the attempt ends.
+A message whose acknowledgement NATS refused is handed back the same way.
 The count the cap is measured against is the consumer's own (`NumDelivered`), so a take-over starts it afresh and the cap bounds the in-flight slots of one consumer rather than the deliveries of all time.
 `Intake.StopDelivering` hands the durable over, and the intake's run loop calls it when the process stops, when its hold is lost, and when a check finds the durable delivering elsewhere.
 It ends the subscription the bus client holds for it
@@ -1401,15 +1763,43 @@ The messages in their handlers get until the stop's deadline
 — `intakeStopBudget`, 15 s after `Run`'s context ends, armed when it ends
 — to finish and be acknowledged; the handlers still running then are given up, their GitHub calls cancelled, and their messages negatively acknowledged.
 Only then does it negatively acknowledge the held messages, so NATS redelivers them at once to the next holder, which can then not start a pull request's or run's next message while this process still works on the one before it.
-Every one of those answers, a given-up handler's and a held message's alike, is withheld once the hold's loss deadline has passed (`intakeDelivery.handBack`), as the head-write hand-back above is:
+The stop's drain and unsubscribe, and the acknowledgements and hand-backs of the handlers it waits for, whether begun before the stop or after, each wait for NATS at most `bus.ConnLockWait` (100 ms), since nats.go holds its connection lock through a reconnect's dial and handshake: a call NATS has not taken by then goes on without its caller (`callNATS`).
+A hand-back publish NATS has not taken in that time is published once NATS takes it (`intakeDelivery.publishHandBack`).
+The run loop releases the hold only once every hand-back the stop published has reached the server, which a flush of up to 1 s confirms (`heldDurable.handBacksReached`).
+With one still pending at the stop's deadline, or a flush that does not answer, `Run` returns and the hold stays renewing on a goroutine of its own (`heldDurable.finalizeHandBacks`).
+It releases only once the hand-back has reached the server and a flush on the connection it was written to answers, or once the connection has closed.
+Each hand-back marks the intake client's connection until such a flush confirms it (`bus.Client.MarkUnconfirmed`, `bus.Client.ConfirmMarked`), and a marked socket is reset rather than closed, at `Client.Close` and when nats.go gives the connection up as stale and reconnects:
+so the hand-back's bytes still in the kernel's send queue are discarded rather than sent after the release, and a flush on the new socket after a reconnect confirms nothing the old one could still send.
+A socket that carries no unconfirmed hand-back closes normally, as every other bus client's does.
+The release waits for every hand-back the connection carries, not only the latest delivery's: a take-over the intake made again under the same hold can leave an earlier, stopped delivery whose hand-back no flush has confirmed, so a stop whose latest delivery handed nothing back still flushes while the connection carries a mark (`bus.Client.CarriesUnconfirmed`), and a flush confirms only once every marked hand-back has been taken and none was marked behind its PING.
+A hold lost meanwhile — its renewals failing, as when the database is out of reach — cannot be kept, so the intake severs its NATS connection instead (`heldDurable.severHandBacks`, `bus.Client.Sever`):
+it resets the connection's sockets without waiting for nats.go's lock, so neither a publish waiting behind a held write nor what the kernel had not sent reaches the server, and the bus client dials a new connection.
+The hold reports itself lost `intakeHoldMargin` (2 s) before its row lapses, so the sever comes before any standby can recreate the durable.
+Every delivery made under a hold has a watcher of that hold of its own (`heldDurable.watchLoss`), which does this on a goroutine nothing else of the intake blocks: at the loss it seals the delivery and severs unless every hand-back it made has landed and a flush answers within 1 s.
+The watcher ends once the delivery's stop has sealed it with nothing handed back, or once a flush confirms its hand-backs, so the take-overs an intake makes again under one live hold (after a create or a token write that fails, or a check that finds the durable elsewhere) leave no goroutine behind; a stopped delivery whose hand-back is still unconfirmed keeps its watcher until the loss.
+The sever reaches the connection without the bus client's own lock, which a caller holds while it waits for nats.go's, and a socket whose write failed is reset when nats.go closes it, so its unsent bytes are dropped too.
+Dispatch shutdown closes that client, which resets each socket that still carries an unconfirmed hand-back, then waits for the finalizer to release the hold through the still-open pool.
+That normally finishes inside the shutdown reserve, but a write can hold nats.go's lock until its one-minute write deadline; `Client.Close` waits for that lock, then the finalizer can spend up to 5 s releasing the hold.
+A process killed before that ends the renewal with its connection, and the standby takes over at the lapse, up to the hold's TTL after its last renewal:
+a hand-back that reached the server after a standby had recreated the durable would move that message's pending entry on the standby's consumer.
+Every one of those answers, a given-up handler's, a held message's and one a refused acknowledgement makes alike, passes one rule (`intakeDelivery.handBack`).
+Outside any stop, the hand-back is published; one made while a write holds nats.go's lock is left running and lands when the lock frees, and one on a reconnecting link is refused at once and comes back after the ack wait.
+Once the stop has begun it is withheld unless NATS took the stop's drain on a live link, and after that, withheld when NATS does not answer within `bus.ConnLockWait` that the connection is connected:
+nothing then says when the server has the subscription's interest gone, and a hand-back would wait for the reconnect.
+It is withheld too once the hold's loss deadline has passed, as the head-write hand-back above is:
 from that moment the durable the answer names may be one a take-over has recreated, where it would move the new holder's pending entry for that message and have it delivered a second time.
-A holder whose stop runs on past the lapse — one frozen and resumed, one whose handler was given up a margin after the deadline — therefore publishes nothing, and the take-over's recreate at the ack floor hands those messages to the new holder once.
-Last it waits for the drain to end, cut short by that deadline, and the run loop releases the durable's hold, so a standby takes it over at once rather than at the hold's lapse.
+A holder whose stop runs on past the lapse — one frozen and resumed, one whose handler was given up a margin after the deadline — begins no new hand-back, and the take-over's recreate at the ack floor hands messages it left outstanding to the new holder once.
+A hand-back that began before the lapse may still be waiting on NATS, and the hold is released only once each such hand-back has reached the server, as above.
+Last it waits for a drain it began to end, cut short by that deadline or by a read of whether NATS is connected, made every 10 ms while it waits, that does not answer within `bus.ConnLockWait` or answers that it is not: nats.go ends a drain under its connection lock, which a reconnect attempt holds.
+Cut short, it unsubscribes, with an ERROR line, and what nats.go had buffered for the subscription is not handed back and waits for the take-over; on a slow but healthy link, one read that takes over 100 ms does that.
+Once the stop's drain has ended, or it has unsubscribed, no hand-back of that subscription begins any more (`intakeDelivery.seal`):
+an unsubscribe does not wait for a subscription callback that is still running, and a callback handing back a message the client had buffered is either admitted and counted before the run loop decides to release the hold, which then waits for it, or withholds its hand-back (`intakeDelivery.admitHandBack`).
+The run loop then releases the durable's hold once its hand-backs have reached the server, so a standby takes it over at once rather than at the hold's lapse.
 A take-over under way when the context ends — a standby's poll
 — spends the same deadline rather than starting one of its own:
 its own bounds (`takeOverFinishWithin`, 10 s, and the hold's deadline) end it inside that budget, and no attempt starts once the context has ended.
-The server's shutdown waits for that stop, which begins at the signal and whose 15 s from the signal is its only deadline, before it deregisters the process and closes the database pool:
-a handler waiting on GitHub holds no connection, so nothing else would keep the pool open for its writes, and a hold released through a closed pool is a hold left in place for its TTL.
+The server's shutdown waits for `Run`'s stop, which begins at the signal and gives handlers 15 s from it, then closes the intake client and waits each pending hand-back finalizer before it deregisters the process and closes the database pool.
+That wait can outlive the usual shutdown reserve only while `Client.Close` waits for nats.go's one-minute write deadline; a kubelet kill then ends the client and renewal, and the hold lapses.
 
 ## Database migrations
 
@@ -1418,7 +1808,8 @@ Version 8 is an empty file: that version was recorded from Go by the one-time co
 
 **A migration must leave the release before it able to read and write the schema.**
 A rolling update runs the old build and the new build against one database at once (Running more than one process, above), and the old build applies no compatibility shim:
-nothing at boot refuses a schema newer than the binary knows, since the runner applies the versions it has not recorded and reads no other (`internal/dispatch/store/store.go`, `migrate`).
+nothing at boot refuses a schema newer than the binary knows, since the runner applies the versions it has not recorded and judges only the versions it has a file of (`internal/dispatch/store/store.go`, `migrate`).
+A later release records the identity of each version's first file (`pgmigrate.Migration.RecordedIdentity`, "A recorded version under another file" below), so what it records of a version the old build has a file of is an identity that file accepts.
 So a schema change is expand-then-contract across two releases.
 The expanding migration adds, with a default or a backfill, and the release that ships it writes both shapes;
 the contracting migration — one that drops, renames or narrows — ships no earlier than the next release, once no running build reads the old shape:
@@ -1450,7 +1841,7 @@ Two pull requests open at once used to take one number each and collide only whe
 — nothing conflicts in git — while two timestamps taken a moment apart belong to their own authors.
 The version is the file name's leading digits read as a number, as before, so every timestamp orders after every number and timestamps order among themselves by time.
 A 14-digit version is past what an `integer` column holds, so `schema_migrations.version` is a `bigint`.
-A database created before the change keeps its `integer` column until a boot whose set holds a timestamped migration, which widens it once, in the same locked transaction that creates the table (`createVersionTable`):
+A database created before the change keeps its `integer` column until a boot whose set holds a timestamped migration, which widens it once, in the same locked transaction that creates the table (`prepareVersionTable`):
 a boot with no timestamped migration leaves it alone, because the release before this change reads `max(version)` uncast and would fail that read once on every connection that prepared it while it still serves.
 So this release is rolled out before any release that carries a timestamped migration:
 a deployment that skips it costs the release it replaces one failed `/healthz` schema read on each connection that prepared the uncast read, which pgx then drops.
@@ -1466,7 +1857,7 @@ If T2 deploys before T1 merges, that database applies T2 then T1 while a fresh o
 So a migration must not depend on its order relative to one written in a concurrent pull request, another branch open at the same time;
 one that needs another's effect is written after that one has merged.
 
-The runner records a migration by its version alone, so before it touches the database it reads the whole directory (`pgmigrate.Load`) and refuses to start, applying nothing and naming every file concerned, when two migrations share a version (it would apply the first and skip the rest as already applied;
+The runner applies every version it has not recorded, so before it touches the database it reads the whole directory the binary embeds (`pgmigrate.LoadBuilt`, every check `pgmigrate.Load` makes but the parse of non-transactional migrations below) and refuses to start, applying nothing and naming every file concerned, when two migrations share a version (it would apply the first and skip the rest as already applied;
 keep the version on the file that merged to `main` first, since a database may already have applied it, and give each of the rest the UTC moment it was created), when a file is named other than `<version>_<name>.up.sql`, `<version>_<name>.down.sql` or `<version>_<name>.census.sql` (a `.down.sql` is a rollback script an operator runs by hand, and a `.census.sql` is the migration's census, "Pre-deploy census" below;
 each needs its `.up.sql`), when a census is not one `select` or calls a function it may not (below), when a version is not decimal digits of a positive number the `bigint` column holds, and when a file cannot be read.
 The directory is embedded with `all:`, which keeps a name beginning with `_` or `.`, so such a name is refused like any other.
@@ -1475,11 +1866,82 @@ Vim writes its swap file beside the file it edits by default.
 What no directive embeds, such as a symlink, a `.git` or a hidden name Go's module paths refuse, never reaches the runner, so only the store's tests catch it (`pgmigrate/pgmigratetest.CheckEmbedsEveryFile` names each cause).
 Versions are applied by their number, not by file name, and the store's tests require every file on disk to be embedded (`TestEveryMigrationFileIsEmbedded`) and the identifiers to be the numbered migrations 1 to the number the series closed at (recorded once in `migrationid`), each taken once with none above it, and a real UTC instant above them (`TestMigrationSetTakesNumbersThenTimestamps`, `migrationid.Check`), both reading file names alone.
 
+**A recorded version under another file.**
+`schema_migrations` records three facts of each applied migration beside its version.
+`name` and `checksum` hold an identity: a file's name, without its directory, and the sha256 of its whole text, in lower-case hex.
+For a file with no `-- replaces:` line that identity is the file's own; for one with them it is the one its first line names, the version's first file (`pgmigrate.Migration.RecordedIdentity`), so every release whose file of the version is in the chain accepts it.
+`applied_checksum` holds the sha256 of the text the runner applied, so a database that ran an edit of the file this build does not hold, such as another branch's, is told apart from one that ran this build's text.
+A row the runner fills, which an earlier runner wrote, records no applied text, since nothing says which text ran.
+The runner adds the nullable columns itself to a table an earlier runner made, in the locked transaction that creates the table (`prepareVersionTable`), reading the columns first so that the `alter table` runs once per database:
+it takes `ACCESS EXCLUSIVE` on `schema_migrations`, and its wait is bounded by `pgmigrate.LockTimeout`, five seconds.
+A wait that outlasts it, behind a `pg_dump` or a census, rolls the transaction back and tries it again, up to `pgmigrate.LockTimeoutAttempts` times with a pause between, as a migration is tried (`pgmigrate.RetryVersionTableLockTimeouts`); a holder that outlives every attempt fails the boot with the lock-timeout error, not a refusal.
+Adding the columns is a catalog change that rewrites no row; where the same boot also widens the version column (above), once, for a table from before the timestamps, the one statement does both, and the widen rewrites the table's few hundred rows.
+Every statement the release before it sends on the table names its columns, so that release serves beside it while it rolls, and the rows it writes record no name.
+In the same transaction, before it applies anything, the runner reads every row and judges it against this build's file of the row's version (`pgmigrate.Reconcile`):
+
+- A row whose name is null, which is every row a runner before this one wrote, and one written by hand, is filled with the recorded identity and never refused; a name that is not null, the empty string included, is judged like any other.
+  Each fill logs `pgmigrate: recorded the identity of a migration applied before the runners recorded identities` at INFO, with the table, the version, the name and the checksum.
+
+- A row whose identity is neither the file's own nor one its replaces lines name is refused.
+
+- A row whose identity passes, but whose applied text is neither the file's own text nor one its replaces lines name, is refused: the database ran an edit of the file this build does not hold.
+
+- Any other row passes and is left as it is: the release that recorded it still finds what it records there and boots, as a rolling update and the auto-deployer's version-only rollback need, on a database an earlier release created and a later one migrated forward (`TestTheReleaseBeforeBootsOverADatabaseTheNextReleaseBootedWithAReplacedFile`).
+  A second edit of the same file keeps the first replaces line first and adds one naming the first edit's identity after it, so the chain covers every text a database may have applied, and the recorded identity stays the version's first.
+
+- A version no file of the build has is left as it is, as before: an image rolled back meets the versions a later one recorded.
+
+The refusal names the version, what the database records and what the build's file is, and both ways out:
+
+```text
+migrations refused, none applied: version 20261117022936 is recorded as 20261117022936_legion_current.up.sql sha256:<recorded>, and this build's file of version 20261117022936 is 20261117022936_legion_current.up.sql sha256:<file>: if this database ran another branch's or an earlier commit's migration, reset it (drop it, create it empty and let the server migrate it); if the edit is intended, add this line to 20261117022936_legion_current.up.sql, after the replaces lines it has (its first replaces line names the identity version 20261117022936 first shipped with): -- replaces: 20261117022936_legion_current.up.sql sha256:<recorded>
+```
+
+A file whose replaces lines name other identities adds `, whose replaces lines name only <identity>` after its own.
+A refusal of the applied text reads `version <v> is recorded as <identity>, which this build's file of version <v>, <file>, accepts, but the text applied under it has sha256 <text>, which neither that file nor its replaces lines name`, and offers the lines that would accept that text.
+The runner gives the key back between that judgment and each migration, so another process can record any version in between: before it applies a migration, the runner judges every row again against its whole set, and applies nothing while any row is refused, in either apply mode.
+Such a refusal reads `apply migration <version>: check migration: version …`, and the migrations the boot applied before it stay applied.
+A lock timeout, or a failed read or write of the table, reads `read or record what schema_migrations records, none applied: …` instead, and asks for no reset.
+What the operator does:
+
+- A database that ran another branch's or an earlier commit's migration, or an edit of one, such as a development database or a preview stack's, holds a schema this build never wrote: reset it, by dropping the database, creating it empty, and starting the server, which migrates it from the first file.
+  This includes a fresh preview or development database that a newer build created and an older build then boots: the older build refuses it, and you reset it.
+  It includes too a development or preview database whose rows recorded no name when a branch's build first booted it under this runner, where that branch edits a migration in place and its file does not yet declare main's identity of it in a replaces line: the boot filled the row with the branch's own identity, not main's, and main refuses that identity, so you reset it.
+  A branch whose edited file already declares main's identity, as the pre-merge check requires, fills the row with main's identity, and main boots on it.
+  A production database meets this refusal only on a rollback by hand to a release it never ran, one older than the release that first applied a migration it holds; roll back only to a release the database ran, as the auto-deployer does, which rolls back to the image that was running, and only when the deploy applied no version.
+
+- A file edited or renamed on purpose, whose schema the database already holds, takes the line the refusal names, alone on a line of its own and outside every literal; in a `-- pgmigrate:non-transactional` file it goes after the marker, which stays the first line, and the loader refuses a file whose marker stands on any other line, naming it, since such a file would run in a transaction.
+  The first replaces line names the identity the version first shipped with, and a later line goes after the ones there, in their order; the next boot accepts the row as it is.
+  The line names a `<version>_<name>.up.sql` of the file's own version and 64 lower-case hex digits, and the loader refuses the whole set, naming the file and line, for a line that begins `-- replaces:` and is written any other way, and for one that Postgres reads as part of a string literal, a dollar-quoted body or a continued string, where it would declare nothing.
+  A line ending in a carriage return, as a file with CRLF line endings has, is read without it.
+  Before the merge, the `envoy-go-build` job compares every migration the base already holds with the head's file of the same version, building `./internal/pgmigrate/cmd/edited-migrations` and running it with `--base <commit>` (built and run, it exits 2 when the check could not be taken; `go run` reports every failure as exit 1).
+  The base is the first parent of the commit the run tests, on a pull request and in the merge queue; on the bypass check's run at main's tip (`main-bypass-check.yaml`, whose push can carry several commits) it is the commit main pointed at before that push, passed as ci.yaml's `migration-base` input, and a dispatch on main that names none fails the check.
+  On a dispatch of another branch that names none, a full run started by hand, the base is the branch's merge base with main (`.github/scripts/edited-migrations-base.sh` picks the base for each run).
+  It fails a head file whose first replaces line is not the base's first identity, a head file whose replaces lines do not begin with the base's, in the base's order, then one naming the base's file itself, name and checksum, since each of those is an identity or a text a database the base accepts may record, and a base file whose version the head no longer has a file of, each naming the lines to begin with, so the pull request that edits an applied migration, a comment included, meets the refusal before any database does.
+  A revert of an edit is refused there too, since a database the edited release created applied the edit's text: the revert keeps the replaces lines.
+
+**The limit.**
+A release cannot accept a text it has never seen, so it refuses a database whose migration a later release applied from an edited text: a database that a later release created from empty when that release had edited a migration, and a production database that skipped the release which first shipped a migration, rolled back by hand to that release.
+A release boots on a database a later release filled, since a fill records the version's first identity and no applied text.
+That is the same row a development database leaves when it ran another branch's edit, and refusing it is what this check is for.
+A production database is created once and booted by every later release, so a rollback onto it to a release it ran, and a rolling update over it, still boot: a later release applies no version the earlier one holds, and leaves each row's applied text as it was.
+A fill records the file of the build that boots, not the text the database ran, so an edited text a database ran before the runners recorded identities is not detected: the first boot of this runner records its own file's identity for that version, and refuses nothing.
+The two-build tests build their database the same way, in production's order: the previous release migrates it from empty, then this tree migrates it forward, and the previous release boots on that (`laneDatabase`, `cmd/dispatch/twobuild_harness_test.go`); the browser step starts the previous release first for the same reason (`packages/dispatch/e2e/harness-listeners.ts`).
+So a pull request that edits a migration the previous release holds, with its replaces line, keeps that lane green, as it keeps production booting (`TestTheReleaseBeforeBootsOverTheLaneDatabaseOfAPullRequestThatEditsAShippedMigration`, whose control is a database the pull request's tree migrated from empty, which the previous release refuses).
+
+Every row a runner before this one wrote has a null name, so a database's first boot of this runner fills each one with the identity this runner records of its file, and refuses none.
+A migration edited in place after this runner's first release needs its replaces line, which the pre-merge check requires.
+`DATABASE_URL=<url> envoy-dispatch versions`, run as a one-off task of the image about to roll out, reads in a read-only transaction what that image's next boot would do with each row, and exits 1 when a recorded version has no file, a row would be refused, or the table records nothing on the connection's `search_path`, which it reports as `NOTHING CHECKED` rather than as a clean check (`pgmigrate.CheckVersions`); a `search_path` that names no schema is an error, exit 2.
+`envoy-broker versions` is the broker's, signing in as a broker pod does (`docs/site/src/content/docs/broker/operate.md`).
+The pre-deploy census (`envoy-dispatch census`) reads only which versions are recorded, and judges no identity.
+
 A file whose first line is exactly `-- pgmigrate:non-transactional` runs outside a transaction (`pgmigrate.ExecNonTransactional`).
-The loader accepts that marker only on one non-unique `CREATE INDEX CONCURRENTLY IF NOT EXISTS` statement, parsed as PostgreSQL parses it; UNIQUE indexes, multiple statements and other commands refuse the whole set.
+The store's test `TestTheEmbeddedMigrationsPassEveryCheckLoadMakes` holds the embedded set to `pgmigrate.Load`, which accepts that marker only on one non-unique `CREATE INDEX CONCURRENTLY IF NOT EXISTS` statement, parsed as PostgreSQL parses it; UNIQUE indexes, multiple statements and other commands refuse the whole set there.
+A start does not repeat that parse, which compiles libpg_query's WebAssembly, for a set that cannot change after the build: a marked migration the database has not applied is parsed when its turn comes, and refused before its statement runs (`pgmigrate.ExecNonTransactional`), after the pending migrations before it have been applied.
+The loader, at a start as in that test, refuses, naming the line, a file that holds the marker as a comment of its own on any other line, as one does with a replaces line written above it: that file would run in a transaction, and its concurrent index would fail on a fresh database.
 The runner owns and closes that connection and holds the session-level advisory lock on the same migration key through the build and its separate version insert, excluding transactional runners and schema-version readers too.
 Every runner takes that key by polling `pg_try_advisory_lock` as statements of its own, with nothing open between two tries, and never by a blocking call: a backend blocked on a lock keeps the snapshot its statement took, and a concurrent index build waits for every older snapshot, so a blocking wait and the build that holds the key deadlock (SQLSTATE 40P01, measured on PostgreSQL 18.6).
-That holds at each of the three places a boot waits for the key (`createVersionTable`, `applyMigrationOnce`, `applyNonTransactionalMigration`) and at the auto-deployer's schema read.
+That holds at each of the three places a boot waits for the key (`prepareVersionTable`, `applyMigrationOnce`, `applyNonTransactionalMigration`) and at the auto-deployer's schema read.
 If recording the version fails after a successful build, the next boot safely repeats the idempotent statement.
 An INVALID index of the migration's own index name, on the table the migration builds on, is the runner's own leftover, from a build its lock bound cancelled or a boot that was killed mid-build: the runner drops it with `drop index concurrently if exists`, logged at WARN, and builds the index again, so one failed build no longer stops every later boot.
 An index of that name on another table, valid or INVALID, is refused with a schema-qualified `DROP INDEX CONCURRENTLY` recovery command, because `IF NOT EXISTS` skips on any relation of that name in the schema and the index would never be built on the target table.
@@ -1552,12 +2014,13 @@ Each table has its own migration, so its transaction holds an `ACCESS EXCLUSIVE`
 Their censuses answer `0` for 0056–0061, which neither refuse nor rewrite a row, and, for 0062, the candidate rows whose stored vector the new expression changes.
 
 Migration `0063_doc_settlements_pending` creates the table in which every durable document update records the settlement it owes, which the settlement deletes when it commits.
-A room's load and the server's minute-by-minute resumption arm the settlement a row names, so one a shutdown cuts short still runs.
+A room's load and the server's minute-by-minute resumption arm the settlement a row names, whether or not the document's issue is closed, so one that a shutdown or a close cuts short still runs.
 It creates a table and touches no row; its census answers `0`.
 
 Migrations `0064`–`0066` let an approval request follow its document's versions.
 `0064` backfills `requested_version` into every approval ask from its `version`, rebuilds `asks_approval_kind_check` to require it, and adds the nullable `asks.handed_back_reply_id` and an insert trigger that gives an older binary's approval row the same value; it locks `asks` alone.
-`0065` sets `comments.created_at`'s default to `clock_timestamp()`, so a comment is stamped when its insert runs, after the owner row every comment insert takes, and an ask's newest reply is the one that committed last; it locks `comments` alone.
+`0065` sets `comments.created_at`'s default to `clock_timestamp()`, so a comment is stamped when its insert runs, under the owner lock every comment write takes, and an ask's newest reply is the one that committed last; it locks `comments` alone.
+This build's two comment inserts (`createCommentFor` and `replyComment`) read `clock_timestamp()` under that lock before the insert, plan their writes on it and write it explicitly, so their comments take the same order.
 `0066` adds `handed_back_reply_id`'s foreign key to `comments`, which takes `SHARE ROW EXCLUSIVE` on both tables, as adding any foreign key does:
 a write waits behind it, a read does not.
 In one migration, the column's key held `asks` `ACCESS EXCLUSIVE` while it waited for `comments`, and a comment write that went on to read `asks` deadlocked with it.
@@ -1638,6 +2101,7 @@ a closed issue holding open asks gets them withdrawn exactly as a close withdraw
 an open issue holding `withdrawn` asks gets them restored, attributed to the actor of the event that reopened it;
 and a closed issue that holds open asks, or whose documents owe a settlement marked since the last pass (at boot, the last 10 minutes;
 on the first interval pass, any), gets the close's final sweep in the same write of each document, which writes block `state` attributes only, never an ask row or a record.
+The sweep's write leaves the document owed, and the document's settlement saves that write whether or not the issue is closed.
 A document whose stored history does not load is logged and left as it is, as the close leaves it.
 Each record is dated when the pass writes it.
 A pass logs `dispatch: repaired the asks of closed and reopened issues` with `withdrawn=<n> restored=<n>
@@ -1646,8 +2110,18 @@ each interval pass that listed its candidates moves the bound to one interval be
 The bound and the carried issues live in the memory of the process that ran the pass, not in the database:
 when the lease moves to another process, that process's pass starts from its own bound and its own carried issues (on its first interval pass, no bound, so it sweeps every closed issue whose documents owe a settlement), and never sees the issues the other process carried.
 
+While a release before this one serves beside it, a reopen made by a process of that release runs none of what this release's reopen does once a settlement of the closed issue's document has saved it:
+no reopen mark (`docs.Service.MarkReopenOwedAskDocuments`), no move of the approval request and no carry of the approval to the version that settlement wrote (`docs.Service.FollowClosedIssueVersions`), and no deletion of the editors such settlements kept.
+So a document that a closed issue's settlement saved waits for its next edit for the asks of its blocks that no settlement indexed, for the retraction of a restored ask whose block left it while the issue was closed, and for the move of its approval request or the carry of its approval.
+Migration `20261115091510_doc_closed_edit_sources` creates `doc_closed_edit_sources`, the editor that a settlement of a closed issue's document credited, which this release keeps when that settlement deletes the document's pending row, and which the settlement after the reopen names on the ask events of the text that editor wrote (`docs.clearSettlementPending`, `docs.settlementPendingStatement`).
+This release names that editor on no version that adds none of their text: a version that lists no one, whose latest edit source is only the kept editor, is written in the name of `SettlementActor` (`docs.settlementVersionCredit`).
+The earlier release neither reads nor deletes the table:
+a pending row that its reopen's write inserts names no editor, so the settlement after such a reopen names `SettlementActor` rather than the kept editor, whichever release runs it, and the kept editor stays until this release's next settlement of the document deletes it;
+a pending row that a write of this release inserts before then, naming no editor of its own, names that kept editor, and a settlement of that row by the earlier release names that editor on its version too, since that release does not tell the kept editor apart.
+The table is new and its foreign key cascades with the document, so no row is refused or rewritten, and its census answers `0`.
+
 Migration `0092_refs_excerpts` adds three nullable columns to `refs` with no default (`excerpt_block_id`, `excerpt_text`, `excerpt_version`), a catalog change that rewrites no row, and the partial index `refs_excerpt_drift` over the rows whose `excerpt_version` is null:
-the stored excerpt `GET /api/v1/references` answers a document mention with, which every version write fills and the reference-excerpt reconciliation fills for every row stored before it (`packages/envoy/AGENTS.md`).
+the stored excerpt `GET /api/v1/references` answers a document mention with, which every version write fills and the reference-excerpt reconciliation fills for every row stored before it (`docs.Service.RunReferenceExcerptReconciliation`).
 On the 2026-10-10 production dump the reconciliation's first pass filled 7,498 mentions of 2,150 documents in 248 s at `GOMAXPROCS=2`.
 Its census answers `0`.
 
@@ -1655,7 +2129,7 @@ Migration `0094_issue_links` creates `issue_links`, the issues each issue waits 
 The table's two foreign keys take `SHARE ROW EXCLUSIVE` on `issues` for the migration's short transaction, so an issue write waits behind it while an issue read does not, and re-stating the view holds `graph_edges` `ACCESS EXCLUSIVE`, so a reference read waits too.
 It touches no row; its census answers `0`.
 
-Migrations `0095_user_threads` through `0099_user_threads_catch_up` build `user_threads`, the table behind the Inbox's Reply rows (`packages/envoy/AGENTS.md`), which `20261105093500` through `20261105093503` give its dismissal mark and the two indexes the Inbox list and the Dismissed view read.
+Migrations `0095_user_threads` through `0099_user_threads_catch_up` build `user_threads`, the table behind the Inbox's Reply rows, which `20261105093500` through `20261105093503` give its dismissal mark and the two indexes the Inbox list and the Dismissed view read.
 `0095` creates the table, its partial index `user_threads_unread` and its `(thread_id)` index, the functions `user_threads_login`, `user_threads_record`, `user_threads_comment` and `user_threads_message`, and the trigger on `comments`;
 `0096` adds the trigger on `asks` (`insert or update of answer`); `0097` attaches `user_threads_message` to `messages`.
 Each trigger is its own migration, so its transaction holds that one table's `SHARE ROW EXCLUSIVE` alone:
@@ -1668,7 +2142,7 @@ it moves nothing backwards, and a write the seed saw stays read.
 On a copy of the 2026-10-12 production dump (11,497 comments, 3,882 asks, 14,289 messages) the seed wrote 3,819 rows for three logins, all of them read, in 0.93 s, and `0099` ran in 0.11 s under the server's own runner and moved no row, taking `ACCESS SHARE` on the three tables it reads and `ROW EXCLUSIVE` on `user_threads` alone.
 All five censuses answer `0`: `0095`-`0097` create functions and triggers and refuse or rewrite no row, and `0098` and `0099` write only the table `0095` creates.
 
-Migration `0113_repo_projects_default_and_issue_repo` adds `repo_projects.is_default` and `issues.repo` (`packages/envoy/AGENTS.md`).
+Migration `0113_repo_projects_default_and_issue_repo` adds `repo_projects.is_default` and `issues.repo`.
 From its release on, an issue sits at most 32 links below its root, and the API refuses a write past that (`409 PARENT_INPUT`);
 the release before it did not, so `0113` refuses to apply while any issue sits more than 32 links below its root or in a parent loop, naming up to 20 of them and the repair:
 `PATCH /api/v1/issues/<ancestor>` with `{"parent": null}`, on the release still running.
@@ -1693,7 +2167,7 @@ The auto-deployer (`packages/envoy/deploy/README.md`) keeps both rules.
 Compose stops and removes the old `dispatch` container before it starts the new one.
 When a deploy fails, the auto-deployer stops the failed image and confirms the stop before it reads the schema, and when the schema has moved past the one the previous image runs against, it refuses to start that image again and exits `1` for a forward recovery.
 
-Migration `0117_architecture_sources_per_repo` lets a project import its components from more than one repository (`packages/envoy/AGENTS.md`).
+Migration `0117_architecture_sources_per_repo` lets a project import its components from more than one repository.
 `architecture_sources` gains `id`, which names a source within its project, and its primary key moves from `(project_key)` to `(project_key, id)`, with a unique index on `(project_key, repo)`, so a repository is a source of a project at most once.
 `components` gains `source_id` and a foreign key on `(project_key, source_id)` to its source's row, `on delete cascade`, so deleting a source deletes its components.
 Both columns are added with the constant default `0`, which rewrites no row, and the default is then dropped:
@@ -1743,7 +2217,7 @@ Dropping a table in the same release as the code that stopped using it is what t
 no server of any release read or wrote this one, only that person-run subcommand did, so the drop breaks no build still serving through the roll.
 Both censuses answer `0`: `0118`'s updates write only the columns it adds, and `0119` drops nothing a running build still reads.
 
-Migration `0120_artifact_reviews_event_seq` adds `artifact_reviews.event_seq`, the sequence of the `artifact.*` event each review appended on its document's owner, which `docs.WriteReview` writes in the transaction that appends the event and the approval read returns as `seq` (`packages/envoy/AGENTS.md`).
+Migration `0120_artifact_reviews_event_seq` adds `artifact_reviews.event_seq`, the sequence of the `artifact.*` event each review appended on its document's owner, which `docs.QueueReview` writes in the transaction that appends the event and the approval read returns as `seq`.
 It is nullable, so a review recorded before it reads with no `seq`, and the release before it, which names no `event_seq` in its insert, rolls beside it.
 Adding a nullable column with no default writes the catalog alone, under `artifact_reviews`' `ACCESS EXCLUSIVE` lock for milliseconds;
 it refuses and rewrites no row, and its census answers `0`.
@@ -1777,7 +2251,7 @@ a trigger on `events` would need that table's `SHARE ROW EXCLUSIVE` while holdin
 the release before it runs over the new schema unchanged, and the trigger gives every review that release writes its sequence.
 The auto-deployer is the exception, by its own rule above: once the schema has moved it refuses to start the previous tag, and recovery there is forward.
 
-Migration `0121_block_graph` creates the tables behind a document's blocks as graph nodes (`packages/envoy/AGENTS.md`, "References form one graph"):
+Migration `0121_block_graph` creates the tables behind a document's blocks as graph nodes ("Reference graph" below):
 `document_blocks`, `block_refs`, `document_block_versions`, `document_block_texts` and `document_indexed_versions`, each with a foreign key to `artifacts`, and `block_grammar_owed`, with their indexes, among them the partial `document_block_versions_owed` and `block_grammar_owed_enqueued` through which the block-index reconciliation reads what is owed.
 It creates the trigger function `block_grammar_owe`, which no trigger calls until `0123`, and re-states the `graph_edges` view with two more arms:
 a block's mentions and its `part_of` edge to its document.
@@ -1816,7 +2290,8 @@ under the 32-byte key every such write is written.
 `asks_block_id_unique` still keeps `(block_artifact_id, block_id)` unique under its name, and each index keeps the first column every read of it leads with, so the earlier release writes and reads through them as before.
 Each drop holds `asks` `ACCESS EXCLUSIVE` until the migration commits, so every read and write of an ask waits while the two indexes build over its rows.
 Each rebuild is a plain `create index`, not `concurrently`, which cannot run inside this unmarked migration's transaction (`internal/dispatch/store/store.go`, `pgmigrate.Exec`).
-How long that wait lasts under production-scale data is unmeasured: this entry claims no duration, since a run on a throwaway Postgres gives a number off other disks, another cache and no live workload, which a deployer must not plan a lock window by.
+How long that wait lasts under production-scale data is unmeasured:
+this entry claims no duration, since a run on a throwaway Postgres gives a number off other disks, another cache and no live workload, which a deployer must not plan a lock window by.
 It refuses and rewrites no row: rows the old unique index held apart differ in their id, so they differ in its SHA-256.
 Its census answers `0`.
 
@@ -1830,7 +2305,8 @@ It refuses and rewrites no row; its census answers `0`.
 Migration `0129_document_edit_notices` creates `document_edit_notices`, one row per document holding a person's pending edit notice:
 the versions its quiet window spans, every person who wrote one, the actor the notice's event carries and when the window ends.
 A settlement of a person's browser edit opens or moves the row in its own transaction, and the leased edit-notice sweep deletes each due row and appends its `artifact.human_edited` event in the same transaction, so a notice still pending when a process stops is sent by either process's next sweep.
-It also adds `doc_settlements_pending.last_person`, the latest person sender of the document's pending edits, which names who edited last.
+A settlement of a closed issue's document opens no row, and when it writes a version it deletes the document's row, so neither a reopen inside the quiet time nor the first notice after the reopen reports the edits that it saved.
+The migration also adds `doc_settlements_pending.last_person`, the latest person sender of the document's pending edits, which names who edited last.
 The table is new and the column a plain nullable add, so no row is refused or rewritten and its census answers `0`;
 the foreign key takes `artifacts`' lock for the length of the migration, and the alter waits for `doc_settlements_pending` within the five-second lock bound.
 
@@ -1844,7 +2320,7 @@ its trigger sets an approval ask's `written_version` to `approval.version`, the 
 Its own migration, so its transaction holds `asks` `ACCESS EXCLUSIVE` alone, for milliseconds.
 It refuses and rewrites no row; its census answers `0`.
 
-Migration `0132_component_facts` creates `component_facts`, when each component was made and last changed and the digest of its own fields at its last recorded change, keyed `(project_key, id)` as `components` is, which every import keeps from then on (`packages/envoy/AGENTS.md`, "References form one graph").
+Migration `0132_component_facts` creates `component_facts`, when each component was made and last changed and the digest of its own fields at its last recorded change, keyed `(project_key, id)` as `components` is, which every import keeps from then on ("Reference graph" below).
 Its foreign key to `projects` cascades, and it has none to `components`, whose rows every import deletes and inserts again.
 Its one insert seeds a row with all three null for each component already stored: when those were made or last changed was never recorded.
 It reads `components` under `ACCESS SHARE`, and the foreign key takes `SHARE ROW EXCLUSIVE` on `projects` for the catalog change.
@@ -1865,6 +2341,8 @@ Its census answers `0` for the same reasons.
 Migration `0135_server_processes` creates two tables:
 `server_processes`, the registry of live server processes, and `server_build_announcements`, each build the fleet has announced as `server.started` (Running more than one process, above).
 It reads, locks and rewrites nothing that exists, and the release before it neither reads nor writes either table, so that release runs over the new schema unchanged and the census answers `0`.
+Migration `20261115051200_server_build_announcements_tuple_kinds` later adds `tuple_kinds` to `server_build_announcements`, a nullable `text[]` with no default: the relation kinds the announced build writes as tuples, from which the release that deletes an old arm of `graph_edges` reads whether the release a rollback would reach answers that arm's kinds from the store too.
+A row a build of an earlier release inserts names only `commit` and lists no kinds, which is true of it; the column rewrites no row, the release before it never reads it, and its census answers `0`.
 
 Migration `0136_dashboard_assets` creates `dashboard_builds`, `dashboard_assets` and `dashboard_build_assets`, where every server process publishes its dashboard build's assets at boot and from which it answers a page of another build that asks it for that build's chunks (`internal/dispatch/dashboard`).
 It creates tables and touches no row; its census answers `0`.
@@ -1933,18 +2411,41 @@ the release before this one reads `ask.answered`, `comment.created`, `message.cr
 Both censuses answer `0`: an index build and an index drop each refuse and rewrite no row.
 A failed concurrent build leaves an INVALID index of the new name on `events`, which the runner drops with `DROP INDEX CONCURRENTLY` and builds again on the next boot, so one failed build stops no later boot.
 
-Migration `0147_message_deliveries_session_created` creates `message_deliveries_session_created` on `message_deliveries (session_id, created_at desc) include (message_id)` where `state` is `sent`, for the same route's read of the session's sent message deliveries created since an hour before its window.
+Migration `0147_message_deliveries_session_created` created `message_deliveries_session_created` on `message_deliveries (session_id, created_at desc) include (message_id)` where `state` is `sent`, for the same route's read of the session's sent message deliveries created since an hour before its window, and `20261114081436_drop_message_deliveries_session_created` drops it:
+the route reads queued deliveries too now and takes that window through `message_deliveries_session_taken` (`20261114081435`, below) instead.
 `message_deliveries_session` (`0051`) keys `session_id` alone, so through it that read fetched the session's whole delivery history and filtered it by time:
 a long-lived session that receives every broadcast copy read all of its deliveries on every model request.
-The new index holds only the read's sent rows and carries the one column it returns, so the read is an index-only scan of the window's range, and a cached generic plan, which knows neither the session nor the window, chooses it too:
+`0147`'s index held only the read's sent rows and carried the one column it returned, so the read was an index-only scan of the window's range, and a cached generic plan, which knows neither the session nor the window, chose it too:
 costed as a plain `(session_id, created_at desc)` index it came within a percent of `0051`, which the generic plan kept.
 `0051` stays for the conversation window, which reads every delivery a session ever received.
 On the seeded database above, with one session given 60,003 sent deliveries (1,019 since an hour before its window), the read of them went from 58,984 rows fetched and discarded (798 buffers, 20-22 ms) to an index-only scan of the 1,019 (11 buffers, 0.3-0.4 ms), in the custom and the generic plan alike;
 the index built in 0.34-0.52 s over three runs on 110,003 deliveries.
-A plain `create index` inside the runner's transaction, it holds `SHARE` on `message_deliveries` while it builds: writes to it wait, reads do not.
+A plain `create index` inside the runner's transaction, it held `SHARE` on `message_deliveries` while it built: writes to it waited, reads did not.
 Its census answers `0`.
 
-Migration `0142_item_blocks` creates the tables behind the blocks of a comment or message as graph nodes (`packages/envoy/AGENTS.md`, "References form one graph"):
+Migration `20261114081434_delivery_queued_state` adds the fourth delivery attempt state, `queued`: the Envoy listener took the message and stored it for a session it knows and that is not running, which reads it when it runs again.
+It drops `comment_deliveries_state_check` (`0039`) and `message_deliveries_state_check` (`0046`) without `cascade` and adds each back `not valid` with `queued` beside `pending`, `sent` and `failed`, so no stored row is read:
+no row can fail a check wider than the one it was written under.
+It adds `message_deliveries.connected_only`, a nullable `text` column with no default whose one other value is `connected_only` (its own check, also `not valid`), set on every attempt of a message whose request asked the listener for a session that is running now:
+attempt 1 records the request's `connected_only`, and every later attempt of the message inherits attempt 1's value.
+No row records the switch rule: every send of a person's own Send or Aside, not one an agent wrote for them, on no issue, no broadcast's copy, whose body is one `/model <value>` or `/effort <value>` line asks it whatever its row holds (`isSessionSwitch`, `deliverMessageResuming`), so a switch an earlier release stored with no flag is held to a running session on its Retry, Use Aside instead or resume too, and every other message, a BTW and an agent's message for its person among them, is queued.
+The release before this one writes only `pending`, `sent` and `failed` and never names the column, so the two builds run against the widened schema at once.
+Each statement is one of the census's catalog-only `alter table` forms, so the census exempts the migration from its table size limit at any size, and each takes `ACCESS EXCLUSIVE` on its table for its catalog write alone.
+Its census answers `0`: it refuses and rewrites no row.
+Rolling back past it is an image rollback alone while no row carries `queued`; once one does, the checks have to be widened again by hand before an earlier set is restored.
+
+Migration `20261114081435_message_deliveries_session_taken` creates `message_deliveries_session_taken` on `message_deliveries (session_id, created_at desc) include (message_id, state)` where `state` is `sent` or `queued`, and `20261114081436_drop_message_deliveries_session_created` drops `0147`'s index behind it.
+The answers route reads a session's queued message deliveries beside its sent ones, so its read names two states and `0147`'s `sent`-only index cannot serve it at all.
+The index carries `state` beside `message_id` because Postgres drops an index predicate's clause from a scan only where the query's clause and the predicate imply each other, so over two states it keeps the read's own `state in ('sent', 'queued')` as a filter, which an uncarried column would turn into a heap read of every row the scan found.
+The build runs `concurrently`, outside the runner's transaction (`-- pgmigrate:non-transactional`):
+`message_deliveries` grows with every message and broadcast copy Dispatch sends, and a plain build holds `SHARE` on it, which blocks every write, for as long as one read of the table takes.
+The drop lands in the same release because a read of `sent` alone implies the two-state predicate:
+the release before this one reads `state = 'sent'`, and the wider index carries every column that read returns, so the planner reads it index-only through the wider index for as long as that build keeps serving requests.
+`drop index` takes `ACCESS EXCLUSIVE` on `message_deliveries` for the instant it unlinks the index, inside the runner's transaction, and it reads no row of the table.
+Both censuses answer `0`: an index build and an index drop each refuse and rewrite no row.
+A failed concurrent build leaves an INVALID index of the new name on `message_deliveries`, which the runner drops with `DROP INDEX CONCURRENTLY` and builds again on the next boot, so one failed build stops no later boot.
+
+Migration `0142_item_blocks` creates the tables behind the blocks of a comment or message as graph nodes ("Reference graph" below):
 `comment_blocks`, `message_blocks`, `comment_block_texts`, `comment_block_state`, `message_block_state`, `comment_block_refs` and `message_block_refs`, each with a foreign key to `comments` or `messages` that cascades, with their indexes, among them the partial `comment_block_state_owed` and `message_block_state_owed` through which the block-index reconciliation reads what is owed.
 It adds the nullable `replies_to_block` to `comments` and to `messages`, a catalog change that rewrites and scans no row, with a partial index on each.
 It creates the trigger function `item_blocks_owe`, which no trigger calls until `0143`, and re-states the `graph_edges` view with six more arms:
@@ -1973,15 +2474,17 @@ The release before it never reads the index and serves beside it unchanged, exce
 the index is left for the next release that reads it.
 
 Migration `0150_dpop_proofs` creates `dpop_proofs`, the record of every RFC 9449 DPoP proof Dispatch has accepted, and its expiry index.
-A caller presenting an access token the secrets broker issued signs a fresh proof of that token's key for each request (`internal/brokertoken`), and the row keyed on the proof's `jti` and normalized `htu` is what refuses the same proof presented twice;
+A caller presenting an access token the secrets broker issued signs a fresh proof of that token's key for each request (`internal/ciphertoken`), and the row keyed on the proof's `jti` and normalized `htu` is what refuses the same proof presented twice;
 the maintenance pass deletes every record past its proof's acceptance window beside the idempotency-key sweep.
 It is a new table that touches no row, which the release before it neither reads nor writes; its census answers `0`.
 
 Migration `20261028195714_doc_compaction_owed` creates `doc_compaction_owed`, the documents with rows a compaction could fold, which the hourly compaction sweep reads in place of a scan of `doc_updates`:
 every append names its document there in the statement that inserts its row once that row is not the document's first, and a compaction that leaves no row above its fold point, a rebuild, a delete and the sweep (for a document with no row after its first) remove it, each under the document's lock.
 It has no foreign key, so no append that names a document locks `artifacts`.
-Its one insert names every document holding more than one row; it reads `doc_updates` under `ACCESS SHARE` and writes only the table it creates, so `doc_updates`, which may be past the census's 1 GiB limit, is not a table it touches.
-The release before it neither reads nor writes the table: a document only that release appends to during the roll is compacted by the new release's queue on its next append or load.
+Its one insert names every document holding more than one row;
+it reads `doc_updates` under `ACCESS SHARE` and writes only the table it creates, so `doc_updates`, which may be past the census's 1 GiB limit, is not a table it touches.
+The release before it neither reads nor writes the table:
+a document only that release appends to during the roll is compacted by the new release's queue on its next append or load.
 It refuses and rewrites no existing row; its census answers `0`.
 
 Migration `20261101143201_duty_holds` creates `duty_holds (name, holder, token, expires_at)`, one row per name a process holds by renewing it (`duty.Hold`):
@@ -1991,6 +2494,24 @@ the events outbox's publisher holds `dispatch-outbox` there, and each delivery i
 A release deletes the row and notifies `dispatch_duty_holds` with the name in one statement, which wakes a standby at once.
 It creates a table and touches no row, and the release before it neither reads nor writes it; its census answers `0`.
 Its identifier is the UTC moment it was created, as every migration added since the numbered series closed is (Database migrations, above).
+
+Migration `20261118020802_github_read_attempts` creates `github_read_attempts`, the newest attempt of each GitHub read Dispatch makes under a lease, which `/healthz` answers as `github` (Routes below).
+The key is `read`, and a check holds it to the four names `webhook_redelivery`, `architecture_import`, `delivery_reconcile` and `ci_reconcile`.
+`at` is when the attempt was recorded, by the database's clock, `succeeded` whether it sent requests to GitHub and noted no failure, and `cause` the text of its first failure, at most 1,024 bytes;
+two checks hold `cause` to that length and null exactly when `succeeded` is true.
+The loop that holds a read's lease writes that read's row over the one before it when its pass ends (`store.GitHubReadAttempts.Record`), and a row trigger notifies `dispatch_github_read_attempts` with the read's name at each write, which refreshes every process's copy of the record (Background loops, above).
+A new table: nothing existing is read, locked or rewritten, the previous release neither reads nor writes it, and its census answers `0`.
+
+Migration `20261120222732_block_refs_to_source` creates `block_refs_to_source` on `block_refs (to_kind, to_id, ((artifact_id)::text))`, and `20261120222733_drop_block_refs_to` drops `0121`'s `block_refs_to` on `(to_kind, to_id)` behind it.
+`heldByABlock`'s probe of `block_refs` (`refs/graph.go`) compares all three columns, and through `block_refs_to` it read every block link into the node once for each document that mentions it and filtered the source document: 999,000 rows removed for an issue that 1,000 documents mention in their text and in two blocks each.
+The new index's first two columns are the old one's, so every read `block_refs_to` served it serves, and `block_refs` keeps one index of targets, with the key the target indexes of `comment_block_refs`, `message_block_refs` and `ask_block_refs` already have.
+The build is a plain `create index` in the runner's transaction, not `concurrently`: production runs one app pod under `Recreate`, which migrates before it listens, so no writer runs while the build holds `SHARE` on `block_refs` for one scan of the table.
+The census admits it only while `block_refs` is under `CensusTableLimit` and refuses it above, and then the build must be rewritten in the concurrent form (`-- pgmigrate:non-transactional`, `create index concurrently if not exists`, alone in its file) before the deployment can move.
+The drop sets `lock_timeout` to `120s` for its own transaction, because it takes `ACCESS EXCLUSIVE` on `block_refs` for the instant it unlinks the index and waits for any read the stopped pod left running, which can outlast the runner's three attempts of 5 s.
+That bound holds on each try, and `store.Migrate` tries a migration up to 3 times after a lock timeout (`pgmigrate.RetryLockTimeouts`), so the drop waits up to 120 s on each of those 3 tries.
+Where two builds serve at once, the build holds off the earlier build's writes to `block_refs` for its scan, and the drop its reads and writes for as long as it waits, up to 120 s on each of `store.Migrate`'s 3 tries.
+Both censuses answer `0`: an index build and an index drop each refuse and rewrite no row.
+The release before them reads `block_refs` by `to_kind` and `to_id` alone, which the new index serves, so it runs unchanged beside them.
 
 Migration `20261101030537_server_processes_schema` adds four columns to `server_processes`:
 `schema_version` and `schema_creatable`, the document schema numbers each process reads and creates, which the document socket's admission reads (Two builds at once, above);
@@ -2033,7 +2554,7 @@ it has no fallback pass, and its outbox skips an event already published, so a c
 Before rolling back past `20261101180039`, run `select count(*) from comment_fallback_copies where settled_at is null` and roll back only when it answers `0`, or let this build drain the rows first.
 
 Migration `20261101144855_block_pointer_links` gives `block_refs` a nullable `to_types text[]`, the types a typed block's `block[]` pointer may point at (null:
-any), creates the function `block_ref_listed(to_types, to_id)`, true when `to_types` is null or no current `document_blocks` row of the target has a type outside it, and re-states `graph_edges` with `0142`'s arms, its `block_refs` arm listing a row only while `block_ref_listed` holds (`packages/envoy/AGENTS.md`, the typed block rules).
+any), creates the function `block_ref_listed(to_types, to_id)`, true when `to_types` is null or no current `document_blocks` row of the target has a type outside it, and re-states `graph_edges` with `0142`'s arms, its `block_refs` arm listing a row only while `block_ref_listed` holds ("Reference graph" below states the typed block rules).
 The column is added with no default, so no row is rewritten, and the previous release, which neither reads nor writes it, keeps writing rows that hold null and so are listed as before.
 The column takes `block_refs` `ACCESS EXCLUSIVE` and the view `graph_edges` `ACCESS EXCLUSIVE` for the migration's short transaction, so a block index write and a reference read wait behind it.
 It refuses and rewrites no row; its census answers `0`.
@@ -2103,19 +2624,26 @@ A holder that outlives all three fails the migration and the boot with it:
 that pod never serves, the release before it keeps serving every request, and the deployment reports the new pod crash-looping.
 A retry is safe — the failed attempt's transaction rolled back, so nothing of it is in the database and no version record was written, and the next boot applies the migration again from the same state.
 
-Migration `20261101182501_document_search_backfill` creates `document_search_backfill`, the one row that records how far the fill of `20261101182447`'s table has got: the keyset cursor (`artifact_id`, the highest document the pass has covered, the all-zero uuid before its first batch) and `done`.
+Migration `20261101182501_document_search_backfill` creates `document_search_backfill`, the one row that records how far the fill of `20261101182447`'s table has got:
+the keyset cursor (`artifact_id`, the highest document the pass has covered, the all-zero uuid before its first batch) and `done`.
 It writes no `document_search` row and reads no large table, so it locks only the table it creates and commits in milliseconds.
 Its census answers `0`: a new table, whose one row the migration inserts.
 
 The fill itself is `store.FillDocumentSearch`, which the boot runs immediately after the migrations and before the server serves (`cmd/dispatch/main.go`), not a migration.
-A migration is one transaction, and the single statement this used to be — `insert … select distinct on (artifact_id) … from artifact_versions where markdown is not null order by artifact_id, number desc` — measured 35.5 s on a production-shaped database (`artifact_versions` 3337 MB, 200,000 versions, 40,000 documents), with every row it wrote uncommitted for those 35.5 s.
-`20261101182454`'s trigger is live by then, so a version write to a document the statement had already written ran its own `insert … on conflict (artifact_id) do update` on that key and waited for the whole statement; that writer holds its issue row (`for no key update`) and its document's room for the whole wait, every other write on that issue queues behind it, and an API writer sets no `lock_timeout`.
+A migration is one transaction, and the single statement this used to be
+— `insert … select distinct on (artifact_id) … from artifact_versions where markdown is not null order by artifact_id, number desc` — measured 35.5 s on a production-shaped database (`artifact_versions` 3337 MB, 200,000 versions, 40,000 documents), with every row it wrote uncommitted for those 35.5 s.
+`20261101182454`'s trigger is live by then, so a version write to a document the statement had already written ran its own `insert … on conflict (artifact_id) do update` on that key and waited for the whole statement;
+that writer holds its issue's owner lock (`store.LockOwner`) and its document's room for the whole wait, every other write on that issue queues behind it, and an API writer sets no `lock_timeout`.
 Each batch is instead one short transaction that takes the next `store.DocumentSearchFillBatch` documents by keyset above the cursor, writes their latest versions under the same write guard as `20261101182454`'s trigger (`on conflict (artifact_id) do update … where excluded.number >= document_search.number`, so a row the trigger wrote while the pass runs is never replaced by an older one), moves the cursor and commits.
 The batch is 1,000 documents, about 0.9 ms a document on the shape above, so a batch is about a second and the pass about forty of them, and a writer that meets a key the pass holds waits for one batch rather than for the whole fill.
-The cursor is taken from the ids the batch read and never from the insert's `returning`, because a row the guard skips returns nothing and the cursor would stall on it; the pass is finished when a batch takes no further id, and each batch is idempotent, so running it twice, or from two processes at once, writes the same table.
+The cursor is taken from the ids the batch read and never from the insert's `returning`, because a row the guard skips returns nothing and the cursor would stall on it;
+the pass is finished when a batch takes no further id, and each batch is idempotent, so running it twice, or from two processes at once, writes the same table.
 A boot after the pass has finished reads that one row and stops, so it costs no read of `artifact_versions` at all.
-A failure stops the boot (`slog.Error`, then exit 1), unlike the `asks_anchor_artifact_id` count beside it: this release's search reads `document_search` alone, so a process serving with the table unfilled would answer a search with documents missing.
-The rolling deploy keeps that correct — the release before this one serves every request until the new process has filled the table and begins serving — and the operator follow-up is that wait: a pod of this release takes the fill's time (about 35 s on production's shape) to become ready on the first boot after the deploy, and the boot logs each batch and the total.
+A failure stops the boot (`slog.Error`, then exit 1), unlike the `asks_anchor_artifact_id` count beside it:
+this release's search reads `document_search` alone, so a process serving with the table unfilled would answer a search with documents missing.
+The rolling deploy keeps that correct — the release before this one serves every request until the new process has filled the table and begins serving
+— and the operator follow-up is that wait:
+a pod of this release takes the fill's time (about 35 s on production's shape) to become ready on the first boot after the deploy, and the boot logs each batch and the total.
 
 Migration `20261101182508_search_term_queue` creates `search_term_queue`, the items whose search text has changed since each project's word counts were last written.
 The related-terms refresh counted every issue, document, comment, ask and message of every project every ten minutes, 1,882 s of database time in the 24 hours to 2026-10-30;
@@ -2168,7 +2696,8 @@ This states every arm of both, and is the arm list a later migration re-states f
 It creates nothing and reads no stored row; it refuses and rewrites no row, and its census answers `0`.
 It takes the view `ACCESS EXCLUSIVE` for its short transaction, as the two before it do.
 
-Migration `20261103205037_refs_grammar_owed` creates `refs_grammar_owed (kind, id, enqueued_at)`, the queue of text owed an index with the whole reference grammar — the bare issue keys, the `#id`s naming a document's question blocks and the short ids a text writes — which a build that predates them indexes without.
+Migration `20261103205037_refs_grammar_owed` creates `refs_grammar_owed (kind, id, enqueued_at)`, the queue of text owed an index with the whole reference grammar
+— the bare issue keys, the `#id`s naming a document's question blocks and the short ids a text writes — which a build that predates them indexes without.
 `kind` is `comment`, `ask`, `message`, `artifact` (a document at its latest version) or `scope`, whose id is a document whose question blocks moved and which owes a re-index of every source whose text belongs to it (`refs.ScopeSources`), and `refs_grammar_owed_enqueued` is the index the drain reads oldest first.
 It is a queue of its own rather than a row in `0121`'s `block_grammar_owed` because a server of the previous release drains that table:
 during a rolling update it would consume the rows seeded there, index that text with the grammar it knows and delete them, and this release would never re-index them.
@@ -2177,21 +2706,27 @@ It creates a table, an index and three functions and touches no row, and the rel
 
 Migrations `20261103205038_comments_refs_grammar_trigger`, `20261103205039_asks_refs_grammar_trigger`, `20261103205040_messages_refs_grammar_trigger` and `20261103205041_artifact_versions_refs_grammar_trigger` attach those functions, each in its own migration so each transaction holds one table's `SHARE ROW EXCLUSIVE` alone (`0122`-`0125`'s precedent), so a write of that table waits behind it while a read does not.
 They enqueue whatever the text says: no cheap SQL predicate finds a bare issue key, a `#id` or a short id, where `0123`-`0125` could test `like '%#b-%'`, and `0122`'s document trigger is the precedent for a trigger that enqueues every write.
-What they test is whether the write changed what the index reads — the text, and the columns that say which document a `#id` in it resolves against (`refs.ScopeOf`) — since a write that leaves every one of them as it found it cites exactly what it cited.
-A comment is owed on insert and on an update that changes `body`, `reply_to`, `artifact_id`, `ask_id`, `issue_key` or the `artifact_id` of its `anchor`, and an ask on insert and on an update that changes `question`, `block_artifact_id`, `artifact_id`, `issue_key` or the `artifact_id` of its `anchor`; an issue message is owed on insert and on an update of `body`, and a direct message, which no mention is indexed from, is owed nothing.
+What they test is whether the write changed what the index reads
+— the text, and the columns that say which document a `#id` in it resolves against (`refs.ScopeOf`)
+— since a write that leaves every one of them as it found it cites exactly what it cited.
+A comment is owed on insert and on an update that changes `body`, `reply_to`, `artifact_id`, `ask_id`, `issue_key` or the `artifact_id` of its `anchor`, and an ask on insert and on an update that changes `question`, `block_artifact_id`, `artifact_id`, `issue_key` or the `artifact_id` of its `anchor`;
+an issue message is owed on insert and on an update of `body`, and a direct message, which no mention is indexed from, is owed nothing.
 Each of the two tables carries two triggers for this, one for the insert and one for the update, because a `WHEN` clause of an insert trigger may not name `OLD`.
-The rest of an anchor is left out on purpose: a settlement rewrites `anchor.quote` and `anchor.orphaned` as a quote moves (`docs/marks.go`) and writes `anchor.block_id` (`docs/anchor_blocks.go`) without re-indexing anything, so a trigger on the whole column would leave a row owed, and the drain re-reading an unchanged text, on every settlement that moves a quote.
-An ask's `block_id` is left out for the same reason it is named by the scope triggers below: it keys the question map of the document the block is on (`refs.QuestionMap`) rather than the ask's own scope, so a change to it owes that document's whole scope, which re-indexes the ask with every other source of it.
+The rest of an anchor is left out on purpose:
+a settlement rewrites `anchor.quote` and `anchor.orphaned` as a quote moves (`docs/marks.go`) and writes `anchor.block_id` (`docs/anchor_blocks.go`) without re-indexing anything, so a trigger on the whole column would leave a row owed, and the drain re-reading an unchanged text, on every settlement that moves a quote.
+An ask's `block_id` is left out for the same reason it is named by the scope triggers below:
+it keys the question map of the document the block is on (`refs.QuestionMap`) rather than the ask's own scope, so a change to it owes that document's whole scope, which re-indexes the ask with every other source of it.
 A markdown version owes its document and that document's scope, since the version declares the question blocks every `#id` in its scope resolves against, and an image's or file's version owes neither.
 An ask that gains or changes `block_id` or `block_artifact_id` is the settlement of a question block, so it owes that document's scope, and the document it left as well where its block moved.
 A write this release makes settles its own row in the write's transaction (`refs.replaceRefs`), so only a write of an earlier build is left owed.
 Each touches no row; each census answers `0`.
 
-Migration `20261103205042_refs_grammar_seed` owes that index to every text already stored: each comment, each ask, each issue message and each document with a markdown version, and each such document's scope.
+Migration `20261103205042_refs_grammar_seed` owes that index to every text already stored:
+each comment, each ask, each issue message and each document with a markdown version, and each such document's scope.
 Those triggers are live by then, so a write that lands while it runs is owed by its trigger, and a row a trigger has already written keeps its `enqueued_at`.
 It takes `ACCESS SHARE` on `comments`, `asks`, `messages`, `artifacts` and `artifact_versions`, which no write waits behind, and writes only `refs_grammar_owed`.
 Its census answers `0`: the one table it writes is `20261103205037`'s, which holds no row at deploy, and the rows it inserts are new work owed, not a rewrite.
-The server drains them itself, a fourth batch of `docs.Service.RunBlockIndexReconciliation` (`packages/envoy/AGENTS.md`), so the links and the edges of text stored before this release appear with no edit and no command run.
+The server drains them itself, a fourth batch of `docs.Service.RunBlockIndexReconciliation`, so the links and the edges of text stored before this release appear with no edit and no command run.
 
 Migration `20261102110000_artifact_document_roles` gives `artifacts` a nullable `role`, `verification` for the document an issue holds as `verification.md` and `plan` for its `plan.md`, null for every other document.
 The upload route sets it from the slug when it creates the row and never changes it, as `is_primary` never changes, and the Verification and Plan tabs find their document by it rather than by reading names back.
@@ -2201,15 +2736,18 @@ The backfill gives the role to the issue documents already stored under those sl
 The column is nullable with no default, so the previous release keeps writing documents with no role, and the add and the backfill take `artifacts` `ACCESS EXCLUSIVE` in the migration's transaction.
 It refuses and rewrites no row; its census answers `0`.
 
-Migration `20261102110100_asks_approval_documents` lets one approval request name more than one document: a spec and its issue's Verification document are approved in one Inbox card, and the human's answer records a review on each.
+Migration `20261102110100_asks_approval_documents` lets one approval request name more than one document:
+a spec and its issue's Verification document are approved in one Inbox card, and the human's answer records a review on each.
 `asks.approval` grows a `documents` array, one entry per document with its `artifact_id`, `name`, `version` and `requested_version`, whose first entry is the document the request was opened on;
 `approval.artifact_id`, `name`, `version` and `requested_version` go on holding that first document's four values, so the previous release reads such a request as the one-document request it has always read.
 The backfill writes the array every stored approval already implies, and the trigger `asks_normalize_approval_documents` writes it for a row the previous release inserts or rewrites during a rolling deploy;
 the rebuilt `asks_approval_kind_check` then requires the array, each entry held to the bounds the top-level four have always been held to.
 `asks_open_approvals` (`0014`) still indexes the first document alone, and the new `asks_open_approval_documents` indexes every document of an open request, so a read by any of them seeks.
-Every statement locks `asks` alone, the index build taking `SHARE`, so an ask write waits for it; it refuses no stored row and rewrites only the approval blobs it fills in, and its census answers `0`.
+Every statement locks `asks` alone, the index build taking `SHARE`, so an ask write waits for it;
+it refuses no stored row and rewrites only the approval blobs it fills in, and its census answers `0`.
 
-Migration `20261102110200_artifact_review_kinds` gives `artifact_reviews` a not-null `kind` defaulted `person`, the other value being `plan_review`: the approval a plan review records of a plan version (`POST /api/v1/artifacts/{id}/plan-reviews`), which no human is ever asked to give.
+Migration `20261102110200_artifact_review_kinds` gives `artifact_reviews` a not-null `kind` defaulted `person`, the other value being `plan_review`:
+the approval a plan review records of a plan version (`POST /api/v1/artifacts/{id}/plan-reviews`), which no human is ever asked to give.
 A plan review's state is `approved`, so `0120`'s trigger gives its row a sequence as it gives every other review one, and the approval goes stale at a later version exactly as a spec's does.
 The constant default rewrites no row, so the statement holds `artifact_reviews` `ACCESS EXCLUSIVE` for the catalog change alone; its census answers `0`.
 
@@ -2220,23 +2758,69 @@ Nothing updates a row — another run is another row — and a table check refus
 `check_results_check` serves the Verification tab's read of one check's results newest first, and `check_results_issue` an issue's own reads.
 A new table: nothing existing is read, locked or rewritten, the previous release neither reads nor writes it, and its census answers `0`.
 
+Migration `20261117093000_check_results_commit_repo` adds the nullable column `check_results.commit_repo`: the repository the record route took a result's commit to be of, written only where that is a repository the check's issue links a pull request in rather than the one the issue resolves to, and null for every other row, the rows before it included.
+Such a repository is one with an open or merged linked pull request that GitHub said holds the commit, and no other: where a linked read did not answer and no repository is shown to hold the commit, no result is stored at all (`502 GITHUB_UNREADABLE`).
+The results read compares an `after_merge` or `default_branch` result with that repository's branches where the column names one, and reads a `before_merge` result's pull requests through it.
+A nullable column with no default rewrites no row; the ALTER holds ACCESS EXCLUSIVE on `check_results` for the catalog write alone, the previous release neither reads nor writes the column, and its census answers `0`.
+
+Migration `20261116163813_issue_role_holders` creates `issue_role_holders`, the session that holds each Legion role of an issue, which the Legion daemon publishes (`PUT /api/v1/issues/{key}/role-holders`, Routes below).
+The key is `(issue_key, role)`, and a unique index on `(issue_key, session)` keeps a session to one role of an issue.
+The `role` check names the six Legion roles, and a row goes with its issue.
+A later release reads the table in the write transaction of a result, so that the stored role of a result is the role that its session holds.
+A new table: nothing existing is read, locked or rewritten, the previous release neither reads nor writes it, and its census answers `0`.
+
+Migration `20261117190118_events_owed_keys` adds `events.owed_keys`, nullable `text[]` with no default: what an event still owes once the outbox's last record of it was written (`recordBatch`, `owedKeys`).
+It holds the key of each destination of the event's list that no batch has reached, the owner's topic family spelled `topic-family`, a session's own subject and a role's topic by their subjects, and `any-session` beside them when the event's recipient read failed;
+an event the record publishes owes nothing, an empty array, and so does one the outbox cannot read: a row it read but cannot publish (its list holds a null, or its actor or payload does not decode), and a row that does not scan, which the batch still knows by its id and its owner's `last_seq`, the first two columns it reads;
+an event no record has written it for holds null.
+The record writes the column only while the publisher hold is its own, so a record made after its process lost the hold leaves it as it was, on an event it publishes too, where nothing reads it: both rules read unpublished events alone.
+The same `ALTER` adds `events.owed_seq`, nullable `integer`: the owner's `last_seq` the batch that wrote `owed_keys` read beside the routing they come from, written with them and only with them.
+A copy of a mention - the API's own send and the outbox's fallback row - waits behind every earlier event of its owner that still owes a send its session may take, or whose `owed_seq` is behind the owner's newest event - a write since the record may have made the session a destination of it (`model.MentionCopyHolderSQL`, read with the role routes in one statement, `model.MentionCopyRuleSQL`) - and null owes the topic family, so an event written before the migration holds those copies until the outbox records it again or publishes it.
+The newest event is the newest that is no pending subscription command, which makes no session a destination and which no batch reads, so it leaves the record current.
+The read walks `events_outbox_owner`, and reads the owner's newest seq once, backwards over its unique `(owner, seq)` index: the subquery ends with `offset 0`, so the planner does not run it again for each earlier event.
+The columns are a catalog change that rewrites no row, and the `ALTER` holds `events` `ACCESS EXCLUSIVE` for that alone; its census answers `0`.
+The previous release neither reads nor writes them, so the two roll side by side.
+An event that release records keeps the values this release wrote last, or null, and every event written since - by either release - moves its owner's `last_seq` past them, so a copy this release sends waits until this release records the event again: while the previous release holds the publisher hold, copies on an owner with an unpublished earlier event wait longer, and pass none of its events.
+This release also writes both again for every unpublished event a batch reads not due, when either changed.
+
+Migration `20261120021308_search_text_versions` creates two new tables, which the keyword fill writes (Background loops, above) and a search at a past time reads (Search, below).
+`search_text_versions` holds one row for each version of the text that keyword search reads of an issue, a comment, an issue message or an ask.
+Its key is `(kind, id, event_seq)`, and a row is never updated: a new version is a new row.
+`search_text_versions_fill` holds the fill's one cursor row, with the reach the fill stored, the holder that wrote the last batch, and the version of the event rules that wrote the rows up to the cursor.
+`search_text_versions_item_start` on `(kind, id, started_at)` serves the relation's test for a later version of the same item.
+`search_text_versions_search` is a GIN index on the vector with `fastupdate = off`, so a search never scans a pending list and an insert never empties one.
+Neither table has a foreign key: a key locks the table it names, and a version is history that a later change to its item must not follow or refuse.
+It is a new-table migration: it holds only `create table` and `create index` on the two new tables, the release before it neither reads nor writes them, and its census answers `0`.
+No migration writes a row of either table.
+At production's counts the table and its indexes take about 2 GB (1.9 GB measured on real text, 2,134 MB on the keyed copy) and grow by 30 to 40 MB a day, which is above the census's 1 GiB limit.
+So once the table is filled, the census refuses a later migration that names it unless the census admits every statement of that migration.
+A change to its shape is a new table that the fill writes again.
+The cursor row's `rules` holds the lowest version of the event rules that wrote the rows up to the cursor: each batch keeps the lower of its own version and the one stored, so a newer build that takes the hold after an older one does not hide the older one's events.
+A later build that reads more event types reads `rules` to know which events to read again, and only that read again raises it.
+
 Migration `20261102122300_pull_request_heads` creates `pull_request_heads`, the newest head Dispatch holds of every pull request it has seen an event for, so a recorded result can say whether it ran at the commit the work stands at.
-This is not `delivery_pull_requests`, which keeps the merged pull requests of the delivery population and no head commit: this table holds open ones too, by any author and in any repository, one row per pull request.
-A row names the `repo` and `number`, the repository under the canonical name it is called today (`refs.CanonicalRepo`), so one repository stored under two names keeps one row and one attribution (`20261105075455_repo_projects_renamed_to`, below);
+This is not `delivery_pull_requests`, which keeps the merged pull requests of the delivery population and no head commit:
+this table holds open ones too, by any author and in any repository, one row per pull request.
+A row names the `repo` and `number`, the repository under the canonical name it is called today (`refs.Renames.Canonical`, over the rename pairs the server read at boot), so one repository stored under two names keeps one row and one attribution (`20261105075455_repo_projects_renamed_to`, below);
 then the `head_sha` (on a merge, the final head of the merged work), the `head_ref` and `base_ref`, the `state` (`open`, `closed` or `merged`), the `issue_key` Dispatch's attribution picks and which of its five sources named it, the title and URL, the pull request's `updated_at` as the event reported it, and when the reconcile or a read-through last read it through the App.
 That key is the first issue the five sources name that resolves to the repository the pull request is in, not the first key they name (`attributionCandidates`, `attributionHeld` in `delivery/attribution.go`):
 a pull request titled after another repository's issue therefore keeps its own, and one no candidate of which resolves to its repository is attributed to nobody, with the source `none`, as is one whose head branch is in another repository (`headInOwnRepository`).
 The hold is the server's own repository-resolution rule spliced into the statement that reads the candidates (`refs.IssueRepoTerms`, `attributionCandidatesQuery`), so the attribution and the issue page cannot disagree, and a pull request's best 25 candidates are the ones read (`attributionCandidateBound`).
 One rule picks both attributions: this row's `issue_key` (`headAttribution`) and the issue of a `delivery_pull_requests` row, which the reconcile resolves again from the database alone (`AttributePullRequests`).
-An older event arriving after a newer one leaves the row as it is, and the reconcile re-reads an open row older than five minutes.
+An older event arriving after a newer one leaves the row as it is, and the reconcile re-reads an open row older than 4.5 minutes (`delivery.PullRequestHeadStaleAfter`).
 That head pass runs whether or not the deployment has delivery settings, and before the deploy repository's permission check (`Reconcile.runOnce`):
 a recorded result is compared with those heads in every deployment, and behind the settings the pass never ran in one that had none, so a result recorded at a head a later push replaced went on standing at it for ever.
 A failed head pass is logged, and named in `delivery_settings.last_error` beside the other steps' failures when the pass reached them.
-The head pass also takes every merged row credited to nobody that the rule the running build judges by has not judged — one no read of GitHub has reached, and one an older rule judged — and offers such a row once per rule version (`delivery.AttributionRuleVersion`, `20261105070440_pull_request_heads_attribution_rule` below):
+The head pass also takes every merged row credited to nobody that the rule the running build judges by has not judged
+— one no read of GitHub has reached, and one an older rule judged
+— and offers such a row once per rule version (`delivery.AttributionRuleVersion`, `20261105070440_pull_request_heads_attribution_rule` below):
 a `pull_request` envelope naming no head repository attributes nobody, a pull request merged under an older rule keeps whatever that rule concluded, and nothing else ever looks at a merged row again, so without that arm a result at such a merged head would stand at no basis for good.
-The row is written outside the reconcile by the `pull_request` envelope, and by the read-through made for a commit that heads no pull request Dispatch knows (`delivery.ReadThroughCommitPulls`):
+The row is written outside the reconcile by the `pull_request` envelope, and by the read-through made for a commit that heads no pull request Dispatch knows (`delivery.Attributor.ReadThroughCommitPulls`):
 a recorded result makes one, and so does the read of an issue's results, which spends at most one such read per repository and commit every `delivery.CommitPullReadStaleAfter` (`GET /api/v1/issues/{key}/results`, Routes below).
-`pull_request_heads_issue_head` answers the heads one issue's checks are compared with, `pull_request_heads_open_stale` the reconcile's open batch, `pull_request_heads_merged_unread` and `pull_request_heads_merged_rule` its merged arm — the first partial on `state`, `issue_key` and `checked_at`, the second on `state = 'merged'` and keyed by `attribution_rule` (`20261111060005_pull_request_heads_merged_rule`) — and `pull_request_heads_repo_head` (`20261105112616`, below) the question the results read asks before it reads GitHub: whether any open or merged stored pull request has this commit of this repository as its head.
+`pull_request_heads_issue_head` answers the heads one issue's checks are compared with, `pull_request_heads_open_stale` the reconcile's open batch, `pull_request_heads_merged_unread` and `pull_request_heads_merged_rule` its merged arm
+— the first partial on `state`, `issue_key` and `checked_at`, the second on `state = 'merged'` and keyed by `attribution_rule` (`20261111060005_pull_request_heads_merged_rule`)
+— and `pull_request_heads_repo_head` (`20261105112616`, below) the question the results read asks before it reads GitHub:
+whether any open or merged stored pull request has this commit of this repository as its head.
 A new table, as above; its census answers `0`.
 
 Migration `20261102122400_default_branch_commits` creates `default_branch_commits`, what Dispatch's GitHub App answered about one commit of one repository: whether the repository's default branch carries it.
@@ -2256,28 +2840,37 @@ So the release that added this table wrote nothing to `default_branch_commits` a
 The table starts empty, with no backfill: a `default_branch_commits` row named no branch, and the default branch it was asked about may since have been renamed, so no backfill could be faithful and every answer is earned again with one GitHub read.
 A new table, as above; its census answers `0`.
 
-Migrations `20261105093500_user_threads_dismissed_at` through `20261105093507_user_agent_thread_dismissed_clear` are the Inbox's dismissal: a thread stays in a person's Inbox, read or not, until they dismiss it.
-`20261105093500` adds `user_threads.dismissed_at`, nullable with no default and no backfill, so the statement writes the catalogue row and nothing else: no rewrite, no row read, and `ACCESS EXCLUSIVE` for that write alone.
-`20261105093501` replaces `user_threads_record` with the same function plus one assignment, so the statement that moves the other participants' `replied_at` on a write by somebody else clears their `dismissed_at` when that write is newer than it; `create or replace function` locks the function's own catalogue row and no table at all.
+Migrations `20261105093500_user_threads_dismissed_at` through `20261105093507_user_agent_thread_dismissed_clear` are the Inbox's dismissal:
+a thread stays in a person's Inbox, read or not, until they dismiss it.
+`20261105093500` adds `user_threads.dismissed_at`, nullable with no default and no backfill, so the statement writes the catalogue row and nothing else:
+no rewrite, no row read, and `ACCESS EXCLUSIVE` for that write alone.
+`20261105093501` replaces `user_threads_record` with the same function plus one assignment, so the statement that moves the other participants' `replied_at` on a write by somebody else clears their `dismissed_at` when that write is newer than it;
+`create or replace function` locks the function's own catalogue row and no table at all.
 `20261105093502` and `20261105093503` create `user_threads_inbox` on `(login, replied_at desc, thread_id desc) where replied_at is not null and dismissed_at is null`, the Inbox list's read, and `user_threads_dismissed` on `(login, dismissed_at desc, thread_id desc) where dismissed_at is not null`, the Dismissed view's read and the cursor it resumes from.
 Each column order is its read's own, the login it narrows to and then the order it answers in, so one index scan answers a page with no sort, and each predicate is its read's own filter, so neither state scans the table.
 Building either takes `SHARE` on `user_threads`, so the writes its triggers make wait for the build while its readers do not, and a plain `create index` scans the table and sorts every row the predicate keeps, read rows included.
 The window is one scan and sort of `user_threads` — a row per person per thread they have written in — with no row rewritten and none refused.
 These unmarked migrations run in a transaction, so `create index concurrently` cannot run inside them, as for `0148`.
-`20261105093505` creates `user_agent_thread_dismissed (login, message_id, dismissed_at)`, the same mark for an Agent thread, which has no `user_threads` row to carry one, with an index on `(login, dismissed_at desc, message_id desc)` for the Dismissed view's own read of it; the table holds no row until the migration commits, so no existing table is locked and nothing is backfilled.
-Its primary key is `(message_id, login)`, that order and not the other: the next migration's trigger deletes by the root alone, since the reply that brings a thread back does not name whoever dismissed it, and under `(login, message_id)` every session reply would scan the table.
+`20261105093505` creates `user_agent_thread_dismissed (login, message_id, dismissed_at)`, the same mark for an Agent thread, which has no `user_threads` row to carry one, with an index on `(login, dismissed_at desc, message_id desc)` for the Dismissed view's own read of it;
+the table holds no row until the migration commits, so no existing table is locked and nothing is backfilled.
+Its primary key is `(message_id, login)`, that order and not the other:
+the next migration's trigger deletes by the root alone, since the reply that brings a thread back does not name whoever dismissed it, and under `(login, message_id)` every session reply would scan the table.
 The Inbox's own reads want one person's whole set of marks, which the `login` index answers, and a dismiss and a restore name both columns, so two indexes serve all three reads.
-`20261105093507` is the Agent half's own "a write by somebody else brings the thread back", which `user_threads_record` does for a Reply thread: a trigger on `messages` that clears a root's mark when a session replies in it after that mark, in the reply's own transaction.
+`20261105093507` is the Agent half's own "a write by somebody else brings the thread back", which `user_threads_record` does for a Reply thread:
+a trigger on `messages` that clears a root's mark when a session replies in it after that mark, in the reply's own transaction.
 Somebody else on this half is the session, the only writer the Inbox reads in such a thread, so the person's own reply from the Dismissed view leaves the thread dismissed, exactly as their own reply leaves a Reply thread's mark where it stands; a mark at or after the new reply stays.
-With it, "dismissed" is what it is on the other half — a mark exists — so no read compares two times, and the Inbox's own reads leave a dismissed root out without reading its thread, which was 66 ms of the Inbox read's 69 at 10,000 dismissed Agent threads.
+With it, "dismissed" is what it is on the other half
+— a mark exists — so no read compares two times, and the Inbox's own reads leave a dismissed root out without reading its thread, which was 66 ms of the Inbox read's 69 at 10,000 dismissed Agent threads.
 `create function` takes no table lock and `create trigger ... after insert on messages` takes `SHARE ROW EXCLUSIVE` on `messages` for the one catalogue write, blocking that table's writers and no reader; neither reads or rewrites a row.
 Every census in the run answers `0`, and each up-file names the lock it takes and the row count its window was judged against.
 
-Migration `20261105014808_comments_answers` gives `comments` a nullable `answers`, the comment a reply answers, and re-states `graph_edges` with one more arm, `answers` from the reply to that comment (`packages/envoy/AGENTS.md`, "References form one graph").
+Migration `20261105014808_comments_answers` gives `comments` a nullable `answers`, the comment a reply answers, and re-states `graph_edges` with one more arm, `answers` from the reply to that comment ("Reference graph" below).
 A comment write climbs the reply chain to the head of the thread before it stores, which is what every thread read selects on, so `reply_to` holds the head and the comment the writer answered was lost;
 `answers` holds the comment the request named, written whenever the request named one, and `reply_to` keeps exactly the value it held before, so every thread read answers as it did.
-A reply whose `answers` and `reply_to` name the same comment is listed once, by `replies_to`, wherever `replies_to` is listed; an explicit `answers` query still lists it.
-A reply listed under a current comment block is not also listed as an answer to the whole comment, including when that comment is nested; explicit `answers` queries still return it.
+A reply whose `answers` and `reply_to` name the same comment is listed once, by `replies_to`, wherever `replies_to` is listed;
+an explicit `answers` query still lists it.
+A reply listed under a current comment block is not also listed as an answer to the whole comment, including when that comment is nested;
+explicit `answers` queries still return it.
 The column is nullable with no default, a catalog change that rewrites no row, and its foreign key to `comments(id)` matches `reply_to`'s (`0001`), so the add holds `comments` `ACCESS EXCLUSIVE` for milliseconds and the partial index `comments_answers` holds `SHARE` while it builds.
 Migration `20261105083800_comments_answers_text` adds the partial expression index on `answers::text` used by graph reads and backlink counts, retaining the UUID index for foreign-key checks.
 It holds `comments` `SHARE` while the index builds, rewrites no row, and its census answers `0`.
@@ -2285,16 +2878,21 @@ Re-stating the view holds `graph_edges` `ACCESS EXCLUSIVE` for the migration's s
 The arm list it re-states is `20261101183525`'s, with the new arm beside the comment reply arm, and it is the arm list a later migration re-states from.
 The release before it names the column in no statement and writes every reply with `reply_to` alone, so a reply written during the roll, or after a rollback, carries no `answers` and reads as a reply to its thread's head, which is what every release before this one shows.
 It refuses and rewrites no row; its census answers `0`.
-Rolling Dispatch back past it is an image rollback alone; `20261105014808_comments_answers.down.sql` is the by-hand script that also drops the column, which loses which comment each reply answered.
+Rolling Dispatch back past it is an image rollback alone;
+`20261105014808_comments_answers.down.sql` is the by-hand script that also drops the column, which loses which comment each reply answered.
 
 Migration `20261105070440_pull_request_heads_attribution_rule` gives `pull_request_heads` a not-null `attribution_rule` defaulted `0`, the rule that last judged that row's `issue_key` and `attribution_source`, as `delivery.AttributionRuleVersion` numbers it.
-`0` is what every row written before the column has: the rule that took the first candidate the five sources named outright, whatever repository that issue resolved to.
-A merged row is the one row nothing revisits: an open row comes round every five minutes, but the merged arm took a merged row only while no read of GitHub had reached it, a merge envelope that names a head repository stamps `checked_at` as such a read, and a read-through runs only for a commit that heads no pull request Dispatch knows.
+`0` is what every row written before the column has:
+the rule that took the first candidate the five sources named outright, whatever repository that issue resolved to.
+A merged row is the one row nothing revisits:
+an open row comes round at every reconcile pass of one process, each starting at most five minutes after the one before it ended, but the merged arm took a merged row only while no read of GitHub had reached it, a merge envelope that names a head repository stamps `checked_at` as such a read, and a read-through runs only for a commit that heads no pull request Dispatch knows.
 So a pull request merged under an older rule kept for good whatever that rule concluded, and one that rule credited to nobody left every `before_merge` result at its merged head standing at no basis for ever.
 The column bounds the repair: the reconcile's merged arm takes a merged row credited to nobody that this build's rule has not judged, and the read stamps the row at that rule whether or not it could attribute it, so every such row stored before the deploy is judged once more and then left alone, and a later change to the attribution reaches the merged rows already stored by raising that constant by one.
-The migration replaces `pull_request_heads_merged_unread` to follow the arm it serves: `20261102122300` made it partial on `state = 'merged' and issue_key is null and checked_at is null`, and this one leaves it partial on the first two of those alone, since its arm takes such a row whatever its `checked_at` says.
+The migration replaces `pull_request_heads_merged_unread` to follow the arm it serves:
+`20261102122300` made it partial on `state = 'merged' and issue_key is null and checked_at is null`, and this one leaves it partial on the first two of those alone, since its arm takes such a row whatever its `checked_at` says.
 `20261111060005_pull_request_heads_merged_rule` restores the third once the arm widens again, and gives the merged rows an older rule judged an index of their own.
-The release before this one keeps working across that drop: its query is partial on all three columns, so every row that query wants is in the new index, which serves it with the one test on `checked_at` left to the recheck, and an index decides a plan and never an answer, so that release answers the query correctly from a sequential scan too.
+The release before this one keeps working across that drop:
+its query is partial on all three columns, so every row that query wants is in the new index, which serves it with the one test on `checked_at` left to the recheck, and an index decides a plan and never an answer, so that release answers the query correctly from a sequential scan too.
 Adding a column with a constant default writes the catalog alone, so the statement holds `pull_request_heads` in `ACCESS EXCLUSIVE` for milliseconds and rewrites no row, `not null` included;
 that release neither reads nor writes the column and names its columns in every insert, so it keeps writing heads while it still serves.
 `drop index` holds `ACCESS EXCLUSIVE` for the instant it unlinks the index and `create index` `SHARE` while it builds, both inside the runner's one transaction, over a table that holds a row per pull request Dispatch has seen an event for.
@@ -2303,19 +2901,71 @@ Its census answers `0`.
 Migration `20261105075455_repo_projects_renamed_to` gives `repo_projects` a nullable `renamed_to`, the full `owner/name` that mapping's repository is called today, null for one that was never renamed, which is every row the migration leaves.
 One GitHub repository under two names was two repositories to Dispatch:
 `sjawhar/legion` was renamed to `cybermonklabs/legion`, both names map to project INFRA, and an issue recorded under the old name was held to no pull request on the new one (`attributionHeld`) while the App, asked about the old name, answered 404 for its installation, so Dispatch could say of no `before_merge` result of such an issue where its commit stood.
-The pair lives on this row because this row is where Dispatch already holds the old name, it is the operator's to set through `PUT /api/v1/settings/repo-projects/{owner}/{repo}` under the authority that already sets a mapping, and Dispatch asks GitHub nothing: a name a repository was renamed away from cannot be read at all, so a rename is declared, never discovered.
-The canonical name of a repository is what its row's `renamed_to` names, else the name itself, compared case-insensitively (`refs.CanonicalRepo`), and six sites read it: both sides of the attribution's hold, the repository the results route asks GitHub about, the key every writer of a `pull_request_heads` row uses, which re-keys a row stored under an old name and drops that row, the settings route, which reads it to decide whether a rename's target is itself renamed, and the CI reconcile, which reads every mapping under the name its repository has now, so no pass asks GitHub about a name it cannot read (`cireconcile`, `Reconciler.mapped`).
+The pair lives on this row because this row is where Dispatch already holds the old name, it is the operator's to set through `PUT /api/v1/settings/repo-projects/{owner}/{repo}` under the authority that already sets a mapping, and Dispatch asks GitHub nothing:
+a name a repository was renamed away from cannot be read at all, so a rename is declared, never discovered.
+The canonical name of a repository is what its row's `renamed_to` names, else the name itself, compared case-insensitively (`refs.CanonicalRepo`), and six sites read it:
+both sides of the attribution's hold, the repository the results route asks GitHub about, the key every writer of a `pull_request_heads` row uses, which re-keys a row stored under an old name and drops that row, the settings route, which reads it to decide whether a rename's target is itself renamed, and the CI reconcile, which reads every repository it covers under the name it has now, so no pass asks GitHub about a name it cannot read (`cireconcile`, `Reconciler.covered`).
 A column check refuses a repository renamed to itself, and the route refuses a pair whose target is itself renamed and a rename of a repository another mapping already points at, so the canonical name is one step away and no cycle exists.
-The listener holds the other half of a rename: `ENVOY_GITHUB_REPOSITORY_RENAMES` publishes every GitHub envelope of the current repository a second time under its former name, so the operator who sets a mapping's `renamed_to` configures that pair too (`packages/envoy/AGENTS.md`, "Repository renames").
+The listener holds the other half of a rename:
+`ENVOY_GITHUB_REPOSITORY_RENAMES` publishes every GitHub envelope of the current repository a second time under its former name, so the operator who sets a mapping's `renamed_to` configures that pair too (`packages/envoy/deploy/README.md`, "Listener configuration").
 Adding a nullable column with no default writes the catalog alone, so it holds `repo_projects` in `ACCESS EXCLUSIVE` for milliseconds and rewrites no row;
 the release before it neither reads nor writes the column and names its columns in every insert, so it keeps writing mappings while it still serves.
 Its census answers `0`.
+From the release of `20261119000230_projects_default_repo` (below) on, no route writes the column, and the server reads it once, at boot.
 
-Migration `20261105112616_pull_request_heads_repo_head` creates `pull_request_heads_repo_head` on `pull_request_heads (lower(repo), head_sha)`, the index behind the question the results read asks before it reads GitHub about a commit: has any open or merged stored pull request this commit of this repository as its head, whatever issue it is attributed to (`delivery.HeadStoredAt`)?
-A `before_merge` result whose commit heads no row attributed to the check's own issue is read through GitHub, which is how a result recorded before its pull request opened comes to stand at that head, and that read can repair nothing for a commit Dispatch already holds an open or merged pull request for: the reconcile re-reads an open row every five minutes and offers a merged one once per rule version, so asking GitHub again from a read teaches nothing.
-So the read asks this first, and a child's result on its parent's tab — whose commit heads the child's own pull request, attributed to the child — costs no GitHub call at all (`api/results_comparison.go`, `comparisonReader.readThroughHead`).
-A closed-unmerged row counts for nothing there: it is a basis for no result, no pass of Dispatch's reads it again, and a pull request closed at a commit does not stop another being opened from the same head, so counting one would leave every result at that commit standing at no basis for good.
-The key is `lower(repo)` because that read compares the repository without case, as every other comparison of a repository does (`refs.CanonicalRepoSQL`): a row written from a `pull_request` envelope carries GitHub's own spelling (`Acme/Widgets`) while the read is passed the lowercased spelling the repository-to-project mapping stores.
+Migration `20261119000230_projects_default_repo` gives `projects` a nullable `default_repo`, the project's default repository:
+the `owner/name` an issue of the project resolves to when neither the issue nor an issue above it names a repository (`refs.IssueRepoResolved`), and null for a project with none.
+Its check holds a value to the form `parseIssueRepo` writes, never empty and in lower case.
+In the same transaction it copies into the column the repository of each `repo_projects` row that carries `is_default`.
+`repo_projects_default_per_project` (`0113`) holds those rows to one for each project, so every issue resolves to the repository it resolved to before.
+The migration reads `repo_projects` and writes no row of it.
+So a Legion daemon that still reads `GET /api/v1/settings/repo-projects` at boot, and a build rolled back to the release before this one, find the rows as the migration left them.
+Neither of them sees a default that is set after the migration, which is on the project alone.
+A default that the release before this one writes to `repo_projects` while the release rolls stays in `repo_projects` alone, and this release does not read it.
+The release before this one names its own columns of `projects` in every read and write, so it serves on this schema, and a project it creates has no default repository.
+The `ALTER` holds `projects` in `ACCESS EXCLUSIVE` to commit, the copy included, over one row for each project, and the copy reads `repo_projects` under `ACCESS SHARE`.
+Its census counts the defaults the column's check would refuse, an empty name or one not in lower case, because the copy of one fails the migration and the boot with it.
+The copy itself counts for nothing, by the rule `0133` states: it fills a column only this release reads and changes no value any reader had.
+
+The same release ends every write of a rename pair, the `renamed_to` of a `repo_projects` row.
+The server reads the pairs once, at boot, after it migrates (`store.ReadRepoRenames`), with both names of each pair in lower case, and it reads no pair once the table is gone.
+It gives that one value, which nothing changes after the read (`refs.Renames`), to every reader of a repository name, so no other statement names `repo_projects` for a rename.
+A read that fails is logged at ERROR and counted as a failure of the pass below, and the server then serves with no pairs.
+
+Before it serves, the boot writes the new name of each pair in place of the old name in every stored repository field of Dispatch (`store.RewriteRenamedRepositories`, a boot task bounded at 30 s).
+It writes fourteen lines of fields in this order, each line in one transaction:
+`issues.repo`, `projects.default_repo`, `check_results.commit_repo`, `issue_external_links.url`, `pull_request_heads.repo` and `.url`, `branch_commits.repo`, `delivery_pull_requests.repo`, `.url` and `.attribution_cited_issues`, `delivery_runs.repo` and `.url` with `delivery_run_jobs.repo`, `delivery_run_warnings.repo`, `delivery_changes.repo`, `delivery_settings.deploy_repo` and `.excluded_repos`, `delivery_reconcile_progress.scope`, `architecture_sources.repo` and `ci_reconcile_passes.cursor_repository`.
+A name matches when its lower case is the pair's old name.
+A URL matches when its host is `github.com` or `www.github.com` and its first two path segments are the old `owner/name` in any case, and the pass writes the new `owner/name` there and keeps every other character.
+A scope of the delivery reconcile's progress matches where it holds the old name as a token.
+The transaction of each line takes the pass's one advisory lock (`repoRenameLockNamespace`, `0`) and a five-second `lock_timeout`, so two processes that boot at once take turns on each line, and the second finds nothing left to write.
+Where the new name gives a row the key of another row, the row under the new name stays, and the pass deletes the row under the old name and logs it at WARN with its table and key.
+The pass logs each field it writes at INFO with `field`, `from`, `to` and `rows`, and each line that fails at ERROR with its field, and it then goes on to the next line.
+It writes no other column, `updated_at` included, and appends no event.
+It never writes `repo_projects`, the event log, or the text of documents, comments, asks and messages, which keep their words.
+After its writes it counts the rows of those fields that still name an old name.
+It also counts them before its writes, and where that count finds none, it runs no line.
+A failure of that first count is not a failure of the pass, which then runs every line.
+Every boot logs one summary line, `dispatch: rewrote renamed repositories' old names`, with `pairs`, `rows`, `deleted`, `failures` and `left`:
+at INFO when `failures` and `left` are `0`, and at ERROR otherwise, with `left=unknown` where nothing counted the rows.
+A failure, a time-out included, does not stop the boot, and the next boot writes what is left.
+
+From the same release on, every write of such a field stores the new name (`refs.Renames.Canonical` and `CanonicalURL`):
+an issue's own repository and its external link URLs on a create and a patch, a project's default repository, the delivery settings' repositories, an architecture source's repository, and the issue URLs a pull request's body cites.
+The attribution of pull requests, the results read, the writers of `pull_request_heads`, the issue reference read (`GET /api/v1/issues/resolve`) and the CI reconcile still read the pairs (`refs.Renames`, `refs.CanonicalRepoSQL`).
+So a row that a failed pass left on an old name still attaches its pull requests.
+
+Migration `20261105112616_pull_request_heads_repo_head` creates `pull_request_heads_repo_head` on `pull_request_heads (lower(repo), head_sha)`, the index behind the question the results read asks before it reads GitHub about a commit:
+has any open or merged stored pull request this commit of this repository as its head, whatever issue it is attributed to (`delivery.HeadStoredAt`)?
+A `before_merge` result whose commit heads no row attributed to the check's own issue is read through GitHub, which is how a result recorded before its pull request opened comes to stand at that head, and that read can repair nothing for a commit Dispatch already holds an open or merged pull request for:
+the reconcile re-reads an open row at every pass of one process, each starting at most five minutes after the one before it ended, and offers a merged one once per rule version, so asking GitHub again from a read teaches nothing.
+So the read asks this first, and a child's result on its parent's tab
+— whose commit heads the child's own pull request, attributed to the child
+— costs no GitHub call at all (`api/results_comparison.go`, `comparisonReader.readThroughHead`).
+A closed-unmerged row counts for nothing there:
+it is a basis for no result, no pass of Dispatch's reads it again, and a pull request closed at a commit does not stop another being opened from the same head, so counting one would leave every result at that commit standing at no basis for good.
+The key is `lower(repo)` because that read compares the repository without case, as every other comparison of a repository does (`refs.CanonicalRepoSQL`):
+a row written from a `pull_request` envelope carries GitHub's own spelling (`Acme/Widgets`) while the read is passed the lowercased spelling the repository-to-project mapping stores.
 No index served that lookup: `pull_request_heads_issue_head` is keyed `(issue_key, head_sha)` and partial on `issue_key is not null`, which answers the heads of one issue and no lookup by repository and head commit, and the primary key is `(repo, number)`, so every results read of such a commit scanned the table.
 `create index` takes `SHARE` on `pull_request_heads` while it builds, holding that table's writes for one read of a table that holds a row per pull request Dispatch has seen an event for;
 the release before it neither reads nor writes the index, an index deciding a plan and never an answer, so it rolls beside this one.
@@ -2332,6 +2982,15 @@ Its census answers `0`: `search` is a derived column no application code writes,
 A function and a trigger are its only two statements, which is what exempts it from the census's table-size limit, and the re-index is the other migration's for that reason: an update is not such a statement, and one in this file would cost the exemption and refuse every deploy carrying it.
 It is applied second so that a version an older build writes between the two commits meets no function the database does not have yet; such a version does not re-index its issue, which the next write of that document does.
 Its census answers `0`: the trigger runs only on versions written after it.
+
+Migration `20261121060636_search_document_text` creates `search_document_text(markdown)`, the one definition of a document's search text: its ask blocks removed, then `search_text` ([Search](#search)).
+It replaces the bodies of `artifact_versions_search` and `20261105145242`'s `issue_search_vector`, which removed the ask blocks after `search_text`, so a block between two underscore runs joined them into one that the parser read in time quadratic in its length.
+`create or replace` keeps each trigger bound to its function, so it takes no table lock, and the release before it still calls the functions it knows, whose answers keep their types.
+It writes no row.
+The two orders give a different text only where text the ask-block pattern matches has an underscore run's character on each side of it, which a real ask block, on a line of its own, never has: only `:::ask{…}:::` written inside a run, in a paragraph or a code block, is indexed differently.
+Where the parser reads the joined run as words, as it reads `a_a_…`, both texts give the same vector; where it reads the run as one host name, email address, path or URL, the vector differs in that run's lexemes and in the positions of the words after it, and such a row keeps its vector until its document's next version.
+While the release before this one still serves, its related-item check and duplicate check build that text in the old order, so for such a text they compare with a vector built in the other order.
+Its census answers `0`.
 
 Migration `0009_project_artifacts` deletes malformed derived artifact references, reports their count, and re-derives them from source text on the next write.
 It aborts server boot before a migration record or schema change only when an existing artifact has no owning issue.
@@ -2416,7 +3075,7 @@ while a deployment rolls, the old build's connections are still open and still h
 `envoy-dispatch census` is run before a new image goes out, with the service's `DATABASE_URL` and under the service's own database credentials, and it is a gate:
 a census that refuses stops the deploy before the service moves, and nothing accepts a refusal and rolls past it.
 The `envoy-infra:gcp:Dispatch` component registers no census task, so a deployment runs it itself against its database before it updates the image:
-as a Kubernetes Job from the new image, or by hand with the `kubectl run` recipe in `packages/envoy/infra/README.md`.
+as a Kubernetes Job from the new image, or by hand as the one-off pod in `packages/envoy/infra/README.md` ("The pods"), which runs `census` and `versions` alike.
 
 ```bash
 DATABASE_URL=postgres://... envoy-dispatch census
@@ -2684,7 +3343,32 @@ It refuses:
   - a migration that does not parse, since the census cannot see whether it creates an event trigger.
 
   The report still prints the table's size beside the limit and says why the migration is exempt, and its lock holders refuse it as they refuse any other.
-  A trigger named only in a comment, a string literal or a function body exempts nothing, and one statement of any other kind beside it ends the exemption;
+  A trigger named only in a comment, a string literal or a function body exempts nothing, and one statement of any other kind beside it ends the exemption.
+
+  - A table above the limit is also admitted, table by table, for bounded writes (`boundedWrites` in `internal/pgmigrate/bounded_writes.go`), when every statement of the migration that touches it, as the census reads touches, is one of these, as Postgres's own parser reads it:
+
+    - an `insert` into the table of a `values` list of at most 1,000 rows (`pgmigrate.BoundedWriteRows`), each value a literal, with no `with`, `returning` or `overriding`, and with no `on conflict` or with `on conflict … do nothing`, under any conflict target or none.
+      A conflict target only names the index Postgres checks, and Postgres evaluates none of it on a row, so a target of index expressions with a predicate (`on conflict (from_kind, from_id, kind, md5(to_id), source_event, asserted) where to_kind = 'value' and source_event <> 0 do nothing`) counts as no target does.
+
+    - an `update` of the table, under its name or an alias, with no `with`, `from` or `returning`, that sets columns to literals and names at most 1,000 rows by its primary key, in a `where` clause of `pk = v`, `pk in (v, …)`, `(pk1, pk2) in ((v, v), …)` or `pk1 = v and pk2 = v`, which names each column of the key once and nothing else.
+      It sets no column of the primary key and no column a foreign key references, since a change of such a key checks the table that references it.
+      Each key value is a string constant or `null`, which takes the column's type, an integer constant for a `smallint`, `integer` or `bigint` column, or a cast to the column's own type: a comparison Postgres searches the key's index by, where `seq = 1.5` casts a `bigint` column to `numeric` and scans the table.
+
+  - A literal is what Postgres stores as an added column's default without a rewrite, and none of them reads a table: a constant (a negative number and `null` among them), an `array[…]` of constants, a cast of one of those to a type the census admits for a column (`'{"a":1}'::jsonb`), a SQL value function (`current_timestamp`), or a call of no argument of a stable or immutable `pg_catalog` function under the rules for a default (`now()`).
+    A cast and a call need the catalog reads, so a migration without them has only the others.
+    An operator, a subquery, a call with arguments (`jsonb_build_object(…)`), a function outside `pg_catalog` and a column reference are not literals, and neither is `default`, since the census does not read the default it stands for.
+    Such a write takes ROW EXCLUSIVE, which holds off no read and no write of another row, and reads and writes only the rows it names, so its time grows with its rows and not with the table:
+    on this pod's PostgreSQL 18.6, over `graph_tuples` at 3,000,000 rows and 1.2 GiB, an insert of 1,000 literal rows took 63 to 194 ms and an update of 1,000 rows by `seq` 170 to 344 ms, where 10,000 took 1.0 s and 2.9 s (`pgmigrate.BoundedWriteRows` holds the measurement).
+
+  - The table is held to more, since each of these makes a write of one row able to read the whole table:
+    no rule (`pg_rewrite`), no row-level security (`relrowsecurity`), and, for an `update` without `only`, no child table.
+    The census reads the table's keys, rules and triggers as they stand before any pending migration applies, so no earlier pending migration may touch the table with more than bounded writes, and neither the migration nor an earlier pending one may hold a statement whose effect the census cannot read, the ones that take the exceptions above from every later migration.
+    Nor may the migration hold a statement after which its names can resolve to another table, a `set` of any setting but `lock_timeout` and `statement_timeout` among them.
+    An enabled trigger of the table, and the default of a column an insert leaves out, run for each row written, and the census reads neither, as it reads no function's body.
+    A column default does not refuse, but an enabled trigger can read any table, so the admission is refused while the table has one that is not on the census's reviewed list (`reviewedTriggers`), whose entry says why its body is bounded; an admitted table's report prints the number of statements, the bound and the table's enabled triggers.
+    The list holds `graph_nodes`' two triggers, `graph_nodes_block_schema_written` and `graph_nodes_block_schema_removed` (migration `20261109051232`): each runs `block_schema_changed`, which reads no table and sends one `dispatch_block_schema` notification, one per transaction however many rows it writes.
+    An enabled event trigger does not take the admission away either, since an `insert` and an `update` fire none.
+    A migration that writes rows of such a table any other way is refused with what is not bounded (`…, and lock table is not one`, `…, and an insert of 1,001 rows, above the 1,000 a bounded write may hold, is not one`), and one that writes none of its rows and is not exempt above is refused on the size alone;
 
 - a session holding a lock on a touched table whose transaction has been open at least a minute (`pgmigrate.CensusLongTransaction`):
   the migration would give up on that lock during the rollout;
@@ -2761,7 +3445,7 @@ Read-only does not stop `pg_terminate_backend` (which, as that role, ends the se
 `Load` finds the comments and literals as Postgres 18's lexer does (nested comments, `E'…'` escapes, continued and dollar-quoted literals), and the census runs with `standard_conforming_strings` on, `backslash_quote` at `safe_encoding` and `client_encoding` at `UTF8`, the settings the runner applies each migration with, so Postgres reads its literals the same way.
 Review is the control past that, since any non-zero integer a census answers is printed.
 
-**What the report prints:** counts, sizes (in KiB, MiB and GiB, or in bytes where a size above the limit would round to the limit's figure), versions, file names and session metadata (pid, role, application name, state, transaction age as Postgres measured it, to the microsecond, the figure the minute's bound is compared with;
+**What the report prints:** counts, sizes (in KiB, MiB and GiB, or in bytes where a size above the limit would round to the limit's figure), versions, file names, the names of the enabled triggers of a table admitted for bounded writes, and session metadata (pid, role, application name, state, transaction age as Postgres measured it, to the microsecond, the figure the minute's bound is compared with;
 never query text, "not visible" for a field Postgres hides, and "autovacuum worker" for one).
 For a census that fails, its file name and the SQLSTATE;
 Postgres's own message only when the error points into the census's own text (a position, which a parse or analysis error carries), since then it quotes that text and its identifiers.
@@ -2771,33 +3455,219 @@ the advice about an earlier migration creating a missing name is given only for 
 The census writes nothing.
 An argument `envoy-dispatch` does not know is refused with exit 2, never served, so an image that predates a subcommand cannot boot and migrate when a deployment asks it for one.
 
+### The node and tuple store census
+
+`envoy-dispatch census --store` is the other census: the node and tuple store (`store/migrations/20261109013400_graph_store.up.sql`) held against the tables that project it (`20261109022248_graph_projections.up.sql`), rather than the pending migrations held against the database.
+It reads `DATABASE_URL` like every other subcommand, migrates nothing, writes nothing, and keeps the same exit convention: 0 when nothing refuses, 1 when the report refuses, 2 when the census could not be taken.
+It is one `repeatable read, read only` transaction on a connection of its own, so everything it reports is one snapshot.
+It records the read sequence that snapshot saw, the highest `graph_tuples.seq` it holds, or 0 for a store that holds no tuple, as R29 of the parent change has a query, a census and an approval each record the read sequence they read.
+It reads that sequence inside its own transaction, so the sequence names the commit every count it prints answers, and not the end of the log when the census finishes.
+The summary line after the kinds prints it last, `census: store rows_checked=<rows> differences=<differences> read_seq=<seq>`, in plain digits where the counts carry thousands separators, since it is a position to hold against `graph_tuples.seq` and not a count.
+
+For each projected kind it counts the nodes the store holds at any state but `gone` against the projection rows, in both directions, and reports each difference by its cause and by the row it was found at:
+a row naming no node, a row naming a node the store does not hold, a row naming one the store holds `gone` — which is the separate assertion that no gone node holds a projection row — a row whose shared fields disagree with its node's, and a node no row projects, named with the state it is at (`a live node no row projects`).
+A state a later release adds, such as `proposed`, is a node a row projects as one at `live` is, so a build of this release reads no difference for it during a roll or after a rollback.
+The shared fields are digested rather than printed, and for the three projected kinds they include the tuples that answer the row, read as the store reads a current relation (the newest tuple per kind and far end, kept while it asserts), and not the node row alone:
+a row that names its node is answered from the tuples by `graph_edges`, `refs.Edges` and `refs.BacklinkCounts`, so a missing or retracted tuple takes a link out of every read while each node row still stands.
+A comment's `created_at`, `author`, the artifact its `anchor` names, the artifact its `artifact_id` names and the author `graphstore.AuthorOf` reads off `author` are held against its node's `made_at` and `made_by` and its current `anchored_to`, `owned_by` and `authored_by` tuples.
+A block's document and the block its `parent_block_id` names, or the document where it names none, are held against its current `in_document` and `part_of` tuples.
+A block that states no parent at all digests differently from one the document holds directly, which is how the census tells a block the index has not reached yet from a block at a document's top level.
+The kinds are:
+
+- `comment` against `comments`, `block` against `document_blocks` and `block_ref` against `block_refs`, the three kinds a table projects, whose counts the report prints.
+  A `block_refs` row is one link out of a block and its node is that block's, so several rows share one node: that kind's node side is every live block node that states a link now other than its `in_document` and `part_of`, whether a row names it or not, and every row of a block is held, as the set of links that block's rows name, against every such link its node states now, so a link with no tuple, a tuple with no row and a link out of a block no `block_refs` row names are all read.
+  A block whose address is past the store's address bound (`graphstore.MaxAddressBytes`, which `refs.MaxBlockNodeBytes` is), and a `block_refs` row whose far end is past it, are no node and no tuple of the store by design, and both sides leave those rows out.
+
+- `person`, `session`, `role` and a role's page, which no table projects.
+  Their row side is the actors and sessions the projected tables and the delivery records name: the people and sessions `comments.author` names as `graphstore.AuthorOf` reads an actor, the sessions `comment_deliveries` and `message_deliveries` recorded reaching, and the roles `comment_deliveries.target`, `messages.target` and `issues.route` address now, with one page per role.
+  A role's row side also holds every role an event of the log ever addressed: the `route` of every `issue.created`, `issue.updated` and `issue.closed` event, the `target` of every `message.created` and `message.answered` event, and the `target` of each mention a `comment.created` event names.
+  A node is history and never goes, so an issue routed to one role and then re-routed to another still owes the first its node and its page, and the census reads the route history the events hold rather than only the current route.
+  The publisher writes a role's node and its page from those same fields of each event it publishes, whether or not it routed anything to the role: a route an agent's write sets, which wakes nobody, a targeted message's role, which no route reaches, and a role a comment mentions on an issue routed elsewhere.
+  A session's row side also holds every session a `comment.delivery` receipt of the event log says the listener took an attempt to.
+  The census reads each of these row sides once a run, in one statement, and binds the names into every statement that reads that kind's rows; `backfill-graph-store` reads the same definition for roles and for sessions.
+  A session's own page is no part of this census.
+
+  An address past the store's bound is no part of the store on purpose: a role name longer than the bound is no node and no page, a comment anchored to or owned by a document whose `ref_key` is longer states no such tuple, and a session named past it is no node either.
+  The census leaves each such address out of both comparisons and counts it as a class of its own, reporting the count as `addresses_past_bound` on the kind's line rather than as a difference, in both directions.
+
+It passes only when it checked more than zero rows of every kind it covers and found zero differences in both directions.
+A total over the kinds is no such proof: two empty sides of one kind agree, so a kind that checked no row prints `census: store kind=<kind> checked no row` and the verdict refuses naming it.
+A database the store does not exist in yet holds no kind to read: the census prints `census: store absent` and refuses, since it read nothing.
+
+Two writes can state one fact twice by design and nothing reads wrong for it — a tuple at the `source_event` sentinel is outside both repeat keys, and the backfill writes every fact it cannot date from a row's own event at that sentinel — so the census counts nodes and projection rows, never tuples.
+
+`envoy-dispatch census --store --sizing` adds the growth pass after that census, each line a driver can look for by its leading fields:
+the write rate by kind over the last 28 days of `events`; the row count and total relation size of every table this branch's migrations touch; the tuples and nodes one write of each kind states, with how many such writes the window holds or, for a kind no table holds yet, is assumed to hold; the rows a day that puts in `graph_tuples` and in `graph_nodes`; the bytes a row each is measured at; and where each reaches in a year against `pgmigrate.CensusTableLimit`.
+The kinds are a term for each kind R20 gives the five children of the parent change, each printed on a `census: sizing tuples-a-write ` line and a `census: sizing share ` line that names the child that moves it (`moved_by=`, one of the five names below), its writes inside the window and its share of the tuples a day.
+Where a write states facts beyond its node, each such fact is a term of its own, counted over the writes that state it:
+
+- `this-change`, this change itself: a comment's node and two base attributes, and its `authored_by`, `anchored_to`, `owned_by` and aliases where its row names each; a comment delivery's `delivered_to`; a block a version inserts afresh, restores, drops (its `gone` state) or moves to another parent (the old parent's retraction and the new one's assertion); a block reference's assertion and the retraction that may end it; and a person, a session, a role and a role's page, each counted over the ones the window records for the first time.
+
+- `inbox-child`, the child that moves the inbox, the messages and the read state: a message's node and the tuples its target and its broadcast become; a reply's meaning tuple and its `part_of`; a comment's mentions; a person's part in a thread; the `delivered_to` of each write to every other participant of its thread and of an ask to the person it waits on, and the move of that person; the body blocks of a comment, a message and an ask, their links and their removal; a delivery attempt's node; and the message deliveries, read marks, clears, dismissals and snoozes.
+
+- `blocks-child`, the child that moves issues, their documents, a block's text and rank, results and components: the text and rank values of each block whose text a version wrote; an issue's node with its `child_of` and `needs`; an artifact's node and a document version's; a result's node with its values and tuples, its screenshots and its retraction; a component's node with its `part_of`, `depends_on` and `affects`; and a criterion's `authored_by`.
+
+- `asks-child`, the child that moves decisions, readings, asks and their answers: an ask's node and what its `ask.*` events state, an edit, an answer, a resolution and a follower; a Keep; and an agent's decision and its reading.
+
+- `lenses-child`, the child that moves interactions, lenses, lens kinds, constraints and risks: an interaction and its frames, a lens and its finding blocks, a lens kind, a constraint and a risk.
+
+Each term a table can count is read from tables that exist before this branch's first migration, so the growth pass runs on a database the store does not exist in yet, which is where R4 takes its readings; there the census prints `census: store absent` and passes on the growth pass alone, which refuses nothing.
+No such table holds a block's parent, so the moved parents are counted by parsing each version the block index indexed in the window beside the one it indexed before, placing the blocks as `refs.PlaceBlocks` places them, and matching the two versions' blocks by their text, since a version's markdown names no paragraph's id; blocks of one document with equal text are matched in document order, so that term is exact except there, and its share line carries `versions_read=` and `versions_unreadable=`.
+Each version is parsed against the block schema the store's type nodes declare, read in the census's own transaction, and against the schema this binary embeds only where the store holds no type node, so a type the store holds and the file lacks does not read as unreadable.
+A kind production writes no row of before its child ships (a criterion, a decision, a reading, and every kind of `lenses-child`) has no history to read, so its term carries an assumed rate instead of reading zero, its `driver=` states that rate and the reason for it, and its share line ends `rate=assumed`.
+A decision, a reading and a criterion are blocks of a document, whose node and placement the block terms count already, so each of those terms counts only the tuples it states beyond a block's.
+It last prints the block-index reconciliation's backlog on two `census: sizing backlog ` lines, because a loop that falls behind fails nothing and nobody would otherwise see it:
+`owed_documents=` is how many documents are owed a block index (`document_block_versions.version` null, or this build's mark `store_owed_at` set, by the backfill or by the block-index tick's marking of the documents the events after its build's cursor name, of a marking rule a build of this binary's rule lists, as the tick's own count reads it), and `oldest_owed_at=` is when the oldest of those debts was incurred, with `oldest_owed_age_seconds=` beside it and `against=` naming the time that age is measured to.
+No column dates a null version, so a debt is dated by the write that owed it — the `created_at` of the latest markdown version the document holds, or the document's own `created_at` where it holds no version — and a document holding the backfill's mark is dated the same way, and the line says so under `dated_by=`.
+The age is measured against the newest write the database recorded (the `created_at` of its highest `events` id) and not against `now()`, so two runs print one age; a database that recorded no event prints `none` and an age of zero.
+The growth pass refuses nothing on size.
+Once the store is backfilled `graph_tuples` stays past the limit, so a pass that refused on size would refuse every run;
+the gate is the migration census's bounded-write rule instead, under which a pending migration writes rows of a table above the limit only as an insert of at most 1,000 literal rows or an update of at most 1,000 rows by their primary key (`pgmigrate.BoundedWriteRows`, "Pre-deploy census" above).
+Beside each table at or above the limit now, and each store table that projection puts past the limit inside a year, the pass names that rule on a line of its own, with the table's verdict now (`absent` for a table the database does not hold) and its year's (`unprojected` for a table other than the two store tables):
+`census: sizing bounded-writes table=graph_tuples now=inside year=past: a pending migration that writes rows of graph_tuples may write them only with bounded writes once it is above the limit (pgmigrate's census: an insert of at most 1,000 literal rows, or an update of at most 1,000 rows by their primary key)`.
+So `--store --sizing` exits 1 only where the store census itself refuses and 2 where it could not make a read, and the pass's last line is always `census: sizing ok`.
+A backlog refuses nothing either: how large a backlog is too large depends on the write rate the lines above it carry, and the driver that watches it decides.
+Every figure comes from a count or from a timestamp the database already holds, so two runs over one unchanged database print the same output.
+A store table holding fewer than ten thousand rows is too small to measure a bytes-a-row from, and the projection uses 783 bytes a row instead, measured when the store was built (1,050,010 tuples at a `pg_total_relation_size` of 822,673,408 bytes on PostgreSQL 18.6, table, seven indexes and TOAST);
+the output says so on the line that uses it.
+`--sizing` without `--store` is a usage error: it is that census's growth pass and not a census of its own.
+
+### Backfilling the node and tuple store
+
+`envoy-dispatch backfill-graph-store` writes the nodes and tuples of the comments, document blocks and block references written before the store existed — every row of the three projected tables that names no node, since migration `20261109022248` added the columns and filled none of them.
+It walks each kind in batches, writing a batch's nodes, its tuples and the projection columns that name them in one transaction, so a row and its node commit together or not at all, exactly as a live write does.
+It appends no event of its own, and a fact whose row's own event cannot be found carries the store's sentinel (`source_event` 0) as its cause:
+a comment's own event is the `comment.created` that stored it, a block's is the event that recorded the version its row was written at, and a block reference's is its `source_seq`, which is that event's id already.
+Each of those reads probes an index of its own, so the run reads no whole table once for each row: a block batch reads the `artifact.version` event of each document and version among its rows through `events_artifact_version_number` (migration `20261119020700`), and a comment batch reads each comment's `comment.created` event through `events_comment_created_id` (migration `20261119020800`) (`TestTheBackfillsEventReadsProbeTheirIndexes`).
+The walks over the blocks and the block references read each batch from the last one's key on, in their order, through `document_blocks_naming_no_node` (migration `20261119020900`) and `block_refs_naming_no_node` (migration `20261119021000`), each partial on the rows naming no node (`TestTheBackfillsWalksReadOnlyTheirBatch`); `node_id` and `from_node` are hash indexed, which keeps no order, and the comment walk reads `comments_pkey`.
+Before its passes the run analyzes `node_kind` of the three tables (`TestTheBackfillAnalyzesTheColumnsItsWalksReadBy`): the release adds those columns after any analysis, and with no statistics of them the planner guesses that a fraction of a percent of the rows name no node and reads every such row through a bitmap for each batch instead of one batch through the index.
+A block-reference batch's read again under its locks checks each row's block node by that node's key, a subquery Postgres runs for each row (`TestTheHeldBlockRefReadProbesEachRowsBlockNode`): as a join, right after the block pass wrote the block nodes and before any analysis counted them, the plan read every block node once per batch.
+The run refuses to start, naming each, while any of these four indexes is absent or invalid (`graphcensus.BackfillIndexes`, `TestTheBackfillRefusesToRunWithoutItsIndexes`, `TestTheBackfillRefusesToRunOverAnInvalidIndex`): it prints `backfill-graph-store: refused: the index(es) … are absent or invalid`, then the statements that build each one again by hand, and exits 1, before it writes anything.
+The command migrates the database before it runs, so by then each index's version is recorded, and the runner applies a recorded version no more: an index the refusal names went missing or invalid after its migration ran (its down file run by hand, or a concurrent build by hand that failed), and no boot builds it again.
+The remedy is the printed statements, run with `psql` one a line, each on its own outside a transaction as `psql`'s default autocommit runs them: a `set search_path` to the schema the tables are in, a `drop index concurrently if exists` of an index that stands invalid (its migration's `create … if not exists` would leave it as it is), and the migration's own `create index concurrently if not exists …`; then run the backfill again.
+Without these indexes each event read was a read of `events` whole, and each batch read and sorted every row still naming no node, so the run's time grew with the square of the data: over a seeded database of 12,884 issues, 270,529 document blocks and 64,460 events, the block pass took 43.9 minutes, against 20.7 seconds over a tenth of that.
+With them, on one machine and beside a serving build, the block pass took 85.7 s over 270,564 blocks (0.32 ms a block) against 7.2 s over a tenth (0.26 ms), the block-reference pass 0.26 ms a reference against 0.19 ms, and the comment pass 0.65 ms a comment against 0.43 ms, where the build before them took 6.24 ms a block over the full database.
+Measured again in one pod against the build before these changes, over the same full database, the whole run took 228 s against 3,249 s: 0.58 ms a block against 5.55 ms, 0.69 ms a block reference against 0.74 ms, and 1.27 ms a comment against 61.0 ms.
+Each tuple takes its row's own `created_at` as its time and its row's own `source_seq` as its `legacy_source_seq`, so a backfilled edge is dated and sequenced exactly as the `graph_edges` arm it replaces dates and sequences it.
+Once every row of a kind the store can hold names its node, the run reports that kind `complete=true`, which is the moment the arm of `graph_edges` over that kind's table answers nothing.
+
+It then gives every role the census's row side names, in a row now or in an event, and that has no node its node, its page and the page's `part_of` the role, as the publisher writes them for the events it publishes: the publisher writes none for an event it published before it wrote roles, so without this pass every role an older database names is a census difference.
+The input is the census's own role row side, so the roles the pass gives a node are exactly the roles the census holds to one; each role's node is caused by the first event that named it, or by the sentinel for a role only a row names, and a role that already holds both nodes is left alone.
+The report counts them on its `kind=role` line, and `remaining=` is how many roles the census names still lack a node or a page.
+
+A block's parent is the one fact it does not write.
+The parent is the nesting of the rendered version, which no column of `document_blocks` holds, and the version's stored markdown cannot give it either, since a paragraph's id is no part of that text; only the server renders the document the ids belong to.
+So the run marks each document it touched, and the reconciliation's index pass writes every block's node, its `part_of` tuple and `parent_block_id`, which is that column's one writer, and clears the mark.
+The mark is `document_block_versions.store_owed_at`, a column migration `20261116221539` adds and only this release reads or writes, and not the null `version` that `rebuild-refs` sets and every release reads; beside it `store_owed_rule`, which migration `20261120122600` adds, records the marking rule of the build that set it (below).
+A process of the release before this one, during a roll or after a rollback, reads a null `version` as its own debt: it indexes the document, writes the rows and states nothing in the store, and the document would be owed nothing again.
+It never reads or clears `store_owed_at`, so this release's reconciliation, which lists a document holding it as it lists one whose `version` is null, still reaches the document and states every parent (`TestABackfillWhoseMarkThePreviousReleaseDrainedStillReachesEveryParent`).
+The batch that names a document's block nodes writes the mark in its own transaction, so a run stopped after any batch leaves every document of its committed batches marked (`TestABackfillKilledAfterOneBatchLeavesThatBatchsDocumentsOwed`).
+So `census --store` reads a difference on every backfilled block until that reconciliation has drained the mark, at twenty documents a tick;
+`TestTheBlockParentCensusReachesZeroAfterTheBackfill` is that whole route end to end.
+
+A document that the release before this one edits during a roll, after this build's drain has cleared its mark, carries no mark, and neither does a document that release creates after the drain, the spec of an issue it creates included, nor a comment it writes after the backfill:
+that release writes the version's rows and the comment's row with no node, states nothing in the store and never sets `store_owed_at`.
+So every block-index tick reads the events after its build's cursor, whether or not another build serves, and marks owed every document an `artifact.version` or `artifact.created` event names, and every document of each issue an `issue.created` event names, whose `document_block_versions.store_version` is not its `version`.
+`store_version` is the version whose blocks this build's index pass last stated in the store, and only that pass writes it, so a document this build wrote and indexed is not marked again.
+A document the release before indexed after the store stated it, one it created, whose `store_version` is null, and one whose `version` is still owed an index (null) are marked, and so is a version that only drops, moves or rewords a block, which leaves no row naming no node (`TestAVersionThePreviousReleaseWritesThatOnlyDropsABlockReachesTheStore`).
+A version event names its document in `payload->>'artifact_id'`, and the event that creates a document carries the whole artifact and names it in `payload->'artifact'->>'id'`.
+An issue's create records its spec's version 1 with the `issue.created` event alone, which names the issue in its `issue_key` and no document, so the tick marks every `doc` artifact of that issue, read from `artifacts` by issue key.
+The tick also reads `comment.created` and `comment.answered` events, each of which names the comment it stores in `payload->>'id'`, and gives each such comment whose row names no node the backfill's own write for that row, in the tick's transaction: its node, the facts its row projects and who wrote it, with that event as their cause (`TestACommentThePreviousReleaseWritesAfterTheBackfillReachesTheStore`).
+That is the backfill's contract applied to the rows the log names: a row that names its node is left alone, so it is no reconcile.
+The tick does all of this before it lists the owed documents, so the same tick drains a document it marks when its batch has room.
+Because every tick reads its events, which build's ticks come first in each period of the shared block-index lease, and so whether this build ticks while the release before serves at all, decides nothing (`TestAVersionThePreviousReleaseWritesWhileItHoldsTheLeaseReachesTheStore`), and neither does a rollback or a roll forward that stops one build before it starts the other (`TestAVersionThePreviousReleaseWritesWhileThisBuildIsStoppedReachesTheStore`).
+The cursor is one row per build commit of `block_index_event_cursors`, a table migration `20261118115645` creates and the previous release never reads, and its `event_id` is the highest event id the build's ticks have read or passed; its `marking_rule` (migration `20261120122600`) is the marking rule of that build.
+A build that holds a row starts at its own row, however old, and reads every event since, one page a tick.
+A build with no row of its own inserts one at its first tick that reads a proven safe horizon: at the highest `event_id` a row of a build of its own marking rule holds; where no such row exists, at the horizon the newest backfill of its own rule recorded when it began; and where neither exists, at that tick's horizon, so the cursor never starts at the beginning of the log (`TestAVersionThePreviousReleaseWritesBeforeTheNextBuildStartsReachesTheStore`, `TestADocumentThePreviousReleaseCreatesBeforeThisBuildsFirstTickReachesTheStore`, `TestASecondBuildsFirstTickReadsNoEventBelowTheCursorAnotherBuildLeft`).
+A build reads no cursor and no horizon of another rule, since that build or that backfill marked what its own rule owes (`TestABuildOfANewerMarkingRuleReadsFromTheBackfillHorizon`, `TestAHigherRuleStartsAtItsOwnHorizonAboveALowerRulesBackfill`, `TestABuildWithOnlyALowerRulesHorizonStartsAtItsSafeHorizon`).
+The backfill's horizons are the rows of `graph_backfill_horizon`, which the same migration creates and migration `20261120122600` keys by `marking_rule`: one row for each rule.
+Before it reads any row, `backfill-graph-store` takes a mark of the event log, waits until no transaction that can still write an event took its transaction id before the mark (`events.Horizon.WriterFloor`), and records the newest event id the mark saw, at or below which every event was final by then, so every event the run cannot have seen is above it; it prints it as `backfill-graph-store: horizon=<id>`, and each run replaces the row of its own marking rule and leaves every other rule's (`TestABackfillOfALowerMarkingRuleLeavesAHigherRulesHorizon`).
+The cursor moves with each tick, so each tick reads only the events since the last one, and nothing scans a whole table.
+A tick reads at most 1,000 events, in id order, after the cursor and at or below the safe horizon (`events.Horizon.Safe`), because event ids are not commit order and an uncapped read could pass an event that is still committing.
+A full page moves the cursor to the last event it read and brings the next tick 2 s later; otherwise the cursor moves to the horizon, and it never moves past it.
+The mark is the backfill's own, set in one statement that takes the documents' `document_block_versions` rows in ascending `artifact_id` order and no owner row.
+The tick's transaction takes its cursor row first, then those rows, and only then the comments' nodes, tuples and rows, since every writer under the revision fence takes a document's `document_block_versions` row before any node it writes; the marks, the comments and the cursor's move commit together.
+The tick's `dispatch: block index` line carries `events=`, the events it read, `marked=`, the documents it marked, `comments=`, the comments it gave their nodes, and `another_build=`, whether a live process of the registry (`server_processes`) registered a commit other than this process's own (`main.buildCommit`, which `docs.Deps.BuildCommit` carries), which the tick reports and which decides nothing (`TestAVersionThePreviousReleaseWritesAfterTheDrainReachesTheStore`).
+The migration's census answers `0`: the two tables are new and hold no row at deploy.
+
+The marking rule versions what a block-index pass and the tick owe: which documents a build marks and which comments its tick writes.
+The code declares it once, `refs.BlockIndexMarkingRule`, which is 1, the first rule this code ships, and raises it whenever what a pass owes changes; `TestTheMarkingRuleNamesTheStatementsItMarksWith` pins a digest of the statements that decide it for each value of the rule, so a change to one of them that keeps the rule fails.
+Every statement that marks a document writes its build's rule into `store_owed_rule` and keeps the higher of the stored rule and its own where a mark already stands; one that marks only a document holding no mark reads a mark of a lower rule as none and raises it (`TestEveryMarkingStatementKeepsOrRaisesTheRuleAsR13States`).
+The column is `not null default 1`: the release before this one and the trigger `document_block_versions_owe` insert rows without naming it, so a mark no later rule wrote is rule 1's.
+A pass of rule r lists a document whose mark is of rule r or lower, and one marked by a higher rule only where its `store_version` is null or below its `version`, which is work of its own there; it wins the fence at the version the row stands at only where a mark stands and the same holds; and it clears the mark only where the mark's rule is r or lower, decided in the fence's own statement against the row as it then stands (`TestALowerRulesDrainLeavesAHigherRulesMark`, `TestAHigherRulesPassListsAndClearsALowerRulesMark`, `TestAHigherRulesMarkWrittenDuringALowerRulesPassSurvivesItsStand`).
+So a build of rule 1 that drains a document a build of rule 2 marked, during a roll or after a rollback, states the version and leaves the mark for the build of rule 2.
+The tick's `owed_documents` and the sizing's backlog count only the documents the build lists (`TestABuildsBacklogCountsOnlyTheDocumentsItLists`).
+Migration `20261120122600`'s census answers `0`: each column's constant default is kept in the catalog and rewrites no row, and every row that stands reads rule 1.
+
+A row the release before this one deleted is nothing the run reads.
+That release, indexing a version of a document the store has stated, deletes the `document_blocks` row of each block the version drops and the `block_refs` row of each link a block stops holding, and it states no node `gone` and retracts no tuple.
+No row is left to read, and a node stated `gone` because its row is missing would be a repair.
+What the run reads instead is the two versions the document's own row records: `version`, which that release writes, and `store_version`, the version at which this release's index pass last stated the document's blocks, which the same migration adds and only that pass writes.
+A document whose `store_version` is below its `version` is one another release indexed after the store stated it, and the run marks it too.
+The reconciliation's index pass over its latest version finds the store last stated the document at a version other than the latest one any release indexed, so it reads what the store still asserts of the document beside the rows and decides from the version's render: a block the store holds live that the version does not hold is stated `gone`, as a block a version drops is, and a link the store asserts that no block of the version holds is retracted (`TestTheBlockAndTheLinkThePreviousReleaseDroppedAreGoneAfterTheBackfill`).
+A version of the document that this release writes before the run does the same, in its own index pass.
+No release deletes a comment's row: no route of either deletes one, and a document is removed only while no comment points at it, so a comment leaves nothing to state `gone`.
+
+It is no repair.
+Its input is each row's own content and the two versions each document's row records: it never reads one side of a projection to write the other, so a row whose node is already written is left alone and a kind whose rows disagree with the store is for the census to report.
+It is safe to run again at any time, after a rollback as well: every pass walks only the rows that name no node, names their nodes in the transaction that writes their tuples, and reads no row that names one, its guards included; a document is marked only while it holds no mark and the store has not stated its latest indexed version; and no release before this one drains the mark.
+The pointer pass skips a link whose block's node the store does not hold or holds `gone`, read off `graph_nodes` and not off the block's `document_blocks` row, which is `graph_edges`' own test of the tuple arm: a link stamped against a gone node would answer from neither arm.
+So a run interrupted anywhere carries on from where it stopped, and a run over tables whose every row names its node writes no node, no tuple and no node column (`TestASecondBackfillWritesNothingOverMarkedRows`).
+It migrates the database first, as the other backfills do, and exits 1 when it skipped a row or left one naming no node.
+
+### The view over the store
+
+Migration `20261109215947_graph_edges_tuples` re-states `graph_edges` with one arm over the current tuples and a `node_kind is null` test on each of the four arms whose relations the store now writes.
+The new arm takes, for each `(from_kind, from_id, kind, to_kind, to_id)`, the newest tuple, which is an edge only while that newest one asserts, with `to_kind <> 'value'` so no attribute's value is an edge.
+It renders a block's `in_document` as the `part_of` to its document the view has always answered, a block's `mentions` and its pointer kinds, and a comment's `anchored_to` and `owned_by`, the list `refs.TupleKinds` holds and the announcer writes into `server_build_announcements.tuple_kinds`;
+the tuple's `at` is the row's `created_at` and its `legacy_source_seq` the row's `source_seq`.
+No other kind the store writes is an edge of this view — `authored_by`, `delivered_to`, `held_by`, the alias tuples, `attribute_of`, and a session's or a page's `part_of` — and a `part_of` whose source is a block is left out too, since the view has no block-to-block row and a top-level block would otherwise be rendered twice.
+
+Each row decides which arm answers it: each of the four old arms answers only the rows of its own table whose `node_kind` is null, and the tuple arm answers an edge of those kinds only while the projection row that names it carries its node — the `document_blocks` row of the block for `in_document`, the `block_refs` row of the pair for a pointer or a mention, and the `comments` row of the comment for `anchored_to` and `owned_by`.
+One transaction writes both sides of a row — the writer that states a row's tuples names its node on the row — so the view answers each row exactly once, at every point of the backfill and not only at its end, and a row a previous release wrote during a roll, a row written after a rollback and a block past `refs.MaxBlockNodeBytes` each keep their answer from the old arm.
+The join is what keeps a rollback whole, since a build of the previous release retracts nothing in the store: a row it deletes leaves its tuple standing and answers from neither arm, and a row it deletes and writes again with no node answers once, from its old arm.
+The arm also answers no row for a node whose current `state` is `gone`, the test the backfill's pointer guard takes too, and a pointer a version dropped is retracted in the same statement that deletes its `block_refs` row.
+`refs.BacklinkCounts` moves the same four arms the same way, each reading its own table for the rows that name no node and the tuples, through the same join, for the rest, so a count and the list behind it cannot disagree.
+A pointer's allowed targets come from the attribute node once the store answers it (`block_pointer_targets`), read as `pmdoc/schemanodes.Read` installs the schema: through the current `attribute_of` tuple and from a live attribute node, so a change to an attribute's `targets` reaches every link of that attribute with no pass over documents nobody edits.
+The reads of the `block_refs` rows themselves, a document's links out (`refs.Edges`) and `refs.BlockLinks`, make the same test of a row that names its node (`refs.blockRefListed`), so no reader lists a link another hides; a row that names no node keeps the `to_types` its index copied.
+`TestGraphEdgesLosesEveryArmOverAMovedKind` reads the arm list back out of the catalogue and reads the whole view, the previous release's view over the same rows and each arm on its own before the backfill, after it, beside rows a previous release wrote and after a rollback that deletes and rewrites rows, with every backlink count and the store census beside them.
+
 ## Stored-order check
 
-`envoy-dispatch stored-order [--artifact <uuid>]... [--since <RFC 3339 time>]` reads, and never writes, whether each document's stored history replays: folding its `doc_updates` rows in version order must give every row's `content_changed` (measured against the render the rows before it fold to, true when either side does not render) and every version's markdown at its `doc_update_version`, and no row may be stored ahead of one it depends on.
-A row after which the fold parks structs is that only when no later row carries what it parked again: the room stores a peer's edit that arrives ahead of the edit it builds on at once, so a restart keeps it, and the commit that integrates it once that edit arrives stores it again, so the check folds the history a second time without such rows and reports them as `pending` only when that fold differs.
-A row still parked when the history ends is counted as `awaiting`, not a mismatch: the store alone cannot tell an edit whose predecessor has not arrived from a dependency never stored, and a dependency the room held and the store lost also leaves every later version rendering text the fold lacks.
+`envoy-dispatch stored-order [--artifact <uuid>]... [--since <RFC 3339 time>]` reads, and never writes, whether each document's stored history replays:
+folding its `doc_updates` rows in version order must give every row's `content_changed` (measured against the render the rows before it fold to, true when either side does not render) and every version's markdown at its `doc_update_version`, and no row may be stored ahead of one it depends on.
+A row after which the fold parks structs is that only when no later row carries what it parked again:
+the room stores a peer's edit that arrives ahead of the edit it builds on at once, so a restart keeps it, and the commit that integrates it once that edit arrives stores it again, so the check folds the history a second time without such rows and reports them as `pending` only when that fold differs.
+A row still parked when the history ends is counted as `awaiting`, not a mismatch:
+the store alone cannot tell an edit whose predecessor has not arrived from a dependency never stored, and a dependency the room held and the store lost also leaves every later version rendering text the fold lacks.
 It reads `DATABASE_URL` as the other subcommands do and runs no migration; with no `--artifact` it checks every document.
-Each document is read in one repeatable-read transaction, which stays open while the check renders the document at every checked update: tens of thousands of updates hold one snapshot for minutes, and an open snapshot on the primary holds back vacuum.
+Each document is read in one repeatable-read transaction, which stays open while the check renders the document at every checked update:
+tens of thousands of updates hold one snapshot for minutes, and an open snapshot on the primary holds back vacuum.
 On production, pass `--since` or point `DATABASE_URL` at a read replica.
 
 The oldest retained row is the base: compaction folds older history into it and a rebuild seeds the history there, so its own class is not checked and a version recording an update below it is compared with nothing.
-Compaction runs on its own, and no setting holds it off: a resident room's rows fold once 16 of them are older than two minutes or one is older than fifteen minutes, and an hourly sweep folds every document due that rule.
+Compaction runs on its own, and no setting holds it off:
+a resident room's rows fold once 16 of them are older than two minutes or one is older than fifteen minutes, and an hourly sweep folds every document due that rule.
 So a version created inside the checked window can record an update a compaction has already folded into the base.
-The check counts those versions `versions_compacted` and prints a reason naming the base; a document's first version, recorded before any row of it was stored, names no update and is skipped as it always was.
+The check counts those versions `versions_compacted` and prints a reason naming the base;
+a document's first version, recorded before any row of it was stored, names no update and is skipped as it always was.
 A document the counted versions leave with no version compared is `unchecked`, never clean, whatever classes the fold measured, and a document with versions at or above the base is clean only on what it compared.
 A history a prune rewrote after the base (a checkpoint standing, a gap, a version past the head or behind an earlier one) is refused.
-`--since` folds rows and versions created before that time without checking them, so history an earlier build wrote is not read as this build's: run it with the start of the window under test, and read `versions_compacted` for how much of that window a compaction folded away.
+`--since` folds rows and versions created before that time without checking them, so history an earlier build wrote is not read as this build's:
+run it with the start of the window under test, and read `versions_compacted` for how much of that window a compaction folded away.
 
 The check holds only for one renderer: run it from the same commit as the Dispatch whose history it reads.
 A version an earlier build rendered (a change to `pmdoc`'s Markdown output) differs from this build's render of the same state.
 
-Output, every line starting `stored-order: `: one line per document (`<uuid> base=… updates_checked=… updates_skipped=… versions_checked=… versions_skipped=… versions_compacted=… mismatches=…`, with `compacted="<reason>"` for a document whose versions record updates below its base, `awaiting="<reason>"` for one holding rows still parked, and `refused="<reason>"` for a refused document), one line per mismatch (`class update=… stored=… expected=…`, `pending update=… parked_items=… parked_delete_ranges=…`, or `version number=… doc_update_version=… stored_md5=… stored_length=… fold_md5=… fold_length=…`), and last a summary (`documents=… clean=… mismatched=… refused=… failed=… unchecked=…`).
+Output, every line starting `stored-order: `:
+one line per document (`<uuid> base=… updates_checked=… updates_skipped=… versions_checked=… versions_skipped=… versions_compacted=… mismatches=…`, with `compacted="<reason>"` for a document whose versions record updates below its base, `awaiting="<reason>"` for one holding rows still parked, and `refused="<reason>"` for a refused document), one line per mismatch (`class update=… stored=… expected=…`, `pending update=… parked_items=… parked_delete_ranges=…`, or `version number=… doc_update_version=… stored_md5=… stored_length=… fold_md5=… fold_length=…`), and last a summary (`documents=… clean=… mismatched=… refused=… failed=… unchecked=…`).
 It prints no document text.
 A document whose check compared no update and no version, one whose versions inside the window all sit below the base included, is `unchecked`, never clean.
 Exit 0 when every document checked is clean, 1 on any mismatch, refusal, read failure, missing `DATABASE_URL`, unchecked document `--artifact` names, or a run that checked no document at all (an empty database included), 2 on a usage error.
 So exit 0 always means the check compared something.
 
-`packages/envoy/loadtest/browsertype` is the browser side of a load test this check judges: it connects peers to documents' rooms as people, each named in the server's identity header (`-identity-header`, `X-Dispatch-User` by default, on a server run with `DISPATCH_IDENTITY=header:<name>` and `DISPATCH_IDENTITY_HEADER_TRUSTED=1`, since a room admits no agent token), and types inside existing paragraphs at a set rate (`browsertype -h` lists its flags).
+`packages/envoy/loadtest/browsertype` is the browser side of a load test this check judges:
+it connects peers to documents' rooms as people, each named in the server's identity header (`-identity-header`, `X-Dispatch-User` by default, on a server run with `DISPATCH_IDENTITY=header:<name>` and `DISPATCH_IDENTITY_HEADER_TRUSTED=1`, since a room admits no agent token), and types inside existing paragraphs at a set rate (`browsertype -h` lists its flags).
 A paragraph whose text holds a `-protect` value (repeatable) is never edited, so the text a load generator's own writes quote stays as it wrote it.
 
 ## Reference graph
@@ -2807,10 +3677,10 @@ migration `0032_refs_provenance` gives each edge a `kind`, `created_at`, and `so
 The name of a typed block's `block[]` attribute is an edge kind too:
 each block the attribute points at is an edge of that kind from the typed block (migration `20261101144855`, Database migrations above).
 `GET /api/v1/references?to=<ref>` lists everything that points at a node and `?from=<ref>` everything it points to, cross-project.
-A row whose other end is a node kind the running build does not know (a newer build's, read during a rolling deploy) is left out of every list and every count that build serves (`nodeLoaders`, `refs/graph.go`, names the kinds it knows).
+A row whose other end is a node kind the running build does not know (a newer build's, read during a rolling deploy) is left out of every list and every count that build serves (`nodeRegistry`, `refs/graph.go`, names the kinds it knows).
 The migration refuses to run when an ask or comment anchor carries a non-uuid `artifact_id`.
 
-Each block of a document is a node of the graph too (migration `0121`; `packages/envoy/AGENTS.md`, "References form one graph").
+Each block of a document is a node of the graph too (migration `0121`).
 Its reference is the document's with `#b-` and the block's id, percent-encoded as `encodeBlockId` (`@legion/contracts`) writes it:
 `dispatch://KEY/spec#b-<id>`, `dispatch://KEY/artifact/<slug>#b-<id>` or `dispatch://PROJECT/artifact/<slug>#b-<id>`.
 Text cites a block only while its id holds at most 256 bytes decoded (`text.MaxBlockIDBytes`), and any node only while its target id, the id its edge is stored under (`text.TargetID`:
@@ -2827,11 +3697,11 @@ a document's own read also lists the links at its blocks, each edge naming its b
 A block reference pinned to a version of its document, `#b-<id>@v<N>` with N at most 9223372036854775807, reads the block as that version held it:
 the node's `pin` carries the block's text at `N` and says whether the block is `unchanged`, `changed` or `removed` since.
 `GET /api/v1/block-links?from=<document>&to=<document>` lists the links from the blocks of one document to the blocks of another.
-A typed block's `block[]` attribute holds canonical block references joined by one space, and its `targets` limit the types of the blocks it points at (`packages/envoy/AGENTS.md`, the typed block rules):
+A typed block's `block[]` attribute holds canonical block references joined by one space, and its `targets` limit the types of the blocks it points at:
 an agent's or API write introducing a pointer to an existing block of another type is refused, a browser's write never is, and every block-aware read lists a pointer's edge only while its target has an allowed type, so retyping the target hides or shows it.
 Text stored before the release, and text an earlier build writes during the roll, is indexed by the server's block-index reconciliation (lease `block-index`), with no command run.
 
-A comment and a message are blocks too (migrations `0142`-`0144`; `packages/envoy/AGENTS.md`, "References form one graph").
+A comment and a message are blocks too (migrations `0142`-`0144`).
 The server splits a body into its top-level blocks as the document parser reads them, each block the text as its author wrote it (a body the parser refuses, such as one holding block HTML, splits at blank lines into blocks of type `text`;
 a body of only whitespace has none), and names them `b1`, `b2`, …, never minting a number twice in one item.
 A block's reference is its item's with `#b-` and the id:
@@ -2851,12 +3721,14 @@ A reply names the block it answers with `reply_to_block` (a comment) or `in_repl
 A comment or message an earlier build writes during the roll, or after a rollback, is owed its blocks (`owed_at`, set by the triggers of `0143` and `0144`), which the same block-index reconciliation indexes, at most 200 a tick, with no command run.
 
 An ask's parts are blocks too (migrations `20261101143211` and `20261101143212`):
-its question, each of its options and its current answer, in that order (`refs.AskParts`), each a text of its own rather than a span of one body, since an ask has no body — the question as the row holds it, an option as `<label> — <description>` or its label alone, and the answer as the one line an `ask.answered` summary renders it.
+its question, each of its options and its current answer, in that order (`refs.AskParts`), each a text of its own rather than a span of one body, since an ask has no body
+— the question as the row holds it, an option as `<label> — <description>` or its label alone, and the answer as the one line an `ask.answered` summary renders it.
 What identifies a part is its type and its text, and for the answer part its answerer, so the same answer from another person is a part of its own (`askAnswerPart`).
 Parts are named `b1`, `b2`, … as an item's blocks are, and an edit keeps each id the same way, except that an answer is replaced rather than reworded:
 `itemblocks.Align` takes the types a new block replaces instead of rewording as an argument of its own, which every caller fills, and the ask's index passes the answer part's (`refs.AskAnswerPart`), where a comment's and a message's pass none.
 A later answer is a new part, so a reference to the answer it replaced reads `removed` where one to a reworded option reads `changed`.
-A part's reference is the ask's with `#b-` and the id: `dispatch://KEY/ask/<id>#b-<part>` or `dispatch://PROJECT/artifact/<slug>/ask/<id>#b-<part>`, and an ask's dashboard page with a `#b-` fragment names it too;
+A part's reference is the ask's with `#b-` and the id:
+`dispatch://KEY/ask/<id>#b-<part>` or `dispatch://PROJECT/artifact/<slug>/ask/<id>#b-<part>`, and an ask's dashboard page with a `#b-` fragment names it too;
 pinned, `#b-<part>@v<N>` names a revision of the ask's parts, as a comment's block pins a revision of the comment, and reads the part as that revision held it.
 Its graph node is kind `block`, id `ask/<ask uuid>#<part id>`, whose `parent` is the ask;
 `graph_edges` stores it under the kind `ask_block`, which a build without ask parts skips as an unknown kind.
@@ -2890,7 +3762,7 @@ for a document's block its changed version, for a comment's block its changed re
 for an ask or comment written on a document the version its anchor names, for a block ask the version that first held its block, for an approval request the version it named when it opened, else the version current when it was written).
 A reply that names a block is part of that block.
 A fact Dispatch never recorded is `[]` for an actor list and `null` otherwise:
-a session has none, a component's makers are never recorded and its times only from this release on, a document block's maker, and a block ask's version, are known only when the block is in the document's first version or Dispatch indexed the version before the one that first held it, and a comment block's making time is not known for a block found at the first indexing of a comment already edited by then (`packages/envoy/AGENTS.md`, "References form one graph", gives each kind's sources and what counts as a change).
+a session has none, a component's makers are never recorded and its times only from this release on, a document block's maker, and a block ask's version, are known only when the block is in the document's first version or Dispatch indexed the version before the one that first held it, and a comment block's making time is not known for a block found at the first indexing of a comment already edited by then (each kind's loader in `nodeLoaders`, `refs/graph.go`, reads its sources).
 Migrations `0130`-`0134` (Database migrations above) add what the facts read:
 the version current when an unanchored comment or ask is written on a document, recorded at insert and filled for the rows already stored, and `component_facts`, which every import keeps.
 `dispatch read` prints the facts of the node it reads on a `Node:` line, before `Referenced by:`.
@@ -2899,7 +3771,10 @@ the version current when an unanchored comment or ask is written on a document, 
 
 Migration 0010 added stored generated `search` columns.
 Migrations `0057`–`0061` made them plain columns that a `BEFORE INSERT OR UPDATE` trigger per table fills (`issues_search`, `artifact_versions_search`, `comments_search`, `asks_search`, `messages_search`), so no application code writes or refreshes a search vector.
-Every indexed text, headline, and duplicate-title comparison first passes through `search_text` (0056), which puts a space after every sixteenth underscore-joined segment.
+Every indexed text, headline, and duplicate-title comparison passes through `search_text` (0056), which puts a space after every sixteenth underscore-joined segment.
+A document's markdown, and so an issue's spec, passes through `search_document_text` (`20261121060636`), which removes the ask blocks and then applies `search_text`:
+removed after it, a block between two runs joined them into one run that nothing broke, which the text-search parser read again from each letter, so 41,000 bytes of `a_` runs between ask blocks took 5 s per vector.
+The document and issue triggers, the related-item check and the duplicate check each call it, so the text each compares with a stored vector is built as every vector written since that migration was.
 A query is not normalised and is limited to 1,000 characters.
 `websearch_to_tsquery` ANDs a person's words, so a question of theirs answers nothing as soon as one of its words is in no item at all.
 That AND is what every search runs, whatever the question's length, and a question it answers is answered from it and nothing else.
@@ -2923,7 +3798,7 @@ It has a path of its own because a build released before those members answers i
 Search covers issue titles, the latest settled document text, comments, asks (questions, option labels and descriptions, free-text answers and the options an answer chose), and messages.
 An issue's own vector carries its key and its title at weight `A`, as `0088` left them, and the markdown of the latest version of its primary document at weight `C` (`20261105145242`), so an issue whose title holds none of its spec's words is still found by them, and below every issue whose key or title holds them:
 `ts_rank_cd`, which ranks every keyword arm, scores `A` at 1.0 and `C` at 0.2.
-The spec is read as the document arm reads that same document, through `search_text` with the ask blocks stripped, and a new version of it re-indexes its issue through `20261105145243`'s trigger on `artifact_versions`, as `0140`'s queues the issue's embedding.
+The spec is read as the document arm reads that same document, through `search_document_text`, and a new version of it re-indexes its issue through `20261105145243`'s trigger on `artifact_versions`, as `0140`'s queues the issue's embedding.
 An ask hit's excerpt is cut from that same indexed text (the question, then `ask_search_suffix`), never from the options' raw JSON, and the hit carries `ask`, where the ask stands when the search ran:
 `open`, `answered` with its latest answer, or `resolved` with its resolution and, when anyone answered it, the last answer it had, which for an ask that document settlement retracted while it was answered is read from its `ask.answered` events, since its row keeps none.
 Live document text takes up to the 2 s settle delay to appear in search results.
@@ -2937,29 +3812,43 @@ a text with no whitespace before the cut is found by none of its own.
 An issue's key is always indexed whole.
 Meaning search, where an embedder is configured (below), ranks by the embedding of a window of neighbouring blocks, not by the text's search vector, so it can still return such a text for a query whose words the vector does not hold, and it names the block of the window that ranks highest for the query (`block_id` on the hit).
 
+**A search at a past time reads the keyword table.**
+`search_text_versions` (migration `20261120021308`, Database migrations above) holds one row for each version of the text that keyword search reads.
+For an issue it is the title, with the version of the primary document that the issue held.
+For a comment or an issue message it is the body, and for an ask it is the question, a space and `ask_search_suffix` of its options and answer.
+A version starts at the event that changed that text, and an event that changes no searchable text starts no version.
+The functions that make the item's own `search` column make the vector of each version, so the vector of an item unchanged since its version started equals that column.
+The keyword fill writes the rows from the event log while Dispatch serves (Background loops, above).
+`store.TextVersionsAt(ctx, cut)` answers `store.TextVersions`, the relation of the version of each item that held at the cut.
+A statement joins it as `from <SQL()> v` and matches, ranks and cuts snippets in itself, as the arms of the present search do over the items' own tables.
+`TextVersionsAt` refuses a cut that the fill has not reached with `*store.TextVersionsNotReachedError`, which names the reach (`internal/dispatch/store/README.md`).
+In this build the relation's `deleted_at` is null, and no route searches at a past time yet.
+
 Meaning search embeds with Cohere Embed v4 at the place `DISPATCH_EMBEDDER` names:
 AWS Bedrock (`bedrock`, the default, on the AWS SDK's own region and credentials) or Azure AI Foundry (`azure`, the `DISPATCH_AZURE_*` settings, with the deployment's API key or a keyless sign-in that exchanges a federated token with Microsoft Entra).
 Bedrock with no AWS region logs `dispatch: meaning search
 unavailable` and leaves meaning search off;
 then, and whenever the query's embedding fails, a search answers by keyword alone with `degraded: embedder_unavailable`.
-A local harness embeds without a model service: `DISPATCH_DEV_EMBEDDER=1`, which the server reads only beside `DISPATCH_DEV_SIGNIN=1`, hashes a text's words into a vector in the process (`embed/dev.go`), so two texts rank near each other by the words they share and nothing else.
+A local harness embeds without a model service:
+`DISPATCH_DEV_EMBEDDER=1`, which the server reads only beside `DISPATCH_DEV_SIGNIN=1`, hashes a text's words into a vector in the process (`embed/dev.go`), so two texts rank near each other by the words they share and nothing else.
 Each vector records its embedder's identity in `embeddings.model`, `us.cohere.embed-v4:0` on Bedrock and `azure:<endpoint host>/<deployment>` on Azure, and search compares a query vector only with stored vectors of its own identity.
 An issue's write enqueues its text through its table's trigger (0073, as 0140 replaced it) in the same transaction.
 Every other kind is embedded in windows of its blocks, written through `embeddings_enqueue_window`, which also deletes the owner's windows the new set does not name.
 No write writes them: a document's version write and a comment's, a message's or an ask's own write record the blocks and mark their owner owed its windows in the same transaction, and the block-index tick's window arm writes them within a tick, in a transaction of its own.
-So a write holds its issue row for its own rows alone, and a comment's and a document's windows, and so their meaning-search hits, appear one reconciliation tick after the write rather than within it (INFRA-988).
+So a write holds its owner's lock for its own rows alone, and a comment's and a document's windows, and so their meaning-search hits, appear one reconciliation tick after the write rather than within it (INFRA-988).
 A window holds at most 1,200 characters of block text, a heading starts a new one, and its text is the context that gives those blocks their meaning - the document's title and the heading above, the issue's title for a comment or a message, the question for an ask's part - and then the blocks themselves, so a passage at the end of a long document carries a vector of its own.
 The block-index tick (Background loops, above) writes the windows of every owner whose blocks a write recorded since it last windowed it, gives windows to every owner that holds blocks and no window of them, and, once an owner's window carries a vector of its current text, deletes that owner's whole-text embeddings row.
 An issue's text is its title and its spec, the latest version of its primary document (its title alone while that is blank), and a new version of the spec queues the issue again through `0140`'s trigger on `artifact_versions`, so meaning search, and the related-item check below, find an issue with a terse title by what its spec says.
 The server also runs a coverage pass (`embedqueue.Cover`) once when it starts, so a deployment runs nothing by hand to embed what it already holds:
-the pass adds a row for every searchable issue that has none (one written before the trigger existed, or with it off, as a restore or a replication writes), points a row whose issue's text changed with the trigger off at the current text, takes every vector another identity made out of the index and queues its item again, gives a row that died under another identity this identity's attempts once, and settles a dead row whose text has nothing to embed (empty or only white space) with no vector, as the queue settles a pending one.
-The window kinds take those last three steps alone: which windows exist is the block index's to say, so a row the pass invented would be embedded for ever at a text no reader can reach.
+the pass adds a row for every searchable issue that has none (one written before the trigger existed, or with it off, as a restore or a replication writes), points a row whose issue's text changed with the trigger off at the current text, records, for every issue whose row then holds its current text, the inputs that text was built from (`recordIssueSources`), takes every vector another identity made out of the index and queues its item again, gives a row that died under another identity this identity's attempts once, and settles a dead row whose text has nothing to embed (empty or only white space) with no vector, as the queue settles a pending one.
+The window kinds take those last three steps alone:
+which windows exist is the block index's to say, so a row the pass invented would be embedded for ever at a text no reader can reach.
 The two steps that act on another identity's rows wait until the configured embedder has answered:
 an embedding this process's queue made has succeeded, or, when none has yet and such rows exist, the pass embeds a short fixed canary text and it succeeds.
 Until then the pass leaves those vectors and dead rows as they are and logs one WARN naming the identity, the canary's error and how many of each it left, so a misnamed Azure deployment (which answers `404 DeploymentNotFound`) or a refused credential drops nothing, and a throttled canary waits too;
 a pass with no such rows calls the embedder not at all.
-After the boot pass only those two steps run again (Background loops, above):
-at once when this process's queue first embeds successfully after the pass skipped them, and every `identityRecheckInterval` (10 minutes, plus up to a tenth again) while a run still finds another identity's rows, a canary first when the queue has not proved the embedder, until a run finds none.
+After the boot pass those two steps run again, and so does the step that records issues' inputs (Background loops, above):
+at once when this process's queue first embeds successfully after the pass skipped the two, and every `identityRecheckInterval` (10 minutes, plus up to a tenth again) for as long as the process runs, a canary first when the queue has not proved the embedder.
 The rest of the pass runs again only at the next start:
 a live write enqueues its own text through its trigger or through the block-index tick that windows its blocks, and what is written with the trigger off waits for that start.
 Each step is a statement of at most 500 rows in its own short transaction, repeated until it changes nothing, and is safe beside a live write and beside another process's pass, so the pass takes no lease.
@@ -2967,6 +3856,31 @@ Each step is a statement of at most 500 rows in its own short transaction, repea
 the identity, its place and model (all three null with no embedder), and in total and per kind the searchable items, how many carry a current vector of that identity, how many lack one, how many failed for good, and how long the oldest lacking item has waited.
 The same report names, under `not_indexed`, every kind of node neither leg of search holds a row of — a component, a session, a document version, a result and a handoff — each with how many of it the database holds, read from the table that holds it.
 A kind nothing indexes is named rather than left out, so a reader cannot read it as a kind that is covered with nothing left to embed; it carries no current, lacking or failed count, and it is in no total.
+The report is one statement, so every count reads one snapshot, and it tests no window's text:
+a window kind's rows are read through two partial indexes, `embeddings_window_embedded` (a row embedded at its current text, current when its model is the identity) and `embeddings_window_unembedded` (every other row, never current), whose predicates hold the test that leaves out a text with nothing to embed, so Postgres runs that test at each write of a row rather than at each read.
+Both predicates test the kind by a regex that matches the window kinds alone (`kind ~ '^(document_block|comment_block|message_block|ask_part)$'`), not by `kind in (...)`:
+a list of kinds is a condition that other indexes of `embeddings` read (`embeddings_pkey`, `embeddings_kind_project`, `embeddings_window_owner`), and no btree index reads that regex.
+The statement reads both halves in one arm whose condition is the two predicates joined by OR, which no single window index answers, so Postgres reads the pair by one bitmap heap scan over a BitmapOr of both indexes:
+it reads each heap page that holds a window once, whatever the visibility map holds, and runs the blank test on no window.
+The arm groups its rows by the kind's position in the list of window kinds rather than by `kind`, so no index's order is of use to it either.
+Each index is keyed on `kind` alone and carries no other column, since that heap scan reads every column the statement needs from the row anyway.
+The report's transaction sets `enable_seqscan = off`, `enable_sort = off`, `max_parallel_workers_per_gather = 0`, `jit = off` and `work_mem = '128MB'` before the statement (`embedqueue`'s `planCoverage`), and reads no statistics to decide anything:
+with sequential scans off, that bitmap is the only way left to read the window rows, so the plan does not rest on the planner's estimates, which are wrong for this table (both predicates compare `embedded_hash` with `content_hash`, which the planner cannot estimate);
+its cost is every entry of both indexes and each heap page that holds a window once, whatever the visibility map holds, whatever the statistics record and whatever share of the windows is embedded, as after an embedder change drops every vector;
+the larger `work_mem` keeps the bitmap exact, so no page is checked against the predicates' regex again;
+and the other three settings take the planner's remaining choices by estimate, a sort, parallel workers and JIT, away from it.
+Index scans stay on, so the issues' lookups keep theirs.
+`packages/envoy/scripts/coverage-scale.sh` measures the statement at production's size and twice it in six states of `embeddings`: freshly vacuumed, a third of its pages written since and analyzed, every page written since and analyzed, every page written since while the statistics still record about half of them all-visible, and after an embedder change has dropped every vector, first with those statistics and then analyzed.
+An issue's vector is judged against the inputs the pass last recorded for it in `embedding_issue_sources` (the id and row version of the latest version of its primary document, its row's `content_hash` and its title):
+where they are still the issue's own, its text is the one its row's `content_hash` is the hash of, and only an issue whose inputs changed since they were recorded, or that has none recorded, has its text built and hashed, as the pass builds it (an issue whose title is empty, or starts with white space or with anything but printable ASCII, also builds its text, to test whether it has anything to embed).
+So an issue edited since the record step last ran costs the report time, not a wrong count (`embedqueue`'s `issueSource` names the one theoretical exception).
+The record step writes `embedding_issue_sources` alone, never a row of `embeddings`, and records an issue only where its row holds the hash of its current text, so an issue whose row is stale is hashed by the report until a boot pass repairs the row and, after the repair, records it.
+The statement runs in a read-only transaction under a `statement_timeout` of 10 s:
+past it the statement counts nothing and the route answers `503 SEARCH_COVERAGE_TIMEOUT`, to be asked again later.
+The bound is the database's own so that it ends the statement while its caller still waits (the coverage probe gives up at 30 s), which then gets that answer rather than a cut connection and a `500`;
+and it holds where the caller's own cancel cannot arrive: pgx answers a caller's context that ends mid-statement by sending Postgres a CancelRequest, which needs a connection of its own, and a saturated server may refuse one.
+The boot pass reads the same report, under the same bound, for its closing log line;
+a report that fails there while the process still runs is logged at WARN (`dispatch embedqueue: coverage pass report failed`, with what the pass changed) and the pass returns, since every step before it is done, rather than failing and running again whole every `identityRecheckInterval`.
 The `backfill-embeddings` subcommand, which did the pass's first job by hand, is gone, with its checkpoint table (0119).
 
 One embedder identity is active at a time, the one row of `embedder_active` (migration `20261101030538_embedder_active`, `internal/dispatch/embedqueue/active.go`).
@@ -3009,15 +3923,30 @@ An issue title is at most 1,000 characters (`contracts.IssueTitleMax`, UTF-16 un
 The check scores the project's issues whose status is not `done`, less the new issue's ancestors (its parent and every issue above it), on the share of the new text's rarest words that a candidate's title vector and its primary document's latest vector hold together:
 the terms are the related-item check's own (`pickRelatedTerms`, `api/related_terms.go`), and the statement drives from them into `issues.search` and `document_search`, so each term is one probe of a GIN index and no candidate's spec vector is read more than once per term.
 Every lexeme an issue key contributes is dropped from those terms, so a spec that cites the nearest issue it ruled out is not refused for citing it.
-A text whose picked terms number fewer than `duplicateMinTerms` (3), or that holds no more than three lexemes of its own, is not scored at all: a share of one or two terms is 1.0 against any issue that holds them.
-Such a text is judged by equality instead (`duplicateEqualLexemesQuery`): the gate refuses an open issue of the project, outside the new issue's ancestors, whose title lexemes and whose primary document's lexemes are exactly the new title's and the new spec's as Dispatch would store it, and it names nothing else.
-A candidate at or above `duplicateRefuseScore` refuses the create; the closest one at or above `duplicateNudgeScore` and below the refusal is named to the filer as `advice.suggestions.likely_duplicate`, which refuses nothing.
+Because no key is scored, titles filed from one template, one for each issue they concern, would score as copies of each other;
+so the scoring statement leaves a candidate out when both titles name issue keys (`[A-Z][A-Z0-9]{1,9}-[0-9]+`, which also reads a word such as `SHA-256`) and the new title names neither the candidate's own key nor any key the candidate's title names (`duplicateNamesAnotherIssue`, a condition inside the statement, before its limit of five candidates).
+A key in a spec does not count.
+A text whose picked terms number fewer than `duplicateMinTerms` (3), or that holds no more than three lexemes of its own, is not scored at all:
+a share of one or two terms is 1.0 against any issue that holds them.
+Such a text is judged by equality instead (`duplicateEqualLexemesQuery`):
+the gate refuses an open issue of the project, outside the new issue's ancestors, whose title lexemes and whose primary document's lexemes are exactly the new title's and the new spec's as Dispatch would store it, and it names nothing else.
+A candidate at or above `duplicateRefuseScore` refuses the create once the refusal's row in `near_copy_checks` is known to be written;
+when that row cannot be written, the create goes in unchecked and its `201` names the candidate in `advice.suggestions.near_copy_check` (below);
+the closest one at or above `duplicateNudgeScore` and below the refusal is named to the filer as `advice.suggestions.likely_duplicate`, which refuses nothing.
 Both bars are set by `TestNearCopyRefusalReplay` over a frozen export of a project's history (`scripts/near-copy-replay.sh`), and a change to the term picker or to the scoring statement invalidates that calibration.
 A candidate's snippet marks the words its title shares with the new one, and the `POSSIBLE_DUPLICATE` message quotes a candidate's whole title.
-The check runs once for every create, forced or not, in a read transaction of its own bounded by `duplicateGateTimeout` (500 ms) on the context and by `statement_timeout` inside it:
-one bound, because two would have a read of 700 ms refuse an unforced create while recording for a forced one that the check did not answer.
-A create whose check does not answer is written either way, forced or not, and the `201` says so in `advice.suggestions.near_copy_check`: the create went in without the near-copy check an unforced create otherwise meets.
+The check runs once for every create, forced or not, in a read transaction of its own bounded by `duplicateGateTimeout` (2 s) on the context and by `statement_timeout` inside it:
+one bound, because with two, a read that ends between the two deadlines would refuse an unforced create while recording for a forced one that the check did not answer.
+A create whose check does not answer is written either way, forced or not, and the `201` says so in `advice.suggestions.near_copy_check`:
+the create went in without the near-copy check an unforced create otherwise meets.
 A forced one also records `forced` with an empty `past` on its `issue.created` event, which is how the weekly audit tells it from an override.
+
+Each answer the gate gives a create is one row of `near_copy_checks` (`api/near_copy_checks.go`), read through `GET /api/v1/near-copy-checks` and `GET /api/v1/near-copy-checks/{id}`:
+`refused`, `forced`, `nudged`, `passed` or `not_made`, with the reason a check was not made (`bound`, `failed` or `unrecorded`), the candidates it read with their scores, and, for a refused create alone, the spec it refused.
+A refusal is answered only once its row is known to be written, so every `409 POSSIBLE_DUPLICATE` has its row;
+otherwise the refusal refuses nothing, and the create goes in as `not_made`, reason `unrecorded`, its row written in its own transaction under the id the refusal used, so it replaces a refused row whose insert landed unseen.
+Every other create's row is written after the commit, bounded to one second (`nearCopyRecordTimeout`), and tried once more in the background for up to 30 s (`retryRecord`) when a timeout or a lock stopped it, as a `related_checks` row is;
+a row that still cannot be written is logged, and the create stands.
 
 `POST /api/v1/issues`, `POST /api/v1/issues/{key}/asks` and `POST /api/v1/artifacts/{id}/asks` run the related-item check once the write has committed, and so does each decision block a document edit (`POST /api/v1/artifacts/{id}/edits`) adds, on the block's question (the check replaced LEGION-550's 300 ms keyword suggestions).
 The check never refuses the write, but the response waits for it, at most 5 s (`relatedCheckAllowance`);
@@ -3061,8 +3990,10 @@ It holds at most two answered question asks of projects other than the one asked
 An ask is offered only when it is a question, somebody answered it, the answer carries text, and it scores at or above the meaning floor the meaning search already uses.
 An issue create and the `GET` form answer none, so a client that predates the field reads what it read before, and the dashboard's new-issue dialog is unchanged.
 The leg runs beside the asking project's own meaning query, on a connection of its own, and reuses the one embedding the check already made.
-The stage waits for it at most 300 ms after its own query answered, and never past its own allowance; a leg that is slower than that, that fails, or that finds nothing leaves the asking project's result whole, with no cross-project item and no reason recorded.
-An issue create forced past the near-copy refusal also names those issues in `title_matches`, and its `issue.created` event records them under `forced.past`; an unforced create names its likely duplicate in `likely_duplicate` instead, and never fills `title_matches`.
+The check waits for it at most 300 ms after that query answered, and never past the meaning search's own allowance, holding the asking project's answer while it waits, so the wait never costs the check its meaning result;
+a leg that is slower than that, that fails, or that finds nothing leaves the asking project's result whole, with no cross-project item and no reason recorded.
+An issue create forced past the near-copy refusal also names those issues in `title_matches`, and its `issue.created` event records them under `forced.past`;
+an unforced create names its likely duplicate in `likely_duplicate` instead, and never fills `title_matches`.
 The search leaves out everything the write's owner holds
 — the new issue and its spec, or the issue or project document an ask or a block sits on and everything inside it
 — so nothing is ever suggested that the writer already has.
@@ -3072,12 +4003,13 @@ Up to three open issues take the places before any item of another kind, and eve
 Every check of a write is recorded in `related_checks` (`0139`):
 its outcome, how it searched, the reason, the words, and its keyword, meaning and total milliseconds.
 `meaning_ms` is the whole meaning stage, so for a question's check it holds the wait for the other projects' answers too, up to 300 ms after the asking project's own query answered.
+The row is written once the write that ran the check has committed, in a transaction of its own.
 `GET /api/v1/related-checks` counts them by source, outcome, search mode and reason, with the keyword and total times' p50, p95, maximum and how many took more than 300 ms, within `[from, to)` and, when given, one project and one source kind.
 It also answers `other_project_offers`, how many ask creates of the window offered at least one answered question of another project: a count of writes and not of items, read from `write_suggestions` under the same filters, and zero for a source kind no such row carries.
 The two records are written at different moments and only the check's own row is retried, so a count at a window's edge can name one fewer write than the window's total:
 
 ```bash
-curl -sf -H "Authorization: Bearer $(cat "$DISPATCH_TOKEN_FILE")" "$DISPATCH_URL/api/v1/related-checks?project=<KEY>&from=<time>&to=<time>"
+printf 'Authorization: Bearer %s' "$(cat "$DISPATCH_TOKEN_FILE")" | curl -sf -H @- "$DISPATCH_URL/api/v1/related-checks?project=<KEY>&from=<time>&to=<time>"
 ```
 
 Every suggestion an issue's or an ask's check offers is recorded in `write_suggestions`, whose `outcome` the server's outcome sweep (`api.RunSuggestionOutcomeSweep`) advances from `ignored` to `acted_on` (the suggested item was cited from the source, or the suggested issue was updated directly) or `overridden` (the source got further activity instead)
@@ -3094,18 +4026,28 @@ A ranking or latency change is measured on a restored copy of the production cor
 
 Where the server generates text is one setting, `DISPATCH_ANSWERER` (Required configuration, above), and `GET /api/v1/going/capability` answers `{"model_configured": <bool>}` and nothing else, so any caller Dispatch admits learns whether a deployment can answer without learning its endpoint, its deployment name or its credential.
 
-`POST /api/v1/going/requests` takes a question and the project to ask it of, records the run and answers `201` with it; the answer itself arrives on `GET /api/v1/going/requests/{id}/stream` as server-sent events, each frame carrying `id:` its sequence, `event:` its name (`text`, `item`, `cut`, `changed`, `none`, `end`, `error`) and `data:` that frame's own JSON (`packages/contracts/src/going.ts` declares the vocabulary once, for this server and for the page that reads it).
+`POST /api/v1/going/requests` takes a question and the project to ask it of, records the run and answers `201` with it;
+the answer itself arrives on `GET /api/v1/going/requests/{id}/stream` as server-sent events, each frame carrying `id:` its sequence, `event:` its name (`text`, `item`, `cut`, `changed`, `none`, `end`, `error`) and `data:` that frame's own JSON (`packages/contracts/src/going.ts` declares the vocabulary once, for this server and for the page that reads it).
 The two are separate requests because the server wraps every `POST` in its idempotency layer and that layer holds a whole answer rather than streaming it (Keyed writes, below), and because a deployment of more than one pod spreads two requests across pods:
 the run's frames are rows of `going_events`, so any pod serves any reader, and a reader that drops resumes with `Last-Event-ID` after the last sequence it saw.
 A repeat of the `POST` under one `Idempotency-Key` answers the first run's id, and its stream replays the same stored frames.
-A run belongs to the credential that asked it, which the stream compares its reader with, so the `POST` refuses a credential that names nobody — the deployment's shared token, which resolves as `{}` — with `403 GOING_ASKER_NAMES_NOBODY` and records nothing: no reader of such a run could ever be served it.
+A run belongs to the credential that asked it, which the stream compares its reader with, so the `POST` refuses a credential that names nobody
+— the deployment's shared token, which resolves as `{}` — with `403 GOING_ASKER_NAMES_NOBODY` and records nothing:
+no reader of such a run could ever be served it.
 
-What the model is given is what the caller may already read: the hits of the server's own search of that project, and each hit's own stored text, at most 2,000 runes a hit and 30,000 in one run, after which a hit is still named to the model with no body and stays something the answer may cite.
+What the model is given is what the caller may already read:
+the hits of the server's own search of that project, and each hit's own stored text, at most 2,000 runes a hit and 30,000 in one run, after which a hit is still named to the model with no body and stays something the answer may cite.
 The model may search twice more through one tool, the server supplying the project, the limit and the offset so it cannot widen the search, and a fourth search is refused back to the model.
-The citation rule is the server's and not the model's: a text frame carries plain text alone, every ASCII punctuation byte of it escaped, which closes markdown's own constructs, and every word a renderer would link on its own — a `www.` host, a scheme's `://`, a `mailto:` or `xmpp:`, an address — dropped from the answer whole, since a renderer decodes an escape before it looks for such a link; so an answer's links are its `item` frames and nothing else — a link to something the model was given raises `item` once for that thing, every other link and every image is counted in `changed`, and either way no byte of the target reaches the reader, who is written the link's own visible text unless that text joins a word a renderer would link on its own, which is dropped whole as every such word is.
+The citation rule is the server's and not the model's:
+a text frame carries plain text alone, every ASCII punctuation byte of it escaped, which closes markdown's own constructs, and every word a renderer would link on its own
+— a `www.` host, a scheme's `://`, a `mailto:` or `xmpp:`, an address
+— dropped from the answer whole, since a renderer decodes an escape before it looks for such a link;
+so an answer's links are its `item` frames and nothing else
+— a link to something the model was given raises `item` once for that thing, every other link and every image is counted in `changed`, and either way no byte of the target reaches the reader, who is written the link's own visible text unless that text joins a word a renderer would link on its own, which is dropped whole as every such word is.
 An answer is cut at 120 words with `cut`, one the model wrote no text for at all ends `none`, and either way `end` closes the stream.
 
-A run has 30 seconds, and that window belongs to the record: `going_requests.ends_at` is written by the `POST`, never held as a timer in the process running the answer.
+A run has 30 seconds, and that window belongs to the record:
+`going_requests.ends_at` is written by the `POST`, never held as a timer in the process running the answer.
 A pod that dies mid-run therefore stores no terminal frame, and the next reader on any pod ends the stream itself with `error` `ANSWER_DID_NOT_ARRIVE`, as the maintenance sweep does for a run nobody reads (Background loops, above), which also deletes a run an hour old.
 At that moment the running answer, a reader and the sweep may each try to end one run, so the table settles which of them does rather than whichever is first:
 `going_events` carries a partial unique index over the run for a terminal frame name, every terminal write is an insert that does nothing on a conflict, and the writer that loses reads the stored frame and reports that one.
@@ -3184,7 +4126,7 @@ Each item below names a status and code, then its meaning.
 
   The write names its presser in `Dispatch-Login` (every write the page makes does, `POST`, `PATCH`, `PUT` and `DELETE` alike) and its caller is someone else, or no person at all (any bearer):
   nothing ran and the key was not read, so it is untouched.
-  A caller that resolves to nobody (a lapsed cookie) gets the route's own `401` instead, and a write without the header is not checked.
+  A caller that resolves to nobody (a lapsed cookie) gets the `401` written further in instead, the keyed layer's for a keyed write and the handler's for any other, and a write without the header is not checked.
   The page drops every write that login pressed.
 
 - `400 REQUEST_BODY_UNREADABLE`
@@ -3213,13 +4155,15 @@ a broadcast answers once its messages are committed, with its deliveries behind 
 
 The layer reads a keyed body before its handler runs, spooling at most the route's own limit:
 26 MiB for the three upload routes (`POST /api/v1/issues/{key}/artifacts`, `/projects/{key}/artifacts`, `/agents/{session_id}/artifacts`), 1,576,960 bytes for the handoff write (`POST /api/v1/issues/{key}/handoffs/{phase}`), 1 MiB for every other.
-A body past it runs unkeyed and its route refuses it.
+A body past it is answered its route's `413` by the layer itself, and the handler does not run.
 A body the client did not finish sending is `400 REQUEST_BODY_UNREADABLE`;
 one Dispatch cannot spool to its temporary directory is Dispatch's own failure, a 5xx with the key echoed, which the client asks again.
 
-Every answer the layer judged echoes the key back (`Idempotency-Key: <key>`) - not the `400 KEY_INVALID`, a request whose caller it could not resolve, or one whose body is past its route's limit, each of which runs unkeyed - and `/healthz` answers `idempotency_keys: true` on every build that judges the header - a fact of the binary, so it is true whatever the database or NATS answer, on a `503` too.
-A client tells a Dispatch that runs this layer from one that ignores the header, and would run a retried write a second time, by one or the other:
-the agents' client resends a failed write only against a Dispatch whose answer carried the echo in the last five minutes, or whose `/healthz` said so in that time (`packages/envoy-client/README.md`).
+Every answer the layer judged echoes the key back (`Idempotency-Key: <key>`) - not the `400 KEY_INVALID`, the refusal of a caller it could not resolve, or the `413` of a body past its route's limit, each of which it answers before it judges the key and none of which runs the handler - and `/healthz` answers `idempotency_keys: true` on every build that judges the header - a fact of the binary, so it is true whatever the database or NATS answer, on a `503` too.
+A check tells a Dispatch that runs this layer from one that ignores the header, and would run a retried write a second time, by one or the other: the deploy check reads `/healthz` (`scripts/e2e/lib/dispatch-keyed-comment.ts`).
+The agents' client reads no `/healthz`: every Dispatch that carries `b1c42d1d7d` runs this layer on every write route, so it sends a failed write again under its key and asks nothing first, whatever the echo says.
+It reads the echo to settle a refusal: a fresh 4xx, or a `422 KEY_REUSED`, that echoes exactly its key is final (`answerEvent`, `packages/envoy-client/README.md`), so a change that drops or moves the echo turns such a refusal back into an unsettled write.
+It also reads the echo to judge a 2xx: once an answer of the same write echoed the key, a 2xx without exactly that key is something in Dispatch's place, so a change that drops the echo from a 2xx alone turns that write's success into an unsettled write.
 
 ## Access log
 
@@ -3358,7 +4302,9 @@ Each item below names a path with its method and identity, then its purpose.
   Record the person and the refresh token (and, under a domain, the account's `sub`, ending the address's sessions when another account held it), issue the cookie.
   Any process holding a key of the set completes a sign-in another process started.
   `400` "invalid or expired state" when the state cookie is missing, does not verify, has lapsed or names another state;
-  `503 SIGNIN_UNAVAILABLE` while this process has not read the issuer's discovery document;
+  `400` "missing code or state in callback", or "the callback's code is longer than 2048 bytes", before any request to the issuer, when the callback carries no code or state or a code longer than 2048 bytes;
+  `503 SIGNIN_UNAVAILABLE` while this process has not read the issuer's discovery document, or when the issuer's token endpoint answers the exchange `5xx`, `408` or `429`, answers with a body cut off before it arrives whole, or does not answer;
+  `502` for every other answer of the token endpoint (a `4xx` with or without an OAuth error, a `2xx` that names an error or holds no token, or a `3xx`) and every other failure of the sign-in;
   `409 SIGNIN_SUPERSEDED` and no cookie when, under a domain, another account signed in to the address between this sign-in's record and its cookie.
 
 - `/auth/logout` (POST; cookie or trusted header)
@@ -3374,8 +4320,9 @@ Each item below names a path with its method and identity, then its purpose.
 
 - `/auth/_dev/signin` (GET; none; `DISPATCH_DEV_SIGNIN=1` only; loopback peer, no forwarding header)
 
-  Sign in the person `login` names, lowercased, without the sign-in issuer: `302` to the sanitized `next` (default `/`) with the session cookie.
-  `400 DEV_SIGNIN_INPUT` without `login`, `403 DEV_SIGNIN_FORBIDDEN` for a non-loopback peer or a request carrying `Forwarded`, `X-Forwarded-For`, `X-Forwarded-Host`, `X-Forwarded-Proto`, `X-Real-IP` or `Via`.
+  Sign in the person `login` names, lowercased, without the sign-in issuer: `302` with the session cookie to the page `next` names on the dashboard origin, as an absolute URL of that origin (default its `/`).
+  `next` is a path, or an absolute URL of the dashboard origin.
+  `400 DEV_SIGNIN_INPUT` without `login`, or for a `next` off the dashboard origin (another host, port or scheme, `//host`, userinfo, a relative path, a backslash), before anyone is recorded or any cookie minted; `403 DEV_SIGNIN_FORBIDDEN` for a non-loopback peer or a request carrying `Forwarded`, `X-Forwarded-For`, `X-Forwarded-Host`, `X-Forwarded-Proto`, `X-Real-IP` or `Via`.
   Each mint logs at WARN with the email and the peer.
   Not mounted otherwise.
 
@@ -3403,7 +4350,8 @@ Each item below names a path with its method and identity, then its purpose.
   Every other field is reported and never decides `ok` or the status, and a deploy check that needs one asserts it itself (`nats: true`, `files: true`, `signin: true`):
   `nats`, whether the server's publisher is connected to NATS (`null` with `DISPATCH_NATS_DISABLED=1`), so a bus outage is `200` with `nats: false` while the process serves and its outbox waits for the bus;
   the client pings every second and declares a connection lost at two pings outstanding, so a silently cut bus reads `false` within two to three seconds;
-  `files`, whether the file store's bucket answers its two-second probe (S3: `HeadBucket`; Cloud Storage: a metadata read of a key no upload writes, which a missing object answers healthy) where `DISPATCH_FILE_STORE_BUCKET` is set (`null` when it is not), so a bucket outage fails uploads and downloads and nothing else;
+  `files`, whether the file store's bucket answers its two-second probe (S3:
+  `HeadBucket`; Cloud Storage: a metadata read of a key no upload writes, which a missing object answers healthy) where `DISPATCH_FILE_STORE_BUCKET` is set (`null` when it is not), so a bucket outage fails uploads and downloads and nothing else;
   `signin` and `service_tokens`, whether the sign-in issuer's and the service-account token issuer's discovery documents have been read (`false` before, `null` where that issuer is not configured).
   Two seconds fits the tightest prober here, the three-second compose healthcheck and deploy script, as well as the ALB's five.
   The body also names what is deployed: `commit`, the legion commit this process's image build stamped (the Dockerfile's `LEGION_COMMIT`;
@@ -3412,6 +4360,67 @@ Each item below names a path with its method and identity, then its purpose.
   `outbox_publisher` says whether this process publishes the events outbox now:
   `true` while it holds the outbox's publisher hold and the hold's deadline has not passed, `false` while it stands by for another process's, after it lost the hold, and with NATS disabled.
   One process of a deployment publishes at a time, so a healthy process may report `false`, and the field never decides `ok` or the status.
+  `github` names each GitHub read Dispatch makes under a lease with its newest attempt (`githubreads`, `gitHubReads` in `main.go`), and it never decides `ok` or the status:
+  a process serves everything but those reads while GitHub fails, so failing the probe would take every server process out of service for an outage each of them serves through.
+  It is `null` where no GitHub App is configured (neither the `DISPATCH_APP_*` settings nor `app.json` name one, `loadAppCredentials`), and otherwise holds `webhook_redelivery`, `architecture_import`, `delivery_reconcile` and `ci_reconcile`, in that order, each `{state, at, cause}`:
+
+  - `state` is `succeeded` when the newest recorded attempt sent requests to GitHub and noted no failure, `failed` when it noted one, `no_attempt` while the record holds no attempt of the read, `unknown` until this process's first read of the record succeeds, and `off` where this process does not run the read:
+    all four without the App private key, and `webhook_redelivery` and `ci_reconcile` without NATS as well, since `webhookSweeper` and `ciReconciler` build nothing without a NATS client.
+    `at` is when that attempt was recorded as its pass ended, by the database's clock, in RFC 3339 UTC, and is `null` unless the state is `succeeded` or `failed`.
+    `cause` is the text of the attempt's first failure, made storable (`text.StorableReplacement`) and cut on a character boundary to at most 1,024 bytes (`githubreads.CauseLimit`), ending with ` … (cut from <n> bytes)` inside that limit when it was cut;
+    it is `null` unless the state is `failed`, and the entry's Go type sets neither where the state carries none (`gitHubReadEntryOf`).
+
+  - The probe sends the database nothing for `github` and waits on nothing:
+    it answers from this process's copy of `github_read_attempts` (`githubreads.Copy`), read at start and again each time any process writes a row (Background loops, above), and a read that fails keeps the copy it had.
+    So a missing table or a failed read of the record changes neither `db`, `ok` nor the status.
+    During a roll the release before this one writes no row, so an entry can be an interval or more old, which `at` shows.
+
+  - A cause can name a repository: the route takes no credential, a GitHub error carries the URL it asked, and Dispatch answers on its private network alone.
+
+  - The delivery intakes read GitHub too, for each webhook event (`FetchPullRequest`, `FetchWorkflowRun` and `ListWorkflowRunJobs` in `internal/dispatch/delivery`), and have no entry of their own:
+    they report through `delivery_reconcile`, since the delivery reconcile reads the same pull requests and runs with the same App every interval, so a GitHub failure of those reads shows there within one pass.
+
+  - An attempt is one pass a loop runs under its lease, on the process that holds the lease (`duty.Exclusive`): one sweep, one import of every enabled source, one delivery reconcile pass or one CI reconcile pass.
+    It opens in the function the lease runs and in nothing a route or a command also calls, so `envoy-dispatch redeliver-webhooks`, the Settings Refresh of a source and `dispatch architecture-sync` record nothing.
+    It is recorded when the pass ends (`githubreads.Finish`), in place of the attempt before it:
+    nothing when the pass sent GitHub nothing and noted no failure (the sweep before NATS connects, a CI reconcile that binds no CI record writer or covers no repository, an architecture import with no enabled source, a delivery reconcile with no settings and no pull request head to re-read), nothing when this process's shutdown cut the pass short, `failed` when a failure was noted, and `succeeded` otherwise.
+    The write runs on a context of its own bounded at five seconds, so a CI reconcile pass that ends on its own bound is still recorded, and a failed write is logged at ERROR and changes nothing else of the pass.
+    A CI reconcile pass can end `complete` in `ci_reconcile_passes` and record `failed` here: that row says how the pass ended, and this record says whether a GitHub read of it failed.
+
+  - An attempt notes failures of two kinds, and both are listed here whole.
+    A failure of the first kind is noted by the GitHub client on each request a pass sends (`githubapp.(*Client).send`, the one function that sends anything to GitHub, and `GraphQL`): the answers no caller takes as data.
+    They are no answer (a transport error, the client's own `RequestTimeout` of 20 seconds ending while the caller's context is live, a body it could not read, a body past its limit), a 5xx or a 401, and a rate limit:
+    an answer `RateLimit` reads as one (a 429, or a 403 that carries a limit), one `GraphQLRateLimit` reads (in a 200 too), or a limit `github_rate_limits` already holds, which stops the request before it is sent.
+    The client notes no other 403, and no 404, 409 or 422: the same answer is data at one point and a failure at another, and only the loop's points below tell the two apart.
+    It notes nothing for a request whose caller's context ended, by the pass's own bound or this process's shutdown.
+    Such a cause reads as the client's own errors do: `<METHOD> <URL>: status <n>: <body>` for a 5xx or a 401, `<METHOD> <URL>: <error>` for a transport error or a body past the limit, `read <METHOD> <URL> response: <error>` for a body it could not read, `<METHOD> <URL>: rate-limited by GitHub (status <n>), next request in <wait>: <body>` for a limit GitHub answered, and, for a limit that held the request, the limit's scope and when it was recorded.
+    Every text of a GitHub answer that a cause can carry ends at `status <n>` or at `<wait>`, with no `: ` after it, when the answer has an empty body (`githubapp.StatusText`): the client's notes above, the client's own errors for an answer it takes as a failure at a step a loop's read makes (the installation lookup, the token mint, `Ref`, `Dir`, `DirFiles`, `Deliveries` and `Redeliver`), `githubapp.StatusError` and `githubapp.RateLimitError`.
+    Each of those texts that words an answer at a 2xx status and is no limit ends at `status <n>` too, whatever the body, with no marker in its place (`githubapp.StatusText`), and the text of a limit at a 2xx status ends at `<wait>`, or carries GitHub's wording of the limit after it (below), never its `Body` (`githubapp.RateLimitError`, whose text the client's note of a limit GitHub answered carries as it is):
+    a 2xx body is the data the request asked for and not GitHub's refusal of it, as a 200 to the token mint, which expects 201, would carry the token.
+    The client's errors of `CheckSource` and `Branch`, which only API routes call, and the CI reconcile's error for a query GitHub answered with a status other than 200, which the pass logs and replaces with a read of the repository's REST listing, noting that listing's own failure, follow both rules and reach no cause.
+    The cause of a limit a query met at 200 carries GitHub's own wording of the limit in place of `<body>` (`graphQLLimitWording`): what of the envelope names the limit, the top-level `message` where it holds GitHub's secondary-limit wording and each `errors` entry of type `RATE_LIMITED` or whose message holds that wording, as `<type>: <message>`, joined by `; `, or, where nothing there names it (the answer that spends the last point carries its data and no error), the `X-RateLimit-Remaining`, `X-RateLimit-Reset` and `Retry-After` headers GitHub sent it with, each `<name>: <value>`.
+    It never carries an `errors` entry about anything else, such as a repository the query could not resolve, since such an entry names another failure than the limit.
+    It never carries the body's `data`: the body of a 200 is the query's answer, which can hold a private repository's pull requests or check runs, and this route takes no credential (`GraphQL`).
+    The `githubapp.RateLimitError` the query's caller is given carries that wording in its text too, and never the data, since its text prints `Body` at no 2xx status whoever built the error, so a loop that notes that error in words of its own before the client's note is noted carries none of the data either.
+
+  - Two loops' notes carry other text of a 200 answer, and each carries GitHub's own wording of an error in its `errors`, never the body's `data`.
+    The CI reconcile's note of a head whose commit statuses it read none of (`statusesUnread`, below) reads `ci reconcile read no commit status of <owner>/<repo>#<n> at <sha>: <error>`, where `<error>` is the REST status read's error, or, for a query, each `errors` entry at or under the head commit's `status` field as `<TYPE> <message>`, joined by `; ` (`errorText`).
+    The delivery reconcile's note of its merged pull request search (`recordRead` of `reconcile merged pull requests`) holds `page after "<cursor>": <message>` where a 200 search answer carries `errors`, `<message>` being the first entry's (`fetchSearchPage`).
+
+  - A failure of the second kind is noted by each loop at each point where it gives up part of the GitHub read the deployment configured it to make, each a point where it already logs or records that failure;
+    it counts whatever failed there, since a database error inside such a step ends that read too, and its cause is the loop's own error, which names the repository where there is one:
+    the redelivery sweep where its listing of the App webhook's deliveries fails (`Sweep`), where GitHub refuses a redelivery request (`decide`, `RequestRefused`), and where a rate limit stops the sweep (`Report.RateLimitedUntil`);
+    the CI reconcile where a repository it reads gets no token, no answer to its identity read, a name that is not `owner/name` or no listing of its open pull requests, where a project's default repository is one the App is not installed on (`appAbsent`, at every pass the fault stands for, the passes that hold GitHub's answer included), where a head cannot be read (`headFailed`, an answer too large included), where it reads none of a head's commit statuses (`statusesUnread`: any `errors` entry a query answers at or under the head commit's `status` field, whatever its type, and any failure of the REST status read but a rate limit and the pass's own end, a 403, 404 or 422, a 5xx, a transport error, an answer it cannot decode and a listing past its page bound included), and where a rate limit ends the pass, one in force at its start included (`Pass`), but not where the pass's own ending killed the read (`cutShort`);
+    the architecture import where a source's sync fails at one of its four steps that read GitHub, `resolve` (the installation token), `Ref`, `Dir` or `DirFiles` (`Importer.syncOnce`), which covers the App not installed on the repository, a missing Contents permission and a branch GitHub does not have, but not where `DirFiles` refuses a note over `notes.MaxFileSize` (`notes.ErrFileTooLarge`);
+    and the delivery reconcile where the deploy repository's permission check fails (`DeliveryPermissions`), where a step that reads GitHub returns an error (`recordRead` in `Reconcile.runOnce`: the merged, partial and head pull request steps, both workflows' runs, and the attribution inputs of stored pull requests), and where it gives up one row of such a step after the answers it takes as data: a head it cannot re-read (`reconcilePullRequestHeads`), a head attributed without its commit messages (`attributeHead`), a partial pull request it cannot complete (`completePartialPullRequest`, a 403 included) and a stored pull request whose attribution inputs it cannot read (`readAttributionInputs`).
+    One failed request can be noted twice, once by the client and once by the loop, and the cause is the first noted.
+
+  - These are no failure, and an attempt that meets only them stays `succeeded`:
+    an answer a loop takes as data about one object and goes on, which is a delivery GitHub no longer has (a 404 to the redelivery request, marked `Expired`), a pull request or a workflow run that GitHub says is gone or whose repository no installation covers (404, 410 or `ErrNoInstallation`, marked unfetchable by `completePartialPullRequest`, the attribution read and the run jobs read), a pull request head GitHub no longer has or of a repository the App cannot read (`repositoryUnreadable`, stamped read), an architecture source's directory that GitHub answers `404` for at the commit, read as an empty model (`Dir`), a repository only an issue names that the App is not installed on (the CI reconcile's `appAbsent`, counted in `repositories_without_app`), and a `304`;
+    a page the delivery reconcile asks for again after a 502, a 504 or a timeout (`retryGitHubPage`, at most three tries) and then reads, and a CI reconcile query whose repository the REST listing then reads, since each try and each query runs in a held scope of the attempt (`githubreads.Hold`), whose notes are dropped when the next try reads what it asked for and kept when it does not, so a page that fails every try counts by its last;
+    a try of an architecture source's sync that another sync or a settings save superseded (`errSuperseded`), once a later try of the flight, which runs it again, reaches GitHub (`githubreads.Held.Reached`: it sends a request, or meets a failure that holds one unsent, a limit already recorded), since each try runs in a held scope whose notes are dropped then, and kept when the flight ends with no later try that reached GitHub (a retry that fails at its load of the row on the flight's spent deadline or on a database error), so the last try that reached GitHub counts;
+    and an error outside the points above: of the database or NATS, which `db` and `nats` report (the sweep before NATS connects, the CI reconcile's check of a head's CI record), of the delivery reconcile's steps that read no GitHub (attributing stored pull requests, recording `issue.deployed` events), and of what an architecture source's files say (a note over `notes.MaxFileSize`, which `DirFiles` refuses by its listed size before any blob read or by a blob's decoded size, `notes.Parse`, a refused projection), which `architecture_sources.last_error` records.
+    The delivery reconcile's runs backfills never fail its pass (`backfillRuns`), but the client still notes what they meet of the first kind.
 
 - `/livez` (GET; none)
 
@@ -3430,6 +4439,9 @@ Each item below names a path with its method and identity, then its purpose.
   `envoy_dispatch_outbox_publish_failures_total{reason}`, one count per destination of an outbox publish attempt that was not reached, `reason` being `denied` (the server refused it under the connection's own publish permissions), `refused` (NATS refuses the envelope or its subject however often it is retried), `unanswered` (NATS took the forward and the stream did not acknowledge the copy it stored, which is the whole of a forward's answer, for every holder alike) or `failed` (every other failure);
   and `envoy_dispatch_outbox_role_forwards_held_total{holder_state}`, one count per role forward a holder's resolution held pending with nothing sent, `holder_state` being `unresponsive` (the holder is past the live window), `undated` (nothing dates the holder) or `unresolved` (the role claim or the holder's session could not be read).
   A hold is a wait for that session to answer and no failure of the bus, so it is counted there and never under the publish failures an alert watches.
+  It also carries four gauges of the copies of comment mentions that wait behind an earlier event of their owner, with no label, since an owner's key is neither bounded nor public and whoever reaches the port reads this endpoint: `envoy_dispatch_mention_sends_held` and `envoy_dispatch_mention_send_held_oldest_seconds`, the API's mention sends that wait and how long the oldest has (`api.registerHeldGauges`), and `envoy_dispatch_outbox_fallback_copies_held` and `envoy_dispatch_outbox_fallback_copy_held_oldest_seconds`, the same of the outbox's fallback copies (`heldCopies`).
+  A held mention copy's wait has no bound, so beside the gauges a copy held `model.MentionCopyHeldWarnAfter` (one minute) logs one WARN naming its owner, the earlier event and that event's `publish_error`; the event's own failed publish logs `dispatch outbox: publish event` at ERROR at each attempt.
+  `envoy_dispatch_document_replacements_unguarded_total`, with no label, counts the whole-document uploads that replaced a document naming no token for the version they replace, which Dispatch takes unchecked until every deployed `dispatch` client sends one (INFRA-4980); each also logs one INFO line naming the artifact and the document (`api.noteUnguardedReplacement`), and no caller: the access log's line for the same upload names the caller and its User-Agent, so the two are joined on the upload's path and time.
   It is answered above the router, so it is never the dashboard's shell, and whoever reaches the HTTP port can read it.
   Nothing scrapes it yet.
 
@@ -3507,6 +4519,14 @@ Each item below names a path with its method and identity, then its purpose.
   A browser test reads the bar with a label and a session configured and then with the session cleared, which no deployment setting can change while the server runs.
   Not mounted otherwise.
 
+- `/api/v1/messages/_test/queued` (GET; cookie, trusted header, or bearer; `DISPATCH_TEST_HOOKS=1`)
+
+  List the targeted messages this process queued itself for a session that neither the listener's registry nor its known-session store held, oldest first, each as the envelope that session's own subject would hold:
+  `{"queued": [{subject, dedupe_key, event_id, source, payload_summary, payload, urgency}]}`.
+  A process with `DISPATCH_NATS_DISABLED=1` keeps them in its own memory, where this route reads them.
+  A process with NATS publishes them to the stream, and answers `404 QUEUED_ON_BUS` here.
+  Not mounted otherwise.
+
 - `/ws/live` (GET; cookie, trusted header, or bearer)
 
   One WebSocket per browser tab, serving delivery, events, and agent subscriptions.
@@ -3518,7 +4538,7 @@ Each item below names a path with its method and identity, then its purpose.
   A page that stops reading meets the socket's own bounds first (#2449):
   the writer's 10 s write deadline (`liveSocketWriteWait`) ends the socket, which holds at most 16 of the hub's frames (`liveSocketQueue`) and 64 stream frames (`liveSocketStream`);
   the agent view's 8 MiB bounds only what it buffers while the socket writes slower than the session produces.
-  A socket rotates with 4001 at a random age from 30 to 60 minutes;
+  A socket rotates with 4001 at a random age from 30 to 60 minutes, and under `DISPATCH_IDENTITY=iap` also once the IAP assertion its upgrade carried expires (reason `credential expired`, Identity, above);
   it closes with 1012 on restart, 1008 when its caller stops resolving, and 1013 when the hub queue fills.
 
 - `/api/v1/inbox?project=&assignee=` (GET; cookie, trusted header, or bearer; needs the `person` scope)
@@ -3557,7 +4577,9 @@ Each item below names a path with its method and identity, then its purpose.
 
 - `/api/v1/me/inbox/read` (POST; cookie, trusted header, or bearer; needs the `person` scope)
 
-  Mark every unread Inbox thread read in one write: `{read_through}` (RFC3339, required; missing, unparsable or more than a minute ahead of the server is `400 INVALID_STATE`), with the Inbox's own narrowing — `kind` (`reply`, `agent`; both by default), `priority` (`P0`, `P1`, `P2`, `P3` and `none`), `urgency` (`low`, `med`, `high`, `blocking` and `none`), `project` (a project key and `none`), and `issue` or `artifact` — each absent list meaning every value.
+  Mark every unread Inbox thread read in one write:
+  `{read_through}` (RFC3339, required; missing, unparsable or more than a minute ahead of the server is `400 INVALID_STATE`), with the Inbox's own narrowing
+  — `kind` (`reply`, `agent`; both by default), `priority` (`P0`, `P1`, `P2`, `P3` and `none`), `urgency` (`low`, `med`, `high`, `blocking` and `none`), `project` (a project key and `none`), and `issue` or `artifact` — each absent list meaning every value.
   It marks exactly the threads `GET /api/v1/me/replies?state=unread` answers under that narrowing whose newest reply is at or before `read_through`, so a thread written in since stays unread and one already read past the mark keeps its later mark.
   Answers `{marked}`, how many threads it moved.
 
@@ -3565,11 +4587,15 @@ Each item below names a path with its method and identity, then its purpose.
 
   Take threads out of the caller's Inbox, or put them back.
   A thread stays in the Inbox, read or not, until it is dismissed, as an email stays until it is archived: reading it and Mark all read leave it there.
-  The body names either `threads`, the Inbox's own row ids (`reply:<thread id>` for a Reply row, `agent:<root message id>` for an Agent row), or the narrowing Mark all read takes with `{dismiss_through}` (RFC3339, required there; missing, unparsable or more than a minute ahead of the server is `400 INVALID_STATE`), never both (`400 INVALID_QUERY`), and `restore`, which clears the marks instead of writing them.
+  The body names either `threads`, the Inbox's own row ids (`reply:<thread id>` for a Reply row, `agent:<root message id>` for an Agent row), or the narrowing Mark all read takes with `{dismiss_through}` (RFC3339, required there;
+  missing, unparsable or more than a minute ahead of the server is `400 INVALID_STATE`), never both (`400 INVALID_QUERY`), and `restore`, which clears the marks instead of writing them.
   Under the narrowing it changes exactly the threads `GET /api/v1/me/replies` answers under it whose newest reply, or whose dismissal, is at or before that mark.
-  A dismissal that names `threads` carries `seen_replies` beside them, one object per row it names and keyed by that same row id: what the page drew in that row, as `GET /api/v1/me/replies` answered it.
-  A `reply:` row's object is `{version}`, the row's own `user_threads.version`; an `agent:` row has no `user_threads` row and so no version, and its object is `{newest_reply, unread_replies}`, the row's `reply.id` and its `unread_reply_ids` (which may be empty).
-  The route writes a row's mark only while the row still holds what the page drew, so a dismissal buries no write nobody has read: a row's version moves on every write by somebody else, and why no comparison of this request's mark with the row's own times can stand in for that check is written on migration `20261105093501`'s increment.
+  A dismissal that names `threads` carries `seen_replies` beside them, one object per row it names and keyed by that same row id:
+  what the page drew in that row, as `GET /api/v1/me/replies` answered it.
+  A `reply:` row's object is `{version}`, the row's own `user_threads.version`;
+  an `agent:` row has no `user_threads` row and so no version, and its object is `{newest_reply, unread_replies}`, the row's `reply.id` and its `unread_reply_ids` (which may be empty).
+  The route writes a row's mark only while the row still holds what the page drew, so a dismissal buries no write nobody has read:
+  a row's version moves on every write by somebody else, and why no comparison of this request's mark with the row's own times can stand in for that check is written on migration `20261105093501`'s increment.
   Seven more `400 INVALID_QUERY`: a row `threads` names that `seen_replies` leaves out, a key naming a row `threads` does not, a `reply:` entry that is not that row's one `version` (of the wrong type, or missing it, as an Agent entry in its place does; a member this build does not declare is ignored there, as it is in a body), an `agent:` entry that is not the `newest_reply` and `unread_replies` the page drew (the same three), an id that is not a uuid, `seen_replies` on a `restore` (which draws the rows back and checks nothing), and `seen_replies` with the narrowing, where the server draws the rows itself.
   A dismissal marks the thread read as well, so a dismissed thread counts as unread nowhere;
   a later write by somebody else brings it back unread, and the caller's own reply leaves it dismissed.
@@ -3586,11 +4612,14 @@ Each item below names a path with its method and identity, then its purpose.
 
   What people wrote that Dispatch delivered to one session, newest first:
   each ask's current answer (`replaced` when it changed an earlier one), each decline of an ask (a question a person closed without answering it), each comment at its current body (`edited_at` when edited) and each message, once however it arrived:
-  a person's `ask.answered`, `comment.created`, `message.created`, `message.answered` or `ask.resolved` event whose `published_destinations` hold the session's own topic, of which the list takes the declines alone, its sent message deliveries, and its sent comment deliveries (mentions).
+  a person's `ask.answered`, `comment.created`, `message.created`, `message.answered` or `ask.resolved` event whose `published_destinations` hold the session's own topic, of which the list takes the declines alone, its sent or queued message deliveries, and its sent or queued comment deliveries (mentions).
   Never an agent's or the system's words, any other resolution of an ask or its hand-back, or a delivery to a `role:` route.
-  Each item carries its `relation`, the `ask` and its question where it answers, declines or replies in one, and its `owner`, `ref` and `href`.
-  A decline is the kind `declined` under the relation `declined_your_ask`, and it carries both parts apart:
-  `text` is the person's own note, empty where they wrote none, and `dispatch_words` the sentences Dispatch wrote beside it for the asking agent.
+  Each item carries its `relation`, the `ask` and its question where it answers, declines or replies in one, whoever asked it, and its `owner`, `ref` and `href`.
+  A session owns an ask when it wrote the ask or follows it, and only an owner is told that an ask is its own:
+  an answer is `answered_your_ask` for an owner and `answered_an_ask` for any other session, a decline is `declined_your_ask` for an owner and `declined_an_ask` for any other session, and a reply in an ask's thread is `replied_on_your_ask` for an owner, which outranks `mentioned_you`.
+  A session that does not own the ask reads a reply in its thread by the reason that delivered it: `mentioned_you` for a mention, else `replied_in_a_comment_thread`, `commented_on_a_document` or `commented_on_an_issue`, as for any other comment, when the issue's route, its claim or a credit on its primary document delivered it.
+  A decline is the kind `declined`, and it carries its words in parts:
+  `text` is the person's own note, empty where they wrote none, and `dispatch_words`, on `declined_your_ask` alone, the sentences Dispatch wrote beside it for the asking agent.
   `since` defaults to 72 hours ago (older than 7 days or in the future is `400 INVALID_QUERY`);
   `max_chars` (1–100,000) stops the list after the item whose words take the running sum past it, counting an item's `text` and the `dispatch_words` a decline carries beside it, `total` still counting every item;
   a bad `session_id` is `400 INVALID_SESSION_ID`.
@@ -3598,7 +4627,7 @@ Each item below names a path with its method and identity, then its purpose.
 
 - `/api/v1/projects` (GET; cookie, trusted header, or bearer)
 
-  List projects (`key`, `name`, `open_asks`, `gated_steps`, `created_at`), ordered by key.
+  List projects (`key`, `name`, `open_asks`, `gated_steps`, `created_at`, and `default_repo` for a project with a default repository), ordered by key.
   A project's default assignee is not listed: `GET /api/v1/settings/project-default-assignees`, which needs the `person` scope, is the one read of it.
 
 - `/api/v1/projects` (POST; cookie, trusted header, or bearer)
@@ -3612,19 +4641,42 @@ Each item below names a path with its method and identity, then its purpose.
 
 - `/api/v1/settings/repo-projects` (GET; cookie, trusted header, or bearer)
 
-  List repository-to-project mappings, each with `default`, whether it is its project's default repository, and `renamed_to`, the `owner/name` the repository is called today, null for one that was never renamed.
+  Read only, and removed in the next release: the rows of `repo_projects` as the last release that wrote them left them, each with `default`, whether it was its project's default repository, and `renamed_to`, the `owner/name` the repository is called today, null for one that was never renamed.
+  Nothing writes the rows, and `PUT` and `DELETE` under this path answer the JSON `404 NOT_FOUND` of a route the process does not serve.
+  The route stays for the Legion daemons that read it at boot.
+  A default set through `PUT /api/v1/projects/{key}/default-repository` is not in it.
 
-- `/api/v1/settings/repo-projects/{owner}/{repo}` (PUT, DELETE; cookie, trusted header, or bearer)
+- `/api/v1/projects/{key}/default-repository` (PUT; cookie, trusted header, or bearer)
 
-  Create or replace, or remove, a repository mapping; PUT takes `{project, default?, renamed_to?}`, and `default: true` moves the project's one default to it.
-  `renamed_to` is the full `owner/name` the repository is called today, which every comparison Dispatch makes of a repository canonicalises through (`refs.CanonicalRepo`): absent or null leaves the stored pair as it is, `""` clears it, and a pair naming this repository itself, one naming a repository that is itself renamed, or one on a repository another mapping is already renamed to is `400 INVALID_REPO_PROJECT`.
-  A mapping an issue names as its `repo` is neither deleted nor moved: `409 REPO_PROJECT_IN_USE`.
-  `AGENTS.md` gives the rules and the `settings.repo_project.updated` events.
+  Set or clear a project's default repository: `{"repo": "owner/name"}` sets it, and `{"repo": null}` clears it.
+  A bearer names its session in an optional `actor`.
+  An issue of the project resolves to the default when neither the issue nor an issue above it names a repository.
+  `repo` is read by the rule that reads an issue's own repository, and stored in lower case with no `.git`, under its new name where a rename pair renames it away.
+  The answer is `{project, repo}`, where `repo` is the default the project holds now, or `null` for none.
+  A write of the value the project holds already changes nothing and appends no event, and a change appends `project.updated` with the project row.
+  A body without `repo`, or a `repo` that is not a repository GitHub could hold, is `400 INVALID_PROJECT` naming `repo`, and an unknown project is `404 PROJECT_NOT_FOUND`.
+  The default belongs to the deployment, so a project-scoped credential is refused it with `403 PROJECT_SCOPE_DEPLOYMENT`, the project this path names included.
+  It needs no `person` scope: the credential the deployment configured writes it, and so does a person.
+
+- `/api/v1/projects/{key}/legion/daemon` (GET, PUT, DELETE; cookie, trusted header, or bearer)
+
+  The Legion daemon this project's state is read from: GET reads it, with the actor that first named it and when it was last written, or `null` when the project names none; PUT names it, `{state_url}`; DELETE stops reading it, what the sampler already recorded staying.
+  No route lists every project's daemon, since R26 of dispatch://INFRA-979's spec permits one cross-project read and this is not it: the Settings page's Legion section reads each project's.
+  A `state_url` that is not an absolute http(s) URL with a host and no path is `400 LEGION_SETTING_INPUT`, a DELETE for a project that names no daemon `404 NOT_FOUND`, a key that is not a project key `400 INVALID_PROJECT`, and a project that does not exist `404 PROJECT_NOT_FOUND`.
+  The daemon points Dispatch at a host, so it belongs to the deployment rather than to the project it is addressed under, and a project-scoped credential is refused the PUT and the DELETE as it is a project's default repository, the project this path names included.
+  `internal/dispatch/api/settings_legion.go` gives the rest, including why neither write emits an event.
+
+- `/api/v1/projects/{key}/legion/board` (GET; cookie, trusted header, or bearer)
+
+  The Legion board of the project its path names, from what the sampler recorded of that project's daemon; the `/ws/live` `legion` view carries the same body and pushes each change, and no page draws it.
+  Eleven columns (`queue`, `design`, `planning`, `implementing`, `testing`, `reviewing`, `accepting`, `retro`, `merging`, `awaiting_person`, `held`), each card naming its issue's key, title, priority, phase and when that phase began, the slot it holds, the roles in a turn now, the issues a blocker link holds it on, what it waits on from a person, its tree root and the children of its tree that have not started; and a header with the slots in use, the slot cap, the queue's length and the last read of the daemon with its failure.
+  `404 LEGION_NOT_CONFIGURED` when the project names no daemon, `400 INVALID_PROJECT` for a key that is not a project key, `404 PROJECT_NOT_FOUND` for a project that does not exist.
 
 - `/api/v1/github/app-installation/{owner}/{repo}` (GET; cookie, trusted header, or bearer)
 
   Whether Dispatch's GitHub App, which GitHub sends the repository's webhook events through, is installed on the repository:
   `200 {installed}`, `false` when GitHub answers 404.
+  A path whose owner or name has a character GitHub does not allow, or whose name is `.`, `..`, empty or longer than 100 characters once a trailing `.git` is trimmed, is `400 INVALID_REPOSITORY`, and GitHub is asked nothing.
   `503 GITHUB_APP_UNCONFIGURED` when Dispatch holds no App key, `502 GITHUB_UNREADABLE` naming the repository and GitHub's error on any other failure.
   The Legion daemon asks it for every repository it serves, for `legion state`.
 
@@ -3675,7 +4727,8 @@ Each item below names a path with its method and identity, then its purpose.
 - `/api/v1/me/agent-tokens` (GET, POST; cookie, trusted header, or bearer; GET needs the `person` scope, POST `person` and `approve`)
 
   List personal-token metadata, each row with the `scopes` its token holds, or mint a personal agent token `{name, scopes?}`.
-  `scopes` defaults to the set the caller's own credential holds; a scope this deployment does not know, or `approve` without `person`, is `400 TOKEN_SCOPES_INPUT`, and a scope the caller does not hold itself is `403 OAUTH_SCOPE_REQUIRED`.
+  `scopes` defaults to the set the caller's own credential holds;
+  a scope this deployment does not know, or `approve` without `person`, is `400 TOKEN_SCOPES_INPUT`, and a scope the caller does not hold itself is `403 OAUTH_SCOPE_REQUIRED`.
 
 - `/api/v1/me/agent-tokens/{id}` (PATCH, DELETE; cookie, trusted header, or bearer; needs the `person` and `approve` scopes)
 
@@ -3742,7 +4795,8 @@ Each item below names a path with its method and identity, then its purpose.
   Every `ask` hit carries `ask`, where the ask stands when the search ran:
   `{state: "open"}`, `{state: "answered", answer}` with its latest answer, or `{state: "resolved", resolution, answer?}` with the last answer it had, absent when nobody answered;
   its excerpt is cut from the ask's indexed text ([Search](#search)).
-  A hit the meaning list found carries `block_id`, the block of it whose own text ranks highest for the query: a block of the document, of the comment's or the message's body, or the part of an ask's question, options or answer.
+  A hit the meaning list found carries `block_id`, the block of it whose own text ranks highest for the query:
+  a block of the document, of the comment's or the message's body, or the part of an ask's question, options or answer.
   It is absent on an issue hit, which has no blocks, and on a hit only the keyword list found.
   An under-two-character query returns `400 INVALID_QUERY`;
   a stop-word-only query returns `200` with no results;
@@ -3773,14 +4827,18 @@ Each item below names a path with its method and identity, then its purpose.
   Each count is read from the table that holds the kind — `components`, the listener's stored session list (`route_roster`, which is Dispatch's whole record of which sessions exist, and counts 0 before the listener has answered), `artifact_versions`, `check_results` and `handoffs` — in the statement that counts the covered kinds, so every number of the report reads one snapshot.
   Such a kind is named rather than left out, because a reader of a report carrying the covered kinds alone cannot tell a kind that is covered with nothing left to embed from one nothing indexes.
   It carries no `current`, `lacking` or `failed`, none of which is defined for a kind that has no vector to be behind on, and it is in no total.
+  The statement reads a window kind through two partial indexes, and an issue's hash from its row wherever the inputs the coverage pass recorded for it are still its own, so it tests no window's text and builds only the text of an issue whose inputs changed ([Search](#search)).
+  It reads the two indexes by one bitmap heap scan over both at once, which visits each heap page holding a window once, and by no other index or plan, whatever the visibility map holds, the statistics record or the share of windows embedded; it reads no statistics to choose a plan.
+  It runs under a 10 s `statement_timeout`, and a statement past it counts nothing and answers `503 SEARCH_COVERAGE_TIMEOUT`, to be asked again later.
 
 - `/api/v1/going/catalogue` (GET; cookie, trusted header, or bearer)
 
-  The catalogue of operations an agent may propose on Dispatch's graph: the dispatch tools that write, twenty of the thirty-four tool specs agents already operate Dispatch with (`packages/contracts/src/dispatch-tools.ts`).
+  The catalogue of operations an agent may propose on Dispatch's graph: twenty of the twenty-one dispatch tools that write, of the thirty-seven tool specs agents already operate Dispatch with (`packages/contracts/src/dispatch-tools.ts`).
+  The one it leaves out is `dispatch_review`, on purpose: a review records an approval or a changes request in a person's name, and the loop that proposes operations on the graph must never propose one.
   Each action carries `action` (the tool's own name, such as `dispatch_issue`), its `description` (the tool spec's own, whole and unchanged, which is what a model chooses on), the `routes` it writes, each a `method` and a `pattern` of this table, the `relations` its verbs write (each a structural edge kind or a `block[]` attribute of a typed block), its `request` (the tool's own argument schema) and an `example` call that schema accepts.
   Twenty actions is under the count where a model's choice falls apart, so the catalogue is read whole: it takes no query and serves no page.
   A tool naming a row this table does not hold, a row the table does not class as a write, a placeholder no argument of the tool fills, or a relation in neither edge family makes the server refuse to mount the table.
-  A write no tool performs is named by the catalogue's own test instead, since it is work still to do rather than an error.
+  A write no catalogue action performs is named by the catalogue's own test instead: most are work still to do rather than an error, and the review route is kept out on purpose.
 
 - `/api/v1/projects/{key}/related?title=&text=&exclude_issue=&exclude_issues=&keywords_only=` (GET, POST; cookie, trusted header, or bearer)
 
@@ -3801,10 +4859,30 @@ Each item below names a path with its method and identity, then its purpose.
   another is `400 INVALID_QUERY`) when given:
   `{project, source_kind, from, to}` echo the filters (null when absent), then `total`, `by_source_kind`, `by_outcome`, `by_search` (a check not made counted under `not_made`), `by_reason`, `completed` (found or none), `skipped_for_time` (reason `timeout`), `other_project_offers` (the ask creates of the window that offered at least one answered question of another project, read from `write_suggestions`), and `keyword_ms` and `total_ms`, each `{count, p50, p95, max, over_300ms}` over the checks holding that time (`model.RelatedChecksReport`).
 
+- `/api/v1/near-copy-checks?project=&from=&to=&after=&limit=` (GET; cookie, trusted header, or bearer)
+
+  List one project's near-copy gate answers (`near_copy_checks`, [Search](#search)) within `[from, to)` (RFC3339, each optional; `from` not before `to` is `400 INVALID_QUERY`), oldest first, at most `limit` (1 to 1,000, default 1,000) after the row `after` names:
+  `{project, from, to, checks, next_after}` (`model.NearCopyChecksPage`), each row with no spec.
+  `project` is required (`400 INVALID_PROJECT` when it is not a key), and an `after` that is no row of the project is `400 INVALID_QUERY`.
+  A window should end some time before now: a row written in its create's transaction holds that transaction's start as `created_at` and is seen only once it commits, so a reader that pages up to now and resumes with `after` can miss it.
+
+- `/api/v1/near-copy-checks/{id}` (GET; cookie, trusted header, or bearer)
+
+  One near-copy gate answer (`model.NearCopyCheck`), with `spec` on a refused row alone;
+  `404 NEAR_COPY_CHECK_NOT_FOUND` when there is none, `400 NEAR_COPY_CHECK_ID_INPUT` for an id that is not a uuid.
+
 - `/api/v1/issues/{key}/references?versions=` (GET; cookie, trusted header, or bearer)
 
-  Read the issue's eight-hop artifact reference closure; a reference to a block reaches the block's document while a current version holds the block.
-  An `If-None-Match` value equal to the response ETag returns `304`.
+  Read the issue's references, one hop in each direction: `{links, linked_from, members, truncated}` (`model.IssueReferences`).
+  The issue's own content is its documents and their blocks, its asks and their parts, and its comments and messages and their blocks; a link is a mention, or a typed pointer while the graph read lists it.
+  `links` is every node the issue's own content links to, and `linked_from` every node that links to the issue or to its own content.
+  Each holds one row for each node, `{node, name, kinds, via}`: the node as `GET /api/v1/references` names it, the words shown for it, the distinct kinds of its links in order, and the lowest of the issue's nodes at the near end of those links.
+  A block of a document counts as that document while a current version holds the block, and a part of an ask or a block of a comment or a message counts as its item.
+  The issue and its own content are in neither list, nor is a node that only a structural edge joins to the issue, such as its parent or a child.
+  Each list is in the order of the node's kind, then its id, and is `[]` when it has no row.
+  `members` is the documents of `links`, each with its versions and its row's via, and `truncated` is false: a member's `depth` is always 1, since the read reads one hop, and both fields stay for the clients that read them.
+  Every statement of the read shares one 2 s budget, and a read that reaches it reads nothing and answers `503 REFERENCES_TIMEOUT`, to be asked again later.
+  An `If-None-Match` value equal to the response ETag returns `304`; the ETag moves when a row of either list changes, as a new link into the issue's content or an edit of a linked node changes one.
   `versions=latest` leaves each member's `artifact.versions` holding only its latest version and carries its own ETag;
   absent, empty or `all` is the full answer; any other value, or `versions` given more than once, is `400 INVALID_QUERY`.
 
@@ -3836,14 +4914,16 @@ Each item below names a path with its method and identity, then its purpose.
     pinned to a version (`#b-<id>@v<N>`; for a comment's block, a revision of the comment, and for an ask's part, a revision of the ask's parts) it also carries `pin` (`version`, `ref`, the block's `text` at that version, `state` `unchanged`, `changed` or `removed`, and `removed_version`), and a removed block answers no edges.
 
   - `400 INVALID_REFERENCE` / `INVALID_SINCE`, `INVALID_REFERENCE` too for a message block pinned with `@v<N>` (a message never changes);
-    `404` for a node that does not exist, a block no current version or revision holds (unpinned; an ask's part is called a part, `no part "<part>" in ask <id>`, where a comment's and a message's is called a block) or whose id is past 256 bytes (no node), or a pinned version the document lacks, has no record of the blocks of, or did not hold the block at, or a revision past the comment's or the ask's current one or that did not hold the block.
+    `404` for a node that does not exist, a block no current version or revision holds (unpinned;
+    an ask's part is called a part, `no part "<part>" in ask <id>`, where a comment's and a message's is called a block) or whose id is past 256 bytes (no node), or a pinned version the document lacks, has no record of the blocks of, or did not hold the block at, or a revision past the comment's or the ask's current one or that did not hold the block.
 
   - A `since` read stops at the event log's safe horizon, and first waits up to 1 s for the horizon to pass every event committed before the read, so it answers every mention committed before it, the caller's own included;
     when an open transaction holds the horizon back past that wait, it answers the mentions at or below the horizon and a later read the rest.
     A caller with no cursor starts from `since=0`, which lists every mention committed before the read that carries a `source_seq`, and after that reads again from the highest `source_seq` an answer showed it.
     A mention written with no event (a rebuild, a backfill, an older build) carries no `source_seq` until a later write of its source stamps it with that write's event, and until then only a read without `since` lists it.
     A signed-in page may start from `GET /auth/whoami`'s `event_head` instead, which takes a cookie or a trusted header and not a bearer, so a bearer caller starts from `0`.
-    Never take a `since` from `max(events.id)` read straight from the database: event ids are not commit order, and an id taken that way can stand above an edge that commits later.
+    Never take a `since` from `max(events.id)` read straight from the database:
+    event ids are not commit order, and an id taken that way can stand above an edge that commits later.
     An empty answer is not proof that nothing is new, so the caller reads again with the id it holds.
 
 - `/api/v1/block-links?from=&to=` (GET; cookie, trusted header, or bearer)
@@ -3859,10 +4939,16 @@ Each item below names a path with its method and identity, then its purpose.
 
   Create an issue and its primary document.
   Omitting or leaving `spec` blank gives an empty primary document at version 1.
-  `repo` (`owner/name`) is the issue's own repository and must be mapped to its project:
-  `400 INVALID_ISSUE` when it is not `owner/name`, `400 REPO_NOT_MAPPED` when it is not mapped.
+  `repo` (`owner/name`) is the issue's own repository, which may be any repository at all:
+  `400 INVALID_ISSUE` when it is not `owner/name`.
+  `parent` may be an issue of any project: `400 PARENT_INPUT` when no such issue exists, `409 PARENT_INPUT` when the new issue would sit more than 32 links below its root, counting the links in every project, and `403 PROJECT_SCOPE` when a credential that may write one project names a parent outside it.
+  A parent of another project passes on no repository, components, `legion` label or assignee:
+  `resolved_repo`, an inherited component attachment, the architecture tree's owner and `legion_managed_status` read only the ancestors in the issue's own project, so such an issue takes its own project's default repository, and a create that names no assignee and acts for no person lands on its own project's default assignee rather than the parent's.
   A title over 1,000 characters (`contracts.IssueTitleMax`, UTF-16 units after trimming) is `400 CAP_EXCEEDED` before the duplicate check.
-  Refuses a near copy of an open issue of the project, other than the new issue's ancestors, with `409 POSSIBLE_DUPLICATE` and candidates unless `force` is true; external references skip the check.
+  Refuses a near copy of an open issue of the project, other than the new issue's ancestors, with `409 POSSIBLE_DUPLICATE` and candidates unless `force` is true, once the refusal's `near_copy_checks` row is known to be written;
+  a refusal whose row cannot be written refuses nothing, and the create goes in with `advice.suggestions.near_copy_check` naming the candidate.
+  External references skip the check.
+  A create that names `external`, an import of a GitHub issue, names its `project` too: one with no `project`, or an empty one, is `400 INVALID_ISSUE` (`project is required when external is set`), and it writes nothing.
   A forced create records the issues it went past on its `issue.created` event, under `forced.past`.
   A spec whose ask block breaks its content rule (`paragraph+ bullet_list?`:
   one or more paragraphs, then at most one bullet list, last) is `400 INVALID_ASK_BLOCK`, and a spec whose markdown makes more than 65,536 elements (weighed as Element weights below lists) is `413 CAP_EXCEEDED`, naming the line that passes the limit;
@@ -3872,15 +4958,24 @@ Each item below names a path with its method and identity, then its purpose.
 - `/api/v1/issues/{key}` (PATCH; cookie, trusted header, or bearer)
 
   Update an issue's `title`, `status`, `priority`, `labels` (or `labels_add`, which adds to the labels the issue holds when the write commits;
-  not with `labels`), `route`, `external_links`, `parent`, `rank`, `assignee`, `components` or `repo` (`null` clears it); `AGENTS.md` gives each field's rules.
+  not with `labels`), `route`, `external_links`, `parent`, `rank`, `assignee`, `components` or `repo` (`null` clears it); the route's row in `internal/dispatch/api/routes_table.go` (`GET /api/v1`) and `patchIssue` in `internal/dispatch/api/issue_patch.go` give each field's rules.
+  A `parent` may be an issue of any project, under the refusals a create meets, and one that would make the issue its own ancestor is `409 PARENT_INPUT`;
+  a parent of another project passes on no repository, components or `legion` label, as on creation.
   A title is trimmed, and one over 1,000 characters is `400 CAP_EXCEEDED`, as on creation.
   `expected_sequence` makes the write conditional: `409 ISSUE_CHANGED` when the issue's last event is no longer that sequence.
   A close (`status: done`) withdraws every open ask of the issue, whoever's turn it is:
   decision blocks in its documents, plain asks and requests to approve one of its documents.
   Each is recorded `resolved` with resolution kind `withdrawn`, naming the closer as the request's actor, with the reason `Withdrawn by the close of <KEY>.`, and gets one `ask.resolved` before `issue.closed`;
-  its block is written `state="resolved"` in the live document, and no version is written.
+  its block is written `state="resolved"` in the live document.
+  The document's next settlement saves that write, and it writes a version when its rendering differs from the latest version.
+  That settlement runs while the issue is closed too, but it opens no ask and wakes nobody:
+  it changes no ask, records no edit notice, carries no approval, and its repair events carry the settlement's own actor.
+  An ask block that has no ask row gets no ask: the settlement saves it `state="resolved"` and records its author.
   An ask answered or resolved before the close is left as it was, and the close records no answer and no approval.
   A reopening `status` (any but `done`) opens again exactly the asks the close withdrew, each with one `ask.opened` before `issue.updated`, and they return to the Inbox.
+  The reopen also marks owed each document whose ask blocks wait for it, and the settlement after the reopen opens the ask of a block that has none, credited to its recorded author, retracts a restored ask whose block left its document while the issue was closed, restores a retracted ask whose block came back, and takes into a restored ask the wording that a person gave its block while the issue was closed.
+  For each document whose latest version holds every stored edit, the reopen moves the open approval request that names it to that version and carries an approval to that version, as that version's own write does on an open issue, so a request that the reopen restores names the version that a settlement wrote while the issue was closed.
+  A document with stored edits that its latest version does not hold, the reopen's own block writes among them, is left to the settlement that saves them, and that settlement's version moves the request and carries the approval.
 
 - `/api/v1/issues/{key}/summary` (GET; cookie, trusted header, or bearer)
 
@@ -3911,7 +5006,8 @@ Each item below names a path with its method and identity, then its purpose.
 - `/api/v1/asks/{id}` (PATCH; cookie, trusted header, or bearer)
 
   Edit one or more of `question`, `options`, `multiple`, or `urgency` on an open ask.
-  A credential holding the `person` scope may edit any open ask, and somebody else's is recorded as the person with the agent beside them; every other must be the asking session, whose own reword is recorded as that session, as it always was.
+  A credential holding the `person` scope may edit any open ask, and somebody else's is recorded as the person with the agent beside them;
+  every other must be the asking session, whose own reword is recorded as that session, as it always was.
   The response records `edited_at` and emits `ask.edited` with the current ask, prior mutable fields, and `edited_by`.
   Anchors are selected when the ask is created and cannot be changed by this route.
   On a block ask the `:::ask` block is written in the same transaction and the row takes the block's parsed values, so the edit versions the document once and no settlement reverts it.
@@ -3964,10 +5060,11 @@ Each item below names a path with its method and identity, then its purpose.
   No note is refused for how it opens, unlike a resolve's reason:
   a decline is no retraction, so nothing a person writes here can be read as settlement's own work.
   On a block ask the block's `state` is written as the resolve route writes it, and that is not weighed either.
-  An ask of kind `approval` is `409 ASK_NOT_DECLINABLE`, decided inside the transaction under the ask's row lock, since an ask's kind is known only once its row is read:
+  An ask of kind `approval` is `409 ASK_NOT_DECLINABLE`, decided inside the transaction under the ask's owner lock, since an ask's kind is known only once its row is read:
   an approval request is answered `Approve` or `Request changes`.
   An ask on a closed issue is `409 ISSUE_CLOSED`.
-  The whole resolution rides `ask.resolved` to every session following the ask, `GET /api/v1/agents/{session_id}/answers` lists the decline under the relation `declined_your_ask`, and a write that opens another question on the issue is answered the issue's `declined_asks`.
+  The whole resolution rides `ask.resolved` to every session following the ask, and a write that opens another question on the issue is answered the issue's `declined_asks`.
+  `GET /api/v1/agents/{session_id}/answers` lists the decline under the relation `declined_your_ask` for the ask's author and its followers, and under `declined_an_ask`, without Dispatch's sentences, for any other session it reached.
 
 - `/api/v1/issues/{key}/comments?artifact=` (GET; cookie, trusted header, or bearer)
 
@@ -3981,6 +5078,9 @@ Each item below names a path with its method and identity, then its purpose.
   with `ask_id` instead of `reply_to` it names a part of that ask.
   `400 INVALID_COMMENT` with neither `reply_to` nor `ask_id`, and for a block or part the named item does not hold now.
   The delivery callback `POST /api/v1/comments/{id}/reply` takes `reply_to_block` for a block of comment `{id}`, never for a part of the ask its thread hangs under.
+  A reply or error callback on `POST /api/v1/comments/{id}/reply` or `POST /api/v1/messages/{id}/reply` is accepted from the session the attempt names, and, for an attempt sent for a `role:` route, from the session the role's claim names when the reply arrives while the listener's role lookup (`GET /v1/roles/<role>`) calls it live: the session that took the role from the one Dispatch sent to, which the listener hands what that session had not read.
+  Dispatch asks the listener before the reply's transaction opens, and only when the attempt names another session; a lookup the listener does not answer is `503 ENVOY_UNAVAILABLE`, and any other session, or the role's holder while it is not live, is `403 REPLY_FORBIDDEN`.
+  The attempt's first stored reply stays its reply, and a later reply is answered as any second reply is (the stored reply; a message reply with `follow_up` is posted under the first).
   A comment's record in its document's margin - its body and replies, or a suggestion's and its replacement - holds at most 256 KiB of text, and a document's margin 1 MiB:
   a comment, reply or suggestion that would leave either past its bound and bigger is `413 CAP_EXCEEDED`, naming the bound and both sizes.
   A quote anchor that would leave the marks on the document's text carrying more than 1 MiB of ids and authors, and more than they carried, is `413 CAP_EXCEEDED` too, as for an ask's.
@@ -3994,7 +5094,8 @@ Each item below names a path with its method and identity, then its purpose.
 - `/api/v1/comments/{id}/blocks` (GET; cookie, trusted header, or bearer)
 
   A comment's current blocks in body order:
-  `{item, revision, indexed, blocks: [{id, type, text, ref, from, to, changed_revision, changed_at, embedding}]}`, `item` the comment's graph node, `revision` its indexed revision, `from` and `to` UTF-16 code units into its stored body, `embedding` where meaning search stands on the block: `embedded`, `pending`, or `none` while no window covers it.
+  `{item, revision, indexed, blocks: [{id, type, text, ref, from, to, changed_revision, changed_at, embedding}]}`, `item` the comment's graph node, `revision` its indexed revision, `from` and `to` UTF-16 code units into its stored body, `embedding` where meaning search stands on the block:
+  `embedded`, `pending`, or `none` while no window covers it.
   While the comment is owed a block index, or was indexed from another body than it stores, `indexed` is `false` and `blocks` empty; the read writes nothing.
   `400 COMMENT_ID_INPUT` for an id that is neither a whole uuid nor a unique prefix of 8 or more characters of one.
 
@@ -4046,24 +5147,37 @@ Each item below names a path with its method and identity, then its purpose.
   a bearer reading a direct message names its session in `?session=` (`400 SESSION_REQUIRED`, `403 THREAD_FORBIDDEN`).
   While the message is owed a block index, `indexed` is `false` and `blocks` empty; the read writes nothing.
 
-- `/api/v1/issues/{key}/results` (GET, POST; cookie, trusted header, or bearer)
+- `/api/v1/issues/{key}/results` (GET; cookie, trusted header, or bearer)
 
   GET lists the `check` blocks of the issue's Verification document in document order:
   `{issue, verification_artifact_id, checks}`, each check with its attributes (`when`, `surface`, `run`, `negative_control`, `ci_check`), the version its words last changed in, their digest, and every result recorded against it from any issue, newest first.
-  A check's results come newest first by `created_at`, the time the recording transaction began, with `id` descending breaking a tie, and a client that reads one result per check reads the first of them;
-  `dispatch results` prints every one of them, each with the reading its role recorded.
-  Two results recorded in transactions that overlapped can come back in either order.
-  `?at=<40-hex commit>` compares every check of the issue with that one commit and nothing else.
-  The only read of GitHub it leaves is the check runs of a check CI proves, read at the issue's newest pull request head as on every read, so a derived result stands at the named commit only where that commit is that head.
+
+  - A check's results come newest first by `created_at`, the time the recording transaction began, with `id` descending breaking a tie, and a client that reads one result per check reads the first of them;
+    `dispatch results` prints every one of them, each with the reading its role recorded.
+    Two results recorded in transactions that overlapped can come back in either order.
+
+  - `?at=<40-hex commit>` compares every check of the issue with that one commit and nothing else.
+    The only read of GitHub it leaves is the check runs of a check CI proves, read at the issue's newest pull request head as on every read, so a derived result stands at the named commit only where that commit is that head.
 
   Each check carries `compared_with`, every commit and branch its results are compared with in the order they are asked about, `compared_nothing` where it has none, and `pass_stands`.
+  Each basis is `{kind, repo?, commit?, branch?, pull_request?, learned_at?}`, `kind` `named`, `pull_request` or `branch`; `repo` is the `owner/repo` of a basis in a repository the issue links a pull request in and does not resolve to, and is absent from every basis of the issue's own repository, so pull request `#7` or branch `main` of that linked repository reads apart from the issue's own.
   Each result carries `commit_stands`, where its own commit stands against those, `check_words_moved`, and `retracted` where a retraction stands against it.
 
   - A `before_merge` check is compared with every head Dispatch holds for the check's own issue: the head of an `open` pull request, and the final head of a `merged` one, attributed to that issue.
+    A pull request that the issue's external links name (`https://github.com/<owner>/<repo>/pull/<n>`) in a repository the issue does not resolve to counts as one attributed to it, since the attribution holds an issue to its own repository and can never give it that pull request (`delivery.Attributor.HeadsAttributedTo`, `linkedPullRequestTerms`); its basis names that repository in `repo`.
+    The link is matched to the stored row by repository and number, so a push that moves that pull request's head moves the basis, and one that closed without a merge is no basis.
+    The owner and the name are read by the patterns every name GitHub allows is read by, an owner of a letter or digit and then up to 38 letters, digits, `-` and `_` (a managed user's `mona-cat_octo` among them) and a name of letters, digits, `.`, `-` and `_`, and a name of `.` or `..` alone names no pull request, so a link cannot send a read of GitHub up the path.
+    A link to a pull request of the issue's own repository adds nothing: the attribution alone decides which pull requests of that repository are the issue's.
 
   - An `after_merge` check is compared with the branch the check's issue's pull request merged into — the `base_ref` of the newest merged pull request attributed to that issue — and with that repository's default branch, which answers alone where Dispatch holds no merge of the issue or the merged row names no base branch.
 
   - A `default_branch` check is compared with that repository's default branch alone, whatever branch the pull request merged into.
+
+  - A result of an `after_merge` or `default_branch` check whose commit the record route took to be of a repository the issue links a pull request in is compared in that repository:
+    the record route keeps that repository with the result (`check_results.commit_repo`, POST below), and the read asks that repository's branches, for `after_merge` the base branch of the merged linked pull request (`delivery.Attributor.BaseBranchMergedIn`) and then its default branch, for `default_branch` its default branch alone; the branch the result stands at names that repository in `repo`.
+    Asked of the issue's own repository, GitHub answers `404` for such a commit.
+    A `before_merge` result of that kind is read through that repository, below, for the same reason.
+    Every other result keeps no repository and is compared as above.
 
   - A check compared with nothing says why in `compared_nothing`:
     `no_pull_request_or_branch` where the issue resolves to no repository, and where a `before_merge` check's issue holds no pull request at all;
@@ -4076,7 +5190,9 @@ Each item below names a path with its method and identity, then its purpose.
     A branch check still places a commit a stored `branch_commits` yes carries, since that answer is keyed by a branch and stands for good.
     An earlier branch of an `after_merge` check is the one exception, and only where GitHub refused the read of it — a 403 or a 404, which a base branch GitHub no longer holds answers with: that says the branch does not carry the commit, and the default branch decides.
     Every other failure of that read, a rate limit, a 5xx, a timeout or a request whose caller went away, leaves the answer `unknown` wherever no branch carries the commit, and never `other_commit`.
-    An issue that resolves to no repository is never unknown: Dispatch holds every head such an issue will ever have, so a commit none of them names is another commit.
+    An issue that resolves to no repository is never unknown, since Dispatch holds every head such an issue will ever have, so a commit none of them names is another commit; the one exception is a `before_merge` result whose `check_results.commit_repo` names a linked repository, which that repository decides, as the next sentence says.
+    A result whose commit is taken to be of a repository the issue links a pull request in (`check_results.commit_repo`) is decided by that repository: a `before_merge` one is `unknown` where Dispatch cannot read it and `other_commit` where no compared head is its commit, and a branch check's walks that repository's branches.
+    Such an `other_commit` or `unknown` answer carries that repository as `repo` (`owner/name`), so a reader names it rather than the issue's own repository; an answer about the issue's own repository carries none, and an `at_basis` answer names a linked repository in its `basis`.
 
   - `check_words_moved` is whether the check's words changed after the result was recorded, which the digest the result kept decides against the block's digest now.
     It is a second fact and a second field: a result at a compared commit whose check has been reworded since is both, and one word for both would hide which.
@@ -4085,15 +5201,25 @@ Each item below names a path with its method and identity, then its purpose.
     `unknown` where the repository is unreadable, for a check CI proves whose check runs GitHub could not be read (`ci.state` `unread`), or where such a pass is held up only by a commit Dispatch could not place;
     `no` otherwise, which a check compared with nothing for `no_pull_request_or_branch` answers, since there is nothing for a pass to stand at.
 
+  - `currency` is a compatibility field for `dispatch` clients older than pi-envoy 17.1.0, which print it beside each result and read none of the fields above (`api/results_currency.go`).
+    It is `current` where `commit_stands` is `at_basis`, `check_words_moved` is false and no retraction stands, and `older` where `commit_stands` is `other_commit` or it is `at_basis` and `check_words_moved` is true.
+    It is left out everywhere else, where those clients print "unknown": a commit Dispatch cannot place, a retracted result at its basis under the check's words now, and every result of a read that names `?at=`.
+    It is derived from those fields alone, with no read of its own, and it is removed once no client older than pi-envoy 17.1.0 is in use.
+
   Where the App can read that repository, a `before_merge` result whose commit heads no such pull request is read through GitHub itself before the answer is given, which is what makes a result recorded before its own pull request opened stand at that head once the pull request opens at its commit:
 
-  - One `GET /repos/{owner}/{repo}/commits/{sha}/pulls`, and every head GitHub names is written (`delivery.ReadThroughCommitPulls`).
+  - One `GET /repos/{owner}/{repo}/commits/{sha}/pulls`, and every head GitHub names is written (`delivery.Attributor.ReadThroughCommitPulls`).
+    It asks the repository the result's `check_results.commit_repo` names where it names one, and the repository the issue resolves to otherwise: asked of the issue's own repository, a commit only a linked repository holds names no pull request on any read, and a linked pull request whose head reaches it after the record would never be learned.
 
-  - Without that read it would stand at no basis for ever: the read-through the record itself makes runs once, while no pull request carries the commit, and a deployment holding no delivery settings binds no intake durable and so consumes no `pull_request` event at all (`delivery.Intake.Run`).
+  - Without that read it would stand at no basis for ever:
+    the read-through the record itself makes runs once, while no pull request carries the commit, and a deployment holding no delivery settings binds no intake durable and so consumes no `pull_request` event at all (`delivery.Intake.Run`).
 
   - One repository and commit costs at most one such read every `delivery.CommitPullReadStaleAfter` (five minutes), however often the Verification tab refetches.
 
-  - Eligibility for that read is the repository and commit's, never one result's: it is skipped only where GitHub's answer cannot change the result — Dispatch already holds an open or merged pull request whose head is that commit, whatever issue it is attributed to, since its own passes keep reading that row; or a read has already been told of a pull request whose head is another commit, which answers about this commit for now and holds the pair off for `delivery.CommitPullSettledFor` (one hour, `delivery.CommitPullReads`), after which it is read through again, since a pull request opened later can have its head at that commit.
+  - Eligibility for that read is the repository and commit's, never one result's:
+    it is skipped only where GitHub's answer cannot change the result
+    — Dispatch already holds an open or merged pull request whose head is that commit, whatever issue it is attributed to, since its own passes keep reading that row;
+    or a read has already been told of a pull request whose head is another commit, which answers about this commit for now and holds the pair off for `delivery.CommitPullSettledFor` (one hour, `delivery.CommitPullReads`), after which it is read through again, since a pull request opened later can have its head at that commit.
 
   A check CI proves is one whose `ci_check` names a GitHub check run, with `when` `before_merge`, no `run`, a `negative_control`, and no result recorded against it (`validCICheck`, `docs.CICheckRuleIn`).
   No role records its result (POST below refuses one), and nothing is stored for it:
@@ -4106,7 +5232,8 @@ Each item below names a path with its method and identity, then its purpose.
     `case` is the conclusion that decided it — `success` passes, and `failure`, `timed_out`, `action_required`, `startup_failure`, `stale` and a conclusion this list does not name, as GitHub wrote it, fail — or one of the cases of no result:
     `neutral`, `skipped`, `cancelled`, `not_completed`, `absent` (no run of that name at the head) and `no_head` (Dispatch holds no open or merged pull request head of the issue), each `no_result`, and `github_unreadable` (`unread`: no App key, a token GitHub would not mint, an HTTP error, a rate limit or the deadline).
     `detail` is one sentence naming the case, at most 2,000 runes; for `github_unreadable` it names GitHub's own answer, a refusal by its status and the `message` of its JSON body, never the body itself and never a token.
-    `line` is the pull-request body line for the check: `- Check <id> (before_merge): <verdict> at <sha>, from CI run <name>. <the check's words>` for a pass or a fail, and `- Check <id> (before_merge): CI run <name> has no result (<case>)` for every other state; the check's words are cut as a recorded line's reading is, at a word, to at most 80 runes, with `…` where they were cut.
+    `line` is the pull-request body line for the check: `- Check <id> (before_merge): <verdict> at <sha>, from CI run <name>. <the check's words>` for a pass or a fail, and `- Check <id> (before_merge): CI run <name> has no result (<case>)` for every other state; the check's words are kept, and the words cut, as a recorded line's reading is (POST below), so `text` keeps an issue key the line leaves out.
+    The run's name is written word for word, its blanks as one, only when the line keeps every word of it; a name holding a word the line drops, such as an issue key or a word holding `_`, reads `the CI run the check names`, and `ci_check` and `run` keep it whole.
 
   - For a pass or a fail its `results` hold the one result derived from that run, and nothing else:
     `id` `ci-run:<check run id>`, `role` `ci`, `actor` `{kind: "github_app", id: <the slug of the App that made the run>}`, `session` `""`, `run` the run's name, `surface` and `negative_control` the check's, `commit_sha` the head read, `created_at` the run's `completed_at`, `observed` the conclusion, then the run's output title and summary cut together to 2,000 runes, then its URL, one a line, `check_sha256` the check's own digest, the counts 0, `screenshots` `[]`, and no `event_seq`.
@@ -4118,17 +5245,66 @@ Each item below names a path with its method and identity, then its purpose.
   Nothing is written on a push: a push that moves a pull request's head leaves the result at the old head standing at no basis, by itself.
   An issue with no Verification document answers no checks.
 
-- POST records one result: `{check, role, verdict, commit, surface?, run?, observed?, negative_control?, failed?, skipped?, excluded?, screenshots?, actor?}`.
-  `{key}` is the issue the result is recorded on; `check` names a check of its Verification document or of one of its ancestors', by block id or, when a block id is not unique in that set, by its canonical block reference (`409 CHECK_AMBIGUOUS`); any other id is `400 UNKNOWN_CHECK`.
-  A check CI proves (GET above) is `409 CHECK_PROVED_BY_CI` for every role, naming the block and the check run, since its result is read from that run;
-  the test runs right after the check is resolved, before GitHub is asked about the commit, and again inside the recording transaction, where whether a result is recorded against the block is read again.
-  `role` is at most 32 characters of `[a-z-]`, `verdict` is `pass` or `fail`, `commit` is 40 lowercase hex, and absent counts are 0; a `pass` counting any failed, skipped or excluded case is `400 RESULT_CONTRADICTS`, and any other malformed field `400 RESULT_INPUT`.
-  Dispatch asks GitHub whether the repository the check's issue resolves to holds that commit, before it writes anything, and refuses a result at one it does not with `400 RESULT_COMMIT_UNKNOWN`, naming the commit and that `owner/repo`.
-  Only GitHub's `422 No commit found for SHA` refuses: a deployment with no App key, an issue resolving to no repository, a repository the App cannot read (GitHub answers `404` for that), a rate limit, a timeout and a failed read all store the result as before.
-  A screenshot names an image document of the recording issue or of the check's issue.
+- `/api/v1/issues/{key}/results` (POST; cookie, trusted header, or bearer)
+
+  POST records one result: `{check, role, verdict, commit, surface?, run?, observed?, negative_control?, failed?, skipped?, excluded?, screenshots?, actor?}`.
+  What it takes, and what it refuses:
+
+  - `{key}` is the issue the result is recorded on;
+    `check` names a check of its Verification document or of one of its ancestors', by block id or, when a block id is not unique in that set, by its canonical block reference (`409 CHECK_AMBIGUOUS`); any other id is `400 UNKNOWN_CHECK`.
+
+  - A check CI proves (GET above) is `409 CHECK_PROVED_BY_CI` for every role, naming the block and the check run, since its result is read from that run;
+    the test runs right after the check is resolved, before GitHub is asked about the commit, and again inside the recording transaction, where whether a result is recorded against the block is read again.
+
+  - `role` is at most 32 characters of `[a-z-]`, `verdict` is `pass` or `fail`, `commit` is 40 lowercase hex, and absent counts are 0;
+    a `pass` counting any failed, skipped or excluded case is `400 RESULT_CONTRADICTS`, and any other malformed field `400 RESULT_INPUT`.
+
+  - Dispatch asks GitHub whether the repository the check's issue resolves to holds that commit, before it writes anything.
+    When GitHub does not say it does — it says that repository does not hold it, or its read did not answer — Dispatch reads the external links of the check's issue: each link of the form `https://github.com/<owner>/<repo>/pull/<n>` names that repository, and the repository counts when GitHub says one of those pull requests is open or merged (`delivery.PullRequestOpenOrMerged`).
+    A pull request that closed without a merge does not make its repository count, and neither does one GitHub answers `404` or `410` for (a mistyped link, or a pull request since deleted), nor a repository the App is not installed on, nor one it cannot read (GitHub's `403` that is no rate limit, as `githubapp.RateLimit` reads one): each is GitHub's answer, not a failed read, and no retry changes it until someone gives the App the repository.
+    One record reads at most 10 linked pull requests, one after another, and each distinct repository once, until one of its pull requests counts (`linkedPullRequestReads`); a link past the bound is left unread.
+    A link names a pull request only where the pattern the links are read by takes it (`delivery.Attributor.LinkedPullRequests`): an owner that is a login GitHub serves, and a name of letters, digits, `.`, `-` and `_` that is neither `.` nor `..`; any other link, such as one whose owner is `-acme` or `my.org`, spends no read, and no refusal names it.
+    A link that pattern takes whose repository's name GitHub's naming rule then refuses (such as `acme/.git`, which is empty once `.git` is trimmed) does not count either: it spends one of the record's 10 reads, makes no GitHub request, and the refusal below names its repository as one whose links Dispatch set aside, which no grant of the App mends.
+    Dispatch then asks GitHub whether each repository that counts holds the commit, and refuses a result at a commit that no repository it asked holds with `400 RESULT_COMMIT_UNKNOWN`, naming the commit, each `owner/repo` it asked, each linked pull request of a repository the App is not installed on or cannot read with its reason (`owner/repo#n (repository_unreadable)`), as a pull request it could not read, at most 10 of those and a count of the rest, or, where it read that pull request and could not read the commit, as the one in whose repository it could not read the commit, every one of those, since each spent one of the record's 10 reads, and that the App is to be granted that repository or a readable pull request linked, each repository whose links it set aside for the naming rule, and how many linked pull requests the bound left unread where it left any.
+    So an issue whose work is in two repositories takes a result at the head of the pull request it links in the second repository, also while GitHub cannot answer for the first.
+
+  - A read of a linked pull request's state or of a linked repository's commit that does not answer — a rate limit, a 5xx, a timeout — refuses the record where no repository is shown to hold the commit, with `502 GITHUB_UNREADABLE` naming that repository, the commit and GitHub's own message, and stores nothing:
+    the repository may hold the commit, and stored under it the result would sit at a commit no read showed any repository to hold.
+    The refusal tells the caller to record the result again, and a rate limit names GitHub's wait, in the sentence and in `Retry-After`.
+
+  - A failed read of Dispatch's own rows of the issue's links refuses the record with `500 INTERNAL` and stores nothing: the links are read, before anything is written, wherever GitHub does not say that the issue's own repository holds the commit.
+
+  - Otherwise only GitHub's `422 No commit found for SHA` refuses, and only once it has said so of the issue's own repository:
+    a deployment with no App key and an issue resolving to no repository store the result as before, and so do an issue's own repository the App cannot read (GitHub answers `404` for that; a linked repository the App is not installed on or cannot read is one that does not count, as above), a rate limit, a timeout and a failed read of the issue's own repository, each where every linked read answered.
+    Any of those four reads of the issue's own repository beside a linked read that did not answer is the `502 GITHUB_UNREADABLE` above.
+    The stored result keeps a linked repository (`check_results.commit_repo`) where GitHub said that repository holds the commit.
+    Where the read of the issue's own repository did not answer, every linked read answered and no linked repository holds the commit, the result keeps none, as before.
+    After the write, the read-through of the pull requests GitHub names for the commit reads the repository the commit is taken to be of, that linked repository or the issue's own, so the pull request of a linked repository is learned from that repository.
+
+  - A screenshot names an image document of the recording issue or of the check's issue.
+
   The result is appended as `result.recorded` on the check's own issue, naming the recording issue.
-  A closed issue, the recording one or the check's, takes a result only for a check whose `when` is `after_merge` or `default_branch` — the production check after the merge — and refuses every other with `409 ISSUE_CLOSED`; every other write on a closed issue stays refused.
-  The answer is `{result, line}`, `line` the pull-request body line the result implies, which carries no link to Dispatch.
+  A closed issue, the recording one or the check's, takes a result only for a check whose `when` is `after_merge` or `default_branch` — the production check after the merge
+  — and refuses every other with `409 ISSUE_CLOSED`; every other write on a closed issue stays refused.
+  The answer is `{result, line}`, `line` the pull-request body line the result implies:
+
+  - The line is `- Check <id> (<when>): <verdict> at <commit>, recorded by <role>.` and the reading.
+    It goes into a pull request, which can be public, so the reading keeps only plain words: a word every rune of which is a visible letter, a digit or one of `. , ; : ! ? ' " - ( ) /`.
+    Every other rune drops its word whole: many of them, such as emphasis and strikethrough (`*`, `_`, `~`), code, HTML, links, escapes, character references, math, mentions and every Unicode dash, quotation mark or invisible character, can split, join, hide or forge a key or a host once the pull request renders it, and the rule allows these few runes rather than list which; `Vec<u8>`, `$PATH`, `ENVOY_TOKEN`, `a->b` and `it’s` leave the line too, while the record keeps the whole reading.
+    Of the plain words it also leaves out every one that holds `://`, a host below `.internal.` or ending in `.internal`, a Tailscale MagicDNS host, this Dispatch's own host, or an issue key of a project this Dispatch holds, judged as written and under NFKC; a public host written as `www.` and a domain, which GitHub renders as a link, stays.
+    The public text check refuses a host below `.internal.` everywhere, and one ending in `.internal` only in a pull request's own text, where it still lets `metadata.google.internal` and `host.docker.internal` pass: over the whole repository such names are well known, while the line is pasted into public text with no reader in between and drops them too.
+    A key counts in any case, at the start of a word or after a character that is neither a letter nor a digit, and up to the end of its number: `ACME-12's`, `(ACME-12)` and `fix/acme-12-lines` each hold one.
+    `UTF-8`, `SHA-256` and `TEST-1` hold none while no project is called UTF, SHA or TEST, and `kernel-6.8` holds none even where KERNEL is a project, since a number that runs on into a decimal part is a version.
+    What is left, when it is longer than 80 runes, is cut at the last blank within its first 80 runes, or, where those runes hold no blank, at the limit itself, with `…` where it was cut; a cut text is judged again, since a cut at the limit can fall inside a word and leave a key the whole word did not hold; a reading of which nothing is left, before the cut or after that second judging, says `The reading holds only words this line leaves out.`, and a result with no reading says `The role recorded no reading.`
+    Words are judged only until what is kept passes 80 runes, since the cut reads no further.
+    No line is stored: each is written when it is answered, from the projects Dispatch holds then.
+
+- `/api/v1/issues/{key}/results/dry-run` (POST; cookie, trusted header, or bearer)
+
+  The dry run of a result's record, which `dispatch result --dry-run` sends: it takes the record's body and refuses it as the record does before it writes anything (`400 RESULT_INPUT`, `400 RESULT_CONTRADICTS`, `400 UNKNOWN_CHECK`, `409 CHECK_AMBIGUOUS`, `409 CHECK_PROVED_BY_CI`, `400 RESULT_COMMIT_UNKNOWN`, `502 GITHUB_UNREADABLE`).
+  Otherwise it answers `200 {line}`, the line the record would answer, and records nothing: no row and no event.
+  A closed issue, a screenshot and a check reworded while the record writes are refused by the record alone, since the record judges them under its locks.
+  The dry run is a path of its own, not a flag on the record: a release that does not serve it answers `404`, where it would drop a flag it did not know and record the result.
 
 - `/api/v1/issues/{key}/coverage` (GET; cookie, trusted header, or bearer)
 
@@ -4136,7 +5312,8 @@ Each item below names a path with its method and identity, then its purpose.
 
   A requirement is a `requirement` block of the spec, and `requirements` lists them in document order, each with its block reference, its words, and how many `check` and `plan_task` blocks name it in `serves`.
 
-  A block counts when it is in any document of the issue or of any descendant issue, at any status; the descendants are one recursive `child_of` walk bounded by `refs.IssueDepthCap` (`refs.IssueDescendants`).
+  A block counts when it is in any document of the issue or of any descendant issue, at any status;
+  the descendants are one recursive `child_of` walk bounded by `refs.IssueDepthCap` (`refs.IssueDescendants`).
 
   `gaps` is one line per gap, `<block id> has no check` and `<block id> has no plan task`, the second only once the issue has a plan document, or the single line `the spec marks no requirements` for a spec that marks none.
 
@@ -4147,7 +5324,7 @@ Each item below names a path with its method and identity, then its purpose.
 - `/api/v1/issues/{key}/handoffs/{phase}` (POST; bearer (an agent session naming itself in `actor`))
 
   Record the session's handoff for one phase of the issue, `{actor, body}`:
-  `body` is one JSON object as a string of at most `contracts.DispatchHandoffBodyMax` (262,144) bytes, stored exactly as sent, and the record is the phase's next version from 1, numbered under the issue's row lock.
+  `body` is one JSON object as a string of at most `contracts.DispatchHandoffBodyMax` (262,144) bytes, stored exactly as sent, and the record is the phase's next version from 1, numbered under the issue's owner lock.
   A cookie caller is `403 HANDOFF_FORBIDDEN`, an actor that is not a session `400 ACTOR_KIND`, a phase that is not a lowercase slug or a body that is not one JSON object `400 HANDOFF_INPUT`, an over-cap body `413 CAP_EXCEEDED` naming the cap, and a closed issue `409 ISSUE_CLOSED`.
   Answers `201 {id, issue_key, phase, version, author, created_at}` and appends `handoff.recorded` `{handoff_id, phase, version}` in the same transaction, which never carries the body and notifies no one.
   A keyed write: a retry under the same `Idempotency-Key` is answered the first call's `201` and records no second version.
@@ -4159,6 +5336,47 @@ Each item below names a path with its method and identity, then its purpose.
 - `/api/v1/issues/{key}/handoffs/{phase}/latest` (GET; cookie, trusted header, or bearer)
 
   The phase's newest handoff with its body, byte for byte as written; `404 HANDOFF_NOT_FOUND` when it has none.
+
+- `/api/v1/issues/{key}/role-holders` (PUT; cookie, trusted header, or bearer; the actor must be the Legion daemon's session)
+
+  Publish the session that holds each Legion role of the issue: `{holders: [{role, session}], actor}`, each pair naming both its role and its session.
+  The role is one of `architect`, `planner`, `implementer`, `tester`, `reviewer` and `merger`.
+  The session is a session id (`text.IsSessionID`) of at most 256 bytes: it holds no whitespace, no control character, no backtick and none of `/?#<>"'[]|`.
+  The body is the whole set of the issue, and `[]` is an issue where no session holds a role.
+  The write replaces the stored set, so a session that the body does not name holds no role of the issue.
+  A pair that did not change keeps its `recorded_at`.
+  The actor must be the session `legion-daemon:<project>`, the key up to its first `-`, which is the session that the daemon of the issue's project writes as.
+  Any other actor is `403 ROLE_HOLDER_FORBIDDEN`.
+  Before the airlock, Dispatch takes the session that a bearer caller names as the caller names it.
+  So any caller whose Dispatch credential proves no session of its own can name the daemon's session and write the set: the deployment's shared token, and a person's own agent token whatever its scopes.
+  The airlock closes that case.
+  A body without `holders`, a role that is not one of the six, a session that is not a session id or is longer than 256 bytes, a role or a session named twice and an empty session are each `400 INVALID_ROLE_HOLDER`, and nothing is stored.
+  An issue that Dispatch does not know is `404 ISSUE_NOT_FOUND`.
+  The write takes a closed issue, appends no issue event and notifies nobody.
+  The answer is `200 {issue, holders}`, the set that this write stored, each holder `{role, session, recorded_at}`, in workflow order.
+
+  - **Two writes of one issue.**
+    A write holds the issue's owner lock (`store.LockOwner`), which a second write of the same issue waits for, so the stored set is always one whole set.
+    When two writes of one issue run at the same time, the one that finishes last wins.
+    The daemon sends one write of an issue at a time: its outbox holds one `role_holders_publish` row for each issue, and a lane runs the rows of its issue one at a time (`packages/daemon/internal/daemon/outbox_lanes.go`).
+    A claim change while the daemon's write of that issue is in flight leaves the older set stored until the outbox's first sweep after that row's lease ends: the lease ends 30 s after its last renewal, and the sweep runs every 30 s, so the older set can stay for about a minute before the row runs again with the live set.
+
+  - **When the daemon publishes.**
+    The daemon publishes the set when a claim readies, at each boot, and at each claim write that changes the session that holds a role: the agent registers, or the claim retires, fails, is suspended or launches again.
+    The claim write queues the publication in its own transaction in the daemon's store, so the change and its publication commit together or not at all.
+    An end whose claim write failed with an error that the daemon owes, such as a lost connection, is published when the daemon makes that write again at the claim's next decision, and not before: until then the store still holds the claim live.
+    The session of an ended claim keeps its role until the next publication lands, and in that time a process whose stop failed can still write with the pane's Dispatch bearer.
+    An end whose claim write failed and is not owed leaves the daemon's memory ended and its store live, and the set follows the store (dispatch://INFRA-4099).
+    A later decision of that claim, such as a second stop, makes that write again only while the claim still holds a pending task that the decision retires, such as the task of a turn that is over, because the retirement writes the claim with it; otherwise the session stays listed until another write of that claim lands, and the daemon's next start takes the claim up from its row as live.
+    Such ends include a suspension, a stop or a failure whose claim write the database refused, and a stop whose retirement of its round's ask failed.
+    The boot publishes each issue with a live claim or a claim that changed in the last seven days, for the claims that an earlier release changed and did not publish.
+    The daemon ends a publication that this route refuses with `400`, and logs one ERROR line with the issue and the code; the next ready, end or other change of a claim on the issue queues a fresh publication of the live set.
+    A live claim whose session this route refuses stops each publication of its issue in that way, with one ERROR line each time, until that claim ends.
+
+- `/api/v1/issues/{key}/role-holders` (GET; cookie, trusted header, or bearer)
+
+  The set that the daemon last published: `{issue, holders}` in workflow order, and `[]` when no session holds a role.
+  A closed issue reads too, and an issue that Dispatch does not know is `404 ISSUE_NOT_FOUND`.
 
 - `/api/v1/handoffs/{id}` (GET; cookie, trusted header, or bearer)
 
@@ -4172,10 +5390,16 @@ Each item below names a path with its method and identity, then its purpose.
   Any other file's kind is read from its bytes, never from the part's declared `Content-Type`:
   it is `image` only when its bytes are a PNG, JPEG, GIF or WebP, stored with `mime` the type its bytes are (a JPEG declared `image/png` is `image/jpeg`), and otherwise a `file` under its declared type, an SVG among them, so no client stores other bytes as an image.
   An upload's name finds the issue's artifact whose name or slug it is, so a name that is an artifact's slug (`plan-md` for `plan.md`) is that artifact's next version, never a second artifact the same reference would also name.
-  A document an issue first holds under `verification.md`, `plan.md` or `decisions.md` carries that role (`artifacts.role`, `verification`, `plan` or `decisions`), which the row keeps for good: a later upload of the same name is that document's next version, and no upload moves a role.
-  An issue holds at most one document of each role, and the issue read names all three (`verification_artifact_id`, `plan_artifact_id` and `decisions_artifact_id`), as the Verification and Plan tabs find them and as the design gate's `decisions` step finds its own document.
-  A document stored under one of those names before its role existed carries no role, and a reader finds it by its slug instead; the next upload of that name sets the role on the row it already has.
-  A role decides what a document is for: `POST /api/v1/artifacts/{id}/plan-reviews` takes only a `plan`, `POST /api/v1/artifacts/{id}/approval-requests` refuses one, and `--include-verification` and `GET .../results` read the `verification` document's `check` blocks.
+
+  - A document an issue first holds under `verification.md`, `plan.md` or `decisions.md` carries that role (`artifacts.role`, `verification`, `plan` or `decisions`), which the row keeps for good:
+    a later upload of the same name is that document's next version, and no upload moves a role.
+    An issue holds at most one document of each role, and the issue read names all three (`verification_artifact_id`, `plan_artifact_id` and `decisions_artifact_id`), as the Verification and Plan tabs find them and as the design gate's `decisions` step finds its own document.
+
+  - A document stored under one of those names before its role existed carries no role, and a reader finds it by its slug instead;
+    the next upload of that name sets the role on the row it already has.
+
+  - A role decides what a document is for: `POST /api/v1/artifacts/{id}/plan-reviews` takes only a `plan`, `POST /api/v1/artifacts/{id}/approval-requests` refuses one, and `--include-verification` and `GET .../results` read the `verification` document's `check` blocks.
+
   A version whose kind is not its artifact's is `400 ARTIFACT_KIND_MISMATCH`, naming the artifact's slug, name and kind.
   A name no artifact has yet is `400 INVALID_ARTIFACT`, naming the bound, when it, or the reference key `<owner>/<slug>` it gives the new artifact, is over 2692 bytes, the most a B-tree entry of `artifacts_ref_key_key` holds of incompressible text;
   an upload under an existing artifact's name, one stored longer included, is never refused for its length.
@@ -4231,11 +5455,19 @@ Each item below names a path with its method and identity, then its purpose.
 
 - `/api/v1/artifacts/{id}/versions/{n}` (GET; cookie, trusted header, or bearer)
 
-  Read a document version or download a blob.
+  Read a document version as JSON, or download any version.
   `{id}` must be a UUID.
   A file whose bytes are in the bucket is `502 FILE_STORE_UNAVAILABLE` when the bucket does not answer, `503` on a server with no bucket configured.
-  A file or image version, whoever owns it, is served with `Cache-Control: private, max-age=31536000, immutable` beside its `ETag` (the bytes' sha256), since a version's bytes never change and the route is authenticated;
-  a document version, and every error, carries no cache header.
+  A file or image version, whoever owns it, is served as `Content-Disposition: attachment` under the artifact's stored name, with `-v<number>` before the name's last `.` for a version older than the latest (`report-v2.pdf`; `Makefile-v1` and `.env-v1` for a name with no `.` after its first character), so a saved file is not named after the version number its address ends in.
+  It carries `Cache-Control: private, max-age=31536000, immutable` beside its `ETag` (the bytes' sha256), since a version's bytes never change and the route is authenticated;
+  a document version read without `?download=true`, and every error, carries no cache header.
+  `?download=true` is the download address, which the web app's Download links use (exactly `true`; any other value answers as without it):
+  every kind answers there `Content-Disposition: attachment` under that name and `Cache-Control: private, no-cache`, so a browser asks again before it uses a copy it holds and saves under the name of the moment, an older version's `-v<number>` included once a newer version arrives.
+  A document version answers there its Markdown, the text the JSON's `markdown` field holds, rather than the JSON, as `text/markdown; charset=utf-8`, its name given `.md` first when it ends in neither `.md` nor `.markdown`, whatever their case (`Launch notes-v1.md`).
+  `?blocks=true` (exactly `true`) carries the document version's typed blocks under `blocks`, each read from that version's own text under the id its opening line writes, with its `type`, its `attributes`, its `token` and its `from` and `to` byte range in the `markdown` of the same answer.
+  That `markdown`, with `sha256` and `size`, is the version as this build renders it, which is the stored text unless an earlier renderer wrote it otherwise; a version holding an element this build cannot read is then `409 DOC_NEWER_CONTENT`.
+  Untyped blocks are not listed, because the stored text names no id for them; a listed block's `references` read zero and it carries no `embedding`, which describe the live document.
+  A build before this one ignores the parameter and answers no `blocks` key.
 
 - `/api/v1/artifacts/{id}/versions` (POST; cookie, trusted header, or bearer)
 
@@ -4259,30 +5491,40 @@ Each item below names a path with its method and identity, then its purpose.
   With `include_verification` it asks for the issue's Verification document (`role` `verification`) in the same request, each document at its own current settled version, and the answer records the human's review on each;
   an issue with no Verification document is `409 NO_VERIFICATION_DOCUMENT`, and one whose Verification document has no settled version is `409 NO_VERSION`.
   The flag is for the issue's spec alone: on any other document it is `409 NOT_SPEC_DOCUMENT`.
-  A document whose role is `plan` is `409 PLAN_APPROVED_BY_REVIEW`: a plan is approved by its plan review, never by a person.
+  A closed issue's document is `409 ISSUE_CLOSED`, before any other 409; an issue's plan is `409 PLAN_APPROVED_BY_REVIEW`, as its plan review approves it, and a project `plan.md` is no plan.
   The question is `Approve <name> (version <N>)?`, or `Approve <name> (version <N>) and <name> (version <N>)?` for a request naming two documents, followed by the optional `summary` (blank is `400 SUMMARY_INPUT`;
   past the ask cap at the longest version a request can reach, ten digits, is `400 CAP_EXCEEDED` naming `summary`).
   A request on a document a human approved earlier names that approval in `ask.approval.approved` (`{version, at, by}`);
   a first request carries no `approved` key.
   One open approval row follows every document version in place, rewording its question and emitting `ask.edited`;
   while its `requested_version` is below the new version it waits on the agent.
+  A row waiting on the human keeps its turn, quietly, at a settlement's version with the bytes of the named one;
+  a version a route writes (a named version, an upload, an edit) moves it to the agent whatever its bytes.
   Only the first move since the request was opened or handed back notifies, even when a thread reply had already left it waiting on the agent;
   a later move, while `requested_version` is already below the version it named, is `quiet: true`, `notify: false`, and reaches no follower.
   A version a human's answer to a decision block writes, when that answer is the whole change since the version he approved (who answered what is the document's asks rows, and an ask block no row of the document backs, a copy, one settlement could not read, one whose server-owned attributes are not as settlement writes them from its row, or a block id the version repeats carries nothing), carries his approval to it in the same transaction - an `approved` review in his name whose `reason` names the carry, and `artifact.approved` - and answers the open request `Approve` in his name after the move (`ask.answered`, the review's `ask_id`), so nothing is requested again for it.
-  Calling this route again while the row waits on the agent - moved, or a thread reply newer than its last hand-back holds the turn - hands it back to the human:
-  a summary that changes its question rewords it first (`ask.edited`;
-  an omitted summary keeps its prior one), then `requested_version` becomes the latest version and `ask.handed_back` is emitted, leaving `edited_at` as it was.
-  While the row waits on the human, the same summary or none is a repeat that answers `200` with no event, and a different one is `409 APPROVAL_WAITS_ON_HUMAN` and changes nothing, since it would rewrite the card the human is reading.
-  It answers `201` when it wrote anything, with the document's `approval` as the call left it (`waiting_on` while awaiting).
-  Every answer carries `coverage`, one line per requirement of the issue's spec with no check, or the single line `the spec marks no requirements` for a spec that marks none (`GET /api/v1/issues/{key}/coverage`), and no line at all for a covered spec; it is empty for a document that is not a spec.
+  A second call does one of two things, by what the row waits on:
 
-  It never names a missing plan task, since the plan comes after the approval; a spec with gaps still opens the request, and a coverage read that failed answers `coverage_unread: true` with no lines.
+  - Calling this route again while the row waits on the agent - moved, or a thread reply newer than its last hand-back holds the turn - hands it back to the human:
+    a summary that changes its question rewords it first (`ask.edited`;
+    an omitted summary keeps its prior one), then `requested_version` becomes the latest version and `ask.handed_back` is emitted, leaving `edited_at` as it was.
+
+  - While the row waits on the human, the same summary or none is a repeat that answers `200` with no event, and a different one is `409 APPROVAL_WAITS_ON_HUMAN` and changes nothing, since it would rewrite the card the human is reading.
+
+  It answers `201` when it wrote anything, with the document's `approval` as the call left it (`waiting_on` while awaiting).
+  Every answer carries `coverage`, one line per requirement of the issue's spec with no check, or the single line `the spec marks no requirements` for a spec that marks none (`GET /api/v1/issues/{key}/coverage`), and no line at all for a covered spec;
+  it is empty for a document that is not a spec.
+
+  It never names a missing plan task, since the plan comes after the approval;
+  a spec with gaps still opens the request, and a coverage read that failed answers `coverage_unread: true` with no lines.
 
 - `/api/v1/artifacts/{id}/plan-reviews` (POST; cookie, trusted header, or bearer)
 
   Record a plan review's approval of a plan version: `{version}`, the version the review read.
   It writes an `approved` review of kind `plan_review` and emits `artifact.approved`, so every read of the document shows it approved and a later version makes it stale, as a spec's approval goes stale.
-  It is `409 NOT_PLAN_DOCUMENT` on any document that is not the issue's plan, the issue's spec included — a document whose `role` is `plan`, or one a rolling deploy left with no role whose slug is `plan-md`, is the plan — `409 NO_VERSION` on a plan with no settled version, and `400 INVALID_REVIEW` for a version the plan does not have.
+  It is `409 NOT_PLAN_DOCUMENT` on any document that is not the issue's plan, the issue's spec and a project document named `plan.md` included
+  — an issue document whose `role` is `plan`, or an issue document a rolling deploy left with no role whose slug is `plan-md`, is the plan
+  — `409 NO_VERSION` on a plan with no settled version, and `400 INVALID_REVIEW` for a version the plan does not have.
   No person is ever asked to approve a plan, which is why `/api/v1/artifacts/{id}/approval-requests` refuses one.
   A review Dispatch carries to a later version keeps the `kind` of the review it carries, so a plan version restored to the text its plan review approved is still `plan_review` and no carry ever records a plan's approval as a person's.
 
@@ -4315,7 +5557,7 @@ Each item below names a path with its method and identity, then its purpose.
 
 - `/api/v1/issues/{key}/artifacts/{slug}/versions/{n}` (GET; cookie, trusted header, or bearer)
 
-  Read an issue artifact version or download its blob, as `/api/v1/artifacts/{id}/versions/{n}` does.
+  Read an issue artifact version or download it, as `/api/v1/artifacts/{id}/versions/{n}` does, `?download=true` and `?blocks=true` included.
 
 - `/api/v1/issues/{key}/artifacts/{slug}/versions` (POST; cookie, trusted header, or bearer)
 
@@ -4343,7 +5585,7 @@ Each item below names a path with its method and identity, then its purpose.
 
 - `/api/v1/projects/{key}/artifacts/{slug}/versions/{n}` (GET; cookie, trusted header, or bearer)
 
-  Read an unlinked project document version or download its blob, as `/api/v1/artifacts/{id}/versions/{n}` does.
+  Read an unlinked project document version or download it, as `/api/v1/artifacts/{id}/versions/{n}` does, `?download=true` and `?blocks=true` included.
 
 - `/api/v1/projects/{key}/artifacts/{slug}/versions` (POST; cookie, trusted header, or bearer)
 
@@ -4378,7 +5620,9 @@ Each item below names a path with its method and identity, then its purpose.
 
 - `/api/v1/agents/{session_id}/artifacts/{slug}/versions/{n}` (GET; cookie, trusted header, or bearer)
 
-  Download one version of an agent's conversation's file or image, as `/api/v1/artifacts/{id}/versions/{n}` does, with its cache header.
+  Download one version of an agent's conversation's file or image, as `/api/v1/artifacts/{id}/versions/{n}` does:
+  its bytes under the file's name, `-v<number>` included for an older version, with `Cache-Control: private, max-age=31536000, immutable`, or `Cache-Control: private, no-cache` with `?download=true`.
+  A conversation holds no document, so no version here answers Markdown.
 
 - `/...` (GET; none)
 
@@ -4392,7 +5636,7 @@ On a comment, an ask or an issue message it is the logins with a Replies row on 
 on a direct (issue-less) conversation's message, which keeps no Replies row, it is the thread root's author, the one person whose Inbox holds that conversation's agent row, and `[]` when no person opened the thread.
 On an issue event it is the sorted union of two sets, naming a login in both of them once:
 for a close or a reopen the logins with a row on the issue's open asks, which the Inbox leaves out of their Replies while the issue is open and the ask waits on them, and `[]` for any other status move;
-for an assignee move the assignee the issue was taken from and the one it was given to, whose rows that same rule moves for every ask nobody has handed on, a side where the issue holds nobody being the project's default assignee, whom a question on such an issue reaches (`issueWriteThreadLogins`, `api/thread_logins.go`).
+for an assignee move the assignee the issue was taken from and the one it was given to, whose rows that same rule moves for every ask nobody has handed on, a side where the issue holds nobody being the project's default assignee, whom a question on such an issue reaches (`api/issue_patch.go`, over `movedLogins` in `api/thread_logins.go`).
 An `ask.asked_of` names two people instead of a thread's readers: the person the ask waited on and the person it waits on now, since a hand-on moves the ask between their lists and changes nothing for a reader of its thread.
 `user_state.updated` carries `changed`, which of `pinned`, `last_read_seq` and `dismissed` the write moved, or `["snoozed"]` for a snooze or an un-snooze of one Inbox row (`PUT` or `DELETE /api/v1/me/asks/{id}/snooze`, which append it only when the row moved).
 A snooze's payload is exactly `{login, changed: ["snoozed"]}`:
@@ -4411,6 +5655,8 @@ It also names a target whose edge the write kept but whose excerpt it moved:
 an edit of an ask's question or a comment's body that changes the head of its text names every target the text still cites, a document version names each target whose stored excerpt it changed and each target a block it changed still cites, and a retitle names the issue's parent and the issues it is blocked by, whose panels show its title.
 A document version also names each block it changed or deleted that something cites, since every link to the block shows its text, and a comment's or issue message's write names each target whose link it moved from one of the item's blocks to another.
 An issue write that adds or removes a `blocked_by` entry names each blocker it added or removed, whose `referenced_by_count` counts the edge, and an `issue.created` names every blocker the new issue holds.
+A changed target that is an issue's own content (a document of the issue or a block of it, an ask of it or a part of it, a comment, a message, or a block of one) also names that issue, as a target of kind `issue`, once and after the other targets, unless the write names that issue already; a comment, a message and their blocks still name no target of their own.
+Those issues count toward the cap of `issue` (`refs.CountedChangeLimit`), so a page holding that issue's references read (`GET /api/v1/issues/{key}/references`, whose `linked_from` lists what links into the issue's content) refreshes it on that target.
 Each field is absent from an event written before it existed.
 
 ## Dispatch topics
@@ -4433,6 +5679,9 @@ Each item below names an operation and its required fields, then its behavior.
 - `replace` (`find`, `with`)
 
   Replace one plain-text target.
+  Every `replace` names `with`, and `with: ""` deletes the target on purpose: a `replace` takes `op`, `find`, `with` and `occurrence` alone, and one with no `with`, or carrying any other member whatever it holds (`markdown`, `markdown: ""`, `text`, `replacement`), is `400 REPLACE_FIELDS` naming the operation and the member, with nothing written, where it was read as an empty `with` and deleted the target, or applied beside a member it never read.
+  The route reads the request body a second time for each operation's member names (`api.replaceFieldsRefusal`), since a decoded operation's `with` is empty both for no `with` and for `with: ""`, and a member the operation type does not declare decodes to nothing.
+  `dispatch doc-edit` refuses both shapes before it sends anything, exit 2 naming `ops[<index>]` and the field.
 
 - `delete` (`find`)
 
@@ -4526,12 +5775,15 @@ Each item below names a status and code, then its meaning.
 
 - `409 ID_AMBIGUOUS`
 
-  The id in a route's path is written short — 8 or more characters of the hex digits and hyphens an id starts with, read without case — and two items or more carry it.
+  The id in a route's path is written short
+  — 8 or more characters of the hex digits and hyphens an id starts with, read without case — and two items or more carry it.
   The body carries `candidates`, each with its `kind`, its whole `id`, its `ref` (the whole `dispatch://` reference), the issue key or project document that owns it, and its `first_line`, which is left out for a direct conversation the caller is not in.
   Write more of the id.
   An id written short that names one item is resolved before the route's handler runs, so the handler, the project-scope check and the response all read the whole id;
-  one that names none answers the 404 that route answers for a whole id that names none, and a value that is no short id at all — fewer than 8 characters, or not hex — gets the answer it has always had.
-  The ids this covers are an ask's, a comment's, a message's, a document's and a document block's; an id in a request body (`reply_to`, `ask_id`, `in_reply_to`) and the `artifact=` filters are read whole, since the programs that write them hold the whole id.
+  one that names none answers the 404 that route answers for a whole id that names none, and a value that is no short id at all
+  — fewer than 8 characters, or not hex — gets the answer it has always had.
+  The ids this covers are an ask's, a comment's, a message's, a document's and a document block's;
+  an id in a request body (`reply_to`, `ask_id`, `in_reply_to`) and the `artifact=` filters are read whole, since the programs that write them hold the whole id.
 
 ## Document errors
 
@@ -4548,6 +5800,12 @@ Each item below names a status and code, then its meaning.
 - `400 TARGET_SPANS_BLOCKS`
 
   A document edit quote crosses textblock boundaries.
+
+- `400 REPLACE_FIELDS`
+
+  A `replace` names no `with` (a JSON `null` is none), or carries a member besides `op`, `find`, `with` and `occurrence`, whatever that member holds (`markdown`, `markdown: ""`, `text`, `replacement`); nothing in the batch is written.
+  Such a replace was read as an empty `with`, which deleted the text its `find` matched, or applied beside a member it never read; `with: ""` still deletes the match on purpose.
+  The message names the operation and each such member: `operation 1: replace names no with, which would delete the text find matches, and carries markdown, which replace does not take; …`.
 
 - `400 TABLE_WIDTH`
 
@@ -4663,3 +5921,21 @@ go vet ./...
 ```
 
 `internal/dispatch/api` alone takes close to `go test`'s default ten-minute package deadline (about 600 s), so it runs first and on its own, with 20 minutes, as CI's `envoy-go` job runs it (`docs/testing.md`, "Go's package deadline").
+
+`./scripts/dev-postgres.sh` prints the database URL to set (Local Postgres, above).
+One test: `go test -run TestName ./internal/dispatch/api`, which needs no deadline of its own.
+
+Three suites build only under a tag, and the commands above run none of them.
+A claim about two processes, or two builds, on one database needs evidence from them.
+Each needs `DISPATCH_TEST_DATABASE_URL`.
+
+```sh
+go test -tags memory -count=1 -timeout 60m ./cmd/dispatch        # resident memory of real servers
+go test -tags multiprocess -count=1 -timeout 30m ./cmd/dispatch  # two servers, one database
+bash scripts/build-dispatch-build.sh --previous-release --out "$TMPDIR/dispatch-previous"
+bash scripts/build-dispatch-build.sh --commit edb69e0d7588ec037847182e74a04a343a0664c9 --out "$TMPDIR/dispatch-first-rollout"
+DISPATCH_PREVIOUS_BUILD="$TMPDIR/dispatch-previous" DISPATCH_FIRST_ROLLOUT_BUILD="$TMPDIR/dispatch-first-rollout" \
+  go test -tags twobuild -count=1 -timeout 30m ./cmd/dispatch   # this build beside earlier ones
+```
+
+"Two builds at once", above, says what the two-build test runs and why it needs the first-rollout build.

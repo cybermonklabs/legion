@@ -2,6 +2,8 @@ import type {
   Agent,
   ClaimHolderLiveness,
   DispatchEvent,
+  GraphEdgeKind,
+  GraphReferences,
   Issue,
   IssueAdvance,
   IssueClaim,
@@ -9,15 +11,25 @@ import type {
   IssueCoverage,
   IssueDetails,
   IssueProgress,
-  IssueReferences,
+  IssueReferencesAnswer,
   IssueRouteStatus,
+  ReferenceLink,
 } from "@legion/contracts";
-import { actorLabel, claimHolds, claimTakeableAt, ISSUE_ROUTE_STATUSES } from "@legion/contracts";
+import {
+  actorLabel,
+  claimHolds,
+  claimTakeableAt,
+  graphNodeKey,
+  ISSUE_ROUTE_STATUSES,
+  issueReferenceSections,
+} from "@legion/contracts";
 import { actorText } from "../actor-text";
 import { askAnswerText, textHead } from "../ask-answer";
 import type { DispatchClient } from "../dispatch-http";
 import { humanEditHead } from "../human-edit";
 import { approvalLine, documentListLines } from "./document-targets";
+import { linkFor } from "./links";
+import { edgeLine, graphSectionLines } from "./render-graph";
 
 /** The Components line of an issue read: the effective set with where it came from. */
 function componentsLine(components: IssueComponents): string {
@@ -251,9 +263,9 @@ export function progressText(progress: IssueProgress | undefined, sep: string): 
 }
 
 /** Which repository the issue targets and where it came from: its own, or resolved through its
- *  parent chain and the project's default mapping. A Dispatch server from before the repository
- *  fields sends neither field, and its answer is unknown, never none: none means the server
- *  resolved no repository. */
+ *  parent chain and the project's default repository. A Dispatch server from before the
+ *  repository fields sends neither field, and its answer is unknown, never none: none means the
+ *  server resolved no repository. */
 function repositoryLine(issue: {
   readonly repo?: string | null;
   readonly resolved_repo?: string | null;
@@ -288,21 +300,113 @@ export function olderServerWarnings(issue: {
   ];
   return warnings.length === 0 ? {} : { warnings };
 }
+
+/** The edges into an issue node that `Referenced by:` prints from the graph read beside the rows
+ *  of `linked_from`: a child's `child_of` and the `blocked_by` of an issue that waits on it. The
+ *  graph read's other edges into the issue node are mentions, each of which `linked_from` holds
+ *  too, and the `attached_to` of the issue's own documents, which are part of the issue and not
+ *  nodes related to it. */
+const STRUCTURAL_EDGES_IN: readonly GraphEdgeKind[] = ["child_of", "blocked_by"];
+
+/** One row of the references read: the kinds of its links, the node at the far end, and the
+ *  issue's node at the near end, which a row of `links` links from (`via`) and a row of
+ *  `linked_from` links to (`to`). */
+function referenceLinkLine({ kinds, node, via }: ReferenceLink, near: "via" | "to"): string {
+  return `- ${(kinds ?? []).join(",")} ${node.kind} ${node.ref ?? node.id} · ${near} ${via.kind} ${via.id}`;
+}
+
+/** The `References:` lines of an answer from a build before the one-hop read, which answers its
+ *  walk's documents alone: each with its depth, then the line that says the walk was cut. Such an
+ *  answer gives `Referenced by:` nothing, so that section prints every edge of the graph read into
+ *  the issue node, as it always did. This path lasts only while such a build is deployed. */
+function memberLines(references: Pick<IssueReferencesAnswer, "members" | "truncated">): string[] {
+  const members = references.members ?? [];
+  return [
+    ...(members.length === 0
+      ? ["- none"]
+      : members.map(
+          ({ artifact, depth, via }) =>
+            `- ${artifact.project}/${artifact.slug} · depth ${depth} via ${via.kind} ${via.id}`
+        )),
+    ...(references.truncated ? ["- more references beyond 8 hops"] : []),
+  ];
+}
+
+/**
+ * An issue read's `References:` lines, and its `Referenced by:` lines where the references read
+ * gives that section more than the graph read's edges into the issue node.
+ *
+ * An answer with `links` lists one hop in each direction. `References:` lists each node the
+ * issue's own content links to, and `Referenced by:` each node that links to the issue or to its
+ * own content, then the issue node's structural edges in from the graph read. Each related node
+ * prints once: a node of both lists prints under `References:`, marked as one that also
+ * references the issue, and not under `Referenced by:` (`issueReferenceSections`), and a node
+ * under `Links:` or at the source of a structural edge in prints there and not under
+ * `References:`. A one-hop read cuts no walk, so no line says one was cut. An answer without
+ * `links` prints as `memberLines` says.
+ */
+function referenceSections(
+  references: IssueReferencesAnswer | string,
+  incoming: GraphReferences | string,
+  outgoing: GraphReferences | string
+): { readonly references: readonly string[]; readonly referencedBy?: readonly string[] } {
+  // A references read the server refused or could not serve names why in one line, and
+  // `Referenced by:` prints every edge of the graph read into the issue node, as it does for an
+  // answer without `links`.
+  if (typeof references === "string") return { references: [`- ${references}`] };
+  if (references.links === undefined) return { references: memberLines(references) };
+  const sections = issueReferenceSections(references);
+  const structural =
+    typeof incoming === "string"
+      ? []
+      : (incoming.edges ?? []).filter((edge) => STRUCTURAL_EDGES_IN.includes(edge.kind));
+  // The nodes another section prints: each under `Links:` and each source of a structural edge
+  // in, which `Referenced by:` prints as that edge.
+  const outgoingEdges = typeof outgoing === "string" ? [] : (outgoing.edges ?? []);
+  const elsewhere = new Set(
+    [...outgoingEdges, ...structural].map((edge) => graphNodeKey(edge.node))
+  );
+  const referencesLines = sections.references
+    .filter(({ row }) => !elsewhere.has(graphNodeKey(row.node)))
+    .map(({ alsoReferences, row }) => {
+      const also = alsoReferences ? " · also references this issue" : "";
+      return `${referenceLinkLine(row, "via")}${also}`;
+    });
+  // A graph read the server could not serve names why after the rows of `linked_from`, since the
+  // structural edges in are its own.
+  const referencedBy = [
+    ...sections.referencedBy.map((row) => referenceLinkLine(row, "to")),
+    ...(typeof incoming === "string" ? [`- ${incoming}`] : structural.map(edgeLine)),
+  ];
+  return {
+    references: referencesLines.length === 0 ? ["- none"] : referencesLines,
+    referencedBy: referencedBy.length === 0 ? ["- none"] : referencedBy,
+  };
+}
+
+/** An issue's read: its facts, `References:` and `Events:`, then the pictures its texts show and
+ *  the issue node's `Node:` line, `Referenced by:` and `Links:` from the graph read of the issue
+ *  node in each direction (`graph.incoming`, `graph.outgoing`). */
 export function issueSummary(
   issue: IssueDetails,
   events: readonly DispatchEvent[],
-  references: IssueReferences | string,
-  graph: readonly string[],
-  linkBase: string,
+  references: IssueReferencesAnswer | string,
+  pictures: readonly string[],
+  graph: {
+    readonly incoming: GraphReferences | string;
+    readonly outgoing: GraphReferences | string;
+  },
+  linkBase: string | undefined,
   coverage: IssueCoverage | string,
   agents?: LiveAgents
 ): string {
   const asks = issue.open_asks ?? [];
   const labels = issue.labels ?? [];
   const links = issue.external_links ?? [];
-  const members = typeof references === "string" ? [] : (references.members ?? []);
+  const sections = referenceSections(references, graph.incoming, graph.outgoing);
   const spec = issue.artifacts?.find((artifact) => artifact.primary);
-  const specApproval = spec === undefined ? undefined : approvalLine(spec);
+  const specApproval =
+    spec === undefined ? undefined : approvalLine(spec, typeof issue.closed_at === "string");
   if (issue.priority === undefined) throw new Error("Dispatch issue is missing priority");
   if (issue.assignee === undefined) throw new Error("Dispatch issue is missing assignee");
   if (issue.components === undefined) throw new Error("Dispatch issue is missing components");
@@ -314,8 +418,9 @@ export function issueSummary(
     `Title: ${issue.title}`,
     `Key: ${issue.key}`,
     // The issue's page, on the dashboard people open (DISPATCH_PUBLIC_URL when set), so an agent
-    // asked about the issue repeats a link rather than building one.
-    `Link: ${new URL(`/issues/${encodeURIComponent(issue.key)}`, linkBase).toString()}`,
+    // asked about the issue repeats a link rather than building one; its reference where no base
+    // prints (`linkFor`).
+    `Link: ${linkFor(`/issues/${encodeURIComponent(issue.key)}`, linkBase)}`,
     `Status: ${issue.status}`,
     `Assignee: ${issue.assignee ?? "unassigned"}`,
     `Claimed by: ${issue.claim === null ? "nobody" : claimText(issue.claim, agents, issue)}`,
@@ -349,20 +454,11 @@ export function issueSummary(
     "Open asks:",
     ...(asks.length === 0 ? ["- none"] : asks.map((ask) => `- ${ask.id}: ${ask.question}`)),
     "References:",
-    ...(typeof references === "string"
-      ? [`- ${references}`]
-      : members.length === 0
-        ? ["- none"]
-        : members.map(
-            ({ artifact, depth, via }) =>
-              `- ${artifact.project}/${artifact.slug} · depth ${depth} via ${via.kind} ${via.id}`
-          )),
-    ...(typeof references === "string" || !references.truncated
-      ? []
-      : ["- more references beyond 8 hops"]),
+    ...sections.references,
     "Events:",
     ...(events.length === 0 ? ["- none"] : events.map(eventLine)),
-    ...graph,
+    ...pictures,
+    ...graphSectionLines(graph.incoming, graph.outgoing, sections.referencedBy),
   ].join("\n");
 }
 
@@ -406,6 +502,16 @@ function eventHead(event: DispatchEvent): string | undefined {
       return textHead(
         `${event.payload.name} v${event.payload.version.number}${event.payload.version.summary ? `: ${event.payload.version.summary}` : ""}`
       );
+    case "artifact.approved":
+    case "artifact.changes_requested": {
+      const { name, version, kind, reason } = event.payload;
+      const verb = event.type === "artifact.approved" ? "approved" : "changes requested";
+      // A Dispatch older than review kinds writes none, and a newer one may write a kind this
+      // build does not know: neither names who reviewed.
+      const reviewer =
+        kind === "plan_review" ? " by plan review" : kind === "person" ? " by a person" : "";
+      return textHead(`${name} v${version} ${verb}${reviewer}${reason ? `: ${reason}` : ""}`);
+    }
     case "artifact.human_edited":
       return textHead(humanEditHead(event.payload));
     case "issue.created": {

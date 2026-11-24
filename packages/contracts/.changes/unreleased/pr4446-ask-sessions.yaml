@@ -1,0 +1,6 @@
+kind: Added
+body: |-
+  `CommentEventPayload` gains `ask_sessions`, the sessions that own the ask a comment replies in:
+  the ask's author when a session wrote it, then its followers. `CommentEventPayloadSchema` also
+  reads `artifact_id`. `SESSION_ANSWER_RELATIONS` gains `answered_an_ask` and `declined_an_ask`,
+  the relations of an answer and a decline that reached a session which does not own the ask.

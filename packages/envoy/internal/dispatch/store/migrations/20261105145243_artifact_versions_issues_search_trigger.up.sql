@@ -20,11 +20,13 @@
 -- `when (new.markdown is not null)` for 20261101182454's reason: a version with no markdown is an
 -- image or a file upload, never a spec, and the guard keeps the trigger off every such write.
 --
--- The update takes the issue's row. Every writer of an issue document's version already holds it:
--- docs/service.go locks the document's owner, which for an issue document is the issue row,
--- `for no key update` before it writes the version, so the trigger upgrades a lock its own
--- transaction holds and waits for nothing new. A project document's artifact names no issue, so
--- the join finds none and the trigger writes nothing.
+-- The update takes the issue's row, in the transaction's write phase: the trigger fires on the
+-- version's insert. Writers of an issue's documents serialize on the issue's owner lock first
+-- (docs/service.go, lockArtifactOwner), a transaction advisory lock that takes no row, and the
+-- event the same transaction appends takes the same row in the same mode (events.Broker,
+-- lockEventOwner), so the trigger adds no lock a write of the issue does not already take. A
+-- project document's artifact names no issue, so the join finds none and the trigger writes
+-- nothing.
 --
 -- Writing search fires 20261101182522's issues_search_term_queue, which is what should happen: the
 -- issue's vector changed, and the related-terms refresh must count it again. It fires no other

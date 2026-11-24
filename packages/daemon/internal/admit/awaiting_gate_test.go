@@ -54,15 +54,27 @@ func architectToken(t *testing.T, root string) claim.Token {
 // seedArchitectClaim records session as the architect of the tree rooted at root, running a turn
 // it has taken its task for: the session SessionClaimsTree finds within that tree, and an
 // architect that owes nothing (workflow's owed), so the root may wait on a person.
+//
+// It holds the architect's phases row at entry 1 with its claim given and serving that entry,
+// which is where every architect this release started stands: the admission that starts one
+// raises its entry (workflow.Engine.EnterArchitect) and the delivery records it as given. An
+// architect claim beside a row that names no entry is the one shape the sweep hands an entry to
+// (admit's resumeSlottedWorkers), so a running architect seeded without it would be sent a first
+// task here.
 func seedArchitectSession(t *testing.T, pool *pgxpool.Pool, root, session string) {
 	t.Helper()
 	inTx(t, pool, func(tx pgx.Tx) {
 		if _, err := tx.Exec(context.Background(), `insert into claims (token, project, tree, issue, role, generation, session, session_file,
-			state, launch_failures, prompt_failures, prompt_retires, uncertain_streak)
-			values ($1, 'LEGION', $2, $2, 'architect', 1, $3, '', 'working', 0, 0, 0, 0)
+			state, launch_failures, prompt_failures, prompt_retires, uncertain_streak, given_entry, served_entry)
+			values ($1, 'LEGION', $2, $2, 'architect', 1, $3, '', 'working', 0, 0, 0, 0, 1, 1)
 			on conflict (token) do update set session = excluded.session, state = excluded.state`,
 			string(architectToken(t, root)), root, session); err != nil {
 			t.Fatalf("seed architect claim: %v", err)
+		}
+		if err := record.NewStore().PutPhase(context.Background(), tx, record.PhaseRow{Issue: root,
+			Role: claim.RoleArchitect, Claim: architectToken(t, root), Entry: 1,
+			EntryTask: root + " is yours.", EntryRaisedAt: fixedNow}); err != nil {
+			t.Fatalf("seed the architect's phases row of %s: %v", root, err)
 		}
 	})
 }
@@ -245,10 +257,10 @@ func seedChild(t *testing.T, pool *pgxpool.Pool, at phase.Phase) {
 		Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets"})
 }
 
-// parkChild is a person moving LEGION-CHILD to the backlog, out of the workflow.
-func parkChild(t *testing.T, pool *pgxpool.Pool, admission *Admission) {
+// backlogChild is a person moving LEGION-CHILD to the backlog, out of the workflow.
+func backlogChild(t *testing.T, pool *pgxpool.Pool, admission *Admission) {
 	t.Helper()
-	apply(t, pool, admission, "child-parked", intake.DispatchIssue{Key: "LEGION-CHILD", ResolvedRepo: "acme/widgets", Seq: 30,
+	apply(t, pool, admission, "child-backlog", intake.DispatchIssue{Key: "LEGION-CHILD", ResolvedRepo: "acme/widgets", Seq: 30,
 		Type: "issue.updated", Status: "backlog", Title: "child", Rank: "C", Parent: "LEGION-100", HandedOver: true}, admission.engine)
 }
 
@@ -635,7 +647,7 @@ func TestAResumedRootIsNotSentBackByAClaimEventOrAMemberLeave(t *testing.T) {
 			applyFact(t, pool, admission, "claim-again", intake.DispatchClaim{Key: "LEGION-100", Seq: 40, ClaimedBy: "session:" + architect.ID})
 		}},
 		{name: "a parked child", after: func(t *testing.T, pool *pgxpool.Pool, admission *Admission) {
-			parkChild(t, pool, admission)
+			backlogChild(t, pool, admission)
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -689,7 +701,7 @@ func TestAResumeKeepsItsHandBackUntilItsTaskIsTaken(t *testing.T) {
 		}
 		assertNoArchitectSuspension(t, pool, "LEGION-100")
 	}
-	parkChild(t, pool, admission)
+	backlogChild(t, pool, admission)
 	applyFact(t, pool, admission, "fresh-hand-back", requestHandedBack(13))
 	assertHeld("with the resume's start queued")
 
@@ -721,7 +733,7 @@ func TestAHandedBackWaitStartsOnEveryGuardClearingPath(t *testing.T) {
 	}{
 		{name: "a member leaves the workflow",
 			guard: func(t *testing.T, pool *pgxpool.Pool) { seedChild(t, pool, phase.Implementing) },
-			clear: parkChild},
+			clear: backlogChild},
 		{name: "a member set back to todo re-enters at admitted",
 			guard: func(t *testing.T, pool *pgxpool.Pool) { seedChild(t, pool, phase.Implementing) },
 			clear: func(t *testing.T, pool *pgxpool.Pool, admission *Admission) {
@@ -808,7 +820,7 @@ func TestAGateWaitHeldByAGuardIsToldDespiteAnActOnAnotherAsk(t *testing.T) {
 		applyFact(t, pool, admission, "question", openedBy("ask-q", 11))
 		applyFact(t, pool, admission, "answer-q0", answeredBy("ask-q0", 12))
 		assertAdmittedInItsSlot(t, pool, "the person's act on another ask")
-		parkChild(t, pool, admission)
+		backlogChild(t, pool, admission)
 
 		got := assertAdmittedInItsSlot(t, pool, "the member's leave")
 		if got.DeclaredSeq != 0 {
@@ -831,7 +843,7 @@ func TestAGateWaitHeldByAGuardIsToldDespiteAnActOnAnotherAsk(t *testing.T) {
 		applyFact(t, pool, admission, "hand-back", requestHandedBack(10))
 		applyFact(t, pool, admission, "answer-q0", answeredBy("ask-q0", 11))
 		applyFact(t, pool, admission, "question", openedBy("ask-q", 12))
-		parkChild(t, pool, admission)
+		backlogChild(t, pool, admission)
 
 		got := issue(t, pool, "LEGION-100")
 		if !got.AwaitingPerson() || got.Answered() || got.Awaiting.GateVersion != 4 || got.Awaiting.Since.Seq != 12 {
@@ -860,7 +872,7 @@ func TestTheSameEventsInAnyOrderGiveTheArchitectTheSameTask(t *testing.T) {
 			for _, i := range order {
 				applyFact(t, pool, admission, fmt.Sprintf("event-%d", i), events[i])
 			}
-			parkChild(t, pool, admission)
+			backlogChild(t, pool, admission)
 			assertAdmittedInItsSlot(t, pool, "the member's leave")
 			task := lastArchitectTask(t, pool, "LEGION-100")
 			if task == "" {
@@ -2008,7 +2020,7 @@ func TestAChangesRequestToldByNoticeIsNotToldAgainInPlace(t *testing.T) {
 				applyFact(t, pool, admission, fmt.Sprintf("event-%d", i), event)
 			}
 			if tc.guarded {
-				parkChild(t, pool, admission)
+				backlogChild(t, pool, admission)
 			}
 			if issue(t, pool, "LEGION-100").Answered() {
 				nextFinished(t, pool, admission)
@@ -2114,7 +2126,7 @@ func TestALateChangesRequestKeepsANewerRequestHandBack(t *testing.T) {
 	if got := assertAdmittedInItsSlot(t, pool, "a guard holding the slot"); got.DeclaredSeq != 20 || got.HandoutSeq != 18 {
 		t.Fatalf("declared_seq = %d, handout_seq = %d; want the hand-back at 20 kept and the handout at the review's 18", got.DeclaredSeq, got.HandoutSeq)
 	}
-	parkChild(t, pool, admission)
+	backlogChild(t, pool, admission)
 	if got := issue(t, pool, "LEGION-100"); !got.AwaitingPerson() || got.Answered() || got.Awaiting.GateVersion != 4 || got.Awaiting.Since.Seq != 20 {
 		t.Fatalf("root once the member left = %#v, want it waiting on version 4 from 20", got)
 	}

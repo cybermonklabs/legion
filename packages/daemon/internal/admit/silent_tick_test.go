@@ -92,9 +92,10 @@ func tickNotice(t *testing.T, pool *pgxpool.Pool) record.Notice {
 
 // The tick is the turn that posts the day's report, so it names every issue whose phase worker
 // is one nothing will prompt: the issue, the role whose claim is silent, the moment that claim
-// last stepped and how long it has been quiet (record.SilentIssue). The issue's own architect
-// was told the same fact by a `worker-silent` notice, and this is the second reader, because
-// that architect may be failed or gone, so its notice reaches nobody.
+// last stepped and how long it has been quiet (record.SilentIssue). The architect that owns the
+// issue was told the same fact by a `worker-silent` notice, and this is the second reader, because
+// that notice can end at a tree root's architect that has failed or is gone, and then it reaches
+// nobody.
 //
 // A worker that stepped inside the bound is in no sense silent, and the tick says nothing about
 // it: the two fixtures differ in the age of that one step and in nothing else. A tick over a

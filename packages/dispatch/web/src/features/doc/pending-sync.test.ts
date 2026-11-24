@@ -1,8 +1,9 @@
-import { afterEach, expect, spyOn, test } from "bun:test";
+import { afterEach, expect, test } from "bun:test";
 import { waitFor } from "@testing-library/react";
 import { createDecoder, readVarString, readVarUint, readVarUint8Array } from "lib0/decoding";
 import * as Y from "yjs";
 
+import { quietConsoleError } from "../../__tests__/act-warnings";
 import { type DocumentConnection, loadDocumentTransport } from "./connection";
 import { createEditor } from "./editor";
 import type { PendingEdits, PendingKey } from "./pending-edits";
@@ -193,7 +194,7 @@ test("an acknowledgement of 0 clears nothing", async () => {
 });
 
 test("a SyncStatus frame that ends before its flag consumes no sent frame", async () => {
-  const logged = spyOn(console, "error").mockImplementation(() => {});
+  const logged = quietConsoleError();
   try {
     const { artifact, sync, type } = await scripted();
     sync.socketOpened();
@@ -210,7 +211,7 @@ test("a SyncStatus frame that ends before its flag consumes no sent frame", asyn
 });
 
 test("an Update frame whose length overruns the frame is refused, not read past its end", async () => {
-  const logged = spyOn(console, "error").mockImplementation(() => {});
+  const logged = quietConsoleError();
   try {
     const { artifact, sync, type } = await scripted();
     sync.socketOpened();
@@ -644,7 +645,7 @@ test("a later SyncStep2 acknowledgement retries an earlier row whose individual 
       return edits.clear(seq);
     },
   };
-  const logged = spyOn(console, "error").mockImplementation(() => {});
+  const logged = quietConsoleError();
   const sync = startPendingSync({
     doc,
     onChange() {},
@@ -708,7 +709,7 @@ test("an edit recorded while a SyncStep2 acknowledgement is clearing stays track
       };
     },
   });
-  const logged = spyOn(console, "error").mockImplementation(() => {});
+  const logged = quietConsoleError();
   const { artifact, doc, sync, type } = await scripted(artifactId(), undefined, wrapStore);
   try {
     sync.socketOpened();
@@ -1035,7 +1036,7 @@ test("a row whose write the store refuses still asks for the count the dropped r
       return { seq: row.seq, written: row.written.then(() => Promise.reject(quota)) };
     },
   });
-  const logged = spyOn(console, "error").mockImplementation(() => {});
+  const logged = quietConsoleError();
   const { artifact, states, type } = await scripted(artifactId(), undefined, wrapStore);
   try {
     await waitFor(() => expect(states.map((state) => state.count)).toEqual([0]));

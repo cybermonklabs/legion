@@ -1,0 +1,7 @@
+kind: Fixed
+body: |-
+  The "CI settled" message, the notice of a head GitHub will not merge, and the task that wakes a
+  released worker now name each check by the conclusion GitHub gave it. A skipped check is named
+  `skipped`, not `succeeded`, and the text says once that a skipped check ran nothing on that
+  head. A wake task never says `passed every check` for a head with a skipped check. Every
+  decision takes a skipped run as it takes a succeeded one.

@@ -94,9 +94,10 @@ type githubPullRequest struct {
 
 // mergeability is the pull request's `mergeable` as the mergeability fact reads it: null
 // is record.MergeabilityUnknown, GitHub not having computed it yet; true is
-// record.MergeabilityMergeable; false is record.MergeabilityConflicting, the state that sends the
-// issue back to implementing from every phase after the implementer's (workflow's
-// mergeability).
+// record.MergeabilityMergeable; false is record.MergeabilityConflicting, a head that conflicts
+// with its base, which a second read confirms before the workflow decides whether to merge the
+// base forward (workflow's mergeability), and which the read carries the base's rules for
+// (applyMergeability).
 func (p githubPullRequest) mergeability() record.Mergeability {
 	switch {
 	case p.Mergeable == nil:
@@ -135,9 +136,10 @@ func (p githubPullRequest) mergeState() record.MergeState {
 //
 // The read is made of the repository GitHub serves the recorded one under (repositories.serving),
 // as every GitHub call the daemon makes for a recorded tree is: a record keeps the name it was
-// written under for its whole life, and after a transfer GitHub holds the repository under the
-// other name, on the other owner's installation. Read under the recorded name, this would mint on
-// the installation the repository has left and address a repository GitHub no longer answers for.
+// written under until this release's one-time rename pass writes a pair's `to` over it
+// (renamePass), and after a transfer GitHub holds the repository under the other name, on the
+// other owner's installation. Read under the recorded name, this would mint on the installation
+// the repository has left and address a repository GitHub no longer answers for.
 func (w *workflowRuntime) readPullRequest(ctx context.Context, pr record.PullRequest) (githubrest.Client, githubPullRequest, error) {
 	recorded, err := ghrepo.Parse("the pull request's repository", pr.Repo)
 	if err != nil {
@@ -156,11 +158,12 @@ func (w *workflowRuntime) readPullRequest(ctx context.Context, pr record.PullReq
 }
 
 // implementClient is the client for repository's REST API on the implement App's installation
-// token: the App every read of an issue's own repository is made as, the per-issue reads' and
-// the outbox rows' alike. The mint failure is returned bare, so each caller says in its own
-// words what it was minting the token for.
+// token for that repository's owner account: the App every read of an issue's own repository is
+// made as, the per-issue reads' and the outbox rows' alike. The token names no repository, so one
+// mint serves every repository of the owner the App is installed on. The mint failure is returned
+// bare, so each caller says in its own words what it was minting the token for.
 func implementClient(ctx context.Context, tokens appauth.Tokens, githubAPI string, repository ghrepo.Repository) (githubrest.Client, error) {
-	lease, err := tokens.Token(ctx, appauth.Implement, repository)
+	lease, err := tokens.Token(ctx, appauth.Implement, repository.Owner())
 	if err != nil {
 		return githubrest.Client{}, err
 	}

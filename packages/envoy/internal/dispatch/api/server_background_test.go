@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/horizontest"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -14,6 +15,7 @@ import (
 // it closes the database pool, so a wait that skipped them would close the pool under a worker
 // still writing.
 func TestTheBackgroundWaitHoldsForWorkARequestLeftRunning(t *testing.T) {
+	t.Parallel()
 	served := register(http.NewServeMux(), t.Context(), Deps{})
 	started, release := make(chan struct{}), make(chan struct{})
 	served.detached.goDetached(func() {
@@ -44,6 +46,7 @@ func TestTheBackgroundWaitHoldsForWorkARequestLeftRunning(t *testing.T) {
 // until the socket ends: production shutdown waits for it before it closes the database pool,
 // which a subscription still reading would otherwise lose under it.
 func TestTheBackgroundWaitHoldsForAnOpenLiveSocket(t *testing.T) {
+	t.Parallel()
 	rig := newLiveSocketRig(t, testServerOptions{}, nil)
 	client := rig.dial(t, asUser("alice"))
 	rig.sockets(t, 1)
@@ -70,7 +73,8 @@ func TestTheBackgroundWaitHoldsForAnOpenLiveSocket(t *testing.T) {
 // returns once that subscription leaves: the relay's generation stops with its last subscriber,
 // so nothing of it is left for the lifetime to end.
 func TestTheBackgroundWaitHoldsForTheEventStreamRelay(t *testing.T) {
-	_, _, _, served := newRegisteredTestServer(t, testServerOptions{})
+	t.Parallel()
+	_, database, _, served := newRegisteredTestServer(t, testServerOptions{})
 	ctx, err := store.ForConcurrentRead(store.WithTransactionTracking(t.Context()))
 	if err != nil {
 		t.Fatalf("mark the subscription's context for the pool: %v", err)
@@ -79,7 +83,7 @@ func TestTheBackgroundWaitHoldsForTheEventStreamRelay(t *testing.T) {
 	close(stream.gate)
 	running := served.startEventsSubscription(ctx, stream, "feed", nil)
 	t.Cleanup(running.stop)
-	pollUntil(t, 5*time.Second, "the subscription subscribes to the relay", func() bool {
+	horizontest.PollInProcess(t, "the subscription subscribes to the relay", database, func() bool {
 		return relaySubscribers(served.eventRelay) == 1
 	})
 	requireBackgroundWaitHoldsUntilTheSubscriberLeaves(t, served, "the event stream relay", func() {
@@ -93,6 +97,7 @@ func TestTheBackgroundWaitHoldsForTheEventStreamRelay(t *testing.T) {
 // The background wait holds for the delivery hub while a view reads it, and returns once that
 // view closes: the hub's generation stops with its last view.
 func TestTheBackgroundWaitHoldsForTheDeliveryHub(t *testing.T) {
+	t.Parallel()
 	_, database, _, served := newRegisteredTestServer(t, testServerOptions{})
 	seedHubSettings(t, database)
 	conn := newFakeLiveConn()
@@ -133,6 +138,7 @@ func requireBackgroundWaitHoldsUntilTheSubscriberLeaves(t *testing.T, served *se
 // the test that built it, and the background wait would never return once a subscription had
 // started the relay.
 func TestRegisterRefusesANilLifetime(t *testing.T) {
+	t.Parallel()
 	defer func() {
 		refusal, ok := recover().(string)
 		if !ok || !strings.Contains(refusal, "the lifetime parameter is required") {

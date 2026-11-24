@@ -29,8 +29,7 @@ const (
 
 // seedDeployedIssues writes the two deployed issues in the project that owns acme/widgets
 // (seedDeliveryProject), since an attribution holds an issue to the repository the pull request
-// is in, and clears their events, so a run against a database an earlier run left holds only
-// what this test writes. The pull requests and runs are cleared by deliveryTestPool.
+// is in.
 func seedDeployedIssues(t *testing.T, ctx context.Context, pool *store.Pool) {
 	t.Helper()
 	seedDeliveryProject(t, ctx, pool)
@@ -44,9 +43,6 @@ func seedDeployedIssues(t *testing.T, ctx context.Context, pool *store.Pool) {
 			values ($1, $2, $3, $1, 'done', '{"kind":"system","id":"delivery-test"}', $1)
 			on conflict do nothing`, key, deliveryProject, deployedIssueBand+number); err != nil {
 			t.Fatalf("seed issue %s: %v", key, err)
-		}
-		if _, err := pool.Exec(ctx, `delete from events where issue_key = $1`, key); err != nil {
-			t.Fatalf("clear the events of %s: %v", key, err)
 		}
 	}
 }
@@ -263,7 +259,7 @@ func TestReconcileWritesTheDeployedEvent(t *testing.T) {
 		mustEncode(t, w, shippedRunJobs())
 	})
 
-	NewReconcile(pool, fake.newTestClient(), events.NewBroker()).runOnce(ctx)
+	NewReconcile(pool, fake.newTestClient(), events.NewBroker(), unrenamed()).runOnce(ctx)
 
 	requireDeployedEvent(t, ctx, pool, deployedIssue, "acme/widgets", 501, 900, "2024-01-01T02:10:00Z")
 	if at := deployedEventAt(t, ctx, pool, "acme/widgets", 501); at == nil {
@@ -291,7 +287,7 @@ func TestIntakeWritesTheDeployedEvent(t *testing.T) {
 	fake.handle("GET /repos/acme/widgets/actions/runs/900/jobs", func(w http.ResponseWriter, r *http.Request) {
 		mustEncode(t, w, shippedRunJobs())
 	})
-	intake := newIntake(nil, pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), nil)
+	intake := newIntake(nil, pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), nil, unrenamed())
 
 	envelope, err := json.Marshal(map[string]string{
 		"kind": "workflow", "action": "completed", "repo": "acme/widgets",

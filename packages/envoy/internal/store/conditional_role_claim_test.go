@@ -17,19 +17,27 @@ import (
 
 // racingUpdateKeyValue runs a hook before the first conditional update reaches the bucket, so
 // the claim that update is conditional on can be moved under it. The hook's own writes go
-// through this wrapper too and are not hooked again, and the update itself is the real one: the
-// loss it suffers is the server's, not one this wrapper invented.
+// through this wrapper too and are neither hooked again nor counted: updates counts the writes
+// of the call under test, and a claim the hook makes writes with the revision it read, so an
+// update of its own (SetRoleWithPrevious). The update itself is the real one: the loss it suffers
+// is the server's, not one this wrapper invented.
 type racingUpdateKeyValue struct {
 	natsgo.KeyValue
 
 	updates           int
+	hooking           bool
 	beforeFirstUpdate func()
 }
 
 func (kv *racingUpdateKeyValue) Update(key string, value []byte, revision uint64) (uint64, error) {
+	if kv.hooking {
+		return kv.KeyValue.Update(key, value, revision)
+	}
 	kv.updates++
 	if kv.updates == 1 {
+		kv.hooking = true
 		kv.beforeFirstUpdate()
+		kv.hooking = false
 	}
 	return kv.KeyValue.Update(key, value, revision)
 }

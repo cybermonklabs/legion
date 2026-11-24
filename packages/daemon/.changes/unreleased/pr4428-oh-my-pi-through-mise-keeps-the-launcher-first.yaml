@@ -1,0 +1,8 @@
+kind: Fixed
+body: |-
+  Oh My Pi that Legion starts through `omp_invocation: mise x <tool> -- omp` (a tmux pane, the
+  boot gate's probes and `legion controller start`) has the launcher directory first on its
+  `PATH`. `mise x` had put each `_.path` entry of the mise config it reads ahead of it, so on an
+  operator's machine the controller's Oh My Pi could run an operator's `gh`, `git` or `jj` in
+  place of Legion's. The fragment now has `mise x` start `/bin/sh`, which puts the launch's first
+  `PATH` entry back in front and execs the tool's own `bin/omp`.

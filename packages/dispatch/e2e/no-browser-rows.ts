@@ -1,11 +1,11 @@
 /** Every row of the browser suite, read from the source of the `*.e2e.ts` files themselves, so a
  *  row that drives no browser can be named.
  *
- * `packages/dispatch/AGENTS.md`'s rule is that a row which drives no browser does not belong in
- * this suite: it takes no page fixture, it runs in one project because every other would repeat
- * it, and it makes the browser run wait for work no browser does. Its home is the layer that owns
- * the claim. This module is that rule's machine check, and
- * `e2e/__tests__/no-browser-rows.test.ts` is what runs it over the real suite.
+ * A row which drives no browser does not belong in this suite: it takes no page fixture, it runs
+ * in one project because every other would repeat it, and it makes the browser run wait for work
+ * no browser does. Its home is the layer that owns the claim, `e2e/__tests__/` or a Go test
+ * (`packages/dispatch/README.md`, "End-to-end tests"). This module is that rule's machine check,
+ * and `e2e/__tests__/no-browser-rows.test.ts` is what runs it over the real suite.
  *
  * A row is read from its source rather than from `playwright test --list` because the listing
  * names no fixtures: it reports a file and a title, and whether the callback destructures `page`

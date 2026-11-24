@@ -1,0 +1,10 @@
+kind: Fixed
+body: |-
+  A person's box key that does not parse is refused in the broker client's own words, naming
+  whose key was read (`read <person>'s box key: it does not parse as a PKCS#8 PEM private key`),
+  with no cause and none of the runtime's text: a parse error can quote the bytes it was handed,
+  which are key material, and a cause is printed with the error wherever the error is printed
+  whole.
+time: 2026-11-18T18:26:18Z
+custom:
+    Issue: pr4140

@@ -1,0 +1,5 @@
+kind: Added
+body: |-
+  `dispatch comment --mention role:<name>|session:<id>` names a role or a session that Dispatch
+  delivers the comment to, repeatable up to ten times, on an issue comment and on a comment on a
+  project document. A target of any other form is refused before anything is sent.

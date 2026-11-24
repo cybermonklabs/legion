@@ -23,6 +23,23 @@ const (
 // component never deploys a listener its configuration would refuse.
 const MaxReplicas = 5
 
+// SenderMessagesPerMinuteEnvVar and SenderMessageBurstEnvVar are envoy-listener's limit on the
+// messages each agent session sends through it: how many a minute, and how many at once. The bus
+// reads neither. They live here with MaxSenderMessagesPerMinute because the listener's parse
+// (cmd/listener, sender_limit.go) and envoy-infra's listener settings
+// (github.com/sjawhar/envoy/infra/core), which may not compile a listener package, name the same
+// variables.
+const (
+	SenderMessagesPerMinuteEnvVar = "ENVOY_SENDER_MESSAGES_PER_MINUTE"
+	SenderMessageBurstEnvVar      = "ENVOY_SENDER_MESSAGE_BURST"
+)
+
+// MaxSenderMessagesPerMinute is the largest SenderMessagesPerMinuteEnvVar the listener takes:
+// one message a millisecond, past which a rate limits nothing a session does. The listener's
+// parse and envoy-infra's check of a component's inputs both read it, so a component never
+// deploys a listener that would refuse its value.
+const MaxSenderMessagesPerMinute = 60000
+
 // ParseNATSReplicas reads ReplicasEnvVar, the deployment's replica count: unset or blank is 1,
 // and otherwise a whole number from 1 to MaxReplicas. Anything else (0, a negative number, more
 // than NATS keeps, a word) is refused naming the variable and the value, at load rather than as a

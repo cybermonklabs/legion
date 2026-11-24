@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/horizontest"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -43,6 +44,7 @@ func (i *endableIdentity) Login(*http.Request) (string, error) {
 // heartbeat is a second, so the client's pong meets the pong deadline on a loaded runner and the
 // socket lasts until the session ends.
 func TestTheEventFeedClosesOnceItsPersonNoLongerResolves(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	broker := events.NewBroker()
 	documents := docs.New(docs.Deps{Store: database, Events: broker})
@@ -51,6 +53,8 @@ func TestTheEventFeedClosesOnceItsPersonNoLongerResolves(t *testing.T) {
 	deps, err := NewDeps(DepsInput{
 		Store: database, Identity: person, AgentTokens: sharedAgentTokens(t, "agent-token"), Docs: documents, Events: broker,
 		StreamHeartbeat: time.Second,
+		// The subscribe below waits on the event feed (eventFeedFrame).
+		HorizonStallAfter: horizontest.StallWarning, HorizonWarnEvery: horizontest.StallWarning,
 	})
 	if err != nil {
 		t.Fatalf("new API dependencies: %v", err)
@@ -60,7 +64,7 @@ func TestTheEventFeedClosesOnceItsPersonNoLongerResolves(t *testing.T) {
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 
-	client := openLiveSocketAt(t, gws.DefaultDialer, "ws"+strings.TrimPrefix(server.URL, "http")+"/ws/live", nil).read()
+	client := openLiveSocketAt(t, gws.DefaultDialer, "ws"+strings.TrimPrefix(server.URL, "http")+"/ws/live", nil).servedBy(database).read()
 	subscribeEvents(t, client, "events", nil)
 
 	person.ended.Store(true)
@@ -73,6 +77,7 @@ func TestTheEventFeedClosesOnceItsPersonNoLongerResolves(t *testing.T) {
 // agent view resolves its person on each heartbeat and closes with 1008 once their session has
 // ended, so the view stops relaying.
 func TestAgentStreamClosesOnceItsViewerNoLongerResolves(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	broker := events.NewBroker()
 	documents := docs.New(docs.Deps{Store: database, Events: broker})
@@ -111,6 +116,7 @@ func TestAgentStreamClosesOnceItsViewerNoLongerResolves(t *testing.T) {
 // sends its own. Each case ends the session the way it ends in production: the hourly membership
 // check finding the person out of the group, and a sign-out.
 func TestDocumentSocketClosesOnceItsPersonNoLongerResolves(t *testing.T) {
+	t.Parallel()
 	const heartbeat = 250 * time.Millisecond
 	for name, end := range map[string]func(*testing.T, *documentSocketRig){
 		"the sign-in pool drops them from the group": func(t *testing.T, rig *documentSocketRig) {
@@ -202,9 +208,9 @@ func newDocumentSocketRig(t *testing.T, heartbeat time.Duration) *documentSocket
 	t.Helper()
 	ctx := context.Background()
 	rig := &documentSocketRig{pool: oidctest.New(t), email: "alice@d.example"}
-	rig.pool.EnableCodeFlow(rig.pool.PublishKey(t, "signing-key"), "dispatch-client", "dispatch-secret")
-	flow := oidc.NewCodeFlow(rig.pool.URL(), "dispatch-client", "dispatch-secret", "")
 	const redirect = "https://dispatch.example/auth/callback"
+	rig.pool.EnableCodeFlow(rig.pool.PublishKey(t, "signing-key"), "dispatch-client", "dispatch-secret", redirect)
+	flow := oidc.NewCodeFlow(rig.pool.URL(), "dispatch-client", "dispatch-secret", "")
 	rig.pool.SignInAs(map[string]any{
 		"sub":              "person-subject",
 		"cognito:username": "ExampleIdP_" + rig.email,
@@ -286,6 +292,7 @@ func newDocumentSocketRig(t *testing.T, heartbeat time.Duration) *documentSocket
 // signed in: their session generation and refresh token are kept, and once the issuer answers the
 // same cookie is served again after one refresh.
 func TestASignInIssuerOutageAnswersTheAPIAndTheDocumentSocket503AndKeepsTheSession(t *testing.T) {
+	t.Parallel()
 	rig := newDocumentSocketRig(t, time.Hour)
 	ctx := context.Background()
 	signedIn, found, err := rig.people.Membership(ctx, rig.email)

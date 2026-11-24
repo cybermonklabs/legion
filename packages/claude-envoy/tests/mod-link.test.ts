@@ -2,7 +2,6 @@ import { afterEach, expect, test } from "bun:test"
 import { chmod, mkdir, mkdtemp, rename, rm, stat } from "node:fs/promises"
 import { request as httpRequest } from "node:http"
 import { createServer, type Server } from "node:net"
-import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import {
   MOD_HEALTH_MARKER,
@@ -21,6 +20,12 @@ import {
 import { type ModLink, startModLink } from "../src/mod-link"
 import { type ModSession, modSession } from "../src/mod-session"
 
+/** Where the socket homes are made. A mod socket is `<home>/claude-envoy/ce-<hash>.sock`, and that
+ *  whole path has 100 bytes to fit in (`MOD_SOCKET_PATH_MAX_BYTES`): under `tmpdir()` a deep
+ *  `TMPDIR` (a dev box's `/mnt/scratch/...`, a Legion pod's) leaves none, so the homes go under
+ *  `/tmp`, whatever `TMPDIR` is, as channel-fatal-exit.test.ts's do. */
+const SOCKET_ROOT = "/tmp"
+
 const scratch: string[] = []
 const links: ModLink[] = []
 afterEach(async () => {
@@ -28,9 +33,10 @@ afterEach(async () => {
   for (const dir of scratch.splice(0)) await rm(dir, { recursive: true, force: true })
 })
 
-/** A scratch directory to put sockets in, short enough that the path stays under the bound. */
+/** A scratch directory to put sockets in, under {@link SOCKET_ROOT} so the path stays under the
+ *  bound. */
 async function directory(): Promise<string> {
-  const dir = await mkdtemp(join(tmpdir(), "mod-"))
+  const dir = await mkdtemp(join(SOCKET_ROOT, "mod-"))
   scratch.push(dir)
   return dir
 }
@@ -240,7 +246,10 @@ test("a request still unanswered when the link closes rejects", async () => {
 })
 
 // The hold is wall-clock behaviour of the running server: the point of the test is that a real
-// poll over a real socket comes back on its own, so the clock here is the one under test.
+// poll over a real socket comes back on its own, so the clock here is the one under test. A hold
+// is MOD_POLL_HOLD_MS, 5 s, which is also `bun test`'s default limit for a test, so this test and
+// the liveness test below, which each wait one out, carry a limit of their own rather than depend on
+// the --timeout of the package's test script.
 test("a poll with nothing to do answers an empty list once the hold is up, rather than hanging", async () => {
   const dir = await directory()
   const link = await start(dir, "s7")
@@ -250,7 +259,7 @@ test("a poll with nothing to do answers an empty list once the hold is up, rathe
   expect(answer).toEqual({ status: 200, body: { requests: [] } })
   expect(held).toBeGreaterThanOrEqual(MOD_POLL_HOLD_MS - 250)
   expect(held).toBeLessThan(MOD_POLL_HOLD_MS * 2)
-})
+}, 20_000)
 
 test("a request made while a poll is held is answered at once, not after the hold", async () => {
   const dir = await directory()
@@ -281,7 +290,7 @@ test("the liveness probe is answered while a poll is held", async () => {
   })
   expect(link.connected()).toBe(true)
   expect(polled(await poll)).toEqual([])
-})
+}, 20_000)
 
 test("events reach the owner in the order the mod posted them", async () => {
   const dir = await directory()

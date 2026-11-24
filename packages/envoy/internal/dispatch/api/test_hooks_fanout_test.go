@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // holdTestHookLock is a process that is alive but never acknowledges a test hook: a connection of
@@ -45,6 +46,7 @@ func holdTestHookLock(t *testing.T, database *store.Store) (*pgx.Conn, int32) {
 // a two-second timeout of its own (Deps.TestHookTimeout) rather than the production ten: long
 // enough that a loaded machine still takes the caller's own lock inside it.
 func TestATestHookNamesTheProcessThatNeverAcknowledged(t *testing.T) {
+	t.Parallel()
 	const timeout = 2 * time.Second
 	handler, database, _ := newTestServer(t, testServerOptions{testHooks: true, testHookTimeout: timeout})
 	_, silent := holdTestHookLock(t, database)
@@ -72,6 +74,7 @@ func TestATestHookNamesTheProcessThatNeverAcknowledged(t *testing.T) {
 // not at the timeout. Until then it does not answer, since that process was alive when the call
 // was sent.
 func TestATestHookStopsWaitingForAProcessWhoseLockIsGone(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithTestHooks(t)
 	conn, _ := holdTestHookLock(t, database)
 	const alive = 500 * time.Millisecond
@@ -94,7 +97,14 @@ func TestATestHookStopsWaitingForAProcessWhoseLockIsGone(t *testing.T) {
 
 // secondHookProcess is a second server process on database: a pool of its own (and so a listening
 // connection and a lock of its own), its own document service and its own in-process conversation
-// relay, as a second envoy-dispatch process holds. It answers that process's server.
+// relay, as a second envoy-dispatch process holds. It answers that process's server once that
+// process hears test hooks. register starts the process's listener and returns before it has
+// dialed, and a call waits only for the processes holding a test-hook lock when it is sent
+// (testHookFanout.call): a call sent sooner answers 200 without this process, which never hears
+// it, so a viewer here waits for a frame that never comes. The process takes its lock only once
+// it listens (testHookFanout.dial), so from then on every call reaches it and waits for its
+// acknowledgement. The wait is the one the caller makes for its own lock (awaitOwnLock), bounded
+// by the test binary's deadline: how long a loaded machine takes to connect is not under test.
 func secondHookProcess(t *testing.T, database *store.Store) *httptest.Server {
 	t.Helper()
 	second := storetest.SecondProcess(t, database)
@@ -117,6 +127,11 @@ func secondHookProcess(t *testing.T, database *store.Store) *httptest.Server {
 	mux := http.NewServeMux()
 	served := register(mux, t.Context(), deps)
 	t.Cleanup(served.waitBackground)
+	listening, stop := context.WithTimeout(t.Context(), testwait.Bounded(t, time.Minute, time.Second))
+	defer stop()
+	if _, err := served.testHooks.awaitOwnLock(listening); err != nil {
+		t.Fatalf("the second process's test-hook listener did not take its lock: %v", err)
+	}
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 	return server
@@ -128,6 +143,7 @@ func secondHookProcess(t *testing.T, database *store.Store) *httptest.Server {
 // process byte for byte, multi-byte characters included, whatever notification boundary they fall
 // on.
 func TestAFrameLargerThanOneNotificationReachesAViewerOnTheOtherProcessWhole(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{testHooks: true, agentStream: agentstream.NewMemory()})
 	other := secondHookProcess(t, database)
 
@@ -159,6 +175,7 @@ func TestAFrameLargerThanOneNotificationReachesAViewerOnTheOtherProcessWhole(t *
 // part. The cap still admits the largest call a request can make: a frame of maxJSONRequestBytes
 // made wholly of a byte json.Marshal escapes widest, to a session id in its longest form.
 func TestAHookNotificationNamingMorePartsThanAnyCallIsDropped(t *testing.T) {
+	t.Parallel()
 	encoded, err := json.Marshal(testHookCall{
 		Hook: hookPublishFrame, Session: "urn:uuid:" + plannerSessionID, As: "replay",
 		Frame: strings.Repeat("\x01", int(maxJSONRequestBytes)),

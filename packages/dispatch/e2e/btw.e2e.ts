@@ -1,5 +1,6 @@
 import { type FakeSession, setLiveSessions, setSessionSendStatus } from "./agents";
 import { createIssue, createProject, listComments } from "./api";
+import { selectMention } from "./mention";
 import { expect, type Page, test } from "./test";
 import { asUser } from "./users";
 
@@ -26,15 +27,6 @@ async function post(page: Page): Promise<Record<string, unknown>> {
   return (await response).request().postDataJSON() as Record<string, unknown>;
 }
 
-async function selectMention(page: Page, text: string, option = "planner"): Promise<void> {
-  const field = page.getByRole("form", { name: "Comment composer" }).getByLabel("Comment");
-  await field.fill(text);
-  await page
-    .getByRole("listbox", { name: "Mention suggestions" })
-    .getByRole("option", { name: option })
-    .click();
-}
-
 // @pr: The /btw delivery mode's own row: the token is stripped and one comment-level delivery goes out.
 test("/btw with a surviving mention strips its token and sends one comment-level mode @pr", async ({
   browser,
@@ -47,7 +39,7 @@ test("/btw with a surviving mention strips its token and sends one comment-level
   try {
     const page = await alice.newPage();
     await page.goto(`/issues/${issue.key}/conversation`);
-    await selectMention(page, "/btw @");
+    await selectMention(page, "/btw @", "planner");
     expect(await post(page)).toEqual({
       body: "@planner",
       delivery: "btw",

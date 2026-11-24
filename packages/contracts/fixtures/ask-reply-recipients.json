@@ -1,0 +1,252 @@
+{
+  "issue_key": "ANS-1",
+  "ask_id": "00000000-0000-4000-8000-000000000001",
+  "sessions": {
+    "A": "session-a",
+    "B": "session-b",
+    "C": "session-c",
+    "D": "session-d"
+  },
+  "copies": [
+    {
+      "reply": "first",
+      "reader": "A",
+      "topic": "notifications.agent.session-a",
+      "relation": "replied_on_your_ask",
+      "envelope": {
+        "event_id": "dispatch-1",
+        "source": "dispatch",
+        "source_event_id": "1",
+        "topic": "notifications.agent.session-a",
+        "dedupe_key": "dispatch-1",
+        "issued_at": 1767225601000,
+        "payload_summary": "ANS-1 comment created: Which pool size do you need?",
+        "payload": "{\"id\":1,\"issue_key\":\"ANS-1\",\"artifact_id\":null,\"project\":\"ANS\",\"seq\":1,\"type\":\"comment.created\",\"actor\":{\"kind\":\"user\",\"id\":\"alice\",\"proven\":true},\"notify\":true,\"created_at\":\"2026-01-01T00:00:02Z\",\"payload\":{\"anchor\":null,\"answers\":null,\"artifact_id\":null,\"artifact_name\":\"\",\"ask_id\":\"00000000-0000-4000-8000-000000000001\",\"ask_question\":\"Which database backs the queue?\",\"ask_sessions\":[\"session-a\",\"session-c\"],\"ask_state\":\"open\",\"ask_waiting_on\":\"agent\",\"author\":{\"id\":\"alice\",\"kind\":\"user\",\"proven\":true},\"body\":\"Which pool size do you need?\",\"created_at\":\"2026-01-01T00:00:03Z\",\"deliveries\":[],\"edited_at\":null,\"id\":\"00000000-0000-4000-8000-000000000002\",\"issue_key\":\"ANS-1\",\"mentions\":[],\"reply_block\":null,\"reply_to\":null,\"resolved\":false,\"resolved_at\":null,\"resolved_by\":null,\"suggestion\":null,\"suppress_route\":false,\"thread_logins\":[\"alice\"],\"turn\":\"agent\"},\"quiet\":false}",
+        "trace_id": "dispatch-1",
+        "in_reply_to": "00000000-0000-4000-8000-000000000001"
+      }
+    },
+    {
+      "reply": "first",
+      "reader": "B",
+      "topic": "notifications.agent.session-b",
+      "relation": "commented_on_an_issue",
+      "envelope": {
+        "event_id": "dispatch-1",
+        "source": "dispatch",
+        "source_event_id": "1",
+        "topic": "notifications.agent.session-b",
+        "dedupe_key": "dispatch-1",
+        "issued_at": 1767225601000,
+        "payload_summary": "ANS-1 comment created: Which pool size do you need?",
+        "payload": "{\"id\":1,\"issue_key\":\"ANS-1\",\"artifact_id\":null,\"project\":\"ANS\",\"seq\":1,\"type\":\"comment.created\",\"actor\":{\"kind\":\"user\",\"id\":\"alice\",\"proven\":true},\"notify\":true,\"created_at\":\"2026-01-01T00:00:02Z\",\"payload\":{\"anchor\":null,\"answers\":null,\"artifact_id\":null,\"artifact_name\":\"\",\"ask_id\":\"00000000-0000-4000-8000-000000000001\",\"ask_question\":\"Which database backs the queue?\",\"ask_sessions\":[\"session-a\",\"session-c\"],\"ask_state\":\"open\",\"ask_waiting_on\":\"agent\",\"author\":{\"id\":\"alice\",\"kind\":\"user\",\"proven\":true},\"body\":\"Which pool size do you need?\",\"created_at\":\"2026-01-01T00:00:03Z\",\"deliveries\":[],\"edited_at\":null,\"id\":\"00000000-0000-4000-8000-000000000002\",\"issue_key\":\"ANS-1\",\"mentions\":[],\"reply_block\":null,\"reply_to\":null,\"resolved\":false,\"resolved_at\":null,\"resolved_by\":null,\"suggestion\":null,\"suppress_route\":false,\"thread_logins\":[\"alice\"],\"turn\":\"agent\"},\"quiet\":false}",
+        "trace_id": "dispatch-1",
+        "in_reply_to": "00000000-0000-4000-8000-000000000001"
+      }
+    },
+    {
+      "reply": "first",
+      "reader": "C",
+      "topic": "notifications.agent.session-c",
+      "relation": "replied_on_your_ask",
+      "envelope": {
+        "event_id": "dispatch-1",
+        "source": "dispatch",
+        "source_event_id": "1",
+        "topic": "notifications.agent.session-c",
+        "dedupe_key": "dispatch-1",
+        "issued_at": 1767225601000,
+        "payload_summary": "ANS-1 comment created: Which pool size do you need?",
+        "payload": "{\"id\":1,\"issue_key\":\"ANS-1\",\"artifact_id\":null,\"project\":\"ANS\",\"seq\":1,\"type\":\"comment.created\",\"actor\":{\"kind\":\"user\",\"id\":\"alice\",\"proven\":true},\"notify\":true,\"created_at\":\"2026-01-01T00:00:02Z\",\"payload\":{\"anchor\":null,\"answers\":null,\"artifact_id\":null,\"artifact_name\":\"\",\"ask_id\":\"00000000-0000-4000-8000-000000000001\",\"ask_question\":\"Which database backs the queue?\",\"ask_sessions\":[\"session-a\",\"session-c\"],\"ask_state\":\"open\",\"ask_waiting_on\":\"agent\",\"author\":{\"id\":\"alice\",\"kind\":\"user\",\"proven\":true},\"body\":\"Which pool size do you need?\",\"created_at\":\"2026-01-01T00:00:03Z\",\"deliveries\":[],\"edited_at\":null,\"id\":\"00000000-0000-4000-8000-000000000002\",\"issue_key\":\"ANS-1\",\"mentions\":[],\"reply_block\":null,\"reply_to\":null,\"resolved\":false,\"resolved_at\":null,\"resolved_by\":null,\"suggestion\":null,\"suppress_route\":false,\"thread_logins\":[\"alice\"],\"turn\":\"agent\"},\"quiet\":false}",
+        "trace_id": "dispatch-1",
+        "in_reply_to": "00000000-0000-4000-8000-000000000001"
+      }
+    },
+    {
+      "reply": "first",
+      "reader": null,
+      "topic": "notifications.dispatch.issue.ANS-1.comment.created",
+      "relation": null,
+      "envelope": {
+        "event_id": "dispatch-1",
+        "source": "dispatch",
+        "source_event_id": "1",
+        "topic": "notifications.dispatch.issue.ANS-1.comment.created",
+        "dedupe_key": "dispatch-1",
+        "issued_at": 1767225601000,
+        "payload_summary": "ANS-1 comment created: Which pool size do you need?",
+        "payload": "{\"id\":1,\"issue_key\":\"ANS-1\",\"artifact_id\":null,\"project\":\"ANS\",\"seq\":1,\"type\":\"comment.created\",\"actor\":{\"kind\":\"user\",\"id\":\"alice\",\"proven\":true},\"notify\":true,\"created_at\":\"2026-01-01T00:00:02Z\",\"payload\":{\"anchor\":null,\"answers\":null,\"artifact_id\":null,\"artifact_name\":\"\",\"ask_id\":\"00000000-0000-4000-8000-000000000001\",\"ask_question\":\"Which database backs the queue?\",\"ask_sessions\":[\"session-a\",\"session-c\"],\"ask_state\":\"open\",\"ask_waiting_on\":\"agent\",\"author\":{\"id\":\"alice\",\"kind\":\"user\",\"proven\":true},\"body\":\"Which pool size do you need?\",\"created_at\":\"2026-01-01T00:00:03Z\",\"deliveries\":[],\"edited_at\":null,\"id\":\"00000000-0000-4000-8000-000000000002\",\"issue_key\":\"ANS-1\",\"mentions\":[],\"reply_block\":null,\"reply_to\":null,\"resolved\":false,\"resolved_at\":null,\"resolved_by\":null,\"suggestion\":null,\"suppress_route\":false,\"thread_logins\":[\"alice\"],\"turn\":\"agent\"},\"quiet\":false}",
+        "trace_id": "dispatch-1",
+        "in_reply_to": "00000000-0000-4000-8000-000000000001"
+      }
+    },
+    {
+      "reply": "third",
+      "reader": "A",
+      "topic": "notifications.agent.session-a",
+      "relation": "replied_on_your_ask",
+      "envelope": {
+        "event_id": "dispatch-2",
+        "source": "dispatch",
+        "source_event_id": "2",
+        "topic": "notifications.agent.session-a",
+        "dedupe_key": "dispatch-2",
+        "issued_at": 1767225604000,
+        "payload_summary": "ANS-1 comment created: Four connections will do.",
+        "payload": "{\"id\":2,\"issue_key\":\"ANS-1\",\"artifact_id\":null,\"project\":\"ANS\",\"seq\":2,\"type\":\"comment.created\",\"actor\":{\"kind\":\"user\",\"id\":\"alice\",\"proven\":true},\"notify\":true,\"created_at\":\"2026-01-01T00:00:05Z\",\"payload\":{\"anchor\":null,\"answers\":null,\"artifact_id\":null,\"artifact_name\":\"\",\"ask_id\":\"00000000-0000-4000-8000-000000000001\",\"ask_question\":\"Which database backs the queue?\",\"ask_sessions\":[\"session-a\",\"session-c\"],\"ask_state\":\"open\",\"ask_waiting_on\":\"agent\",\"author\":{\"id\":\"alice\",\"kind\":\"user\",\"proven\":true},\"body\":\"Four connections will do.\",\"created_at\":\"2026-01-01T00:00:06Z\",\"deliveries\":[],\"edited_at\":null,\"id\":\"00000000-0000-4000-8000-000000000003\",\"issue_key\":\"ANS-1\",\"mentions\":[],\"reply_block\":null,\"reply_to\":null,\"resolved\":false,\"resolved_at\":null,\"resolved_by\":null,\"suggestion\":null,\"suppress_route\":false,\"thread_logins\":[\"alice\"],\"turn\":\"agent\"},\"quiet\":false}",
+        "trace_id": "dispatch-2",
+        "in_reply_to": "00000000-0000-4000-8000-000000000001"
+      }
+    }
+  ],
+  "stand_in": {
+    "ask_id": "00000000-0000-4000-8000-000000000004",
+    "owners": [
+      "session-owner-of-the-stand-in-ask-01",
+      "session-owner-of-the-stand-in-ask-02",
+      "session-owner-of-the-stand-in-ask-03",
+      "session-owner-of-the-stand-in-ask-04",
+      "session-owner-of-the-stand-in-ask-05",
+      "session-owner-of-the-stand-in-ask-06",
+      "session-owner-of-the-stand-in-ask-07"
+    ],
+    "copies": [
+      {
+        "reader": "session-owner-of-the-stand-in-ask-01",
+        "topic": "notifications.agent.session-owner-of-the-stand-in-ask-01",
+        "relation": "replied_on_your_ask",
+        "envelope": {
+          "event_id": "dispatch-3",
+          "source": "dispatch",
+          "source_event_id": "3",
+          "topic": "notifications.agent.session-owner-of-the-stand-in-ask-01",
+          "dedupe_key": "dispatch-3",
+          "issued_at": 1767225607000,
+          "payload_summary": "ANS-1 comment created: Ship to the region whose queue is nearest. Ship to the region whose queue is nearest. Ship to the region whose queue is nearest. Ship to ",
+          "payload": "{\"actor\":{\"kind\":\"user\",\"id\":\"alice\",\"proven\":true},\"artifact_id\":null,\"created_at\":\"2026-01-01T00:00:08Z\",\"id\":3,\"issue_key\":\"ANS-1\",\"notify\":true,\"payload\":{\"anchor\":null,\"answers\":null,\"artifact_id\":null,\"artifact_name\":\"\",\"ask_id\":\"00000000-0000-4000-8000-000000000004\",\"ask_question\":\"Which region do we ship to first?\",\"ask_sessions\":[\"session-owner-of-the-stand-in-ask-01\",\"session-owner-of-the-stand-in-ask-02\",\"session-owner-of-the-stand-in-ask-03\",\"session-owner-of-the-stand-in-ask-04\",\"session-owner-of-the-stand-in-ask-05\",\"session-owner-of-the-stand-in-ask-06\",\"session-owner-of-the-stand-in-ask-07\"],\"ask_state\":\"open\",\"ask_waiting_on\":\"agent\",\"author\":{\"id\":\"alice\",\"kind\":\"user\",\"proven\":true},\"created_at\":\"2026-01-01T00:00:09Z\",\"deliveries\":[],\"edited_at\":null,\"id\":\"00000000-0000-4000-8000-000000000005\",\"issue_key\":\"ANS-1\",\"mentions\":[],\"payload_omitted\":true,\"reply_block\":null,\"reply_to\":null,\"resolved\":false,\"resolved_at\":null,\"resolved_by\":null,\"suggestion\":null,\"suppress_route\":false,\"thread_logins\":[\"alice\"],\"turn\":\"agent\"},\"project\":\"ANS\",\"quiet\":false,\"seq\":3,\"type\":\"comment.created\"}",
+          "trace_id": "dispatch-3",
+          "in_reply_to": "00000000-0000-4000-8000-000000000004"
+        }
+      },
+      {
+        "reader": "session-owner-of-the-stand-in-ask-02",
+        "topic": "notifications.agent.session-owner-of-the-stand-in-ask-02",
+        "relation": "replied_on_your_ask",
+        "envelope": {
+          "event_id": "dispatch-3",
+          "source": "dispatch",
+          "source_event_id": "3",
+          "topic": "notifications.agent.session-owner-of-the-stand-in-ask-02",
+          "dedupe_key": "dispatch-3",
+          "issued_at": 1767225607000,
+          "payload_summary": "ANS-1 comment created: Ship to the region whose queue is nearest. Ship to the region whose queue is nearest. Ship to the region whose queue is nearest. Ship to ",
+          "payload": "{\"actor\":{\"kind\":\"user\",\"id\":\"alice\",\"proven\":true},\"artifact_id\":null,\"created_at\":\"2026-01-01T00:00:08Z\",\"id\":3,\"issue_key\":\"ANS-1\",\"notify\":true,\"payload\":{\"anchor\":null,\"answers\":null,\"artifact_id\":null,\"artifact_name\":\"\",\"ask_id\":\"00000000-0000-4000-8000-000000000004\",\"ask_question\":\"Which region do we ship to first?\",\"ask_sessions\":[\"session-owner-of-the-stand-in-ask-01\",\"session-owner-of-the-stand-in-ask-02\",\"session-owner-of-the-stand-in-ask-03\",\"session-owner-of-the-stand-in-ask-04\",\"session-owner-of-the-stand-in-ask-05\",\"session-owner-of-the-stand-in-ask-06\",\"session-owner-of-the-stand-in-ask-07\"],\"ask_state\":\"open\",\"ask_waiting_on\":\"agent\",\"author\":{\"id\":\"alice\",\"kind\":\"user\",\"proven\":true},\"created_at\":\"2026-01-01T00:00:09Z\",\"deliveries\":[],\"edited_at\":null,\"id\":\"00000000-0000-4000-8000-000000000005\",\"issue_key\":\"ANS-1\",\"mentions\":[],\"payload_omitted\":true,\"reply_block\":null,\"reply_to\":null,\"resolved\":false,\"resolved_at\":null,\"resolved_by\":null,\"suggestion\":null,\"suppress_route\":false,\"thread_logins\":[\"alice\"],\"turn\":\"agent\"},\"project\":\"ANS\",\"quiet\":false,\"seq\":3,\"type\":\"comment.created\"}",
+          "trace_id": "dispatch-3",
+          "in_reply_to": "00000000-0000-4000-8000-000000000004"
+        }
+      },
+      {
+        "reader": "session-owner-of-the-stand-in-ask-03",
+        "topic": "notifications.agent.session-owner-of-the-stand-in-ask-03",
+        "relation": "replied_on_your_ask",
+        "envelope": {
+          "event_id": "dispatch-3",
+          "source": "dispatch",
+          "source_event_id": "3",
+          "topic": "notifications.agent.session-owner-of-the-stand-in-ask-03",
+          "dedupe_key": "dispatch-3",
+          "issued_at": 1767225607000,
+          "payload_summary": "ANS-1 comment created: Ship to the region whose queue is nearest. Ship to the region whose queue is nearest. Ship to the region whose queue is nearest. Ship to ",
+          "payload": "{\"actor\":{\"kind\":\"user\",\"id\":\"alice\",\"proven\":true},\"artifact_id\":null,\"created_at\":\"2026-01-01T00:00:08Z\",\"id\":3,\"issue_key\":\"ANS-1\",\"notify\":true,\"payload\":{\"anchor\":null,\"answers\":null,\"artifact_id\":null,\"artifact_name\":\"\",\"ask_id\":\"00000000-0000-4000-8000-000000000004\",\"ask_question\":\"Which region do we ship to first?\",\"ask_sessions\":[\"session-owner-of-the-stand-in-ask-01\",\"session-owner-of-the-stand-in-ask-02\",\"session-owner-of-the-stand-in-ask-03\",\"session-owner-of-the-stand-in-ask-04\",\"session-owner-of-the-stand-in-ask-05\",\"session-owner-of-the-stand-in-ask-06\",\"session-owner-of-the-stand-in-ask-07\"],\"ask_state\":\"open\",\"ask_waiting_on\":\"agent\",\"author\":{\"id\":\"alice\",\"kind\":\"user\",\"proven\":true},\"created_at\":\"2026-01-01T00:00:09Z\",\"deliveries\":[],\"edited_at\":null,\"id\":\"00000000-0000-4000-8000-000000000005\",\"issue_key\":\"ANS-1\",\"mentions\":[],\"payload_omitted\":true,\"reply_block\":null,\"reply_to\":null,\"resolved\":false,\"resolved_at\":null,\"resolved_by\":null,\"suggestion\":null,\"suppress_route\":false,\"thread_logins\":[\"alice\"],\"turn\":\"agent\"},\"project\":\"ANS\",\"quiet\":false,\"seq\":3,\"type\":\"comment.created\"}",
+          "trace_id": "dispatch-3",
+          "in_reply_to": "00000000-0000-4000-8000-000000000004"
+        }
+      },
+      {
+        "reader": "session-owner-of-the-stand-in-ask-04",
+        "topic": "notifications.agent.session-owner-of-the-stand-in-ask-04",
+        "relation": "replied_on_your_ask",
+        "envelope": {
+          "event_id": "dispatch-3",
+          "source": "dispatch",
+          "source_event_id": "3",
+          "topic": "notifications.agent.session-owner-of-the-stand-in-ask-04",
+          "dedupe_key": "dispatch-3",
+          "issued_at": 1767225607000,
+          "payload_summary": "ANS-1 comment created: Ship to the region whose queue is nearest. Ship to the region whose queue is nearest. Ship to the region whose queue is nearest. Ship to ",
+          "payload": "{\"actor\":{\"kind\":\"user\",\"id\":\"alice\",\"proven\":true},\"artifact_id\":null,\"created_at\":\"2026-01-01T00:00:08Z\",\"id\":3,\"issue_key\":\"ANS-1\",\"notify\":true,\"payload\":{\"anchor\":null,\"answers\":null,\"artifact_id\":null,\"artifact_name\":\"\",\"ask_id\":\"00000000-0000-4000-8000-000000000004\",\"ask_question\":\"Which region do we ship to first?\",\"ask_sessions\":[\"session-owner-of-the-stand-in-ask-01\",\"session-owner-of-the-stand-in-ask-02\",\"session-owner-of-the-stand-in-ask-03\",\"session-owner-of-the-stand-in-ask-04\",\"session-owner-of-the-stand-in-ask-05\",\"session-owner-of-the-stand-in-ask-06\",\"session-owner-of-the-stand-in-ask-07\"],\"ask_state\":\"open\",\"ask_waiting_on\":\"agent\",\"author\":{\"id\":\"alice\",\"kind\":\"user\",\"proven\":true},\"created_at\":\"2026-01-01T00:00:09Z\",\"deliveries\":[],\"edited_at\":null,\"id\":\"00000000-0000-4000-8000-000000000005\",\"issue_key\":\"ANS-1\",\"mentions\":[],\"payload_omitted\":true,\"reply_block\":null,\"reply_to\":null,\"resolved\":false,\"resolved_at\":null,\"resolved_by\":null,\"suggestion\":null,\"suppress_route\":false,\"thread_logins\":[\"alice\"],\"turn\":\"agent\"},\"project\":\"ANS\",\"quiet\":false,\"seq\":3,\"type\":\"comment.created\"}",
+          "trace_id": "dispatch-3",
+          "in_reply_to": "00000000-0000-4000-8000-000000000004"
+        }
+      },
+      {
+        "reader": "session-owner-of-the-stand-in-ask-05",
+        "topic": "notifications.agent.session-owner-of-the-stand-in-ask-05",
+        "relation": "replied_on_your_ask",
+        "envelope": {
+          "event_id": "dispatch-3",
+          "source": "dispatch",
+          "source_event_id": "3",
+          "topic": "notifications.agent.session-owner-of-the-stand-in-ask-05",
+          "dedupe_key": "dispatch-3",
+          "issued_at": 1767225607000,
+          "payload_summary": "ANS-1 comment created: Ship to the region whose queue is nearest. Ship to the region whose queue is nearest. Ship to the region whose queue is nearest. Ship to ",
+          "payload": "{\"actor\":{\"kind\":\"user\",\"id\":\"alice\",\"proven\":true},\"artifact_id\":null,\"created_at\":\"2026-01-01T00:00:08Z\",\"id\":3,\"issue_key\":\"ANS-1\",\"notify\":true,\"payload\":{\"anchor\":null,\"answers\":null,\"artifact_id\":null,\"artifact_name\":\"\",\"ask_id\":\"00000000-0000-4000-8000-000000000004\",\"ask_question\":\"Which region do we ship to first?\",\"ask_sessions\":[\"session-owner-of-the-stand-in-ask-01\",\"session-owner-of-the-stand-in-ask-02\",\"session-owner-of-the-stand-in-ask-03\",\"session-owner-of-the-stand-in-ask-04\",\"session-owner-of-the-stand-in-ask-05\",\"session-owner-of-the-stand-in-ask-06\",\"session-owner-of-the-stand-in-ask-07\"],\"ask_state\":\"open\",\"ask_waiting_on\":\"agent\",\"author\":{\"id\":\"alice\",\"kind\":\"user\",\"proven\":true},\"created_at\":\"2026-01-01T00:00:09Z\",\"deliveries\":[],\"edited_at\":null,\"id\":\"00000000-0000-4000-8000-000000000005\",\"issue_key\":\"ANS-1\",\"mentions\":[],\"payload_omitted\":true,\"reply_block\":null,\"reply_to\":null,\"resolved\":false,\"resolved_at\":null,\"resolved_by\":null,\"suggestion\":null,\"suppress_route\":false,\"thread_logins\":[\"alice\"],\"turn\":\"agent\"},\"project\":\"ANS\",\"quiet\":false,\"seq\":3,\"type\":\"comment.created\"}",
+          "trace_id": "dispatch-3",
+          "in_reply_to": "00000000-0000-4000-8000-000000000004"
+        }
+      },
+      {
+        "reader": "session-owner-of-the-stand-in-ask-06",
+        "topic": "notifications.agent.session-owner-of-the-stand-in-ask-06",
+        "relation": "replied_on_your_ask",
+        "envelope": {
+          "event_id": "dispatch-3",
+          "source": "dispatch",
+          "source_event_id": "3",
+          "topic": "notifications.agent.session-owner-of-the-stand-in-ask-06",
+          "dedupe_key": "dispatch-3",
+          "issued_at": 1767225607000,
+          "payload_summary": "ANS-1 comment created: Ship to the region whose queue is nearest. Ship to the region whose queue is nearest. Ship to the region whose queue is nearest. Ship to ",
+          "payload": "{\"actor\":{\"kind\":\"user\",\"id\":\"alice\",\"proven\":true},\"artifact_id\":null,\"created_at\":\"2026-01-01T00:00:08Z\",\"id\":3,\"issue_key\":\"ANS-1\",\"notify\":true,\"payload\":{\"anchor\":null,\"answers\":null,\"artifact_id\":null,\"artifact_name\":\"\",\"ask_id\":\"00000000-0000-4000-8000-000000000004\",\"ask_question\":\"Which region do we ship to first?\",\"ask_sessions\":[\"session-owner-of-the-stand-in-ask-01\",\"session-owner-of-the-stand-in-ask-02\",\"session-owner-of-the-stand-in-ask-03\",\"session-owner-of-the-stand-in-ask-04\",\"session-owner-of-the-stand-in-ask-05\",\"session-owner-of-the-stand-in-ask-06\",\"session-owner-of-the-stand-in-ask-07\"],\"ask_state\":\"open\",\"ask_waiting_on\":\"agent\",\"author\":{\"id\":\"alice\",\"kind\":\"user\",\"proven\":true},\"created_at\":\"2026-01-01T00:00:09Z\",\"deliveries\":[],\"edited_at\":null,\"id\":\"00000000-0000-4000-8000-000000000005\",\"issue_key\":\"ANS-1\",\"mentions\":[],\"payload_omitted\":true,\"reply_block\":null,\"reply_to\":null,\"resolved\":false,\"resolved_at\":null,\"resolved_by\":null,\"suggestion\":null,\"suppress_route\":false,\"thread_logins\":[\"alice\"],\"turn\":\"agent\"},\"project\":\"ANS\",\"quiet\":false,\"seq\":3,\"type\":\"comment.created\"}",
+          "trace_id": "dispatch-3",
+          "in_reply_to": "00000000-0000-4000-8000-000000000004"
+        }
+      },
+      {
+        "reader": "session-owner-of-the-stand-in-ask-07",
+        "topic": "notifications.agent.session-owner-of-the-stand-in-ask-07",
+        "relation": "replied_on_your_ask",
+        "envelope": {
+          "event_id": "dispatch-3",
+          "source": "dispatch",
+          "source_event_id": "3",
+          "topic": "notifications.agent.session-owner-of-the-stand-in-ask-07",
+          "dedupe_key": "dispatch-3",
+          "issued_at": 1767225607000,
+          "payload_summary": "ANS-1 comment created: Ship to the region whose queue is nearest. Ship to the region whose queue is nearest. Ship to the region whose queue is nearest. Ship to ",
+          "payload": "{\"actor\":{\"kind\":\"user\",\"id\":\"alice\",\"proven\":true},\"artifact_id\":null,\"created_at\":\"2026-01-01T00:00:08Z\",\"id\":3,\"issue_key\":\"ANS-1\",\"notify\":true,\"payload\":{\"anchor\":null,\"answers\":null,\"artifact_id\":null,\"artifact_name\":\"\",\"ask_id\":\"00000000-0000-4000-8000-000000000004\",\"ask_question\":\"Which region do we ship to first?\",\"ask_sessions\":[\"session-owner-of-the-stand-in-ask-01\",\"session-owner-of-the-stand-in-ask-02\",\"session-owner-of-the-stand-in-ask-03\",\"session-owner-of-the-stand-in-ask-04\",\"session-owner-of-the-stand-in-ask-05\",\"session-owner-of-the-stand-in-ask-06\",\"session-owner-of-the-stand-in-ask-07\"],\"ask_state\":\"open\",\"ask_waiting_on\":\"agent\",\"author\":{\"id\":\"alice\",\"kind\":\"user\",\"proven\":true},\"created_at\":\"2026-01-01T00:00:09Z\",\"deliveries\":[],\"edited_at\":null,\"id\":\"00000000-0000-4000-8000-000000000005\",\"issue_key\":\"ANS-1\",\"mentions\":[],\"payload_omitted\":true,\"reply_block\":null,\"reply_to\":null,\"resolved\":false,\"resolved_at\":null,\"resolved_by\":null,\"suggestion\":null,\"suppress_route\":false,\"thread_logins\":[\"alice\"],\"turn\":\"agent\"},\"project\":\"ANS\",\"quiet\":false,\"seq\":3,\"type\":\"comment.created\"}",
+          "trace_id": "dispatch-3",
+          "in_reply_to": "00000000-0000-4000-8000-000000000004"
+        }
+      },
+      {
+        "reader": "session-b",
+        "topic": "notifications.agent.session-b",
+        "relation": "commented_on_an_issue",
+        "envelope": {
+          "event_id": "dispatch-3",
+          "source": "dispatch",
+          "source_event_id": "3",
+          "topic": "notifications.agent.session-b",
+          "dedupe_key": "dispatch-3",
+          "issued_at": 1767225607000,
+          "payload_summary": "ANS-1 comment created: Ship to the region whose queue is nearest. Ship to the region whose queue is nearest. Ship to the region whose queue is nearest. Ship to ",
+          "payload": "{\"actor\":{\"kind\":\"user\",\"id\":\"alice\",\"proven\":true},\"artifact_id\":null,\"created_at\":\"2026-01-01T00:00:08Z\",\"id\":3,\"issue_key\":\"ANS-1\",\"notify\":true,\"payload\":{\"anchor\":null,\"answers\":null,\"artifact_id\":null,\"artifact_name\":\"\",\"ask_id\":\"00000000-0000-4000-8000-000000000004\",\"ask_question\":\"Which region do we ship to first?\",\"ask_sessions\":[\"session-owner-of-the-stand-in-ask-01\",\"session-owner-of-the-stand-in-ask-02\",\"session-owner-of-the-stand-in-ask-03\",\"session-owner-of-the-stand-in-ask-04\",\"session-owner-of-the-stand-in-ask-05\",\"session-owner-of-the-stand-in-ask-06\",\"session-owner-of-the-stand-in-ask-07\"],\"ask_state\":\"open\",\"ask_waiting_on\":\"agent\",\"author\":{\"id\":\"alice\",\"kind\":\"user\",\"proven\":true},\"created_at\":\"2026-01-01T00:00:09Z\",\"deliveries\":[],\"edited_at\":null,\"id\":\"00000000-0000-4000-8000-000000000005\",\"issue_key\":\"ANS-1\",\"mentions\":[],\"payload_omitted\":true,\"reply_block\":null,\"reply_to\":null,\"resolved\":false,\"resolved_at\":null,\"resolved_by\":null,\"suggestion\":null,\"suppress_route\":false,\"thread_logins\":[\"alice\"],\"turn\":\"agent\"},\"project\":\"ANS\",\"quiet\":false,\"seq\":3,\"type\":\"comment.created\"}",
+          "trace_id": "dispatch-3",
+          "in_reply_to": "00000000-0000-4000-8000-000000000004"
+        }
+      }
+    ]
+  }
+}

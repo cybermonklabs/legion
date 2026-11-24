@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Tests for `check-ci-images.sh`: one red case per rule it enforces, under the mode that owns
-# that refusal, one per ground of its exception list, and the repository's own tree in each mode.
+# that refusal, one per ground of its exception list, and the repository's own tree in the
+# package mode, which is the one mode a case of it is left for.
 #
 # Each case builds a miniature repository under a temporary directory and symlinks the real
 # script, the path model its sweep walks the tree with (workflow_paths.py) and the reference
@@ -100,9 +101,9 @@ fixture() {
     "$root/packages/envoy/docker" "$root/packages/envoy/infra/host/heldportwrapper" \
     "$root/packages/daemon/docker" "$root/packages/daemon/internal/testnats" \
     "$root/packages/envoy/internal/testnats" "$root/packages/envoy/internal/testpg" \
-    "$root/packages/envoy/internal/tests3" "$root/packages/envoy-client/src/__tests__" \
+    "$root/packages/envoy/internal/tests3" "$root/packages/envoy-client/test" \
     "$root/scripts/e2e/lib" "$root/packages/dispatch/e2e" \
-    "$root/packages/pi-legion/scripts/skill-scenarios"
+    "$root/packages/pi-legion/scripts/skill-scenarios" "$root/packages/envoy/deploy/scripts"
   ln -s "$check_script" "$root/.github/scripts/check-ci-images.sh"
   ln -s "$script_dir/workflow_paths.py" "$root/.github/scripts/workflow_paths.py"
   ln -s "$script_dir/ci_images.py" "$root/.github/scripts/ci_images.py"
@@ -136,8 +137,17 @@ jobs:
     steps:
       - uses: ./.github/actions/pull-test-images
       - run: docker pull $REGISTRY@$NATS
-      # The two shapes IMAGE_FROM covers in the real tree, so this fixture holds its entries
-      # to a command each, as the check demands.
+YAML
+  # The second shape IMAGE_FROM covers in the real tree, so this fixture holds its entries to a
+  # command each, as the check demands. It is outside ci.yaml: it lives in a called file of a
+  # job, where ci.yaml's job of that id holds the gate and the file the steps.
+  cat > "$root/.github/workflows/ci-job-envoy-smoke.yaml" <<YAML
+name: CI job envoy-smoke
+on: [workflow_call]
+jobs:
+  envoy-smoke:
+    runs-on: ubuntu-24.04
+    steps:
       - run: docker run --rm "\$ENVOY_SMOKE_IMAGE" ls
 YAML
   cat > "$root/.github/actions/pull-test-images/action.yml" <<'YAML'
@@ -194,7 +204,7 @@ package testimage
 const Image = "$REGISTRY@$NATS"
 YAML
   done
-  cat > "$root/packages/envoy-client/src/__tests__/nats-server.ts" <<YAML
+  cat > "$root/packages/envoy-client/test/nats-server.ts" <<YAML
 const NATS_IMAGE = "$REGISTRY@$NATS";
 export { NATS_IMAGE };
 YAML
@@ -206,15 +216,27 @@ YAML
 docker run --rm --network host --cpus 2 --memory 4g $REGISTRY@$NATS \\
   node node_modules/@playwright/test/cli.js test --project=visual
 YAML
+  cat > "$root/.github/scripts/dispatch-browser-visual-suite.sh" <<YAML
+#!/usr/bin/env bash
+export DISPATCH_E2E_PG_IMAGE=$REGISTRY@$NATS
+YAML
   cat > "$root/packages/pi-legion/scripts/skill-scenarios/rig.sh" <<YAML
 #!/usr/bin/env bash
 judge_image=$REGISTRY@$NATS
 docker run --rm --init "\$judge_image" bash -c 'echo judged'
+# The shape IMAGE_FROM covers in the real rig.sh: its NATS server's image, which
+# scripts/e2e/lib/nats-image.sh sets.
+docker run -d --name rig-nats "\$nats_image" -js >/dev/null
 YAML
   cat > "$root/scripts/e2e/stage1-skeleton.sh" <<YAML
 #!/usr/bin/env bash
 docker run -d --name pg --cpus 2 --memory 2g \\
   -e POSTGRES_DB=legion $REGISTRY@$NATS >/dev/null
+YAML
+  cat > "$root/packages/envoy/deploy/scripts/compose-2.12.2_test.sh" <<YAML
+# shellcheck shell=bash
+compose_2_12_image=$REGISTRY@$NATS
+container=\$(docker create "\$compose_2_12_image")
 YAML
   echo "$root"
 }
@@ -665,7 +687,7 @@ check "names the service and its line" "$(contains "$out" 'ci.yaml:8: the nats s
 
 echo "case: rule 6 — a reference whose digest no row holds"
 root=$(fixture digest-unknown)
-sed -i "s|$NATS|$UNKNOWN|" "$root/packages/envoy-client/src/__tests__/nats-server.ts"
+sed -i "s|$NATS|$UNKNOWN|" "$root/packages/envoy-client/test/nats-server.ts"
 run_check tree "$root"
 check "a digest outside the file fails" "$(is "$status" 1)"
 check "names the file to add it to" "$(contains "$out" 'names a digest no row of .github/ci-images.yaml holds')"
@@ -872,13 +894,17 @@ set -e
 check "both modes in one call fails" "$(is "$status" 1)"
 check "naming them" "$(contains "$out" 'this check takes one mode')"
 
-echo "case: the repository's own tree, in each mode"
-set +e
-out=$(CI_IMAGES_MANIFEST_HEAD="$head_script" "$check_script" tree 2>&1)
-status=$?
-set -e
-check "the real tree passes the tree mode" "$(is "$status" 0)"
-check "says what it read" "$(contains "$out" "reference(s) in .* file(s) of CI's reach")"
+# The package mode alone. ci.yaml's lint job runs `check-ci-images.sh tree` over this
+# repository on every change (.github/workflows/ci-job-lint.yaml, "Check every image a CI job
+# fetches is a row of .github/ci-images.yaml"), so a tree-mode case here would run that same
+# check a second time in the same CI run. The package mode runs in a CI run too: ci.yaml's
+# ci-images job runs `check-ci-images.sh package` (.github/workflows/ci-job-ci-images.yaml,
+# "Check the package holds every row of .github/ci-images.yaml") on every event ci.yaml runs
+# on - a pull request, a merge group and a dispatch - whenever the ci_images filter selects
+# it, and there it reads ghcr.io itself. This case runs that mode over this tree's rows against
+# a stand-in for the registry instead (CI_IMAGES_MANIFEST_HEAD and LABELS below), so the mode's
+# own reading of the rows is held in every run of this suite, which reaches no registry.
+echo "case: the repository's own tree, in the package mode"
 
 # This tree's own `built` row carries the digest of an image this repository published, and
 # rule 10 holds that image's label to the recipe this tree holds. The row is read out of

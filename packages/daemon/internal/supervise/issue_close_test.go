@@ -166,7 +166,7 @@ func TestAReopenedClaimWhoseSessionTheStoreLostStartsFreshAndReportsIt(t *testin
 	var reported []string
 	h := newBareHarness(t)
 	// The hook is set before the machine is built, since the machine takes the deps it is given.
-	h.deps.SessionLost = func(_ Claim, detail string) { reported = append(reported, detail) }
+	h.deps.SessionLost = func(_ Claim, _ SessionLoss, detail string) { reported = append(reported, detail) }
 	if err := h.store.PutClaim(h.ctx, queuedClaim()); err != nil {
 		t.Fatal(err)
 	}
@@ -186,7 +186,7 @@ func TestAReopenedClaimWhoseSessionTheStoreLostStartsFreshAndReportsIt(t *testin
 	if c := h.claim(); c.Session != "" || c.SessionFile != "" {
 		t.Errorf("claim %+v after the lost session, want it recording none", c)
 	}
-	if built := h.specs.last(t); !built.SessionLost {
+	if built := h.specs.last(t); built.SessionLost != SessionLossGone {
 		t.Error("the fresh agent's spec was built for a claim that does not know its session was lost")
 	}
 	if len(reported) != 1 || !strings.Contains(reported[0], session) {

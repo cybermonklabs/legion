@@ -33,29 +33,63 @@ import (
 // replaces its pod. A controller left behind by a configuration change must still be brought onto
 // it: either its launch replaces the pod, as before, or PodDrift names the drift so something
 // replaces it.
+//
+// The service account the session proxy impersonates is part of the session store too: the
+// controller's launcher was told it once, at its pod's creation, and signs in to Cloud SQL as that
+// identity for the pod's life. A deployment that comes to name one, under the same instance,
+// database and login, must not leave the controller signing in as the pod itself — and since no
+// round is opened over the controller's pod, that row holds its next launch to the replacement.
+// So does the writer audience the account is impersonated with, named or dropped: it changes the
+// credential the controller's launcher signs in with, and the form that launcher runs, the
+// roles-dir form with it and the single-role form without (controllerPod.launcherContainer).
 func TestTheControllersPodIsNotLeftBehindByAConfigurationItCannotCarry(t *testing.T) {
 	const overlay = "/etc/legion-operator-roles/controller.yml"
 	roles := corev1.Volume{Name: "operator-roles", VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{
 		LocalObjectReference: corev1.LocalObjectReference{Name: "legion-operator-roles"},
 	}}}
-	for name, now := range map[string]func(*Options){
-		"the secrets broker's enrollment": func(o *Options) {
+	for name, tc := range map[string]struct {
+		// built is the configuration the controller's pod is created under, testOptions when nil,
+		// and now the one the restarted daemon reads. replaces holds the launch to replacing the
+		// pod itself, rather than to either way of bringing the controller onto the change.
+		built, now func(*Options)
+		replaces   bool
+	}{
+		"the secrets broker's enrollment": {now: func(o *Options) {
 			o.AgentSecrets = &AgentSecrets{URL: "https://secrets.internal.example", Audience: "agent-secrets", TokenExpiry: time.Hour}
-		},
-		"the controller's own overlay": func(o *Options) {
+		}},
+		"the controller's own overlay": {now: func(o *Options) {
 			o.Pod.Volumes = append(o.Pod.Volumes, roles)
 			o.Pod.VolumeMounts = append(o.Pod.VolumeMounts, corev1.VolumeMount{Name: roles.Name, MountPath: "/etc/legion-operator-roles", ReadOnly: true})
 			o.RoleConfigFiles = map[claim.Role][]string{claim.RoleController: {overlay}}
-		},
-		"the session store": func(o *Options) {
+		}},
+		"the session store": {now: func(o *Options) {
 			o.SessionStore = ompsessions.Store{Kind: ompsessions.StorePostgres, DSNSecret: "legion/sessions/other"}
+		}},
+		"the session store's service account": {
+			built:    func(o *Options) { o.SessionStore = cloudSQLStore },
+			now:      func(o *Options) { o.SessionStore = cloudSQLImpersonatingStore },
+			replaces: true,
+		},
+		"the session store's writer audience": {
+			built:    func(o *Options) { o.SessionStore = cloudSQLImpersonatingStore },
+			now:      func(o *Options) { o.SessionStore = cloudSQLWriterStore },
+			replaces: true,
+		},
+		"the session store's writer audience dropped": {
+			built:    func(o *Options) { o.SessionStore = cloudSQLWriterStore },
+			now:      func(o *Options) { o.SessionStore = cloudSQLImpersonatingStore },
+			replaces: true,
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			g := newRig(t, nil)
+			var options []rigOption
+			if tc.built != nil {
+				options = append(options, withOptions(tc.built))
+			}
+			g := newRig(t, nil, options...)
 			spec := controllerSpec(t)
 			loc := g.spawn(spec)
-			r2 := secondRuntime(t, g, now)()
+			r2 := secondRuntime(t, g, tc.now)()
 			g.connectRunning(controllerToken, loc.Sandbox.Generation)
 			g.eventually("the controller's launcher to report its child to the restarted daemon", func() bool {
 				state, connected := r2.launchers.state(controllerToken, loc.Sandbox.PodUID)
@@ -66,13 +100,20 @@ func TestTheControllersPodIsNotLeftBehindByAConfigurationItCannotCarry(t *testin
 				t.Fatalf("the controller's pod holds nothing of this change, so this case proves nothing")
 			}
 			obs := readopt(t, g.ctx, r2, loc)[0]
-			drifted := driftOf(t, g.ctx, r2, loc)
+			drifted := driftOf(t, g, r2, loc)
 			spec.Generation, spec.BootToken, spec.ResumeSessionFile = 2, "boot-controller-g2", controllerSession
 			next, err := r2.Resume(g.ctx, &loc, spec)
 			if err != nil {
 				t.Fatalf("Resume the controller: %v", err)
 			}
 			replaced := next.Sandbox.PodUID != loc.Sandbox.PodUID
+			if tc.replaces {
+				if !replaced {
+					t.Errorf("the controller's launch kept pod %s, though it holds %+v, which a pod created now is not handed: no round is opened over the controller's pod, so its launch is what replaces it (observation %s, %s; PodDrift %q)",
+						loc.Sandbox.PodUID, held, obs.Kind, obs.Detail, drifted)
+				}
+				return
+			}
 			if replaced || len(drifted) > 0 {
 				return
 			}
@@ -89,10 +130,10 @@ func TestTheControllersPodIsNotLeftBehindByAConfigurationItCannotCarry(t *testin
 // answers nothing for it, so every facet of driftedInPod reaches it through movedInPod's rule
 // for an uncovered pod (addresses.go), and its next launch replaces it, as it always has. A
 // served owner its gh volume projects no directory for is such a facet: the controller acts as
-// the review App for every owner of the project, and one its pod holds no directory for is one
-// its `gh` reaches as nobody. It has no issue workspace and nothing to push, so nothing is lost
-// by replacing the pod where it stands — and it is replaced at its next launch, with no second
-// registration anywhere.
+// the review App for every owner that App is installed on, and one its pod holds no directory
+// for is one its `gh` reaches as nobody. It has no issue workspace and nothing to push, so
+// nothing is lost by replacing the pod where it stands — and it is replaced at its next launch,
+// with no second registration anywhere.
 func TestAControllerPodWhoseGhVolumeLacksAServedOwnerIsReplacedByItsNextLaunch(t *testing.T) {
 	g := newRig(t, nil)
 	spec := controllerSpec(t)
@@ -137,9 +178,8 @@ func TestAControllerPodWhoseGhVolumeLacksAServedOwnerIsReplacedByItsNextLaunch(t
 // its gh volume an empty directory rather than a projection of its Secret
 // (TestAControllerWithNoOwnerRunsWithAnEmptyGhDirectory, volumes: a projection with no items
 // would project every key of the Secret, the launcher token among them). That state is ordinary
-// and transient: a project whose mapping names no repository both Apps are installed on yet, and
-// a daemon whose read of an installation GitHub did not answer, which leaves that repository out
-// for now and reads it again.
+// and transient: a project whose Apps are installed on no owner yet, and a daemon whose read of an
+// installation GitHub did not answer, which leaves that owner out for now and reads it again.
 //
 // When the project then gains its first owner, that pod's /var/run/legion/gh holds no directory
 // of that owner's name: the refresher's Update reaches the Secret and never the projection, so
@@ -254,14 +294,15 @@ func TestMovedGhDirsLeavesAPodItCannotJudgeAndOneAheadOfTheDaemon(t *testing.T) 
 	}
 }
 
-// A repository the mapping gains is no pod to replace; an owner it gains is. The directories a pod
-// created now would hold depend on the pod's own repository — the owner it writes to holds one
-// directory per other repository that owner serves — so movedGhDirs reads that repository off the
-// pod's workspace fetch (fetchRepository) rather than guessing it, and asks for the owner-only set
-// of a pod that fetches none, the controller's. It then compares owner directories alone: a pod
-// whose own owner has since gained a sibling repository keeps running, reading that repository
-// through its owner's directory until the issue's next pod projects a directory of its own for it,
-// where a pod lacking an owner's directory holds no token of that owner at all.
+// A repository the daemon comes to serve is no pod to replace; an owner it gains is. The
+// directories a pod created now would hold depend on the pod's own repository — the owner it
+// writes to holds one directory per other repository that owner serves — so movedGhDirs reads
+// that repository off the pod's workspace fetch (fetchRepository) rather than guessing it, and
+// asks for the owner-only set of a pod that fetches none, the controller's. It then compares
+// owner directories alone: a pod whose own owner has since gained a sibling repository keeps
+// running, reading that repository through its owner's directory until the issue's next pod
+// projects a directory of its own for it, where a pod lacking an owner's directory holds no token
+// of that owner at all.
 func TestMovedGhDirsComparesTheOwnerDirectoriesOfThePodsOwnRepository(t *testing.T) {
 	t.Run("a repository of an owner the pod already holds", func(t *testing.T) {
 		var asked []string
@@ -279,7 +320,7 @@ func TestMovedGhDirsComparesTheOwnerDirectoriesOfThePodsOwnRepository(t *testing
 		asked = nil
 
 		if moved, ok := g.r.movedGhDirs(g.pod(issue.Sandbox.Name), claim.RoleArchitect); ok {
-			t.Errorf("the issue pod moved %q, want it left where it is: the mapping gained a repository of an owner it holds, not an owner", moved.String())
+			t.Errorf("the issue pod moved %q, want it left where it is: the daemon came to serve a repository of an owner it holds, not an owner", moved.String())
 		}
 		if _, ok := g.r.movedGhDirs(g.pod(controller.Sandbox.Name), claim.RoleController); ok {
 			t.Error("the controller's pod, which fetches no repository, moved though it holds every owner the daemon serves")

@@ -3,6 +3,8 @@ package core_test
 import (
 	"errors"
 	"fmt"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -201,4 +203,142 @@ func TestListenerConfigSOCKS5Proxy(t *testing.T) {
 
 	_, err = config.Env([]string{"nats://127.0.0.1:4222"})
 	requireInputError(t, err, "socks5Proxy", "natsUrls")
+}
+
+// Check refuses a sender limit the listener refuses when it boots, and takes every limit it boots
+// on: none, and a rate from 1 to 60000 with or without a burst. Env runs Check, so a refused limit
+// renders nothing.
+func TestListenerConfigCheckRefusesASenderMessageLimitTheListenerRefuses(t *testing.T) {
+	for _, c := range []struct {
+		name        string
+		rate, burst int
+		input, err  string // the input a refusal names, and its message
+	}{
+		{name: "no limit"},
+		{name: "the smallest rate alone", rate: 1},
+		{name: "the largest rate with a burst", rate: 60000, burst: 4},
+		{name: "a negative rate", rate: -1, input: "senderMessagesPerMinute", err: "senderMessagesPerMinute -1 is outside 0-60000"},
+		{name: "a rate above 60000", rate: 60001, input: "senderMessagesPerMinute", err: "senderMessagesPerMinute 60001 is outside 0-60000"},
+		{name: "a negative burst", rate: 4, burst: -1, input: "senderMessageBurst", err: "senderMessageBurst -1 is below 0"},
+		{name: "a burst with no rate", burst: 8, input: "senderMessageBurst", err: "senderMessageBurst 8 is set with no senderMessagesPerMinute"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			config := core.ListenerConfig{MachineID: "m", Port: 9020, SenderMessagesPerMinute: c.rate, SenderMessageBurst: c.burst}
+			err := config.Check()
+			env, envErr := config.Env([]string{"nats://127.0.0.1:4222"})
+			if c.err == "" {
+				require.NoError(t, err)
+				require.NoError(t, envErr)
+				return
+			}
+			requireInputError(t, err, c.input, c.err)
+			require.Nil(t, env)
+			requireInputError(t, envErr, c.input, c.err)
+		})
+	}
+}
+
+// Env renders each sender variable exactly when its field is above 0, after the stream byte limit
+// and before the broker check, so a listener with no limit renders what it always rendered. The
+// names are written out here rather than taken from bus, so a rename is seen in what the listener
+// reads.
+func TestListenerConfigEnvRendersTheSenderMessageLimit(t *testing.T) {
+	base := []string{"PORT=9020", "ENVOY_MACHINE_ID=m", "NATS_URLS=nats://127.0.0.1:4222"}
+	for _, c := range []struct {
+		name string
+		in   core.ListenerConfig
+		want []string
+	}{
+		{"no limit renders neither variable", core.ListenerConfig{MachineID: "m", Port: 9020}, base},
+		{
+			"a rate alone renders the rate alone",
+			core.ListenerConfig{MachineID: "m", Port: 9020, SenderMessagesPerMinute: 4},
+			slices.Concat(base, []string{"ENVOY_SENDER_MESSAGES_PER_MINUTE=4"}),
+		},
+		{
+			"a rate and a burst render both, the rate first",
+			core.ListenerConfig{MachineID: "m", Port: 9020, SenderMessagesPerMinute: 4, SenderMessageBurst: 8},
+			slices.Concat(base, []string{"ENVOY_SENDER_MESSAGES_PER_MINUTE=4", "ENVOY_SENDER_MESSAGE_BURST=8"}),
+		},
+		{
+			"after the stream byte limit and before the broker check",
+			core.ListenerConfig{
+				MachineID: "m", Port: 9020, NATSReplicas: 3, StreamMaxBytes: 1073741824,
+				SenderMessagesPerMinute: 60000, SenderMessageBurst: 1,
+				AgentSecretsURL: "https://broker.internal.example", AgentSecretsAudience: "broker-audience",
+				PublicURL: "https://listener.internal.example",
+			},
+			slices.Concat(base, []string{
+				"ENVOY_NATS_REPLICAS=3", "ENVOY_STREAM_MAX_BYTES=1073741824",
+				"ENVOY_SENDER_MESSAGES_PER_MINUTE=60000", "ENVOY_SENDER_MESSAGE_BURST=1",
+				"ENVOY_AGENT_SECRETS_URL=https://broker.internal.example", "ENVOY_AGENT_SECRETS_GOOGLE_AUDIENCE=broker-audience",
+				"ENVOY_PUBLIC_URL=https://listener.internal.example",
+			}),
+		},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			got, err := c.in.Env([]string{"nats://127.0.0.1:4222"})
+			require.NoError(t, err)
+			require.Equal(t, c.want, got)
+		})
+	}
+}
+
+// CheckSenderLimit is a component's rule for its two sender inputs: unset is no limit, a rate is a
+// whole number from 1 to 60000, and a burst is at least 1 and comes with a rate. Each refusal names
+// the input by the component's own path, prefix and all, and each limit it answers is one Check
+// takes, so the listener a component deploys boots on it.
+func TestCheckSenderLimitRefusesEachSenderMessageInputByItsPath(t *testing.T) {
+	n := func(v int) *int { return &v }
+	for _, prefix := range []string{"", "listener.", "tailnet.listener."} {
+		t.Run("prefix "+strconv.Quote(prefix), func(t *testing.T) {
+			for _, c := range []struct {
+				name                string
+				rate, burst         *int
+				wantRate, wantBurst int
+				input, err          string // %[1]s is the prefix
+			}{
+				{name: "unset"},
+				{name: "a rate alone", rate: n(4), wantRate: 4},
+				{name: "a rate and a burst", rate: n(4), burst: n(8), wantRate: 4, wantBurst: 8},
+				{name: "the smallest rate and burst", rate: n(1), burst: n(1), wantRate: 1, wantBurst: 1},
+				{name: "the largest rate", rate: n(60000), wantRate: 60000},
+				{
+					name: "a rate of 0", rate: n(0), input: "senderMessagesPerMinute",
+					err: "%[1]ssenderMessagesPerMinute 0 is outside 1-60000; leave it unset for no limit",
+				},
+				{
+					name: "a negative rate", rate: n(-1), input: "senderMessagesPerMinute",
+					err: "%[1]ssenderMessagesPerMinute -1 is outside 1-60000",
+				},
+				{
+					name: "a rate of 60001", rate: n(60001), input: "senderMessagesPerMinute",
+					err: "%[1]ssenderMessagesPerMinute 60001 is outside 1-60000",
+				},
+				{
+					name: "a burst of 0", rate: n(4), burst: n(0), input: "senderMessageBurst",
+					err: "%[1]ssenderMessageBurst 0 is below 1",
+				},
+				{
+					name: "a negative burst", rate: n(4), burst: n(-1), input: "senderMessageBurst",
+					err: "%[1]ssenderMessageBurst -1 is below 1",
+				},
+				{
+					name: "a burst with no rate", burst: n(8), input: "senderMessageBurst",
+					err: "%[1]ssenderMessageBurst is given without %[1]ssenderMessagesPerMinute",
+				},
+			} {
+				t.Run(c.name, func(t *testing.T) {
+					rate, burst, err := core.CheckSenderLimit(prefix, c.rate, c.burst)
+					if c.err != "" {
+						requireInputError(t, err, prefix+c.input, fmt.Sprintf(c.err, prefix))
+						return
+					}
+					require.NoError(t, err)
+					require.Equal(t, [2]int{c.wantRate, c.wantBurst}, [2]int{rate, burst})
+					require.NoError(t, core.ListenerConfig{MachineID: "m", Port: 9020, SenderMessagesPerMinute: rate, SenderMessageBurst: burst}.Check())
+				})
+			}
+		})
+	}
 }

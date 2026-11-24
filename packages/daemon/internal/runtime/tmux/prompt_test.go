@@ -6,21 +6,39 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
+// writeLaunchPrompt writes spec's composed system prompt to the claim's prompt file under host's
+// state directory, as launch does before the pane opens, and returns its path, for a test that runs
+// a launcher's command itself: Oh My Pi handed a path it cannot open would take the path's text for
+// its prompt.
+func writeLaunchPrompt(t *testing.T, spec runtime.SpawnSpec, host Host) string {
+	t.Helper()
+	prompt, err := runtime.ComposePrompt(spec.Prompt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	promptFile, err := runtime.WriteSystemPrompt(host.StateDir, string(spec.Claim), prompt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return promptFile
+}
+
 // The OMP command inside the shim, as runtime-tmux.ts:430 builds it: prefix and invocation,
-// `--model @default`, `--resume=<file>` when resuming, `--mode rpc`, the prompt word
-// (processes.test.ts:1126 fresh, :3950 resumed). The model flag rides both launches: a resumed
-// session would otherwise run the model it saved rather than the one the pod's overlay puts on
-// the `default` role, and a launch under the flag records no model of its own, so a later launch
-// without it would read the saved pin again.
+// `--model @default`, `--resume=<file>` when resuming, `--mode rpc` (processes.test.ts:1126 fresh,
+// :3950 resumed), then `--append-system-prompt` on the path of the claim's prompt file, one word
+// quoted for the pane's shell when it needs to be, never the prompt's text. The model flag rides
+// both launches: a resumed session would otherwise run its recorded model rather than the one the
+// pod's overlay puts on the `default` role. From Oh My Pi 18.18.6 of the fork
+// (upstream oh-my-pi #18534), a resumed launch under the role alias appends a replacement
+// `model_change` for its resolved model, which later launches without the flag read.
 func TestInnerCommand(t *testing.T) {
-	parts := runtime.PromptParts{RolePromptPaths: []string{"/roles/architect-root.md"}}
-	prompt := `--append-system-prompt "$(cat /roles/architect-root.md)"`
-	if got, want := innerCommand(nil, "/opt/oh-my-pi/18.0.3/omp", "", parts),
-		"/opt/oh-my-pi/18.0.3/omp --model @default --mode rpc "+prompt; got != want {
+	const promptFile = "/state/secrets/legion-omp-legion-42-architect-system-prompt.md"
+	if got, want := innerCommand(nil, "/opt/oh-my-pi/18.0.3/omp", "", promptFile),
+		"/opt/oh-my-pi/18.0.3/omp --model @default --mode rpc --append-system-prompt "+promptFile; got != want {
 		t.Errorf("fresh: got %q, want %q", got, want)
 	}
-	if got, want := innerCommand([]string{"env", "K=v", "--"}, "/opt/oh-my-pi/18.0.3/omp", "/state/trees/x/.omp/s 1.jsonl", parts),
-		"env 'K=v' -- /opt/oh-my-pi/18.0.3/omp --model @default --resume='/state/trees/x/.omp/s 1.jsonl' --mode rpc "+prompt; got != want {
+	if got, want := innerCommand([]string{"env", "K=v", "--"}, "/opt/oh-my-pi/18.0.3/omp", "/state/trees/x/.omp/s 1.jsonl", "/state dir/secrets/p-system-prompt.md"),
+		"env 'K=v' -- /opt/oh-my-pi/18.0.3/omp --model @default --resume='/state/trees/x/.omp/s 1.jsonl' --mode rpc --append-system-prompt '/state dir/secrets/p-system-prompt.md'"; got != want {
 		t.Errorf("resumed: got %q, want %q", got, want)
 	}
 }

@@ -1,11 +1,15 @@
-import { expect, spyOn, test } from "bun:test";
+import { expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
+import { realClock } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
-import { ApiError, api } from "../../api/client";
+import { stopTheLateWrite } from "../../__tests__/stop-late-write";
+import { userOnFakeClock } from "../../__tests__/user";
+import { ApiError, api, NetworkError } from "../../api/client";
 import type { ArchitectureSource } from "../../api/types";
+import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { ArchitectureSourcesSection } from "./ArchitectureSourcesSection";
 
 const architectureSource: ArchitectureSource = {
@@ -264,5 +268,198 @@ test("each architecture source of a project is its own row, refreshed and delete
     putArchitectureSource.mockRestore();
     syncArchitectureSource.mockRestore();
     deleteArchitectureSource.mockRestore();
+  }
+});
+
+/** The section over the sources `list` answers, its save and its removal answered by `put` and
+ *  `remove`. Answers the section once it has drawn. */
+async function sourcesOf(
+  list: () => Promise<ArchitectureSource[]>,
+  put: typeof api.putArchitectureSource,
+  remove: typeof api.deleteArchitectureSource
+) {
+  const mocks = [
+    spyOn(api, "listArchitectureSources").mockImplementation(list),
+    spyOn(api, "listProjects").mockResolvedValue([
+      {
+        created_at: "2026-09-01T00:00:00Z",
+        gated_steps: [],
+        key: "CORE",
+        name: "Core",
+        open_asks: 0,
+      },
+    ]),
+    spyOn(api, "putArchitectureSource").mockImplementation(put),
+    spyOn(api, "deleteArchitectureSource").mockImplementation(remove),
+  ];
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(
+    <QueryClientProvider client={queryClient}>
+      <ArchitectureSourcesSection />
+    </QueryClientProvider>
+  );
+  const section = within(await screen.findByRole("region", { name: "Architecture sources" }));
+  return {
+    queryClient,
+    restore: () => {
+      cleanup();
+      queryClient.clear();
+      for (const mock of mocks) mock.mockRestore();
+    },
+    section,
+  };
+}
+
+/** A fetch that failed, which the write is tried again after: it goes late, for the reader to
+ *  stop. */
+const dropped = () =>
+  Promise.reject(new NetworkError("/api/v1/projects/CORE", new TypeError("Failed to fetch")));
+
+// A save or a removal the reader stopped may have been made: the section says so, and that its
+// Retry sends the same change again - a `PUT` or a `DELETE` sends no key - rather than that it
+// failed.
+test("a source save the reader stopped says Retry sends it again, not that it failed", async () => {
+  const server = sourceServer([]);
+  const page = await sourcesOf(server.list, dropped, server.remove);
+  try {
+    await userEvent
+      .setup()
+      .selectOptions(await page.section.findByLabelText("Source project"), "CORE");
+    jest.useFakeTimers();
+    const user = userOnFakeClock();
+    await user.click(page.section.getByLabelText("Source repository"));
+    await user.paste("legion/arch");
+    await user.click(page.section.getByRole("button", { name: "Add source" }));
+    await stopTheLateWrite(page.queryClient);
+    // The alert's paragraph, without its Retry button's name.
+    expect(page.section.getByRole("alert").querySelector("p")?.textContent).toBe(
+      stoppedWriteNote("the architecture source", "saved", {
+        method: "PUT",
+        stopped: new SendStoppedError(),
+      })
+    );
+  } finally {
+    realClock();
+    page.restore();
+  }
+});
+
+test("a source removal the reader stopped says Retry sends it again, not that it failed", async () => {
+  const server = sourceServer([architectureSource]);
+  const page = await sourcesOf(server.list, server.put, dropped);
+  try {
+    const remove = await page.section.findByRole("button", {
+      name: "Delete architecture source legion/arch for CORE",
+    });
+    jest.useFakeTimers();
+    await userOnFakeClock().click(remove);
+    await stopTheLateWrite(page.queryClient);
+    expect(page.section.getByRole("alert").querySelector("p")?.textContent).toBe(
+      stoppedWriteNote("the removal of the architecture source legion/arch for CORE", "made", {
+        method: "DELETE",
+        stopped: new SendStoppedError(),
+      })
+    );
+  } finally {
+    realClock();
+    page.restore();
+  }
+});
+
+// A refresh the reader stopped may have been made: the section says so, and that its Retry asks
+// again under the refresh's key - a `POST` sends one - rather than that it failed.
+test("a source refresh the reader stopped says Retry asks again under its key", async () => {
+  const server = sourceServer([architectureSource]);
+  const sync = spyOn(api, "syncArchitectureSource").mockImplementation(dropped);
+  const page = await sourcesOf(server.list, server.put, server.remove);
+  try {
+    const refresh = await page.section.findByRole("button", {
+      name: "Refresh architecture source legion/arch for CORE",
+    });
+    jest.useFakeTimers();
+    await userOnFakeClock().click(refresh);
+    await stopTheLateWrite(page.queryClient);
+    expect(page.section.getByRole("alert").querySelector("p")?.textContent).toBe(
+      stoppedWriteNote("the refresh of the architecture source legion/arch for CORE", "made", {
+        method: "POST",
+        stopped: new SendStoppedError(),
+      })
+    );
+  } finally {
+    realClock();
+    page.restore();
+    sync.mockRestore();
+  }
+});
+
+// A `DELETE` sends no key, so one made again after a removal that landed finds no source and is
+// answered `404 SOURCE_NOT_FOUND`: the removal done, which the section takes as it takes a
+// `204`, reading its sources again, not as a refusal.
+test("a source removal answered SOURCE_NOT_FOUND is the removal done, not a refusal", async () => {
+  const server = sourceServer([architectureSource]);
+  const page = await sourcesOf(server.list, server.put, async (project, repo) => {
+    await server.remove(project, repo);
+    throw new ApiError(404, { code: "SOURCE_NOT_FOUND", error: "no architecture source" });
+  });
+  try {
+    await userEvent.setup().click(
+      await page.section.findByRole("button", {
+        name: "Delete architecture source legion/arch for CORE",
+      })
+    );
+    await waitFor(() =>
+      expect(page.section.queryByRole("cell", { name: "legion/arch" })).not.toBeInTheDocument()
+    );
+    expect(page.section.queryByRole("alert")).not.toBeInTheDocument();
+  } finally {
+    page.restore();
+  }
+});
+
+// A removal's and a refresh's refusals each sit under the table, one line for every row: each
+// names the source it was about, and goes once that source leaves the list - removed in another
+// tab, or by another person - rather than stand under sources it was never about.
+test("a refused removal or refresh names its source, and goes once that source leaves", async () => {
+  const server = sourceServer([architectureSource, { ...architectureSource, repo: "acme/infra" }]);
+  const sync = spyOn(api, "syncArchitectureSource").mockRejectedValue(
+    new ApiError(409, {
+      code: "SOURCE_UNREADABLE",
+      error: "the Dispatch GitHub App cannot read acme/infra",
+    })
+  );
+  const page = await sourcesOf(server.list, server.put, async () => {
+    throw new ApiError(403, { code: "FORBIDDEN", error: "not yours to remove" });
+  });
+  try {
+    const user = userEvent.setup();
+    await user.click(
+      await page.section.findByRole("button", {
+        name: "Refresh architecture source acme/infra for CORE",
+      })
+    );
+    const refreshRefusal =
+      "Couldn't refresh the architecture source acme/infra for CORE — the Dispatch GitHub App cannot read acme/infra";
+    expect(await page.section.findByText(refreshRefusal)).toBeDefined();
+    await user.click(
+      page.section.getByRole("button", { name: "Delete architecture source legion/arch for CORE" })
+    );
+    const deleteRefusal = "Couldn't delete the architecture source legion/arch for CORE.";
+    expect(await page.section.findByText(deleteRefusal)).toBeDefined();
+
+    await server.remove("CORE", "acme/infra");
+    await act(() => page.queryClient.invalidateQueries());
+    await waitFor(() =>
+      expect(page.section.queryByRole("cell", { name: "acme/infra" })).not.toBeInTheDocument()
+    );
+    expect(page.section.queryByText(refreshRefusal)).not.toBeInTheDocument();
+    expect(page.section.getByText(deleteRefusal)).toBeDefined();
+
+    await server.remove("CORE", "legion/arch");
+    await act(() => page.queryClient.invalidateQueries());
+    expect(await page.section.findByText("No architecture sources yet.")).toBeDefined();
+    expect(page.section.queryByRole("alert")).not.toBeInTheDocument();
+  } finally {
+    page.restore();
+    sync.mockRestore();
   }
 });

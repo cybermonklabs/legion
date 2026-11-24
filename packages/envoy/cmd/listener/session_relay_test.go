@@ -60,6 +60,14 @@ func newRelayRigReceipt(t *testing.T, first, max, receipt time.Duration) *relayR
 // this way rather than by timing.
 func newRelayRigUnowned(t *testing.T, first, max time.Duration) *relayRig {
 	t.Helper()
+	return newRelayRigUnownedAs(t, first, max, nil)
+}
+
+// newRelayRigUnownedAs is newRelayRigUnowned whose relay is an edge listener's when edge is set,
+// as main starts it in edge mode (listenerDeliveryHandlerConfig.edge): its receipts arrive under
+// bus.RelayReplyPrefix.
+func newRelayRigUnownedAs(t *testing.T, first, max time.Duration, edge *edgeGrant) *relayRig {
+	t.Helper()
 	url := testnats.URL(t)
 	client, err := bus.ConnectOwningStream([]string{url}, bus.WithReplicas(1))
 	if err != nil {
@@ -67,7 +75,9 @@ func newRelayRigUnowned(t *testing.T, first, max time.Duration) *relayRig {
 	}
 	t.Cleanup(client.Close)
 	rig := newSessionConsumerRigOn(t, client, url)
-	relays, err := startSessionRelays(rig.deps.consumers, rig.harness.config)
+	config := rig.harness.config
+	config.edge = edge
+	relays, err := startSessionRelays(rig.deps.consumers, config)
 	if err != nil {
 		t.Fatalf("start the session relays: %v", err)
 	}
@@ -116,19 +126,30 @@ type relayedFrame struct {
 }
 
 // listener is the reply inbox the frame is to be answered on, which names the listener that relayed
-// it.
+// it: the frame's reply subject without the session id and the token after it
+// (bus.SessionReplySubject).
 func (f relayedFrame) listener() string {
-	return f.msg.Reply[:strings.LastIndex(f.msg.Reply, ".")]
+	session := f.msg.Reply[:strings.LastIndex(f.msg.Reply, ".")]
+	return session[:strings.LastIndex(session, ".")]
 }
 
 // sessionStandIn takes a session's relay frames on a NATS connection of its own, as a plugin in
 // consumer mode does, and answers each at once with the replies answer names for it, unless it is
-// silent.
+// silent. A message carrying the connection probe's header (bus.ConnectionProbeHeader) is no frame:
+// it is answered done before anything is decoded, as the plugins' shared consumer delivery
+// answers it, unless the stand-in is silent, and counted in probed rather than collected; the last
+// probe's reply subject is kept in probeReply. Once it is closed (close), by its test's cleanup or
+// by a test that stops the session early, it reports no answer the closed connection cut short: a
+// frame the listener delivers just as the test ends meets that close, and its reply has no session
+// left to reach (closedUnder).
 type sessionStandIn struct {
-	t      *testing.T
-	conn   *natsgo.Conn
-	frames chan relayedFrame
-	silent atomic.Bool
+	t          *testing.T
+	conn       *natsgo.Conn
+	frames     chan relayedFrame
+	silent     atomic.Bool
+	closed     atomic.Bool
+	probed     atomic.Int32
+	probeReply atomic.Pointer[string]
 }
 
 // answerDone answers a frame received and done at once: the session wrote it.
@@ -136,9 +157,26 @@ func answerDone(relayedFrame) []string { return []string{relayReplyReceived, rel
 
 func startSessionStandIn(t *testing.T, url, sessionID string, answer func(relayedFrame) []string) *sessionStandIn {
 	t.Helper()
-	standIn := &sessionStandIn{t: t, conn: testnats.Connect(t, url), frames: make(chan relayedFrame, 256)}
-	t.Cleanup(standIn.conn.Close)
+	return startSessionStandInOn(t, testnats.Connect(t, url), sessionID, answer)
+}
+
+// startSessionStandInOn is startSessionStandIn on a connection the test opened itself: one through
+// a proxy it can cut, or one a server whose users are granted authenticates.
+func startSessionStandInOn(t *testing.T, conn *natsgo.Conn, sessionID string, answer func(relayedFrame) []string) *sessionStandIn {
+	t.Helper()
+	standIn := &sessionStandIn{t: t, conn: conn, frames: make(chan relayedFrame, 256)}
+	t.Cleanup(standIn.close)
 	if _, err := standIn.conn.Subscribe(bus.DeliverSubject(sessionID), func(msg *natsgo.Msg) {
+		if msg.Header.Get(bus.ConnectionProbeHeader) == "1" {
+			standIn.probeReply.Store(&msg.Reply)
+			standIn.probed.Add(1)
+			if !standIn.silent.Load() {
+				if err := msg.Respond([]byte(relayReplyDone)); err != nil && !standIn.closedUnder(err) {
+					t.Errorf("answer the connection probe of %s: %v", sessionID, err)
+				}
+			}
+			return
+		}
 		frame := relayedFrame{msg: msg, arrived: time.Now()}
 		if err := json.Unmarshal(msg.Data, &frame.item); err != nil {
 			t.Errorf("decode a frame for %s: %v", sessionID, err)
@@ -164,11 +202,28 @@ func startSessionStandIn(t *testing.T, url, sessionID string, answer func(relaye
 	return standIn
 }
 
+// close marks the stand-in closed and closes its connection, as its test's cleanup does and as a
+// test does that stops the session's plugin early. Marked first, so a reply the close cuts short
+// finds it marked.
+func (s *sessionStandIn) close() {
+	s.closed.Store(true)
+	s.conn.Close()
+}
+
+// closedUnder reports whether err is the closed connection of a stand-in that was closed (close):
+// its test is over, or stopped the session, and the answer has no session left to reach. Any
+// other failure to answer is the test's.
+func (s *sessionStandIn) closedUnder(err error) bool {
+	return s.closed.Load() && errors.Is(err, natsgo.ErrConnectionClosed)
+}
+
+// reply sends word as the answer to frame, and fails the test when it cannot, unless the stand-in
+// was closed under it (closedUnder).
 func (s *sessionStandIn) reply(frame relayedFrame, word string) {
-	if err := s.conn.Publish(frame.msg.Reply, []byte(word)); err != nil {
+	if err := s.conn.Publish(frame.msg.Reply, []byte(word)); err != nil && !s.closedUnder(err) {
 		s.t.Errorf("reply %s to a frame: %v", word, err)
 	}
-	if err := s.conn.Flush(); err != nil {
+	if err := s.conn.Flush(); err != nil && !s.closedUnder(err) {
 		s.t.Errorf("flush the reply %s: %v", word, err)
 	}
 }
@@ -227,20 +282,49 @@ func requireFrames(t *testing.T, frames []relayedFrame, want ...contracts.Envelo
 	}
 }
 
+// requireEventuallyDelivered returns the frame carrying want once it reaches the stand-in within
+// the bound. A frame carrying one of allowRedelivered's events is a legitimate at-least-once
+// redelivery - a relay handoff gives the server back the frames the old relay held unacked, which
+// the new relay then delivers again, and the client dedupes - so it is passed over; any other event
+// fails the test, since it is a frame the session must never see.
+func requireEventuallyDelivered(t *testing.T, s *sessionStandIn, want contracts.Envelope, within time.Duration, allowRedelivered ...contracts.Envelope) relayedFrame {
+	t.Helper()
+	allowed := map[string]bool{}
+	for _, item := range allowRedelivered {
+		allowed[item.EventID] = true
+	}
+	deadline := time.After(within)
+	for {
+		select {
+		case frame := <-s.frames:
+			switch {
+			case frame.item.EventID == want.EventID:
+				return frame
+			case allowed[frame.item.EventID]:
+				continue
+			default:
+				t.Fatalf("the session received %s on %s, want the %s frame; only a redelivery of an earlier frame is allowed", frame.item.EventID, frame.item.Topic, want.EventID)
+			}
+		case <-deadline:
+			t.Fatalf("the %s frame did not reach the session within %s", want.EventID, within)
+		}
+	}
+}
+
 // A session away during publishes (its connection gone) receives each on its return, when it
 // registers with a new epoch, once and in stream order, from its consumer: nothing it receives
 // comes from a subscription of its own.
 func TestSessionConsumerAwaySessionReceivesEachMessageOnceOnReturn(t *testing.T) {
 	rig := newRelayRig(t)
 	const sessionID = "ses_away"
-	agent := contracts.AgentSubject(sessionID)
+	agent := contracts.LegacyAgentSubject(sessionID)
 	first := startSessionStandIn(t, rig.url, sessionID, answerDone)
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
 	before, beforeSeq := rig.storeEvent(t, agent)
 	requireFrames(t, first.collect(t, 1, 5*time.Second), before)
 	awaitAcked(t, rig.consumers, sessionID, beforeSeq)
 
-	first.conn.Close()
+	first.close()
 	var away []contracts.Envelope
 	for range 3 {
 		item, _ := rig.storeEvent(t, agent)
@@ -248,6 +332,10 @@ func TestSessionConsumerAwaySessionReceivesEachMessageOnceOnReturn(t *testing.T)
 	}
 	// The relay sends what it pulls at once, to nobody now.
 	time.Sleep(300 * time.Millisecond)
+	// The registration below restarts the relay at the ack floor, which deletes the consumer
+	// holding those three unanswered and creates it again.
+	awaitAckState(t, rig.consumers, sessionID, len(away), beforeSeq)
+	awaitSessionConsumerStored(t, rig.harness.client.Conn, sessionID)
 
 	second := startSessionStandIn(t, rig.url, sessionID, answerDone)
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-2"))
@@ -263,12 +351,12 @@ func TestSessionConsumerAcksAFrameOnlyOnDone(t *testing.T) {
 	const sessionID = "ses_ack_on_done"
 	standIn := startSessionStandIn(t, rig.url, sessionID, nil)
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
-	stored, seq := rig.storeEvent(t, contracts.AgentSubject(sessionID))
+	stored, seq := rig.storeEvent(t, contracts.LegacyAgentSubject(sessionID))
 
 	frame := standIn.collect(t, 1, 5*time.Second)[0]
 	requireFrames(t, []relayedFrame{frame}, stored)
 	header := frame.msg.Header
-	if got := header.Get(relayHeaderSubject); got != contracts.AgentSubject(sessionID) {
+	if got := header.Get(relayHeaderSubject); got != contracts.LegacyAgentSubject(sessionID) {
 		t.Errorf("%s = %q, want the stored subject", relayHeaderSubject, got)
 	}
 	if got := header.Get(relayHeaderStreamID); got != rig.streamID(t) {
@@ -307,12 +395,18 @@ func awaitAcked(t *testing.T, consumers *bus.SessionConsumers, sessionID string,
 }
 
 // awaitAckState waits up to 5 s for sessionID's consumer to hold pending messages for an ack with
-// every message through floor acked.
+// every message through floor acked. A consumer that does not exist yet is waited for within the
+// same bound: a registration with a new epoch restarts the session's relay, which deletes its
+// consumer and creates it again at the floor, and a read between the two finds none.
 func awaitAckState(t *testing.T, consumers *bus.SessionConsumers, sessionID string, pending int, floor uint64) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		info, err := consumers.Info(context.Background(), sessionID)
+		if errors.Is(err, bus.ErrSessionConsumerNotFound) && time.Now().Before(deadline) {
+			time.Sleep(20 * time.Millisecond)
+			continue
+		}
 		if err != nil {
 			t.Fatalf("read the consumer of %s: %v", sessionID, err)
 		}
@@ -334,7 +428,7 @@ func awaitAckState(t *testing.T, consumers *bus.SessionConsumers, sessionID stri
 func TestSessionConsumerHeldFrameDoesNotDelayLaterReceiptsAndSurvivesARestart(t *testing.T) {
 	rig := newRelayRig(t)
 	const sessionID = "ses_held"
-	agent := contracts.AgentSubject(sessionID)
+	agent := contracts.LegacyAgentSubject(sessionID)
 	var ledgerMu sync.Mutex
 	var shown []string
 	ledger := map[string]bool{}
@@ -374,10 +468,11 @@ func TestSessionConsumerHeldFrameDoesNotDelayLaterReceiptsAndSurvivesARestart(t 
 	// Everything but the held frame is written and acked; the held one waits, in progress.
 	awaitAckState(t, rig.consumers, sessionID, 1, e0Seq)
 
-	first.conn.Close()
+	first.close()
 	ledgerMu.Lock()
 	held = ""
 	ledgerMu.Unlock()
+	awaitSessionConsumerStored(t, rig.harness.client.Conn, sessionID)
 	second := startSessionStandIn(t, rig.url, sessionID, show)
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-2"))
 	requireFrames(t, second.collect(t, 3, 5*time.Second), e1, e2, e3)
@@ -403,7 +498,7 @@ func TestSessionConsumerHeldFrameDoesNotDelayLaterReceiptsAndSurvivesARestart(t 
 func TestSessionConsumerNewEpochHeardAfterTheRunRestartedRestartsNothing(t *testing.T) {
 	rig := newRelayRig(t)
 	const sessionID = "ses_epoch_heard_late"
-	agent := contracts.AgentSubject(sessionID)
+	agent := contracts.LegacyAgentSubject(sessionID)
 	standIn := startSessionStandIn(t, rig.url, sessionID, func(relayedFrame) []string { return []string{relayReplyReceived} })
 	// A mark taken before the session's relay starts, as a registration takes its own before its
 	// entry write starts the relay.
@@ -416,6 +511,7 @@ func TestSessionConsumerNewEpochHeardAfterTheRunRestartedRestartsNothing(t *test
 	rig.relays.registered(sessionID, true, heard)
 	standIn.none(t, time.Second)
 
+	awaitSessionConsumerStored(t, rig.harness.client.Conn, sessionID)
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-2"))
 	again := standIn.collect(t, 1, 5*time.Second)[0]
 	requireFrames(t, []relayedFrame{again}, held)
@@ -432,7 +528,7 @@ func TestSessionConsumerRestartWritesTheTopicsStoredWhenItHoldsTheLock(t *testin
 	rig := newRelayRig(t)
 	const sessionID = "ses_restart_stale"
 	const followed = "notifications.dispatch.issue.RESTARTSTALE.>"
-	agent := contracts.AgentSubject(sessionID)
+	agent := contracts.LegacyAgentSubject(sessionID)
 	standIn := startSessionStandIn(t, rig.url, sessionID, answerDone)
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
 	before, beforeSeq := rig.storeEvent(t, agent)
@@ -509,7 +605,7 @@ func TestSessionConsumerUnreachableSessionPausesAndSendsAgainAfterItsBackoff(t *
 	const pauseFirst, pauseMax = 2 * time.Second, 4 * time.Second
 	rig := newRelayRigReceipt(t, pauseFirst, pauseMax, receipt)
 	const sessionID = "ses_unreachable"
-	agent := contracts.AgentSubject(sessionID)
+	agent := contracts.LegacyAgentSubject(sessionID)
 	standIn := startSessionStandIn(t, rig.url, sessionID, answerDone)
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
 	e0, _ := rig.storeEvent(t, agent)
@@ -519,6 +615,10 @@ func TestSessionConsumerUnreachableSessionPausesAndSendsAgainAfterItsBackoff(t *
 	e1, _ := rig.storeEvent(t, agent)
 	unanswered := standIn.collect(t, 1, 5*time.Second)[0]
 	requireFrames(t, []relayedFrame{unanswered}, e1)
+	// The relay's own restart after the pause deletes the consumer holding that frame and creates
+	// it again; nothing the consumer delivers or takes changes after this frame until then, since
+	// the paused relay pulls nothing.
+	awaitSessionConsumerStored(t, rig.harness.client.Conn, sessionID)
 	// The relay stops receipt after that frame: a message stored once it has reaches the session
 	// only when the relay sends again, which is pauseFirst later.
 	time.Sleep(time.Until(unanswered.arrived.Add(receipt + 300*time.Millisecond)))
@@ -540,7 +640,7 @@ func TestSessionConsumerUnreachableSessionResumesAtOnceWhenItRegisters(t *testin
 	const receipt = 500 * time.Millisecond
 	rig := newRelayRigReceipt(t, time.Minute, time.Minute, receipt)
 	const sessionID = "ses_unreachable_registers"
-	agent := contracts.AgentSubject(sessionID)
+	agent := contracts.LegacyAgentSubject(sessionID)
 	standIn := startSessionStandIn(t, rig.url, sessionID, answerDone)
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
 	e0, _ := rig.storeEvent(t, agent)
@@ -558,6 +658,7 @@ func TestSessionConsumerUnreachableSessionResumesAtOnceWhenItRegisters(t *testin
 	}
 
 	standIn.silent.Store(false)
+	awaitSessionConsumerStored(t, rig.harness.client.Conn, sessionID)
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
 	requireFrames(t, standIn.collect(t, 2, 5*time.Second), e1, e2)
 	standIn.none(t, time.Second)
@@ -571,7 +672,7 @@ func TestSessionConsumerEventPublishedJustAfterAFollowIsRelayed(t *testing.T) {
 	const topic = "notifications.dispatch.issue.FOLLOW.>"
 	standIn := startSessionStandIn(t, rig.url, sessionID, answerDone)
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
-	before, _ := rig.storeEvent(t, contracts.AgentSubject(sessionID))
+	before, _ := rig.storeEvent(t, contracts.LegacyAgentSubject(sessionID))
 	requireFrames(t, standIn.collect(t, 1, 5*time.Second), before)
 
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1", topic))
@@ -587,8 +688,8 @@ func TestSessionConsumerRelaySubjectIsNotStored(t *testing.T) {
 	const sessionID = "ses_not_stored"
 	standIn := startSessionStandIn(t, rig.url, sessionID, answerDone)
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
-	first, _ := rig.storeEvent(t, contracts.AgentSubject(sessionID))
-	second, _ := rig.storeEvent(t, contracts.AgentSubject(sessionID))
+	first, _ := rig.storeEvent(t, contracts.LegacyAgentSubject(sessionID))
+	second, _ := rig.storeEvent(t, contracts.LegacyAgentSubject(sessionID))
 	requireFrames(t, standIn.collect(t, 2, 5*time.Second), first, second)
 
 	info, err := rig.harness.client.JS().StreamInfo(bus.Stream, &natsgo.StreamInfoRequest{SubjectsFilter: bus.DeliverSubjectPrefix + ">"})
@@ -612,7 +713,7 @@ func TestSessionConsumerFramesStoredWhileTheOwnerWasDownArriveAfterItsRestart(t 
 	listener := startListenerProcess(t, binary, uri, machineID)
 	listener.waitHealthy(t)
 	sessionID := "ses_owner_killed_" + id.New()
-	agent := contracts.AgentSubject(sessionID)
+	agent := contracts.LegacyAgentSubject(sessionID)
 	midFlight := newEnvelope("agent", agent, "in flight when the listener died")
 	var midFlightSeen atomic.Bool
 	standIn := startSessionStandIn(t, uri, sessionID, func(frame relayedFrame) []string {
@@ -647,6 +748,9 @@ func TestSessionConsumerFramesStoredWhileTheOwnerWasDownArriveAfterItsRestart(t 
 		down = append(down, item)
 	}
 
+	// The restarted listener restarts the session's relay at the ack floor, which deletes the
+	// consumer holding the frame the session never finished and creates it again.
+	awaitSessionConsumerStored(t, publisher.Conn, sessionID)
 	restarted := startListenerProcess(t, binary, uri, machineID)
 	t.Cleanup(func() {
 		if t.Failed() {
@@ -674,7 +778,7 @@ func TestSessionConsumerRelayLosingItsSessionReturnsTheMessageItHolds(t *testing
 	// stays delivered and unacked.
 	standIn := startSessionStandIn(t, rig.url, sessionID, nil)
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
-	stored, seq := rig.storeEvent(t, contracts.AgentSubject(sessionID))
+	stored, seq := rig.storeEvent(t, contracts.LegacyAgentSubject(sessionID))
 	requireFrames(t, standIn.collect(t, 1, 5*time.Second), stored)
 	awaitAckState(t, rig.consumers, sessionID, 1, 0)
 
@@ -714,7 +818,7 @@ func TestSessionConsumerRelayHandOverThatReachesNoServerSaysSo(t *testing.T) {
 	// stays delivered and unacked.
 	standIn := startSessionStandIn(t, rig.url, sessionID, nil)
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
-	stored, _ := rig.storeEvent(t, contracts.AgentSubject(sessionID))
+	stored, _ := rig.storeEvent(t, contracts.LegacyAgentSubject(sessionID))
 	requireFrames(t, standIn.collect(t, 1, 5*time.Second), stored)
 	awaitAckState(t, rig.consumers, sessionID, 1, 0)
 
@@ -784,7 +888,7 @@ func TestSessionConsumerRelayLosingItsSessionReturnsEveryMessageItHoldsInStreamO
 	// held is under the consumer's MaxAckPending (bus.SessionConsumerMaxAckPending, 1024), so the
 	// server delivers every one of them and the relay holds every one as a frame.
 	const held = 200
-	agent := contracts.AgentSubject(sessionID)
+	agent := contracts.LegacyAgentSubject(sessionID)
 	items := make([]contracts.Envelope, 0, held)
 	stored := make([]uint64, 0, held)
 	for range held {
@@ -863,7 +967,7 @@ func TestSessionConsumerOwnershipMovesWithTheSessionToOneRelayer(t *testing.T) {
 	first.waitHealthy(t)
 	second.waitHealthy(t)
 	sessionID := "ses_moved_relay_" + id.New()
-	agent := contracts.AgentSubject(sessionID)
+	agent := contracts.LegacyAgentSubject(sessionID)
 	standIn := startSessionStandIn(t, uri, sessionID, answerDone)
 	consumers := observeConsumers(t, uri)
 	publisher := connectPublisher(t, uri)
@@ -916,7 +1020,7 @@ func TestSessionConsumerOwnershipMovesWithTheSessionToOneRelayer(t *testing.T) {
 // observeConsumers opens the test's own view of the session consumers on uri.
 func observeConsumers(t *testing.T, uri string) *bus.SessionConsumers {
 	t.Helper()
-	consumers, err := bus.ConnectSessionConsumers([]string{uri}, 0)
+	consumers, err := bus.ConnectSessionConsumers([]string{uri}, 0, nil)
 	if err != nil {
 		t.Fatalf("connect the test's view of the session consumers: %v", err)
 	}
@@ -1104,7 +1208,7 @@ accounts {
 }
 `
 	_, uri := testnats.StartConfig(t, config, []string{"-js"}, false)
-	uri = strings.Replace(uri, "nats://", "nats://listener:listener@", 1)
+	uri = asListenerUser(t, uri)
 
 	listener := startListenerProcess(t, cmdtest.Build(t, "envoy-listener"), uri, "session-consumers-refused")
 	listener.WaitExit(t, "its start")
@@ -1176,7 +1280,7 @@ func TestTheNakDelayClimbsWithTheMessagesDeliveryCount(t *testing.T) {
 		relays.frames[token] = frame
 		run.outstanding[token] = frame
 		relays.framesMu.Unlock()
-		relays.onReply(&natsgo.Msg{Subject: relays.replyPrefix + token, Data: []byte(relayReplyNak)})
+		relays.onReply(&natsgo.Msg{Subject: relays.replyPrefix + run.sessionID + "." + token, Data: []byte(relayReplyNak)})
 		return acker.last()
 	}
 
@@ -1249,7 +1353,7 @@ func TestARefusedFrameComesBackOnTheLadderRatherThanEverySecond(t *testing.T) {
 		return []string{relayReplyReceived, relayReplyNak}
 	})
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
-	stored, seq := rig.storeEvent(t, contracts.AgentSubject(sessionID))
+	stored, seq := rig.storeEvent(t, contracts.LegacyAgentSubject(sessionID))
 
 	frames := standIn.collect(t, 3, 20*time.Second)
 	for i, frame := range frames {

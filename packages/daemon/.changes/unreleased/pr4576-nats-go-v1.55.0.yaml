@@ -1,0 +1,10 @@
+kind: Changed
+body: |-
+  The daemon uses nats.go v1.55.0. A server's `Unknown Protocol Operation` error no longer closes
+  the daemon's NATS connection: the daemon logs WARN `NATS connection lost` and reconnects, where
+  it logged ERROR `NATS connection closed` and ended its consumers. A server's
+  `Maximum Control Line Exceeded` error still closes the connection, and the daemon now logs WARN
+  `NATS reported an asynchronous error` before the ERROR `NATS connection closed`.
+time: 2026-11-20T05:13:00Z
+custom:
+    Issue: pr4576

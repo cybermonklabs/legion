@@ -1,0 +1,18 @@
+{
+  "source": "example-org/deployment fe26eb31 envoy-cluster/hub.go hubMeasurePublish, hubMeasureSubscribe",
+  "publish": [
+    "$JS.API.INFO",
+    "$JS.API.STREAM.NAMES",
+    "$JS.API.STREAM.LIST",
+    "$JS.API.STREAM.INFO.*",
+    "$JS.API.CONSUMER.NAMES.*",
+    "$JS.API.CONSUMER.LIST.*",
+    "$JS.API.CONSUMER.INFO.*.*",
+    "$JS.API.DIRECT.GET.KV_envoy_listener.$KV.envoy_listener.lease.>",
+    "$JS.API.STREAM.CREATE.ENVOY_MEASURE",
+    "$JS.API.STREAM.UPDATE.ENVOY_MEASURE",
+    "$JS.API.STREAM.DELETE.ENVOY_MEASURE",
+    "envoy-measure.>"
+  ],
+  "subscribe": ["_INBOX_envoy_measure.>"]
+}

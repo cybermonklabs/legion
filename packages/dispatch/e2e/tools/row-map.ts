@@ -75,21 +75,21 @@ function table(header: readonly string[], rows: readonly (readonly string[])[]):
 // The two `playwright test --list` subprocesses this map is read from, started together so the
 // second collects while the first does. Each runs through `e2e/__tests__/playwright-listing.ts`,
 // which holds the argv, the working directory, the environment floor and what a non-zero exit
-// says. Measured at this head on this two-core pod: the default listing alone takes about three
-// and a half seconds, the wall-clock one about one, and the two together about four.
+// says. Each is a bounded child, so what it cost is in the line this generation prints on its
+// own stderr when that child ends (`e2e/__tests__/bounded-subprocess.ts`).
 //
 // The second names the three wall-clock projects (`clockProjectNames`, e2e/configurations.ts).
 // They carry `default: false` since dispatch://INFRA-1280, so a listing that names no project
 // holds no row of `agent-workspace-timing.e2e.ts`, `heavy-bodies.e2e.ts` or
-// `nested-directive.e2e.ts` - 54 rows of those three files in this head's wall-clock listing -
+// `nested-directive.e2e.ts` - 51 rows of those three files in this head's wall-clock listing -
 // and with the default listing alone this generation refused outright: "the listing names no
 // real-stack row in them: heavy-bodies.e2e.ts, nested-directive.e2e.ts", measured by running
 // the tool before the second listing was added, when those two were the whole of the set.
 // Neither listing names a process count, so both run one Dispatch process, which is
 // the only mode whose project list declares the wall-clock projects at all.
 const [defaultListing, clockListing] = await Promise.all([
-  listing("e2e/playwright.config.ts", {}),
-  listing("e2e/playwright.config.ts", {}, projectArguments(clockProjectNames)),
+  listing(import.meta.url, "e2e/playwright.config.ts", {}),
+  listing(import.meta.url, "e2e/playwright.config.ts", {}, projectArguments(clockProjectNames)),
 ]);
 const rows = [...rowsOfListing(defaultListing), ...rowsOfListing(clockListing)];
 const moved = rows.filter((row) => stubProjectNames.includes(row.project));
@@ -153,7 +153,7 @@ if (strayNotes.length > 0) {
 // they own their file here, and only the run knows otherwise (`deadRecordingGuard`,
 // `e2e/stub/stub-test.ts`). A describe-level modifier whose condition is a function of a
 // worker fixture is seen by neither: the listing marks its rows `passed`, and Playwright runs
-// it before any test-scoped fixture. `packages/dispatch/AGENTS.md`, "The stubbed layer", says
+// it before any test-scoped fixture. `packages/dispatch/README.md`, "The stubbed layer", says
 // so, and every stubbed row skips inside its own body.
 const owned = new Set(
   moved.filter((row) => row.expectedStatus !== "skipped").map((row) => recordingFor(row, ".har"))

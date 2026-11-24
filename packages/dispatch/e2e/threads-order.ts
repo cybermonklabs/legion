@@ -22,6 +22,7 @@ import {
 } from "./api";
 import { inboxPane } from "./inbox-pane";
 import { asSession, THREAD_SESSION } from "./inbox-threads";
+import { settledState } from "./settled";
 export const ROOT = "How far back does a replay go?";
 /** The six replies, oldest first; the newest two are the ones a collapsing surface keeps. */
 export const REPLIES = [1, 2, 3, 4, 5, 6].map((place) => `Reply ${place} about the replay budget.`);
@@ -148,6 +149,8 @@ export async function readAskThrough(
 export async function verticalOrder(items: Record<string, Locator>): Promise<string[]> {
   const placed: [string, number][] = [];
   for (const [name, locator] of Object.entries(items)) {
+    await expect(locator.first()).toBeVisible();
+    // The wait above drew the part, and a drawn element has a box, so the box is there.
     const box = await locator.first().boundingBox();
     if (box === null) throw new Error(`${name} is not on the page`);
     placed.push([name, box.y]);
@@ -190,15 +193,19 @@ export function foldParts(scope: Locator, folded: number): Record<string, Locato
  * Opens a thread card that is still collapsed; an open one is left alone. The card may carry
  * its own `aria-expanded`, so the open state is read on the replies it reveals.
  *
- * The control arrives with the card, and `count()` waits for nothing, so a card still being
- * drawn would be read as a card with nothing to open and never opened at all: the wait is for
- * the card to have settled into one state or the other.
+ * The control arrives with the card, and a probe such as `count()` waits for nothing, so a card
+ * still being drawn would be read as a card with nothing to open and never opened at all: the
+ * card is read once it has settled into one state or the other. The collapsed control is read
+ * first, so a card that shows it is opened even where replies show too.
  */
 export async function expand(card: Locator): Promise<void> {
   const replies = card.getByRole("list", { name: "Replies" });
   const collapsed = card.locator('button[aria-expanded="false"]').first();
-  await expect(collapsed.or(replies).first()).toBeVisible();
-  if ((await collapsed.count()) > 0) await collapsed.click();
+  const shown = await settledState("the thread card", [
+    ["collapsed", collapsed],
+    ["open", replies],
+  ]);
+  if (shown === "collapsed") await collapsed.click();
   await expect(replies).toHaveCount(1);
 }
 

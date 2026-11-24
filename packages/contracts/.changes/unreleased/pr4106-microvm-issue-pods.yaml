@@ -1,0 +1,8 @@
+kind: Changed
+custom:
+  Issue: pr4106
+body: |-
+  Daemon API contract 151: `launcher_hello_ack` carries `kernelKills`, `launcher_memory_kill`
+  carries `cause` (`kernel` for a command a microVM pod's own kernel stopped, `kernel-protected`
+  for a process of a role's session it stopped), and the settings
+  fixture (`state.json`) carries `runtime.kubernetes.sandbox`.

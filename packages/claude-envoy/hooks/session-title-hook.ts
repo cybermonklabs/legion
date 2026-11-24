@@ -14,8 +14,12 @@
 // UserPromptSubmit hook's stdout to the model's context and reads its exit code 2 as a block of
 // the prompt, and a cosmetic title must do neither. A failure goes to stderr, which Claude Code
 // shows the user and the model never sees.
+import { scrubProcessStreams } from "@legion/contracts/held-secrets"
 import { messageFor } from "@legion/envoy-client/errors"
 import { recordChosenTitle } from "../src/session-state"
+
+// Every line this hook writes passes the scrub of the secrets it holds.
+scrubProcessStreams()
 
 interface ChosenTitlePayload {
   readonly sessionId: string

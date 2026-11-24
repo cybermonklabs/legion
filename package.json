@@ -17,7 +17,7 @@
     "docs:media": "bun docs/site/media/shots.ts"
   },
   "workspaces": [
-    "packages/broker-client",
+    "packages/cipher-client",
     "packages/contracts",
     "packages/envoy-client",
     "packages/pi-envoy",
@@ -57,6 +57,7 @@
     "micromark@4.0.2": "patches/micromark@4.0.2.patch",
     "micromark-core-commonmark@2.0.3": "patches/micromark-core-commonmark@2.0.3.patch",
     "micromark-extension-gfm-footnote@2.1.0": "patches/micromark-extension-gfm-footnote@2.1.0.patch",
-    "mdast-util-from-markdown@2.0.3": "patches/mdast-util-from-markdown@2.0.3.patch"
+    "mdast-util-from-markdown@2.0.3": "patches/mdast-util-from-markdown@2.0.3.patch",
+    "playwright@1.64.1": "patches/playwright@1.64.1.patch"
   }
 }

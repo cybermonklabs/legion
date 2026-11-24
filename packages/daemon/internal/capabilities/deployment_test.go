@@ -263,7 +263,7 @@ func TestLiveRowsRenderWhatTheSessionsReported(t *testing.T) {
 
 // Open names every open row in Table order, the live rows a session's check failed among the
 // deployment gaps; OpenFromConfiguration never names a live row, since no legion.yaml line
-// decides one, so `legion start --check-config` says nothing of them.
+// decides one, so `legion config check` says nothing of them.
 func TestOpenNamesLiveRowsInTableOrder(t *testing.T) {
 	d := Deployment{Runtime: "tmux", Decided: map[Name]string{ModelFallback: "the host's own", ResourceLimits: "a pane has none"},
 		Sessions: []Session{paneSession("LEGION-663", claim.RoleArchitect, measured, map[Name]string{Subagents: "task agents are disabled", GitHub: "gh: not logged in"})}}
@@ -398,9 +398,9 @@ func TestDeploymentRowsArePresentDecidedOrOpen(t *testing.T) {
 		{"tmux runs no probe pod", Deployment{Runtime: "tmux"}, PoolCapacity, StatusPresent, "the tmux runtime runs no probe pod"},
 		{"the probe pod scheduled at once", satisfied, PoolCapacity, StatusPresent, "the image probe pod scheduled at its first attempt"},
 		{"the probe pod waited on capacity", Deployment{Runtime: "kubernetes", Probed: true, ProbeCapacityWaits: 2, ProbeCapacityReason: full}, PoolCapacity, StatusOpen,
-			"the image probe pod was Unschedulable 2 time(s) at boot before it scheduled: " + full + "; the pool had no room for its 250m / 1Gi reservation"},
+			"the image probe pod was Unschedulable 2 time(s) at boot before it scheduled: " + full + "; the pool had no room for its 500m / 1Gi reservation"},
 		{"a decided capacity gap", Deployment{Runtime: "kubernetes", Probed: true, ProbeCapacityWaits: 1, ProbeCapacityReason: full, Decided: decided}, PoolCapacity, StatusDecided,
-			"the image probe pod was Unschedulable 1 time(s) at boot before it scheduled: " + full + "; the pool had no room for its 250m / 1Gi reservation"},
+			"the image probe pod was Unschedulable 1 time(s) at boot before it scheduled: " + full + "; the pool had no room for its 500m / 1Gi reservation"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := states(tc.deployment.Report())[tc.row]
@@ -455,11 +455,11 @@ func TestOpenAndLogNameTheGapsAlone(t *testing.T) {
 	}
 }
 
-// OpenFromConfiguration is what `legion start --check-config` prints: the open rows the file alone
+// OpenFromConfiguration is what `legion config check` prints: the open rows the file alone
 // decides, each as Report renders it — secrets where no broker is configured, resource-limits where
 // a pod lacks a reservation — and never a configured broker's secrets row, whose login boot
 // measures, nor model fallback, which the probe or the plugin gate reads, nor pool capacity, which
-// the probe's run measures.
+// the probe's run measures, nor the repository caches' room, which their health reads measure.
 func TestOpenFromConfigurationNamesTheGapsTheFileAloneDecides(t *testing.T) {
 	lacking := []Pod{PodIssue}
 	for _, tc := range []struct {
@@ -476,6 +476,10 @@ func TestOpenFromConfigurationNamesTheGapsTheFileAloneDecides(t *testing.T) {
 		{"fallback unread alone", Deployment{Runtime: "kubernetes", AgentSecrets: true, ModelFallback: bootprobe.ModelFallbackUnread}, nil},
 		{"fallback never read alone", Deployment{Runtime: "kubernetes", AgentSecrets: true}, nil},
 		{"a probe that waited on capacity alone", Deployment{Runtime: "kubernetes", AgentSecrets: true, Probed: true, ProbeCapacityWaits: 1, ProbeCapacityReason: "the pool is full"}, nil},
+		{"a repository cache out of room alone", Deployment{Runtime: "kubernetes", AgentSecrets: true, Caches: []Cache{{
+			Repo: "acme/widgets", Claim: "cache-legion-acme-cache-acme-widgets-1234abcd", Read: true, Reported: true,
+			VolumeBytes: 20 << 30, AvailableBytes: 1 << 20, Bytes: 19 << 30, RepackOutOfSpaceAt: time.Date(2026, 11, 19, 2, 15, 33, 0, time.UTC),
+		}}}, nil},
 		{"tmux", Deployment{Runtime: "tmux"}, []Name{Secrets, ResourceLimits}},
 		{"tmux, both decided", Deployment{Runtime: "tmux", Decided: map[Name]string{Secrets: "later", ResourceLimits: "one tree per node"}}, nil},
 	} {
@@ -497,10 +501,11 @@ func TestOpenFromConfigurationNamesTheGapsTheFileAloneDecides(t *testing.T) {
 					t.Errorf("%s = %+v, want Report's %+v", state.Name, state, want)
 				}
 			}
-			// Every open row the check leaves out is boot's to measure, and says so.
+			// Every open row the check leaves out is boot's or the repository caches' to measure,
+			// and says so.
 			for _, state := range tc.deployment.openStates() {
-				if !slices.Contains(names, state.Name) && state.Source != SourceBoot {
-					t.Errorf("%s is open with Source %q and left out, want %q on every open row the check leaves out", state.Name, state.Source, SourceBoot)
+				if !slices.Contains(names, state.Name) && state.Source != SourceBoot && state.Source != SourceCaches {
+					t.Errorf("%s is open with Source %q and left out, want %q or %q on every open row the check leaves out", state.Name, state.Source, SourceBoot, SourceCaches)
 				}
 			}
 		})
@@ -514,6 +519,106 @@ func TestEveryDeploymentRowIsMeasured(t *testing.T) {
 		if _, source, detail := (Deployment{Runtime: "kubernetes"}).measure(name); detail == "" || strings.HasPrefix(detail, "no measurement") || source == "" {
 			t.Errorf("deployment row %s has no measurement (%q, source %q)", name, detail, source)
 		}
+	}
+}
+
+// The repository-cache-room row is read from each cache's last health read (Deployment.Caches),
+// and its source is the caches whatever it says. It is present under tmux, which runs no cache,
+// with no cache running, and while no cache that reports its room carries a failure for lack of
+// space: its detail then counts the caches read, those of an earlier release, which send no room
+// figures, and those unread, none of which opens it. It is open while one does, naming each failing
+// cache — its repository, volume size, claim, available bytes and clone's bytes in GiB with one
+// decimal, and each failed step with its time in RFC 3339 UTC — and where room comes from, and a
+// decision on it reads decided. `legion config check` never prints it, since the configuration
+// does not measure it.
+func TestTheRepositoryCacheRoomRow(t *testing.T) {
+	const reason = "the caches' claims are grown by hand each week"
+	const remedy = "Room comes from growing the cache's claim in place and raising runtime.kubernetes.repository_cache.volume"
+	repacked := time.Date(2026, 11, 19, 3, 15, 33, 0, time.FixedZone("CET", 60*60))
+	fetched := time.Date(2026, 11, 19, 4, 0, 0, 0, time.UTC)
+	claimOf := func(repo string) string {
+		return "cache-legion-acme-cache-" + strings.ReplaceAll(repo, "/", "-") + "-1234abcd"
+	}
+	roomy := func(repo string) Cache {
+		return Cache{Repo: repo, Claim: claimOf(repo), Read: true, Reported: true, VolumeBytes: 20 << 30, AvailableBytes: 12 << 30, Bytes: 6 << 30}
+	}
+	repackFull := roomy("acme/widgets")
+	repackFull.AvailableBytes, repackFull.Bytes, repackFull.RepackOutOfSpaceAt = 107374182, 20830591386, repacked
+	fetchFull := roomy("acme/gadgets")
+	fetchFull.AvailableBytes, fetchFull.Bytes, fetchFull.FetchOutOfSpaceAt = 512<<20, 19<<30, fetched
+	unreadable := Cache{Repo: "acme/widgets", Claim: claimOf("acme/widgets"), Read: true, Reported: true, VolumeError: "statfs /cache: input/output error",
+		Bytes: 20830591386, FetchOutOfSpaceAt: fetched, RepackOutOfSpaceAt: repacked}
+	// A cache on an older worker image answers its health with none of the room fields.
+	older := Cache{Repo: "acme/legacy", Claim: claimOf("acme/legacy"), Read: true, Bytes: 3 << 30}
+	// A cache whose /healthz could not be read, or that is not Ready, has no read.
+	unread := Cache{Repo: "acme/tools", Claim: claimOf("acme/tools")}
+	kubernetes := func(caches ...Cache) Deployment { return Deployment{Runtime: "kubernetes", Caches: caches} }
+	decided := kubernetes(roomy("acme/gadgets"), repackFull, roomy("acme/tools"))
+	decided.Decided = map[Name]string{RepositoryCacheRoom: reason}
+	for _, tc := range []struct {
+		name       string
+		deployment Deployment
+		status     string
+		// detail is the whole detail where it is pinned, "" where holds alone is checked.
+		detail string
+		holds  []string
+	}{
+		{"tmux", Deployment{Runtime: "tmux"}, StatusPresent, "the tmux runtime runs no repository cache", nil},
+		{"kubernetes, no caches", kubernetes(), StatusPresent, "no repository cache is running", nil},
+		{"kubernetes, 3 caches reported, none failed", kubernetes(roomy("acme/gadgets"), roomy("acme/tools"), roomy("acme/widgets")), StatusPresent,
+			"no repository cache reports a failure for lack of space (3 caches read)", nil},
+		{"one cache with no room fields (older image) and none failed", kubernetes(roomy("acme/gadgets"), older, roomy("acme/widgets")), StatusPresent,
+			"no repository cache reports a failure for lack of space (3 caches read, 1 sends no room figures)", nil},
+		{"one cache whose read failed", kubernetes(roomy("acme/gadgets"), unread, roomy("acme/widgets")), StatusPresent,
+			"no repository cache reports a failure for lack of space (2 caches read, 1 unread)", nil},
+		{"one of three caches with repackOutOfSpaceAt", kubernetes(roomy("acme/gadgets"), roomy("acme/tools"), repackFull), StatusOpen,
+			"1 of 3 repository caches ran out of room: acme/widgets on a 20.0 GiB volume (claim " + claimOf("acme/widgets") + ") with 0.1 GiB available, its clone 19.4 GiB; " +
+				"its repack failed for lack of space at 2026-11-19T02:15:33Z. " + remedy,
+			nil},
+		{"two failing caches, one by fetch", kubernetes(fetchFull, roomy("acme/tools"), repackFull), StatusOpen,
+			"2 of 3 repository caches ran out of room: acme/gadgets on a 20.0 GiB volume (claim " + claimOf("acme/gadgets") + ") with 0.5 GiB available, its clone 19.0 GiB; " +
+				"its fetch failed for lack of space at 2026-11-19T04:00:00Z. " +
+				"acme/widgets on a 20.0 GiB volume (claim " + claimOf("acme/widgets") + ") with 0.1 GiB available, its clone 19.4 GiB; " +
+				"its repack failed for lack of space at 2026-11-19T02:15:33Z. " + remedy,
+			nil},
+		{"a failing cache whose volume could not be read, both steps failed", kubernetes(unreadable), StatusOpen,
+			"1 of 1 repository caches ran out of room: acme/widgets on a volume (claim " + claimOf("acme/widgets") + ") whose room it could not read (statfs /cache: input/output error), its clone 19.4 GiB; " +
+				"its fetch failed for lack of space at 2026-11-19T04:00:00Z and its repack failed for lack of space at 2026-11-19T02:15:33Z. " + remedy,
+			nil},
+		{"a failing cache with capabilities.decided.repository-cache-room set", decided, StatusDecided, "", []string{"1 of 3 repository caches ran out of room: acme/widgets"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := states(tc.deployment.Report())[RepositoryCacheRoom]
+			if got.Status != tc.status || got.Source != SourceCaches {
+				t.Fatalf("%s = %s from %q (%s), want %s from %q", RepositoryCacheRoom, got.Status, got.Source, got.Detail, tc.status, SourceCaches)
+			}
+			if tc.detail != "" && got.Detail != tc.detail {
+				t.Errorf("detail\n got: %s\nwant: %s", got.Detail, tc.detail)
+			}
+			for _, clause := range tc.holds {
+				if !strings.Contains(got.Detail, clause) {
+					t.Errorf("detail %q lacks %q", got.Detail, clause)
+				}
+			}
+			wantDecision, wantLine := "", ""
+			switch tc.status {
+			case StatusDecided:
+				wantDecision = reason
+			case StatusOpen:
+				wantLine = `capabilities.decided.repository-cache-room: "<reason>"`
+			}
+			if got.Decision != wantDecision || got.ConfigLine != wantLine {
+				t.Errorf("the row carries decision %q and config line %q, want %q and %q", got.Decision, got.ConfigLine, wantDecision, wantLine)
+			}
+			if open := slices.Contains(tc.deployment.Open(), RepositoryCacheRoom); open != (tc.status == StatusOpen) {
+				t.Errorf("Open() names the row: %v, want %v", open, tc.status == StatusOpen)
+			}
+			for _, state := range tc.deployment.OpenFromConfiguration() {
+				if state.Name == RepositoryCacheRoom {
+					t.Errorf("OpenFromConfiguration() names %s, whose source is the caches, not the configuration", state.Name)
+				}
+			}
+		})
 	}
 }
 

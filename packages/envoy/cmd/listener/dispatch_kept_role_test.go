@@ -294,7 +294,7 @@ func TestAKeptCopyOfAFailedMentionReachesThatSessionUnderTheMentionsKey(t *testi
 		t.Fatalf("the copy forwarded to the session its own mention names carries %q, want no role forward's prefix",
 			handed[0].key)
 	}
-	subject := contracts.AgentSubject(holder)
+	subject := contracts.LegacyAgentSubject(holder)
 	if want := bus.ForwardMsgID(mentionKey, subject); handed[0].msgID != want {
 		t.Fatalf("the forward was made under %q, want %q: the outbox's own handover of a kept copy names it that, and the stream stores the two as one",
 			handed[0].msgID, want)
@@ -336,7 +336,7 @@ func (w keptUnderAClaimWindow) PublishStoredAsync(subject string, item contracts
 func takenForwards(t *testing.T, harness listenerDeliveryHarness, sessionID string) <-chan contracts.Envelope {
 	t.Helper()
 	taken := make(chan contracts.Envelope, 16)
-	sub, err := harness.client.Conn.Subscribe(contracts.AgentSubject(sessionID), func(msg *natsgo.Msg) {
+	sub, err := harness.client.Conn.Subscribe(contracts.LegacyAgentSubject(sessionID), func(msg *natsgo.Msg) {
 		var item contracts.Envelope
 		if err := json.Unmarshal(msg.Data, &item); err != nil {
 			return

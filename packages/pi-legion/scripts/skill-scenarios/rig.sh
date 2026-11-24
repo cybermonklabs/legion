@@ -302,10 +302,16 @@ load_label() {
   # unreviewed (packages/pi-envoy/README.md, "The time limit"): an askgate run would then score the
   # timeout, not the rule. The model route installers set the limit in the profile's settings
   # (scripts/e2e/lib/install-model-gateway.sh, install-key-file-model-route.sh); a profile built
-  # before they did is refused here.
-  local settings=$P/home/.omp/profiles/$profile/agent/config.yml
-  bun -e 'const v = Bun.YAML.parse(await Bun.file(process.argv[1]).text())?.extensionHandlers?.toolCallTimeoutMs; process.exit(typeof v === "number" && v >= 120000 ? 0 : 1)' "$settings" 2>/dev/null ||
-    fail "label $1's profile settings $settings do not set extensionHandlers.toolCallTimeoutMs to 120000 or more, so AskGate's review would often time out: remove $P and run \`rig.sh profile $1 <checkout>\` from a checkout whose model route installer sets it"
+  # before they did is refused here. The read is bun's, which exits 0 where the key is set and 3
+  # where it is not: any other exit is a bun that could not run or could not read the settings,
+  # refused with bun's own words and never as a missing key.
+  local settings=$P/home/.omp/profiles/$profile/agent/config.yml said read=0
+  said=$(bun -e 'const v = Bun.YAML.parse(await Bun.file(process.argv[1]).text())?.extensionHandlers?.toolCallTimeoutMs; process.exit(typeof v === "number" && v >= 120000 ? 0 : 3)' "$settings" 2>&1) || read=$?
+  case $read in
+    0) ;;
+    3) fail "label $1's profile settings $settings do not set extensionHandlers.toolCallTimeoutMs to 120000 or more, so AskGate's review would often time out: remove $P and run \`rig.sh profile $1 <checkout>\` from a checkout whose model route installer sets it" ;;
+    *) fail "label $1: bun could not read the profile settings $settings: $said" ;;
+  esac
 }
 
 # install_model_route CHECKOUT PROFILE DIR installs the model route of the profile whose HOME is
@@ -627,32 +633,33 @@ EOF
   tmux kill-session -t "=$session" 2>/dev/null || true
 }
 
-# run_env_pids DIR prints each process whose environment names a run at or under DIR in
-# SKILL_SCENARIO_RUN, which an agent gets from its pane file and every command it runs inherits.
-# It finds what stop_tree cannot reach from the pids a command recorded: a process that left their
-# tree, such as a `setsid -f` child. A process that merely works under DIR, such as a developer's
-# shell watching a run, has no such variable, and another user's environment cannot be read. One
-# grep narrows the environments to those holding the text anywhere; each is then read variable by
-# variable.
+# run_env_pids DIR prints `PID START` (stat field 22) for each process whose environment names a run
+# at or under DIR in SKILL_SCENARIO_RUN, which an agent gets from its pane file and every command it
+# runs inherits. It finds what stop_tree cannot reach from the pids a command recorded: a process
+# that left their tree, such as a `setsid -f` child. A process that merely works under DIR, such as a
+# developer's shell watching a run, has no such variable, and another user's environment cannot be
+# read. It is procs_naming (scripts/e2e/lib/process-tree.sh), which hands every /proc/<pid>/environ
+# to grep through xargs in calls that fit ARG_MAX, reads each match whole, and prints why and fails
+# with 2 when the machine's environments could not be read.
 # shellcheck disable=SC2329 # stop_env_processes, which the exit traps run, runs it
-run_env_pids() {
-  local p var
-  for p in $(grep -lzsF -e "SKILL_SCENARIO_RUN=$1" /proc/[0-9]*/environ || true); do
-    {
-      while IFS= read -r -d '' var; do
-        case $var in "SKILL_SCENARIO_RUN=$1" | "SKILL_SCENARIO_RUN=$1"/*) echo "${p//[!0-9]/}" && break ;; esac
-      done <"$p"
-    } 2>/dev/null || true
-  done
-}
+run_env_pids() { procs_naming "$1" SKILL_SCENARIO_RUN; }
 
-# stop_env_processes DIR stops, with stop_tree, each process run_env_pids DIR finds and everything
-# under it, a child that dropped the variable included; the parent stop_tree checks is the one the
-# process has now, read a moment after the list.
+# stop_env_processes DIR ends each process run_env_pids DIR finds and everything under it, a child
+# that dropped the variable included, through kill_held (scripts/e2e/lib/process-tree.sh), the
+# run's sweep's own loop: each is frozen and read again, ended only while it is still the process
+# the walk read (its start time) and still names the run, and then ended with its tree, its own
+# parent not read again. When run_env_pids could not read the machine's environments, or a tree's
+# processes could not all be read (kill_held), it says so, and this returns, so the exit handler
+# that runs it goes on with the rest of its cleanup.
 # shellcheck disable=SC2329 # the exit traps run it
 stop_env_processes() {
-  local pid
-  for pid in $(run_env_pids "$1"); do stop_tree "$pid" "$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')"; done
+  local pairs
+  pairs=$(run_env_pids "$1") || {
+    echo "stop_env_processes: stopped no process of the run under $1, since none could be named" >&2
+    return 0
+  }
+  kill_held "$1" SKILL_SCENARIO_RUN <<<"$pairs" ||
+    echo "stop_env_processes: the processes under some process of the run under $1 could not be read" >&2
 }
 
 # stop_panes SESSION stops, with stop_tree, each pane process of SESSION on the work directory's
@@ -730,8 +737,15 @@ start_listener() {
   ENVOY_API_TOKEN="$(<"$S/envoy-token")" ENVOY_LISTEN_HOST=127.0.0.1 \
     ENVOY_MACHINE_ID="$tag" NATS_URLS="nats://127.0.0.1:$nats_port" \
     start_held listener envoy_port ENVOY_LISTEN_FD --env 'PORT={port}' -- "$S/envoy-listener"
-  await_start listener "$listener_pid" 60 "the Envoy listener to answer /v1/sessions" \
-    curl -fsS -o /dev/null -H "Authorization: Bearer $(<"$S/envoy-token")" "http://127.0.0.1:$envoy_port/v1/sessions"
+  await_start listener "$listener_pid" 60 "the Envoy listener to answer /v1/sessions" listener_answers
+}
+
+# listener_answers reads the listener's /v1/sessions with the rig's bearer, which reaches curl on
+# standard input from printf, a shell builtin, so it is in no command line.
+# shellcheck disable=SC2329 # await_start in start_listener runs it
+listener_answers() {
+  printf 'Authorization: Bearer %s' "$(<"$S/envoy-token")" |
+    curl -fsS -o /dev/null -H @- "http://127.0.0.1:$envoy_port/v1/sessions"
 }
 
 # start_dispatch DATABASE_URL starts the e2e harness's Dispatch server on that database. The
@@ -774,8 +788,11 @@ services_up() {
     -c max_connections=$((30 * ${SKILL_SCENARIOS_PARALLEL:-5} + 20)) >/dev/null
   pg_port=$(docker port "$tag-pg" 5432/tcp | sed -n '1s/.*://p')
   [ -n "$pg_port" ] || fail "docker assigned Postgres no host port"
-  # ghcr.io/cybermonklabs/legion/ci, the copy of nats:2.10 (.github/ci-images.yaml)
-  docker run -d --name "$tag-nats" --cpus 1 --memory 512m -p 127.0.0.1::4222 ghcr.io/cybermonklabs/legion/ci@sha256:5498ba57b9471840be3d15b033a4eec554d1c02fa6c2cc0ca2d888637f6c6e2f -js >/dev/null
+  # The hub's nats-server (lib/nats-image.sh reads testnats.HubImage): the listener and the daemon
+  # refuse a nats-server below the floor packages/envoy/natsversion holds, every 2.10 among them.
+  # shellcheck source-path=SCRIPTDIR/../../../.. source=scripts/e2e/lib/nats-image.sh
+  . "$root/scripts/e2e/lib/nats-image.sh"
+  docker run -d --name "$tag-nats" --cpus 1 --memory 512m -p 127.0.0.1::4222 "$nats_image" -js >/dev/null
   nats_port=$(docker port "$tag-nats" 4222/tcp | sed -n '1s/.*://p')
   [ -n "$nats_port" ] || fail "docker assigned NATS no host port"
   until_true 60 "Postgres to accept TCP connections" docker exec "$tag-pg" pg_isready -h 127.0.0.1 -p 5432 -U postgres
@@ -1109,10 +1126,15 @@ run_spec() {
   seed_ts capture-spec "$R/fixture.json" "$R"
 }
 
-# The judge's two profiles, under $work/judge-profiles/<kind>, each its own HOME made by
-# make_omp_home with the model route install_model_route installs and no plugin. `ste` holds one
-# user skill, this checkout's skills/asd-ste100. `bare` holds none. The first judge-omp call builds
-# both, and every other call waits on the same lock, so parallel calls are safe.
+# The judge's two profiles, under $work/judge-profiles/<kind>, each under a HOME of its own with the
+# model route install_model_route installs and no plugin. `ste` holds one user skill, this
+# checkout's skills/asd-ste100. `bare` holds none. The first judge-omp call builds both, and every
+# other call waits on the same lock, so parallel calls are safe.
+# A judge's HOME is only the .omp directory the route installers require, not make_omp_home's: no
+# Oh My Pi and no jj runs under it on this host. cmd_judge_omp copies the profile's agent directory
+# into the container's own HOME and mounts no native cache, so make_omp_home's natives link and jj
+# overlay would reach no judge, while its read of the operator's jj config would make judge-omp
+# fail on a machine with no jj on PATH.
 judge_profiles() {
   local dir=$work/judge-profiles kind P commit
   mkdir -p "$dir"
@@ -1125,13 +1147,8 @@ judge_profiles() {
     for kind in ste bare; do
       P=$dir/$kind
       rm -rf "$P"
-      mkdir -p "$P"
-      (
-        # shellcheck source=/dev/null
-        source "$root/scripts/e2e/lib/omp-home.sh"
-        make_omp_home "$P/home"
-      ) >"$P/install.log" 2>&1 || fail "make_omp_home failed for the judge's $kind profile; see $P/install.log"
-      install_model_route "$root" "judge-$kind" "$P" >>"$P/install.log" 2>&1 ||
+      mkdir -p "$P/home/.omp"
+      install_model_route "$root" "judge-$kind" "$P" >"$P/install.log" 2>&1 ||
         fail "the judge's model route (${LEGION_E2E_MODEL_ROUTE:-gateway}) could not be installed; see $P/install.log"
     done
     mkdir -p "$dir/ste/home/.omp/profiles/judge-ste/agent/skills"

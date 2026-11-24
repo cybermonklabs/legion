@@ -20,6 +20,7 @@ import (
 	dispatchenvoy "github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -299,8 +300,12 @@ type broadcastRecovery struct {
 // own exclusions, under the send's own 201 - answered at once, as the send was, while
 // sendOwedBroadcastRecipients puts every recipient it still owes on its way behind the answer.
 func (s *server) replayBroadcast(w http.ResponseWriter, r *http.Request, point broadcastRecovery, _ []byte) {
+	who, ok := s.actingReader(w, r)
+	if !ok {
+		return
+	}
 	ctx := r.Context()
-	read, err := s.readBroadcast(ctx, point.BroadcastID, wantsDisplayTrees(r))
+	read, err := s.readBroadcast(ctx, who, point.BroadcastID, wantsDisplayTrees(r))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -323,6 +328,11 @@ func (s *server) replayBroadcast(w http.ResponseWriter, r *http.Request, point b
 // id - found its record, or had the store say it holds none - and any other outcome ends the
 // whole resolution with an error, because a read that did not answer, or was never made, says
 // nothing about whether the session is working.
+//
+// It reads the stopped sessions too (SessionIncludingStopped), so a session the listener knows
+// and that is not running is a recipient whose copy the listener stores for it, not an exclusion:
+// a broadcast to a team of suspended Legion sessions reaches each of them when it runs again. A
+// session the listener knows nothing about is still missing from the map, and still excluded.
 //
 // The reads run broadcastResolveConcurrency at a time under one budget taken from the
 // request's context (broadcastResolveAllowance), and those two together are what keep a send's
@@ -347,7 +357,7 @@ func (s *server) resolveBroadcastSessions(
 			break
 		}
 		group.Go(func() error {
-			session, err := s.deps.Envoy.Session(groupCtx, sessionID)
+			session, err := s.deps.Envoy.SessionIncludingStopped(groupCtx, sessionID)
 			if err != nil && !errors.Is(err, dispatchenvoy.ErrNotFound) {
 				return err
 			}
@@ -390,8 +400,10 @@ func (s *server) resolveBroadcastSessions(
 //
 // An unresponsive session is a recipient like any other: the listener stores what is sent to
 // it and hands it over when it answers again, which is exactly what a broadcast to a session
-// that missed its heartbeats should do. Only a record the registry itself calls gone is no
-// session to send to, as a missing record is.
+// that missed its heartbeats should do. So is a session the store holds as stopped, by its
+// record alone (advertisesDelivery judges its mode): the listener stores its copy for it and
+// hands it over when it runs again. Only a record the registry itself calls gone is no session
+// to send to, as a missing record is.
 func resolveBroadcastTargets(
 	requested []string, delivery string, live map[string]dispatchenvoy.Session,
 ) []broadcastTarget {
@@ -401,7 +413,7 @@ func resolveBroadcastTargets(
 		switch {
 		case !ok, session.State == dispatchenvoy.StateGone:
 			targets = append(targets, broadcastTarget{sessionID: sessionID, reason: "no live session"})
-		case !hasCapability(session.Capabilities, delivery):
+		case !advertisesDelivery(session, delivery):
 			targets = append(targets, broadcastTarget{
 				sessionID: sessionID, title: session.Title, reason: "does not advertise " + delivery,
 			})
@@ -472,8 +484,11 @@ func (s *server) writeBroadcast(
 		if err != nil {
 			return broadcastRead{}, nil, err
 		}
-		// Each copy is a direct message: its blocks are indexed, and it writes no mention.
-		if _, err := s.indexMessage(ctx, tx, message); err != nil {
+		// Each copy is a direct message: its blocks are indexed, and it writes no mention, so
+		// its blocks hold none either and the write moves nothing. The copy is inserted above,
+		// so its body is read here rather than planned before the insert, as every other
+		// message write plans it (api.planItemWrite).
+		if _, err := refs.IndexItem(ctx, tx, refs.ItemMessage, message.ID, message.Body, message.CreatedAt, nil, nil); err != nil {
 			return broadcastRead{}, nil, err
 		}
 		// A broadcast message is a thread root that answers nothing, so its event says what
@@ -677,7 +692,8 @@ func (s *server) listBroadcasts(w http.ResponseWriter, r *http.Request) {
 // `urn:uuid:<uuid>` on the uuid column, and the raw value would answer 500 where the canonical
 // one answers this route's own 404.
 func (s *server) getBroadcast(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.actingPerson(w, r); !ok {
+	who, ok := s.actingPerson(w, r)
+	if !ok {
 		return
 	}
 	id := r.PathValue("id")
@@ -685,7 +701,7 @@ func (s *server) getBroadcast(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "BROADCAST_NOT_FOUND", http.StatusNotFound, "broadcast not found")
 		return
 	}
-	read, err := s.readBroadcast(r.Context(), id, wantsDisplayTrees(r))
+	read, err := s.readBroadcast(r.Context(), who, id, wantsDisplayTrees(r))
 	if errors.Is(err, pgx.ErrNoRows) {
 		writeError(w, "BROADCAST_NOT_FOUND", http.StatusNotFound, "broadcast not found")
 		return
@@ -698,8 +714,8 @@ func (s *server) getBroadcast(w http.ResponseWriter, r *http.Request) {
 }
 
 // readBroadcast reads one broadcast with every recipient's state, as GET /api/v1/broadcasts/{id}
-// answers it; an unknown id is pgx.ErrNoRows.
-func (s *server) readBroadcast(ctx context.Context, id string, trees bool) (broadcastRead, error) {
+// answers it to who; an unknown id is pgx.ErrNoRows.
+func (s *server) readBroadcast(ctx context.Context, who model.Actor, id string, trees bool) (broadcastRead, error) {
 	var read broadcastRead
 	var author []byte
 	if err := s.deps.Store.Pool.QueryRow(ctx, `
@@ -715,7 +731,7 @@ func (s *server) readBroadcast(ctx context.Context, id string, trees bool) (broa
 	// rest of the request.
 	reader := s.readDisplayTrees(ctx, trees)
 	read.attachTrees(reader)
-	recipients, err := s.loadBroadcastRecipients(ctx, read.ID, reader)
+	recipients, err := s.loadBroadcastRecipients(ctx, who, read.ID, reader)
 	if err != nil {
 		return broadcastRead{}, err
 	}
@@ -725,11 +741,11 @@ func (s *server) readBroadcast(ctx context.Context, id string, trees bool) (broa
 }
 
 // loadBroadcastRecipients reads every message the broadcast sent in the sender's requested
-// order. Messages created before positions existed, or by an old server during a rolling deploy,
-// have no position; their request order was never stored, so they retain the created_at and id
-// fallback order. created_at cannot order one current broadcast because all of its rows share
-// the one transaction's now().
-func (s *server) loadBroadcastRecipients(ctx context.Context, broadcastID string, reader *displayTreeReader) ([]broadcastRecipient, error) {
+// order, each reply's block read for who. Messages created before positions existed, or by an
+// old server during a rolling deploy, have no position; their request order was never stored, so
+// they retain the created_at and id fallback order. created_at cannot order one current broadcast
+// because all of its rows share the one transaction's now().
+func (s *server) loadBroadcastRecipients(ctx context.Context, who model.Actor, broadcastID string, reader *displayTreeReader) ([]broadcastRecipient, error) {
 	rows, err := s.deps.Store.Pool.Query(ctx, `
 		select `+messageColumns+`
 		from messages
@@ -764,7 +780,7 @@ func (s *server) loadBroadcastRecipients(ctx context.Context, broadcastID string
 	if err != nil {
 		return nil, err
 	}
-	if err := hydrateThreadReplyBlocks(ctx, s.deps.Store.Pool, messages, replies); err != nil {
+	if err := hydrateThreadReplyBlocks(ctx, s.deps.Store.Pool, who, messages, replies); err != nil {
 		return nil, err
 	}
 	recipients := make([]broadcastRecipient, len(messages))

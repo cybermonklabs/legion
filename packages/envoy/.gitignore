@@ -11,6 +11,13 @@ deploy/compose/nats/nats-*.conf
 /broker
 /broker-refgen
 /agent-secrets
+# The same commands' binaries as a bare go build names them, after each command's directory.
+/cipherd
+/cipher
+/cipher-helper
+/cipher-refgen
+/cipher-devrelay
+/dev-proxy-stands
 # The Dispatch e2e harness's server binary and its build lock (packages/dispatch/e2e/run-server.sh)
 /dispatch-e2e
 /.dispatch-e2e.lock
@@ -20,3 +27,5 @@ deploy/compose/nats/nats-*.conf
 
 # Host deployment settings (secrets) — see deploy/README.md
 deploy/compose/.env
+# The auto-deployer's staging file for a write of it, which a SIGKILL can leave (autodeploy.sh env_file)
+deploy/compose/.env.stage.*

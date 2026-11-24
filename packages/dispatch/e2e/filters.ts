@@ -1,5 +1,7 @@
 import { expect, type Locator, type Page } from "@playwright/test";
 
+import { expandedState } from "./settled";
+
 /** A Board strip picker or the List table's header filter. */
 export function filterPicker(page: Page, picker: "Claimed by" | "Labels" | "Status"): Locator {
   return page
@@ -10,16 +12,15 @@ export function filterPicker(page: Page, picker: "Claimed by" | "Labels" | "Stat
 }
 
 /** Toggles one option in an expanded strip's `Labels` or `Status` multi-select, then closes the
- *  popover with Escape so it never covers the control the test drives next. */
+ *  popover with Escape so it never covers the control the test drives next. The trigger says
+ *  whether the popover is open, and is read once the page has drawn it. */
 export async function pickFilterOption(
   page: Page,
   picker: "Claimed by" | "Labels" | "Status",
   option: string
 ): Promise<void> {
   const trigger = filterPicker(page, picker);
-  if ((await trigger.getAttribute("aria-expanded")) === "false") {
-    await trigger.click();
-  }
+  if ((await expandedState(`the ${picker} picker`, trigger)) === "shut") await trigger.click();
   await page
     .getByRole("option", {
       // "Done, not loaded" while closed issues are still out: its count would be a lie.

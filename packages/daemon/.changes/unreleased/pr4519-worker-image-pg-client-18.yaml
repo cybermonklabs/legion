@@ -1,0 +1,6 @@
+kind: Fixed
+body: |-
+  The worker image builds again since apt.postgresql.org began serving PostgreSQL 19:
+  `legion-testpg check` reads pgvector's share directory from the selected server's own
+  `pg_config`, and the image installs `postgresql-client-18`, so the client and the server stay
+  one major.

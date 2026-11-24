@@ -1,0 +1,11 @@
+{
+  "app": { "id": 5341243 },
+  "conclusion": null,
+  "head_branch": "legion/INFRA-4374",
+  "head_sha": "4198cda5fd0ae76e055089846f40f7be0d10dcf4",
+  "id": 120620537894,
+  "latest_check_runs_count": 0,
+  "pull_requests": [],
+  "status": "queued",
+  "updated_at": "2026-11-19T15:56:07Z"
+}

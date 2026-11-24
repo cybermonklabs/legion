@@ -5,8 +5,9 @@
 #
 # Sourced, never run. The caller sets
 #   root           the checkout
-#   work           the run's scratch directory; every process whose command line or working
-#                  directory names it belongs to the run
+#   work           the run's scratch directory; every process that carries the run's mark, which
+#                  the caller exports as LEGION_E2E_RUN=$work (run_marks, lib/process-tree.sh),
+#                  belongs to the run
 #   evidence       the evidence directory; each service started by start_process logs to
 #                  $evidence/logs/<name>.log
 #   timeout_hook   empty, or a function a timed-out until_true runs before it fails
@@ -68,16 +69,20 @@ real_bin_path() {
 # never returns would hold the wait past its bound, so a caller's remote calls carry their own
 # timeouts.
 until_true() {
-  local limit=$1 what=$2 polls=0 started=$SECONDS beat=$SECONDS
+  # Its time of entry is `began`, not `started`: a caller's `fail` exits inside this function, so
+  # the caller's EXIT trap runs where these locals hide the caller's variables of the same names,
+  # and a test harness's trap that stops each pid of its `started` array read this number instead
+  # and left every process the failed row had started running.
+  local limit=$1 what=$2 polls=0 began=$SECONDS beat=$SECONDS
   shift 2
   note "waiting up to ${limit}s for $what"
-  while ((SECONDS - started < limit)); do
+  while ((SECONDS - began < limit)); do
     [ ! -s "$evidence/pane-endpoint-violation.txt" ] || fail "ABORT: $(cat "$evidence/pane-endpoint-violation.txt")"
     polls=$((polls + 1))
     if "$@" >/dev/null 2>&1; then return 0; fi
     if ((SECONDS - beat >= 60)); then
       beat=$SECONDS
-      note "still waiting for $what: poll $polls, $((SECONDS - started))s of ${limit}s"
+      note "still waiting for $what: poll $polls, $((SECONDS - began))s of ${limit}s"
     fi
     sleep 0.5
   done
@@ -182,34 +187,95 @@ port_answers() {
 }
 
 # listening_holders PORT prints, one per line in order, the pid of every process holding the one
-# socket that listens on PORT: its inode from the LISTEN row (state 0A) of /proc/net/tcp and
-# /proc/net/tcp6, and each process with a descriptor naming socket:[<inode>]. It fails when no
-# socket listens on PORT, or more than one does.
+# socket that listens on 127.0.0.1:PORT, where every service of a rig listens (held-port.py's
+# default host, port_answers' address): its inode from the LISTEN row (state 0A) of /proc/net/tcp
+# whose local address is 127.0.0.1:PORT, and each process of `${proc_root:-/proc}` with a
+# descriptor naming socket:[<inode>] (the host's /proc, unless a test points proc_root at a proc
+# root of its own, scripts/e2e/lib/proc-root.ts). A socket on the same port of another address is
+# none of it: the kernel's bind of port 0 on 127.0.0.1 hands out a port another process already
+# listens on at another loopback address, as a Go test of this box does on a random 127.x.y.z, and
+# a count of every row with that port read two sockets and failed. The table writes an address as
+# the hexadecimal of its 32 bits in the host's byte order: 127.0.0.1 is 0100007F on a little-endian
+# host and 7F000001 on a big-endian one, and the other spelling is 1.0.0.127 there, an address a
+# socket can hold too (IP_FREEBIND), so each call reads the order (od of the bytes 01 00 as one
+# 16-bit word) and takes the one spelling. It fails with 1 when no socket listens on
+# 127.0.0.1:PORT, or more than one does, and with 2, saying why, when /proc/net/tcp cannot be read,
+# so an unread table is never read as a port nothing listens on, when od does not tell the byte
+# order, and when the proc root lists no process at all.
+# The shell's glob hands the <pid>/fd entries to find on stdin (-files0-from -), never as its
+# arguments: as arguments, past ARG_MAX (about 80,000 processes), find could not start, and the
+# `|| true` this had turned that E2BIG into no holder at all. An fd directory this user may not read
+# (another user's process) or whose process ended during the walk is none of the answer; any other
+# complaint of the walk's (proc_walk_complaint) prints and fails with 2.
 listening_holders() {
-  local inodes
-  inodes=$(awk -v port=":$(printf '%04X' "$1")" \
-    '$4 == "0A" && substr($2, length($2) - 4) == port { print $10 }' /proc/net/tcp /proc/net/tcp6 2>/dev/null)
+  local proc=${proc_root:-/proc} inodes err status=0 complaint holder order loopback
+  local -a holders=() entries=()
+  [ -r /proc/net/tcp ] || {
+    echo "listening_holders: /proc/net/tcp cannot be read, so the socket listening on 127.0.0.1:$1 was not looked for" >&2
+    return 2
+  }
+  order=$(printf '\1\0' | od -An -tx2)
+  case "$order" in
+    *0001*) loopback=0100007F ;;
+    *0100*) loopback=7F000001 ;;
+    *)
+      echo "listening_holders: od read the bytes 01 00 as '$order', not this host's byte order, so the socket listening on 127.0.0.1:$1 was not looked for" >&2
+      return 2
+      ;;
+  esac
+  inodes=$(awk -v address="$loopback:$(printf '%04X' "$1")" \
+    '$4 == "0A" && $2 == address { print $10 }' /proc/net/tcp) || {
+    echo "listening_holders: awk could not read /proc/net/tcp, so the socket listening on 127.0.0.1:$1 was not looked for" >&2
+    return 2
+  }
   case "$inodes" in
     '' | *[!0-9]*)
-      echo "listening_holders: $(wc -w <<<"$inodes") sockets listen on port $1, not one" >&2
+      echo "listening_holders: $(wc -w <<<"$inodes") sockets listen on 127.0.0.1:$1, not one" >&2
       return 1
       ;;
   esac
-  # A process that exits during the walk leaves find an unreadable directory: its status is no answer.
-  { find /proc/[0-9]*/fd -maxdepth 1 -lname "socket:\\[$inodes\\]" 2>/dev/null || true; } | cut -d/ -f3 | sort -un
+  entries=("$proc"/[0-9]*/fd)
+  [ -e "${entries[0]}" ] || {
+    echo "listening_holders: $proc lists no process's fd directory, so the holders of port $1 were not read" >&2
+    return 2
+  }
+  err=$(mktemp "${TMPDIR:-/tmp}/listening-holders.XXXXXX") || {
+    echo "listening_holders: no file to keep find's complaints in, so $proc was not read" >&2
+    return 2
+  }
+  # shellcheck disable=SC2185 # find reads its paths from stdin (-files0-from -), not from argv
+  # `|| exit` keeps find's status and keeps a caller's ERR trap (`set -E`) from firing inside the
+  # substitution for the unreadable entries every walk meets.
+  mapfile -t holders < <(printf '%s\0' "${entries[@]}" | LC_ALL=C find -files0-from - -maxdepth 1 -lname "socket:\\[$inodes\\]" 2>"$err" || exit)
+  wait "$!" || status=$?
+  complaint=
+  [ "$status" = 0 ] || complaint=$(proc_walk_complaint "$err" "$proc") || complaint=
+  # GNU find exits 0 or 1 of its own accord; any other status is a find that a signal or the shell
+  # ended, and the lines it wrote before are no answer, even when it printed no complaint.
+  [ "$status" -le 1 ] || complaint=${complaint:-"find ended with status $status and printed nothing"}
+  rm -f -- "$err"
+  if [ -n "$complaint" ]; then
+    printf 'listening_holders: find exited %s reading %s: %s\n' "$status" "$proc" "$complaint" >&2
+    return 2
+  fi
+  for holder in ${holders[@]+"${holders[@]}"}; do
+    holder=${holder#"$proc"/}
+    printf '%s\n' "${holder%%/*}"
+  done | sort -un
 }
 
-# held_only_by PORT PID... succeeds when the processes holding the socket listening on PORT
-# (listening_holders) are exactly the PIDs given, and otherwise prints each holder with its command
-# and fails: a descriptor that leaked into another process (a tmux server, a pane, a CLI call) keeps
-# the port listening after the service stops.
+# held_only_by PORT PID... succeeds when the processes holding the socket listening on
+# 127.0.0.1:PORT (listening_holders) are exactly the PIDs given, and otherwise prints each holder
+# with its command and fails: a descriptor that leaked into another process (a tmux server, a pane,
+# a CLI call) keeps the port listening after the service stops. A reading listening_holders could
+# not make fails with its status and its reason.
 held_only_by() {
   local port=$1 holders want pid
   shift
-  holders=$(listening_holders "$port") || return 1
+  holders=$(listening_holders "$port") || return
   want=$(printf '%s\n' "$@" | sort -un)
   [ "$holders" != "$want" ] || return 0
-  echo "the socket listening on port $port is held by:" >&2
+  echo "the socket listening on 127.0.0.1:$port is held by:" >&2
   for pid in $holders; do echo "  $pid $(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null)" >&2; done
   echo "and should be held by $(tr '\n' ' ' <<<"$want")alone" >&2
   return 1
@@ -230,11 +296,16 @@ await_start() {
 }
 
 # start_process NAME COMMAND... starts COMMAND in the background, logging to the service's log, and
-# sets <NAME>_pid to its pid. Monitor mode is on for the start alone, so the service leads a process
-# group of its own: stop_tree stops what it kills with SIGSTOP first, and a stopped member of this
-# shell's own process group has the kernel hang up every member of that group — this shell, the
-# command that started it and the `bun test` that started that — as soon as any of them exits and
-# the group is orphaned. In a group of its own the service's stop reaches nothing but itself.
+# sets <NAME>_pid to its pid, with its start time recorded (record_start, lib/process-tree.sh), so
+# stop_pid signals it only while it is still that process. A service that has already exited when
+# the start is read, or is a zombie, is recorded `gone` (started_at), so stop_pid and signal_group
+# later send it nothing and say nothing; start_process still succeeds, so await_start, not a
+# driver's `set -e`, names its log. Monitor mode is on for the start alone,
+# so the service leads a process group of its own: stop_tree stops what it kills with SIGSTOP
+# first, and a stopped member of this shell's own process group has the kernel hang up every member
+# of that group — this shell, the command that started it and the `bun test` that started that — as
+# soon as any of them exits and the group is orphaned. In a group of its own the service's stop
+# reaches nothing but itself.
 #
 # The redirection from /dev/null is what monitor mode takes away: bash gives a background job
 # /dev/null on stdin only while monitor mode is off, so without it a service inherits this script's
@@ -247,84 +318,22 @@ start_process() {
   "$@" </dev/null >>"$evidence/logs/$name.log" 2>&1 &
   printf -v "${name}_pid" '%s' "$!"
   set +m
+  record_start "$!" || started_at[$!]=gone
 }
 
-# signalable PID is whether PID can name one process the run started: a number without a leading
-# zero other than 1, this shell, and this shell's process group leader. 0, however many digits spell
-# it, and a negative number name a whole process group, so `kill -STOP 0` would stop the caller with
-# everything else in its group and a later `kill -KILL 0` end them all; no pid is written with a
-# leading zero. A refusal is printed, since a caller that hands one over has a bug.
-signalable() {
-  local pid=$1
-  case "$pid" in
-    '' | *[!0-9]* | 0* | 1) ;;
-    *)
-      [ "$pid" != "$$" ] && [ "$pid" != "$BASHPID" ] &&
-        [ "$pid" != "$(ps -o pgid= -p "$$" 2>/dev/null | tr -d ' ')" ] && return 0
-      ;;
-  esac
-  echo "refused to signal pid '$pid': it is not one process this run started" >&2
-  return 1
-}
-
-# stop_pid is intentionally best effort: a failed cleanup must never obscure the check that failed.
-stop_pid() {
-  local pid=${1:-} i
-  [ -n "$pid" ] || return 0
-  signalable "$pid" || return 0
-  kill -TERM "$pid" 2>/dev/null || return 0
-  for i in $(seq 1 50); do
-    kill -0 "$pid" 2>/dev/null || return 0
-    sleep 0.2
-  done
-  kill -KILL "$pid" 2>/dev/null || true
-  return 0
-}
-
-# stop_tree PID stops PID and every process under it. A watcher is a loop whose kubectl, jq or sleep
-# outlives the loop when only the loop is stopped; the loop is frozen first, so it starts nothing new
-# while its children go. PID is signalled only while its parent is PARENT (default this shell), so a
-# pid the watcher left and another process reused is never hit. An empty PID is a watcher that
-# never started: nothing to stop.
-# pgrep exits 1 for a process with no children, which is no error: under a driver's `set -E` it would
-# run the ERR trap inside the substitution, and a trap that prints there would hand its words over
-# as child pids (the `0` of an `exit 0` among them).
-stop_tree() {
-  local pid=${1:-} parent=${2:-$$} child
-  [ -n "$pid" ] || return 0
-  signalable "$pid" || return 0
-  [ "$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')" = "$parent" ] || return 0
-  kill -STOP "$pid" 2>/dev/null || return 0
-  for child in $(pgrep -P "$pid" || true); do stop_tree "$child" "$pid"; done
-  kill -KILL "$pid" 2>/dev/null || true
-}
-
-# run_processes prints every pid of this run still alive: any whose working directory is under
-# $work, and any whose command line names $work. A process whose working directory this user cannot
-# read is another user's, so it is none of the run's and gets no further look, as a kill of it would
-# fail anyway.
-# One `find` reads every /proc/<pid>/cwd link, and the command lines are read by the shell itself:
-# a `readlink` and a `grep` for each of a devbox's thousands of /proc entries cost seconds of every
-# teardown, the sweeps of a checkpoint among them. `%l` is empty for a link find could not read.
+# run_processes prints the pid of every process of this run still alive: each that carries the run's
+# mark (marked_processes and run_marks, lib/process-tree.sh), which the run exports as LEGION_E2E_RUN
+# once its transcript runs. A process that works under $work or names it on its command line and
+# carries no mark, a person's shell or `tail -f` watching the run among them, is none of the run's.
+# It prints why and fails with 2 when the run's processes could not be read, so no caller reads an
+# unread machine as one with nothing left. stop_marked_processes "$work" ends what it names.
 run_processes() {
-  local p cwd arg entry
-  local -a args
-  while IFS= read -r -d '' entry; do
-    p=${entry%% *}
-    cwd=${entry#* }
-    [ -n "$cwd" ] || continue
-    case "$cwd/" in
-      "$work"/*) printf '%s\n' "${p#/proc/}"; continue ;;
-    esac
-    args=()
-    { mapfile -d '' -t args <"$p/cmdline"; } 2>/dev/null || continue
-    for arg in ${args[@]+"${args[@]}"}; do
-      case $arg in
-        *"$work"*) printf '%s\n' "${p#/proc/}"; break ;;
-      esac
-    done
-    # find exits 1 for the cwd links it cannot read, every root process's among them, which is no
-    # error here: under the callers' `set -E` an unguarded status would run their ERR trap inside
-    # this substitution and print a warning, or a check's FAIL line, on a run that is going well.
-  done < <(find /proc/[0-9]*/cwd -maxdepth 0 -printf '%h %l\0' 2>/dev/null || :)
+  local pairs pid
+  pairs=$(marked_processes "$work") || return 2
+  while read -r pid _; do
+    [ -z "$pid" ] || printf '%s\n' "$pid"
+  done <<<"$pairs"
 }
+
+# shellcheck source-path=SCRIPTDIR source-path=SCRIPTDIR/lib source=process-tree.sh
+. "$root/scripts/e2e/lib/process-tree.sh"

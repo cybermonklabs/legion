@@ -5,10 +5,16 @@
 // publishes upstream, and it never touches Dispatch issue subjects — the instance's scratch
 // Dispatch server publishes its own, and two rigs on one issue stream admitted each other's issues
 // (docs/solutions/legion).
-import { connect, type NatsConnection, type Subscription } from "nats";
+import { type ConnectionOptions, connect, type NatsConnection, type Subscription } from "nats";
 import { EnvelopeSchema } from "../../../packages/contracts/src/envelope";
 import { githubSubject } from "../../../packages/contracts/src/subject";
+import { LoggableError, natsFailureReason } from "../../../packages/envoy-client/src/errors";
 import { natsAuthOptions } from "../../../packages/envoy-client/src/nats-auth";
+import {
+  natsDialedAddress,
+  natsDialFailure,
+  natsServersForLog,
+} from "../../../packages/envoy-client/src/nats-connection";
 import { operatorNatsSeed } from "./operator-nats-seed";
 
 const requiredEnvelopeFields = [
@@ -57,14 +63,18 @@ export function bridgeConfigFromEnvironment(
   environment: Record<string, string | undefined>
 ): BridgeConfig {
   const repository = environment.SMOKE_REPO?.trim() ?? "";
-  if (!/^[A-Za-z0-9][A-Za-z0-9.-]*\/[A-Za-z0-9][A-Za-z0-9._-]*$/.test(repository)) {
+  // The owner half is ghrepo's own grammar for an account (packages/daemon/internal/ghrepo): a
+  // letter or digit, then up to 38 letters, digits, hyphens and underscores. The underscore is
+  // there because a managed user's login ends in `_<shortcode>`, and the dot this check used to
+  // admit in an owner is gone, since no login holds one.
+  if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,38}\/[A-Za-z0-9][A-Za-z0-9._-]*$/.test(repository)) {
     throw new Error("SMOKE_REPO must be a literal <owner>/<repo> repository");
   }
   const downstreamUrl = environment.SMOKE_RIG_NATS?.trim() ?? "";
   if (!downstreamUrl) throw new Error("SMOKE_RIG_NATS is required");
   const upstreamUrl = environment.SMOKE_UPSTREAM_NATS?.trim() ?? "";
   if (!upstreamUrl) throw new Error("SMOKE_UPSTREAM_NATS is required");
-  if (!upstreamNatsUrl.test(upstreamUrl)) {
+  if (!upstreamNatsUrl.test(upstreamUrl) || !dialsCheckedHost(upstreamUrl)) {
     throw new Error(
       "SMOKE_UPSTREAM_NATS is not one NATS URL naming a fully-qualified host: a bare alias resolves through whatever search domain the box has; name the production Envoy NATS as the operator's envoy.json does (envoy.natsUrls, nats://<host>.<tailnet>.ts.net:4222)"
     );
@@ -84,17 +94,29 @@ export function bridgeConfigFromEnvironment(
 const upstreamNatsUrl =
   /^(?:[A-Za-z][A-Za-z0-9+.-]*:\/\/)?(?:([^@/?#,\s]+)@)?([A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)+)(?::\d+)?\/?$/;
 
-// The operator's upstream names production infrastructure, so a client error that quotes the
-// value, its user info or its host is printed with the variable's name in their place.
-export function redactUpstream(text: string, upstreamUrl: string): string {
-  const [, userInfo, host] = upstreamNatsUrl.exec(upstreamUrl) ?? [];
-  let redacted = text;
-  for (const value of [upstreamUrl, userInfo, host]) {
-    if (!value) continue;
-    const pattern = new RegExp(value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi");
-    redacted = redacted.replace(pattern, "SMOKE_UPSTREAM_NATS");
-  }
-  return redacted;
+// Whether the host nats.js dials (natsDialedAddress, its own hostPort) is the host the pattern
+// checked. nats.js reads the URL as an http: one, which ends the host at a `\` in the user info,
+// so `nats://tok\x@<fqdn>` passes the pattern and dials the bare name `tok`. The port it dials can
+// differ too (it takes the first `:<digits>`, a password's included); that misroutes nothing, and
+// the failure line names neither.
+function dialsCheckedHost(upstreamUrl: string): boolean {
+  const [, , host] = upstreamNatsUrl.exec(upstreamUrl) ?? [];
+  return host !== undefined && natsDialedAddress(upstreamUrl)?.host === host.toLowerCase();
+}
+
+/** The line the bridge prints once both connections answer. Each server is named by its variable
+ *  alone: either may hold a credential, and the upstream names production infrastructure. */
+export function bridgeReadyLine(config: BridgeConfig): string {
+  return `BRIDGE READY subjects=${config.subjects.join(",")} upstream=SMOKE_UPSTREAM_NATS downstream=SMOKE_RIG_NATS`;
+}
+
+/** The line the bridge prints when it stops on `error`: why, as a log may print it
+ *  (natsFailureReason). The bridge's own refusals and its dial failures are its own lines
+ *  (LoggableError, natsDialFailure), which name the upstream by its variable alone; nats.js's and
+ *  the runtime's errors are printed by their code, so nothing either connection was set to, the
+ *  operator's production host and password included, reaches the line. */
+export function bridgeFailureLine(error: unknown, _config: BridgeConfig): string {
+  return `BRIDGE UNHEALTHY ${natsFailureReason(error)}`;
 }
 
 export function envelopeValidation(data: string | Uint8Array): EnvelopeValidation {
@@ -146,7 +168,7 @@ async function forwardMessages(
   let firstMessage = true;
   for await (const message of subscription) {
     if (!message.subject.startsWith(subjectPrefix)) {
-      throw new Error(`refusing out-of-scope upstream subject ${message.subject}`);
+      throw new LoggableError(`refusing out-of-scope upstream subject ${message.subject}`);
     }
     if (firstMessage) {
       firstMessage = false;
@@ -154,7 +176,7 @@ async function forwardMessages(
       if (!validation.ok) {
         const reason = validationFailure(validation);
         console.error(`BRIDGE UNHEALTHY first-envelope subject=${message.subject} ${reason}`);
-        throw new Error(`first bridged envelope is incompatible: ${reason}`);
+        throw new LoggableError(`first bridged envelope is incompatible: ${reason}`);
       }
       console.log(
         `BRIDGE VALIDATION shape=${validation.shape} subject=${message.subject} bytes=${message.data.byteLength}`
@@ -166,28 +188,48 @@ async function forwardMessages(
   }
 }
 
-export async function runBridge(config: BridgeConfig): Promise<void> {
-  const upstream = await connect({
-    servers: config.upstreamUrl,
-    name: `legion-e2e-bridge-upstream-${config.repository}`,
-    // The production server's nkey user, when it requires one: the seed a command run from the
-    // operator's shell sends to that server (operator-nats-seed.ts).
-    ...natsAuthOptions(
-      operatorNatsSeed(config.upstreamUrl, "SMOKE_UPSTREAM_NATS", process.env, process.cwd())
-    ),
-    reconnect: true,
-    maxReconnectAttempts: -1,
-    reconnectTimeWait: 2_000,
-  });
-  let downstream: NatsConnection | undefined;
+/** nats.js's `connect` with `options`, whose failure is the bridge's own line naming the server by
+ *  its variable (natsDialFailure, natsServersForLog). */
+async function dial(options: ConnectionOptions, named: string): Promise<NatsConnection> {
   try {
-    downstream = await connect({
-      servers: config.downstreamUrl,
-      name: `legion-e2e-bridge-downstream-${config.repository}`,
+    return await connect(options);
+  } catch (error) {
+    throw new LoggableError(natsDialFailure(named, error));
+  }
+}
+
+export async function runBridge(config: BridgeConfig): Promise<void> {
+  // The production server's nkey user, when it requires one: the seed a command run from the
+  // operator's shell sends to that server (operator-nats-seed.ts).
+  const seed = operatorNatsSeed(
+    config.upstreamUrl,
+    "SMOKE_UPSTREAM_NATS",
+    process.env,
+    process.cwd()
+  );
+  const upstream = await dial(
+    {
+      servers: config.upstreamUrl,
+      name: `legion-e2e-bridge-upstream-${config.repository}`,
+      ...natsAuthOptions(seed === undefined ? { kind: "none" } : { kind: "seed", seed }),
       reconnect: true,
       maxReconnectAttempts: -1,
       reconnectTimeWait: 2_000,
-    });
+    },
+    natsServersForLog("SMOKE_UPSTREAM_NATS", 1)
+  );
+  let downstream: NatsConnection | undefined;
+  try {
+    downstream = await dial(
+      {
+        servers: config.downstreamUrl,
+        name: `legion-e2e-bridge-downstream-${config.repository}`,
+        reconnect: true,
+        maxReconnectAttempts: -1,
+        reconnectTimeWait: 2_000,
+      },
+      natsServersForLog("SMOKE_RIG_NATS", 1)
+    );
     const activeDownstream = downstream;
     const subscriptions = config.subjects.map((subject) => upstream.subscribe(subject));
     const stop = () => {
@@ -198,9 +240,7 @@ export async function runBridge(config: BridgeConfig): Promise<void> {
     try {
       await upstream.flush();
       await downstream.flush();
-      console.log(
-        `BRIDGE READY subjects=${config.subjects.join(",")} upstream=SMOKE_UPSTREAM_NATS downstream=${config.downstreamUrl}`
-      );
+      console.log(bridgeReadyLine(config));
       await Promise.all(
         subscriptions.map((subscription, index) =>
           forwardMessages(subscription, config.subjects[index] as string, activeDownstream)
@@ -218,8 +258,7 @@ export async function runBridge(config: BridgeConfig): Promise<void> {
 if (import.meta.main) {
   const config = bridgeConfigFromEnvironment(process.env);
   await runBridge(config).catch((error) => {
-    const message = error instanceof Error ? error.message : String(error);
-    console.error(`BRIDGE UNHEALTHY ${redactUpstream(message, config.upstreamUrl)}`);
+    console.error(bridgeFailureLine(error, config));
     process.exitCode = 1;
   });
 }

@@ -30,7 +30,8 @@
 # left pending on it; the other two panes answer a warm-up task of their own before the step that
 # drives them (the driver's seed says why each claim holds one).
 #
-# Run it from a checkout on a Linux host with go, awk, bash, tar, bun and python3, as
+# Run it from a checkout on a Linux host with go, git, jj 0.38 or later (the daemon's boot refuses
+# to start without them), awk, bash, tar, bun and python3, as
 #   LEGION_OMP_PATH=/opt/omp/bin/omp \
 #     LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
 #     bash scripts/e2e/provider-error-retry.sh

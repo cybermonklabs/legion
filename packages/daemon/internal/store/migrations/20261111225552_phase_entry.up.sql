@@ -120,13 +120,17 @@
 -- What that costs is one fill run a second time over a record that has moved on. Every role that
 -- release had handed work is numbered entry 1 again, whatever entry it stood at before the
 -- rollback, and entry_raised_at reads the moment of the roll-forward rather than of the transition
--- that handed the work out. Nothing reads an entry across the rollback — the numbers of both sides
--- went with the columns, and what a role is owed is read as the difference between its phases row
--- and its claim, both written by this one run (workflow.OwedEntry) — so the renumbering costs no
--- more than the history it does not keep. A completion in flight is accepted exactly as it is on a
--- first upgrade: the fill puts a claim that took the work at served_entry 1 under a row at entry 1,
--- leaves a claim that never got it at 0, and the fence compares the two sides only where both name
--- an entry (internal/api/handoff.go).
+-- that handed the work out. The numbers of both sides went with the columns, and what a role is
+-- owed is read as the difference between its phases row and its claim, both written by this one
+-- run (workflow.OwedEntry). One reader does compare an entry across the rollback: the reviewer's
+-- review footer names the entry of its round, so a review from before the rollback that names
+-- entry 1 and is applied after the roll-forward can match the reviewer's row at entry 1 again. It
+-- moves the reviewed commit only for a review of the reviewer's own session that names the pull
+-- request's current head, so the commit it records is one that session read, and the renumbering
+-- costs no more than that and the history it does not keep. A completion in flight is accepted
+-- exactly as it is on a first upgrade: the fill puts a claim that took the work at served_entry 1
+-- under a row at entry 1, leaves a claim that never got it at 0, and the fence compares the two
+-- sides only where both name an entry (internal/api/handoff.go).
 --
 -- Why the re-arm is better than a way back that left the six columns standing at zero: nothing
 -- re-derives a lost task from zeros. A role at entry 0 whose claim is at 0 is owed nothing and is

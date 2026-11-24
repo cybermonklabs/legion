@@ -1,0 +1,8 @@
+kind: Added
+body: |-
+  `LegionHandoffCompleteRequest` takes `planRating` and `planReason` (daemon API contract 168),
+  refused `PLAN_RATING_UNEXPECTED`, `PLAN_RATING_INPUT` or `PLAN_RATING_REQUIRED`, with the rating
+  scale and the reason's bound stated once (`LEGION_PLAN_RATING_LEAST`, `LEGION_PLAN_RATING_MOST`,
+  `LEGION_PLAN_REASON_MAX`). The plan write's refusal codes are `PLAN_INPUT_CODE` and
+  `PLAN_OTHER_ISSUE_CODE`, generated into Go. The `dispatch_plans` spec describes `dispatch plans`,
+  and `goBlankPattern` has a subpath of its own, `@legion/contracts/go-blank`.

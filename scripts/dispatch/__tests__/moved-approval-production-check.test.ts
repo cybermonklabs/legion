@@ -228,3 +228,40 @@ describe("the close of the scratch issue", () => {
     }
   });
 });
+
+// pi-envoy leaves DISPATCH_SESSION_ID set to "" while its session has no id, rather than
+// deleting it, so a child's inherited value cannot come back: an empty variable names no
+// session, and the check's writes act as "unknown" then, exactly as with the variable unset.
+describe("the session the check's writes act as", () => {
+  test.each([
+    ["empty", ""],
+    ["unset", undefined],
+    ["set", "ses-check"],
+  ])("DISPATCH_SESSION_ID %s", async (_label, value) => {
+    const bodies: unknown[] = [];
+    const server = Bun.serve({
+      port: 0,
+      async fetch(request) {
+        bodies.push(await request.json());
+        return Response.json({ status: "in_progress" });
+      },
+    });
+    const before = process.env.DISPATCH_SESSION_ID;
+    if (value === undefined) delete process.env.DISPATCH_SESSION_ID;
+    else process.env.DISPATCH_SESSION_ID = value;
+    try {
+      const live = liveDispatch({
+        url: `http://127.0.0.1:${server.port}`,
+        credential: bearerCredential("t"),
+      });
+      await live.setStatus(KEY, "in_progress");
+      expect(bodies).toEqual([
+        expect.objectContaining({ actor: { kind: "session", id: value || "unknown" } }),
+      ]);
+    } finally {
+      if (before === undefined) delete process.env.DISPATCH_SESSION_ID;
+      else process.env.DISPATCH_SESSION_ID = before;
+      server.stop(true);
+    }
+  });
+});

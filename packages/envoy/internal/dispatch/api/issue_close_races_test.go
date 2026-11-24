@@ -4,11 +4,14 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -28,6 +31,7 @@ const raceDeadline = 10 * time.Second
 // 409 ISSUE_CLOSED and the ask reads withdrawn naming the closer. Either way the ask has exactly
 // one ask.resolved event, and a decision block's block reads resolved, as its row does.
 func TestClosingAnIssueAgainstAConcurrentResolveLeavesOneRecord(t *testing.T) {
+	t.Parallel()
 	resolver := model.Actor{Kind: "session", ID: sessionActor()["id"].(string)}
 	for _, block := range []bool{false, true} {
 		name := "a plain ask"
@@ -116,10 +120,12 @@ func (d *afterCloseSettlementDocs) SettleIssueDocuments(ctx context.Context, iss
 
 // A decision resolved after the close's settlement ran and before the close took the issue's row
 // is the order a resolve released beside a close commits in when it wins. The resolution marks
-// the decision's copy in the issue's other document owed a settlement, which never runs once the
-// issue is closed, and the close withdraws nothing of an ask already resolved. The close's sweep
-// writes the copy from its source's row instead, so it reads resolved, as the source does.
+// the decision's copy in the issue's other document owed a settlement, which the settle delay of
+// an hour keeps from running here, and the close withdraws nothing of an ask already resolved.
+// The close's sweep writes the copy from its source's row instead, so it reads resolved, as the
+// source does, without waiting for that settlement.
 func TestADecisionResolvedJustBeforeTheCloseTakesTheIssueLeavesItsCopyResolved(t *testing.T) {
+	t.Parallel()
 	var documents *docs.Service
 	wrapper := &afterCloseSettlementDocs{}
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
@@ -146,9 +152,11 @@ func TestADecisionResolvedJustBeforeTheCloseTakesTheIssueLeavesItsCopyResolved(t
 
 // A decision resolved within the settle delay before a release older than the withdrawal closed
 // its issue leaves its copy in the issue's other document owing the settlement that shows the
-// resolution, which never runs once the issue is closed. The repair's sweep of that closed issue
-// writes the copy from its source's row, as the close's own sweep does, so it reads resolved.
+// resolution, which the settle delay of an hour keeps from running here. The repair's sweep of
+// that closed issue writes the copy from its source's row, as the close's own sweep does, so it
+// reads resolved without waiting for that settlement.
 func TestTheRepairSweepLeavesTheCopyOfAResolvedDecisionResolved(t *testing.T) {
+	t.Parallel()
 	// An hour, so the settlement the resolution arms for the copy never fires while the test runs.
 	f := newRepairFixtureSettlingAfter(t, time.Hour)
 	issue, decision, copied := decisionWithCopy(t, f.handler, f.documents)
@@ -168,11 +176,13 @@ func TestTheRepairSweepLeavesTheCopyOfAResolvedDecisionResolved(t *testing.T) {
 // A decision answered after the close's settlement ran and before the close took the issue's row
 // is the order an answer released beside a close commits in when it wins. The answer writes the
 // decision's own block and marks its copy in the issue's other document owed a settlement, which
-// never runs once the issue is closed, and the close withdraws nothing of an ask already answered.
-// The close's sweep writes the copy from its source's row instead, so it reads answered, naming
-// who answered and when, with the answer itself left out; the decision's own block is left as the
-// answer route wrote it. The settlement the reopen leaves owed writes the answer into the copy.
+// the settle delay of an hour keeps from running here, and the close withdraws nothing of an ask
+// already answered. The close's sweep writes the copy from its source's row instead, so it reads
+// answered, naming who answered and when, with the answer itself left out; the decision's own
+// block is left as the answer route wrote it. The settlement the reopen leaves owed writes the
+// answer into the copy.
 func TestADecisionAnsweredJustBeforeTheCloseTakesTheIssueLeavesItsCopyAnswered(t *testing.T) {
+	t.Parallel()
 	var documents *docs.Service
 	wrapper := &afterCloseSettlementDocs{}
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
@@ -206,10 +216,12 @@ func TestADecisionAnsweredJustBeforeTheCloseTakesTheIssueLeavesItsCopyAnswered(t
 
 // A decision answered within the settle delay before a release older than the withdrawal closed
 // its issue leaves its copy in the issue's other document owing the settlement that shows the
-// answer, which never runs once the issue is closed. The repair's sweep of that closed issue
-// writes the copy from its source's row, as the close's own sweep does, so it reads answered with
-// the answer left out, and leaves the decision's own block as the answer route wrote it.
+// answer, which the settle delay of an hour keeps from running here. The repair's sweep of that
+// closed issue writes the copy from its source's row, as the close's own sweep does, so it reads
+// answered with the answer left out, and leaves the decision's own block as the answer route
+// wrote it.
 func TestTheRepairSweepLeavesTheCopyOfAnAnsweredDecisionAnswered(t *testing.T) {
+	t.Parallel()
 	// An hour, so the settlement the answer arms for the copy never fires while the test runs.
 	f := newRepairFixtureSettlingAfter(t, time.Hour)
 	issue, decision, copied := decisionWithCopy(t, f.handler, f.documents)
@@ -228,6 +240,7 @@ func TestTheRepairSweepLeavesTheCopyOfAnAnsweredDecisionAnswered(t *testing.T) {
 // The close's sweep writes an answered decision's copies with the answer left out only where they
 // do not already hold it, so this copy keeps its answer.
 func TestClosingAnIssueLeavesTheSettledAnswerInADecisionsCopy(t *testing.T) {
+	t.Parallel()
 	var documents *docs.Service
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
 		// An hour, so the only settlements are the ones this test runs.
@@ -364,8 +377,11 @@ func requireResolvedDecisionAndCopy(t *testing.T, handler http.Handler, database
 // issue's row - when the issue is closed: the close waits for it on that row, so the settlement
 // indexes the block as an ask credited to its writer, and the close then withdraws that ask,
 // naming the closer. The close's own settlement, behind it, finds the document settled, so the
-// two write at most one version of it between them.
+// two write at most one version of it before the close, and none holds the block resolved. The
+// close's write of the block resolved leaves the document owing a settlement, which runs on the
+// closed issue and writes exactly one version more, the newest, holding the block resolved.
 func TestClosingAnIssueWaitsForTheSettlementOfItsDocumentInFlight(t *testing.T) {
+	t.Parallel()
 	var documents *docs.Service
 	// hold names the document whose next settlement is held at its owner row, until release.
 	var hold atomic.Pointer[string]
@@ -444,14 +460,36 @@ func TestClosingAnIssueWaitsForTheSettlementOfItsDocumentInFlight(t *testing.T) 
 	if ask.Author.Kind != "session" || ask.Author.ID != sessionActor()["id"] {
 		t.Fatalf("the decision's author = %#v, want the session that wrote it", ask.Author)
 	}
-	requireWithdrawn(t, handler, issue.Key, ask.ID, model.Actor{Kind: "user", ID: "alice"})
+	requireWithdrawn(t, handler, issue.Key, ask.ID, model.Actor{Kind: "user", ID: "alice", Proven: true})
 	if count := askEventCount(t, database, ask.ID, "ask.resolved"); count != 1 {
 		t.Fatalf("ask %s has %d ask.resolved events, want 1", ask.ID, count)
 	}
-	requireLiveText(t, handler, spec, `#late-decision urgency="high" multiple="false" state="resolved"`)
-	if written := len(versionHashes(t, database, spec)) - versions; written > 1 {
-		t.Fatalf("the settlement and the close wrote %d versions of the document, want at most one", written)
+	const resolved = `#late-decision urgency="high" multiple="false" state="resolved"`
+	requireLiveText(t, handler, spec, resolved)
+	awaitSettled(t, database, spec)
+	written := versionMarkdowns(t, database, spec)[versions:]
+	if len(written) == 0 || !strings.Contains(written[len(written)-1], resolved) {
+		t.Fatalf("the document's versions since the decision block was written are %q, want the newest to hold %s", written, resolved)
 	}
+	if before := written[:len(written)-1]; len(before) > 1 || slices.ContainsFunc(before, func(markdown string) bool { return strings.Contains(markdown, resolved) }) {
+		t.Fatalf("the settlement and the close wrote the versions %q before the closed issue's settlement, want at most one, without the block resolved", before)
+	}
+}
+
+// versionMarkdowns is the markdown of every stored version of document, oldest first.
+func versionMarkdowns(t *testing.T, database *store.Store, document string) []string {
+	t.Helper()
+	rows, err := database.Pool.Query(context.Background(), `
+		select coalesce(markdown, '') from artifact_versions where artifact_id = $1 order by number
+	`, document)
+	if err != nil {
+		t.Fatalf("read the versions of %s: %v", document, err)
+	}
+	markdowns, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatalf("read the versions of %s: %v", document, err)
+	}
+	return markdowns
 }
 
 // A client that hangs up on its close while the close's own settlement of a document runs does not
@@ -459,6 +497,7 @@ func TestClosingAnIssueWaitsForTheSettlementOfItsDocumentInFlight(t *testing.T) 
 // written a moment before is indexed as an ask credited to its writer, and the document owes no
 // settlement afterwards, whatever becomes of the close.
 func TestAClientHangingUpOnItsCloseStillLetsTheDocumentsSettle(t *testing.T) {
+	t.Parallel()
 	// cancelOn names the document whose next settlement cancels the close's request once it holds
 	// the issue's row.
 	var cancelOn atomic.Pointer[string]
@@ -526,5 +565,71 @@ func awaitRequests(t *testing.T, requests *sync.WaitGroup, start chan struct{}, 
 	case <-answered:
 	case <-time.After(raceDeadline):
 		t.Fatalf("%s did not both answer within %v", what, raceDeadline)
+	}
+}
+
+// holdLock opens a transaction that runs lock and keeps it until the returned release runs, so a
+// test can stop requests at a known point and let them through together.
+func holdLock(t *testing.T, database *store.Store, lock string, args ...any) (release func()) {
+	t.Helper()
+	tx, err := database.Pool.Begin(context.Background())
+	if err != nil {
+		t.Fatalf("begin the holding transaction: %v", err)
+	}
+	if _, err := tx.Exec(context.Background(), lock, args...); err != nil {
+		_ = tx.Rollback(context.Background())
+		t.Fatalf("take %q: %v", lock, err)
+	}
+	released := false
+	release = func() {
+		if !released {
+			released = true
+			_ = tx.Rollback(context.Background())
+		}
+	}
+	t.Cleanup(release)
+	return release
+}
+
+// lockWaiters counts the backends of this test's own database that wait on a lock. Scoped to
+// current_database() because one Postgres serves every test in the package.
+func lockWaiters(t *testing.T, database *store.Store) int {
+	t.Helper()
+	var waiting int
+	if err := database.Pool.QueryRow(context.Background(), `
+		select count(*) from pg_stat_activity
+		where datname = current_database() and wait_event_type = 'Lock' and pid <> pg_backend_pid()
+	`).Scan(&waiting); err != nil {
+		t.Fatalf("read pg_stat_activity: %v", err)
+	}
+	return waiting
+}
+
+// awaitLockWaiters waits until at least count backends of this test's own database wait on a lock.
+func awaitLockWaiters(t *testing.T, database *store.Store, count int) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		waiting := lockWaiters(t, database)
+		if waiting >= count {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%d request(s) wait on a lock after 10s, want %d", waiting, count)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// awaitAnswer waits up to 15 seconds for the answer of a request a test sent from a goroutine of
+// its own, and fails the test, naming the request by what, when none arrives.
+func awaitAnswer(t *testing.T, answered <-chan *httptest.ResponseRecorder, what string) *httptest.ResponseRecorder {
+	t.Helper()
+	select {
+	case response := <-answered:
+		return response
+	case <-time.After(15 * time.Second):
+		t.Fatalf("%s never answered", what)
+		return nil
 	}
 }

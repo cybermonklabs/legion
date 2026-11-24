@@ -11,7 +11,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/credential"
-	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -19,7 +18,7 @@ type tokenSource struct{}
 
 // Token leases the role's App: the implement App is legion-implementer[bot], the review App
 // legion-reviewer[bot].
-func (tokenSource) Token(_ context.Context, role appauth.AppRole, _ ghrepo.Repository) (appauth.Lease, error) {
+func (tokenSource) Token(_ context.Context, role appauth.AppRole, _ string) (appauth.Lease, error) {
 	name := "legion-implementer[bot]"
 	if role == appauth.Review {
 		name = "legion-reviewer[bot]"
@@ -28,13 +27,19 @@ func (tokenSource) Token(_ context.Context, role appauth.AppRole, _ ghrepo.Repos
 }
 
 // ReadToken is Token's lease with "-read" appended to the token text.
-func (s tokenSource) ReadToken(ctx context.Context, role appauth.AppRole, _ string, _ []string) (appauth.Lease, error) {
-	lease, err := s.Token(ctx, role, ghrepo.Repository{})
+func (s tokenSource) ReadToken(ctx context.Context, role appauth.AppRole, _ string) (appauth.Lease, error) {
+	lease, err := s.Token(ctx, role, "")
 	lease.Token += "-read"
 	return lease, err
 }
 
-func newCredentialHarness(t *testing.T, tokens appauth.Tokens) *harness {
+// InstalledOwners is the owner accounts each App is installed on, which a gh bundle reads at
+// every build (appauth.OwnerInstallations): the two these harnesses serve.
+func (tokenSource) InstalledOwners(context.Context, appauth.AppRole) ([]string, error) {
+	return []string{"acme", "sjawhar"}, nil
+}
+
+func newCredentialHarness(t *testing.T, tokens appauth.Source) *harness {
 	t.Helper()
 	h := newHarness(t)
 	h.handler = NewServer("127.0.0.1", 8437, Options{
@@ -96,8 +101,8 @@ func TestAClaimLeavingItsRunningStatesRevokesItsSecretAndGrants(t *testing.T) {
 					t.Fatalf("stop: %v", err)
 				}
 			}
-			assertFailure(t, mint(), http.StatusForbidden, "INVALID_SESSION_SECRET")
-			assertFailure(t, h.request(http.MethodPost, "/legion/v1/issues/status", IssueStatusRequest{GrantID: grant.GrantID, Issue: "LEGION-208", Status: "todo"}, nil),
+			refused(t, mint(), http.StatusForbidden, "INVALID_SESSION_SECRET")
+			refused(t, h.request(http.MethodPost, "/legion/v1/issues/status", IssueStatusRequest{GrantID: grant.GrantID, Issue: "LEGION-208", Status: "todo"}, nil),
 				http.StatusForbidden, "GRANT_REVOKED")
 			if stored := h.stored(token); len(stored.CapabilityHash) != 0 {
 				t.Fatalf("stored claim after %s keeps capability hash %x", exit, stored.CapabilityHash)

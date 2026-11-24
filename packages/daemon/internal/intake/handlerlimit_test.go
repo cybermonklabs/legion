@@ -30,8 +30,9 @@ import (
 
 // maxTimerWindow is the largest worker_rpc_timeout_seconds a legion.yaml may carry: the largest
 // whole number of seconds whose milliseconds fit a signed 32-bit timer, the bound both daemons
-// hold every duration key to (maxTimerSeconds and durationKeys in
-// packages/daemon/internal/config/config.go, lines 233 and 244). The table below ends on it
+// hold every duration key to (maxTimerSeconds in
+// packages/daemon/internal/config/config.go, and the Positive rows of topLevelKeys in
+// packages/daemon/internal/config/keytable.go, which carry each duration key's own default). The table below ends on it
 // because the derivation multiplies its window by four and nothing refuses the product: a legal
 // configuration must still yield a limit a caller can hold, so the largest legal window is the
 // one row that says the arithmetic does not overflow or wrap.
@@ -138,7 +139,6 @@ var reviewBoundedReads = map[string]string{
 // review does. They are bounded reads like the two above, and they are not counted, because
 // boundedReadsPerFact is the most any one fact makes and no fact here makes more than one.
 var otherFactBoundedReads = map[string]string{
-	"RepositoryMapping": "RepoMappingChanged reads the project's repository mapping again (readMapping); handleMessage returns the moment that read answers, so this fact reaches no other read and no transaction",
 	"PrepareRepository": "a DispatchIssue fact has the repository it resolves to readied before it is applied (prepareRepository); it is no pull request's event, so recordedPullRequest answers true with no read of the pool, and neither review resolver touches it: one read in all",
 	"PrepareArtifact":   "a DispatchArtifact fact has the issue its review is on readied before it is applied (prepareArtifact); it reaches the pool and GitHub through nothing else, for the same reason a DispatchIssue fact does not: one read in all",
 }

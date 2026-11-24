@@ -40,11 +40,12 @@ func putUnfinished(t *testing.T, cfg config.Config, issue string, role claim.Rol
 	return token, bootToken
 }
 
-// newTestShim is the test's shim on conn, closed when the test ends.
+// newTestShim is the test's shim on conn, which the test ends when it ends (shim.end).
 func newTestShim(t *testing.T, conn net.Conn) *shim {
 	t.Helper()
-	t.Cleanup(func() { conn.Close() })
-	return &shim{t: t, conn: conn, lines: bufio.NewReader(conn), writer: shimwire.NewWriter(conn)}
+	s := &shim{t: t, conn: conn, lines: bufio.NewReader(conn), writer: shimwire.NewWriter(conn), stopping: make(chan struct{})}
+	t.Cleanup(s.end)
+	return s
 }
 
 // registerReady registers the agent a launch started and has it say it is ready, as a relaunched
@@ -138,6 +139,7 @@ func (r *clusterRoutedRuntime) Spawn(ctx context.Context, spec runtime.SpawnSpec
 // unfinished launch with its API unanswered, past a Deployment's progress deadline, and the claim
 // failed (LEGION-653).
 func TestABootAnswersHealthzBeforeItRelaunchesAnUnfinishedLaunchAndTheRelaunchRegisters(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	token, _ := putUnfinished(t, cfg, "LEGION-3", claim.RolePlanner)
 	// One wait of the launcher bounds the boot: a boot that waits for the relaunch answers only
@@ -198,6 +200,7 @@ func (r *coldStartRuntime) Spawn(ctx context.Context, spec runtime.SpawnSpec) (r
 // whole cold start, or its whole launch budget, to the time before the API answered, so two could
 // outlast a Deployment's progress deadline whatever worker_boot_timeout_seconds is (LEGION-653).
 func TestABootWaitsForNoneOfItsUnfinishedLaunches(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	tokens := []claim.Token{}
 	for _, issue := range []string{"LEGION-3", "LEGION-4"} {
@@ -315,6 +318,7 @@ func dialShimUntilAcked(t *testing.T, address, bootToken string) *shim {
 // The store refuses the release at first, which holds the window open: a successful boot
 // reconciliation, restoration closed, the release retried at each orphan sweep.
 func TestAPreRestartProcessAdmittedBeforeItsRelaunchNeitherMovesItsClaimNorLocksOutTheNext(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	token, oldBootToken := putUnfinished(t, cfg, "LEGION-3", claim.RolePlanner)
 	letRelease := refuseRelease(t, cfg, token)

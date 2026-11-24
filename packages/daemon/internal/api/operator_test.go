@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/wakepace"
@@ -46,7 +47,10 @@ func TestOperatorRoutesRefuseAnythingButTheOperatorBearer(t *testing.T) {
 		{http.MethodPost, "/legion/v1/operator/claims/" + string(architectToken) + "/stop"},
 		{http.MethodPost, "/legion/v1/operator/claims/" + string(architectToken) + "/retry"},
 		{http.MethodPost, "/legion/v1/operator/claims/" + string(architectToken) + "/forget-session"},
+		{http.MethodPost, "/legion/v1/operator/claims/" + string(architectToken) + "/release-names"},
 		{http.MethodPost, "/legion/v1/operator/claims/" + string(architectToken) + "/close"},
+		{http.MethodPost, "/legion/v1/operator/project/pause"},
+		{http.MethodPost, "/legion/v1/operator/project/resume"},
 	}
 	for _, route := range routes {
 		for name, header := range map[string]http.Header{
@@ -474,7 +478,7 @@ func TestForgetSessionRefusesAStillLiveClaimEvenWithAnExplicitSession(t *testing
 // The operator's retry is for a claim that runs nothing. A live claim has not failed and a
 // suspended one is resumed: each is refused, naming its state, and left as it was. A retired
 // claim is no longer one of them (dispatch://INFRA-956 R3): it runs again, which
-// TestTheOperatorsRetryOfAStoppedArchitectRelaunchesIt and
+// TestAnOperatorRetryOfAStoppedArchitectRelaunchesItThroughItsMachine and
 // TestTheOperatorsRetryOfAStoppedPhaseWorkerRestartsItsPhase hold to.
 func TestTheOperatorsRetryOfAClaimThatHasNotFailedIsRefused(t *testing.T) {
 	h := newHarness(t)
@@ -578,7 +582,7 @@ func (r *heldRetrier) Apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (i
 func heldIssue(t *testing.T, h *harness, from phase.Phase) {
 	t.Helper()
 	parent := "LEGION-208"
-	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		return record.NewStore().PutIssue(context.Background(), tx, record.Issue{
 			Key: "LEGION-209", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-208", Project: testProject,
 			Title: "LEGION-209", Parent: &parent, Phase: phase.Held, Hold: &record.Hold{From: from}, Generation: 1, Status: "in_progress",
@@ -843,10 +847,18 @@ func TestTheOperatorsRefusedFreshSessionRetryHasAlreadyForgottenTheSession(t *te
 	}
 }
 
-// An architect an operator stopped is relaunched by its retry: no phase start reaches an
-// architect, so the machine is what runs it again, on the session it recorded.
-func TestTheOperatorsRetryOfAStoppedArchitectRelaunchesIt(t *testing.T) {
+// R2: an operator's retry of an architect builds no phase restart and relaunches the claim
+// through its machine, on the session it recorded. restartWorkedPhase answers a role that is no
+// phase worker before it reads the issue (isPhaseWorker), so the architect never reaches
+// Options.RoleFor, whatever phase its issue stands in — admitted here, which phase.RoleFor
+// answers the architect for.
+func TestAnOperatorRetryOfAStoppedArchitectRelaunchesItThroughItsMachine(t *testing.T) {
+	facts := &phaseRestarter{}
 	h := newHarness(t)
+	h.handler = NewServer("127.0.0.1", 8437, Options{
+		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken, Controller: h.store,
+		Pool: h.store.Pool(), Record: record.NewStore(), Releaser: h.runtime, Trees: h.store, Handlers: []intake.Handler{facts}, RoleFor: phase.RoleFor,
+	}).Handler
 	h.operator(http.MethodPost, "/legion/v1/operator/claims", spawnBody())
 	// The operator holds this tree, so its sub-architect is spawned through the same route: the
 	// tree's lifecycle row is the operator's, and launchIn would open a second one as the
@@ -861,12 +873,16 @@ func TestTheOperatorsRetryOfAStoppedArchitectRelaunchesIt(t *testing.T) {
 	if recorder := h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(token)+"/stop", nil); recorder.Code != http.StatusOK {
 		t.Fatalf("stop = %d, want 200; body %s", recorder.Code, recorder.Body)
 	}
+	workingIssue(t, h, phase.Admitted)
 	resumes := len(h.runtime.CallsOf("Resume"))
 
 	recorder := h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(token)+"/retry", nil)
 
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("retry of a stopped architect = %d, want 200; body %s", recorder.Code, recorder.Body)
+	}
+	if applied := facts.recorded(); len(applied) != 0 {
+		t.Errorf("the retry applied %#v, want nothing: no phase start reaches an architect", applied)
 	}
 	if after := h.stored(token); after.State != supervise.StateLaunching || after.Budgets != (supervise.Budgets{}) {
 		t.Errorf("the retried architect is %+v, want a launching claim with fresh budgets", after)

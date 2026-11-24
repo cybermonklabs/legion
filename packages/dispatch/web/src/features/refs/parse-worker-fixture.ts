@@ -27,8 +27,9 @@ import type { DocumentJSON, ParseReply, ParseRequest } from "./markdown-parse.wo
  *
  * Unlike the real worker nothing here answers on its own: a row calls `answer` or `crash`, so the
  * row decides when each answer lands, and can land a newer body's answer before an older one's.
- * Installing a factory leaves the engine holding no worker, so each row starts from a page that
- * has created none; `restoreParseWorker` puts the page's own factory back.
+ * Installing a factory leaves the engine holding no worker and no cached answer, so each row
+ * starts from a page that has created none and has parsed no long body, a rerun of its own file
+ * included; `restoreParseWorker` puts the page's own factory back, emptying the cache again.
  */
 
 type Listener = (event: unknown) => void;

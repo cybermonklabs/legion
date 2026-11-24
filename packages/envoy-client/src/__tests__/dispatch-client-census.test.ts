@@ -1,7 +1,7 @@
-import { afterEach, expect, spyOn, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { IDEMPOTENCY_KEY_HEADER, IDEMPOTENCY_KEY_PATTERN } from "@legion/contracts";
 import { bearerCredential } from "../bearer";
-import { DISPATCH_WRITE_RETRY, DispatchClient, forgetKeyedLayerMemory } from "../dispatch-http";
+import { DISPATCH_WRITE_RETRY, DispatchClient } from "../dispatch-http";
 
 // Every write the `dispatch` command makes carries one key because every request DispatchClient
 // makes goes through its one request function. This drives every method of the class through a
@@ -63,8 +63,17 @@ const CALLS: Record<ClientMethod, (client: DispatchClient) => Promise<unknown>> 
   resolveAsk: (client) => client.resolveAsk("ask-1", { answer: "This one.", actor } as never),
   requestApproval: (client) => client.requestApproval("artifact-1", { actor, summary: "Spec" }),
   planApprove: (client) => client.planApprove("artifact-1", { actor, version: 2 }),
+  reviewArtifact: (client) => client.reviewArtifact("artifact-1", 2, { state: "approved" }),
   recordResult: (client) =>
     client.recordResult("DSP-1", {
+      actor,
+      check: "k1",
+      role: "implementer",
+      verdict: "pass",
+      commit: "1111111111111111111111111111111111111111",
+    }),
+  dryRunResult: (client) =>
+    client.dryRunResult("DSP-1", {
       actor,
       check: "k1",
       role: "implementer",
@@ -121,9 +130,13 @@ const CALLS: Record<ClientMethod, (client: DispatchClient) => Promise<unknown>> 
   listHandoffs: (client) => client.listHandoffs("DSP-1"),
   latestHandoff: (client) => client.latestHandoff("DSP-1", "implement"),
   handoff: (client) => client.handoff("handoff-1"),
+  listSteps: (client) => client.listSteps("DSP-1"),
+  listProjectPlans: (client) =>
+    client.listProjectPlans("DSP", {
+      since: "2026-11-01T00:00:00Z",
+      until: "2026-11-17T00:00:00Z",
+    }),
 };
-
-afterEach(forgetKeyedLayerMemory);
 
 test("every DispatchClient method reaches Dispatch through its one request function, every write keyed", async () => {
   // Every method, which is every own property of the prototype that is one: `token` is an

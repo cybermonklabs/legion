@@ -1,0 +1,4 @@
+kind: Added
+body: |-
+  The `legion` MCP tool's `handoff_complete` takes `plan_rating` and `plan_reason`, which the
+  completion that ends the retro sends, and the plugin declares daemon API contract 168.

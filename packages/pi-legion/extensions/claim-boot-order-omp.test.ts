@@ -16,6 +16,7 @@ import {
   spawnRpc,
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { connect, headers, StringCodec } from "nats";
 import { z } from "zod";
 
@@ -61,6 +62,10 @@ const ROLE = "implementer";
 const TREE = "INFRA-1573";
 const ISSUE = "INFRA-1573";
 const CLAIM_TOKEN = "legion-claim-boot-order-infra-1573-implementer";
+
+/** The registration secret the stand-in daemon answers, and the boot token the worker starts with. */
+const REGISTRATION_SECRET = fixtureSecret("reg");
+const BOOT_TOKEN = fixtureSecret("boot");
 
 /** The daemon's assignment, written to the worker as one RPC `prompt`, as the shim writes it
  * (packages/daemon/internal/shimwire `Prompt`). */
@@ -227,7 +232,7 @@ async function startWorker(options: { readonly boundMs: number }): Promise<Worke
         issue: ISSUE,
         role: ROLE,
         generation: 1,
-        secret: "claim-boot-order-secret",
+        secret: REGISTRATION_SECRET,
       });
     }
     if (url.pathname === "/legion/v1/claims/ready") {
@@ -248,8 +253,13 @@ async function startWorker(options: { readonly boundMs: number }): Promise<Worke
     }
     // An unavailable Dispatch arms no run-end self-check, so every Messages request is a turn.
     if (url.pathname.startsWith("/api/")) return new Response("unavailable", { status: 503 });
-    // The Envoy listener: the role claim records its holder and hands the kept message over, the
-    // role read names the holder, and registration and any other read answer with an interest.
+    // The Envoy listener, which serves `/v1/` and nothing else: the role claim records its
+    // holder and hands the kept message over, the role read names the holder, and registration
+    // and any other `/v1/` read answer with an interest. A path outside it is a route this
+    // stand-in does not serve, and it is refused.
+    if (!url.pathname.startsWith("/v1/")) {
+      return Response.json({ error: `no stand-in route ${url.pathname}` }, { status: 404 });
+    }
     const sid = typeof body.session_id === "string" ? body.session_id : "";
     if (url.pathname === "/v1/roles/set") {
       if (body.role === CLAIM_TOKEN && roleHolder === "") {
@@ -297,7 +307,7 @@ async function startWorker(options: { readonly boundMs: number }): Promise<Worke
         LEGION_TREE: TREE,
         LEGION_ISSUE: ISSUE,
         LEGION_GENERATION: "1",
-        LEGION_BOOT_TOKEN: "claim-boot-order-boot",
+        LEGION_BOOT_TOKEN: BOOT_TOKEN,
         LEGION_STATE_DIR: state,
         LEGION_WORKSPACE: workspace,
         LEGION_CLAIM_FIRST_TURN_BOUND_MS: String(options.boundMs),

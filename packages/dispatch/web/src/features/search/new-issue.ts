@@ -1,7 +1,7 @@
-import { api } from "../../api/client";
+import { api, type WriteMethod } from "../../api/client";
 import type { Issue, NewIssueSettings } from "../../api/types";
 import type { Attempt, Writes } from "../writes/write-store";
-import { press, refusalText } from "./offer";
+import { press, type UnconfirmedWrite, unconfirmedWrite } from "./offer";
 
 /**
  * The whole content of the Verification document a new issue from the bar gets: the words the
@@ -25,12 +25,11 @@ export interface NewIssueWrite {
   readonly words: string;
 }
 
-/** A write onto an issue the create has already made, which Dispatch refused: which write it
- *  was, in the words the bar reports it in, and the reason Dispatch gave. */
-export interface RefusedWrite {
-  readonly what: string;
-  readonly why: string;
-}
+/** A write onto an issue the create has already made that Dispatch did not confirm: which write
+ *  it was, in the words the bar reports it in (`what`), and where it stands - refused, with the
+ *  reason Dispatch gave, or stopped by the person, when it may have landed and there is no
+ *  refusal to report (`UnconfirmedWrite`). */
+export type RefusedWrite = UnconfirmedWrite & { readonly what: string };
 
 /** What one acceptance made. */
 export interface FiledIssue {
@@ -38,8 +37,9 @@ export interface FiledIssue {
   /** The session the issue was routed to and its first message went to; `""` where the
    *  deployment names none, which is the issue made with no conversation started on it. */
   readonly session: string;
-  /** The first write onto the issue Dispatch refused, where one was: the filing ended there,
-   *  and the issue stands without it. Undefined where every write landed. */
+  /** The first write onto the issue that Dispatch did not confirm, where there was one: the
+   *  filing ended there, and the issue stands without it - or with it, where a stopped one
+   *  landed. Undefined where every write landed. */
   readonly refused?: RefusedWrite;
 }
 
@@ -53,13 +53,14 @@ async function writeOnto<T>(
   writes: Writes,
   what: string,
   label: string,
+  method: WriteMethod,
   write: Attempt<T>
 ): Promise<RefusedWrite | undefined> {
   try {
-    await press(writes, label, write);
+    await press(writes, label, method, write);
     return undefined;
   } catch (error) {
-    return { what, why: refusalText(error, "the write did not reach Dispatch.") };
+    return { ...unconfirmedWrite(error, "the write did not reach Dispatch."), what };
   }
 }
 
@@ -82,7 +83,7 @@ export async function fileNewIssue(
   writes: Writes,
   { project, settings, words }: NewIssueWrite
 ): Promise<FiledIssue | undefined> {
-  const issue = await press(writes, `New issue “${words}”`, (bounds) =>
+  const issue = await press(writes, `New issue “${words}”`, "POST", (bounds) =>
     api.createIssue(
       { project, title: words, ...(settings.label === "" ? {} : { labels: [settings.label] }) },
       bounds
@@ -100,6 +101,7 @@ export async function fileNewIssue(
     writes,
     "its first criterion",
     `The first criterion of ${issue.key}`,
+    "POST",
     (bounds) =>
       api.uploadArtifact(
         { issue: issue.key },
@@ -115,14 +117,19 @@ export async function fileNewIssue(
     writes,
     `its route to the session ${settings.session}`,
     `${issue.key} to ${settings.session}`,
+    "PATCH",
     (bounds) => api.patchIssue(issue.key, { route: target }, bounds)
   );
   if (route !== undefined) {
     return filed(route);
   }
   return filed(
-    await writeOnto(writes, "its first message", `The first message on ${issue.key}`, (bounds) =>
-      api.createMessage(issue.key, { body: words, delivery: "aside", target }, bounds)
+    await writeOnto(
+      writes,
+      "its first message",
+      `The first message on ${issue.key}`,
+      "POST",
+      (bounds) => api.createMessage(issue.key, { body: words, delivery: "aside", target }, bounds)
     )
   );
 }

@@ -1,0 +1,8 @@
+name: spec
+description: Checks the tree of the spec files of ACME.
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        "$RUNNER_TEMP/spec-check" tree --dir .dispatch/spec

@@ -6,7 +6,15 @@ import { linkHoverText, linkText } from "../../theme/classes";
 import type { DwellRef } from "../shell/useDwell";
 import { composerFirst } from "../threads/thread-layout";
 import type { ThreadOrder } from "../threads/thread-order";
-import { AskReplyComposer, AskThread, type AskThreadQuery, type CreateReply } from "./AskThread";
+import {
+  AskReplyComposer,
+  AskThread,
+  type AskThreadQuery,
+  type CreateReply,
+  takesReply,
+  UnsentReply,
+  useUnsentReply,
+} from "./AskThread";
 
 interface AskThreadDisclosureProps {
   ask: Ask;
@@ -40,6 +48,7 @@ export function AskThreadDisclosure({
 }: AskThreadDisclosureProps): ReactNode {
   const [composerOpen, setComposerOpen] = useState(false);
   const composerId = useId();
+  const unsentReply = useUnsentReply(ask);
   if (thread.isError) {
     const message =
       thread.error instanceof Error ? thread.error.message : "Unable to load replies.";
@@ -59,7 +68,7 @@ export function AskThreadDisclosure({
   }
 
   const replyCount = (thread.data?.replies ?? []).length;
-  if (replyCount === 0 && ask.state !== "answered") return null;
+  if (replyCount === 0 && !takesReply(ask) && unsentReply === "") return null;
 
   // The composer follows the control that reveals it, so the next Tab from the control lands in
   // the field and a screen reader meets the expanded panel right after its button. The control is
@@ -78,25 +87,30 @@ export function AskThreadDisclosure({
         unread={unread}
       />
     );
-  const composer =
-    ask.state === "answered" ? (
-      <>
-        <button
-          aria-controls={composerId}
-          aria-expanded={composerOpen}
-          className={`mt-3 min-h-11 text-sm font-medium ${linkText} ${linkHoverText}`}
-          onClick={() => setComposerOpen((open) => !open)}
-          type="button"
-        >
-          Write a reply
-        </button>
-        {composerOpen ? (
-          <div className="mt-2" id={composerId}>
-            <AskReplyComposer ask={ask} createReply={createReply} uploadOwner={uploadOwner} />
-          </div>
-        ) : null}
-      </>
-    ) : null;
+  // An open ask takes no reply composer: a reply the reader typed before it opened again stands
+  // in the composer's place, read-only (`useUnsentReply`).
+  const composer = !takesReply(ask) ? (
+    unsentReply === "" ? null : (
+      <UnsentReply className="mt-3" text={unsentReply} />
+    )
+  ) : (
+    <>
+      <button
+        aria-controls={composerId}
+        aria-expanded={composerOpen}
+        className={`mt-3 min-h-11 text-sm font-medium ${linkText} ${linkHoverText}`}
+        onClick={() => setComposerOpen((open) => !open)}
+        type="button"
+      >
+        Write a reply
+      </button>
+      {composerOpen ? (
+        <div className="mt-2" id={composerId}>
+          <AskReplyComposer ask={ask} createReply={createReply} uploadOwner={uploadOwner} />
+        </div>
+      ) : null}
+    </>
+  );
 
   return composerFirst(order) ? (
     <>

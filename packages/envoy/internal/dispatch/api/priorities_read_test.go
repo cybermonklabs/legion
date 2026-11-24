@@ -34,6 +34,7 @@ const (
 )
 
 func TestPrioritiesRead(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	for _, project := range []string{"CORE", "OPS", "WEB"} {
 		createTestProject(t, handler, project)
@@ -222,7 +223,7 @@ func TestPrioritiesRead(t *testing.T) {
 		t.Fatalf("%s is parked in %q advancing %v, want backlog under park-the-bus inherited, which its parent states",
 			parkedChild, parked.Status, got)
 	}
-	if parked.MovedAt == nil || parked.MovedBy == nil || *parked.MovedBy != (model.Actor{Kind: "user", ID: "bob"}) {
+	if parked.MovedAt == nil || parked.MovedBy == nil || *parked.MovedBy != (model.Actor{Kind: "user", ID: "bob", Proven: true}) {
 		t.Fatalf("%s was moved at %v by %v, want the moment and the person the events record",
 			parkedChild, parked.MovedAt, parked.MovedBy)
 	}

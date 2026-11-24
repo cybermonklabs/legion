@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"log/slog"
@@ -22,13 +21,18 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/spf13/cobra"
+
 	"github.com/sjawhar/envoy/listenfd"
 	"github.com/sjawhar/legion/daemon/internal/api"
 	legionclaim "github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/daemon"
+	"github.com/sjawhar/legion/daemon/internal/pause"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/registry"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
@@ -82,153 +86,78 @@ var release string
 // revision and release; both empty in every other build. They are this binary's own plugin
 // pair for a stale-plugin relaunch under Kubernetes (LEGION-164) when `legion.yaml` names none
 // (`runtime.kubernetes.plugins`) — `legion version`'s second line, and start's and
-// --check-config's resolution of the pair to install (applyLinkedPlugins, daemon.ResolvedPlugins).
+// `legion config check`'s resolution of the pair to install (applyLinkedPlugins, daemon.ResolvedPlugins).
 var piLegionVersion, piEnvoyVersion string
 
-type command func(ctx context.Context, args []string, stdout, stderr io.Writer) int
-
-// commandEntry is one `legion` command: what runs it, and its line in `legion --help`.
-type commandEntry struct {
-	run     command
-	summary string
-}
-
-var commands = map[string]commandEntry{
-	"version":        {runVersion, "print the version and the commit the binary was built from"},
-	"start":          {runStart, "run the Legion daemon from legion.yaml in the foreground; --check-config validates the file and exits"},
-	"stop":           {runStop, "stop the daemon registered for legion.yaml's project"},
-	"state":          {runState, "print the daemon's state: admission, issues, pending Dispatch status writes, claims nothing will wake, served repositories without Dispatch's webhook App, the durable consumers' lag (--json for all of it)"},
-	"legions":        {runLegions, "list the daemons registered on this machine"},
-	"status":         {runStatus, "say whether a team's daemon is running, or set an issue's Dispatch status"},
-	"restart":        {runRestart, "stop a registered daemon and start it again from the configuration it recorded"},
-	"claude-bridge":  {runClaudeBridge, "run Claude Code in Oh My Pi's place under worker-shim, for a role worker_backends puts on claude"},
-	"worker-shim":    {runWorkerShim, "bridge an agent's Oh My Pi to the daemon's worker stream (the daemon starts it in every pod)"},
-	"launcher":       {runLauncher, "PID 1 of an issue pod's roles container or the controller's pod: starts and stops each role's worker-shim on the daemon's command"},
-	"model-token":    {runModelToken, "sign a pod in to Cognito with its service-account token and print the access token (a model apiKey command)"},
-	"claims":         {runClaims, "the operator's hand on the daemon's claims"},
-	"sessions":       {runSessions, "copy recorded session files into Oh My Pi's session database (runtime.kubernetes.session_store postgres)"},
-	"probe-boot":     {runProbeBoot, "run a Kubernetes daemon's cluster check and worker image probe from legion.yaml, with no workflow, and exit"},
-	"probe-image":    {runProbeImage, "run the worker image's launch probes (the image build and the daemon's probe Sandbox run it)"},
-	"workspace-init": {runWorkspaceInit, "an issue pod's init containers: fetch the repository, clone the skills marketplace, provision the issue's workspace; and a repository cache pod's process"},
-	"skills-check":   {runSkillsCheck, "compare the skills a role installed with the commit its pod's init container recorded (a role's start wrapper runs it, never a person)"},
-	"controller":     {runController, "start the operator's controller, the interactive Oh My Pi session an operator talks to"},
-	"git-credential": {runGitCredential, "git's credential helper in every shared clone: answers git with the token of the owner the repository's path names (git runs it, never a person)"},
-	"git":            {runGit, "the commit half of a pod's git and the git first on a tmux pane's PATH: adds a git commit's Omp-Session and Legion-Role trailers and runs the real git (a git wrapper runs it, never a person)"},
-	"gh":             {runGh, "the gh first on a pane's or pod's PATH: runs the real gh with the gh directory of the owner the command names (a pane runs it, never a person)"},
-	"leak-check":     {runLeakCheck, "run the leak guard over a write the shell is about to make: git's pre-push hook runs its pre-push form, and the rule file's port test runs its text form (never a person)"},
-}
-
-// helpRequested says whether a command's first argument asks for its usage.
+// helpRequested says whether a pass-through command's first argument asks for its usage: such a
+// command reads its own arguments (passThrough), --help among them.
 func helpRequested(arg string) bool {
 	return arg == "-h" || arg == "-help" || arg == "--help"
 }
 
-// usage is `legion --help`: every command, alphabetically, with its one line.
-func usage(w io.Writer) {
-	fmt.Fprintln(w, "usage: legion <command> [flags]")
-	fmt.Fprintln(w)
-	fmt.Fprintln(w, "Commands:")
-	for _, name := range slices.Sorted(maps.Keys(commands)) {
-		fmt.Fprintf(w, "  %-16s %s\n", name, commands[name].summary)
+func newVersionCommand(stdout io.Writer) *cobra.Command {
+	return &cobra.Command{
+		Use:   "version",
+		Short: "print the version and the commit the binary was built from",
+		Args:  noArguments,
+		RunE: runs(func(context.Context, []string) int {
+			version := "(devel)"
+			if release != "" {
+				version = release
+			} else if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "" {
+				version = info.Main.Version
+			}
+			if revision != "" {
+				fmt.Fprintf(stdout, "legion %s commit %s\n", version, revision)
+			} else {
+				fmt.Fprintf(stdout, "legion %s\n", version)
+			}
+			if piLegionVersion != "" && piEnvoyVersion != "" {
+				fmt.Fprintf(stdout, "plugins @sjawhar/pi-legion %s @sjawhar/pi-envoy %s\n", piLegionVersion, piEnvoyVersion)
+			}
+			return 0
+		}),
 	}
-	fmt.Fprintln(w)
-	fmt.Fprintln(w, "Run `legion <command> --help` for a command's flags.")
 }
 
-// runSubcommand runs the subcommand of `legion <name>` that args[0] names, from table, the one
-// list of them: -h, -help or --help prints subcommandUsage and exits 0, and no subcommand or an
-// unknown one is a usage error.
-func runSubcommand(ctx context.Context, name string, table map[string]command, args []string, stdout, stderr io.Writer) int {
-	line := subcommandUsage(name, table)
-	if len(args) > 0 && helpRequested(args[0]) {
-		fmt.Fprintln(stderr, line)
-		return 0
+// configOnly refuses a word: the configuration is named only by --config, since a file given as
+// an argument would otherwise be ignored while ./legion.yaml is read, and `legion config check`
+// would vouch for the wrong file.
+func configOnly(_ *cobra.Command, args []string) error {
+	if len(args) > 0 {
+		return usageError{fmt.Errorf("unexpected argument %q; name the configuration with --config <file>", args[0])}
 	}
-	if len(args) == 0 {
-		fmt.Fprintln(stderr, line)
-		return 2
-	}
-	sub, ok := table[args[0]]
-	if !ok {
-		fmt.Fprintf(stderr, "legion %s: unknown subcommand %q\n%s\n", name, args[0], line)
-		return 2
-	}
-	return sub(ctx, args[1:], stdout, stderr)
+	return nil
 }
 
-// subcommandUsage is `legion <name>`'s usage line, naming every subcommand of table
-// alphabetically: `usage: legion <name> a|b|… [flags]`.
-func subcommandUsage(name string, table map[string]command) string {
-	return "usage: legion " + name + " " + strings.Join(slices.Sorted(maps.Keys(table)), "|") + " [flags]"
+func newStartCommand(stderr io.Writer) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "start",
+		Short: "run the Legion daemon from legion.yaml in the foreground",
+		Args:  configOnly,
+	}
+	configPath := cmd.Flags().String("config", defaultConfigPath, "path to legion.yaml")
+	cmd.RunE = runs(func(ctx context.Context, _ []string) int { return start(ctx, *configPath, stderr) })
+	return cmd
 }
 
-func run(ctx context.Context, argv []string, stdout, stderr io.Writer) int {
-	if len(argv) < 2 {
-		usage(stderr)
-		return 2
+// newConfigCheckCommand is `legion config check`, checkConfig on the file --config names.
+func newConfigCheckCommand(stdout, stderr io.Writer) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "check",
+		Short: "check legion.yaml as `legion start` reads it, running none of its key commands, and exit without starting",
+		Args:  configOnly,
 	}
-	if argv[1] == "help" || helpRequested(argv[1]) {
-		usage(stdout)
-		return 0
-	}
-	cmd, ok := commands[argv[1]]
-	if !ok {
-		fmt.Fprintf(stderr, "legion: unknown command %q; run legion --help for the commands\n", argv[1])
-		return 2
-	}
-	return cmd.run(ctx, argv[2:], stdout, stderr)
-}
-
-func runVersion(_ context.Context, args []string, stdout, stderr io.Writer) int {
-	flags := newFlags("version", "usage: legion version", stderr)
-	if code, ok := parseFlags(flags, args); !ok {
-		return code
-	}
-	if flags.NArg() > 0 {
-		flags.Usage()
-		return 2
-	}
-	version := "(devel)"
-	if release != "" {
-		version = release
-	} else if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "" {
-		version = info.Main.Version
-	}
-	if revision != "" {
-		fmt.Fprintf(stdout, "legion %s commit %s\n", version, revision)
-	} else {
-		fmt.Fprintf(stdout, "legion %s\n", version)
-	}
-	if piLegionVersion != "" && piEnvoyVersion != "" {
-		fmt.Fprintf(stdout, "plugins @sjawhar/pi-legion %s @sjawhar/pi-envoy %s\n", piLegionVersion, piEnvoyVersion)
-	}
-	return 0
-}
-
-func runStart(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	flags := newFlags("start", "usage: legion start [flags]", stderr)
-	configPath := flags.String("config", defaultConfigPath, "path to legion.yaml")
-	checkConfig := flags.Bool("check-config", false, "validate the configuration, run none of its key commands, and exit without starting")
-	if code, ok := parseFlags(flags, args); !ok {
-		return code
-	}
-	// The configuration is named only by --config: a file given as an argument would otherwise be
-	// ignored while ./legion.yaml is read, and --check-config would vouch for the wrong file.
-	if flags.NArg() > 0 {
-		fmt.Fprintf(stderr, "legion start: unexpected argument %q; name the configuration with --config <file>\n", flags.Arg(0))
-		return 2
-	}
-	if *checkConfig {
-		return checkStartConfig(*configPath, stdout, stderr)
-	}
-	return start(ctx, *configPath, stderr)
+	configPath := cmd.Flags().String("config", defaultConfigPath, "path to legion.yaml")
+	cmd.RunE = runs(func(context.Context, []string) int { return checkConfig(*configPath, stdout, stderr) })
+	return cmd
 }
 
 // applyLinkedPlugins fills cfg.Runtime.Kubernetes.Plugins from this binary's linked pair
 // (piLegionVersion, piEnvoyVersion) when the file names none: the file's
 // runtime.kubernetes.plugins wins when it is set, the binary's linked pair otherwise, and neither
 // leaves the daemon knowing no plugin pair at all (LEGION-164). PluginsFromBinary records which,
-// for the boot log and `legion start --check-config` to name. A no-op under tmux, or once the
+// for the boot log and `legion config check` to name. A no-op under tmux, or once the
 // file already named a pair.
 func applyLinkedPlugins(cfg *config.Config) {
 	k := cfg.Runtime.Kubernetes
@@ -240,7 +169,7 @@ func applyLinkedPlugins(cfg *config.Config) {
 }
 
 // pluginsSourceWords is ResolvedPlugins' source (daemon.PluginsFromFile or daemon.PluginsFromBinary)
-// as the `--check-config` line's parenthetical names it.
+// as the `legion config check` line's parenthetical names it.
 func pluginsSourceWords(source string) string {
 	if source == daemon.PluginsFromBinary {
 		return "the binary"
@@ -248,7 +177,7 @@ func pluginsSourceWords(source string) string {
 	return source
 }
 
-// pluginsLine is `--check-config`'s plugins line: the pair this daemon would install for a
+// pluginsLine is `legion config check`'s plugins line: the pair this daemon would install for a
 // stale-plugin relaunch and where it came from (pluginsSourceWords), or the gap when it knows
 // none. When worker_backends runs any role on Claude Code, the line gains one sentence naming
 // those roles: their plugin is the worker image's claude-envoy, which no relaunch installs (the
@@ -260,8 +189,8 @@ func pluginsLine(cfg config.Config) string {
 		line = fmt.Sprintf("plugins: @sjawhar/pi-legion %s @sjawhar/pi-envoy %s (from %s)",
 			pair.PiLegion, pair.PiEnvoy, pluginsSourceWords(source))
 	}
-	// The roles Claude Code may run at all (runtime.Backends), in the order the workflow reaches
-	// them: a role worker_backends puts on it is always one of them, since the loader refuses any
+	// The roles Claude Code may run at all (runtime.Backends), in claim.Roles' order, the default
+	// steps' order: a role worker_backends puts on it is always one of them, since the loader refuses any
 	// other.
 	var claude []string
 	for _, role := range runtime.Backends[runtime.BackendClaude].Roles {
@@ -276,28 +205,39 @@ func pluginsLine(cfg config.Config) string {
 		strings.Join(claude, ", "))
 }
 
-// checkStartConfig is `legion start --check-config`: every refusal the configuration's read at
+// checkConfig is `legion config check`: every refusal the configuration's read at
 // boot makes, through the loader that runs neither GitHub App's private_key_command nor any
 // secretsd read, then every refusal boot makes from the configuration, the environment and the
 // files they name before it writes anything (daemon.CheckStart, the reads boot's own prepare
-// starts with, the daemon's own NATS nkey seed among them), and nothing else: no store, no team, no
+// starts with, the daemon's own NATS nkey seed among them, then the store's refusals of a
+// postgres_dsn, which daemon.CheckStart lists), and nothing else: no store connection, no team, no
 // file written, and no process but `mise where <tool>` when a tmux configuration's omp_invocation
-// names a mise tool. The OK line names the design-gate steps the file resolved to, in the order
-// it named them (`design-gate-steps=`, `none` for a deployment that gates none), and each NATS
-// nkey seed's public key when there is one, never the seed.
+// names a mise tool. Each refusal is written to stderr through printRefusal, as `legion start`
+// writes its own, so a URL a refusal quotes loses its query and its userinfo in both commands.
+// The OK line names the design-gate steps the file resolved to, in the order it named them
+// (`design-gate-steps=`, `none` for a deployment that gates none), and each NATS nkey seed's
+// public key when there is one, never the seed.
 // Right after it comes one line per loader warning (config.Config.Warnings) — a key the file
 // still sets that this daemon no longer reads, whether a project sets it or the file does at its
 // top level — in the words boot logs it with: what the key would have been refused for, and what
 // to change. A deprecation is the first thing an operator reads that way, and the exit stays 0,
 // since such a key is ignored and never refused.
-// Then one line per project, in key order, naming its `production_check` and what the word
+// Then two lines per project, in key order: one naming its `production_check` and what the word
 // decides (productionCheckLine), so an operator reads back which projects open a production
-// check at a merge. After them, one line per configured repository rename
+// check at a merge, and one naming its `default_steps` (defaultStepsLine), so an operator reads
+// back the steps an issue runs when its owner gives no plan. After them, one line per configured
+// repository rename
 // (`repository_renames`), so an operator reads back what the daemon will treat as one repository
 // before a transfer moves the events onto the new name; a file that configures none prints no
 // such line. Then one line per deployment capability the file alone leaves open, in the words
 // boot logs it with
 // (capabilities.Deployment.OpenFromConfiguration): a report, so the exit stays 0.
+// Then, when the file sets what turns the project's pause off (pause.Unavailable: runtime: tmux,
+// an idle release of 0 minutes, or a wake pacing of 0), one line `pause unavailable: <setting>`,
+// and the exit stays 0: such a daemon answers every pause PAUSE_UNAVAILABLE naming that setting,
+// and this is where an operator reads it before a pause is needed (decision 21 of
+// dispatch://INFRA-3759). It is a line rather than a capability row, which every controller tick
+// of every tmux daemon would report open.
 // Then, under either runtime, the intake handler limit's line, but only when
 // worker_rpc_timeout_seconds derived a limit above intake's ten-minute floor
 // (daemon.IntakeHandlerLimitLine): a check of a file that leaves the floor in place says nothing
@@ -307,15 +247,15 @@ func pluginsLine(cfg config.Config) string {
 // `resources:` line names those pods as Burstable (capabilities.Deployment.BurstableLine);
 // a file that sets no lower request prints none, its pods all Guaranteed. Then, when the image
 // probe's attempt budget is derived above slow_command_timeout_seconds (daemon.ProbeBudget), one
-// plain line names the derived bound and why; then one names the repository cache every mapped
-// repository gets, as the file settles it;
+// plain line names the derived bound and why; then one names the repository cache each repository
+// a live record names gets, as the file settles it;
 // then a last plain line names the plugin pair this daemon would install for a stale-plugin
 // relaunch — the file's or the binary's — or, with neither, the gap, and, when worker_backends
 // runs any role on Claude Code, one sentence more saying that such a role's plugin is the image's
 // (pluginsLine); it is its own line rather than a capability row, since it would otherwise be
 // open on every unreleased build. All of them run only under kubernetes, since the probe and the
 // caches run only there.
-func checkStartConfig(configPath string, stdout, stderr io.Writer) int {
+func checkConfig(configPath string, stdout, stderr io.Writer) int {
 	cfg, err := config.LoadForValidation(configPath, nil)
 	if err == nil {
 		applyLinkedPlugins(&cfg)
@@ -325,7 +265,7 @@ func checkStartConfig(configPath string, stdout, stderr io.Writer) int {
 		paneNatsUser, daemonNatsUser, err = daemon.CheckStart(cfg, os.LookupEnv)
 	}
 	if err != nil {
-		fmt.Fprintf(stderr, "legion start: %v\n", err)
+		printRefusal(stderr, "legion config check", err)
 		return 1
 	}
 	ok := "Config OK: project=" + cfg.Project + " design-gate-steps=" + designGateSteps(cfg.Gates.Steps())
@@ -341,6 +281,7 @@ func checkStartConfig(configPath string, stdout, stderr io.Writer) int {
 	}
 	for _, key := range slices.Sorted(maps.Keys(cfg.Projects)) {
 		fmt.Fprintln(stdout, productionCheckLine(key, cfg.Projects[key]))
+		fmt.Fprintln(stdout, defaultStepsLine(key, cfg.Projects[key]))
 	}
 	for _, rename := range cfg.RepositoryRenames.Pairs() {
 		fmt.Fprintf(stdout, "repository rename: %s and %s are one repository wherever the daemon compares a name; keep the pair configured for as long as any record names %s\n",
@@ -349,6 +290,9 @@ func checkStartConfig(configPath string, stdout, stderr io.Writer) int {
 	deployment := daemon.Deployment(cfg)
 	for _, gap := range deployment.OpenFromConfiguration() {
 		fmt.Fprintln(stdout, gap.OpenLine())
+	}
+	if setting, unavailable := pause.Unavailable(cfg); unavailable {
+		fmt.Fprintln(stdout, "pause unavailable: "+string(setting))
 	}
 	if line, derived := daemon.IntakeHandlerLimitLine(cfg); derived {
 		fmt.Fprintln(stdout, line)
@@ -361,7 +305,7 @@ func checkStartConfig(configPath string, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stdout, line)
 		}
 		cache := cfg.Runtime.Kubernetes.RepositoryCache
-		fmt.Fprintf(stdout, "repository cache: a %s volume per mapped repository, fetched from GitHub every %d minutes, kept %d hours after its repository leaves the mapping; its container reserves cpu %s, memory %s, ephemeral storage %s under %s\n",
+		fmt.Fprintf(stdout, "repository cache: a %s volume for each repository a live record names, fetched from GitHub every %d minutes, kept %d hours after no live record names it; its container reserves cpu %s, memory %s, ephemeral storage %s under %s\n",
 			cache.Volume, cache.RefreshMinutes, cache.RetainHours, reservedUnder(cache.Resources.CPURequest, cache.Resources.CPU),
 			reservedUnder(cache.Resources.MemoryRequest, cache.Resources.Memory), cache.Resources.EphemeralStorageRequest, cache.Resources.EphemeralStorage)
 		fmt.Fprintln(stdout, pluginsLine(cfg))
@@ -379,7 +323,7 @@ func designGateSteps(steps []record.DesignStep) string {
 	return strings.Join(record.StepNames(steps), ",")
 }
 
-// productionCheckLine is `--check-config`'s line for one project's `production_check`: the word
+// productionCheckLine is `legion config check`'s line for one project's `production_check`: the word
 // the file writes (`tester` or `off`, config.Project.ProductionCheckWord) and what it decides.
 // The role the key names works the check, and `off` opens none; either way the key decides only
 // the checks opened after the load, never one already open, which keeps the role it opened with.
@@ -392,7 +336,16 @@ func productionCheckLine(key string, project config.Project) string {
 		key, project.ProductionCheckWord(), effect)
 }
 
-// reservedUnder is a cpu or memory reservation as --check-config names it: the one quantity when
+// defaultStepsLine is `legion config check`'s line for one project's `default_steps`: the steps
+// the project runs by default (config.Project.RunsByDefault, today's line up to the owner's
+// acceptance for a project that names none), as the file would write the list (plan.Words), and
+// what they decide.
+func defaultStepsLine(key string, project config.Project) string {
+	return fmt.Sprintf("projects.%s.default_steps: [%s] — a task whose plan block names neither steps nor a sub-owner, and the one task of an issue whose owner gives no plan or whose experiment's group takes none, runs these steps, then Legion's retro and merge",
+		key, strings.Join(plan.Words(project.RunsByDefault()), ", "))
+}
+
+// reservedUnder is a cpu or memory reservation as `legion config check` names it: the one quantity when
 // the request is the limit, as at the defaults, and `<request> under <limit>` when the file set a
 // lower request.
 func reservedUnder(request, limit string) string {
@@ -406,15 +359,18 @@ func reservedUnder(request, limit string) string {
 // process's one claim on the team — there is no second record to disagree with it — so `legion
 // stop`, `legion status` and `legion legions` read one answer and not the daemon's own opinion
 // of itself.
+//
+// Every error start writes to stderr passes the URL rule the log's handler applies to every
+// record (printRefusal).
 func start(ctx context.Context, configPath string, stderr io.Writer) int {
-	log := slog.New(slog.NewJSONHandler(stderr, nil))
+	log := slog.New(slog.NewJSONHandler(stderr, redact.HandlerOptions(nil)))
 	slog.SetDefault(log)
 
 	// The inherited socket is adopted first, before the configuration's key commands run, so none
 	// of them inherits its descriptor: from here on only the close-on-exec copy serving it is open.
 	inherited, socket, err := adoptListenFD()
 	if err != nil {
-		fmt.Fprintf(stderr, "legion start: %v\n", err)
+		printRefusal(stderr, "legion start", err)
 		return 1
 	}
 	if inherited != nil {
@@ -424,7 +380,7 @@ func start(ctx context.Context, configPath string, stderr io.Writer) int {
 	}
 	cfg, err := config.Load(configPath, nil)
 	if err != nil {
-		fmt.Fprintf(stderr, "legion start: %v\n", err)
+		printRefusal(stderr, "legion start", err)
 		return 1
 	}
 	// Each warning the loader has (config.Config.Warnings) is logged once, here and nowhere
@@ -444,26 +400,27 @@ func start(ctx context.Context, configPath string, stderr io.Writer) int {
 		bind := listenfd.Setting{Name: "bind", Value: cfg.Bind, Set: true}
 		port := listenfd.Setting{Name: "port", Value: strconv.Itoa(cfg.Port), Set: true}
 		if err := socket.CheckAgainst(bind, port); err != nil {
-			fmt.Fprintf(stderr, "legion start: %s: %v\n", configPath, err)
+			printRefusal(stderr, "legion start: "+configPath, err)
 			return 1
 		}
 	}
 	applyLinkedPlugins(&cfg)
+	cfg.Revision = revision
 	absoluteConfig, err := filepath.Abs(configPath)
 	if err != nil {
-		fmt.Fprintf(stderr, "legion start: resolve %s: %v\n", configPath, err)
+		printRefusal(stderr, "legion start: resolve "+configPath, err)
 		return 1
 	}
 	// The state directory is where the worker stream socket, the panes' secret files, and their
 	// home live; the registry refuses a second live legion on it, which only holds if every
 	// start names it the same way.
 	if cfg.StateDir, err = filepath.Abs(cfg.StateDir); err != nil {
-		fmt.Fprintf(stderr, "legion start: resolve state_dir: %v\n", err)
+		printRefusal(stderr, "legion start: resolve state_dir", err)
 		return 1
 	}
 	legions, err := registryPath()
 	if err != nil {
-		fmt.Fprintf(stderr, "legion start: %v\n", err)
+		printRefusal(stderr, "legion start", err)
 		return 1
 	}
 
@@ -480,7 +437,7 @@ func start(ctx context.Context, configPath string, stderr io.Writer) int {
 		StartedAt:  time.Now().UTC(),
 	})
 	if err != nil {
-		fmt.Fprintf(stderr, "legion start: %v\n", err)
+		printRefusal(stderr, "legion start", err)
 		return 1
 	}
 	if !claimed {
@@ -490,20 +447,30 @@ func start(ctx context.Context, configPath string, stderr io.Writer) int {
 	// Only this process's own entry: a daemon that replaced it owns the team now.
 	defer func() {
 		if err := registry.RemoveIf(legions, cfg.Project, os.Getpid()); err != nil {
-			fmt.Fprintf(stderr, "legion start: %v\n", err)
+			printRefusal(stderr, "legion start", err)
 		}
 	}()
 
 	if err := daemon.Run(ctx, cfg, log, inherited); err != nil {
-		fmt.Fprintf(stderr, "legion start: %v\n", err)
+		printRefusal(stderr, "legion start", err)
 		return 1
 	}
 	return 0
 }
 
+// printRefusal writes prefix, ": ", err's text through the URL rule (redact.URLCredentials) and a
+// newline to stderr. Every command's stderr passes the rule already (newRoot) but the three that
+// hand it to a child, `legion claude-bridge` among them, which writes its refusals through here:
+// an error can wrap a *url.Error, which keeps the URL's query and its user name (Go's client masks
+// only a password), and pgx's ParseConfigError of a postgres_dsn it cannot parse quotes the DSN
+// with its user name and its query (pgx masks only the password).
+func printRefusal(stderr io.Writer, prefix string, err error) {
+	fmt.Fprintf(stderr, "%s: %s\n", prefix, redact.URLCredentials(err.Error()))
+}
+
 // listenFDVariable names the listening TCP socket `legion start` serves its API on in place of
 // binding legion.yaml's bind and port: a test harness opens it on port 0 and holds it until the
-// daemon serves, so no other program takes the port in between. `legion start --check-config`
+// daemon serves, so no other program takes the port in between. `legion config check`
 // binds nothing and never reads it.
 const listenFDVariable = "LEGION_LISTEN_FD"
 
@@ -532,19 +499,21 @@ func adoptListenFD() (net.Listener, listenfd.Socket, error) {
 	return listener, socket, nil
 }
 
-func runStop(_ context.Context, args []string, stdout, stderr io.Writer) int {
-	flags := newFlags("stop", "usage: legion stop [flags]", stderr)
-	configPath := flags.String("config", defaultConfigPath, "path to legion.yaml")
-	if code, ok := parseFlags(flags, args); !ok {
-		return code
+func newStopCommand(stdout, stderr io.Writer) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "stop",
+		Short: "stop the daemon registered for legion.yaml's project",
+		Args:  configOnly,
 	}
-	if flags.NArg() > 0 {
-		fmt.Fprintf(stderr, "legion stop: unexpected argument %q; name the configuration with --config <file>\n", flags.Arg(0))
-		return 2
-	}
+	configPath := cmd.Flags().String("config", defaultConfigPath, "path to legion.yaml")
+	cmd.RunE = runs(func(context.Context, []string) int { return stopLegion(*configPath, stdout, stderr) })
+	return cmd
+}
 
+// stopLegion is `legion stop`: it stops the daemon registered for configPath's project.
+func stopLegion(configPath string, stdout, stderr io.Writer) int {
 	// The file names the team and nothing else here, so its App key commands do not run.
-	cfg, err := config.LoadForValidation(*configPath, nil)
+	cfg, err := config.LoadForValidation(configPath, nil)
 	if err != nil {
 		fmt.Fprintf(stderr, "legion stop: %v\n", err)
 		return 1
@@ -587,11 +556,20 @@ func runStop(_ context.Context, args []string, stdout, stderr io.Writer) int {
 // (operatorCall): one decision of which daemon the command reads, and the bearer, which this
 // command alone may leave out, read from the same --operator-token-file. With one it also names
 // who suspended each stranded claim, which the state body does not carry (strandedSuspenders).
-func runState(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	c := newOperatorCall("state", "usage: legion state [flags]\nthe configuration is named with --config <file>, never as an argument",
-		"file holding the operator bearer the daemon's operator_token_file names; with it the claims nothing will wake name who suspended each", stdout, stderr)
-	asJSON := c.flags.Bool("json", false, "print the state as the daemon serves it")
-	if code, ok := c.parse(args); !ok {
+func newStateCommand(stdout, stderr io.Writer) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "state",
+		Short: "print the daemon's state: admission, the project's pause, issues, pending Dispatch status writes, claims nothing will wake, the live records' repositories GitHub did not read or a GitHub App is missing from, the durable consumers' lag (--json for all of it)",
+		Args:  configOnly,
+	}
+	c := newOperatorCall(cmd, "file holding the operator bearer the daemon's operator_token_file names; with it the claims nothing will wake name who suspended each", stdout, stderr)
+	asJSON := cmd.Flags().Bool("json", false, "print the state as the daemon serves it")
+	cmd.RunE = runs(func(ctx context.Context, _ []string) int { return runState(ctx, c, *asJSON, stdout, stderr) })
+	return cmd
+}
+
+func runState(ctx context.Context, c *operatorCall, asJSON bool, stdout, stderr io.Writer) int {
+	if code, ok := c.check(); !ok {
 		return code
 	}
 	op, ok := c.connect()
@@ -605,7 +583,7 @@ func runState(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		return 1
 	}
 
-	if *asJSON {
+	if asJSON {
 		if _, err := stdout.Write(body); err != nil {
 			fmt.Fprintf(stderr, "legion state: %v\n", err)
 			return 1
@@ -624,12 +602,21 @@ func runState(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	fmt.Fprintf(stdout, "admission: %d issues hold a slot, cap %d, %d waiting; %d live trees; %d issues\n",
 		len(state.Admission.Active), state.Admission.Cap, len(state.Admission.Waiting),
 		len(state.Admission.Trees), len(state.Issues))
+	// The project's pause: a paused line while it stands, a last-pause line while the project runs
+	// after one has ended, and neither before any pause, as the state carries one key at most.
+	for _, line := range []string{pausedSummary(state.Paused), lastPauseSummary(state.LastPause)} {
+		if line != "" {
+			fmt.Fprintln(stdout, line)
+		}
+	}
 	for _, line := range waitingLineLines(state.Admission.Waiting, state.Issues) {
 		fmt.Fprintln(stdout, line)
 	}
 	fmt.Fprintln(stdout, blockedSummary(state.Admission.Blocked))
 	fmt.Fprintln(stdout, heldAdmissionSummary(state.Admission.Held))
-	fmt.Fprintln(stdout, memorySummary(state.Issues))
+	for _, line := range experimentLines(state.Settings, state.Daemon.Project, state.Issues) {
+		fmt.Fprintln(stdout, line)
+	}
 	fmt.Fprintln(stdout, awaitingSummary(state.Issues))
 	fmt.Fprintln(stdout, checksSummary(openChecks(state.Issues)))
 	fmt.Fprintln(stdout, mergeWaitsSummary(mergeWaits(state.Issues)))
@@ -641,6 +628,9 @@ func runState(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	fmt.Fprintln(stdout, strandedSummary(state.StrandedClaims, strandedSuspenders(ctx, op, state.StrandedClaims)))
 	if wakes := wakesWaitingSummary(state.WakesWaiting); wakes != "" {
 		fmt.Fprintln(stdout, wakes)
+	}
+	for _, line := range repositoryLines(state.Repositories.Live) {
+		fmt.Fprintln(stdout, line)
 	}
 	for _, line := range webhookAppLines(state.Repositories.WithoutWebhookApp) {
 		fmt.Fprintln(stdout, line)
@@ -778,42 +768,129 @@ func waitingLineLines(waiting []string, issues map[string]api.Issue) []string {
 // `legion state --json`.
 const waitingLineNamedCap = 10
 
-// memorySummary is the one line an operator reads for the memory groups the project's work was
-// drawn into: how many issues carry a draw at all, and how many of those under each group and
-// mode, in group and then mode order, so two runs over one state print one line.
+// experimentLines are the lines an operator reads for the experiments the deployment declares
+// (the daemon's own project): one per experiment, in the order the daemon's loader declares
+// them — the `memory` block's experiment first, then the `experiments` key's own in the file's
+// order (api.ProjectSettings.DeclaredExperiments) — counting how many issues were drawn each arm
+// of it. An experiment no issue was drawn an arm of is `none` after its name, as a deployment
+// that has drawn nothing has always read.
 //
-// It counts issues, and not the trees the draw is made for, because the state carries no tree: a
-// draw would have to stand for its tree, and it cannot. Every issue of a tree carries its root's
-// draw, and a tree handed over as one of its own carries its old tree's draw verbatim — the
-// group, the mode and the instant alike — so two trees share one draw and no draw is a tree's
-// name. It names no issue either: the per-issue values are in `legion state --json`, where a line
-// per issue would print hundreds on a live deployment.
-func memorySummary(issues map[string]api.Issue) string {
-	type groupMode struct{ group, mode string }
-	counts := map[groupMode]int{}
-	drawn := 0
+// It counts only the rows that record a draw, which are the rows that carry an instant
+// (api.AssignmentView's DrawnAt), and leaves out a row a hand-over settled at no arm — no
+// variant, no mode and no instant — for every experiment alike, as internal/projection's
+// memoryOf leaves that row out of an issue's three memory fields. So the `memory` experiment's
+// line counts the issues the memory line counted before any experiment was declared, the
+// issues whose `memoryGroup` is set.
+//
+// The list is built from the settings and not from `settings.projects.<KEY>.experiments` alone,
+// because the two keys a project declares an experiment with are carried apart there: a
+// deployment that writes the `memory` block and no `experiments` key — which is what this fleet
+// runs — declares one experiment and carries an empty `experiments`, and reading that key alone
+// would print `experiments: none` while every issue holds a memory assignment.
+//
+// It counts issues, and not the trees a tree experiment is drawn for, because the state shows
+// every draw on the issues it applies to. Each issue's `assignments` holds its tree's tree-unit
+// rows and its own issue-unit rows: a tree row is the whole tree's answer, which every issue of
+// the tree is shown (internal/projection's assignmentViews). So one count, of issues, serves an
+// experiment of either unit. A count of trees, read off api.Issue.Tree, would fit a tree
+// experiment alone, and even there it would not count draws. A child handed over as a tree of its
+// own becomes the root of its own tree (internal/admit's readmit sets its Tree to its own key),
+// and it carries its old tree's tree-unit rows verbatim — the arm, the mode and the instant alike
+// (record.Postgres.CarryAssignments) — so two trees hold one draw. It names no issue either: the
+// per-issue answers are in `legion state --json`, where a line per issue would print hundreds on
+// a live deployment.
+//
+// Every project declares at least the memory experiment, so there is always a line: a project
+// whose settings carry no `memory` block and no experiment of its own declares that one at mode
+// off (config.Project.ExperimentsDeclared), and its line counts the arms its issues hold —
+// `memory: none` for a deployment that has drawn nothing yet, which is the line such a
+// deployment read before any experiment was declared.
+//
+// A daemon older than contract 141 serves no `assignments` on any issue, and that is the daemon an
+// operator who rolls the daemon back and keeps this `legion` reads. So an issue that carries no
+// `assignments` is counted from its memory fields instead (api.Issue.MemoryGroup and
+// MemoryDrawMode, which every daemon from contract 49 serves), under the `memory` experiment,
+// wherever its `memoryGroup` is set, as the memory line counted them before any experiment was
+// declared: its group, `memory` or `none`, is the arm and its mode the mode. Such a daemon's
+// settings carry the `memory` block and no `experiments` key, and a daemon that serves no
+// settings carries neither, so the list above declares the `memory` experiment alone and the
+// line is the one a `legion` without this change prints for the same body. A daemon of this
+// release serves the memory fields only where an issue's `memory` row records a draw, and serves
+// that row in `assignments` as well to every caller but one below contract 141 (api's shapeIssue),
+// so in the body it serves `legion state` an issue with no `assignments` carries no `memoryGroup`
+// either and the fallback counts nothing; in the body it serves a caller below 141 it counts the
+// `memory` draws.
+func experimentLines(settings api.Settings, project string, issues map[string]api.Issue) []string {
+	declared := settings.Projects[project].DeclaredExperiments(project)
+	counts := make(map[string]map[armDraw]int, len(declared))
+	count := func(experiment string, draw armDraw) {
+		held, counted := counts[experiment]
+		if !counted {
+			held = map[armDraw]int{}
+			counts[experiment] = held
+		}
+		held[draw]++
+	}
 	for _, issue := range issues {
-		if issue.MemoryGroup == "" {
+		if len(issue.Assignments) == 0 {
+			if issue.MemoryGroup != "" {
+				count(config.MemoryExperimentName, armDraw{variant: issue.MemoryGroup, mode: issue.MemoryDrawMode})
+			}
 			continue
 		}
-		drawn++
-		counts[groupMode{group: issue.MemoryGroup, mode: issue.MemoryDrawMode}]++
+		for _, assignment := range issue.Assignments {
+			if assignment.DrawnAt == nil {
+				continue
+			}
+			count(assignment.Experiment, armDraw{variant: assignment.Variant, mode: assignment.Mode})
+		}
 	}
-	if drawn == 0 {
-		return "memory: none"
+	lines := make([]string, len(declared))
+	for i, experiment := range declared {
+		lines[i] = experimentLine(experiment.Name, counts[experiment.Name])
 	}
-	kinds := slices.SortedFunc(maps.Keys(counts), func(a, b groupMode) int {
-		return cmp.Or(cmp.Compare(a.group, b.group), cmp.Compare(a.mode, b.mode))
+	return lines
+}
+
+// armDraw is what one experiment line counts issues by: the arm an issue was drawn and the mode
+// it was drawn under (api.AssignmentView's Variant and Mode).
+type armDraw struct{ variant, mode string }
+
+// label is how the line names the arm: its own name, or `none` for the empty arm, which is the
+// arm an experiment at mode off draws.
+func (d armDraw) label() string {
+	if d.variant == "" {
+		return "none"
+	}
+	return d.variant
+}
+
+// experimentLine is one experiment's line: how many issues were drawn an arm of it, and how many
+// of those under each arm and mode, `N <arm> (<mode>)`, in the order of the arm's printed name
+// and then of the mode, so two runs over one state print one line. The `memory` experiment's two
+// arms are `memory` and `none` (config.MemoryVariantNames), the two memory groups, so its line is
+// word for word the one `legion state` printed for the memory groups before any experiment was
+// declared.
+func experimentLine(name string, counts map[armDraw]int) string {
+	held := 0
+	for _, count := range counts {
+		held += count
+	}
+	if held == 0 {
+		return name + ": none"
+	}
+	draws := slices.SortedFunc(maps.Keys(counts), func(a, b armDraw) int {
+		return cmp.Or(cmp.Compare(a.label(), b.label()), cmp.Compare(a.mode, b.mode))
 	})
-	named := make([]string, len(kinds))
-	for i, kind := range kinds {
-		named[i] = fmt.Sprintf("%d %s (%s)", counts[kind], kind.group, kind.mode)
+	named := make([]string, len(draws))
+	for i, draw := range draws {
+		named[i] = fmt.Sprintf("%d %s (%s)", counts[draw], draw.label(), draw.mode)
 	}
 	noun := "issues"
-	if drawn == 1 {
+	if held == 1 {
 		noun = "issue"
 	}
-	return fmt.Sprintf("memory: %d %s — %s", drawn, noun, strings.Join(named, ", "))
+	return fmt.Sprintf("%s: %d %s — %s", name, held, noun, strings.Join(named, ", "))
 }
 
 // awaitingSummary is the one line an operator reads for the roots that wait on a person
@@ -1193,61 +1270,104 @@ func strandedSummary(stranded []api.StrandedClaim, suspended api.Suspenders) str
 	return fmt.Sprintf("claims nothing will wake: %d — %s", len(stranded), strings.Join(groups, "; "))
 }
 
-// entryBehind is one issue whose role has not been given the work its phase entry names: the
-// issue, the role of its current phase (phase.RoleFor, the role the state's two numbers are
-// of), the entry that role's phases row stands on and the entry it was given.
+// entryBehind is one issue the plain state names for its phase entry: the issue, the role it is
+// named for, the entry the phases row of the role of its current phase stands on and the entry
+// that role was given (phase.RoleFor, the role the state's two numbers are of), and, for a root's
+// architect, the arms the state names for it.
 type entryBehind struct {
 	issue string
 	role  legionclaim.Role
-	entry int64
-	given int64
+	// numbered is whether entry and given are role's own, which they are for every row but the
+	// architect of a root past the phases its architect works, where they are that phase's
+	// worker's and the line leaves them off the architect.
+	numbered     bool
+	entry, given int64
+	// arms is every arm of the daemon's architect-stalled reading the state names for this root
+	// (api.Issue.ArchitectStalls), and empty for the worker of an issue that is not its tree's
+	// root, whose two numbers differ, which the difference names instead.
+	arms []record.ArchitectStallArm
 }
 
-// entriesBehind is every issue of the state whose two entry numbers differ
-// (api.Issue.PhaseEntry and GivenEntry), by issue key. An issue whose current phase names no
-// phase worker role carries neither number, so it is never named here: the projection writes
-// them only where phase.RoleFor names a role, and that is the role this reads back for the
-// line.
+// entriesBehind is every issue of the state the plain line names, by issue key: a tree's own root
+// the state names an arm of the architect-stalled reading for (api.Issue.ArchitectStalls), as its
+// architect, and an issue that is not its tree's root whose phase worker has not been given the
+// work its phase entry names (api.Issue.PhaseEntry and GivenEntry). The daemon reads the arms by
+// the predicates its own wake uses and serves them whether or not the controller was told, so
+// this reads no arm of its own.
+//
+// A root is named for the arms alone, whatever role works the phase it stands in
+// (dispatch://INFRA-2614, R6): every root reads as behind for the moments between a transition
+// and its delivery, so the difference alone would name a healthy root at every read. A root is an
+// issue whose tree is its own key (api.Issue.Tree, claim.IsTreeRoot), and the numbers it carries
+// past its architect's phases are its phase worker's, which the line names for no root. The
+// numbers are named for the role a phase worker works on any other issue, which is
+// dispatch://INFRA-2800's line; a role of the architect's, a child at admitted among them, which
+// phase.RoleFor names the architect's phase, is named for nothing. An issue whose current phase
+// names no role at all carries neither number and is never named for them: the projection writes
+// them only where phase.RoleFor names a role, and that is the role this reads back for the line.
 func entriesBehind(issues map[string]api.Issue) []entryBehind {
 	var behind []entryBehind
 	for _, key := range slices.Sorted(maps.Keys(issues)) {
 		issue := issues[key]
-		if issue.PhaseEntry == issue.GivenEntry {
+		role := phase.RoleFor(issue.Phase)
+		if legionclaim.IsTreeRoot(key, issue.Tree) {
+			if len(issue.ArchitectStalls) == 0 {
+				continue
+			}
+			row := entryBehind{issue: key, role: legionclaim.RoleArchitect, arms: issue.ArchitectStalls}
+			if role == legionclaim.RoleArchitect {
+				row.numbered, row.entry, row.given = true, issue.PhaseEntry, issue.GivenEntry
+			}
+			behind = append(behind, row)
 			continue
 		}
-		behind = append(behind, entryBehind{issue: key, role: phase.RoleFor(issue.Phase),
-			entry: issue.PhaseEntry, given: issue.GivenEntry})
+		if role == "" || role == legionclaim.RoleArchitect || issue.PhaseEntry == issue.GivenEntry {
+			continue
+		}
+		behind = append(behind, entryBehind{issue: key, role: role, numbered: true, entry: issue.PhaseEntry, given: issue.GivenEntry})
 	}
 	return behind
 }
 
 // entrySummary is the one line an operator reads for the roles that have not been given the work
-// their phase entry names: how many, and each by issue and role with the two numbers. A
-// difference here is one of four things. An entry raised seconds ago, which the next pass
-// closes: the daemon sends that entry's work on every admission pass and on a sweep of its own
-// each minute (admit's resumeSlottedWorkers). An issue waiting for its admission slot, whose
-// start row the outbox holds unclaimable until the slot comes (workflow.StartOrOwe) and which
-// the pass passes over, since it reads the slotted issues alone — every issue in the waiting
-// line is named here, and its difference stands for as long as it waits, which is hours on a
-// full cap. A claim whose worker is still working an earlier entry's task, which the pass passes
-// over while that delivery is worked: a start the slot held back reaches its worker mid-turn, so
-// the difference reads for the rest of that turn and closes on the first pass after the task is
-// retired. Or a role the pass skips and sends nothing to at all (admit's owedEntryRoles, which
-// states each skip), whose difference stands until something outside that pass moves it.
+// their phase entry names and for the roots a wake names: how many, and each by issue and role
+// with the two numbers where they are that role's, a root with the words of each arm the state
+// names for it (record.ArchitectStallArm.Words, the words the wake's reason begins with). For a
+// role a phase worker works on an issue that is not its tree's root, a difference here is one of
+// four things. An entry raised seconds ago, which the next pass closes: the daemon sends that
+// entry's work on every admission pass and on a sweep of its own each minute (admit's
+// resumeSlottedWorkers). An issue waiting for its admission slot, whose start row the outbox holds
+// unclaimable until the slot comes (workflow.StartOrOwe) and which the pass passes over, since it
+// reads the slotted issues alone — every such issue in the waiting line is named here, and its
+// difference stands for as long as it waits, which is hours on a full cap. A claim whose worker is
+// still working an earlier entry's task, which the pass passes over while that delivery is
+// worked: a start the slot held back reaches its worker mid-turn, so the difference reads for the
+// rest of that turn and closes on the first pass after the task is retired. Or a role the pass
+// skips and sends nothing to at all (admit's owedEntryRoles, which states each skip), whose
+// difference stands until something outside that pass moves it.
 //
 // The daemon's own "a role was behind the entry its phases row names" log line names the roles
-// that pass sends the work to and no others, so a difference of that last kind is read here and
-// nowhere else.
+// that pass sends the work to and no others, so a difference of that last kind on such an issue is
+// read here and nowhere else. A root is named for the arms the state serves instead
+// (entriesBehind), whatever its numbers say.
 func entrySummary(issues map[string]api.Issue) string {
 	behind := entriesBehind(issues)
 	if len(behind) == 0 {
-		return "roles not given their phase entry: none"
+		return "roles not given their phase entry, and roots a wake names: none"
 	}
 	named := make([]string, len(behind))
 	for i, row := range behind {
-		named[i] = fmt.Sprintf("%s %s: entry %d, given %d", row.issue, row.role, row.entry, row.given)
+		parts := make([]string, 0, 2+len(row.arms))
+		if row.numbered {
+			parts = append(parts, fmt.Sprintf("entry %d", row.entry), fmt.Sprintf("given %d", row.given))
+		}
+		for _, arm := range row.arms {
+			parts = append(parts, arm.Words())
+		}
+		named[i] = fmt.Sprintf("%s %s: %s", row.issue, row.role, strings.Join(parts, ", "))
 	}
-	return fmt.Sprintf("roles not given their phase entry: %d — %s", len(behind), strings.Join(named, "; "))
+	return fmt.Sprintf("roles not given their phase entry, and roots a wake names: %d — %s",
+		len(behind), strings.Join(named, "; "))
 }
 
 // wakesWaitingSummary is the line an operator reads for the wakes the daemon's pacing is holding
@@ -1293,11 +1413,43 @@ func strandedSuspenders(ctx context.Context, op operator, stranded []api.Strande
 	return api.SuspendersOfOperatorClaims(list.Claims)
 }
 
-// webhookAppLines are the lines an operator reads for the served repositories Dispatch's GitHub App
-// is not known to be installed on (api.RepositoriesView.WithoutWebhookApp): GitHub sends Legion no
-// event of such a repository. One line per repository with why, in the state's order; with none
-// the one line says so.
+// repositoryLines are the lines an operator reads for the repositories the live records name
+// (api.RepositoriesView.Live) that GitHub's last read did not name or a role App is not installed
+// on: one line per such repository, in the state's order, with why — its readError, the Apps
+// GitHub answered are not installed on it (api.LiveRepositoryView.NotInstalled), or both — and
+// the name it is served under where that is the other name of its configured pair. A repository
+// with neither, one GitHub has not yet answered among them, has no line.
+func repositoryLines(live []api.LiveRepositoryView) []string {
+	var lines []string
+	for _, repo := range live {
+		var why []string
+		for _, reason := range []string{repo.ReadError, repo.NotInstalled()} {
+			if reason != "" {
+				why = append(why, reason)
+			}
+		}
+		if len(why) == 0 {
+			continue
+		}
+		name := repo.Repo
+		if repo.ServedAs != "" {
+			name += " (served as " + repo.ServedAs + ")"
+		}
+		lines = append(lines, "repository "+name+": "+strings.Join(why, "; "))
+	}
+	return lines
+}
+
+// webhookAppLines are the lines an operator reads for the repositories the live records name that
+// Dispatch's GitHub App is not known to be installed on (api.RepositoriesView.WithoutWebhookApp,
+// which a daemon of contract 152 writes too): GitHub sends Legion no event of such a repository.
+// One line per repository with why, in the state's order. Only a list that is present and empty
+// gives the one line that says none is missing; a daemon that wrote no list (gaps nil) says
+// nothing of the webhook App, so the CLI prints no line for it.
 func webhookAppLines(gaps []api.WebhookAppGapView) []string {
+	if gaps == nil {
+		return nil
+	}
 	if len(gaps) == 0 {
 		return []string{"webhook App missing: none"}
 	}
@@ -1374,13 +1526,18 @@ func stateAddress(configPath string, port int) (string, error) {
 	return net.JoinHostPort(dialHost(cfg.Bind), strconv.Itoa(port)), nil
 }
 
-func runLegions(_ context.Context, args []string, stdout, stderr io.Writer) int {
-	flags := newFlags("legions", "usage: legion legions [flags]", stderr)
-	asJSON := flags.Bool("json", false, "print the registry as JSON")
-	if code, ok := parseFlags(flags, args); !ok {
-		return code
+func newLegionsCommand(stdout, stderr io.Writer) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "legions",
+		Short: "list the daemons registered on this machine",
+		Args:  noArguments,
 	}
+	asJSON := cmd.Flags().Bool("json", false, "print the registry as JSON")
+	cmd.RunE = runs(func(context.Context, []string) int { return runLegions(*asJSON, stdout, stderr) })
+	return cmd
+}
 
+func runLegions(asJSON bool, stdout, stderr io.Writer) int {
 	legions, err := registryPath()
 	if err != nil {
 		fmt.Fprintf(stderr, "legion legions: %v\n", err)
@@ -1392,7 +1549,7 @@ func runLegions(_ context.Context, args []string, stdout, stderr io.Writer) int 
 		return 1
 	}
 
-	if *asJSON {
+	if asJSON {
 		if entries == nil {
 			entries = []registry.Entry{}
 		}
@@ -1411,20 +1568,28 @@ func runLegions(_ context.Context, args []string, stdout, stderr io.Writer) int 
 	return 0
 }
 
-func runStatus(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	if len(args) >= 2 && !strings.HasPrefix(args[0], "-") && !strings.HasPrefix(args[1], "-") {
-		return runIssueStatus(ctx, args[0], args[1], args[2:], stdout, stderr)
+// exactWords refuses every count of words but n: the command's arguments, which what names.
+func exactWords(n int, what string) cobra.PositionalArgs {
+	return func(_ *cobra.Command, args []string) error {
+		if len(args) != n {
+			return usageError{fmt.Errorf("name %s (got %d words)", what, len(args))}
+		}
+		return nil
 	}
-	flags := newFlags("status", "usage: legion status <team>\n       "+issueStatusSynopsis, stderr)
-	if code, ok := parseFlags(flags, args); !ok {
-		return code
-	}
-	if flags.NArg() != 1 {
-		flags.Usage()
-		return 2
-	}
-	team := flags.Arg(0)
+}
 
+func newStatusCommand(stdout, stderr io.Writer) *cobra.Command {
+	return &cobra.Command{
+		Use:   "status <team>",
+		Short: "say whether a team's daemon is running",
+		Args:  exactWords(1, "one team"),
+		RunE: runs(func(ctx context.Context, args []string) int {
+			return runStatus(ctx, args[0], stdout, stderr)
+		}),
+	}
+}
+
+func runStatus(ctx context.Context, team string, stdout, stderr io.Writer) int {
 	entry, found, err := findLegion(team)
 	if err != nil {
 		fmt.Fprintf(stderr, "legion status: %v\n", err)
@@ -1458,17 +1623,18 @@ func dialHost(bind string) string {
 	return bind
 }
 
-func runRestart(ctx context.Context, args []string, _, stderr io.Writer) int {
-	flags := newFlags("restart", "usage: legion restart <team>", stderr)
-	if code, ok := parseFlags(flags, args); !ok {
-		return code
+func newRestartCommand(stderr io.Writer) *cobra.Command {
+	return &cobra.Command{
+		Use:   "restart <team>",
+		Short: "stop a registered daemon and start it again from the configuration it recorded",
+		Args:  exactWords(1, "one team"),
+		RunE: runs(func(ctx context.Context, args []string) int {
+			return runRestart(ctx, args[0], stderr)
+		}),
 	}
-	if flags.NArg() != 1 {
-		flags.Usage()
-		return 2
-	}
-	team := flags.Arg(0)
+}
 
+func runRestart(ctx context.Context, team string, stderr io.Writer) int {
 	entry, found, err := findLegion(team)
 	if err != nil {
 		fmt.Fprintf(stderr, "legion restart: %v\n", err)
@@ -1555,31 +1721,6 @@ func get(ctx context.Context, url string) ([]byte, error) {
 		return nil, fmt.Errorf("%s answered %d: %s", url, response.StatusCode, strings.TrimSpace(string(body)))
 	}
 	return body, nil
-}
-
-// newFlags is `legion <name>`'s flag set, reporting on stderr. Its Usage, which Parse prints for
-// -h, -help and --help and after a flag it refuses, is usage and then every flag.
-func newFlags(name, usage string, stderr io.Writer) *flag.FlagSet {
-	flags := flag.NewFlagSet("legion "+name, flag.ContinueOnError)
-	flags.SetOutput(stderr)
-	flags.Usage = func() {
-		fmt.Fprintln(stderr, usage)
-		flags.PrintDefaults()
-	}
-	return flags
-}
-
-// parseFlags parses args into flags. When ok is false Parse has printed flags' Usage, and code
-// is the command's exit: 0 for a help request, 2 for a flag it refused.
-func parseFlags(flags *flag.FlagSet, args []string) (code int, ok bool) {
-	switch err := flags.Parse(args); {
-	case err == nil:
-		return 0, true
-	case errors.Is(err, flag.ErrHelp):
-		return 0, false
-	default:
-		return 2, false
-	}
 }
 
 // processEnvironment is this process's environment by name, the last entry for a name winning as

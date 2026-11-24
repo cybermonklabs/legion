@@ -1,0 +1,12 @@
+kind: Fixed
+body: |-
+    A keyed write (a `POST` or `PATCH` with an `Idempotency-Key`) never runs without its key. When
+    Dispatch could not resolve the caller for a moment, the keyed layer ran the handler with no key,
+    and a handler that resolved the caller again could make the write, so a resend under the key
+    made it a second time. The keyed layer now answers that refusal itself, and a body past the
+    route's limit with the route's `413`, and in neither case does the handler run. A deployment
+    moves its Dispatch to a build with this change before it moves its sessions to a pi-envoy,
+    pi-legion or claude-envoy that carries the client which resends every failed keyed write.
+time: 2026-11-17T20:27:50.206250540Z
+custom:
+    Issue: pr4350

@@ -165,8 +165,10 @@ const section = (page: Page, label: string): Locator =>
   page.locator(`section[aria-label="${label}"]`);
 
 /** Where a section's box starts down the page, which is what says the page draws the order
- *  first and the faults under it. */
+ *  first and the faults under it. Read once the section shows. */
 async function topOf(locator: Locator): Promise<number> {
+  await expect(locator).toBeVisible();
+  // The wait above drew the section, and a drawn element has a box, so the box is there.
   const box = await locator.boundingBox();
   if (box === null) throw new Error("the section this row reads is not on the page");
   return box.y;
@@ -477,7 +479,22 @@ test("a priority row opens its work by status, and four writes survive a reload"
 
     // What the page does not say about a priority (INFRA-2947, R10): no date it is wanted by,
     // no portion of it done, and no word judging how it is going. Every `<time>` the page draws
-    // is a moment that has passed, and no relative label reads forwards.
+    // is a moment that has passed, and no relative label reads forwards. Each absence is read
+    // once the parts that carry dates and counts have drawn - the work under P1 and both fault
+    // lists, each a read of its own - since a page still loading them would pass it on text it
+    // never drew.
+    await expectRowNames(section(page, `Work advancing ${seed.titles[0]}`), [
+      `${seed.rollout} Daemon rollout to the fleet`,
+      `${seed.smoke} Daemon smoke suite`,
+    ]);
+    await expect(
+      page
+        .getByRole("table", { exact: true, name: NO_PRIORITY_TABLE })
+        .locator("tr[data-issue-row]")
+    ).toHaveCount(4);
+    await expectRowOrder(page.getByRole("table", { exact: true, name: PARKED_TABLE }), [
+      `${seed.child} Ledger client migration`,
+    ]);
     const future = await page
       .locator("time[datetime]")
       .evaluateAll(
@@ -488,6 +505,7 @@ test("a priority row opens its work by status, and four writes survive a reload"
         Date.now()
       );
     expect(future).toEqual([]);
+    // The waits above settled the content this reads, so one read is enough.
     const drawn = await page.locator("body").innerText();
     expect(drawn).not.toMatch(/\bin \d+ (second|minute|hour|day|week|month|year)s?\b/);
     expect(drawn).not.toMatch(/\d\s?%/);
@@ -770,8 +788,11 @@ test("the margin lists a priority's history newest first and keeps the state a r
     expect(acts[0]?.value).toBe(retitled);
     expect(acts[1]?.field).toBe("owner");
     expect(acts[1]?.value).toBe("bob");
-    const entries = await margin.getByRole("listitem").allInnerTexts();
-    expect(entries.length).toBe(acts.length);
+    // Read once the list has drawn every act the server holds, so the order read below is the
+    // whole list's and not that of a list still arriving.
+    const listed = margin.getByRole("listitem");
+    await expect(listed).toHaveCount(acts.length);
+    const entries = await listed.allInnerTexts();
     const renamedAt = entries.findIndex((entry) => entry.includes(retitled));
     const ownedAt = entries.findIndex((entry) => entry.includes("bob"));
     expect(renamedAt).toBe(0);
@@ -846,14 +867,17 @@ test("a person places an issue under a priority from the issue and takes it off 
     // And the priority's margin holds both acts, newest first, each in the words
     // `PriorityMargin.tsx` writes it in and each naming the person who made it: a relation is
     // an act of the priority as much as of the issue, and the retraction is not the assertion.
-    const entries = await page
-      .getByRole("complementary", { name: "Margin" })
-      .getByRole("listitem")
-      .allInnerTexts();
-    expect(entries[0]).toContain(`retracted the relation to the issue ${seed.clock}`);
-    expect(entries[0]).toContain("alice");
-    expect(entries[1]).toContain(`related the issue ${seed.clock}`);
-    expect(entries[1]).toContain("alice");
+    // The margin reads the history apart from the work table above, so each entry is waited
+    // for rather than read off a margin that may not have drawn yet.
+    const entries = page.getByRole("complementary", { name: "Margin" }).getByRole("listitem");
+    await expect
+      .poll(() => entries.nth(0).innerText())
+      .toContain(`retracted the relation to the issue ${seed.clock}`);
+    await expect.poll(() => entries.nth(0).innerText()).toContain("alice");
+    await expect
+      .poll(() => entries.nth(1).innerText())
+      .toContain(`related the issue ${seed.clock}`);
+    await expect.poll(() => entries.nth(1).innerText()).toContain("alice");
   } finally {
     await context.close();
   }

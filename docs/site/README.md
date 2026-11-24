@@ -28,11 +28,17 @@ bun run docs:dev     # generate the reference pages, then serve with live reload
 bun run docs:build   # generate the reference pages, then build into docs/site/dist/
 ```
 
-In this directory, `bun run lint` and `bun run typecheck` are the checks CI runs before the build.
-After it, `.github/scripts/check-private-names.sh docs/site/dist` (from the repository root) fails
-on any built page, caption or file name that names the private deployment repository or the
-company, and on any built page or caption whose text names a private internal host or a Tailscale
-MagicDNS host.
+In this directory, `bun run typecheck` is the check CI runs before the build; `bun run lint`
+(Biome) is a person's to run, since the root `lint` job's `bunx biome check .` already covers
+these files and no CI job runs this script.
+That script is `biome check --error-on-warnings .`, while the root job runs plain
+`bunx biome check .`, which passes on a warning: so a Biome warning in this directory fails this
+script and no longer fails CI, which is the strictness dispatch://INFRA-1413 gave up when it
+deleted the duplicate lint step (measured first: these files carry no Biome diagnostic at all).
+After the build, `.github/scripts/check-private-names.sh docs/site/dist` (from the repository
+root) fails on any built page, caption or file name that names the private deployment repository
+or the company, and on any built page or caption whose text names a private internal host or a
+Tailscale MagicDNS host.
 
 ## Links between pages
 

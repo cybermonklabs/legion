@@ -907,7 +907,9 @@ func runLoopSeedWrite(args []string) error {
 	out := fs.String("out", "", "the run's record (default $LOADTEST_ROOT/loopseed.meta.json)")
 	project := fs.String("project", "LOOP", "the project key every proposal's issue is created in")
 	workers := fs.Int("workers", 8, "proposals written in parallel")
-	_ = fs.Parse(args)
+	if err := parseArgs(fs, args); err != nil {
+		return err
+	}
 
 	if fs.NArg() > 0 {
 		return fmt.Errorf("unexpected argument %q", fs.Arg(0))

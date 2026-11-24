@@ -2,6 +2,7 @@ package docs
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -23,10 +24,11 @@ type BlockRef struct {
 }
 
 // logUnindexedAskBlocks logs each ask block with no ask row that a write to issueKey's
-// documents marked resolved: it is not an ask yet, so it has no record to show, and settlement
-// indexes it as a new open ask once the issue reopens. WriteIssueAskStates and RebuildDocument
-// each log the blocks they mark themselves, so every caller sees them logged once, whatever it
-// does with them.
+// documents marked resolved: it is not an ask yet, so it has no record to show. A settlement
+// while the issue is closed keeps it resolved and opens no ask for it, and once the issue
+// reopens, which marks its document owed (MarkReopenOwedAskDocuments), a settlement indexes it
+// as a new open ask. WriteIssueAskStates and RebuildDocument each log the blocks they mark
+// themselves, so every caller sees them logged once, whatever it does with them.
 func logUnindexedAskBlocks(issueKey string, blocks []BlockRef) {
 	for _, block := range blocks {
 		slog.Warn("dispatch: mark resolved an ask block no settlement indexed before its issue closed",
@@ -35,7 +37,8 @@ func logUnindexedAskBlocks(issueKey string, blocks []BlockRef) {
 }
 
 // errSettleJoined refuses SettleIssueDocuments inside a transaction: each settlement opens a
-// transaction of its own and takes the issue's row, which a caller's open transaction can hold.
+// transaction of its own and takes the issue's owner lock, which a caller's open transaction can
+// hold.
 var errSettleJoined = errors.New("docs: an issue's documents settle outside every transaction")
 
 // issueDocumentIDs lists the documents of the issue $1, in id order: the order WriteIssueAskStates
@@ -50,7 +53,11 @@ type lifecycleWriteContextKey struct{}
 // leaves the document's latest edit source (roomState.lastActor) as it was (applyLive). A
 // settlement then names the person who last edited the document, as the author of an ask block it
 // indexes with no author of its own and on its derived events, never the closer or the reopener,
-// however the room is released and loaded between the close and the reopen.
+// however the room is released and loaded between the close and the reopen: where a settlement
+// while the issue was closed deleted the pending row that named that person, the row the reopen's
+// write inserts names the editor that settlement kept (doc_closed_edit_sources,
+// settlementPendingStatement). A settlement while the issue is closed indexes no ask block, and
+// gives its derived events the settlement's own actor (reconcileAskBlocks, planRepairs).
 func withLifecycleWrite(ctx context.Context) context.Context {
 	return context.WithValue(ctx, lifecycleWriteContextKey{}, true)
 }
@@ -86,29 +93,33 @@ func isLifecycleWrite(ctx context.Context) bool {
 // answerer and time with the answer left out, as settlement writes a block whose document has no
 // room for its answer (withholdAnswers): no write here is weighed for size, so none adds an
 // answer's bytes to a document. A copy that already holds the answer in full is left as it is
-// (answeredCopyAttributes), and the settlement an issue's reopen leaves owed writes the answer into
-// the rest.
+// (answeredCopyAttributes), and the document's next settlement, which this write leaves owed and
+// which runs whether or not the issue is closed, writes the answer into the rest as it writes any
+// copy (withholdAnswers).
 //
 // With markUnindexed it also writes state="resolved" into every readable ask block that neither
 // has an ask of its own on its document nor is a copy of another document's ask: a block no
-// settlement has indexed yet, which no longer reads open once its issue has closed, and which
-// settlement indexes as a new open ask once the issue reopens. Once every document is written, it
-// logs each such block it changed (logUnindexedAskBlocks), so no caller logs them again, and
-// returns them for a caller that counts them. Among these is every readable ask block that repeats
-// the id an earlier ask block of its document holds and does not read state="resolved" - a
-// browser's paste copies a block with its id - which a write addressed by id cannot reach, since
-// such a write lands on the id's first holder (repairLive). It is written by its place among the
-// document's ask blocks instead (markRepeatedAskBlocks), and logged and returned under the id it
-// repeats. Its id is left as it is: stamping it an id of its own is settlement's job, and the
-// reopen's settlement stamps it and indexes it as a new open ask.
+// settlement has indexed yet, which no longer reads open once its issue has closed. A settlement
+// while the issue is closed keeps it resolved with no ask, and once the issue reopens, which marks
+// its document owed (MarkReopenOwedAskDocuments), a settlement indexes it as a new open ask.
+// Once every document is written, it logs each such block it changed (logUnindexedAskBlocks), so
+// no caller logs them again, and returns them for a caller that counts them. Among these is every
+// readable ask block that repeats the id an earlier ask block of its document holds and does not
+// read state="resolved" - a browser's paste copies a block with its id - which a write addressed
+// by id cannot reach, since such a write lands on the id's first holder (repairLive). It is
+// written by its place among the document's ask blocks instead (markRepeatedAskBlocks), and
+// logged and returned under the id it repeats. Its id is left as it is: stamping it an id of its
+// own is settlement's job. The document's next settlement stamps it, and keeps it resolved with no
+// ask while the issue is closed, as it keeps any block with no row (reconcileAskBlocks); a
+// settlement after the reopen indexes it as a new open ask.
 //
 // It runs in the transaction ctx joined (errUnjoined otherwise), and its caller holds the issue's
-// row, as settlement holds it, so the writes are owner-verified: they reach a document whose room
-// is flagged closed, and one no room holds, while every other write to a closed issue's document
-// is refused. A write credits no one (withLifecycleWrite): it adds no pending author, leaves the
-// authors already pending and the document's latest edit source as they were, and writes no
-// version: the settlement it leaves owed versions it, and none whose markdown repeats the latest
-// version is written. A document it changes nothing in is written nothing.
+// owner lock (store.LockOwner), as settlement holds it, so the writes are owner-verified: they
+// reach a document whose room is flagged closed, and one no room holds, while every other write to
+// a closed issue's document is refused. A write credits no one (withLifecycleWrite): it adds no
+// pending author, leaves the authors already pending and the document's latest edit source as they
+// were, and writes no version: the settlement it leaves owed versions it, and none whose markdown
+// repeats the latest version is written. A document it changes nothing in is written nothing.
 func (s *Service) WriteIssueAskStates(ctx context.Context, issueKey string, asks []model.Ask, actor model.Actor, markUnindexed bool) ([]BlockRef, error) {
 	tx, joined := txFromContext(ctx)
 	if !joined {
@@ -195,6 +206,265 @@ func (s *Service) writeDocumentAskStates(
 	return writes.marked, nil
 }
 
+// reopenOwedAskDocuments lists, in id order, the documents of the issue $1 whose ask blocks a
+// settlement after the issue's reopen has to reconcile: one that holds an ask block no settlement
+// has indexed, the blocks doc_ask_block_authors keeps an author for, or will once the write phase
+// has run ($6, the documents whose authors the reopen's own writes queued); one that is the block
+// document (asks.block_artifact_id) of an open ask, the asks the reopen restores among them ($5,
+// whose rows the table still reads withdrawn); and one that is the block document of an ask a
+// settlement retracted. The retraction is settlementRetraction's rule in SQL, read off the stored
+// resolution: kind "retracted", and an actor $2 (kind) and $3 (id) or a reason that opens with $4
+// (SettlementActor, SettlementRetractionReason), so the two change together.
+const reopenOwedAskDocuments = `
+	select a.id::text from artifacts a
+	where a.issue_key = $1 and a.kind = 'doc'
+		and (exists (select from doc_ask_block_authors b where b.artifact_id = a.id)
+			or a.id = any($6::uuid[])
+			or exists (
+				select from asks k
+				where k.block_artifact_id = a.id and k.block_id is not null
+					and (k.state = 'open' or k.id = any($5::uuid[])))
+			or exists (
+				select from asks k
+				where k.block_artifact_id = a.id and k.block_id is not null and k.state = 'resolved'
+					and k.resolution->>'kind' = 'retracted'
+					and ((k.resolution->'actor'->>'kind' = $2 and k.resolution->'actor'->>'id' = $3)
+						or starts_with(k.resolution->>'reason', $4))))
+	order by a.id`
+
+// MarkReopenOwedAskDocuments marks owing a settlement each document of issueKey whose ask blocks a
+// settlement after the issue's reopen has to reconcile. The issue's reopen calls it once it has
+// restored the asks the close withdrew and written their state into their blocks
+// (WriteRestoredAsks, WriteIssueAskStates), which marks owed only a document it writes: one
+// holding a block of a restored ask, or a copy of one. A settlement of a closed issue's document
+// changes no ask and deletes the document's pending row, as every settlement that commits does
+// (reconcileAskBlocks, clearSettlementPending), so without this mark the documents below would
+// get no settlement until their next edit:
+//
+//   - one that holds an ask block no settlement has indexed, a document with a row in
+//     doc_ask_block_authors, the durable record of those blocks and their authors
+//     (ask_authors.go): the closed issue's settlement saved such a block resolved and recorded its
+//     author, and the settlement after the reopen opens its ask, credited to that author;
+//   - one that is the block document of an open ask, the document asks.block_artifact_id names,
+//     where settlement reads the ask's own block (loadAskBlocks): when the block of an ask the
+//     close withdrew left that document while the issue was closed, the closed issue's settlement
+//     left the ask withdrawn, the reopen restored it with no block to write, and the settlement
+//     after the reopen retracts it, as it retracts an open ask whose block left on an open issue.
+//     A copy of the block in another document of the issue is no block of the ask's own: the
+//     reopen's ask-state write writes it, and the retraction settles it again (owedCopiesOf);
+//   - one that is the block document of an ask a settlement retracted when its block left
+//     (settlementRetracted): when the block came back while the issue was closed, the closed
+//     issue's settlement left the ask retracted, and the settlement after the reopen restores it,
+//     as it restores a returning block's ask on an open issue.
+//
+// A document marked for an open ask whose block it still holds, or for a retracted ask whose block
+// has not come back, gets a settlement that finds nothing to change and writes no version.
+//
+// The mark sets marked_at to now, which a new row takes as its default, and leaves the latest
+// edit source and the latest person sender a row names as they are; a row it inserts names the
+// editor a settlement while the issue was closed kept (doc_closed_edit_sources,
+// settlementPendingStatement), so the settlement the mark leaves owed names that editor on the
+// events of the ask blocks that editor's text holds, and names SettlementActor on a version that
+// adds none of that text (settlementAuthors).
+// It arms nothing: the room's next load, a timer or the resumption runs the settlement
+// (onLoadDocument, RunSettlementResumption).
+//
+// It runs in the transaction ctx joined (errUnjoined otherwise), and its caller holds the issue's
+// owner lock, as a settlement of each of the issue's documents holds it, so no settlement reads or
+// changes the rows this lists between the list and the mark. The list is read where it is called,
+// the reopen's read phase, as that transaction's queued writes leave the rows: the asks whose
+// restore it queued read open (restoredAsksOf), and the documents whose block authors it queued
+// hold them (Ledger.queuedAskAuthors). The mark is queued after the writes queued before it (the
+// restore and the ask-state write), for the write phase (markSettlementPending).
+func (s *Service) MarkReopenOwedAskDocuments(ctx context.Context, issueKey string) error {
+	tx, joined := txFromContext(ctx)
+	if !joined {
+		return errUnjoined
+	}
+	var authored []string
+	if ledger := queueFor(ctx, tx); ledger != nil {
+		for room, authors := range ledger.askAuthors {
+			if len(authors) > 0 {
+				authored = append(authored, room)
+			}
+		}
+	}
+	rows, err := tx.Query(ctx, reopenOwedAskDocuments, issueKey, SettlementActor.Kind, SettlementActor.ID, SettlementRetractionReason,
+		restoredAsksOf(ctx, tx), authored)
+	if err != nil {
+		return fmt.Errorf("list the issue's documents whose ask blocks wait for its reopen: %w", err)
+	}
+	documents, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return fmt.Errorf("list the issue's documents whose ask blocks wait for its reopen: %w", err)
+	}
+	if len(documents) == 0 {
+		return nil
+	}
+	return markSettlementPending(ctx, tx, documents, nil, false, true, nil, false)
+}
+
+// FollowClosedIssueVersions does, at the reopen of issueKey, what writeVersionTx skips for a
+// version that a settlement of a closed issue's document writes (versionWrite.closedIssue): for
+// each document of the issue, in id order, it moves the open approval request that names the
+// document to the document's latest version (MoveApprovalAsk), and then carries an approval to
+// that version (carryStandingApproval), as the version's own write does on an open issue. Before
+// a closed issue's document settled, the first settlement after the reopen wrote that text and
+// did both. Without them a restored request names the version from before the close, so a
+// person's approval from it reviews that version and reads stale, and an approved text that a
+// settlement wrote back while the issue was closed stays without its approval. The issue's reopen
+// calls it once it has queued the restore of the asks the close withdrew and their ask.opened
+// events, so each restored request reads open again (openApprovalAsk), and a request's move and
+// the carry's answer are queued after its ask.opened.
+//
+// A document whose updates are ahead of its latest version, stored or queued by this transaction
+// (contentChangedSinceVersion), is left to the settlement it owes. The reopen's own ask-state
+// write is such an update, and that settlement's version holds the text the reopen leaves, which
+// its own write compares with the version the request names and with the approved text. A reopen
+// that writes back the text the person was asked about then keeps the request with the person,
+// which a move to the closed issue's version, whose blocks show the close's resolved states, would
+// not. Where that settlement's version lists no author, it adds none of the kept editor's text and
+// names SettlementActor, but its move of a request that names a version from before the close
+// spans the closed issue's versions and names the kept editor, as this move does
+// (versionWrite.keptEditor).
+//
+// The one case this leaves stale is a document whose stored updates past its latest version render
+// that version again. Its settlement writes no version, since a settlement versions only a
+// rendering that differs from the latest version, so nothing moves the request or runs the carry,
+// and the request keeps naming the version from before the close. Such updates come only after
+// the closed issue's settlement that wrote the latest version, which stored every update it read.
+// So they are a browser's edit and its exact undo, both stored after that settlement and inside
+// the close margin, the one window in which the append gate stores a closed issue's browser
+// update, so that settlement must also have run inside the margin; or the seed of a rebuild, from
+// that version, of a document whose history cannot load. The close's sweep and the ask repair
+// write nothing into a document whose blocks already show the states they write.
+//
+// Nothing is moved or carried twice. MoveApprovalAsk moves nothing when the request already names
+// the latest version, as it does after every version written while the request was open, whose
+// own write moved it. The carry runs only while the newest review approves a version before the
+// latest one: a version whose own write carried an approval, or that this carried at an earlier
+// reopen, is already approved. A version whose own write ran the carry and carried nothing is
+// refused again, since the rule reads its stored text and the rows as they stand. So the ask
+// repair's restore after a reopen, and a later reopen, change nothing more.
+//
+// The move names the editor that a settlement while the issue was closed credited and kept for the
+// document (doc_closed_edit_sources, clearSettlementPending): the edit that moves the request is
+// that editor's, saved in that settlement's version, not the reopener's act, and the version's
+// own write on an open issue names its editor so. Before a closed issue's document settled, the
+// first settlement after the reopen named the same editor, read off the pending row that stood
+// through the closed period, so a move that hands the request to its agent wakes the route and
+// the claimant as it did then. A document with no kept source, whose closed issue's settlements
+// named no editor, is moved in the name of SettlementActor, the actor of a settlement that cannot
+// name the editor: such an ask.edited wakes nobody itself (events.Broker.Notify), the reopen's own
+// ask.opened in the reopener's name does, and it reaches the request's followers as every
+// ask.edited does that is not quiet. The carry's events are in the approver's name, as every
+// carry's are.
+//
+// Once every document is followed, it deletes the kept source of each document of the issue that
+// owes no settlement: no settlement left owed by the reopen names it, and a row a later write
+// inserts naming no editor of its own would name that old editor (settlementPendingStatement).
+// The kept source of a document that owes one stays for that settlement, which deletes it. The
+// delete is queued after every write the reopen queued before it, so it reads the pending rows
+// those writes leave, the reopen's mark among them.
+//
+// It runs in the transaction ctx joined (errUnjoined otherwise), and its caller holds the issue's
+// owner lock, as a settlement of each of the issue's documents holds it, so no settlement writes
+// a version, or a kept source, between the read of the latest one and the move. Every read and the
+// document work - the latest versions, the requests, each carry's parse and rules - run where it
+// is called, the reopen's read phase, and every write is queued for the write phase, in the order
+// made: the move and the carry write asks rows, reviews and events, and the cleanup deletes kept
+// sources alone. It takes no copy lock and writes no pending row. The events it appends reach
+// ctx's ledger (eventSink), which publishes them once the transaction commits.
+func (s *Service) FollowClosedIssueVersions(ctx context.Context, issueKey string) error {
+	tx, joined := txFromContext(ctx)
+	if !joined {
+		return errUnjoined
+	}
+	rows, err := tx.Query(ctx, issueDocumentEditSources, issueKey)
+	if err != nil {
+		return fmt.Errorf("list the issue's documents: %w", err)
+	}
+	documents, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (closedEditSource, error) {
+		var document closedEditSource
+		err := row.Scan(&document.artifactID, &document.lastActor)
+		return document, err
+	})
+	if err != nil {
+		return fmt.Errorf("list the issue's documents: %w", err)
+	}
+	for _, document := range documents {
+		mover := SettlementActor
+		if document.lastActor != nil {
+			if err := json.Unmarshal(document.lastActor, &mover); err != nil {
+				return fmt.Errorf("decode the closed edit source of document %s: %w", document.artifactID, err)
+			}
+		}
+		if err := s.followLatestVersion(ctx, tx, document.artifactID, mover); err != nil {
+			return fmt.Errorf("follow the latest version of document %s: %w", document.artifactID, err)
+		}
+	}
+	return writeExec(ctx, tx, "delete the closed edit sources of the issue's settled documents", dropSettledClosedEditSources, issueKey)
+}
+
+// closedEditSource is one document of an issue as issueDocumentEditSources lists it: its id and
+// the editor a settlement while the issue was closed kept for it, the stored jsonb, nil for none.
+type closedEditSource struct {
+	artifactID string
+	lastActor  []byte
+}
+
+// issueDocumentEditSources lists the documents of the issue $1 in id order, as issueDocumentIDs
+// does, each with its kept closed edit source (doc_closed_edit_sources), null for none.
+const issueDocumentEditSources = `
+	select a.id::text, kept.last_actor
+	from artifacts a left join doc_closed_edit_sources kept on kept.artifact_id = a.id
+	where a.issue_key = $1 and a.kind = 'doc'
+	order by a.id`
+
+// dropSettledClosedEditSources deletes the kept closed edit source of each document of the issue
+// $1 that owes no settlement (FollowClosedIssueVersions).
+const dropSettledClosedEditSources = `
+	delete from doc_closed_edit_sources kept
+	using artifacts a
+	where a.id = kept.artifact_id and a.issue_key = $1 and a.kind = 'doc'
+		and not exists (select from doc_settlements_pending p where p.artifact_id = kept.artifact_id)`
+
+// followLatestVersion is FollowClosedIssueVersions for one document, artifactID, moving its
+// request in mover's name.
+func (s *Service) followLatestVersion(ctx context.Context, tx pgx.Tx, artifactID string, mover model.Actor) error {
+	latest, err := latestVersion(ctx, tx, artifactID)
+	if err != nil {
+		return err
+	}
+	owed, err := contentChangedSinceVersion(ctx, tx, artifactID, latest.docUpdateVersion)
+	if err != nil || owed {
+		return err
+	}
+	// A latest version the request does not name yet was written while the issue was closed,
+	// since every version written while it was open moved the request: by a settlement, or by a
+	// comment anchor's snapshot (SnapshotVersion under WithCommentMarks), the one route that writes
+	// a closed issue's version. No stored version says which wrote it, so the move reads it as a
+	// settlement's and keeps the person's turn where that settlement's own version write would
+	// have kept it.
+	if err := MoveApprovalAsk(ctx, tx, s.events, artifactID, latest.Version, latest.markdown, mover, true, s.serverURL); err != nil {
+		return err
+	}
+	if err := refuseSecondCarry(ctx, tx, artifactID); err != nil {
+		return err
+	}
+	newest, err := NewestReview(ctx, tx, artifactID)
+	if err != nil || newest == nil || newest.State != "approved" || newest.Version >= latest.Number {
+		return err
+	}
+	// The answer carry reads the version's blocks from its tree, as the version's own write reads
+	// the live tree it rendered: the stored text's read-back is that tree.
+	tree, err := pmdoc.ParseRendering(latest.markdown)
+	if err != nil {
+		return skipUnreadableVersion(artifactID, latest.Number, err)
+	}
+	return s.carryStandingApproval(ctx, tx, artifactID, latest.Number, renderedTree{tree: tree, markdown: latest.markdown}, *newest, eventSink(ctx))
+}
+
 // issueAskStateWrites is what WriteIssueAskStates writes into one document of an issue, read off
 // one tree of it (readIssueAskStateWrites) and made on a tree by apply.
 type issueAskStateWrites struct {
@@ -238,7 +508,7 @@ func readIssueAskStateWrites(
 		return nil, err
 	}
 	// An issue's documents take no copy lock (lockProjectCopies): the caller holds the issue's
-	// row, as every transaction reading or marking the copies among its documents does.
+	// owner lock, as every transaction reading or marking the copies among its documents does.
 	sources, err := readCopiedAskSources(ctx, tx, artifactID, owner, blocks, unindexedAskBlockIDs(blocks, rows))
 	if err != nil {
 		return nil, err
@@ -263,10 +533,9 @@ func readIssueAskStateWrites(
 		if markUnindexed {
 			ref := BlockRef{ArtifactID: artifactID, BlockID: block.id}
 			found.writes.repairs = append(found.writes.repairs, askRepair(block.id, func(node *pmdoc.Node) bool {
-				if node.Attrs["state"] == "resolved" {
+				if !resolveUnindexedAskBlock(node) {
 					return false
 				}
-				node.Attrs["state"] = "resolved"
 				found.marked = append(found.marked, ref)
 				return true
 			}))
@@ -295,6 +564,22 @@ func (w *issueAskStateWrites) apply(live *pmdoc.Node) bool {
 // repair that withdraws the asks a close by an older release left open writes their blocks.
 func closedIssueAskState(row model.Ask) (model.Ask, bool) {
 	return row, row.State == "resolved" || row.State == "answered"
+}
+
+// resolveUnindexedAskBlock writes state="resolved" into node, a readable ask block that is no ask
+// yet - no ask row indexes it, or it repeats the id an earlier ask block of its document holds,
+// and it is no copy of another document's ask - and reports whether that changed it: the state
+// such a block shows while its issue is closed, since the close withdrew every ask of the issue.
+// It is the one write of that state. The close's final sweep makes it (WriteIssueAskStates with
+// markUnindexed: readIssueAskStateWrites, markRepeatedAskBlocks), and so does a settlement of a
+// closed issue's document, which opens no ask for such a block (reconcileAskBlocks). The block
+// stays without a row, and a settlement after the issue reopens opens its ask.
+func resolveUnindexedAskBlock(node *pmdoc.Node) bool {
+	if node.Attrs["state"] == "resolved" {
+		return false
+	}
+	node.Attrs["state"] = "resolved"
+	return true
 }
 
 // answeredCopyAttributes is the write WriteIssueAskStates makes to a copy of ask, an answered ask,
@@ -388,8 +673,7 @@ func markRepeatedAskBlocks(live *pmdoc.Node, artifactID string, repeats []repeat
 		}
 		repeat := repeats[next]
 		next++
-		if id, _ := node.Attrs[pmdoc.BlockIDAttr].(string); id == repeat.id && node.Attrs["state"] != "resolved" {
-			node.Attrs["state"] = "resolved"
+		if id, _ := node.Attrs[pmdoc.BlockIDAttr].(string); id == repeat.id && resolveUnindexedAskBlock(node) {
 			marked = append(marked, BlockRef{ArtifactID: artifactID, BlockID: repeat.id})
 		}
 		return next < len(repeats)
@@ -417,8 +701,9 @@ const (
 // owes, as Shutdown's drain does: it waits for the room's durable appends to land, reads whether
 // the document owes a settlement, and settles it at its room's current generation, in place of the
 // timer armed for it, if one is. Every new ask block the documents hold is then an ask, credited
-// to its author as settlement credits one, which the close of an issue, which no settlement runs
-// after, withdraws with the rest.
+// to its author as settlement credits one, which the close of an issue withdraws with the rest:
+// a settlement after the close opens no ask, and saves a block it finds with none resolved
+// (reconcileAskBlocks).
 //
 // A settlement that stops short (settleOutcome) is run again, up to issueSettleAttempts times for
 // each document and within issueSettleBudget for the whole issue, no retry starting once the
@@ -437,8 +722,8 @@ const (
 // pending-settlement row keeps the debt, for the room's next load or the resumption
 // (RunSettlementResumption).
 //
-// It opens a transaction of its own for each settlement, which takes the issue's row, so it is
-// refused inside a transaction: a joined context's, or, for a context the pool tracks, any
+// It opens a transaction of its own for each settlement, which takes the issue's owner lock, so it
+// is refused inside a transaction: a joined context's, or, for a context the pool tracks, any
 // (store.ErrNestedAcquire).
 func (s *Service) SettleIssueDocuments(ctx context.Context, issueKey string) error {
 	if ledgerFrom(ctx).inTransaction() {
@@ -508,6 +793,7 @@ func (s *Service) settleOwedNow(ctx context.Context, room string, deadline time.
 	state.mu.Lock()
 	state.settling--
 	s.unlockState(room, state)
+	s.retireSettlementRoom(room)
 	s.settleWG.Done()
 	if outcome.err != nil {
 		return outcome.err

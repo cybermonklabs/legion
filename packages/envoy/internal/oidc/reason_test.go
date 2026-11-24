@@ -26,6 +26,7 @@ func TestReasonNamesEveryClass(t *testing.T) {
 		{"issuer", fmt.Errorf("%w: %q, want %q", ErrIssuer, "https://other", "https://mine"), "issuer"},
 		{"audience", fmt.Errorf("%w: %q, want %q", ErrAudience, []string{"dispatch"}, "envoy"), "audience"},
 		{"expired", fmt.Errorf("%w at 2026-01-01T00:00:00Z", ErrExpired), "expired"},
+		{"not yet valid", fmt.Errorf("%w: issued at 2026-01-01T00:00:00Z", ErrNotYetValid), "not-yet-valid"},
 		{"cancelled", fmt.Errorf("%w: %v", ErrCancelled, context.Canceled), "cancelled"},
 		{"issuer unavailable", fmt.Errorf("%w: %w", ErrIssuerUnavailable, fmt.Errorf("%w: https://issuer.example/keys answered 503", ErrKeySet)), "unavailable"},
 		{"signature", ErrSignature, "signature"},
@@ -53,11 +54,9 @@ func TestVerifyDoesNotCallAnEndedRequestAForgery(t *testing.T) {
 	token := issuer.Mint(t, signing, issuer.Claims(testSubject, testAudience))
 
 	// The token here is sound, so this case exists only while the key-set read
-	// is what fails. It fails for certain: the verifier reads the key set
-	// through *Keys, whose read is one HTTP request made on the caller's own
-	// context, and a request made on a context that has already ended never
-	// reaches the issuer. The delay stands in for the network all the same, so
-	// that a read which somehow did start is still the slow side.
+	// is what fails. It fails for certain: the caller's wait on the key-set read
+	// ends at once with its context, and classify reads the context first. The
+	// read itself runs on, detached, and reaches the issuer after the delay.
 	issuer.DelayKeys(2 * time.Second)
 
 	// Cancelled before the first Verify, so the key-set fetch is what fails:
@@ -108,8 +107,8 @@ func TestEndedRequestOutranksTheTokensOwnFault(t *testing.T) {
 	// A token bad by its claims, not its signature: the only fixture that tells
 	// "the context is read first" apart from "the context is read last, in the
 	// residue arm". Both report the forgery above as cancelled; only the first
-	// reports this one that way, and only the first makes AGENTS.md's "a bad
-	// token on a connection that is already gone lands here too" true.
+	// reports this one that way, and only the first makes Reason's "a genuinely
+	// bad token presented on an ended request reads cancelled" true.
 	wrongAudience := issuer.Claims(testSubject, testAudience)
 	wrongAudience["aud"] = []string{"somebody-else"}
 	claimBad := issuer.Mint(t, signing, wrongAudience)
@@ -130,6 +129,9 @@ func TestEndedRequestOutranksTheTokensOwnFault(t *testing.T) {
 func TestAKeySetOutageIsNotAForgery(t *testing.T) {
 	issuer := oidctest.New(t)
 	keys, signing := keysFor(t, issuer, "signing-key")
+	// The read once the key set answers again is due at once: this is the verdict after a
+	// recovery, not the spacing between failed reads (TestAKeySetThatFailsAtOnceIsReadOncePerSpacing).
+	keys.FailureSpacing = 0
 	verifier := NewWithKeys(issuer.URL(), testAudience, keys)
 	sound := issuer.Mint(t, signing, issuer.Claims(testSubject, testAudience))
 

@@ -28,6 +28,7 @@ import (
 )
 
 func TestAdvancesRelation(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	ctx := context.Background()
 	createTestProject(t, handler, "CORE")
@@ -119,7 +120,7 @@ func TestAdvancesRelation(t *testing.T) {
 	if !ended.At.After(stated.At) && !ended.At.Equal(stated.At) {
 		t.Fatalf("the retraction's moment %v is before the statement's %v", ended.At, stated.At)
 	}
-	if stated.Who != (model.Actor{Kind: "user", ID: "bob"}) || ended.Who != (model.Actor{Kind: "user", ID: "bob"}) {
+	if stated.Who != (model.Actor{Kind: "user", ID: "bob", Proven: true}) || ended.Who != (model.Actor{Kind: "user", ID: "bob", Proven: true}) {
 		t.Fatalf("the acts were written by %+v and %+v, want the person who wrote them", stated.Who, ended.Who)
 	}
 
@@ -180,10 +181,6 @@ func TestAdvancesRelation(t *testing.T) {
 	// An issue that already stands under a parent, behind a blocker, in a repository and out of
 	// the architecture keeps every one of them when it states what it advances, and the event
 	// says that is all the write moved.
-	if mapped := dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/acme/widgets",
-		map[string]any{"project": "CORE"}, "alice"); mapped.Code != http.StatusOK && mapped.Code != http.StatusCreated {
-		t.Fatalf("map the repository to CORE: status=%d body=%s", mapped.Code, mapped.Body.String())
-	}
 	parent := createAdvancingIssue(t, handler, map[string]any{"project": "CORE", "title": "The parent", "force": true}, "alice")
 	blocker := createAdvancingIssue(t, handler, map[string]any{"project": "CORE", "title": "The blocker", "force": true}, "alice")
 	child := createAdvancingIssue(t, handler, map[string]any{
@@ -252,6 +249,7 @@ func TestAdvancesRelation(t *testing.T) {
 // carried a title, a status and labels leaves every one of them, and the issue's updated_at,
 // exactly as they were.
 func TestAdvancesRelationRevisionIsExactAndRefusesBeforeItWrites(t *testing.T) {
+	t.Parallel()
 	handler, _ := newTestHandlerWithStore(t)
 	createTestProject(t, handler, "CORE")
 	first := createTestPriority(t, handler, map[string]any{"id": "ship-the-thing", "title": "Ship the thing"}, "alice").ID

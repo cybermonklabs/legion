@@ -25,11 +25,12 @@ func (s StepRecord) LastStep() time.Time {
 // once the machine has done it (Deps.StallBackstopped, the daemon's stallBackstopped): the
 // record the request carried, the moment the machine judged from, the bound it passed, the
 // end the machine reached — relaunched, the relaunch parked on the wake pacing, the relaunch
-// still to make, suspended, or the claim failed (ProcessEnd) — the moment a parked launch's
-// turn comes, whether the process that end let go was left possibly running, and what the
-// replacement charged the claim on its way to that end. The owner's notice is written from
-// this and not from what the sweep asked for, because the sweep asks over claims it read
-// before the decision and the machine can answer by leaving the turn exactly as it stands.
+// waiting at its issue pod's gate, the relaunch still to make, suspended, or the claim failed
+// (ProcessEnd) — the moment a parked launch's turn comes, whether the process that end let go was
+// left possibly running, and what the replacement charged the claim on its way to that end. The
+// owner's notice is written from this and not from what the sweep asked for, because the sweep
+// asks over claims it read before the decision and the machine can answer by leaving the turn
+// exactly as it stands.
 type StallBackstopStop struct {
 	Step     StepRecord
 	LastStep time.Time
@@ -47,7 +48,7 @@ type StallBackstopStop struct {
 	// owner acts on. It is false for an end that let no process go.
 	StopUnconfirmed bool
 	// LaunchFailures is how many launch failures the replacement this end came out of charged
-	// the claim: one for every start of it the runtime refused (launchNow). It is read as the
+	// the claim: one for every start of it the runtime refused (launchTries). It is read as the
 	// claim's launch budget after the replacement less that budget before it, which is exact
 	// because the only two things that reset the budget are event rows of the table — the
 	// agent's ready and a retry (the table's ready and retry) — and a row runs under the
@@ -94,7 +95,7 @@ type StallBackstopStop struct {
 // that repeats would spend the claim's death budget and fail the claim at launch_failure_limit,
 // where the requirement is that the claim come back with its task still owed. What the
 // replacement itself charges is another thing: a start the runtime refuses inside it is a launch
-// failure like any other (launchNow), so the end can carry charges the stop did not make, and
+// failure like any other (launchTries), so the end can carry charges the stop did not make, and
 // the report carries how many of them this replacement charged for the owner's notice to say
 // (StallBackstopStop.LaunchFailures).
 //
@@ -128,6 +129,12 @@ type StallBackstopStop struct {
 // and bounded by a deadline (holdSuspension, whose deadline only moves earlier); this request
 // carries its deadline already passed — the recorded last step plus the role's bound — because
 // the turn it exists for is one that never ends, and a request held for it would wait for ever.
+//
+// The launch lets the stalled process go as one whose turn showed no progress for the role's
+// bound, or whose claim did where this decision finds the claim working for a compaction with no
+// turn under it (endStalled, endState), and records what it ended there: in this decision, or at
+// the turn of the wake the pacing parks it on (launchNow, letGo). The cause is what this stop
+// found, so a parked launch carries it to that turn as the decision named it (launchAfter).
 func (m *Machine) backstopStalledTurn(ctx context.Context, ev StallBackstop) error {
 	last := m.claim.Step.LastStep()
 	if m.steppedAt.After(last) {
@@ -170,7 +177,8 @@ func (m *Machine) backstopStalledTurn(ctx context.Context, ev StallBackstop) err
 	// failure of the claim's life, and the owner of a stalled worker is told what this one
 	// replacement took out of it (StallBackstopStop.LaunchFailures).
 	charged := m.claim.Budgets.LaunchFailures
-	end, err := m.replaceProcess(ctx, "the daemon's stall backstop ended a turn whose agent stopped stepping", ordinaryEnd)
+	end, err := m.replaceProcess(ctx, "the daemon's stall backstop ended a turn whose agent stopped stepping", ordinaryEnd,
+		endStalled(ev.Bound, m.endState() == StateWorking))
 	charged = m.claim.Budgets.LaunchFailures - charged
 	if end.TellsOwner() && m.deps.StallBackstopped != nil {
 		stop := StallBackstopStop{Step: ev.Step, LastStep: last, Bound: ev.Bound, End: end,

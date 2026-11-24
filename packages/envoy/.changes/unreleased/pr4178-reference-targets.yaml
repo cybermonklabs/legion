@@ -1,0 +1,29 @@
+kind: Added
+body: |-
+  What the Dispatch issue page needs to draw an issue as one tree:
+
+  - `GET /api/v1/reference-targets?ref=…&ref=…` resolves many `dispatch://` references in one
+    request, answering each one's kind, the words a reader is shown for its target and whether
+    the target is gone, so a page draws every pointer chip without a request per chip. At most
+    256 references in one request, with an `ETag`; a reference that parses but names nothing is
+    answered as gone rather than refused. A reference whose short id two or more items carry
+    answers that member as gone with `ambiguous: true`, and every other member is answered.
+  - Each `IssueChild` of `GET /api/v1/issues/{key}` carries `needs`, the keys of the issues it
+    waits on, and `claim`, who holds it, each left out when the child has none, so a reader sees
+    what blocks a child and who holds it.
+  - A caller that sent `Dispatch-Trees: 1` is given a block's whole text, every link and
+    `dispatch://` reference kept and nothing cut, as `text_tree`: on each requirement of
+    `GET /api/v1/issues/{key}/coverage`, on each check of `GET /api/v1/issues/{key}/results`, and
+    on each member of `GET /api/v1/reference-targets` that names a block, which is where a plan
+    task's words are read whole. A typed block's tree is of its own content, without its
+    directive line: a document's block has its closing fence's indentation taken out of each
+    line, which a block in a list item or a footnote definition carries, and a block of a
+    comment, a message or an ask, stored from the start of its line, has its opening line's
+    indentation, up to three spaces, taken off and up to as many columns off each later line,
+    as that text's own parse reads them, the indentation left, and the spaces or tabs after a
+    list marker or `>`, written as spaces. With its opening line at column 0, such a block keeps
+    every line as written; an opening line four spaces or a tab in opens no typed block, so that
+    text gives the tree of its whole text. A typed block in a quote gives the tree of its whole
+    text, and so does a block of a comment, a message or an ask whose closing fence stands four
+    spaces or a tab in, since that fence closes nothing in its text. One block gives the same
+    tree in the three reads. The `text` a requirement and a check already answered is unchanged.

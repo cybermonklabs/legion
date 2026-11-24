@@ -46,7 +46,10 @@ func preconditionTestHandler(t *testing.T) (http.Handler, *store.Store, docs.API
 	return handler, database, deps.Docs
 }
 
-func readDocumentPrecondition(t *testing.T, handler http.Handler, artifactID string) documentPreconditionRead {
+// readDocumentPrecondition is the text read of a document and the token it carries now, which
+// an upload replacing it names (uploadBase). It takes a benchmark's TB as well as a test's,
+// since the upload benchmark reads its spec's token through it.
+func readDocumentPrecondition(t testing.TB, handler http.Handler, artifactID string) documentPreconditionRead {
 	t.Helper()
 	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/artifacts/"+artifactID+"/text", nil, "alice")
 	if response.Code != http.StatusOK {
@@ -88,6 +91,7 @@ func documentMutationCounts(t *testing.T, database *store.Store, artifactID stri
 }
 
 func TestDocumentEditPreconditionRejectsStaleDocumentWithoutMutation(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := preconditionTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Document precondition", "before")
 
@@ -132,6 +136,7 @@ func TestDocumentEditPreconditionRejectsStaleDocumentWithoutMutation(t *testing.
 	}
 }
 func TestDocumentEditPreconditionChecksEmptyBatch(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := preconditionTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Empty precondition", "before")
 	stale := readDocumentPrecondition(t, handler, issue.PrimaryArtifactID)
@@ -205,6 +210,7 @@ func guardedDocumentEdit(t *testing.T, handler http.Handler, artifactID, find, w
 // own transaction wrote, which is the next edit's precondition, so no edit re-reads the document
 // to learn a token the edit before it just minted.
 func TestDocumentEditReturnsTheTokenItProduced(t *testing.T) {
+	t.Parallel()
 	handler, _, _ := preconditionTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Chained document edits", "before")
 
@@ -239,6 +245,7 @@ func TestDocumentEditReturnsTheTokenItProduced(t *testing.T) {
 }
 
 func TestDocumentEditWithoutPreconditionRemainsUnconditional(t *testing.T) {
+	t.Parallel()
 	handler, _, _ := preconditionTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Unconditional document edit", "before")
 
@@ -259,6 +266,7 @@ func TestDocumentEditWithoutPreconditionRemainsUnconditional(t *testing.T) {
 }
 
 func TestDocumentEditBlockPreconditionsAllowIndependentEdits(t *testing.T) {
+	t.Parallel()
 	handler, _, _ := preconditionTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Independent blocks", "alpha\n\nbeta")
 	blocks := readDocumentPreconditionBlocks(t, handler, issue.PrimaryArtifactID)
@@ -297,6 +305,7 @@ func TestDocumentEditBlockPreconditionsAllowIndependentEdits(t *testing.T) {
 }
 
 func TestDocumentEditBlockPreconditionMustCoverEveryTouchedBlock(t *testing.T) {
+	t.Parallel()
 	handler, _, _ := preconditionTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Covered blocks", "guard\n\ntarget old")
 	blocks := readDocumentPreconditionBlocks(t, handler, issue.PrimaryArtifactID)
@@ -323,6 +332,7 @@ func TestDocumentEditBlockPreconditionMustCoverEveryTouchedBlock(t *testing.T) {
 }
 
 func TestDocumentEditContainerDeleteUsesItsOwnBlockToken(t *testing.T) {
+	t.Parallel()
 	handler, _, _ := preconditionTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Container token", "- Parent\n  - Child")
 	blocks := readDocumentPreconditionBlocks(t, handler, issue.PrimaryArtifactID)
@@ -340,6 +350,7 @@ func TestDocumentEditContainerDeleteUsesItsOwnBlockToken(t *testing.T) {
 }
 
 func TestDocumentPreconditionRejectsAnchorAddedAfterRead(t *testing.T) {
+	t.Parallel()
 	handler, _, _ := preconditionTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Anchor freshness", "The quick brown fox")
 	stale := readDocumentPrecondition(t, handler, issue.PrimaryArtifactID)
@@ -375,6 +386,7 @@ func TestDocumentPreconditionRejectsAnchorAddedAfterRead(t *testing.T) {
 }
 
 func TestDocumentEditPreconditionRejectsWriterAfterDurableAppendRace(t *testing.T) {
+	t.Parallel()
 	service, handler, database := browserDocumentService(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Precondition race", "before")
 	stale := readDocumentPrecondition(t, handler, issue.PrimaryArtifactID)
@@ -415,5 +427,53 @@ func TestDocumentEditPreconditionRejectsWriterAfterDurableAppendRace(t *testing.
 	}
 	if got := readDocumentPrecondition(t, handler, issue.PrimaryArtifactID); got.Markdown != "writer\n" {
 		t.Fatalf("race document = %q, want writer only", got.Markdown)
+	}
+}
+
+// A `replace` that writes blocks is a conditional edit like any other (INFRA-1520 R9): a `blocks`
+// precondition naming the matched block's current token takes it, the blocks it adds need no token
+// of their own, having no earlier version to name, and a stale token for that block refuses it with
+// nothing written. A `replace` that parses to one paragraph answers the same way.
+func TestDocumentEditBlockPreconditionCoversAReplaceThatWritesBlocks(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct{ name, with, want string }{
+		{
+			name: "a with that writes blocks",
+			with: "Here is the plan:\n\n- first\n- second",
+			want: "guard\n\nHere is the plan:\n\n- first\n- second\n",
+		},
+		{name: "a with of one paragraph", with: "rewritten", want: "guard\n\nrewritten\n"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			handler, _, _ := preconditionTestHandler(t)
+			issue := createInteractionIssue(t, handler, "TEST", "Conditional replace", "guard\n\ntarget")
+			blocks := readDocumentPreconditionBlocks(t, handler, issue.PrimaryArtifactID)
+			if len(blocks) != 2 {
+				t.Fatalf("blocks = %#v, want guard and target", blocks)
+			}
+			target := blocks[1]
+			stale := dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/edits", map[string]any{
+				"ops":          []map[string]string{{"op": "replace", "find": "target", "with": test.with}},
+				"precondition": map[string]any{"blocks": []map[string]string{{"id": target.ID, "token": "sha256:" + strings.Repeat("0", 64)}}},
+			}, "alice")
+			if stale.Code != http.StatusConflict || !strings.Contains(stale.Body.String(), `"code":"PRECONDITION_FAILED"`) {
+				t.Fatalf("stale token: status=%d body=%s, want 409 PRECONDITION_FAILED", stale.Code, stale.Body.String())
+			}
+			t.Logf("the precondition sent named %s with a stale token, and the answer was %s", target.ID, stale.Body.String())
+			if got := readDocumentPrecondition(t, handler, issue.PrimaryArtifactID); got.Markdown != "guard\n\ntarget\n" {
+				t.Fatalf("the refused edit left %q, want the document unchanged", got.Markdown)
+			}
+			applied := dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/edits", map[string]any{
+				"ops":          []map[string]string{{"op": "replace", "find": "target", "with": test.with}},
+				"precondition": map[string]any{"blocks": []map[string]string{{"id": target.ID, "token": target.Token}}},
+			}, "alice")
+			if applied.Code != http.StatusOK {
+				t.Fatalf("current token: status=%d body=%s", applied.Code, applied.Body.String())
+			}
+			t.Logf("the precondition sent named %s at its current token, and the answer was %s", target.ID, applied.Body.String())
+			if got := readDocumentPrecondition(t, handler, issue.PrimaryArtifactID); got.Markdown != test.want {
+				t.Fatalf("the conditional edit wrote %q, want %q", got.Markdown, test.want)
+			}
+		})
 	}
 }

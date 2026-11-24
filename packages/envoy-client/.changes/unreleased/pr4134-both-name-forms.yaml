@@ -1,0 +1,10 @@
+kind: Fixed
+custom:
+  Issue: pr4134
+body: |-
+  A session's consumer delivery takes a message in either form of a name the rename moves: a frame
+  whose subject names the project reaches a session that followed the form without it, and the
+  other way round, and a message on the session's own inbox under any project is its own. Before
+  this, the client compared a frame's subject with the topics it follows as plain text, so a frame
+  in the other form was answered `done` and its resume point moved past it: the message was lost
+  with no notice. Another session's inbox is still refused in either form.

@@ -1,0 +1,9 @@
+kind: Fixed
+custom:
+  Issue: pr4479
+body: |-
+  A Codex session no longer stops taking Envoy messages after one is written to its inbox while a
+  turn ends or the plugin stops: that message's write could stay unanswered for good, and every
+  later message of the session waited behind it. A message the plugin stops on while
+  `codex queue` is taking it is refused when `codex queue` fails, as any failed `codex queue` is,
+  instead of being answered as delivered.

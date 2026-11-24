@@ -1,7 +1,15 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
+import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
+import { act, renderHook, waitFor } from "@testing-library/react";
+import { createElement, type ReactNode } from "react";
 
-import type { UserAgentStates } from "../../api/types";
-import { legacyPinnedIds, pinnedAgentSessions } from "./pins";
+import { settle } from "../../__tests__/fake-clock";
+import { answerAgentStates } from "../../__tests__/send-answers";
+import { api } from "../../api/client";
+import { userAgentStateQuery } from "../../api/queries";
+import { DispatchQueryClient, hearLiveEvent } from "../../api/query-client";
+import type { DispatchEvent, UserAgentState, UserAgentStates } from "../../api/types";
+import { legacyPinnedIds, pinnedAgentSessions, useAgentPinWrite, usePinnedAgents } from "./pins";
 
 // The rail lists the person's pins oldest first (INFRA-812, R1), so the agent they pinned first
 // keeps the top row however their agent state is keyed, and a session they have only read or
@@ -64,4 +72,232 @@ test("an old key holding no list of ids carries no pins", () => {
   expect(legacyPinnedIds(JSON.stringify(["planner-session", 7, null]))).toEqual([
     "planner-session",
   ]);
+});
+
+/** Alice's agent states as Dispatch holds them before she pins the planner: read, not pinned. */
+const unpinned: UserAgentStates = { "planner-session": { unread_replies: 0 } };
+
+/** Dispatch's answer to her pin of the planner. */
+const pinAnswer: UserAgentState = { pinned_at: "2026-09-14T00:00:01Z", unread_replies: 0 };
+
+/** Dispatch's answers to the page's reads of the viewer's agent states, each held until the test
+ *  gives it: `asked[n]` is the read the page made n-th. */
+function heldAgentStateReads() {
+  const asked: ReturnType<typeof Promise.withResolvers<UserAgentStates>>[] = [];
+  const getMyAgentState = spyOn(api, "getMyAgentState").mockImplementation(() => {
+    const read = Promise.withResolvers<UserAgentStates>();
+    asked.push(read);
+    return read.promise;
+  });
+  return { asked, getMyAgentState };
+}
+
+/** A pin control, the rail's pins and the agent states they are drawn from, as a page of alice's
+ *  mounts them over `client`. */
+function renderPins(client: QueryClient) {
+  client.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
+  return renderHook(
+    () => ({
+      pin: useAgentPinWrite(),
+      pinned: usePinnedAgents(),
+      states: useQuery(userAgentStateQuery()).data,
+    }),
+    {
+      wrapper: ({ children }: { children: ReactNode }) =>
+        createElement(QueryClientProvider, { client }, children),
+    }
+  );
+}
+
+/** Asks the page's agent states again, as an event's refresh or another surface does. */
+function readAgentStatesAgain(client: QueryClient): void {
+  void client.invalidateQueries({ queryKey: userAgentStateQuery().queryKey });
+}
+
+// A read of the agent states that was out when the reader pressed Pin was answered from the
+// states before the press. When it lands after the press, the session the reader just pinned
+// must not drop out of the rail again while the pin is still out.
+test("a read asked before a pin press does not take the session out of the rail when it answers", async () => {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const reads = heldAgentStateReads();
+  const write = Promise.withResolvers<UserAgentState>();
+  const putAgentState = answerAgentStates().mockImplementation(() => write.promise);
+  const hook = renderPins(client);
+  try {
+    await waitFor(() => expect(reads.asked).toHaveLength(1));
+    await act(async () => reads.asked[0]?.resolve(unpinned));
+    expect(hook.result.current.pinned).toEqual([]);
+
+    act(() => readAgentStatesAgain(client));
+    await waitFor(() => expect(reads.asked).toHaveLength(2));
+    let pinned: Promise<boolean> | undefined;
+    act(() => {
+      pinned = hook.result.current.pin("planner-session", true);
+    });
+    await waitFor(() => expect(hook.result.current.pinned).toEqual(["planner-session"]));
+
+    // The read asked before the press answers the states from before it.
+    await act(async () => {
+      reads.asked[1]?.resolve(unpinned);
+      await settle();
+    });
+    expect(hook.result.current.pinned).toEqual(["planner-session"]);
+
+    await act(async () => {
+      write.resolve(pinAnswer);
+      expect(await pinned).toBe(true);
+    });
+    expect(hook.result.current.pinned).toEqual(["planner-session"]);
+  } finally {
+    hook.unmount();
+    putAgentState.mockRestore();
+    reads.getMyAgentState.mockRestore();
+  }
+});
+
+// A read of the agent states asked while a pin is out could reach Dispatch before the pin does,
+// and its answer, the states from before the press, would take the session out of the rail
+// while the pin is still out. The read waits until the pin's answer is in (`holds`), and then
+// reads what Dispatch holds after the pin.
+test("a read asked while a pin is out waits for the pin's answer", async () => {
+  const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  const reads = heldAgentStateReads();
+  const write = Promise.withResolvers<UserAgentState>();
+  const putAgentState = answerAgentStates().mockImplementation(() => write.promise);
+  const hook = renderPins(client);
+  try {
+    await waitFor(() => expect(reads.asked).toHaveLength(1));
+    await act(async () => reads.asked[0]?.resolve(unpinned));
+
+    let pinned: Promise<boolean> | undefined;
+    act(() => {
+      pinned = hook.result.current.pin("planner-session", true);
+    });
+    await waitFor(() => expect(putAgentState).toHaveBeenCalledTimes(1));
+    expect(hook.result.current.pinned).toEqual(["planner-session"]);
+
+    await act(async () => {
+      readAgentStatesAgain(client);
+      await settle();
+    });
+    expect(reads.getMyAgentState).toHaveBeenCalledTimes(1);
+    expect(hook.result.current.pinned).toEqual(["planner-session"]);
+
+    await act(async () => {
+      write.resolve(pinAnswer);
+      expect(await pinned).toBe(true);
+    });
+    expect(hook.result.current.pinned).toEqual(["planner-session"]);
+
+    // The read goes out once the answer is in, and what Dispatch holds now - the reviewer pinned
+    // in another browser as well - is what the rail shows.
+    await waitFor(() => expect(reads.getMyAgentState).toHaveBeenCalledTimes(2));
+    await act(async () => {
+      reads.asked[1]?.resolve({
+        "planner-session": pinAnswer,
+        "reviewer-session": { pinned_at: "2026-09-14T00:00:02Z", unread_replies: 0 },
+      });
+      await settle();
+    });
+    expect(hook.result.current.pinned).toEqual(["planner-session", "reviewer-session"]);
+  } finally {
+    hook.unmount();
+    putAgentState.mockRestore();
+    reads.getMyAgentState.mockRestore();
+  }
+});
+
+/** The `user_agent_state.updated` event alice's feed carries once Dispatch has moved `login`'s
+ *  state of `sessionId`. */
+function agentStateEvent(sessionId: string, login: string): DispatchEvent {
+  return {
+    actor: { id: login, kind: "user" },
+    created_at: "2026-09-14T00:00:01Z",
+    id: 1,
+    issue_key: null,
+    notify: false,
+    payload: { login, session_id: sessionId },
+    seq: 1,
+    type: "user_agent_state.updated",
+  } as DispatchEvent;
+}
+
+// The agent states hold every session's unread count, which other sessions' replies move while a
+// pin is out: a read held until the pin's answer, however late, would keep back the reviewer's
+// new reply that long. The pin's own event - its session's state, alice's - says Dispatch has
+// taken the pin, so the held read goes then and draws the pin with the reply, while the pin's
+// answer is still out. Another session's event, or bob's of the same session, leaves it held.
+test("a read held behind a pin goes on the pin's own event, and shows another session's reply before the pin's answer", async () => {
+  const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  const reads = heldAgentStateReads();
+  const write = Promise.withResolvers<UserAgentState>();
+  const putAgentState = answerAgentStates().mockImplementation(() => write.promise);
+  const hook = renderPins(client);
+  try {
+    await waitFor(() => expect(reads.asked).toHaveLength(1));
+    await act(async () =>
+      reads.asked[0]?.resolve({ ...unpinned, "reviewer-session": { unread_replies: 0 } })
+    );
+
+    let pinned: Promise<boolean> | undefined;
+    act(() => {
+      pinned = hook.result.current.pin("planner-session", true);
+    });
+    await waitFor(() => expect(putAgentState).toHaveBeenCalledTimes(1));
+    expect(hook.result.current.pinned).toEqual(["planner-session"]);
+
+    // Dispatch has not taken the pin, so a read that reached it now would answer no pin.
+    await act(async () => {
+      readAgentStatesAgain(client);
+      await settle();
+    });
+    expect(reads.getMyAgentState).toHaveBeenCalledTimes(1);
+
+    // Neither the reviewer's state nor bob's state of the planner is this pin.
+    await act(async () => {
+      hearLiveEvent(client, agentStateEvent("reviewer-session", "alice"), "alice");
+      hearLiveEvent(client, agentStateEvent("planner-session", "bob"), "alice");
+      readAgentStatesAgain(client);
+      await settle();
+    });
+    expect(reads.getMyAgentState).toHaveBeenCalledTimes(1);
+    expect(hook.result.current.states?.["reviewer-session"]?.unread_replies).toBe(0);
+
+    // Dispatch takes the pin, and the reviewer replies twice meanwhile: the pin's event comes,
+    // and the read it held goes, with the refresh the event asks for behind it.
+    const after: UserAgentStates = {
+      "planner-session": pinAnswer,
+      "reviewer-session": { unread_replies: 2 },
+    };
+    await act(async () => {
+      hearLiveEvent(client, agentStateEvent("planner-session", "alice"), "alice");
+      readAgentStatesAgain(client);
+      await settle();
+    });
+    expect(reads.getMyAgentState).toHaveBeenCalledTimes(2);
+    await act(async () => {
+      reads.asked[1]?.resolve(after);
+      await settle();
+    });
+    await waitFor(() => expect(reads.asked).toHaveLength(3));
+    await act(async () => {
+      reads.asked[2]?.resolve(after);
+      await settle();
+    });
+
+    // The pin's answer is still out, and the rail draws the pin with the reviewer's replies.
+    expect(putAgentState).toHaveBeenCalledTimes(1);
+    expect(hook.result.current.pinned).toEqual(["planner-session"]);
+    expect(hook.result.current.states).toEqual(after);
+
+    await act(async () => {
+      write.resolve(pinAnswer);
+      expect(await pinned).toBe(true);
+    });
+    expect(hook.result.current.states).toEqual(after);
+  } finally {
+    hook.unmount();
+    putAgentState.mockRestore();
+    reads.getMyAgentState.mockRestore();
+  }
 });

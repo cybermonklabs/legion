@@ -1,0 +1,29 @@
+{
+  "event_id": "evt-role-field",
+  "source": "agent",
+  "source_event_id": "agent.ses_sender.evt-role-field",
+  "source_session": "ses_sender",
+  "topic": "notifications.agent.ses_role_field",
+  "dedupe_key": "agent.ses_role_field.0123456789abcdef0123456789abcdef",
+  "issued_at": 1794992400000,
+  "expires_at": 1794996000000,
+  "kept_at": 1794992700000,
+  "mention_dedupe_keys": {
+    "ses_other": "mention.ses_other.evt-role-field"
+  },
+  "payload_summary": "Review the plan",
+  "payload": "Review the plan before noon.",
+  "payload_ref": "ref-role-field",
+  "trace_id": "trace-role-field",
+  "sender": {
+    "session_id": "ses_sender",
+    "machine": "host-a",
+    "cwd": "/work",
+    "title": "Planner",
+    "roles": ["legion-reviewer"]
+  },
+  "in_reply_to": "evt-before",
+  "supersedes": "evt-obsolete",
+  "urgency": "high",
+  "expects_reply": "required"
+}

@@ -1,22 +1,11 @@
 import { expect, jest, spyOn, test } from "bun:test";
 import { IDEMPOTENCY_KEY_TTL_MS } from "@legion/contracts";
-import {
-  type MutationKey,
-  onlineManager,
-  QueryClient,
-  QueryClientProvider,
-} from "@tanstack/react-query";
+import { type MutationKey, onlineManager, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, renderHook, waitFor } from "@testing-library/react";
 import { createElement, type ReactNode } from "react";
 
 import { onFakeClock, settle } from "../../__tests__/fake-clock";
-import {
-  type KeptTab,
-  keptTab,
-  keyMinted,
-  memoryFiles,
-  UnloadTarget,
-} from "../../__tests__/kept-sends-harness";
+import { type KeptTab, keptTab, keyMinted, UnloadTarget } from "../../__tests__/kept-sends-harness";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { ApiError, api, NetworkError } from "../../api/client";
 import { agentMessagesQuery } from "../../api/queries";
@@ -29,33 +18,11 @@ import {
   SendStoppedError,
 } from "../writes/keyed-write";
 import { KEPT_SEND_RESUME_MS } from "../writes/write-storage";
-import { Writes } from "../writes/write-store";
-import { type HeldSend, HeldSends, heldSends, stoppable } from "./held-sends";
+import { type HeldSend, type HeldSends, heldSends, stoppable } from "./held-sends";
+import { agentKey, agentSend, heldOf, request, signedIn, verdict } from "./held-sends-fixture";
 import { PendingSendTurn } from "./PendingSendTurn";
 import { carriedIdsOf, type SentRequest, saveCommentEdit } from "./send-request";
 import { useSessionSends } from "./useSessionSends";
-
-const request: SentRequest = {
-  anchor: undefined,
-  ask: { multiple: false, options: [], urgency: "med" },
-  draft: { body: "Held", mentions: [], replacement: "" },
-  edit: undefined,
-  kind: "comment",
-  owner: { issueKey: "CORE-1", kind: "issue" },
-  plainDelivery: "steer",
-  replyTo: null,
-  sendKey: "send-0",
-};
-
-/** A message to one session, Send's own: the request the Agents page's composer holds. */
-const agentSend: SentRequest = {
-  ...request,
-  draft: { body: "Status please", mentions: [], replacement: "" },
-  owner: { kind: "session", sessionId: "planner-session" },
-  sendKey: "send-1",
-};
-
-const agentKey: MutationKey = ["agent-composer", "planner-session"];
 
 const sentMessage = {
   body: "Status please",
@@ -103,23 +70,6 @@ const editPatch = {
   ],
   body: editBody,
 };
-
-/** Dispatch's verdict on a send: it is not tried again, and the composer shows it. */
-const verdict = new ApiError(400, { code: "COMMENT_INPUT", error: "the body is empty" });
-
-/** A page's query client, signed in: the store stamps every send with this login at its press
- *  and resumes only this login's, as the app's does. */
-function signedIn(login = "alice"): QueryClient {
-  const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
-  client.setQueryData(["whoami"], { event_head: "0", kind: "user", login });
-  return client;
-}
-
-/** The held sends of a page of `tab`, over a store of their own. */
-function heldOf(tab = keptTab(), client = signedIn(), unload?: EventTarget) {
-  const writes = new Writes(client, tab.page(unload), memoryFiles());
-  return { held: new HeldSends(writes), writes };
-}
 
 /** Puts the write `key` back far enough that the page it comes back to does not make it again on
  *  its own: it shows refused, with Retry and Discard. */

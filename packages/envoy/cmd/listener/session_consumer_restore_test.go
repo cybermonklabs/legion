@@ -100,7 +100,7 @@ func TestARegistrationRacedByAnotherListenersDeleteKeepsItsConsumer(t *testing.T
 func TestARestoredConsumerDoesNotOfferTheAckedFramesAgain(t *testing.T) {
 	rig := newRelayRig(t)
 	sessionID := "ses_acked_" + id.New()
-	agent := contracts.AgentSubject(sessionID)
+	agent := contracts.LegacyAgentSubject(sessionID)
 	standIn := startSessionStandIn(t, rig.url, sessionID, answerDone)
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
 	var written []contracts.Envelope
@@ -132,6 +132,7 @@ func TestARestoredConsumerDoesNotOfferTheAckedFramesAgain(t *testing.T) {
 			t.Errorf("write the record of %s back as the registration that raced its delete does: %v", sessionID, err)
 		}
 	})
+	awaitSessionConsumerStored(t, rig.harness.client.Conn, sessionID)
 	if !rig.deps.consumers.deleteConsumer(ctx, rig.deps, sessionID, nil) {
 		t.Fatalf("the delete of %s's consumer reported it standing; want it gone, the bucket holding no record when the delete read it", sessionID)
 	}
@@ -180,9 +181,9 @@ const sessionEntryWriteDelay = 400 * time.Millisecond
 func TestASessionThatRacesADeleteThroughItsEntryWriteIsOfferedNothingItAcked(t *testing.T) {
 	rig := newRelayRig(t)
 	sessionID := "ses_entry_write_race_" + id.New()
-	agent := contracts.AgentSubject(sessionID)
+	agent := contracts.LegacyAgentSubject(sessionID)
 	hub := testnats.StartProxy(t, rig.url, testnats.ProxyLatency(sessionEntryWriteDelay))
-	slow, err := session.OpenSessionRegistry(testnats.Connect(t, hub.URL()), session.WithSessionReplicas(1))
+	slow, err := session.OpenSessionRegistry(t.Context(), testnats.Connect(t, hub.URL()), session.WithSessionReplicas(1))
 	if err != nil {
 		t.Fatalf("open the registry the entry write that races the delete is made through: %v", err)
 	}
@@ -238,6 +239,7 @@ func TestASessionThatRacesADeleteThroughItsEntryWriteIsOfferedNothingItAcked(t *
 			t.Errorf("the entry write that raced the delete of %s: %v", sessionID, err)
 		}
 	})
+	awaitSessionConsumerStored(t, rig.harness.client.Conn, sessionID)
 	if !rig.deps.consumers.deleteConsumer(ctx, deleteDeps, sessionID, nil) {
 		t.Fatalf("the delete of %s's consumer reported it standing; want it gone, the bucket holding no record when the delete read it", sessionID)
 	}
@@ -271,7 +273,7 @@ func TestARegistrationsOwnRepairDoesNotOfferTheAckedFramesAgain(t *testing.T) {
 	registering := newRelayRig(t)
 	deleting := newSessionConsumerRig(t)
 	sessionID := "ses_register_repair_" + id.New()
-	agent := contracts.AgentSubject(sessionID)
+	agent := contracts.LegacyAgentSubject(sessionID)
 	standIn := startSessionStandIn(t, registering.url, sessionID, answerDone)
 	registering.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
 	// The frames the session acks before the registration below: its floor stands at the last of
@@ -307,6 +309,7 @@ func TestARegistrationsOwnRepairDoesNotOfferTheAckedFramesAgain(t *testing.T) {
 			}
 		})
 	}
+	awaitSessionConsumerStored(t, registering.harness.client.Conn, sessionID)
 	registering.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
 	registering.deps.consumers.afterRegisterFilter = nil
 
@@ -399,7 +402,7 @@ func TestADeleteRestoresTheConsumerOfASessionItsCacheHasNoRecordOf(t *testing.T)
 	deleting := newSessionConsumerRig(t)
 	const sessionID = "ses_cache_behind"
 	registering.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
-	registering.store(t, contracts.AgentSubject(sessionID))
+	registering.store(t, contracts.LegacyAgentSubject(sessionID))
 	registering.awaitPending(t, sessionID, 1)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -469,7 +472,7 @@ func TestADeleteRestoresTheConsumerWithTheTopicItsCacheHasNotHeardOf(t *testing.
 	const sessionID = "ses_topics_behind"
 	const probe = "notifications.dispatch.issue.PROBE.>"
 	registering.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
-	awaitCachedTopics(t, deleting.deps.registry, sessionID, contracts.AgentSubject(sessionID))
+	awaitCachedTopics(t, deleting.deps.registry, sessionID, contracts.LegacyAgentSubject(sessionID))
 	deleting.deps.registry.StopWatch()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

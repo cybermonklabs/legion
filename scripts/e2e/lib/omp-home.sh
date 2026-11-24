@@ -4,15 +4,20 @@
 # make_omp_home DIR — DIR becomes the HOME every Oh My Pi process of the run runs under (the daemon,
 # so every pane, the controller, and each `omp` a lib runs), so the run's profile root is
 # DIR/.omp/profiles/<name>, inside its work directory, and the operator's own ~/.omp/profiles is
-# never written or deleted. Oh My Pi places a profile from the home directory alone:
-# os.homedir()/.omp/profiles/<name> (getProfileConfigRoot, @oh-my-pi/pi-utils dirs.ts).
+# never written or deleted. Oh My Pi places a profile under its config root:
+# os.homedir()/.omp/profiles/<name> (getProfileConfigRoot, @oh-my-pi/pi-utils dirs.ts), or
+# profiles/<name> under the directory OMP_CONFIG_ROOT names, which the pinned build reads and which
+# the driver's own shell is taken not to set.
 # XDG_DATA_HOME moves only a named profile's data, and only once $XDG_DATA_HOME/omp/profiles/<name>
-# exists, and PI_CONFIG_DIR reaches no pane (neither daemon's pane allow-list carries it).
+# exists, and neither PI_CONFIG_DIR nor OMP_CONFIG_ROOT reaches a pane (neither daemon's pane
+# allow-list carries them).
 #
-# DIR/.omp/natives links to the operator's native module cache (116 MiB per Oh My Pi version at the
-# pin, the one variant the CPU selects; resolved as getNativesDir in @oh-my-pi/pi-natives'
-# native/loader-state.js resolves it), which a
-# fresh home would download again; removing DIR removes the link, never the cache. MISE_DATA_DIR and
+# DIR/.omp/natives links to the operator's native module cache (123 MiB per Oh My Pi version at the
+# pin, the one variant the CPU selects), which is $XDG_DATA_HOME/omp/natives when $XDG_DATA_HOME/omp
+# exists and $HOME/.omp/natives otherwise: the two places getNativesDir in @oh-my-pi/pi-natives'
+# native/loader-state.js reads when none of PI_NATIVES_DIR, OMP_DOWNLOAD_ROOT and OMP_CONFIG_ROOT
+# is set, as no Legion process sets them. A fresh home would download that module again; removing
+# DIR removes the link, never the cache. MISE_DATA_DIR and
 # XDG_CONFIG_HOME are exported first as the operator's own, where each already resolves, so what the
 # daemon itself runs under DIR finds what it did under the operator's HOME: `mise` the same pinned
 # Oh My Pi, `secrets` its secretsd config (the daemon resolves provider_keys with it), and gh and jj
@@ -62,3 +67,36 @@ make_omp_home() {
   # through the first link), and a real directory there fails the call instead of taking a link.
   ln -sfT "$natives" "$1/.omp/natives"
 }
+
+# omp_setup_wizard_off FILE: appends to FILE, the agent/config.yml of a profile the run writes under
+# its own home, the setting that keeps Oh My Pi's first-run setup wizard shut. An interactive Oh My
+# Pi in a terminal (`legion controller start` in a tmux pane, a person's session) opens the wizard
+# ("Setup step 1 of 5", "Sign in to your providers") while the profile's setupVersion is below the
+# build's CURRENT_SETUP_VERSION, so on a fresh profile the wizard blocks the session's first
+# command and normal editor interaction (runInteractiveMode in packages/coding-agent/src/main.ts
+# and selectSetupScenes in packages/tui/src/setup/wizard.ts, at the pin). `startup.setupWizard:
+# false` shuts it whatever setup version the build counts to; `--mode rpc` never opens it. A named
+# profile's own settings file is its agent/config.yml, and it inherits no other config.yml of the
+# home (getProfileConfigRoot in @oh-my-pi/pi-utils dirs.ts). Only the working directory's project
+# settings and PI_CONFIG_FILES overlays merge over it, so each profile the run writes carries the
+# line.
+omp_setup_wizard_off() {
+  printf 'startup:\n  setupWizard: false\n' >>"$1"
+}
+
+# omp_session_unsets is env's -u options for the variables of the operator's own Oh My Pi session
+# that no Oh My Pi a rig starts from that session may inherit: OMP_SESSION_ID, that session's id;
+# OMPCODE, the mark Oh My Pi puts on the shells its bash tool spawns (buildSpawnEnv in
+# @oh-my-pi/pi-utils procmgr.ts); PI_CONFIG_FILES, that session's settings overlays, which Oh My Pi
+# lays over the profile it opens; ENVOY_NATS_URL, the NATS that session's Envoy plugin dials;
+# LEGION_OMP_PATH, the Oh My Pi binary that `legion controller start` and the daemon run in place
+# of omp_invocation (ResolveInvocation, packages/daemon/internal/omplaunch); and
+# OMP_SESSION_EXCLUSIVE, the variable the runtime sets to 1 in a pane or pod that resumes a
+# recorded Oh My Pi session, under which an Oh My Pi a rig resumes (--continue) exits rather than
+# moving where another live process holds the session, and which `legion controller start` also
+# drops from what it inherits (packages/daemon/cmd/legion/controller.go). `legion controller
+# start` hands Oh My Pi its caller's environment, so every rig that runs it, or an interactive omp,
+# from the operator's shell drops these first: `env "${omp_session_unsets[@]}" …` in an argv, and
+# `env ${omp_session_unsets[*]} …` in a pane's shell command, which no name here needs quoted in.
+# shellcheck disable=SC2034 # the scripts that source this file read it
+omp_session_unsets=(-u OMP_SESSION_ID -u OMPCODE -u PI_CONFIG_FILES -u ENVOY_NATS_URL -u LEGION_OMP_PATH -u OMP_SESSION_EXCLUSIVE)

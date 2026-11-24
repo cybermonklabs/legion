@@ -90,9 +90,9 @@ func appliedAt(t *testing.T, store *Store, stem string) time.Time {
 	return recordedAt
 }
 
-// databaseFromBeforeTheWidening gives the store's database the schema_migrations table
-// createVersionTable created before the versions became timestamps — version an integer — with
-// the numbered migration such a database had already applied recorded in it.
+// databaseFromBeforeTheWidening gives the store's database the schema_migrations table the runner
+// created before the versions became timestamps — version an integer, and no identity columns —
+// with the numbered migration such a database had already applied recorded in it.
 func databaseFromBeforeTheWidening(t *testing.T, store *Store) {
 	t.Helper()
 	ctx := context.Background()

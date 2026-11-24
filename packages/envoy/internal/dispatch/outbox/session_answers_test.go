@@ -85,7 +85,7 @@ func TestSessionAnswersReadsWhatThePublisherRecorded(t *testing.T) {
 		}
 		return topics
 	}
-	askerTopic := contracts.AgentSubject(asker.ID)
+	askerTopic := contracts.LegacyAgentSubject(asker.ID)
 	for name, event := range map[string]model.Event{"the answer": answered, "the agent's reply": agentReply, "the person's reply": personReply} {
 		if topics := destinations(event); !slices.Contains(topics, askerTopic) {
 			t.Fatalf("%s reached %v, want the asker's own topic", name, topics)

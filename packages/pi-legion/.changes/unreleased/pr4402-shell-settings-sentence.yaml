@@ -1,0 +1,9 @@
+kind: Changed
+body: |-
+    The shipped agents' rule on reading a piped command's status names all three shell settings:
+    never set `-e`, `-u` or `pipefail` at the top level of the shell, since under `-e` or `-u` a
+    later command that fails or reads an unset variable ends the call, and under `pipefail` a later
+    `cmd | head` reads as failed.
+time: 2026-11-18T10:13:01Z
+custom:
+    Issue: pr4402

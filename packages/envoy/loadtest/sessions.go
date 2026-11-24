@@ -4,10 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"io"
 	"log"
-	"maps"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -20,6 +19,8 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/listenerwire"
+	"github.com/sjawhar/envoy/loadtest/listenerclient"
 )
 
 // The simulated sessions: on NATS, each subscribes its relay subject, as the pi plugin does
@@ -64,7 +65,7 @@ func (st *step) subscribeSessions() (*natsSessions, error) {
 	ns.relay = newRelaySessions(len(st.ids), len(ns.conns))
 	for i, id := range st.ids {
 		nc := ns.conns[i%len(ns.conns)]
-		if _, err := nc.Subscribe(bus.DeliverSubject(id), ns.relay.handler(ns, i, contracts.AgentSubject(id), st.nonce)); err != nil {
+		if _, err := nc.Subscribe(bus.DeliverSubject(id), ns.relay.handler(ns, i, contracts.LegacyAgentSubject(id), st.nonce)); err != nil {
 			return ns, err
 		}
 		ns.subs++
@@ -148,45 +149,31 @@ func (e *envelopeSamples) write(dir string, lg *log.Logger) {
 // is the same at every heartbeat, but for its delivery field, which carries the session's current
 // resume point.
 type registrar struct {
-	url, token    string
-	client        *http.Client
-	bodies        []map[string]any
+	listener      *listenerclient.Client
+	bodies        []listenerwire.SubscribeRequest
 	ok, errs      atomic.Int64 // the first registration of each session
 	heartbeatErrs atomic.Int64
 	// relay hears each answer's delivery mode and holds the resume point each body asks from.
 	relay *relaySessions
 }
 
-// registerAnswer is the part of a registration's answer the registrar reads: the delivery mode
-// and stream. This listener answers every registration it takes with a delivery field naming
-// consumer; one that carries none, or another mode, is counted a session with no consumer
-// (relaySessions.answered).
-type registerAnswer struct {
-	Delivery *struct {
-		Mode     string `json:"mode"`
-		StreamID string `json:"stream_id"`
-	} `json:"delivery"`
-}
-
+// register sends session i's registration. The listener answers every registration it takes with
+// a delivery field naming consumer; an answer that carries none, another mode or does not decode
+// is counted a session with no consumer (relaySessions.answered). A refusal is its status and what
+// the listener said.
 func (r *registrar) register(ctx context.Context, i int) error {
-	body := maps.Clone(r.bodies[i])
-	body["delivery"] = r.relay.delivery(i)
-	data, _ := json.Marshal(body)
-	req, _ := http.NewRequestWithContext(ctx, "POST", r.url+"/v1/interests/subscribe", bytes.NewReader(data))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+r.token)
-	resp, err := r.client.Do(req)
+	body := r.bodies[i]
+	body.Delivery = r.relay.delivery(i)
+	ans, err := r.listener.Subscribe(ctx, body)
+	var refusal *listenerclient.Refusal
+	if errors.As(err, &refusal) {
+		return fmt.Errorf("%d %s", refusal.Status, trunc(refusal.Body))
+	}
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
-	b, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode/100 != 2 {
-		return fmt.Errorf("%d %s", resp.StatusCode, trunc(b))
-	}
-	var ans registerAnswer
 	mode, streamID := "", ""
-	if json.Unmarshal(b, &ans) == nil && ans.Delivery != nil {
+	if ans != nil && ans.Delivery != nil {
 		mode, streamID = ans.Delivery.Mode, ans.Delivery.StreamID
 	}
 	r.relay.answered(i, mode, streamID)
@@ -198,7 +185,7 @@ func (r *registrar) register(ctx context.Context, i int) error {
 // populations. With -mention-frac, it advertises the default mention delivery, so Dispatch
 // delivers a mention of the session. registrar.register adds the delivery field asking for
 // consumer delivery.
-func (st *step) registrationFields(i int) map[string]any {
+func (st *step) registrationFields(i int) listenerwire.SubscribeRequest {
 	topics := []string{}
 	for _, p := range st.pops {
 		topics = append(topics, p.topics(p.sessions[i])...)
@@ -209,13 +196,13 @@ func (st *step) registrationFields(i int) map[string]any {
 // registrationFieldsOf is that registration for a session id and the topics it follows, which
 // the replay's roster builds one of before the session is laid out (newReplayStep). mentions
 // advertises the default mention delivery, which is what -mention-frac needs of a session.
-func registrationFieldsOf(id string, topics []string, mentions bool) map[string]any {
+func registrationFieldsOf(id string, topics []string, mentions bool) listenerwire.SubscribeRequest {
 	capabilities := []string{}
 	if mentions {
 		capabilities = []string{mentionDelivery}
 	}
-	return map[string]any{"session_id": id, "dir": "/work/" + id, "title": "load " + id,
-		"topics": topics, "port": 0, "self_subscribed": true, "driving": false, "capabilities": capabilities}
+	return listenerwire.SubscribeRequest{SessionID: id, Dir: "/work/" + id, Title: "load " + id,
+		Topics: topics, SelfSubscribed: true, Capabilities: capabilities}
 }
 
 // registrationBody is registrationFieldsOf encoded, as the listener receives it.
@@ -228,8 +215,8 @@ func registrationBody(id string, topics []string, mentions bool) []byte {
 // with the epoch of the session's NATS connection and, once the session has one, its resume point
 // (relaySessions.delivery).
 func (st *step) registerSessions(ctx context.Context, ns *natsSessions) *registrar {
-	reg := &registrar{url: st.cfg.ep.listener, token: st.cfg.ep.listenerToken, client: &http.Client{Timeout: 10 * time.Second},
-		bodies: make([]map[string]any, len(st.ids)), relay: ns.relay}
+	reg := &registrar{listener: &listenerclient.Client{URL: st.cfg.ep.listener, Token: st.cfg.ep.listenerToken, HTTP: &http.Client{Timeout: 10 * time.Second}},
+		bodies: make([]listenerwire.SubscribeRequest, len(st.ids)), relay: ns.relay}
 	for i := range st.ids {
 		reg.bodies[i] = st.registrationFields(i)
 	}

@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"runtime"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -23,6 +24,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // An ask block a session writes just before its issue closes - inside the settle delay, so no
@@ -42,8 +44,13 @@ func TestAnAskWrittenJustBeforeItsIssueClosedKeepsItsAuthorAfterAReopen(t *testi
 	waitForAskAuthor(t, service, artifactID, actor)
 }
 
-// The author persisted for a document that closes before its settlement also survives a process
-// restart between the close and the reopen, where the old service's room state is unavailable.
+// The author recorded for an ask block written just before its issue closes also survives a
+// process restart between the close and the reopen, where the old service's room state is
+// unavailable. The restarted service's resumption settles the document on the closed issue, unless
+// the old service's shutdown drain already did: either way the block gets no ask, the version
+// shows it resolved, and doc_ask_block_authors keeps its author (reconcileAskBlocks). The reopen
+// marks the document owed (MarkReopenOwedAskDocuments), and the resumption after it opens the
+// block's ask, credited to that recorded author.
 func TestAnAskWrittenJustBeforeItsIssueClosedKeepsItsAuthorAfterRestartAndReopen(t *testing.T) {
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour // the issue closes before the edit's own settlement runs
@@ -62,6 +69,24 @@ func TestAnAskWrittenJustBeforeItsIssueClosedKeepsItsAuthorAfterRestartAndReopen
 			t.Errorf("shutdown restarted document service: %v", err)
 		}
 	})
+	if err := restarted.resumeOwedSettlements(ctx, 0); err != nil {
+		t.Fatalf("resume the closed issue's owed settlement: %v", err)
+	}
+	waitFor(t, roomWait(t), "the closed issue's document to settle on the restarted service", func() bool {
+		owed, err := settlementPending(ctx, restarted.store.Pool, artifactID)
+		return err == nil && !owed
+	})
+	if asks := asksOn(t, restarted, artifactID); asks != 0 {
+		t.Fatalf("the closed issue's settlement left %d asks on the document, want none while the issue is closed", asks)
+	}
+	const resolved = `#closing-ask urgency="med" multiple="false" state="resolved"`
+	if _, markdown, _ := latestDocumentVersion(t, restarted.store, artifactID); !strings.Contains(markdown, resolved) {
+		t.Fatalf("the closed issue's settlement left the latest version reading:\n%s\nwant the block saved resolved: %s", markdown, resolved)
+	}
+	if recorded := recordedAskAuthors(t, restarted.store, artifactID); recorded["closing-ask"] != actor {
+		t.Fatalf("doc_ask_block_authors after the closed issue's settlement = %+v, want closing-ask recorded as %+v", recorded, actor)
+	}
+
 	reopenTestIssue(t, restarted)
 	if err := restarted.resumeOwedSettlements(ctx, 0); err != nil {
 		t.Fatalf("resume the reopened document's settlement: %v", err)
@@ -83,7 +108,7 @@ func TestCommittedLedgerWritePersistsSettlementCreditWhenCallerContextCancelsAft
 		t.Fatalf("begin edit: %v", err)
 	}
 	defer tx.Rollback(context.Background())
-	joined, ledger := service.Join(ctx, cancelAfterCommitTx{Tx: tx, cancel: cancel})
+	joined, ledger := service.Join(ctx, &cancelAfterCommitTx{Tx: tx, cancel: cancel})
 	defer ledger.Discard()
 	actor := model.Actor{Kind: "session", ID: "canceled-after-commit-session"}
 	if _, err := service.ApplyOps(joined, artifactID, []model.EditOp{{
@@ -491,20 +516,13 @@ func editAsBrowser(t *testing.T, service *Service, artifactID string, browser *d
 // roomWait bounds a wait on a document room's own work - sending a browser the document,
 // recording an edit, landing an append, finishing an eviction - which takes as long as the loaded
 // machine takes. It is the smaller of roomWaitCap and what the test binary's deadline leaves after
-// roomWaitMargin, so a room that never finishes fails the test by name, and leaves the binary's
-// timeout to the package's later tests. A deadline that leaves no more than roomWaitMargin to
-// begin with fails once, by name: that reads like a misconfigured run, not a room that stopped.
+// roomWaitMargin (testwait.Remaining), so a room that never finishes fails the test by name, and
+// leaves the binary's timeout to the package's later tests. A deadline that leaves no more than
+// roomWaitMargin to begin with fails once, by name, saying whether the -timeout was too short or
+// the tests before used it up.
 func roomWait(t *testing.T) time.Duration {
 	t.Helper()
-	deadline, bounded := t.Deadline()
-	if !bounded {
-		return roomWaitCap
-	}
-	left := time.Until(deadline)
-	if left <= roomWaitMargin {
-		t.Fatalf("the test binary's deadline leaves %s, not more than roomWaitMargin (%s): this looks like a misconfigured run; raise -timeout", left.Round(time.Millisecond), roomWaitMargin)
-	}
-	return min(left-roomWaitMargin, roomWaitCap)
+	return min(testwait.Remaining(t, roomWaitMargin), roomWaitCap)
 }
 
 const (
@@ -540,7 +558,7 @@ func TestATwoPeerBrowserEditQueuedBehindAnOpenVersionIsNotCreditedAgainAfterAReo
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
 	t.Cleanup(httpServer.Close)
 
-	dave := model.Actor{Kind: "user", ID: "dave"}
+	dave := model.Actor{Kind: "user", ID: "dave", Proven: true}
 	agent := model.Actor{Kind: "session", ID: "agent-session"}
 	delta := model.Actor{Kind: "session", ID: "delta-session"}
 
@@ -613,7 +631,7 @@ func TestABrowserEditAfterAVersionsCaptureStaysOwed(t *testing.T) {
 	seedServiceText(t, service, artifactID, "# Decision\n\nContext.\n")
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
 	t.Cleanup(httpServer.Close)
-	carol := model.Actor{Kind: "user", ID: "carol"}
+	carol := model.Actor{Kind: "user", ID: "carol", Proven: true}
 	agent := model.Actor{Kind: "session", ID: "agent-session"}
 
 	browser := connectBrowser(t, httpServer.URL, artifactID, carol.ID)
@@ -650,7 +668,7 @@ func TestAnUploadsFullReleaseClearsTheDurableRowOfAPendingAuthorItWasNeverCredit
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
 	t.Cleanup(httpServer.Close)
-	bob := model.Actor{Kind: "user", ID: "bob"}
+	bob := model.Actor{Kind: "user", ID: "bob", Proven: true}
 	uploader := model.Actor{Kind: "session", ID: "uploader-session"}
 
 	browser := connectBrowser(t, httpServer.URL, artifactID, bob.ID)
@@ -673,7 +691,7 @@ func TestAnUploadsFullReleaseClearsTheDurableRowOfAPendingAuthorItWasNeverCredit
 	defer tx.Rollback(ctx)
 	joined, ledger := service.Join(ctx, tx)
 	defer ledger.Discard()
-	if _, err := service.ReplaceText(joined, artifactID, "First.\n\nSecond, uploaded.\n", uploader); err != nil {
+	if _, err := service.ReplaceText(joined, artifactID, "First.\n\nSecond, uploaded.\n", uploader, liveDocumentToken(t, service, artifactID)); err != nil {
 		t.Fatalf("upload the replacement text: %v", err)
 	}
 	var nextNumber int
@@ -708,7 +726,7 @@ func TestAnUploadsFullReleaseKeepsABrowserEditCreditedWhileItsTransactionWasOpen
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
 	t.Cleanup(httpServer.Close)
-	bob := model.Actor{Kind: "user", ID: "bob"}
+	bob := model.Actor{Kind: "user", ID: "bob", Proven: true}
 	uploader := model.Actor{Kind: "session", ID: "uploader-session"}
 
 	tx, err := service.store.Pool.Begin(ctx)
@@ -718,7 +736,7 @@ func TestAnUploadsFullReleaseKeepsABrowserEditCreditedWhileItsTransactionWasOpen
 	defer tx.Rollback(ctx)
 	joined, ledger := service.Join(ctx, tx)
 	defer ledger.Discard()
-	if _, err := service.ReplaceText(joined, artifactID, "First.\n\nSecond, uploaded.\n", uploader); err != nil {
+	if _, err := service.ReplaceText(joined, artifactID, "First.\n\nSecond, uploaded.\n", uploader, liveDocumentToken(t, service, artifactID)); err != nil {
 		t.Fatalf("upload the replacement text: %v", err)
 	}
 
@@ -825,7 +843,7 @@ func TestABrowserEditAfterARoomReloadIsOwed(t *testing.T) {
 	}
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
 	t.Cleanup(httpServer.Close)
-	alice := model.Actor{Kind: "user", ID: "alice"}
+	alice := model.Actor{Kind: "user", ID: "alice", Proven: true}
 
 	// Several versioned writes before the reload, each taking its own author out of what the
 	// document owes.
@@ -881,7 +899,7 @@ func TestConcurrentBrowserAndVersionedWritesListEveryAuthorOnceAfterEveryRound(t
 		login := fmt.Sprintf("round%d-browser", round)
 		browser := connectBrowser(t, httpServer.URL, artifactID, login)
 		agent := model.Actor{Kind: "session", ID: fmt.Sprintf("round%d-agent", round)}
-		authors = append(authors, model.Actor{Kind: "user", ID: login}, agent)
+		authors = append(authors, model.Actor{Kind: "user", ID: login, Proven: true}, agent)
 
 		var wg sync.WaitGroup
 		wg.Add(2)
@@ -1273,25 +1291,61 @@ func writeAskBeforeClose(t *testing.T, service *Service, artifactID string, acto
 	service.ScheduleSettlement(artifactID)
 }
 
+// closeTestIssue closes DOC-1 in the database and hands this service the notification that commit
+// sends, and waits until every room resident before the close has closed. It waits for those rooms
+// alone, by instance, not for the service to hold none: a room's last browser leaving runs the
+// settlement the document owes at once (settleLastPeer), on the closed issue as on an open one,
+// and its warm-up can load the document into a new room, which stays resident until the departing
+// browser's socket ends and retires it, or until it idles out (roomIdleTimeout) when something took
+// it up (retireSettlementRoom).
 func closeTestIssue(t *testing.T, service *Service) {
 	t.Helper()
 	ctx := context.Background()
+	resident := map[string]*crdt.Doc{}
+	for _, room := range service.srv.Rooms() {
+		resident[room] = service.srv.GetDoc(room)
+	}
 	if _, err := service.store.Pool.Exec(ctx, `update issues set closed_at = now() where key = 'DOC-1'`); err != nil {
 		t.Fatalf("close the issue: %v", err)
 	}
 	service.issueOpenChanged(ctx, "DOC-1")
-	waitFor(t, 30*time.Second, "the closed issue's room to close", func() bool {
-		return len(service.srv.Rooms()) == 0
+	waitFor(t, 30*time.Second, "the closed issue's rooms to close", func() bool {
+		for room, live := range resident {
+			if live != nil && service.srv.GetDoc(room) == live {
+				return false
+			}
+		}
+		return true
 	})
 }
 
+// reopenTestIssue reopens DOC-1 as the API's reopen does (api.prepareRestoration, recordRestoredAsksTx): in one
+// transaction joined with Service.Join (joinedWrite), which holds the issue's row once it clears
+// closed_at, it marks owing a settlement each document of the issue whose ask blocks a settlement
+// after the reopen has to reconcile (MarkReopenOwedAskDocuments): one that holds an ask block no
+// settlement has indexed, the block document of an open ask, or one holding the block of an ask
+// a settlement retracted. It then follows the versions a settlement wrote while the issue was
+// closed (FollowClosedIssueVersions): it moves an open approval request to its document's latest
+// version, carries a standing approval to that version, and forgets the editor a closed issue's
+// settlement kept for each document that owes no settlement. It restores no ask: a test that
+// wants an ask the close withdrew open again writes its row itself. The commit publishes the
+// events the follow appended (Ledger.Commit), and the reopen is then recorded on this service's
+// rooms, as room sync records it on the reopen's notification.
 func reopenTestIssue(t *testing.T, service *Service) {
 	t.Helper()
-	ctx := context.Background()
-	if _, err := service.store.Pool.Exec(ctx, `update issues set closed_at = null where key = 'DOC-1'`); err != nil {
-		t.Fatalf("reopen the issue: %v", err)
+	if err := joinedWrite(service, func(ctx context.Context) error {
+		tx, _ := txFromContext(ctx)
+		if _, err := tx.Exec(ctx, `update issues set closed_at = null where key = 'DOC-1'`); err != nil {
+			return fmt.Errorf("clear the issue's closed_at: %w", err)
+		}
+		if err := service.MarkReopenOwedAskDocuments(ctx, "DOC-1"); err != nil {
+			return err
+		}
+		return service.FollowClosedIssueVersions(ctx, "DOC-1")
+	}); err != nil {
+		t.Fatalf("reopen the issue, mark owed its documents whose ask blocks wait for the reopen and follow its closed versions: %v", err)
 	}
-	service.issueOpenChanged(ctx, "DOC-1")
+	service.issueOpenChanged(context.Background(), "DOC-1")
 }
 
 func waitForAskAuthor(t *testing.T, service *Service, artifactID string, want model.Actor) {

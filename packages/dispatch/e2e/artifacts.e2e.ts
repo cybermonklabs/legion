@@ -3,6 +3,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 
 import { RECONNECT_SPREAD_MS } from "../web/src/api/live-socket";
 import { QUERY_RETRY_DELAY_MS } from "../web/src/api/query-client";
+import { scrollFadeTrailingPx } from "../web/src/theme/classes";
 
 import {
   createAsk,
@@ -11,12 +12,14 @@ import {
   createIssueArtifact,
   createProject,
   dashboardOrigin,
+  documentBase,
   editArtifact,
   getArtifactText,
 } from "./api";
 import { countDocumentSockets, documentEditor, documentTransport, typeAtEnd } from "./editor";
 import { navigateInApp } from "./sends";
-import { expect, type Locator, type Page, type TestInfo, test } from "./test";
+import { expandedState } from "./settled";
+import { expect, type Locator, type Page, type Request, type TestInfo, test } from "./test";
 
 const tinyPng =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL0eAAAAABJRU5ErkJggg==";
@@ -36,13 +39,20 @@ async function notesFile(testInfo: TestInfo): Promise<string> {
   return path;
 }
 
+/** The phone's review panel toggle, whose name says Open or Close as the panel is shut or open. */
+function reviewPanelToggle(page: Page): Locator {
+  return page.getByRole("button", { name: /review panel/i });
+}
+
+/** Shuts the phone's review panel where it is open over the page. The toggle says which it is,
+ *  and is read once the page has drawn it rather than at the instant it attaches. */
+async function shutReviewPanel(page: Page): Promise<void> {
+  const toggle = reviewPanelToggle(page);
+  if ((await expandedState("the review panel", toggle)) === "open") await toggle.click();
+}
+
 async function openArtifacts(page: Page, isPhone: boolean) {
-  if (isPhone) {
-    const reviewPanel = page.getByRole("button", { name: /review panel/i });
-    if ((await reviewPanel.getAttribute("aria-expanded")) === "true") {
-      await reviewPanel.click();
-    }
-  }
+  if (isPhone) await shutReviewPanel(page);
   await page.getByRole("tab", { name: "Artifacts" }).click();
 }
 
@@ -179,10 +189,8 @@ test("artifacts upload, version, references, and phone layout @phone @pr", async
     await expect(page.getByRole("navigation", { name: "Navigation" })).toBeVisible();
     await page.getByRole("button", { name: "Close navigation" }).click();
     await navigateInApp(page, `/issues/${issue.key}`);
-    const openMargin = page.getByRole("button", { name: /review panel/i });
-    if ((await openMargin.getAttribute("aria-expanded")) === "true") {
-      await openMargin.click();
-    }
+    const openMargin = reviewPanelToggle(page);
+    await shutReviewPanel(page);
     const [navigationBox, marginBox] = await Promise.all([
       openNavigation.boundingBox(),
       openMargin.boundingBox(),
@@ -198,6 +206,101 @@ test("artifacts upload, version, references, and phone layout @phone @pr", async
       await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)
     ).toBe(true);
   }
+});
+
+// The base a multipart upload names: the value of its `precondition` form field, parsed, and
+// null when the upload carries no such field. The page posts a `FormData` for a picked file, and
+// the server reads the base from that field (`multipartArtifactUpload` in the server's
+// `api/artifacts.go`), so this is the base as the server receives it rather than as the page
+// meant it. No unit test reads this: every one of them mocks the client the page uploads
+// through, so what the request carries is read here or nowhere.
+function uploadedBase(request: Request): unknown {
+  const field = /name="precondition"\r?\n\r?\n([^\r\n]*)/.exec(request.postData() ?? "");
+  return field === null ? null : JSON.parse(field[1] ?? "");
+}
+
+// A person uploading a markdown document over a name the issue already holds must name the
+// token of the version they are replacing, so what the page sends and what it shows are read
+// here rather than in jsdom alone. The page reads that token when the person chooses the file
+// and every attempt of the press sends the one it read; the upload is then held in its own
+// route while an agent changes the document under it, so the change lands between the page's
+// read and the server's reading of the request, and no wall clock decides it. The second half
+// is what `web/src/features/artifacts/ArtifactUpload.test.tsx` asserts against a mocked client
+// - the server's own sentence names `dispatch doc-read` and `--precondition-json`, and a person
+// at a browser runs no command and pastes no token, so the row must say what the refusal means
+// instead.
+test("an upload over a document carries the token the page read, and says what a change under it means", async ({
+  page,
+}, testInfo) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "Upload over a document" });
+  const notes = await createIssueArtifact(issue.key, {
+    content: "# Review notes\n\nThe ledger keeps three leases.\n",
+    name: "notes.md",
+  });
+
+  const bases: unknown[] = [];
+  // What the next upload meets at the server: the first one meets nothing and is taken, and the
+  // second meets this edit, made after the page read its token.
+  let changeUnderTheUpload: (() => Promise<unknown>) | null = null;
+  await page.route(`**/api/v1/issues/${issue.key}/artifacts`, async (route) => {
+    if (route.request().method() !== "POST") return route.fallback();
+    bases.push(uploadedBase(route.request()));
+    const change = changeUnderTheUpload;
+    changeUnderTheUpload = null;
+    if (change !== null) {
+      await change();
+    }
+    return route.fallback();
+  });
+
+  await page.goto(`/issues/${issue.key}`);
+  await openArtifacts(page, false);
+  const upload = page.getByLabel("Upload artifact");
+  const row = page.getByTestId("artifact-notes-md");
+  await expect(row).toContainText("1 version");
+
+  // The base the live document holds now, which is what the page reads for itself before it
+  // posts: the upload names it, and the version it writes is the proof the server took it.
+  const base = await documentBase(notes.artifact.id);
+  await upload.setInputFiles(await notesFile(testInfo));
+  await confirmUpload(page);
+  await expect(row).toContainText("2 versions");
+  expect(bases).toEqual([base]);
+  expect((await getArtifactText(notes.artifact.id)).markdown).toBe(
+    "# Review notes\n\nThese notes replace the initial spec.\n"
+  );
+
+  // The second upload names the token the document holds now, and an agent moves the document
+  // past it while the upload is held, so the server reads a base that is one version behind.
+  const held = await documentBase(notes.artifact.id);
+  changeUnderTheUpload = () =>
+    editArtifact(
+      notes.artifact.id,
+      {
+        ops: [
+          {
+            find: "These notes replace the initial spec.",
+            op: "replace",
+            with: "The reviewer rewrote these notes.",
+          },
+        ],
+        summary: "The reviewer's own words",
+      },
+      { as: "agent" }
+    );
+  await upload.setInputFiles(await notesFile(testInfo));
+  await confirmUpload(page);
+
+  const refusal = page.getByRole("alert");
+  await expect(refusal).toContainText("changed");
+  await expect(refusal).not.toContainText("dispatch doc-read");
+  await expect(refusal).not.toContainText("--precondition-json");
+  expect(bases).toEqual([base, held]);
+  // Nothing of the refused upload was written: the document still says what the agent left.
+  expect((await getArtifactText(notes.artifact.id)).markdown).toBe(
+    "# Review notes\n\nThe reviewer rewrote these notes.\n"
+  );
 });
 
 // The From/To compare of a document shows what changed as the change view, word by word. It is
@@ -271,8 +374,9 @@ test("the artifacts tab filter narrows rows by name and kind", async ({ page }, 
   await expect(page.getByTestId("artifact-notes-md")).toBeVisible();
 });
 
-// SLOW(>=2s): a real upload the live feed counts into the tab, and the keyboard tour of five
-// tabs with each tab's box measured, at 390 px and back.
+// SLOW(>=2s): a real upload the live feed counts into the tab, and the keyboard tour of ten
+// tabs with each tab's box and the tablist's fade measured, at 390 px and back, then the comment
+// margin hidden and shown again.
 test("an uploaded document is linked from the Activity tab and counted on its own tab", async ({
   page,
 }, testInfo) => {
@@ -292,7 +396,7 @@ test("an uploaded document is linked from the Activity tab and counted on its ow
   await expect(page.getByRole("tab", { exact: true, name: "Artifacts 2" })).toBeVisible();
   const tablist = page.getByRole("tablist", { name: "Issue detail" });
   const tabs = tablist.getByRole("tab");
-  await expect(tabs).toHaveCount(9);
+  await expect(tabs).toHaveCount(10);
   const insideTablist = async (tab: Locator) => {
     const [listBox, box] = await Promise.all([tablist.boundingBox(), tab.boundingBox()]);
     expect(listBox).not.toBeNull();
@@ -303,16 +407,40 @@ test("an uploaded document is linked from the Activity tab and counted on its ow
       (listBox?.x ?? 0) + (listBox?.width ?? 0) + 0.5
     );
   };
-  // Nine tabs, one of them counted, no longer fit a 390 px viewport: the tablist scrolls
+  // Ten tabs, one of them counted, no longer fit a 390 px viewport: the tablist scrolls
   // sideways there (as it already did at 360 px). No label is shortened to buy the room, every
   // tab is reachable from the keyboard, each is scrolled fully into view as it takes focus, and
-  // each keeps its 44 px touch target.
+  // each keeps its 44 px touch target. While tabs lie past its trailing edge the tablist wears
+  // the trailing fade, which says the cut is a scroll, and a tab taking focus stops clear of it;
+  // at the end of the scroll the fade is off, since it would hide the last tab. A tablist that
+  // narrows with no change of tab - a narrower window, the comment margin opening - brings the
+  // selected tab back whole and clear of the fade too.
+  const masked = () => tablist.evaluate((node) => getComputedStyle(node).maskImage !== "none");
+  // Polled: the reveal that answers a narrower tablist runs on the browser's next resize
+  // observation, after the change that narrowed it.
+  const wholeAndClearOfFade = (tab: Locator) =>
+    expect
+      .poll(async () => {
+        const [faded, listBox, box] = await Promise.all([
+          masked(),
+          tablist.boundingBox(),
+          tab.boundingBox(),
+        ]);
+        const listLeft = listBox?.x ?? 0;
+        const listRight = listLeft + (listBox?.width ?? 0);
+        const left = box?.x ?? Number.NEGATIVE_INFINITY;
+        const right = left + (box?.width ?? 0);
+        const visibleRight = faded ? listRight - scrollFadeTrailingPx + 1 : listRight + 0.5;
+        return left >= listLeft - 0.5 && right <= visibleRight;
+      })
+      .toBe(true);
   const viewport = page.viewportSize();
   await page.setViewportSize({ height: viewport?.height ?? 800, width: 390 });
   await expect(tabs).toHaveText([
     "Spec",
     "Verification",
     "Plan",
+    "Steps",
     "Conversation",
     "Children",
     "Artifacts 2",
@@ -321,10 +449,16 @@ test("an uploaded document is linked from the Activity tab and counted on its ow
     "Collaborators",
   ]);
   expect(await tablist.evaluate((node) => node.scrollWidth > node.clientWidth + 0.5)).toBe(true);
+  // The row opened on Conversation, which the narrower window left cut off at the edge.
+  const conversationTab = page.getByRole("tab", { exact: true, name: "Conversation" });
+  await expect(conversationTab).toHaveAttribute("aria-selected", "true");
+  await wholeAndClearOfFade(conversationTab);
   await page.getByRole("tab", { name: "Spec" }).focus();
+  await expect.poll(masked).toBe(true);
   for (const label of [
     "Verification",
     "Plan",
+    "Steps",
     "Conversation",
     "Children",
     "Artifacts 2",
@@ -336,6 +470,7 @@ test("an uploaded document is linked from the Activity tab and counted on its ow
     const tab = page.getByRole("tab", { exact: true, name: label });
     await expect(tab).toBeFocused();
     await insideTablist(tab);
+    await wholeAndClearOfFade(tab);
     expect((await tab.boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(44);
   }
   await page.keyboard.press("Home");
@@ -343,16 +478,36 @@ test("an uploaded document is linked from the Activity tab and counted on its ow
   await expect(specTab).toBeFocused();
   await insideTablist(specTab);
   expect((await specTab.boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(44);
+  await expect.poll(masked).toBe(true);
+  await page.keyboard.press("End");
+  await expect(page.getByRole("tab", { exact: true, name: "Collaborators" })).toBeFocused();
+  await expect.poll(masked).toBe(false);
   await page.setViewportSize({ height: viewport?.height ?? 800, width: viewport?.width ?? 1280 });
+  // At 1280 px every tab fits beside the hidden margin, and Activity, chosen there, is whole. The
+  // margin coming back narrows the tablist with no change of tab, and Activity, which it left past
+  // the trailing edge, is brought back whole and clear of the fade.
+  await page.getByRole("button", { name: "Hide margin" }).click();
+  await expect(page.getByTestId("margin-rail")).toBeVisible();
+  const activityTab = page.getByRole("tab", { name: "Activity" });
+  await activityTab.click();
+  await expect(activityTab).toHaveAttribute("aria-selected", "true");
+  await expect.poll(masked).toBe(false);
+  await page.getByRole("button", { name: "Show margin" }).click();
+  await expect.poll(masked).toBe(true);
+  await wholeAndClearOfFade(activityTab);
 
-  await page.getByRole("tab", { name: "Activity" }).click();
   const rows = page.getByRole("list", { name: "Issue activity" }).getByRole("listitem");
   const added = rows.filter({ hasText: `added ${name}` });
   await expect(added).toHaveCount(1);
   await page.screenshot({ path: testInfo.outputPath("activity-added-artifact.png") });
 
-  // A second upload under the same name is a new version; its line links that version.
-  await createIssueArtifact(issue.key, { content: "# Draft\n\nRevised.\n", name });
+  // A second upload under the same name is a new version; its line links that version. It
+  // replaces the whole document, so it names the token of the version it replaces.
+  await createIssueArtifact(issue.key, {
+    content: "# Draft\n\nRevised.\n",
+    name,
+    precondition: await documentBase(upload.artifact.id),
+  });
   const saved = rows.filter({ hasText: `saved ${name} v2` });
   await expect(saved).toHaveCount(1);
   await expect(page.getByRole("tab", { exact: true, name: "Artifacts 2" })).toBeVisible();
@@ -373,6 +528,62 @@ test("an uploaded document is linked from the Activity tab and counted on its ow
   await expect(page.getByTestId("artifact-header")).toContainText(name);
 });
 
+// The issue's tab strip rests where its last layout puts the selected tab: at the smallest scroll
+// that shows that tab whole and clear of the trailing fade. The tablist can be narrower for a
+// moment while the page lays out, and a reveal that only ever added the scroll it needed left the
+// strip where that moment put it once the tablist widened again: the visual row of this page then
+// read the strip at the end of its scroll, 212 px from where its baseline is shot. Here the
+// tablist is made 300 px wide for a moment, with the Artifacts tab selected, and released: it must
+// scroll for the narrow moment, and come back to the scroll its own layout gives it, not stay.
+test("the issue's tab strip rests where its last layout puts the selected tab, whatever narrower layout came first", async ({
+  page,
+}) => {
+  await createProject({ key: "OPS", name: "Ops" });
+  const issue = await createIssue({ project: "OPS", title: "A strip that settles" });
+  await page.goto(`/issues/${issue.key}/artifacts`);
+  const tablist = page.getByRole("tablist", { name: "Issue detail" });
+  await expect(page.getByRole("tab", { exact: true, name: "Artifacts 1" })).toHaveAttribute(
+    "aria-selected",
+    "true"
+  );
+  await expect(tablist.getByRole("tab")).toHaveCount(10);
+  // The comment margin loads after the first paint, and until it is drawn the tablist is wider
+  // and every tab fits: a resting point read then would be the start, and the strip moves again
+  // once the margin arrives. So the resting point is read only with the margin drawn.
+  await expect(page.getByTestId("desktop-margin-shell")).toBeVisible();
+  // Where the strip is, and where its layout alone puts the selected tab: its right edge in the
+  // strip's content, less what the fade leaves of the tablist. Sub-pixel layout rounds a scroll
+  // to a whole pixel, so the two are compared within one.
+  const place = () =>
+    tablist.evaluate((list, fade) => {
+      const tab = list.querySelector('[role="tab"][aria-selected="true"]');
+      const right = (tab?.getBoundingClientRect().right ?? 0) - list.getBoundingClientRect().left;
+      const target = Math.max(0, right + list.scrollLeft - (list.clientWidth - fade));
+      return {
+        offBy: Math.abs(list.scrollLeft - target),
+        overflow: list.scrollWidth - list.clientWidth,
+        scrollLeft: list.scrollLeft,
+      };
+    }, scrollFadeTrailingPx);
+  await expect.poll(async () => (await place()).offBy).toBeLessThanOrEqual(1);
+  const { overflow, scrollLeft: rested } = await place();
+  // The strip can scroll past where it rests, so a strip left at the end of its scroll is a
+  // different reading from the resting one, and the last assertion below can fail.
+  expect(overflow).toBeGreaterThan(rested + 1);
+
+  await tablist.evaluate((list) => {
+    list.style.width = "300px";
+  });
+  // The narrow moment moves the strip, or this row proves nothing.
+  await expect.poll(async () => (await place()).scrollLeft).toBeGreaterThan(rested + 50);
+  await tablist.evaluate((list) => {
+    list.style.width = "";
+  });
+  // Polled: the strip answers a layout change on the browser's next resize observation.
+  await expect.poll(async () => (await place()).offBy).toBeLessThanOrEqual(1);
+  expect(Math.abs((await place()).scrollLeft - rested)).toBeLessThanOrEqual(1);
+});
+
 test("the Artifacts badge counts the rows the tab lists, and a row's details are not truncated @phone", async ({
   page,
 }) => {
@@ -390,7 +601,7 @@ test("the Artifacts badge counts the rows the tab lists, and a row's details are
   await expect(page.getByRole("tab", { exact: true, name: "Artifacts 2" })).toBeVisible();
 
   // Every row shows its whole detail line: it wraps where it must rather than truncating on a
-  // row with room beside it.
+  // row with room beside it. The count of two above waited for both rows, so one read lists them.
   for (const row of await rows.all()) {
     const details = row.locator("p").first();
     await expect(details).toContainText("Updated");

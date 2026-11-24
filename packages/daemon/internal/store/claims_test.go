@@ -71,6 +71,10 @@ func sameClaim(t *testing.T, got, want supervise.Claim) {
 	got.ServingCheckLook.OpenedAt, want.ServingCheckLook.OpenedAt = time.Time{}, time.Time{}
 	gotFailed, wantFailed := got.FailedAt, want.FailedAt
 	got.FailedAt, want.FailedAt = time.Time{}, time.Time{}
+	// The handshake's two moments are timestamptz columns too, compared the same way.
+	gotHandshake, wantHandshake := got.Handshake, want.Handshake
+	got.Handshake.QueuedAt, got.Handshake.ConfirmedAt = time.Time{}, time.Time{}
+	want.Handshake.QueuedAt, want.Handshake.ConfirmedAt = time.Time{}, time.Time{}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("claim read back differs:\n got %+v\nwant %+v", got, want)
 	}
@@ -79,6 +83,10 @@ func sameClaim(t *testing.T, got, want supervise.Claim) {
 	}
 	if !gotFailed.Equal(wantFailed) {
 		t.Errorf("the claim failed at %v, want %v", gotFailed, wantFailed)
+	}
+	if !gotHandshake.QueuedAt.Equal(wantHandshake.QueuedAt) || !gotHandshake.ConfirmedAt.Equal(wantHandshake.ConfirmedAt) {
+		t.Errorf("the claim's handshake was queued at %v and confirmed at %v, want %v and %v",
+			gotHandshake.QueuedAt, gotHandshake.ConfirmedAt, wantHandshake.QueuedAt, wantHandshake.ConfirmedAt)
 	}
 	if (gotPending == nil) != (wantPending == nil) {
 		t.Fatalf("pending delivery read back = %+v, want %+v", gotPending, wantPending)
@@ -183,9 +191,9 @@ func TestADeliverysFailedSendsRoundTripAndItsConfirmationClearsThem(t *testing.T
 			got, failing.SendFailures, failing.LastSendFailureAt)
 	}
 
-	// The send that reached a turn clears all three (supervise's confirm), through the same
-	// upsert: a delivery read back still counting failures an earlier turn got past would name a
-	// stall that is over.
+	// The send that reached a turn clears all three (supervise's confirmCarrying), through the
+	// same upsert: a delivery read back still counting failures an earlier turn got past would name
+	// a stall that is over.
 	confirmed := failing
 	confirmed.DeliveredAt, confirmed.MarkedBy, confirmed.ConfirmedAt = at(6), failing.ID, at(7)
 	confirmed.SendFailures, confirmed.LastSendFailureAt, confirmed.LastSendError = 0, time.Time{}, ""
@@ -201,15 +209,14 @@ func TestADeliverysFailedSendsRoundTripAndItsConfirmationClearsThem(t *testing.T
 
 // The text of a failed send is the far side's own: the wedged command's stderr, relayed by the
 // shim, or Oh My Pi's `error` decoded from JSON, where a `\u0000` becomes a NUL byte. This column
-// takes only what its server encoding can read, so supervise scrubs the text before it is stored
-// (scrubSendError) and the rule it holds is valid UTF-8 with no NUL.
+// holds only what its server encoding can read, and the store's text rule is what makes such a
+// text fit: the NUL is stored as U+FFFD, and every other character as it was written.
 //
-// Both halves of that are pinned here, against the real server. The raw text is refused outright,
-// which is what made the record's write fail; that failure used to return before the refused
-// adoption was charged, so the send was re-sent with no bound (INFRA-1480). The same words
-// without the NUL — the text the daemon stores — round-trip whole, so the diagnosis an operator
-// reads survives a restart.
-func TestADeliverysSendErrorRoundTripsOnceItsNULIsScrubbed(t *testing.T) {
+// Pinned here against the real server. A write of this text once failed, and that failure
+// returned before the refused adoption was charged, so the send was re-sent with no bound
+// (INFRA-1480). The raw text is taken now and reads back whole, with U+FFFD where the NUL was, so
+// the diagnosis an operator reads survives a restart.
+func TestADeliverysSendErrorWithANULRoundTripsWithAReplacementCharacter(t *testing.T) {
 	ctx := context.Background()
 	store := migratedStore(t)
 	c := tmuxClaim("legion-LEGION-209-implementer")
@@ -219,23 +226,18 @@ func TestADeliverysSendErrorRoundTripsOnceItsNULIsScrubbed(t *testing.T) {
 	const raw = "worker-stream: legion-LEGION-209-implementer refused adopt-working-copy: " +
 		"Command failed (exit 1): jj metaedit: the git lock " +
 		"/legion/workspaces/acme/widgets/legion-209/.git/index.lock\x00 was last written 31m ago"
-	scrubbed := strings.ReplaceAll(raw, "\x00", "")
+	stored := strings.ReplaceAll(raw, "\x00", "\uFFFD")
 	d := supervise.Delivery{
 		ID: "delivery-1", Task: "implement the plan", Phase: phase.Implementing, Generation: 4, QueuedAt: at(1),
 		SendFailures: 1, LastSendFailureAt: at(5), LastSendError: raw,
 	}
 
-	if err := store.PutDelivery(ctx, c.Token, d); err == nil {
-		t.Fatal("the store took a send error holding a NUL; this test needs the write the server refuses")
-	}
-
-	d.LastSendError = scrubbed
 	if err := store.PutDelivery(ctx, c.Token, d); err != nil {
-		t.Fatalf("put the scrubbed delivery: %v", err)
+		t.Fatalf("put the delivery whose send error holds a NUL: %v", err)
 	}
 	got := onlyClaim(t, store).Pending
-	if got == nil || got.LastSendError != scrubbed {
-		t.Fatalf("delivery read back = %+v, want the scrubbed text whole", got)
+	if got == nil || got.LastSendError != stored {
+		t.Fatalf("delivery read back = %+v, want the send error whole with U+FFFD in place of the NUL", got)
 	}
 }
 
@@ -263,6 +265,42 @@ func TestARePutDeliveryCarriesItsInterruption(t *testing.T) {
 
 	if got := onlyClaim(t, store).Pending; got == nil || got.ID != "delivery-2" || !got.Interrupted || !got.OutOfMemory {
 		t.Fatalf("delivery read back = %+v, want the re-put delivery, interrupted and out of memory", got)
+	}
+}
+
+// The fact that a reviewer's task ends with the daemon's two sentences of its review round
+// (supervise.Delivery.RoundNamed) reaches the store with the delivery and comes back from it, in
+// both directions, through a re-put that replaces the delivery: a restarted daemon sends what it
+// reads back, and a fact lost on the way would send a task of this release with the daemon's
+// sentences naming nothing after its own, or keep one the release before queued from them. A
+// delivery the release before wrote, which names no such column, reads back without the fact.
+func TestADeliveryCarriesTheFactThatItNamesItsReviewRound(t *testing.T) {
+	ctx := context.Background()
+	store := migratedStore(t)
+	c := tmuxClaim("legion-LEGION-212-reviewer")
+	if err := store.PutClaim(ctx, c); err != nil {
+		t.Fatalf("put claim: %v", err)
+	}
+	named := supervise.Delivery{ID: "outbox:7", Task: "Continue. Phase: reviewing. Last reviewed commit: none. Review entry: 1.", Phase: phase.Reviewing, QueuedAt: at(1), RoundNamed: true}
+	for _, put := range []supervise.Delivery{named, {ID: "outbox:8", Task: "Continue. Phase: reviewing.", Phase: phase.Reviewing, QueuedAt: at(2)}, named} {
+		if err := store.PutDelivery(ctx, c.Token, put); err != nil {
+			t.Fatalf("put the delivery %s: %v", put.ID, err)
+		}
+		if got := onlyClaim(t, store).Pending; got == nil || got.ID != put.ID || got.RoundNamed != put.RoundNamed {
+			t.Fatalf("the delivery read back = %+v, want %s with the fact %v", got, put.ID, put.RoundNamed)
+		}
+	}
+	// The release before writes a delivery naming no round_named, so a delivery it writes on a
+	// claim that holds none takes the column's default.
+	if _, err := store.pool.Exec(ctx, `delete from pending_task_deliveries where claim_token = $1`, string(c.Token)); err != nil {
+		t.Fatalf("retire the delivery: %v", err)
+	}
+	if _, err := store.pool.Exec(ctx, `insert into pending_task_deliveries (claim_token, delivery_id, task, phase, generation, queued_at)
+		values ($1, 'outbox:9', 'Continue. Phase: reviewing.', 'reviewing', 1, now())`, string(c.Token)); err != nil {
+		t.Fatalf("write the delivery as the release before writes it: %v", err)
+	}
+	if got := onlyClaim(t, store).Pending; got == nil || got.ID != "outbox:9" || got.RoundNamed {
+		t.Fatalf("the delivery read back = %+v, want outbox:9 with no fact: the release before named no round", got)
 	}
 }
 
@@ -393,6 +431,29 @@ func TestAClaimsPluginContractRoundTrips(t *testing.T) {
 
 	want.PluginContract = 24
 	want.PluginRelaunchFor = 0
+	if err := store.PutClaim(ctx, want); err != nil {
+		t.Fatalf("put claim again: %v", err)
+	}
+	sameClaim(t, onlyClaim(t, store), want)
+}
+
+// The mark of a launch that had Oh My Pi resume the claim's session by its id itself
+// (AgentResumeGeneration) is a column of its own: a daemon restarted between that launch and its
+// agent's registration reads the mark back, and with it whether the launch's end is charged and
+// whether the claim's next try forgets the session (dispatch://INFRA-4108 R3). The claim marked
+// is one launched at generation 7 that records its session and no file; once its agent registered
+// with the file, the mark is 0, no such launch outstanding, and reads back as 0.
+func TestAClaimsAgentResumeGenerationRoundTrips(t *testing.T) {
+	ctx := context.Background()
+	store := migratedStore(t)
+	want := tmuxClaim("legion-LEGION-209-implementer")
+	want.Generation, want.SessionFile, want.AgentResumeGeneration = 7, "", 7
+	if err := store.PutClaim(ctx, want); err != nil {
+		t.Fatalf("put claim: %v", err)
+	}
+	sameClaim(t, onlyClaim(t, store), want)
+
+	want.SessionFile, want.AgentResumeGeneration = "/state/sessions/implementer.jsonl", 0
 	if err := store.PutClaim(ctx, want); err != nil {
 		t.Fatalf("put claim again: %v", err)
 	}
@@ -810,10 +871,7 @@ func TestIssueRunsElsewhereNamesOnlyAClaimOfAnotherTreeThatHoldsAProcess(t *test
 			t.Fatalf("put %s %s: %v", implementer.Token, state, err)
 		}
 	}
-	all := []supervise.ClaimState{supervise.StateQueued, supervise.StateLaunchUncertain, supervise.StateLaunching, supervise.StateShimConnected,
-		supervise.StateRegistered, supervise.StateReady, supervise.StateWorking, supervise.StateIdle, supervise.StateSuspended,
-		supervise.StateFailed, supervise.StateRetired}
-	for _, state := range all {
+	for _, state := range supervise.States() {
 		put(state, false)
 		named := elsewhere("LEGION-209") == "legion-LEGION-209-implementer:"+string(state)
 		if runs := !(supervise.Claim{State: state}).RunsNothing(); named != runs {
@@ -867,9 +925,7 @@ func TestClaimUnretiredIsEveryStoredStateButRetired(t *testing.T) {
 	if unretired() {
 		t.Fatalf("ClaimUnretired(%s) with no claim stored = true, want false", controller.Token)
 	}
-	for _, state := range []supervise.ClaimState{supervise.StateQueued, supervise.StateLaunchUncertain, supervise.StateLaunching,
-		supervise.StateShimConnected, supervise.StateRegistered, supervise.StateReady, supervise.StateWorking, supervise.StateIdle,
-		supervise.StateSuspended, supervise.StateFailed, supervise.StateRetired} {
+	for _, state := range supervise.States() {
 		controller.State = state
 		if err := store.PutClaim(ctx, controller); err != nil {
 			t.Fatalf("put %s %s: %v", controller.Token, state, err)
@@ -1073,7 +1129,7 @@ func TestAnActivityReportOfAnEarlierProcessIsNoReportToAnyReader(t *testing.T) {
 			read: func(t *testing.T) activityReport {
 				t.Helper()
 				var held *record.RoleClaim
-				if err := st.Tx(ctx, func(tx pgx.Tx) error {
+				if err := Transact(ctx, st.pool, func(ctx context.Context, tx pgx.Tx) error {
 					claims, err := record.NewStore().RoleClaims(ctx, tx, []claim.Token{token})
 					held = claims[token]
 					return err

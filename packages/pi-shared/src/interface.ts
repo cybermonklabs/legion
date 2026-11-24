@@ -8,8 +8,12 @@ import type { LegionRoleClaimBridge } from "./role-claim-bridge";
  * (`@sjawhar/pi-legion`, which claims roles and reads what Envoy delivered). Each plugin bundles
  * its own copy of this module, so nothing here is shared by import: the one object lives on
  * `globalThis` under a `Symbol.for` key both copies compute, and `ENVOY_PLUGIN_INTERFACE_VERSION`
- * says which shape a copy expects. Any change to `EnvoyPluginInterface`'s shape, or to what either
- * side reads from it, bumps the version; both plugins release from the same commit.
+ * says which shape a copy expects. The Envoy entry publishes into it from its factory
+ * (`publishEnvoyPluginInterface`); the Legion entry reads it at `session_start`
+ * (`readEnvoyPluginInterface`) and refuses to run when it is absent or at another version. Any
+ * change to `EnvoyPluginInterface`'s shape, or to what either side reads from it, bumps the
+ * version; both plugins release from the same commit, and the daemon's boot gate
+ * (`packages/daemon/internal/daemon/bootgate.go`) refuses a pair whose versions differ.
  *
  * The object holds process-wide state only — arrays, a map, a record holder — and never a function
  * bound to one extension instance: Oh My Pi re-binds every extension factory for each in-process

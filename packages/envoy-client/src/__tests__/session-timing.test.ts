@@ -7,6 +7,7 @@ import {
   LISTENER_CALL_TIMEOUT_MS,
   SESSION_HEARTBEAT_MS,
 } from "@legion/contracts";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { readEnvoyConfig } from "../envoy-config";
 import { envoySettings } from "../envoy-settings";
@@ -16,7 +17,7 @@ const listener = {
   enabled: true,
   url: "http://listener.internal.example:9020/",
   natsUrls: ["nats://nats.internal.example:4222"],
-  token: "file-token",
+  token: fixtureSecret("file"),
   natsSeed: "SUFILESEED",
 };
 

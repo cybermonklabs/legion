@@ -28,7 +28,7 @@ func newTestEnvelope(source, topic, summary string) contracts.Envelope {
 func newSessionRegistry(t *testing.T) *session.SessionRegistry {
 	t.Helper()
 	client := session.SetupNATS(t)
-	sessions, err := session.OpenSessionRegistry(client.Conn, session.WithSessionReplicas(1), session.WithSessionTTL(10*time.Second))
+	sessions, err := session.OpenSessionRegistry(t.Context(), client.Conn, session.WithSessionReplicas(1), session.WithSessionTTL(10*time.Second))
 	if err != nil {
 		t.Fatalf("failed to open session registry: %v", err)
 	}
@@ -63,7 +63,7 @@ func TestDeliver_NoSessionRecord_whenSessionIsOnlySelfSubscribed(t *testing.T) {
 	// Given
 	sessions := newSessionRegistry(t)
 	var entry session.SessionEntry
-	if err := json.Unmarshal([]byte(`{"self_subscribed":true}`), &entry); err != nil {
+	if err := json.Unmarshal([]byte(`{"machine_id":"test-machine","self_subscribed":true}`), &entry); err != nil {
 		t.Fatalf("decode self-subscribed session entry: %v", err)
 	}
 	if err := sessions.Put("ses_omp", entry); err != nil {
@@ -88,7 +88,7 @@ func TestDeliver_SkipsStoredTopics_whenSessionIsOnConsumerDelivery(t *testing.T)
 	// Given
 	sessions := newSessionRegistry(t)
 	var entry session.SessionEntry
-	if err := json.Unmarshal([]byte(`{"delivery":"consumer","epoch":"e1"}`), &entry); err != nil {
+	if err := json.Unmarshal([]byte(`{"machine_id":"test-machine","delivery":"consumer","epoch":"e1"}`), &entry); err != nil {
 		t.Fatalf("decode consumer-delivery session entry: %v", err)
 	}
 	if err := sessions.Put("ses_consumer", entry); err != nil {
@@ -116,7 +116,7 @@ func TestDeliver_SkipsStoredTopics_whenSessionIsOnConsumerDelivery(t *testing.T)
 func TestResolve_JudgesTheCaptureItsCallerHandsIt(t *testing.T) {
 	sessions := newSessionRegistry(t)
 	var entry session.SessionEntry
-	if err := json.Unmarshal([]byte(`{"delivery":"consumer","epoch":"e1"}`), &entry); err != nil {
+	if err := json.Unmarshal([]byte(`{"machine_id":"test-machine","delivery":"consumer","epoch":"e1"}`), &entry); err != nil {
 		t.Fatalf("decode consumer-delivery session entry: %v", err)
 	}
 	if err := sessions.Put("ses_deployed", entry); err != nil {

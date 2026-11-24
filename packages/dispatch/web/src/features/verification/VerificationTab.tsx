@@ -21,6 +21,7 @@ import {
   textMutedOnSurfaceMuted,
   textSecondaryOnSurface,
 } from "../../theme/classes";
+import { ReplacingUploadNote } from "../artifacts/ArtifactUpload";
 import { AgentName } from "../refs/AgentName";
 import { BlockReferences } from "../refs/ReferencedBy";
 import { ReferenceLink } from "../refs/ReferenceLink";
@@ -49,12 +50,38 @@ const PASS_STANDS_TEXT: Record<CheckBlock["pass_stands"]["answer"], string> = {
 
 /** Why a check compared its results with nothing at all, and why one result's commit could not
  *  be placed. A check takes all three and a result all but no_pull_request_or_branch, so the
- *  check's set types this map and answers both. */
-const REASON_WORDS: Record<NonNullable<CheckBlock["compared_nothing"]>, string> = {
-  no_pull_request_or_branch: "This issue holds no pull request and no branch.",
-  read_failed: "A read Dispatch made did not answer.",
-  repository_unreadable: "Dispatch cannot read the repository.",
+ *  check's set types this map and answers both. Each takes the repository the answer is about
+ *  where the server names one (`repo`): a result whose commit is taken to be of a repository the
+ *  issue links a pull request in is decided by that repository, and "the repository" would read
+ *  as the issue's own. Keyed by `compared_nothing`'s reasons, so a reason the contract adds to
+ *  that union is a type error until it has words here; one it adds to `ResultCommitStands.reason`
+ *  alone is not, and `reasonWords` shows it by its code, as it shows any reason this build has no
+ *  words for. */
+const REASON_WORDS: Record<
+  NonNullable<CheckBlock["compared_nothing"]>,
+  (repo: string | undefined) => string
+> = {
+  no_pull_request_or_branch: () => "This issue holds no pull request and no branch.",
+  read_failed: (repo) =>
+    repo === undefined
+      ? "A read Dispatch made did not answer."
+      : `A read Dispatch made of ${repo} did not answer.`,
+  repository_unreadable: (repo = "the repository") => `Dispatch cannot read ${repo}.`,
 };
+
+/** Whether a reason the server sent is one this build words. The server gives the reasons its
+ *  own build knows, so a newer Dispatch can send one this build has no words for. */
+function isKnownReason(reason: string): reason is keyof typeof REASON_WORDS {
+  return Object.hasOwn(REASON_WORDS, reason);
+}
+
+/** `reason` in words, naming `repo` where the server names the repository the answer is about.
+ *  A reason this build has no words for shows as the server gave it, with that repository beside
+ *  it in parentheses, so the answer still says which repository it is about. */
+function reasonWords(reason: string, repo?: string): string {
+  if (isKnownReason(reason)) return REASON_WORDS[reason](repo);
+  return repo === undefined ? reason : `${reason} (${repo})`;
+}
 
 /** Which time a basis learned from a pull request carries: when Dispatch last read the pull
  *  request from GitHub, or the pull request's own update time as GitHub gave it. */
@@ -91,15 +118,20 @@ function Screenshot({ reference }: { reference: string }): ReactNode {
 }
 
 /** What one basis is, in words: the commit a reader named in the request, the head of a pull
- *  request, or a branch. The commit itself is drawn beside this, whole. */
+ *  request, or a branch. The commit itself is drawn beside this, whole. A basis in a repository
+ *  the issue links a pull request in and does not resolve to names that repository (`repo`), so
+ *  it reads apart from a pull request or a branch of the issue's own repository: `owner/repo#7`
+ *  is GitHub's own name for that pull request. */
 function basisWords(basis: CheckBasis): string {
   if (basis.kind === "branch") {
-    return `branch ${basis.branch ?? ""}`;
+    const branch = `branch ${basis.branch ?? ""}`;
+    return basis.repo === undefined ? branch : `${branch} of ${basis.repo}`;
   }
   if (basis.kind === "pull_request") {
-    return basis.pull_request === undefined
-      ? "the head of the pull request"
-      : `the head of pull request ${basis.pull_request}`;
+    if (basis.pull_request === undefined) return "the head of the pull request";
+    return basis.repo === undefined
+      ? `the head of pull request ${basis.pull_request}`
+      : `the head of ${basis.repo}#${basis.pull_request}`;
   }
   return "the commit this read named";
 }
@@ -130,7 +162,7 @@ function Basis({ basis }: { basis: CheckBasis }): ReactNode {
 
 /** The first fact of each result: where its commit stands against what its check compared
  *  with. At one of those commits, naming which; at another commit; or not known, with the
- *  reason Dispatch could not say. */
+ *  reason Dispatch could not say. An answer a linked repository decided names it (`repo`). */
 function CommitStands({ stands }: { stands: ResultCommitStands | undefined }): ReactNode {
   if (stands === undefined) {
     return undefined;
@@ -145,11 +177,14 @@ function CommitStands({ stands }: { stands: ResultCommitStands | undefined }): R
     );
   }
   if (stands.answer === "other_commit") {
-    return "At another commit";
+    return stands.repo === undefined ? "At another commit" : `At another commit of ${stands.repo}`;
   }
   // The reason is the server's to give and may be absent, so an unknown answer stands on its
   // own where there is none.
-  return stands.reason === undefined ? "Not known." : `Not known. ${REASON_WORDS[stands.reason]}`;
+  if (stands.reason === undefined) {
+    return stands.repo === undefined ? "Not known." : `Not known in ${stands.repo}.`;
+  }
+  return `Not known. ${reasonWords(stands.reason, stands.repo)}`;
 }
 
 /** The second fact of each result: whether the check's words moved after the result was
@@ -249,7 +284,7 @@ function ComparedWith({ check }: { check: CheckBlock }): ReactNode {
   const bases = check.compared_with ?? [];
   if (bases.length === 0) {
     // compared_nothing is the server's to give: where it holds none, the fact shows its dash.
-    return check.compared_nothing === undefined ? "" : REASON_WORDS[check.compared_nothing];
+    return check.compared_nothing === undefined ? "" : reasonWords(check.compared_nothing);
   }
   return bases.map((basis, index) => (
     <span key={`${basis.kind}-${basis.commit ?? basis.branch ?? index}`}>
@@ -407,7 +442,12 @@ export function VerificationTab({
     return (
       <div data-testid="verification-empty">
         <EmptyState
-          action={<code>{`dispatch artifact --issue ${issueKey} --name verification.md`}</code>}
+          action={
+            <>
+              <code>{`dispatch artifact --issue ${issueKey} --name verification.md`}</code>
+              <ReplacingUploadNote />
+            </>
+          }
           label="Verification empty state"
           message={`${issueKey} has no Verification document. Make one with:`}
         />

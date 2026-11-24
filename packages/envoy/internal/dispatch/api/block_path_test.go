@@ -22,6 +22,7 @@ import (
 )
 
 func TestBlockPathReadsPlaceAnAnchoredCellByRowAndColumn(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Table position",
 		"Intro.\n\n| # | Line | Due |\n| --- | --- | --- |\n| 1 | GDM backfill | Oct 1 |\n| 2 | Red-teamer loop | Today |\n")
@@ -139,6 +140,7 @@ func TestBlockPathReadsPlaceAnAnchoredCellByRowAndColumn(t *testing.T) {
 // whose live tree leaves the schema, or one whose live tree holds an element this build does not
 // know.
 func TestCommentAndAskReadsStandWhenTheAnchorDocumentCannotBeRead(t *testing.T) {
+	t.Parallel()
 	writer, database, _ := newTestServer(t, testServerOptions{})
 	issue := createInteractionIssue(t, writer, "TEST", "Table position",
 		"Intro.\n\n| # | Line | Due |\n| --- | --- | --- |\n| 1 | GDM backfill | Oct 1 |\n| 2 | Red-teamer loop | Today |\n")
@@ -196,6 +198,7 @@ func TestCommentAndAskReadsStandWhenTheAnchorDocumentCannotBeRead(t *testing.T) 
 // read whose own request has gone away fails. The two reads meet the same error; only the request
 // differs.
 func TestAnAnchoredReadDecidesCancellationByItsOwnRequest(t *testing.T) {
+	t.Parallel()
 	writer, database, _ := newTestServer(t, testServerOptions{})
 	issue := createInteractionIssue(t, writer, "TEST", "Cancelled writer", "Intro.\n\nThe quoted line.\n")
 	created := func(path string, body map[string]any) string {
@@ -247,11 +250,12 @@ func TestAnAnchoredReadDecidesCancellationByItsOwnRequest(t *testing.T) {
 // same error, since both reads place one block and writeHandlerError serves the route's error. A
 // failed room is DOC_SERVICE_UNAVAILABLE on both, whatever failed it: both take that code before
 // any branch that reads a cause, so the cause another operation failed the room with - settlement's
-// schema refusal, its warm-up refused on a closed issue, or an error that would name an invalid
-// operation or a missing block on its own - never becomes this request's answer, and the room
-// serves the document again once it is evicted. A live tree outside the schema is DOC_SCHEMA on
-// both, and any other failure INTERNAL.
+// schema refusal, an error that wraps a closed issue's refusal, or an error that would name an
+// invalid operation or a missing block on its own - never becomes this request's answer, and the
+// room serves the document again once it is evicted. A live tree outside the schema is DOC_SCHEMA
+// on both, and any other failure INTERNAL.
 func TestAnAnchoredReadNamesADocumentErrorAsTheBlockRouteDoes(t *testing.T) {
+	t.Parallel()
 	writer, database, _ := newTestServer(t, testServerOptions{})
 	issue := createInteractionIssue(t, writer, "TEST", "One code", "Intro.\n\nThe quoted line.\n")
 	created := func(path string, body map[string]any) (string, string) {
@@ -279,7 +283,7 @@ func TestAnAnchoredReadNamesADocumentErrorAsTheBlockRouteDoes(t *testing.T) {
 		code   string
 	}{
 		{"a room settlement's schema refusal failed", failedRoom(outsideSchema), http.StatusServiceUnavailable, codeDocServiceUnavailable},
-		{"a room whose settlement warm-up a closed issue refused failed", failedRoom(fmt.Errorf("document settlement failed 3 times: warm document for settlement: ygo/websocket: inject refused: %w", docs.ErrIssueClosed)), http.StatusServiceUnavailable, codeDocServiceUnavailable},
+		{"a room failed by an error that wraps a closed issue's refusal", failedRoom(fmt.Errorf("ygo/websocket: inject refused: %w", docs.ErrIssueClosed)), http.StatusServiceUnavailable, codeDocServiceUnavailable},
 		{"a room failed by an invalid operation's error", failedRoom(&docs.ErrInvalidOp{Field: "markdown", Reason: "a fragment the document cannot hold"}), http.StatusServiceUnavailable, codeDocServiceUnavailable},
 		{"a room failed by a missing block's error", failedRoom(fmt.Errorf("place block: %w", pmdoc.ErrTargetNotFound)), http.StatusServiceUnavailable, codeDocServiceUnavailable},
 		{"a live tree outside the schema", outsideSchema, http.StatusInternalServerError, codeDocSchema},
@@ -317,6 +321,7 @@ func TestAnAnchoredReadNamesADocumentErrorAsTheBlockRouteDoes(t *testing.T) {
 // renderer gave, since writeHandlerError takes DOC_SCHEMA only after the refusals that name the
 // caller's input; the same refusal inside a failed room is that room's 503, which comes first.
 func TestAnAskBlockRefusalWhoseReasonIsASchemaRefusalStaysThatRefusal(t *testing.T) {
+	t.Parallel()
 	refusal := &docs.ErrInvalidAskBlock{Reason: fmt.Errorf("%w: ask \"ask-1\" renders outside the schema", docs.ErrDocSchema)}
 	for _, test := range []struct {
 		name   string

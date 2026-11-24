@@ -48,13 +48,6 @@ func (p PullRequest) HeadIn(repository string, renames ghrepo.Renames) bool {
 	return p.Head.Repo != nil && renames.Same(p.Head.Repo.FullName, repository)
 }
 
-// OpenPullRequests is every open pull request of the client's repository, as GET
-// /pulls?state=open lists them, a hundred to a page (GetPages): one request per hundred open pull
-// requests, whatever their branches.
-func (c Client) OpenPullRequests(ctx context.Context) ([]PullRequest, error) {
-	return GetPages[PullRequest](ctx, c, "/pulls?state=open")
-}
-
 // OpenPullRequestOn is the open pull request on branch of the client's repository, whose owner is
 // owner (GET /pulls?head=<owner>:<branch>&state=open), and whether there is one. The list's filter
 // is not taken on trust: a listed pull request counts only when its head.ref is branch, the same

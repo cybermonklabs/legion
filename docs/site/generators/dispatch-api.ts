@@ -2,9 +2,9 @@
 // Writes <content dir>/dispatch/reference/api.md from Dispatch's route table
 // (packages/envoy/internal/dispatch/api/routes_table.go), read through `envoy-dispatch routes`,
 // which prints the body GET /api/v1 serves without a database or a listener. Contract:
-// scripts/generate.ts; lib/envoy-dispatch.ts runs the binary.
-import { readEnvoyDispatch } from "./lib/envoy-dispatch.ts";
+// scripts/generate.ts; lib/reference.ts runs the binary.
 import { inline, writePage } from "./lib/markdown.ts";
+import { readTable } from "./lib/reference.ts";
 
 /** Who may call a route, by the table's auth value (`routeAuth` in the source). */
 const CALLERS: Record<string, { label: string; meaning: string }> = {
@@ -23,9 +23,9 @@ const CALLERS: Record<string, { label: string; meaning: string }> = {
  *  the source, `model.ScopePerson` and `model.ScopeApprove`). */
 const SCOPES: Record<string, string> = {
   person:
-    "this credential acts as its person. A browser sign-in holds it, and so does a personal token unless its owner took it away.",
+    "this credential acts as its person. A browser sign-in holds it, so does a personal token unless its owner took it away, and so does a token the secrets broker issued that acts for its person.",
   approve:
-    "beside `person`, this credential may do what settles work or controls a credential: a document review, the answer of an ask of kind `approval`, a machine-login decision, a credential-grant or machine-login revoke, and minting, changing or revoking a personal token. No credential holds `approve` without `person`.",
+    "beside `person`, this credential may do what settles work or controls a credential: a document review, keeping a decision, the answer of an ask of kind `approval`, a machine-login decision, a credential-grant, machine-login or sign-in revoke, and minting, changing or revoking a personal token. A browser sign-in holds it, and so does a personal token its owner gave it; no token the secrets broker issued holds it, and no credential holds `approve` without `person`.",
 };
 
 interface Route {
@@ -37,25 +37,28 @@ interface Route {
 }
 
 function readRoutes(): Route[] {
-  return readEnvoyDispatch("routes", "routes", ["method", "path", "auth", "description"]).map(
-    (route) => {
-      if (!Object.hasOwn(CALLERS, route.auth as string)) {
-        throw new Error(`route ${route.method} ${route.path} has unknown auth ${route.auth}`);
-      }
-      // A route that needs no scope leaves the field out, so only a present one is read.
-      if (route.scopes !== undefined) {
-        if (!Array.isArray(route.scopes) || route.scopes.length === 0) {
-          throw new Error(`route ${route.method} ${route.path} has unreadable scopes`);
-        }
-        for (const scope of route.scopes) {
-          if (typeof scope !== "string" || !Object.hasOwn(SCOPES, scope)) {
-            throw new Error(`route ${route.method} ${route.path} needs unknown scope ${scope}`);
-          }
-        }
-      }
-      return route as unknown as Route;
+  return readTable("envoy-dispatch", ["routes"], "routes", [
+    "method",
+    "path",
+    "auth",
+    "description",
+  ]).map((route) => {
+    if (!Object.hasOwn(CALLERS, route.auth as string)) {
+      throw new Error(`route ${route.method} ${route.path} has unknown auth ${route.auth}`);
     }
-  );
+    // A route that needs no scope leaves the field out, so only a present one is read.
+    if (route.scopes !== undefined) {
+      if (!Array.isArray(route.scopes) || route.scopes.length === 0) {
+        throw new Error(`route ${route.method} ${route.path} has unreadable scopes`);
+      }
+      for (const scope of route.scopes) {
+        if (typeof scope !== "string" || !Object.hasOwn(SCOPES, scope)) {
+          throw new Error(`route ${route.method} ${route.path} needs unknown scope ${scope}`);
+        }
+      }
+    }
+    return route as unknown as Route;
+  });
 }
 
 /** The scopes of one route as its line names them: `` `person` `` or `` `person` and `approve` ``. */
@@ -80,6 +83,8 @@ function render(routes: Route[]): string {
     'A route can need OAuth scopes of the credential that calls it, and the credential must hold every one it names. A credential that holds none — the shared agent token a deployment configures, a Kubernetes service-account token, a broker-issued token scoped to a project — is refused `403 OAUTH_SCOPE_REQUIRED` naming the scope, under `WWW-Authenticate: Bearer error="insufficient_scope", scope="<scope>"` (RFC 6750 section 3.1).',
     "",
     ...Object.entries(SCOPES).map(([scope, meaning]) => `- \`${scope}\`: ${meaning}`),
+    "",
+    "A read-only token the secrets broker issued holds neither scope. Dispatch serves it only on the routes `readScopeRoutes` in the source lists, and refuses it `403 READ_ONLY_TOKEN` on every other route, with no challenge header, before it reads the route's scopes. The route index does not carry that list, so this page does not mark those routes.",
     "",
     "Path parameters are the `{name}` segments of a path.",
     "",

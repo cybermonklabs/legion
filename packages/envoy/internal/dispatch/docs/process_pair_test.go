@@ -45,13 +45,19 @@ func newProcessPair(t *testing.T) processPair {
 }
 
 // newSeededProcessPair is the pair on a document seeded with markdown and not settled, which
-// leaves task A holding no room of its own: where the room-query tests start.
+// leaves task A holding no room of its own: where the room-query tests start. Each process's
+// queries wait for the other's answers for roomWait, not production's roomQueryWait: what the
+// tests over the pair check is what an answer holds and what a write does with it, and on a loaded
+// machine an answer can take longer than that latency budget to cross Postgres twice, which
+// failed TestAShareHoldsEveryQueuedUpdateOfAPendingBatch with no answer at all
+// (dispatch://INFRA-3904). TestAMemberThatNeverAnswersCostsTheWaitAndAWarn holds the budget itself.
 func newSeededProcessPair(t *testing.T, markdown string) processPair {
 	t.Helper()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "# First")
 	taskA, serverA := newTestServiceInstance(t, database)
 	taskB, gateB := newGatedServiceInstance(t, storetest.SecondProcess(t, database))
+	taskA.roomQueries.wait, taskB.roomQueries.wait = roomWait(t), roomWait(t)
 	serverB := newTestServer(t, taskB)
 	seedServiceText(t, taskA, artifactID, markdown)
 	return processPair{

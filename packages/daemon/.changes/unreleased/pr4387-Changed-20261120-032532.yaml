@@ -1,0 +1,8 @@
+kind: Changed
+body: |-
+  The daemon's warning when it retires an agent that never registered or never reported ready now
+  carries `launchFailure`, the launch failure that retirement counts, and `limit`, the launch-failure
+  limit it counts against.
+time: 2026-11-20T03:25:32.148444962Z
+custom:
+    Issue: pr4387

@@ -1,19 +1,23 @@
-import { expect, spyOn, test } from "bun:test";
+import { expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
+import { realClock } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerIssuePatches } from "../../__tests__/send-answers";
-import { ApiError, api } from "../../api/client";
+import { stopTheLateWrite } from "../../__tests__/stop-late-write";
+import { userOnFakeClock } from "../../__tests__/user";
+import { ApiError, api, NetworkError } from "../../api/client";
 import type { Issue, Priorities, PriorityRow } from "../../api/types";
+import { stoppedWriteNote } from "../writes/keyed-write";
 import { IssuePriorityLine } from "./IssuePriorityLine";
 
 /**
  * The issue header's `Advances` item (INFRA-2947, R16 and R3): what it draws for a priority of
- * the issue's own and for one it inherits, what it draws for an issue that advances none, and
- * the two writes the control makes.
+ * the issue's own and for one it inherits, what it draws for an issue that advances none, the
+ * two writes the control makes, and what it says of one the reader stopped.
  */
 
 function priority(id: string, title: string): PriorityRow {
@@ -74,6 +78,7 @@ function renderLine(advances: Issue["advances"], closed = false) {
     listPriorities,
     patchIssue,
     q: within(view.container),
+    queryClient,
     unmountAll: () => {
       view.unmount();
       listPriorities.mockRestore();
@@ -210,6 +215,32 @@ test("a remove carries the revision it was read at, and a stale one's refusal is
     expect(view.invalidations).toHaveBeenCalledWith({ queryKey: ["issue"] });
   } finally {
     view.unmountAll();
+  }
+});
+
+// A write the reader stopped may have been saved: the line says so, and that each press after it
+// is a new write, since the line offers no Retry of it, rather than a failure it cannot know of.
+test("a write the reader stopped says it may have been saved, not that it failed", async () => {
+  const view = renderLine([{ id: "evals-now", inherited: false }]);
+  view.patchIssue.mockRejectedValue(
+    new NetworkError("/api/v1/issues/CORE-9", new TypeError("Failed to fetch"))
+  );
+  try {
+    const remove = await view.q.findByRole("button", {
+      name: "Remove P1 Evals collecting data now from CORE-9",
+    });
+    jest.useFakeTimers();
+    await userOnFakeClock().click(remove);
+    await stopTheLateWrite(view.queryClient);
+    expect(view.q.getByRole("alert").textContent).toBe(
+      stoppedWriteNote("what this issue advances", "saved", {
+        anew: "It is read again, and adding or removing a priority sends a new write.",
+      })
+    );
+  } finally {
+    realClock();
+    view.unmountAll();
+    view.queryClient.clear();
   }
 });
 

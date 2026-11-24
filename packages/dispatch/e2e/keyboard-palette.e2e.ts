@@ -66,6 +66,11 @@ test("the palette lists the issue page's actions, guarded like their buttons, an
 
     // Arrow down to Close issue, wherever the sort put it, and Enter runs the highlighted row.
     const closeId = await close.getAttribute("id");
+    await expect(rows.first()).toBeVisible();
+    await expect(close).toBeVisible();
+    // Both rows the bound is taken between are drawn, and the render that drew them drew every
+    // row: the bar reads its recent items and its actions once, on the render that opens it
+    // (`SearchPalette.tsx:420-429`), and an empty box adds no project and no hit (`:497-524`).
     const ids = await rows.evaluateAll((options) => options.map((option) => option.id));
     const closeIndex = ids.indexOf(closeId ?? "");
     expect(closeIndex).toBeGreaterThanOrEqual(0);
@@ -477,7 +482,16 @@ test("hits that arrive after the reader has arrowed keep the highlight on the ro
     await input.fill("go to");
     const documents = rows.filter({ hasText: "Go to Documents" });
     await expect(documents).toHaveCount(1);
+    // Every row left is one `go to` leads to, so the list drawn is the one the query filtered.
+    await expect(rows.filter({ hasNotText: /^Go to / })).toHaveCount(0);
+    await expect(rows.first()).toBeVisible();
+    // The count above waited for this row, and a row's id is built from the action it runs
+    // (`search-option-action-<scope>-<id>`, `SearchPalette.tsx`), so it reads the same at any
+    // instant after.
     const documentsId = await documents.getAttribute("id");
+    // The bar filters the actions it read on the render that opened it by the words in the box,
+    // all in one render (`SearchPalette.tsx:429` and `:478-492`), so the render that drew the
+    // rows waited for above drew every row `go to` leads to.
     const ids = await rows.evaluateAll((options) => options.map((option) => option.id));
     await expect(input).toHaveAttribute("aria-activedescendant", ids[0] ?? "");
     for (let step = 0; step < ids.indexOf(documentsId ?? ""); step += 1) {

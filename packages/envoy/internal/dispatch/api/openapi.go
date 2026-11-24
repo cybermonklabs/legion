@@ -410,6 +410,7 @@ func (e *openAPIEmitter) interceptProp(p jsonschema.InterceptPropParams) error {
 			p.ParentSchema.Required = append(p.ParentSchema.Required, p.Name)
 		}
 		openAPIAllowNullRef(p.PropertySchema, p.Field.Type)
+		openAPIAllowNullEnum(p.PropertySchema)
 		return nil
 	}
 	if p.PropertySchema != nil {
@@ -475,6 +476,17 @@ func openAPIAllowNullRef(schema *jsonschema.Schema, field reflect.Type) {
 	referred := jsonschema.Schema{Ref: schema.Ref}
 	schema.Ref = nil
 	schema.WithAnyOf(referred.ToSchemaOrBool(), null.ToSchemaOrBool())
+}
+
+// openAPIAllowNullEnum puts null among the values of a nilable field's enum. The reflector reads an
+// `enum` tag onto the field's schema and adds "null" to a pointer's type, but JSON Schema holds a
+// value to both, so left alone the document would refuse the null the server sends for a *string
+// with no `,omitempty` and an enum of its values (NearCopyCheck.reason).
+func openAPIAllowNullEnum(schema *jsonschema.Schema) {
+	if schema == nil || len(schema.Enum) == 0 || !schema.HasType(jsonschema.Null) || slices.Contains(schema.Enum, nil) {
+		return
+	}
+	schema.Enum = append(schema.Enum, nil)
 }
 
 // rawFieldKey answers the rawFieldSchemas key of one property, the rawFieldKeyOf of the owning
@@ -816,11 +828,13 @@ func (e *openAPIEmitter) requestBody(shape routeShape, name string) (*openapi31.
 }
 
 // openAPIAnswer is one status of one operation while it is being built: every schema the route
-// answers at that status, and the content types its bytes are served as.
+// answers at that status, and the content types its bytes are served as. refusal marks a status a
+// richer refusal body answers (routeShape.Refusals), which writeError's plain body answers too.
 type openAPIAnswer struct {
 	schemas     []map[string]any
 	description string
 	opaque      []string
+	refusal     bool
 }
 
 // responses are every answer the row gives: its success with the shapes that ride it, each of the
@@ -869,20 +883,34 @@ func (e *openAPIEmitter) responses(route apiRoute, shape routeShape) (*openapi31
 		}
 	}
 	if shape.Opaque != "" {
-		if shape.OpaqueContentType == "" {
+		if len(shape.OpaqueContentTypes) == 0 {
 			return nil, fmt.Errorf("%s %s answers bytes Dispatch does not model and names no "+
-				"content type for them (routeShape.OpaqueContentType)", route.Method, route.Pattern)
+				"content type for them (routeShape.OpaqueContentTypes)", route.Method, route.Pattern)
 		}
 		success.description = shape.Opaque
-		success.opaque = append(success.opaque, shape.OpaqueContentType)
+		success.opaque = append(success.opaque, shape.OpaqueContentTypes...)
 	}
 	for _, also := range shape.Also {
 		if err := add(also.Status, also.Body); err != nil {
 			return nil, err
 		}
 	}
+	// A status that answers a richer refusal answers writeError's plain body as well: the default
+	// answer below covers only the statuses the document does not name, and a route's handler
+	// writes plain refusals at the same status as its rich one (an issue PATCH's 409
+	// ISSUE_CHANGED beside its 409 FOREIGN_CHILD_OPEN, a create's 409 PARENT_INPUT beside its 409
+	// POSSIBLE_DUPLICATE). So each such status holds errorBody beside its rich bodies.
+	plain, err := e.schema(errorBody{})
+	if err != nil {
+		return nil, err
+	}
 	for _, refusal := range shape.Refusals {
 		if err := add(refusal.Status, refusal.Body); err != nil {
+			return nil, err
+		}
+		at := answer(refusal.Status)
+		at.refusal = true
+		if err := at.hold(plain); err != nil {
 			return nil, err
 		}
 	}
@@ -897,12 +925,8 @@ func (e *openAPIEmitter) responses(route apiRoute, shape routeShape) (*openapi31
 		responses.WithMapOfResponseOrReferenceValuesItem(
 			fmt.Sprintf("%d", status), openapi31.ResponseOrReference{Response: response})
 	}
-	refusal, err := e.schema(errorBody{})
-	if err != nil {
-		return nil, err
-	}
 	responses.WithDefault(openapi31.ResponseOrReference{Response: (&openapi31.Response{
-		Content: map[string]openapi31.MediaType{"application/json": {Schema: refusal}},
+		Content: map[string]openapi31.MediaType{"application/json": {Schema: plain}},
 	}).WithDescription("A refusal: its code and its message, which every refusal this route does " +
 		"not give a richer body writes (writeError).")})
 	return responses, nil
@@ -944,7 +968,14 @@ func (a *openAPIAnswer) response(status int) (*openapi31.Response, error) {
 		for _, schema := range a.schemas {
 			shapes = append(shapes, schema)
 		}
-		content["application/json"] = openapi31.MediaType{Schema: map[string]any{"oneOf": shapes}}
+		// A refusal status's rich body carries code and error too, so it also reads as
+		// errorBody: the shapes overlap, and the body matches at least one of them, not exactly
+		// one.
+		combinator := "oneOf"
+		if a.refusal {
+			combinator = "anyOf"
+		}
+		content["application/json"] = openapi31.MediaType{Schema: map[string]any{combinator: shapes}}
 	}
 	for _, contentType := range a.opaque {
 		if _, modelled := content[contentType]; modelled {

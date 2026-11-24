@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { chmod, readFile, writeFile } from "node:fs/promises";
 import * as path from "node:path";
 import { STALL_EXIT_CAP, STALL_EXIT_CODE } from "@legion/pi-shared/stall-watchdog";
-import { call } from "@legion/pi-shared/test/omp-harness";
+import { call, newestMessage } from "@legion/pi-shared/test/omp-harness";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import {
   ARCHITECT_TOPIC,
@@ -15,7 +15,6 @@ import {
   gone,
   ISSUE,
   kernelOf,
-  lastMessage,
   ofKind,
   QUIET_MS,
   ROLE,
@@ -152,6 +151,12 @@ test.skipIf(skip)(
       toolCallId: evidence.toolCallId,
     });
 
+    // The notice's own record check reads this issue's record and never the whole project body
+    // (dispatch://INFRA-2694): the stall evidence takes that reader from the plugin's wiring.
+    const paths = pane.requests.map((request) => request.path);
+    expect(paths).toContain(`/legion/v1/issues/${ISSUE}/record`);
+    expect(paths).not.toContain("/legion/v1/state");
+
     // The first step: the child, and only the child — the cell's own child gone, this session's
     // kernel untouched, and exactly one process ended. The count is pinned again because the
     // warming cell is what made it deterministic: the kernel was started by a turn that had
@@ -229,12 +234,15 @@ test.skipIf(skip)(
     );
     expect(aborted.openMs).toBeGreaterThanOrEqual(ended.openMs + STEP_MS);
 
-    // The session is the same session, and it took a turn on the message it sent itself.
+    // The session is the same session, and it took a turn on the message it sent itself: the
+    // newest of the turn's own messages, past the date/cwd reminder the host sends after it when
+    // the local date has changed since the wedging turn's request, as it does for a case that
+    // runs across midnight (`ownMessages` in the harness).
     const again = await pane.until("the turn the worker's own message started", () =>
-      pane.turns().find((turn) => lastMessage(turn).includes("Your turn was ended because"))
+      pane.turns().find((turn) => newestMessage(turn.body).includes("Your turn was ended because"))
     );
-    expect(lastMessage(again)).toContain("`eval` call");
-    expect(lastMessage(again)).toContain("Decide whether that call is still worth making");
+    expect(newestMessage(again.body)).toContain("`eval` call");
+    expect(newestMessage(again.body)).toContain("Decide whether that call is still worth making");
     await pane.settled();
     const restarts = await pane.restarts();
     expect(restarts).toHaveLength(1);
@@ -598,8 +606,8 @@ test.skipIf(skip)(
     // quiet altogether is the daemon's backstop to end, not this watch's.
     //
     // The wait is what makes the emptiness mean something: the call declared its own deadline,
-    // so a record still open would be overdue a grace later and written up by the next
-    // 5-second sweep. This waits past that moment and several sweeps beyond it. Driven: with
+    // so a record still open would be overdue a grace later and written up by the next sweep
+    // (`SWEEP_MS`). This waits past that moment and several sweeps beyond it. Driven: with
     // every close of the entry cut — `executionEnded`, `resultDelivered` and the `turnEnded`
     // of both `turn_end` and `agent_end` — this case is red, the sweep writing the evidence
     // and the ladder's steps for the backgrounded `bash` call. Cutting the two closing by id

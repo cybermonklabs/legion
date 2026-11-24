@@ -1,0 +1,5 @@
+kind: Added
+body: PUT /api/v1/issues/{key}/role-holders records the session that holds each Legion role of an issue, and GET answers that set in workflow order. A write must name the actor legion-daemon:<project>, each pair must name both its role and its session, each session must be a session id of at most 256 bytes, and each write replaces the whole set of the issue.
+time: 2026-11-16T17:36:30.486030646Z
+custom:
+    Issue: pr4228

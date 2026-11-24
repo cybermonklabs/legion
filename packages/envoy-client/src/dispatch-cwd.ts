@@ -38,7 +38,7 @@ const REMOTE_LOOKUP_MS = 5_000;
 export const TMUX_PANE_LOOKUP_MS = 1_000;
 
 /** The coding-agent hosts that ship a `dispatch` tool. Each plugin asserts its own value. */
-export type DispatchHost = "omp" | "claude";
+export type DispatchHost = "omp" | "claude" | "codex";
 
 /** Provenance attached to every dispatch turn so a human can find the asking session. */
 export interface DispatchOrigin {

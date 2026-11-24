@@ -54,9 +54,9 @@ import (
 // interval was 276.8 ms.
 //
 // jetstream.ErrMsgAlreadyAckd ends the keeper with no line at all. nats.go never marks a message
-// acknowledged for a progress signal (nats.go v1.53.1's (*jetStreamMsg).ackReply, which sets ackd
-// for every acknowledgement type but ackProgress), so that error can only mean the handler
-// already ended the message, which is the moment the keeper has nothing left to do.
+// acknowledged for a progress signal (nats.go v1.55.0's jetstream/message.go:411-464
+// `(*jetStreamMsg).ackReply`, which sends a progress signal without setting ackd; other
+// acknowledgement types set it), so that error can only mean the handler has already ended the message, which is the moment the keeper has nothing left to do.
 //
 // Every other error is tolerated and logged once per message, at debug. The signal is a
 // fire-and-forget publish (the same ackReply, which publishes rather than requests for a caller

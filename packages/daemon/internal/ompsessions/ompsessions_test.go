@@ -147,6 +147,131 @@ func TestWrittenFindsOnlyASessionTheTableHoldsAndWhenItWasWritten(t *testing.T) 
 	}
 }
 
+// The session a pod's PI_SESSION_FILE named, captured in the planner's pod on 2026-11-19, as Oh My
+// Pi keeps it: `<sessions>/<folder named for the working directory>/<timestamp>_<session id>.jsonl`,
+// written at the instant its timestamp names.
+const (
+	podSessions    = "/home/legion/.omp/profiles/legion/agent/sessions"
+	podFolder      = podSessions + "/--legion-workspaces-cybermonklabs-legion-infra-4108--"
+	podSessionID   = "01a1f5de-4835-7667-b005-e99e3e17edd3"
+	podSessionFile = podFolder + "/2026-11-19T22-12-27-829Z_" + podSessionID + ".jsonl"
+)
+
+// podSessionWritten is when podSessionFile was written, as its row's mtime_ms holds it.
+var podSessionWritten = time.Date(2026, 11, 19, 22, 12, 27, 829_000_000, time.UTC).UnixMilli()
+
+// putSession is a row of Oh My Pi's session table at path, last written at mtimeMs (milliseconds
+// since the epoch), with no parts.
+func putSession(t *testing.T, conn *pgx.Conn, path string, mtimeMs int64) {
+	t.Helper()
+	if _, err := conn.Exec(context.Background(), "INSERT INTO omp_session_files (path, content, mtime_ms, byte_len) VALUES ($1, $2, $3, $4)",
+		path, "{}\n", mtimeMs, 3); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A start that names a session by its id alone resumes the newest row of the table that is one of
+// that session's: a row whose path ends `_<id>.jsonl`, compared as text. Of two folders holding
+// the session, the one written last; of two written in the same millisecond, the lesser path. A
+// row of another session whose id shares the first 30 characters, a subagent's file under the
+// session's own folder, and a row that would match only were `_` or `%` a wildcard are none of
+// its, and a path whose folder holds both is matched as written. A table holding no row of it,
+// or no table at all, is no session and no error, as Written answers. An id that is no single
+// path element is refused before any query.
+func TestFindByIDReadsTheNewestRowWhosePathEndsInTheID(t *testing.T) {
+	ctx := context.Background()
+	later := podSessionWritten + time.Hour.Milliseconds()
+	finds := func(t *testing.T, conn *pgx.Conn, id, want string) {
+		t.Helper()
+		if path, found, err := FindByID(ctx, conn, id); err != nil || !found || path != want {
+			t.Errorf("FindByID(%q) = %q, %t, %v; want %s", id, path, found, err, want)
+		}
+	}
+	findsNone := func(t *testing.T, conn *pgx.Conn, id string) {
+		t.Helper()
+		if path, found, err := FindByID(ctx, conn, id); err != nil || found || path != "" {
+			t.Errorf("FindByID(%q) = %q, %t, %v; want no session and no error", id, path, found, err)
+		}
+	}
+
+	t.Run("the newest of two folders holding the session", func(t *testing.T) {
+		conn := connectWithTables(t)
+		// The newer row's path is the greater, so an order by path alone would take the older.
+		newer := podSessions + "/--state-workspaces-cybermonklabs-legion-infra-4108--/2026-11-19T23-12-27-829Z_" + podSessionID + ".jsonl"
+		putSession(t, conn, podSessionFile, podSessionWritten)
+		putSession(t, conn, newer, later)
+		finds(t, conn, podSessionID, newer)
+	})
+
+	t.Run("a tie on the last write is broken by the lesser path", func(t *testing.T) {
+		conn := connectWithTables(t)
+		greater := podSessions + "/--state-workspaces-cybermonklabs-legion-infra-4108--/2026-11-19T22-12-27-829Z_" + podSessionID + ".jsonl"
+		putSession(t, conn, greater, podSessionWritten)
+		putSession(t, conn, podSessionFile, podSessionWritten)
+		finds(t, conn, podSessionID, podSessionFile)
+	})
+
+	t.Run("another session whose id shares the first 30 characters", func(t *testing.T) {
+		conn := connectWithTables(t)
+		other := podSessionID[:30] + "28aa01"
+		putSession(t, conn, podSessionFile, podSessionWritten)
+		putSession(t, conn, podFolder+"/2026-11-19T23-12-27-829Z_"+other+".jsonl", later)
+		finds(t, conn, podSessionID, podSessionFile)
+		findsNone(t, conn, podSessionID[:30])
+	})
+
+	t.Run("a subagent's file under the session's own folder", func(t *testing.T) {
+		conn := connectWithTables(t)
+		putSession(t, conn, podSessionFile, podSessionWritten)
+		putSession(t, conn, strings.TrimSuffix(podSessionFile, ".jsonl")+"/0-scout.jsonl", later)
+		finds(t, conn, podSessionID, podSessionFile)
+		if _, err := conn.Exec(ctx, "DELETE FROM omp_session_files WHERE path = $1", podSessionFile); err != nil {
+			t.Fatal(err)
+		}
+		findsNone(t, conn, podSessionID)
+	})
+
+	t.Run("a _ or a % matches only itself", func(t *testing.T) {
+		conn := connectWithTables(t)
+		literal := podSessions + "/--legion-workspaces-cyber_monk%labs-legion-infra-4108--/2026-11-19T22-12-27-829Z_" + podSessionID + ".jsonl"
+		putSession(t, conn, literal, podSessionWritten)
+		// A newer row whose name has a `-` where the session's own `_` stands before its id: only a
+		// `_` read as a wildcard matches it.
+		putSession(t, conn, podFolder+"/2026-11-19T23-12-27-829Z-"+podSessionID+".jsonl", later)
+		finds(t, conn, podSessionID, literal)
+		// Ids that name the session only where `_` or `%` stands for another character.
+		findsNone(t, conn, strings.Replace(podSessionID, "-", "_", 1))
+		findsNone(t, conn, podSessionID[:24]+"%")
+	})
+
+	t.Run("a table holding no row of it", func(t *testing.T) {
+		conn := connectWithTables(t)
+		putSession(t, conn, podFolder+"/2026-11-19T23-12-27-829Z_01a1f5de-4835-7667-b005-e99e3e28aa01.jsonl", later)
+		findsNone(t, conn, podSessionID)
+	})
+
+	t.Run("a database no Oh My Pi has opened", func(t *testing.T) {
+		findsNone(t, connect(t), podSessionID)
+	})
+
+	t.Run("an id that is no single path element", func(t *testing.T) {
+		// No connection: a query on it panics, so an id refused before any query is the one
+		// answer that returns.
+		for _, id := range []string{"", "01a1f5de/4835", "../" + podSessionID, podSessionID + "\x00"} {
+			func() {
+				defer func() {
+					if queried := recover(); queried != nil {
+						t.Errorf("FindByID(%q) reached for the table (%v), want the id refused before any query", id, queried)
+					}
+				}()
+				if path, found, err := FindByID(ctx, nil, id); err == nil || found || path != "" {
+					t.Errorf("FindByID(%q) = %q, %t, %v; want the id refused", id, path, found, err)
+				}
+			}()
+		}
+	})
+}
+
 // Content Postgres cannot keep as text is refused, by Postgres itself, naming the session, and
 // nothing is written.
 func TestImportRefusesContentNoTextValueHolds(t *testing.T) {

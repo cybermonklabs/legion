@@ -7,11 +7,11 @@ import {
   AskEventPayloadSchema,
   dispatchToolSpecs,
 } from "@legion/contracts";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { runDispatchCli } from "../dispatch-cli";
 import { commandFlags } from "../dispatch-command";
 import { resetAdviceMemory } from "../dispatch-execute";
-import { forgetKeyedLayerMemory } from "../dispatch-http";
 
 // Who an open ask waits on, from the command line and from the texts an agent reads. A person
 // hands an ask on through the web app or `PUT /api/v1/asks/{id}/asked-of`, both person-scoped, so
@@ -22,11 +22,14 @@ import { forgetKeyedLayerMemory } from "../dispatch-http";
 
 const makeDirectory = temporaryDirectories("dispatch-asked-of");
 
+/** The Dispatch bearer each command is handed. */
+const TOKEN = fixtureSecret("dsp");
+
 /** The repository root, from this file's own path rather than the working directory, which bun
  *  sets to the package when the check runs `cd packages/envoy-client && bun test`. */
 const REPO_ROOT = join(import.meta.dir, "..", "..", "..", "..");
 
-const ASSIGNEE = "bob@theorem.dev";
+const ASSIGNEE = "bob@example.com";
 
 interface Recorded {
   readonly method: string;
@@ -80,7 +83,6 @@ beforeEach(() => {
   requests.length = 0;
   stateDir = makeDirectory();
   resetAdviceMemory();
-  forgetKeyedLayerMemory();
 });
 
 async function run(argv: readonly string[]): Promise<{
@@ -95,7 +97,7 @@ async function run(argv: readonly string[]): Promise<{
     {
       HOME: stateDir,
       DISPATCH_URL: `http://127.0.0.1:${server.port}`,
-      DISPATCH_TOKEN: "test-token",
+      DISPATCH_TOKEN: TOKEN,
       DISPATCH_STATE_DIR: stateDir,
       DISPATCH_HOST: "omp",
       DISPATCH_SESSION_ID: "ses-1",
@@ -219,62 +221,18 @@ const ALLOWED: readonly (readonly [string, string])[] = [
     "skills/legion-worker/references/findings.md",
     "## Fix it where you are, else hand it over, and ask only for a",
   ],
-  [
-    "skills/legion-worker/references/findings.md",
-    "not sure of is not step 1: hand it over, or ask when a person must",
-  ],
-  [
-    "skills/legion-worker/references/findings.md",
-    "options ask where the work goes, with `Hand it to the owning tree` first",
-  ],
-  // "by hand", the adverb: a human resolving a review thread themselves.
-  [
-    "skills/legion-worker/references/review-threads.md",
-    "which opens a `dispatch ask` for a human to resolve it by hand; never skip it",
-  ],
   // Handing a turn back inside one ask's thread, which moves nobody's list.
   [
     "skills/legion-architect/references/wake-routing.md",
     "request you must revise or hand back, `--reply-to-ask <ask id> --turn agent`,",
   ],
-  [
-    "skills/legion-controller/references/parked-decisions.md",
-    "ask hands the turn to the person. For",
-  ],
-  [
-    "skills/legion-controller/references/parked-decisions.md",
-    "same ask, and a session's reply there hands the turn to the person, as",
-  ],
-  [
-    "packages/pi-envoy/AGENTS.md",
-    "version moved, which no reply hands back: the client then reads the ask and adds a line naming the",
-  ],
-  ["packages/envoy/AGENTS.md", "agent replying to a deferred ask hands the turn back without"],
   // A link to a section of a reference file, whose anchor holds the word.
   ["skills/legion-controller/SKILL.md", "finding-asks.md#hand-over-a-clear-defect`"],
   [
     "skills/legion-controller/references/consolidation.md",
     "finding-asks.md#hand-over-a-clear-defect`",
   ],
-  // The web app's own behaviour, written for whoever edits it, never for an agent.
-  [
-    "packages/dispatch/AGENTS.md",
-    "its thread's replies, and an ask link focuses its Conversation turn or redirects to the document whose margin",
-  ],
-  [
-    "packages/dispatch/AGENTS.md",
-    "below its document version; a hand-back (`ask.handed_back`, which",
-  ],
-  [
-    "packages/dispatch/AGENTS.md",
-    "or resolved elsewhere) or hands its turn the other way (their own ask-back, an agent's progress",
-  ],
-  // The block-id repair in the server, which hands rows around, not asks.
-  [
-    "packages/envoy/AGENTS.md",
-    "(an id holding a NUL, which a hand-built client can set and no ask row or anchor can store,",
-  ],
-  ["packages/envoy/AGENTS.md", "since the id repair would hand the held ask's row and answer to"],
+  // Tool descriptions that state who an ask waits on and what a hand-on moves.
   [
     "dispatch_issue_update description",
     "this issue's asks, and every ask on it waits on them until a person hands that ask on",
@@ -282,45 +240,6 @@ const ALLOWED: readonly (readonly [string, string])[] = [
   [
     "dispatch_claim description",
     "to it, except in an ask you follow: anyone else's answer, hand-back, resolution or edit of",
-  ],
-  // The guides of this repository, which state the rule for whoever edits the code rather than
-  // telling an agent to use it: who an ask waits on, and what a hand-on moves.
-  [
-    "packages/contracts/AGENTS.md",
-    "Every ask on the issue waits on the person it was handed to, else the assignee, else the project's default assignee",
-  ],
-  [
-    "packages/contracts/AGENTS.md",
-    "on an `ask.asked_of` the two people the hand-on moved the ask between",
-  ],
-  ["packages/dispatch/AGENTS.md", "A hand-on is there for the reason a reassignment is"],
-  [
-    "packages/dispatch/AGENTS.md",
-    "the lowercase email of who an ask on it waits on until somebody hands that ask to another person",
-  ],
-  [
-    "packages/envoy/AGENTS.md",
-    "email of the person every ask on it waits on until somebody hands that ask to another person",
-  ],
-  [
-    "packages/envoy/AGENTS.md",
-    "the person an ask on the issue waits on until somebody hands it on, or, while the issue holds nobody, its project's default assignee",
-  ],
-  [
-    "packages/envoy/AGENTS.md",
-    "`ask.asked_of` names two people instead, the person the ask waited on and the person it waits on now",
-  ],
-  [
-    "packages/envoy/AGENTS.md",
-    "that same rule moves the rows of the asks nobody has handed on out of one Inbox and into the other",
-  ],
-  [
-    "packages/envoy/AGENTS.md",
-    "the asks handed to them, the asks on the issues assigned to them that nobody has handed on",
-  ],
-  [
-    "packages/envoy/AGENTS.md",
-    "the person the ask was handed to, the assignee of its issue until somebody hands it on",
   ],
 ];
 
@@ -419,15 +338,15 @@ test("an ask.asked_of payload keeps its three hand-on fields", () => {
     opened_event_id: 12,
     question: "Which store do we keep?",
     asked_of: ASSIGNEE,
-    asked_of_by: "alice@theorem.dev",
+    asked_of_by: "alice@example.com",
     asked_of_at: "2026-11-02T09:00:00Z",
-    thread_logins: ["alice@theorem.dev", ASSIGNEE],
+    thread_logins: ["alice@example.com", ASSIGNEE],
     waiting_on_person: ASSIGNEE,
   });
 
   expect(parsed).toMatchObject({
     asked_of: ASSIGNEE,
-    asked_of_by: "alice@theorem.dev",
+    asked_of_by: "alice@example.com",
     asked_of_at: "2026-11-02T09:00:00Z",
   });
   // Read-time only: the row never stores it, so no frame may carry it.
@@ -438,8 +357,8 @@ test("an ask.asked_of payload keeps its three hand-on fields", () => {
     AskEventPayloadSchema.parse({
       opened_event_id: 13,
       asked_of: null,
-      asked_of_by: "alice@theorem.dev",
+      asked_of_by: "alice@example.com",
       asked_of_at: "2026-11-02T10:00:00Z",
     })
-  ).toMatchObject({ asked_of: null, asked_of_by: "alice@theorem.dev" });
+  ).toMatchObject({ asked_of: null, asked_of_by: "alice@example.com" });
 });

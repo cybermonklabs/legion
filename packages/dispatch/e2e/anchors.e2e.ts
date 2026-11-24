@@ -51,15 +51,19 @@ test("a block-anchored comment remains with its block through a reword and quote
     await expect(gutter).toBeVisible();
     await gutter.click();
     await expect(page.getByText("References for this block")).toBeVisible();
-    await selectEditorText(page, "Target passage");
-    await page.keyboard.type("Reworded passage");
+    // The comment mark is not inclusive, so typing over the whole passage drops the mark from the
+    // typed words, and the server then orphans the anchor. This row's claim is that a reword that
+    // keeps the mark keeps the anchor, so it rewords only the start; the quote then shows that
+    // the server has read the reworded words.
+    await selectEditorText(page, "Target");
+    await page.keyboard.type("Reworded");
     await expect(documentEditor(page)).toContainText("Reworded passage");
     await expect
       .poll(async () => {
         const comments = await listComments(issue.key, issue.primary_artifact_id);
         return comments.find((candidate) => candidate.id === commentId)?.anchor;
       }, PROBE)
-      .toMatchObject({ block_id: anchoredBlock, orphaned: false });
+      .toMatchObject({ block_id: anchoredBlock, orphaned: false, quote: "Reworded passage" });
 
     await deleteEditorText(page, "Reworded passage");
     await expect

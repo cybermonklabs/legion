@@ -9,11 +9,16 @@ import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { graphNode } from "../../__tests__/graph-fixture";
 import { dwellOn, installIntersectionObserver } from "../../__tests__/intersection-observer";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
+import { expectSameElements } from "../../__tests__/same-elements";
 import { answerThreadReads } from "../../__tests__/send-answers";
-import { api } from "../../api/client";
+import { heldDraftWords, stopReplySend } from "../../__tests__/stop-late-write";
+import { ApiError, api } from "../../api/client";
 import type { Comment } from "../../api/types";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { userPreferenceStorageKey } from "../shell/userPreference";
 import { seedUnread } from "../threads/replies-fixture";
+import { SendStoppedError } from "../writes/keyed-write";
+import { marginReplySendKey } from "./margin-context";
 import { ThreadCard } from "./ThreadCard";
 import type { Thread } from "./useMarginItems";
 
@@ -405,6 +410,117 @@ test("Escape with an empty inline reply collapses the thread", async () => {
   }
 });
 
+/** A card its host opens and closes as the margin's list does: its toggle flips `expanded`. */
+function ToggledCard(props: Omit<EditableCardProps, "expanded" | "onToggle">) {
+  const [expanded, setExpanded] = useState(true);
+  return (
+    <EditableCard {...props} expanded={expanded} onToggle={() => setExpanded((open) => !open)} />
+  );
+}
+
+/** The thread's reply send name, as the margin names it. */
+const replyKey = marginReplySendKey(root.id);
+
+/** What a refusal Dispatch gave says in the reply composer. */
+const refusedText = "Couldn't send — the server is down";
+
+/** What a send the reader stopped says in its composer at its own address: Dispatch has not
+ *  confirmed it, and its Retry asks again under its own key. */
+const stoppedText = new SendStoppedError().message;
+
+/** The thread's reply, as a stopped send answers it (`stopReplySend`). */
+const rootReply = { actor: root.author, excerpt: "", id: root.id, parentKind: "comment" } as const;
+
+// Cancel reply is the reader's own move, and a margin thread has no other composer to take the
+// reply to: the reply is kept under its own send name, the card says so until the reader goes on
+// with it, and the card's Reply puts it back in the field - its text, a refusal's note, and a
+// stopped send's note that it may have been delivered. Nothing is sent until the reader presses:
+// a refusal's Retry then goes under a key of its own, and a stopped send's under the key it went
+// out under, at the address it went to.
+for (const kept of ["typed", "refused", "stopped"] as const) {
+  test(`Cancel reply keeps a margin reply ${heldDraftWords[kept]}, the card says so, and its Reply brings it back`, async () => {
+    const user = userEvent.setup();
+    const queryClient = new QueryClient({
+      defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+    });
+    const createComment = spyOn(api, "createComment");
+    const body = `Reply ${heldDraftWords[kept]}, then Cancel reply`;
+    if (kept === "stopped") {
+      await stopReplySend(queryClient, createComment, replyKey, body, rootReply);
+    }
+    createComment.mockResolvedValue({ ...reply, body, id: "reply-2" });
+    if (kept === "refused") {
+      createComment.mockRejectedValueOnce(
+        new ApiError(409, { code: "UNAVAILABLE", error: "the server is down" })
+      );
+    }
+    const view = render(
+      <MemoryRouter>
+        <QueryClientProvider client={queryClient}>
+          <ToggledCard
+            actionFailure={undefined}
+            artifactSlug="spec"
+            hovered={false}
+            isClosed={false}
+            onAction={() => {}}
+            onEdit={async () => undefined}
+            onRetryAction={() => {}}
+            owner={{ key: "CORE-1", kind: "issue" }}
+            pendingAction={false}
+            replyMutationKey={replyKey}
+            thread={thread()}
+            viewerLogin="alice"
+          />
+        </QueryClientProvider>
+      </MemoryRouter>
+    );
+    const card = screen.getByTestId(`margin-comment-${root.id}`);
+
+    try {
+      if (kept === "stopped") {
+        expect(within(card).getByText(stoppedText)).toBeTruthy();
+      } else {
+        await user.click(within(card).getByRole("textbox", { name: "Reply" }));
+        await user.paste(body);
+        if (kept === "refused") {
+          await user.click(within(card).getByRole("button", { name: "Send" }));
+          await within(card).findByText(refusedText);
+        }
+      }
+      const sent = createComment.mock.calls.length;
+
+      await user.click(within(card).getByRole("button", { name: "Cancel reply" }));
+      expect(card).toHaveAttribute("aria-expanded", "false");
+      expect(within(card).queryByRole("textbox", { name: "Reply" })).not.toBeInTheDocument();
+      expect(within(card).getByRole("status").textContent).toBe(
+        "Your reply to the comment by alice is kept. Press Reply to go on with it."
+      );
+      expect(createComment).toHaveBeenCalledTimes(sent);
+
+      await user.click(within(card).getByRole("button", { name: "Reply" }));
+      expect(card).toHaveAttribute("aria-expanded", "true");
+      // The text and the note in one comparison, so a row that fails says which of them is gone.
+      expect({
+        refusal: within(card).queryByText(refusedText) !== null,
+        stopped: within(card).queryByText(stoppedText) !== null,
+        text: within(card).getByRole<HTMLTextAreaElement>("textbox", { name: "Reply" }).value,
+      }).toEqual({ refusal: kept === "refused", stopped: kept === "stopped", text: body });
+      expect(within(card).queryByText(/is kept/)).not.toBeInTheDocument();
+      expect(createComment).toHaveBeenCalledTimes(sent);
+
+      if (kept === "typed") return;
+      await user.click(within(card).getByRole("button", { name: "Retry" }));
+      await waitFor(() => expect(createComment).toHaveBeenCalledTimes(sent + 1));
+      const keys = createComment.mock.calls.map(([, , bounds]) => bounds.key);
+      if (kept === "refused") expect(keys[1]).not.toBe(keys[0]);
+      if (kept === "stopped") expect(keys.at(-1)).toBe("stopped-send");
+    } finally {
+      view.unmount();
+      createComment.mockRestore();
+    }
+  });
+}
+
 test("a terminal suggestion shows its disposition and has no Reopen control", () => {
   const accepted = comment("root-1", "Suggested replacement.", "2026-09-10T00:00:00Z", {
     resolved: true,
@@ -646,7 +762,9 @@ afterEach(() => {
 
 /** Renders the card on `CORE-1`, whose root-1 thread is unread for alice, with time and the
  *  screen in the test's hands. */
-function renderUnreadCard(expanded: boolean) {
+async function renderUnreadCard(expanded: boolean) {
+  // A reply is Markdown (`MarkdownBody`), empty until the lazy Markdown engine loads in real time.
+  await warmMarkdownRenderer();
   jest.useFakeTimers();
   const screen = installIntersectionObserver();
   const mark = answerThreadReads().mockResolvedValue(undefined);
@@ -671,12 +789,12 @@ function renderUnreadCard(expanded: boolean) {
 }
 
 test("an expanded thread is marked read once its newest reply has been on screen", async () => {
-  const card = renderUnreadCard(true);
+  const card = await renderUnreadCard(true);
   try {
     const newest = (await card.view.findByText("First reply")).closest("li");
     if (newest === null) throw new Error("expected the newest reply's item");
     // The watched element is the newest reply's own, not the card around the whole thread.
-    expect(card.screen.observed()).toEqual([newest]);
+    expectSameElements(card.screen.observed(), [newest]);
     await dwellOn(card.screen, newest);
     expect(card.mark.mock.calls).toEqual([
       [root.id, { read_through: reply.created_at }, keyedAttempt],
@@ -687,9 +805,9 @@ test("an expanded thread is marked read once its newest reply has been on screen
 });
 
 test("a collapsed thread shows no reply and marks nothing", async () => {
-  const card = renderUnreadCard(false);
+  const card = await renderUnreadCard(false);
   try {
-    expect(card.screen.observed()).toEqual([]);
+    expect(card.screen.observed().length).toBe(0);
     await dwellOn(card.screen, screen.getByTestId(`margin-comment-${root.id}`));
     expect(card.mark).not.toHaveBeenCalled();
   } finally {

@@ -1,0 +1,32 @@
+Delete artifacts from an issue. A deleted artifact can't be restored.
+
+Name artifacts by their issue and numbers, or by their URLs, which must all be
+on one issue. `<issue>` is an issue number or URL.
+
+In a terminal, deletion requires confirmation. `--yes` skips the prompt and is
+required when prompting is unavailable.
+
+
+USAGE
+  gh issue artifact delete {<issue> <artifact-number>... | <artifact-url>...} [flags]
+
+FLAGS
+  --yes[=true|false]   Confirm deletion without prompting
+
+INHERITED FLAGS
+      --help[=true|false]        Show help for command
+  -R, --repo [HOST/]OWNER/REPO   Select another repository using the [HOST/]OWNER/REPO format
+
+EXAMPLES
+  # Delete artifact 2 from issue 142
+  $ gh issue artifact delete 142 2
+  
+  # Delete two artifacts without a prompt
+  $ gh issue artifact delete 142 2 5 --yes
+
+LEARN MORE
+  Use `gh <command> <subcommand> --help` for more information about a command.
+  Read the manual at https://cli.github.com/manual
+  Learn about exit codes using `gh help exit-codes`
+  Learn about accessibility experiences using `gh help accessibility`
+

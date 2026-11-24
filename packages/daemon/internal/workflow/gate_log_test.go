@@ -3,14 +3,18 @@ package workflow
 import (
 	"bytes"
 	"context"
+	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // A gate's registration and each artifact event that opens or closes it write one Info line
@@ -49,7 +53,7 @@ func TestTheDesignGateLogsItsRegistrationAndEachOpenOrClose(t *testing.T) {
 		// log line of the registration itself, since the row is written first.
 		{"registration", intake.GateRegistered{Issue: "LEGION-1", ArtifactID: "art-1", Version: 2},
 			[]string{
-				`msg="workflow: the design gate moved and every phase holder of the tree is told" issue=LEGION-1 tree=LEGION-1 step=spec version=2 open=false told=1`,
+				`msg="workflow: the design gate moved and every phase worker of the tree and the root's architect are told" issue=LEGION-1 tree=LEGION-1 step=spec version=2 open=false told=1`,
 				`msg="workflow: design gate registered" issue=LEGION-1 artifact=art-1 step=spec version=2 open=false changes_requested=false gated_steps=[spec]`,
 			}},
 		{"changes requested on the closed gate", intake.DispatchArtifact{Key: "LEGION-1", ArtifactID: "art-1", Kind: intake.DispatchArtifactChangesRequested, Version: 2, Reason: "tighten it"},
@@ -59,7 +63,7 @@ func TestTheDesignGateLogsItsRegistrationAndEachOpenOrClose(t *testing.T) {
 		{"the approval", intake.DispatchArtifact{Key: "LEGION-1", ArtifactID: "art-1", Kind: intake.DispatchArtifactApproved, Version: 3},
 			[]string{
 				`msg="workflow: design gate opened" issue=LEGION-1 artifact=art-1 event=approved version=3`,
-				`msg="workflow: the design gate moved and every phase holder of the tree is told" issue=LEGION-1 tree=LEGION-1 step=spec version=3 open=true told=1`,
+				`msg="workflow: the design gate moved and every phase worker of the tree and the root's architect are told" issue=LEGION-1 tree=LEGION-1 step=spec version=3 open=true told=1`,
 			}},
 		{"a version after the approval", intake.DispatchArtifact{Key: "LEGION-1", ArtifactID: "art-1", Kind: intake.DispatchArtifactVersion, Version: 4},
 			[]string{
@@ -67,7 +71,7 @@ func TestTheDesignGateLogsItsRegistrationAndEachOpenOrClose(t *testing.T) {
 				// The root is still admitted: an approval opens the gate and the waiting line
 				// starts the first phase at its slot (StartFirstPhase), which this test's
 				// admission stub does not do, so the architect is the one holder there is.
-				`msg="workflow: the design gate moved and every phase holder of the tree is told" issue=LEGION-1 tree=LEGION-1 step=spec version=4 open=false told=1`,
+				`msg="workflow: the design gate moved and every phase worker of the tree and the root's architect are told" issue=LEGION-1 tree=LEGION-1 step=spec version=4 open=false told=1`,
 			}},
 	} {
 		if got := apply(step.name, step.fact); strings.Join(got, "\n") != strings.Join(step.want, "\n") {
@@ -83,16 +87,14 @@ func TestAGateFactThatDoesNotCommitLogsNothing(t *testing.T) {
 		Generation: 1, Status: "in_progress", Rank: "U"})
 	var logged bytes.Buffer
 	engine := testEngine(config.DesignGateRootIssues, slog.New(slog.NewTextHandler(&logged, nil)))
-	tx, err := pool.Begin(context.Background())
-	if err != nil {
-		t.Fatalf("begin: %v", err)
-	}
-	applied, _ := intake.WithCommitHooks(context.Background())
-	if _, err := engine.Apply(applied, tx, intake.GateRegistered{Issue: "LEGION-1", ArtifactID: "art-1", Version: 2}); err != nil {
-		t.Fatalf("apply the registration: %v", err)
-	}
-	if err := tx.Rollback(context.Background()); err != nil {
-		t.Fatalf("roll back: %v", err)
+	errRolledBack := errors.New("the test rolls the registration back")
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
+		if _, err := engine.Apply(ctx, tx, intake.GateRegistered{Issue: "LEGION-1", ArtifactID: "art-1", Version: 2}); err != nil {
+			return fmt.Errorf("apply the registration: %w", err)
+		}
+		return errRolledBack
+	}); !errors.Is(err, errRolledBack) {
+		t.Fatalf("the registration = %v, want it rolled back", err)
 	}
 	if strings.Contains(logged.String(), "design gate") {
 		t.Fatalf("logged %q for a registration that never committed", logged.String())

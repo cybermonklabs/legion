@@ -2,30 +2,21 @@ import { afterEach, beforeEach, expect, jest, test } from "bun:test";
 import { waitFor } from "@testing-library/react";
 
 import { realClock, tick } from "../../__tests__/fake-clock";
+import { installResizeObserver, type ResizeControl } from "../../__tests__/scroll-box";
 import { refocusWhenSettled } from "./refocus-when-settled";
 
 /** The observers the rows below fire by hand: happy-dom lays nothing out and watches no size, so
  *  a drawn root grows only when its test says it did. */
-let observers: ResizeObserverCallback[] = [];
-let originalObserver: typeof ResizeObserver;
+let sizes: ResizeControl;
 
 beforeEach(() => {
-  observers = [];
-  originalObserver = globalThis.ResizeObserver;
-  globalThis.ResizeObserver = class {
-    constructor(callback: ResizeObserverCallback) {
-      observers.push(callback);
-    }
-    observe() {}
-    disconnect() {}
-    unobserve() {}
-  } as unknown as typeof ResizeObserver;
+  sizes = installResizeObserver();
   jest.useFakeTimers();
 });
 
 afterEach(() => {
   realClock();
-  globalThis.ResizeObserver = originalObserver;
+  sizes.restore();
 });
 
 /** A drawn document root of a stated height, with the growth a late card gives it. */
@@ -37,9 +28,7 @@ function drawnRoot(): { element: HTMLElement; grow(by: number): void } {
     element,
     grow(by: number) {
       height += by;
-      for (const observer of observers) {
-        observer([], undefined as unknown as ResizeObserver);
-      }
+      sizes.resize();
     },
   };
 }
@@ -109,7 +98,7 @@ test("a caller with no drawn root and no diagram waiting arms nothing", async ()
   const stop = refocusWhenSettled(() => (focused += 1));
 
   try {
-    expect(observers).toHaveLength(0);
+    expect(sizes.live()).toBe(0);
     await tick(AFTER_THE_QUIET);
     expect(focused).toBe(0);
   } finally {

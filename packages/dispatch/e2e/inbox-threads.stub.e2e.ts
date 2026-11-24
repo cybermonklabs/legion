@@ -2,7 +2,7 @@
  *  beside the reader's open asks and approvals, and what the Type filter makes of them.
  *
  *  Each row reads what the page draws over one fixed list, so each runs against a recording
- *  rather than against a harness (packages/dispatch/AGENTS.md, "The stubbed layer"). Two rows
+ *  rather than against a harness (packages/dispatch/README.md, "The stubbed layer"). Two rows
  *  of this family stayed in `inbox-threads.e2e.ts`, each with its reason written there.
  *
  *  Two seeds, because the first row counts a whole Inbox of its own.

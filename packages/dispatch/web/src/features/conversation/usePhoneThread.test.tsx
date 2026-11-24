@@ -70,6 +70,7 @@ function renderPhoneThread() {
     ({ isPhoneViewport }: { isPhoneViewport: boolean }) =>
       usePhoneThread({
         isPhoneViewport,
+        owner: { issueKey: "CORE-1", kind: "issue" },
         sendKey,
         sendingNow: () => queryClient.isMutating({ mutationKey: sendKey }) > 0,
       }),
@@ -177,10 +178,10 @@ test("a Reply while the tab has a send out is refused and leaves the thread wher
   }
 });
 
-// Back and Escape with the thread composer's refusal on screen drop it, its draft with it, as
-// they drop the card's own reply's: the composer leaves with its reply, rather than staying
-// mounted, hidden, to bring the refusal back when the thread opens again.
-test("Back with the thread composer's refusal showing drops the refusal and ends its reply", async () => {
+// Back and Escape are the host's moves, so the thread composer's refusal on screen stays held for
+// its comment, its draft and its reply with it: the composer stays mounted, hidden, and that
+// comment's Reply brings it back where it was.
+test("Back with the thread composer's refusal showing keeps the refusal and its reply for the comment's Reply", async () => {
   const { queryClient, view } = renderPhoneThread();
 
   try {
@@ -191,9 +192,15 @@ test("Back with the thread composer's refusal showing drops the refusal and ends
 
     act(() => view.result.current.leave());
     expect(view.result.current.id).toBeUndefined();
-    expect(heldSends(queryClient).get(view.result.current.composerKey)).toBeUndefined();
-    expect(view.result.current.replyTo).toBeNull();
-    expect(view.result.current.holds("comment-1")).toBe(false);
+    expect(heldSends(queryClient).get(view.result.current.composerKey)?.status).toBe("refused");
+    expect(view.result.current.replyTo).toBe(reply);
+    expect(view.result.current.holds("comment-1")).toBe(true);
+
+    act(() => {
+      expect(view.result.current.beginReply(reply)).toBe(true);
+    });
+    expect(view.result.current.id).toBe("comment-1");
+    expect(heldSends(queryClient).get(view.result.current.composerKey)?.status).toBe("refused");
   } finally {
     view.unmount();
   }
@@ -219,9 +226,9 @@ test("Back from another thread keeps the thread composer's refusal for its own t
   }
 });
 
-// Cancel reply, and Escape in the composer's field, end the reply and with it the composer: a
-// refusal it holds goes too, as an inline reply's Cancel reply drops one, rather than coming back
-// under the next comment's Reply.
+// A send that landed, and the reader's Discard, end the reply and with it the composer: nothing of
+// it is left to carry, and a refusal it still holds goes too rather than coming back under the
+// next comment's Reply. Cancel reply carries the draft instead (`ConversationTab.test.tsx`).
 test("ending the thread composer's reply drops a refusal it holds", async () => {
   const { queryClient, view } = renderPhoneThread();
 

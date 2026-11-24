@@ -31,6 +31,7 @@ import (
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 func TestStartingGate_Closed_Returns503(t *testing.T) {
@@ -119,7 +120,7 @@ func TestStartingGateLogsEachRefusedRequest(t *testing.T) {
 
 func TestHealthz_Starting_Returns200WithJSON(t *testing.T) {
 	var state atomic.Pointer[listenerDeps]
-	handler := healthzHandler(&state)
+	handler := healthzHandler(&state, nil)
 
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, httptest.NewRequest("GET", "/healthz", nil))
@@ -152,7 +153,7 @@ func TestDependencyHealthStatus(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rr := httptest.NewRecorder()
-			writeDependencyHealth(rr, "session kv", errors.New("probe failed"), tc.terminal)
+			writeDependencyHealth(rr, "session kv", errors.New("probe failed"), tc.terminal, nil)
 			if rr.Code != tc.statusCode {
 				t.Fatalf("status code = %d, want %d", rr.Code, tc.statusCode)
 			}
@@ -172,7 +173,7 @@ func TestFullMux_StartingState(t *testing.T) {
 	var state atomic.Pointer[listenerDeps]
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", healthzHandler(&state))
+	mux.HandleFunc("/healthz", healthzHandler(&state, nil))
 
 	mux.Handle("/v1/", newStartingGate("v1", logging.NewWithWriter("test", io.Discard)))
 
@@ -259,7 +260,7 @@ func TestPublishHandler_RejectsAgentTopics(t *testing.T) {
 		},
 		{
 			name:       "agent with session ID",
-			topic:      contracts.AgentSubject("ses_abc123"),
+			topic:      contracts.LegacyAgentSubject("ses_abc123"),
 			wantStatus: http.StatusBadRequest,
 			wantSubstr: "cannot publish to agent topics",
 		},
@@ -609,12 +610,12 @@ func TestPublishHandler_RoleMessageReachesTheCurrentHolderWithoutTheRoleLane(t *
 		t.Fatalf("claim registered role B: status = %d, body = %s", claimRecorder.Code, claimRecorder.Body.String())
 	}
 
-	probeA, err := harness.client.Conn.SubscribeSync(contracts.AgentSubject("ses_role_a"))
+	probeA, err := harness.client.Conn.SubscribeSync(contracts.LegacyAgentSubject("ses_role_a"))
 	if err != nil {
 		t.Fatalf("subscribe A agent subject: %v", err)
 	}
 	t.Cleanup(func() { _ = probeA.Unsubscribe() })
-	probeB, err := harness.client.Conn.SubscribeSync(contracts.AgentSubject("ses_role_b"))
+	probeB, err := harness.client.Conn.SubscribeSync(contracts.LegacyAgentSubject("ses_role_b"))
 	if err != nil {
 		t.Fatalf("subscribe B agent subject: %v", err)
 	}
@@ -653,7 +654,7 @@ func TestPublishHandler_RoleMessageReachesTheCurrentHolderWithoutTheRoleLane(t *
 	if err != nil {
 		t.Fatalf("read forwarded role event for B: %v", err)
 	}
-	if forwardedMessage.Subject != contracts.AgentSubject("ses_role_b") {
+	if forwardedMessage.Subject != contracts.LegacyAgentSubject("ses_role_b") {
 		t.Fatalf("forwarded subject = %q, want B agent subject", forwardedMessage.Subject)
 	}
 	var forwarded contracts.Envelope
@@ -695,23 +696,33 @@ func TestPublishHandler_RoleMessageReachesTheCurrentHolderWithoutTheRoleLane(t *
 		t.Fatalf("human-sourced forwarded event id = %q, want %q", externalForwarded.EventID, externalHuman.EventID)
 	}
 
-	deadline := time.Now().Add(5 * time.Second)
-	var info *natsgo.StreamInfo
-	for {
-		info, err = harness.client.JS().StreamInfo(bus.Stream)
+	// The forwards are counted on the agent subjects alone: B's claim over A also writes a
+	// takeover record on the listener's own lane (role_takeover.go), which is no forward.
+	agentForwards := func() uint64 {
+		info, err := harness.client.JS().StreamInfo(bus.Stream, &natsgo.StreamInfoRequest{SubjectsFilter: contracts.AgentTopicPrefix + ">"})
 		if err != nil {
 			t.Fatalf("read notification stream: %v", err)
 		}
-		if info.State.Msgs > 2 {
-			t.Fatalf("agent-subject role forwards were captured %d times, want at most two", info.State.Msgs)
+		var held uint64
+		for _, count := range info.State.Subjects {
+			held += count
 		}
-		if info.State.Msgs == 2 || time.Now().After(deadline) {
+		return held
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	var forwards uint64
+	for {
+		forwards = agentForwards()
+		if forwards > 2 {
+			t.Fatalf("agent-subject role forwards were captured %d times, want at most two", forwards)
+		}
+		if forwards == 2 || time.Now().After(deadline) {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if info.State.Msgs != 2 {
-		t.Fatalf("agent-subject role forwards were captured %d times, want two", info.State.Msgs)
+	if forwards != 2 {
+		t.Fatalf("agent-subject role forwards were captured %d times, want two", forwards)
 	}
 	if _, err := laneProbe.NextMsg(250 * time.Millisecond); !errors.Is(err, natsgo.ErrTimeout) {
 		t.Fatalf("the route published on the role lane: the probe answered %v, want a timeout", err)
@@ -749,7 +760,7 @@ func TestPublishHandler_RoleFreshDeafHolderIsAnsweredStored(t *testing.T) {
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("publish role event: status = %d, want 200; body = %s", recorder.Code, recorder.Body.String())
 	}
-	var answer publishResponse
+	var answer listenerwire.PublishResponse
 	if err := json.NewDecoder(recorder.Body).Decode(&answer); err != nil {
 		t.Fatalf("decode the answer: %v", err)
 	}
@@ -783,7 +794,7 @@ func TestPublishHandler_ExplicitDedupeKeyIsNotForwardedAgainOnceStored(t *testin
 		t.Fatalf("claim role: %v", err)
 	}
 	forwards := make(chan contracts.Envelope, 8)
-	responder, err := harness.client.Conn.Subscribe(contracts.AgentSubject("ses_slow"), func(message *natsgo.Msg) {
+	responder, err := harness.client.Conn.Subscribe(contracts.LegacyAgentSubject("ses_slow"), func(message *natsgo.Msg) {
 		var forwarded contracts.Envelope
 		if err := json.Unmarshal(message.Data, &forwarded); err == nil {
 			forwards <- forwarded
@@ -1103,14 +1114,11 @@ func TestDeleteSessionHandler_KeepsAnotherClientInstancesRegistration(t *testing
 	if rr.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d (body: %s)", rr.Code, rr.Body.String())
 	}
-	var answer struct {
-		Deleted bool   `json:"deleted"`
-		Reason  string `json:"reason"`
-	}
+	var answer listenerwire.DeleteSessionResponse
 	if err := json.NewDecoder(rr.Body).Decode(&answer); err != nil {
 		t.Fatalf("decode the answer: %v", err)
 	}
-	if answer.Deleted || answer.Reason != "the registration belongs to another client instance" {
+	if answer.Deleted == nil || *answer.Deleted || answer.Reason != "the registration belongs to another client instance" {
 		t.Fatalf("answer = %+v, want the registration kept with its reason", answer)
 	}
 	entry, err := sessions.Get(sessionID)
@@ -1156,14 +1164,11 @@ func TestDeleteSessionHandler_KeepsARegistrationWrittenAfterTheStopsMoment(t *te
 	if rr.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d (body: %s)", rr.Code, rr.Body.String())
 	}
-	var answer struct {
-		Deleted bool   `json:"deleted"`
-		Reason  string `json:"reason"`
-	}
+	var answer listenerwire.DeleteSessionResponse
 	if err := json.NewDecoder(rr.Body).Decode(&answer); err != nil {
 		t.Fatalf("decode the answer: %v", err)
 	}
-	if answer.Deleted || answer.Reason != "the registration was written after the moment the delete belongs to" {
+	if answer.Deleted == nil || *answer.Deleted || answer.Reason != "the registration was written after the moment the delete belongs to" {
 		t.Fatalf("answer = %+v, want the relaunch's registration kept with its reason", answer)
 	}
 	entry, err := sessions.Get(sessionID)
@@ -1276,7 +1281,7 @@ func TestIsValidRole(t *testing.T) {
 
 func TestSessionHealthFields_PopulatedAfterReady(t *testing.T) {
 	client := setupPublishTestClient(t)
-	sessions, err := session.OpenSessionRegistry(client.Conn, session.WithSessionReplicas(1), session.WithSessionTTL(time.Minute))
+	sessions, err := session.OpenSessionRegistry(t.Context(), client.Conn, session.WithSessionReplicas(1), session.WithSessionTTL(time.Minute))
 	if err != nil {
 		t.Fatalf("open session registry: %v", err)
 	}
@@ -1420,12 +1425,12 @@ func setupAdminTestRegistry(t *testing.T, interests map[string][]string) *store.
 		t.Fatalf("failed to connect bus: %v", err)
 	}
 	t.Cleanup(client.Close)
-	registry, err := store.Open(client.Conn, store.WithReplicas(1))
+	registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("failed to create registry: %v", err)
 	}
 	for sessionID, topics := range interests {
-		allTopics := append([]string{contracts.AgentSubject(sessionID)}, topics...)
+		allTopics := append([]string{contracts.LegacyAgentSubject(sessionID)}, topics...)
 		if _, err := registry.Upsert(store.Interest{
 			SessionID: sessionID,
 			MachineID: "test-machine",
@@ -1442,7 +1447,7 @@ func TestAdminInterestsHandler_ListAll(t *testing.T) {
 		"ses_list_b": {"notifications.test.>"},
 		"ses_list_a": {"notifications.github.>"},
 	}, nil)
-	handler := adminInterestsHandler(registry, sessions, nil, logging.New("test"))
+	handler := adminInterestsHandler(registry, sessions, nil, nil, logging.New("test"))
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/interests/", nil)
 	rec := httptest.NewRecorder()
@@ -1467,7 +1472,7 @@ func TestAdminInterestsHandler_GetBySession(t *testing.T) {
 	registry, sessions := setupSessionsTest(t, map[string][]string{
 		"ses_get_test": {"notifications.test.>"},
 	}, nil)
-	handler := adminInterestsHandler(registry, sessions, nil, logging.New("test"))
+	handler := adminInterestsHandler(registry, sessions, nil, nil, logging.New("test"))
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/interests/ses_get_test", nil)
 	rec := httptest.NewRecorder()
@@ -1494,19 +1499,19 @@ func TestAdminInterestsHandler_GetAnswers404OnlyForAnUnknownSession(t *testing.T
 		t.Fatalf("failed to connect bus: %v", err)
 	}
 	t.Cleanup(client.Close)
-	registry, err := store.Open(client.Conn, store.WithReplicas(1))
+	registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("failed to create registry: %v", err)
 	}
 	if _, err := registry.Upsert(store.Interest{SessionID: "ses_known", MachineID: "test-machine", Dir: "/test"},
-		[]string{contracts.AgentSubject("ses_known")}); err != nil {
+		[]string{contracts.LegacyAgentSubject("ses_known")}); err != nil {
 		t.Fatalf("failed to upsert interest: %v", err)
 	}
-	sessions, err := session.OpenSessionRegistry(client.Conn, session.WithSessionReplicas(1))
+	sessions, err := session.OpenSessionRegistry(t.Context(), client.Conn, session.WithSessionReplicas(1))
 	if err != nil {
 		t.Fatalf("failed to create session registry: %v", err)
 	}
-	handler := adminInterestsHandler(registry, sessions, nil, logging.New("test"))
+	handler := adminInterestsHandler(registry, sessions, nil, nil, logging.New("test"))
 	get := func(sessionID string) *httptest.ResponseRecorder {
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/interests/"+sessionID, nil))
@@ -1535,7 +1540,7 @@ func TestAdminInterestsHandler_DeleteBySession(t *testing.T) {
 	registry, sessions := setupSessionsTest(t, map[string][]string{
 		"ses_delete_target": {"notifications.test.>"},
 	}, nil)
-	handler := adminInterestsHandler(registry, sessions, nil, logging.New("test"))
+	handler := adminInterestsHandler(registry, sessions, nil, nil, logging.New("test"))
 
 	req := httptest.NewRequest(http.MethodDelete, "/v1/interests/ses_delete_target", nil)
 	rec := httptest.NewRecorder()
@@ -1554,7 +1559,7 @@ func TestAdminInterestsHandler_DeleteBySession(t *testing.T) {
 
 func TestAdminInterestsHandler_DeleteIdempotent(t *testing.T) {
 	registry, sessions := setupSessionsTest(t, nil, nil)
-	handler := adminInterestsHandler(registry, sessions, nil, logging.New("test"))
+	handler := adminInterestsHandler(registry, sessions, nil, nil, logging.New("test"))
 
 	req := httptest.NewRequest(http.MethodDelete, "/v1/interests/ses_nonexistent", nil)
 	rec := httptest.NewRecorder()
@@ -1567,7 +1572,7 @@ func TestAdminInterestsHandler_DeleteIdempotent(t *testing.T) {
 
 func TestAdminInterestsHandler_MethodNotAllowed(t *testing.T) {
 	registry, sessions := setupSessionsTest(t, nil, nil)
-	handler := adminInterestsHandler(registry, sessions, nil, logging.New("test"))
+	handler := adminInterestsHandler(registry, sessions, nil, nil, logging.New("test"))
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/interests/", nil)
 	rec := httptest.NewRecorder()
@@ -1598,19 +1603,19 @@ func setupInterestLastSeenTest(t *testing.T, interests []string, options ...sess
 	}
 	t.Cleanup(client.Close)
 	rowsWritten := time.Now().Add(-3 * time.Minute)
-	registry, err := store.Open(client.Conn, store.WithReplicas(1), store.WithClock(func() time.Time { return rowsWritten }))
+	registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1), store.WithClock(func() time.Time { return rowsWritten }))
 	if err != nil {
 		t.Fatalf("failed to create registry: %v", err)
 	}
 	waitForRegistry(t, registry)
-	sessions, err := session.OpenSessionRegistry(client.Conn, append([]session.SessionRegistryOption{session.WithSessionReplicas(1)}, options...)...)
+	sessions, err := session.OpenSessionRegistry(t.Context(), client.Conn, append([]session.SessionRegistryOption{session.WithSessionReplicas(1)}, options...)...)
 	if err != nil {
 		t.Fatalf("failed to create session registry: %v", err)
 	}
 	t.Cleanup(sessions.StopWatch)
 	for _, sessionID := range interests {
 		if _, err := registry.Upsert(store.Interest{SessionID: sessionID, MachineID: "test-machine", Dir: "/test/" + sessionID},
-			[]string{contracts.AgentSubject(sessionID)}); err != nil {
+			[]string{contracts.LegacyAgentSubject(sessionID)}); err != nil {
 			t.Fatalf("failed to upsert interest for %s: %v", sessionID, err)
 		}
 	}
@@ -1682,7 +1687,7 @@ func TestAdminInterestsHandler_RowsCarryALiveSessionsHeartbeat(t *testing.T) {
 	registry, sessions := setupInterestLastSeenTest(t, []string{live, unknown})
 	beat := heartbeat(t, sessions, live)
 
-	list, single := listedInterestRows(t, adminInterestsHandler(registry, sessions, nil, logging.New("test")))
+	list, single := listedInterestRows(t, adminInterestsHandler(registry, sessions, nil, nil, logging.New("test")))
 	wantLastSeen(t, "GET /v1/interests/", list[live], beat)
 	wantLastSeen(t, "GET /v1/interests/"+live, single[live], beat)
 	for route, row := range map[string]interestRowLastSeen{"GET /v1/interests/": list[unknown], "GET /v1/interests/" + unknown: single[unknown]} {
@@ -1710,7 +1715,7 @@ func TestAdminInterestsHandler_RowsCarryAnExpiredSessionsLastHeartbeat(t *testin
 	})
 	time.Sleep(sessionTTL + 200*time.Millisecond)
 
-	list, single := listedInterestRows(t, adminInterestsHandler(registry, sessions, nil, logging.New("test")))
+	list, single := listedInterestRows(t, adminInterestsHandler(registry, sessions, nil, nil, logging.New("test")))
 	wantLastSeen(t, "GET /v1/interests/", list[expired], beat)
 	wantLastSeen(t, "GET /v1/interests/"+expired, single[expired], beat)
 }
@@ -1722,12 +1727,12 @@ func setupSessionsTest(t *testing.T, interests map[string][]string, live []strin
 		t.Fatalf("failed to connect bus: %v", err)
 	}
 	t.Cleanup(client.Close)
-	registry, err := store.Open(client.Conn, store.WithReplicas(1))
+	registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("failed to create registry: %v", err)
 	}
 	waitForRegistry(t, registry)
-	sessions, err := session.OpenSessionRegistry(client.Conn, session.WithSessionReplicas(1))
+	sessions, err := session.OpenSessionRegistry(t.Context(), client.Conn, session.WithSessionReplicas(1))
 	if err != nil {
 		t.Fatalf("failed to create session registry: %v", err)
 	}
@@ -1740,7 +1745,7 @@ func setupSessionsTest(t *testing.T, interests map[string][]string, live []strin
 		t.Fatalf("open the interest bucket: %v", err)
 	}
 	for sessionID, topics := range interests {
-		allTopics := slices.Compact(slices.Sorted(slices.Values(append([]string{contracts.AgentSubject(sessionID)}, topics...))))
+		allTopics := slices.Compact(slices.Sorted(slices.Values(append([]string{contracts.LegacyAgentSubject(sessionID)}, topics...))))
 		row, err := json.Marshal(store.Interest{
 			SessionID: sessionID,
 			MachineID: "test-machine",
@@ -1822,7 +1827,7 @@ func TestSessionsHandler_JoinsRegistries(t *testing.T) {
 		},
 		[]string{"ses_a", "ses_b"},
 	)
-	handler := sessionsHandler(registry, sessions)
+	handler := sessionsHandler(registry, sessions, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/sessions", nil)
 	rec := httptest.NewRecorder()
@@ -1831,7 +1836,7 @@ func TestSessionsHandler_JoinsRegistries(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
-	var items []sessionInfo
+	var items []listenerwire.SessionInfo
 	if err := json.NewDecoder(rec.Body).Decode(&items); err != nil {
 		t.Fatalf("failed to decode response: %v", err)
 	}
@@ -1867,11 +1872,11 @@ func TestSessionsHandler_IncludesTitle(t *testing.T) {
 		t.Fatalf("failed to connect bus: %v", err)
 	}
 	t.Cleanup(client.Close)
-	registry, err := store.Open(client.Conn, store.WithReplicas(1))
+	registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("failed to create registry: %v", err)
 	}
-	sessions, err := session.OpenSessionRegistry(client.Conn, session.WithSessionReplicas(1))
+	sessions, err := session.OpenSessionRegistry(t.Context(), client.Conn, session.WithSessionReplicas(1))
 	if err != nil {
 		t.Fatalf("failed to create session registry: %v", err)
 	}
@@ -1879,7 +1884,7 @@ func TestSessionsHandler_IncludesTitle(t *testing.T) {
 		SessionID: "ses_titled",
 		MachineID: "test-machine",
 		Dir:       "/test/ses_titled",
-	}, []string{contracts.AgentSubject("ses_titled")}); err != nil {
+	}, []string{contracts.LegacyAgentSubject("ses_titled")}); err != nil {
 		t.Fatalf("failed to upsert interest: %v", err)
 	}
 	if err := sessions.Put("ses_titled", session.SessionEntry{
@@ -1893,7 +1898,7 @@ func TestSessionsHandler_IncludesTitle(t *testing.T) {
 	waitForRegistry(t, registry)
 	waitForSessions(t, sessions)
 
-	handler := sessionsHandler(registry, sessions)
+	handler := sessionsHandler(registry, sessions, nil)
 	req := httptest.NewRequest(http.MethodGet, "/v1/sessions", nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -1901,7 +1906,7 @@ func TestSessionsHandler_IncludesTitle(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
-	var items []sessionInfo
+	var items []listenerwire.SessionInfo
 	if err := json.NewDecoder(rec.Body).Decode(&items); err != nil {
 		t.Fatalf("failed to decode response: %v", err)
 	}
@@ -1975,10 +1980,10 @@ func TestSessionsHandler_ReportsSelfSubscribedSession(t *testing.T) {
 	registry, sessions := setupSessionsTest(t, map[string][]string{
 		"ses_omp": {"notifications.test.>"},
 	}, nil)
-	if err := sessions.Put("ses_omp", session.SessionEntry{SelfSubscribed: true}); err != nil {
+	if err := sessions.Put("ses_omp", session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true}); err != nil {
 		t.Fatalf("register self-subscribed session: %v", err)
 	}
-	handler := sessionsHandler(registry, sessions)
+	handler := sessionsHandler(registry, sessions, nil)
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodGet, "/v1/sessions", nil)
 
@@ -2003,7 +2008,7 @@ func TestSessionsHandler_ReportsSelfSubscribedSession(t *testing.T) {
 }
 
 func TestSessionsHandler_MethodNotAllowed(t *testing.T) {
-	handler := sessionsHandler(nil, nil)
+	handler := sessionsHandler(nil, nil, nil)
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/v1/sessions", nil)
@@ -2016,7 +2021,7 @@ func TestSessionsHandler_MethodNotAllowed(t *testing.T) {
 
 func TestSessionsHandler_EmptyList(t *testing.T) {
 	registry, sessions := setupSessionsTest(t, nil, nil)
-	handler := sessionsHandler(registry, sessions)
+	handler := sessionsHandler(registry, sessions, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/sessions", nil)
 	rec := httptest.NewRecorder()
@@ -2025,7 +2030,7 @@ func TestSessionsHandler_EmptyList(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
-	var items []sessionInfo
+	var items []listenerwire.SessionInfo
 	if err := json.NewDecoder(rec.Body).Decode(&items); err != nil {
 		t.Fatalf("failed to decode response: %v", err)
 	}
@@ -2044,7 +2049,7 @@ func TestSessionsHandler_OnlyLiveSessions(t *testing.T) {
 		// ses_dead intentionally not in the sessions registry — it's dead
 		[]string{"ses_live"},
 	)
-	handler := sessionsHandler(registry, sessions)
+	handler := sessionsHandler(registry, sessions, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/sessions", nil)
 	rec := httptest.NewRecorder()
@@ -2053,7 +2058,7 @@ func TestSessionsHandler_OnlyLiveSessions(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
-	var items []sessionInfo
+	var items []listenerwire.SessionInfo
 	if err := json.NewDecoder(rec.Body).Decode(&items); err != nil {
 		t.Fatalf("failed to decode response: %v", err)
 	}
@@ -2077,7 +2082,7 @@ func TestSessionsHandler_NoInterestsData(t *testing.T) {
 		nil, // no interests
 		[]string{"ses_orphan"},
 	)
-	handler := sessionsHandler(registry, sessions)
+	handler := sessionsHandler(registry, sessions, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/sessions", nil)
 	rec := httptest.NewRecorder()
@@ -2086,7 +2091,7 @@ func TestSessionsHandler_NoInterestsData(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
-	var items []sessionInfo
+	var items []listenerwire.SessionInfo
 	if err := json.NewDecoder(rec.Body).Decode(&items); err != nil {
 		t.Fatalf("failed to decode response: %v", err)
 	}
@@ -2475,7 +2480,6 @@ func TestASettingNATSCannotChangeOnTheListenerDurableIsRefused(t *testing.T) {
 // bucket included, which a listener mounting the GitHub route opens first.
 func TestARefusedDurableStopsTheListenerAtOnce(t *testing.T) {
 	client := setupTestNATS(t)
-	t.Cleanup(client.Close)
 	consumer := "listener-refused-durable-startup"
 	config := natsgo.ConsumerConfig{Durable: consumer, DeliverSubject: natsgo.NewInbox()}
 	applyListenerConsumerPolicy(&config, bus.StreamSubjects())
@@ -2792,6 +2796,70 @@ func TestBindListenerDurablePassesARefusalThrough(t *testing.T) {
 	}
 }
 
+// deniedGrantClient is a client of a server whose listener user may publish anything but deny
+// (testnats.StartNkeyDenied), and the stream that server holds, created by the server's admin. It
+// is the listener's own client (bus.Connect), so the server's refusal of a request reaches it as
+// bus.ErrPublishDenied.
+func deniedGrantClient(t *testing.T, deny ...string) *bus.Client {
+	t.Helper()
+	seed, public := testnats.User(t)
+	uri := testnats.StartNkeyDenied(t, public, deny...)
+	owner, err := bus.ConnectOwningStream([]string{uri}, bus.WithReplicas(1))
+	if err != nil {
+		t.Fatalf("the admin creates the stream: %v", err)
+	}
+	t.Cleanup(owner.Close)
+	t.Setenv("NATS_NKEY_SEED", seed)
+	client, err := bus.Connect([]string{uri})
+	if err != nil {
+		t.Fatalf("connect the listener's client: %v", err)
+	}
+	t.Cleanup(client.Close)
+	return client
+}
+
+// A durable whose create the listener's grant refuses ends the bind at the first attempt with the
+// server's refusal, which main exits on at once (durableRefused), rather than polling it every
+// interval until the deadline: the grant refuses it again however often it is sent. It once ended
+// after 2m15s and 69 attempts with "listener durable bind exhausted".
+func TestBindListenerDurableEndsAtTheGrantsRefusal(t *testing.T) {
+	const consumer = "listener-bind-denied"
+	create := "$JS.API.CONSUMER.CREATE." + bus.Stream + "." + consumer
+	client := deniedGrantClient(t, create, create+".>", "$JS.API.CONSUMER.DURABLE.CREATE."+bus.Stream+"."+consumer)
+
+	started := time.Now()
+	bind, err := bindListenerDurable(context.Background(), client, consumer, func(msg *natsgo.Msg) { _ = msg.Ack() },
+		logging.NewWithWriter("test", io.Discard), 50*time.Millisecond, 10*time.Second)
+	took := time.Since(started)
+	if !errors.Is(err, bus.ErrPublishDenied) || errors.Is(err, errListenerDurableBindExhausted) || !durableRefused(err) {
+		t.Fatalf("bind of a durable the grant refuses: %v, want bus.ErrPublishDenied alone", err)
+	}
+	if want := `Permissions Violation for Publish to "` + create; !strings.Contains(err.Error(), want) {
+		t.Fatalf("bind of a durable the grant refuses: %v, want it to name %q", err, want)
+	}
+	if bind.attempts != 1 || took > 3*time.Second {
+		t.Fatalf("the bind made %d attempts in %s at a durable the grant refuses, want 1 within 3s", bind.attempts, took.Round(time.Millisecond))
+	}
+}
+
+// A rebuild's wait for its durable ends at once when the grant refuses the durable's read, naming
+// the refusal, rather than reading it again every interval until the deadline.
+func TestAwaitDurableBoundEndsAtTheGrantsRefusal(t *testing.T) {
+	const consumer = "listener-await-denied"
+	info := "$JS.API.CONSUMER.INFO." + bus.Stream + "." + consumer
+	client := deniedGrantClient(t, info)
+
+	started := time.Now()
+	err := awaitDurableBound(context.Background(), client, consumer, 50*time.Millisecond, 10*time.Second)
+	took := time.Since(started)
+	if !errors.Is(err, bus.ErrPublishDenied) || errors.Is(err, errDurableUnbound) {
+		t.Fatalf("the wait for a durable whose read the grant refuses = %v, want bus.ErrPublishDenied alone", err)
+	}
+	if took > 3*time.Second {
+		t.Fatalf("the wait for a durable whose read the grant refuses ended after %s, want within 3s", took.Round(time.Millisecond))
+	}
+}
+
 // A listener waiting out the task that holds its durable already serves /v1 and its role lane from
 // the interest, session and role stores, which its reconnect hook moves onto each new connection.
 // When nats.go gives up on the connection and the bus dials a replacement during that wait, the
@@ -2812,16 +2880,18 @@ func TestTheStoresFollowAConnectionReplacedWhileTheDurableIsHeld(t *testing.T) {
 		t.Fatalf("connect the replacement: %v", err)
 	}
 	t.Cleanup(client.Close)
-	registry, err := store.Open(client.Conn, store.WithReplicas(1))
+	registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open the interest registry: %v", err)
 	}
-	sessions, err := session.OpenSessionRegistry(client.Conn, session.WithSessionReplicas(1))
+	sessions, err := session.OpenSessionRegistry(t.Context(), client.Conn, session.WithSessionReplicas(1))
 	if err != nil {
 		t.Fatalf("open the session registry: %v", err)
 	}
 	caches := listenerCaches(registry, sessions, nil)
-	client.AddReconnectHook(func(conn *natsgo.Conn) error { return rewatchListenerKVWatchers(conn, caches) })
+	client.AddReconnectHook(func(ctx context.Context, conn *natsgo.Conn) error {
+		return rewatchListenerKVWatchers(ctx, conn, caches)
+	})
 	if _, err := client.SubscribeCore(contracts.RoleTopicPrefix+">", func(*natsgo.Msg) {}, "envoy-listener-"+machineID); err != nil {
 		t.Fatalf("open the role lane: %v", err)
 	}
@@ -2969,7 +3039,7 @@ func TestIsControlTopic(t *testing.T) {
 		want  bool
 	}{
 		{topic: "notifications.role.legion-controller", want: true},
-		{topic: contracts.AgentSubject("ses_control"), want: true},
+		{topic: contracts.LegacyAgentSubject("ses_control"), want: true},
 		{topic: "notifications.envoy.exceptions.notifications.role.legion-controller", want: false},
 		{topic: "notifications.github.sjawhar.legion.issue.42.comment", want: false},
 	}
@@ -3024,13 +3094,14 @@ func TestListenerDeliveryHandler_RoleReleasedByReplacementIsKeptForItsNextHolder
 	noException(t, probe)
 }
 
-// A role-lane delivery whose holder is not answering reports the delivery failed and leaves the
-// claim exactly as it is: the role lane is one more reader of a session's state, and the one
-// caller that ends a claim is the role reaper, once the holder is gone. Dropping it here took the
-// role away from a holder stalled for a minute, and every message for that role then reached
-// nobody until it claimed again. Nothing is kept for it either: a claim that stands is a claim no
-// next holder will make, so a kept copy would wait for a claim that never comes (roleKeepable).
-func TestListenerDeliveryHandler_ExpiredRoleKeepsTheClaimAfterItsException(t *testing.T) {
+// A role-lane delivery whose holder is not answering keeps the message for the role's next live
+// holder and leaves the claim exactly as it is: the role lane is one more reader of a session's
+// state, and the one caller that ends a claim is the role reaper, once the holder is gone.
+// Dropping the claim here took the role away from a holder stalled for a minute, and every message
+// for that role then reached nobody until it claimed again. The kept copy waits on the role's kept
+// lane for that holder answering again or a successor (roleKeepable), so no delivery exception
+// goes out: the message is not lost.
+func TestListenerDeliveryHandler_ExpiredRoleKeepsTheClaimAndItsMessageIsKept(t *testing.T) {
 	harness := newListenerDeliveryHarness(t)
 	const role = "expired-holder"
 	if _, err := harness.registry.SetRole("ses_expired", "test-machine", role, false); err != nil {
@@ -3054,9 +3125,10 @@ func TestListenerDeliveryHandler_ExpiredRoleKeepsTheClaimAfterItsException(t *te
 	if err := harness.client.Publish(item); err != nil {
 		t.Fatalf("publish role delivery: %v", err)
 	}
-	assertDeliveryException(t, probe, item, "delivery_failed")
+	waitForKeptRoleMessage(t, harness.client, role, item.EventID)
+	noException(t, probe)
 	if holder, err := harness.registry.RoleHolder(role); err != nil || holder != "ses_expired" {
-		t.Fatalf("the claim after the failed delivery = %q, %v; want ses_expired's, left for the reaper", holder, err)
+		t.Fatalf("the claim after the kept delivery = %q, %v; want ses_expired's, left for the reaper", holder, err)
 	}
 }
 
@@ -3078,7 +3150,7 @@ func TestListenerDeliveryHandler_RoleLaneForwardsToAHolderItsSessionCacheHasNotS
 		t.Fatalf("warm the session cache: %v", err)
 	}
 	harness.sessions.StopWatch()
-	claimant, err := session.OpenSessionRegistry(harness.client.Conn, session.WithSessionReplicas(1))
+	claimant, err := session.OpenSessionRegistry(t.Context(), harness.client.Conn, session.WithSessionReplicas(1))
 	if err != nil {
 		t.Fatalf("open the claimant's session registry: %v", err)
 	}
@@ -3111,8 +3183,8 @@ func TestListenerDeliveryHandler_RoleLaneForwardsToAHolderItsSessionCacheHasNotS
 
 	coreNATSDeliveryHandler(cfg)(&natsgo.Msg{Data: marshalListenerEnvelope(t, item)})
 	cfg.roleForwards.settled(t)
-	if len(forwardedTo) != 1 || forwardedTo[0] != contracts.AgentSubject(holderID) {
-		t.Fatalf("the role message was forwarded to %v, want once to %s", forwardedTo, contracts.AgentSubject(holderID))
+	if len(forwardedTo) != 1 || forwardedTo[0] != contracts.LegacyAgentSubject(holderID) {
+		t.Fatalf("the role message was forwarded to %v, want once to %s", forwardedTo, contracts.LegacyAgentSubject(holderID))
 	}
 	if message, err := probe.NextMsg(250 * time.Millisecond); !errors.Is(err, natsgo.ErrTimeout) {
 		t.Fatalf("a forwarded role message emitted an exception (or the probe failed): %v %v", message, err)
@@ -3306,18 +3378,25 @@ func TestListenerDeliveryHandler_RoleForwardDedupeSkipsCapabilityRecheckOnRedeli
 // not acknowledge storing it (bus.ErrForwardNotStored), or the forward never
 // left this process -- a raw nats.ErrTimeout is what the client's flush returns
 // while a reconnecting or stalled connection still buffers it. No forward draws
-// a receipt (startRoleForward), so none is reported receipt_timeout.
+// a receipt (startRoleForward), so none is reported receipt_timeout. Only a
+// forward whose window ended before it was published (bus.ErrWindowEndedBeforePublish)
+// carries "window_ended_before_publish":true on its line; the same text from a window
+// that ended after the publish carries no mark.
 func TestListenerDeliveryHandler_RoleForwardFailureIsAlwaysDeliveryFailed(t *testing.T) {
 	cases := []struct {
 		name       string
 		forwardErr error
 		reason     string
 		logMessage string
+		// beforePublish is whether the line carries "window_ended_before_publish":true.
+		beforePublish bool
 	}{
-		{"raw nats.ErrTimeout from the flush", natsgo.ErrTimeout, "delivery_failed", "listener role forward failed"},
-		{"flush timeout wrapped by the client", fmt.Errorf("bus: flush publish to \"agent.x\": %w", natsgo.ErrTimeout), "delivery_failed", "listener role forward failed"},
-		{"bus.ErrForwardNotStored", bus.ErrForwardNotStored, "delivery_failed", "listener role forward failed"},
-		{"bus.ErrForwardNotStored wrapped", fmt.Errorf("forward: %w", bus.ErrForwardNotStored), "delivery_failed", "listener role forward failed"},
+		{"raw nats.ErrTimeout from the flush", natsgo.ErrTimeout, "delivery_failed", "listener role forward failed", false},
+		{"flush timeout wrapped by the client", fmt.Errorf("bus: flush publish to \"agent.x\": %w", natsgo.ErrTimeout), "delivery_failed", "listener role forward failed", false},
+		{"bus.ErrForwardNotStored", bus.ErrForwardNotStored, "delivery_failed", "listener role forward failed", false},
+		{"bus.ErrForwardNotStored wrapped", fmt.Errorf("forward: %w", bus.ErrForwardNotStored), "delivery_failed", "listener role forward failed", false},
+		{"a window that ended before the publish", fmt.Errorf("bus: window elapsed before the publish to \"agent.x\" was flushed: %w: %w", context.DeadlineExceeded, bus.ErrWindowEndedBeforePublish), "delivery_failed", "listener role forward failed", true},
+		{"a window that ended after the publish", errors.New(`bus: window elapsed before the publish to "agent.x" was flushed`), "delivery_failed", "listener role forward failed", false},
 	}
 	for i, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -3356,6 +3435,9 @@ func TestListenerDeliveryHandler_RoleForwardFailureIsAlwaysDeliveryFailed(t *tes
 			if strings.Contains(logs, "receipt") {
 				t.Fatalf("a failed forward must not be logged as a receipt outcome:\n%s", logs)
 			}
+			if marked := strings.Contains(logs, `"window_ended_before_publish":true`); marked != tc.beforePublish {
+				t.Fatalf("the failure line carries the window_ended_before_publish mark: %v, want %v:\n%s", marked, tc.beforePublish, logs)
+			}
 		})
 	}
 }
@@ -3371,7 +3453,7 @@ func TestListenerDeliveryHandler_NoHolderKeepsARoleAndExceptsAnAgent(t *testing.
 		role string
 	}{
 		{name: "role", topic: contracts.RoleTopicPrefix + "unheld", role: "unheld"},
-		{name: "agent", topic: contracts.AgentSubject("ses_unheld")},
+		{name: "agent", topic: contracts.LegacyAgentSubject("ses_unheld")},
 	}
 
 	for _, tc := range cases {
@@ -3536,16 +3618,6 @@ func TestListenerDeliveryHandler_FanoutRefusalOfATeamTopicIsStoredOnItsException
 // a redelivery with the same key cannot emit another refusal.
 func TestListenerDeliveryHandler_FanoutRefusalDedupesAfterExceptionDelivery(t *testing.T) {
 	harness := newListenerDeliveryHarness(t)
-	// Both copies refill from their buckets on a goroutine the harness's registries start
-	// (kvwatch.Watcher.Start), and a write that lands while that first read runs carries no mark
-	// of it, so the sweep ending the read takes it back out of the copy
-	// (kvwatch.Copy.CompleteRead) until the watcher delivers the write's own record. The fan-out
-	// reads both copies for the message below, and a session whose record it cannot read is one
-	// it reports dead and sends no exception for ("listener delivery failed ... no session record
-	// for session ses_incapable", merge-queue job 127694167470), so both reads are waited out
-	// here, before registerFanoutTarget's two writes.
-	waitForRegistry(t, harness.registry)
-	waitForSessions(t, harness.sessions)
 	const (
 		topic     = "notifications.github.owner.repo.issue.4"
 		incapable = "ses_incapable"
@@ -3590,13 +3662,6 @@ func TestListenerDeliveryHandler_FanoutAllowsUntaggedPayload(t *testing.T) {
 		firstTarget = "ses_first"
 		nextTarget  = "ses_next"
 	)
-	// Both copies the fan-out reads refill on the goroutine the watcher starts, and a write that
-	// lands while that first read runs is taken back out of the copy until the watcher delivers
-	// its own record, so a target registered before the reads end is one the fan-out cannot see
-	// ("the untagged message was not given to ses_first", envoy-go-race job 128250468046). Both
-	// reads are waited out here, before registerConsumerTarget's writes, as the rows above do.
-	waitForRegistry(t, harness.registry)
-	waitForSessions(t, harness.sessions)
 	harness.registerConsumerTarget(t, firstTarget, topic, nil)
 	harness.registerConsumerTarget(t, nextTarget, topic, nil)
 	// The fan-out reaches only what these two registries answer for, so they are read here: a
@@ -3691,7 +3756,7 @@ func TestListenerDeliveryHandler_FanoutRefusesUnreadableOrAmbiguousDeliveryMode(
 // delivery fails (session.ErrNoSessionRecord) instead of counting as skipped, on a followed
 // topic and on the session's agent subject alike. Only a message a consumer holds is skipped.
 func TestListenerDeliveryHandler_RecordsPortlessSelfSubscribedDeliveryAsFailed(t *testing.T) {
-	for _, topic := range []string{"notifications.github.owner.repo.issue.1", contracts.AgentSubject("ses_omp")} {
+	for _, topic := range []string{"notifications.github.owner.repo.issue.1", contracts.LegacyAgentSubject("ses_omp")} {
 		t.Run(topic, func(t *testing.T) {
 			// Given
 			harness := newListenerDeliveryHarness(t)
@@ -3814,16 +3879,15 @@ func newListenerDeliveryHarness(t *testing.T) listenerDeliveryHarness {
 // own clock and windows (session.WithSessionClock, session.WithSessionLiveWindow).
 func newListenerDeliveryHarnessOn(t *testing.T, client *bus.Client, sessionOptions ...session.SessionRegistryOption) listenerDeliveryHarness {
 	t.Helper()
-	registry, err := store.Open(client.Conn, store.WithReplicas(1))
+	registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open interest registry: %v", err)
 	}
-	// Both caches are waited for here, as the listener's own start waits for them: a Put that
-	// lands after a watch fixed its initial snapshot and before the read that turns its marks on
-	// is unmarked, and the sweep that completes the read drops it, so an interest or a session
-	// registered in that window would be missing from what Match and Lookup answer.
+	// Both caches are waited for here, as the listener's own start waits for them: until a cache's
+	// first read completes, the role claim view refuses RolesHeldBy and the session routes answer
+	// their refilling 503 (waitForRegistry, waitForSessions).
 	waitForRegistry(t, registry)
-	sessions, err := session.OpenSessionRegistry(client.Conn, append([]session.SessionRegistryOption{session.WithSessionReplicas(1)}, sessionOptions...)...)
+	sessions, err := session.OpenSessionRegistry(t.Context(), client.Conn, append([]session.SessionRegistryOption{session.WithSessionReplicas(1)}, sessionOptions...)...)
 	if err != nil {
 		t.Fatalf("open session registry: %v", err)
 	}
@@ -3853,10 +3917,21 @@ func newListenerDeliveryHarnessOn(t *testing.T, client *bus.Client, sessionOptio
 		messagesNAKed:     met.NewCounter("test_messages_naked", "test"),
 		deliveryDuration:  met.NewHistogram("test_delivery_duration", "test", metrics.DefaultBuckets),
 		roleKeptExpired:   met.NewCounter("test_role_kept_expired", "test"),
+		// The walk's other two counts, and its dead letters stored as main.go stores them, on
+		// the sender's agent subject of this test's own stream.
+		roleDeadLetters:     met.NewCounter("test_role_dead_letters", "test"),
+		roleKeptUndecodable: met.NewCounter("test_role_kept_undecodable", "test"),
+		publishDeadLetter:   client.PublishStoredAs,
+		keepPublish:         client.PublishStoredAck,
 		// The handler refuses a config without its deferral set or its kept-lane drain guards, as
-		// main.go's always has both; the harness's two handlers share these as main.go's do.
+		// main.go's always has both; the harness's two handlers share these as main.go's do. The
+		// clock is main.go's too, which a test that crosses a kept copy's hour replaces on its copy.
 		deferredUnplaceable: newUnplaceableDeferrals(),
 		roleKeepDrains:      newRoleKeepGuards(),
+		now:                 time.Now,
+		// The takeover copy's seams, which a row forces a fault through (setTakeoverFaults):
+		// this listener's own, shared by every copy of this configuration.
+		takeoverFaults: &takeoverFaultHooks{},
 	}
 	// The role lane's forwards run on the role forwarder, as main.go wires them: it is the one
 	// path those messages take. It is wired last, from the configuration above, so a test that
@@ -3959,9 +4034,9 @@ func (h listenerDeliveryHarness) registerConsumerTarget(t *testing.T, sessionID,
 
 // inlineForward is a role forward seam (listenerDeliveryHandlerConfig.forwardRole) whose publish
 // always succeeds and whose wait is forward: a test that stands in for the stream's answer.
-func inlineForward(forward func(subject string, item contracts.Envelope, msgID string, timeout time.Duration) error) func(string, contracts.Envelope, string, time.Duration) (func() error, error) {
-	return func(subject string, item contracts.Envelope, msgID string, timeout time.Duration) (func() error, error) {
-		return func() error { return forward(subject, item, msgID, timeout) }, nil
+func inlineForward(forward func(subject string, item contracts.Envelope, msgID string, timeout time.Duration) error) func(string, contracts.Envelope, string, time.Duration) (func() (bus.StoredAck, error), error) {
+	return func(subject string, item contracts.Envelope, msgID string, timeout time.Duration) (func() (bus.StoredAck, error), error) {
+		return func() (bus.StoredAck, error) { return bus.StoredAck{}, forward(subject, item, msgID, timeout) }, nil
 	}
 }
 
@@ -4225,16 +4300,15 @@ func TestTopicPrefix(t *testing.T) {
 
 func TestCheckSelfHealth_HealthyReturnsNil(t *testing.T) {
 	client := setupTestNATS(t)
-	defer client.Close()
-	registry, err := store.Open(client.Conn, store.WithReplicas(1))
+	registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open registry: %v", err)
 	}
-	sessions, err := session.OpenSessionRegistry(client.Conn, session.WithSessionReplicas(1), session.WithSessionTTL(time.Minute))
+	sessions, err := session.OpenSessionRegistry(t.Context(), client.Conn, session.WithSessionReplicas(1), session.WithSessionTTL(time.Minute))
 	if err != nil {
 		t.Fatalf("open session registry: %v", err)
 	}
-	if err := checkSelfHealth([]listenerCache{{name: "interest", cache: registry}, {name: "session", cache: sessions}}, nil); err != nil {
+	if err := checkSelfHealth([]listenerCache{{name: "interest", cache: registry}, {name: "session", cache: sessions}}, nil, nil); err != nil {
 		t.Fatalf("healthy probe should not error: %v", err)
 	}
 }
@@ -4243,18 +4317,18 @@ func TestCheckSelfHealth_ClosedConnReturnsError(t *testing.T) {
 	// A stale KV handle must remain observable through checkSelfHealth so
 	// /healthz reports the unavailable dependency while NATS reconnects.
 	client := setupTestNATS(t)
-	registry, err := store.Open(client.Conn, store.WithReplicas(1))
+	registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open registry: %v", err)
 	}
-	sessions, err := session.OpenSessionRegistry(client.Conn, session.WithSessionReplicas(1), session.WithSessionTTL(time.Minute))
+	sessions, err := session.OpenSessionRegistry(t.Context(), client.Conn, session.WithSessionReplicas(1), session.WithSessionTTL(time.Minute))
 	if err != nil {
 		t.Fatalf("open session registry: %v", err)
 	}
 
 	client.Close()
 
-	if err := checkSelfHealth([]listenerCache{{name: "interest", cache: registry}, {name: "session", cache: sessions}}, nil); err == nil {
+	if err := checkSelfHealth([]listenerCache{{name: "interest", cache: registry}, {name: "session", cache: sessions}}, nil, nil); err == nil {
 		t.Fatal("probe after conn close should return error")
 	}
 }
@@ -4263,10 +4337,10 @@ func TestCheckSelfHealth_ClosedConnReturnsError(t *testing.T) {
 // consumer visible to /healthz and the monitor rather than treating it as a
 // healthy state.
 func TestCheckSelfHealth_DurableProbeFailurePropagates(t *testing.T) {
-	if err := checkSelfHealth(nil, func() error { return nil }); err != nil {
+	if err := checkSelfHealth(nil, nil, func() error { return nil }); err != nil {
 		t.Fatalf("healthy durable probe should not error: %v", err)
 	}
-	err := checkSelfHealth(nil, func() error { return natsgo.ErrConsumerNotFound })
+	err := checkSelfHealth(nil, nil, func() error { return natsgo.ErrConsumerNotFound })
 	if err == nil {
 		t.Fatal("missing durable consumer should surface as unhealthy")
 	}
@@ -4532,7 +4606,8 @@ func TestRunSelfHealthMonitor_MovesADeadInterestRegistryToTheLiveConnection(t *t
 	if err != nil {
 		t.Fatalf("connect registry: %v", err)
 	}
-	registry, err := store.Open(registryConn, store.WithReplicas(1))
+	t.Cleanup(registryConn.Close)
+	registry, err := store.Open(t.Context(), registryConn, store.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open interest registry: %v", err)
 	}
@@ -4551,13 +4626,13 @@ func TestRunSelfHealthMonitor_MovesADeadInterestRegistryToTheLiveConnection(t *t
 		func(err error) bool { return errors.Is(err, natsgo.ErrConnectionClosed) },
 		client.Connected,
 		func() error {
-			return rewatchListenerKVWatchers(client.Conn, []listenerCache{{name: "interest", cache: registry}})
+			return rewatchListenerKVWatchers(context.Background(), client.Conn, []listenerCache{{name: "interest", cache: registry}})
 		},
 	)
 
 	writer := testnats.Connect(t, client.Conn.ConnectedUrl())
 	t.Cleanup(writer.Close)
-	other, err := store.Open(writer, store.WithReplicas(1))
+	other, err := store.Open(t.Context(), writer, store.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open the registry as another listener: %v", err)
 	}
@@ -4590,11 +4665,10 @@ func TestRunSelfHealthMonitor_RebuildsTerminalWatcher(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect watcher: %v", err)
 	}
-	sessions, err := session.OpenSessionRegistry(
-		watcherConn,
+	t.Cleanup(watcherConn.Close)
+	sessions, err := session.OpenSessionRegistry(t.Context(), watcherConn,
 		session.WithSessionReplicas(1),
-		session.WithSessionTTL(time.Minute),
-	)
+		session.WithSessionTTL(time.Minute))
 	if err != nil {
 		t.Fatalf("open session registry: %v", err)
 	}
@@ -4621,7 +4695,7 @@ func TestRunSelfHealthMonitor_RebuildsTerminalWatcher(t *testing.T) {
 		client.Connected,
 		func() error {
 			rebuilds.Add(1)
-			return rewatchListenerKVWatchers(client.Conn, []listenerCache{{name: "session", cache: sessions}})
+			return rewatchListenerKVWatchers(context.Background(), client.Conn, []listenerCache{{name: "session", cache: sessions}})
 		},
 	)
 	if got := rebuilds.Load(); got != 1 {
@@ -4851,7 +4925,7 @@ func TestRunSelfHealthMonitor_ShutdownCutRebuildLogsNoError(t *testing.T) {
 // the listener would stay up with role routing broken and nothing repairing it.
 func TestRunSelfHealthMonitor_RestartsWithoutItsRoleBucket(t *testing.T) {
 	client := setupTestNATS(t)
-	registry, err := store.Open(client.Conn, store.WithReplicas(1))
+	registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open interest registry: %v", err)
 	}
@@ -4877,12 +4951,12 @@ func TestRunSelfHealthMonitor_RestartsWithoutItsRoleBucket(t *testing.T) {
 	go func() {
 		defer close(done)
 		runSelfHealthMonitor(ctx, logging.New("test"),
-			func() error { return checkSelfHealth(caches, nil) },
+			func() error { return checkSelfHealth(caches, nil, nil) },
 			func(err error) bool { return isUnrecoverableSelfHealthFailure(err, client, caches) },
 			client.Connected,
 			func() error {
 				rebuilds.Add(1)
-				return rewatchListenerKVWatchers(client.Conn, caches)
+				return rewatchListenerKVWatchers(context.Background(), client.Conn, caches)
 			},
 			func() { terminated <- struct{}{} },
 			time.Millisecond,
@@ -4948,7 +5022,13 @@ func monitorUntilRecovered(t *testing.T, what string, wait, interval time.Durati
 	<-done
 }
 
-// setupTestNATS starts a NATS server dedicated to this test, which ends with it.
+// setupTestNATS starts a NATS server dedicated to this test, which ends with it, and a bus client
+// on it, which the test's cleanup closes before the server's. A bus client reconnects forever, so
+// one left open goes on dialing the server's address after the test, from this test binary, and
+// reaches whatever server later holds that port: the clients of
+// TestHealthzAnswersUnhealthyWhileTheInterestWatcherIsDead and
+// TestHealthzReportsARoleClaimViewThatCompletesNoScanDegraded reached the test servers of other
+// packages' binaries minutes after their tests had ended.
 func setupTestNATS(t *testing.T) *bus.Client {
 	t.Helper()
 	_, uri := testnats.Start(t)
@@ -4956,11 +5036,13 @@ func setupTestNATS(t *testing.T) *bus.Client {
 	if err != nil {
 		t.Fatalf("bus connect: %v", err)
 	}
+	t.Cleanup(client.Close)
 	return client
 }
 
-// TestMain removes the NATS server the package's tests share (testnats.Main).
-func TestMain(m *testing.M) { os.Exit(testnats.Main(m)) }
+// TestMain removes the NATS server the package's tests share (testnats.Main) and the binaries
+// they built (cmdtest.Run).
+func TestMain(m *testing.M) { os.Exit(cmdtest.Run(func() int { return testnats.Main(m) })) }
 
 // endInterestWatcherWhileConnected ends the interest registry's KV watcher while NATS stays
 // connected: deleting the bucket's stream makes the watcher's ordered consumer fail to reset.
@@ -4987,7 +5069,7 @@ func endInterestWatcherWhileConnected(t *testing.T, client *bus.Client, registry
 // nothing is rebuilt, and the cache stays frozen behind the dead watcher.
 func TestSelfHealthRebuildsAnInterestWatcherThatEndedWhileConnected(t *testing.T) {
 	client := setupTestNATS(t)
-	registry, err := store.Open(client.Conn, store.WithReplicas(1))
+	registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open interest registry: %v", err)
 	}
@@ -5005,7 +5087,7 @@ func TestSelfHealthRebuildsAnInterestWatcherThatEndedWhileConnected(t *testing.T
 	}
 
 	monitorUntilRecovered(t, "the interest watcher", 10*time.Second, 10*time.Millisecond,
-		func() error { return checkSelfHealth([]listenerCache{{name: "interest", cache: registry}}, nil) },
+		func() error { return checkSelfHealth([]listenerCache{{name: "interest", cache: registry}}, nil, nil) },
 		func(err error) bool {
 			return isUnrecoverableSelfHealthFailure(err, client, []listenerCache{{name: "interest", cache: registry}})
 		},
@@ -5016,7 +5098,7 @@ func TestSelfHealthRebuildsAnInterestWatcherThatEndedWhileConnected(t *testing.T
 	)
 
 	writer := testnats.Connect(t, client.Conn.ConnectedUrl())
-	other, err := store.Open(writer, store.WithReplicas(1))
+	other, err := store.Open(t.Context(), writer, store.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open a second registry: %v", err)
 	}
@@ -5040,7 +5122,7 @@ func TestSelfHealthRebuildsAnInterestWatcherThatEndedWhileConnected(t *testing.T
 func TestHealthzAnswersUnhealthyWhileTheInterestWatcherIsDead(t *testing.T) {
 	client := setupTestNATS(t)
 	bindBoundDurable(t, client, "listener-healthz-interest", func(msg *natsgo.Msg) { _ = msg.Ack() })
-	registry, err := store.Open(client.Conn, store.WithReplicas(1))
+	registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open interest registry: %v", err)
 	}
@@ -5050,7 +5132,7 @@ func TestHealthzAnswersUnhealthyWhileTheInterestWatcherIsDead(t *testing.T) {
 	if err := registry.WaitForCacheReady(readyCtx); err != nil {
 		t.Fatalf("wait for interest cache: %v", err)
 	}
-	sessions, err := session.OpenSessionRegistry(client.Conn, session.WithSessionReplicas(1))
+	sessions, err := session.OpenSessionRegistry(t.Context(), client.Conn, session.WithSessionReplicas(1))
 	if err != nil {
 		t.Fatalf("open session registry: %v", err)
 	}
@@ -5062,7 +5144,7 @@ func TestHealthzAnswersUnhealthyWhileTheInterestWatcherIsDead(t *testing.T) {
 	state.Store(&listenerDeps{client: client, registry: registry, sessions: sessions, caches: []listenerCache{{name: "interest", cache: registry}, {name: "session", cache: sessions}}, consumer: "listener-healthz-interest"})
 	get := func() (int, map[string]any) {
 		recorder := httptest.NewRecorder()
-		healthzHandler(&state).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+		healthzHandler(&state, nil).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 		var body map[string]any
 		_ = json.Unmarshal(recorder.Body.Bytes(), &body)
 		return recorder.Code, body

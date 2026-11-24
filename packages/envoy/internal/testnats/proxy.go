@@ -7,13 +7,16 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 // Proxy relays a client's TCP connections to a NATS server, so a test can take one client off
 // NATS while every other client keeps its own connection: Cut drops it, as a network that ends a
 // connection does, and Freeze silences it, as a network that drops packets does, and Restore ends
 // either. A Proxy started with ProxyLatency adds a round trip's delay to everything it relays, as
-// the route to a remote NATS hub does.
+// the route to a remote NATS hub does, and one started with ProxyRate moves no faster than its
+// rate, as a slow link does.
 type Proxy struct {
 	listener net.Listener
 	target   string
@@ -21,6 +24,8 @@ type Proxy struct {
 	delay    time.Duration
 	done     chan struct{}
 	closing  sync.Once
+	// rate is the bytes a second each direction of each connection reads at, 0 for no limit.
+	rate int
 
 	mu sync.Mutex
 	// conns are both ends of every connection the proxy is relaying.
@@ -30,6 +35,9 @@ type Proxy struct {
 	// gate is nil while the proxy moves bytes, and open from Freeze until Restore: every read
 	// and every write of a relayed connection waits for it to close.
 	gate chan struct{}
+	// serverGate is nil while server replies move, and open from FreezeServerReplies until Restore.
+	// It holds only server-to-client reads and writes.
+	serverGate chan struct{}
 }
 
 // ProxyOption configures a Proxy.
@@ -42,15 +50,23 @@ func ProxyLatency(rtt time.Duration) ProxyOption {
 	return func(p *Proxy) { p.delay = rtt / 2 }
 }
 
+// ProxyRate reads each direction of each connection at about bytesPerSecond, so a sender's socket
+// backs up as it does behind a slow link: the throttle is on the read, so the proxy's queue never
+// holds more than one read ahead of the rate, and the sender, not the proxy, buffers the rest.
+func ProxyRate(bytesPerSecond int) ProxyOption {
+	return func(p *Proxy) { p.rate = bytesPerSecond }
+}
+
 // StartProxy relays to the NATS server at target, a client URL such as Start returns, on a
-// loopback port of its own, until the test ends. URL is the same server through the proxy.
+// loopback port and address of its own (testport.LoopbackIP), until the test ends. URL is the same
+// server through the proxy.
 func StartProxy(t testing.TB, target string, options ...ProxyOption) *Proxy {
 	t.Helper()
 	server, err := url.Parse(target)
 	if err != nil || server.Host == "" {
 		t.Fatalf("read the NATS URL %q the proxy relays to: %v", target, err)
 	}
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	listener, err := testport.ListenLoopback()
 	if err != nil {
 		t.Fatalf("listen for the NATS proxy: %v", err)
 	}
@@ -100,8 +116,19 @@ func (p *Proxy) Freeze() {
 	}
 }
 
-// Restore ends a Cut and a Freeze: the proxy accepts and relays connections again, and the bytes a
-// freeze held move on.
+// FreezeServerReplies stops server replies while client writes still reach the server. Restore
+// releases the replies. A test uses it when it must prove a request stored before it loses the
+// request's acknowledgement.
+func (p *Proxy) FreezeServerReplies() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.serverGate == nil {
+		p.serverGate = make(chan struct{})
+	}
+}
+
+// Restore ends a Cut, a Freeze and a FreezeServerReplies: the proxy accepts and relays connections
+// again, the bytes a freeze held move on, and server replies resume.
 func (p *Proxy) Restore() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -109,6 +136,10 @@ func (p *Proxy) Restore() {
 	if p.gate != nil {
 		close(p.gate)
 		p.gate = nil
+	}
+	if p.serverGate != nil {
+		close(p.serverGate)
+		p.serverGate = nil
 	}
 }
 
@@ -137,8 +168,8 @@ func (p *Proxy) join(client net.Conn) {
 		p.untrack(client)
 		return
 	}
-	go p.relay(server, client)
-	p.relay(client, server)
+	go p.relay(server, client, false)
+	p.relay(client, server, true)
 }
 
 // track records conn as relayed and reports true, or closes it and reports false while the proxy
@@ -169,9 +200,15 @@ func (p *Proxy) untrack(conns ...net.Conn) {
 	}
 }
 
-// relay copies src to dst, each chunk written the proxy's delay after it was read, until either
-// ends; then it closes both, which ends the other direction too.
-func (p *Proxy) relay(dst, src net.Conn) {
+// proxyReadBuffer is the most one read of a relayed connection takes. With ProxyRate the reader
+// forwards each read before it sleeps for it, so a direction can run up to proxyReadBuffer bytes
+// ahead of its rate.
+const proxyReadBuffer = 64 << 10
+
+// relay copies src to dst, each chunk written the proxy's delay after it was read and each read
+// held to the proxy's rate, until either ends; then it closes both, which ends the other direction
+// too.
+func (p *Proxy) relay(dst, src net.Conn, serverToClient bool) {
 	defer p.untrack(dst, src)
 	type chunk struct {
 		data []byte
@@ -180,12 +217,15 @@ func (p *Proxy) relay(dst, src net.Conn) {
 	queue := make(chan chunk, 4096)
 	go func() {
 		defer close(queue)
-		buffer := make([]byte, 64<<10)
+		buffer := make([]byte, proxyReadBuffer)
 		for {
-			p.pass()
+			p.pass(serverToClient)
 			read, err := src.Read(buffer)
 			if read > 0 {
 				queue <- chunk{data: bytes.Clone(buffer[:read]), due: time.Now().Add(p.delay)}
+				if p.rate > 0 {
+					time.Sleep(time.Duration(read) * time.Second / time.Duration(p.rate))
+				}
 			}
 			if err != nil {
 				return
@@ -194,7 +234,7 @@ func (p *Proxy) relay(dst, src net.Conn) {
 	}()
 	for c := range queue {
 		time.Sleep(time.Until(c.due))
-		p.pass()
+		p.pass(serverToClient)
 		if _, err := dst.Write(c.data); err != nil {
 			// The reader ends once src is closed below.
 			break
@@ -205,17 +245,24 @@ func (p *Proxy) relay(dst, src net.Conn) {
 	}
 }
 
-// pass waits while the proxy is frozen, and returns at once while it is not or once it closes.
-func (p *Proxy) pass() {
+// pass waits for any active gate before a relay read or write proceeds. serverToClient selects the
+// server-to-client gate in addition to the bidirectional one.
+func (p *Proxy) pass(serverToClient bool) {
 	p.mu.Lock()
 	gate := p.gate
+	serverGate := p.serverGate
 	p.mu.Unlock()
-	if gate == nil {
-		return
+	if gate != nil {
+		select {
+		case <-gate:
+		case <-p.done:
+		}
 	}
-	select {
-	case <-gate:
-	case <-p.done:
+	if serverToClient && serverGate != nil {
+		select {
+		case <-serverGate:
+		case <-p.done:
+		}
 	}
 }
 

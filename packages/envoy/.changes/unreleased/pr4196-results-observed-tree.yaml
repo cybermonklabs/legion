@@ -1,0 +1,6 @@
+kind: Added
+body: |-
+  `GET /api/v1/issues/{key}/results` answers each result's observed text as the tree a reader is
+  shown, `observed_tree`, to a caller that sent `Dispatch-Trees: 1`, as it answers each check's
+  `text_tree`, and `POST /api/v1/issues/{key}/results` stores that tree after its write commits,
+  so the read copies the stored bytes rather than reading the markdown again.

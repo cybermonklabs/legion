@@ -1,0 +1,11 @@
+kind: Fixed
+body: |-
+  Dispatch's near-copy gate gives its read 2 s, up from 500 ms, before an issue create goes in
+  unchecked. Under 500 ms the gate made no check on 9 of INFRA's first 29 creates that
+  `near_copy_checks` recorded in production (outcome `not_made`, reason `bound`), where the replay
+  on an idle machine had predicted 0.17%. 2 s is an estimate; the share of reads it still cuts is
+  read from those rows once it is deployed. A read that answers within 500 ms waits no longer; a
+  slower one has up to 1.5 s more to answer before the create goes in unchecked.
+time: 2026-11-17T19:00:00Z
+custom:
+    Issue: pr4340

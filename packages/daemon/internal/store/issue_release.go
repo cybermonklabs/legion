@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
+	"github.com/sjawhar/legion/daemon/internal/wait"
 )
 
 // IssueReleased is one idle release of an issue's pod as its issue_release outbox row names it:
@@ -74,6 +75,10 @@ const (
 	// left the workflow, its tree lingers, or its cleanup is reserved. None of those is a
 	// release's business, and each of them is a close's.
 	ReleaseCauseUnauthorized
+	// ReleaseCausePaused: the project is paused at the release's save. The pause saves no
+	// workspace and deletes no pod, so the release is cancelled before it stores a bundle
+	// (IssueReleaseSave, decision 12 and departure 4 of dispatch://INFRA-3759).
+	ReleaseCausePaused
 )
 
 // String is the cause's name in a log line or a test's message. The hold the daemon records for
@@ -84,6 +89,8 @@ func (c ReleaseCause) String() string {
 		return "overtaken"
 	case ReleaseCauseUnauthorized:
 		return "unauthorized"
+	case ReleaseCausePaused:
+		return "paused"
 	}
 	return "none"
 }
@@ -217,7 +224,9 @@ func releaseOvertaken(ctx context.Context, tx pgx.Tx, project, issue string, mar
 //     queue itself. One below the release's own rows was queued by a transaction already in
 //     flight when the mark was written; one above them was queued once the mark stood, while
 //     every role still ran. Either way the pod is the one that must answer it, so the release
-//     goes rather than the pod.
+//     goes rather than the pod. A start queued for news alone is not such a row (idleWaitingRow),
+//     as it holds no pod: it wakes the claim the release suspends, and the role comes back with
+//     its news.
 //
 // The mark stands through a cancel decided here: the caller carries the cancel out whole
 // (CancelIssueRelease), and a cancel that did not finish — a resume refused, the daemon stopped
@@ -232,7 +241,7 @@ func (s *Store) IssueReleaseStop(ctx context.Context, project, issue string, row
 		return ReleaseDecision{}, errors.New("a release's role stop requires its project, its issue and its outbox row")
 	}
 	var decision ReleaseDecision
-	err := s.Tx(ctx, func(tx pgx.Tx) error {
+	err := TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		decision = ReleaseDecision{}
 		mark, held, err := readReleaseMark(ctx, tx, project, issue, row)
 		if err != nil || !held {
@@ -245,7 +254,7 @@ func (s *Store) IssueReleaseStop(ctx context.Context, project, issue string, row
 		}
 		if !overtaken && row == mark.boundary {
 			if err := tx.QueryRow(ctx, `select exists (
-				select 1 from outbox where issue = $1 and kind = any($2) and (id < $3 or id > $4))`,
+				select 1 from outbox where issue = $1 and `+idleWaitingRow+` and (id < $3 or id > $4))`,
 				issue, idleWaitingKinds, mark.first, mark.last).Scan(&overtaken); err != nil {
 				return err
 			}
@@ -274,7 +283,7 @@ func (s *Store) ReleaseSuspendedClaim(ctx context.Context, project, issue string
 	if project == "" || issue == "" || role == "" || row <= 0 {
 		return errors.New("recording a claim a release suspended requires its project, its issue, the role and its outbox row")
 	}
-	err := s.Tx(ctx, func(tx pgx.Tx) error {
+	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		_, held, err := readReleaseMark(ctx, tx, project, issue, row)
 		if err != nil || !held {
 			return err
@@ -295,6 +304,16 @@ func (s *Store) ReleaseSuspendedClaim(ctx context.Context, project, issue string
 // does write the issue's one stored bundle, and a save of a finished release must not replace the
 // bundle the live one stored.
 //
+// A save that finds the project paused cancels the release (ReleaseCausePaused): the pause saves
+// no workspace and deletes no pod, so a release whose save had not run when the pause began is
+// cancelled and keeps its pod, whatever reached its roles first (decision 12 and departure 4 of
+// dispatch://INFRA-3759). The pause is project's, read by its token (readOpenPauseByToken,
+// which says why). No production row reaches a save for another project's issue: the save runs
+// from the release's row, which is keyed by its issue, and the daemon's outbox runs only the rows
+// of its own project's keys (record's DueRows). A release that saved before the pause finishes
+// as it does while the project runs: its role stops and its teardown read no pause. The open
+// pause is the one fact this reads of it, in this transaction.
+//
 // The decision carries the release's id, which the save puts on the bundle it stores
 // (PutWorkspaceBundle): the restore of the pod that replaces the released one names the release
 // whose work it put back, so a late report deletes no newer release's bundle.
@@ -303,7 +322,7 @@ func (s *Store) IssueReleaseSave(ctx context.Context, project, issue string, row
 		return ReleaseDecision{}, errors.New("a release's save requires its project, its issue and its outbox row")
 	}
 	var decision ReleaseDecision
-	err := s.Tx(ctx, func(tx pgx.Tx) error {
+	err := TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		decision = ReleaseDecision{}
 		mark, held, err := readReleaseMark(ctx, tx, project, issue, row)
 		if err != nil || !held {
@@ -311,6 +330,13 @@ func (s *Store) IssueReleaseSave(ctx context.Context, project, issue string, row
 		}
 		decision.Act, decision.Release = ReleaseActs, mark.id
 		decision.Suspended, decision.SuspendsNoRole = mark.roles(), mark.suspendsNoRole()
+		_, paused, err := readOpenPauseByToken(ctx, tx, project, "")
+		if err != nil {
+			return err
+		}
+		if paused {
+			decision.Act, decision.Cause = ReleaseCancel, ReleaseCausePaused
+		}
 		return nil
 	})
 	if err != nil {
@@ -329,9 +355,9 @@ func (s *Store) IssueReleaseSave(ctx context.Context, project, issue string, row
 // stored goes — when the run it released has moved on, the issue has left the workflow or its
 // tree lingers (each of which is a close's business, not a release's), when the tree's cleanup is
 // reserved, which deletes the Sandbox this release would, or when the pod went on working after
-// the mark: a claim started, resumed or holding a process now. It waits while one of the
-// release's own role stops is unfinished or a stored claim of the issue may still hold a
-// process. outOfWorkflow is the workflow's rule for a status that takes an issue out of it
+// the mark: a claim started, resumed or holding a process now. It waits while the release's own
+// workspace save or one of its role stops is unfinished, or a stored claim of the issue may still
+// hold a process. outOfWorkflow is the workflow's rule for a status that takes an issue out of it
 // (record.OutOfWorkflow), which the store does not restate; the gate itself is the one every
 // other path that acts on a released pod reads (pods.InWorkflowNotLingering), down to the
 // issue's own linger, which this read missed.
@@ -350,7 +376,7 @@ func (s *Store) IssueRelease(ctx context.Context, project string, release IssueR
 		return ReleaseDecision{}, errors.New("issue release requires issue, tree, both generations and its outbox row")
 	}
 	var decision ReleaseDecision
-	err := s.Tx(ctx, func(tx pgx.Tx) error {
+	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		decision = ReleaseDecision{}
 		if err := treelifecycle.Serialize(ctx, tx); err != nil {
 			return err
@@ -384,11 +410,15 @@ func (s *Store) IssueRelease(ctx context.Context, project string, release IssueR
 		}
 		// A role started or resumed since the mark, or a start queued above the release's own
 		// rows, is the pod being used again: the teardown would take a pod with a live role in
-		// it, and the stop that would have caught it has already run. The release reads every
-		// queued start row where IssueSuspension reads only a production check's look, and
-		// needs no narrowing of its own: the read above has already returned a cancel for an
-		// issue that is not pods.InWorkflowNotLingering, so this predicate runs only for an issue
-		// still in the workflow under a live tree, where the outbox's start fence declines
+		// it, and the stop that would have caught it has already run. The start rows read here
+		// are those that wait for a role of the pod, the one rule the idle hold and the boundary
+		// read too (idleWaitingRow), so a start queued for news alone does not cancel the
+		// teardown: it wakes the claim this release suspended, as any start wakes one, and the
+		// role comes back with its news in the pod that replaces this one. The release reads
+		// every other queued start row where IssueSuspension reads only a production check's
+		// look, and needs no other narrowing: the read above has already returned a cancel for
+		// an issue that is not pods.InWorkflowNotLingering, so this predicate runs only for an
+		// issue still in the workflow under a live tree, where the outbox's start fence declines
 		// nothing and a queued start row really is a start. The cause is the one a role stop
 		// reads for it.
 		overtaken, err := releaseOvertaken(ctx, tx, project, release.Issue, mark)
@@ -397,8 +427,9 @@ func (s *Store) IssueRelease(ctx context.Context, project string, release IssueR
 		}
 		if !overtaken {
 			if err := tx.QueryRow(ctx, `select exists (
-				select 1 from outbox where issue = $1 and id > $2 and kind = 'supervise' and payload->>'op' = 'start')`,
-				release.Issue, mark.last).Scan(&overtaken); err != nil {
+				select 1 from outbox where issue = $1 and `+idleWaitingRow+` and id > $3
+					and kind = 'supervise' and payload->>'op' = 'start')`,
+				release.Issue, idleWaitingKinds, mark.last).Scan(&overtaken); err != nil {
 				return err
 			}
 		}
@@ -410,9 +441,21 @@ func (s *Store) IssueRelease(ctx context.Context, project string, release IssueR
 		if err != nil {
 			return err
 		}
-		if may {
-			decision.Act, decision.Cause = ReleaseActs, ReleaseCauseNone
+		if !may {
+			return nil
 		}
+		// The release's own save is its issue_bundle row inside the mark's range, the range holds
+		// reads; a save below it is an earlier release's and holds no pod of this one.
+		var saving bool
+		if err := tx.QueryRow(ctx, `select exists (
+			select 1 from outbox where issue = $1 and kind = 'issue_bundle' and id >= $2 and id <= $3)`,
+			release.Issue, mark.first, mark.last).Scan(&saving); err != nil {
+			return err
+		}
+		if saving {
+			return wait.Errorf("issue %s release waits for its workspace save", release.Issue)
+		}
+		decision.Act, decision.Cause = ReleaseActs, ReleaseCauseNone
 		return nil
 	})
 	if err != nil {

@@ -27,6 +27,26 @@ test("a frame without a dedupe key or an event id is never a repeat", () => {
   expect(dedupe.claim(undefined)).toBeDefined();
 });
 
+// The listener copies a role message a previous holder did not read to the role's kept lane, for
+// the role's next holder, under a minted dedupe key of its own - 32 hex digits of a hash of the
+// message's key and the copied frame's sequence, after `publish.` for a message the publish route
+// keyed - and with the message's own event id. A host that already showed the message, the
+// previous holder taking the role back, drops the copy by that event id. The control is a frame of
+// another publish under the copy's key, which is a new message.
+test("a takeover's copy of a message the host already showed is a repeat by its event id, under its own key", () => {
+  const dedupe = createDeliveryDedupe();
+  const original = {
+    event_id: "evt-role-1",
+    source: "agent",
+    dedupe_key: "publish.notifications.role.reviewer.k1",
+  };
+  const copy = { ...original, dedupe_key: "publish.0f1e2d3c4b5a69788796a5b4c3d2e1f0" };
+
+  expect(dedupe.claim(original)).toBeDefined();
+  expect(dedupe.claim(copy)).toBeUndefined();
+  expect(dedupe.claim({ ...copy, event_id: "evt-role-2" })).toBeDefined();
+});
+
 // A frame that follows two overlapping subscriptions (`pr.7.>` and `pr.7.checks`) arrives once
 // per subscription, every copy carrying the one event id its publish minted. A CI settlement's key
 // does not name its event, so only that event id says the second copy is the first again; a later
@@ -43,6 +63,48 @@ test("a second copy of one publish is a repeat by its event id, whatever its key
   expect(dedupe.claim(settlement("evt-1"))).toBeDefined();
   expect(dedupe.claim(settlement("evt-1"))).toBeUndefined();
   expect(dedupe.claim(settlement("evt-2"))).toBeDefined();
+});
+
+// Dispatch's outbox sends one event to the owner's topic family and to a session's own subject as
+// two publishes: every copy carries the event id `dispatch-<event id>`, and a dedupe key that names
+// its event, which is `dispatch-<event id>` on the topic copy and most others, that key behind the
+// forward prefix on most role forwards, and a mention's own key on a new comment's copy for the
+// session that mention failed for and on its role forward to a holder whose own mention of it
+// settled. Its sends to the two subjects have no order between them, so a session that follows the
+// topic and is sent the event on its own subject takes whichever copy comes first and drops the
+// other, in either order, by the event id whatever the key. The outbox's Go test that lets the two
+// copies go either way round (TestASendToASessionIsHeldBackBehindAFailedTopicSendOfItsBatch) holds
+// that it writes them so.
+test("the outbox's topic copy and session copy of one event are one delivery, in either order", () => {
+  const topicCopy = {
+    event_id: "dispatch-42",
+    source: "dispatch",
+    topic: "notifications.dispatch.issue.T-1.message.created",
+    dedupe_key: "dispatch-42",
+  };
+  const sessionCopy = { ...topicCopy, topic: "notifications.agent.S" };
+  const roleForward = {
+    ...topicCopy,
+    topic: "notifications.role.reviewer",
+    dedupe_key: "envoy.role.forward.dispatch-42",
+  };
+  const failedMentionCopy = {
+    ...topicCopy,
+    topic: "notifications.agent.S",
+    dedupe_key: "agent.S.5a660655-04ad-4ce0-8a9b-93dd03c412b7:session:S:steer",
+  };
+  for (const [first, second] of [
+    [topicCopy, sessionCopy],
+    [sessionCopy, topicCopy],
+    [topicCopy, roleForward],
+    [roleForward, topicCopy],
+    [topicCopy, failedMentionCopy],
+    [failedMentionCopy, topicCopy],
+  ]) {
+    const dedupe = createDeliveryDedupe();
+    expect(dedupe.claim(first)).toBeDefined();
+    expect(dedupe.claim(second)).toBeUndefined();
+  }
 });
 
 test("a key that names its event is remembered for the duplicate window and not a moment longer", () => {

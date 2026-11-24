@@ -1,0 +1,13 @@
+kind: Changed
+body: |-
+  A secrets broker request any signed-in person may decide (approver `anyone`: a shared human-tier
+  secret, or a shared agent-tier secret the session's operator withheld from it) is listed by
+  `GET /v1/pending`, and so in a Dispatch Inbox, for the person responsible for the agent that asked,
+  not for every person: the session's operator, else for a fleet machine's own session the person
+  its `BROKER_VM_EXCHANGE_ACCOUNTS` entry names, else for a Legion worker pod the assignee of the
+  Dispatch issue its claim names, read at `BROKER_JUDGE_DISPATCH_URL` and given up after three
+  seconds. Where none names a person the request is listed for everyone, as before, and a Dispatch
+  read that failed or ran late logs a WARN,
+  `broker: the assignee of a Legion pod's issue could not be read; its request is listed for everyone`.
+  Anyone signed in still decides such a request from its page. Migration `0036_request_notify` adds
+  the nullable `credential_requests.notify`.

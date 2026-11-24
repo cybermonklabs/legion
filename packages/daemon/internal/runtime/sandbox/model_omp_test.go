@@ -38,6 +38,128 @@ func runOmp(t *testing.T, argv []string, dir string, environ []string, stdin str
 	return out.String(), errOut.String(), err
 }
 
+// withPromptFile is argv, an agentArgv, with the generation's prompt file it names replaced by a
+// file of the test's own holding text, as the launcher writes that file in a pod before the agent
+// starts (launcherCommand's Files): Oh My Pi would read a path it cannot open as the prompt's text
+// itself, which is no launch a pod makes.
+func withPromptFile(t *testing.T, argv []string, text string) []string {
+	t.Helper()
+	at := slices.Index(argv, "--append-system-prompt")
+	if at < 0 || at+1 == len(argv) {
+		t.Fatalf("the agent argv %q names no --append-system-prompt file", argv)
+	}
+	path := filepath.Join(t.TempDir(), filepath.Base(argv[at+1]))
+	if err := os.WriteFile(path, []byte(text), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	argv = slices.Clone(argv)
+	argv[at+1] = path
+	return argv
+}
+
+// requestSystem is the system text of one anthropic-messages request body: its `system` member,
+// which is one string or a list of text blocks, the blocks' texts joined in order, and "" for a
+// body that carries none.
+func requestSystem(body []byte) string {
+	var request struct {
+		System json.RawMessage `json:"system"`
+	}
+	if json.Unmarshal(body, &request) != nil || len(request.System) == 0 {
+		return ""
+	}
+	var text string
+	if json.Unmarshal(request.System, &text) == nil {
+		return text
+	}
+	var blocks []struct {
+		Text string `json:"text"`
+	}
+	if json.Unmarshal(request.System, &blocks) != nil {
+		return ""
+	}
+	var joined strings.Builder
+	for _, block := range blocks {
+		joined.WriteString(block.Text)
+	}
+	return joined.String()
+}
+
+// Oh My Pi appends the whole of the file its `--append-system-prompt` names, however long: a pod's
+// agent is named its generation's prompt file (systemPromptPath), so a prompt past the 131072
+// bytes Linux lets one argv string be reaches the model whole. Measured on the pinned binary: a
+// 200000-byte prompt ending in a line of its own, and the system text of a request the turn makes
+// to an anthropic-messages stand-in holding every byte of it. The control is a path to a file that
+// does not exist, which Oh My Pi silently takes as the prompt's text itself and sends the model as
+// such, with no error: that is why the launcher writes the file before the agent starts
+// (launcherCommand), since a missing file would fail no launch and leave the agent without its
+// prompt.
+func TestOhMyPiAppendsTheWholePromptFileItIsNamed(t *testing.T) {
+	omp := testbin.OMP(t)
+	dir := t.TempDir()
+	home, work := filepath.Join(dir, "home"), filepath.Join(dir, "work")
+	if err := os.MkdirAll(work, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	var systems []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		mu.Lock()
+		systems = append(systems, requestSystem(body))
+		mu.Unlock()
+		testbin.AnthropicAnswer(w, "configured", "ok")
+	}))
+	defer server.Close()
+	// taken is every system text the server has been sent since it was last asked.
+	taken := func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		seen := systems
+		systems = nil
+		return seen
+	}
+	testbin.OMPHome(t, omp, home)
+	testbin.WriteOMPProfile(t, home,
+		"providers:\n  operator:\n    baseUrl: "+server.URL+"\n    auth: apiKey\n    api: anthropic-messages\n"+
+			"    apiKey: unused\n    models:\n      - id: configured\n        name: Configured\n",
+		"modelRoles:\n  default: operator/configured\n")
+	environ := testbin.OMPEnviron(home)
+
+	const size = 200_000
+	line, last := "A line of a system prompt longer than one argv string may be.\n", "The prompt's own last line."
+	prompt := strings.Repeat(line, size/len(line)+1)[:size-len(last)-1] + "\n" + last
+	frames, stderr := promptOnce(t, withPromptFile(t, launch{}.agentArgv([]string{omp}), prompt), work, environ, "Reply ok.")
+	if !slices.ContainsFunc(frames, func(frame testbin.OMPFrame) bool { return frame.Type == "message_end" }) {
+		t.Fatalf("the turn ended with no answer\nstderr: %s", stderr)
+	}
+	seen := taken()
+	if !slices.ContainsFunc(seen, func(system string) bool { return strings.Contains(system, prompt) }) {
+		lengths := make([]int, len(seen))
+		for i, system := range seen {
+			lengths[i] = len(system)
+		}
+		t.Errorf("none of the turn's %d requests carries the whole %d-byte prompt in its system text (system texts of %v bytes; its last line reached the model: %t)\nstderr: %s",
+			len(seen), len(prompt), lengths, slices.ContainsFunc(seen, func(system string) bool { return strings.Contains(system, last) }), stderr)
+	}
+
+	missing := filepath.Join(dir, "absent", "system-prompt.md")
+	control := launch{}.agentArgv([]string{omp})
+	control[slices.Index(control, "--append-system-prompt")+1] = missing
+	_, stderr = promptOnce(t, control, work, environ, "Reply ok.")
+	seen = taken()
+	if !slices.ContainsFunc(seen, func(system string) bool { return strings.Contains(system, missing) }) {
+		t.Errorf("a path to no file did not reach the model as the prompt's own text: no system text of the turn's %d requests names %s\nstderr: %s",
+			len(seen), missing, stderr)
+	}
+	if slices.ContainsFunc(seen, func(system string) bool { return strings.Contains(system, last) }) {
+		t.Errorf("the control's turn carries the long prompt's last line, which no file it named holds")
+	}
+}
+
 // A pod's agent resumes the session its claim recorded and runs the model the pod's overlay puts
 // on the `default` role, not the one that session saved: `--model @default` rides the recorded
 // argv, and @default is Oh My Pi's own name for that role. Measured on the pinned binary: a
@@ -45,10 +167,17 @@ func runOmp(t *testing.T, argv []string, dir string, environ []string, stdin str
 // recorded argv's own answer naming the profile's current model. The same argv with the flag
 // taken out is the control, and reports the saved model instead.
 //
-// The resume leaves the session's earlier bytes alone and adds no second file, and — because a
-// launch under the flag writes no `model_change` entry of its own — the saved pin is still in
-// there, which is why the flag rides every launch and not the resuming one alone
-// (TestAgentArgvCarriesTheConfiguredModel).
+// **The control runs first, and it must.** A resume carrying a role alias writes a
+// `model_change` of its own into the session it resumed, naming what the role resolved to
+// (upstream oh-my-pi #18534, in the fork from 18.18.6; through 18.16.0 it wrote nothing). So the
+// flagged arm leaves the session pinned to `operator/configured`, and a control run after it
+// would read that back and measure nothing but the arm before it. Run before the flagged arm,
+// the control reads the pin the saving turn wrote, which is the only thing it was ever asking
+// about, and it reads the same on either build.
+//
+// The resumes leave the session's earlier bytes alone and add no second file. That is worth
+// checking but explains nothing about role resolution: the flag rides every launch because the
+// operator's current role is resolved per launch (TestAgentArgvCarriesTheConfiguredModel).
 func TestTheResumedAgentRunsTheConfiguredModel(t *testing.T) {
 	omp := testbin.OMP(t)
 	dir := t.TempDir()
@@ -91,16 +220,10 @@ func TestTheResumedAgentRunsTheConfiguredModel(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	argv := launch{spec: runtime.SpawnSpec{ResumeSessionFile: saved[0]}, prompt: "The test's system prompt."}.agentArgv([]string{omp})
-	stdout, stderr, err := runOmp(t, argv, work, environ, `{"type":"get_state","id":"1"}`+"\n")
-	if err != nil {
-		t.Fatalf("omp %s: %v\nstdout: %s\nstderr: %s", strings.Join(argv[1:], " "), err, stdout, stderr)
-	}
-	if got := testbin.StateModel(t, stdout); got != "operator/configured" {
-		t.Errorf("the resumed agent runs %s, want the profile's operator/configured\nstderr: %s", got, stderr)
-	}
+	argv := withPromptFile(t, launch{spec: runtime.SpawnSpec{ResumeSessionFile: saved[0]}}.agentArgv([]string{omp}), "The test's system prompt.")
 
-	// The control: the same launch with the flag taken out reads the session's own pin.
+	// The control, and it runs first: the same launch with the flag taken out reads the session's
+	// own pin, which at this point is the one the saving turn wrote and nothing else.
 	without := slices.DeleteFunc(slices.Clone(argv), func(word string) bool { return word == "--model" || word == "@default" })
 	plain, stderr, err := runOmp(t, without, work, environ, `{"type":"get_state","id":"1"}`+"\n")
 	if err != nil {
@@ -108,6 +231,35 @@ func TestTheResumedAgentRunsTheConfiguredModel(t *testing.T) {
 	}
 	if got := testbin.StateModel(t, plain); got != "operator/saved" {
 		t.Errorf("without the flag the resumed agent runs %s, want the session's own operator/saved", got)
+	}
+	if got, want := testbin.ModelChanges(t, saved[0]), []string{"operator/saved"}; !slices.Equal(got, want) {
+		t.Errorf("after the plain control, recorded model changes = %q, want %q", got, want)
+	}
+
+	// The recorded argv itself, which carries the flag: it answers on the profile's role whatever
+	// the session was pinned to.
+	stdout, stderr, err := runOmp(t, argv, work, environ, `{"type":"get_state","id":"1"}`+"\n")
+	if err != nil {
+		t.Fatalf("omp %s: %v\nstdout: %s\nstderr: %s", strings.Join(argv[1:], " "), err, stdout, stderr)
+	}
+	if got := testbin.StateModel(t, stdout); got != "operator/configured" {
+		t.Errorf("the resumed agent runs %s, want the profile's operator/configured\nstderr: %s", got, stderr)
+	}
+	if got, want := testbin.ModelChanges(t, saved[0]), []string{"operator/saved", "operator/configured"}; !slices.Equal(got, want) {
+		t.Errorf("after the role-alias resume, recorded model changes = %q, want %q", got, want)
+	}
+
+	// Moving the role back cannot recover the old pin: a later plain resume reads the role-alias
+	// resume's durable replacement.
+	if err := os.WriteFile(filepath.Join(agent, "config.yml"), []byte("modelRoles:\n  default: operator/saved\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	plain, stderr, err = runOmp(t, without, work, environ, `{"type":"get_state","id":"1"}`+"\n")
+	if err != nil {
+		t.Fatalf("omp %s: %v\nstdout: %s\nstderr: %s", strings.Join(without[1:], " "), err, plain, stderr)
+	}
+	if got, want := testbin.StateModel(t, plain), "operator/configured"; got != want {
+		t.Errorf("after the role moves back, the plain resumed agent runs %s, want the durable %s", got, want)
 	}
 
 	after, err := os.ReadFile(saved[0])
@@ -166,7 +318,7 @@ func TestAFallbackChainStillWalksUnderAnExplicitModel(t *testing.T) {
 		"modelRoles:\n  default: first/first-model\n"+
 			"retry:\n  modelFallback: true\n  maxDelayMs: 1000\n  fallbackChains:\n    first/first-model:\n      - second/second-model\n")
 
-	argv := launch{prompt: "The test's system prompt."}.agentArgv([]string{omp})
+	argv := withPromptFile(t, launch{}.agentArgv([]string{omp}), "The test's system prompt.")
 	frames, stderr := promptOnce(t, argv, work, testbin.OMPEnviron(home), "Reply ok.")
 	answered := ""
 	for _, frame := range frames {
@@ -204,7 +356,7 @@ func TestMeasuredNoDefaultRoleLaunchesOnABuiltInModel(t *testing.T) {
 			"    apiKey: unused\n    models:\n      - id: configured\n        name: Configured\n",
 		"enabledModels:\n  - operator/configured\n")
 
-	argv := launch{prompt: "The test's system prompt."}.agentArgv([]string{omp})
+	argv := withPromptFile(t, launch{}.agentArgv([]string{omp}), "The test's system prompt.")
 	stdout, stderr, err := runOmp(t, argv, work, testbin.OMPEnviron(home), `{"type":"get_state","id":"1"}`+"\n")
 	if err != nil {
 		t.Fatalf("omp %s: %v, want a launch\nstdout: %s\nstderr: %s", strings.Join(argv[1:], " "), err, stdout, stderr)

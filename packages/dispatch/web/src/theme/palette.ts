@@ -79,3 +79,83 @@ export const EMERALD_700 = swatch("emerald-700", 0.508, 0.118, 165.612);
 export const EMERALD_800 = swatch("emerald-800", 0.432, 0.095, 166.913);
 export const EMERALD_900 = swatch("emerald-900", 0.378, 0.077, 168.94);
 export const EMERALD_950 = swatch("emerald-950", 0.262, 0.051, 172.552);
+
+export const STONE_300 = swatch("stone-300", 0.869, 0.005, 56.366);
+export const STONE_800 = swatch("stone-800", 0.268, 0.007, 34.298);
+
+// biome-ignore lint/suspicious/noApproximativeNumericConstant: Tailwind's own lightness, not √½.
+export const BLUE_400 = swatch("blue-400", 0.707, 0.165, 254.624);
+export const BLUE_950 = swatch("blue-950", 0.282, 0.091, 267.935);
+export const VIOLET_400 = swatch("violet-400", 0.702, 0.183, 293.541);
+export const VIOLET_950 = swatch("violet-950", 0.283, 0.141, 291.089);
+export const TEAL_400 = swatch("teal-400", 0.777, 0.152, 181.912);
+export const TEAL_950 = swatch("teal-950", 0.277, 0.046, 192.524);
+export const INDIGO_400 = swatch("indigo-400", 0.673, 0.182, 276.935);
+export const INDIGO_950 = swatch("indigo-950", 0.257, 0.09, 281.288);
+export const PINK_400 = swatch("pink-400", 0.718, 0.202, 349.761);
+export const PINK_700 = swatch("pink-700", 0.525, 0.223, 3.958);
+export const PINK_950 = swatch("pink-950", 0.284, 0.109, 3.907);
+export const FUCHSIA_400 = swatch("fuchsia-400", 0.74, 0.238, 322.16);
+export const FUCHSIA_950 = swatch("fuchsia-950", 0.293, 0.136, 325.661);
+export const ORANGE_300 = swatch("orange-300", 0.837, 0.128, 66.29);
+export const ORANGE_400 = swatch("orange-400", 0.75, 0.183, 55.934);
+export const ORANGE_950 = swatch("orange-950", 0.266, 0.079, 36.259);
+export const GREEN_400 = swatch("green-400", 0.792, 0.209, 151.711);
+export const RED_400 = swatch("red-400", 0.704, 0.191, 22.216);
+// biome-ignore lint/suspicious/noApproximativeNumericConstant: Tailwind's own lightness, not √½.
+export const GRAY_400 = swatch("gray-400", 0.707, 0.022, 261.325);
+
+/**
+ * The issue page's own colours, each the value the approved prototype's stylesheet declares
+ * (dispatch://INFRA-1196/artifact/issue-page-prototype-html, version 3: its `:root` tokens, and
+ * the few literals its left pane, rail and waiting chip write), so the page is drawn in the
+ * colours of the pictures its owner approved rather than in the nearest Tailwind shade. Each is
+ * named for what it is on that page; its OKLCH triple renders to the prototype's hex exactly
+ * (`styles-css-pin.test.ts` holds `styles.css` to it). The dark scheme draws Tailwind shades of
+ * the same hue in their place (`styles.css`, `classes.ts`'s `PAGE_COLORS`).
+ */
+export const PAGE_PAPER = swatch("page-paper", 1, 0, 0);
+export const PAGE_INK = swatch("page-ink", 0.2161, 0.0061, 56.043);
+/** A node's words, the prototype's `.body` (`#292524`): one step off the ink, which the
+ *  reader's own words keep. */
+export const PAGE_WORDS = swatch("page-words", 0.2685, 0.0063, 34.298);
+export const PAGE_MUTED = swatch("page-muted", 0.4444, 0.0096, 73.639);
+export const PAGE_QUIET = swatch("page-quiet", 0.5534, 0.0116, 58.071);
+export const PAGE_LINE = swatch("page-line", 0.9378, 0.0046, 78.297);
+export const PAGE_HAIR = swatch("page-hair", 0.8837, 0.0134, 82.401);
+export const PAGE_PANE = swatch("page-pane", 0.9848, 0.0013, 106.423);
+export const PAGE_MARK = swatch("page-mark", 0.9468, 0.0046, 78.298);
+export const PAGE_GUIDE = swatch("page-guide", 0.9232, 0.0026, 48.717);
+/** The bullet of an agent's words and of a node of no kind the prototype names (`#A8A29E`). */
+export const PAGE_BULLET = swatch("page-bullet", 0.7161, 0.0091, 56.259);
+export const PAGE_QUESTION = swatch("page-question", 0.5461, 0.2152, 262.881);
+export const PAGE_QUESTION_TINT = swatch("page-question-tint", 0.9705, 0.0142, 254.604);
+export const PAGE_PERSON_TINT = swatch("page-person-tint", 0.9513, 0.0217, 83.264);
+export const PAGE_DECISION = swatch("page-decision", 0.5413, 0.2466, 293.009);
+export const PAGE_DECISION_TINT = swatch("page-decision-tint", 0.9691, 0.0161, 293.756);
+export const PAGE_STATEMENT = swatch("page-statement", 0.5109, 0.0861, 186.391);
+export const PAGE_STATEMENT_TINT = swatch("page-statement-tint", 0.9836, 0.0142, 180.72);
+export const PAGE_CHECK = swatch("page-check", 0.4568, 0.2146, 277.023);
+export const PAGE_CHECK_TINT = swatch("page-check-tint", 0.9619, 0.0179, 272.314);
+export const PAGE_STEP = swatch("page-step", 0.5553, 0.1455, 48.998);
+export const PAGE_STEP_TINT = swatch("page-step-tint", 0.9869, 0.0214, 95.277);
+export const PAGE_CHILD = swatch("page-child", 0.5916, 0.218, 0.584);
+export const PAGE_CHILD_TINT = swatch("page-child-tint", 0.9714, 0.0141, 343.198);
+export const PAGE_LENS = swatch("page-lens", 0.518, 0.2258, 323.949);
+export const PAGE_LENS_TINT = swatch("page-lens-tint", 0.9773, 0.0173, 320.058);
+export const PAGE_AGENT = swatch("page-agent", 0.5544, 0.0407, 257.417);
+export const PAGE_ISSUE = swatch("page-issue", 0.3741, 0.0087, 67.558);
+export const PAGE_WAITING = swatch("page-waiting", 0.6461, 0.1943, 41.116);
+export const PAGE_WAITING_TINT = swatch("page-waiting-tint", 0.9796, 0.0158, 73.684);
+export const PAGE_WAITING_TEXT = swatch("page-waiting-text", 0.5534, 0.1739, 38.402);
+export const PAGE_PASSED = swatch("page-passed", 0.5273, 0.1371, 150.069);
+export const PAGE_FAILED = swatch("page-failed", 0.5054, 0.1905, 27.518);
+export const PAGE_NOT_RUN = swatch("page-not-run", 0.551, 0.0234, 264.364);
+export const PAGE_IN_PROGRESS = swatch("page-in-progress", 0.4882, 0.2172, 264.376);
+/** The icon rail the issue page draws in place of the shell's navigation column: the
+ *  prototype's `#rail`, a fixed dark surface in both schemes like the shell's own rail. Its
+ *  active entry's ground is the prototype's white at 8 % over the rail, composited. */
+export const ICON_RAIL = swatch("icon-rail", 0.1889, 0.0369, 264.087);
+export const ICON_RAIL_TEXT = swatch("icon-rail-text", 0.869, 0.0198, 252.894);
+export const ICON_RAIL_ACCENT = swatch("icon-rail-accent", 0.7535, 0.139, 232.661);
+export const ICON_RAIL_ACTIVE = swatch("icon-rail-active", 0.2695, 0.0316, 266.051);

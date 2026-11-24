@@ -6,7 +6,7 @@
 # its issue pod `Guaranteed`. The pods are built by Legion's own code: the daemon's loader reads
 # each legion.yaml, its sandboxOptions translates the reservation, and the Agent Sandbox runtime
 # launches the issue's root through Agent Sandbox v1.0.3's controller under gVisor
-# (internal/daemon/burstable_live_test.go). `legion start --check-config` is run on each file and
+# (internal/daemon/burstable_live_test.go). `legion config check` is run on each file and
 # on two broken variants. Each check prints `== <name>`, what it observed and `ok <name> (<s>s)`;
 # the first that fails ends the run non-zero, naming it.
 #
@@ -29,6 +29,8 @@ mkdir -p "$evidence"
 transcript_to "$evidence/transcript.log"
 # shellcheck source-path=SCRIPTDIR source=lib/kind-sandbox.sh
 . "$root/scripts/e2e/lib/kind-sandbox.sh"
+# shellcheck source-path=SCRIPTDIR source=lib/run-verdict.sh
+. "$root/scripts/e2e/lib/run-verdict.sh"
 
 cluster=legion-burstable-$$
 work=$(mktemp -d "/tmp/legion-e2e-burstable.$$.XXXXXXXX")
@@ -41,16 +43,17 @@ note() { echo "   $*"; }
 pass() { echo "ok $check ($((SECONDS - check_started))s)"; }
 fail() { echo "FAIL $check: $*" >&2; exit 1; }
 
+# cleanup tears the run down and prints its last line through lib/run-verdict.sh: PASS only for a
+# run that reached run_end, the script's last statement. A run a signal ended reads FAIL, and the
+# teardown keeps the cluster's evidence for it as it does for a failure.
 cleanup() {
   local status=$?
   docker rm -f "$cluster-driver" >/dev/null 2>&1 || true
-  kind_sandbox_teardown "$status" "$evidence"
+  kind_sandbox_teardown "$(run_status "$status")" "$evidence"
   rm -rf "$work"
-  if [ "$status" -eq 0 ]; then
-    echo "burstable kind e2e: PASS in $((SECONDS - started))s (evidence: $evidence)"
-  else
-    echo "burstable kind e2e: FAIL at $check after $((SECONDS - started))s (evidence: $evidence)" >&2
-  fi
+  run_verdict "$status" \
+    "burstable kind e2e: PASS in $((SECONDS - started))s (evidence: $evidence)" \
+    "burstable kind e2e: FAIL at $check after $((SECONDS - started))s (evidence: $evidence)"
 }
 trap cleanup EXIT
 
@@ -120,16 +123,16 @@ while read -r name pod config; do
 done <"$result"
 pass
 
-begin check-config
+begin config-check
 go -C "$root/packages/daemon" build -o "$work/legion" ./cmd/legion
 while read -r name _ config; do
-  out=$("$work/legion" start --check-config --config "$config") || fail "--check-config refused $name's file: $out"
+  out=$("$work/legion" config check --config "$config") || fail "legion config check refused $name's file: $out"
   note "$name: $(tr '\n' '|' <<<"$out")"
   if [ "$name" = burstable ]; then
     grep -qx 'resources: Burstable (a request below the limit): the issue pod; every other pod is Guaranteed' <<<"$out" ||
-      fail "--check-config on the burstable file does not name the Burstable issue pod"
+      fail "legion config check on the burstable file does not name the Burstable issue pod"
   else
-    ! grep -q '^resources:' <<<"$out" || fail "--check-config on the default file names a Burstable pod: $out"
+    ! grep -q '^resources:' <<<"$out" || fail "legion config check on the default file names a Burstable pod: $out"
   fi
 done <"$result"
 config=$(awk '$1 == "burstable" {print $3}' "$result")
@@ -137,10 +140,11 @@ for broken in 'memory_request: 40Gi|runtime.kubernetes.resources.issue.memory_re
   'memory_request: lots|runtime.kubernetes.resources.issue.memory_request must be a positive Kubernetes quantity (e.g. 20Gi or 500m)'; do
   value=${broken%%|*} want=${broken#*|}
   sed "s/memory_request: 8Gi/$value/" "$config" >"$(dirname "$config")/broken.yaml"
-  if refused=$("$work/legion" start --check-config --config "$(dirname "$config")/broken.yaml" 2>&1); then
-    fail "--check-config passed a file with $value"
+  if refused=$("$work/legion" config check --config "$(dirname "$config")/broken.yaml" 2>&1); then
+    fail "legion config check passed a file with $value"
   fi
-  [ "$refused" = "legion start: $want" ] || fail "--check-config refused $value with: $refused"
+  [ "$refused" = "legion config check: $want" ] || fail "legion config check refused $value with: $refused"
   note "$value: refused, exit 1: $refused"
 done
 pass
+run_end

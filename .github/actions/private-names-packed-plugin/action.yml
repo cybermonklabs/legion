@@ -1,0 +1,60 @@
+name: Check the packed Claude Code plugin for private names
+description: >-
+  The private-name check of a packed Claude Code plugin, over the tarball another job packed:
+  downloads the artifact that holds it, refuses an artifact that holds no single
+  sjawhar-claude-envoy tarball, lays that tarball's dist/ and legion/ out at their repository
+  path, packages/claude-envoy (the vendored NATS client's exception is a path,
+  packages/claude-envoy/dist/envoy-channel.js), and runs .github/scripts/check-private-names.sh
+  over the two from the checkout's root with the deployment's term list. It runs that shell
+  script, tar and mkdir and nothing else, so the job that calls it runs no dependency code
+  (.github/scripts/check-release-credentials.sh reads these steps). ci-job-claude-envoy.yaml's
+  private-names job and release.yaml's claude_envoy_names call it; each keeps its own needs,
+  conditions, permissions, checkout of the .github cone and ci-ok report. Pull-request CI packs
+  the Codex plugin's tarball into the same artifact, and this action passes over it: its dist/ is
+  the checked dist/ this tarball carries, copied byte for byte (scripts/build.ts --codex-out
+  --dist), and the rest of it is written from this tree's codex/, skills/ and scripts/build.ts,
+  which the repository scan reads.
+
+inputs:
+  artifact:
+    description: The name of the artifact that holds the packed sjawhar-claude-envoy tarball.
+    required: true
+  private-name-terms:
+    description: >-
+      The deployment's term list, PRIVATE_NAME_TERMS, from the Actions secret of that name. The
+      check fails a merge group's, a push's or a dispatched run's scan without it.
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      with:
+        name: ${{ inputs.artifact }}
+        path: ${{ runner.temp }}/private-names-packed-plugin
+
+    - name: Lay the packed plugin's dist/ and legion/ out at their repository path
+      shell: bash
+      env:
+        ARTIFACT: ${{ inputs.artifact }}
+      run: |
+        tarballs=("$RUNNER_TEMP"/private-names-packed-plugin/sjawhar-claude-envoy-*.tgz)
+        if [ ${#tarballs[@]} -ne 1 ] || [ ! -f "${tarballs[0]}" ]; then
+          echo "::error::the $ARTIFACT artifact holds no single sjawhar-claude-envoy tarball"
+          exit 1
+        fi
+        mkdir -p "$GITHUB_WORKSPACE/packages/claude-envoy"
+        tar -xzf "${tarballs[0]}" -C "$GITHUB_WORKSPACE/packages/claude-envoy" --strip-components=1 \
+          package/dist package/legion
+
+    # From the checkout's root, so the two paths are the repository paths the vendored client's
+    # exception names, and by the script's path from that root, the one form of it
+    # check-release-credentials.sh classes as no dependency code wherever a step runs.
+    - name: Check the packed plugin's dist/ and legion/ name nothing private
+      shell: bash
+      working-directory: ${{ github.workspace }}
+      env:
+        PRIVATE_NAME_TERMS: ${{ inputs.private-name-terms }}
+      run: |
+        "$GITHUB_WORKSPACE/.github/scripts/check-private-names.sh" packages/claude-envoy/dist packages/claude-envoy/legion

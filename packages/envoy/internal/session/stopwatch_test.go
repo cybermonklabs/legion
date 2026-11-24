@@ -16,7 +16,7 @@ func openWatchedRegistry(t *testing.T, uri string) *SessionRegistry {
 	t.Helper()
 	conn := testnats.Connect(t, uri)
 	t.Cleanup(conn.Close)
-	registry, err := OpenSessionRegistry(conn, WithSessionReplicas(1))
+	registry, err := OpenSessionRegistry(t.Context(), conn, WithSessionReplicas(1))
 	if err != nil {
 		t.Fatalf("open session registry: %v", err)
 	}
@@ -50,7 +50,7 @@ func TestStopWatchMakesNoRequestOfTheServer(t *testing.T) {
 func TestStopWatchIsFinal(t *testing.T) {
 	_, uri := testnats.Start(t)
 	conn := testnats.Connect(t, uri)
-	registry, err := OpenSessionRegistry(conn, WithSessionReplicas(1))
+	registry, err := OpenSessionRegistry(t.Context(), conn, WithSessionReplicas(1))
 	if err != nil {
 		t.Fatalf("open session registry: %v", err)
 	}
@@ -64,7 +64,7 @@ func TestStopWatchIsFinal(t *testing.T) {
 	logtest.SetDefault(t, slog.NewTextHandler(&logs, nil))
 
 	registry.StopWatch()
-	if err := registry.Rewatch(conn); err != nil {
+	if err := registry.Rewatch(context.Background(), conn); err != nil {
 		t.Fatalf("Rewatch after StopWatch: %v", err)
 	}
 	if err := conn.Drain(); err != nil {

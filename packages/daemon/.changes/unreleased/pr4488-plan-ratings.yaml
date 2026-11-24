@@ -1,0 +1,12 @@
+kind: Added
+body: |-
+  The completion that ends a retro rates the plan the issue ran: `planRating`, a whole number from
+  1 (the plan cost the work) to 5 (the plan fit the work), and `planReason`, why, the two together
+  (daemon API contract 168). One of the two alone, or a rating outside that form, is refused
+  `400 PLAN_RATING_INPUT`, both on any other completion `400 PLAN_RATING_UNEXPECTED`, and the
+  retro's completion with neither, from a plugin at contract 168 or later, `400 PLAN_RATING_REQUIRED`.
+  The daemon writes each run's plan and each rating onto Dispatch through its outbox, on the lane
+  of the step records: the new kind `plan_record`, which the migration
+  `20261117023932_outbox_kinds_with_the_plan_record` adds to the outbox's kinds.
+  Every route of the daemon's API now refuses a body string that holds U+0000 with a 400 naming
+  where the caller wrote it.

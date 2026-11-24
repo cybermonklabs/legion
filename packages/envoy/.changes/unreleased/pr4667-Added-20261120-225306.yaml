@@ -1,0 +1,10 @@
+kind: Added
+body: |-
+  The secrets broker reads `BROKER_PRIVATE_PROJECTS`, the Dispatch projects the operator declares
+  private, as whitespace-separated project keys. A key that is not a project key, and a key named
+  twice, refuse the broker's start, naming the setting and the key. Unset or blank, no project is
+  private. This release reads and checks the list and acts on none of it: every token exchange,
+  enrollment and exchange entry is decided as before.
+time: 2026-11-20T22:53:06Z
+custom:
+    Issue: pr4667

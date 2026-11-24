@@ -1,3 +1,4 @@
+import { isEventType } from "@legion/contracts";
 import { type QueryClient, useQueryClient } from "@tanstack/react-query";
 import { useEffect } from "react";
 
@@ -10,69 +11,9 @@ import {
 import { askThreadsIssue, eventRefreshTargets } from "./event-refresh";
 import { liveSocketFor } from "./live-socket";
 import { inboxQuery } from "./queries";
+import { hearLiveEvent } from "./query-client";
 import { type RefreshTarget, refreshQueries, trackQueryFetches } from "./query-refresh";
-import type { AuthenticatedUser, DispatchEvent, EventType } from "./types";
-
-const knownEventTypes: Record<EventType, true> = {
-  "project.created": true,
-  "project.updated": true,
-  "settings.repo_project.updated": true,
-  "settings.project_default_assignee.updated": true,
-  "settings.architecture_source.updated": true,
-  "architecture.synced": true,
-  "architecture.sync_failed": true,
-  "user_state.updated": true,
-  "user_agent_state.updated": true,
-  "user_thread_state.updated": true,
-  "decision.kept": true,
-  "priority.updated": true,
-  "issue.created": true,
-  "issue.updated": true,
-  "issue.closed": true,
-  "issue.claimed": true,
-  "issue.released": true,
-  "issue.deployed": true,
-  "handoff.recorded": true,
-  "artifact.created": true,
-  "artifact.renamed": true,
-  "artifact.removed": true,
-  "artifact.version": true,
-  "artifact.human_edited": true,
-  "artifact.approved": true,
-  "artifact.changes_requested": true,
-  "ask.opened": true,
-  "ask.anchor_refreshed": true,
-  "ask.edited": true,
-  "ask.handed_back": true,
-  "ask.asked_of": true,
-  "ask.answered": true,
-  "ask.resolved": true,
-  "ask.follower_added": true,
-  "ask.follower_removed": true,
-  "block.repaired": true,
-  "block.invalid": true,
-  "result.recorded": true,
-  "result.retracted": true,
-  "issue.pull_request_attribution_changed": true,
-  "comment.created": true,
-  "comment.anchor_refreshed": true,
-  "comment.delivery": true,
-  "comment.answered": true,
-  "comment.resolved": true,
-  "comment.reopened": true,
-  "comment.edited": true,
-  "suggestion.accepted": true,
-  "suggestion.rejected": true,
-  "message.created": true,
-  "message.delivery": true,
-  "message.accepted": true,
-  "message.answered": true,
-  "child.status": true,
-  "child.added": true,
-  "child.removed": true,
-  "subscription.remove_requested": true,
-  "subscription.removed": true,
-};
+import type { AuthenticatedUser, DispatchEvent } from "./types";
 
 const inboxQueryKey = inboxQuery().queryKey;
 
@@ -125,7 +66,7 @@ export function prependEventToLog(queryClient: QueryClient, event: DispatchEvent
 // Leading window for a burst: a cold-start replay or a flurry of events on one issue is handed to
 // the refresh scheduler (`api/query-refresh.ts`) as one batch, 100ms after the first event of the
 // burst - later events join the pending batch but do not extend the window.
-const BATCH_WINDOW_MS = 100;
+export const BATCH_WINDOW_MS = 100;
 
 // A whole-cache refresh reaches every query the app holds, the GitHub proxy queries included,
 // and two callers ask for one: an event this client cannot parse, and a gap in the feed that its
@@ -319,9 +260,7 @@ export function useEventFeed({
         }
         const type =
           typeof raw === "object" && raw !== null && "type" in raw ? raw.type : undefined;
-        // `Object.hasOwn`, not `in`: `knownEventTypes` inherits `Object.prototype`, so `in` reads
-        // an event named `constructor` or `toString` as a known type and reads it as an event.
-        if (typeof type !== "string" || !Object.hasOwn(knownEventTypes, type)) {
+        if (typeof type !== "string" || !isEventType(type)) {
           // The server may add an event this client cannot parse. Refresh everything rather than
           // leaving a rendered field stale until the next gap.
           refreshEverything();
@@ -334,10 +273,11 @@ export function useEventFeed({
         const event = raw as DispatchEvent;
         try {
           prependEventToLog(queryClient, event);
-          const targets = eventRefreshTargets(
-            event,
-            queryClient.getQueryData<AuthenticatedUser>(["whoami"])?.login
-          );
+          const viewer = queryClient.getQueryData<AuthenticatedUser>(["whoami"])?.login;
+          // A write's own event ends its hold on its queries' reads, so the refresh this event asks
+          // for, and every read after it, is asked past the hold (`hearLiveEvent`).
+          hearLiveEvent(queryClient, event, viewer);
+          const targets = eventRefreshTargets(event, viewer);
           markAskThreadsSeededByAnInFlightInbox(queryClient, targets, askThreadsIssue(event));
           queueRefresh(targets);
         } catch (error) {

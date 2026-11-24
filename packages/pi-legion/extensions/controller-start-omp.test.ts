@@ -4,17 +4,20 @@ import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import * as path from "node:path";
 import {
   controllerToken,
+  LISTENER_CALL_ATTEMPTS,
   legionControllerNoticeSubject,
   ROLE_TOPIC_PREFIX,
   slackMentionTopic,
 } from "@legion/contracts";
-import { deliverSubject } from "@legion/envoy-client/consumer-delivery";
+import { LegionHealthResponse } from "@legion/contracts/legion-api";
+import { deliverSubject, RelayHeader } from "@legion/envoy-client/consumer-delivery";
 import {
   type Block,
   type Cleanup,
   deliveryFor,
   type Interactive,
   messageStream,
+  newestMessage,
   ompNatsGuard,
   ompRoot,
   type Request,
@@ -25,6 +28,7 @@ import {
   spawnRpc,
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import {
   completeLines,
   endsWhole,
@@ -33,6 +37,7 @@ import {
 } from "@legion/test-fixtures/transcript-lines";
 import { connect, type Msg, headers as natsHeaders, StringCodec } from "nats";
 import { z } from "zod";
+import pkg from "../package.json";
 
 // The operator's controller on the real, interactive Oh My Pi, as `legion controller start` runs
 // it: both plugins, the controller's environment, and `/legion-controller-start` on the command
@@ -312,6 +317,11 @@ interface StandinHooks {
    */
   readonly onRoleClaim?: (sid: string) => void;
   /**
+   * Asked at each claim of the controller role (`/v1/roles/set`): true answers it 503 with
+   * `Retry-After: 1`, as the listener answers a claim that wrote nothing.
+   */
+  readonly roleSetBusy?: () => boolean;
+  /**
    * Called with the session's id as the first listener registration after that role claim
    * arrives (`/v1/interests/subscribe`): the one envoy.ts sends right after it opens the
    * controller topic's NATS subscription (`subscribeNotice`), which the claim awaits. A promise
@@ -382,10 +392,21 @@ interface ControllerStandin {
  * Serves the controller's stand-in and writes the profile that points Oh My Pi at it: the gateway
  * holds each Messages request until the case answers it; the daemon answers its state from
  * `stateFixture` and the controller's registration from the contract fixtures (or
- * `hooks.register`'s answer), acknowledges a ready and mints grants; Dispatch is unavailable; and
- * the Envoy listener records the session that sets a role and names it as that role's holder,
- * calling `hooks`' role-claim and notice-interest callbacks as those requests arrive. `hooks`'
- * holds hold the requests they name.
+ * `hooks.register`'s answer), answers the health route, acknowledges a ready and mints grants;
+ * Dispatch is unavailable; and the Envoy listener records the session that sets a role and names
+ * it as that role's holder, calling `hooks`' role-claim and notice-interest callbacks as those
+ * requests arrive. `hooks`' holds hold the requests they name.
+ *
+ * The daemon's routes here are the five the plugin reads of a controller's boot and its turns:
+ * `GET /healthz`, `GET /legion/v1/state`, `POST /legion/v1/claims/register`,
+ * `POST /legion/v1/claims/ready` and `POST /legion/v1/grants`. The health route is one of them
+ * because the controller's boot check reads the daemon's project there (dispatch://INFRA-2694),
+ * where it read the whole state before, and the `legion` tool's `read_build` reads the same
+ * route for the contract its header states. It is not under `/legion/`, so the refusal that
+ * answers every unserved `/legion/` route does not cover it, and the listener's arm below is
+ * held to `/v1/` for that reason: a route this stand-in does not serve is refused, never
+ * answered with the listener's body, which is how this one was served a body with no project
+ * until nine cases of this file timed out on the boot check.
  */
 async function serveController(
   stateFixture: string,
@@ -403,6 +424,12 @@ async function serveController(
   const daemonState: unknown = JSON.parse(
     await readFile(path.join(fixtures, stateFixture), "utf8")
   );
+  // The health body the boot check reads, whose project is the state's own: one project word for
+  // the two routes, so a state fixture that named another project could not leave them apart.
+  const served = z
+    .looseObject({ daemon: z.looseObject({ project: z.string() }) })
+    .parse(daemonState);
+  const health = LegionHealthResponse.parse({ status: "ok", project: served.daemon.project });
   const registered = z
     .looseObject({ claimToken: z.string() })
     .parse(JSON.parse(await readFile(path.join(fixtures, "register-controller.json"), "utf8")));
@@ -432,6 +459,14 @@ async function serveController(
       await hooks.startupHold?.wait();
       return new Response(null, { status: 204 });
     }
+    // The controller's boot check reads the daemon's project here, and `read_build` the contract
+    // the header states, which is this build's own `legion.daemonApiVersion` (the contract a
+    // daemon this build pairs with speaks).
+    if (url.pathname === "/healthz") {
+      return Response.json(health, {
+        headers: { "Legion-Daemon-Contract": String(pkg.legion.daemonApiVersion) },
+      });
+    }
     if (url.pathname === "/legion/v1/state") return Response.json(daemonState);
     if (url.pathname === "/legion/v1/claims/register") {
       return hooks.register?.(body) ?? Response.json(registered);
@@ -452,14 +487,31 @@ async function serveController(
     }
     // An unavailable Dispatch arms no run-end self-check, so every Messages request is a turn.
     if (url.pathname.startsWith("/api/")) return new Response("unavailable", { status: 503 });
-    // The Envoy listener: the role claim records its holder, the role read names it, and
-    // registration and any other read answer with an interest.
+    // The Envoy listener, which serves `/v1/` and nothing else: the role claim records its
+    // holder, the role read names it, and registration and any other `/v1/` read answer with an
+    // interest. A path outside it is a route this stand-in does not serve, and it is refused.
+    if (!url.pathname.startsWith("/v1/")) {
+      return Response.json({ error: `no stand-in route ${url.pathname}` }, { status: 404 });
+    }
     const sid = typeof body.session_id === "string" ? body.session_id : "";
     hooks.onListener?.(sid);
     // The role the controller holds is another live session's from the moment a case names one:
     // the read below answers that session, and a claim of the role is refused with it, as the
     // listener refuses a claim of a role a live session holds.
     const otherHolder = hooks.roleHeldBy?.();
+    if (
+      url.pathname === "/v1/roles/set" &&
+      body.role === registered.claimToken &&
+      hooks.roleSetBusy?.()
+    ) {
+      return Response.json(
+        {
+          error:
+            "envoy: the takeover record of this claim did not store, so the claim was not written",
+        },
+        { status: 503, headers: { "Retry-After": "1" } }
+      );
+    }
     if (url.pathname === "/v1/roles/set") {
       if (otherHolder !== undefined && body.role === registered.claimToken) {
         return Response.json(
@@ -535,7 +587,10 @@ async function startController(
   const { binary, nats, root, home, workspace, sessions, state, base, turns } =
     await serveController("state.json", hooks);
   const secretFile = path.join(root, "controller-secret");
-  await writeFile(secretFile, "controller-start-capability\n", { mode: 0o600 });
+  // Random, as the daemon's capability is: the controller holds it, and every line it prints is
+  // scrubbed of it (`@legion/contracts/held-secrets`), so one spelled from words would take those
+  // words out of the refusal the operator reads ("invalid controller capability").
+  await writeFile(secretFile, `${fixtureSecret("ctl")}\n`, { mode: 0o600 });
   const startupHold = path.join(root, "startup-hold.ts");
   if (hooks.startupHold !== undefined) await writeFile(startupHold, STARTUP_HOLD_EXTENSION);
 
@@ -682,7 +737,8 @@ async function startDaemonController(
   const { binary, nats, root, home, workspace, sessions, state, base, turns } =
     await serveController("state-controller-claim.json", hooks);
   const bootFile = path.join(root, "LEGION_BOOT_TOKEN");
-  await writeFile(bootFile, "launch-boot-token\n", { mode: 0o600 });
+  // Random, as the daemon's boot token is (see the capability above).
+  await writeFile(bootFile, `${fixtureSecret("boot")}\n`, { mode: 0o600 });
 
   const responses = new Map<string, PromiseWithResolvers<Record<string, unknown>>>();
   const closed: { error?: unknown } = {};
@@ -779,12 +835,6 @@ async function startDaemonController(
 /** A Messages request's conversation, as one string to find texts in. */
 function conversation(request: Request): string {
   return JSON.stringify(request.body.messages ?? null);
-}
-
-/** The text of a Messages request's last message: what the turn it answers was started on. */
-function lastMessage(request: Request): string {
-  const messages = Array.isArray(request.body.messages) ? request.body.messages : [];
-  return JSON.stringify(messages.at(-1) ?? null);
 }
 
 /**
@@ -1069,13 +1119,21 @@ test.skipIf(natsUrl === undefined && !onActions)(
 
     // One session on its own deliver subject, answering each frame as the half wants: the word it
     // writes, on its own connection as a session answers, or nothing at all for the half whose
-    // session takes the frame and never answers.
+    // session takes the frame and never answers. A listener's connection probe on that subject
+    // (`RelayHeader.probe`) is no frame: it is answered `done`, as a session's consumer delivery
+    // answers it before it decodes anything, and reaches no half.
     const listens = async (sid: string, answer: (frame: Msg) => void): Promise<void> => {
       const session = await connect({ servers: natsUrl ?? "" });
       cleanup.push(() => session.close());
       const frames = session.subscribe(deliverSubject(sid));
       void (async () => {
-        for await (const message of frames) answer(message);
+        for await (const message of frames) {
+          if (message.headers?.get(RelayHeader.probe) === "1") {
+            if (message.reply) message.respond(codec.encode("done"));
+            continue;
+          }
+          answer(message);
+        }
       })();
       await session.flush();
     };
@@ -1158,7 +1216,7 @@ test.skipIf(skip)(
     const startAt = held.indexOf(START_MESSAGE_JSON);
     expect(startAt).toBeGreaterThanOrEqual(0);
     expect(held.indexOf(typed)).toBeGreaterThan(startAt);
-    expect(lastMessage(next.request)).toContain(typed);
+    expect(newestMessage(next.request.body)).toContain(typed);
     next.reply("Typed message answered.");
     await settledOn(session, "Typed message answered.");
   },
@@ -1199,7 +1257,7 @@ test.skipIf(skip)(
   async () => {
     const session = await startController();
     const start = await session.nextTurn("the start turn's model request");
-    expect(lastMessage(start.request)).toContain(START_MESSAGE_JSON);
+    expect(newestMessage(start.request.body)).toContain(START_MESSAGE_JSON);
     start.reply("Start procedure done.");
     await settledOn(session, "Start procedure done.");
 
@@ -1282,8 +1340,8 @@ test.skipIf(skip)(
     );
     expect(firstStart).toBeGreaterThanOrEqual(0);
     for (const request of requests.slice(0, firstStart)) {
-      expect(lastMessage(request)).not.toContain(card.summary);
-      expect(lastMessage(request)).not.toContain(published);
+      expect(newestMessage(request.body)).not.toContain(card.summary);
+      expect(newestMessage(request.body)).not.toContain(published);
     }
     // From the first request carrying it on, the start message comes before the card and the
     // notice wherever they are.
@@ -1327,6 +1385,56 @@ test.skipIf(skip)(
     // with no Messages request shows the absence.
     await Bun.sleep(3_000);
     expect(session.turns).toHaveLength(0);
+  },
+  CASE_TIMEOUT_MS
+);
+
+// A claim the listener answers 503 wrote nothing, and a person's claim makes it again after a
+// growing wait, each wait on screen with its attempt, until a counted number of tries: then the
+// command fails with the listener's answer where the person reads it. The start message goes out
+// before the role claim (`claimWith`), so it is sent either way. The listener answers 503 to each
+// transport attempt of a claim (LISTENER_CALL_ATTEMPTS), so a claim answered 503 costs that many
+// requests. The control is a listener that answers one claim's attempts 503 and then takes the
+// claim: the wait shows, and the role lands.
+test.skipIf(skip)(
+  "a person's controller claim the listener keeps answering 503 shows each wait and then fails on screen",
+  async () => {
+    let landed = false;
+    const session = await startController({
+      roleSetBusy: () => true,
+      onRoleClaim: () => {
+        landed = true;
+      },
+    });
+    await session.shows(
+      "a wait of the busy claim on screen",
+      "was answered 503 at attempt 1, so nothing was claimed; claiming it again in"
+    );
+    await session.shows(
+      "the busy claim's failure on screen",
+      "the controller claim failed",
+      "/legion-claim-controller"
+    );
+    expect(landed).toBe(false);
+  },
+  CASE_TIMEOUT_MS
+);
+
+test.skipIf(skip)(
+  "control: a person's controller claim the listener answers 503 once and then takes claims the role",
+  async () => {
+    let claims = 0;
+    const landed = Promise.withResolvers<void>();
+    const session = await startController({
+      roleSetBusy: () => ++claims <= LISTENER_CALL_ATTEMPTS,
+      onRoleClaim: () => landed.resolve(),
+    });
+    await session.shows(
+      "a wait of the busy claim on screen",
+      "was answered 503 at attempt 1, so nothing was claimed; claiming it again in"
+    );
+    await landed.promise;
+    expect(claims).toBe(LISTENER_CALL_ATTEMPTS + 1);
   },
   CASE_TIMEOUT_MS
 );
@@ -1431,7 +1539,7 @@ test.skipIf(skip)(
     expect(reclaimed.sessionId).toBe(switched);
     const messages = Array.isArray(start.request.body.messages) ? start.request.body.messages : [];
     expect(messages).toHaveLength(1);
-    expect(lastMessage(start.request)).toContain(START_MESSAGE_JSON);
+    expect(newestMessage(start.request.body)).toContain(START_MESSAGE_JSON);
     start.reply("Start procedure done.");
     await session.shows("the start turn's reply", "Start procedure done.");
 
@@ -1609,7 +1717,7 @@ test.skipIf(skip)(
       ? start.request.body.messages
       : [];
     expect(startMessages).toHaveLength(1);
-    expect(lastMessage(start.request)).toContain(START_MESSAGE_JSON);
+    expect(newestMessage(start.request.body)).toContain(START_MESSAGE_JSON);
     let reply = "Start procedure done.";
     start.reply(reply);
 
@@ -1682,7 +1790,7 @@ test.skipIf(skip)(
     session.deliver(START_MESSAGE);
 
     const start = await session.nextTurn("the first model request");
-    expect(lastMessage(start.request)).toContain(START_MESSAGE_JSON);
+    expect(newestMessage(start.request.body)).toContain(START_MESSAGE_JSON);
     const first = conversation(start.request);
     expect(first).not.toMatch(WAKE_TEXT);
     expect(first.indexOf(card.summary)).toBeGreaterThanOrEqual(0);
@@ -1690,7 +1798,7 @@ test.skipIf(skip)(
     start.reply("Start procedure done.");
 
     const wake = await session.nextTurn("the startup wake's model request");
-    expect(lastMessage(wake.request)).toContain(WAKE_ONE);
+    expect(newestMessage(wake.request.body)).toContain(WAKE_ONE);
     wake.reply("Read the startup card.");
     await session.until("the session to settle", async () =>
       (await session.state()).isSettled ? true : undefined
@@ -1733,14 +1841,16 @@ test.skipIf(skip)(
     expect(session.turns).toHaveLength(0);
     session.deliver(START_MESSAGE);
     const start = await session.nextTurn("the start turn's model request");
-    expect(lastMessage(start.request)).toContain(START_MESSAGE_JSON);
+    expect(newestMessage(start.request.body)).toContain(START_MESSAGE_JSON);
     expect(conversation(start.request)).toContain(card.summary);
     await session.abort();
 
     const noRequestAfterStart = (): undefined => {
       const extra = session.turns[1];
       if (extra !== undefined) {
-        throw new Error(`a model request came before the probe, on ${lastMessage(extra.request)}`);
+        throw new Error(
+          `a model request came before the probe, on ${newestMessage(extra.request.body)}`
+        );
       }
       return undefined;
     };
@@ -1754,7 +1864,7 @@ test.skipIf(skip)(
     const prompt = `PROBE-${randomUUID().slice(0, 8)}`;
     session.deliver(prompt);
     const probe = await session.nextTurn("the probe's model request");
-    expect(lastMessage(probe.request)).toContain(prompt);
+    expect(newestMessage(probe.request.body)).toContain(prompt);
     expect(conversation(probe.request)).toContain(card.summary);
     expect(conversation(probe.request)).not.toMatch(WAKE_TEXT);
     probe.reply("Probe answered.");
@@ -1797,7 +1907,7 @@ test.skipIf(skip)(
     startupHold.release();
 
     const start = await session.nextTurn("the first model request");
-    expect(lastMessage(start.request)).toContain(START_MESSAGE_JSON);
+    expect(newestMessage(start.request.body)).toContain(START_MESSAGE_JSON);
     const first = conversation(start.request);
     expect(first).not.toMatch(WAKE_TEXT);
     expect(first.indexOf(card.summary)).toBeGreaterThanOrEqual(0);
@@ -1805,7 +1915,7 @@ test.skipIf(skip)(
     start.reply("Start procedure done.");
 
     const wake = await session.nextTurn("the startup wake's model request");
-    expect(lastMessage(wake.request)).toContain(WAKE_ONE);
+    expect(newestMessage(wake.request.body)).toContain(WAKE_ONE);
     wake.reply("Read the startup card.");
     await settledOn(session, "Read the startup card.");
     expect(session.turns).toHaveLength(2);
@@ -1844,7 +1954,7 @@ test.skipIf(skip)(
     startupHold.release();
 
     const start = await session.nextTurn("the start turn's model request");
-    expect(lastMessage(start.request)).toContain(START_MESSAGE_JSON);
+    expect(newestMessage(start.request.body)).toContain(START_MESSAGE_JSON);
     const during = inbound.card(opened, "during-start");
     await during.taken;
     await inbound.repeat(opened, during.card);
@@ -1859,7 +1969,7 @@ test.skipIf(skip)(
     // A real clock, as in "the operator sees a claim refusal": a wake that is not sent emits no
     // signal to await, so only a quiet window with no further Messages request shows its absence.
     await Bun.sleep(3_000);
-    expect(session.turns.slice(2).map(({ request }) => lastMessage(request))).toEqual([]);
+    expect(session.turns.slice(2).map(({ request }) => newestMessage(request.body))).toEqual([]);
   },
   CASE_TIMEOUT_MS
 );
@@ -1908,7 +2018,7 @@ for (const variant of ["the start claim never answers", "the start command never
         90_000
       );
       expect(conversation(first.request)).toContain(card.summary);
-      expect(lastMessage(first.request)).toContain(WAKE_ONE);
+      expect(newestMessage(first.request.body)).toContain(WAKE_ONE);
     },
     CASE_TIMEOUT_MS
   );
@@ -1983,7 +2093,7 @@ test.skipIf(skip)(
     // what arrives after it is an idle session's to read.
     session.deliver(START_MESSAGE);
     const start = await session.nextTurn("the start turn's model request");
-    expect(lastMessage(start.request)).toContain(START_MESSAGE_JSON);
+    expect(newestMessage(start.request.body)).toContain(START_MESSAGE_JSON);
     start.reply("Start procedure done.");
     let answered = 1;
     /**

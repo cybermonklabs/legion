@@ -1,7 +1,7 @@
 /** The issue landing at both widths: Spec primary with the open asks in Needs you at a desktop
  *  width, and the review panel toggle the phone layout draws instead. Each reads only what the
  *  page draws, so each runs against a recording rather than against a harness
- *  (packages/dispatch/AGENTS.md, "The stubbed layer"). The phone row runs under `stub-phone`,
+ *  (packages/dispatch/README.md, "The stubbed layer"). The phone row runs under `stub-phone`,
  *  which is the one project that takes the ` @phone-only` tag it carries. */
 import { expect } from "@playwright/test";
 

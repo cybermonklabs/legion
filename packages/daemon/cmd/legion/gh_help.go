@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"maps"
 	"regexp"
 	"slices"
 	"strings"
@@ -34,8 +35,10 @@ type ghSlot struct {
 
 // ghCommand is what gh's help of one command says: its canonical path (an alias resolved) and the
 // cobra aliases it lists for itself; for a group of subcommands, every subcommand and help topic it
-// lists, and the gh aliases and extensions among them; and, for a leaf, its options, its arguments
-// and whether its USAGE passes on the arguments after `--`.
+// lists, and the gh aliases and extensions among them; and, for a leaf, its options, its arguments,
+// whether its USAGE passes on the arguments after `--`, and whether what it passes on are git
+// clone's flags (`[-- <gitflags>...]`: repo clone, repo fork, gist clone), which ghCloneGitFlags
+// judges.
 type ghCommand struct {
 	path                          []string
 	aliases                       map[string]bool
@@ -44,14 +47,15 @@ type ghCommand struct {
 	flags                         map[string]ghFlag
 	shorts                        map[byte]string
 	slots                         []ghSlot
-	passthrough                   bool
+	passthrough, passesGitFlags   bool
 }
 
 var (
 	// ghFlagLine is one option line of gh's help: an optional shorthand, the long name, the
-	// placeholder naming its value when it takes one, with pflag's optional-value marker, and the
-	// option's description.
-	ghFlagLine = regexp.MustCompile(`^\s+(?:-([A-Za-z0-9]), )?--([A-Za-z0-9][A-Za-z0-9-]*)(?: (\S+))?(?:\s{2,}(.*)|\s*)$`)
+	// boolean marker `[=true|false]` gh 2.104.0 and later print right after a boolean option's
+	// name, the placeholder naming its value when it takes one, with pflag's optional-value
+	// marker, and the option's description.
+	ghFlagLine = regexp.MustCompile(`^\s+(?:-([A-Za-z0-9]), )?--([A-Za-z0-9][A-Za-z0-9-]*)(\[=true\|false\])?(?: (\S+))?(?:\s{2,}(.*)|\s*)$`)
 	// ghCommandWord is one word of a command path.
 	ghCommandWord = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
 	// ghSlotName is a named argument of a USAGE line, `<name>`.
@@ -99,10 +103,14 @@ func parseGhHelp(requested []string, text string) (ghCommand, error) {
 			switch {
 			case entry == "":
 			case section == "FLAGS" || section == "INHERITED FLAGS":
-				if strings.HasPrefix(entry, "-") {
-					if err := cmd.addFlag(line); err != nil {
-						return ghCommand{}, fmt.Errorf("cannot read the options of %s: %w; pass -R <owner>/<repo>", what, err)
-					}
+				// Every line of an options section lists one option: a line that does not, such
+				// as the continuation of a description gh wrapped, is refused rather than skipped,
+				// since a later gh might write an option there in a form this does not know.
+				if !strings.HasPrefix(entry, "-") {
+					return ghCommand{}, fmt.Errorf("cannot read the options of %s: a line %q of its %s names no option; pass -R <owner>/<repo>", what, entry, section)
+				}
+				if err := cmd.addFlag(line); err != nil {
+					return ghCommand{}, fmt.Errorf("cannot read the options of %s: %w; pass -R <owner>/<repo>", what, err)
 				}
 			case section == "ALIASES":
 				for _, alias := range strings.Split(entry, ",") {
@@ -122,6 +130,11 @@ func parseGhHelp(requested []string, text string) (ghCommand, error) {
 				}
 			}
 			continue
+		}
+		// An option at the margin of an options section would otherwise be read as the heading of
+		// the next section, and its option never listed.
+		if (section == "FLAGS" || section == "INHERITED FLAGS") && strings.HasPrefix(line, "-") {
+			return ghCommand{}, fmt.Errorf("cannot read the options of %s: a line %q at the margin of its %s; pass -R <owner>/<repo>", what, strings.TrimSpace(line), section)
 		}
 		section = strings.TrimSpace(line)
 		if strings.HasSuffix(section, "COMMANDS") {
@@ -166,8 +179,41 @@ func parseGhHelp(requested []string, text string) (ghCommand, error) {
 		cmd.flags[name] = flag
 	}
 	cmd.slots, cmd.passthrough = ghSlots(cmd.path, args)
+	if cmd.passthrough {
+		placeholder := ""
+		if match := ghPassedOnRule.FindStringSubmatch(args); match != nil {
+			placeholder = match[1]
+		}
+		gitFlags, known := ghPassedOnPlaceholders[placeholder]
+		leaf := strings.Join(cmd.path, " ")
+		switch {
+		case ghCloneLeaves[leaf]:
+			cmd.passesGitFlags = true
+		case !known:
+			return ghCommand{}, fmt.Errorf("%s passes %q on after `--`, which is none this command reads (%s), so it cannot tell what gh hands on; it sends nothing", what, placeholder, strings.Join(slices.Sorted(maps.Keys(ghPassedOnPlaceholders)), ", "))
+		default:
+			cmd.passesGitFlags = gitFlags
+		}
+	}
 	return cmd, nil
 }
+
+// ghPassedOnRule finds what a passthrough usage passes on after `--`, the first `<…>` after
+// `[--`, in a nested group or not: `<gitflags>` in `[-- <gitflags>...]`, `<scp flags>` in `[--
+// [<scp flags>...]]`.
+var ghPassedOnRule = regexp.MustCompile(`\[--[\s\[]+(<[^>]*>)`)
+
+// ghPassedOnPlaceholders are what a passthrough leaf of gh 2.98.0's and 2.104.0's may pass on
+// after `--`, with whether it is git clone's flags, which ghCloneGitFlags judges: `<gitflags>`
+// (repo clone, repo fork, gist clone), `<ssh-flags>` (codespace ssh) and `<scp flags>` (codespace
+// cp). A leaf whose help names any other, or none, is refused, so a later gh that renames
+// `<gitflags>` cannot make a clone's flags pass unread.
+var ghPassedOnPlaceholders = map[string]bool{"<gitflags>": true, "<ssh-flags>": false, "<scp flags>": false}
+
+// ghCloneLeaves are the leaves that hand git clone what they pass on, whatever their help calls
+// it (cli/cli v2.104.0 pkg/cmd/repo/clone/clone.go, repo/fork/fork.go, gist/clone/clone.go): a
+// later gh's help that renames `<gitflags>` keeps them judged by ghCloneGitFlags.
+var ghCloneLeaves = map[string]bool{"repo clone": true, "repo fork": true, "gist clone": true}
 
 // ghUsageNamesSubcommands says whether the arguments of a USAGE line, after the command's path,
 // are a group's: its subcommand first.
@@ -261,13 +307,34 @@ func (c *ghCommand) mayRead(word string) error {
 	return nil
 }
 
-// addFlag records one option line of a FLAGS section, refusing one this cannot read.
+// addFlag records one option line of a FLAGS section, refusing one this cannot read: a line of no
+// form gh prints, a placeholder that is pflag's optional-value marker alone (`--web [=true]`,
+// which pflag never prints apart from a type), and an option or a shorthand the help already
+// listed, which would otherwise replace the first silently. A boolean option takes no value of
+// its own after it, only after `=`, which the argument reader takes of every option that takes
+// none (`--help=false`), so `--web[=true|false]`, as gh 2.104.0 prints it, is the `--web` gh
+// 2.98.0 prints; a line marking an option boolean that also names a value is no form gh prints,
+// and is refused.
 func (c *ghCommand) addFlag(line string) error {
 	match := ghFlagLine.FindStringSubmatch(line)
 	if match == nil {
 		return fmt.Errorf("an option line %q", strings.TrimSpace(line))
 	}
-	flag := ghFlag{placeholder: match[3], description: match[4]}
+	if match[3] != "" && match[4] != "" {
+		return fmt.Errorf("an option line %q, which marks its option boolean and names a value", strings.TrimSpace(line))
+	}
+	if strings.HasPrefix(match[4], "[=") {
+		return fmt.Errorf("an option line %q, whose optional-value marker names no type", strings.TrimSpace(line))
+	}
+	if _, repeated := c.flags[match[2]]; repeated {
+		return fmt.Errorf("an option line %q, which lists --%s again", strings.TrimSpace(line), match[2])
+	}
+	if match[1] != "" {
+		if prior, repeated := c.shorts[match[1][0]]; repeated {
+			return fmt.Errorf("an option line %q, whose -%s the help already gives --%s", strings.TrimSpace(line), match[1], prior)
+		}
+	}
+	flag := ghFlag{placeholder: match[4], description: match[5]}
 	if flag.placeholder != "" {
 		flag.value = true
 		if before, _, found := strings.Cut(flag.placeholder, "[="); found && before != "" {
@@ -348,9 +415,10 @@ func ghSlots(path []string, args string) (slots []ghSlot, passthrough bool) {
 // ghArgKind is what one argument name of gh's usages selects — a repository, another repository a
 // command acts on beside its own, an owner, a URL that may name a repository, a search query, the
 // repository a command creates (OWNER/NAME, or a name alone, which names none), an issue or pull
-// request number (which names a repository written OWNER/REPO#N), or nothing ("") — and whether it
-// stands for one or more arguments, as a plural name does with no `...` (`gh issue edit
-// {<numbers> | <urls>}` edits one or more issues).
+// request number, which names none (a pr leaf reads OWNER/REPO#N as a branch of its own
+// repository, and `gh agent-task`, whose view read it as a repository, is refused whole), or
+// nothing ("") — and whether it stands for one or more arguments, as a plural name does with no
+// `...` (`gh issue edit {<numbers> | <urls>}` edits one or more issues).
 type ghArgKind struct {
 	kind string
 	many bool
@@ -393,27 +461,25 @@ var ghSlotKinds = map[string]ghArgKind{
 
 // ghLeafQuirk is where gh, for one leaf, departs from what its help says, in what the leaf reads
 // as its repository: GH_REPO for its own repository though its -R is a plain string
-// (readsGHRepo); every remote's network whatever names its repository (readsAllRemotes);
-// OWNER/REPO#N in a number's place as that repository's (readsRepositoryNumber); a URL as naming
-// its pull request, and so its repository, only at /OWNER/REPO/pull/N, any other as the name of a
-// branch of its own repository (pullRequestFinder); an option naming its target in place of its
-// own repository (targetOption); and argument names of its own kind (slotKinds).
+// (readsGHRepo); every remote's network whatever names its repository (readsAllRemotes); a URL as
+// naming its pull request, and so its repository, only at /OWNER/REPO/pull/N, any other as the
+// name of a branch of its own repository (pullRequestFinder); an option naming its target in place
+// of its own repository (targetOption); and argument names of its own kind (slotKinds).
 type ghLeafQuirk struct {
-	readsGHRepo, readsAllRemotes, readsRepositoryNumber, pullRequestFinder bool
-	targetOption                                                           string
-	slotKinds                                                              map[string]ghArgKind
+	readsGHRepo, readsAllRemotes, pullRequestFinder bool
+	targetOption                                    string
+	slotKinds                                       map[string]ghArgKind
 }
 
 // ghLeafQuirks are gh 2.98.0's and 2.65.0's quirks, by leaf path, read from gh's source: project
 // link and unlink call gh's repository override with -R a plain string, and act on --team when it
-// is given; repo set-default resolves every remote's network before it reads its argument; agent-
-// task view is gh's one reader of OWNER/REPO#N (ParseFullReference) and reads a URL through the pr
-// finder, as every pr leaf does (quirkOf); and repo create's <name> is the repository it creates.
+// is given; repo set-default resolves every remote's network before it reads its argument; every
+// pr leaf reads a URL through the pr finder (quirkOf); and repo create's <name> is the repository
+// it creates.
 var ghLeafQuirks = map[string]ghLeafQuirk{
 	"project link":     {readsGHRepo: true, targetOption: "team"},
 	"project unlink":   {readsGHRepo: true, targetOption: "team"},
 	"repo set-default": {readsAllRemotes: true},
-	"agent-task view":  {readsRepositoryNumber: true, pullRequestFinder: true},
 	"repo create":      {slotKinds: map[string]ghArgKind{"name": {kind: "new-repository"}}},
 }
 
@@ -457,8 +523,8 @@ func (s ghSlot) kind() (kind, unknown string) {
 	return kind, ""
 }
 
-// takes says whether one of the slot's names is of kind: a slot whose most specific name is a URL
-// may still take a number, which may name its repository (OWNER/REPO#N).
+// takes says whether one of the slot's names is of kind, whatever the slot's most specific name
+// is: `[<repository>] [-- <gitflags>...]`'s first slot takes a repository.
 func (s ghSlot) takes(kind string) bool {
 	return slices.ContainsFunc(s.args, func(arg ghArg) bool { return arg.kind.kind == kind })
 }
@@ -625,6 +691,31 @@ func ghOptionKind(path []string, name string, flag ghFlag) string {
 // -R, or its quirk says it does.
 func (c *ghCommand) readsGHRepo() bool {
 	return c.flags["repo"].placeholder == "[HOST/]OWNER/REPO" || quirkOf(c.path).readsGHRepo
+}
+
+// ghDefaultMarkerGroups are the top-level groups gh builds with its repoResolvingCmdFactory,
+// whose commands resolve their own repository through gh's default marker, a remote's
+// gh-resolved setting (cli/cli pkg/cmd/root/root.go, `repoResolvingCmdFactory.BaseRepo =
+// factory.SmartBaseRepoFunc(f)`, gh 2.65.0 through 2.104.0; 2.65.0 has neither agent-task nor
+// discussion). Every other group keeps gh's BaseRepoFunc, which takes the first of gh's sorted
+// remotes and never reads the marker.
+var ghDefaultMarkerGroups = map[string]bool{
+	"agent-task": true, "browse": true, "discussion": true, "pr": true, "org": true, "issue": true, "release": true,
+	"repo": true, "ruleset": true, "run": true, "workflow": true, "label": true, "cache": true, "api": true,
+}
+
+// honoursDefaultMarker says whether gh takes the leaf's own repository from its default marker
+// where one is set (ghDefaultMarkerGroups) and reads no other remote's: not repo set-default,
+// which reads every remote's network (readsAllRemotes), unless its --view or --unset is true,
+// where gh returns before it reads a network (cli/cli pkg/cmd/repo/setdefault/setdefault.go).
+func (c *ghCommand) honoursDefaultMarker(parsed ghArgs) bool {
+	if !ghDefaultMarkerGroups[c.path[0]] {
+		return false
+	}
+	if !quirkOf(c.path).readsAllRemotes {
+		return true
+	}
+	return slices.Equal(c.path, []string{"repo", "set-default"}) && (parsed.booleans["view"] || parsed.booleans["unset"])
 }
 
 // isAPI says whether the leaf is gh api, whose argument is an endpoint and which has no -R.

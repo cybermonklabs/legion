@@ -14,13 +14,14 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-// What a document write's transaction touches, from the issue row it locks to its commit: no
+// What a document write's transaction touches, from the issue's owner lock to its commit: no
 // statement of it writes an embedding window. The version write records the blocks and leaves
-// their windows to the block-index tick's window arm (refs.IndexBlocks, docs.windowDocument,
-// INFRA-988), so the write holds `select status, closed_at is null from issues where key = $1
-// for no key update` for its own rows alone. That window write was the statement INFRA-988
-// measured as the write path's blocker: 9.7% of an hour's database time over 31,241 calls at a
-// 114.3 ms mean, with every other writer of the issue queued behind it on that row.
+// their windows to the block-index tick's window arm (refs.BlockIndexing.Queue,
+// docs.windowDocument, INFRA-988), so the write holds the issue's owner lock (store.LockOwner)
+// for its own rows alone. That window write was the statement INFRA-988 measured as the write
+// path's blocker: 9.7% of an hour's database time over 31,241 calls at a 114.3 ms mean, with
+// every other writer of the issue queued behind it on the issue's row, which writers then
+// locked in place of the owner lock.
 //
 // The work is not dropped with it: the document is left owed its windows
 // (refs.DocumentsOwedWindows), since the version its blocks are indexed at - written in this
@@ -41,6 +42,7 @@ import (
 //	            select embeddings_enqueue_window($1, $2 || '#' || w.suffix, w.text, w.covers)
 //	            from jsonb_to_recordset($3::jsonb) as w (suffix text, text text, covers text[])
 func TestADocumentWriteWritesNoWindowUnderTheIssueRow(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	sent := &sentStatements{}
 	traced := &store.Store{Pool: storetest.Traced(t, database.Pool, sent, nil)}

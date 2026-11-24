@@ -3,6 +3,7 @@ import {
   DISPATCH_TOPIC_PREFIX,
   GHOSTWISPR_TOPIC_PREFIX,
   LEGION_NOTICE_TOPIC_PREFIX,
+  legacyTwin,
   ROLE_TOPIC_PREFIX,
   uncapturedTopicRefusal,
 } from "@legion/contracts";
@@ -155,11 +156,12 @@ export function subjectsOverlap(a: string, b: string): boolean {
  * team lane beside it), another project's controller lane, and every wildcard reaching any of
  * them (`notifications.agent.*`, `notifications.>`, `notifications.*.<x>`,
  * `notifications.envoy.>`) count. Two literal subjects are this session's own: `ownAgentSubject`,
- * and the controller notice lane of a project whose controller role `roles` names
- * (`controllerNoticeRole`), which its holder registers because a session receives what its own
- * consumer delivers and nothing else. This mirrors the listener's rule,
- * `ReachesPrivateStreamSubject` in packages/envoy/internal/bus/stream.go: the listener stores no
- * such interest, so a host registers none.
+ * in either form (its new form under a project, `NO_PROJECT` or a wildcard over every project,
+ * whose old form `legacyTwin` reads back), and the controller notice lane of a project whose
+ * controller role `roles` names (`controllerNoticeRole`), which its holder registers because a
+ * session receives what its own consumer delivers and nothing else. This mirrors the listener's
+ * rule, `ReachesPrivateStreamSubject` in packages/envoy/internal/bus/stream.go: the listener stores
+ * no such interest, so a host registers none.
  */
 export function reachesPrivateStreamSubject(
   ownAgentSubject: string,
@@ -170,7 +172,8 @@ export function reachesPrivateStreamSubject(
   const role = controllerNoticeRole(topic);
   if (role !== undefined) return !roles.includes(role);
   // A session id holding `*` or `>` makes a wildcard of its "own" agent subject, no session's alone.
-  return topic !== ownAgentSubject || /[*>]/.test(ownAgentSubject);
+  const own = topic === ownAgentSubject || legacyTwin(topic) === ownAgentSubject;
+  return !own || /[*>]/.test(ownAgentSubject);
 }
 
 /**

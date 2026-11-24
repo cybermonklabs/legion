@@ -204,7 +204,14 @@ export async function holdWorkerSource(page: Page): Promise<() => number> {
 
 /** Waits for a worker to report that it holds the source, then shows that five 100 ms timers on
  *  the page's thread each fire on time, give or take a scheduling hiccup, while the worker is
- *  busy: a page that drew on its own thread would never hand the source over. */
+ *  busy: a page that drew on its own thread would never hand the source over.
+ *
+ *  The 1,000 ms bound is five times the largest sample read under load, and a page that draws the
+ *  diagram on its own thread holds that thread for seconds, so the bound fails that page. The
+ *  load: the row that calls it, "a diagram too large to draw in time shows the reason, and the
+ *  page keeps responding" (`e2e/mermaid.e2e.ts`), ran 50 times with no retries at 4357585e of
+ *  main, on two CPUs beside the full lane's shard that holds the row running with three workers.
+ *  0 of the 50 failed, and the largest of the five samples over all 50 runs was 200 ms. */
 export async function expectHeldAndResponsive(page: Page, holds: () => number): Promise<void> {
   await expect
     .poll(holds, { message: "the Mermaid worker took the diagram's source and holds it" })

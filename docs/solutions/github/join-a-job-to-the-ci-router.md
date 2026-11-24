@@ -40,8 +40,9 @@ its own workflows; this page covers this repository only.
 2. **An output of `changes`** for that filter.
    Every output carries the dispatched term, since a dispatched run skips the filter step and selects every job:
    `<filter>: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.<filter> }}`.
-   A slow suite carries the `full-ci` term too (step 5 says why), and ends with the `'false'` that makes the skip `changes`' own:
-   `<filter>: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && steps.filter.outputs.<filter> || 'false' }}`.
+   A slow suite carries the `full-ci` term too, with its own `lane:<filter>` label beside it (step 5 says why), and ends with the `'false'` that makes the skip `changes`' own:
+   `<filter>: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:<filter>')) && steps.filter.outputs.<filter> || 'false' }}`.
+   Which jobs are slow suites is `.github/ci-notes/ci.md`'s rule ("Which lane a job runs in: the pull request or the merge queue"): a test job above 10 minutes at the 90th percentile of its pull-request runs. A build, vet, format, typecheck or lint check runs on every pull request whatever its time, so it never takes this term. No job runs in part: a job that mixes such checks with slow tests is split in two, the checks in a job of their own that a pull request runs and the tests in the job that keeps the old id and takes this term, so each runs all its steps wherever it runs (step 4 says where the second job's steps go).
 3. **`needs: changes`** on the job, and
    `if: needs.changes.outputs.<filter> == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')`.
    The second term holds the job back on a re-run attempt of a merge-group run, where the group is tested already.
@@ -65,6 +66,14 @@ its own workflows; this page covers this repository only.
    `checks: write`, which the step needs. It posts nothing but the failing `ci-ok` of a
    merge-group run this job's own result decides, so that a doomed group leaves the queue at the
    first failure; a job without it leaves that group waiting for every other job of the run.
+
+   `ci.yaml` calls 45 unique reusable workflows, as many as `check-workflow-files.sh` allows, so
+   a job split off another calls the file it was split from rather than a file of its own
+   (`.github/ci-notes/ci.md`, "Two jobs that call one file: the reusable-workflow limit"). The
+   file takes a `job` input, each of its two jobs carries exactly
+   `if: inputs.job == '<its id>'` and ends with the step under `job: <its id>`, and each caller
+   passes `job: <its own id>`; `ci_filter_coverage.py` refuses any other shape for a file two
+   jobs call, and `ci_job_reads.py`'s `SHARED_FILE` maps the new job to that file.
 5. **The job in one of `ci-ok`'s three classes**, all three in ci.yaml's `env:`, and in exactly
    one of them:
 
@@ -85,10 +94,9 @@ its own workflows; this page covers this repository only.
 
    A job an event must hold back gets its `changes` output
    set false on that event instead of an `if:` that skips it, so `ci-ok` reads the skip as
-   unselected: that is how the nine slow suites are held back on a pull request that does not
-   carry the label `full-ci` (`(github.event_name != 'pull_request' ||
-   contains(github.event.pull_request.labels.*.name, 'full-ci')) && steps.filter.outputs.<filter>
-   || 'false'`). `ci-ok` fails a job in none of the three classes, naming all three remedies, and
+   unselected: that is how the slow suites are held back on a pull request that carries neither
+   the label `full-ci` nor the job's own `lane:<filter>` (step 2's term). `ci-ok` names such a job
+   as not run at this head, with the label that would run it. `ci-ok` fails a job in none of the three classes, naming all three remedies, and
    `check-ci-filters.sh` fails when the map or a list is not exactly what the `if:`s test, when a
    job is in none of the classes or in two, when a job `CI_OK_ALWAYS_RUN` names is gated by a
    `changes` output after all, or when a
@@ -127,14 +135,24 @@ So the cost is a distribution rather than a number, and what sets it is how busy
 queue is at the moment the last of the verdict job's needs ends.
 The verdict stays a job regardless, because a late verdict is right while a verdict filed in
 another workflow's suite blocks the head until a person re-runs it.
+Those three readings were taken while the job ran on `ubuntu-24.04`. It runs on
+`ubuntu-24.04-arm` now, with `changes`, `pr-title` and `cancel-started`. That pool queues apart
+from the x86_64 one, and by the time the last need ends the run's other arm64 jobs have long
+started, so the wait is short: 14 s on the run the "Choose the runner" section below measures.
 
 Two things still run outside that job. The `ci-ok-report` step every other job ends with posts
 the failing `ci-ok` of a merge-group run that job's own result decides — its failure or its
 cancellation, or a `changes` that failed or was cancelled — the moment that job ends
 (`.github/scripts/ci-ok-report.sh`), because the `ci-ok` job waits for every job of the run and a
-group that can no longer merge should leave the queue at the first failure. Every check run it
-posts carries an `external_id` of `ci-ok-post:<that run's id>`. And the `ci-ok` job's
-last step (`.github/scripts/ci-ok-reconcile.sh`) sets to what the job concluded each `ci-ok`
+group that can no longer merge should leave the queue at the first failure. It posts only for the
+queue's front group, whose base is the tip of main: the queue takes a group behind the front out
+only once the groups in front of it end, and an early failing `ci-ok` there makes the queue build
+another group on it, so that group's verdict waits for the `ci-ok` job, which holds a failing
+verdict until the group is the front (`.github/scripts/ci-ok-hold.sh`) for the same reason.
+Every check run it posts carries an `external_id` of `ci-ok-post:<that run's id>`. And the
+`ci-ok` job's reconcile step (`.github/scripts/ci-ok-reconcile.sh`), its last on every run but a
+merge group's first attempt whose verdict failed, where the hold ends the job, sets to what the
+job concluded each `ci-ok`
 check run on the head that is a post: one carrying that marker, or one with an empty
 `external_id`, which the release before the marker posted. A posted check run is updated by no
 re-run and can sit in another workflow's suite, so a run that was posted a failing `ci-ok` and
@@ -165,8 +183,9 @@ job its filters gate is skipped. GitHub's "Re-run failed jobs" then re-runs `cha
 `changes` can succeed while the jobs it now selects stay skipped. So `ci-ok.sh` decides what
 `changes` selected from its outputs, through `CI_OK_SELECTED_BY` (one reading, in
 `.github/scripts/ci-ok.jq`): a job is selected when the output it maps to is `'true'`, and for a
-job in `CI_OK_PULL_REQUEST_ONLY` the run must also be a pull request's (`worker-image` is the one
-such job; main's image builds are release.yaml's). Re-run the whole workflow instead, on a
+job in `CI_OK_PULL_REQUEST_ONLY` the run must also be a pull request's (`worker-image`, since
+main's image builds are release.yaml's, and `dispatch-browser-pr`, whose rows the queue's full
+lane runs). Re-run the whole workflow instead, on a
 `pull_request` run. A merge-group run is never re-run: on a re-run attempt of one every job
 skips but `ci-ok` and `pr-title`, which run and fail in a step, so the pull request is tested
 again when it is queued again.
@@ -354,43 +373,100 @@ a Bun job's typecheck program are the two halves it does find, from `go list` an
 cold runner as on a warm machine; third-party packages fail to load, which loses no first-party
 package. Run it locally from anywhere: `.github/scripts/check-ci-filters.sh`.
 
-## Caches: no job of the router writes one
+## Caches: no job of the router writes a Go cache
 
-No run of `ci.yaml` saves an Actions cache entry. A pull request's entries are scoped to its ref,
+No run of `ci.yaml` saves a Go cache entry; the two entries a job of it saves are
+dispatch-two-builds' builds of the previous commit and of the first rollout, which only later runs
+of the same ref read. A pull request's entries are scoped to its ref,
 no other pull request reads them, and they count against the repository's cache limit, where they
 evict main's entries; a merge group's entries are no more readable than those. Only an event that
 writes the default branch's scope — a push to main — leaves an entry every later run can read, so
 the fills live in workflows that run there.
 
 - Give `actions/setup-go` `cache: false` and `id: setup-go`.
-- Restore with `actions/cache/restore`, keyed on the Go version setup-go installed
-  (`key: <family>-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}`), with the
-  family's prefix as `restore-keys`
-  (`restore-keys: ${{ format('<family>-{0}-', runner.os) }}`; the families are `go-daemon`,
-  `go-docs`, `go-envoy`, `go-envoy-test`, `go-envoy-infra`, `go-notices`). In `ci.yaml` that
-  fallback applies on every run, a dispatched one on main included, because no job there saves.
-  A job that does save keeps the prefix off main alone
-  (`restore-keys: ${{ github.ref != 'refs/heads/main' && format('<family>-{0}-', runner.os) || '' }}`),
+- Restore with `actions/cache/restore`, keyed on the runner's architecture and the Go version
+  setup-go installed
+  (`key: <family>-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}`),
+  with the family's prefix as `restore-keys`
+  (`restore-keys: ${{ format('<family>-{0}-{1}-', runner.os, runner.arch) }}`; the families are
+  `go-daemon`, `go-docs`, `go-envoy`, `go-envoy-test`, `go-envoy-darwin-vet` and `go-envoy-infra`,
+  and `go-notices` in the order the item below gives; `go-envoy-darwin-vet` restores into the
+  build cache directory its step's `GOCACHE` names, not into `~/.cache/go-build`). In
+  `ci.yaml` that fallback applies on every run, a dispatched one on main included, because no job
+  there saves. A job that does save keeps the prefix off main alone
+  (`restore-keys: ${{ github.ref != 'refs/heads/main' && format('<family>-{0}-{1}-', runner.os, runner.arch) || '' }}`),
   so the entry it saves after a Go bump holds nothing the older Go built; docs-site.yaml's build,
-  which docs-pages.yaml calls on main, is the one such job. Each family keeps one
-  entry, refreshed only when Go is bumped. Do not
-  key on go.sum: every go.sum change would leave a whole entry, up to a gigabyte, for seven days. A
+  which docs-pages.yaml calls on main, is the one such job. The architecture is in the key because
+  a build cache holds the objects of the architecture that compiled them: without it, a job on
+  `ubuntu-24.04-arm` restores an entry an x86_64 runner filled and compiles every object again.
+  Each family is kept per runner architecture and, but for `go-envoy-infra` and `go-docs`, filled
+  again on every push to main, so a job restores the entry of the last fill that succeeded. Do not key
+  on go.sum: every go.sum change would leave a whole entry, up to a gigabyte, for seven days. A
   go.sum change downloads only the changed modules, and Go's build cache is content-addressed, so a
-  stale entry costs a run only what changed. Share a family only with the jobs that build the same
+  fill compiles only what changed. Share a family only with the jobs that build the same
   packages, or whichever job saves first owns the entry the others then miss.
+- `go-notices` is the one family keyed with the architecture before the OS
+  (`key: go-notices-${{ runner.arch }}-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}`,
+  `restore-keys: ${{ format('go-notices-{0}-{1}-', runner.arch, runner.os) }}`). Its entry holds
+  go-licenses, a program the notices step runs, so an entry one CPU built is of no use to a reader
+  on another. A run of a workflow file older than the architecture in the key restores by
+  `go-notices-Linux-` on `ubuntu-24.04`, and `go-notices-Linux-ARM64-go1.27.3` starts with that
+  prefix: such a run restored main's arm64 go-licenses on x86_64 and failed with `Exec format
+  error` (run 44437023306). When the key of a family whose entry holds a program gains a part that
+  separates readers who cannot run each other's program (the CPU, the OS), put that part before
+  the end of the shortest `key` or `restore-keys` an older reader has, or rename the family:
+  GitHub matches both as prefixes, so no `key` or `restore-keys` of an older reader that cannot
+  run the new entries may be a prefix of their key. A part that readers can share, such as the Go
+  version, may follow the shared prefix: go-licenses sits in a directory that names its own
+  version and Go, so a restore of the last Go's entry still gives the modules, and the tool is
+  built again at the new Go's path rather than the old one run. Entries saved under the old shape
+  still match the older prefixes, and none is deleted by hand: GitHub removes an entry after 7
+  days with no read, or earlier, oldest read first, once the repository's caches reach their size
+  limit, and each older reader's restore is a read. An older reader that cannot run the entry,
+  on the entry's Go and tool versions, then fails on every run until its runs come from a commit
+  that carries the new key (a re-run keeps its old commit), or until a program deletes the entry
+  the way ci-caches.yaml's `envoy-infra-superseded` job deletes the `go-envoy-infra` entries a
+  fill superseded.
 - Add no `actions/cache/save` step here, and no `if:` that tests `github.event_name == 'push'` or
   compares `github.ref` with a branch ref: the workflow runs on no push, so such a condition gates
   its step on what no run ever is, and `check-ci-filters.sh` refuses it. A family a new job
-  restores is filled by `.github/workflows/ci-caches.yaml`, which runs on a push to main, looks
-  each key up (`lookup-only: true`, no `restore-keys`) and, only on a miss, runs what the job
-  builds and saves it under exactly the key and paths the restore names; `check-ci-filters.sh`
-  holds the save to the restore and fails when the two drift. `go-docs` is the exception:
-  docs-pages.yaml saves it on that same push, from the build job it shares with ci.yaml's docs
-  job.
+  restores is filled by `.github/workflows/ci-caches.yaml`, which runs on a push to main,
+  restores the family's newest entry (the job's key, and that key and a `-` as `restore-keys`),
+  runs on it what the job builds, and saves it under the key the job restores followed by
+  `-${{ github.sha }}`, with the paths the restore names; its `refill-superseded` job then deletes
+  every other entry of the family, so it keeps one entry per runner. No entry carries the job's
+  key itself, so the job's restore takes the newest entry whose key starts with it.
+  `check-ci-filters.sh` holds the
+  save to the restore and fails when the two drift. The fill runs on every runner a job restoring
+  that family runs on, one matrix leg per runner where there are two. Two families are the
+  exception: `go-envoy-infra`, whose key carries a hash of its module files, is filled only when
+  that key is missing, and `go-docs` is saved by docs-pages.yaml on that same push, from the build
+  job it shares with ci.yaml's docs job.
 - The release workflows' Go builds (release.yaml's `legion_build`, release-envoy-infra.yaml's
   `build`) restore `go-daemon` and `go-envoy-infra` and save nothing, so they keep the prefix as
   `restore-keys` on main too: an entry they never save cannot grow.
 - `.github/actions/setup-bun` reads and writes its cache only on main; use it as it is.
+
+## Choose the runner: ubuntu-24.04-arm unless the job needs an x86_64 machine
+
+A new job runs on `ubuntu-24.04-arm`. The two hosted pools queue apart, and both queue. On
+2026-11-16 a job waited 456 s for an `ubuntu-24.04` runner at the median and 678 s at the 90th
+percentile. On the run that first moved this repository's jobs to arm64 (run 44069656523,
+2026-11-17), the 24 `ubuntu-24.04-arm` jobs waited 217 s at the median and 542 s at most, against
+890 s and 1428 s for the 19 `ubuntu-24.04` ones: an arm64 job created with twenty others waits its
+turn too, and the gating jobs (`lint`, `ci-ok`, `changes`, `pr-title`) started in 7 to 23 s. So
+the gain is a second pool, and gating jobs that no longer wait behind the x86_64 queue; it is not
+zero wait. A job goes on `ubuntu-24.04` only for a reason of the machine,
+and ci.yaml's "Runners" paragraph lists each one: a tool with no arm64 row in
+`.github/ci-tools.yaml`, the pinned Oh My Pi build (linux-x64 alone), a browser, an image built
+for linux/amd64, or a build that must match a release built on `ubuntu-24.04`. A Go build that
+sets no `CGO_ENABLED` is that last kind: Go turns cgo on for a native build where gcc is present
+and off for a cross build, so the same command links a different pair of binaries on each runner.
+That is why envoy-go-build, which packs the release's listener archives that way, stays on
+`ubuntu-24.04`. A job that installs a tool on arm64 needs that tool's `<tool>-aarch64` row, which
+`check-ci-tools.sh` holds to the version of the `<tool>` row, an install action that picks the
+row from `uname -m`, and a case of that row in the tool-fallback-arm job; a Go cache family it
+restores needs a fill on that runner (the section above).
 
 ## The merge queue runs the router too
 
@@ -401,13 +477,15 @@ anything lands. A new job needs nothing extra for it. But a job whose `if:` name
 `github.event_name` must admit `merge_group`, or it skips on the group while its output selects
 it, and `ci-ok` fails the group: a selected job that skipped is a job the verdict cannot accept.
 What skips a
-group does so on purpose, and worker-image is the one job that does (pull request only, so it is
-in `CI_OK_PULL_REQUEST_ONLY`; main's image builds are release.yaml's). The queued pull request's
+group does so on purpose, and two jobs do, each pull request only and so in
+`CI_OK_PULL_REQUEST_ONLY`: worker-image (main's image builds are release.yaml's) and
+dispatch-browser-pr, the browser suite's pull-request lane, whose full lane the group runs in
+dispatch-browser. The queued pull request's
 text is checked on the group by ci.yaml's `pr-title` job, which finds it with
-find-pr-payload.sh; pr-title.yaml runs on an edit and a review alone, and a group carries
-neither. The nine slow suites go the
+find-pr-payload.sh; pr-title.yaml runs on an edit alone, which a group never
+carries. The slow suites go the
 other way: the queue is where their result normally comes from, and a pull request runs them only
-when it carries the label `full-ci`. The
+when it carries the label `full-ci`, or `lane:<filter>` for one of them. The
 docs job runs on a group and on a pull request alike; docs-pages.yaml builds and publishes main's
 site on a push trigger of its own.
 

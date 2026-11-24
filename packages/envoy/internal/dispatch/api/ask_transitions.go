@@ -20,16 +20,21 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/texttrees"
 )
 
+// askTransition is one way of closing or changing an ask's answer. Its writes are the
+// transaction's (ledger): Apply and After make them in the order they run, each queued on
+// ledger when the caller joined one, and the events After returns are filled in once Commit has run
+// the write phase (queueEvent).
 type askTransition struct {
 	EventType      string
 	ReplacesAnswer *time.Time
-	Apply          func(context.Context, pgx.Tx, model.Ask) (model.Ask, error)
+	Apply          func(context.Context, pgx.Tx, *docs.Ledger, model.Ask) (model.Ask, error)
 	// Payload builds the event's payload from the one every transition carries (the ask after
-	// the transition, with its thread_logins); nil appends that payload as it is.
+	// the transition, whose thread_logins the event's insert reads); nil appends that payload as
+	// it is.
 	Payload func(model.AskEventPayload) any
 	// After runs once the transition's own event is appended, still inside the
 	// transaction; the events it returns are published with it.
-	After func(context.Context, pgx.Tx, model.Ask) ([]model.Event, error)
+	After func(context.Context, pgx.Tx, *docs.Ledger, model.Ask) ([]*model.Event, error)
 }
 
 // answerRevision is the question revision a human reviewed before choosing an answer.
@@ -65,7 +70,7 @@ func answerTransition(actor model.Actor, selected []string, text *string, option
 	return askTransition{
 		EventType:      "ask.answered",
 		ReplacesAnswer: options.ReplacesAnswer,
-		Apply: func(ctx context.Context, tx pgx.Tx, ask model.Ask) (model.Ask, error) {
+		Apply: func(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, ask model.Ask) (model.Ask, error) {
 			if options.Revision != nil && !stringPointersEqual(options.Revision.EditedAt, ask.EditedAt) {
 				return model.Ask{}, errorf(
 					http.StatusConflict,
@@ -105,10 +110,11 @@ func answerTransition(actor model.Actor, selected []string, text *string, option
 			if selected == nil {
 				selected = []string{}
 			}
-			// The transaction's now(), read under the ask's row lock (transitionAskTx), so it is
-			// the created_at of this answer's ask.answered event too. Each process's host keeps
-			// its own clock, and this `at` is compared with times the database stamped: the carry
-			// rule holds it against an approval's created_at (docs.carryVerdict).
+			// The transaction's now(), read under the ask's owner lock, which this route took
+			// before its reads (transitionAskTx), so it is the created_at of this answer's
+			// ask.answered event too. Each process's host keeps its own clock, and this `at` is
+			// compared with times the database stamped: the carry rule holds it against an
+			// approval's created_at (docs.carryVerdict).
 			var answeredAt time.Time
 			if err := tx.QueryRow(ctx, `select now()`).Scan(&answeredAt); err != nil {
 				return model.Ask{}, err
@@ -126,7 +132,7 @@ func answerTransition(actor model.Actor, selected []string, text *string, option
 			if err != nil {
 				return model.Ask{}, err
 			}
-			if _, err := tx.Exec(ctx, `update asks set state = 'answered', answer = $2 where id = $1`, ask.ID, answerJSON); err != nil {
+			if err := queueExec(ledger, `update asks set state = 'answered', answer = $2 where id = $1`, ask.ID, answerJSON); err != nil {
 				return model.Ask{}, err
 			}
 			ask.State = "answered"
@@ -261,22 +267,26 @@ func (s *server) answerAsk(w http.ResponseWriter, r *http.Request) {
 	// the person scope the table declares for this route. The check cannot sit at the gate: an
 	// ask's kind is known only once its row is read, and reading it before the transaction would
 	// decide on a row another writer could still move. It sits here instead, inside Apply, under
-	// the row lock the answer is written beneath, so the kind checked is the kind answered; the
-	// refusal is the gate's own (missingScopeError), which writeHandlerError gives the challenge
-	// header.
+	// the ask's owner lock (requireOpenOwner in transitionAskTx), which every writer of an ask
+	// takes first and which the transaction holds until Commit writes the queued answer, so the
+	// kind checked is the kind answered; the refusal is the gate's own (missingScopeError), which
+	// writeHandlerError gives the challenge header.
 	recordAnswer := transition.Apply
-	transition.Apply = func(ctx context.Context, tx pgx.Tx, ask model.Ask) (model.Ask, error) {
+	transition.Apply = func(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, ask model.Ask) (model.Ask, error) {
 		if ask.Kind == "approval" && !actor.Act.Holds(model.ScopeApprove) {
 			return model.Ask{}, missingScopeError(model.ScopeApprove,
 				"this request's credential does not hold the approve scope, which answering an approval request requires")
 		}
-		return recordAnswer(ctx, tx, ask)
+		return recordAnswer(ctx, tx, ledger, ask)
 	}
 	// An approval ask's answer is a review of every document it names, each pinned to the version
 	// its question named: that document's latest settled one, which every version write moves the
 	// request to, and the one the human reviewed (revision). A request naming a spec and its
-	// issue's Verification document writes one review on each.
-	transition.After = func(ctx context.Context, tx pgx.Tx, ask model.Ask) ([]model.Event, error) {
+	// issue's Verification document writes one review on each. The reviews are queued on the
+	// ledger in the order the request names the documents (queueApprovalReviews), as the document
+	// header's review is, so the write phase writes the rows and appends their events in that
+	// order and this route publishes them.
+	transition.After = func(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, ask model.Ask) ([]*model.Event, error) {
 		if ask.Kind != "approval" {
 			return nil, nil
 		}
@@ -288,11 +298,11 @@ func (s *server) answerAsk(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return nil, err
 		}
-		_, events, err := s.writeApprovalReviews(ctx, tx, artifact, ask.Approval.Documents, state, actor, reason, new(ask.ID))
+		_, reviewEvents, err := s.queueApprovalReviews(ctx, tx, ledger, artifact, ask.Approval.Documents, state, actor, reason, new(ask.ID))
 		if err != nil {
 			return nil, err
 		}
-		return events, nil
+		return reviewEvents, nil
 	}
 	ask, err := s.closeAsk(r.Context(), r.PathValue("id"), actor, transition)
 	if err != nil {
@@ -353,10 +363,12 @@ func (s *server) resolveAsk(w http.ResponseWriter, r *http.Request) {
 	}
 	ask, err := s.closeAsk(r.Context(), r.PathValue("id"), actor, askTransition{
 		EventType: "ask.resolved",
-		Apply: func(ctx context.Context, tx pgx.Tx, ask model.Ask) (model.Ask, error) {
+		Apply: func(ctx context.Context, tx pgx.Tx, _ *docs.Ledger, ask model.Ask) (model.Ask, error) {
 			if err := s.writeClosedBlockState(ctx, ask, actor); err != nil {
 				return model.Ask{}, err
 			}
+			// ctx is joined to the transaction's ledger (closeAsk), so the resolution's update
+			// is queued there, after the block's writes.
 			return docs.WriteAskResolution(ctx, tx, ask, kind, reason, actor)
 		},
 	})
@@ -434,11 +446,12 @@ func (s *server) declineAsk(w http.ResponseWriter, r *http.Request) {
 	// person's words is refused for how they open.
 	ask, err := s.closeAsk(r.Context(), r.PathValue("id"), actor, askTransition{
 		EventType: "ask.resolved",
-		Apply: func(ctx context.Context, tx pgx.Tx, ask model.Ask) (model.Ask, error) {
+		Apply: func(ctx context.Context, tx pgx.Tx, _ *docs.Ledger, ask model.Ask) (model.Ask, error) {
 			// The kind is refused here, inside Apply, for the reason answerAsk states for its
 			// own kind-dependent refusal: an ask's kind is known only once its row is read, and
 			// a read before the transaction would decide on a row another writer could still
-			// move. Under the row lock the kind refused is the kind this write would close.
+			// move. Under the ask's owner lock, which transitionAskTx takes before it reads the
+			// row (requireOpenOwner), the kind refused is the kind this write would close.
 			if ask.Kind == "approval" {
 				return model.Ask{}, errorf(http.StatusConflict, "ASK_NOT_DECLINABLE",
 					"an approval request is answered with %s or %s; it is not declined",
@@ -465,14 +478,14 @@ func (s *server) closeAsk(ctx context.Context, id string, actor model.Actor, tra
 	defer tx.Rollback(ctx)
 	documentCtx, ledger := s.deps.Docs.Join(ctx, tx)
 	defer ledger.Discard()
-	ask, events, err := s.closeAskTx(documentCtx, tx, id, actor, transition)
+	ask, events, err := s.closeAskTx(documentCtx, tx, ledger, id, actor, transition)
 	if err != nil {
 		return model.Ask{}, err
 	}
 	if err := ledger.Commit(ctx); err != nil {
 		return model.Ask{}, err
 	}
-	s.publish(ctx, events...)
+	s.publish(ctx, appendedEvents(events...)...)
 	// What the transition wrote: an answer's own words, and the reason a resolution recorded.
 	// Which of the two the ask holds is the transition's, so both are read from the ask it left,
 	// through the one walk of an ask's stored texts (texttrees.VisitAskTexts), so an answer or
@@ -484,45 +497,44 @@ func (s *server) closeAsk(ctx context.Context, id string, actor model.Actor, tra
 
 // closeAskTx applies a transition to an open ask inside the caller's transaction, indexes the
 // ask's parts, appends the transition's event and runs its After; the caller commits and
-// publishes the events.
-func (s *server) closeAskTx(ctx context.Context, tx pgx.Tx, id string, actor model.Actor, transition askTransition) (model.Ask, []model.Event, error) {
-	ask, err := s.transitionAskTx(ctx, tx, id, transition)
+// publishes the events. Every write is queued on ledger, in the order made, so the copies'
+// pending rows SettleCopiesOf takes come before the parts' index and the event appends, as the
+// copy lock's order requires (docs.lockProjectCopies), and the events are filled in once Commit
+// has run the write phase (appendedEvents).
+func (s *server) closeAskTx(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, id string, actor model.Actor, transition askTransition) (model.Ask, []*model.Event, error) {
+	ask, err := s.transitionAskTx(ctx, tx, ledger, id, transition)
 	if err != nil {
 		return model.Ask{}, nil, err
 	}
 	// A transition writes no question text, so it reconciles none of the ask's own references.
 	// An answer is a part of the ask, though, so both transitions index the parts here, where
-	// the ask row they wrote is held: a resolution adds no part, but its indexing still takes
-	// the ask's state row, reconciles the links its parts hold and clears owed_at, and writes
-	// every part of an ask an older build left owed. The answer a transition wrote is in tx, so
-	// the ask's Replies rows are read after it.
+	// the row write they queued comes before the index: a resolution adds no part, but its
+	// indexing still takes the ask's state row, reconciles the links its parts hold and clears
+	// owed_at, and writes every part of an ask an older build left owed. The answer a transition
+	// wrote is queued before the event, so the ask's Replies rows are read by the event's insert,
+	// after it.
 	at := refs.AskPartsAt(ask)
-	changes, err := s.indexAskParts(ctx, tx, ask, at, model.ReferenceChanges{})
+	changes, err := s.queueAskParts(ctx, ledger, ask, nil, at, model.ReferenceChanges{})
 	if err != nil {
 		return model.Ask{}, nil, err
 	}
-	base, err := events.AskEventPayload(ctx, tx, ask, changes)
-	if err != nil {
-		return model.Ask{}, nil, err
-	}
+	base := model.NewAskEventPayload(ask, changes)
 	payload := any(base)
 	if transition.Payload != nil {
 		payload = transition.Payload(base)
 	}
-	event, err := s.appendEvent(ctx, tx, ownerOf(ask.IssueKey, ask.ArtifactID).event(
+	// The part edges the index above moves are new rows of this transaction, so the event stamps
+	// them with its id ("ask", ask.ID) and a ?since= read lists them, as a create's and an edit's
+	// do.
+	event, err := s.queueLoggedEvent(ledger, ownerOf(ask.IssueKey, ask.ArtifactID).event(
 		transition.EventType, actor, payload,
-	))
+	), events.ThreadLoginsOf(ask.ID), "ask", ask.ID)
 	if err != nil {
 		return model.Ask{}, nil, err
 	}
-	// The answer's part edges are new rows of this transaction, so they take the event's id and
-	// a ?since= read lists them, as a create's and an edit's do.
-	if err := refs.Stamp(ctx, tx, "ask", ask.ID, event.ID); err != nil {
-		return model.Ask{}, nil, err
-	}
-	events := []model.Event{event}
+	events := []*model.Event{event}
 	if transition.After != nil {
-		more, err := transition.After(ctx, tx, ask)
+		more, err := transition.After(ctx, tx, ledger, ask)
 		if err != nil {
 			return model.Ask{}, nil, err
 		}
@@ -531,9 +543,9 @@ func (s *server) closeAskTx(ctx context.Context, tx pgx.Tx, id string, actor mod
 	return ask, events, nil
 }
 
-// transitionAskTx locks an open ask and applies a transition inside the caller's
-// transaction; it appends no event.
-func (s *server) transitionAskTx(ctx context.Context, tx pgx.Tx, id string, transition askTransition) (model.Ask, error) {
+// transitionAskTx reads an open ask under its owner's lock and applies a transition inside the
+// caller's transaction; it appends no event.
+func (s *server) transitionAskTx(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, id string, transition askTransition) (model.Ask, error) {
 	unlockedAsk, err := s.loadAsk(ctx, tx, id)
 	if err != nil {
 		return model.Ask{}, err
@@ -541,7 +553,7 @@ func (s *server) transitionAskTx(ctx context.Context, tx pgx.Tx, id string, tran
 	if err := s.requireOpenOwner(ctx, tx, ownerOf(unlockedAsk.IssueKey, unlockedAsk.ArtifactID)); err != nil {
 		return model.Ask{}, err
 	}
-	ask, err := s.lockAskForTransition(ctx, tx, id)
+	ask, err := s.readAskForTransition(ctx, tx, id)
 	if err != nil {
 		return model.Ask{}, err
 	}
@@ -564,7 +576,7 @@ func (s *server) transitionAskTx(ctx context.Context, tx pgx.Tx, id string, tran
 	default:
 		return model.Ask{}, errorf(http.StatusInternalServerError, "ASK_STATE_INVALID", "ask has an invalid state")
 	}
-	return transition.Apply(ctx, tx, ask)
+	return transition.Apply(ctx, tx, ledger, ask)
 }
 func selectedOptions(options []model.AskOption, selected []string) bool {
 	labels := make(map[string]struct{}, len(options))

@@ -123,7 +123,7 @@ func (r *liveRig) checkSetupNegative() error {
 		return err
 	}
 	c := r.claim("setup-negative")
-	r.mapRepository(r.env.repo)
+	r.cacheRepository(r.env.repo)
 	name := SandboxName(c.token)
 	if err := r.recordSandbox(name); err != nil {
 		return err
@@ -145,7 +145,7 @@ func (r *liveRig) checkSetupNegative() error {
 	}
 	shared := r.rt.LauncherResolver()
 	second := rt.LauncherResolver()
-	r.ln.SetLauncherResolver(func(hello shimwire.LauncherHello) (stream.LauncherHandler, string) {
+	r.ln.SetLauncherResolver(func(hello shimwire.LauncherHello) (stream.LauncherHandler, shimwire.LauncherHelloAck, string) {
 		if hello.Sandbox == name {
 			return second(hello)
 		}

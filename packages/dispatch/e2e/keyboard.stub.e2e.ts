@@ -2,7 +2,7 @@
  *  help's own listing and filter, the Inbox selection the keys walk, and the board's roving.
  *
  *  Each reads what the browser does over one fixed answer, so each runs against a recording
- *  rather than against a harness (packages/dispatch/AGENTS.md, "The stubbed layer"). The row
+ *  rather than against a harness (packages/dispatch/README.md, "The stubbed layer"). The row
  *  that creates an issue and the one that moves a card between statuses stayed in
  *  `keyboard.e2e.ts`: both are writes read back from the server.
  */

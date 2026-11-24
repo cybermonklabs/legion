@@ -1,0 +1,9 @@
+kind: Added
+custom:
+  Issue: pr4281
+body: |-
+  Dispatch records whether a write's credential proved its actor: the actor carries `proven: true`
+  for a browser's person, the person a credential acts for and a broker-issued token's session, and
+  nothing for a session the body names under the shared agent token, a personal token or a
+  service-account token. An act carries `session_proven: true` only for a broker-issued token's own
+  session. A document version's author is proven only when every write merged into it was.

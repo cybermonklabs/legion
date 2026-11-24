@@ -15,13 +15,20 @@ import {
 } from "../../theme/classes";
 import type { ComposerKind } from "../conversation/composer-model";
 import type { SaveCommentEdit } from "../conversation/send-request";
+import type { AwayDraft } from "../conversation/unsent-drafts";
+import { useMarginDrawer, useMarginSlotFill } from "../issue-page/margin-slot";
 import {
   COMPACT_VIEWPORT_QUERY,
   PHONE_VIEWPORT_QUERY,
   useDialog,
   useMediaQuery,
 } from "../shell/useDialog";
-import { CommentsTab, type MarginComposer, MarginComposerSlot } from "./CommentsTab";
+import {
+  CommentsTab,
+  type MarginComposer,
+  MarginComposerSlot,
+  MarginKeptDrafts,
+} from "./CommentsTab";
 import { marginReplySendKey } from "./margin-context";
 import { PinnedTab } from "./PinnedTab";
 import { ThreadCard } from "./ThreadCard";
@@ -42,9 +49,12 @@ export interface MarginSheetModel {
      *  store holds for the document goes, its mark with it. */
     closeComposer: (composer: MarginComposer) => void;
     onAction: (id: string, action: MarginItemAction) => void;
-    onComposerKindChange: (kind: ComposerKind) => string | undefined;
+    /** The kind switch of the composer on the document `artifact` (`retypeCompose`). */
+    onComposerKindChange: (artifact: string, kind: ComposerKind) => string | undefined;
     onEdit: SaveCommentEdit;
     onRetryAction: () => void;
+    /** Discard my draft on a draft the compose kept for words of the document (`keptDrafts`). */
+    discardKeptDraft: (away: AwayDraft) => void;
     onUnpin: (eventId: number) => void;
     onUnpinConversation: (id: string) => void;
     onRetryAnsweredAsk: (() => void) | undefined;
@@ -71,6 +81,9 @@ export interface MarginSheetModel {
     issueError: boolean;
     owner: MarginOwner | undefined;
     issuePending: boolean;
+    /** What the margin's compose kept for words of the open document (`AwayDraft.anchor`), which
+     *  the margin draws while no compose is open there. */
+    keptDrafts: readonly AwayDraft[];
     needsYou: Ask[];
     onSelectCard: (id: string, blockID?: string) => void;
     openAskCount: number;
@@ -95,6 +108,14 @@ export interface MarginSheetModel {
     savingCommentEditId: string | undefined;
     hoveredItemId: string | undefined;
     hoveredMarkId: string | undefined;
+    /** The address's landing on a card beside its document, keyed per navigation, once the
+     *  margin holds that card (`useMarginSheet.ts`); undefined while the address names none. In
+     *  the new issue page's Details, a closed drawer opens for it (`Margin.tsx`). */
+    landedCard: string | undefined;
+    /** The item the address names where it is a node of the new issue page's outline rather
+     *  than a card beside an open document: marked, as the address's own landing, and never the
+     *  reader's pick, so it opens no Details (`Margin.tsx`). Undefined on every other page. */
+    routeMarkedItemId: string | undefined;
     selectedItemId: string | undefined;
     showResolved: boolean;
   };
@@ -124,12 +145,19 @@ interface MarginSheetProps {
    *  its composer. */
   collapsed?: boolean;
   desktopControl?: ReactNode;
+  /** The sheet is the body of the new issue page's Details drawer (`Margin.tsx`'s
+   *  `DetailsDrawer`): a box that scrolls inside the drawer at every width, with no sheet of its
+   *  own below `xl`, which draws only what the page put in the margin's slot - the slot's fill,
+   *  handed this sheet's content - and nothing while the page has put nothing there
+   *  (R14). False everywhere else. */
+  drawer?: boolean;
   model: MarginSheetModel;
 }
 
 export function MarginSheet({
   collapsed = false,
   desktopControl,
+  drawer = false,
   model,
 }: MarginSheetProps): ReactNode {
   const {
@@ -148,6 +176,7 @@ export function MarginSheet({
       issueError,
       owner,
       issuePending,
+      keptDrafts,
       openAskCount,
       pendingActionIds,
       pinned,
@@ -169,11 +198,17 @@ export function MarginSheet({
   } = model;
   const isCompactViewport = useMediaQuery(COMPACT_VIEWPORT_QUERY);
   const isPhoneViewport = useMediaQuery(PHONE_VIEWPORT_QUERY);
+  // Below `xl` the margin is a sheet at the foot of the screen, except in Details, which is the
+  // same box at every width.
+  const compactSheet = isCompactViewport && !drawer;
+  // Details is on screen only while it is open: a composer mounted in a closed Details takes the
+  // focus once the drawer opens for it (`Margin.tsx`), not while it is hidden.
+  const drawerOpen = useMarginDrawer()?.open === true;
   const sheetDragOrigin = useRef<number | undefined>(undefined);
   const sheetDragMoved = useRef(false);
   const dialog = useDialog<HTMLElement>({
     onClose: () => sheet.toggle(false),
-    open: sheet.expanded && isCompactViewport,
+    open: sheet.expanded && compactSheet,
   });
 
   const reviewToggleLabel = `${sheet.expanded ? "Close" : "Open"} review panel (${openAskCount} open ${
@@ -192,7 +227,7 @@ export function MarginSheet({
 
   return (
     <>
-      {sheet.expanded && isCompactViewport ? (
+      {sheet.expanded && compactSheet ? (
         <div
           aria-hidden="true"
           className={`fixed inset-0 z-[9] ${backdrop50}`}
@@ -201,15 +236,19 @@ export function MarginSheet({
       ) : null}
       {/* biome-ignore lint/a11y/useAriaPropsSupportedByRole: aria-modal only applies while the compact review sheet is an open dialog */}
       <aside
-        aria-label={isCompactViewport ? "Review panel" : "Review margin"}
-        aria-modal={sheet.expanded && isCompactViewport ? true : undefined}
-        className={`fixed inset-x-0 bottom-0 ${sheet.expanded && isCompactViewport ? "z-30" : "z-10"} border-t shadow-[0_-8px_24px_rgba(15,23,42,0.08)] ${card} ${
-          owner === undefined
-            ? "hidden"
-            : sheet.expanded
-              ? "max-h-[85dvh] overflow-y-auto p-4"
-              : "h-16 overflow-hidden"
-        } xl:sticky xl:top-0 xl:block xl:h-dvh xl:max-h-dvh xl:w-full xl:overflow-y-auto xl:border-t-0 xl:border-l xl:p-4 xl:shadow-none`}
+        aria-label={compactSheet ? "Review panel" : "Review margin"}
+        aria-modal={sheet.expanded && compactSheet ? true : undefined}
+        className={
+          drawer
+            ? "min-h-0 flex-1 overflow-y-auto px-4 pt-1.5 pb-8"
+            : `fixed inset-x-0 bottom-0 ${sheet.expanded && isCompactViewport ? "z-30" : "z-10"} border-t shadow-[0_-8px_24px_rgba(15,23,42,0.08)] ${card} ${
+                owner === undefined
+                  ? "hidden"
+                  : sheet.expanded
+                    ? "max-h-[85dvh] overflow-y-auto p-4"
+                    : "h-16 overflow-hidden"
+              } xl:sticky xl:top-0 xl:block xl:h-dvh xl:max-h-dvh xl:w-full xl:overflow-y-auto xl:border-t-0 xl:border-l xl:p-4 xl:shadow-none`
+        }
         data-expanded={sheet.expanded ? "true" : "false"}
         data-testid="margin-sheet"
         id="review-margin"
@@ -217,9 +256,9 @@ export function MarginSheet({
           dialog.containerRef.current = element;
           marginRef.current = element;
         }}
-        role={sheet.expanded && isCompactViewport ? "dialog" : undefined}
+        role={sheet.expanded && compactSheet ? "dialog" : undefined}
       >
-        {isCompactViewport ? (
+        {compactSheet ? (
           <>
             <div
               aria-hidden="true"
@@ -258,8 +297,9 @@ export function MarginSheet({
             collapsed rail too, holding only the composer then, so an unsent draft survives
             whatever the margin shows over it; a send it has out, and that send's refusal, are the
             held-send store's, and survive anything. */}
-        <div
+        <SheetBody
           className={sheet.expanded ? "px-4 pb-4 xl:px-0 xl:pb-0" : "hidden xl:block"}
+          drawer={drawer}
           hidden={covered}
         >
           {covered ? null : (
@@ -333,19 +373,36 @@ export function MarginSheet({
               )}
             </>
           )}
+          {/* Keyed by its document and its compose: a newer compose on the document is the host's
+              move for the one before it, so it draws a composer of its own, which takes nothing
+              of that compose's draft, while Send, a kind switch and a re-written mark keep the
+              one the reader is writing in. */}
           {composer === undefined ? null : (
             <MarginComposerSlot
               composer={composer}
               hidden={tab.value !== "comments"}
               isClosed={isClosed}
-              key={composer.anchor.artifact}
+              key={`${composer.anchor.artifact}:${composer.seq ?? ""}`}
               onClose={actions.closeComposer}
               onKindChange={actions.onComposerKindChange}
               onScreen={
-                !covered && tab.value === "comments" && (sheet.expanded || !isCompactViewport)
+                !covered &&
+                tab.value === "comments" &&
+                (drawer ? drawerOpen : sheet.expanded || !isCompactViewport)
               }
             />
           )}
+          {/* With no compose open on the document, what the margin's compose kept for its words
+              is drawn here: the compose that held it ended with nothing the reader pressed - a
+              reload, a sign-in after a lapse, its issue's closing - and nothing else would show
+              it until the next compose on the document. */}
+          {composer === undefined && visibleArtifact !== undefined ? (
+            <MarginKeptDrafts
+              drafts={keptDrafts}
+              hidden={tab.value !== "comments"}
+              onDiscard={actions.discardKeptDraft}
+            />
+          ) : null}
           {tab.value === "comments" &&
           !covered &&
           owner !== undefined &&
@@ -387,7 +444,7 @@ export function MarginSheet({
               viewerLogin={viewerLogin}
             />
           ) : null}
-        </div>
+        </SheetBody>
         {isPhoneViewport &&
         phoneThread !== undefined &&
         owner !== undefined &&
@@ -440,4 +497,33 @@ export function MarginSheet({
       </aside>
     </>
   );
+}
+
+/**
+ * The box under the sheet's head: the margin's tabs, its composer and its cards. Everywhere but
+ * the new issue page's Details it is the sheet's own box. In Details it draws only what the page
+ * put in the margin's slot (`margin-slot.tsx`), which is handed this content and answers what is
+ * drawn in its place, and nothing while the page has put nothing there, so the content is drawn
+ * once per load rather than plain first and again inside the page's panel (R14).
+ */
+function SheetBody({
+  children,
+  className,
+  drawer,
+  hidden,
+}: {
+  children: ReactNode;
+  className: string;
+  drawer: boolean;
+  hidden: boolean;
+}): ReactNode {
+  const fill = useMarginSlotFill();
+  if (!drawer) {
+    return (
+      <div className={className} hidden={hidden}>
+        {children}
+      </div>
+    );
+  }
+  return fill === undefined ? null : <div hidden={hidden}>{fill(children)}</div>;
 }

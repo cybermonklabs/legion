@@ -178,14 +178,37 @@ func TestIsolatedDropsTheProcesssRepositoryWorkspaceAndCredential(t *testing.T) 
 	}
 }
 
+// A state home the process names, as a Legion pod names one for each role, reaches no command run
+// under Isolated: Isolated and Home each hold one XDG_STATE_HOME, under the test's home. The leak
+// guard caches the repositories it found public there and reads that cache before it asks GitHub,
+// so on the runner's state home a test's invented repository can be answered public from what an
+// earlier test cached, and a test of a visibility that cannot be read gets no refusal
+// (internal/leakguard's TestAVisibilityThatCannotBeReadRefuses failed that way in a pod).
+func TestIsolatedAndHomeGiveAStateHomeOfTheTestsOwn(t *testing.T) {
+	runner := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", runner)
+	home := t.TempDir()
+	for name, env := range map[string][]string{"Isolated": fixtureenv.Isolated(home), "Home": fixtureenv.Home(home)} {
+		var states []string
+		for _, entry := range env {
+			if key, value, _ := strings.Cut(entry, "="); key == "XDG_STATE_HOME" {
+				states = append(states, value)
+			}
+		}
+		if len(states) != 1 || !strings.HasPrefix(states[0], home+string(filepath.Separator)) {
+			t.Errorf("%s holds XDG_STATE_HOME %q, want one value under the test's home %s, not the process's %s", name, states, home, runner)
+		}
+	}
+}
+
 // A repository whose own configuration allows http (protocol.http.allow=always, which outranks
 // protocol.allow) still reaches no network remote under Isolated: jj git push to a loopback HTTP
 // server fails and the server receives no request. Without GIT_ALLOW_PROTOCOL the same push
-// reaches the server, so the refusal is the environment's.
+// reaches the server, so the refusal is the environment's. Every jj is the real jj
+// (fixturegit.CompiledJJ): a jj of the machine's own first on PATH, a dev box's shim, can refuse
+// the push itself, which would read as the environment's refusal.
 func TestIsolatedReachesNoNetworkRemoteWhateverTheRepositoryAllows(t *testing.T) {
-	if _, err := exec.LookPath("jj"); err != nil {
-		t.Fatalf("this test drives a real jj: %v", err)
-	}
+	jj := fixturegit.CompiledJJ(t)
 	var requests atomic.Int64
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		requests.Add(1)
@@ -195,13 +218,13 @@ func TestIsolatedReachesNoNetworkRemoteWhateverTheRepositoryAllows(t *testing.T)
 
 	env := fixtureenv.Isolated(t.TempDir())
 	repo := t.TempDir()
-	mustRun(t, repo, env, fixturegit.JJInit(repo, true)...)
-	mustRun(t, repo, env, "jj", "describe", "-m", "work that must not leave the test", "-R", repo)
-	mustRun(t, repo, env, "jj", "bookmark", "set", "main", "-r", "@", "-R", repo)
-	mustRun(t, repo, env, "jj", "git", "remote", "add", "origin", server.URL+"/repo.git", "-R", repo)
+	mustRun(t, repo, env, append([]string{jj}, fixturegit.JJInit(repo, true)[1:]...)...)
+	mustRun(t, repo, env, jj, "describe", "-m", "work that must not leave the test", "-R", repo)
+	mustRun(t, repo, env, jj, "bookmark", "set", "main", "-r", "@", "-R", repo)
+	mustRun(t, repo, env, jj, "git", "remote", "add", "origin", server.URL+"/repo.git", "-R", repo)
 	mustRun(t, repo, env, "git", "config", "protocol.http.allow", "always")
 
-	push := []string{"jj", "git", "push", "--remote", "origin", "--bookmark", "main", "-R", repo}
+	push := []string{jj, "git", "push", "--remote", "origin", "--bookmark", "main", "-R", repo}
 	if out, err := run(repo, env, push...); err == nil {
 		t.Errorf("jj git push under Isolated succeeded, want a refusal:\n%s", out)
 	}

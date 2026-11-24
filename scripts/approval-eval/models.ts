@@ -102,8 +102,12 @@ const JEV_STATE_CUTS = 3;
 /** What is written where a Jev state was cut, so the cut is visible in the state itself. */
 const JEV_CUT_MARK = "\n\n[... the state was cut to the endpoint's budget ...]\n\n";
 
-/** Why no answer came, or why the answer that came could not be read. */
-export type FaultKind = "transport" | "status" | "unreadable";
+/**
+ * Why no answer came, or why the answer that came could not be read. `model` is an answer that
+ * names no served model, or another model than the asked one (`servedModelFault`): its verdict
+ * is not the asked bundle's.
+ */
+export type FaultKind = "transport" | "status" | "unreadable" | "model";
 
 /** The limit of one call: how long it has, and how many tokens its answer may take. */
 export interface CallBounds {
@@ -125,6 +129,14 @@ export interface ModelAnswer {
   probabilities: Record<string, number> | null;
   /** How sure the endpoint says it is, from 0 to 1, where it says. */
   confidence: number | null;
+  /**
+   * The model the answer says served the call, where it says one: the `model` of the answered
+   * body. `askClaude` refuses an answer whose served model is not the asked one (the `model`
+   * fault). `askJev` only records it: the round asks Jev for `jev-latest`, an alias that names no
+   * one model, so no served id can be checked against it, and the rows show the ids served. A
+   * round reads a Jev answer that names no model as the `model` fault (`servedModelFaultOf`).
+   */
+  servedModel?: string;
   /** The tokens the endpoint reports it read and wrote, and null where it reports none. */
   inputTokens: number | null;
   outputTokens: number | null;
@@ -463,9 +475,36 @@ export function labelsOf(text: string, labels: readonly string[]): string[] {
 }
 
 /**
+ * Why a verdict is not the asked model's, or null where it is: the answer names no served model,
+ * or, where `exactId` holds, it names another id than the asked one. This is the one rule every
+ * writer and reader of a verdict applies: `askClaude` and the agent with `exactId`, and a round's
+ * rows by endpoint (`servedModelFaultOf`), where a Jev arm asks for an alias and so is held to
+ * naming its served model, not to the asked id.
+ *
+ * The exact id is what each path gives: the gateway answers `model` with the very name a call
+ * asked for (`anthropic/claude-opus-5-5` asked, `anthropic/claude-opus-5-5` served, measured
+ * 2026-11-15), and the agent reports the bare name it was started with. Any other id, a dated
+ * snapshot or a provider prefix included, is another model or another route, and a verdict it
+ * gave is not the asked bundle's: a served id other than the bundle's makes the verdict an
+ * error. An ask that names no model has no served id that matches it.
+ */
+export function servedModelFault(
+  asked: string,
+  served: string | null,
+  exactId: boolean
+): string | null {
+  if (served === null || served === "") return `asked ${asked}, and the answer names no model`;
+  if (!exactId || (asked !== "" && served === asked)) return null;
+  return `asked ${asked}, and the answer came from ${served}`;
+}
+
+/**
  * One judgement put to a Claude model through the gateway. The answer is one of the labels the
  * prompt offered, on a line of its own or at the head of one, and anything else is the
- * `unreadable` fault carrying what came back, bounded at `DETAIL_CHARS`.
+ * `unreadable` fault carrying what came back, bounded at `DETAIL_CHARS`. An answer whose body
+ * names no served model, or another one than the asked model (`servedModelFault`), is the
+ * `model` fault with no label read, whatever its text says, so a fallback to another model never
+ * reads as the asked one.
  */
 export async function askClaude(ask: ClaudeAsk): Promise<ModelAnswer> {
   const endpoint = await claudeEndpoint();
@@ -509,21 +548,40 @@ export async function askClaude(ask: ClaudeAsk): Promise<ModelAnswer> {
   } catch {
     return unreadable(sent.body, latencyMs, sent.attempts);
   }
+  const servedFields = servedOf(parsed);
+  const served = servedFields.servedModel ?? "";
+  const usage = usageOf(parsed);
+  const wrongModel = servedModelFault(ask.model, served, true);
+  if (wrongModel !== null) {
+    return {
+      chosen: [],
+      probabilities: null,
+      confidence: null,
+      ...servedFields,
+      ...usage,
+      latencyMs,
+      attempts: sent.attempts,
+      stateCut: false,
+      fault: "model",
+      faultDetail: scrubSecrets(wrongModel).slice(0, DETAIL_CHARS),
+    };
+  }
   const text = claudeText(parsed);
   if (text === null) {
-    return unreadable(`${noTextDetail(parsed)}\n${sent.body}`, latencyMs, sent.attempts);
+    const answer = unreadable(`${noTextDetail(parsed)}\n${sent.body}`, latencyMs, sent.attempts);
+    return { ...answer, servedModel: served };
   }
   const chosen = labelsOf(text, ask.prompt.labels);
-  const usage = usageOf(parsed);
   if (chosen.length === 0) {
     const answer = unreadable(text, latencyMs, sent.attempts);
-    return { ...answer, ...usage };
+    return { ...answer, servedModel: served, ...usage };
   }
   return {
     chosen,
     text,
     probabilities: null,
     confidence: null,
+    servedModel: served,
     ...usage,
     latencyMs,
     attempts: sent.attempts,
@@ -617,7 +675,7 @@ export async function askJev(ask: JevAsk): Promise<ModelAnswer> {
   const choice = stringOf(decision?.choice);
   const label = choice === null ? undefined : byName.get(choice);
   if (label === undefined) {
-    return { ...unreadable(sent.body, latencyMs, attempts), stateCut };
+    return { ...unreadable(sent.body, latencyMs, attempts), ...servedOf(parsed), stateCut };
   }
   const probabilities: Record<string, number> = {};
   for (const [name, value] of Object.entries(recordOf(decision?.probabilities) ?? {})) {
@@ -628,6 +686,7 @@ export async function askJev(ask: JevAsk): Promise<ModelAnswer> {
     chosen: [label],
     probabilities: Object.keys(probabilities).length === 0 ? null : probabilities,
     confidence: numberOf(decision?.confidence),
+    ...servedOf(parsed),
     ...usageOf(parsed),
     latencyMs,
     attempts,
@@ -635,4 +694,10 @@ export async function askJev(ask: JevAsk): Promise<ModelAnswer> {
     fault: null,
     faultDetail: null,
   };
+}
+
+/** The `servedModel` of an answered body, where the body names its model. */
+function servedOf(body: unknown): { servedModel?: string } {
+  const served = stringOf(recordOf(body)?.model) ?? "";
+  return served === "" ? {} : { servedModel: served };
 }

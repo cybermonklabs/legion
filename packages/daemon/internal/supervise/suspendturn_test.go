@@ -304,7 +304,7 @@ func TestAStartRunAgainstTheClaimDropsTheSuspensionWaitingForItsTurn(t *testing.
 		t.Fatalf("suspend mid-turn returned %v, want ErrSuspendHeld", err)
 	}
 
-	if err := h.m.StartedBy(h.ctx, 42); err != nil {
+	if err := h.m.StartedBy(h.ctx, 42, nil); err != nil {
 		t.Fatalf("record the start: %v", err)
 	}
 	h.must(StreamTurnEnd{Claim: testToken})
@@ -324,19 +324,19 @@ func TestAStartWaitsOutTheOperatorsSuspension(t *testing.T) {
 		t.Fatalf("suspend mid-turn returned %v, want ErrSuspendHeld", err)
 	}
 
-	if err := h.m.StartedBy(h.ctx, 42); !errors.Is(err, ErrHeldByOperator) {
+	if err := h.m.StartedBy(h.ctx, 42, nil); !errors.Is(err, ErrHeldByOperator) {
 		t.Fatalf("a start against the held operator's suspension returned %v, want ErrHeldByOperator", err)
 	}
 	h.must(StreamTurnEnd{Claim: testToken})
 	h.wantState(StateSuspended)
-	if err := h.m.StartedBy(h.ctx, 42); !errors.Is(err, ErrHeldByOperator) {
+	if err := h.m.StartedBy(h.ctx, 42, nil); !errors.Is(err, ErrHeldByOperator) {
 		t.Fatalf("a start against the operator's suspension returned %v, want ErrHeldByOperator", err)
 	}
 	if got := h.claim().LastStartRow; got != 0 {
 		t.Fatalf("the claim recorded start row %d, want none while the operator's suspension holds", got)
 	}
 	h.must(RequestResume{Claim: testToken})
-	if err := h.m.StartedBy(h.ctx, 42); err != nil {
+	if err := h.m.StartedBy(h.ctx, 42, nil); err != nil {
 		t.Fatalf("the start after the operator's resume: %v", err)
 	}
 }
@@ -441,7 +441,7 @@ func TestOnlyAHeldSuspensionLetsARowEndSuspendedWithoutNamingIt(t *testing.T) {
 			saved := table[k]
 			t.Cleanup(func() { table[k] = saved })
 			table[k] = rule{name: "a rogue row", to: saved.to, act: func(m *Machine, ctx context.Context, _ Event) error {
-				return m.suspendNow(ctx, RequestSuspend{Claim: testToken, By: SuspendedByOperator})
+				return m.suspendNow(ctx, RequestSuspend{Claim: testToken, By: SuspendedByOperator}, false)
 			}}
 
 			err := h.handle(RuntimeObservation{Observation: runtime.Observation{Locator: h.locator(), Kind: runtime.Alive, At: h.clock.Now()}})

@@ -3,7 +3,7 @@
  *  button opens, and the Inbox badge a phone draws twice.
  *
  *  Every row reads only what the page draws over fixed answers, so each runs against a
- *  recording rather than against a harness (packages/dispatch/AGENTS.md, "The stubbed layer").
+ *  recording rather than against a harness (packages/dispatch/README.md, "The stubbed layer").
  *  The phone row runs under `stub-phone`, which emulates the phone; its ` @phone-only` tag is
  *  what keeps it out of `stub`, which runs at a desktop width. The sidebar row of `nav.e2e.ts`
  *  stayed there: its badges are counts the server computes over the twenty issues and three

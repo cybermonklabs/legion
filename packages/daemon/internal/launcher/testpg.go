@@ -7,10 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
-
-	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
 // The pod's own PostgreSQL for tests, which an issue pod's launcher serves when the deployment
@@ -24,18 +21,28 @@ import (
 // is why `ensure` puts `vector` in template1, where every database made from it carries it.
 // TestPGDirName is the directory the server's data and admin socket live in, under the roles
 // directory, which every role's namespace covers (role-init), so no role can edit the cluster's
-// configuration and have the launcher load it at the next start.
+// configuration and have the launcher load it at the next start. The server's log is the one file
+// of that directory a role reads: role-init binds it read-only at RoleTestPGLog under the fixed
+// root, and TestPGLogVariable is the variable that names that path to every generation, beside
+// the DSN.
 //
 // The launcher owns the server and no role does: a role's generation runs as the init of its own
 // PID namespace, and the kernel kills every process in a PID namespace when its init exits, so a
 // server a role's setup step started would die with that generation and take every sibling role's
 // database with it.
 const (
-	TestPGVariable = "LEGION_TEST_PG_DSN"
-	TestPGDSN      = "postgres://legion_test@127.0.0.1:5433/legion_test?sslmode=disable"
-	TestPGDirName  = "testpg"
+	TestPGVariable    = "LEGION_TEST_PG_DSN"
+	TestPGDSN         = "postgres://legion_test@127.0.0.1:5433/legion_test?sslmode=disable"
+	TestPGLogVariable = "LEGION_TEST_PG_LOG"
+	TestPGDirName     = "testpg"
 	// testPGDirVariable is how the worker image's script is told where the cluster lives.
 	testPGDirVariable = "LEGION_TESTPG_DIR"
+	// testPGLogVariable is how that script is told which file is the server's log, and
+	// testPGLogName is the file's name in the cluster's directory. The launcher names the file
+	// rather than leaving the script its default, so the file the script and the server write is
+	// the one this launcher made and role-init binds (testPGLog).
+	testPGLogVariable = "LEGION_TESTPG_LOG"
+	testPGLogName     = "server.log"
 	// testPGProgram is that script, on the image's PATH.
 	testPGProgram = "legion-testpg"
 )
@@ -51,34 +58,46 @@ var testPGInterval = 15 * time.Second
 // testPGDir is where the server's data and admin socket live for this launcher's roles directory.
 func testPGDir(rolesDir string) string { return filepath.Join(rolesDir, TestPGDirName) }
 
+// testPGLog is the server's log for this launcher's roles directory: the file the launcher makes
+// (makeTestPGLog), the script and the server write, and role-init binds into every role's
+// namespace.
+func testPGLog(rolesDir string) string { return filepath.Join(testPGDir(rolesDir), testPGLogName) }
+
 // testPGEnv is what a generation of this launcher is told about the pod's test database: when
 // this launcher serves one (serves, from Config.TestPostgres), TestPGVariable is TestPGDSN of
-// this binary, over whatever value the daemon's start command carried; when it serves none the
-// variable is taken out of that environment, so a role is never told of a server its pod does not
-// run. env is the launcher's own environment with the start command's values over it (start's
-// mergeEnv), so the removal drops the variable from either source. The daemon puts it in a role's
-// start command for an issue pod alone, and only while that deployment sets
-// `runtime.kubernetes.test_postgres` (the sandbox package's manifest), so from the start command
-// the removal serves a pod started before that key was turned on and kept since: its launcher was
-// given no such flag, while the daemon that starts its roles now sends the DSN. From the
-// launcher's own environment it serves a launcher that inherited the variable, as the idle rig of
-// the daemon package's tests runs one inside a test process that holds LEGION_TEST_PG_DSN.
+// this binary, over whatever value the daemon's start command carried, and TestPGLogVariable is
+// the path the role reads the server's log at, RoleTestPGLog under the fixed root; when it serves
+// none both variables are taken out of that environment, so a role is never told of a server its
+// pod does not run, nor of a log no server writes. env is the launcher's own environment with the
+// start command's values over it (start's mergeEnv), so the removal drops each variable from
+// either source. The daemon puts the DSN in a role's start command for an issue pod alone, and
+// only while that deployment sets `runtime.kubernetes.test_postgres` (the sandbox package's
+// manifest), so from the start command the removal serves a pod started before that key was
+// turned on and kept since: its launcher was given no such flag, while the daemon that starts its
+// roles now sends the DSN. From the launcher's own environment it serves a launcher that
+// inherited the variable, as the idle rig of the daemon package's tests runs one inside a test
+// process that holds LEGION_TEST_PG_DSN.
 //
 // It overrides the start command because the daemon and the worker image are deployed from two
 // separately pinned builds, and this launcher, which comes from the image, is the process that
 // runs `legion-testpg ensure` and so decides which database the server holds. The process that
 // serves the database is therefore the one that names it: a role in a pod whose image predates a
 // change of the DSN is told that image's own DSN, rather than a database nothing in its pod
-// creates.
+// creates. The log's path is this launcher's alone for the same reason: the daemon sends none,
+// and the role-init that binds the file there comes from the same image as this launcher.
 //
 // It reads whether this launcher was told to serve a database, never whether the server answers:
 // the first `ensure` runs before any role starts and a failure of it is logged rather than thrown
-// (serveTestPG), so a role whose server is late or dead is still told where that server is.
+// (serveTestPG), so a role whose server is late or dead is still told where that server is, and
+// where to read why.
 func testPGEnv(env []string, serves bool) []string {
 	if !serves {
-		return withoutEnv(env, TestPGVariable)
+		return withoutEnv(env, TestPGVariable, TestPGLogVariable)
 	}
-	return mergeEnv(env, []string{TestPGVariable + "=" + TestPGDSN})
+	return mergeEnv(env, []string{
+		TestPGVariable + "=" + TestPGDSN,
+		TestPGLogVariable + "=" + filepath.Join(roleFixedRoot, RoleTestPGLog),
+	})
 }
 
 // serveTestPG starts the pod's test database and keeps it running until ctx ends, and answers a
@@ -89,11 +108,19 @@ func testPGEnv(env []string, serves bool) []string {
 // A failure is logged and never thrown: a pod whose test database cannot start still runs its
 // roles, whose agents then read the refusal in the container's log, where a launcher that failed
 // its container would instead cost the issue every role it was serving.
+//
+// The server's log is made before that first attempt, so every role started after it has a file
+// to bind even when the attempt failed before `initdb` wrote one: without it such a role would
+// hold the image's empty mount point for its whole generation and see nothing of what the server
+// a later tick starts logs. A log that cannot be made is logged as the script's failures are.
 func serveTestPG(ctx context.Context, cfg Config, log *roleLog, guard *pidGuard) <-chan struct{} {
 	// The interval is read here, in the caller's own goroutine, and not inside the one below: it
 	// is a package variable a test shortens, and a goroutine still reading it after the test
 	// restored it is a data race the race detector fails the test for.
 	interval := testPGInterval
+	if err := makeTestPGLog(cfg.RolesDir); err != nil {
+		log.linef("launcher: test database: %v", err)
+	}
 	ensure := func() {
 		if err := runTestPG(ctx, cfg, log, guard, "ensure"); err != nil {
 			log.linef("launcher: test database: %v", err)
@@ -117,6 +144,23 @@ func serveTestPG(ctx context.Context, cfg Config, log *roleLog, guard *pidGuard)
 	return done
 }
 
+// makeTestPGLog makes the cluster's directory and, where there is none, the server's log in it,
+// empty. A log already there is left as it is, never truncated: a launcher that restarts in a pod
+// whose server has run finds that server's lines, and they are what a role reads to learn why it
+// stopped. The file is the launcher's own and mode 0600: the script and the server it starts run
+// as the launcher's user, and so does a role's agent outside its own namespaces (roleUID maps to
+// it), which reaches the file through role-init's read-only bind alone.
+func makeTestPGLog(rolesDir string) error {
+	if err := os.MkdirAll(testPGDir(rolesDir), 0o755); err != nil {
+		return fmt.Errorf("make the server's directory: %w", err)
+	}
+	file, err := os.OpenFile(testPGLog(rolesDir), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		return fmt.Errorf("make the server's log: %w", err)
+	}
+	return file.Close()
+}
+
 // testPGBound is how long one run of the script may take. The first `ensure` runs before the
 // launcher serves any role, and the daemon's boot timeout for a pod is 120 s by default, so an
 // `ensure` that hangs — a lock a dead holder still owns, a disk that does not answer — must not
@@ -125,12 +169,12 @@ func serveTestPG(ctx context.Context, cfg Config, log *roleLog, guard *pidGuard)
 // log is better than a pod the daemon gives up on. A test shortens it.
 var testPGBound = 60 * time.Second
 
-// runTestPG runs one command of the image's script with the DSN it must serve and the directory it
-// must serve it from, writing its output to the container's log behind a prefix of its own, so a
-// refusal reads apart from a role's lines. Its process is held out of the reaper's pass (pidGuard)
-// until this wait has read its exit. WaitDelay makes the kill at testPGBound final: without it a
-// child that keeps the output pipe open — the postmaster `pg_ctl` leaves running — would hold this
-// wait past the bound.
+// runTestPG runs one command of the image's script with the DSN it must serve, the directory it
+// must serve it from and the file it must log to, writing its output to the container's log
+// behind a prefix of its own, so a refusal reads apart from a role's lines. Its process is held
+// out of the reaper's pass (pidGuard) until this wait has read its exit. WaitDelay makes the kill
+// at testPGBound final: without it a child that keeps the output pipe open — the postmaster
+// `pg_ctl` leaves running — would hold this wait past the bound.
 func runTestPG(ctx context.Context, cfg Config, log *roleLog, guard *pidGuard, command string) error {
 	bounded, cancel := context.WithTimeout(ctx, testPGBound)
 	defer cancel()
@@ -140,6 +184,7 @@ func runTestPG(ctx context.Context, cfg Config, log *roleLog, guard *pidGuard, c
 	cmd.Env = append(os.Environ(),
 		TestPGVariable+"="+TestPGDSN,
 		testPGDirVariable+"="+testPGDir(cfg.RolesDir),
+		testPGLogVariable+"="+testPGLog(cfg.RolesDir),
 	)
 	cmd.Stdout, cmd.Stderr = out, out
 	pid, err := guard.start(cmd)
@@ -195,57 +240,4 @@ func CheckTestPostgres(dir string) error {
 		}
 	}
 	return run(testPGProgram, "stop")
-}
-
-// pidGuard holds the pids of the launcher's own children that are no generation's, so PID 1's
-// reaper leaves each exit to the wait that started it (reapOrphans skips them as it skips a
-// manager's generation). A pid is recorded before its process exists, under the lock the reaper
-// holds for its whole pass, so no pass can read /proc between a child's start and its record.
-type pidGuard struct {
-	mu   sync.Mutex
-	pids map[int]bool
-}
-
-// start runs cmd and answers its pid, recorded as the launcher's own.
-func (g *pidGuard) start(cmd *exec.Cmd) (int, error) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	if err := cmd.Start(); err != nil {
-		return 0, err
-	}
-	pid := cmd.Process.Pid
-	if g.pids == nil {
-		g.pids = map[int]bool{}
-	}
-	g.pids[pid] = true
-	return pid, nil
-}
-
-// done forgets pid once its own wait has read its exit.
-func (g *pidGuard) done(pid int) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	delete(g.pids, pid)
-}
-
-// starter is start and done as a workspace.Starter, for the launcher's own jj and git children
-// that run through workspace.RunCommand: the put-back of a released workspace's bundle
-// (restoreWorkspace). Its start takes the guard's lock alone, as start does.
-func (g *pidGuard) starter() workspace.Starter {
-	return func(cmd *exec.Cmd) (func(), error) {
-		pid, err := g.start(cmd)
-		if err != nil {
-			return nil, err
-		}
-		return func() { g.done(pid) }, nil
-	}
-}
-
-// held are the pids the reaper must skip. The caller holds the guard's lock for the whole pass.
-func (g *pidGuard) held() []int {
-	pids := make([]int, 0, len(g.pids))
-	for pid := range g.pids {
-		pids = append(pids, pid)
-	}
-	return pids
 }

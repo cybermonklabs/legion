@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # Tests for `check-daemon-api-contract.sh`: a change that touches the daemon API contract's
-# declaration declares a number above the one its base carries, the refusal names a free number
-# and every file that holds it, and a base or a tree the check cannot read refuses the change.
+# history or declaration declares a number above the one its base carries, the refusal names a
+# free number and every file that holds it, the files that hold the number agree on it, an
+# edit of the doc comment above the history touches no contract, a declared number needs its own
+# `// <number>:` history entry, and a base, a tree or a file the check cannot read refuses the
+# change.
 #
 # Each case builds a miniature repository under a temporary directory, symlinks the real script
 # into it, and puts a stub `gh` first on PATH, so the script under test is the file CI runs and
@@ -26,15 +29,67 @@ trap 'rm -rf "$work"' EXIT
 # shellcheck source=.github/scripts/test-lib.sh
 source "$script_dir/test-lib.sh"
 
-# declaration <number> [<extra comment>]: the text of a version.go declaring <number>. The extra
-# comment is how a case makes a tree that touches the file without moving the number.
+# The interpreter python3 names, asked once in this harness's own environment. Each fixture's bin
+# directory, first on the PATH a case runs the script under, holds a link to it as python3, so the
+# script's `python3` is this interpreter and the gh its Python runs is the stub beside that link.
+# The first python3 on the caller's PATH can be a version manager's shim that starts the
+# interpreter with a PATH of its own: mise 2026.10.11's python3 shim, in a mise-activated
+# environment, put that environment's PATH in front of the entries the caller had put first, so
+# the script's Python ran that environment's gh, against GitHub, and not the stub.
+# disk_watch.test.sh links its interpreter the same way.
+if ! python=$(python3 -I -c 'import sys; print(sys.executable)'); then
+  echo "could not resolve the python3 interpreter" >&2
+  exit 1
+fi
+if [[ "$python" != /* || ! -x "$python" ]]; then
+  echo "python3 did not report an absolute executable path: $python" >&2
+  exit 1
+fi
+
+# declaration <number> [<extra comment>]: the text of a version.go declaring <number>, laid out as
+# the real one is: a doc comment, then the history, here one entry at <number>, then the `const`
+# line. The extra comment goes under that entry, which is how a case makes a tree that touches
+# the contract's history without moving the number.
 declaration() {
   printf 'package api\n\n'
   printf '// DaemonAPIVersion is the contract this daemon speaks with the plugin in its pods.\n'
+  printf '//\n'
+  printf '// %s: the shapes the plugin parses at this number.\n' "$1"
   if [ -n "${2:-}" ]; then
-    printf '//\n// %s\n' "$2"
+    printf '// %s\n' "$2"
   fi
-  printf '\nconst DaemonAPIVersion = %s\n' "$1"
+  printf 'const DaemonAPIVersion = %s\n' "$1"
+}
+
+# The files beside version.go that hold the contract number, in the order the check names
+# them.
+other_sites=(
+  packages/contracts/fixtures/daemon-api/version.json
+  packages/contracts/fixtures/daemon-api/state.json
+  packages/pi-legion/package.json
+  packages/claude-envoy/package.json
+)
+
+# holding <site> <number>: the least text of one of other_sites that holds <number> where the
+# check reads it.
+holding() {
+  case "$1" in
+    */version.json) printf '{"daemonApiVersion": %s}\n' "$2" ;;
+    */state.json) printf '{"contract": {"daemon": %s, "caller": %s}}\n' "$2" "$2" ;;
+    */package.json) printf '{"legion": {"daemonApiVersion": %s}}\n' "$2" ;;
+    *) echo "holding: no shape for $1" >&2; return 1 ;;
+  esac
+}
+
+# sites <root> <number>: writes each of other_sites into the fixture, holding <number>. The check
+# holds them to the number version.go declares before it compares that number with the base's,
+# so every case that gets past reading the tree's own number writes them.
+sites() {
+  local site
+  for site in "${other_sites[@]}"; do
+    mkdir -p "$(dirname "$1/$site")"
+    holding "$site" "$2" > "$1/$site"
+  done
 }
 
 # fixture <name>: an empty repository with the real script symlinked in, a stub gh first on PATH,
@@ -47,6 +102,7 @@ fixture() {
   fi
   mkdir -p "$root/.github/scripts" "$root/packages/daemon/internal/api" "$root/stub/refs" "$root/bin"
   ln -s "$check_script" "$root/.github/scripts/check-daemon-api-contract.sh"
+  ln -s "$python" "$root/bin/python3"
   : > "$root/stub/pr-queries"
   cat > "$root/bin/gh" <<'SH'
 #!/usr/bin/env bash
@@ -160,7 +216,12 @@ run_check() {
   queries=$(wc -l < "$root/stub/pr-queries" | tr -d ' ')
 }
 
-all_four_files='packages/daemon/internal/api/version.go, packages/contracts/fixtures/daemon-api/version.json, packages/pi-legion/package.json, packages/claude-envoy/package.json'
+all_files="packages/daemon/internal/api/version.go$(printf ', %s' "${other_sites[@]}")"
+
+# How a refusal for files that disagree says to write the number: the golden tests write the
+# fixtures, and the manifests take it by hand. A pattern for contains, so `.` stands for the
+# backquote.
+update_command="go test ./internal/api -run '^(TestDaemonAPIVersionGolden|TestStateGolden)\$' -update., run in packages/daemon, writes the fixtures, and the manifests take the number in legion.daemonApiVersion"
 
 echo "case: a tree equal to its base that touches the declaration"
 root=$(fixture equal)
@@ -168,6 +229,7 @@ built_on "$root" 7 > /dev/null
 declaration 7 > "$root/stub/refs/main"
 declaration 7 "LEGION-1: a shape this change adds, on the number the base already carries" \
   > "$root/packages/daemon/internal/api/version.go"
+sites "$root" 7
 no_open_pull_requests "$root"
 pull_request_event "$root" main
 run_check "$root" pull_request
@@ -178,7 +240,7 @@ check "names both numbers and the base it read" \
   "$(contains "$out" 'declares daemon API contract 7, which is not above the 7 the base carries (the tip of main)')"
 check "names the free number" \
   "$(contains "$out" 'Take 8, the lowest number above the base.s that no open pull request declares,')"
-check "names every file that holds the number" "$(contains "$out" "$all_four_files")"
+check "names every file that holds the number" "$(contains "$out" "$all_files")"
 check "reads the open pull requests once" "$(is "$queries" 1)"
 check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
 
@@ -187,6 +249,7 @@ root=$(fixture below)
 built_on "$root" 9 > /dev/null
 declaration 9 > "$root/stub/refs/main"
 declaration 8 > "$root/packages/daemon/internal/api/version.go"
+sites "$root" 8
 no_open_pull_requests "$root"
 pull_request_event "$root" main
 run_check "$root" pull_request
@@ -194,7 +257,7 @@ check "exits 1" "$(is "$status" 1)"
 check "names both numbers" \
   "$(contains "$out" 'declares daemon API contract 8, which is not above the 9 the base carries')"
 check "names the free number above the base, not above the tree" "$(contains "$out" 'Take 10,')"
-check "names every file that holds the number" "$(contains "$out" "$all_four_files")"
+check "names every file that holds the number" "$(contains "$out" "$all_files")"
 check "reads the open pull requests once" "$(is "$queries" 1)"
 
 echo "case: a tree above its base, the merge group of two entries that both picked that number"
@@ -202,10 +265,10 @@ root=$(fixture above)
 base_sha=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 declaration 7 > "$root/stub/refs/$base_sha"
 # The group's tree carries both entries' changes at 8: the declaration one of them bumped, and
-# the other's edit beside it. The queue tests this tree, which is the pair that ships.
+# the other's edit beside it. The queue tests this tree, which is the pair that ships. Every
+# file that holds the number holds 8, so they all agree.
 declaration 8 > "$root/packages/daemon/internal/api/version.go"
-mkdir -p "$root/packages/contracts/fixtures/daemon-api"
-printf '{\n  "daemonApiVersion": 8\n}\n' > "$root/packages/contracts/fixtures/daemon-api/version.json"
+sites "$root" 8
 merge_group_event "$root" "$base_sha"
 run_check "$root" merge_group
 check "exits 0" "$(is "$status" 0)"
@@ -219,11 +282,12 @@ for carried in 7 99; do
   base=$(built_on "$root" "$carried")
   declaration "$carried" > "$root/stub/refs/main"
   declaration "$carried" > "$root/packages/daemon/internal/api/version.go"
+  sites "$root" "$carried"
   pull_request_event "$root" main
   run_check "$root" pull_request
   check "a base at $carried: exits 0" "$(is "$status" 0)"
   check "a base at $carried: says it declares none of its own" \
-    "$(contains "$out" "leaves packages/daemon/internal/api/version.go as the commit GitHub built this pull request's merge ref on ($base) has it (contract $carried)")"
+    "$(contains "$out" "leaves the history and the declaration in packages/daemon/internal/api/version.go as the commit GitHub built this pull request's merge ref on ($base) has them (contract $carried), so it declares no daemon API contract of its own")"
   check "a base at $carried: reads no open pull request" "$(is "$queries" 0)"
 done
 
@@ -235,13 +299,14 @@ root=$(fixture moved-on)
 base=$(built_on "$root" 7)
 declaration 8 > "$root/stub/refs/main"
 declaration 7 > "$root/packages/daemon/internal/api/version.go"
+sites "$root" 7
 # The answer is there to be read, so a run that reads it is a run that was about to refuse.
 no_open_pull_requests "$root"
 pull_request_event "$root" main
 run_check "$root" pull_request
 check "exits 0" "$(is "$status" 0)"
 check "says it declares none of its own, naming the commit it was built on" \
-  "$(contains "$out" "leaves packages/daemon/internal/api/version.go as the commit GitHub built this pull request's merge ref on ($base) has it (contract 7)")"
+  "$(contains "$out" "leaves the history and the declaration in packages/daemon/internal/api/version.go as the commit GitHub built this pull request's merge ref on ($base) has them (contract 7), so it declares no daemon API contract of its own")"
 check "takes no number for a file it leaves alone" "$(is "$(contains "$out" 'Take ')" false)"
 check "reads no open pull request" "$(is "$queries" 0)"
 
@@ -291,6 +356,7 @@ built_on "$root" 7 > /dev/null
 declaration 7 > "$root/stub/refs/main"
 declaration 7 "LEGION-2: another shape on the number the base carries" \
   > "$root/packages/daemon/internal/api/version.go"
+sites "$root" 7
 open_pull_request_declaring "$root" 11 8
 pull_request_event "$root" main
 run_check "$root" pull_request
@@ -306,6 +372,7 @@ built_on "$root" 7 > /dev/null
 declaration 7 > "$root/stub/refs/main"
 declaration 7 "LEGION-3: a shape that needs a number" \
   > "$root/packages/daemon/internal/api/version.go"
+sites "$root" 7
 # #12 changes more than 100 files, so the list GitHub answers with says nothing about whether
 # the declaration is among them. Its head declares 8, which the free number must pass over.
 cat > "$root/stub/open-prs.json" <<'JSON'
@@ -329,6 +396,7 @@ built_on "$root" 7 > /dev/null
 declaration 7 > "$root/stub/refs/main"
 declaration 7 "LEGION-4: a shape that needs a number" \
   > "$root/packages/daemon/internal/api/version.go"
+sites "$root" 7
 open_pull_request_declaring "$root" 13 8
 rm "$root/stub/refs/refs_pull_13_head"
 pull_request_event "$root" main
@@ -346,6 +414,7 @@ base=$(built_on "$root" 7)
 rm "$root/stub/refs/$base"
 declaration 7 > "$root/stub/refs/main"
 declaration 7 > "$root/packages/daemon/internal/api/version.go"
+sites "$root" 7
 no_open_pull_requests "$root"
 pull_request_event "$root" main
 run_check "$root" pull_request
@@ -363,6 +432,7 @@ root=$(fixture no-parent)
 no_merge_ref "$root"
 declaration 7 > "$root/stub/refs/main"
 declaration 7 > "$root/packages/daemon/internal/api/version.go"
+sites "$root" 7
 no_open_pull_requests "$root"
 pull_request_event "$root" main
 run_check "$root" pull_request
@@ -371,5 +441,225 @@ check "names what it could not read" \
   "$(contains "$out" "could not read the commit GitHub built this pull request's merge ref on: HEAD names no parent")"
 check "reads no open pull request" "$(is "$queries" 0)"
 check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+
+# The cases below lock the agreement of those files and the comparison of the history alone.
+# Each serves an answer to the open pull request query, so a refusal that read the open pull
+# requests would be counted rather than fail.
+
+echo "case: a bump that leaves state.json at the number it bumps from"
+root=$(fixture bump-forgets-state)
+# INFRA-3621's bump: version.go and three of the other files at 8, and state.json still at 7.
+# The number is above the base's, and the check refuses it all the same, before it passes one.
+declaration 7 > "$root/stub/refs/main"
+declaration 8 > "$root/packages/daemon/internal/api/version.go"
+sites "$root" 8
+holding packages/contracts/fixtures/daemon-api/state.json 7 \
+  > "$root/packages/contracts/fixtures/daemon-api/state.json"
+no_open_pull_requests "$root"
+pull_request_event "$root" main
+run_check "$root" pull_request
+check "exits 1" "$(is "$status" 1)"
+check "names state.json as the file" \
+  "$(contains "$out" '^::error file=packages/contracts/fixtures/daemon-api/state.json::')"
+check "names both numbers it holds and the number version.go declares" \
+  "$(contains "$out" 'packages/contracts/fixtures/daemon-api/state.json holds daemon API contract 7 at contract.daemon and 7 at contract.caller, and packages/daemon/internal/api/version.go declares 8\.')"
+check "names every file that holds the number" "$(contains "$out" "$all_files")"
+check "says how to write the number" "$(contains "$out" "$update_command")"
+check "names no free number" "$(is "$(contains "$out" 'Take ')" false)"
+check "does not pass the number above the base's" "$(is "$(contains "$out" 'is above')" false)"
+check "reads no open pull request" "$(is "$queries" 0)"
+check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+
+echo "case: a state.json whose caller's number alone is behind"
+root=$(fixture state-caller-behind)
+declaration 7 > "$root/stub/refs/main"
+declaration 8 > "$root/packages/daemon/internal/api/version.go"
+sites "$root" 8
+printf '{"contract": {"daemon": 8, "caller": 7}}\n' \
+  > "$root/packages/contracts/fixtures/daemon-api/state.json"
+no_open_pull_requests "$root"
+pull_request_event "$root" main
+run_check "$root" pull_request
+check "exits 1" "$(is "$status" 1)"
+check "names state.json and both numbers it holds" \
+  "$(contains "$out" '^::error file=packages/contracts/fixtures/daemon-api/state.json::packages/contracts/fixtures/daemon-api/state.json holds daemon API contract 8 at contract.daemon and 7 at contract.caller, and packages/daemon/internal/api/version.go declares 8\.')"
+check "names every file that holds the number" "$(contains "$out" "$all_files")"
+check "reads no open pull request" "$(is "$queries" 0)"
+
+echo "case: each other file one number behind version.go"
+for site in "${other_sites[@]}"; do
+  # state.json holds the number twice, and has cases of its own above.
+  case "$site" in */state.json) continue ;; esac
+  root=$(fixture "behind-${site//\//-}")
+  declaration 7 > "$root/stub/refs/main"
+  declaration 8 > "$root/packages/daemon/internal/api/version.go"
+  sites "$root" 8
+  holding "$site" 7 > "$root/$site"
+  no_open_pull_requests "$root"
+  pull_request_event "$root" main
+  run_check "$root" pull_request
+  check "$site at 7: exits 1" "$(is "$status" 1)"
+  check "$site at 7: names that file, the number it holds and the number version.go declares" \
+    "$(contains "$out" "^::error file=$site::$site holds daemon API contract 7 at [a-zA-Z.]*, and packages/daemon/internal/api/version.go declares 8\.")"
+  check "$site at 7: names every file that holds the number" "$(contains "$out" "$all_files")"
+  check "$site at 7: says how to write the number" "$(contains "$out" "$update_command")"
+  check "$site at 7: reads no open pull request" "$(is "$queries" 0)"
+done
+
+# unreadable <name> <site> <text> <reason>: a bump from 7 to 8 whose <site> holds <text>, or is
+# missing where <text> is empty, which the check refuses as a read that failed for <reason>.
+unreadable() {
+  local root
+  root=$(fixture "unreadable-site-$1")
+  declaration 7 > "$root/stub/refs/main"
+  declaration 8 > "$root/packages/daemon/internal/api/version.go"
+  sites "$root" 8
+  if [ -n "$3" ]; then
+    printf '%s\n' "$3" > "$root/$2"
+  else
+    rm "$root/$2"
+  fi
+  no_open_pull_requests "$root"
+  pull_request_event "$root" main
+  run_check "$root" pull_request
+  check "$1: exits 1" "$(is "$status" 1)"
+  check "$1: names the read that failed" \
+    "$(contains "$out" "^::error file=$2::could not read $2 in this checkout: $4")"
+  check "$1: does not pass for want of a reading" "$(is "$(contains "$out" 'is above')" false)"
+  check "$1: reads no open pull request" "$(is "$queries" 0)"
+  check "$1: no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+}
+
+echo "case: a file beside version.go that the check cannot read"
+unreadable missing packages/pi-legion/package.json '' 'it is missing$'
+unreadable not-json packages/claude-envoy/package.json '{"legion": {"daemonApiVersion": 8' \
+  'it is not JSON ('
+unreadable no-field packages/contracts/fixtures/daemon-api/version.json '{"contractVersion": 8}' \
+  'it holds no daemonApiVersion$'
+unreadable string packages/contracts/fixtures/daemon-api/version.json '{"daemonApiVersion": "8"}' \
+  'its daemonApiVersion is "8", not an integer$'
+# JSON's true is a Python bool, which Python counts an int.
+unreadable true packages/contracts/fixtures/daemon-api/state.json \
+  '{"contract": {"daemon": true, "caller": 8}}' 'its contract.daemon is true, not an integer$'
+# 8.0 equals 8 in Python, so a check that took it would pass a file that holds no integer.
+unreadable float packages/pi-legion/package.json '{"legion": {"daemonApiVersion": 8.0}}' \
+  'its legion.daemonApiVersion is 8.0, not an integer$'
+
+echo "case: an edit of the doc comment above the history, the number left alone"
+root=$(fixture doc-comment)
+# The header above the first history entry holds no number, so an edit of it alone owes no bump,
+# which would relaunch every registered claim onto a plugin that changed nothing.
+base=$(built_on "$root" 7)
+declaration 7 > "$root/stub/refs/main"
+text=$(declaration 7)
+printf '%s\n' "${text/in its pods./in its pods. Its bump rule names the files that hold it.}" \
+  > "$root/packages/daemon/internal/api/version.go"
+sites "$root" 7
+no_open_pull_requests "$root"
+pull_request_event "$root" main
+run_check "$root" pull_request
+check "its version.go is not the one it was built on" \
+  "$(is "$(cmp -s "$root/packages/daemon/internal/api/version.go" "$root/stub/refs/$base" && echo same || echo differs)" differs)"
+check "exits 0" "$(is "$status" 0)"
+check "says it declares none of its own, naming the commit it was built on" \
+  "$(contains "$out" "leaves the history and the declaration in packages/daemon/internal/api/version.go as the commit GitHub built this pull request's merge ref on ($base) has them (contract 7), so it declares no daemon API contract of its own")"
+check "takes no number for an edit above the history" "$(is "$(contains "$out" 'Take ')" false)"
+check "reads no open pull request" "$(is "$queries" 0)"
+
+echo "case: an edit of a history entry, the number left alone"
+root=$(fixture history-entry)
+built_on "$root" 7 > /dev/null
+declaration 7 > "$root/stub/refs/main"
+text=$(declaration 7)
+printf '%s\n' "${text/the shapes the plugin parses/the shapes and the flags the plugin parses}" \
+  > "$root/packages/daemon/internal/api/version.go"
+sites "$root" 7
+no_open_pull_requests "$root"
+pull_request_event "$root" main
+run_check "$root" pull_request
+check "exits 1" "$(is "$status" 1)"
+check "names the declaration and its line" \
+  "$(contains "$out" '^::error file=packages/daemon/internal/api/version.go::packages/daemon/internal/api/version.go:6:')"
+check "names both numbers" \
+  "$(contains "$out" 'declares daemon API contract 7, which is not above the 7 the base carries (the tip of main)')"
+check "names the free number" "$(contains "$out" 'Take 8, the lowest number above')"
+check "names every file that holds the number" "$(contains "$out" "$all_files")"
+check "reads the open pull requests once" "$(is "$queries" 1)"
+
+echo "case: a declaration bump with no history entry at its number"
+root=$(fixture const-without-history)
+built_on "$root" 7 > /dev/null
+declaration 7 > "$root/stub/refs/main"
+declaration 7 > "$root/packages/daemon/internal/api/version.go"
+sed -i 's/^const DaemonAPIVersion = 7$/const DaemonAPIVersion = 8/' \
+  "$root/packages/daemon/internal/api/version.go"
+sites "$root" 8
+no_open_pull_requests "$root"
+pull_request_event "$root" main
+run_check "$root" pull_request
+check "exits 1" "$(is "$status" 1)"
+# shellcheck disable=SC2016 # the backticks are the refusal's own text, not a substitution
+check "names the missing history entry" \
+  "$(contains "$out" 'declares daemon API contract 8, but its history has no `// 8:` entry')"
+check "names the free number" "$(contains "$out" 'Take 8, the lowest number above')"
+check "reads the open pull requests once" "$(is "$queries" 1)"
+
+echo "case: a declaration bump whose only line at its number is an entry's wrapped prose"
+root=$(fixture const-with-prose-number)
+built_on "$root" 7 > /dev/null
+declaration 7 > "$root/stub/refs/main"
+declaration 7 "a reading taken between 07:58Z and" > "$root/packages/daemon/internal/api/version.go"
+sed -i -e 's/^const DaemonAPIVersion = 7$/const DaemonAPIVersion = 8/' \
+  -e 's|^// a reading taken between 07:58Z and$|// a reading taken between 07:58Z and\n// 8:04Z, which the bump cites|' \
+  "$root/packages/daemon/internal/api/version.go"
+sites "$root" 8
+no_open_pull_requests "$root"
+pull_request_event "$root" main
+run_check "$root" pull_request
+check "the miniature file has the wrapped line" \
+  "$(contains "$(cat "$root/packages/daemon/internal/api/version.go")" '^// 8:04Z')"
+check "exits 1" "$(is "$status" 1)"
+# shellcheck disable=SC2016 # the backticks are the refusal's own text, not a substitution
+check "names the missing history entry" \
+  "$(contains "$out" 'declares daemon API contract 8, but its history has no `// 8:` entry')"
+
+echo "case: a python3 after the stub that starts the interpreter with a PATH of its own"
+# A stricter form of what mise's shim did (the comment on $python above): this python3 starts the
+# interpreter with the PATH this harness had and leaves the fixture's bin directory out, where mise
+# put it behind its environment's own entries. So a script whose `python3` were this one would read
+# the base with this harness's own gh, or with none, and never through the stub, whether or not
+# this harness's PATH holds a gh. The fixture's link comes first, so the script never meets it. The
+# two checks before the case show the resetting python3 does what the row needs, so the row can
+# fail.
+# The case is "a tree above its base" above, in a merge group, whose one GitHub read is the base.
+resetting=$work/resetting-python
+mkdir -p "$resetting/probe"
+printf '%s' "$PATH" > "$resetting/path"
+cat > "$resetting/python3" <<EOF
+#!/bin/sh
+PATH=\$(cat '$resetting/path') exec '$python' "\$@"
+EOF
+printf '#!/bin/sh\nexit 0\n' > "$resetting/probe/gh"
+chmod +x "$resetting/python3" "$resetting/probe/gh"
+check "without a link of its own, a PATH's python3 is the resetting one" \
+  "$(is "$(PATH="$resetting/probe:$resetting:$PATH" command -v python3)" "$resetting/python3")"
+check "  and the interpreter it starts does not find the gh before it" \
+  "$(is "$(PATH="$resetting/probe:$resetting:$PATH" python3 -c 'import shutil; print(shutil.which("gh"))')" \
+    "$(command -v gh || echo None)")"
+root=$(fixture after-a-resetting-python3)
+base_sha=cccccccccccccccccccccccccccccccccccccccc
+declaration 7 > "$root/stub/refs/$base_sha"
+declaration 8 > "$root/packages/daemon/internal/api/version.go"
+sites "$root" 8
+merge_group_event "$root" "$base_sha"
+set +e
+out=$(PATH="$root/bin:$resetting:$PATH" STUB_DIR="$root/stub" GITHUB_EVENT_NAME=merge_group \
+  GITHUB_EVENT_PATH="$root/event.json" GITHUB_REPOSITORY="example-owner/example-repo" \
+  "$root/.github/scripts/check-daemon-api-contract.sh" 2>&1)
+status=$?
+set -e
+check "exits 0" "$(is "$status" 0)"
+check "reads the base through the stub" \
+  "$(contains "$out" "daemon API contract 8 is above the 7 the base carries (the commit the queue built this group on ($base_sha))")"
 
 summary "check-daemon-api-contract.sh"

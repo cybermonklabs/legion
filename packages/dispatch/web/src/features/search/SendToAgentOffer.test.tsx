@@ -1,4 +1,4 @@
-import { expect, type Mock, spyOn, test } from "bun:test";
+import { expect, jest, type Mock, spyOn, test } from "bun:test";
 import type { IssueClaimHolderState } from "@legion/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor } from "@testing-library/react";
@@ -6,10 +6,14 @@ import type { UserEvent } from "@testing-library/user-event";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
-import { api } from "../../api/client";
+import { realClock } from "../../__tests__/fake-clock";
+import { stopTheLateWrite } from "../../__tests__/stop-late-write";
+import { userOnFakeClock } from "../../__tests__/user";
+import { api, NetworkError } from "../../api/client";
 import type { IssueClaim, IssueDetails, Message } from "../../api/types";
 import { BLOCK_ID_ATTRIBUTE } from "../doc/block-id";
 import { KeymapProvider } from "../shell/KeymapProvider";
+import { stoppedWriteNote } from "../writes/keyed-write";
 import { SearchPalette } from "./SearchPalette";
 import { searchAnswer } from "./search-fixture";
 import { handoffBody } from "./send-to-agent";
@@ -88,6 +92,7 @@ function issueDetails(
 
 interface Stubs {
   readonly createAgentMessage: Mock<typeof api.createAgentMessage>;
+  readonly queryClient: QueryClient;
   readonly restore: () => void;
 }
 
@@ -113,6 +118,7 @@ function openBar(claim: IssueClaim | null, holderState: IssueClaimHolderState | 
   );
   return {
     createAgentMessage,
+    queryClient,
     restore: () => {
       for (const stub of [search, getIssue, listAgents, createAgentMessage]) {
         stub.mockRestore();
@@ -199,6 +205,31 @@ test("approving sends one message naming the issue and the words, and the bar sa
   }
 });
 
+// INFRA-626. A session that stopped between the bar's read and the send has the words stored for
+// it rather than refused: the bar says so in the words every queued attempt reads, and offers no
+// second press, which would store a second copy.
+test("a send the listener queued for a session that has stopped says so, and is not offered again", async () => {
+  const user = userEvent.setup();
+  const bar = openBar(sessionClaim, "live");
+  bar.createAgentMessage.mockResolvedValue({
+    deliveries: [{ delivery: "aside", state: "queued" }],
+  } as Message);
+  try {
+    await typeWords(user);
+    await user.click(await waitFor(() => screen.getByText(offerLabel)));
+
+    await waitFor(() =>
+      expect(screen.getByTestId("search-send-to-agent-said").textContent).toMatch(
+        /^Queued: .+ is stopped; it gets the message if it runs again within 72 hours$/
+      )
+    );
+    expect(screen.queryByText(offerLabel)).toBeNull();
+    expect(bar.createAgentMessage).toHaveBeenCalledTimes(1);
+  } finally {
+    bar.restore();
+  }
+});
+
 test("the row is absent with no claim, a person's claim, a holder that stopped, or no registry", async () => {
   const user = userEvent.setup();
   const absent: [string, IssueClaim | null, IssueClaimHolderState | null][] = [
@@ -262,5 +293,31 @@ test("Tab narrows the chip to the block, and the message names that block before
   } finally {
     bar.restore();
     block.remove();
+  }
+});
+
+// A send the person stopped may have reached the agent: the line says so, and that pressing the
+// row again sends a new message, rather than "Could not send it" in the stopped write's own
+// words, which promise a Retry the bar does not offer.
+test("a send the person stopped says it may have been sent, not that it could not be", async () => {
+  const user = userEvent.setup();
+  const bar = openBar(sessionClaim, "live");
+  try {
+    bar.createAgentMessage.mockRejectedValue(
+      new NetworkError("/api/v1/agents/session-one/messages", new TypeError("Failed to fetch"))
+    );
+    await typeWords(user);
+    const row = await waitFor(() => screen.getByText(offerLabel));
+    jest.useFakeTimers();
+    await userOnFakeClock().click(row);
+    await stopTheLateWrite(bar.queryClient);
+    expect(screen.getByTestId("search-send-to-agent-said").textContent).toBe(
+      stoppedWriteNote(`your message to the agent on ${issueKey}`, "sent", {
+        anew: "Pressing Send this to the agent again sends it as a new message.",
+      })
+    );
+  } finally {
+    realClock();
+    bar.restore();
   }
 });

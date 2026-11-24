@@ -19,12 +19,13 @@
  */
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { agentSubject, EnvelopeSchema } from "@legion/contracts";
+import { EnvelopeSchema, legacyAgentSubject } from "@legion/contracts";
 import { connect, Events, type KV, type NatsConnection, StringCodec } from "nats";
 import { z } from "zod";
 import { createConsumerDelivery } from "../src/consumer-delivery";
 import { createDeliveryLedger } from "../src/delivery-ledger";
 import { createEnvoyClient, type EnvoyClient, type SessionState } from "../src/transport";
+import { delivered } from "./delivered";
 import {
   type EnvoyStack,
   envoyStackEnabled,
@@ -157,7 +158,7 @@ async function runSessionChild(config: ChildConfig): Promise<never> {
     process.stdout.write(`${JSON.stringify(event)}\n`);
   };
   const client = createEnvoyClient({ baseUrl: config.envoyUrl, fetch });
-  const subject = agentSubject(config.sessionID);
+  const subject = legacyAgentSubject(config.sessionID);
   const nats = await connect({ servers: [config.natsUrl], name: config.sessionID });
   const codec = StringCodec();
   // The ledger a host keeps of what it has already shown. Nothing is persisted: this child lives
@@ -513,12 +514,14 @@ describe.skipIf(!envoyStackEnabled)("a session its box stalls", () => {
   test("a stalled session keeps its role claim through any number of lookups, and a send to it is stored and arrives when it answers again", async () => {
     const { envoyUrl, claims, child, client } = rig();
     const live = `stall-live-${crypto.randomUUID()}`;
-    const sentLive = await client.send({
-      source: "agent",
-      sourceSessionID: OBSERVER_SESSION,
-      targetSessionID: child.sessionID,
-      message: live,
-    });
+    const sentLive = delivered(
+      await client.send({
+        source: "agent",
+        sourceSessionID: OBSERVER_SESSION,
+        targetSessionID: child.sessionID,
+        message: live,
+      })
+    );
     expect(sentLive.recipientState).toBe("live");
     await until(`${live} to reach the live session`, Date.now() + 30_000, () =>
       child.messages().includes(live)
@@ -554,12 +557,14 @@ describe.skipIf(!envoyStackEnabled)("a session its box stalls", () => {
     // (5) A send to it is taken and stored, naming the state it was taken for, and reaches the
     // session when it answers again — which is what a stalled pane must find waiting for it.
     const missed = `stall-missed-${crypto.randomUUID()}`;
-    const sentStalled = await client.send({
-      source: "agent",
-      sourceSessionID: OBSERVER_SESSION,
-      targetSessionID: child.sessionID,
-      message: missed,
-    });
+    const sentStalled = delivered(
+      await client.send({
+        source: "agent",
+        sourceSessionID: OBSERVER_SESSION,
+        targetSessionID: child.sessionID,
+        message: missed,
+      })
+    );
     expect(sentStalled.recipientState).toBe("unresponsive");
     expect(child.messages()).not.toContain(missed);
 

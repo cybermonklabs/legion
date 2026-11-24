@@ -4,13 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 
+	"github.com/sjawhar/legion/daemon/internal/rolefile"
 	"golang.org/x/sys/unix"
 )
 
@@ -30,7 +30,7 @@ const gitWorktreeLockReason = "legion workspace: its directory may be invisible 
 const rootCommitID = "0000000000000000000000000000000000000000"
 
 // rootHeadRef is the unborn ref jj's own colocated `workspace add` writes to HEAD when a
-// workspace's working copy has no real parent yet (verified against jj 0.45.1-sami).
+// workspace's working copy has no real parent yet (verified against jj 0.46.0-sami).
 const rootHeadRef = "ref: refs/jj/root"
 
 // gitWorktreeEntries is the admin directories of the shared clone's git worktrees registered at
@@ -209,9 +209,11 @@ const gitdirLimit = 4096 + 1
 // the issue's volume, which every role of the pod writes as the pod's uid. Both of the pod's
 // sweeps read every entry's gitdir — the launcher's in PID 1 of the roles container, where a read
 // that never ends stalls every pass behind the sweep's lock and a read that runs away ends the
-// process. So it is opened without following a link, blocking on a special file or taking a
-// terminal for PID 1's own, held to a regular file by the descriptor it opened (openRegular), and
-// read only up to gitdirLimit (readBounded), as Created reads the workspace's creation record.
+// process. So it is read as every file a role can write is read where something waits on the
+// reader (rolefile.Read): opened without following a link, blocking on a special file or taking a
+// terminal for PID 1's own, held to a regular file by the descriptor it opened, and read only up
+// to gitdirLimit, as Created reads the workspace's creation record and the leak-check install
+// reads its tag.
 // The workspace's .git is the pointer to its entry (whyNoOwnEntry, and restoreGitWorktree, which a
 // provision of an existing workspace runs), and its .jj/repo the pointer to its repository
 // (config.go's workspaceRepository, which the runner reads before each jj command). Every one of
@@ -225,117 +227,25 @@ const gitdirLimit = 4096 + 1
 // refusal of the walk: gitWorktreeEntries passes such an entry over, and names it only when no
 // entry is the workspace's own and the workspace's .git names that one (its case C).
 func readGitdir(path string) (string, error) {
-	file, err := openRegular(unix.AT_FDCWD, path, path, unix.O_RDONLY, 0)
-	if err != nil {
-		return "", err
-	}
-	defer file.Close()
-	body, err := readBounded(file, path, gitdirLimit-1)
+	body, err := rolefile.Read(path, gitdirLimit-1)
 	return string(body), err
-}
-
-// openRegular opens name under the directory dirfd (unix.AT_FDCWD for a path) with flag and,
-// when flag creates it, perm, and answers it only when the descriptor it opened is a regular
-// file; path is name as the errors print it. It is how this package opens a file a role can
-// write, for a caller that holds something others wait on: it never follows a link at name
-// (O_NOFOLLOW, which answers ELOOP), never waits on a fifo or a device (O_NONBLOCK, which a
-// regular file ignores), never takes a terminal (O_NOCTTY), and refuses each in words naming the
-// file — a symlink, a socket (which open answers with ENXIO), a directory (EISDIR, for a flag that
-// writes), or whatever else the descriptor is. Any other failure is open's own error, as
-// os.OpenFile words it.
-func openRegular(dirfd int, name, path string, flag int, perm uint32) (*os.File, error) {
-	fd, err := openat(dirfd, name, flag|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_NOCTTY|unix.O_CLOEXEC, perm)
-	switch {
-	case errors.Is(err, unix.ELOOP):
-		return nil, fmt.Errorf("%s is a symlink", path)
-	case errors.Is(err, unix.ENXIO):
-		return nil, fmt.Errorf("%s is a socket", path)
-	case errors.Is(err, unix.EISDIR):
-		return nil, fmt.Errorf("%s is a directory", path)
-	case err != nil:
-		return nil, &fs.PathError{Op: "open", Path: path, Err: err}
-	}
-	file := os.NewFile(uintptr(fd), path)
-	info, err := file.Stat()
-	if err != nil {
-		_ = file.Close()
-		return nil, err
-	}
-	if !info.Mode().IsRegular() {
-		_ = file.Close()
-		return nil, fmt.Errorf("%s is a %s", path, fileKind(info.Mode()))
-	}
-	return file, nil
-}
-
-// readBounded reads file, which openRegular opened as path, from where it stands to its end, and
-// refuses it rather than read on once it holds more than limit bytes: a file a role wrote can be
-// any size, and a reader that holds it whole in memory is one a role can end.
-func readBounded(file *os.File, path string, limit int) ([]byte, error) {
-	body, err := io.ReadAll(io.LimitReader(file, int64(limit)+1))
-	if err != nil {
-		return nil, err
-	}
-	if len(body) > limit {
-		return nil, fmt.Errorf("%s is larger than %d bytes", path, limit)
-	}
-	return body, nil
-}
-
-// openDirectory is a descriptor of the directory name under dirfd (unix.AT_FDCWD for a path),
-// path being name as the errors print it, for a caller that writes under it: a symlink at name is
-// refused in words rather than followed (O_NOFOLLOW, which answers ELOOP), and anything at name
-// but a directory, a fifo or a device among them, is opened without a wait (O_NONBLOCK, O_NOCTTY)
-// and refused by what its descriptor is. O_DIRECTORY is deliberately not asked for: gVisor, the
-// kernel this tree's tests run under, follows a link at name when O_DIRECTORY and O_NOFOLLOW are
-// both set (measured: the open succeeds through the link), where O_NOFOLLOW alone answers ELOOP.
-func openDirectory(dirfd int, name, path string) (int, error) {
-	fd, err := openat(dirfd, name, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_NOCTTY|unix.O_CLOEXEC, 0)
-	switch {
-	case errors.Is(err, unix.ELOOP):
-		return -1, fmt.Errorf("%s is a symlink", path)
-	case errors.Is(err, unix.ENXIO):
-		return -1, fmt.Errorf("%s is a socket", path)
-	case err != nil:
-		return -1, &fs.PathError{Op: "open", Path: path, Err: err}
-	}
-	var stat unix.Stat_t
-	if err := unix.Fstat(fd, &stat); err != nil {
-		_ = unix.Close(fd)
-		return -1, &fs.PathError{Op: "fstat", Path: path, Err: err}
-	}
-	if stat.Mode&unix.S_IFMT != unix.S_IFDIR {
-		_ = unix.Close(fd)
-		return -1, fmt.Errorf("%s is no directory", path)
-	}
-	return fd, nil
-}
-
-// openat is unix.Openat, asked again when a signal interrupted it, as os.OpenFile asks.
-func openat(dirfd int, name string, flag int, perm uint32) (int, error) {
-	for {
-		fd, err := unix.Openat(dirfd, name, flag, perm)
-		if !errors.Is(err, unix.EINTR) {
-			return fd, err
-		}
-	}
 }
 
 // createFile creates the file at path, which must not exist yet, holding content: an existing one
 // is open's own EEXIST, never opened, so a fifo a role planted there holds no write open and a
 // symlink sends no write anywhere (O_EXCL). Its directory is opened first, refused when it is a
-// symlink (openDirectory), and the file is created under that descriptor, so the directory
-// cannot be swapped for a link between the two. Both of its callers write under the shared
-// clone's .git/worktrees, which a role can write: lockGitWorktree, into each own entry it listed,
-// and restoreGitWorktree, into the temporary entry it made.
+// symlink (rolefile.OpenDirectory), and the file is created under that descriptor, so the
+// directory cannot be swapped for a link between the two. Both of its callers write under the
+// shared clone's .git/worktrees, which a role can write: lockGitWorktree, into each own entry it
+// listed, and restoreGitWorktree, into the temporary entry it made.
 func createFile(path, content string) error {
 	dir := filepath.Dir(path)
-	parent, err := openDirectory(unix.AT_FDCWD, dir, dir)
+	parent, err := rolefile.OpenDirectory(unix.AT_FDCWD, dir, dir)
 	if err != nil {
 		return err
 	}
 	defer unix.Close(parent)
-	fd, err := openat(parent, filepath.Base(path), unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0o644)
+	fd, err := rolefile.Openat(parent, filepath.Base(path), unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0o644)
 	if err != nil {
 		return &fs.PathError{Op: "open", Path: path, Err: err}
 	}
@@ -348,10 +258,10 @@ func createFile(path, content string) error {
 }
 
 // chmodDirectory sets the mode of the directory at path through a descriptor of it opened without
-// following a link (openDirectory), so a symlink swapped in at path changes the mode of nothing
-// else.
+// following a link (rolefile.OpenDirectory), so a symlink swapped in at path changes the mode of
+// nothing else.
 func chmodDirectory(path string, mode uint32) error {
-	fd, err := openDirectory(unix.AT_FDCWD, path, path)
+	fd, err := rolefile.OpenDirectory(unix.AT_FDCWD, path, path)
 	if err != nil {
 		return err
 	}
@@ -466,28 +376,14 @@ func removeGitWorktree(cloneDir, dir string) error {
 		return unread
 	}
 	for _, entry := range own {
-		// No row covers removeTree here: the window it closes is a swap of .git/worktrees for a
-		// fifo between gitWorktreeEntries' ReadDir and this removal, which no test can land in
-		// deterministically.
-		if err := removeTree(entry); err != nil {
+		// No row covers rolefile.RemoveTree here: the window it closes is a swap of
+		// .git/worktrees for a fifo between gitWorktreeEntries' ReadDir and this removal, which no
+		// test can land in deterministically.
+		if err := rolefile.RemoveTree(entry); err != nil {
 			return fmt.Errorf("remove git worktree %s: %w", entry, err)
 		}
 	}
 	return nil
-}
-
-// removeTree removes path and everything under it, as os.RemoveAll does, without ever waiting on
-// the directory path is in. Every path it is handed is under the shared clone's .git/worktrees,
-// which a role can swap for a fifo: os.RemoveAll, when path is no file it can unlink outright,
-// opens path's parent with a plain open(2) to remove what is under path (os/removeall_at.go), and
-// a plain open of a fifo waits for a writer for as long as none comes, under whatever its caller
-// holds (the tmux daemon's store lock among them). So path is named through its parent's own "."
-// entry: os.RemoveAll opens `<parent>/.` instead, which the kernel resolves only through a
-// directory, and a parent that is no directory is ENOTDIR at once. Below path os.RemoveAll opens
-// every directory with O_DIRECTORY and O_NOFOLLOW already, so nothing it walks there can hold it.
-func removeTree(path string) error {
-	parent, name := filepath.Split(filepath.Clean(path))
-	return os.RemoveAll(parent + "." + string(filepath.Separator) + name)
 }
 
 // lockGitWorktree locks the shared clone's git worktree entry for dir, as `git worktree lock` does,
@@ -612,13 +508,13 @@ func restoreGitWorktree(ctx context.Context, run Runner, workspace Workspace, lo
 	if err != nil {
 		return fmt.Errorf("restore git worktree %s: %w", target, err)
 	}
-	defer func() { _ = removeTree(tmp) }()
+	defer func() { _ = rolefile.RemoveTree(tmp) }()
 	// MkdirTemp creates tmp at 0700; git's own worktree entries land at 0755 (a plain mkdir under
 	// the ordinary 022 umask), and this restore's doc comment says it writes what `git worktree add`
 	// would, so the mode matches too. The mode is set through a descriptor of tmp opened without
-	// following a link (openDirectory), never by its path: a role that swapped tmp for a symlink
-	// would otherwise have this chmod any directory the link names. No row covers it: the window is
-	// a swap between two syscalls (MkdirTemp and this open), which no test can land in
+	// following a link (rolefile.OpenDirectory), never by its path: a role that swapped tmp for a
+	// symlink would otherwise have this chmod any directory the link names. No row covers it: the
+	// window is a swap between two syscalls (MkdirTemp and this open), which no test can land in
 	// deterministically.
 	if err := chmodDirectory(tmp, 0o755); err != nil {
 		return fmt.Errorf("restore git worktree %s: %w", target, err)
@@ -679,7 +575,7 @@ func restoreGitWorktree(ctx context.Context, run Runner, workspace Workspace, lo
 				continue
 			}
 			entry := filepath.Join(worktrees, listedEntry.Name())
-			if err := removeTree(entry); err != nil {
+			if err := rolefile.RemoveTree(entry); err != nil {
 				log(fmt.Sprintf("Workspace %s: could not remove the stale restore entry %s: %v", workspace.Dir, entry, err))
 			}
 		}

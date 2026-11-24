@@ -51,17 +51,19 @@ import (
 //     blocked by that issue, and takes the row again and starts its planning when the issue
 //     closes;
 //  4. a child released through release_children is held, the answer naming the issue it waits on,
-//     and starts when that issue closes, its tree's architect told so by a child-status notice
-//     naming the issue it waited on; and a child released out of backlog is recorded by the
-//     release's own todo write, held at admitted and named blocked on that same issue as the
-//     answer says, while an unblocked one released beside it is started by its release, and the
-//     todo events of those writes, when the daemon's consumer delivers them, change nothing;
+//     and starts when that issue closes, the architect above it (here its tree's) told so by a
+//     child-status notice naming the issue it waited on; and a child released out of backlog is
+//     recorded by the release's own todo write, held at admitted and named blocked on that same
+//     issue as the answer says, while an unblocked one released beside it is started by its
+//     release, and the todo events of those writes, when the daemon's consumer delivers them,
+//     change nothing;
 //  5. a waiting root a person moves to backlog and back to todo is still checked, since only a tree
 //     that ran starts again when Legion takes it back, and is admitted when its blocker closes;
 //  6. a root waiting on an issue Legion keeps no record of and nobody handed to it is admitted by
 //     that issue's closing event alone, not by the controller tick that follows;
-//  7. a held child whose blocked-by links a person takes off starts, and its tree's architect is
-//     told by a child-status notice that the links were taken off;
+//  7. a held child whose blocked-by links a person takes off starts, and the architect above it
+//     (here its tree's) is told by a child-status notice that it reached the front of the waiting
+//     line;
 //  8. a child that ran in its tree's earlier run and comes to Legion as a root of its own once
 //     that tree finishes is checked like any other root — one set back to todo and held in its
 //     tree before the tree closed, and one closed and set back to todo after;
@@ -70,6 +72,7 @@ import (
 //     takes back and nothing else, so step 8 cannot pass by checking everything;
 //  10. the roots of step 8 are admitted when that blocker closes.
 func TestBlockedIssuesAreNotStartedAgainstScratchDispatch(t *testing.T) {
+	t.Parallel()
 	// The NATS server is taken first: testnats.URL empties it of every stream, and Dispatch
 	// reconciles ENVOY_NOTIFICATIONS on it on its first connection, which the daemon then consumes
 	// from.
@@ -101,8 +104,8 @@ func TestBlockedIssuesAreNotStartedAgainstScratchDispatch(t *testing.T) {
 	}
 	dispatchCall(t, baseURL, http.MethodPost, "/api/v1/projects",
 		map[string]string{"key": cfg.Project, "name": "Blocked issues"}, nil)
-	dispatchCall(t, baseURL, http.MethodPut, "/api/v1/settings/repo-projects/acme/widgets",
-		map[string]any{"project": cfg.Project, "default": true}, nil)
+	dispatchCall(t, baseURL, http.MethodPut, "/api/v1/projects/"+cfg.Project+"/default-repository",
+		map[string]any{"repo": "acme/widgets"}, nil)
 
 	rt := fake.NewRuntime()
 	// A pods runtime provisions each claim's workspace itself, so the daemon clones nothing: these
@@ -451,10 +454,11 @@ func TestBlockedIssuesAreNotStartedAgainstScratchDispatch(t *testing.T) {
 	}
 	// The tree's architect is told the child it held starts, and why: the child-status notice the
 	// daemon queued on the child, in the very transaction that started it, naming the issue it
-	// waited on.
+	// waited on and saying that the child's own architect owns it while that architect holds its
+	// role.
 	notices := childStatusNotices(t, pool, child)
 	t.Logf("the child-status notices the daemon queued on %s for its tree's architect: %q", child, notices)
-	wantNotice := fmt.Sprintf("%s starts planning under %s: every issue it waited on (%s) is done", child, free, blocked)
+	wantNotice := fmt.Sprintf("%s starts planning under %s: every issue it waited on (%s) is done", child, free, blocked) + childStartedOwnership
 	if !slices.Equal(notices, []string{wantNotice}) {
 		t.Fatalf("Legion started the held child %s once %s closed and queued its tree's architect the child-status notices %q; "+
 			"want the one reading %q\nstate %s", child, blocked, notices, wantNotice, body)
@@ -666,7 +670,7 @@ func TestBlockedIssuesAreNotStartedAgainstScratchDispatch(t *testing.T) {
 	}
 	notices = childStatusNotices(t, pool, unlinked)
 	t.Logf("the child-status notices the daemon queued on %s for its tree's architect: %q", unlinked, notices)
-	wantNotice = fmt.Sprintf("%s starts planning under %s: it reached the front of the waiting line and took an admission slot", unlinked, free)
+	wantNotice = fmt.Sprintf("%s starts planning under %s: it reached the front of the waiting line and took an admission slot", unlinked, free) + childStartedOwnership
 	if !slices.Equal(notices, []string{wantNotice}) {
 		t.Fatalf("Legion started the held child %s once a person took its links off and queued its tree's architect the child-status "+
 			"notices %q; want the one reading %q: a start nobody hears of is the silence the hold's report exists to remove\nstate %s",
@@ -716,24 +720,28 @@ func TestBlockedIssuesAreNotStartedAgainstScratchDispatch(t *testing.T) {
 		}
 	}
 
-	// The planner the child's run launched registers, as its plugin does once its agent boots. The
-	// re-entry below suspends it, and a suspend reaching an agent still booting is held until the
-	// agent is ready; this harness boots no agent, so unregistered it would stay launching under
-	// the tree it ran in, and the cleanup of that tree, which step 9's re-admission waits on, would
-	// wait on it in turn.
-	planner, err := claim.NewToken(project, child, claim.RolePlanner)
-	if err != nil {
-		t.Fatalf("the planner claim token of %s: %v", child, err)
-	}
-	testwait.Eventually(t, "the daemon to launch the planner of "+child, func() bool {
-		for _, call := range rt.Calls() {
-			if (call.Method == "Spawn" || call.Method == "Resume") && call.Spec.Claim == planner {
-				return true
-			}
+	// The two claims the child's run launched register, as their plugins do once their agents
+	// boot: its planner, and its own architect, which every child's first phase start starts beside
+	// the planner. The close of the tree they ran in, below, suspends every claim of that tree's
+	// issues, and a suspend reaching an agent still booting is held until the agent is ready; this
+	// harness boots no agent, so either claim left unregistered would stay launching under that
+	// tree once the child is handed over as a root of its own, and the cleanup of that tree, which
+	// step 9's re-admission waits on, would wait on it in turn.
+	for _, role := range []claim.Role{claim.RolePlanner, claim.RoleArchitect} {
+		token, err := claim.NewToken(project, child, role)
+		if err != nil {
+			t.Fatalf("the %s claim token of %s: %v", role, child, err)
 		}
-		return false
-	})
-	registerLaunch(t, d, lastLaunch(t, rt, planner))
+		testwait.Eventually(t, "the daemon to launch the "+string(role)+" of "+child, func() bool {
+			for _, call := range rt.Calls() {
+				if (call.Method == "Spawn" || call.Method == "Resume") && call.Spec.Claim == token {
+					return true
+				}
+			}
+			return false
+		})
+		registerLaunch(t, d, lastLaunch(t, rt, token))
+	}
 
 	ran := state.Issues[child].Generation
 	setDispatchStatus(t, baseURL, child, "in_progress")
@@ -773,13 +781,13 @@ func TestBlockedIssuesAreNotStartedAgainstScratchDispatch(t *testing.T) {
 	// The hand-over is read off the record, as the tree the child stands in: it becomes a tree of
 	// its own. A place in `admission.waiting` or `admission.active` no longer marks it. The child
 	// re-entered its tree at admitted when a person set it back to todo, and the daemon had
-	// started it, so it would keep its admission slot until its work is past its review
-	// (record.KeepsSlot); but it waits on `elsewhere`, and a started issue that waits on another
-	// issue holds no slot while it waits (admit's releaseSlotsForWaits) and stands in
-	// `admission.waiting` and `admission.blocked`. So it stands in `admission.waiting` from its
-	// re-entry on, as it does after the hand-over, and a predicate reading that list would be true
-	// before the close of `free` was consumed at all and would judge the state before the
-	// hand-over.
+	// started it, so it would keep its admission slot while it stands in a phase that keeps one,
+	// as admitted does (record.KeepsSlot); but it waits on `elsewhere`, and a started issue that
+	// waits on another issue holds no slot while it waits (admit's releaseSlotsForWaits) and
+	// stands in `admission.waiting` and `admission.blocked`. So it stands in `admission.waiting`
+	// from its re-entry on, as it does after the hand-over, and a predicate reading that list
+	// would be true before the close of `free` was consumed at all and would judge the state
+	// before the hand-over.
 	state, body = settled(t, d, "hand "+child+" over as a root of its own once "+free+" closed", func(s api.State) bool {
 		return s.Issues[child].Tree == child
 	})
@@ -863,7 +871,7 @@ func settled(t *testing.T, d *daemon, what string, want func(api.State) bool) (a
 	t.Helper()
 	var state api.State
 	var body []byte
-	if !testwait.Holds(testwait.Bounded(t, time.Minute, 20*time.Second), 20*time.Millisecond, func() bool {
+	if !testwait.Holds(testwait.Remaining(t), 20*time.Millisecond, func() bool {
 		status, read := d.request(http.MethodGet, "/legion/v1/state", nil, false)
 		body = read
 		if status != http.StatusOK {
@@ -890,8 +898,17 @@ func blockedOn(state api.State, issue string) ([]string, bool) {
 	return nil, false
 }
 
+// childStartedOwnership is how every child-status notice of a child's start ends, after its
+// reason: the child's own architect starts with it and owns it while that architect holds its
+// role, so the architect it tells hears only what goes above that architect
+// (workflow.ChildStartedNotice).
+const childStartedOwnership = ". Its own architect starts with it and owns it while that architect holds its role: its " +
+	"decomposition, its children and its acceptance. You hear its child-status and child-closed notices, a worker-died or " +
+	"worker-stalled of its architect, and its other notices while its architect does not hold its role, which the daemon's " +
+	"holdsRole decides"
+
 // childStatusNotices is the reason of every child-status notice the daemon has queued on issue for
-// its tree's architect, oldest first, read off the daemon's own outbox, where a notice stands
+// the architect above it, oldest first, read off the daemon's own outbox, where a notice stands
 // until the architect's role topic takes it. Nothing in this harness answers the Envoy address the
 // notice runner publishes to, so no row is finished by a delivery while the test reads it.
 func childStatusNotices(t *testing.T, pool *store.Pool, issue string) []string {

@@ -18,7 +18,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
-	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -66,7 +65,12 @@ type branchCreate struct {
 func newBranchGitHub(t *testing.T, rt *fake.Runtime, answer func() (int, string)) *branchGitHub {
 	t.Helper()
 	g := &branchGitHub{answer: answer, defaultBranch: "main"}
-	g.url = githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
+	g.url = githubtest.Server(t, githubtest.Spec{Handle: g.handle(t, rt)})
+	return g
+}
+
+func (g *branchGitHub) handle(t *testing.T, rt *fake.Runtime) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet && r.URL.Path == "/repos/acme/widgets/pulls" {
 			_, _ = io.WriteString(w, `[]`)
 			return
@@ -100,8 +104,7 @@ func newBranchGitHub(t *testing.T, rt *fake.Runtime, answer func() (int, string)
 		default:
 			githubtest.Unexpected(t, w, r)
 		}
-	}})
-	return g
+	}
 }
 
 func (g *branchGitHub) created() []branchCreate {
@@ -125,11 +128,11 @@ func (g *branchGitHub) answerWith(answer func() (int, string)) {
 // roleTokens mints a token named for the App it is minted as, so a request shows which App made it.
 type roleTokens struct{}
 
-func (roleTokens) Token(_ context.Context, role appauth.AppRole, repo ghrepo.Repository) (appauth.Lease, error) {
-	return appauth.Lease{Token: string(role) + "-app-token-for-" + repo.Owner(), ExpiresAt: time.Now().Add(time.Hour)}, nil
+func (roleTokens) Token(_ context.Context, role appauth.AppRole, owner string) (appauth.Lease, error) {
+	return appauth.Lease{Token: string(role) + "-app-token-for-" + owner, ExpiresAt: time.Now().Add(time.Hour)}, nil
 }
 
-func (t roleTokens) ReadToken(_ context.Context, role appauth.AppRole, owner string, _ []string) (appauth.Lease, error) {
+func (t roleTokens) ReadToken(_ context.Context, role appauth.AppRole, owner string) (appauth.Lease, error) {
 	return appauth.Lease{Token: string(role) + "-app-token-for-" + owner + "-read", ExpiresAt: time.Now().Add(time.Hour)}, nil
 }
 
@@ -195,6 +198,7 @@ func (b *branchAdmission) launches() int {
 // the repository's default branch, which admission recorded. A branch GitHub already has (its
 // create answered 422 "Reference already exists") is the same success.
 func TestAdmissionCreatesTheRootsBranchAtTheDefaultBranchBeforeItsArchitectStarts(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		answer func() (int, string)
@@ -226,6 +230,7 @@ func TestAdmissionCreatesTheRootsBranchAtTheDefaultBranchBeforeItsArchitectStart
 // outbox's backoff, each attempt logged with the repository, the ref, GitHub's status and its body,
 // and the start behind it waits. Once a create passes, the architect starts.
 func TestARefusedBranchCreateHoldsTheArchitectBackUntilACreatePasses(t *testing.T) {
+	t.Parallel()
 	admitted, github := newBranchAdmission(t, branchRefused)
 
 	for range 3 {
@@ -275,6 +280,7 @@ func TestARefusedBranchCreateHoldsTheArchitectBackUntilACreatePasses(t *testing.
 // nothing and finishes: a refused create of a parked tree never retries forever, and the starts it
 // held back meet their own fences.
 func TestAnIssueBranchRowOfALeftRunFinishesWithoutACreate(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	github := newBranchGitHub(t, nil, branchRefused)
@@ -305,11 +311,11 @@ func TestAnIssueBranchRowOfALeftRunFinishesWithoutACreate(t *testing.T) {
 // refusingOwnerTokens refuses every mint, naming nothing, so a test reads what the caller names.
 type refusingOwnerTokens struct{}
 
-func (refusingOwnerTokens) Token(context.Context, appauth.AppRole, ghrepo.Repository) (appauth.Lease, error) {
+func (refusingOwnerTokens) Token(context.Context, appauth.AppRole, string) (appauth.Lease, error) {
 	return appauth.Lease{}, errors.New("GitHub is down")
 }
 
-func (refusingOwnerTokens) ReadToken(context.Context, appauth.AppRole, string, []string) (appauth.Lease, error) {
+func (refusingOwnerTokens) ReadToken(context.Context, appauth.AppRole, string) (appauth.Lease, error) {
 	return appauth.Lease{}, errors.New("GitHub is down")
 }
 
@@ -317,6 +323,7 @@ func (refusingOwnerTokens) ReadToken(context.Context, appauth.AppRole, string, [
 // record names, and a mint that fails names that owner, so the outbox's failure line says whose
 // installation refused.
 func TestBranchCreationNamesTheOwnerItMintsFor(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	issue := record.Issue{Key: "LEGION-208", Repo: "zeta/tools", DefaultBranch: "main", GitHubRepo: "zeta/tools", Project: "LEGION", Tree: "LEGION-208", Title: "Workflow",

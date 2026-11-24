@@ -1,8 +1,8 @@
 /**
  * The upstream boundary carries real types.
  *
- * proof-sdk ships sources no consumer's tsc program may open (AGENTS.md § The upstream
- * boundary). Before `upstream/` existed, every name crossing that boundary resolved to `any`:
+ * proof-sdk ships sources no consumer's tsc program may open (docs/upstream.md, "Resolving the
+ * modules"). Before `upstream/` existed, every name crossing that boundary resolved to `any`:
  * the opaque declaration they were mapped to was a script, not a module, so each import
  * silently became `any` under the copied files' `@ts-nocheck` — 49 bindings, and with them
  * `ProofEditorHandle.applyRemoteMarks`, whose mark records Dispatch builds.

@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // This file holds dispatch://INFRA-889's acceptance A1: the listener delivers nothing to a
@@ -39,7 +40,7 @@ func TestARegistrationWithAPortIsAnswered400NamingThePortField(t *testing.T) {
 			if recorder.Code != http.StatusBadRequest {
 				t.Fatalf("status = %d, want 400; body = %s", recorder.Code, recorder.Body.String())
 			}
-			var refusal apiError
+			var refusal listenerwire.APIError
 			if err := json.Unmarshal(recorder.Body.Bytes(), &refusal); err != nil {
 				t.Fatalf("decode the refusal %s: %v", recorder.Body.String(), err)
 			}
@@ -105,7 +106,7 @@ func TestARegistrationWithNoPortIsAcceptedAndListedAtPortZero(t *testing.T) {
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("GET /v1/sessions: status %d %s, want 200", recorder.Code, recorder.Body.String())
 	}
-	var listed []sessionInfo
+	var listed []listenerwire.SessionInfo
 	if err := json.Unmarshal(recorder.Body.Bytes(), &listed); err != nil {
 		t.Fatalf("decode the session list %s: %v", recorder.Body.String(), err)
 	}

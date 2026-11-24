@@ -1,0 +1,5 @@
+kind: Fixed
+body: |-
+  `legion gh` never runs itself as the real gh. A `LEGION_GH_PATH` that is the wrapper first on PATH, or another `legion gh` wrapper script, is refused with exit 2 before anything runs. A real gh that leads back to `legion gh` when it runs, such as a gh shim that takes the next gh on PATH, is refused there, so its help read fails and nothing runs again. Before, each such read ran `legion gh` again without end.
+  A help read of the real gh that runs past its timeout now stops everything gh started, not gh alone.
+  A SIGINT, SIGTERM or SIGHUP that reaches `legion gh` before it starts the real gh, or `legion leak-check pre-push` while a push's hook runs it, now stops the leak guard's checks with their process groups, and the command exits with 128 plus the signal; `legion gh` stops its help read the same way. Before, a SIGHUP left the leak guard's checks running with no parent waiting for them, and a stopped check was answered with a setup error, exit 2.

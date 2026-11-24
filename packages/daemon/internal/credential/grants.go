@@ -19,18 +19,30 @@ const ttl = 60 * time.Second
 const expiredRetention = time.Hour
 
 var (
-	// ErrUnauthenticated means Mint was not given the live, authenticated claim a route obtained.
+	// ErrUnauthenticated means Mint was not given the live, authenticated claim a route obtained,
+	// or MintController no session.
 	ErrUnauthenticated = errors.New("grant requires an authenticated claim")
 	// ErrExpired means the grant's sixty-second window elapsed before redemption.
 	ErrExpired = errors.New("grant expired")
 	// ErrUnavailable is deliberately the one answer for an unknown id and for a pruned one: a
 	// bearer must not become an oracle.
 	ErrUnavailable = errors.New("grant is unavailable")
+	// ErrReplaced means MintController was asked for a session's grant under a controller
+	// generation a confirmed mint has replaced (RevokeControllersBelow): the route read the
+	// session's registration before that mint's commit, and its revocation ran since.
+	ErrReplaced = errors.New("the controller capability that registered the session was replaced")
 )
 
-// Grant is the in-memory capability returned by Mint or MintController. ID is the bearer and is
-// never persisted or logged. CapabilityHash is deliberately private: routes compare it through
-// StillMatches, so a grant authenticates only while its claim holds the capability that minted it.
+// Grant is the in-memory capability returned by Mint, MintController or MintOperatorController. ID
+// is the bearer and is never persisted or logged. CapabilityHash is deliberately private: routes
+// compare it through StillMatches, so a grant authenticates only while its claim holds the
+// capability that minted it.
+//
+// A controller grant (Controller) says who minted it, because a project's pause records who acted
+// (decision 19 of dispatch://INFRA-3759): Session is the controller session that minted it
+// (MintController), and Operator is set where the operator's bearer minted it instead
+// (MintOperatorController). Exactly one of the two is set on every controller grant, and neither
+// on a claim's.
 type Grant struct {
 	ID         string
 	Issue      string
@@ -40,8 +52,13 @@ type Grant struct {
 	Claim      claim.Token
 	ExpiresAt  time.Time
 	Controller bool
+	Operator   bool
+	Session    string
 
 	capabilityHash []byte
+	// generation is the controller capability a controller grant is recorded under
+	// (MintController), which RevokeControllersBelow compares.
+	generation uint64
 }
 
 // Grants holds process-local grants. A daemon restart invalidates them by design.
@@ -50,6 +67,9 @@ type Grants struct {
 
 	mu     sync.Mutex
 	issued map[string]Grant
+	// confirmed is the highest controller generation a confirmed mint has named
+	// (RevokeControllersBelow).
+	confirmed uint64
 }
 
 // New constructs a grant service. A nil clock is the wall clock.
@@ -85,26 +105,59 @@ func (g *Grants) Mint(c supervise.Claim) (Grant, error) {
 	return grant, nil
 }
 
-// MintController records a sixty-second controller grant: for the operator's bearer, or for the
-// session registered with the current controller capability. Authorization happens at the route:
-// the service keeps no bearer and cannot accidentally copy one into a grant record.
-func (g *Grants) MintController() (Grant, error) {
+// MintController records a sixty-second controller grant for session under generation, the
+// controller capability that registered it. Authorization happens at the route: the service keeps
+// no secret and cannot accidentally copy one into a grant record. A blank session is refused,
+// since a controller grant that names no session would read as nobody's. A generation below the
+// one a confirmed mint named is refused with ErrReplaced: the route read the registration before
+// that mint committed, and the mint's revocation (RevokeControllersBelow), which has run, ends
+// every grant of a lower generation. The check and the record are one step under the grants'
+// lock, which the revocation takes too, so a grant of a replaced generation is either recorded
+// before the revocation and ended by it, or refused.
+func (g *Grants) MintController(session string, generation uint64) (Grant, error) {
+	if session == "" {
+		return Grant{}, ErrUnauthenticated
+	}
+	return g.mintController(Grant{Session: session}, generation)
+}
+
+// MintOperatorController records a sixty-second controller grant for the operator's bearer, which
+// the route compared before it asked. The service keeps no bearer. Its zero generation is raised
+// to the last generation a confirmed mint named.
+func (g *Grants) MintOperatorController(generation uint64) (Grant, error) {
+	return g.mintController(Grant{Operator: true}, generation)
+}
+
+// mintController records grant, which names who minted it, as a controller grant under generation.
+// A session's grant of a generation below the confirmed one is refused (MintController); the
+// operator's is raised to it (MintOperatorController).
+func (g *Grants) mintController(grant Grant, generation uint64) (Grant, error) {
 	id, err := grantID()
 	if err != nil {
 		return Grant{}, err
 	}
-	grant := Grant{ID: id, ExpiresAt: g.now().Add(ttl), Controller: true}
-	g.record(grant)
+	grant.ID, grant.ExpiresAt, grant.Controller = id, g.now().Add(ttl), true
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if grant.Session != "" && generation < g.confirmed {
+		return Grant{}, ErrReplaced
+	}
+	grant.generation = max(generation, g.confirmed)
+	g.recordLocked(grant)
 	return grant, nil
 }
 
-// RevokeControllers ends every controller grant, so none minted under a controller capability
-// outlives the capability a new mint replaces. A revoked id is unavailable, like one never minted.
-func (g *Grants) RevokeControllers() {
+// RevokeControllersBelow is a confirmed mint of generation: it raises the confirmed generation to
+// generation, and ends every controller grant recorded under a lower one, so none outlives the
+// capability the mint replaced. A grant of generation or above stands, so a confirmation that
+// arrives late — a mint whose commit's outcome the store said only later — revokes nothing of a
+// newer mint. A revoked id is unavailable, like one never minted.
+func (g *Grants) RevokeControllersBelow(generation uint64) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	g.confirmed = max(g.confirmed, generation)
 	for id, held := range g.issued {
-		if held.Controller {
+		if held.Controller && held.generation < generation {
 			delete(g.issued, id)
 		}
 	}
@@ -113,9 +166,14 @@ func (g *Grants) RevokeControllers() {
 // record stores a freshly minted grant and prunes every record past its retention, so the
 // process-local map holds only the last hour's grants however many commands never redeem theirs.
 func (g *Grants) record(grant Grant) {
-	cutoff := g.now().Add(-expiredRetention)
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	g.recordLocked(grant)
+}
+
+// recordLocked is record for a caller that holds mu.
+func (g *Grants) recordLocked(grant Grant) {
+	cutoff := g.now().Add(-expiredRetention)
 	for id, held := range g.issued {
 		if held.ExpiresAt.Before(cutoff) {
 			delete(g.issued, id)
@@ -125,7 +183,7 @@ func (g *Grants) record(grant Grant) {
 }
 
 // Redeem answers id's grant for as long as ttl lasts. A grant is the credential of one call the
-// `legion` tool or the operator CLI makes, which may reach the daemon more than once (`legion status`, which mints then posts),
+// `legion` tool or the operator CLI makes, which may reach the daemon more than once (`legion issue status`, which mints then posts),
 // so it serves every redemption until it expires — as the shipped daemon's resolveGrant does.
 // Redeem knows nothing of the claim: a route refuses a grant whose claim no longer holds the
 // capability that minted it (StillMatches), on every redemption.

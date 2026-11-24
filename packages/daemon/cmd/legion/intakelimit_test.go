@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// derivedIntakeHandlerLimitLine is the sentence `legion start --check-config` prints for a file
+// derivedIntakeHandlerLimitLine is the sentence `legion config check` prints for a file
 // whose `worker_rpc_timeout_seconds` is 200, written out here rather than built from
 // daemon.IntakeHandlerLimitLine: a row that composed the expected line from the code that writes
 // it would pass whatever that code said, and what an operator reads is the whole point of the
@@ -21,12 +21,12 @@ const derivedIntakeHandlerLimitLine = "intake: one fact's handling is cut after 
 // check: the check names the intake handler limit when the window derives one above the floor,
 // and says nothing about it when the floor still decides it. Both halves matter, and the quiet
 // one matters most. The line is a report an operator reads back, so a check that printed it for
-// every file would add a fifth line to the output of every deployment on the default window —
+// every file would add one line more to the output of every deployment on the default window —
 // including the ones this package's other rows assert whole, character for character
-// (TestStartCheckConfigValidatesAndStartsNothing and its neighbours) — and would tell an operator
+// (TestConfigCheckValidatesAndStartsNothing and its neighbours) — and would tell an operator
 // nothing they could not read in the daemon's own default. The derived half is asserted verbatim
 // for the same reason: the sentence is the deliverable.
-func TestStartCheckConfigNamesTheIntakeHandlerLimitOnlyWhenTheWindowDerivesOne(t *testing.T) {
+func TestConfigCheckNamesTheIntakeHandlerLimitOnlyWhenTheWindowDerivesOne(t *testing.T) {
 	for _, row := range []struct {
 		name     string
 		projects string
@@ -35,12 +35,12 @@ func TestStartCheckConfigNamesTheIntakeHandlerLimitOnlyWhenTheWindowDerivesOne(t
 		{
 			"a window the ten-minute floor covers names no limit",
 			"worker_rpc_timeout_seconds: 5\nprojects:\n  DEMO: {}\n",
-			demoCheckConfigOK + tmuxCapabilityGaps,
+			demoCheckConfigOK + tmuxCapabilityGaps + tmuxPauseUnavailable,
 		},
 		{
 			"a window that derives a limit above the floor names it",
 			"worker_rpc_timeout_seconds: 200\nprojects:\n  DEMO: {}\n",
-			demoCheckConfigOK + tmuxCapabilityGaps + derivedIntakeHandlerLimitLine,
+			demoCheckConfigOK + tmuxCapabilityGaps + tmuxPauseUnavailable + derivedIntakeHandlerLimitLine,
 		},
 	} {
 		t.Run(row.name, func(t *testing.T) {
@@ -48,7 +48,7 @@ func TestStartCheckConfigNamesTheIntakeHandlerLimitOnlyWhenTheWindowDerivesOne(t
 			config := projectsConfig(t, row.projects)
 
 			var out, errb bytes.Buffer
-			code := run(context.Background(), []string{"legion", "start", "--config", config, "--check-config"}, &out, &errb)
+			code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
 
 			if code != 0 || out.String() != row.want || errb.Len() != 0 {
 				t.Fatalf("exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), row.want)

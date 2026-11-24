@@ -74,7 +74,7 @@ func TestAnOwnerOfTheStalledHoldersBatchIsReleasedBeforeTheBatchEnds(t *testing.
 	deps := rig.deps()
 	deps.Listen = rig.database.Pool.Listener
 	deps.forwardAckWait = stalledForwardWait
-	stop := runDeps(t, deps, 15*time.Second)
+	stop := runDeps(t, deps)
 	defer stop()
 
 	select {
@@ -129,7 +129,7 @@ func TestAnOwnersSecondEventDoesNotOvertakeItsFirstWhileItsForwardIsUnacknowledg
 
 	deps := rig.deps()
 	deps.Listen = rig.database.Pool.Listener
-	stop := runDeps(t, deps, 15*time.Second)
+	stop := runDeps(t, deps)
 	defer stop()
 
 	first := rig.routedEvent(t, "T-1", stalledRole, alice)
@@ -205,7 +205,7 @@ func TestAnEventCommittedWhileItsOwnerIsInFlightIsReadWhenThatOwnerIsBack(t *tes
 
 	deps := rig.deps()
 	deps.Listen = rig.database.Pool.Listener
-	stop := runDeps(t, deps, 15*time.Second)
+	stop := runDeps(t, deps)
 	defer stop()
 
 	select {
@@ -302,7 +302,7 @@ func TestAnOwnerLeftForTheBatchsEndLogsItsFailureOnce(t *testing.T) {
 
 	publisher := &answeringTopics{answers: map[string]error{
 		"notifications.dispatch.issue.T-1.message.created": fmt.Errorf("bus: %w", bus.ErrUnavailable),
-		contracts.AgentSubject("writer"):                   fmt.Errorf("bus: %w", bus.ErrPublishDenied),
+		contracts.LegacyAgentSubject("writer"):             fmt.Errorf("bus: %w", bus.ErrPublishDenied),
 	}}
 	deps := Deps{Store: database, Publisher: publisher}
 	if _, err := scanBatch(context.Background(), deps, unfenced{}, holding(t, deps).instance); err != nil {

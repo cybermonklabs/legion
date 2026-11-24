@@ -7,8 +7,9 @@
 // (`subscribeAgent`) ride the same socket with handlers of their own. Nothing here reads on a
 // timer: a lost socket reconnects and resumes every subscription, a delivery view from the last
 // change it applied with the revisions it holds and the event feed from the last event it applied,
-// and Dispatch answers what changed since. Dispatch rotates every socket once it reaches its age
-// (close 4001); the page reopens at once and shows nothing of it.
+// and Dispatch answers what changed since. Dispatch rotates every socket once it reaches its age,
+// or, behind Identity-Aware Proxy, once the assertion its upgrade carried expires (close 4001); the
+// page reopens at once, with a fresh assertion, and shows nothing of it.
 import { type AgentStreamResponder, LIVE_SOCKET_MAX_AGE_CLOSE } from "@legion/contracts";
 import { hashKey, type QueryClient, type QueryKey, useQueryClient } from "@tanstack/react-query";
 import { useSyncExternalStore } from "react";
@@ -16,6 +17,7 @@ import { useSyncExternalStore } from "react";
 import { applyDelta, applyRevs } from "../features/delivery/lib/applyDelta";
 import type { DeliveryFreshness } from "../features/delivery/lib/freshness";
 import { ApiError } from "./client";
+import { askSignInAgain } from "./query-client";
 import { reachable, unreachable } from "./reachability";
 import type {
   DeliveryLiveBody,
@@ -507,7 +509,7 @@ export function createLiveSocket(queryClient: QueryClient): LiveSocket {
     const now = Date.now();
     if (now - signInCheckedAt < SIGN_IN_CHECK_MS) return;
     signInCheckedAt = now;
-    void queryClient.invalidateQueries({ queryKey: ["whoami"] });
+    void askSignInAgain(queryClient);
   };
 
   const reconnecting = () => {
@@ -606,8 +608,8 @@ export function createLiveSocket(queryClient: QueryClient): LiveSocket {
     const wasOpen = isOpen;
     detach();
     if (wasOpen && code === LIVE_SOCKET_MAX_AGE_CLOSE) {
-      // Dispatch rotated a socket that reached its age: every subscription resumes on the next,
-      // nothing was missed, and nothing shows.
+      // Dispatch rotated a socket that reached its age, or whose upgrade's assertion expired: every
+      // subscription resumes on the next, nothing was missed, and nothing shows.
       open();
       return;
     }

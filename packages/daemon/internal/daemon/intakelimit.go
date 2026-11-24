@@ -20,7 +20,7 @@ import (
 // Unlike ProbeBudgetLine, which answers "" when nothing is derived, this returns the sentence for
 // every configuration, because the boot writes it at every boot (logIntakeHandlerLimit) — a
 // running daemon says its limit whether the floor or the window decided it. Only
-// `legion start --check-config` is selective, and it reads derived to decide.
+// `legion config check` is selective, and it reads derived to decide.
 func IntakeHandlerLimitLine(cfg config.Config) (line string, derived bool) {
 	line, _, derived = intakeHandlerLimitLine(cfg)
 	return line, derived
@@ -28,7 +28,7 @@ func IntakeHandlerLimitLine(cfg config.Config) (line string, derived bool) {
 
 // intakeHandlerLimitLine is the sentence and the two facts its readers decide on, derived once:
 // whether the window lifted the limit above the floor (derived, which is what
-// `legion start --check-config` prints on) and whether it lifted it above
+// `legion config check` prints on) and whether it lifted it above
 // intake.HandlerLimitCeiling (aboveCeiling, which adds the sentence's last clause and puts the
 // boot line at Warn). One condition decides the clause and the level, so a change to the ceiling
 // rule cannot leave a line that warns without saying why, or says why without warning.
@@ -73,7 +73,7 @@ func intakeHandlerLimitLine(cfg config.Config) (line string, aboveCeiling, deriv
 // about intake do, so nothing is prefixed to it.
 //
 // The sentence is the whole message, with no attribute repeating the seconds it already names, so
-// that this line and `legion start --check-config` say the same thing word for word; an operator
+// that this line and `legion config check` say the same thing word for word; an operator
 // who reads one has read the other. It is also the only place a running daemon says what the
 // limit is — `legion state` does not carry it — so the line goes out whether the floor or the
 // window decided the limit.

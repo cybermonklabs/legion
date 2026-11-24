@@ -14,6 +14,7 @@ import {
 } from "../configurations";
 import { harnessProcessCount } from "../harness-processes";
 import realConfig from "../playwright.config";
+import { rowLimit } from "./bounded-subprocess";
 import doubledConfig, { doubledProject, doubledSpec } from "./fixtures/doubled-project.config";
 import { listing, projectArguments, retained } from "./playwright-listing";
 
@@ -33,14 +34,13 @@ const ambientProcessCount: Record<string, string> =
 
 // The three listings are read-only subprocesses, so they start here rather than in their tests:
 // the second and third collect while the first does, which is most of this file's cost on a
-// two-core runner. What that costs is read once in this file, at the `listingTimeout` it
-// justifies, below.
+// two-core runner.
 //
 // The third names the three wall-clock projects (`clockProjectNames`, e2e/configurations.ts),
 // which carry `default: false` since dispatch://INFRA-1280. A listing that names no project
 // holds no row of theirs, so without this one the accounting below would read the suite with
 // `agent-workspace-timing.e2e.ts`, `heavy-bodies.e2e.ts` and `nested-directive.e2e.ts` missing:
-// 54 rows, which is what this head's wall-clock listing holds.
+// 51 rows, which is what this head's wall-clock listing holds.
 //
 // It is taken only where the run has one Dispatch process, because the ambient count reaches
 // these listings and two-process mode declares one project, the multiprocess one: measured at
@@ -49,14 +49,17 @@ const ambientProcessCount: Record<string, string> =
 // "firefox-alone", "webkit-alone" not found. Available projects: "chromium"`. Both assertions
 // that read it hold in that mode without it: the one project that mode declares owns rows of
 // the real listing, and it declares no wall-clock project to hold to its settings.
-const realListing = retained(listing("e2e/playwright.config.ts", ambientProcessCount));
+const realListing = retained(
+  listing(import.meta.url, "e2e/playwright.config.ts", ambientProcessCount)
+);
 const doubledListing = retained(
-  listing("e2e/__tests__/fixtures/doubled-project.config.ts", ambientProcessCount)
+  listing(import.meta.url, "e2e/__tests__/fixtures/doubled-project.config.ts", ambientProcessCount)
 );
 const clockListing =
   harnessProcessCount === 1
     ? retained(
         listing(
+          import.meta.url,
           "e2e/playwright.config.ts",
           ambientProcessCount,
           projectArguments(clockProjectNames)
@@ -106,13 +109,6 @@ function selectsAClockSpec(
   );
 }
 
-// The three listings run at once and cost about five and a half seconds together on this
-// two-core pod - 5.55 and 5.38 seconds in two runs of this file, measured at this head, of
-// which the real listing alone is 3.59 seconds and the wall-clock one 1.25 - so a test may take
-// far longer than Bun's five-second default; a minute and a half is the ceiling at which
-// something is wrong rather than slow.
-const listingTimeout = 90_000;
-
 test(
   "no row runs twice in one configuration, and every project has a configuration and rows",
   async () => {
@@ -159,7 +155,7 @@ test(
     // below shows this assertion catches it.
     expect(duplicateRows(rows, keyOfRow(configurations))).toEqual([]);
   },
-  listingTimeout
+  rowLimit({ atOnce: ["listing", "listing"] })
 );
 
 test(
@@ -188,13 +184,13 @@ test(
       expect([...duplicate.projects].sort()).toEqual(["chromium", doubledProject].sort());
     }
   },
-  listingTimeout
+  rowLimit("listing")
 );
 
 // The four fields that give a wall-clock row its quiet machine and keep it out of a bare run,
 // and the list that is how every accounting of this suite finds those rows at all. Nothing else
 // in the suite reads them: `workers: 1` and `retries: 0` are what make a reading the page's own
-// work rather than the other workers', `default: false` is what keeps 54 rows out of a run that
+// work rather than the other workers', `default: false` is what keeps 51 rows out of a run that
 // names no project, and a `dependencies` is what pulled the whole suite in behind a file filter
 // until dispatch://INFRA-1280 (e2e/playwright.config.ts, above `aloneProjects`).
 //

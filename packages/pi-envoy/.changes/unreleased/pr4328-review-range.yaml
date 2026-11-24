@@ -1,0 +1,6 @@
+kind: Changed
+body: |-
+  The thermonuclear-deep-review skill audits the range its brief names, or the checked-out branch
+  against its base when the brief names none. It and the thermonuclear-code-quality skill gain one
+  rule: a range limits what must be read, never what is reported, so a defect or a smell in code the
+  pull request changed before the range is a finding.

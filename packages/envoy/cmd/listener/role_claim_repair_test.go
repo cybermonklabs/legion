@@ -60,7 +60,7 @@ func reportsOver(d *listenerDeps) listenerReports {
 	served.Store(d)
 	met := metrics.New()
 	registerListGauges(met, &served)
-	return listenerReports{healthz: healthzHandler(&served), metrics: met.Handler()}
+	return listenerReports{healthz: healthzHandler(&served, nil), metrics: met.Handler()}
 }
 
 // healthzAnswer is one /healthz answer: its status code and its body's fields.

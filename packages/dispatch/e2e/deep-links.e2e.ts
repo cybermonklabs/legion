@@ -796,6 +796,7 @@ test("a past version's comment link lands on its quote in a document with no dia
     // change of the version view's own scroll height - the very measurement a rebuild disturbs -
     // and a loaded machine stretches those frames, which a wall-clock window cannot do.
     await landingSettled(versionView);
+    // The landing settled above, so the frames recorded up to here are every scroll it made.
     const offsets = (await page.evaluate(() => window.__scrollEachFrame)) ?? [];
     const started = offsets.findIndex((offset) => offset > 0);
     expect(started).toBeGreaterThanOrEqual(0);

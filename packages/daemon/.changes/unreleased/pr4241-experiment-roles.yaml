@@ -1,0 +1,13 @@
+kind: Added
+body: |-
+    `projects.<KEY>.experiments.<NAME>.roles` names the issue roles whose launches load an
+    experiment's arms. A launch of a role the list leaves out loads none of that experiment's
+    overlays or instructions, while its unit keeps the arm it drew, so an experiment can leave the
+    roles that judge the work (the reviewer, the tester, the architect who accepts it) out of what
+    it changes. With no `roles`, every issue role loads the arms, as before. The loader refuses a
+    role that is not an issue role, a role named twice and an empty list, and asks for Oh My Pi
+    only on the roles an experiment reaches; the boot gate and the image probe read an arm's
+    overlays only for those roles; the settings carry the list.
+time: 2026-11-16T22:33:30Z
+custom:
+    Issue: pr4241

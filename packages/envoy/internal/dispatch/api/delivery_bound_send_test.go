@@ -122,6 +122,7 @@ func attemptStates(t *testing.T, database *store.Store, table, column, id string
 // and it must take it - the row names the message's own target - and pin it to the session the
 // target resolved to, rather than refusing an attempt whose row names no session.
 func TestABoundSendTakesAnUnpinnedAttemptAndPinsTheSessionItsTargetResolvedTo(t *testing.T) {
+	t.Parallel()
 	listener := startResumeListener(t)
 	handler, database, deps := newTestServer(t, testServerOptions{envoyURL: listener.server.URL})
 	direct := directServer(deps)
@@ -164,6 +165,7 @@ func TestABoundSendTakesAnUnpinnedAttemptAndPinsTheSessionItsTargetResolvedTo(t 
 // no attempt beside it, where a Retry would open one; once that claim lapses, the bound send takes
 // the attempt under its original number and key.
 func TestACommentResumeSendsNothingBesideALiveSenderAndTakesTheAttemptOnceItLapses(t *testing.T) {
+	t.Parallel()
 	listener := startResumeListener(t)
 	handler, database, deps := newTestServer(t, testServerOptions{envoyURL: listener.server.URL})
 	direct := directServer(deps)
@@ -187,9 +189,9 @@ func TestACommentResumeSendsNothingBesideALiveSenderAndTakesTheAttemptOnceItLaps
 	// A sender claimed attempt 1 a moment ago and is still sending it.
 	strandStoredAttempt(t, database, "comment_deliveries", "comment_id", comment.ID, "'0 seconds'", "'5 minutes'")
 	listener.forget()
-	held, err := direct.deliverResolvedCommentMention(context.Background(), comment, event, mention, comment.Author, attemptClaim{attempt: 1}, direct.newTakeoverRetry())
-	if err != nil {
-		t.Fatalf("resume beside a live sender: %v", err)
+	held, waits, err := direct.deliverResolvedCommentMention(context.Background(), comment, event, mention, comment.Author, attemptClaim{attempt: 1}, direct.newTakeoverRetry())
+	if err != nil || waits != nil {
+		t.Fatalf("resume beside a live sender: %v (waits %+v)", err, waits)
 	}
 	if held.Attempt != 1 || held.State != "pending" {
 		t.Fatalf("resume beside a live sender = %#v, want attempt 1 reported as the live sender left it", held)
@@ -203,9 +205,9 @@ func TestACommentResumeSendsNothingBesideALiveSenderAndTakesTheAttemptOnceItLaps
 
 	// That sender never came back.
 	strandStoredAttempt(t, database, "comment_deliveries", "comment_id", comment.ID, "'5 minutes'", "'5 minutes'")
-	resumed, err := direct.deliverResolvedCommentMention(context.Background(), comment, event, mention, comment.Author, attemptClaim{attempt: 1}, direct.newTakeoverRetry())
-	if err != nil {
-		t.Fatalf("resume the abandoned attempt: %v", err)
+	resumed, waits, err := direct.deliverResolvedCommentMention(context.Background(), comment, event, mention, comment.Author, attemptClaim{attempt: 1}, direct.newTakeoverRetry())
+	if err != nil || waits != nil {
+		t.Fatalf("resume the abandoned attempt: %v (waits %+v)", err, waits)
 	}
 	if resumed.Attempt != 1 || resumed.State != "sent" {
 		t.Fatalf("resume of the abandoned attempt = %#v, want attempt 1 sent", resumed)
@@ -225,6 +227,7 @@ func TestACommentResumeSendsNothingBesideALiveSenderAndTakesTheAttemptOnceItLaps
 // resumeOwedDelivery hands deliverMessageResuming the attempt's number and nothing else - and a
 // stranded urgent message it resumes still reaches the listener as urgent, not as a plain steer.
 func TestTheDeliverySweepResumesAnAttemptWithTheUrgencyItRecorded(t *testing.T) {
+	t.Parallel()
 	listener := startResumeListener(t)
 	handler, database, deps := newTestServer(t, testServerOptions{envoyURL: listener.server.URL})
 	direct := directServer(deps)
@@ -254,6 +257,7 @@ func TestTheDeliverySweepResumesAnAttemptWithTheUrgencyItRecorded(t *testing.T) 
 // its own instead - in another mode, or beside a sender still holding the stranded one - is a new
 // send of the person's, which asked for no urgency.
 func TestARetryCarriesTheUrgencyOfTheAttemptItResumesAndNoneOnANewAttempt(t *testing.T) {
+	t.Parallel()
 	listener := startResumeListener(t)
 	handler, database, _ := newTestServer(t, testServerOptions{envoyURL: listener.server.URL})
 	issue := createInteractionIssue(t, handler, "TEST", "Urgent retries", "before")

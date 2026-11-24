@@ -9,10 +9,10 @@ const ghostWisprSignaturePrefix = "sha256="
 
 // GhostWispr verifies an HMAC SHA256 signature from a Ghost Wispr webhook.
 // Uses the same sha256= prefix scheme as GitHub webhooks.
-// If secret is empty, verification is skipped and returns true.
+// An empty secret checks nothing, so it answers false for every signature.
 func GhostWispr(secret string, body []byte, signature string) bool {
 	if secret == "" {
-		return true
+		return false
 	}
 	signature = strings.ToLower(strings.TrimSpace(signature))
 	provided, ok := strings.CutPrefix(signature, ghostWisprSignaturePrefix)

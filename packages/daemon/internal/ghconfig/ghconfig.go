@@ -3,18 +3,26 @@
 //
 // The files are gh's `hosts.yml`, which holds the token for github.com, and its `config.yml`, in
 // one directory per entry of the role's bundle under its bundle root (Bundle, WriteBundle): one
-// per GitHub owner of the project, the issue's owner's holding its role's App token, which
-// GH_CONFIG_DIR names, and every other owner's a token of the same App narrowed to reading, and
-// one more under an owner's directory for each of that owner's repositories the role writes to
-// none of, `<owner>/<repo>`, holding a token narrowed to that one repository. gh reads both files
+// per owner account the role's GitHub App is installed on, each holding that account's
+// installation lease at the role's own permissions, with the issue's own owner's directory the
+// one GH_CONFIG_DIR names (INFRA-2543). gh reads both files
 // on every invocation and holds nothing between invocations, so the daemon rewriting hosts.yml
 // from a fresh lease is what the next `gh` runs with. `legion gh`, the `gh` first on a pane's
 // PATH, and `legion git-credential`, the helper every shared clone's `credential.helper` names
-// (workspace.GitHubCredentialHelper), both pick the directory of the repository the command or
-// git's request names, `<owner>/<repo>`, where the bundle holds it, and that owner's own
-// directory otherwise; the helper answers git from that directory's hosts.yml and treats git's
-// `store` and `erase` as no-ops. In a pod the root is a read-only
-// Secret volume, which gh never needs to write: it writes under GH_CONFIG_DIR only when told to
+// (workspace.GitHubCredentialHelper), both pick the directory of the owner of the repository the
+// command or git's request names, the one directory the bundle holds for that account — except
+// for a repository a configured rename moved to another owner, which takes the directory of the
+// owner it moved to, since that account's installation is the one holding it now. The pairs that
+// route are the bundle's own file in the root, beside the owners' directories (Bundle, PairsFile),
+// and the two wrappers read them from there and from nowhere else; a pod launched before that
+// ruling may still hold an `<owner>/<repo>` directory of its own, which no token is read out of,
+// and the Sandbox drift check reports both that and a root with no pairs file. The helper answers
+// git from the chosen directory's hosts.yml and treats git's `store` and `erase` as no-ops. Where
+// the bundle holds no directory for the owner git's request names, the helper reads that
+// repository from GitHub, and a fork takes the directory its parent, or else its source, routes
+// to (cmd/legion's forkUpstreamDir). In a pod the
+// root is a read-only Secret volume, which gh never needs to write: it writes under
+// GH_CONFIG_DIR only when told to
 // (`gh auth login`, `gh config set`) or when migrating a pre-2.40 hosts.yml into its
 // multi-account shape. A `config.yml` carrying `version: "1"` is what tells gh that migration has
 // already happened, and Hosts renders the migrated shape it then expects.
@@ -24,12 +32,16 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"syscall"
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/sjawhar/legion/daemon/internal/rolefile"
 )
 
 // HostsFile is the name of gh's per-host credential file under GH_CONFIG_DIR.
@@ -127,11 +139,16 @@ func Render(token, app string, expiresAt time.Time) Rendered {
 	return Rendered{Hosts: Hosts(token), Config: Config, App: app, ExpiresAt: expiresAt}
 }
 
-// Write brings dir, one directory of a gh bundle, to rendered: the directory made 0700 if
-// it is gone, config.yml written once when absent or different, and hosts.yml replaced — a
-// temporary file in the directory (0600, as os.CreateTemp makes it) renamed over it, so the gh
-// reading it never sees a half-written file — only when its content differs. It reports whether
-// hosts.yml changed. WriteBundle calls it for each directory of a bundle.
+// Write brings dir, one directory of a gh bundle, to rendered: the directory made 0700 if it is
+// gone, and config.yml and hosts.yml each replaced (replaceFile) only where its content differs, so
+// the gh reading them never sees a half-written file. It reports whether hosts.yml changed.
+// WriteBundle calls it for each directory of a bundle.
+//
+// A pane can put anything at those paths between two writes, a named pipe or a symbolic link
+// among them, and swap it in between any check and any open. replaceFile reads what is there only
+// through ReadRegular, which never waits on a pipe and never follows a link, and writes only by
+// renaming a file of its own over the path, so no such swap stalls the refresh, and with it every
+// pane's, and none redirects a write.
 func Write(dir string, rendered Rendered) (changed bool, err error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return false, err
@@ -139,34 +156,121 @@ func Write(dir string, rendered Rendered) (changed bool, err error) {
 	if err := os.Chmod(dir, 0o700); err != nil {
 		return false, err
 	}
-	config := filepath.Join(dir, ConfigFile)
-	if current, err := os.ReadFile(config); err != nil || string(current) != rendered.Config {
-		if err := os.WriteFile(config, []byte(rendered.Config), 0o600); err != nil {
-			return false, err
-		}
-	}
-	hosts := filepath.Join(dir, HostsFile)
-	current, err := os.ReadFile(hosts)
-	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+	if _, err := replaceFile(filepath.Join(dir, ConfigFile), rendered.Config); err != nil {
 		return false, err
 	}
-	if err == nil && bytes.Equal(current, []byte(rendered.Hosts)) {
-		return false, nil
+	return replaceFile(filepath.Join(dir, HostsFile), rendered.Hosts)
+}
+
+// MaxFileBytes is the most ReadRegular reads of one file: far beyond any hosts.yml, config.yml or
+// pairs file the daemon writes, each a few hundred bytes, and small enough that a file a pane
+// planted costs its reader nothing.
+const MaxFileBytes = 1 << 20
+
+// ErrNotRegular is ReadRegular's answer for a path that is no regular file: a symbolic link, a
+// named pipe, a directory, a socket or a device, none of which it reads from.
+var ErrNotRegular = errors.New("is no regular file")
+
+// ErrTooLarge is ReadRegular's answer for a regular file larger than MaxFileBytes.
+var ErrTooLarge = fmt.Errorf("is larger than %d bytes, which no file the daemon writes is", MaxFileBytes)
+
+// ReadRegular reads the regular file at path whole and refuses anything else without reading from
+// it. It opens path with O_NOFOLLOW, so a symbolic link is refused rather than followed, and
+// O_NONBLOCK, so a named pipe opens at once rather than waiting for a writer; it then asks the
+// open file what it is (fstat), not the path, so a pane that swaps the path between a check and
+// the open wins nothing; and it reads through a limit, so a file that grows while it is read is
+// refused too. A path that is not there is fs.ErrNotExist; one that is no regular file is
+// ErrNotRegular; one larger than MaxFileBytes is ErrTooLarge.
+//
+// Only the last component goes unfollowed. A pod's Secret volume shows each item's top directory
+// as a link into the volume's `..data`, so an owner's directory is a link there, while the
+// hosts.yml and config.yml inside it are regular files, which this reads as they are.
+func ReadRegular(path string) ([]byte, error) { return readRegular(path, syscall.O_NOFOLLOW) }
+
+// readRegularFollowing is ReadRegular for a file that a Secret volume shows as a link: the bundle's
+// pairs file sits at the volume's top, so the kubelet makes it a link into `..data` (ReadPairs).
+// It follows that link, and reads what it reaches only as ReadRegular reads: without waiting on a
+// pipe, refusing anything the open file says is no regular file, and through the same limit.
+func readRegularFollowing(path string) ([]byte, error) { return readRegular(path, 0) }
+
+func readRegular(path string, follow int) ([]byte, error) {
+	file, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK|follow, 0)
+	if err != nil {
+		// ELOOP is a symbolic link under O_NOFOLLOW; ENXIO and EOPNOTSUPP a socket; ENODEV a device
+		// with no driver.
+		var errno syscall.Errno
+		if errors.As(err, &errno) && (errno == syscall.ELOOP || errno == syscall.ENXIO || errno == syscall.EOPNOTSUPP || errno == syscall.ENODEV) {
+			return nil, fmt.Errorf("%s %w", path, ErrNotRegular)
+		}
+		return nil, err
 	}
-	temporary, err := os.CreateTemp(dir, "."+HostsFile+"-")
+	defer func() { _ = file.Close() }()
+	info, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s %w", path, ErrNotRegular)
+	}
+	if info.Size() > MaxFileBytes {
+		return nil, fmt.Errorf("%s %w", path, ErrTooLarge)
+	}
+	data, err := io.ReadAll(io.LimitReader(file, MaxFileBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > MaxFileBytes {
+		return nil, fmt.Errorf("%s %w", path, ErrTooLarge)
+	}
+	return data, nil
+}
+
+// replaceFile brings path to content and reports whether it changed: a temporary file beside it
+// (0600, as os.CreateTemp makes it) renamed over it, so a reader of the file — the gh of a pane
+// reading a hosts.yml or a config.yml, the `legion gh` or `legion git-credential` of one reading
+// the bundle's pairs file — never sees a half-written one, and a reader that opened the old file
+// keeps reading it whole. A file whose content already is content is left alone, which is what
+// keeps a bundle's writer from touching the files a lease's turn did not change (WriteBundle,
+// Write). What is at path is read only through ReadRegular: anything that is no regular file is
+// removed first, since a rename replaces a link or a pipe but not a directory, and one too large
+// to read is simply replaced. The pane's own user can write every path handed here, so what is
+// removed may be a directory it filled, and it is removed as every tree a pane writes is: without
+// following a link in it (rolefile.RemoveTree), under path's directory resolved once, since that
+// directory may be reached through a link and RemoveTree refuses a parent that is one.
+func replaceFile(path, content string) (changed bool, err error) {
+	current, err := ReadRegular(path)
+	switch {
+	case err == nil:
+		if bytes.Equal(current, []byte(content)) {
+			return false, nil
+		}
+	case errors.Is(err, fs.ErrNotExist), errors.Is(err, ErrTooLarge):
+	case errors.Is(err, ErrNotRegular):
+		parent, err := filepath.EvalSymlinks(filepath.Dir(path))
+		if err != nil {
+			return false, err
+		}
+		if err := rolefile.RemoveTree(filepath.Join(parent, filepath.Base(path))); err != nil {
+			return false, err
+		}
+	default:
+		return false, err
+	}
+	dir := filepath.Dir(path)
+	temporary, err := os.CreateTemp(dir, "."+filepath.Base(path)+"-")
 	if err != nil {
 		return false, err
 	}
 	temporaryPath := temporary.Name()
 	defer func() { _ = os.Remove(temporaryPath) }()
-	if _, err := temporary.WriteString(rendered.Hosts); err != nil {
+	if _, err := temporary.WriteString(content); err != nil {
 		_ = temporary.Close()
 		return false, err
 	}
 	if err := temporary.Close(); err != nil {
 		return false, err
 	}
-	if err := os.Rename(temporaryPath, hosts); err != nil {
+	if err := os.Rename(temporaryPath, path); err != nil {
 		return false, err
 	}
 	return true, nil

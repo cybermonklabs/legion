@@ -5,6 +5,7 @@ import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer"
 import { envoyToolSpecs } from "@legion/envoy-client/tool-contract"
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { legion } from "../package.json" with { type: "json" }
@@ -42,6 +43,12 @@ test("a Legion pane's server registers on its transcript, claims its role, serve
       if (path === "/legion/v1/claims/register") return Response.json(registered)
       if (path === "/legion/v1/claims/ready") return new Response(null, { status: 204 })
       if (path === "/legion/v1/state") return Response.json(await daemonFixture("state.json"))
+      // `read_record` and the reminder's record check read one issue's record
+      // (dispatch://INFRA-2694).
+      if (path === "/legion/v1/issues/LEGION-208/record") {
+        const state = (await daemonFixture("state.json")) as { issues: Record<string, unknown> }
+        return Response.json(state.issues["LEGION-208"])
+      }
       return Response.json({ error: "unexpected" }, { status: 500 })
     },
   })
@@ -102,7 +109,8 @@ test("a Legion pane's server registers on its transcript, claims its role, serve
   await new Promise<void>((listening) => inbox.listen(inboxPath, listening))
   await mkdir(configDir, { recursive: true })
   const tokenFile = join(root, "boot-token")
-  await writeFile(tokenFile, "boot-token-from-the-pane\n")
+  const bootToken = fixtureSecret("boot")
+  await writeFile(tokenFile, `${bootToken}\n`)
 
   const client = new Client({ name: "test", version: "0" })
   const transport = new StdioClientTransport({
@@ -158,7 +166,7 @@ test("a Legion pane's server registers on its transcript, claims its role, serve
       {
         path: "/legion/v1/claims/register",
         body: {
-          bootToken: "boot-token-from-the-pane",
+          bootToken,
           sessionId: SESSION,
           ompSessionFile: transcript,
           agentId: SESSION,
@@ -210,6 +218,11 @@ test("a Legion pane's server registers on its transcript, claims its role, serve
     // A read that leaves `issue` out answers the claim's own issue, LEGION-208 here.
     const own = await client.callTool({ name: "legion", arguments: { op: "read_record" } })
     expect(own.content).toEqual(record.content)
+
+    // Nothing this pane's server asks the daemon is the whole project body: `read_record` and
+    // the phase reminder's own check both read one issue's record (dispatch://INFRA-2694).
+    expect(daemonCalls.map(({ path }) => path)).toContain("/legion/v1/issues/LEGION-208/record")
+    expect(daemonCalls.map(({ path }) => path)).not.toContain("/legion/v1/state")
 
     // The session receives only what its own consumer holds, which the listener relays to it.
     broker.deliverRelay(SESSION, {

@@ -1,0 +1,11 @@
+{{define "message.html"}}{{template "head" .}}
+{{- range .Lines}}
+<p>{{.}}</p>
+{{- end}}
+{{- with .Link}}
+<p><a href="{{.Href}}">{{.Text}}</a></p>
+{{- end}}
+{{- with .AnswerID}}
+<p>If you ask for help with this, quote the answer id <code>{{.}}</code>.</p>
+{{- end}}
+{{template "foot" .}}{{end}}

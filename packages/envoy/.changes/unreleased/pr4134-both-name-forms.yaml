@@ -1,0 +1,34 @@
+kind: Changed
+custom:
+  Issue: pr4134
+body: |-
+  The listener reads an issue's topic, a session's inbox and a role's lane in two forms: the one it
+  always read, and a form that names the project, `notifications.dispatch.issue.<PROJECT>.<KEY>.>`,
+  `notifications.agent.<PROJECT or _>.<session>` and `notifications.role.<PROJECT or _>.<role>`.
+  A session's consumer filters on both forms of each topic it follows, so it receives each event
+  whichever form it subscribed with and whichever form is published. `POST /v1/interests/subscribe`
+  and `POST /v1/roles/set` keep a name given in the old form as written and answer it with a
+  warning naming the new form; `envoy_listener_legacy_subjects_total{kind}` counts each old-form
+  name registered, claimed, or read back from a stored row into a filter. Nothing is published in
+  the new form yet, and nothing is refused for the old one. A role named in the new form under a
+  project other than the one its name gives (`PRIV.legion-zz-controller`, `PRIV.lead-reviewer`)
+  is refused with 400, as every dotted role was before. Dispatch's subscriber list and its removal count a session that follows
+  an issue in either form, and an unsubscribe answers every form it took out of the record.
+  **The listener now needs nats-server v2.11.12, v2.12.4, or v2.14.0 and later**, and refuses to
+  start against any other, naming its version and those releases: from v2.10.26, and in 2.11
+  before 2.11.12 and 2.12 before 2.12.4, nats-server can skip a message on a consumer that filters
+  on a wildcard and a literal at the same token, which a session's consumer does, and would lose
+  the session's messages with no error. No 2.10 release has the fix, so the floor refuses every
+  2.10, and it refuses the first fixed releases' own candidates (v2.11.12-RC.1, v2.12.4-RC.1) too.
+  A connection that is reconnecting or draining when the check runs is waited for, never read as a
+  server of no version. The stream's consumer cap is decided on a version the connection reports
+  in the same way, so an ensure across a reconnect no longer leaves a stream with no cap at
+  nats-server 2.15's default of 1000.
+
+  **A connection that drops again right after a reconnect no longer stalls the listener for 10 s.**
+  The work a reconnect starts now runs off nats.go's callback goroutine, and its stream ensure and
+  every KV cache's re-watch end when the connection they run on is lost, so the next disconnect is
+  reported at once and the next reconnect's re-watch is not held behind a request that will never
+  be answered. Re-subscribing is not cut short, so a durable is never bound twice. A link that
+  drops during every such run still raises the "reconnect hooks have not succeeded" ERROR once
+  the hooks have been behind for the repair grace.

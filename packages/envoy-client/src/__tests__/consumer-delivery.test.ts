@@ -9,12 +9,12 @@ import {
   decodeRelayFrame,
   deliverSubject,
   FOLLOW_CLOCK_ALLOWANCE_MS,
-  inboundUnavailable,
   RELAY_PROGRESS_INTERVAL_MS,
+  RelayHeader,
   type RelayMessage,
   type RelayReply,
-  registerWithRelay,
 } from "../consumer-delivery";
+import { renderInbound } from "../delivery";
 import { createDeliveryLedger, type DeliveryLedger, type LedgerSnapshot } from "../delivery-ledger";
 import type { DeliveryAnswer } from "../transport";
 
@@ -242,6 +242,43 @@ describe("relay frames", () => {
     expect(handed).toEqual([]);
     expect(logs.some((line) => line.includes("undecodable"))).toBe(true);
   });
+
+  // The listener's connection probe rides the relay subject with one header and no body. Read as
+  // a frame it would move the resume point past stored messages; logged, it would put a line in
+  // the session's log for every send to it.
+  test("a connection probe is answered done, logs nothing, reaches no host and moves no resume point", () => {
+    const { delivery, replies, handed, logs, gaps, persisted } = setup();
+    const probe = (reply: string | undefined): RelayMessage => ({
+      data: new Uint8Array(),
+      headers: { get: (name) => (name === RelayHeader.probe ? "1" : "") },
+      reply,
+    });
+    expect(RelayHeader.probe).toBe("Envoy-Probe");
+
+    delivery.receive(probe("_INBOX.probe.1"));
+    expect(replies).toEqual([["_INBOX.probe.1", "done"]]);
+    expect(delivery.resumePoint()).toBeUndefined();
+    expect(persisted).toEqual([]);
+
+    delivery.receive(relay({ seq: 7 }));
+    handed[0]?.done();
+    const point = delivery.resumePoint();
+    const writes = persisted.length;
+    const answered = replies.length;
+    const logged = logs.length;
+    delivery.receive(probe("_INBOX.probe.2"));
+    // A probe with no inbox asks nothing, so nothing answers it.
+    delivery.receive(probe(undefined));
+
+    expect(replies.slice(answered)).toEqual([["_INBOX.probe.2", "done"]]);
+    expect(handed).toHaveLength(1);
+    expect(delivery.resumePoint()).toEqual(point);
+    expect(point).toEqual({ stream_id: STREAM, seq: 7 });
+    expect(persisted).toHaveLength(writes);
+    expect(gaps).toEqual([]);
+    expect(logs).toHaveLength(logged);
+    expect(logs.some((line) => line.includes("undecodable"))).toBe(false);
+  });
 });
 
 describe("replies", () => {
@@ -446,6 +483,30 @@ describe("replies", () => {
       "consumer delivery: frame 1 could not be read to report it; it goes back to the stream"
     );
     expect(delivery.resumePoint()).toEqual({ stream_id: STREAM, seq: 0 });
+  });
+
+  // A frame whose JSON spells half a surrogate pair alone made the card's TOON encoder throw, in
+  // the host's render and in the give-up's alike, so the frame went back to the stream on every
+  // delivery and nobody was ever told of it. The renderer reads the half as U+FFFD
+  // (`parseFrameJSON`), so a host that renders the frame as every host does takes it at once.
+  test("a frame whose text spells half a surrogate pair is taken, not sent again for ever", async () => {
+    const { delivery, replies, state, settled } = setup();
+    state.deliver = (frame) => {
+      renderInbound(frame.data, SESSION, frame.subject);
+      frame.done();
+    };
+    const payload = String.raw`{"event_id":"evt-1","source":"agent","payload":"\ud800"}`;
+    const answers: Array<RelayReply | undefined> = [];
+
+    for (const delivered of [1, 2, 3, 4]) {
+      const reply = `_INBOX.half-${delivered}`;
+      delivery.receive(relay({ seq: 1, delivered, reply, payload }));
+      await settled();
+      answers.push(repliesTo(replies, reply).at(-1));
+      if (answers.at(-1) === "done") break;
+    }
+
+    expect(answers).toEqual(["done"]);
   });
 
   // A ledger of this repository never rejects, and a host may pass one of its own: a notice this
@@ -755,6 +816,58 @@ describe("follow filter", () => {
     expect(seqs(handed)).toEqual([1]);
   });
 
+  // A message name the rename moves has two forms while every reader takes both
+  // (dispatch://INFRA-3862): the listener's filters carry both, so this client, the last reader
+  // of a frame, must take a frame in either form of a topic the session follows. One that
+  // compares the spellings as they are drops every event of a session that followed the other
+  // form, and drops it in silence: the frame is answered `done` and the resume point passes it.
+  test("a frame reaches the session in either form of a topic it follows", () => {
+    const stored = T0 + MINUTE;
+    for (const [followed, subject] of [
+      [ISSUE_TOPIC, ISSUE],
+      [ISSUE_TOPIC, "notifications.dispatch.issue.INFRA.INFRA-1.comment"],
+      ["notifications.dispatch.issue.INFRA.INFRA-1.>", ISSUE],
+      [
+        "notifications.dispatch.issue.INFRA.INFRA-1.>",
+        "notifications.dispatch.issue.INFRA.INFRA-1.comment",
+      ],
+    ] as const) {
+      const { delivery, handed, replies } = setup();
+      delivery.setFollowed([followed]);
+      delivery.receive(relay({ seq: 1, subject, storedAt: stored, reply: "_INBOX.1" }));
+
+      expect(seqs(handed), `${subject} while following ${followed}`).toEqual([1]);
+      expect(repliesTo(replies, "_INBOX.1"), `${subject} while following ${followed}`).toEqual([
+        "received",
+      ]);
+    }
+  });
+
+  // The session's own inbox in either form is its own, whenever it was stored, as the old form
+  // always was; another session's inbox in either form is not, so the rename widens no reach.
+  test("the session's own agent subject is taken in either form, and no other session's", () => {
+    for (const subject of [
+      AGENT,
+      "notifications.agent._.ses_a",
+      "notifications.agent.PRIV.ses_a",
+    ]) {
+      const { delivery, handed } = setup();
+      delivery.receive(relay({ seq: 1, subject, storedAt: T0 - 60 * MINUTE }));
+
+      expect(seqs(handed), subject).toEqual([1]);
+    }
+    for (const subject of [
+      "notifications.agent.ses_other",
+      "notifications.agent._.ses_other",
+      "notifications.agent.PRIV.ses_other",
+    ]) {
+      const { delivery, handed } = setup();
+      delivery.receive(relay({ seq: 1, subject, storedAt: T0 - 60 * MINUTE }));
+
+      expect(seqs(handed), subject).toEqual([]);
+    }
+  });
+
   test("a topic's follow time survives a restart, and an unfollow forgets it", () => {
     const { delivery, clock } = setup();
     delivery.setFollowed([ISSUE_TOPIC]);
@@ -1045,91 +1158,5 @@ describe("persisting the snapshot", () => {
     delivery.setFollowed([AGENT, ISSUE_TOPIC]);
 
     expect(delivery.snapshot().follows).toEqual({ [ISSUE_TOPIC]: T0 });
-  });
-});
-
-describe("one registration", () => {
-  const UNCAPTURED = "notifications.team";
-  const TEAM = "notifications.team.deploys";
-
-  /** A relay that records what a registration stamped on it. */
-  function fakeRelay() {
-    const followed: string[][] = [];
-    return {
-      followed,
-      setFollowed: (topics: Iterable<string>) => followed.push([...topics]),
-      registration: () => ({ consumer: true, epoch: "epoch-1" }) as const,
-    };
-  }
-
-  test("carries the topics the listener will store, and takes the answer", async () => {
-    const relay = fakeRelay();
-    const told: string[] = [];
-    const answers: string[] = [];
-    const sent: { topics: readonly string[]; epoch: string }[] = [];
-
-    const result = await registerWithRelay({
-      relay,
-      ownAgentSubject: AGENT,
-      // The bare base a stored row or a transcript brings back: the listener stores it for no
-      // session and warns about it, so it never goes out (INFRA-771 review).
-      followed: [TEAM, UNCAPTURED, "notifications.agent.ses_b"],
-      outage: inboundUnavailable((why) => told.push(why)),
-      send: (topics, delivery) => {
-        sent.push({ topics, epoch: delivery.epoch });
-        return Promise.resolve("registered");
-      },
-      answered: (answer) => answers.push(answer),
-    });
-
-    expect(sent).toEqual([{ topics: [AGENT, TEAM], epoch: "epoch-1" }]);
-    expect(relay.followed).toEqual([[AGENT, TEAM]]);
-    expect([result, answers, told]).toEqual(["registered", ["registered"], []]);
-  });
-
-  test("a session holding no relay subject registers nothing and is told once", async () => {
-    const told: string[] = [];
-    const outage = inboundUnavailable((why) => told.push(why));
-    const sent: unknown[] = [];
-    const register = () =>
-      registerWithRelay({
-        relay: undefined,
-        ownAgentSubject: AGENT,
-        followed: [TEAM],
-        outage,
-        send: (topics) => {
-          sent.push(topics);
-          return Promise.resolve("registered");
-        },
-        answered: () => undefined,
-      });
-
-    await expect(register()).rejects.toThrow("holds no relay subject");
-    // The second outage tick says nothing more: the session was told once.
-    await expect(register()).rejects.toThrow("holds no relay subject");
-    expect(sent).toEqual([]);
-    expect(told).toEqual([
-      "this session holds no relay subject, so the listener can give it no consumer and it can receive nothing",
-    ]);
-  });
-
-  test("a refused registration tells the session once and takes no answer", async () => {
-    const relay = fakeRelay();
-    const told: string[] = [];
-    const answers: string[] = [];
-
-    await expect(
-      registerWithRelay({
-        relay,
-        ownAgentSubject: AGENT,
-        followed: [TEAM],
-        outage: inboundUnavailable((why) => told.push(why)),
-        send: () => Promise.reject(new Error("no_grant")),
-        answered: (answer: string) => answers.push(answer),
-      })
-    ).rejects.toThrow("no_grant");
-
-    expect(relay.followed).toEqual([[AGENT, TEAM]]);
-    expect([answers, told]).toEqual([[], ["no_grant"]]);
   });
 });

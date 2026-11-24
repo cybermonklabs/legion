@@ -1,0 +1,8 @@
+kind: Changed
+body: |-
+  The bundled TypeScript client of the secrets broker moved from `packages/broker-client`
+  (`@legion/broker-client`) to `packages/cipher-client` (`@legion/cipher-client`), a private
+  workspace package the plugin's bundle inlines. Nothing the plugin does changed.
+time: 2026-11-20T17:30:31Z
+custom:
+    Issue: cipher-directories

@@ -1,11 +1,17 @@
 import { expect, test } from "bun:test"
-import { uncapturedTopicRefusal } from "@legion/contracts"
+import {
+  canonicalTopic,
+  legacyDispatchIssueSubject,
+  uncapturedTopicRefusal,
+} from "@legion/contracts"
+import { projectRefusal } from "@legion/envoy-client/test/subscribe-answer"
 import { EnvoyApiError } from "@legion/envoy-client/transport"
 import { startChannelSession } from "../src/envoy-channel-server"
 import { SessionIdentity, sessionHandoffFile, writeSessionHandoff } from "../src/session-identity"
 import {
   directSubject,
   FakeNats,
+  FakeNotifier,
   noInterest,
   recordingClient,
   sessionOptions,
@@ -703,6 +709,125 @@ test("never registers a topic no stream subject captures, however it was followe
   }
 })
 
+// An edge listener refuses a whole registration that names a topic of no project of the session's
+// token, naming each refused topic. The session drops exactly those, so its next heartbeat is not
+// refused for them again, and keeps every other topic it follows.
+test("a topic the edge refuses for the session's projects is dropped, and the heartbeats register the rest", async () => {
+  const refusedRoot = "notifications.github.acme.priv"
+  const subscribes: Array<readonly string[]> = []
+  const client = recordingClient([], {
+    subscribe: async (input) => {
+      subscribes.push(input.topics)
+      const refused = input.topics.filter((topic) => topic.startsWith(refusedRoot))
+      if (refused.length > 0) {
+        throw new EnvoyApiError({
+          method: "POST",
+          url: "http://listener.example/v1/interests/subscribe",
+          status: 403,
+          responseBody: JSON.stringify(projectRefusal(refused)),
+        })
+      }
+      return noInterest()
+    },
+  })
+  const session = await startChannelSession(
+    sessionOptions(new SessionIdentity("ses_claude", "/tmp"), scratchState(), {
+      connection: new FakeNats(),
+      heartbeatMs: 25,
+      client,
+    }),
+  )
+
+  try {
+    await session.follow([`${refusedRoot}.>`, "notifications.dispatch.issue.DSP-7.>"])
+    const refusedAt = subscribes.findIndex((topics) =>
+      topics.some((topic) => topic.startsWith(refusedRoot)),
+    )
+    await waitFor(
+      async () => subscribes.length >= refusedAt + 3,
+      "two heartbeats after the refusal",
+    )
+
+    const carriedAgain = subscribes
+      .slice(refusedAt + 1)
+      .filter((topics) => topics.some((topic) => topic.startsWith(refusedRoot)))
+    if (carriedAgain.length > 0) {
+      throw new Error(
+        `a registration carried a refused topic again: ${JSON.stringify(carriedAgain)}`,
+      )
+    }
+    expect(session.topics()).toEqual([
+      directSubject,
+      "notifications.dispatch.issue.DSP-7",
+      "notifications.dispatch.issue.DSP-7.>",
+    ])
+    expect(subscribes.at(-1)).toEqual([
+      directSubject,
+      "notifications.dispatch.issue.DSP-7",
+      "notifications.dispatch.issue.DSP-7.>",
+    ])
+  } finally {
+    await session.shutdown()
+  }
+})
+
+// The edge can start refusing a topic it accepted before, as when the broker's answer for the
+// token's projects stops naming a repository: the heartbeat's registration is refused, the topic
+// is dropped, and the session is told once, naming the topic and the edge's reason, rather than
+// going on believing it follows it.
+test("a topic the edge refuses at a heartbeat is told to the session once, naming it and the reason", async () => {
+  const refusedRoot = "notifications.github.acme.priv"
+  let refusing = false
+  const subscribes: Array<readonly string[]> = []
+  const client = recordingClient([], {
+    subscribe: async (input) => {
+      subscribes.push(input.topics)
+      const refused = input.topics.filter((topic) => topic.startsWith(refusedRoot))
+      if (refusing && refused.length > 0) {
+        throw new EnvoyApiError({
+          method: "POST",
+          url: "http://listener.example/v1/interests/subscribe",
+          status: 403,
+          responseBody: JSON.stringify(projectRefusal(refused)),
+        })
+      }
+      return noInterest()
+    },
+  })
+  const notifier = new FakeNotifier()
+  const session = await startChannelSession(
+    sessionOptions(new SessionIdentity("ses_claude", "/tmp"), scratchState(), {
+      connection: new FakeNats(),
+      heartbeatMs: 25,
+      client,
+      notifier,
+    }),
+  )
+  const told = () =>
+    notifier.notifications
+      .filter((written) => written.eventId === undefined)
+      .map((written) => written.content)
+      .filter((content) => content.includes(refusedRoot))
+
+  try {
+    await session.follow([`${refusedRoot}.>`, "notifications.dispatch.issue.DSP-7.>"])
+    expect(told()).toEqual([])
+    refusing = true
+    const refusedAt = subscribes.length
+    await waitFor(
+      async () => subscribes.length >= refusedAt + 4,
+      "three heartbeats after the refusal",
+    )
+
+    expect(told()).toHaveLength(1)
+    expect(told()[0]).toContain(`${refusedRoot}, ${refusedRoot}.>`)
+    expect(told()[0]).toContain("repository_not_in_project")
+    expect(session.topics()).not.toContain(`${refusedRoot}.>`)
+  } finally {
+    await session.shutdown()
+  }
+})
+
 // The record outlives this process by the live window and the gone horizon after it, so the
 // deregistration is what ends the session for its peers: a registry write this listener has
 // stalled on must delay it, never swallow it (dispatch://INFRA-392).
@@ -777,5 +902,62 @@ test("the shutdown deregistration spends a quarter second settling, not the whol
     expect(elapsed).toBeLessThan(2_000)
   } finally {
     wedged.resolve()
+  }
+})
+
+// The listener's record keeps each topic as its caller wrote it, the old form of an issue's name
+// included (packages/envoy/internal/store/legacy_topics.go), and the heartbeat's reconciliation
+// (`syncRegisteredInterests`) unsubscribes every topic of the record the session does not follow
+// by that exact name. So a session that follows an issue in the old form reads its record back as
+// its own and unsubscribes nothing. The second row is the control the first leans on: a record
+// rewritten to the new form reads to this very comparison as a lost registration, unsubscribed on
+// one heartbeat and written back by the next, so a store that rewrote it would show here.
+test("a followed topic the record keeps in its old form is never unsubscribed, where a rewritten one would be", async () => {
+  const followed = legacyDispatchIssueSubject("INFRA-12", ">")
+  const rewritten = canonicalTopic(followed).canonical
+  expect(rewritten).toBe("notifications.dispatch.issue.INFRA.INFRA-12.>")
+  for (const { name, store, unsubscribed } of [
+    { name: "as the caller wrote it", store: (topic: string) => topic, unsubscribed: false },
+    {
+      name: "rewritten to the new form",
+      store: (topic: string) => canonicalTopic(topic).canonical,
+      unsubscribed: true,
+    },
+  ]) {
+    const stateDirectory = scratchState()
+    const entry = new Set<string>()
+    const unsubscribes: string[] = []
+    let reads = 0
+    const client = recordingClient([], {
+      subscribe: async (input) => {
+        for (const topic of input.topics) entry.add(store(topic))
+        return noInterest()
+      },
+      unsubscribe: async (input) => {
+        unsubscribes.push(...input.topics)
+        for (const topic of input.topics) entry.delete(topic)
+      },
+      getInterest: async (sessionID) => {
+        reads++
+        return { ...noInterest(), session_id: sessionID, topics: [...entry] }
+      },
+    })
+    const session = await startChannelSession(
+      sessionOptions(new SessionIdentity("ses_claude", "/tmp"), stateDirectory, {
+        connection: new FakeNats(),
+        client,
+        heartbeatMs: 20,
+      }),
+    )
+    try {
+      await session.follow([followed])
+      const followedAt = reads
+      await waitFor(async () => reads >= followedAt + 3, `three heartbeats with the record ${name}`)
+      expect(unsubscribes.includes(rewritten), name).toBe(unsubscribed)
+      if (!unsubscribed) expect(unsubscribes, name).toEqual([])
+      expect(session.topics(), name).toContain(followed)
+    } finally {
+      await session.shutdown()
+    }
   }
 })

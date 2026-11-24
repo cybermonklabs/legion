@@ -6,6 +6,7 @@ import { ISSUE_TITLE_MAX, MAX_ISSUE_ADVANCES, PROJECT_NAME_MAX } from "./dispatc
 import {
   ARTIFACT_STORED_TEXT_RULE,
   DISPATCH_HANDOFF_BODY_MAX,
+  type DispatchToolSpec,
   dispatchToolSchema,
   dispatchToolSpecs,
   ISSUE_STATUSES,
@@ -176,6 +177,7 @@ const validCalls = {
     summary: "A live sync replaces the nightly export.",
   },
   dispatch_plan_approve: { issue: "DSP-1", version: 2 },
+  dispatch_review: { issue: "DSP-1", version: 2, verdict: "approved" },
   dispatch_result: {
     issue: "DSP-1",
     check: "k1",
@@ -199,11 +201,25 @@ const validCalls = {
   dispatch_limits: {},
   dispatch_handoff_write: specFor("dispatch_handoff_write").example,
   dispatch_handoff_read: { issue: "DSP-1", phase: "implement", version: 2 },
+  dispatch_steps: { issue: "DSP-1" },
+  dispatch_plans: { project: "INFRA" },
   dispatch_inbox: {},
 } as const;
 
 function schemaFor(name: keyof typeof validCalls) {
   return dispatchToolSchema(specFor(name), schemaApi);
+}
+
+/** `schema` refuses each of `inputs` once, naming the project-key rule and nothing else. */
+function expectNotAProjectKey(schema: z.ZodType, inputs: readonly Record<string, unknown>[]): void {
+  for (const input of inputs) {
+    const refused = schema.safeParse(input);
+    expect(refused.success, JSON.stringify(input)).toBe(false);
+    expect(
+      refused.error?.issues.map((issue) => issue.message),
+      JSON.stringify(input)
+    ).toEqual([`project is not a project key: ${PROJECT_KEY_RULE}`]);
+  }
 }
 
 const ISSUE_UPDATE_FIELDS_RULE =
@@ -284,6 +300,7 @@ describe("dispatchToolSpecs", () => {
       "dispatch_doc_read",
       "dispatch_request_approval",
       "dispatch_plan_approve",
+      "dispatch_review",
       "dispatch_result",
       "dispatch_results",
       "dispatch_artifact",
@@ -301,6 +318,8 @@ describe("dispatchToolSpecs", () => {
       "dispatch_limits",
       "dispatch_handoff_write",
       "dispatch_handoff_read",
+      "dispatch_steps",
+      "dispatch_plans",
       "dispatch_inbox",
     ]);
 
@@ -347,16 +366,35 @@ describe("dispatchToolSpecs", () => {
     }
   });
 
+  // An empty key is the value where this rule and `dispatch_search`'s differ: a search takes `""`
+  // as no project, and a key in the request path cannot be empty.
   test("dispatch_related takes a project key and refuses anything else by name", () => {
     const schema = schemaFor("dispatch_related");
 
     expect(schema.safeParse({ project: "CORE", text: "a draft spec" }).success).toBe(true);
     expect(schema.safeParse({ title: "no project" }).success).toBe(false);
-    const lower = schema.safeParse({ project: "core", title: "Retry deliveries" });
-    expect(lower.success).toBe(false);
-    expect(lower.error?.issues.map((issue) => issue.message)).toEqual([
-      `project is not a project key: ${PROJECT_KEY_RULE}`,
+    expectNotAProjectKey(schema, [
+      { project: "core", title: "Retry deliveries" },
+      { project: "", title: "Retry deliveries" },
     ]);
+  });
+
+  test("dispatch_plans takes a project key, an optional since and until, and nothing else", () => {
+    const schema = schemaFor("dispatch_plans");
+
+    expect(schema.safeParse({ project: "INFRA" }).success).toBe(true);
+    expect(
+      schema.safeParse({
+        project: "INFRA",
+        since: "2026-11-01T00:00:00Z",
+        until: "2026-11-17T00:00:00Z",
+      }).success
+    ).toBe(true);
+    expect(schema.safeParse({}).success).toBe(false);
+    expect(schema.safeParse({ project: "INFRA", issue: "INFRA-1" }).success).toBe(false);
+    expect(schema.safeParse({ project: "INFRA", since: 1 }).success).toBe(false);
+    // An empty key would send `GET /api/v1/projects//plans`, so it is refused like any other.
+    expectNotAProjectKey(schema, [{ project: "infra" }, { project: "" }]);
   });
 
   test("dispatch_search rejects a one-character query and a limit above 50", () => {
@@ -396,27 +434,25 @@ describe("dispatchToolSpecs", () => {
     const schema = schemaFor("dispatch_search");
 
     // The key's length limits, and anchors that hold at the ends of the whole value rather than
-    // of a line, are what keep the search URL short ("Search limits" in
-    // packages/contracts/AGENTS.md), and this copy of the pattern changes without a migration.
+    // of a line, are what keep the search URL short (the URL budget in `SEARCH_QUERY_MAX`'s doc
+    // comment, src/dispatch-tools.ts), and this copy of the pattern changes without a migration.
     for (const project of [undefined, "", "AB", "K8S", "LEGION", "LEGSMOKE", "ABCDEFGHIJ"]) {
       expect(schema.safeParse({ query: "ok", project }).success).toBe(true);
     }
-    for (const project of [
-      "A",
-      "ABCDEFGHIJK",
-      "1ABC",
-      "legion",
-      " LEGION",
-      "LEGION\n",
-      "LEGION\nX",
-      "LEGION-1",
-      "中".repeat(100),
-    ]) {
-      const refused = schema.safeParse({ query: "ok", project });
-      expect(refused.error?.issues.map((issue) => issue.message)).toEqual([
-        `project is not a project key: ${PROJECT_KEY_RULE}`,
-      ]);
-    }
+    expectNotAProjectKey(
+      schema,
+      [
+        "A",
+        "ABCDEFGHIJK",
+        "1ABC",
+        "legion",
+        " LEGION",
+        "LEGION\n",
+        "LEGION\nX",
+        "LEGION-1",
+        "中".repeat(100),
+      ].map((project) => ({ query: "ok", project }))
+    );
   });
 
   test("dispatch_project's description gives the project-key rule", () => {
@@ -443,6 +479,7 @@ describe("dispatchToolSpecs", () => {
       "acme/infra",
       "sjawhar/legion",
       "Owner-1/repo.name_2",
+      "mona-cat_octo/arch",
       "a/..b",
     ]) {
       expect(schema.safeParse({ project: "CORE", repo }).success, String(repo)).toBe(true);
@@ -719,6 +756,15 @@ describe("dispatchToolSpecs", () => {
     expect(schema.safeParse({ issue: "DSP-1", phase: "review", body: "{}" }).success).toBe(false);
   });
 
+  test("dispatch_steps takes one issue and nothing else", () => {
+    const schema = schemaFor("dispatch_steps");
+
+    expect(schema.safeParse({ issue: "DSP-1" }).success).toBe(true);
+    expect(schema.safeParse({ issue: "acme/infra#12" }).success).toBe(true);
+    expect(schema.safeParse({ issue: "DSP-1", task: "default" }).success).toBe(false);
+    expect(schema.safeParse({ issue: 1 }).success).toBe(false);
+  });
+
   test("dispatch_project takes a key and a name and nothing else", () => {
     const schema = schemaFor("dispatch_project");
 
@@ -815,7 +861,7 @@ describe("dispatchToolSpecs", () => {
       { issue: "DSP-1", labels: [] },
       { issue: "DSP-1", priority: 0 },
       { issue: "DSP-1", priority: null },
-      { issue: "DSP-1", assignee: "alice@theorem.dev" },
+      { issue: "DSP-1", assignee: "alice@example.com" },
       { issue: "DSP-1", assignee: null },
       { issue: "DSP-1", external_links: ["https://github.com/owner/repo/pull/7"] },
       { issue: "DSP-1", route: "" },
@@ -899,6 +945,40 @@ describe("dispatchToolSpecs", () => {
         `${tool} ${JSON.stringify(args)}`
       ).toEqual([refusal]);
     }
+  });
+
+  // Dispatch refuses a comment whose mentions name one target twice ("mentions must not repeat a
+  // target", validateCommentMentions in comment_create.go), and the field promises "none named
+  // twice", so the tool refuses such a call in those words before anything is sent. The server
+  // judges each target in turn, its form before whether an earlier target named it, and the tool
+  // names the rule the same call breaks first there. The rule the tool states names the repeat
+  // beside the count and the form.
+  test("dispatch_comment refuses a repeated mention target in Dispatch's words", () => {
+    const repeat = "mentions must not repeat a target";
+    const form = "mention target must be role:<name> or session:<id>";
+    const schema = schemaFor("dispatch_comment");
+    for (const [mentions, refusal] of [
+      [["role:architect", "role:architect"], repeat],
+      [["session:s1", "role:architect", "session:s1"], repeat],
+      [["role:architect", "role:architect", "user:alice"], repeat],
+      [["role:architect", "user:alice", "role:architect"], form],
+    ] as const) {
+      const result = schema.safeParse({ issue: "DSP-1", body: "Over to you.", mentions });
+      expect(result.success, JSON.stringify(mentions)).toBe(false);
+      expect(
+        result.error?.issues.map((issue) => issue.message),
+        JSON.stringify(mentions)
+      ).toEqual([refusal]);
+    }
+    expect(
+      schema.safeParse({
+        issue: "DSP-1",
+        body: "Over to you.",
+        mentions: ["role:architect", "session:architect"],
+      }).success
+    ).toBe(true);
+    const comment: DispatchToolSpec = specFor("dispatch_comment");
+    expect(comment.validation?.message).toContain(`and ${repeat}.`);
   });
 
   // The reason is the close's note, so the tool takes it in the same call, posts it before the
@@ -1445,6 +1525,63 @@ describe("dispatchToolSpecs", () => {
     ).toBe(true);
   });
 
+  test("dispatch_review takes an issue, a version from 1 and a verdict, and nothing else", () => {
+    const schema = schemaFor("dispatch_review");
+
+    expect(schema.safeParse({ issue: "DSP-1", version: 1, verdict: "approved" }).success).toBe(
+      true
+    );
+    expect(
+      schema.safeParse({
+        issue: "DSP-1",
+        artifact: "verification-md",
+        version: 3,
+        verdict: "approved",
+        reason: "Reads well.",
+      }).success
+    ).toBe(true);
+    for (const args of [
+      { version: 2, verdict: "approved" },
+      { issue: "DSP-1", verdict: "approved" },
+      { issue: "DSP-1", version: 0, verdict: "approved" },
+      { issue: "DSP-1", version: 1.5, verdict: "approved" },
+      { issue: "DSP-1", version: 2 },
+      { issue: "DSP-1", version: 2, verdict: "rejected" },
+      { issue: "DSP-1", version: 2, verdict: "approved", state: "approved" },
+    ]) {
+      expect(schema.safeParse(args).success, JSON.stringify(args)).toBe(false);
+    }
+  });
+
+  test("dispatch_review requests changes only with a reason, and names the rule without one", () => {
+    const schema = schemaFor("dispatch_review");
+    const changes = { issue: "DSP-1", version: 2, verdict: "changes_requested" };
+
+    expect(schema.safeParse({ ...changes, reason: "Name the rollback path." }).success).toBe(true);
+    for (const args of [changes, { ...changes, reason: "" }, { ...changes, reason: "   " }]) {
+      const result = schema.safeParse(args);
+      expect(result.success, JSON.stringify(args)).toBe(false);
+      expect(result.error?.issues.map((issue) => issue.message)).toEqual([
+        "verdict changes_requested requires reason, a non-empty note saying what must change before the document can be approved.",
+      ]);
+    }
+  });
+
+  test("dispatch_review's description, which --help prints, says whose name it writes in, what Dispatch refuses and what a build without its route does", () => {
+    const { description } = specFor("dispatch_review");
+
+    for (const words of [
+      "A review records an approval or a changes request in the person's name at that version, so it works only with a token that names a person who holds approve",
+      "403 OAUTH_SCOPE_REQUIRED or 403 SIGN_IN_REQUIRED",
+      "it must be the version the review would record",
+      "409 REVIEW_VERSION_MOVED",
+      "A Dispatch build without the versioned review route answers no route and records nothing; the command then says so and names /healthz",
+      "every other browser action is dispatch://INFRA-910's",
+    ]) {
+      expect(description).toContain(words);
+    }
+  });
+
   test("points dispatch_issue's spec and dispatch_doc_edit at the skill that writes specs", () => {
     const issue = dispatchToolSpecs.find((spec) => spec.name === "dispatch_issue");
     const documentEdit = dispatchToolSpecs.find((spec) => spec.name === "dispatch_doc_edit");
@@ -1541,7 +1678,7 @@ describe("dispatchToolSpecs", () => {
     ],
     [
       "dispatch_doc_edit",
-      "One replace per paragraph: more new paragraphs go in one insert after the last one you rewrote, since two inserts at one anchor come out reversed; read the passage back with dispatch doc-read afterwards.",
+      "Several paragraphs, or a list, go in one replace, since with writes the blocks its markdown names; blocks beside a block go in one insert, since two inserts at one anchor come out reversed. The result prints the markdown of each block the edit wrote, so read that rather than the document again.",
     ],
     [
       "dispatch_artifact",
@@ -1565,7 +1702,7 @@ describe("dispatchToolSpecs", () => {
     ],
     [
       "dispatch_doc_edit",
-      "The spec holds requirements, design, and decisions - never progress, status, or timestamps; a record of open items or progress is a document of its own.",
+      "The spec holds requirements, design, and decisions - never progress, status, or timestamps. Work still to do is a task in the issue's plan, an issue, or an ask, never a separate document that lists it.",
     ],
     [
       "dispatch_issue",
@@ -1608,6 +1745,24 @@ describe("dispatchToolSpecs", () => {
     const argument = fields[field];
     const description = argument?.description ?? argument?.unwrap?.().description ?? "";
     expect(description).toContain(rule);
+  });
+
+  // Work still to do lives in the issue's plan, other issues and asks. No tool's help may offer a
+  // separate list of open items beside them. The control is the help sentence that offered one.
+  test("no tool description or flag help offers a separate list of open items", () => {
+    const listOffer = /open[- _]items/i;
+    expect(
+      listOffer.test("a record of open items or progress is a document of its own"),
+      "the control: the retired offer"
+    ).toBe(true);
+    const offering = dispatchToolSpecs.filter((spec) =>
+      listOffer.test(
+        JSON.stringify(z.toJSONSchema(dispatchToolSchema(spec, schemaApi), { io: "input" })) +
+          spec.description
+      )
+    );
+    expect(dispatchToolSpecs.length).toBeGreaterThan(0);
+    expect(offering.map((spec) => spec.name)).toEqual([]);
   });
 
   test("dispatch_follow takes a full ask id and follow or unfollow, nothing else", () => {

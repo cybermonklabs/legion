@@ -1,0 +1,20 @@
+kind: Added
+body: |-
+    Dispatch's CI reconcile reads the commit statuses of each open pull request head where its
+    App's token holds Commit statuses, through the GraphQL heads query and through
+    `GET /repos/{owner}/{repo}/commits/{ref}/status` on the REST fallback. The CI record keeps the
+    newest success, failure or error status of each context as an entry of its own kind, and each
+    settlement names them in a new `statuses` field, as `{context, state, created_at}` with
+    GitHub's `created_at` of each status. A consumer orders two statuses of one context by
+    `created_at`, not by the settlement's generation, which starts again in a record recreated
+    after the bucket's seven-day TTL. For each context it keeps the entry with the later
+    `created_at`, and it keeps a context that a settlement leaves out as it was. A new context or a
+    changed state settles the head again. A refused status read costs the head its statuses alone,
+    and the reconcile logs a warning for it. At the record's size bound a status gives way to the
+    check runs, with a warning. Deploy the listener first, then each Legion daemon, then Dispatch. A rollback of
+    the listener below this release goes with a rollback of Dispatch: an earlier listener drops
+    the statuses of each record it writes, and nothing writes them back while GitHub's answer for
+    that head stays the same.
+time: 2026-11-17T12:46:31Z
+custom:
+    Issue: pr4299

@@ -11,9 +11,9 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/classify"
-	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -23,12 +23,13 @@ import (
 // design gate is open (answerOpenGates). It reads only the record, so the same record gives the
 // same decision, and admission calls it on every pass (Admission.promoteHolds): a guard that
 // clears on any path — a member leaving, a claim released, the label put back, the architect's
-// start taken — is seen at the next fact. issues is the caller's snapshot of the record, and
-// held names each root the caller still holds for the Dispatch consumer to catch up (nil holds
-// none): a root whose listing is ahead of the record decides nothing until the consumer has
-// reached it, so a question already answered on Dispatch does not start a wait here first. It
-// returns the roots that entered awaiting_person, which keep the slots they hold, and whether
-// it wrote any issue of the snapshot, which the caller then reads again.
+// start taken — is seen at the next fact. issues is the caller's snapshot of project's records
+// (admission's LiveIssues, which names the project), and held names each root the caller still
+// holds for the Dispatch consumer to catch up (nil holds none): a root whose listing is ahead of
+// the record decides nothing until the consumer has reached it, so a question already answered on
+// Dispatch does not start a wait here first. It returns the roots that entered awaiting_person,
+// which keep the slots they hold, and whether it wrote any issue of the snapshot, which the caller
+// then reads again.
 //
 // It reads the slot rows once for the pass, because a root waits on a person only while the
 // daemon has started it, which is what its slot row says (record.CanWaitOnPerson,
@@ -37,7 +38,7 @@ import (
 // the design gate first opens. That is the spec's own condition, and the boot's catch-up reads
 // the roots this pass can move (the daemon's catchesUp) by that same predicate.
 func (e *Engine) ReconcileAwaiting(ctx context.Context, tx pgx.Tx, project string, issues []record.Issue, held func(string) bool) ([]string, bool, error) {
-	changed, err := e.answerOpenGates(ctx, tx, project, issues, held)
+	changed, err := e.answerOpenGates(ctx, tx, issues, held)
 	if err != nil {
 		return nil, false, err
 	}
@@ -46,7 +47,7 @@ func (e *Engine) ReconcileAwaiting(ctx context.Context, tx pgx.Tx, project strin
 		if held != nil && held(issue.Key) {
 			continue
 		}
-		if issue.Project == project && claim.IsTreeRoot(issue.Key, issue.Tree) &&
+		if claim.IsTreeRoot(issue.Key, issue.Tree) &&
 			issue.Phase == phase.Admitted && issue.DeclaredSeq != 0 {
 			roots = append(roots, issue)
 		}
@@ -127,7 +128,7 @@ func (e *Engine) ReconcileAwaiting(ctx context.Context, tx pgx.Tx, project strin
 				"declared_seq", root.DeclaredSeq)
 			changed = true
 		default:
-			intake.OnCommit(ctx, func() {
+			store.OnCommit(ctx, func() {
 				e.log.Debug("workflow: a root that handed work to a person starts no wait on that person", "issue", root.Key, "why", decision.Why)
 			})
 		}
@@ -135,7 +136,7 @@ func (e *Engine) ReconcileAwaiting(ctx context.Context, tx pgx.Tx, project strin
 	return entered, changed, nil
 }
 
-// answerOpenGates answers each unanswered root of project waiting on a person whose design gate
+// answerOpenGates answers each unanswered root of issues waiting on a person whose design gate
 // is open, whatever opened it and whenever: a person's approval Dispatch recorded before the wait
 // began but applied after it, a registration's read of an approval, or a registration of a step
 // the deployment does not gate. The gate it reads is the one the wait's own document names, since
@@ -150,10 +151,10 @@ func (e *Engine) ReconcileAwaiting(ctx context.Context, tx pgx.Tx, project strin
 // counts then (gateRequestArtifact): the wait moves to a question of the tree still with the
 // person, and is otherwise answered, so the architect resumes and registers its spec, which
 // opens the gate. It reports whether it answered or moved any root's wait.
-func (e *Engine) answerOpenGates(ctx context.Context, tx pgx.Tx, project string, issues []record.Issue, held func(string) bool) (bool, error) {
+func (e *Engine) answerOpenGates(ctx context.Context, tx pgx.Tx, issues []record.Issue, held func(string) bool) (bool, error) {
 	answered := false
 	for _, root := range issues {
-		if (held != nil && held(root.Key)) || root.Project != project || !claim.IsTreeRoot(root.Key, root.Tree) ||
+		if (held != nil && held(root.Key)) || !claim.IsTreeRoot(root.Key, root.Tree) ||
 			!root.AwaitingPerson() || root.Awaiting.AnsweredAt != nil {
 			continue
 		}
@@ -201,7 +202,7 @@ func (e *Engine) leaveGateOff(ctx context.Context, tx pgx.Tx, root record.Issue,
 		e.logOnCommit(ctx, "workflow: the deployment gates no step, so a root's wait on its gate moves to what is still with the person",
 			"issue", root.Key, "version", root.Awaiting.GateVersion, "next_ask", next.Ask)
 		root.Awaiting.Ask, root.Awaiting.GateVersion, root.Awaiting.Artifact = next.Ask, next.GateVersion, next.Artifact
-		return e.store.PutIssue(ctx, tx, root)
+		return e.WriteIssue(ctx, tx, root)
 	}
 	e.logOnCommit(ctx, "workflow: the deployment gates no step, which answers a root's wait on its gate", "issue", root.Key,
 		"version", root.Awaiting.GateVersion)
@@ -280,7 +281,7 @@ type awaitDecision struct {
 //
 // Rule 0 is the spec's own condition (dispatch://INFRA-980, "Which issue needs a slot"): a root
 // enters awaiting_person only while it holds a slot, which now says the daemon has started it
-// and its work is not yet past its review (record.KeepsSlot); a root at admitted whose gate has
+// and it stands in a phase that keeps a slot (record.KeepsSlot); a root at admitted whose gate has
 // never opened keeps that slot through a wait on another issue (blockers.waitsOf). It is read as
 // the root's own slot row
 // (awaitView.Slotted). A root still waiting in line for
@@ -439,11 +440,18 @@ func waitSubject(asks []record.RootAsk, steps []record.DesignStep, gates map[rec
 
 // owed says whether the architect has not yet taken the work it was last given, and how: a start
 // still queued for it, no claim yet, a claim still starting, or a task it has not confirmed.
+//
+// The daemon's own delivery of a relaunch's record is no work it was given (supervise.HoldsTask):
+// it names no person's decision, only the sentence of what the relaunch ended, which the
+// architect reads whether or not the root waits — entering the wait leaves the architect running.
+// So it holds neither the wait nor the telling of a person's act, which would otherwise wait
+// behind that sentence for as long as the agent's own turns kept it unread
+// (dispatch://INFRA-3276 R3). Nor is news of the approved design alone, queued as a start
+// (startsWork) or held as a task (supervise.HoldsWork): it hands the architect no work of the
+// root's, and the start can wait on its backoff for as long as the architect's turn runs.
 func owed(run record.RoleRun) (string, bool) {
-	for _, queued := range run.Queued {
-		if queued.Request.Op == "start" {
-			return "has a start still queued", true
-		}
+	if queuedStart(run) {
+		return "has a start still queued", true
 	}
 	held := run.Claim
 	switch {
@@ -452,7 +460,7 @@ func owed(run record.RoleRun) (string, bool) {
 	case slices.Contains([]supervise.ClaimState{supervise.StateQueued, supervise.StateLaunchUncertain, supervise.StateLaunching,
 		supervise.StateShimConnected, supervise.StateRegistered}, held.State):
 		return fmt.Sprintf("is still starting (%s)", held.State), true
-	case held.Pending != nil && held.Pending.ConfirmedAt.IsZero():
+	case supervise.HoldsWork(held.Pending) && held.Pending.ConfirmedAt.IsZero():
 		return "has not taken its task yet", true
 	}
 	return "", false
@@ -503,8 +511,10 @@ func answerOfAct(ask record.RootAsk, seq int64, otherwise record.Answer) record.
 // waits on another issue as well (blockers.waitsOf leaves it out). The architect stays live to
 // read the person's answer, and the controller is told.
 func (e *Engine) enterAwaiting(ctx context.Context, tx pgx.Tx, root record.Issue, waiting record.Awaiting, reason string) error {
+	// The root's task keeps its place (moveTask): the wait comes before its first step, so the task
+	// has not started, and awaiting_person, like admitted, is a phase of the architect before it.
 	root.Phase, root.Awaiting = phase.AwaitingPerson, &waiting
-	if err := e.store.PutIssue(ctx, tx, root); err != nil {
+	if err := e.WriteIssue(ctx, tx, root); err != nil {
 		return err
 	}
 	// The root moves from admitted into awaiting_person here, which is a phase change and so a
@@ -546,6 +556,17 @@ func (e *Engine) tellInPlace(ctx context.Context, tx pgx.Tx, root record.Issue, 
 // counts, so each takes its own place in the waiting line and starts at its own slot
 // (record.Waiting's LineFirstPhase), in the same admission pass that resumed this root.
 //
+// The resume hands the architect work it was not on, so it raises the architect's phase entry and
+// writes this task as the work of that entry (EnterArchitect), and the start carries the number
+// (record.SuperviseRequest.Entry) as a phase worker's start does. That is what makes a resume
+// survivable: the entry and this task live on the record, so a start row that reaches no claim
+// leaves the architect's claim below that entry, and the entry sweep sends it that entry's work.
+// The raise marks the task as one to send as written (record.PhaseRow.EntryVerbatim), so that work
+// is this text (SendArchitectStart): it names the answer and no kept decision, so nothing it says
+// can have been told by another start. Both callers get it — the promotion of an answered root
+// (admit's record.LineAnswered branch) and tellInPlace, which gives a live architect this task
+// where it stands.
+//
 // The resume starts the root's architect, which is a movement of the issue
 // (record.Store.MarkIssueMoved, the rule in dispatchIssue). It is marked here rather than at
 // either caller, so that both of them carry it: the promotion of a root a person answered
@@ -575,8 +596,12 @@ func (e *Engine) ResumeAwaitedRoot(ctx context.Context, tx pgx.Tx, root record.I
 		return err
 	}
 	task := resumeTask(root.Key, waiting, step, gate, asks[root.Key], e.armed())
+	entry, err := e.EnterArchitect(ctx, tx, root, task, true)
+	if err != nil {
+		return err
+	}
 	if err := e.enqueue(ctx, tx, root.Key, record.SuperviseRequest{
-		Op: "start", Tree: root.Tree, Role: claim.RoleArchitect, Generation: root.Generation, Task: task,
+		Op: "start", Tree: root.Tree, Role: claim.RoleArchitect, Generation: root.Generation, Task: task, Entry: entry,
 	}); err != nil {
 		return err
 	}
@@ -587,15 +612,16 @@ func (e *Engine) ResumeAwaitedRoot(ctx context.Context, tx pgx.Tx, root record.I
 // step the person was asked about (classify.StandingGate), which is the one the resume answers
 // for; else the first required step that is not open, which nobody has registered and whose
 // document the architect has still to register; and when every required step is open the first
-// required step, whose version the resume says the work runs at. The row is nil for the
-// unregistered step, as a root nobody has registered a gate for holds none.
+// required step, whose version the resume says the work runs at. The required steps are the
+// ones the tree is gated on (classify.TreeSteps), as in the two rules it reads. The row is nil
+// for the unregistered step, as a root nobody has registered a gate for holds none.
 func gateInQuestion(steps []record.DesignStep, gates map[record.DesignStep]record.DesignGate) (record.DesignStep, *record.DesignGate) {
 	if gate, standing := classify.StandingGate(steps, gates); standing {
 		return gate.Step, &gate
 	}
 	step, _, closed := classify.FirstClosedStep(steps, gates)
 	if !closed {
-		step = classify.RequiredSteps(steps)[0]
+		step = classify.RequiredSteps(classify.TreeSteps(steps, gates))[0]
 	}
 	gate, ok := gates[step]
 	if !ok {

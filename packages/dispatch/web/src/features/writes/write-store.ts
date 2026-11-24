@@ -5,10 +5,12 @@ import { useRef, useSyncExternalStore } from "react";
 import {
   ApiError,
   api,
+  goesUnderKey,
   type WriteBounds,
   type WriteMethod,
   type WriteRequest,
 } from "../../api/client";
+import { askSignInAgain } from "../../api/query-client";
 import type { AuthenticatedUser } from "../../api/types";
 import { newSendKey } from "../../lib/send-key";
 import { indexedDbFiles, type KeptFiles } from "./kept-files";
@@ -20,6 +22,7 @@ import {
   WriteDiscardedError,
   writeUnderKey,
 } from "./keyed-write";
+import type { Shape } from "./tab-storage";
 import {
   KEPT_SEND_RESUME_MS,
   type KeptState,
@@ -30,7 +33,6 @@ import {
   refusalFrom,
   requestFrom,
   resumesOnItsOwn,
-  type Shape,
   type WriteStorage,
   writeStorage,
 } from "./write-storage";
@@ -47,13 +49,20 @@ export type WriteState =
   | { readonly status: "made"; readonly answer: unknown };
 
 /** A write apart from where it stands: its key, its kind and its kind's record (`detail`), the
- *  login of the person who pressed it (stamped at the press, never again), what it is called and
- *  where it shows, and the target its line is ordered on. */
+ *  login of the person who pressed it (stamped at the press, never again), whether it goes under
+ *  its key, what it is called and where it shows, and the target its line is ordered on. */
 export interface WriteBase<D = unknown> {
   readonly id: number;
   readonly key: string;
   readonly kind: string;
   readonly login: string | undefined;
+  /** Whether the request it makes goes under its key (`goesUnderKey`): a `POST` or a `PATCH`,
+   *  whose Retry after it ended without Dispatch's verdict asks again under that key, and not a
+   *  `PUT` or a `DELETE`, which sends none, nor a write whose spec says it goes under none
+   *  (`WriteSpec.keyed`). Read from what its spec names at the press (`WriteSpec`), never from
+   *  what goes out later, since a write can end stopped before any attempt of it sends a
+   *  request; kept with it (`KeptWrite.keyed`), so a reload reads it back. */
+  readonly keyed: boolean;
   readonly label: string;
   readonly presentation: Presentation;
   /** Whether the surface that made it shows its refusal itself, so the store lets a refused one
@@ -83,16 +92,23 @@ export interface WriteBase<D = unknown> {
  *  or discarded. */
 export type Write<D = unknown> = WriteBase<D> & WriteState;
 
+/** Whether `write` may still reach Dispatch: waiting its turn, or out, within its deadline or
+ *  past it and still being tried. A refused or discarded write is not. */
+export function isLive(write: Write): boolean {
+  return write.status === "queued" || write.status === "sending" || write.status === "late";
+}
+
 /** `write` apart from where it stands, for a new state to be put on. */
 function baseOf<D>(write: Write<D>): WriteBase<D> {
-  const { detail, id, inline, joined, key, kind, label, login, presentation, pressedAt } = write;
-  const { retried, sent, signingOutElsewhere, target, uploaded } = write;
+  const { detail, id, inline, joined, key, keyed, kind, label, login, presentation } = write;
+  const { pressedAt, retried, sent, signingOutElsewhere, target, uploaded } = write;
   return {
     detail,
     id,
     inline,
     joined,
     key,
+    keyed,
     kind,
     label,
     login,
@@ -139,8 +155,12 @@ export interface WriteKind<D, K = D> {
   /** What a write of this kind undoes once it is refused, discarded or dropped. */
   readonly undone?: (client: QueryClient, write: Write<D>) => void;
   /** What a kind lets go of once whoever is signed in changes, or the person signs out: what it
-   *  remembered of their answers, which the next person's writes must not build on. */
+   *  remembered of their answers, which the next person's writes must not build on. The writes
+   *  that change drops are undone first (`undone`), from what the kind still remembers. */
   readonly reset?: () => void;
+  /** Told once of each store as it is made, with the client it lives with: what a kind keeps of
+   *  that client for its whole life, from before the first write of the kind. */
+  readonly opened?: (client: QueryClient, writes: Writes) => void;
   /** Whether a write of this kind Dispatch made and answered stays, `made`, until its surface lets
    *  it go (`letGo`); one made with no answer to give has nothing to show, and goes. */
   readonly keepsMade?: boolean;
@@ -193,6 +213,8 @@ export type WriteSpec<T, D, K> = WriteSpecBase<D, K> &
          *  and no other: `Writes.run` refuses one that names an attempt (`write`) instead. */
         readonly request: WriteRequest<T>;
         readonly write?: undefined;
+        /** The request's own (`request.method`). */
+        readonly method?: undefined;
       }
     | {
         readonly request?: undefined;
@@ -200,6 +222,9 @@ export type WriteSpec<T, D, K> = WriteSpecBase<D, K> &
          *  the state the last answer left); the request is kept as its first attempt goes out,
          *  and every attempt must make that one (`OneRequestPerWriteError`). */
         readonly write: Attempt<T>;
+        /** The method of the request every attempt of `write` makes, which no attempt says
+         *  until it goes out: what tells whether the write goes under its key (`Write.keyed`). */
+        readonly method: WriteMethod;
       }
   );
 
@@ -223,6 +248,9 @@ interface WriteSpecBase<D, K> {
    *  done what it was for: the write lands, with no answer, rather than being held for the next
    *  sign-in. */
   readonly endsWithSession?: boolean;
+  /** `false` for a write that goes under no key whatever its method: the sign-out, a `POST` to
+   *  `/auth/logout`, which sits outside Dispatch's keyed layer (`api.logout`). */
+  readonly keyed?: false;
 }
 
 /** What became of a write: it landed (with Dispatch's answer, `null` for none), was refused, or
@@ -338,6 +366,7 @@ export class Writes {
   #rows: readonly Write[] = NO_WRITES;
   readonly #listeners = new Set<() => void>();
   readonly #outcomes = new Set<(outcome: WriteOutcome) => void>();
+  readonly #signedOut = new Set<(login: string) => void>();
   #ids = 0;
   #joins = 0;
   #resumed = false;
@@ -372,10 +401,18 @@ export class Writes {
     this.#kept = kept;
     this.#files = files;
     watcher?.(this);
+    for (const kind of kinds.values()) kind.opened?.(client, this);
   }
 
   /** Every write held, in press order: one array until a write changes. */
   readonly rows = (): readonly Write[] => this.#rows;
+
+  /** The request the write `id` makes - the one its press named, or the one it last went out as
+   *  - or undefined where the store holds no such write or it names none yet (one made by an
+   *  attempt of its own that has not gone out). What a reader of a line asks of the writes on it:
+   *  which change each one makes (`issue-field-writes.ts`). */
+  readonly requestOf = (id: number): WriteRequest | undefined =>
+    this.#entries.get(id)?.request ?? undefined;
 
   readonly subscribe = (listener: () => void): (() => void) => {
     this.#listeners.add(listener);
@@ -388,6 +425,15 @@ export class Writes {
     return () => this.#outcomes.delete(listener);
   };
 
+  /** Tells `listener` whom each sign-out that lands from now on signed out, once their writes are
+   *  gone: this page's (`signedOut`), another tab's (`dropLogin`), and one a lapse lands
+   *  (`signedIn`). What else the page holds of theirs goes on the same word: every draft they
+   *  typed and did not send (`app.tsx`). A lapse that lands none tells nothing. */
+  readonly onSignedOut = (listener: (login: string) => void): (() => void) => {
+    this.#signedOut.add(listener);
+    return () => this.#signedOut.delete(listener);
+  };
+
   /** Makes `spec`'s write, stamped with the person signed in now, and answers with Dispatch's 2xx,
    *  `null` for a write that landed with no answer to give, or rejects with its refusal - or
    *  `SendStoppedError` once the reader stops it. A write that names its request is made from it
@@ -396,7 +442,7 @@ export class Writes {
    *  running an attempt, and the request kept could differ from the one sent. A sign-out
    *  (`endsWithSession`) holds every other write of its person until Dispatch answers it, as
    *  another tab's does (`holdFor`): refused, they go on; landed, they wait for the page to let
-   *  them go (`clear`). */
+   *  them go (`signedOut`). */
   run<T, D, K>(spec: WriteSpec<T, D, K>): Promise<T | null> {
     const { request } = spec;
     if (spec.target !== undefined && request === undefined && spec.kind.resume === undefined) {
@@ -431,6 +477,7 @@ export class Writes {
         inline: spec.inline ?? false,
         joined: this.#nextJoin(),
         key,
+        keyed: spec.keyed ?? goesUnderKey(request === undefined ? spec.method : request.method),
         kind: spec.kind.name,
         label: spec.label,
         login,
@@ -605,17 +652,16 @@ export class Writes {
    * lands; so has another tab's sign-out of the person whose session lapsed, while it still holds
    * their writes here (`holdFor`): the lapse is that sign-out landing, whether it reaches this
    * page before or after that tab's hold ends, so their writes go (`dropLogin`) rather than wait
-   * for a sign-in they were discarded before. A lapse with no such hold keeps them. Each kind lets
-   * go of what it remembered of the person before (`reset`) whenever who is signed in changes,
-   * and so does every hold this page's sign-out put on writes; another tab's hold is that tab's
-   * to end (`holdFor`), or this lapse's.
+   * for a sign-in they were discarded before. A lapse with no such hold keeps them. Whenever who
+   * is signed in changes, every hold this page's sign-out put on writes ends, and each kind lets
+   * go of what it remembered of the person before (`reset`) - once the writes the change drops
+   * are gone, so each of those is undone (`undone`) from what its kind still remembers of that
+   * person's answers. Another tab's hold is that tab's to end (`holdFor`), or this lapse's.
    */
   signedIn(login: string | undefined): void {
     const before = this.#login;
-    if (login !== before) {
-      this.#resetKinds();
-      this.#signingOut.clear();
-    }
+    const changed = login !== before;
+    if (changed) this.#signingOut.clear();
     this.#login = login;
     if (login === undefined) {
       this.#lapsed = true;
@@ -626,6 +672,7 @@ export class Writes {
         (this.#signingOutElsewhere.has(before) ||
           (unsettledUntil !== undefined && Date.now() <= unsettledUntil));
       if (landed) this.dropLogin(before);
+      if (changed) this.#resetKinds();
       for (const entry of [...this.#entries.values()]) this.#hold(entry);
       return;
     }
@@ -633,12 +680,14 @@ export class Writes {
     this.#unsettledSignOuts.clear();
     this.#lapsed = false;
     this.#take([...this.#entries.values()].filter((entry) => entry.write.login !== login));
+    if (changed) this.#resetKinds();
     void this.#files.keepOnly(login);
     this.#advanceEvery();
   }
 
   /** Lets every write go, out or refused, and everything kept with them, every kept file
-   *  included: the person who made them signed out. */
+   *  included: what a sign-out of this page's that landed does (`signedOut`), and the unit-test
+   *  preload after each test. */
   clear(): void {
     this.#take([...this.#entries.values()]);
     this.#signingOut.clear();
@@ -647,13 +696,22 @@ export class Writes {
     this.#kept.clear();
   }
 
+  /** This page's sign-out of `login` landed: every write goes (`clear`), and every listener is
+   *  told (`onSignedOut`). */
+  signedOut(login: string): void {
+    this.clear();
+    for (const listener of this.#signedOut) listener(login);
+  }
+
   /** Drops every write `login` pressed, out or refused, its trying stopped and everything kept
-   *  of it, its file included: that person signed out in another tab of this browser, which
-   *  discards their writes in every tab (`app.tsx`). */
+   *  of it, its file included, and tells every listener (`onSignedOut`): that person's sign-out
+   *  landed in another tab of this browser, which discards their writes in every tab
+   *  (`app.tsx`), or under a lapse here (`signedIn`). */
   dropLogin(login: string): void {
     this.#signingOut.delete(login);
     this.#signingOutElsewhere.delete(login);
     this.#drop([...this.#entries.values()].filter((entry) => entry.write.login === login));
+    for (const listener of this.#signedOut) listener(login);
   }
 
   /** Holds every write `login` pressed while their sign-out in another tab of this browser is
@@ -755,7 +813,13 @@ export class Writes {
     if (this.#resumed) return;
     this.#resumed = true;
     const now = Date.now();
+    // A write pressed in this page before this take-up is kept in the tab from its press, so the
+    // tab holds it too: it is already in its line here, and is not taken up beside itself. The app
+    // resumes in the shell's effect, which React runs after every effect of the shell's children,
+    // so a write a child makes as it mounts is pressed first.
+    const held = new Set([...this.#entries.values()].map((entry) => entry.write.key));
     for (const kept of this.#kept.load(login)) {
+      if (held.has(kept.key)) continue;
       // What the key has carried is the entry's own record of it (`KeptWrite.carried`): the
       // store wrote it from this map as the write was kept, so a write re-pressed under the key
       // of the one it replaced - kept with nothing sent and no request of its own - still says
@@ -809,6 +873,7 @@ export class Writes {
         inline: false,
         joined: this.#nextJoin(),
         key: kept.key,
+        keyed: kept.keyed,
         kind: kept.kind,
         label: kept.label,
         login: kept.login,
@@ -965,9 +1030,11 @@ export class Writes {
       // The person's session may have lapsed under the write: the page reads who is signed in
       // again, and a lapse holds every write until the sign-in that follows (`signedIn`). The
       // answer says whether the check, read afresh, still names the person who pressed it, which
-      // makes a repeated 401 Dispatch's refusal (`writeUnderKey`).
+      // makes a repeated 401 Dispatch's refusal (`writeUnderKey`). The answer read is the newest
+      // check's, once it is in (`askSignInAgain`): another ask made meanwhile starts a check of
+      // its own, and a check paused offline has not answered yet.
       unauthorized: async () => {
-        await this.#client.invalidateQueries({ queryKey: ["whoami"] });
+        await askSignInAgain(this.#client);
         const state = this.#client.getQueryState<AuthenticatedUser>(["whoami"]);
         return (
           state?.status === "success" &&
@@ -1034,7 +1101,10 @@ export class Writes {
   }
 
   /** The write `entry` landed with `answer` (`null` for a landing with none): it leaves, or stays
-   *  made for its kind to show, and its kind refreshes what it wrote. */
+   *  made for its kind to show, and its kind refreshes what it wrote. The landing is told before
+   *  the store reads anything again for it, so every read it starts was sent after it: a listener
+   *  that orders Dispatch's answers by when each read went out (`issue-field-writes.ts`) counts
+   *  those reads as newer than the landing. */
   #landed(entry: Entry, answer: unknown): void {
     const kind = kinds.get(entry.write.kind);
     const awaited = entry.press !== undefined;
@@ -1048,8 +1118,10 @@ export class Writes {
       this.#remove(entry);
     }
     if (kind?.landed !== undefined) kind.landed(this.#client, entry.write, answer, awaited);
-    else if (!awaited || answer === null) void this.#client.invalidateQueries();
     this.#emit({ answer, kind: "landed", write: entry.write });
+    if (kind?.landed === undefined && (!awaited || answer === null)) {
+      void this.#client.invalidateQueries();
+    }
     this.#advance(entry.write.target);
   }
 
@@ -1068,7 +1140,7 @@ export class Writes {
     ) {
       const login = entry.write.login;
       this.#drop([...this.#entries.values()].filter((other) => other.write.login === login));
-      void this.#client.invalidateQueries({ queryKey: ["whoami"] });
+      void askSignInAgain(this.#client);
       return;
     }
     const write: Write = { ...baseOf(entry.write), refusal, status: "refused" };
@@ -1162,6 +1234,7 @@ export class Writes {
       carried: this.#carried.get(write.key) ?? null,
       detail: kind?.keep === undefined ? write.detail : kind.keep(write.detail),
       key: write.key,
+      keyed: write.keyed,
       kind: write.kind,
       label: write.label,
       login: write.login,

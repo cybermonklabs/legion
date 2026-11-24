@@ -8,8 +8,9 @@ import (
 // HandleAgentResult captures the outcome of agent message handling: the message the session's own
 // consumer holds and its relay delivers (Relayed), the session another listener owns
 // (OwnedElsewhere), a failure the caller NAKs (Err), or none of the three - the zero result - for
-// a session this listener answers for whose record says no way of receiving, which the caller
-// holds and retries rather than NAKs (cmd/listener/unplaceable_delivery.go).
+// a session this listener answers for whose record says no way of receiving, and for a session
+// with no record at all, which the caller holds and retries rather than NAKs
+// (cmd/listener/unplaceable_delivery.go).
 type HandleAgentResult struct {
 	// Relayed reports a message the session's own consumer holds, which the relay of that
 	// consumer delivers: the caller records nothing about it, neither an attempt nor a dedupe
@@ -20,7 +21,8 @@ type HandleAgentResult struct {
 	// listener reads the same inbox message from its own durable and delivers it, so this one
 	// acknowledges it with nothing to report: no delivery, no exception, no NAK.
 	OwnedElsewhere bool
-	// Err is a resolution the interest path made and failed (Resolve): the one outcome whose
+	// Err is a resolution the interest path made and failed (Resolve) over a record that names no
+	// way of receiving, or over no record from a read that did not answer: the one outcome whose
 	// caller NAKs the message for redelivery.
 	Err error
 }
@@ -33,6 +35,10 @@ type HandleAgentResult struct {
 // entry is that resolved session record, nil when none was resolved; both paths deliver through
 // it (Resolve) rather than resolving it a second time, so the record the caller read - the
 // store's own word for it, not just this listener's cache - is the one delivery acts on.
+// gone is whether that read answered that the session is gone (nats.ErrKeyNotFound): the bucket
+// holds no record of it, or holds one that reads gone (cmd/listener's liveSessionEntry refuses
+// such a record with the same error), as against a read that did not answer, which leaves entry
+// nil too and says nothing of the session.
 //
 // storedSeq is the stream sequence the delivery resolves under: the durable path's copy of a
 // stored message carries its own, and a core path's message, which is not the durable's copy of
@@ -46,11 +52,22 @@ func HandleAgentMessage(
 	machineID string,
 	interest *store.Interest,
 	entry *SessionEntry,
+	gone bool,
 	storedSeq uint64,
 	captured bool,
 ) HandleAgentResult {
 	// Interest path: the stored subscription names this listener, which owns the session.
 	if interest != nil && interest.MachineID == machineID {
+		// A gone session is one whose registration was deleted - a released Legion role's, say -
+		// or whose record outlived its gone horizon, while its interest row waits for the reaper,
+		// which keeps it for minutes. That is the same absence the direct path below answers, so
+		// it gets the same zero result: the caller holds the message for its window and then
+		// gives it up with the wake that brings the session back. A NAK here would fail it on
+		// every redelivery and never report the wake. A read that did not answer is no word of
+		// absence, so it still fails below.
+		if entry == nil && gone {
+			return HandleAgentResult{}
+		}
 		if err := Resolve(item, sessionID, entry, storedSeq, captured); err != nil {
 			return HandleAgentResult{Err: err}
 		}

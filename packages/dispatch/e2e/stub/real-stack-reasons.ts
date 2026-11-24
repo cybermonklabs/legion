@@ -8,7 +8,7 @@
  *  that is absent here, so the map stays complete and machine-checked either way.
  *
  *  A reason names what the server decides for that file's rows: the four shapes
- *  `packages/dispatch/AGENTS.md`, "The stubbed layer", sets out. Where a file's rows stay for
+ *  `packages/dispatch/README.md`, "The stubbed layer", sets out. Where a file's rows stay for
  *  more than one, the reasons are joined with a semicolon.
  *
  *  A file whose every row moved is absent from this list, and so is a file no project of this
@@ -106,11 +106,15 @@ export const realStackReasons: Record<string, string> = {
   "create-issue-decision-claim.e2e.ts":
     "the server's search answers the typed title, and the answered ask it lists is its ranking",
   "create-issue-related.e2e.ts": "the server's similar-issue search answers the typed title",
+  "credential-expired.e2e.ts":
+    "a Dismiss is a write the server relays to the broker, and the reload after it reads the list the broker kept; an expired machine login's record is the one the broker answers for its typed code",
   "decision-records.e2e.ts":
     'Keep and Change are writes, and "out of date" is the server\'s judgement',
   "deep-links.e2e.ts": "document landings need the live room and server-settled anchored marks",
   "delivery-groups.e2e.ts": "grouping and the window's counts are the server's aggregation",
   "delivery-live.e2e.ts": "`sql` writes delivered as live frames",
+  "delivery-queued.e2e.ts":
+    "a queued attempt is what Dispatch stores from the fake Envoy's answer to a send for a stopped session, read back on a message, a mention and a broadcast; a message to a session no store holds is queued by the server's own publish",
   "delivery.e2e.ts":
     "facet counts come from the server; a reconcile error must arrive from the server mid-gesture; the title says it: the server narrows",
   "doc-reload-line.e2e.ts": "the read-only admission is decided at socket open",
@@ -119,6 +123,8 @@ export const realStackReasons: Record<string, string> = {
   "document-way-back.e2e.ts":
     "a correction and two removals written and then re-read on the open page, the issue's list and its Activity; the refused removal is the server's judgement that the document holds writing, which only a settled version makes true",
   "document.e2e.ts": "collaboration, uploads, marks, and the live connection dot",
+  "download-names.e2e.ts":
+    "the server computes each download's Content-Disposition, the name the browser saves, and its Cache-Control; the rows write a version and then download again, since an older version's name changes only once a newer one is written",
   "editor-paste.e2e.ts": "pastes into the live editor, read back after a reload",
   "email-links.e2e.ts": "asserts in the live editor before the past version",
   "failed-room.e2e.ts": "a document room that fails and recovers",
@@ -135,6 +141,8 @@ export const realStackReasons: Record<string, string> = {
   "going-new-issue.e2e.ts":
     "the bar creates an issue and the row re-reads what the server stored, its messages and its results",
   "going-operators.e2e.ts": "each operator form and each chip narrows a list the server answers",
+  "graph-store.e2e.ts":
+    "both rows read the node and tuple store back through the server's own reads over a real database: one applies a supertag migration under an open editor and reads the version the live document room admits after it, and the other reads one person's page, whose rows are the authored_by and delivered_to tuples the server wrote as those comments were posted and delivered",
   "handoffs.e2e.ts": "needs the live frame",
   "heavy-bodies.e2e.ts":
     "its claim is a wall-clock time, so it runs one row at a time in the -alone projects and in no other",
@@ -164,8 +172,27 @@ export const realStackReasons: Record<string, string> = {
   "inbox-view.e2e.ts": "a priority write must arrive live",
   "inbox.e2e.ts":
     "writes a reply and re-reads the thread; live event feed; lands in the document's live room",
+  "issue-page-g.e2e.ts":
+    "the rows draw what the server stored and indexed - a document's blocks, the decisions read, a result, the one batched read of names - on the new page the reader's stored preference turns on",
+  "issue-page-g-view.e2e.ts":
+    "its rows seed long planner replies through the server, three of them taller than the view, and read where the drawn page lays them out as it jumps, on the new page the reader's stored preference turns on",
+  "issue-page-look.e2e.ts":
+    "its rows read the Dispatch server's content type for the font file, its /THIRD_PARTY_NOTICES.txt, and the issue.page preference under a real sign-in",
+  "issue-page-switch.e2e.ts":
+    "the setting is kept under the login the server's sign-in names, and one row signs a second login in on the same context to read that it holds none; one row reads the server's 404 for a key it does not hold",
+  "issue-page-i.e2e.ts": "the server's reads fold the outline; read marks and typed words persist",
+  "issue-page-q.e2e.ts": "the server's decisions read sorts the view; a sent Change is re-read",
+  "issue-page-k.e2e.ts": "the view orders the plan's blocks and needs the server stored",
+  "issue-page-v.e2e.ts":
+    "the rows record and withdraw results and file a child through the server, and the view draws its coverage and results reads",
   "issues-table.e2e.ts":
     "every row writes and then reads its own write: parents, ranks, epics and merges patched through the API and read back through `getIssue`, plus a refused write retried from the store and an interrupted action finished after a reload",
+  "issue-page-d.e2e.ts":
+    "each row signs in for real and turns the new page on through that login's stored preference, and the view row's counts are the server's coverage, results and block reads of the seeded issue",
+  "issue-page-h.e2e.ts":
+    "the seed's approvals, claim, blockers and pins are the server's own, and one row writes each control's value through Dispatch and reads it back after a reload",
+  "issue-page-p.e2e.ts":
+    "each row writes the header's issue, its questions and its approval requests through the server and reads back what the header's controls write: the title, the status, the priority, the pin and an approval",
   "issue.e2e.ts":
     "asserts the fake Envoy's state across resets; status writes re-read; writes persisted and re-read",
   "judged-grant.e2e.ts":
@@ -189,9 +216,13 @@ export const realStackReasons: Record<string, string> = {
     "the close commits a label write and the row waits for the server's answer to reach the header before it reads focus again",
   "labels.e2e.ts":
     "label writes and a server-filtered list; writes labels, then reloads and measures",
+  "legion.e2e.ts":
+    "the Settings page's Legion daemon field: naming a project's daemon, refusing a state URL that is not a daemon's in the server's own words, and removing it",
   "live-socket.e2e.ts": "the `/ws/live` socket's own behaviour",
   "live.e2e.ts": "live delivery of writes made after the page loaded",
   "machine-login.e2e.ts": "device grants decided on the real broker",
+  "machine-logins-person-pod.e2e.ts":
+    "the machine logins it reads are written into the fake broker and the page is asserted against what the server relays back",
   "machines.e2e.ts":
     "the draw and drawing-age rows read the wall clock against last_seen, which a recording freezes",
   "margin-composer-hold.e2e.ts": "live document margin with sends out and server refusals",
@@ -219,6 +250,8 @@ export const realStackReasons: Record<string, string> = {
     "the trap is asserted while a send is out; asserts the project document's live editor content",
   "picture-link-click.e2e.ts": "the link is clicked inside the live document editor",
   "pictures.e2e.ts": "pastes and uploads, with the live editor and stored markdown read back",
+  "pinned-review-events.e2e.ts":
+    "the server writes each review's event with the document and version it reviewed, and the Pinned tab reads the pins back from the reader's stored issue state",
   "pipeline.e2e.ts": "`sql`-seeded pipeline state the server aggregates",
   "plain-http-origin.e2e.ts": "types into the live document over the plain-HTTP origin",
   "plain-http-proxy.e2e.ts": "counts the live socket upstream of a real proxy",
@@ -243,12 +276,14 @@ export const realStackReasons: Record<string, string> = {
   "search-tiers.e2e.ts":
     "its claim is the number of embeddings the server asks the fake embedder for, counted on the server's own calls",
   "search.e2e.ts": "the server's search hits; the server's answer for the query",
-  "settings.e2e.ts": "mappings, defaults and architecture sources saved, refused and re-read",
+  "settings.e2e.ts": "project defaults and architecture sources saved, refused and re-read",
   "shell.e2e.ts": "the server must revoke the session",
   "signins.e2e.ts": "the broker's machine list and a Revoke decided there",
   "smoke.e2e.ts":
     "the reader nobody signed in, where the stubbed layer's page is always signed in because its recording answers /auth/whoami",
   "spec-suggestion-decoration.e2e.ts": "reads the decoration's DOM inside the live editor",
+  "steps.e2e.ts":
+    "the attempt is the server's count of the daemon's writes, and a start written twice keeps the server's first",
   "stored-text-reading.e2e.ts":
     "each row reads a body the live server stored and drew as its own tree, and the server's reading is what the row compares against the browser's: a recording would answer a tree recorded elsewhere rather than the one this server sends for those bytes",
   "task-items.e2e.ts": "asserts inside the live document editor",
@@ -263,6 +298,8 @@ export const realStackReasons: Record<string, string> = {
     "opens the document's live room; where a result's commit stands is the server's comparison with the PR head",
   "visual.e2e.ts":
     "it compares a page against a committed baseline inside the pinned Playwright image, which is its own pair of projects",
+  "visual-guard.e2e.ts":
+    "the writes the guard must stop go to the real API and the live document room, and a second page reads the server back",
   "workspace.e2e.ts": "it asserts the counts and the titles the server groups a workspace into",
   "writer-spelling.e2e.ts": "asserts the readings inside the live document editor",
   "writes.e2e.ts":

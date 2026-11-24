@@ -1,0 +1,9 @@
+kind: Removed
+body: |-
+  `withoutUserinfo` is gone from `@legion/envoy-client/errors`. A configured URL is now printed
+  through `@legion/contracts/log-text` (`urlForText`, `requestForText`), which prints no part of a
+  URL that carries a user, a password or anything but a plain http(s) origin and path, where
+  `withoutUserinfo` printed the URL with its user info taken out.
+time: 2026-11-18T18:58:54Z
+custom:
+    Issue: pr4140

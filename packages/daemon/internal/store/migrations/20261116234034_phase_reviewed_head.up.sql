@@ -1,0 +1,89 @@
+-- 20261116234034_phase_reviewed_head.up.sql — the commit the daemon last recorded as read by the
+-- reviewer's own deciding review, kept on the reviewer's phases row across its rounds.
+--
+-- phases.reviewed_head is record.PhaseRow.ReviewedHead. A review that approves or requests changes
+-- and decides its round, submitted as the review App from the session the claims record holds for
+-- the claim the daemon starts the reviewer under, writes the head its Legion footer names
+-- (workflow's review, byReviewer); a person's review and a review of any other session write
+-- nothing, in the first round as in every later one, and while that claim records no session no
+-- review of the review App decides, so none writes it. Only a review of the entry that stands
+-- writes it: the reviewer's row holds the task of an entry, and the review's footer names that
+-- entry's number (phases.entry_task and phases.entry), which each task of the reviewer in
+-- reviewing ends with. No time is compared. The number is never reset, so a review of an entry
+-- before a new generation's clear writes nothing, however late it is applied. No entry into a
+-- phase clears it, unlike the round's decision beside it (workflow's clearHandoff), so the task
+-- of the reviewer's next round names it as `Last reviewed commit: <sha>.` and the reviewer reads
+-- the difference from that commit to the head. A new generation clears it with the decision
+-- (record.Store.ClearGeneration and ClearTreeGeneration).
+--
+-- Every row the table already holds takes the default, the empty string, and nothing fills it: the
+-- release before this one kept no such commit, since the decision that held one was cleared at each
+-- entry into a phase. So the first round after the upgrade of an issue already in review names no
+-- commit, `none`, and its reviewer reads the whole change, as it did before.
+--
+-- Each task of the reviewer ends with two sentences of the daemon's, the commit and then the entry
+-- (workflow's namingTheReviewRound), and the task of an entry is stored with them
+-- (phases.entry_task), so a stored task is sent as it stands (workflow's sendOwedEntry). The release
+-- before stored the reviewer's task with neither, so the update below appends them to each task a
+-- reviewer's row stores, in the words namingTheReviewRound writes for a row that holds no commit:
+-- ` Last reviewed commit: none.`, since the column added here is empty on every row, then
+-- ` Review entry: <the row's entry>.`. A test holds the update's text to the function's
+-- (TestTheReviewedHeadMigrationGivesEachStoredReviewerTaskTheRoundsSentences in
+-- internal/workflow). It reads no task's text, and a row of another role, or a reviewer's row
+-- that stores no task, is left as it is. All three statements run in store.apply's one
+-- transaction, under its advisory lock: each of the two adds takes a short ACCESS EXCLUSIVE lock
+-- on its table, phases and pending_task_deliveries, and rewrites no row, and the update writes the
+-- reviewer's rows that store a task.
+--
+-- The two sentences are the last two of each task the reviewer is sent, whatever queued it, and a
+-- typed fact tells a task that holds them from one that does not, never the task's text: the start
+-- row's `roundNamed` (record.SuperviseRequest.RoundNamed), which the workflow writes on each start
+-- of the reviewer it names, and pending_task_deliveries.round_named below, which the claim's
+-- delivery of such a start carries (supervise.Delivery.RoundNamed). The one place each prompt is
+-- composed gives a reviewer's task without the fact the two sentences naming no commit and no
+-- entry (supervise's Delivery.message): a start row or a pending delivery the release before this
+-- one stored, whose text can end with words of the same shape, and a task an operator wrote. Every
+-- row the release before stored takes the column's default, false. The add rewrites no row.
+--
+-- There is no down file. This directory keeps none — migrations here are forward-only and no
+-- .down.sql file exists — so the way back is the transaction below, run with the daemon stopped:
+--
+--   psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
+--   begin;
+--   update phases set entry_task = regexp_replace(entry_task, ' Last reviewed commit: ([0-9a-f]{40}|none)\. Review entry: ([0-9]+|none)\.$', '') where role = 'reviewer';
+--   update pending_task_deliveries set task = regexp_replace(task, ' Last reviewed commit: ([0-9a-f]{40}|none)\. Review entry: ([0-9]+|none)\.$', '') where round_named;
+--   update outbox set payload = jsonb_set(payload, '{task}', to_jsonb(regexp_replace(payload->>'task', ' Last reviewed commit: ([0-9a-f]{40}|none)\. Review entry: ([0-9]+|none)\.$', ''))) where kind = 'supervise' and payload ? 'roundNamed' and payload ? 'task';
+--   update outbox set payload = payload - 'roundNamed' where kind = 'supervise' and payload ? 'roundNamed';
+--   alter table pending_task_deliveries drop column if exists round_named;
+--   alter table phases drop column if exists reviewed_head;
+--   delete from schema_version where version = 20261116234034;
+--   commit;
+--   SQL
+--
+-- The first three statements take the daemon's last two sentences off each task this release
+-- stored with them: a reviewer's row, a pending delivery that carries the fact, and a supervise
+-- start that carries it. Each then holds the text the release before would have written, and the
+-- roll-forward, which appends one pair again to each task a reviewer's row stores, leaves it with
+-- exactly one pair. Each match is anchored at the end of the text, so a sentence of the same words
+-- earlier in a task, which a retry's reason can quote, stays. The release before needs the fourth
+-- statement: it decodes an outbox row strictly (DisallowUnknownFields), so a start row that still
+-- carried `roundNamed` would be a row it retries for ever. It needs neither column dropped: its
+-- phases read and write and its claims read and delivery write name each column they touch
+-- (record's Phases and PutPhase, the claim store's claimSelect and putDelivery), so the columns
+-- would stand there unread, and every row that release inserts would take their defaults. The two
+-- drops and the delete are owed to the roll-forward: with the columns dropped and the row deleted,
+-- store.apply finds no row of this version and runs this file again, which adds the columns again
+-- at their defaults. The drops are also what let this file run again at all, since an add of a
+-- column that stands fails, and the delivery's drop is what keeps a stale fact from surviving: the
+-- release before replaces a claim's delivery by an upsert that does not name round_named, so a
+-- column left in place would say `true` of the task that release wrote. What the way back costs is
+-- the commit each reviewer's row held and the fact on each start row and delivery, so the next
+-- round of each issue then in review reads the whole change, and each task this release queued is
+-- sent after the roll-forward ending with the daemon's sentences naming no commit and no entry:
+-- its reviewer reads the whole change.
+alter table phases add column reviewed_head text not null default '';
+
+update phases set entry_task = entry_task || ' Last reviewed commit: none. Review entry: ' || entry || '.'
+where role = 'reviewer' and entry_task <> '';
+
+alter table pending_task_deliveries add column round_named boolean not null default false;

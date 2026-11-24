@@ -61,29 +61,48 @@ sends your request to its owners. An owner must approve the request before the b
 
 ## Tell the administrator which accounts the box uses
 
-The broker makes tokens only for the accounts that the secret's `github-owners` tag lists. Anyone
-can install a public App. The tag stops a token for an account that you did not choose.
+The broker makes tokens only for the accounts that the secret's `github-owners` tag lists, and
+that the profile you ask for names. Anyone can install a public App. The tag stops a token for an
+account that you did not choose.
 
 You cannot change the tag. The deployment sets it when it creates your secret. Send the
 administrator the account names where you installed the App. Ask them to add any account that the
 deployment does not list.
 
+The broker serves a `github-app` secret only through the profiles that the deployment's profiles
+file declares for it, and refuses the secret by its own name when no profile names it. The
+administrator declares your profiles with your secret: one of its own name, with the permissions
+your App holds, and others that narrow it, such as `GITHUB_APP_<PERSON>_READ`, a read profile.
+
 The broker returns one token for each installation that is not suspended, on an account that the
-tag lists. An installation on any other account gets no token.
+profile names. An installation on any other account gets no token.
 
 ## Store the App key
 
-The deployment creates an empty secret named `GITHUB_APP_<PERSON>`, with the `kind: github-app`
+The deployment creates an empty secret named `GITHUB_APP_<PERSON>`, with the `type: github-app`
 and `github-owners` tags. Your access lets you set its value.
 
-Set the private key only in a secret that has the `kind: github-app` tag. If the secret has no
-`kind` tag, a session that has a grant for it gets the stored value. That value is your private
-key. To change a secret without a kind to `github-app`, do these steps in this sequence:
+Set the private key only in a secret that has the `type: github-app` tag. If the secret has no
+`type` tag, a session that has a grant for it gets the stored value. That value is your private
+key. To change a secret without a type to `github-app`, do these steps in this sequence:
 
-1. Change the tags with `agent-secrets secret retag NAME --kind github-app --github-owners "<owners>"`.
-2. Make sure that the retag exits 0 and shows `broker: serving NAME (kind github-app)`. This tells
-   you that the broker uses the new tags. If the retag exits 1 and tells you that the broker still
-   sees the old tags, do the retag again. Do not set the private key until a retag exits 0.
+1. Change the tags with `agent-secrets secret retag NAME --type github-app --github-owners "<owners>"`.
+   The retag reads the value of the secret and checks it as an App key, because the broker reads
+   it that way after the change. If your sign-in can read the value, the retag stops with exit 2
+   and writes nothing when the value is not an App key. It also stops, with exit 1, when the
+   secret has no value. Then ask the administrator for a new secret that has the
+   `type: github-app` tag. If your sign-in cannot read the value, the retag writes the tags and
+   tells you that it did not check the value.
+2. Make sure that the broker uses the new tags. The retag shows `broker: serving NAME (type
+   github-app)`, or it exits 1 with `reason=value-malformed`, because the old value is not an App
+   key. If the retag exits 1 and tells you that the broker still sees the old tags, do the retag
+   again. Do not set the private key until the broker uses the new tags. If the secret has no
+   value, the retag exits 1 with `reason=no-current-value`, or `reason=pending-value` in the ten
+   minutes after the secret was created. The broker gives that reason for a secret with no value,
+   with the old tags and with the new tags, so the retag cannot show which
+   tags the broker uses. Then set the private key (step 3): `secret set` checks it as an App key
+   before it writes it, and shows `broker: serving NAME (type github-app)` when the broker uses the
+   new tags.
 3. Set the private key.
 
 You can do this step on your own computer or on the box. The procedure is the same. The agents on
@@ -92,12 +111,23 @@ sign-in that you leave there. Thus, on the box, delete the key files and delete 
 you complete the step.
 
 Sign in one time with `gcloud auth login`. This command does not change the credentials of the
-box. `agent-secrets` writes with the credentials that its environment gives it: first an access
-token in `CLOUDSDK_AUTH_ACCESS_TOKEN`, then the Application Default Credentials, then your gcloud
-login. A box usually has Application Default Credentials of its own. Thus, on the box, give your
-access token to the command, as the `set` command below does. For more information, refer to
-[Before you start](/legion/broker/guides/manage-a-secret/#before-you-start) in "Manage a secret".
-Then build the file and set the secret.
+box. `agent-secrets` writes with the credential of the first source it finds, in this order: an
+access token in `CLOUDSDK_AUTH_ACCESS_TOKEN`, then a credentials file that
+`GOOGLE_APPLICATION_CREDENTIALS` names, then the gcloud login that `CLOUDSDK_CORE_ACCOUNT` names,
+else the gcloud configuration that `CLOUDSDK_ACTIVE_CONFIG_NAME` names (the account variable
+outranks the account of any configuration), then the well-known credentials file, then the
+active gcloud account, and last the credentials of the box. Thus, before the `set`, unset the
+three variables that come before the configuration, so that your own login signs in and not a
+token or a login you exported for an earlier step:
+
+```sh
+unset CLOUDSDK_AUTH_ACCESS_TOKEN GOOGLE_APPLICATION_CREDENTIALS CLOUDSDK_CORE_ACCOUNT
+```
+
+Then, on the box, name the configuration your `gcloud auth login` signed in to, as the `set`
+command below does; the command's first line names the credential it used. For more
+information, refer to [Before you start](/legion/broker/guides/manage-a-secret/#before-you-start)
+in "Manage a secret". Then build the file and set the secret.
 
 Build `app-key.json` from the App ID and the private key file that GitHub gave you. A PEM key
 spans several lines, which JSON must escape, so let `jq` write the file. Do not paste the key into
@@ -108,14 +138,31 @@ the file.
   '{app_id: $app_id, private_key: $private_key}' > app-key.json)
 ```
 
-Set the secret from standard input, then delete the two key files. Do not put the private key on a
-command line.
+Set the secret from standard input, then delete the two key files once the set succeeds. Do not
+put the private key on a command line.
 
 ```sh
-CLOUDSDK_AUTH_ACCESS_TOKEN="$(gcloud auth print-access-token)" \
-  agent-secrets secret set GITHUB_APP_<PERSON> < app-key.json
+CLOUDSDK_ACTIVE_CONFIG_NAME='<your gcloud configuration>' agent-secrets secret set GITHUB_APP_<PERSON> < app-key.json \
+  && rm app-key.json '<private key file>.pem'
+```
+
+`secret set` checks the value before it writes it, as the broker reads it: a JSON object with an
+`app_id` of digits and a `private_key` that signs. If the check fails, the command exits 2, writes
+nothing, and names the problem, for example `GitHub App secret needs an app_id and private_key`.
+The key files stay, so fix `app-key.json` and set the secret again.
+
+If the command shows `set a new value of GITHUB_APP_<PERSON> in …` and then exits 1, the key is
+stored. The exit 1 means that the command could not ask the broker to read the secret again, or
+that the broker refuses the secret. The `&&` does not delete the key files in this case, so delete
+them yourself:
+
+```sh
 rm app-key.json '<private key file>.pem'
 ```
+
+The line after `set a new value` tells you why the command exits 1.
+[Troubleshooting](/legion/broker/guides/troubleshooting/#managing-a-secret) gives the fix for
+each message.
 
 If you do this step on the box, delete your Google sign-in from the box after you set the secret:
 
@@ -193,46 +240,59 @@ The token expires at the time in `expires_at`. Read the secret again after the t
 ## Give a narrowed token to another machine
 
 A token you give to another machine, such as a virtual machine that must only read one
-repository, must be narrowed. Use these flags on the `agent-secrets` command that reads the
-secret:
+repository, must be narrowed. Ask for a profile that narrows the App's permissions, such as
+`GITHUB_APP_<PERSON>_READ`, and narrow it further on the `agent-secrets` command that reads it:
 
-- `--github-owner <owner>` gives a token for the installation on that account only. The account
-  must be in the `github-owners` tag of the secret.
-- `--github-repo <repository>` limits the token to that repository of the account. Use the flag
-  one time for each repository, at most 100 times. Give the repository name without the account.
-  The token keeps every permission the App holds, its organization permissions too, unless you
-  also give `--github-read-only`.
-- `--github-read-only` limits the token to `contents: read`, `metadata: read`,
-  `pull_requests: read` and `actions: read`, the last of which an App whose installation has not
-  been granted Actions does not get. A machine that must only read needs it, with or without
-  `--github-repo`.
-- `--github-token` hands over that one installation's token alone, in place of the JSON object
-  of installations. A command that sends the token to GitHub in a header needs this form.
+- `--target <owner>` gives a token for the installation on that account only. The account must be
+  one that the profile names.
+- `--target <owner>/<repository>` limits the token to that repository of the account. Use the
+  flag one time for each repository, all of one account, at most 100 times. A repository must be
+  one that the profile reaches.
 
-`--github-repo`, `--github-read-only` and `--github-token` need `--github-owner`.
-`agent-secrets` checks the flags before it asks for the secret: a flag the broker would refuse
-exits 2, and nothing is sent.
+`--target` never widens a profile, and it narrows a run of that one name.
+`agent-secrets` checks it before it asks for the secret: a target of two accounts exits 2, and
+nothing is sent.
+A target that the profile does not hold is refused `400 TARGET_REFUSED`, and the message names the
+profile's accounts and repositories.
 
 ```sh
-agent-secrets --reason "read <repository> on <machine>" GITHUB_APP_<PERSON> \
-  --github-owner <owner> --github-repo <repository> --github-read-only --github-token -- sh -ceu '
-printf %s "$GITHUB_APP_<PERSON>"
+agent-secrets --reason "read <repository> on <machine>" GITHUB_APP_<PERSON>_READ \
+  --target <owner>/<repository> -- sh -ceu '
+printf %s "$GITHUB_APP_<PERSON>_READ" | jq -r ".installations[\"<owner>\"].token"
 '
 ```
 
-With `--github-token` the variable holds that one account's token, so the example needs no `jq`
-and no account key. The case you type in `--github-owner` therefore does not matter to it.
-Without the flag the variable holds the JSON object of installations, which the examples
-earlier on this page read with `jq`.
+In the `jq` key, write the account's login as GitHub writes it: the release names each
+installation by that login, whatever case you type in `--target`.
+A profile whose `github.value` is `token` puts that one account's token in the variable in place of
+the JSON object of installations, so a command that sends it to GitHub in a header needs no `jq`.
+Such a profile needs one account in effect: give `--target` when it names more than one.
 
-The broker sends the narrowing to GitHub, which refuses a repository or permission the
-installation does not have: `agent-secrets` then exits 1 with `NARROWING_REFUSED`, naming the
-repositories, and an account the `github-owners` tag does not list exits 1 with
-`NARROWING_OWNER_NOT_LISTED`. The broker gives out the token only when GitHub's answer shows
-that the token holds no more than you asked. The command runs only when the broker tells
-`agent-secrets` that it applied the narrowing. A broker that cannot narrow releases the token
-for all repositories, so `agent-secrets` runs nothing and exits 1.
+The broker asks GitHub for the profile's permissions cut to what the App's installation holds, and
+names each permission it left out in the release (`github_left_out`); `agent-secrets` writes one
+line on stderr for each account, `the profile <NAME> left out <permissions> for <account>, since
+the installation there does not hold them`, and runs the command.
+A profile that asks for more than `metadata` and whose permissions the installation holds none of
+but `metadata`, which every installation holds and which alone does nothing the profile is for,
+or that names a repository the installation does not reach, is refused `422 PROFILE_MINT_REFUSED`;
+an account the App is not installed on is refused with a message that says `has no installation
+on` that account, `422 PROFILE_MINT_REFUSED` when the broker refuses the request, and
+`502 MINT_FAILED` when the refusal comes as the broker reads the grant.
+When a person approves the request, the broker makes these refusals before the approval request:
+it makes the token that your read would get, reads GitHub's answer, and gives that token back to
+GitHub at once, so no request waits and the person is not asked.
+When GitHub does not answer the broker or refuses the App itself, or the check passes its time
+limit, the request goes to the approver as before, and the refusal comes when the broker reads the
+grant.
+The broker gives out a token only when GitHub's answer shows that it holds no more than the profile
+asked.
 
-The narrowing applies to this read only. The next read without these flags gives the token for
-all repositories of each installation. Keep a narrowed token apart from the other tokens, so
-that you do not use one in place of the other.
+An `agent-secrets` of an earlier release took this narrowing as flags of its own, and sent it in the
+request's `github_app` field. The broker refuses every body that carries that field with
+`400 GITHUB_APP_FIELD_REMOVED` before it writes anything or asks anyone, so such a client runs
+nothing. This release refuses those flags itself, with exit 2, and names `--target` and the
+profile form.
+
+The target applies to this read only. The next read of the profile without `--target` gives the
+token for every account and repository that the profile names. Keep a narrowed token apart from
+the other tokens, so that you do not use one in place of the other.

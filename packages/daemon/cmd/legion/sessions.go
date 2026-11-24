@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -14,6 +13,8 @@ import (
 	"syscall"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 	"golang.org/x/sys/unix"
 
 	"github.com/sjawhar/legion/daemon/internal/claudelaunch"
@@ -21,18 +22,24 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 )
 
-// sessionsCommands is `legion sessions`, the operator's hand on Oh My Pi's session database
-// (either database kind of runtime.kubernetes.session_store, postgres or cloudsql-iam), and the one
-// list of its subcommands.
-var sessionsCommands = map[string]command{
-	"import": runSessionsImport,
-}
-
-func runSessions(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	return runSubcommand(ctx, "sessions", sessionsCommands, args, stdout, stderr)
-}
-
 const sessionsImportUsage = "usage: legion sessions import --dsn-file <file> --claims <file|-> [--tree <KEY>] [--tree-volume <dir>]"
+
+// newSessionsImportCommand is `legion sessions import` (runSessionsImport), the one command of
+// `legion sessions`, the operator's hand on Oh My Pi's session database (either database kind of
+// runtime.kubernetes.session_store, postgres or cloudsql-iam).
+func newSessionsImportCommand(stdout, stderr io.Writer) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "import --dsn-file <file> --claims <file|->",
+		Short: "copy every recorded session file of a claims list into the session database",
+	}
+	input := addSessionsInput(cmd.Flags())
+	tree := cmd.Flags().String("tree", "", "copy the sessions of this tree's claims alone")
+	treeVolume := cmd.Flags().String("tree-volume", "", "read each session from the tree volume mounted here rather than at its recorded path")
+	cmd.RunE = runs(func(ctx context.Context, args []string) int {
+		return runSessionsImport(ctx, input, *tree, *treeVolume, args, stdout, stderr)
+	})
+	return cmd
+}
 
 // sessionsInput is what `legion sessions import` reads first: --dsn-file and --claims, registered
 // on its flag set by addSessionsInput.
@@ -40,7 +47,7 @@ type sessionsInput struct {
 	dsnFile, claimsFile *string
 }
 
-func addSessionsInput(flags *flag.FlagSet) sessionsInput {
+func addSessionsInput(flags *pflag.FlagSet) sessionsInput {
 	return sessionsInput{
 		dsnFile:    flags.String("dsn-file", "", "file holding the session database's postgres:// URL (required)"),
 		claimsFile: flags.String("claims", "", "the claims `legion claims list --json` printed, or - for stdin (required)"),
@@ -50,9 +57,9 @@ func addSessionsInput(flags *flag.FlagSet) sessionsInput {
 // open refuses a positional argument or a missing required flag, its own two, as a usage error,
 // then reads the claims list and connects to the session database. code is the command's exit
 // when conn is nil.
-func (in sessionsInput) open(ctx context.Context, flags *flag.FlagSet, stderr io.Writer) (claims []importedClaim, conn *pgx.Conn, code int) {
-	if flags.NArg() != 0 {
-		fmt.Fprintf(stderr, "legion sessions import: unexpected argument %q\n%s\n", flags.Arg(0), sessionsImportUsage)
+func (in sessionsInput) open(ctx context.Context, args []string, stderr io.Writer) (claims []importedClaim, conn *pgx.Conn, code int) {
+	if len(args) != 0 {
+		fmt.Fprintf(stderr, "legion sessions import: unexpected argument %q\n%s\n", args[0], sessionsImportUsage)
 		return nil, nil, 2
 	}
 	for _, pair := range [][2]string{{"dsn-file", *in.dsnFile}, {"claims", *in.claimsFile}} {
@@ -100,21 +107,14 @@ type importedClaim struct {
 // content) or a recorded session of the claims it was asked to copy is missing from the table; a
 // missing one of another tree is reported and leaves the exit as it is. A rerun copies nothing
 // twice: a session the table already holds byte for byte is reported as copied before.
-func runSessionsImport(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	flags := newFlags("sessions import", sessionsImportUsage, stderr)
-	input := addSessionsInput(flags)
-	tree := flags.String("tree", "", "copy the sessions of this tree's claims alone")
-	treeVolume := flags.String("tree-volume", "", "read each session from the tree volume mounted here rather than at its recorded path")
-	if code, ok := parseFlags(flags, args); !ok {
-		return code
-	}
-	claims, conn, code := input.open(ctx, flags, stderr)
+func runSessionsImport(ctx context.Context, input sessionsInput, tree, treeVolume string, args []string, stdout, stderr io.Writer) int {
+	claims, conn, code := input.open(ctx, args, stderr)
 	if conn == nil {
 		return code
 	}
 	defer conn.Close(context.Background())
 
-	selected := func(c importedClaim) bool { return *tree == "" || c.Tree == *tree }
+	selected := func(c importedClaim) bool { return tree == "" || c.Tree == tree }
 	counts := map[string]int{}
 	matched := 0
 	for _, c := range claims {
@@ -122,7 +122,7 @@ func runSessionsImport(ctx context.Context, args []string, stdout, stderr io.Wri
 			continue
 		}
 		matched++
-		outcome, file, err := importClaimSession(ctx, conn, c, *treeVolume)
+		outcome, file, err := importClaimSession(ctx, conn, c, treeVolume)
 		if file == "" {
 			fmt.Fprintf(stdout, "%s recorded no session: nothing to copy\n", c.Token)
 			counts["nothing recorded"]++
@@ -146,8 +146,8 @@ func runSessionsImport(ctx context.Context, args []string, stdout, stderr io.Wri
 		}
 	}
 
-	if matched == 0 && *tree != "" {
-		fmt.Fprintf(stderr, "legion sessions import: the claims list %s has no claim of %s\n", *input.claimsFile, *tree)
+	if matched == 0 && tree != "" {
+		fmt.Fprintf(stderr, "legion sessions import: the claims list %s has no claim of %s\n", *input.claimsFile, tree)
 		return 1
 	}
 	missing, err := missingSessions(ctx, conn, claims)

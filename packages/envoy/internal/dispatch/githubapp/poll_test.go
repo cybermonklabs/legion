@@ -200,6 +200,66 @@ func TestCommitCheckSuitesReadsThePageAndA304(t *testing.T) {
 	}
 }
 
+// CommitStatuses reads the commit's combined status a hundred statuses to a page, conditional on
+// the ETag, and answers the statuses GitHub listed with the answer's own ETag; the combined state
+// beside them is no object. GitHub's 304 is the page NotModified. A 403, which is GitHub's answer
+// to a token without Commit statuses, and a 404 are ErrRepositoryUnreadable, and a client with no
+// App key reads nothing.
+func TestCommitStatusesReadsThePageWithItsETag(t *testing.T) {
+	client, fake := startPollGitHub(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("ETag", `"statuses-1"`)
+		if r.Header.Get("If-None-Match") == `"statuses-1"` {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+		fmt.Fprint(w, `{"state":"failure","sha":"c0ffee","total_count":2,"statuses":[`+
+			`{"id":1,"context":"ci/build","state":"success","created_at":"2026-11-17T05:00:00Z","target_url":"https://ci.example.com/1","description":"built"},`+
+			`{"id":2,"context":"ci/lint","state":"failure","created_at":"2026-11-17T05:01:00Z","target_url":null,"description":null}]}`)
+	})
+	ctx := context.Background()
+
+	page, err := client.CommitStatuses(ctx, "installation-token", "acme", "web", "c0ffee", 2, `"statuses-0"`)
+	if err != nil {
+		t.Fatalf("CommitStatuses: %v", err)
+	}
+	sent := fake.last(t)
+	if sent.path != "/repos/acme/web/commits/c0ffee/status" || sent.query != "per_page=100&page=2" {
+		t.Fatalf("CommitStatuses asked for %s?%s, want the commit's combined status, 100 a page, page 2", sent.path, sent.query)
+	}
+	if sent.ifNoneMatch != `"statuses-0"` {
+		t.Fatalf("If-None-Match sent = %q, want %q", sent.ifNoneMatch, `"statuses-0"`)
+	}
+	if page.NotModified || page.Full || page.ETag != `"statuses-1"` || len(page.Objects) != 2 {
+		t.Fatalf("CommitStatuses = %+v, want two statuses, ETag \"statuses-1\", neither 304 nor full", page)
+	}
+	if page.Objects[1]["context"] != "ci/lint" || page.Objects[1]["state"] != "failure" || page.Objects[1]["target_url"] != nil {
+		t.Fatalf("the second status decoded as %+v, want GitHub's own object", page.Objects[1])
+	}
+
+	unchanged, err := client.CommitStatuses(ctx, "installation-token", "acme", "web", "c0ffee", 1, page.ETag)
+	if err != nil {
+		t.Fatalf("CommitStatuses again: %v", err)
+	}
+	if !unchanged.NotModified || len(unchanged.Objects) != 0 || unchanged.ETag != `"statuses-1"` {
+		t.Fatalf("the unchanged read = %+v, want 304 with no objects and the same ETag", unchanged)
+	}
+
+	for _, status := range []int{http.StatusForbidden, http.StatusNotFound} {
+		refusing, _ := startPollGitHub(t, func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(status)
+			fmt.Fprint(w, `{"message":"Resource not accessible by integration"}`)
+		})
+		if _, err := refusing.CommitStatuses(ctx, "installation-token", "acme", "web", "c0ffee", 1, ""); !errors.Is(err, ErrRepositoryUnreadable) {
+			t.Fatalf("a status read GitHub answered %d: %v, want ErrRepositoryUnreadable", status, err)
+		}
+	}
+
+	var none *Client
+	if _, err := none.CommitStatuses(ctx, "installation-token", "acme", "web", "c0ffee", 1, ""); !errors.Is(err, ErrNoAppKey) {
+		t.Fatalf("CommitStatuses without a client: %v, want ErrNoAppKey", err)
+	}
+}
+
 // OpenPullRequests reads the repository's open pull requests, a hundred to a page, and answers
 // each one's number and head commit; GitHub's 304 is the page NotModified.
 func TestOpenPullRequestsReadsTheNumbersAndHeads(t *testing.T) {

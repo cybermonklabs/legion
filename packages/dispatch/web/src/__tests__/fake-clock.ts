@@ -3,30 +3,41 @@ import { act } from "@testing-library/react";
 
 /**
  * Moves the fake clock `ms` on in steps of at most `step`, letting each timer's continuation and
- * React's updates run as it fires. A test that waits a product timer out installs the fake clock
- * - through `onFakeClock` below, or `jest.useFakeTimers()` of its own - and moves it here rather
- * than waiting for real time; one jump would run every timer of the window at the same instant,
- * so a wait that must really cross a window - and a `Date.now()` the test reads after it - would
- * measure the test rather than the product. Every test that installs the fake clock restores the
- * real one in its `finally` or its file's `afterEach` (`realClock` below): a fake clock left
- * behind stops the timers of every test after it.
+ * React's updates run as it fires, and then always runs one last round of 0 ms. That round fires,
+ * inside the same wait, what the last step's continuations scheduled at zero delay, whether `ms`
+ * divides by `step` or not. It moves the clock 1 ms: Bun's fake clock runs a zero-delay timer
+ * 1 ms after it is set, and `jest.advanceTimersByTime(0)` moves it 1 ms. So `tick(n)` leaves the
+ * clock `n` + 1 ms on, for every `n` of 0 or more; a negative span runs the last round alone.
+ * A test that waits a product timer out installs the fake clock - through `onFakeClock` below,
+ * or `jest.useFakeTimers()` of its own - and moves it here rather than waiting for real time; one
+ * jump would run every timer of the window at the same instant, so a wait that must really cross
+ * a window - and a `Date.now()` the test reads after it - would measure the test rather than the
+ * product. Every test that installs the fake clock restores the real one in its `finally` or its
+ * file's `afterEach` (`realClock` below): a fake clock left behind stops the timers of every test
+ * after it.
  */
 export async function tick(ms: number, step = 500): Promise<void> {
   if (step <= 0) throw new RangeError("tick's step must be above zero; use jump for a single jump");
-  for (let left = ms; left >= 0; left -= step) {
-    await act(async () => {
-      jest.advanceTimersByTime(Math.min(step, left));
-      for (let turn = 0; turn < 20; turn += 1) await Promise.resolve();
-    });
-  }
+  for (let left = ms; left > 0; left -= step) await round(Math.min(step, left));
+  await round(0);
+}
+
+/** One round of `tick`: `jest.advanceTimersByTime(ms)` inside `act` (1 ms for an `ms` of 0),
+ *  then 20 microtask turns for the promises the move released. */
+async function round(ms: number): Promise<void> {
+  await act(async () => {
+    jest.advanceTimersByTime(ms);
+    for (let turn = 0; turn < 20; turn += 1) await Promise.resolve();
+  });
 }
 
 /** Moves the fake clock `ms` on in one jump, letting every promise the move released run, and
- *  then runs a second round that advances nothing: for a wait that crosses one timer of the
- *  product, where no part of the span needs a round of its own. The second round fires, inside
- *  the same wait, whatever the first round's continuations scheduled at zero delay, so a product
- *  that should wait a timer of its own but follows up at once is caught: the retry row of
- *  `useDwell.test.tsx` fails if a failed write is retried without a new dwell. */
+ *  then runs `tick`'s last round of 0 ms, which moves the clock 1 ms more: for a wait that
+ *  crosses one timer of the product, where no part of the span needs a round of its own. So
+ *  `jump(ms)` leaves the clock `ms` + 1 ms on, and `jump(0)` is that last round alone. That round
+ *  fires, inside the same wait, whatever the jump's continuations scheduled at zero delay, so a
+ *  product that should wait a timer of its own but follows up at once is caught: the retry row
+ *  of `useDwell.test.tsx` fails if a failed write is retried without a new dwell. */
 export async function jump(ms: number): Promise<void> {
   await tick(ms, Math.max(ms, 1));
 }
@@ -44,6 +55,28 @@ export function realClock(): void {
 /** Lets every promise a write chained run as far as it goes without the clock moving. */
 export async function settle(): Promise<void> {
   for (let turn = 0; turn < 30; turn += 1) await Promise.resolve();
+}
+
+/**
+ * Lets the real event loop turn, inside `act`, until `done` answers true, and moves no clock.
+ * Bun's fake clock holds `setTimeout` and not the real `setImmediate` (and `Date.now` reads the
+ * fake clock), so what reaches a page on real turns - a `BroadcastChannel` message in happy-dom,
+ * a `fake-indexeddb` keep - arrives here while every product timer stays where the row left it.
+ * A row waits here rather than in `waitFor`, which moves a held clock 50 ms each time it polls,
+ * when it must show something came without a timer: how many polls a step takes depends on how
+ * loaded the machine is, so a clock `waitFor` moved says how often it polled and not what the
+ * product waited for. What comes on real turns comes within a few; `turns` that bring nothing
+ * end the wait (a thousand unless a row stepping the clock gives fewer per step), and the row
+ * fails on what it expects next.
+ */
+export async function onRealTurns(done: () => boolean, turns = 1_000): Promise<void> {
+  for (let turn = 0; turn < turns && !done(); turn += 1) {
+    await act(() => {
+      const { promise, resolve } = Promise.withResolvers<void>();
+      setImmediate(resolve);
+      return promise;
+    });
+  }
 }
 
 /** Runs `body` on the fake clock, so a wait inside it - a backoff, a send's deadline, a key's

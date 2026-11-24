@@ -59,8 +59,8 @@ export function SignInsSection(): ReactNode {
       onRevoked={() => void queryClient.invalidateQueries({ queryKey: signInsQuery().queryKey })}
       query={signIns}
       revoke={(signIn, bounds) => api.revokeSignIn(signIn.signin_id, bounds)}
-      revokeError="Could not revoke this sign-in."
       rowKey={(signIn) => signIn.signin_id}
+      rowName={(signIn) => `your sign-in on ${signIn.machine}`}
     />
   );
 }

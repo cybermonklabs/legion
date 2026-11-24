@@ -1,0 +1,195 @@
+name: CI job pi-legion
+
+# The steps of ci.yaml's `pi-legion` and `pi-legion-build` jobs, in a file of their own.
+# ci.yaml's job of each id calls this file and passes its own id as `job`, and the job of this
+# file named for it runs while the other is skipped. Each caller keeps `needs: changes` and the
+# whole `if:` that decides whether its job runs, so the `if:` here only picks which of the two
+# that is. The two share a file because ci.yaml already calls as many reusable workflows as
+# .github/scripts/check-workflow-files.sh allows it
+# (.github/ci-notes/ci.md#two-jobs-that-call-one-file).
+#
+# The split is for the filters. Each job's filter names this file beside ci.yaml, so a change to
+# these steps selects these two jobs alone, where a change to ci.yaml selects every job.
+#
+# The two are the halves of what was one job, and each runs every one of its steps wherever it
+# runs. pi-legion-build typechecks the plugin and packs it as the release does, which a pull
+# request runs. pi-legion runs the plugin's test suite, a slow suite (the one job took 14.8
+# minutes at the 90th percentile of the pull-request runs of 2026-11-22): its `pi_legion` output
+# is held back on a pull request without the label full-ci or lane:pi_legion, so it runs in the
+# merge queue
+# (.github/ci-notes/ci.md#which-lane-a-job-runs-in-the-pull-request-or-the-merge-queue).
+#
+# Each job's last step reports ci-ok for its caller: on a merge-group run the job's own result
+# decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
+# ci.yaml ends. `ci-ok-changes` carries ci.yaml's `toJSON(needs.changes)` for it.
+on:
+  workflow_call:
+    inputs:
+      job:
+        description: >-
+          The id of ci.yaml's job that calls this file, `pi-legion` or `pi-legion-build`: the job
+          of this file of that id runs, and the other is skipped.
+        type: string
+        required: true
+      ci-ok-changes:
+        description: >-
+          ci.yaml's `toJSON(needs.changes)`: end the job with ci-ok's report
+          (.github/actions/ci-ok-report), as every job of ci.yaml ends.
+        type: string
+        required: true
+
+# A `|` between proxy entries makes a go command fall through to the next source after ANY error,
+# where a `,` falls through only after a 404 or a 410 (Go's module reference, "GOPROXY protocol").
+# proxy.golang.org reset a download mid-stream and turned a Go lane red on a module whose hash
+# go.sum already holds (sjawhar/legion#2512); with `|direct` the command fetches the same bytes
+# straight from the source and checks them against go.sum, so this is a second path, not a weaker
+# check.
+env:
+  GOPROXY: https://proxy.golang.org|direct
+
+jobs:
+  pi-legion:
+    if: inputs.job == 'pi-legion'
+    runs-on: ubuntu-24.04
+    # The budget, added up part by part from the slowest run this job can have rather than
+    # copied from another job, when it also ran the typecheck and the pack that pi-legion-build
+    # runs now: the job's set-up with the NATS service started and the checkout (15 s), setup-bun
+    # (2), install-jj (3), install-omp (6), setup-go and the go-daemon cache restore (26), the
+    # workspace install and contracts' build (14), the lint and the typecheck (16), the test step
+    # (300), the pack, the upload and the ci-ok report (4), the post steps with the containers
+    # stopped (5), and the seconds the job's own clock holds over the sum of its steps (5). That
+    # is 396 s, 6 m 36 s, a floor this job, without the typecheck and the pack, stays under.
+    # The test step runs the package's files in one worker per CPU (`bun test --parallel`,
+    # package.json), so it lasts as long as its slowest worker, which runs
+    # legion-stall-watchdog-omp.test.ts alone: its eight cases took 241.3 s, 281.5 s and 296.4 s
+    # of the step's 241.4 s, 281.8 s and 296.7 s in jobs 137348443705, 137353258170 and
+    # 137361573250 (2026-11-22), the 300 above being the slowest rounded up. Three runs are no
+    # worst case. Run one after another, the files took a median 774 s that day.
+    # A job its own limit cuts off reports `cancelled`, which ci-ok fails, and 10 did that to
+    # the merge groups of 2026-11-08T23:22Z and 2026-11-09T00:53Z with every step of the job
+    # concluded `success`, when the files still ran one after another under a 10-minute limit.
+    # 28 rather than the next minute up: #2918 (dispatch://INFRA-1545) makes install-jj retry
+    # on a 1057 s ladder and gates a job's ceiling above its slowest retried step, a refusal
+    # that names 18 minutes, and that branch carries 28, so both hold one value on this line.
+    # Every figure here is a cold-Bun one: off main the setup-bun wrapper passes no-cache, so a
+    # pull request's run and a merge group's both download the 34 MB release asset rather than
+    # restore it, and that download is the 2 s above.
+    timeout-minutes: 28
+    env:
+      JOB_TIMEOUT_MINUTES: 28 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+    # The NATS server the Envoy role claim of extensions/controller-start-omp.test.ts's controller
+    # needs (LEGION_TEST_NATS_URL on the test step), on the image the envoy-client job pulls.
+    services:
+      nats:
+        # ghcr.io/cybermonklabs/legion/ci, the copy of nats:2.10 (.github/ci-images.yaml)
+        image: ghcr.io/cybermonklabs/legion/ci@sha256:5498ba57b9471840be3d15b033a4eec554d1c02fa6c2cc0ca2d888637f6c6e2f
+        ports: ["4222:4222"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-bun
+      - uses: ./.github/actions/install-jj
+      # extensions/legion-phase-stall-omp.test.ts and controller-start-omp.test.ts run the pinned
+      # Oh My Pi against stand-ins (packages/pi-shared/test/omp-harness.ts) and refuse on GitHub
+      # Actions without one. The pin is read from .omp-pin, the repository's one copy of it
+      # (.github/actions/install-omp).
+      - uses: ./.github/actions/install-omp
+      # scripts/skill-scenarios/rig.test.ts runs rig.sh judge-omp's container with the runner's own
+      # Docker. Every image a CI job fetches is a copy in ghcr.io/cybermonklabs/legion/ci, named by
+      # digest, which ci.yaml's ci-images job publishes from .github/ci-images.yaml.
+      # scripts/skill-scenarios/daemon-pane.test.ts runs daemon-pane.go with `go run` inside packages/daemon.
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/daemon/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
+          cache: false
+      # go-daemon, shared with typecheck and daemon-go.
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-daemon-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ format('go-daemon-{0}-{1}-', runner.os, runner.arch) }}
+      - run: bun install --frozen-lockfile
+      - name: Build contracts for pi-legion
+        run: bun run build
+        working-directory: packages/contracts
+      - name: Test pi-legion
+        run: bun run test
+        working-directory: packages/pi-legion
+        env:
+          LEGION_TEST_NATS_URL: nats://127.0.0.1:4222
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: pi-legion
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}
+
+  pi-legion-build:
+    if: inputs.job == 'pi-legion-build'
+    # arm64, as every job of ci.yaml that needs no x86_64 machine runs: what kept pi-legion on
+    # ubuntu-24.04 is the pinned Oh My Pi build, whose release ships linux-x64 alone, and this job
+    # installs none (.github/ci-notes/ci.md#the-router-every-check-a-pull-request-or-the-merge-queue-runs,
+    # "Runners").
+    runs-on: ubuntu-24.04-arm
+    # The parts of pi-legion's budget above this job runs, at their slowest: the set-up and the
+    # checkout (15 s, with the NATS service it no longer starts), setup-bun (2), the workspace
+    # install and contracts' build (14), the typecheck (16), the pack, the upload and the ci-ok
+    # report (4), the post steps (5) and the job's own clock over its steps (5): 61 s, measured on
+    # ubuntu-24.04. Ten minutes is about ten times that, room for a slow runner and a cold Bun
+    # download, and it still cuts off a hung pack long before pi-legion's 28.
+    timeout-minutes: 10
+    env:
+      JOB_TIMEOUT_MINUTES: 10 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-bun
+      - run: bun install --frozen-lockfile
+      - name: Build contracts for pi-legion
+        run: bun run build
+        working-directory: packages/contracts
+      - name: Typecheck pi-legion
+        run: bun run typecheck
+        working-directory: packages/pi-legion
+      # The release's pack (release.yaml's pi_legion_build job), which is also this job's build: the
+      # manifest pointed at the one bundle, then scripts/pi-plugin-prepack.sh, which bundles
+      # legion.ts, writes dist/THIRD_PARTY_NOTICES (failing the pack on a bundled package whose
+      # license cannot be determined) and stages this plugin's six skills. The listing shows the
+      # tarball ships those, its agents/, and nothing of the Envoy plugin's: no envoy.js, none of
+      # its skills.
+      - name: Pack pi-legion
+        run: |
+          jq '.omp.extensions = ["dist/legion.js"]' package.json > "$RUNNER_TEMP/package.json"
+          mv "$RUNNER_TEMP/package.json" package.json
+          bun pm pack --destination ../../out/pr-artifacts
+          listing=$RUNNER_TEMP/pi-legion-listing
+          tar tzf ../../out/pr-artifacts/*.tgz > "$listing"
+          for shipped in package/dist/legion.js package/dist/THIRD_PARTY_NOTICES package/dist/skills/legion-worker/SKILL.md package/agents/deep-worker.md; do
+            grep -qxF "$shipped" "$listing" || { echo "::error::the pi-legion tarball does not ship $shipped"; exit 1; }
+          done
+          for envoy in package/dist/envoy.js package/dist/skills/dispatch/; do
+            if grep -qF "$envoy" "$listing"; then
+              echo "::error::the pi-legion tarball ships $envoy, which is the Envoy plugin's"
+              exit 1
+            fi
+          done
+        working-directory: packages/pi-legion
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: pi-legion-pr
+          path: out/pr-artifacts/*.tgz
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: pi-legion-build
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -189,7 +190,8 @@ func runSeed(args []string) error {
 			config.TTL = *ttl
 		}
 		if *create {
-			_, err = bus.EnsureKeyValue(conn, js, config)
+			// A rig command, run by hand until it ends: it runs under no context of its own.
+			_, err = bus.EnsureKeyValue(context.Background(), conn, js, config)
 		} else {
 			_, err = js.KeyValue(config.Bucket)
 		}

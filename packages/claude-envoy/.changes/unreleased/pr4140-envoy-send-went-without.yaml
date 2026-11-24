@@ -1,0 +1,12 @@
+kind: Fixed
+body: |-
+  `envoy-send` says when it sent a message without this machine's Envoy credential. A listener
+  that asks for no credential stores a send whose broker trade failed, so `envoy-send` still
+  prints its `Sent` line and exits 0, and now also writes one line to stderr naming why the
+  credential could not be minted; where the refusal is final (a sign-in the issuer ended, a
+  broker's refusal no retry cures) the line says so, and that a listener that asks for the
+  credential refuses every send from this machine until it is cured, with the remedy the refusal
+  names (`run: agent-secrets login`). Before, a revoked sign-in's send printed only `Sent`.
+time: 2026-11-18T18:26:18Z
+custom:
+    Issue: pr4140

@@ -8,10 +8,14 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/nats-io/nats.go/jetstream"
 	"golang.org/x/sync/errgroup"
+
+	"github.com/sjawhar/envoy/natsversion"
 
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -49,7 +53,7 @@ const boundedReadsPerFact = 3
 // HandlerLimitCeiling is the derived limit above which a wedged handler's message no longer
 // returns to the stream within one operator's look, which is what the limit is for. Nothing
 // refuses a configuration whose window derives a limit above it; the daemon's boot line and
-// `legion start --check-config` say so instead (daemon.IntakeHandlerLimitLine), which is why it
+// `legion config check` say so instead (daemon.IntakeHandlerLimitLine), which is why it
 // is exported.
 const HandlerLimitCeiling = time.Hour
 
@@ -124,8 +128,8 @@ type ConsumerSpec struct {
 	//
 	//   - The fetch batch of one defers a second delivery while the handler runs. This consumer
 	//     asks for one message at a time (consumerFetchBatch as jetstream.PullMaxMessages in
-	//     consumeConsumer), and nats.go v1.53.1 calls the consume callback and only then
-	//     checkPending, which sends the next pull (jetstream/pull.go:287), so no pull is
+	//     consumeConsumer), and nats.go v1.55.0 calls the consume callback and only then
+	//     checkPending (jetstream/pull.go:291-295), which sends the next pull, so no pull is
 	//     outstanding while a handler runs and nothing reaches this consumer. A reconnect, which
 	//     pulls again, is the one exception.
 	//   - The keeper prevents a second delivery while its reports reach the server before the
@@ -183,12 +187,6 @@ type ConsumerSpec struct {
 	// failed ReviewPermission read is. No resolver (a test, or a daemon without one) leaves every
 	// truncated review's body capped.
 	ReviewBody func(ctx context.Context, review PullRequestReview) (string, error)
-	// RepositoryMapping reads the project's repository mapping again, for Dispatch's
-	// settings.repo_project.updated on the project (RepoMappingChanged): it runs before the event
-	// is acknowledged, within AckWait, which bounds this read alone (ReviewPermission), and in no
-	// transaction, and a failed read is retried after NakDelay. No reader (a test) acknowledges the
-	// event.
-	RepositoryMapping func(ctx context.Context) error
 	// PrepareRepository readies what the workflow reads in memory of the repository a Dispatch
 	// issue event resolves to (DispatchIssue.ResolvedRepo), before the fact is applied, within
 	// AckWait, which bounds this one preparation rather than the delivery (ReviewPermission), and
@@ -224,10 +222,13 @@ func (r *RetryLater) Unwrap() error { return r.Err }
 // set GitHub intake hears and decodes, which SetRepositories replaces under mu. pool is the
 // Postgres every fact is applied on and every consumer's position is kept in (consumer_positions).
 // progress is, per durable consumer, what JetStream does not keep: when this daemon opened it and
-// when it last handled a message (Lag).
+// when it last handled a message (Lag). js is the JetStream they were opened on, where each read of
+// the stream's info opens a handle of its own (DispatchTarget, createConsumer); stream is the
+// handle every other call shares.
 type Consumers struct {
 	spec     ConsumerSpec
-	pool     Pool
+	pool     store.TxPool
+	js       jetstream.JetStream
 	stream   jetstream.Stream
 	dispatch jetstream.Consumer
 	github   jetstream.Consumer
@@ -254,9 +255,21 @@ type Consumers struct {
 // it, and takes the rest of this boot's configuration. A consumer that applied messages before and
 // is now missing starts at the last one it applied (openConsumer). pool is required: it is where
 // facts are applied and positions kept.
-func OpenConsumers(ctx context.Context, js jetstream.JetStream, pool Pool, spec ConsumerSpec) (*Consumers, error) {
+//
+// A NATS server that can skip a message on a consumer filtering on a wildcard and a literal at the
+// same token is refused before any consumer is opened, naming its version and the fixed releases
+// (envoy's natsversion.ConnectedRefusal, the rule the listener refuses one by): the stream is the
+// listener's, whose session consumers filter so and need such a server. The daemon's boot ends on
+// the error.
+// The version is decided on one the connection reports: a connection reconnecting or draining when
+// the boot reaches this is looked at again, within ctx (the boot attempt's 30 s bootTimeout, the
+// bound the stream lookup after this has), and is never read as a server of no version.
+func OpenConsumers(ctx context.Context, js jetstream.JetStream, pool store.TxPool, spec ConsumerSpec) (*Consumers, error) {
 	if pool == nil {
 		return nil, errors.New("intake consumers need the Postgres pool facts are applied on")
+	}
+	if err := natsversion.ConnectedRefusal(ctx, js.Conn()); err != nil {
+		return nil, fmt.Errorf("open the intake consumers: %w", err)
 	}
 	spec, err := normalizedSpec(spec)
 	if err != nil {
@@ -267,20 +280,20 @@ func OpenConsumers(ctx context.Context, js jetstream.JetStream, pool Pool, spec 
 		return nil, fmt.Errorf("open %s: %w", notificationStream, err)
 	}
 
-	dispatch, err := openConsumer(ctx, stream, pool, spec.Logger, jetstream.ConsumerConfig{
+	dispatch, err := openConsumer(ctx, js, stream, pool, spec.Logger, jetstream.ConsumerConfig{
 		Durable:        dispatchConsumerName(spec.Project),
-		FilterSubjects: []string{"notifications.dispatch.issue.>", mappingSubject(spec.Project)},
+		FilterSubjects: []string{"notifications.dispatch.issue.>"},
 		AckPolicy:      jetstream.AckExplicitPolicy,
 		AckWait:        spec.AckWait,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("open the Dispatch durable consumer: %w", err)
 	}
-	github, err := openConsumer(ctx, stream, pool, spec.Logger, githubConsumerConfig(spec, spec.Repositories))
+	github, err := openConsumer(ctx, js, stream, pool, spec.Logger, githubConsumerConfig(spec, spec.Repositories))
 	if err != nil {
 		return nil, fmt.Errorf("open the GitHub durable consumer: %w", err)
 	}
-	wake, err := openConsumer(ctx, stream, pool, spec.Logger, jetstream.ConsumerConfig{
+	wake, err := openConsumer(ctx, js, stream, pool, spec.Logger, jetstream.ConsumerConfig{
 		Durable:       wakeConsumerName(spec.Project),
 		FilterSubject: legionWakeSubject,
 		AckPolicy:     jetstream.AckExplicitPolicy,
@@ -289,7 +302,7 @@ func OpenConsumers(ctx context.Context, js jetstream.JetStream, pool Pool, spec 
 	if err != nil {
 		return nil, fmt.Errorf("open the listener wake durable consumer: %w", err)
 	}
-	consumers := &Consumers{spec: spec, pool: pool, stream: stream, dispatch: dispatch, github: github, wake: wake,
+	consumers := &Consumers{spec: spec, pool: pool, js: js, stream: stream, dispatch: dispatch, github: github, wake: wake,
 		repos: slices.Clone(spec.Repositories)}
 	opened := spec.Now()
 	consumers.progress.dispatch = &consumerProgress{name: dispatchConsumerName(spec.Project), opened: opened}
@@ -320,7 +333,7 @@ func (c *Consumers) SetRepositories(ctx context.Context, repositories []ghrepo.R
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	github, err := openConsumer(ctx, c.stream, c.pool, c.spec.Logger, githubConsumerConfig(c.spec, repositories))
+	github, err := openConsumer(ctx, c.js, c.stream, c.pool, c.spec.Logger, githubConsumerConfig(c.spec, repositories))
 	if err != nil {
 		return fmt.Errorf("update the GitHub durable consumer's repositories: %w", err)
 	}
@@ -346,10 +359,10 @@ func (c *Consumers) repositories() []ghrepo.Repository {
 // may have been handled by the consumer before it went missing, or may have been missed. The
 // daemon applied none of them, and nothing replays them. A consumer with no position starts at the
 // next message.
-func openConsumer(ctx context.Context, stream jetstream.Stream, pool Pool, logger *slog.Logger, config jetstream.ConsumerConfig) (jetstream.Consumer, error) {
+func openConsumer(ctx context.Context, js jetstream.JetStream, stream jetstream.Stream, pool store.TxPool, logger *slog.Logger, config jetstream.ConsumerConfig) (jetstream.Consumer, error) {
 	existing, err := stream.Consumer(ctx, config.Durable)
 	if errors.Is(err, jetstream.ErrConsumerNotFound) {
-		return createConsumer(ctx, stream, pool, logger, config)
+		return createConsumer(ctx, js, stream, pool, logger, config)
 	}
 	if err != nil {
 		return nil, err
@@ -360,8 +373,10 @@ func openConsumer(ctx context.Context, stream jetstream.Stream, pool Pool, logge
 }
 
 // createConsumer creates the missing durable consumer config names, at its stored position when
-// pool keeps one and at the next message otherwise (openConsumer).
-func createConsumer(ctx context.Context, stream jetstream.Stream, pool Pool, logger *slog.Logger, config jetstream.ConsumerConfig) (jetstream.Consumer, error) {
+// pool keeps one and at the next message otherwise (openConsumer). The stream's info it reads for
+// a stored position comes through a handle of its own on js, as DispatchTarget's does, and never
+// through stream, which other goroutines share.
+func createConsumer(ctx context.Context, js jetstream.JetStream, stream jetstream.Stream, pool store.TxPool, logger *slog.Logger, config jetstream.ConsumerConfig) (jetstream.Consumer, error) {
 	start, stored, err := storedStreamTime(ctx, pool, config.Durable)
 	if err != nil {
 		return nil, err
@@ -370,10 +385,11 @@ func createConsumer(ctx context.Context, stream jetstream.Stream, pool Pool, log
 		config.DeliverPolicy = jetstream.DeliverNewPolicy
 		return stream.CreateConsumer(ctx, config)
 	}
-	info, err := stream.Info(ctx)
+	fresh, err := js.Stream(ctx, notificationStream)
 	if err != nil {
 		return nil, fmt.Errorf("read %s info: %w", notificationStream, err)
 	}
+	info := fresh.CachedInfo()
 	config.DeliverPolicy, config.OptStartTime = jetstream.DeliverByStartTimePolicy, &start
 	consumer, err := stream.CreateConsumer(ctx, config)
 	if err != nil {
@@ -396,13 +412,18 @@ func createConsumer(ctx context.Context, stream jetstream.Stream, pool Pool, log
 // so any record the listing shows behind Dispatch's log is caught up only once the Dispatch
 // consumer's ack floor reaches this position — a stream position, not a per-issue or per-message
 // count, so it needs no correction for redelivery, a nak, or messages the consumer's filter never
-// matches.
+// matches. It reads through a handle of its own (js.Stream: one STREAM.INFO request, the handle's
+// cached info that answer) rather than c.stream.Info: nats.go's Info writes the handle's cached
+// info under no lock, and the refresher's recovery reads the target while a SetRepositories on
+// another goroutine can read the stream's info (createConsumer), so reads on the shared handle
+// raced (the race detector's find in the daemon's boot-listing test). A fresh handle shares
+// nothing with another read.
 func (c *Consumers) DispatchTarget(ctx context.Context) (int64, error) {
-	info, err := c.stream.Info(ctx)
+	stream, err := c.js.Stream(ctx, notificationStream)
 	if err != nil {
 		return 0, fmt.Errorf("read notification stream info: %w", err)
 	}
-	return int64(info.State.LastSeq), nil
+	return int64(stream.CachedInfo().State.LastSeq), nil
 }
 
 // DispatchPosition is the Dispatch consumer's own current position, read fresh from JetStream:
@@ -413,19 +434,81 @@ func (c *Consumers) DispatchTarget(ctx context.Context) (int64, error) {
 // raced on the shared handle (the race detector's find in the daemon's retained-event test), and a
 // fresh handle shares nothing with the one Run consumes. Nothing here may wait for Run instead:
 // the boot's reconcile reads the position before Run starts, and pollHoldRelease beside it.
+//
+// Idle is the stream's store's answer, not the consumer's counts alone. nats-server answers a
+// publish once it has stored the message, and only then queues the message for the stream's
+// consumers, where a goroutine of the stream's own adds it to each matching consumer's pending
+// count (v2.15.1: stream.go processJetStreamMsgWithBatch sends the PubAck, then pushes to sigq;
+// signalConsumersLoop calls consumer.processStreamSignal, which raises npc). Until that goroutine
+// runs, CONSUMER.INFO counts the message neither pending nor awaiting an ack, so a reading taken
+// just after the publish answered read idle while the message waited on the stream, and Reconcile
+// decided at once a key that message would still change. So when the counts say nothing waits,
+// the reading asks the store for the first message after the consumer's delivered sequence on its
+// filter subjects (firstStoredAfter), within consumerOldestBound, and a message there is waiting
+// whatever the counts say.
+//
+// That read can fail: its bound passes on a loaded server, or the daemon's user lacks the
+// stored-message get (STREAM.MSG.GET, which NATS refuses by not answering, so it too ends at the
+// bound). DispatchPosition, the reading pollHoldRelease takes on its ticker, then keeps the
+// counts' idle, which is what every reading was before this get, and says so at Warn: a daemon
+// without the grant must still release its holds, and the poller reads again at its next tick.
+// ReconcilePosition, the reading a reconcile decides on at once, reads such a failure as not idle
+// instead (unconfirmed), so the keys a listing shows behind their log stay held until the poller
+// releases them.
 func (c *Consumers) DispatchPosition(ctx context.Context) (DispatchConsumerPosition, error) {
-	consumer, err := c.stream.Consumer(ctx, dispatchConsumerName(c.spec.Project))
+	position, unconfirmed, err := c.dispatchPosition(ctx)
 	if err != nil {
-		return DispatchConsumerPosition{}, fmt.Errorf("read Dispatch consumer info: %w", err)
+		return DispatchConsumerPosition{}, err
 	}
-	return positionOf(consumer.CachedInfo()), nil
+	if unconfirmed != nil {
+		c.spec.Logger.Warn("intake: the Dispatch consumer's next stored message could not be read, so its idle is its own count alone, which can miss a message the server stored and has not counted yet; the read's bound passed, on a loaded NATS server or because the daemon's NATS user lacks $JS.API.STREAM.MSG.GET."+notificationStream,
+			"consumer", dispatchConsumerName(c.spec.Project), "error", unconfirmed)
+	}
+	return position, nil
 }
 
-func positionOf(info *jetstream.ConsumerInfo) DispatchConsumerPosition {
-	return DispatchConsumerPosition{
+// ReconcilePosition is DispatchPosition for a reconcile, which decides on the reading at once:
+// a counted idle the store could not confirm reads as not idle.
+func (c *Consumers) ReconcilePosition(ctx context.Context) (DispatchConsumerPosition, error) {
+	position, unconfirmed, err := c.dispatchPosition(ctx)
+	if err != nil {
+		return DispatchConsumerPosition{}, err
+	}
+	if unconfirmed != nil {
+		position.Idle = false
+		c.spec.Logger.Warn("intake: the Dispatch consumer's next stored message could not be read, so a reconcile reads the consumer as not idle and holds the keys its listing shows behind their log; the read's bound passed, on a loaded NATS server or because the daemon's NATS user lacks $JS.API.STREAM.MSG.GET."+notificationStream,
+			"consumer", dispatchConsumerName(c.spec.Project), "error", unconfirmed)
+	}
+	return position, nil
+}
+
+// dispatchPosition is the reading DispatchPosition and ReconcilePosition share: the position, and
+// the store read's error when the counts said idle and the store could not confirm it
+// (unconfirmed, in which case position.Idle is the counts').
+func (c *Consumers) dispatchPosition(ctx context.Context) (position DispatchConsumerPosition, unconfirmed, err error) {
+	consumer, err := c.stream.Consumer(ctx, dispatchConsumerName(c.spec.Project))
+	if err != nil {
+		return DispatchConsumerPosition{}, nil, fmt.Errorf("read Dispatch consumer info: %w", err)
+	}
+	info := consumer.CachedInfo()
+	position = DispatchConsumerPosition{
 		AckFloorStream: int64(info.AckFloor.Stream),
 		Idle:           info.NumPending == 0 && info.NumAckPending == 0,
 	}
+	if !position.Idle {
+		return position, nil, nil
+	}
+	read, cancel := context.WithTimeout(ctx, consumerOldestBound)
+	defer cancel()
+	waiting, err := c.firstStoredAfter(read, info, info.Delivered.Stream)
+	if err != nil {
+		if ctx.Err() != nil {
+			return DispatchConsumerPosition{}, nil, fmt.Errorf("read the Dispatch consumer's next stored message: %w", err)
+		}
+		return position, err, nil
+	}
+	position.Idle = waiting == nil
+	return position, nil, nil
 }
 
 const (
@@ -553,34 +636,42 @@ func (c *Consumers) lagOf(ctx context.Context, progress *consumerProgress) Consu
 }
 
 // oldestWaiting is the stream time of the first message after info's ack floor on any of its
-// consumer's filter subjects, or zero when the stream holds none (the stream's MaxAge removed it
-// since the info was read). A message at the sequence right after the ack floor is the oldest any
-// filter can give, so the filters after it are not read.
+// consumer's filter subjects (firstStoredAfter), or zero when the stream holds none (the stream's
+// MaxAge removed it since the info was read).
 func (c *Consumers) oldestWaiting(ctx context.Context, info *jetstream.ConsumerInfo) (time.Time, error) {
+	oldest, err := c.firstStoredAfter(ctx, info, info.AckFloor.Stream)
+	if err != nil || oldest == nil {
+		return time.Time{}, err
+	}
+	return oldest.Time, nil
+}
+
+// firstStoredAfter is the first message the stream stores after sequence after on any of info's
+// consumer's filter subjects, one STREAM.MSG.GET per filter, or nil when it stores none. A message
+// at the sequence right after is the first any filter can give, so the filters after it are not
+// read.
+func (c *Consumers) firstStoredAfter(ctx context.Context, info *jetstream.ConsumerInfo, after uint64) (*jetstream.RawStreamMsg, error) {
 	filters := slices.Clone(info.Config.FilterSubjects)
 	if info.Config.FilterSubject != "" {
 		filters = append(filters, info.Config.FilterSubject)
 	}
-	var oldest *jetstream.RawStreamMsg
+	var first *jetstream.RawStreamMsg
 	for _, filter := range filters {
-		message, err := c.stream.GetMsg(ctx, info.AckFloor.Stream+1, jetstream.WithGetMsgSubject(filter))
+		message, err := c.stream.GetMsg(ctx, after+1, jetstream.WithGetMsgSubject(filter))
 		if errors.Is(err, jetstream.ErrMsgNotFound) {
 			continue
 		}
 		if err != nil {
-			return time.Time{}, err
+			return nil, err
 		}
-		if oldest == nil || message.Sequence < oldest.Sequence {
-			oldest = message
+		if first == nil || message.Sequence < first.Sequence {
+			first = message
 		}
-		if oldest.Sequence == info.AckFloor.Stream+1 {
+		if first.Sequence == after+1 {
 			break
 		}
 	}
-	if oldest == nil {
-		return time.Time{}, nil
-	}
-	return oldest.Time, nil
+	return first, nil
 }
 
 // Run consumes the three durable consumers until ctx ends, and returns the error of the one that
@@ -613,9 +704,11 @@ func (c *Consumers) Run(ctx context.Context, handlers ...Handler) error {
 // message handled is recorded in progress at spec.Now.
 func (c *Consumers) consumeConsumer(ctx context.Context, consumer jetstream.Consumer, progress *consumerProgress, handlers []Handler) error {
 	lag := &lagWatch{consumer: consumer.CachedInfo().Name, logger: c.spec.Logger, now: time.Now}
+	names := &issueNames{}
+	dropped := newDroppedSettlements()
 	consuming, err := consumer.Consume(func(message jetstream.Msg) {
 		lag.observe(message)
-		if consumeMessage(ctx, message, c.spec, c.repositories(), c.pool, handlers) {
+		if consumeMessage(ctx, message, c.spec, c.repositories(), c.pool, handlers, names, dropped) {
 			progress.handle(c.spec.Now())
 		}
 	}, jetstream.PullMaxMessages(consumerFetchBatch))
@@ -633,6 +726,122 @@ func (c *Consumers) consumeConsumer(ctx context.Context, consumer jetstream.Cons
 		}
 		return fmt.Errorf("durable consumer %s stopped unexpectedly", consumer.CachedInfo().Name)
 	}
+}
+
+// issueNames counts, for one durable consumer, the issue events it read named in the old form and
+// the ones whose name carries a key in neither form (subjectforms.IssueEventKey), while both forms
+// are read (dispatch://INFRA-3862). A name in neither form is a fault, and each is logged at ERROR
+// as the poison it is. An old-form name is not: Dispatch publishes every issue event in the old
+// form until its producers move, and every daemon hears every project's, so the first is logged at
+// INFO at once and then at most one each issueNameLogEvery, each line with the running count, which
+// is what tells an operator the old form is still read here without a line per event.
+type issueNames struct {
+	legacy, neither atomic.Uint64
+	// legacyLogged is when the last old-form name was logged, in Unix nanoseconds of the consumer
+	// spec's clock; zero before the first.
+	legacyLogged atomic.Int64
+}
+
+// issueNameLogEvery is the most often an old-form issue name is logged (issueNames).
+const issueNameLogEvery = time.Minute
+
+// legacyRead counts one issue event named in the old form, read at now, and answers the running
+// count and whether this one is due to be logged.
+func (n *issueNames) legacyRead(now time.Time) (uint64, bool) {
+	count := n.legacy.Add(1)
+	last := n.legacyLogged.Load()
+	if last != 0 && now.Sub(time.Unix(0, last)) < issueNameLogEvery {
+		return count, false
+	}
+	return count, n.legacyLogged.CompareAndSwap(last, now.UnixNano())
+}
+
+// DroppedSettlementsKept is how many checks settlements each line that names a dropped settlement
+// remembers having logged (RecentKeys): the consumer's for the decoder's refusals, by event id,
+// and for a settlement of a pull request the daemon does not record, by identity, and the
+// workflow engine's for the settlements it does not apply. One settlement delivered many times
+// writes one line, and a settlement forgotten past this bound, or after a restart, one more
+// (dispatch://INFRA-4135 R6).
+const DroppedSettlementsKept = 4096
+
+// NoRecordedPullRequestLine is the line that names a checks settlement dropped because no pull
+// request the daemon records matches its repository and number. One cause has one message text,
+// whichever layer finds it, so a reader matches the line without knowing which did: the consumer
+// finds it before any transaction (handleMessage, recordedPullRequest), which is where nearly
+// every such settlement ends, and workflow's checks finds a record gone by the time the fact is
+// applied. Hence the workflow prefix on a line intake writes too: it is the workflow's verdict
+// that the settlement has no pull request to apply to, read early.
+const NoRecordedPullRequestLine = "workflow: a checks settlement was dropped: no pull request is recorded for it"
+
+// SettlementIdentity is a checks settlement as the lines that name its drop key it: its pull
+// request, and the head, generation and snapshot the listener's line that published it names.
+type SettlementIdentity struct {
+	Repo       string
+	Number     int
+	Head       string
+	Generation int64
+	Snapshot   string
+}
+
+// Identity is the settlement's identity.
+func (c PullRequestChecks) Identity() SettlementIdentity {
+	return SettlementIdentity{Repo: c.Repo, Number: c.Number, Head: c.HeadSHA, Generation: c.Generation, Snapshot: c.Snapshot}
+}
+
+// Attributes is the identity as the log attributes every drop line begins with.
+func (s SettlementIdentity) Attributes() []any {
+	return []any{"repo", s.Repo, "number", s.Number, "head", s.Head, "generation", s.Generation, "snapshot", s.Snapshot}
+}
+
+// RecentKeys is a set of the last keys added to it, at most its bound, the oldest forgotten first,
+// and safe for use by several goroutines at once. A line written once per key remembers its keys
+// in one, so what the line costs stays at the bound however many keys come: a key forgotten, or a
+// set made again when its process starts, writes its line once more.
+type RecentKeys[K comparable] struct {
+	mu    sync.Mutex
+	bound int
+	held  map[K]struct{}
+	// order is the keys held in the order they were added; once it holds bound keys it is a ring
+	// whose oldest key is at next.
+	order []K
+	next  int
+}
+
+// NewRecentKeys is an empty set of at most bound keys, and of one at the least.
+func NewRecentKeys[K comparable](bound int) *RecentKeys[K] {
+	return &RecentKeys[K]{bound: max(bound, 1), held: map[K]struct{}{}}
+}
+
+// Add holds key and reports whether it was not held already. A key added to a full set takes the
+// place of the oldest one held.
+func (r *RecentKeys[K]) Add(key K) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, held := r.held[key]; held {
+		return false
+	}
+	if len(r.order) < r.bound {
+		r.order = append(r.order, key)
+	} else {
+		delete(r.held, r.order[r.next])
+		r.order[r.next] = key
+		r.next = (r.next + 1) % r.bound
+	}
+	r.held[key] = struct{}{}
+	return true
+}
+
+// droppedSettlements is what one durable consumer remembers of the checks settlements whose drop
+// it logged: the event ids of those the decoder refused (decodedMessage.Refused), and the
+// identities of those of a pull request the daemon does not record (handleMessage). An event id
+// and an identity are keys of two kinds, so each has a set of its own.
+type droppedSettlements struct {
+	refused    *RecentKeys[string]
+	unrecorded *RecentKeys[SettlementIdentity]
+}
+
+func newDroppedSettlements() *droppedSettlements {
+	return &droppedSettlements{refused: NewRecentKeys[string](DroppedSettlementsKept), unrecorded: NewRecentKeys[SettlementIdentity](DroppedSettlementsKept)}
 }
 
 const (
@@ -702,10 +911,18 @@ func (l *lagWatch) observe(message jetstream.Msg) {
 // long as it hangs (the delivery mechanism: ConsumerSpec.HandlerLimit's comment). The handler is
 // cut at that limit instead, its message naked and delivered again rather than held for the
 // length of the hang.
-func consumeMessage(ctx context.Context, message jetstream.Msg, spec ConsumerSpec, repositories []ghrepo.Repository, pool Pool, handlers []Handler) bool {
+//
+// names counts the issue events this consumer read named in the old form, and the ones named in
+// neither form, which are poison (issueNames). dropped is what it remembers of the checks
+// settlements whose drop it logged (droppedSettlements).
+func consumeMessage(ctx context.Context, message jetstream.Msg, spec ConsumerSpec, repositories []ghrepo.Repository, pool store.TxPool, handlers []Handler, names *issueNames, dropped *droppedSettlements) bool {
 	decoded, err := decodeMessage(message.Subject(), spec.Project, repositories, message.Data())
 	if err != nil {
-		logMessage(spec.Logger, slog.LevelError, "poison JetStream message", message, "error", err)
+		attributes := []any{"error", err}
+		if errors.Is(err, errIssueNameInNeitherForm) {
+			attributes = append(attributes, "neither_form_count", names.neither.Add(1))
+		}
+		logMessage(spec.Logger, slog.LevelError, "poison JetStream message", message, attributes...)
 		if termErr := message.Term(); termErr != nil {
 			logMessage(spec.Logger, slog.LevelError, "term poison JetStream message", message, "error", termErr)
 			return false
@@ -714,6 +931,20 @@ func consumeMessage(ctx context.Context, message jetstream.Msg, spec ConsumerSpe
 	}
 	for _, field := range decoded.Unread {
 		logMessage(spec.Logger, slog.LevelWarn, "unreadable field taken as absent", message, "event_id", decoded.EventID, "field", field)
+	}
+	// A checks settlement the decoder refused decodes to no fact and is acknowledged below as every
+	// such message is, so this line is all that is left of it (dispatch://INFRA-4135 R6): the
+	// field refused, and the head, generation and snapshot its payload gives, by which the
+	// listener's line that published the settlement is found. It is written once for each event
+	// id, so the same settlement delivered again writes no second line.
+	if decoded.Refused != nil && dropped.refused.Add(decoded.EventID) {
+		attributes := append([]any{"event_id", decoded.EventID, "reason", decoded.Refused.reason}, decoded.Refused.settlement.attributes()...)
+		logMessage(spec.Logger, slog.LevelWarn, "intake: a checks settlement was dropped: the decoder refused it", message, attributes...)
+	}
+	if decoded.LegacyName {
+		if count, due := names.legacyRead(spec.Now()); due {
+			logMessage(spec.Logger, slog.LevelInfo, "an issue event named in the old form", message, "legacy_count", count)
+		}
 	}
 
 	// A message that decodes to no fact is acknowledged here rather than inside the work, for the
@@ -736,7 +967,7 @@ func consumeMessage(ctx context.Context, message jetstream.Msg, spec ConsumerSpe
 	defer cancel()
 	stop := keepInProgress(work, message, spec.AckWait/3, spec.Logger)
 	started := time.Now()
-	outcome := handleMessage(work, message, spec, pool, decoded, handlers)
+	outcome := handleMessage(work, message, spec, pool, decoded, handlers, dropped)
 	took := time.Since(started)
 	stop()
 
@@ -808,23 +1039,28 @@ func nakOutcome(what, nakWhat string, err error) messageOutcome {
 // transaction — under work, the deadline context of consumeMessage's handling, and says what
 // should become of the message. It acknowledges, naks and terminates nothing. Each read keeps its
 // own AckWait bound, nested under work, so one dependency that is slow to answer is cut while the
-// handling as a whole runs to HandlerLimit.
-func handleMessage(work context.Context, message jetstream.Msg, spec ConsumerSpec, pool Pool, decoded decodedMessage, handlers []Handler) messageOutcome {
+// handling as a whole runs to HandlerLimit. dropped is the consumer's memory of the checks
+// settlements whose drop it logged (droppedSettlements).
+func handleMessage(work context.Context, message jetstream.Msg, spec ConsumerSpec, pool store.TxPool, decoded decodedMessage, handlers []Handler, dropped *droppedSettlements) messageOutcome {
 	// decoded.Fact is never nil here: consumeMessage acknowledges a message that decodes to none
 	// before it starts the keeper this work runs under.
-	if _, ok := decoded.Fact.(RepoMappingChanged); ok {
-		if err := readMapping(work, spec); err != nil {
-			return nakOutcome("read the project's repository mapping again", "nak the mapping read", err)
-		}
-		return ackOutcome()
-	}
 	recorded, err := recordedPullRequest(work, spec, pool, decoded.Fact)
 	if err != nil {
 		return nakOutcome("read whether the pull request is recorded", "nak the pull request read", err)
 	}
 	if !recorded {
-		logMessage(spec.Logger, slog.LevelDebug, "a GitHub event of a pull request the daemon does not record is acknowledged without a transaction", message,
+		logMessage(spec.Logger, slog.LevelDebug, "a GitHub event of a pull request the daemon does not record is acknowledged without a fact transaction", message,
 			"event_id", decoded.EventID)
+		// Each checks settlement of a pull request the daemon does not record is named once at
+		// INFO (NoRecordedPullRequestLine), whatever the reason the record is missing — a pull
+		// request no Legion issue runs, or one whose opened event never reached the daemon — so a
+		// reader can tell such a drop from a lost settlement (dispatch://INFRA-4135 R6). The
+		// DEBUG line above is written for each review and checks settlement of such a pull request.
+		if checks, ok := decoded.Fact.(PullRequestChecks); ok {
+			if identity := checks.Identity(); dropped.unrecorded.Add(identity) {
+				logMessage(spec.Logger, slog.LevelInfo, NoRecordedPullRequestLine, message, identity.Attributes()...)
+			}
+		}
 		return ackOutcome()
 	}
 	prepared, err := prepareRepository(work, spec, decoded.Fact)
@@ -908,14 +1144,14 @@ func handleMessage(work context.Context, message jetstream.Msg, spec ConsumerSpe
 // name the fact carries and then, when that finds nothing, under the other name of the pair that
 // names it (ghrepo.Under, ConsumerSpec.Renames), as the workflow reads the row: a pull request
 // already open when its repository was transferred is recorded under the name it moved from,
-// while the fact names the one it moved to. It is one read of the pool per name within the one
-// AckWait, in no transaction and under no lock, made before the review's GitHub reads
-// (resolveReviewBody, resolveReviewPermission): the workflow applies either fact only to a
-// recorded pull request, so one of any other pull request is acknowledged with no transaction
-// under the fact lock (ApplyFact) and no GitHub read, whatever the number of other pull requests
-// a mapped repository reviews and checks. A pull request recorded after this read, by a later
-// opened, gets its checks and reviews from their next event.
-func recordedPullRequest(ctx context.Context, spec ConsumerSpec, pool Pool, fact Fact) (bool, error) {
+// while the fact names the one it moved to. It is one read-only transaction per name within the
+// one AckWait, made before the review's GitHub reads (resolveReviewBody,
+// resolveReviewPermission): the workflow applies either fact only to a recorded pull request, so
+// one of any other pull request is acknowledged with no transaction under the fact lock
+// (ApplyFact) and no GitHub read, whatever the number of other pull requests a repository the
+// daemon hears reviews and checks. A pull request recorded after this read, by a later opened,
+// gets its checks and reviews from their next event.
+func recordedPullRequest(ctx context.Context, spec ConsumerSpec, pool store.TxPool, fact Fact) (bool, error) {
 	var repo string
 	var number int
 	switch fact := fact.(type) {
@@ -929,18 +1165,10 @@ func recordedPullRequest(ctx context.Context, spec ConsumerSpec, pool Pool, fact
 	read, cancel := context.WithTimeout(ctx, spec.AckWait)
 	defer cancel()
 	return ghrepo.Under(spec.Renames, repo, func(name string) (bool, error) {
-		return record.PullRequestRecorded(read, pool, name, number)
+		return store.ReadOnly(read, pool, fmt.Sprintf("read whether %s#%d is recorded", name, number), func(ctx context.Context, tx pgx.Tx) (bool, error) {
+			return record.PullRequestRecorded(ctx, tx, name, number)
+		})
 	})
-}
-
-// readMapping runs ConsumerSpec.RepositoryMapping within AckWait; no reader reads nothing.
-func readMapping(ctx context.Context, spec ConsumerSpec) error {
-	if spec.RepositoryMapping == nil {
-		return nil
-	}
-	read, cancel := context.WithTimeout(ctx, spec.AckWait)
-	defer cancel()
-	return spec.RepositoryMapping(read)
 }
 
 // prepareRepository runs ConsumerSpec.PrepareRepository for a Dispatch issue fact, within AckWait,

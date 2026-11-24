@@ -2,12 +2,13 @@ import { expect, test } from "bun:test";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
+import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { NameVersionDialog } from "./NameVersionDialog";
 
 test("renders nothing when closed", () => {
   const view = render(
     <NameVersionDialog
-      error={false}
+      error={null}
       onClose={() => {}}
       onSave={() => {}}
       open={false}
@@ -23,7 +24,7 @@ test("renders nothing when closed", () => {
 test("Save is disabled until the input is non-empty", async () => {
   const user = userEvent.setup();
   const view = render(
-    <NameVersionDialog error={false} onClose={() => {}} onSave={() => {}} open saving={false} />
+    <NameVersionDialog error={null} onClose={() => {}} onSave={() => {}} open saving={false} />
   );
   try {
     const save = screen.getByRole("button", { name: "Save" }) as HTMLButtonElement;
@@ -48,7 +49,7 @@ test("Enter submits the trimmed summary", async () => {
   const saved: string[] = [];
   const view = render(
     <NameVersionDialog
-      error={false}
+      error={null}
       onClose={() => {}}
       onSave={(summary) => saved.push(summary)}
       open
@@ -71,7 +72,7 @@ test("Enter does nothing while the input is empty", async () => {
   const saved: string[] = [];
   const view = render(
     <NameVersionDialog
-      error={false}
+      error={null}
       onClose={() => {}}
       onSave={(summary) => saved.push(summary)}
       open
@@ -93,7 +94,7 @@ test("Cancel calls onClose", async () => {
   let closed = 0;
   const view = render(
     <NameVersionDialog
-      error={false}
+      error={null}
       onClose={() => (closed += 1)}
       onSave={() => {}}
       open
@@ -110,7 +111,13 @@ test("Cancel calls onClose", async () => {
 
 test("a failed save keeps the dialog and the typed summary and shows the error inside it", () => {
   const view = render(
-    <NameVersionDialog error onClose={() => {}} onSave={() => {}} open saving={false} />
+    <NameVersionDialog
+      error={new Error("Failed to fetch")}
+      onClose={() => {}}
+      onSave={() => {}}
+      open
+      saving={false}
+    />
   );
   try {
     expect(within(view.container).getByRole("alert")).toHaveTextContent(
@@ -119,6 +126,29 @@ test("a failed save keeps the dialog and the typed summary and shows the error i
     expect(
       (within(view.container).getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled
     ).toBe(true);
+  } finally {
+    view.unmount();
+  }
+});
+
+// A version the reader stopped may have been named: the dialog says so, and that Save is a press
+// of its own, rather than a failure it cannot know of.
+test("a version the reader stopped says it may have been named, not that it failed", () => {
+  const view = render(
+    <NameVersionDialog
+      error={new SendStoppedError()}
+      onClose={() => {}}
+      onSave={() => {}}
+      open
+      saving={false}
+    />
+  );
+  try {
+    expect(within(view.container).getByRole("alert").textContent).toBe(
+      stoppedWriteNote("the new version", "made", {
+        anew: "Saving it again names a new version.",
+      })
+    );
   } finally {
     view.unmount();
   }

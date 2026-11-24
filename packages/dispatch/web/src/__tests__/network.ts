@@ -67,9 +67,28 @@ const shellHandlers: RequestHandler[] = [
   // no gate, which is what a page with no `api.listProjects` spy drew before, and every row that
   // asserts on project content spies that method above MSW.
   http.get("/api/v1/projects", () => Response.json([])),
+  // The Settings page's daemon section reads every project's Legion daemon with no `enabled` guard
+  // beyond the project being known (`useLegionDaemons`), so the read happens wherever that section
+  // is drawn. `null` is a project that names no daemon, not a failure (`legionDaemonQuery`'s own
+  // doc), and that is what the page drew before MSW: an empty daemon list. Every row that asserts
+  // on a daemon spies `api.getLegionDaemon` above MSW and never reaches this.
+  http.get("/api/v1/projects/:key/legion/daemon", () => Response.json(null)),
   http.get("/api/v1/me/replies", () => Response.json({ rows: [], total: 0, limit: 50, offset: 0 })),
   http.get("/api/v1/credential-requests", () => Response.json({ pending: [] })),
   http.get("/api/v1/me/agents/state", () => Response.json({})),
+  // The base an upload names: before it posts a markdown file, the Upload control reads the
+  // token of the document the owner already holds under that name
+  // (`features/artifacts/ArtifactUpload.tsx`'s `captureUploadBase`), so every page that can
+  // take a dropped or pasted `.md` reads this route. The owner holds no such document in a unit
+  // test's world, which is Dispatch's own `404` and what `captureUploadBase` takes as no base,
+  // so the upload it sends is the one those pages asserted before this read existed. A test
+  // about the base spies `api.ownerArtifactText` and never reaches this handler.
+  http.get("/api/v1/issues/:key/artifacts/:slug/text", () =>
+    Response.json({ code: "ARTIFACT_NOT_FOUND", error: "artifact not found" }, { status: 404 })
+  ),
+  http.get("/api/v1/projects/:key/artifacts/:slug/text", () =>
+    Response.json({ code: "ARTIFACT_NOT_FOUND", error: "artifact not found" }, { status: 404 })
+  ),
   // The navigation rail reads the two fault counts on every page it is drawn on
   // (`features/sidebar/Sidebar.tsx`, `prioritySummaryQuery`), so every test that renders the
   // rail or the shell around it makes this read without being about priorities. The answer is

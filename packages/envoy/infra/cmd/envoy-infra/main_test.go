@@ -15,9 +15,12 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/infra/core"
+	"github.com/sjawhar/envoy/infra/routes"
 	"github.com/sjawhar/envoy/infra/seed"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 )
+
+func TestMain(m *testing.M) { os.Exit(cmdtest.Main(m)) }
 
 // buildCLI builds this package's binary as name with the extra go build arguments args, and
 // returns its path.
@@ -61,6 +64,16 @@ func TestVersionPrintsTheStampedRelease(t *testing.T) {
 	}
 }
 
+// noHub fails the test if a command opens a hub: only `envoy-infra routes record` and `check` read
+// one.
+func noHub(t *testing.T) routes.Opener {
+	return func(routes.Target) (routes.Source, error) {
+		t.Helper()
+		t.Fatal("the command opened a hub")
+		return nil, nil
+	}
+}
+
 // noStore fails the test if a command opens a store: neither --version nor the usage reads one.
 func noStore(t *testing.T) seed.Stores {
 	return seed.Stores{seed.AWSSecretsManager: {Open: func(context.Context, string, string) (seed.Store, error) {
@@ -81,7 +94,7 @@ func (brokenStdout) Write([]byte) (int, error) {
 // so a script that reads it is not told the version was printed.
 func TestVersionItCannotPrintExitsOne(t *testing.T) {
 	var stderr bytes.Buffer
-	if code := run(context.Background(), []string{"--version"}, brokenStdout{}, &stderr, noStore(t)); code != 1 {
+	if code := run(context.Background(), []string{"--version"}, brokenStdout{}, &stderr, noStore(t), noHub(t)); code != 1 {
 		t.Fatalf("exit %d, want 1", code)
 	}
 	if want := "envoy-infra: could not print the version: write /dev/stdout: bad file descriptor\n"; stderr.String() != want {
@@ -94,13 +107,13 @@ func TestVersionItCannotPrintExitsOne(t *testing.T) {
 func TestVersionStandsAlone(t *testing.T) {
 	const canary = "SUCANARYNOTASEED"
 	var stdout, stderr bytes.Buffer
-	if code := run(context.Background(), []string{"--version", canary}, &stdout, &stderr, noStore(t)); code != 2 {
+	if code := run(context.Background(), []string{"--version", canary}, &stdout, &stderr, noStore(t), noHub(t)); code != 2 {
 		t.Fatalf("exit %d, want 2", code)
 	}
 	if stdout.Len() != 0 {
 		t.Errorf("stdout %q, want none", stdout.String())
 	}
-	if !strings.Contains(stderr.String(), "envoy-infra: the command is seed or render, or --version alone\n") {
+	if !strings.Contains(stderr.String(), "envoy-infra: the command is seed, render or routes, or --version alone\n") {
 		t.Errorf("stderr %q does not say what the command takes", stderr.String())
 	}
 	if strings.Contains(stderr.String(), canary) {
@@ -108,16 +121,19 @@ func TestVersionStandsAlone(t *testing.T) {
 	}
 }
 
-// TestHelpNamesVersion: the usage names --version beside the seed and render commands' own usage.
+// TestHelpNamesVersion: the usage names --version beside the seed, render and routes commands' own
+// usage.
 func TestHelpNamesVersion(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	if code := run(context.Background(), []string{"--help"}, &stdout, &stderr, noStore(t)); code != 0 {
+	if code := run(context.Background(), []string{"--help"}, &stdout, &stderr, noStore(t), noHub(t)); code != 0 {
 		t.Fatalf("exit %d, want 0", code)
 	}
 	for _, line := range []string{
 		"usage: envoy-infra --version\n",
 		"usage: envoy-infra seed {check|generate|verify}",
 		"usage: envoy-infra render {nats-start-script|webhook-listener-env|metric-filters}",
+		"usage: envoy-infra routes record --namespace <ns> --statefulset <name> --out <file>",
+		"       envoy-infra routes check --namespace <ns> --statefulset <name> --record <file>",
 	} {
 		if !strings.Contains(stderr.String(), line) {
 			t.Errorf("the usage lacks %q: %q", line, stderr.String())
@@ -132,7 +148,7 @@ func TestHelpNamesVersion(t *testing.T) {
 // GCP Secret Manager, as its usage error for another --store names them.
 func TestTheCommandKnowsBothStores(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	code := run(context.Background(), []string{"seed", "check", "--store", "elsewhere", "--name", "example"}, &stdout, &stderr, stores)
+	code := run(context.Background(), []string{"seed", "check", "--store", "elsewhere", "--name", "example"}, &stdout, &stderr, stores, noHub(t))
 	if code != 2 {
 		t.Fatalf("exit %d, want 2", code)
 	}
@@ -141,17 +157,144 @@ func TestTheCommandKnowsBothStores(t *testing.T) {
 	}
 }
 
+// TestRoutesOpensTheHubItIsGiven: `envoy-infra routes` runs the routes command over the opener main
+// gives it, with the hub its flags name, and reports that opener's error; main's own opener is
+// routes.OpenKubectl.
+func TestRoutesOpensTheHubItIsGiven(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	var opened routes.Target
+	open := func(target routes.Target) (routes.Source, error) {
+		opened = target
+		return nil, errors.New("no kubeconfig here")
+	}
+	code := run(context.Background(), []string{"routes", "record", "--namespace", "envoy", "--statefulset", "envoy-nats", "--out", filepath.Join(t.TempDir(), "r.json")},
+		&stdout, &stderr, noStore(t), open)
+	if code != 2 || opened.Namespace != "envoy" || opened.StatefulSet != "envoy-nats" || opened.Kubectl != "kubectl" {
+		t.Fatalf("exit %d, opened %+v; want 2 and envoy/envoy-nats through kubectl", code, opened)
+	}
+	if want := "envoy-infra routes record: no kubeconfig here\n"; stderr.String() != want {
+		t.Errorf("stderr %q, want %q", stderr.String(), want)
+	}
+}
+
 // TestRenderPrintsToStdout: `envoy-infra render` runs the render command, which opens no store.
 func TestRenderPrintsToStdout(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	args := []string{"render", "metric-filters", "--component", "nats-service", "--metric-namespace", "example/NATS",
 		"--logical-name-prefix", "example-bus", "--json"}
-	if code := run(context.Background(), args, &stdout, &stderr, noStore(t)); code != 0 {
+	if code := run(context.Background(), args, &stdout, &stderr, noStore(t), noHub(t)); code != 0 {
 		t.Fatalf("exit %d, want 0; stderr %q", code, stderr.String())
 	}
 	if !strings.Contains(stdout.String(), `"logicalName": "example-bus-route-disconnect-filter"`) || stderr.Len() != 0 {
 		t.Errorf("stdout %q, stderr %q; want the NATS service's filters and no stderr", stdout.String(), stderr.String())
 	}
+}
+
+// calloutUsers are the users of the nats-start-script rows below: a client with a seed, the session
+// user whom a client presenting no credential becomes, and the auth service's user. Public keys
+// only; their seeds were discarded when they were made.
+const calloutUsers = `"users": [
+    {"name": "example-hub", "nkey": "UCVLUXHFBITELHZUNIQG35K5PGQJIP6RX4LUG32L5I22JL7VGXKJQ4BV", "publish": {"allow": ["notifications.>"]}, "subscribe": {"allow": ["_INBOX.>"]}, "hasSeed": true},
+    {"name": "example-sessions", "nkey": "UAZUULVPMGDGSEXFS26DBYEAMLBGWFX6HKOCQGIWTDBZARXTK3VRF5W5", "publish": {"allow": ["notifications.agent.>"]}, "subscribe": {"allow": ["_INBOX.>"]}},
+    {"name": "example-auth", "nkey": "UD5BKU3BU7COAOUCXHGXWOSLNVLL4TEXCWPJHDUQE4C47ZNOYFOZVKUN", "publish": {"allow": ["$SYS._INBOX.>"]}, "subscribe": {"allow": ["$SYS.REQ.USER.AUTH"]}, "hasSeed": true}
+  ]`
+
+const calloutJSON = `"callout": {"issuer": "AB2TCXFBYSIN24KFPVJARBN5CHCL4ZCV5SBWSONTZ2WYXS3XTAEK6S3G", "xkey": "XBVCTZK3PV5Y7TBIVYTDZBP3O2YGHUUL7MMENN4DTZIREJCPGLTAF6EL", "serviceUser": "example-auth"}`
+
+// startScriptWithout is the script `envoy-infra render nats-start-script` printed, at
+// cybermonklabs/legion 545b211633 (before the callout existed), for calloutUsers with the session
+// user as noAuthUser, `--config-header x --server-arg -js --config-path /tmp/n.conf`.
+const startScriptWithout = `set -eu; printf '%s' '# x
+authorization {
+  users: [
+    # example-hub
+    {"nkey": "UCVLUXHFBITELHZUNIQG35K5PGQJIP6RX4LUG32L5I22JL7VGXKJQ4BV", "permissions": {"publish": {"allow": ["notifications.>"]}, "subscribe": {"allow": ["_INBOX.>"]}}}
+    # example-sessions
+    {"nkey": "UAZUULVPMGDGSEXFS26DBYEAMLBGWFX6HKOCQGIWTDBZARXTK3VRF5W5", "permissions": {"publish": {"allow": ["notifications.agent.>"]}, "subscribe": {"allow": ["_INBOX.>"]}}}
+    # example-auth
+    {"nkey": "UD5BKU3BU7COAOUCXHGXWOSLNVLL4TEXCWPJHDUQE4C47ZNOYFOZVKUN", "permissions": {"publish": {"allow": ["$SYS._INBOX.>"]}, "subscribe": {"allow": ["$SYS.REQ.USER.AUTH"]}}}
+  ]
+}
+# example-sessions: a client presenting no credential becomes this user
+no_auth_user: "UAZUULVPMGDGSEXFS26DBYEAMLBGWFX6HKOCQGIWTDBZARXTK3VRF5W5"
+' > /tmp/n.conf; exec nats-server --config /tmp/n.conf -js`
+
+// TestRenderNatsStartScriptWithACallout: the authorization file takes the callout and
+// privateProjects as core.Authorization spells them. With a callout the script's configuration
+// gains the auth_callout block, listing every keyed user's key, and no authorization timeout;
+// without one it is byte for byte the script the command printed before the callout existed. A
+// callout without an xkey is refused, and so are privateProjects beside a session user and beside
+// a service user granted more than an auth service needs, each named.
+func TestRenderNatsStartScriptWithACallout(t *testing.T) {
+	render := func(t *testing.T, authorization string) (string, string, int) {
+		t.Helper()
+		path := filepath.Join(t.TempDir(), "a.json")
+		if err := os.WriteFile(path, []byte(authorization), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		var stdout, stderr bytes.Buffer
+		args := []string{"render", "nats-start-script", "--authorization-file", path,
+			"--config-header", "x", "--server-arg", "-js", "--config-path", "/tmp/n.conf"}
+		code := run(context.Background(), args, &stdout, &stderr, noStore(t), noHub(t))
+		return stdout.String(), stderr.String(), code
+	}
+
+	t.Run("with a callout", func(t *testing.T) {
+		stdout, stderr, code := render(t, `{`+calloutUsers+`, "noAuthUser": "example-sessions", `+calloutJSON+`}`)
+		if code != 0 || stderr != "" {
+			t.Fatalf("exit %d, stderr %q; want 0 and no stderr", code, stderr)
+		}
+		want := strings.Replace(startScriptWithout, "  ]\n}\n", "  ]\n"+
+			"  auth_callout {\n"+
+			`    issuer: "AB2TCXFBYSIN24KFPVJARBN5CHCL4ZCV5SBWSONTZ2WYXS3XTAEK6S3G"`+"\n"+
+			`    auth_users: ["UCVLUXHFBITELHZUNIQG35K5PGQJIP6RX4LUG32L5I22JL7VGXKJQ4BV", "UAZUULVPMGDGSEXFS26DBYEAMLBGWFX6HKOCQGIWTDBZARXTK3VRF5W5", "UD5BKU3BU7COAOUCXHGXWOSLNVLL4TEXCWPJHDUQE4C47ZNOYFOZVKUN"]`+"\n"+
+			`    xkey: "XBVCTZK3PV5Y7TBIVYTDZBP3O2YGHUUL7MMENN4DTZIREJCPGLTAF6EL"`+"\n"+
+			"  }\n"+
+			"}\n", 1)
+		// The ping lines end the configuration; the comment's apostrophe is quoted for the shell's
+		// single-quoted printf argument.
+		want = strings.Replace(want, "\n' > /tmp/n.conf", "\n"+
+			`# a replica of the auth service that answers nothing is dropped from the callout'"'"'s queue group within 80 s`+"\n"+
+			`ping_interval: "20s"`+"\n"+
+			"ping_max: 2\n"+
+			"' > /tmp/n.conf", 1)
+		if stdout != want {
+			t.Errorf("stdout:\n%s\nwant:\n%s", stdout, want)
+		}
+	})
+	t.Run("without a callout, the script printed before callouts existed", func(t *testing.T) {
+		stdout, stderr, code := render(t, `{`+calloutUsers+`, "noAuthUser": "example-sessions"}`)
+		if code != 0 || stderr != "" {
+			t.Fatalf("exit %d, stderr %q; want 0 and no stderr", code, stderr)
+		}
+		if stdout != startScriptWithout {
+			t.Errorf("stdout:\n%s\nwant:\n%s", stdout, startScriptWithout)
+		}
+	})
+	refused := func(t *testing.T, authorization, want string) {
+		t.Helper()
+		stdout, stderr, code := render(t, authorization)
+		want = "refused: --authorization-file: authorization: " + want + "\n"
+		if code != 2 || stdout != "" || stderr != want {
+			t.Errorf("exit %d, stdout %q, stderr %q; want exit 2, no stdout and stderr %q", code, stdout, stderr, want)
+		}
+	}
+	t.Run("a callout without an xkey is refused", func(t *testing.T) {
+		refused(t, `{`+calloutUsers+`, "callout": {"issuer": "AB2TCXFBYSIN24KFPVJARBN5CHCL4ZCV5SBWSONTZ2WYXS3XTAEK6S3G", "serviceUser": "example-auth"}}`,
+			"callout.xkey is required: without it nats-server sends each connecting client's token to the auth service unsealed, on $SYS.REQ.USER.AUTH")
+	})
+	t.Run("private projects beside a session user are refused, naming it", func(t *testing.T) {
+		refused(t, `{`+calloutUsers+`, "noAuthUser": "example-sessions", `+calloutJSON+`, "privateProjects": true}`,
+			`privateProjects: users[1] "example-sessions" is noAuthUser: a client presenting no credential would become it while a project is private`)
+	})
+	// The service user connects by its seed alone, so with a grant wider than an auth service's it
+	// is a client past the service (review of #4118 at e7c174fa1b, its e-broad-service.json with an
+	// xkey).
+	t.Run("private projects beside a service user granted everything are refused, naming the entry", func(t *testing.T) {
+		refused(t, `{"users": [{"name": "example-auth", "nkey": "UD5BKU3BU7COAOUCXHGXWOSLNVLL4TEXCWPJHDUQE4C47ZNOYFOZVKUN", "publish": {"allow": [">"]}, "subscribe": {"allow": [">"]}, "hasSeed": true}], `+
+			calloutJSON+`, "privateProjects": true}`,
+			`privateProjects: callout.serviceUser "example-auth": publish.allow[0] ">" is wider than the auth service's grant, which subscribes $SYS.REQ.USER.AUTH and publishes only its replies under $SYS._INBOX.; with a wider grant the service user is a client that connects past the auth service`)
+	})
 }
 
 // TestAnInterruptDuringTheWriteEndsAsAnErrorAfterWriting: an interrupt while PutSecretValue is in

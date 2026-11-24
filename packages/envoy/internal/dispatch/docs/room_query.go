@@ -1,6 +1,7 @@
 package docs
 
 import (
+	"cmp"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -65,7 +66,8 @@ const (
 )
 
 const (
-	// roomQueryWait is the longest an asker waits for the other members' answers.
+	// roomQueryWait is the longest an asker waits for the other members' answers, and a member's
+	// flush for its room's appends to answer one (roomQueries.answerWait).
 	roomQueryWait = 500 * time.Millisecond
 	// roomShareLimit bounds the updates one member shares (bytes of the merged Yjs update, before
 	// base64): more is answered too_large, and the asker judges without them. It is about twelve
@@ -112,8 +114,18 @@ type roomAnswer struct {
 // lanes call them, roomSync.handlers).
 type roomQueries struct {
 	service *Service
+	// wait is answerWait's bound, roomQueryWait where it is zero, as it is in production. A test
+	// of what an answer holds sets a bound of its own: roomQueryWait is a latency budget, and on a
+	// loaded machine an answer can take longer than that to cross Postgres twice.
+	wait    time.Duration
 	mu      sync.Mutex
 	pending map[string]*pendingRoomQuery
+}
+
+// answerWait is how long this process's queries wait for the other members' answers, and how
+// long a flush it answers waits for its room's appends.
+func (r *roomQueries) answerWait() time.Duration {
+	return cmp.Or(r.wait, roomQueryWait)
 }
 
 // pendingRoomQuery is one query of this process's waiting on answers: the parts of each member's
@@ -161,7 +173,7 @@ func readRoomQueryMembers(ctx context.Context, q Queryer, room string, checkLock
 }
 
 // ask sends a kind query about room to every other member, read through q, and returns the whole
-// answers that arrive within roomQueryWait. asked says whether any other member was there to ask.
+// answers that arrive within answerWait. asked says whether any other member was there to ask.
 // A query this process could not send, or whose answers it could not hear - its own listener is
 // not connected, so it is no member - is logged and answered by nobody; only a failed read of the
 // members, which leaves a transaction q belongs to aborted, is an error.
@@ -216,7 +228,7 @@ func (r *roomQueries) ask(ctx context.Context, q Queryer, room, kind string) (an
 			"room", room, "kind", kind, "error", err)
 		return nil, true, nil
 	}
-	timer := time.NewTimer(roomQueryWait)
+	timer := time.NewTimer(r.answerWait())
 	defer timer.Stop()
 	select {
 	case <-pending.done:
@@ -309,7 +321,7 @@ func (p *roomAnswerParts) assemble() (roomAnswer, error) {
 
 // query is documentQueryChannel's handler, on room sync's query lane. This process's own queries
 // are dropped. A holds or share query is answered here; a flush waits for the room's appends on a
-// goroutine of its own, bounded by roomQueryWait, so a slow flush never holds up the next query.
+// goroutine of its own, bounded by answerWait, so a slow flush never holds up the next query.
 func (r *roomQueries) query(ctx context.Context, payload string) {
 	var query roomQuery
 	if err := json.Unmarshal([]byte(payload), &query); err != nil || query.ID == "" || query.Room == "" {
@@ -347,7 +359,7 @@ func (r *roomQueries) query(ctx context.Context, payload string) {
 		done := s.askRoomAppends(query.Room)
 		go func() {
 			defer done()
-			flushed, cancel := context.WithTimeout(ctx, roomQueryWait)
+			flushed, cancel := context.WithTimeout(ctx, r.answerWait())
 			defer cancel()
 			if err := awaitStored(flushed, s.instanceOf(live), classes); err != nil {
 				slog.Warn("dispatch: a document room's updates were not stored in time to answer another process's flush; it is left unanswered",

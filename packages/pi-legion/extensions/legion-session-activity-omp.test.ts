@@ -12,6 +12,7 @@ import {
   type Cleanup,
   call,
   deliveryFor,
+  isSelfCheck,
   messageStream,
   ompNatsGuard,
   ompRoot,
@@ -20,6 +21,7 @@ import {
   spawnRpc,
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 
 // What the pinned Oh My Pi reports of a role session's own background work (INFRA-945), which is
 // the whole input to the daemon's idle rule: a claim that reports background work keeps its pod,
@@ -36,10 +38,11 @@ import {
 //     `subagent`;
 //   - a named `bash` service — it is *not* reported, and this case pins that it is not. A service
 //     runs outside the session's job manager, so `getAsyncJobSnapshot()` never names it and the
-//     daemon cannot know it is there. That is what skills/legion-worker/SKILL.md tells a worker
-//     ("A named Oh My Pi `bash` service goes with the pod too … your session reports nothing about
-//     it"), and the case fails if a pin starts reporting one, because the skill would then be
-//     telling a worker to throw away work the daemon could have kept.
+//     daemon cannot know it is there. That is what the worker prompt tells a worker
+//     (packages/daemon/internal/prompts/go/worker-common.md: "A named Oh My Pi `bash` service
+//     does not keep the pod: it runs outside your session's job manager, so your session reports
+//     nothing about it"), and the case fails if a pin starts reporting one, because the prompt
+//     would then be telling a worker to throw away work the daemon could have kept.
 //
 // The pane is a role session as a pod runs one: pi-envoy's extension and this package's root (the
 // root, not extensions/legion.ts, so Oh My Pi discovers the `agents/` beside it), the role's
@@ -57,6 +60,9 @@ const { skip, setup } = ompNatsGuard();
 const ROLE = "implementer";
 const TREE = "ACT-1";
 const ISSUE = "ACT-2";
+
+/** The registration secret the stand-in daemon answers. */
+const REGISTRATION_SECRET = fixtureSecret("reg");
 
 /**
  * The daemon's assignment, sent as the RPC prompt. Every turn of the role's own conversation
@@ -98,12 +104,6 @@ function conversation(request: Request): string {
   return JSON.stringify(request.body.messages ?? null);
 }
 
-/** A Messages request's last message, which is what started the turn it answers. */
-function lastMessage(request: Request): string {
-  const messages = Array.isArray(request.body.messages) ? request.body.messages : [];
-  return JSON.stringify(messages.at(-1) ?? null);
-}
-
 /** Whether a Messages request is the subagent's own: only its system prompt is deep-worker's. */
 function isSubagentRequest(request: Request): boolean {
   return JSON.stringify(request.body.system ?? null).includes(DEEP_WORKER_SYSTEM);
@@ -111,13 +111,12 @@ function isSubagentRequest(request: Request): boolean {
 
 /**
  * Whether a Messages request is a turn of the role's own conversation: it carries the daemon's
- * assignment and is not a side turn. A side turn (pi-envoy's run-end self-check) is an ordinary
- * Messages request over a snapshot of that same conversation whose last message is the `<btw>`
- * block, so the assignment alone would take it for a turn.
+ * assignment and is not a side turn. A side turn (pi-envoy's run-end self-check, `isSelfCheck`)
+ * is an ordinary Messages request over a snapshot of that same conversation, so the assignment
+ * alone would take it for a turn.
  */
 function isRoleTurn(request: Request): boolean {
-  if (isSubagentRequest(request)) return false;
-  if (lastMessage(request).includes("<btw>")) return false;
+  if (isSubagentRequest(request) || isSelfCheck(request)) return false;
   return conversation(request).includes("ACT-ROLE-ASSIGNMENT");
 }
 
@@ -215,7 +214,7 @@ async function startRolePane(): Promise<RolePane> {
         issue: ISSUE,
         role: ROLE,
         generation: 1,
-        secret: "act-secret",
+        secret: REGISTRATION_SECRET,
       });
     }
     if (url.pathname === "/legion/v1/claims/ready") return new Response(null, { status: 204 });
@@ -232,14 +231,21 @@ async function startRolePane(): Promise<RolePane> {
       grants += 1;
       return Response.json({ grantId: `act-grant-${grants}`, expiresAt: "2099-01-01T00:00:00Z" });
     }
-    if (url.pathname === "/legion/v1/state") return Response.json(MOVED_ON);
+    // The reminder's record check reads one issue's record (dispatch://INFRA-2694).
+    if (url.pathname === `/legion/v1/issues/${ISSUE}/record`) {
+      return Response.json(MOVED_ON.issues[ISSUE]);
+    }
     if (url.pathname.startsWith("/legion/")) {
       return Response.json({ error: `no stand-in route ${url.pathname}` }, { status: 404 });
     }
-    // The Envoy listener: registration, the role claim, and any read answer with an interest. A
-    // registration is answered a consumer on the session's own relay subject, the one path a
-    // message reaches a session by (dispatch://INFRA-771); an answer without one leaves the pane
-    // deaf and its claim boot fails.
+    // The Envoy listener, which serves `/v1/` and nothing else: registration, the role claim, and
+    // any other `/v1/` read answer with an interest. A path outside it is a route this stand-in
+    // does not serve, and it is refused. A registration is answered a consumer on the session's
+    // own relay subject, the one path a message reaches a session by (dispatch://INFRA-771); an
+    // answer without one leaves the pane deaf and its claim boot fails.
+    if (!url.pathname.startsWith("/v1/")) {
+      return Response.json({ error: `no stand-in route ${url.pathname}` }, { status: 404 });
+    }
     return Response.json({
       session_id: typeof body.session_id === "string" ? body.session_id : "",
       machine_id: "act-machine",
@@ -344,9 +350,7 @@ const MOVED_ON = {
   strandedClaims: [],
   capabilities: [],
   repositories: {
-    owners: ["acme"],
-    mapped: [{ repo: "acme/widgets", default: true }],
-    refused: [],
+    live: [{ repo: "acme/widgets", apps: { implement: true, review: true } }],
     withoutWebhookApp: [],
     caches: [],
   },

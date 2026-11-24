@@ -25,11 +25,12 @@ export interface AuthenticatedUser {
 
 /** GET /api/v1/whoami: a person by lowercase email (`login`), or an agent with its personal
  *  token's owner (a lowercase email) — null under the shared token or a verified service token —
- *  and that service token's subject, null unless one authenticated the request. `session` is the
- *  session the credential itself proved, which only an access token the secrets broker issued
- *  does, and `project` the one project key that credential lets the caller write, null where it
- *  names none. Both are absent from a Dispatch older than broker-issued tokens, which a client
- *  reads as an older build rather than as null.
+ *  and that service token's subject (`service`), null unless one authenticated the request.
+ *  `session` is the session the credential itself proved, which only an access token the secrets
+ *  broker issued does, and `project` the one project key that credential lets the caller write,
+ *  null where it names none. A client reads an absent `service`, `session` or `project` as a
+ *  Dispatch older than that field, not as null: `service` is absent from one older than verified
+ *  service tokens, and the other two from one older than broker-issued tokens.
  *
  *  `scopes` is the OAuth scopes the caller's own credential holds, which decide the routes it may
  *  call: both of them for a person at a browser, the set its row names for a personal token, and

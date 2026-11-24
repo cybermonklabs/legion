@@ -1,0 +1,42 @@
+List the artifacts on an issue, in number order. Every artifact is listed
+unless you set `--limit`.
+
+For more information about output formatting flags, see `gh help formatting`.
+
+USAGE
+  gh issue artifact list {<issue-number> | <issue-url>} [flags]
+
+ALIASES
+  gh issue artifact ls
+
+FLAGS
+  -q, --jq expression     Filter JSON output using a jq expression
+      --json fields       Output JSON with the specified fields
+  -L, --limit int         Maximum number of artifacts to fetch
+  -t, --template string   Format JSON output using a Go template; see "gh help formatting"
+      --type string       Filter by type: {generic|plan|link|embedded_html}
+
+INHERITED FLAGS
+      --help[=true|false]        Show help for command
+  -R, --repo [HOST/]OWNER/REPO   Select another repository using the [HOST/]OWNER/REPO format
+
+JSON FIELDS
+  body, bodyHtml, createdAt, creator, description, id, name, number, type,
+  updatedAt, updatedByActor, url
+
+EXAMPLES
+  # List the artifacts on issue 142
+  $ gh issue artifact list 142
+  
+  # List only links
+  $ gh issue artifact list 142 --type link
+  
+  # Print artifact numbers and names as JSON
+  $ gh issue artifact list 142 --json number,name
+
+LEARN MORE
+  Use `gh <command> <subcommand> --help` for more information about a command.
+  Read the manual at https://cli.github.com/manual
+  Learn about exit codes using `gh help exit-codes`
+  Learn about accessibility experiences using `gh help accessibility`
+

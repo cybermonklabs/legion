@@ -1,0 +1,22 @@
+kind: Added
+body: |-
+  A later review round's task names the commit that the newest of the reviewer's own deciding
+  reviews read, so the reviewer reads the difference from that commit to the head instead of the
+  whole change. The last two sentences of each task a reviewer is sent are always the daemon's,
+  in every phase and whatever queued the task: ` Last reviewed commit: <sha>.`, or
+  ` Last reviewed commit: none.` where the task names no commit, and
+  then ` Review entry: <n>.`, the round it is for, or ` Review entry: none.`. The reviewer writes
+  that number into its review's Legion footer (`"entry":"<n>"`), and only an approval or a request
+  for changes of the reviewer's own session whose footer names the entry that stands moves the
+  stored commit; any other review decides its round as before and leaves the commit, so the next
+  round reads more. A new generation of an issue clears the commit, and no entry into a phase does.
+  A compaction the daemon asks for keeps the entry's sentence word for word. The migration
+  `20261116234034_phase_reviewed_head` adds `phases.reviewed_head` with an empty default, so the
+  first round after the upgrade names the commit `none`; it appends
+  ` Last reviewed commit: none. Review entry: <n>.` to each task a reviewer's phases row stores;
+  and it adds `pending_task_deliveries.round_named`, the typed fact, with `roundNamed` on a
+  supervise start row, that a task already ends with the two sentences. A task the release
+  before queued or handed a claim before the upgrade, and an operator's own task, carry no such
+  fact, and are sent with ` Last reviewed commit: none. Review entry: none.` at their end, so the
+  reviewer reads the whole change. A rollback runs the way back in `docs/kubernetes.md`, "Rolling
+  back the release that keeps the commit a reviewer last read".

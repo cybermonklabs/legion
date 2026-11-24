@@ -1,7 +1,12 @@
 import { afterEach, beforeEach, expect, jest, test } from "bun:test";
 import { QueryClient, type QueryKey, QueryObserver } from "@tanstack/react-query";
 
-import { MIN_REFETCH_INTERVAL_MS, refreshQueries, trackQueryFetches } from "./query-refresh";
+import {
+  MIN_REFETCH_INTERVAL_MS,
+  ownQuery,
+  refreshQueries,
+  trackQueryFetches,
+} from "./query-refresh";
 
 // The scheduler runs on the clock: every test drives fake timers, and each answer from the server
 // is a timer too, so a fetch takes exactly as long as the test says.
@@ -305,4 +310,32 @@ test("a test of a read's data while a fetch is out runs on the response that lan
   } finally {
     inbox.stop();
   }
+});
+
+// An owner that reads on its own terms hears every refresh that reaches its query: one already
+// marked stale - a read that failed leaves it so - takes the mark again with no change of state
+// to see, and must still be heard, and so must a refresh of the whole cache (the feed's, after a
+// gap), which names no target. A refresh of another query, and one after the owner stops holding
+// it, is not heard.
+test("ownQuery hears each refresh of its query, one already stale included, and no other", () => {
+  const queryClient = new QueryClient();
+  queryClient.setQueryData(["issue", "CORE-1", "steps"], { tasks: [] });
+  queryClient.setQueryData(["issue", "CORE-9", "steps"], { tasks: [] });
+  let heard = 0;
+  const owner = ownQuery(queryClient, ["issue", "CORE-1", "steps"], () => {
+    heard += 1;
+  });
+
+  refreshQueries(queryClient, [{ exact: true, queryKey: ["issue", "CORE-1", "steps"] }]);
+  expect(queryClient.getQueryState(["issue", "CORE-1", "steps"])?.isInvalidated).toBe(true);
+  refreshQueries(queryClient, [{ exact: true, queryKey: ["issue", "CORE-1", "steps"] }]);
+  refreshQueries(queryClient, [{ exact: true, queryKey: ["issue", "CORE-9", "steps"] }]);
+  expect(heard).toBe(2);
+  refreshQueries(queryClient);
+  expect(heard).toBe(3);
+
+  owner.stop();
+  refreshQueries(queryClient, [{ exact: true, queryKey: ["issue", "CORE-1", "steps"] }]);
+  refreshQueries(queryClient);
+  expect(heard).toBe(3);
 });

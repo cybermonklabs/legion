@@ -24,8 +24,8 @@
 # /legion/v1/phase/backward from a reviewer whose session is registered and holds a grant, because
 # the engine takes a backward move from no role but the one running the issue's phase
 # (BACKWARD_REFUSED). The proof publishes no CI settlement, because the daemon judges no check and
-# moves no issue on a red, and no conflict, because the daemon reads a head's mergeability while the
-# tester tests only at its next handoff. The whole daemon is booted by the function `legion start`
+# moves no issue on a red, and no conflict, because the daemon makes no move at all for a head that
+# conflicts with its base. The whole daemon is booted by the function `legion start`
 # calls, over a real PostgreSQL and a real nats-server, and driven only through GitHub envelopes on
 # the ENVOY_NOTIFICATIONS stream, the daemon's own HTTP routes and its worker stream, which the
 # driver speaks as `legion worker-shim` does; every step is read back from GET /legion/v1/state and
@@ -37,7 +37,8 @@
 # `-tags e2e`). Each check prints `== <name>`, what it observed and `ok <name>`; the first that fails
 # ends the run non-zero, naming it.
 #
-# Run it from a checkout on a Linux host with go, awk and python3, as
+# Run it from a checkout on a Linux host with go, git, jj 0.38 or later (the daemon's boot refuses
+# to start without them), awk and python3, as
 #   LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
 #     bash scripts/e2e/behind-entry-fence.sh
 # LEGION_TEST_PG_DSN is required and names the PostgreSQL the daemon migrates and runs on — CI's

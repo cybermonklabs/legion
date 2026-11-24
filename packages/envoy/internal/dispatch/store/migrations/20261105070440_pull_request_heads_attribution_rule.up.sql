@@ -15,7 +15,7 @@
 -- merged before the attribution changed keeps for ever whatever the rule of its day concluded —
 -- for a title that named another repository's issue first, no issue at all, and every
 -- `before_merge` result at that merged head reads `older` for ever (INFRA-1240's own witness,
--- theorem-labs/agent-infra#2131 for INFRA-1219, merged at 2026-11-05T01:09:12Z, is such a row).
+-- example-org/deployment#2131 for INFRA-1219, merged at 2026-11-05T01:09:12Z, is such a row).
 --
 -- This column is what bounds the repair. The reconcile takes a merged row credited to nobody
 -- whose attribution_rule is below the rule the running build judges by, and the read stamps the

@@ -62,9 +62,12 @@
 #     `some` (the default) a file matches when any pattern does, and a `!` pattern, which
 #     there matches every file outside it, is refused; under `some-with-excludes` a file
 #     matches when a pattern without `!` does and no `!` pattern does, so a `!` pattern
-#     excludes. Any other quantifier (`every` among them), a pattern holding a brace, which
-#     picomatch expands, and a filter whose name two paths-filter steps of one job define,
-#     are refused. One more term is admitted beside the filters, in a job's `if:` only: a
+#     excludes. Any other quantifier (`every` among them), and a pattern holding a brace, which
+#     picomatch expands, are refused. The filters are read where the action reads them: from
+#     the file a step's `filters` input names, which is .github/ci-filters.yaml for ci.yaml's
+#     changes job, once however many gates it decides, and a file that is absent, refuses the
+#     open, is not valid YAML or holds no mapping is refused, naming the file. One more term is
+#     admitted beside the filters, in a job's `if:` only: a
 #     CALL MODE, `inputs.<name> == ''`, exactly the empty literal, on a <name> the workflow's
 #     own `on.workflow_call.inputs` declares `type: string` with no `default` or `default:
 #     ""`, and that its `on.workflow_dispatch.inputs` leaves out or declares the same way. A
@@ -157,15 +160,21 @@
 #   6. the other direction: a pull request trigger path that starts an image build and nothing
 #      else, yet matches a file no build it starts reads, since each push to a pull request
 #      touching only such files then builds an image for nothing. That is (a) a `pull_request`
-#      or `pull_request_target` trigger of a workflow whose every job builds, calls a workflow
-#      that only builds, or needs a job that does, with no paths-filter filter selecting the
+#      or `pull_request_target` trigger of a workflow whose every job only builds or needs a job
+#      that does, with no paths-filter filter selecting the
 #      build; and (b) a path that paths-filter filters select, where each of those filters
 #      decides only jobs that only build — a building job with nothing beside its build but
-#      checkout, buildx and registry steps, or a call of a workflow that only builds — and the
+#      checkout, buildx and registry steps, or a call of a workflow whose jobs pass that same
+#      test — and the
 #      job's gates admit a pull request event. There the event's paths AND the filters must
-#      match only files the builds read, or the workflows involved (the building one and the
-#      caller). A `push` or `merge_group` trigger, a filter that also decides a job doing more,
-#      and a workflow with other jobs are left alone: what they start reads more than an image.
+#      match only files the builds read, the workflows involved (the building one and the
+#      caller), or .github/ci-filters.yaml, the file a filter lives in, which decides whether
+#      the job runs and reaches no build input. A `push` or `merge_group` trigger, a filter
+#      that also decides a job doing more, and a workflow with other jobs are left alone: what
+#      they start reads more than an image.
+#      One test for a job wherever its steps are: ci.yaml's jobs each hold theirs in a called
+#      workflow of their own, so a job that builds an image and then runs a suite against it is
+#      a job doing more whether its steps are in ci.yaml or in the file ci.yaml calls.
 #
 # Files are discovered by walking the tree, not by asking git, so an unsnapshotted change cannot
 # read green locally.
@@ -188,9 +197,13 @@ import sys
 from pathlib import Path
 
 import yaml
-from workflow_paths import Filter, PathsFilter, events, glob_regex, unread_filter_patterns, unread_patterns, walk
+from workflow_paths import (Filter, PathsFilter, UniqueKeyLoader, events, glob_regex, unread_filter_patterns,
+                            unread_patterns, walk)
 
 WORKFLOWS = Path(".github/workflows")
+# Where ci.yaml's changes job keeps the filters it gates its jobs by: its one dorny/paths-filter
+# step hands the action this path rather than a filters string of its own.
+FILTERS_FILE = ".github/ci-filters.yaml"
 PATH_EVENTS = ("push", "pull_request", "pull_request_target", "merge_group")
 NEEDS_OUTPUT = re.compile(r"needs\.([\w-]+)\.outputs\.([\w-]+)")
 STEP_OUTPUT = re.compile(r"steps\.([\w-]+)\.outputs\.([\w-]+)")
@@ -219,7 +232,8 @@ EQUALS_TRUE = re.compile(r"needs\.([\w-]+)\.outputs\.([\w-]+)\s*==\s*'true'")
 # `github.run_attempt == '1'` is neutral in the same sense: a re-run attempt runs on the commit
 # attempt 1 ran on, so a term that admits attempt 1 alone narrows by attempt and never by path,
 # and every change still reaches the build on its first attempt. ci.yaml's merge-group runs carry
-# it (the comment above its `changes` job says why a re-run of a group must do nothing). Only
+# it (.github/ci-notes/ci.md#what-the-changes-job-selects-and-the-two-terms-every-job-carries says
+# why a re-run of a group must do nothing). Only
 # that one comparison is admitted: `github.run_attempt` against any other value, or against
 # nothing at all, can skip the first attempt of a change, so it stays refused.
 DRAFT = re.compile(r"!\s*github\.event\.pull_request\.draft", re.I)
@@ -546,10 +560,11 @@ PINNED_IMAGE_GATES: list[tuple[str, str, str, str]] = [
         "what the term reads: the filter names .github/docker/**, which is the context "
         "directory, and .github/workflows/browser-image.yaml, which holds the build step, its "
         "`labels:`, `outputs:`, `platforms:`, `provenance:` and build-args and the pins of the "
-        "action and of the BuildKit image it runs in. The filter's third path, "
-        ".github/workflows/ci.yaml, is the file the filter itself lives in: it decides whether "
-        "this job runs and hands it one input, ci-ok-changes, which reaches the ci-ok report "
-        "and nothing the build receives. What the trigger exists to guarantee, that a change "
+        "action and of the BuildKit image it runs in. Two more of its paths decide whether "
+        "this job runs and reach nothing the build receives: .github/workflows/ci.yaml, which "
+        "holds the job's `if:` and hands it one input, ci-ok-changes, which reaches the ci-ok "
+        "report, and .github/ci-filters.yaml, the file the filter itself lives in. What the "
+        "trigger exists to guarantee, that a change "
         "to a build input produces the image the row pins, is therefore already true wherever "
         "the build is skipped, and this gate cannot hide a changed input, because the hash of "
         "every input is the thing it reads. The other half of the argument is rule 10 of "
@@ -785,7 +800,9 @@ NON_BUILDING_ACTIONS = {
     "docker/setup-qemu-action",
     "dorny/paths-filter",
     "github/codeql-action/analyze",
+    "github/codeql-action/autobuild",
     "github/codeql-action/init",
+    "github/codeql-action/upload-sarif",
     "oven-sh/setup-bun",
 }
 # `docker/build-push-action` inputs this check has read and found to add no build input, so a
@@ -883,7 +900,7 @@ def parents(path: str) -> list[str]:
 
 def load(path: Path):
     try:
-        return yaml.safe_load(path.read_text())
+        return yaml.load(path.read_text(), Loader=UniqueKeyLoader)
     except yaml.YAMLError as error:
         problems.append(f"::error file={path}::{path} is not valid YAML: {' '.join(str(error).split())}; fix the "
         f"syntax so this check can read the workflow")
@@ -1145,15 +1162,6 @@ def gating_filters(
             f"nothing (no push:, and outputs: exporters that write no registry)"
         )
         name = reference[1]
-        # A filter of the same name in another paths-filter step of the job reads like the gate,
-        # while the output reads only one of them.
-        holders = [str(s.get("id", "")) for s in paths_filter_steps(upstream) if name in step_filters(s)]
-        if len(holders) > 1:
-            problems.append(
-                f"::error::jobs.{needed} defines filter {name} in two dorny/paths-filter steps "
-                f"({', '.join(holders)}); keep it in the one step its output reads"
-            )
-            continue
         options = step.get("with") or {}
         # dorny/paths-filter v4.0.3 (src/filter.ts:58-66,133-149): under the default, `some`, a
         # file matches a filter when any of its patterns matches it, and picomatch reads a `!`
@@ -1167,7 +1175,10 @@ def gating_filters(
                 f"some-with-excludes to exclude with `!` patterns"
             )
             continue
-        patterns = step_filters(step).get(name)
+        filters = step_filters(step)
+        if filters is None:
+            continue  # step_filters has refused the file the step names
+        patterns = filters.get(name)
         if not isinstance(patterns, list) or not all(isinstance(p, str) for p in patterns):
             problems.append(
                 f"::error::jobs.{needed} filter {name} is not a list of globs, which this "
@@ -1261,10 +1272,58 @@ def paths_filter_steps(job: dict) -> list[dict]:
     ]
 
 
-def step_filters(step: dict) -> dict:
-    """A paths-filter step's filters, by name; empty when they are not inline YAML."""
-    filters = yaml.safe_load(str((step.get("with") or {}).get("filters", ""))) or {}
-    return filters if isinstance(filters, dict) else {}
+# Each filters file a paths-filter step names, by that path: read once however many gates it
+# decides, as its filters by name, or as None once it could not be read, its refusal recorded.
+FILTER_FILES: dict[str, dict | None] = {}
+
+
+def step_filters(step: dict) -> dict | None:
+    """A paths-filter step's filters, by name, read as dorny/paths-filter v4.0.3 reads its
+    `filters` input (src/main.ts, isPathInput): the path of a file when the text holds no newline
+    and no colon, and inline YAML otherwise. ci.yaml's changes job hands it .github/ci-filters.yaml
+    that way. Empty when inline filters are not a mapping. None when inline filters are not valid
+    YAML, a repeated key included, or when the file a step names is absent, refuses the open, is
+    not valid YAML or holds no mapping, each refused here naming the file and which, so the gate it
+    decides is refused rather than read as one with no filter."""
+    given = str((step.get("with") or {}).get("filters", "")).strip()
+    if not given or "\n" in given or ":" in given:
+        try:
+            filters = yaml.load(given, Loader=UniqueKeyLoader) or {}
+        except yaml.YAMLError as error:
+            problems.append(f"::error::a dorny/paths-filter step's inline filters are not "
+                            f"valid YAML: {' '.join(str(error).split())}, so no gate that step decides can be read")
+            return None
+        return filters if isinstance(filters, dict) else {}
+    if given not in FILTER_FILES:
+        FILTER_FILES[given] = filters_file(given)
+    return FILTER_FILES[given]
+
+
+def filters_file(path: str) -> dict | None:
+    """The filters of the file a paths-filter step names, or None with the refusal recorded."""
+    reads = "a dorny/paths-filter step reads its filters from it"
+    try:
+        text = Path(path).read_text()
+    except FileNotFoundError:
+        problems.append(f"::error file={path}::{path} is absent, and {reads}, so no gate that step decides "
+                        f"can be read; restore the file or point the step's filters input at the one that holds them")
+        return None
+    except (OSError, UnicodeError) as error:
+        why = error.strerror if isinstance(error, OSError) and error.strerror else str(error)
+        problems.append(f"::error file={path}::{path} is there and refuses the open ({type(error).__name__}: "
+                        f"{why}), and {reads}, so no gate that step decides can be read")
+        return None
+    try:
+        filters = yaml.load(text, Loader=UniqueKeyLoader)
+    except yaml.YAMLError as error:
+        problems.append(f"::error file={path}::{path} is not valid YAML: {' '.join(str(error).split())}, and "
+                        f"{reads}, so no gate that step decides can be read")
+        return None
+    if not isinstance(filters, dict):
+        problems.append(f"::error file={path}::{path} holds no mapping of filter name to patterns, and {reads}, "
+                        f"so no gate that step decides can be read")
+        return None
+    return filters
 
 
 documents = {
@@ -1772,7 +1831,11 @@ for workflow, job_name, *_ in builds:
     building_jobs.setdefault(workflow, set()).add(job_name)
 
 # The steps a job may run and still have an image build as its only purpose: the build itself,
-# and steps that prepare or publish it and read no file of the tree.
+# and steps that prepare or publish it and read no file of the tree. The exception is the
+# router's own report step, which every job ci.yaml runs ends with
+# (.github/actions/ci-ok-report): it reports the job's result rather than doing work of the
+# job's, and the files it reads are its own action and ci.yaml, which is the origin of every
+# trigger that could owe a pattern for it.
 BUILD_PLUMBING = {
     "actions/checkout",
     "docker/build-push-action",
@@ -1780,7 +1843,110 @@ BUILD_PLUMBING = {
     "docker/metadata-action",
     "docker/setup-buildx-action",
     "docker/setup-qemu-action",
+    "./.github/actions/ci-ok-report",
 }
+
+# The `run:` steps such a job may hold too: plumbing of that same image build, which a step's
+# own text cannot say and this list does. Keyed like NOT_A_BUILD_STEPS, by (workflow, job,
+# step `id:`) — a step's name is neither required nor unique — and pinning the full text of
+# every command the step runs, line by line as the step writes it (run_lines). An entry
+# matching no step or more than one fails, and so does one whose step's commands are no
+# longer the pinned ones, so a
+# step that grows work of its own is refused here rather than riding its entry.
+#
+# What may be listed: a step that prepares or publishes the image and reads no file of the
+# tree, or none that the job's trigger would owe a pattern for. What may not: work of the
+# job's own, which is what makes the job do more than build — the filter gating it then owes
+# that work's files, and rule 6's other direction must leave that trigger alone.
+BUILD_PLUMBING_STEPS: list[tuple[str, str, str, tuple[str, ...], str]] = [
+    # (workflow file, job id, step id, the step's exact commands, why it is the build's plumbing)
+    (
+        ".github/workflows/worker-image.yaml", "build", "image",
+        (
+            'image=$(.github/scripts/repo-paths.sh worker_image)',
+            'echo "IMAGE=$image" >> "$GITHUB_ENV"',
+        ),
+        "derives the repository this build pushes to and hands it to the build and push steps "
+        "through $GITHUB_ENV; .github/scripts/repo-paths.sh is the one file of the tree it "
+        "reads, and no pattern of the worker_image filter matches that script, so the step "
+        "justifies no breadth of the trigger",
+    ),
+    (
+        ".github/workflows/worker-image.yaml", "build", "meta",
+        (
+            'short="${BUILT_SHA::12}"',
+            'version_label="sha-$short"',
+            'if [ "$GITHUB_REF" = "refs/heads/main" ] && [ -n "$LEGION_VERSION" ]; then',
+            'version_label="$LEGION_VERSION"',
+            'fi',
+            '{',
+            'echo "built_sha=$BUILT_SHA"',
+            'echo "version_label=$version_label"',
+            'echo "tags=${IMAGE}:sha-${short}"',
+            '} >> "$GITHUB_OUTPUT"',
+        ),
+        "computes the image's tags and labels from the built commit and the caller's "
+        "legion_version input, and writes them to $GITHUB_OUTPUT for the push: it reads the "
+        "event context and no file at all",
+    ),
+    (
+        ".github/workflows/worker-image.yaml", "build", "served-leaves",
+        (
+            'for chain in packages/daemon/cmd/legion/tls-fixtures/vendored-*-chain.pem; do',
+            'end=$(openssl x509 -in "$chain" -noout -enddate 2>&1) || { echo "::warning file=$chain::openssl could not read its leaf: $end"; continue; }',
+            'openssl x509 -in "$chain" -noout -checkend 2592000 >/dev/null || echo "::warning file=$chain::its leaf is valid until ${end#notAfter=}, within 30 days or past: vendor the chains again (cd packages/daemon/cmd/legion/tls-fixtures && go run vendor.go) and commit what it writes, or from then every client of the TLS probe is held to the public site in its place"',
+            'done',
+        ),
+        "warns, never fails, when a leaf of the two chains the image's TLS probe serves ends within "
+        "30 days: it reads packages/daemon/cmd/legion/tls-fixtures/vendored-*-chain.pem, which the "
+        "build embeds in the image's legion, so the worker_image filter matches them for the build "
+        "already and the step justifies no breadth of the trigger",
+    ),
+    (
+        ".github/workflows/worker-image.yaml", "build", "record",
+        (
+            'test -n "$DIGEST"',
+            'REF="${IMAGE}@${DIGEST}"',
+            '{',
+            'echo "image=$IMAGE"',
+            'echo "digest=$DIGEST"',
+            'echo "ref=$REF"',
+            '} >> "$GITHUB_OUTPUT"',
+            '{',
+            'echo "### Worker image"',
+            'echo',
+            'echo "\\`$REF\\`"',
+            'echo',
+            'echo "Tag: \\`$TAG\\`"',
+            'echo',
+            'echo "Pin \\`runtime.kubernetes.image\\` to the digest reference above; the daemon refuses a tag."',
+            '} >> "$GITHUB_STEP_SUMMARY"',
+        ),
+        "publishes what the push produced — the digest the build step output, as this job's "
+        "outputs and as the run's summary: it reads earlier steps' outputs and no file at all",
+    ),
+]
+
+PINNED_PLUMBING = {(w, j, i): texts for w, j, i, texts, _ in BUILD_PLUMBING_STEPS}
+
+
+def run_lines(script: str) -> tuple[str, ...]:
+    """A `run:` step's commands as the step writes them: its lines, comments and blank ones
+    aside, each stripped. The text a BUILD_PLUMBING_STEPS entry pins is this, not the
+    detector's reading of it, whose quoted strings and substitutions are blanked."""
+    return tuple(line.strip() for line in strip_comments(script).splitlines() if line.strip())
+
+
+def plumbing_step(workflow: Path, job_name: str, step) -> bool:
+    """True for a step of a building job that is the build's own plumbing: an action of
+    BUILD_PLUMBING, or a `run:` step BUILD_PLUMBING_STEPS pins, while it runs exactly the
+    commands the entry holds."""
+    if not isinstance(step, dict):
+        return False
+    if str(step.get("uses", "")).split("@", 1)[0] in BUILD_PLUMBING:
+        return True
+    pinned = PINNED_PLUMBING.get((str(workflow), job_name, str(step.get("id", "")))) if step.get("id") else None
+    return pinned is not None and "run" in step and run_lines(str(step["run"])) == tuple(pinned)
 
 
 def local_call(job: dict) -> Path | None:
@@ -1790,15 +1956,15 @@ def local_call(job: dict) -> Path | None:
 
 
 def only_builds(workflow: Path, seen: frozenset = frozenset()) -> bool:
-    """True when every job of the workflow builds an image, calls a workflow that only builds,
-    or transitively needs a job that does either, so whatever starts the workflow starts an
-    image build and nothing else."""
+    """True when every job of the workflow is a job whose only purpose is an image build
+    (builds_only), or transitively needs one, so whatever starts the workflow starts an image
+    build and nothing else. It is builds_only's test and not a looser one of its own, because a
+    job is the same job wherever its steps are written: ci.yaml's jobs hold their steps in a
+    called workflow each (.github/workflows/ci-job-<id>.yaml), so a workflow whose one job
+    builds an image and then runs a suite against it would read as building only, and its
+    caller's filter - which owes that suite's files - would be refused for matching them."""
     jobs = documents[workflow].get("jobs") or {}
-    building = set(building_jobs.get(workflow, set()))
-    for name, job in jobs.items():
-        target = local_call(job)
-        if target and target not in seen | {workflow} and only_builds(target, seen | {workflow}):
-            building.add(name)
+    building = {name for name in jobs if builds_only(workflow, name, seen | {workflow})}
 
     def reaches(name: str, path: frozenset) -> bool:
         if name in building:
@@ -1810,20 +1976,18 @@ def only_builds(workflow: Path, seen: frozenset = frozenset()) -> bool:
     return bool(jobs) and all(reaches(name, frozenset()) for name in jobs)
 
 
-def builds_only(workflow: Path, job_name: str) -> bool:
+def builds_only(workflow: Path, job_name: str, seen: frozenset = frozenset()) -> bool:
     """True for a job whose only purpose is an image build: a call of a workflow that only
-    builds, or a building job whose every step is in BUILD_PLUMBING. A run step or any other
-    action may read files no build reads, so a job with one does more."""
+    builds, or a building job whose every step is in BUILD_PLUMBING or pinned in
+    BUILD_PLUMBING_STEPS. Any other action, and any `run:` step that list does not hold, may
+    read files no build reads, so a job with one does more."""
     job = (documents[workflow].get("jobs") or {}).get(job_name) or {}
     target = local_call(job)
     if target:
-        return only_builds(target)
+        return target not in seen and only_builds(target, seen)
     if job_name not in building_jobs.get(workflow, set()):
         return False
-    return all(
-        isinstance(step, dict) and str(step.get("uses", "")).split("@", 1)[0] in BUILD_PLUMBING
-        for step in job.get("steps") or []
-    )
+    return all(plumbing_step(workflow, job_name, step) for step in job.get("steps") or [])
 
 
 def jobs_selected_by(workflow: Path, label: str) -> list[str]:
@@ -1879,10 +2043,17 @@ for label, (filters, origin, selectors, read) in started.items():
         continue
     if not selectors and not only_builds(origin):
         continue
+    # Two files a gating filter names that no build reads are passed over: the workflow whose
+    # trigger it is, and .github/ci-filters.yaml, the file the filter itself lives in now. That
+    # file decides whether the job runs, as a workflow's own `if:` does, and reaches no build
+    # input; any other file no build reads is still refused.
     extra = [
         path
         for path in FILES
-        if all(f.covers(path) for f in filters) and path not in read and path != str(origin)
+        if all(f.covers(path) for f in filters)
+        and path not in read
+        and path != str(origin)
+        and path != FILTERS_FILE
     ]
     if not extra:
         print(f"{label}: matches only files its image builds read")
@@ -1915,6 +2086,38 @@ for entry in NOT_A_BUILD_STEPS:
         f"{entry[2]!r}, which matches {len(found)} steps that build; an entry must name exactly "
         f"one, so remove it or correct the id"
     )
+
+# The same discipline for BUILD_PLUMBING_STEPS: an entry names exactly one step of that job,
+# and that step runs exactly the commands it pins. Zero means the step was deleted, renamed or
+# re-keyed; more than one means the key does not identify a step; different commands mean the
+# step does something the entry's reason was not written for, and that refusal prints the
+# reason, which is where a reader meets it. Each fails, so the list cannot go
+# on excusing a step that has moved on. An entry naming a workflow the tree has not got excuses
+# nothing there and is passed over, which is what lets this check run over a tree of its own.
+for workflow_path, job_name, step_id, pinned, reason in BUILD_PLUMBING_STEPS:
+    document = documents.get(Path(workflow_path))
+    if document is None:
+        continue
+    found = [
+        step
+        for step in ((document.get("jobs") or {}).get(job_name) or {}).get("steps") or []
+        if isinstance(step, dict) and str(step.get("id", "")) == step_id and "run" in step
+    ]
+    if len(found) != 1:
+        problems.append(
+            f"::error file={workflow_path}::BUILD_PLUMBING_STEPS names {workflow_path} job "
+            f"{job_name} step id {step_id!r}, which matches {len(found)} run steps; an entry "
+            f"must name exactly one, so remove it or correct the id"
+        )
+        continue
+    ran = run_lines(str(found[0]["run"]))
+    if ran != tuple(pinned):
+        problems.append(
+            f"::error file={workflow_path}::BUILD_PLUMBING_STEPS pins {workflow_path} job "
+            f"{job_name} step id {step_id!r} to {list(pinned)}, and it runs {list(ran)}: the "
+            f"entry says the step is the image build's own plumbing ({reason}), so update the "
+            f"entry's commands and its reason, or drop the entry and let the job read as doing more"
+        )
 
 # Every gate this run excused is printed with the `if:` it was read in, and an entry that
 # excused none fails: a gate that was reworded, moved to another job or taken out again leaves

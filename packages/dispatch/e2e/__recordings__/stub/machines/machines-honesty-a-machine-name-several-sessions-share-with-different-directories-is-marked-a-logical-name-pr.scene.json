@@ -8,7 +8,7 @@
     "editor": "019a1e11-0000-7000-8000-000000000002",
     "shell": "019a1e11-0000-7000-8000-000000000001"
   },
-  "repeatedHost": "sami-twoservers",
+  "repeatedHost": "sand-twoservers",
   "sharedNameHost": "legion-infra",
   "undrawn": {
     "builder": "019a1d11-0000-7000-8000-000000000002",
@@ -18,5 +18,5 @@
     "tester": "019a1d11-0000-7000-8000-000000000003"
   },
   "undrawnHost": "example-host-split",
-  "widthHost": "sami-laptop"
+  "widthHost": "sand-laptop"
 }

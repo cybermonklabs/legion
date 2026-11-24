@@ -2,6 +2,7 @@ package docs
 
 import (
 	"context"
+	"fmt"
 	"slices"
 	"strings"
 	"sync"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/reearth/ygo/persistence"
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -219,8 +221,8 @@ func (r *roundTripRecorder) labelsOn(conn *pgx.Conn) []string {
 	return roundTripLabels(trips)
 }
 
-// roundTripLabels names each trip for an assertion's message: the statements one store runs are
-// few and fixed, so each has a name of its own and anything else is reported as its own SQL.
+// roundTripLabels names each trip for an assertion's message, in order (roundTripLabel): the
+// statements one store runs are few and fixed, so each has a name of its own.
 func roundTripLabels(trips []roundTrip) []string {
 	labels := make([]string, 0, len(trips))
 	for _, trip := range trips {
@@ -229,14 +231,13 @@ func roundTripLabels(trips []roundTrip) []string {
 	return labels
 }
 
-// roundTripLabel names one trip: a pipeline by its first statement, since a room's append sends
-// the same statements in the same order in each of its pipelines (appendRoomTx), and a statement
-// run on its own by itself. A trip whose first statement the list does not know is reported as
-// that SQL, so a new one shows in an assertion's message rather than passing for a known one.
+// roundTripLabel names one trip: a pipeline by what it holds (pipelineLabel), and a statement run
+// on its own by itself. A trip whose statements the list does not know is reported as that SQL,
+// so a new one shows in an assertion's message rather than passing for a known one.
 func roundTripLabel(trip roundTrip) string {
 	label := statementLabel(oneLineSQL(trip.sql[0]))
 	if trip.batch {
-		label = pipelineLabel(label)
+		label = pipelineLabel(trip, label)
 	}
 	if trip.prepare {
 		return "a prepare of " + label
@@ -244,14 +245,20 @@ func roundTripLabel(trip roundTrip) string {
 	return label
 }
 
+// isAppendInsert reports whether sql is the statement an append writes its update rows with
+// (appendUpdatesStatement, appendUpdatesJoinedStatement): the batch holding it is the append's.
+func isAppendInsert(sql string) bool {
+	return strings.Contains(sql, "insert into doc_updates")
+}
+
 // statementLabel names one statement of a document's store by its SQL.
 func statementLabel(sql string) string {
 	switch {
 	case sql == oneLineSQL(appendGateStatement):
 		return "the append gate read"
-	case sql == oneLineSQL(appendUpdatesStatement), sql == oneLineSQL(appendUpdatesJoinedStatement):
+	case isAppendInsert(sql):
 		return "the append's insert"
-	case sql == oneLineSQL(takePruneCheckpointStatement):
+	case sql == oneLineSQL(takePruneCheckpointStatement), sql == oneLineSQL(readPruneCheckpointStatement):
 		return "the prune checkpoint read"
 	case strings.Contains(sql, "pg_advisory_lock(hashtext"):
 		return "pg_advisory_lock"
@@ -265,17 +272,24 @@ func statementLabel(sql string) string {
 	return sql
 }
 
-// pipelineLabel names a pipeline by the label of its first statement: the two a room's batch
-// sends under the document's lock, the one a standing prune checkpoint costs it and the rollback
-// a path that returns before its commit sends before its unlock (appendRoomTx). The unlock is no
-// pipeline of its own: it is one statement, sent through duty.FreeSessionLock, and statementLabel
-// names it.
-func pipelineLabel(first string) string {
+// pipelineLabel names a pipeline by what it holds, not by being one: a batch holding the
+// statement an append writes its update rows with is the append's writes wherever in the batch
+// it sits (isAppendInsert), since a transaction whose writes are queued puts the append's
+// statements among its own, in the order the transaction made them (appendWrites,
+// store.WriteBatch). Any other pipeline is named by the label of its first statement: the ones a
+// room's batch sends under the document's lock, the one a standing prune checkpoint costs it and
+// the rollback a path that returns before its commit sends before its unlock (appendRoomTx), and
+// the batches a transaction's read phase sends - the owner's lock and the read that lock guards,
+// sent as one (store.LockOwnerAndRead, lockArtifactOwner) - which are no trip of an append and
+// must not read as one. The unlock is no pipeline of its own: it is one statement, sent through
+// duty.FreeSessionLock, and statementLabel names it.
+func pipelineLabel(trip roundTrip, first string) string {
+	if slices.ContainsFunc(trip.sql, isAppendInsert) {
+		return "the append's writes (one batch)"
+	}
 	switch first {
 	case "pg_advisory_lock":
 		return "the append's opening (one batch)"
-	case "the append's insert":
-		return "the append's writes (one batch)"
 	case "rollback":
 		return "the append's rollback (one batch)"
 	case "the prune checkpoint read":
@@ -353,13 +367,13 @@ func TestAWarmBrowserKeystrokeFlushesInThreeRoundTrips(t *testing.T) {
 
 // What the saving above must not cost: the room's two durable writers of one document, a live
 // write and the room's own persistence worker, are serialised by the room's advisory lock. The
-// write takes it in its own transaction at its one read of the document (readFork, lockedHead)
-// and holds it until the transaction ends; the worker's batch holds the session-level form on
-// its own connection for the whole of its store (appendRoomTx). That lock is also what lets
-// every append of a flush skip a lock of its own (Service.flushThrough's rule): a flush runs
-// inside the transaction its caller already locked the room in. The write's own appends are
-// statements of that transaction, not a pipeline of its own (writeStatement.exec), so the trips
-// named below are statements.
+// write takes it in its own transaction at its one read of the document (readFork,
+// headUnderDocumentLock) and holds it until the transaction ends; the worker's batch holds the
+// session-level form on its own connection for the whole of its store (appendRoomTx). That lock
+// is also what lets every append of a flush skip a lock of its own (Service.flushThrough's
+// rule): a flush runs inside the transaction its caller already locked the room in. The write's
+// own appends are queued on its write phase and go out with the rest of that batch
+// (appendWrites, store.WriteBatch), which is the trip named below.
 //
 // Here a transaction of the test's own holds the room's lock, Bob's keystroke queues on it and
 // the live write queues behind the keystroke, watched on its own backend: the write's one read
@@ -413,7 +427,7 @@ func TestALiveWriteAndAKeystrokeQueueOnTheRoomsLockAndNeitherIsLost(t *testing.T
 	}
 	for _, appended := range []string{"the append gate read", "the append's insert"} {
 		if labels := recorder.labelsOn(writeConn); slices.Contains(labels, appended) {
-			t.Fatalf("the live write queued behind the room's lock only after %q, so it did not wait at its one read of the document (readFork, lockedHead); it ran:\n\t%s",
+			t.Fatalf("the live write queued behind the room's lock only after %q, so it did not wait at its one read of the document (readFork, headUnderDocumentLock); it ran:\n\t%s",
 				appended, strings.Join(labels, "\n\t"))
 		}
 	}
@@ -444,6 +458,190 @@ func TestALiveWriteAndAKeystrokeQueueOnTheRoomsLockAndNeitherIsLost(t *testing.T
 	for _, want := range []string{"First, written.", "Second, bob."} {
 		if !strings.Contains(stored, want) {
 			t.Fatalf("the stored document is %q, want %q in it: one of the two writers lost its edit", stored, want)
+		}
+	}
+}
+
+// The room batch's transaction-id window, declared as the per-route window tests declare a
+// route's (docs/xid_window_test.go) but measured here instead: the xid rig reads a transaction
+// from the BEGIN and COMMIT its backend sent as statements of their own, and this transaction
+// sends both inside pipelines (appendRoomTx), so the rig sees no transaction of it at all. What
+// the rig would assert of a route - the window holds the write phase's one batch and its COMMIT,
+// and nothing else - is asserted here over the trips the recorder saw: every statement that
+// writes is in the one pipeline that also commits, so the transaction holds an xid from that
+// pipeline's first statement to the commit that ends it, and nothing runs in between.
+//
+// It is measured over the one path that could hold an id longer, a document whose prune a crash
+// left half done: the rest of that prune - the checkpoint taken and the rows above its ceiling
+// deleted - is queued with the append's writes, and the extra round trip it costs is the gate
+// read again, bounded by the ceiling. Run between the two gate reads instead, those two deletes
+// would open the window before the gate's verdict and before the decode a replaced history costs
+// it (gateAppend, storedHistoryHolds), which is Go work this transaction must not hold an xid
+// across (INFRA-636).
+func TestARoomsAppendBatchHoldsItsXidForItsWritesPipelineAlone(t *testing.T) {
+	ctx := context.Background()
+	service, artifactID, recorder := tracedRoomService(t)
+	versioned := service.persistence.(*PgVersioned)
+	for range 2 {
+		if _, err := versioned.AppendUpdatesWithCredit(ctx, artifactID,
+			[]BrowserUpdate{{Update: paragraphUpdate(), ContentChanged: true}}); err != nil {
+			t.Fatalf("seed the document's history: %v", err)
+		}
+	}
+	head, err := versioned.head(ctx, service.store.Pool, artifactID)
+	if err != nil {
+		t.Fatalf("read the document's head: %v", err)
+	}
+	if head < 2 {
+		t.Fatalf("the document stands at version %d, want at least 2", head)
+	}
+	// The checkpoint a crashed prune left, with rows above its ceiling for the recovery queued
+	// with the append's writes to delete.
+	ceiling := int64(head) - 1
+	if _, err := service.store.Pool.Exec(ctx, `
+		insert into doc_checkpoints (artifact_id, ceiling) values ($1, $2)
+	`, artifactID, ceiling); err != nil {
+		t.Fatalf("leave a half-done prune's checkpoint: %v", err)
+	}
+
+	recorder.reset()
+	stored, err := versioned.AppendUpdatesWithCredit(ctx, artifactID,
+		[]BrowserUpdate{{Update: paragraphUpdate(), ContentChanged: true}})
+	if err != nil {
+		t.Fatalf("append the room's update: %v", err)
+	}
+	if stored != persistence.Version(ceiling+1) {
+		t.Fatalf("the append stored version %d, want %d: the prune's rest did not run with its writes",
+			stored, ceiling+1)
+	}
+	var checkpoints int
+	if err := service.store.Pool.QueryRow(ctx,
+		`select count(*) from doc_checkpoints where artifact_id = $1`, artifactID).Scan(&checkpoints); err != nil {
+		t.Fatalf("count the document's checkpoints: %v", err)
+	}
+	if checkpoints != 0 {
+		t.Fatalf("the append left the prune's checkpoint standing")
+	}
+
+	if failure := appendXidWindowFailure(recorder.recorded()); failure != "" {
+		t.Fatal(failure)
+	}
+}
+
+// appendXidWindowFailure judges, over the round trips one room append sent, what the xid rig
+// would assert of a route: the transaction's first writing statement and its commit are in the
+// same round trip, that trip is the writes pipeline, and nothing of the append's runs between
+// them. It answers the failure to report, or "" when the shape holds.
+//
+// It is a function rather than a run of assertions inside the test so a test can feed it a
+// sequence no appendRoomTx sends and watch it red (TestTheRoomAppendXidCheckRedsOnAFedSequence),
+// which the test above cannot show of itself: a guard whose rule is never seen to fail guards
+// nothing.
+func appendXidWindowFailure(trips []roundTrip) string {
+	labels := roundTripLabels(trips)
+	writing, committing := -1, -1
+	for index, trip := range trips {
+		if trip.prepare {
+			continue
+		}
+		for _, sql := range trip.sql {
+			if storetest.XidAssigningSQL(sql) && writing < 0 {
+				writing = index
+			}
+			if oneLineSQL(sql) == "commit" {
+				committing = index
+			}
+		}
+	}
+	if writing < 0 || committing < 0 {
+		return fmt.Sprintf("the append sent no write and no commit, so nothing here says where its xid window is:\n\t%s",
+			strings.Join(labels, "\n\t"))
+	}
+	if writing != committing {
+		return fmt.Sprintf("the append's first write is round trip %d (%s) and its commit round trip %d (%s), so it holds a transaction id across %d round trip(s) of its own:\n\t%s",
+			writing+1, labels[writing], committing+1, labels[committing], committing-writing, strings.Join(labels, "\n\t"))
+	}
+	if label := labels[writing]; label != "the append's writes (one batch)" {
+		return fmt.Sprintf("the append's window is round trip %d, %q, want the writes pipeline:\n\t%s",
+			writing+1, label, strings.Join(labels, "\n\t"))
+	}
+	return ""
+}
+
+// The guard's check fed round-trip sequences by hand, each a shape appendRoomTx does not send,
+// and the one it does. It needs no database: the check reads the SQL each trip carried and
+// nothing else. The gap INFRA-636 is about is among them - the commit sent a round trip after
+// the writes, which the append's own pipeline rules out - so the check is known to red on the
+// one fault this transaction's shape exists to keep out, and on what each red says.
+func TestTheRoomAppendXidCheckRedsOnAFedSequence(t *testing.T) {
+	lock := `select pg_advisory_lock(hashtext($1))`
+	unlock := roundTrip{sql: []string{`select pg_advisory_unlock(hashtext($1))`}}
+	insert := `insert into doc_updates (artifact_id, version, update) values ($1, $2, $3)`
+	prune := `delete from doc_updates where artifact_id = $1 and version <= $2`
+	opening := roundTrip{batch: true, sql: []string{lock, `begin`, appendGateStatement}}
+	writes := roundTrip{batch: true, sql: []string{insert}}
+	writesAndCommit := roundTrip{batch: true, sql: []string{insert, `commit`}}
+	read := roundTrip{sql: []string{appendGateStatement}}
+	commit := roundTrip{sql: []string{`commit`}}
+	for _, fed := range []struct {
+		what  string
+		trips []roundTrip
+		red   bool
+		// says is what the check must name when it reds on the sequence: a guard that reds
+		// without naming where the window ran says nothing the next reader can act on.
+		says string
+	}{
+		{"the shape the append sends", []roundTrip{opening, writesAndCommit, unlock}, false, ""},
+		{"a commit sent a round trip after the writes", []roundTrip{opening, writes, commit, unlock}, true, "holds a transaction id across"},
+		{"a read between the writes and the commit", []roundTrip{opening, writes, read, commit, unlock}, true, "holds a transaction id across"},
+		{"a prune's delete in the opening pipeline", []roundTrip{{batch: true, sql: []string{lock, `begin`, prune, appendGateStatement}}, writesAndCommit, unlock}, true, "holds a transaction id across"},
+		{"a window that is no pipeline of writes", []roundTrip{{batch: true, sql: []string{lock, `begin`, prune, `commit`}}, unlock}, true, "want the writes pipeline"},
+		{"an append that neither wrote nor committed", []roundTrip{opening, read, unlock}, true, "sent no write and no commit"},
+	} {
+		t.Run(fed.what, func(t *testing.T) {
+			failure := appendXidWindowFailure(fed.trips)
+			if fed.red && failure == "" {
+				t.Fatalf("the check passed %s, so it would pass that of the append itself", fed.what)
+			}
+			if !fed.red && failure != "" {
+				t.Fatalf("the check red on %s, the shape appendRoomTx sends: %s", fed.what, failure)
+			}
+			if fed.red {
+				if !strings.Contains(failure, fed.says) {
+					t.Fatalf("the check reds on %s with %q, want it to say %q", fed.what, failure, fed.says)
+				}
+				t.Logf("the check reds on %s: %s", fed.what, failure)
+			}
+		})
+	}
+}
+
+// What storetest.XidAssigningSQL takes for a statement that assigns a transaction id, and what
+// it does not: the rule appendXidWindowFailure judges an append's queued statements by, which
+// stands in for the xid rig over a transaction the rig sees nothing of (room_appends.go's
+// appendRoomTx). The two an append's own writes do not cover are the pg_current_xact_id() an
+// event's write phase takes its id with (events.lockEventOwner) and a trailing row lock: neither
+// writes a row, and each opens the window all the same, so a pipeline that queued one before the
+// commit would be a gap this guard must see. The call that asks whether an id was assigned
+// without assigning one is the near miss they must not drag in.
+func TestXidAssigningSQLKnowsWhatTakesATransactionId(t *testing.T) {
+	for sql, want := range map[string]bool{
+		`insert into doc_updates (artifact_id) values ($1)`:       true,
+		"update artifacts\n\t\tset title = $2\n\t\twhere id = $1": true,
+		`delete from doc_checkpoints where artifact_id = $1`:      true,
+		`select status from issues where key = $1 for update`:     true,
+		`select key from issues where key = $1
+		for no key update`: true,
+		`select 1 from issues where key = $1 for share`:               true,
+		`select pg_current_xact_id()`:                                 true,
+		`select pg_current_xact_id_if_assigned()`:                     false,
+		`select status, closed_at is null from issues where key = $1`: false,
+		`select pg_advisory_lock(hashtext($1))`:                       false,
+		`begin`:                                                       false,
+		`commit`:                                                      false,
+	} {
+		if got := storetest.XidAssigningSQL(sql); got != want {
+			t.Errorf("storetest.XidAssigningSQL(%q) = %v, want %v", sql, got, want)
 		}
 	}
 }

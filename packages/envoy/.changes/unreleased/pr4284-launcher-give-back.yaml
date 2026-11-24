@@ -1,0 +1,6 @@
+kind: Fixed
+body: |-
+  After a 5xx for a login whose token it verified, the broker's token login, `POST /v1/launcher-credentials/token`, gives the login's request back to the rate limits of its source address and its account.
+  It now gives the whole request back, also when another login from the same address or for the same account came one refill interval or more later.
+  A refill interval is the time a rate limit takes to gain back one request.
+  Before, such a login got nothing back, because `golang.org/x/time/rate`'s `Reservation.CancelAt` restores nothing once a later request came a whole interval after the request it cancels.

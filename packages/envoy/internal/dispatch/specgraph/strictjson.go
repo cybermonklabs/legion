@@ -1,0 +1,99 @@
+package specgraph
+
+import (
+	"bytes"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
+	"errors"
+	"fmt"
+	"io"
+	"strconv"
+	"unicode/utf8"
+)
+
+// decodeJSON decodes data, one JSON value, into v, and form is the format as a person reads it,
+// such as approvedForm, which it names for a value of another type. It is the one reader of each
+// JSON file of a format of this package, approved.json (ApprovedFile), and it refuses each text
+// that the format does not hold:
+//
+//   - a byte that is not UTF-8 (RFC 8259 §8.1: JSON text "MUST be encoded using UTF-8"): "it is not
+//     UTF-8";
+//   - a member that v's type does not name, also one whose name differs from the format's in the
+//     case of a letter, since encoding/json/v2 matches a name to a field with regard to case:
+//     "member "<JSON pointer>" is not in the format";
+//   - a member name that one object gives two times: "member "<JSON pointer>" is in one object two
+//     times";
+//   - no value, or text after the value: "it holds no JSON value", "text after the JSON value";
+//   - a value of another type than the form needs, such as a string in the place of a number or a
+//     time that time.Time does not read as RFC 3339: "it is not in the form <form>: the value at
+//     "<JSON pointer>" is of another type", and "it is not in the form <form>" for the whole text.
+//     The words are the package's, since encoding/json/v2 names a Go type, and picks its verb,
+//     "cannot" or "unable to", once in each process;
+//   - in each of those lines, "<JSON pointer>" is the place as quoted prints it: whole up to 100
+//     bytes, else its first and its last 50 bytes with … between them, since a map of a format
+//     takes the names that its writer picks, and a long name would make the line as long;
+//   - a text that is not JSON, in the words of encoding/json/jsontext, which name the place too.
+//
+// The report of go test -json is no format of this package: ReadGoTestJSON reads it as go test
+// writes it, and passes over the members that it does not name.
+func decodeJSON(data []byte, v any, form string) error {
+	if !utf8.Valid(data) {
+		return errors.New("it is not UTF-8")
+	}
+	dec := jsontext.NewDecoder(bytes.NewReader(data))
+	err := json.UnmarshalDecode(dec, v, json.RejectUnknownMembers(true))
+	var semantic *json.SemanticError
+	var syntactic *jsontext.SyntacticError
+	switch {
+	case errors.Is(err, io.EOF):
+		return errors.New("it holds no JSON value")
+	case errors.As(err, &semantic) && errors.Is(err, json.ErrUnknownName):
+		return fmt.Errorf("member %s is not in the format", quoted(string(semantic.JSONPointer)))
+	case errors.As(err, &semantic) && semantic.JSONPointer == "":
+		return fmt.Errorf("it is not in the form %s", form)
+	case errors.As(err, &semantic):
+		return fmt.Errorf("it is not in the form %s: the value at %s is of another type", form, quoted(string(semantic.JSONPointer)))
+	case errors.As(err, &syntactic) && errors.Is(err, jsontext.ErrDuplicateName):
+		return fmt.Errorf("member %s is in one object two times", quoted(string(syntactic.JSONPointer)))
+	case err != nil:
+		return err
+	}
+	if _, err := dec.ReadToken(); !errors.Is(err, io.EOF) {
+		return errors.New("text after the JSON value")
+	}
+	return nil
+}
+
+// decodeJSONFrom reads all of r and decodes it with decodeJSON.
+func decodeJSONFrom(r io.Reader, v any, form string) error {
+	data, err := io.ReadAll(r)
+	if err != nil {
+		return err
+	}
+	return decodeJSON(data, v, form)
+}
+
+// quotedBound is the most bytes of a value of the input that quoted prints whole. encoding/json/v2
+// and encoding/json/jsontext cut a JSON pointer to about 100 bytes in their own errors
+// (jsonwire.TruncatePointer(pointer, 100) in Go 1.27's src/encoding/json), so a refusal in the
+// package's words is no longer than the library's was, and still names the place.
+const quotedBound = 100
+
+// quoted is s, a value of the input that a refusal prints, such as a JSON pointer or a node id, as
+// a Go string literal: whole when it holds at most quotedBound bytes, else its first and its last
+// quotedBound/2 bytes, each cut at a whole UTF-8 character, with … in place of the rest. So the
+// start of the value and its last part stay, the line grows with no name of the input, and each
+// control character in it is an escape, as %q writes it.
+func quoted(s string) string {
+	if len(s) > quotedBound {
+		start, end := quotedBound/2, len(s)-quotedBound/2
+		for start > 0 && !utf8.RuneStart(s[start]) {
+			start--
+		}
+		for end < len(s) && !utf8.RuneStart(s[end]) {
+			end++
+		}
+		s = s[:start] + "…" + s[end:]
+	}
+	return strconv.Quote(s)
+}

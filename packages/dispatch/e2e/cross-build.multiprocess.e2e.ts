@@ -1,8 +1,9 @@
-import { readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import type { LiveClientFrame, LiveServerFrame } from "../web/src/api/types";
+import type { BlockSchema, LiveClientFrame, LiveServerFrame } from "../web/src/api/types";
+import { schemaCreatable } from "../web/src/features/doc/schema-creatable";
 import {
   baseUrl,
   createAsk,
@@ -15,6 +16,7 @@ import {
 } from "./api";
 import { seedDeliveryFixture } from "./delivery-seed";
 import { connectedDot, documentEditor, typeAtEnd } from "./editor";
+import { firstRolloutCommit, firstRolloutRefusal, type LiveFleet } from "./first-rollout";
 import {
   apiPinCookie,
   binaryB,
@@ -25,6 +27,7 @@ import {
   pinnedTo,
   webDistOf,
 } from "./harness-processes";
+import { sql } from "./psql";
 import type { ProxiedRequest, ProxiedSocket } from "./round-robin-proxy";
 import { type Browser, type BrowserContext, expect, type Page, test, type WebSocket } from "./test";
 import { signIn } from "./users";
@@ -47,6 +50,14 @@ import { signIn } from "./users";
  * `index.html` names (`entryChunkOf`), so a direction whose server is the previous release but
  * whose page this tree served is a failure here rather than a row that passes unnoticed.
  *
+ * With `DISPATCH_E2E_FIRST_ROLLOUT_COMMIT` set (CI's second run of this spec;
+ * e2e/first-rollout.ts), Dispatch B is the first-rollout build, the newest release before the
+ * first that registers its schema numbers, and the variable holds the run to that build: B's
+ * `COMMIT` file, beside `DISPATCH_E2E_BINARY_B`, must hold that commit, and the live registry must
+ * read a lowest schema version of 0 while B is live. Each direction checks both before it reads
+ * `pageWritable`, and fails with a sentence that names what it read. A run that sets the variable
+ * but not `DISPATCH_E2E_BINARY_B` fails before any row starts.
+ *
  * Each seed call names the process it runs on (`process` in e2e/api.ts, which pins its sign-in
  * there too), so the build that wrote a row and the build that reads it back are both known.
  */
@@ -54,7 +65,12 @@ import { signIn } from "./users";
 /** What a message calls each process's build. */
 const builds: Record<DispatchProcess, string> = {
   a: "this tree's build (Dispatch A)",
-  b: binaryB === undefined ? "this tree's build (Dispatch B)" : "the previous build (Dispatch B)",
+  b:
+    binaryB === undefined
+      ? "this tree's build (Dispatch B)"
+      : firstRolloutCommit === undefined
+        ? "the previous build (Dispatch B)"
+        : "the first-rollout build (Dispatch B)",
 };
 
 const seedAgent = { kind: "session", id: "e2e-cross-build" } as const;
@@ -65,8 +81,26 @@ const seedAgent = { kind: "session", id: "e2e-cross-build" } as const;
 const envoyDir = fileURLToPath(new URL("../../envoy", import.meta.url));
 const buildB = binaryB === undefined ? undefined : dirname(binaryB);
 
-/** The schema manifest version a build's server reads and admits a page by. */
-function manifestVersion(process: DispatchProcess): number {
+if (firstRolloutCommit !== undefined && buildB === undefined) {
+  throw new Error(
+    `DISPATCH_E2E_FIRST_ROLLOUT_COMMIT holds Dispatch B to the first-rollout build, commit ` +
+      `${firstRolloutCommit}. DISPATCH_E2E_BINARY_B is unset, so Dispatch B runs this tree. ` +
+      "Set DISPATCH_E2E_BINARY_B to that build's envoy-dispatch, or unset " +
+      "DISPATCH_E2E_FIRST_ROLLOUT_COMMIT."
+  );
+}
+
+/** The commit build-dispatch-build.sh wrote beside B's binary (`COMMIT`), read only in the
+ *  first-rollout run, which holds it to `firstRolloutCommit`. Undefined when B has no such file. */
+const commitFileB = buildB === undefined ? undefined : resolve(buildB, "COMMIT");
+const commitB =
+  firstRolloutCommit !== undefined && commitFileB !== undefined && existsSync(commitFileB)
+    ? readFileSync(commitFileB, "utf8").trim()
+    : undefined;
+
+/** The schema manifest a build's server reads and admits a page by, and its page carries. A
+ *  manifest before the typed blocks names no `types`, which reads here as none. */
+function manifestOf(process: DispatchProcess): BlockSchema {
   const path =
     process === "b" && buildB !== undefined
       ? resolve(buildB, "pmdoc", "schema", "blocks.json")
@@ -80,7 +114,8 @@ function manifestVersion(process: DispatchProcess): number {
   ) {
     throw new Error(`${path} declares no schema version`);
   }
-  return manifest.version;
+  const schema = manifest as BlockSchema;
+  return { ...schema, types: schema.types ?? [] };
 }
 
 /** Whether a build's page carries the manifest it was built with, which it presents as
@@ -98,34 +133,75 @@ function pageCarriesManifest(process: DispatchProcess): boolean {
   );
 }
 
+/** The two numbers a page presents on its document socket: V, the schema version it reads, and
+ *  R, the highest `since` among what it may create (`schemaCreatable`). A page that carries no
+ *  manifest of its own takes V from the schema route of the server it talks to and presents an R
+ *  of 1, since every element before the manifest has `since` 1. */
+function pageNumbers(
+  pageProcess: DispatchProcess,
+  server: DispatchProcess
+): { version: number; creatable: number } {
+  if (!pageCarriesManifest(pageProcess)) {
+    return { creatable: 1, version: manifestOf(server).version };
+  }
+  const manifest = manifestOf(pageProcess);
+  return { creatable: schemaCreatable(manifest), version: manifest.version };
+}
+
+/** The numbers the live server processes register (`docs.readSchemaFleet`): the lowest V and the
+ *  highest R among the rows whose heartbeat is inside the registry's 15 s live window, a copy of
+ *  `processes.LiveWindow` (`packages/envoy/internal/dispatch/processes/processes.go`), which the
+ *  servers read. A row of a build before the fleet columns holds no numbers, and its zeros are
+ *  what it counts as. */
+async function liveFleet(): Promise<LiveFleet> {
+  const read = await sql(
+    `select count(*), coalesce(min(schema_version), 0), coalesce(max(schema_creatable), 0)
+     from server_processes where heartbeat_at > now() - make_interval(secs => 15)`
+  );
+  const [live, minVersion, maxCreatable] = read.split("|").map(Number);
+  if (!(live > 0) || Number.isNaN(minVersion) || Number.isNaN(maxCreatable)) {
+    throw new Error(`the registry's live rows read ${JSON.stringify(read)}, which names no fleet`);
+  }
+  return { maxCreatable, minVersion };
+}
+
 /**
- * Whether a page of `pageProcess` may write a document on the server of `server`.
+ * Whether a page of `pageProcess` may write a document on the server of `server`, read from the
+ * registry the two servers write, so the row holds for any previous build CI picks.
  *
- * Dispatch B is the previous build when `DISPATCH_E2E_BINARY_B` names one. That build writes no
- * schema numbers into its `server_processes` row, so this tree's admission counts it as a
- * process that reads version 0, which no page's `schema_creatable` is at or under: while it is
- * live, a server of this tree admits every page read-only, its own and B's alike
- * (`docs.readSchemaFleet`, and `packages/envoy/cmd/dispatch/README.md`, "Two builds at once").
+ * A server of a build with the fleet columns admits a page by the whole fleet's numbers
+ * (`packages/envoy/cmd/dispatch/README.md`, "Two builds at once"; `schemaFleet.admits`): the
+ * page's R is at most every live process's V and at most the highest live R, and its V is at
+ * least the highest live R (the document holds a heading and a paragraph, whose `since` is 1).
+ * This tree's server is one, and it registers its own numbers, so a live row of V 0 is the
+ * previous build's: a build before the fleet columns, which registers none. That V of 0 is under
+ * every page's R, so every page of either build is read-only on this tree's server while that
+ * build is live. A previous build that registers numbers equal to this tree's leaves every page of
+ * either build writable on either server.
  *
- * B's own server knows no fleet: it compares the page's `schema_version` with its own manifest
- * version exactly (`schemaReadOnly` in that build), so it admits a page of its own version, and
- * holds a page of any other version read-only. A page that carries no manifest of its own takes
- * its `schema_version` from the schema route of the server it talks to, so against B's server it
- * presents B's own version.
+ * A server of a build before the fleet columns knows no fleet: it compares the page's V with its
+ * own manifest version exactly (`schemaReadOnly` in that build), so it admits a page of its own
+ * version and holds a page of any other version read-only.
  *
  * With no previous build - both processes run this tree - the fleet is two processes of one
  * build, and a page of that build is writable on either.
  */
-function pageWritable(pageProcess: DispatchProcess, server: DispatchProcess): boolean {
+async function pageWritable(
+  pageProcess: DispatchProcess,
+  server: DispatchProcess
+): Promise<boolean> {
   if (binaryB === undefined) {
     return true;
   }
-  if (server === "b") {
-    return (
-      !pageCarriesManifest(pageProcess) || manifestVersion(pageProcess) === manifestVersion("b")
-    );
+  const page = pageNumbers(pageProcess, server);
+  const fleet = await liveFleet();
+  if (server === "b" && fleet.minVersion === 0) {
+    return page.version === manifestOf("b").version;
   }
-  return false;
+  return (
+    page.creatable <= Math.min(fleet.minVersion, fleet.maxCreatable) &&
+    page.version >= fleet.maxCreatable
+  );
 }
 
 /** The day `seedDeliveryFixture` writes its timeline on. */
@@ -175,6 +251,15 @@ for (const pageProcess of dispatchProcesses) {
     browser,
   }) => {
     test.setTimeout(120_000);
+    // The first-rollout run holds B to its commit and to a registry that reads version 0 while B
+    // is live. The harness starts both servers before any row, so both serve and both register
+    // here, and pageWritable below reads the same registry.
+    if (firstRolloutCommit !== undefined) {
+      const refusal = firstRolloutRefusal(firstRolloutCommit, commitB, await liveFleet());
+      if (refusal !== undefined) {
+        throw new Error(refusal);
+      }
+    }
     const on = { process: server };
     await createProject({ key: "XB", name: "Cross build" }, on);
     const issue = await createIssue(
@@ -237,14 +322,15 @@ for (const pageProcess of dispatchProcesses) {
       // The issue's document. Where the other build's server admits this page writable
       // (pageWritable), an edit typed here is saved by that server, then read from the store by
       // this page's own server, and shown below in a context of the other build's page. Where it
-      // admits the page read-only - a page whose version its own rule does not match, or any
-      // page at all on a server of this tree while a process of the previous build is live -
-      // the page says so, takes no edit, and the stored document is untouched.
+      // admits the page read-only - a page whose version a server before the fleet admission does
+      // not match, or any page at all on a server of this tree while a process of a build before
+      // the fleet columns is live - the page says so, takes no edit, and the stored document is
+      // untouched.
       await page.goto(`/issues/${issue.key}/spec`);
       await expect(documentEditor(page)).toContainText("Written before the edit.");
       await expect(connectedDot(page)).toHaveText("connected");
       const edit = `Typed on ${builds[pageProcess]}'s page.`;
-      const writable = pageWritable(pageProcess, server);
+      const writable = await pageWritable(pageProcess, server);
       if (writable) {
         await typeAtEnd(page, edit);
       } else {

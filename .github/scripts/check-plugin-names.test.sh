@@ -3,11 +3,14 @@
 # plugin @sjawhar/pi-legion-envoy fails, naming the file and line; a file git has not been told
 # about counts; each class of the allowlist passes through one representative, and a path that
 # merely begins like an allowlisted directory, or a changelog fragment of a package whose
-# changelog is not allowlisted, does not; and the real repository passes.
+# changelog is not allowlisted, does not.
 #
 # Each case builds a miniature git repository under a temporary directory and symlinks the real
 # script into it, so the script under test is the file CI runs: it resolves its root from its own
-# path, which the symlink puts at the fixture root.
+# path, which the symlink puts at the fixture root. No case runs the checker over this
+# repository's own tree: ci.yaml's lint job does (.github/workflows/ci-job-lint.yaml, "Check no
+# current file names the pre-split Oh My Pi plugin"), on every change, so a case here would only
+# run that same check a second time in the same CI run.
 #
 # Run from anywhere: .github/scripts/check-plugin-names.test.sh
 # CI runs it in ci.yaml's test job.
@@ -138,13 +141,11 @@ representatives=(
   packages/envoy/CHANGELOG.md
   packages/envoy/.changes/unreleased/INFRA-1-note.yaml
   packages/contracts/src/dispatch-api-search.ts
-  packages/contracts/AGENTS.md
   packages/envoy/internal/dispatch/model/model.go
   packages/dispatch/web/src/features/agent-view/AgentConversationPage.tsx
   packages/daemon/internal/daemon/bootgate.go
   packages/daemon/internal/daemon/probe.mjs
   packages/pi-shared/src/interface.ts
-  packages/pi-shared/AGENTS.md
   packages/pi-legion/extensions/legion.ts
   packages/pi-legion/extensions/legion.test.ts
   packages/daemon/internal/daemon/bootgate_test.go
@@ -190,13 +191,5 @@ run_check "$root"
 check "fails" "$(is "$status" 1)"
 check "one finding counted" "$(contains "$out" '^check-plugin-names: 1 finding(s)')"
 check "names the file outside the allowlist" "$(contains "$out" 'docs/plans-note.md:1:')"
-
-echo "case: the real repository passes"
-set +e
-out=$("$check_script" 2>&1)
-status=$?
-set -e
-check "exits 0" "$(is "$status" 0)"
-check "reports the clean scan" "$(contains "$out" '^check-plugin-names: no text file or path names the pre-split plugin')"
 
 summary "check-plugin-names.sh"

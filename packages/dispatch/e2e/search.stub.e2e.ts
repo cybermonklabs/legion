@@ -3,7 +3,7 @@
  *  writes when it has nothing to list, and the group each owner row names.
  *
  *  Each reads what the browser does, so each runs against a recording rather than against a
- *  harness (packages/dispatch/AGENTS.md, "The stubbed layer"). The rows whose claim is what the
+ *  harness (packages/dispatch/README.md, "The stubbed layer"). The rows whose claim is what the
  *  index found - the grouped hits, their marks, an ask hit's answer, and the two routes a hit
  *  opens - stayed in `search.e2e.ts`, with the keyboard-hints row, which is read in the desktop
  *  and the phone configurations at once.
@@ -84,12 +84,13 @@ phoneTest(
     // Four rows, not the three this corpus answered before an issue's keyword vector carried
     // its primary document's text: the document, the comment, the ask, and the issue the
     // document belongs to, which that change makes a hit for its own spec's words.
-    await expect(options).toHaveCount(4);
+    const hits = 4;
+    await expect(options).toHaveCount(hits);
     await expect(dialog.getByRole("option", { name: /^issue / })).toHaveCount(1);
     await expect(dialog.getByRole("option", { name: /^ask / })).toContainText(
       "Chose On the chart table"
     );
-    for (let index = 0; index < (await options.count()); index += 1) {
+    for (let index = 0; index < hits; index += 1) {
       const box = await options.nth(index).boundingBox();
       expect(box, `result option ${index} has a layout box`).not.toBeNull();
       expect(box?.height ?? 0, `result option ${index} is a touch target`).toBeGreaterThanOrEqual(

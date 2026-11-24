@@ -6,6 +6,16 @@
       "names": true
     },
     {
+      "name": "the key Dispatch's outbox gives every copy of one event",
+      "envelope": { "source": "dispatch", "dedupe_key": "dispatch-42" },
+      "names": true
+    },
+    {
+      "name": "the key of the outbox's role forward of that event",
+      "envelope": { "source": "dispatch", "dedupe_key": "envoy.role.forward.dispatch-42" },
+      "names": true
+    },
+    {
       "name": "a webhook key of its delivery id",
       "envelope": {
         "source": "github",

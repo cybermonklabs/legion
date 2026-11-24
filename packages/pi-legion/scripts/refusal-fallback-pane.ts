@@ -45,10 +45,12 @@ import {
 import {
   type Cleanup,
   deliveryFor,
+  isSelfCheck,
   ompRoot,
   serveStandin,
   spawnRpc,
 } from "@legion/pi-shared/test/omp-harness";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 
 const [cooldownArg, driveArg, evidence] = process.argv.slice(2);
 const binary = process.env.LEGION_OMP_PATH ?? "";
@@ -86,7 +88,7 @@ const WEAK = `${PROVIDER}/${WEAK_ID}`;
 
 /**
  * Oh My Pi's own floor for how long it suppresses a model it could not classify
- * (`packages/coding-agent/src/session/turn-recovery.ts:2029-2037` at the pinned tag): five
+ * (`packages/coding-agent/src/session/turn-recovery.ts:2202-2209` at the pinned tag): five
  * minutes. Without `retry.fallbackRevertPolicy: never` the host's own restore would come at about
  * this mark, so a pane with no request to the refused model between it and the cooldown's end
  * is the proof that the overlay's `never` and the plugin's ten minutes are both in force.
@@ -99,8 +101,15 @@ const HOST_RESTORE_FLOOR_MS = 300_000;
 const sleepSeconds = Math.max(1, Math.round(driveMs / 13_000));
 
 /** How late after the cooldown's end the session may come back and still be its return: one
- * request's worth of cadence, twice over. The host picks a request's model before it runs the
- * `context` hook, so the hook's switch is the model of the request after the one it ran under. */
+ * request's worth of cadence, twice over. The pane is in its long turn when the wait ends, and the
+ * plugin's timer switches no model while a turn runs (`ModelFallback.maybeRestore`), so the return
+ * is the `context` hook's. The host picks a request's model before it runs that hook, so the hook's
+ * switch is the model of the request after the one it ran under: the return comes one to two
+ * cadences after the due time. The bound tells no timer from a hook, and is not meant to: their
+ * returns would sit one cadence apart, and a request's arrival moves with the box's load (the sleep,
+ * the stand-in's round trip, the host's own work), so a bound in time at that cadence would misjudge
+ * a slow run. `extensions/legion-model-fallback-omp.test.ts` tells them apart by the order of one
+ * turn's requests instead. */
 const RETURN_SLACK_MS = 150_000;
 
 /** How far the recorded arming's own numbers may sit from what the stand-in measured: a request
@@ -314,13 +323,6 @@ const runs: readonly Run[] = [
   },
 ];
 
-/** Whether a request is the run-end self-check rather than a turn: pi-envoy asks it over a snapshot
- * of the conversation whose last message is the `<btw>` block around the question. */
-function isSelfCheck(body: Record<string, unknown>): boolean {
-  const messages = Array.isArray(body.messages) ? body.messages : [];
-  return JSON.stringify(messages.at(-1) ?? null).includes("<btw>");
-}
-
 /** The profile the pane runs on: one OpenAI-shaped provider at `base`, its two models, and the
  * operator overlay's own chain settings. The provider is keyed by a literal API key, as a plain
  * key caller is, and every provider a pod could otherwise answer from is disabled, so no turn
@@ -362,8 +364,8 @@ async function writeProfile(home: string, base: string): Promise<void> {
       "  modelFallback: true",
       "  fallbackRevertPolicy: never",
       // On, a rate limit is admitted to the chain consult rather than deferred to another attempt
-      // on the same model (`sourceRateLimited`, `session/turn-recovery.ts:2913-2920` and
-      // `:3238-3246` at the pinned tag); Oh My Pi has it off. The host spends its same-model
+      // on the same model (`sourceRateLimited`, `session/turn-recovery.ts:3395-3397` and
+      // `:3747-3765` at the pinned tag); Oh My Pi has it off. The host spends its same-model
       // retries either way — `retry.maxRetries` is 10 and each one waits out the 60 s the
       // stand-in's 429 asks for — so the walk this pane measures comes about ten minutes in.
       "  rateLimitWalksChain: true",
@@ -457,6 +459,10 @@ async function runPane(run: Run, pane: Pane, cleanup: Cleanup): Promise<void> {
   // stand-in's `claims/register` too.
   const registered: Record<string, unknown> = JSON.parse(await readFile(registerFixture, "utf8"));
   let grants = 0;
+  // The pane's registration secret and boot token: random, as the daemon's are, since the pane
+  // holds each and scrubs it from every line it prints (`@legion/contracts/held-secrets`).
+  const registrationSecret = fixtureSecret("reg");
+  const bootToken = fixtureSecret("boot");
 
   const record = (at: number, model: string, what: string): void => {
     pane.served.push({ at, model, answer: what });
@@ -470,7 +476,7 @@ async function runPane(run: Run, pane: Pane, cleanup: Cleanup): Promise<void> {
       const model = typeof body.model === "string" ? body.model : "";
       if (pane.startedAt === 0) pane.startedAt = at;
       if (model === WEAK_ID && pane.fellBackAt === undefined) pane.fellBackAt = at;
-      if (isSelfCheck(body)) {
+      if (isSelfCheck({ path: url.pathname, body })) {
         const answer = says(model, pane.served.length, "PROCEEDING");
         record(at, model, "the run-end self-check");
         return answer.response;
@@ -492,7 +498,7 @@ async function runPane(run: Run, pane: Pane, cleanup: Cleanup): Promise<void> {
         issue: run.key,
         role: "architect",
         generation: 1,
-        secret: `${run.label}-secret`,
+        secret: registrationSecret,
       });
     }
     if (url.pathname === "/legion/v1/claims/ready") return new Response(null, { status: 204 });
@@ -506,10 +512,14 @@ async function runPane(run: Run, pane: Pane, cleanup: Cleanup): Promise<void> {
     if (url.pathname.startsWith("/legion/")) {
       return Response.json({ error: `no stand-in route ${url.pathname}` }, { status: 404 });
     }
-    // The Envoy listener: registration, the role claim, and any read answer with an interest.
-    // A registration is answered the session's own consumer (deliveryFor): a session given none
-    // receives nothing and its claim boot ends it, so a pane with no consumer would never reach
-    // the turns this proof measures.
+    // The Envoy listener, which serves `/v1/` and nothing else: registration, the role claim, and
+    // any other `/v1/` read answer with an interest. A path outside it is a route this stand-in
+    // does not serve, and it is refused. A registration is answered the session's own consumer
+    // (deliveryFor): a session given none receives nothing and its claim boot ends it, so a pane
+    // with no consumer would never reach the turns this proof measures.
+    if (!url.pathname.startsWith("/v1/")) {
+      return Response.json({ error: `no stand-in route ${url.pathname}` }, { status: 404 });
+    }
     return Response.json({
       session_id: typeof body.session_id === "string" ? body.session_id : "",
       machine_id: `${run.label}-machine`,
@@ -537,7 +547,7 @@ async function runPane(run: Run, pane: Pane, cleanup: Cleanup): Promise<void> {
         LEGION_TREE: run.key,
         LEGION_ISSUE: run.key,
         LEGION_GENERATION: "1",
-        LEGION_BOOT_TOKEN: `${run.label}-boot`,
+        LEGION_BOOT_TOKEN: bootToken,
         LEGION_STATE_DIR: state,
         LEGION_WORKSPACE: workspace,
         LEGION_REFUSAL_COOLDOWN_MS: String(cooldownMs),

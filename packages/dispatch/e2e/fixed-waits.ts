@@ -60,10 +60,11 @@
  * checker is needed for that, so the scan parses files and builds no program; which files it
  * parses, and why a file it skips can hold no wait, is in `waitsOfFiles`.
  *
- * What it does NOT read: `Bun.sleep`, which `e2e/fake-envoy.ts` and `e2e/local-instance.ts` use
- * for a fixture's configured delay and a dev server's shutdown, neither of them a row's wait;
- * and a page clock jumped forward, which spends no time at all. A pass here is a claim about the
- * two spellings above and about nothing else.
+ * What it does NOT read: `Bun.sleep`, which `e2e/fake-envoy.ts` and `e2e/fake-github.ts` use
+ * for a fixture's configured delay, neither of them a row's wait; and a page clock jumped
+ * forward, which spends no time at all. The PostgreSQL wait of `e2e/local-instance.ts` is
+ * `awaitPostgres` of `e2e/local-instance-support.ts`, whose pause between reads is a `sleep` this
+ * rule reads. A pass here is a claim about the two spellings above and about nothing else.
  *
  * `suiteFiles` and `waitsOfFiles` read the file system and everything else here is pure over its
  * arguments: no environment, no network, no database and no server, so any process may call it.
@@ -183,7 +184,7 @@ function isFixedWait(call: ts.CallExpression, names: WaitNames): boolean {
 
 /** The statement a call stands in: the ancestor whose own parent holds a list of statements. A
  *  reason is written above that statement's first line, which is the call's own line whenever the
- *  wait is a statement of its own and some earlier line otherwise. */
+ *  call is a statement of its own and some earlier line otherwise. */
 function statementOf(call: ts.CallExpression): ts.Node {
   let node: ts.Node = call;
   while (
@@ -220,17 +221,36 @@ export function reasonWords(reason: string): string[] {
   return reason.split(/\s+/).filter((word) => /[A-Za-z]/.test(word));
 }
 
-/** The reason standing above a call: every comment of an unbroken run that ends on the line
- *  directly above `callLine`, read as one sentence. A run is unbroken when each comment ends on
- *  the line before the next one begins, so `//` lines written together are one reason and a blank
- *  line between them ends it. */
-function reasonAbove(sourceFile: ts.SourceFile, statement: ts.Node, callLine: number): string {
+/** The half of a refusal that says a reason is too short, where it is: what the reason says, how
+ *  many words it runs to against `minimumReasonWords`, and that a line that short names `subject`
+ *  rather than saying why it is `purpose`. Nothing where the reason runs long enough. It is
+ *  exported because `e2e/row-limits.ts` refuses a short reason in this module's words. */
+export function shortReason(reason: string, subject: string, purpose: string): string | undefined {
+  const words = reasonWords(reason);
+  if (words.length >= minimumReasonWords) return undefined;
+  return (
+    `under "${reason}", which is ${words.length} ` +
+    `${words.length === 1 ? "word" : "words"} where the rule asks for ` +
+    `${minimumReasonWords}: a line that short names ${subject} rather than saying why it is ` +
+    purpose
+  );
+}
+
+/** The reason the comments of `ranges` state above `line`: every comment of the unbroken run that
+ *  ends on the line directly above it, read as one sentence. A run is unbroken when each comment
+ *  ends on the line before the next one begins, so `//` lines written together are one reason and
+ *  a blank line between them ends it. `ranges` are in the order they stand in the file. It is
+ *  exported because `e2e/row-limits.ts` reads a reason by this module's measure. */
+export function reasonEndingAbove(
+  sourceFile: ts.SourceFile,
+  ranges: readonly ts.CommentRange[],
+  line: number
+): string {
   const text = sourceFile.getFullText();
-  const ranges = ts.getLeadingCommentRanges(text, statement.getFullStart()) ?? [];
   const lineOf = (position: number): number =>
     sourceFile.getLineAndCharacterOfPosition(position).line;
   const reason: string[] = [];
-  let endsOn = callLine - 1;
+  let endsOn = line - 1;
   for (let index = ranges.length - 1; index >= 0; index -= 1) {
     const range = ranges[index];
     if (lineOf(range.end - 1) !== endsOn) break;
@@ -238,6 +258,17 @@ function reasonAbove(sourceFile: ts.SourceFile, statement: ts.Node, callLine: nu
     endsOn = lineOf(range.pos) - 1;
   }
   return reason.join(" ").trim();
+}
+
+/** The reason that stands above `call`: the comments before its statement, read by
+ *  `reasonEndingAbove` against the line the call's first token stands on. It is exported because
+ *  `e2e/zero-wait-probes.ts` reads a probe's reason by this measure. */
+export function reasonAboveCall(call: ts.CallExpression): string {
+  const sourceFile = call.getSourceFile();
+  const line = sourceFile.getLineAndCharacterOfPosition(call.getStart(sourceFile)).line;
+  const text = sourceFile.getFullText();
+  const ranges = ts.getLeadingCommentRanges(text, statementOf(call).getFullStart()) ?? [];
+  return reasonEndingAbove(sourceFile, ranges, line);
 }
 
 /** Every fixed wait the given files hold, each reported under the path it was named by:
@@ -271,7 +302,7 @@ export function waitsOfFiles(directory: string, files: readonly string[]): Fixed
           file,
           line: callLine + 1,
           call: node.getText(sourceFile),
-          reason: reasonAbove(sourceFile, statementOf(node), callLine),
+          reason: reasonAboveCall(node),
         });
       }
       ts.forEachChild(node, visit);
@@ -298,16 +329,9 @@ export function refusedWaits(waits: readonly FixedWait[]): RefusedWait[] {
       refused.push({ wait, why: `${at} has no reason on the line above it: ${remedy}` });
       continue;
     }
-    const words = reasonWords(wait.reason);
-    if (words.length < minimumReasonWords) {
-      refused.push({
-        wait,
-        why:
-          `${at} stands under "${wait.reason}", which is ${words.length} ` +
-          `${words.length === 1 ? "word" : "words"} where the rule asks for ` +
-          `${minimumReasonWords}: a line that short names the wait rather than saying why it is ` +
-          `here, so ${remedy}`,
-      });
+    const short = shortReason(wait.reason, "the wait", "here");
+    if (short !== undefined) {
+      refused.push({ wait, why: `${at} stands ${short}, so ${remedy}` });
     }
   }
   return refused;

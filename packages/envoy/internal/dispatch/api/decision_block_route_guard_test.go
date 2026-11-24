@@ -55,8 +55,14 @@ var decisionBlockExempt = map[string]string{
 	"PATCH /api/v1/asks/{id}":             "an edit's question and options are held by validateAskWording against the ask as it will be stored, and a decision block in an ask is left alone (dispatch://INFRA-1201/artifact/decisions-md)",
 	"POST /api/v1/asks/{id}/answer":       "refusing a person's answer text would stop the one act this issue exists to protect; the text is held to contracts.DispatchEventBodyMax (ask_transitions.go)",
 	"POST /api/v1/asks/{id}/resolve":      "a resolution's reason is a person's or a session's own wording on an ask that already reached a person, left alone by the same decision (dispatch://INFRA-1201/artifact/decisions-md)",
-	"POST /api/v1/artifacts/{id}/reviews": "while an approval request is open this route answers it, closing the ask with answerTransition, and the decisions document leaves an answer's text alone (dispatch://INFRA-1201/artifact/decisions-md); the same reason text reaches artifact_reviews unchecked through POST /api/v1/asks/{id}/answer (ask_transitions.go), so refusing one side would be inconsistent rather than protective. A decision block written there still draws a card nobody can answer on the approval chip, which this issue does not close",
+	"POST /api/v1/artifacts/{id}/reviews": reviewRouteExemption,
+	// The review that names the version its caller read answers an open approval request as the
+	// route above does, so it is left alone for the same reason.
+	"POST /api/v1/artifacts/{id}/versions/{number}/reviews": reviewRouteExemption,
 }
+
+// reviewRouteExemption is why decisionBlockExempt leaves both review routes unrefused.
+const reviewRouteExemption = "while an approval request is open this route answers it, closing the ask with answerTransition, and the decisions document leaves an answer's text alone (dispatch://INFRA-1201/artifact/decisions-md); the same reason text reaches artifact_reviews unchecked through POST /api/v1/asks/{id}/answer (ask_transitions.go), so refusing one side would be inconsistent rather than protective. A decision block written there still draws a card nobody can answer on the approval chip, which this issue does not close"
 
 // decisionBlockGuardSees are the three writes the issue exists for, named so the guard cannot
 // pass by seeing nothing: a comment, a message and a broadcast. They are a control over the walk,
@@ -90,6 +96,7 @@ var decisionBlockGuardSees = []string{
 // a condition passes here, as it does in the other static guards of this package
 // (keyed_write_guard_test.go), and the route's own tests hold the branch.
 func TestEveryRouteThatTakesABodyRefusesADecisionBlock(t *testing.T) {
+	t.Parallel()
 	graph := copyLockGraph(t)
 	for _, function := range []string{sharedBodyCheck, sharedBodyRefusal} {
 		if graph.named[function] == nil {
@@ -140,6 +147,7 @@ func TestEveryRouteThatTakesABodyRefusesADecisionBlock(t *testing.T) {
 // as a server that checks everything: the three writes the issue exists for are in its inventory,
 // each taking a body and each reaching the check.
 func TestTheDecisionBlockGuardSeesWhatItGuards(t *testing.T) {
+	t.Parallel()
 	graph := copyLockGraph(t)
 	routes := decisionBlockRouteHandlers(t, graph)
 	for _, name := range decisionBlockGuardSees {
@@ -163,6 +171,7 @@ func TestTheDecisionBlockGuardSeesWhatItGuards(t *testing.T) {
 // is renamed, or whose body stops being a string, drops its route out of the inventory and takes
 // the rule off it in silence.
 func TestTheGuardReadsABodyStringOffARequestType(t *testing.T) {
+	t.Parallel()
 	type embedded struct {
 		Body string `json:"body"`
 	}

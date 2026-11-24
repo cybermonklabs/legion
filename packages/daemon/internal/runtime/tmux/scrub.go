@@ -61,7 +61,7 @@ func (r *Runtime) ScrubServerEnvironment(ctx context.Context) ([]string, error) 
 			}
 		}
 	case !targetAbsent(res):
-		return nil, fmt.Errorf("tmux set-option -t %s update-environment '' failed (exit %d)%s", r.socket, res.exitCode, failure(res))
+		return nil, fmt.Errorf("tmux set-option -t %s update-environment ''%s", r.socket, failed(res))
 	}
 	out := make([]string, 0, len(removed))
 	for name := range removed {
@@ -85,8 +85,8 @@ func (r *Runtime) scrubTable(ctx context.Context, table envTable, names []string
 			return err
 		}
 		if res.exitCode != 0 {
-			return fmt.Errorf("tmux set-environment %s -u %s failed (exit %d)%s",
-				strings.Join(table.flags(), " "), name, res.exitCode, failure(res))
+			return fmt.Errorf("tmux set-environment %s -u %s%s",
+				strings.Join(table.flags(), " "), name, failed(res))
 		}
 		dropped = append(dropped, name)
 		removed[name] = true
@@ -138,8 +138,8 @@ func (r *Runtime) environmentNames(ctx context.Context, table envTable) (names [
 		if targetAbsent(res) {
 			return nil, false, nil
 		}
-		return nil, false, fmt.Errorf("tmux show-environment -s %s failed (exit %d)%s",
-			strings.Join(table.flags(), " "), res.exitCode, failure(res))
+		return nil, false, fmt.Errorf("tmux show-environment -s %s%s",
+			strings.Join(table.flags(), " "), failed(res))
 	}
 	names, err = parseShellEnvironment(res.stdout, table)
 	return names, true, err

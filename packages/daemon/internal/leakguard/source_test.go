@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io/fs"
 	"maps"
 	"net"
 	"net/http"
@@ -17,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 )
@@ -25,8 +27,12 @@ import (
 // requires of every read.
 const sourceToken = "ghs_leak_check_read"
 
+// checkRepository is the repository these tests' Source reads the check from, a stand-in for the
+// one a deployment names (Setting.Repository): every cause sentence names it.
+var checkRepository = ghrepo.MustParse("example-org/deployment")
+
 // tarballRoute is the path GitHub serves the check's repository's tarball under, a tag after it.
-const tarballRoute = "/repos/" + CheckSlug + "/tarball/"
+var tarballRoute = "/repos/" + checkRepository.String() + "/tarball/"
 
 // checkGitHub is a fake GitHub serving the tarball route of the check's repository, with a count
 // of the reads made at each tag. answer serves a read at tag; any other route fails the test.
@@ -72,9 +78,9 @@ func (f *checkGitHub) total() int {
 	return total
 }
 
-// sourceOver is a Source reading url, whose every mint is counted in mints.
+// sourceOver is a Source reading checkRepository at url, whose every mint is counted in mints.
 func sourceOver(url string, mints *atomic.Int32) *Source {
-	return &Source{API: url, Token: func(context.Context) (string, error) {
+	return &Source{Repository: checkRepository, API: url, Token: func(context.Context) (string, error) {
 		mints.Add(1)
 		return sourceToken, nil
 	}}
@@ -172,6 +178,19 @@ func TestTheServedBodyIsTheDirectoryAloneWithItsDigest(t *testing.T) {
 	if got.Tag != theTag || got.Frames[0].SHA256 != hex.EncodeToString(sum[:]) {
 		t.Fatalf("served frames declaring %s at %s, want %s at the body's SHA-256 %x", got.Frames[0].SHA256, got.Tag, theTag, sum)
 	}
+	manifest, err := Manifest(func(name string) ([]byte, error) {
+		member, found := files[name]
+		if !found {
+			return nil, fs.ErrNotExist
+		}
+		return []byte(member.Body), nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ManifestSHA256 != manifest {
+		t.Fatalf("served manifest = %s, want %s from the files in its body", got.ManifestSHA256, manifest)
+	}
 	members := membersOf(t, got.Body)
 	names := slices.Sorted(maps.Keys(members))
 	if want := slices.Sorted(maps.Keys(files)); !slices.Equal(names, want) {
@@ -231,7 +250,7 @@ func TestARefusedReadIsRefusedWithGitHubsAnswerAndNotKept(t *testing.T) {
 			var mints atomic.Int32
 			source := sourceOver(fake.url, &mints)
 			_, err := source.Get(bound(t), theTag)
-			want := fmt.Sprintf("%sGitHub answered the read of theorem-labs/agent-infra at %s with HTTP %d: %s", RefusalPrefix, theTag, tc.status, tc.answer)
+			want := fmt.Sprintf("%sGitHub answered the read of example-org/deployment at %s with HTTP %d: %s", RefusalPrefix, theTag, tc.status, tc.answer)
 			if err == nil || err.Error() != want {
 				t.Fatalf("the refused read = %v, want %q", err, want)
 			}
@@ -244,6 +263,31 @@ func TestARefusedReadIsRefusedWithGitHubsAnswerAndNotKept(t *testing.T) {
 				t.Fatalf("the ask after a refused read made the reads %d and the mints %d, want it read again: 2 and 2", reads, minted)
 			}
 		})
+	}
+}
+
+// A refusal of GitHub's longer than refusalBodyBytes whose bound falls inside a URL's user name,
+// before its "@", is refused with a cause that holds no part of that user name: the read knows its
+// bound cut the body and drops the run it stopped inside before the URL rule reads it. A cut made
+// first leaves the user name's start where the rule reads it as the URL's host.
+func TestARefusalCutInsideAURLsUserNameIsRefusedWithNoPartOfIt(t *testing.T) {
+	cutAt := "https://" + plantedToken[:8]
+	answer := strings.Repeat(" ", refusalBodyBytes-len(cutAt)) + "https://" + plantedToken + "@codeload.example/legacy.tar.gz"
+	if !strings.HasSuffix(answer[:refusalBodyBytes], cutAt) {
+		t.Fatalf("the answer's first %d bytes end %q, not inside the user name", refusalBodyBytes, answer[refusalBodyBytes-len(cutAt):refusalBodyBytes])
+	}
+	fake := serveCheck(t, func(w http.ResponseWriter, _ *http.Request, _ string) {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(answer))
+	})
+	var mints atomic.Int32
+	_, err := sourceOver(fake.url, &mints).Get(bound(t), theTag)
+	want := fmt.Sprintf("%sGitHub answered the read of %s at %s with HTTP %d", RefusalPrefix, checkRepository, theTag, http.StatusForbidden)
+	if err == nil || !strings.HasPrefix(err.Error(), want) {
+		t.Fatalf("the refused read = %v, want a cause beginning %q", err, want)
+	}
+	if part := partOf(err.Error(), plantedToken); part != "" {
+		t.Fatalf("the cause %q holds %q of the URL's user name", err, part)
 	}
 }
 
@@ -274,7 +318,7 @@ func TestAReadAnswered401ForgetsTheTokenAndIsNotKept(t *testing.T) {
 			source := sourceOver(fake.url, &mints)
 			source.Forget = func() { forgets.Add(1) }
 			_, err := source.Get(bound(t), theTag)
-			want := fmt.Sprintf("%sGitHub answered the read of theorem-labs/agent-infra at %s with HTTP %d: %s", RefusalPrefix, theTag, tc.status, tc.answer)
+			want := fmt.Sprintf("%sGitHub answered the read of example-org/deployment at %s with HTTP %d: %s", RefusalPrefix, theTag, tc.status, tc.answer)
 			if err == nil || err.Error() != want {
 				t.Fatalf("the refused read = %v, want %q", err, want)
 			}
@@ -327,7 +371,7 @@ func TestATarballWithoutTheCheckIsRefusedAndNotKept(t *testing.T) {
 			var mints atomic.Int32
 			source := sourceOver(fake.url, &mints)
 			_, err := source.Get(bound(t), theTag)
-			want := RefusalPrefix + "the tarball of theorem-labs/agent-infra at " + theTag + " " + tc.want
+			want := RefusalPrefix + "the tarball of example-org/deployment at " + theTag + " " + tc.want
 			if err == nil || err.Error() != want {
 				t.Fatalf("the tarball = %v, want %q", err, want)
 			}
@@ -348,8 +392,8 @@ func TestATarballWithoutTheCheckIsRefusedAndNotKept(t *testing.T) {
 func TestAFailedMintIsRefusedWithItsSentenceAndNotKept(t *testing.T) {
 	fake := serveCheck(t, answerCheck(t))
 	var mints atomic.Int32
-	const sentence = "the daemon could not mint its read-only token for theorem-labs/agent-infra: the App has no installation on theorem-labs"
-	source := &Source{API: fake.url, Token: func(context.Context) (string, error) {
+	const sentence = "the daemon could not mint its read-only token for example-org/deployment: the App has no installation on example-org"
+	source := &Source{Repository: checkRepository, API: fake.url, Token: func(context.Context) (string, error) {
 		if mints.Add(1) == 1 {
 			return "", errors.New(sentence)
 		}
@@ -376,7 +420,7 @@ func TestAReadThatDoesNotAnswerEndsAtItsBound(t *testing.T) {
 	source := sourceOver(fake.url, &mints)
 	source.ReadBound = 50 * time.Millisecond
 	_, err := source.Get(bound(t), theTag)
-	want := RefusalPrefix + "the daemon's read of theorem-labs/agent-infra at " + theTag + " did not finish within 50ms"
+	want := RefusalPrefix + "the daemon's read of example-org/deployment at " + theTag + " did not finish within 50ms"
 	if err == nil || err.Error() != want {
 		t.Fatalf("a read that does not answer = %v, want %q", err, want)
 	}
@@ -417,7 +461,7 @@ func TestACallerThatGivesUpDoesNotEndTheReadOthersWaitOn(t *testing.T) {
 	}()
 	giveUp()
 	err := <-first
-	want := RefusalPrefix + "the start stopped waiting for the daemon's read of theorem-labs/agent-infra at " + theTag + ": context canceled"
+	want := RefusalPrefix + "the start stopped waiting for the daemon's read of example-org/deployment at " + theTag + ": context canceled"
 	if err == nil || err.Error() != want {
 		t.Fatalf("the caller that gave up = %v, want %q", err, want)
 	}
@@ -449,7 +493,7 @@ func TestTheReadFollowsGitHubsRedirectAndHandsTheDownloadHostNoToken(t *testing.
 				githubtest.Unexpected(t, w, r)
 				return
 			}
-			http.Redirect(w, r, "http://"+downloads+"/theorem-labs/agent-infra/legacy.tar.gz/refs/tags/"+theTag, http.StatusFound)
+			http.Redirect(w, r, "http://"+downloads+"/example-org/deployment/legacy.tar.gz/refs/tags/"+theTag, http.StatusFound)
 		}})
 	dialer := &net.Dialer{}
 	transport := &http.Transport{DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
@@ -480,5 +524,77 @@ func TestTheReadFollowsGitHubsRedirectAndHandsTheDownloadHostNoToken(t *testing.
 	}
 	if auth, _ := downloadAuth.Load().(string); auth != "" {
 		t.Fatalf("the download host was handed Authorization %q, want none", auth)
+	}
+}
+
+// closedAddress is an address on 127.0.0.1 that nothing listens on: a port the test held and let
+// go, so a dial there is refused.
+func closedAddress(t *testing.T) string {
+	t.Helper()
+	held, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("hold a port: %v", err)
+	}
+	address := held.Addr().String()
+	if err := held.Close(); err != nil {
+		t.Fatalf("let the port go: %v", err)
+	}
+	return address
+}
+
+// GitHub answers a tarball read with a redirect to its download host, whose URL carries a token
+// of its own in its query, and a redirect can name a userinfo too. A read whose redirect leads to
+// a port nothing listens on fails, and Go's client writes the URL it last asked into that error:
+// its query whole, and its user name (it masks only a password). The read is refused with a cause
+// that names the failure and the URL's host and path, and holds no part of the credential.
+func TestAReadRedirectedWithAURLCredentialIsRefusedWithACauseThatHoldsNoneOfIt(t *testing.T) {
+	dead := closedAddress(t)
+	const download = "/example-org/deployment/legacy.tar.gz/refs/tags/" + theTag
+	for _, tc := range []struct {
+		name, redirect string
+		// transport is what Go's client writes of the credential into the read's own error.
+		transport string
+	}{
+		{"a token in the redirect's query", "http://" + dead + download + "?token=" + plantedToken, "?token=" + plantedToken},
+		{"a token as the redirect's user name", "http://" + plantedToken + "@" + dead + download, plantedToken + "@"},
+		{"a token as the redirect's password", "http://" + plantedUserinfo + "@" + dead + download, "user:***@"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			api := githubtest.Server(t, githubtest.Spec{Token: sourceToken, Handle: func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != tarballRoute+theTag {
+					githubtest.Unexpected(t, w, r)
+					return
+				}
+				http.Redirect(w, r, tc.redirect, http.StatusFound)
+			}})
+			// The control: the same read made with the client the Source uses fails with an error
+			// that holds the credential.
+			request, err := http.NewRequestWithContext(bound(t), http.MethodGet, api+tarballRoute+theTag, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			request.Header.Set("Authorization", "Bearer "+sourceToken)
+			response, transportErr := http.DefaultClient.Do(request)
+			if transportErr == nil {
+				response.Body.Close()
+				t.Fatalf("the read through the redirect to %s was answered %d, want it refused at the dial", dead, response.StatusCode)
+			}
+			if !strings.Contains(transportErr.Error(), tc.transport) {
+				t.Fatalf("the transport's error %q does not hold %q: the control reads nothing", transportErr, tc.transport)
+			}
+
+			var mints atomic.Int32
+			_, err = sourceOver(api, &mints).Get(bound(t), theTag)
+			if err == nil {
+				t.Fatalf("the read through the redirect to %s was served, want it refused", dead)
+			}
+			cause := err.Error()
+			if want := RefusalPrefix + "the daemon could not read " + checkRepository.String() + " at " + theTag + `: Get "http://` + dead + download + `": `; !strings.HasPrefix(cause, want) {
+				t.Errorf("the cause is %q, want it to begin %q: the URL's host and path, and nothing of its credential", cause, want)
+			}
+			if part := partOf(cause, plantedToken); part != "" {
+				t.Errorf("the cause %q holds %q of the planted token", cause, part)
+			}
+		})
 	}
 }

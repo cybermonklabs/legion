@@ -1,8 +1,20 @@
 import { beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  cpSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import path from "node:path";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
-import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { memoryRoot, temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { argMaxForceHolds } from "../../../../scripts/e2e/lib/arg-max-force";
+import { ownGroup, untilRunning } from "../../../../scripts/e2e/lib/own-group";
+import { procRootOf } from "../../../../scripts/e2e/lib/proc-root";
 import { scriptFunctions } from "../../../../scripts/e2e/lib/script-functions";
 
 // Every test here runs rig.sh and its stand-ins as real processes. On a loaded machine one test
@@ -18,7 +30,27 @@ const withoutDocker = skipWithout("docker");
 // profile reaches Anthropic by, picked by LEGION_E2E_MODEL_ROUTE.
 const root = path.resolve(import.meta.dir, "../../../..");
 const fn = scriptFunctions(path.join(import.meta.dir, "rig.sh"));
-const work = temporaryDirectory("skill-scenarios-rig");
+/**
+ * The directory this file's work directory goes in: memoryRoot, so /dev/shm where the machine has
+ * a tmpfs there, unless its real path holds a character other than letters, digits and `/._-`, and
+ * then /tmp. A plain path, because the model route installers and judge-omp write the path of each
+ * key command, and of the key file, into a profile as one plain `!command` word, and refuse any
+ * other character in it (install-model-gateway.sh and install-key-file-model-route.sh at `--dest`,
+ * rig.sh's judge_keys at the key file): under a TMPDIR with a space or a quote in its name, every
+ * row that installs a route failed on that refusal. A tmpfs, because the file's afterAll removes
+ * the whole directory under the file's 60 s: on the disk TMPDIR names, that removal of about 1,600
+ * entries took 70 to 90 s at a five-minute load of about 2,200, and failed the file with "a
+ * beforeEach/afterEach hook timed out" after every row had passed. `need` is about sixteen times
+ * the 1.8 MiB a run held there at its largest (1,392 entries).
+ */
+const memory = memoryRoot({ need: 32 * 1024 * 1024 });
+const workRoot = /^[A-Za-z0-9/._-]+$/.test(realpathSync(memory)) ? memory : "/tmp";
+if (workRoot !== memory) {
+  console.error(
+    `rig.test.ts: ${memory} holds a character a plain \`!command\` word cannot, so the work directory is under /tmp`
+  );
+}
+const work = temporaryDirectory("skill-scenarios-rig", { root: workRoot });
 const operatorHome = path.join(work, "operator-home");
 // The home the probes must not reach, with the one thing they look for in it: a judge that could
 // read it would list this directory. It is staged in a hook, below the one the reservation
@@ -246,11 +278,13 @@ describe("a setup that fails after install_model_route", () => {
     mkdirSync(path.join(co, "skills/asd-ste100"), { recursive: true });
     writeFileSync(path.join(co, "skills/asd-ste100/SKILL.md"), "# STE\n");
     writeFileSync(path.join(co, ".omp-pin"), "omp@pin\n");
-    // The real key-file route, with the lib it sources for its base URL's check.
-    for (const file of ["install-key-file-model-route.sh", "model-endpoint.sh"]) {
+    // The real key-file route, with the libs it sources: model-endpoint.sh for its base URL's
+    // check, and omp-home.sh for the line that shuts the setup wizard, whose make_omp_home is then
+    // replaced by one that only makes the home's .omp.
+    for (const file of ["install-key-file-model-route.sh", "model-endpoint.sh", "omp-home.sh"]) {
       cpSync(path.join(root, "scripts/e2e/lib", file), path.join(co, "scripts/e2e/lib", file));
     }
-    writeFileSync(
+    appendFileSync(
       path.join(co, "scripts/e2e/lib/omp-home.sh"),
       'make_omp_home() { mkdir -p "$1/.omp"; }\n'
     );
@@ -306,32 +340,74 @@ describe("a setup that fails after install_model_route", () => {
     expect(existsSync(path.join(kept, "profiles/probe/ready"))).toBe(true);
   });
 
+  /** judge_profiles and its helpers, called on the checkout $1 and the work directory $2. A row
+   * puts an install_model_route definition before it. */
+  const judgeProfiles = [
+    "set -euo pipefail",
+    ...["fail", "on_exit", "drop_unready_keys", "judge_profiles"].map(fn),
+    "checkout_commit() { printf 'fixture parents=base\\n'; }",
+    "root=$1; work=$2; judge_model=fixture; judge_thinking=high; judge_profiles",
+  ].join("\n");
+
   // Catches: a judge-profile build that fails at its second profile and keeps the first one's key
   // command.
   test("judge_profiles removes both profiles' model-key and marks nothing ready", () => {
     const work = freshDir("judge-route-work");
-    const co = checkout();
+    // The bare profile's route cannot be installed, after the ste profile's is.
     const script = [
-      "set -euo pipefail",
-      ...["fail", "on_exit", "drop_unready_keys", "install_model_route", "judge_profiles"].map(fn),
-      "checkout_commit() { printf 'fixture parents=base\\n'; }",
-      "root=$1; work=$2; judge_model=fixture; judge_thinking=high; judge_profiles",
+      fn("install_model_route").replace("install_model_route()", "installed_route()"),
+      'install_model_route() { [ "$2" != judge-bare ] || { echo "no route for bare" >&2; return 1; }; installed_route "$@"; }',
+      judgeProfiles,
     ].join("\n");
-    // The bare profile's home cannot be made, after the ste profile's route is installed.
-    writeFileSync(
-      path.join(co, "scripts/e2e/lib/omp-home.sh"),
-      'make_omp_home() { [ "$(basename "$(dirname "$1")")" != bare ] || { echo "no home for bare" >&2; return 1; }; mkdir -p "$1/.omp"; }\n'
-    );
-    const failed = bash(script, [co, work], routeEnv());
+    const failed = bash(script, [checkout(), work], routeEnv());
     expect(failed.code).toBe(1);
-    expect(failed.stderr).toContain("make_omp_home failed for the judge's bare profile");
+    expect(failed.stderr).toContain("the judge's model route (key-file) could not be installed");
     const dir = path.join(work, "judge-profiles");
+    expect(readFileSync(path.join(dir, "bare/install.log"), "utf8")).toBe("no route for bare\n");
     expect(existsSync(path.join(dir, "ste/home/.omp/profiles/judge-ste/agent/models.yml"))).toBe(
       true
     );
     expect(existsSync(path.join(dir, "ste/model-key"))).toBe(false);
     expect(existsSync(path.join(dir, "bare/model-key"))).toBe(false);
     expect(existsSync(path.join(dir, "ready"))).toBe(false);
+  });
+
+  // Catches: a judge profile that needs jj. No Oh My Pi and no jj runs under a judge's HOME on this
+  // host, yet a home made by make_omp_home read the operator's jj config, so judge-omp failed on a
+  // machine with no jj on PATH ("make_omp_home failed for the judge's ste profile"). Here the
+  // checkout's omp-home.sh is the real one, and the only jj on PATH records its call and fails.
+  test("judge_profiles builds both profiles and runs no jj", () => {
+    const work = freshDir("judge-nojj-work");
+    const co = checkout();
+    cpSync(
+      path.join(root, "scripts/e2e/lib/omp-home.sh"),
+      path.join(co, "scripts/e2e/lib/omp-home.sh")
+    );
+    const bin = freshDir("judge-nojj-bin");
+    const calls = path.join(bin, "jj-calls");
+    writeFileSync(
+      path.join(bin, "jj"),
+      `#!/bin/sh\necho "$*" >>'${calls}'\necho "jj: not on this machine" >&2\nexit 127\n`,
+      { mode: 0o755 }
+    );
+    const built = bash(`${fn("install_model_route")}\n${judgeProfiles}`, [co, work], {
+      ...routeEnv(),
+      PATH: `${bin}:${childEnv.PATH}`,
+    });
+    expect({ code: built.code, stderr: built.stderr }).toEqual({ code: 0, stderr: "" });
+    expect(existsSync(calls)).toBe(false);
+    const dir = path.join(work, "judge-profiles");
+    for (const kind of ["ste", "bare"]) {
+      expect(
+        existsSync(path.join(dir, `${kind}/home/.omp/profiles/judge-${kind}/agent/models.yml`))
+      ).toBe(true);
+    }
+    expect(
+      existsSync(
+        path.join(dir, "ste/home/.omp/profiles/judge-ste/agent/skills/asd-ste100/SKILL.md")
+      )
+    ).toBe(true);
+    expect(existsSync(path.join(dir, "ready"))).toBe(true);
   });
 });
 
@@ -411,8 +487,9 @@ describe("checkout_commit", () => {
   });
 });
 
-// cmd_live_read reads every path skill_reads prints. asd-ste100 holds examples/ beside
-// references/, and a read of SKILL.md and references/ alone left examples/ unread.
+// cmd_live_read reads every path skill_reads prints. A skill can hold examples/ beside
+// references/ (asd-ste100 holds examples/), and a read of SKILL.md and references/ alone left
+// examples/ unread.
 describe("skill_reads", () => {
   function checkout() {
     const co = freshDir("skills-checkout");
@@ -525,6 +602,90 @@ describe("next_run", () => {
   // Catches: a first batch that fails because $work/runs does not exist yet.
   test("1 when the label has no run of the scenario", () => {
     expect(next(freshDir("numbering-empty"), "spec-rewrite", "s1").stdout).toBe("1\n");
+  });
+});
+
+// run_env_pids names each process whose environment carries a run under DIR, with its start time,
+// for the exit handlers' stop_env_processes. It walks every process's environment, so a machine
+// whose /proc/<pid>/environ entries together pass ARG_MAX must not hand them to grep as its
+// arguments: past about 80,000 processes grep could not start, and the run had nothing to stop.
+// perl: each row's processes and harness start through ownGroup (scripts/e2e/lib/own-group.ts).
+const withoutPerl = skipWithout("perl");
+describe.skipIf(withoutPerl)("run_env_pids and stop_env_processes", () => {
+  const force = path.join(root, "scripts/e2e/lib/arg-max-force.sh");
+  const processTree = path.join(root, "scripts/e2e/lib/process-tree.sh");
+  const start = (pid: number) =>
+    readFileSync(`/proc/${pid}/stat`, "utf8")
+      .replace(/^.*\) /, "")
+      .split(" ")[19];
+  // Each row's run process and its harness shell run in process groups of their own (ownGroup,
+  // scripts/e2e/lib/own-group.ts): stop_env_processes stops what it ends, and a stopped member of
+  // the test runner's own group hangs the runner up where that group is orphaned, as in a Legion pod.
+  // A row that sweeps waits until its run process runs sleep (untilRunning), and so leads its own
+  // group, before it sweeps. The walk reads `proc_root`, a proc root of the row's run process alone
+  // (scripts/e2e/lib/proc-root.ts), so a row's time is its own and not the host's process count.
+  const runProcess = (dir: string) =>
+    Bun.spawn(ownGroup(["sleep", "60"]), {
+      env: { PATH: process.env.PATH ?? "", SKILL_SCENARIO_RUN: path.join(dir, "run-1") },
+      stdout: "ignore",
+      stderr: "ignore",
+    });
+  const groupBash = (script: string, args: string[], procRoot: string) => {
+    const result = Bun.spawnSync(ownGroup(["bash", "-c", script, "-", ...args]), {
+      env: { ...childEnv, proc_root: procRoot },
+    });
+    return {
+      code: result.exitCode,
+      stdout: result.stdout.toString(),
+      stderr: result.stderr.toString(),
+    };
+  };
+
+  // Catches: a walk that hands grep every /proc/<pid>/environ at once, which under the force
+  // (scripts/e2e/lib/arg-max-force.sh) cannot start and names nothing. The force cannot hold under
+  // gVisor (a Legion pod's kernel): there the row is skipped, by that name (argMaxForceHolds).
+  test.skipIf(!argMaxForceHolds())(
+    "names a process of the run, with its start time, where a program handed every /proc/<pid>/environ would not start",
+    () => {
+      const dir = freshDir("env-pids");
+      const scratch = freshDir("env-pids-scratch");
+      const run = runProcess(dir);
+      try {
+        const old = 'grep -lzsF -e "SKILL_SCENARIO_RUN=$2" "$proc_root"/[0-9]*/environ';
+        const forced = groupBash(
+          `set -euo pipefail\n. ${JSON.stringify(force)}\n. ${JSON.stringify(processTree)}\n${fn("run_env_pids")}\narg_max_force environ 6144 "$1" ${JSON.stringify(old)}\nrun_env_pids "$2"`,
+          [scratch, dir],
+          procRootOf(scratch, [run.pid])
+        );
+        expect(forced).toEqual({ code: 0, stdout: `${run.pid} ${start(run.pid)}\n`, stderr: "" });
+      } finally {
+        run.kill("SIGKILL");
+      }
+    }
+  );
+
+  // Catches: a stop_env_processes that does not end what its walk names. The loop that ends each
+  // process, held to its start and its mark, is kill_held (scripts/e2e/lib/process-tree.sh), the
+  // run's sweep's own; its rows, a pid that passed to another process and a parent that exits after
+  // the freeze, are run-processes.test.ts's, and are not written a second time here.
+  test("stops each process of the run its walk names, with the run's sweep's own loop", async () => {
+    const dir = freshDir("env-stop");
+    const run = runProcess(dir);
+    await untilRunning(run.pid, "sleep");
+    try {
+      const rig = path.join(root, "scripts/e2e/lib/rig.sh");
+      const prelude = `set -euo pipefail\nroot=${JSON.stringify(root)} work=$1 evidence=$1 timeout_hook=\nnote() { :; }\nfail() { exit 1; }\n. ${JSON.stringify(rig)}\n${fn("stop_env_processes")}`;
+      const own = groupBash(
+        `${prelude}\n${fn("run_env_pids")}\nstop_env_processes "$1"; echo "status $?"`,
+        [dir],
+        procRootOf(dir, [run.pid])
+      );
+      expect(own).toEqual({ code: 0, stdout: "status 0\n", stderr: "" });
+      expect(await run.exited).not.toBe(0);
+      expect(run.signalCode).toBe("SIGKILL");
+    } finally {
+      run.kill("SIGKILL");
+    }
   });
 });
 
@@ -774,10 +935,19 @@ echo done
     );
     expect(existsSync(path.join(skills, "writing-plans/SKILL.md"))).toBe(true);
     expect(existsSync(path.join(label, "superpowers"))).toBe(true);
-    const env = readFileSync(path.join(bin, "env.txt"), "utf8");
-    expect(env).toContain("ENVOY_URL=http://127.0.0.1:1\n");
-    expect(env).toContain("OMP_PROFILE=skills-s1\n");
-    expect(env).toContain(`HOME=${label}/home\n`);
+    // Each variable is read whole, by name: a substring would also match a longer name such as
+    // X_OMP_PROFILE, and env can print any variable first.
+    const env = new Map(
+      readFileSync(path.join(bin, "env.txt"), "utf8")
+        .split("\n")
+        .flatMap((line): [string, string][] => {
+          const eq = line.indexOf("=");
+          return eq > 0 ? [[line.slice(0, eq), line.slice(eq + 1)]] : [];
+        })
+    );
+    expect(env.get("ENVOY_URL")).toBe("http://127.0.0.1:1");
+    expect(env.get("OMP_PROFILE")).toBe("skills-s1");
+    expect(env.get("HOME")).toBe(`${label}/home`);
     expect(readFileSync(path.join(label, "built-from"), "utf8")).toContain(
       "superpowers-skill writing-plans "
     );
@@ -811,6 +981,9 @@ echo done
 // environment. SKILL_SCENARIOS_JUDGE_OMP puts the stand-in where the pinned omp's binary is
 // mounted, so no test needs a model. The checkout's own skills/asd-ste100 is the ste skill.
 describe("judge-omp", () => {
+  // Each row starts one or two judge containers, and a container's start on a loaded host has
+  // taken longer than the file's 60 s bound, so these rows get a bound of their own.
+  const judgeBound = 180_000;
   // Every row that reaches the container needs Docker, so a machine without it (a Legion
   // worker's pod) skips those rows and the rest of the file still runs. GitHub Actions is the
   // exception, as in extensions/controller-start-omp.test.ts: its ubuntu-24.04 runners have
@@ -846,7 +1019,7 @@ fi
 {
   printf 'argv %s\\n' "$0" "$@"
   printf 'env %s\\n' "PWD=$PWD" "HOME=$HOME" "OMP_PROFILE=$OMP_PROFILE"
-  env | grep -q LEGION_E2E && echo "env LEGION_E2E set"
+  compgen -e | grep -q '^LEGION_E2E' && echo "env LEGION_E2E set"
   probe read-outside cat "$OUTSIDE"
   probe read-home-ssh ls "$OPERATOR_HOME/.ssh"
   probe list-work ls "$WORK/runs"
@@ -959,7 +1132,8 @@ exit "$(cat "$PWD/exit-status" 2>/dev/null || echo 0)"
           "utf8"
         )
       ).toContain("https://api.anthropic.com");
-    }
+    },
+    judgeBound
   );
 
   // Catches: a judge that reads the run's transcript, other runs or the operator's files beside its
@@ -985,53 +1159,68 @@ exit "$(cat "$PWD/exit-status" 2>/dev/null || echo 0)"
         "dbus-set": "denied",
       });
       expect(existsSync(path.join(dir, "new.txt"))).toBe(false);
-    }
+    },
+    judgeBound
   );
 
   // Catches: a bare judge that still loads skills, or a judge-omp that hides omp's failure.
-  test.skipIf(skip)("bare loads no skill, and judge-omp exits with omp's status", () => {
-    const dir = judgeDir();
-    writeFileSync(path.join(dir, "exit-status"), "3\n");
-    const result = judge("bare", dir);
-    expect(result.exitCode).toBe(3);
-    expect(recorded(dir, "argv")).toContain("--no-skills");
-    expect(recorded(dir, "argv")).not.toContain("--skills");
-    expect(recorded(dir, "env")).toContain("OMP_PROFILE=judge-bare");
-    expect(recorded(dir, "probe")).toContain("read-skill denied");
-    expect(readFileSync(path.join(dir, "out.txt"), "utf8")).toBe("judged\nexit=3\n");
-    expect(
-      existsSync(path.join(work, "judge-profiles/bare/home/.omp/profiles/judge-bare/agent/skills"))
-    ).toBe(false);
-  });
+  test.skipIf(skip)(
+    "bare loads no skill, and judge-omp exits with omp's status",
+    () => {
+      const dir = judgeDir();
+      writeFileSync(path.join(dir, "exit-status"), "3\n");
+      const result = judge("bare", dir);
+      expect(result.exitCode).toBe(3);
+      expect(recorded(dir, "argv")).toContain("--no-skills");
+      expect(recorded(dir, "argv")).not.toContain("--skills");
+      expect(recorded(dir, "env")).toContain("OMP_PROFILE=judge-bare");
+      expect(recorded(dir, "probe")).toContain("read-skill denied");
+      expect(readFileSync(path.join(dir, "out.txt"), "utf8")).toBe("judged\nexit=3\n");
+      expect(
+        existsSync(
+          path.join(work, "judge-profiles/bare/home/.omp/profiles/judge-bare/agent/skills")
+        )
+      ).toBe(false);
+    },
+    judgeBound
+  );
 
   // Catches: a mount two judges share that one can write and the next can read, such as the key
   // command's call record, a path one judge could leave its private input in for another to read.
   // The first judge writes a marker into every directory it can write outside its own directory;
   // the second, of the same kind, looks for one anywhere it can read.
-  test.skipIf(skip)("one judge cannot leave a file that a second judge can read", () => {
-    const first = judgeDir();
-    const env = (word: string) => ({
-      SKILL_SCENARIOS_JUDGE_ENV: `OUTSIDE=${outside} OPERATOR_HOME=${operatorHome} WORK=${work} ${word}`,
-    });
-    expect(judge("ste", first, "answer.json", env("DROP=one")).exitCode).toBe(0);
-    const second = judgeDir();
-    expect(judge("ste", second, "answer.json", env("SEEK=1")).exitCode).toBe(0);
-    expect(recorded(second, "seek")).toEqual([""]);
-  });
+  test.skipIf(skip)(
+    "one judge cannot leave a file that a second judge can read",
+    () => {
+      const first = judgeDir();
+      const env = (word: string) => ({
+        SKILL_SCENARIOS_JUDGE_ENV: `OUTSIDE=${outside} OPERATOR_HOME=${operatorHome} WORK=${work} ${word}`,
+      });
+      expect(judge("ste", first, "answer.json", env("DROP=one")).exitCode).toBe(0);
+      const second = judgeDir();
+      expect(judge("ste", second, "answer.json", env("SEEK=1")).exitCode).toBe(0);
+      expect(recorded(second, "seek")).toEqual([""]);
+    },
+    judgeBound
+  );
 
   // Catches: a judge kind the rig has no profile for, a directory with no prompt, and an answer
   // file name that escapes the judge's directory or names another of its files.
-  test("refuses another kind, a directory with no prompt.txt and a bad answer name", () => {
-    expect(judge("plugins", judgeDir()).stderr.toString()).toContain("is ste or bare");
-    expect(judge("ste", freshDir("judging-empty")).stderr.toString()).toContain(
-      "has no prompt.txt"
-    );
-    for (const output of ["../answer.json", "sessions", "prompt.txt", "a/b.json", ""]) {
-      const result = judge("ste", judgeDir(), output);
-      expect(result.exitCode).not.toBe(0);
-      expect(result.stderr.toString()).toContain("is not the name of an answer file");
-    }
-  });
+  test(
+    "refuses another kind, a directory with no prompt.txt and a bad answer name",
+    () => {
+      expect(judge("plugins", judgeDir()).stderr.toString()).toContain("is ste or bare");
+      expect(judge("ste", freshDir("judging-empty")).stderr.toString()).toContain(
+        "has no prompt.txt"
+      );
+      for (const output of ["../answer.json", "sessions", "prompt.txt", "a/b.json", ""]) {
+        const result = judge("ste", judgeDir(), output);
+        expect(result.exitCode).not.toBe(0);
+        expect(result.stderr.toString()).toContain("is not the name of an answer file");
+      }
+    },
+    judgeBound
+  );
 
   // The gateway route with the real installer and key command, and a stand-in hawk-token first on
   // PATH that mints a JWT and counts each mint. The key command needs the operator's home and
@@ -1112,7 +1301,8 @@ printf 'eyJhbGciOiJub25lIn0.%s.c2ln\\n' "$payload"
         });
         expect(existsSync(`${dir}.key`)).toBe(false);
         expect(readFileSync(path.join(dir, "answer.json"), "utf8")).not.toMatch(/eyJ[\w-]*\./);
-      }
+      },
+      judgeBound
     );
 
     // Catches: a token directory or file that others can read while the judge runs. The modes
@@ -1120,13 +1310,17 @@ printf 'eyJhbGciOiJub25lIn0.%s.c2ln\\n' "$payload"
     // (`recorded(dir, "mode")`), rather than a watcher's from outside: the stand-in omp sleeps
     // for nothing now, so there is no window for a watcher to look through, and a row that
     // waited for one would be waiting on a sleep.
-    test.skipIf(skip)("the token file is the owner's alone while the judge runs", () => {
-      const dir = gatewayDir();
-      const result = gatewayJudge("bare", dir);
-      expect(judged(result)).toEqual(judgedCleanly);
-      expect(recorded(dir, "mode")).toEqual(["key-dir 700", "token 600"]);
-      expect(existsSync(`${dir}.key`)).toBe(false);
-    });
+    test.skipIf(skip)(
+      "the token file is the owner's alone while the judge runs",
+      () => {
+        const dir = gatewayDir();
+        const result = gatewayJudge("bare", dir);
+        expect(judged(result)).toEqual(judgedCleanly);
+        expect(recorded(dir, "mode")).toEqual(["key-dir 700", "token 600"]);
+        expect(existsSync(`${dir}.key`)).toBe(false);
+      },
+      judgeBound
+    );
 
     // Catches: a token file left behind when the judge fails, and a failed mint that starts the
     // judge anyway.
@@ -1154,44 +1348,52 @@ printf 'eyJhbGciOiJub25lIn0.%s.c2ln\\n' "$payload"
           "judge-omp: the gateway's key command gave no key"
         );
         expect(existsSync(path.join(refused, "answer.json"))).toBe(false);
-      }
+      },
+      judgeBound
     );
   });
 
   // Catches: a judge profile whose built-from records an empty commit line when the rig's root is
   // no checkout, so a judge's model run cannot be traced to the code that built it.
-  test.skipIf(skip)("fails, naming the rig's root, when the root is no checkout", () => {
-    const top = freshDir("judge-root");
-    const scripts = path.join(top, "packages/pi-legion/scripts/skill-scenarios");
-    mkdirSync(scripts, { recursive: true });
-    writeFileSync(path.join(scripts, "rig.sh"), readFileSync(path.join(import.meta.dir, "rig.sh")));
-    for (const file of [".omp-pin", "skills/asd-ste100/SKILL.md"]) {
-      mkdirSync(path.dirname(path.join(top, file)), { recursive: true });
-      writeFileSync(path.join(top, file), readFileSync(path.join(root, file)));
-    }
-    mkdirSync(path.join(top, "scripts/e2e"), { recursive: true });
-    cpSync(path.join(root, "scripts/e2e/lib"), path.join(top, "scripts/e2e/lib"), {
-      recursive: true,
-    });
-    const rootWork = freshDir("judge-root-work");
-    const result = Bun.spawnSync(
-      ["bash", path.join(scripts, "rig.sh"), "judge-omp", "ste", judgeDir(), "answer.json"],
-      {
-        env: {
-          ...childEnv,
-          USER: "rig",
-          SKILL_SCENARIOS_WORK: rootWork,
-          SKILL_SCENARIOS_JUDGE_OMP: omp,
-          LEGION_E2E_MODEL_ROUTE: "key-file",
-          LEGION_E2E_ANTHROPIC_KEY_FILE: keyFile(0o600),
-          GIT_CEILING_DIRECTORIES: path.dirname(top),
-        },
+  test.skipIf(skip)(
+    "fails, naming the rig's root, when the root is no checkout",
+    () => {
+      const top = freshDir("judge-root");
+      const scripts = path.join(top, "packages/pi-legion/scripts/skill-scenarios");
+      mkdirSync(scripts, { recursive: true });
+      writeFileSync(
+        path.join(scripts, "rig.sh"),
+        readFileSync(path.join(import.meta.dir, "rig.sh"))
+      );
+      for (const file of [".omp-pin", "skills/asd-ste100/SKILL.md"]) {
+        mkdirSync(path.dirname(path.join(top, file)), { recursive: true });
+        writeFileSync(path.join(top, file), readFileSync(path.join(root, file)));
       }
-    );
-    expect(result.exitCode).toBe(1);
-    expect(result.stderr.toString()).toContain(`cannot read the commit of ${top} with jj or git`);
-    expect(existsSync(path.join(rootWork, "judge-profiles/ready"))).toBe(false);
-  });
+      mkdirSync(path.join(top, "scripts/e2e"), { recursive: true });
+      cpSync(path.join(root, "scripts/e2e/lib"), path.join(top, "scripts/e2e/lib"), {
+        recursive: true,
+      });
+      const rootWork = freshDir("judge-root-work");
+      const result = Bun.spawnSync(
+        ["bash", path.join(scripts, "rig.sh"), "judge-omp", "ste", judgeDir(), "answer.json"],
+        {
+          env: {
+            ...childEnv,
+            USER: "rig",
+            SKILL_SCENARIOS_WORK: rootWork,
+            SKILL_SCENARIOS_JUDGE_OMP: omp,
+            LEGION_E2E_MODEL_ROUTE: "key-file",
+            LEGION_E2E_ANTHROPIC_KEY_FILE: keyFile(0o600),
+            GIT_CEILING_DIRECTORIES: path.dirname(top),
+          },
+        }
+      );
+      expect(result.exitCode).toBe(1);
+      expect(result.stderr.toString()).toContain(`cannot read the commit of ${top} with jj or git`);
+      expect(existsSync(path.join(rootWork, "judge-profiles/ready"))).toBe(false);
+    },
+    judgeBound
+  );
 });
 
 // A spec run's plan row reads skill://writing-plans, which only a label built with

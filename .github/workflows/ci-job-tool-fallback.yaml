@@ -1,0 +1,565 @@
+name: CI job tool-fallback
+
+# why: .github/ci-notes/ci-job-tool-fallback.md#the-steps-of-ciyamls-tool-fallback-job-in-a-file-of-their-own
+on:
+  workflow_call:
+    inputs:
+      ci-ok-changes:
+        description: >-
+          ci.yaml's `toJSON(needs.changes)`: end the job with ci-ok's report
+          (.github/actions/ci-ok-report), as every job of ci.yaml ends.
+        type: string
+        required: true
+
+jobs:
+  tool-fallback:
+    runs-on: ubuntu-24.04
+    # why: .github/ci-notes/ci-job-tool-fallback.md#the-jobs-budget-and-the-bound-every-install-step-carries
+    # 1 + 2 + 1 + 1 + 2 + 1 + 3 + 1 = 12 min + 10 = 22 min; an install step's 2 x 326 s -> 11 min.
+    timeout-minutes: 22
+    env:
+      JOB_TIMEOUT_MINUTES: 22 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # why: .github/ci-notes/ci-job-tool-fallback.md#why-the-merge-base-is-checked-out
+      - name: Check out the merge base the negative control installs from
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.sha }}
+          path: base
+          persist-credentials: false
+
+      # why: .github/ci-notes/ci-job-tool-fallback.md#why-the-packages-blob-is-read-for-every-mirrored-row
+      - name: Check the package holds the blob of every mirrored row
+        run: .github/scripts/tool-fallback-package-blobs.sh
+
+      # why: .github/ci-notes/ci-job-tool-fallback.md#why-every-row-is-printed-beside-the-two-call-sites-that-read-its-digest
+      - name: Print every row beside the two call sites that read its digest
+        run: .github/scripts/tool-fallback-row-call-sites.sh
+
+      - name: Stage the correct bytes of every row a case serves, before the fault
+        run: .github/scripts/ci-tools-proof.sh stage
+
+      - id: origin
+        name: Start the origin that stands in for all four sources
+        run: .github/scripts/ci-tools-proof.sh origin-start
+
+      # why: .github/ci-notes/ci-job-tool-fallback.md#what-the-machine-watch-records-and-what-it-cannot-show
+      - name: Start the machine watch over every faulted install
+        run: .github/scripts/disk_watch.py start --path "$RUNNER_TEMP" --state "$RUNNER_TEMP/disk-watch.json"
+
+      # why: .github/ci-notes/ci-job-tool-fallback.md#case-5-of-18-and-why-it-runs-before-the-fault
+      - name: Corrupt nothing at the origin for the jj-primary case
+        run: .github/scripts/ci-tools-proof.sh corrupt
+
+      - name: Seed mise's install of jj with the staged binary, one byte changed
+        run: |
+          set -euo pipefail
+          proof=.github/scripts/ci-tools-proof.sh
+          corrupted="$RUNNER_TEMP/jj-one-byte-changed"
+          cp -- "$("$proof" payload-path jj)" "$corrupted"
+          "$proof" flip-last-byte "$corrupted"
+          "$proof" seed-mise-jj "$corrupted"
+          rm -f "$corrupted"
+
+      - id: jj-primary
+        continue-on-error: true
+        timeout-minutes: 11
+        uses: ./.github/actions/install-jj
+        env:
+          CI_TOOLS_GHCR_BASE: ${{ steps.origin.outputs.ghcr }}
+
+      - name: Read the jj-primary case
+        run: .github/scripts/ci-tools-proof.sh report jj-primary --outcome ${{ steps.jj-primary.outcome }} --row jj --expect-source github-release
+
+      # why: .github/ci-notes/ci-job-tool-fallback.md#why-mises-install-directory-is-taken-away-again
+      - name: Take mise's install away again, so the faulted install must read the copy
+        run: rm -rf "$HOME/.local/share/mise"
+
+      # why: .github/ci-notes/ci-job-tool-fallback.md#the-stand-in-curl-what-it-shortens-and-why-it-is-installed-at-this-position
+      - name: Shorten the ladder of every fetch this job arranges to fail
+        run: .github/scripts/ci-tools-proof.sh shorten-ladder
+
+      # why: .github/ci-notes/ci-job-tool-fallback.md#the-fault-and-the-routing-of-every-later-step-through-it
+      - name: Start the fault in front of GitHub's release assets
+        run: .github/scripts/ci-tools-proof.sh start-fault
+
+      - name: Read the fault before any install meets it
+        run: .github/scripts/ci-tools-proof.sh probe github.com
+
+      # why: .github/ci-notes/ci-job-tool-fallback.md#the-negative-control-and-why-it-does-not-expire
+
+      # why: .github/ci-notes/ci-job-tool-fallback.md#why-each-install-with-nowhere-to-go-carries-a-mark-step
+      - id: mark-base-crane
+        name: Mark when the install with nowhere to go for crane began
+        run: echo "at=$(date +%s)" >> "$GITHUB_OUTPUT"
+
+      - id: base-crane
+        continue-on-error: true
+        timeout-minutes: 11
+        uses: ./base/.github/actions/install-crane
+        env:
+          CI_TOOLS_GHCR_BASE: http://127.0.0.1:1
+          CI_TOOLS_NPM_BASE: http://127.0.0.1:1
+
+      - id: mark-base-changie
+        name: Mark when the install with nowhere to go for changie began
+        run: echo "at=$(date +%s)" >> "$GITHUB_OUTPUT"
+
+      - id: base-changie
+        continue-on-error: true
+        timeout-minutes: 11
+        uses: ./base/.github/actions/install-changie
+        env:
+          CI_TOOLS_GHCR_BASE: http://127.0.0.1:1
+          CI_TOOLS_NPM_BASE: http://127.0.0.1:1
+
+      - id: mark-base-jj
+        name: Mark when the install with nowhere to go for jj began
+        run: echo "at=$(date +%s)" >> "$GITHUB_OUTPUT"
+
+      - id: base-jj
+        continue-on-error: true
+        timeout-minutes: 11
+        uses: ./base/.github/actions/install-jj
+        env:
+          CI_TOOLS_GHCR_BASE: http://127.0.0.1:1
+          CI_TOOLS_NPM_BASE: http://127.0.0.1:1
+
+      - id: mark-base-bun
+        name: Mark when the install with nowhere to go for bun began
+        run: echo "at=$(date +%s)" >> "$GITHUB_OUTPUT"
+
+      - id: base-bun
+        continue-on-error: true
+        timeout-minutes: 11
+        uses: ./base/.github/actions/setup-bun
+        env:
+          CI_TOOLS_GHCR_BASE: http://127.0.0.1:1
+          CI_TOOLS_NPM_BASE: http://127.0.0.1:1
+
+      # why: .github/ci-notes/ci-job-tool-fallback.md#why-elan-is-taken-away-before-the-control-installs
+      - name: Take elan away, so the control installs rather than finds one
+        run: rm -rf "$RUNNER_TEMP/elan" "$RUNNER_TEMP/elan-init"
+
+      - id: mark-base-elan
+        name: Mark when the install with nowhere to go for elan began
+        run: echo "at=$(date +%s)" >> "$GITHUB_OUTPUT"
+
+      - id: base-elan
+        continue-on-error: true
+        timeout-minutes: 11
+        uses: ./base/.github/actions/install-elan
+        env:
+          CI_TOOLS_GHCR_BASE: http://127.0.0.1:1
+          CI_TOOLS_NPM_BASE: http://127.0.0.1:1
+
+      - id: mark-base-uv
+        name: Mark when the install with nowhere to go for uv began
+        run: echo "at=$(date +%s)" >> "$GITHUB_OUTPUT"
+
+      # why: .github/ci-notes/ci-job-tool-fallback.md#which-seam-sends-uvs-control-to-a-dead-port
+      - id: base-uv
+        continue-on-error: true
+        timeout-minutes: 11
+        uses: ./base/.github/actions/install-uv
+        env:
+          CI_TOOLS_URL_BASE: http://127.0.0.1:1
+
+      - id: mark-nowhere-pulumi-docker
+        name: Mark when the install with nowhere to go for the docker provider plugin began
+        run: echo "at=$(date +%s)" >> "$GITHUB_OUTPUT"
+
+      # why: .github/ci-notes/ci-job-tool-fallback.md#the-docker-provider-plugins-control-and-why-it-does-not-expire
+      - id: nowhere-pulumi-docker
+        continue-on-error: true
+        timeout-minutes: 11
+        uses: ./.github/actions/install-docker-plugin
+        env:
+          CI_TOOLS_URL_BASE: http://127.0.0.1:1
+
+      - id: mark-base-pulumi
+        name: Mark when the install with nowhere to go for the Pulumi CLI began
+        run: echo "at=$(date +%s)" >> "$GITHUB_OUTPUT"
+
+      # why: .github/ci-notes/ci-job-tool-fallback.md#the-pulumi-clis-control-and-the-two-proxy-spellings-it-carries
+      - id: base-pulumi
+        continue-on-error: true
+        timeout-minutes: 11
+        uses: ./base/.github/actions/install-pulumi
+        env:
+          http_proxy: http://127.0.0.1:1
+          https_proxy: http://127.0.0.1:1
+
+      # why: .github/ci-notes/ci-job-tool-fallback.md#why-the-control-step-reads-the-clock-as-well
+      - name: Check all eight installs with nowhere to go failed, and failed in their own time
+        env:
+          CRANE: ${{ steps.base-crane.outcome }}
+          CHANGIE: ${{ steps.base-changie.outcome }}
+          JJ: ${{ steps.base-jj.outcome }}
+          BUN: ${{ steps.base-bun.outcome }}
+          ELAN: ${{ steps.base-elan.outcome }}
+          UV: ${{ steps.base-uv.outcome }}
+          PULUMI_DOCKER: ${{ steps.nowhere-pulumi-docker.outcome }}
+          PULUMI_CLI: ${{ steps.base-pulumi.outcome }}
+          CRANE_AT: ${{ steps.mark-base-crane.outputs.at }}
+          CHANGIE_AT: ${{ steps.mark-base-changie.outputs.at }}
+          JJ_AT: ${{ steps.mark-base-jj.outputs.at }}
+          BUN_AT: ${{ steps.mark-base-bun.outputs.at }}
+          ELAN_AT: ${{ steps.mark-base-elan.outputs.at }}
+          UV_AT: ${{ steps.mark-base-uv.outputs.at }}
+          PULUMI_DOCKER_AT: ${{ steps.mark-nowhere-pulumi-docker.outputs.at }}
+          PULUMI_CLI_AT: ${{ steps.mark-base-pulumi.outputs.at }}
+        run: .github/scripts/tool-fallback-nowhere-controls.sh
+
+      # why: .github/ci-notes/ci-job-tool-fallback.md#the-heads-own-installs-under-the-fault
+
+      # This install is the one case that keeps the pinned ladder, and the ladder-report step
+      # at the end of this job reads the measurement it leaves.
+      - timeout-minutes: 11
+        uses: ./.github/actions/install-crane
+        env:
+          CI_TOOLS_PROOF_FULL_LADDER: crane-head
+
+      - timeout-minutes: 11
+        uses: ./.github/actions/install-changie
+
+      - timeout-minutes: 11
+        uses: ./.github/actions/install-jj
+
+      - timeout-minutes: 11
+        uses: ./.github/actions/setup-bun
+
+      # why: .github/ci-notes/ci-job-tool-fallback.md#why-the-faulted-elan-install-must-read-the-copy
+      - name: Take elan away, so the faulted install must read the copy
+        run: rm -rf "$RUNNER_TEMP/elan" "$RUNNER_TEMP/elan-init"
+
+      - timeout-minutes: 11
+        uses: ./.github/actions/install-elan
+
+      # why: .github/ci-notes/ci-job-tool-fallback.md#why-the-faulted-uv-install-reads-the-wheel-pypi-serves
+      - timeout-minutes: 11
+        uses: ./.github/actions/install-uv
+
+      # why: .github/ci-notes/ci-job-tool-fallback.md#why-the-faulted-docker-provider-plugin-install-reads-getpulumicom
+      - id: docker-plugin
+        timeout-minutes: 11
+        uses: ./.github/actions/install-docker-plugin
+
+      # why: .github/ci-notes/ci-job-tool-fallback.md#the-pulumi-clis-own-fallback-and-why-the-origin-serves-its-second-source
+      - timeout-minutes: 11
+        uses: ./.github/actions/install-pulumi
+        env:
+          CI_TOOLS_URL_BASE: http://127.0.0.1:1
+          CI_TOOLS_GITHUB_BASE: ${{ steps.origin.outputs.github }}
+
+      # why: .github/ci-notes/ci-job-tool-fallback.md#why-the-faulted-helm-install-reads-the-copy
+      - timeout-minutes: 11
+        uses: ./.github/actions/install-helm
+
+      - name: Check every tool is the version its row pins
+        run: .github/scripts/tool-fallback-installed-versions.sh "${{ steps.docker-plugin.outputs.tarball }}"
+
+      # why: .github/ci-notes/ci-job-tool-fallback.md#the-eighteen-corrupted-payloads-and-case-1-of-them
+      - name: Corrupt crane for its primary case
+        run: .github/scripts/ci-tools-proof.sh corrupt crane
+
+      - id: crane-primary
+        continue-on-error: true
+        timeout-minutes: 11
+        uses: ./.github/actions/install-crane
+        env:
+          CI_TOOLS_GITHUB_BASE: ${{ steps.origin.outputs.github }}
+          CI_TOOLS_GHCR_BASE: ${{ steps.origin.outputs.ghcr }}
+
+      - name: Read the crane-primary case
+        run: .github/scripts/ci-tools-proof.sh report crane-primary --outcome ${{ steps.crane-primary.outcome }} --row crane --expect-source github-release --expect-untried ghcr-mirror
+
+      # Case 2 of 18: crane's second source serves one byte changed, after the primary — the real
+      # host, which the fault holds — did not serve them at all.
+      - name: Corrupt crane for its second-source case
+        run: .github/scripts/ci-tools-proof.sh corrupt crane
+
+      - id: crane-second-source
+        continue-on-error: true
+        timeout-minutes: 11
+        uses: ./.github/actions/install-crane
+        env:
+          CI_TOOLS_GHCR_BASE: ${{ steps.origin.outputs.ghcr }}
+
+      - name: Read the crane-second-source case
+        run: .github/scripts/ci-tools-proof.sh report crane-second-source --outcome ${{ steps.crane-second-source.outcome }} --row crane --expect-source ghcr-mirror
+
+      # Case 3 of 18: changie's primary serves one byte changed.
+      - name: Corrupt changie for its primary case
+        run: .github/scripts/ci-tools-proof.sh corrupt changie
+
+      - id: changie-primary
+        continue-on-error: true
+        timeout-minutes: 11
+        uses: ./.github/actions/install-changie
+        env:
+          CI_TOOLS_GITHUB_BASE: ${{ steps.origin.outputs.github }}
+          CI_TOOLS_GHCR_BASE: ${{ steps.origin.outputs.ghcr }}
+
+      - name: Read the changie-primary case
+        run: .github/scripts/ci-tools-proof.sh report changie-primary --outcome ${{ steps.changie-primary.outcome }} --row changie --expect-source github-release --expect-untried ghcr-mirror
+
+      # Case 4 of 18: changie's second source serves one byte changed.
+      - name: Corrupt changie for its second-source case
+        run: .github/scripts/ci-tools-proof.sh corrupt changie
+
+      - id: changie-second-source
+        continue-on-error: true
+        timeout-minutes: 11
+        uses: ./.github/actions/install-changie
+        env:
+          CI_TOOLS_GHCR_BASE: ${{ steps.origin.outputs.ghcr }}
+
+      - name: Read the changie-second-source case
+        run: .github/scripts/ci-tools-proof.sh report changie-second-source --outcome ${{ steps.changie-second-source.outcome }} --row changie --expect-source ghcr-mirror
+
+      # why: .github/ci-notes/ci-job-tool-fallback.md#case-6-of-18-and-what-the-case-before-it-left
+      - name: Corrupt the jj copy for its second-source case
+        run: .github/scripts/ci-tools-proof.sh corrupt jj
+
+      - name: Remove mise's data directory, so its install must reach the faulted host
+        run: |
+          set -euo pipefail
+          rm -rf "$HOME/.local/share/mise"
+          echo "$HOME/.local/share/mise is gone, so mise must install jj rather than find it installed"
+
+      - id: jj-second-source
+        continue-on-error: true
+        timeout-minutes: 11
+        uses: ./.github/actions/install-jj
+        env:
+          CI_TOOLS_GHCR_BASE: ${{ steps.origin.outputs.ghcr }}
+
+      - name: Read the jj-second-source case
+        run: .github/scripts/ci-tools-proof.sh report jj-second-source --outcome ${{ steps.jj-second-source.outcome }} --row jj --expect-source ghcr-mirror
+
+      # why: .github/ci-notes/ci-job-tool-fallback.md#case-7-of-18-and-the-branch-setup-bun-takes-for-it
+      - name: Corrupt nothing at the origin for the bun-primary case
+        run: .github/scripts/ci-tools-proof.sh corrupt
+
+      - name: Change the last byte of the installed Bun
+        run: |
+          set -euo pipefail
+          .github/scripts/ci-tools-proof.sh flip-last-byte "$HOME/.bun/bin/bun"
+          revision=$("$HOME/.bun/bin/bun" --revision)
+          pinned=$(tr -d '[:space:]' < .bun-version)
+          echo "the changed binary answers --revision $revision, and .bun-version pins $pinned"
+          if [ "${revision%%+*}" != "$pinned" ]; then
+            echo "::error::the changed Bun no longer answers the pinned version, so setup-bun would take its npm branch and this case would read something else" >&2
+            exit 1
+          fi
+
+      - id: bun-primary
+        continue-on-error: true
+        timeout-minutes: 11
+        uses: ./.github/actions/setup-bun
+
+      - name: Read the bun-primary case
+        run: .github/scripts/ci-tools-proof.sh report bun-primary --outcome ${{ steps.bun-primary.outcome }} --row bun-linux-x64 --expect-source github-release
+
+      # why: .github/ci-notes/ci-job-tool-fallback.md#case-8-of-18-and-why-it-takes-the-bun-pair-away-itself
+      - name: Take any Bun away, so the second source must serve this case
+        run: rm -f "$HOME/.bun/bin/bun" "$HOME/.bun/bin/bunx"
+
+      - name: Corrupt the Bun package for its second-source case
+        run: .github/scripts/ci-tools-proof.sh corrupt bun-linux-x64
+
+      - id: bun-second-source
+        continue-on-error: true
+        timeout-minutes: 11
+        uses: ./.github/actions/setup-bun
+        env:
+          CI_TOOLS_NPM_BASE: ${{ steps.origin.outputs.npm }}
+
+      - name: Read the bun-second-source case
+        run: .github/scripts/ci-tools-proof.sh report bun-second-source --outcome ${{ steps.bun-second-source.outcome }} --row bun-linux-x64 --expect-source npm
+
+      # Case 9 of 18: elan's primary serves one byte changed, and the copy must stay untried.
+      - name: Take elan away for its primary case
+        run: rm -rf "$RUNNER_TEMP/elan" "$RUNNER_TEMP/elan-init"
+
+      - name: Corrupt elan for its primary case
+        run: .github/scripts/ci-tools-proof.sh corrupt elan
+
+      - id: elan-primary
+        continue-on-error: true
+        timeout-minutes: 11
+        uses: ./.github/actions/install-elan
+        env:
+          CI_TOOLS_GITHUB_BASE: ${{ steps.origin.outputs.github }}
+          CI_TOOLS_GHCR_BASE: ${{ steps.origin.outputs.ghcr }}
+
+      - name: Read the elan-primary case
+        run: .github/scripts/ci-tools-proof.sh report elan-primary --outcome ${{ steps.elan-primary.outcome }} --row elan --expect-source github-release --expect-untried ghcr-mirror
+
+      # Case 10 of 18: elan's copy serves one byte changed, after the primary — the real host,
+      # which the fault holds — did not serve them at all.
+      - name: Take elan away for its second-source case
+        run: rm -rf "$RUNNER_TEMP/elan" "$RUNNER_TEMP/elan-init"
+
+      - name: Corrupt elan for its second-source case
+        run: .github/scripts/ci-tools-proof.sh corrupt elan
+
+      - id: elan-second-source
+        continue-on-error: true
+        timeout-minutes: 11
+        uses: ./.github/actions/install-elan
+        env:
+          CI_TOOLS_GHCR_BASE: ${{ steps.origin.outputs.ghcr }}
+
+      - name: Read the elan-second-source case
+        run: .github/scripts/ci-tools-proof.sh report elan-second-source --outcome ${{ steps.elan-second-source.outcome }} --row elan --expect-source ghcr-mirror
+
+      # why: .github/ci-notes/ci-job-tool-fallback.md#case-11-of-18-and-the-digest-the-changed-byte-trips
+      - name: Corrupt uv for its primary case
+        run: .github/scripts/ci-tools-proof.sh corrupt uv
+
+      - id: uv-primary
+        continue-on-error: true
+        timeout-minutes: 11
+        uses: ./.github/actions/install-uv
+        env:
+          CI_TOOLS_GITHUB_BASE: ${{ steps.origin.outputs.github }}
+          CI_TOOLS_URL_BASE: ${{ steps.origin.outputs.url }}
+
+      - name: Read the uv-primary case
+        run: .github/scripts/ci-tools-proof.sh report uv-primary --outcome ${{ steps.uv-primary.outcome }} --row uv --expect-source github-release --expect-untried pypi
+
+      # why: .github/ci-notes/ci-job-tool-fallback.md#case-12-of-18-where-the-changed-byte-is-and-how-each-archive-refuses-it
+      - name: Corrupt uv for its second-source case
+        run: .github/scripts/ci-tools-proof.sh corrupt uv
+
+      - id: uv-second-source
+        continue-on-error: true
+        timeout-minutes: 11
+        uses: ./.github/actions/install-uv
+        env:
+          CI_TOOLS_URL_BASE: ${{ steps.origin.outputs.url }}
+
+      - name: Read the uv-second-source case
+        run: .github/scripts/ci-tools-proof.sh report uv-second-source --outcome ${{ steps.uv-second-source.outcome }} --row uv --expect-source pypi
+
+      # Case 13 of 18: the docker provider plugin's release asset serves one byte changed, and
+      # get.pulumi.com must stay untried.
+      - name: Corrupt the docker provider plugin for its primary case
+        run: .github/scripts/ci-tools-proof.sh corrupt pulumi-docker
+
+      - id: pulumi-docker-primary
+        continue-on-error: true
+        timeout-minutes: 11
+        uses: ./.github/actions/install-docker-plugin
+        env:
+          CI_TOOLS_GITHUB_BASE: ${{ steps.origin.outputs.github }}
+          CI_TOOLS_URL_BASE: ${{ steps.origin.outputs.url }}
+
+      - name: Read the pulumi-docker-primary case
+        run: .github/scripts/ci-tools-proof.sh report pulumi-docker-primary --outcome ${{ steps.pulumi-docker-primary.outcome }} --row pulumi-docker --expect-source github-release --expect-untried pulumi-releases
+
+      # why: .github/ci-notes/ci-job-tool-fallback.md#case-14-of-18-and-the-one-payload-the-origin-serves-on-two-routes
+      - name: Corrupt the docker provider plugin for its second-source case
+        run: .github/scripts/ci-tools-proof.sh corrupt pulumi-docker
+
+      - id: pulumi-docker-second-source
+        continue-on-error: true
+        timeout-minutes: 11
+        uses: ./.github/actions/install-docker-plugin
+        env:
+          CI_TOOLS_URL_BASE: ${{ steps.origin.outputs.url }}
+
+      - name: Read the pulumi-docker-second-source case
+        run: .github/scripts/ci-tools-proof.sh report pulumi-docker-second-source --outcome ${{ steps.pulumi-docker-second-source.outcome }} --row pulumi-docker --expect-source pulumi-releases
+
+      # why: .github/ci-notes/ci-job-tool-fallback.md#case-15-of-18-and-why-the-untried-reading-is-a-reading
+      - name: Corrupt the Pulumi CLI for its primary case
+        run: .github/scripts/ci-tools-proof.sh corrupt pulumi-cli
+
+      - id: pulumi-cli-primary
+        continue-on-error: true
+        timeout-minutes: 11
+        uses: ./.github/actions/install-pulumi
+        env:
+          CI_TOOLS_URL_BASE: ${{ steps.origin.outputs.url }}
+          CI_TOOLS_GITHUB_BASE: ${{ steps.origin.outputs.github }}
+
+      - name: Read the pulumi-cli-primary case
+        run: .github/scripts/ci-tools-proof.sh report pulumi-cli-primary --outcome ${{ steps.pulumi-cli-primary.outcome }} --row pulumi-cli --expect-source pulumi-releases --expect-untried github-release
+
+      # why: .github/ci-notes/ci-job-tool-fallback.md#case-16-of-18-and-why-it-is-a-dead-port-rather-than-the-fault
+      - name: Corrupt the Pulumi CLI for its second-source case
+        run: .github/scripts/ci-tools-proof.sh corrupt pulumi-cli
+
+      - id: pulumi-cli-second-source
+        continue-on-error: true
+        timeout-minutes: 11
+        uses: ./.github/actions/install-pulumi
+        env:
+          CI_TOOLS_URL_BASE: http://127.0.0.1:1
+          CI_TOOLS_GITHUB_BASE: ${{ steps.origin.outputs.github }}
+
+      - name: Read the pulumi-cli-second-source case
+        run: .github/scripts/ci-tools-proof.sh report pulumi-cli-second-source --outcome ${{ steps.pulumi-cli-second-source.outcome }} --row pulumi-cli --expect-source github-release
+
+      # why: .github/ci-notes/ci-job-tool-fallback.md#case-17-of-18-and-the-seam-a-helm-releases-primary-is-read-through
+      - name: Corrupt helm for its primary case
+        run: .github/scripts/ci-tools-proof.sh corrupt helm
+
+      - id: helm-primary
+        continue-on-error: true
+        timeout-minutes: 11
+        uses: ./.github/actions/install-helm
+        env:
+          CI_TOOLS_URL_BASE: ${{ steps.origin.outputs.url }}
+          CI_TOOLS_GHCR_BASE: ${{ steps.origin.outputs.ghcr }}
+
+      - name: Read the helm-primary case
+        run: .github/scripts/ci-tools-proof.sh report helm-primary --outcome ${{ steps.helm-primary.outcome }} --row helm --expect-source helm-releases --expect-untried ghcr-mirror
+
+      # Case 18 of 18: helm's copy serves one byte changed, after the primary — get.helm.sh,
+      # which the fault holds — did not serve them at all.
+      - name: Corrupt helm for its second-source case
+        run: .github/scripts/ci-tools-proof.sh corrupt helm
+
+      - id: helm-second-source
+        continue-on-error: true
+        timeout-minutes: 11
+        uses: ./.github/actions/install-helm
+        env:
+          CI_TOOLS_GHCR_BASE: ${{ steps.origin.outputs.ghcr }}
+
+      - name: Read the helm-second-source case
+        run: .github/scripts/ci-tools-proof.sh report helm-second-source --outcome ${{ steps.helm-second-source.outcome }} --row helm --expect-source ghcr-mirror
+
+      # why: .github/ci-notes/ci-job-tool-fallback.md#what-this-runner-holds-after-the-eighteen-refusals
+      - name: Print what every tool answers now
+        run: .github/scripts/tool-fallback-final-state.sh
+
+      # why: .github/ci-notes/ci-job-tool-fallback.md#what-the-reading-of-the-stand-in-curl-refuses
+      - name: Read what the stand-in curl measured of every fetch
+        run: .github/scripts/ci-tools-proof.sh ladder-report
+
+      # `always()`, because the reading a reader wants most is the one from a job that failed.
+      - name: Report what this job ran on
+        if: always()
+        run: .github/scripts/disk_watch.py report --state "$RUNNER_TEMP/disk-watch.json"
+
+      # why: .github/ci-notes/ci-job-tool-fallback.md#why-the-fault-stops-before-the-last-steps
+      - name: Stop routing this job through the fault
+        if: always()
+        run: .github/scripts/ci-tools-proof.sh stop-fault
+
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: tool-fallback
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}

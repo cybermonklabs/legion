@@ -28,6 +28,8 @@ test("a personal agent token attributes its ask, remains private, and is revoked
     await alicePage.goto("/settings");
     await alicePage.getByLabel("Token label").fill("Architect");
     await alicePage.getByRole("button", { name: "New token" }).click();
+    // textContent waits for the code element to attach, and an element's text is never null,
+    // so the check below only narrows the type.
     const token = await alicePage.getByRole("status").locator("code").first().textContent();
     if (token === null) {
       throw new Error("new agent token was not rendered");

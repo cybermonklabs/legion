@@ -1,0 +1,5 @@
+kind: Fixed
+body: 'A role''s launch in an issue pod or the controller''s pod no longer fails, now and then, with `the shared public leak check could not be installed: the served check could not be run: waitid: no child processes`, or under gVisor `waitid: no such process`. The launcher, its container''s PID 1, reaps every exited child it does not hold, and the install''s run of the check now starts through the guard that holds the launcher''s own children out of that reaper, as the put-back''s git and jj do. The controller pod''s drain of an exited generation leaves those children to their own waits too.'
+time: 2026-11-17T07:37:08.795942761Z
+custom:
+    Issue: pr4289

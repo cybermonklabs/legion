@@ -13,6 +13,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
 // githubReview is one review as GitHub lists a pull request's reviews (GET /pulls/{number}/reviews):
@@ -111,7 +113,7 @@ func (w *workflowRuntime) readReviews(ctx, read context.Context, github githubre
 // candidate), anyone else's against the write access GitHub gives the account as a webhook's
 // review reads it (intake.ResolveAuthorCanWrite with reviewerCanWrite) - and the head the
 // review says it read, and it says of a refusal whether it stands at every head
-// (workflow.RoundRefusal.AtEveryHead), which is what this read remembers one by.
+// (workflow.RefusedAtEveryHead), which is what this read remembers one by.
 //
 // GitHub lists reviews in the order they were created, and a draft keeps its place when it is
 // submitted later, so the list's order decides nothing. Its body is the review's whole body,
@@ -134,10 +136,12 @@ func (w *workflowRuntime) readReviews(ctx, read context.Context, github githubre
 // because the record had not yet reached the head its footer names is judged again by the next
 // read of the issue - the read the runtime makes as it starts, and the one a handoff of the issue
 // queues, there being no other moment it reads one (readIssuePullRequest) - and decides the round
-// once that head has arrived. The refusal a reviewer's own mistake leaves on its row for the
-// stuck notice (record.ReviewDecision.Refused) is the webhook's to record, and the reviewer's row
-// carries it only for a review whose webhook arrived; a review this read alone saw leaves nothing
-// on the row, so the stuck notice of its round carries its base reason and no refusal.
+// once that head has arrived. So is one that waits because the reviewer's claim records no session
+// yet (workflow.RefusedWhileNoSession), which that next read judges by the session recorded then.
+// The refusal a reviewer's own mistake leaves on its row for the stuck notice
+// (record.ReviewDecision.Refused) is the webhook's to record, and the reviewer's row carries it
+// only for a review whose webhook arrived; a review this read alone saw leaves nothing on the row,
+// so the stuck notice of its round carries its base reason and no refusal.
 //
 // A review is judged once per daemon process for the half of the judgement that stands at every
 // head, as a webhook's review is judged once when it is delivered: a review whose author the
@@ -183,7 +187,7 @@ func (w *workflowRuntime) reviewToApply(ctx context.Context, github githubrest.C
 			continue
 		}
 		if !sessionRead {
-			if err := pgx.BeginTxFunc(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+			if err := store.TransactWith(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 				var err error
 				reviewerSession, err = w.engine.ReviewerSession(ctx, tx, pr.Issue)
 				return err
@@ -205,8 +209,9 @@ func (w *workflowRuntime) reviewToApply(ctx context.Context, github githubrest.C
 			"state", resolved.State, "refused", refusal.Reason, "footer_head", resolved.LegionHead(), "head", pr.HeadSHA)
 		// Only a refusal that stands at every head is remembered: a review refused for the head
 		// its footer names is refused at the head the record holds now, and the next read of the
-		// issue judges it at the head the record holds then.
-		if refusal.AtEveryHead {
+		// issue judges it at the head the record holds then; one that waits for the reviewer's
+		// session (workflow.RefusedWhileNoSession), by the session the reviewer's claim records then.
+		if refusal.Lasts == workflow.RefusedAtEveryHead {
 			w.refuseReview(review.ID)
 		}
 	}
@@ -214,9 +219,10 @@ func (w *workflowRuntime) reviewToApply(ctx context.Context, github githubrest.C
 }
 
 // reviewRefused is whether this process has already judged the review GitHub lists under id and
-// found the workflow refuses it at every head (workflow.RoundRefusal.AtEveryHead), and
-// refuseReview records one it has. A review refused for the head it read is in neither: it is
-// judged again at the head the record holds then (reviewToApply). The per-issue
+// found the workflow refuses it at every head (workflow.RefusedAtEveryHead), and
+// refuseReview records one it has. A review refused for the head it read, or one that waits for the
+// reviewer's session, is in neither: it is judged again at the head the record holds, and by the
+// session the reviewer's claim records, then (reviewToApply). The per-issue
 // read (readIssuePullRequest) judges reviews on a goroutine of its own for each issue, so the set
 // is kept under readMemoMu rather than by whichever read touched it last.
 func (w *workflowRuntime) reviewRefused(id int64) bool {

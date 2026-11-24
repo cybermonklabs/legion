@@ -24,6 +24,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/architecture/notes"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
+	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
 	"github.com/sjawhar/envoy/internal/githubtest"
 )
 
@@ -90,6 +91,11 @@ type fakeGitHub struct {
 	// DeliveryPermissions' tests; a repo absent from one of these maps gets "" (no permission).
 	actionsPermissions      map[string]string
 	pullRequestsPermissions map[string]string
+	// installationStatuses is the Commit statuses permission every installation lookup answers,
+	// and tokenPermissions the permissions every token mint answers: GitHub answers both, and the
+	// two can differ while a token minted before a grant changed lives.
+	installationStatuses string
+	tokenPermissions     map[string]string
 	// appInstallations, when non-nil, backs GET /app/installations, paginated at 100 per page; a
 	// nil value answers an empty list. appInstallationsCalls counts every call made, and
 	// appInstallationsRateLimitOnCall (1-indexed, 0 means never) makes that numbered call answer a
@@ -119,6 +125,9 @@ func (f *fakeGitHub) handler() http.Handler {
 		if pullRequests := f.pullRequestsPermissions[name]; pullRequests != "" {
 			permissions["pull_requests"] = pullRequests
 		}
+		if f.installationStatuses != "" {
+			permissions["statuses"] = f.installationStatuses
+		}
 		response := map[string]any{
 			"id":          f.installationID,
 			"app_slug":    "dispatch-test",
@@ -133,8 +142,9 @@ func (f *fakeGitHub) handler() http.Handler {
 		f.tokenMints++
 		w.WriteHeader(http.StatusCreated)
 		if err := json.NewEncoder(w).Encode(map[string]any{
-			"token":      fmt.Sprintf("ghs_fake_%d_%d", f.installationID, f.tokenMints),
-			"expires_at": f.tokenExpiresAt.Format(time.RFC3339),
+			"token":       fmt.Sprintf("ghs_fake_%d_%d", f.installationID, f.tokenMints),
+			"expires_at":  f.tokenExpiresAt.Format(time.RFC3339),
+			"permissions": f.tokenPermissions,
 		}); err != nil {
 			f.t.Errorf("encode token: %v", err)
 		}
@@ -454,6 +464,335 @@ func TestReadAcceptsAResponseAtTheLimit(t *testing.T) {
 	}
 }
 
+// answeringGitHub is a GitHub that answers GET /answer/{status} with that status and the body
+// GitHub gives with it, or no body at all when the query asks for none (?empty=1), a 429 and a
+// 403 with the headers of an exhausted rate limit when the query asks for them (?limited=1), and
+// /large with a body of 64 bytes.
+func answeringGitHub(t *testing.T) (*Client, string) {
+	t.Helper()
+	base := githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/large" {
+			fmt.Fprint(w, strings.Repeat("x", 64))
+			return
+		}
+		status, err := strconv.Atoi(strings.TrimPrefix(r.URL.Path, "/answer/"))
+		if err != nil {
+			githubtest.Unexpected(t, w, r)
+			return
+		}
+		if r.URL.Query().Get("limited") == "1" {
+			w.Header().Set("X-RateLimit-Remaining", "0")
+			w.Header().Set("Retry-After", "60")
+		}
+		w.WriteHeader(status)
+		if status != http.StatusNotModified && r.URL.Query().Get("empty") != "1" {
+			fmt.Fprintf(w, `{"message":"answered %d"}`, status)
+		}
+	}})
+	_, pemText := testKeyPEM(t)
+	client, err := New(&auth.AppConfig{ClientID: "Iv1.testclient", PEM: pemText}, base)
+	if err != nil || client == nil {
+		t.Fatalf("new client: %v", err)
+	}
+	return client, base
+}
+
+// The client notes on the attempt a request's context carries (githubreads) the answers no
+// caller takes as data: a 5xx, a 401, a limit RateLimit reads (a 429, and a 403 that carries
+// one) and a body past the caller's limit, each in the words of the client's own errors, with no
+// separator left at the end of an answer that has no body. Every other answer is the caller's to
+// judge, so a 200, a 304, a 403 that carries no limit, a 404, a 409 and a 422 are not noted. Each
+// request is marked sent either way, and the same request on a context with no attempt is
+// answered exactly as on one with an attempt.
+func TestSendNotesTheAnswersNoCallerTakesAsData(t *testing.T) {
+	client, base := answeringGitHub(t)
+	cases := []struct {
+		name  string
+		path  string
+		etag  string
+		limit int64
+		// cause is the cause noted, "" when the answer is not noted.
+		cause string
+	}{
+		{name: "200", path: "/answer/200"},
+		{name: "304", path: "/answer/304", etag: `"abc"`},
+		{name: "a 403 that carries no limit", path: "/answer/403"},
+		{name: "404", path: "/answer/404"},
+		{name: "409", path: "/answer/409"},
+		{name: "422", path: "/answer/422"},
+		{name: "503", path: "/answer/503", cause: "GET " + base + `/answer/503: status 503: {"message":"answered 503"}`},
+		{name: "500", path: "/answer/500", cause: "GET " + base + `/answer/500: status 500: {"message":"answered 500"}`},
+		{name: "a 503 with no body", path: "/answer/503?empty=1", cause: "GET " + base + "/answer/503?empty=1: status 503"},
+		{name: "401", path: "/answer/401", cause: "GET " + base + `/answer/401: status 401: {"message":"answered 401"}`},
+		{name: "429", path: "/answer/429?limited=1", cause: "GET " + base + `/answer/429?limited=1: rate-limited by GitHub (status 429), next request in 1m0s: {"message":"answered 429"}`},
+		{name: "a 429 with no body", path: "/answer/429?limited=1&empty=1", cause: "GET " + base + "/answer/429?limited=1&empty=1: rate-limited by GitHub (status 429), next request in 1m0s"},
+		{name: "a 403 that RateLimit reads as a limit", path: "/answer/403?limited=1", cause: "GET " + base + `/answer/403?limited=1: rate-limited by GitHub (status 403), next request in 1m0s: {"message":"answered 403"}`},
+		{name: "a body past the caller's limit", path: "/large", limit: 16, cause: "GET " + base + "/large: GitHub response body exceeds the 16-byte limit"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			limit := tc.limit
+			if limit == 0 {
+				limit = responseLimit
+			}
+			read := func(ctx context.Context) string {
+				body, status, _, err := client.ReadConditionalWithin(ctx, "installation-token", tc.path, tc.etag, limit)
+				return fmt.Sprintf("status %d, body %q, error %v", status, body, err)
+			}
+			ctx, attempt := githubreads.Begin(context.Background())
+			withAttempt := read(ctx)
+			if without := read(context.Background()); without != withAttempt {
+				t.Fatalf("with an attempt the read answers %s, and without one %s; want the same answer", withAttempt, without)
+			}
+			sent, failed, cause := attempt.Outcome()
+			if !sent || failed != (tc.cause != "") || cause != tc.cause {
+				t.Fatalf("after %s: sent %v, failed %v, cause %q; want sent and cause %q", withAttempt, sent, failed, cause, tc.cause)
+			}
+		})
+	}
+}
+
+// Each error the client gives for an answer it takes as a failure words that answer with
+// StatusText, `status <n>: <body>`, and ends at `status <n>` when GitHub answered no body: a loop
+// notes such an error as it is, and GET /healthz serves the note as the read's cause, which must
+// not end at a `: ` that nothing follows. A limit GitHub answered with no body ends at its wait
+// the same way (RateLimitError). An answer at a 2xx status ends at its status with GitHub's body
+// too, since that body is the data the call asked for (StatusText). Each row is one call that
+// words such an answer, asked once with no body and once with GitHub's.
+func TestAnErrorOfAnAnswerWithNoBodyEndsAtItsStatus(t *testing.T) {
+	const refusal = `{"message":"refused"}`
+	rows := []struct {
+		name string
+		// refuse is the request GitHub answers with status, "<METHOD> <path>"; the installation
+		// lookup and the token mint a call makes before it are answered as GitHub answers them.
+		refuse string
+		status int
+		call   func(ctx context.Context, client *Client) error
+		// want is the error's text when GitHub answered no body, {base} standing for the API
+		// origin; with a body it is that text, `: ` and the body, unless data says the status is
+		// a 2xx, whose body is data that the text never carries.
+		want string
+		data bool
+	}{{
+		name:   "an installation lookup",
+		refuse: "GET /repos/acme/web/installation",
+		status: http.StatusInternalServerError,
+		call: func(ctx context.Context, client *Client) error {
+			_, err := client.Installation(ctx, "acme", "web")
+			return err
+		},
+		want: "GET {base}/repos/acme/web/installation: status 500",
+	}, {
+		name:   "a token mint",
+		refuse: "POST /app/installations/7/access_tokens",
+		status: http.StatusInternalServerError,
+		call: func(ctx context.Context, client *Client) error {
+			_, err := client.Token(ctx, 7)
+			return err
+		},
+		want: "POST {base}/app/installations/7/access_tokens: status 500",
+	}, {
+		// The mint expects 201, and a 200 would carry the token itself.
+		name:   "a token mint GitHub answered 200",
+		refuse: "POST /app/installations/7/access_tokens",
+		status: http.StatusOK,
+		call: func(ctx context.Context, client *Client) error {
+			_, err := client.Token(ctx, 7)
+			return err
+		},
+		want: "POST {base}/app/installations/7/access_tokens: status 200",
+		data: true,
+	}, {
+		name:   "the repository read of a source's check",
+		refuse: "GET /repos/acme/web",
+		status: http.StatusInternalServerError,
+		call: func(ctx context.Context, client *Client) error {
+			_, err := client.CheckSource(ctx, "acme", "web")
+			return err
+		},
+		want: "GET {base}/repos/acme/web: status 500",
+	}, {
+		name:   "a branch's head commit",
+		refuse: "GET /repos/acme/web/commits/main",
+		status: http.StatusConflict,
+		call: func(ctx context.Context, client *Client) error {
+			_, err := client.Ref(ctx, "ghs_test", "acme", "web", "main")
+			return err
+		},
+		want: "GET {base}/repos/acme/web/commits/main: status 409",
+	}, {
+		name:   "a branch's exact ref",
+		refuse: "GET /repos/acme/web/git/ref/heads/main",
+		status: http.StatusBadGateway,
+		call: func(ctx context.Context, client *Client) error {
+			_, err := client.Branch(ctx, "ghs_test", "acme", "web", "main")
+			return err
+		},
+		want: "GET {base}/repos/acme/web/git/ref/heads/main: status 502",
+	}, {
+		name:   "a directory's listing",
+		refuse: "GET /repos/acme/web/git/trees/c0ffee:docs",
+		status: http.StatusInternalServerError,
+		call: func(ctx context.Context, client *Client) error {
+			_, err := client.Dir(ctx, "ghs_test", "acme", "web", "c0ffee", "docs")
+			return err
+		},
+		want: "GET {base}/repos/acme/web/git/trees/c0ffee:docs: status 500",
+	}, {
+		name:   "a file's blob",
+		refuse: "GET /repos/acme/web/git/blobs/b1",
+		status: http.StatusInternalServerError,
+		call: func(ctx context.Context, client *Client) error {
+			_, err := client.DirFiles(ctx, "ghs_test", "acme", "web", Dir{SHA: "t1", Files: []DirFile{{Name: "a.md", Path: "docs/a.md", SHA: "b1", Size: 1}}})
+			return err
+		},
+		want: "GET {base}/repos/acme/web/git/blobs/b1 (docs/a.md): status 500",
+	}, {
+		name:   "the App webhook's deliveries",
+		refuse: "GET /app/hook/deliveries",
+		status: http.StatusInternalServerError,
+		call: func(ctx context.Context, client *Client) error {
+			_, err := client.Deliveries(ctx, time.Now(), nil)
+			return err
+		},
+		want: "GET {base}/app/hook/deliveries?per_page=100: status 500",
+	}, {
+		name:   "a redelivery request",
+		refuse: "POST /app/hook/deliveries/5/attempts",
+		status: http.StatusUnprocessableEntity,
+		call: func(ctx context.Context, client *Client) error {
+			return client.Redeliver(ctx, 5)
+		},
+		want: "POST {base}/app/hook/deliveries/5/attempts: status 422",
+	}, {
+		name:   "a limit GitHub answered",
+		refuse: "GET /app/hook/deliveries",
+		status: http.StatusTooManyRequests,
+		call: func(ctx context.Context, client *Client) error {
+			_, err := client.Deliveries(ctx, time.Now(), nil)
+			return err
+		},
+		want: "rate-limited by GitHub (status 429), next request in 1m0s",
+	}}
+	for _, row := range rows {
+		for _, answer := range []string{"", refusal} {
+			name := row.name + " with no body"
+			if answer != "" {
+				name = row.name + " with GitHub's body"
+			}
+			t.Run(name, func(t *testing.T) {
+				base := githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
+					switch request := r.Method + " " + r.URL.Path; request {
+					case row.refuse:
+						w.WriteHeader(row.status)
+						fmt.Fprint(w, answer)
+					case "GET /repos/acme/web/installation":
+						fmt.Fprint(w, `{"id":7,"app_slug":"dispatch-test","permissions":{"contents":"read"}}`)
+					case "POST /app/installations/7/access_tokens":
+						w.WriteHeader(http.StatusCreated)
+						fmt.Fprintf(w, `{"token":"ghs_test","expires_at":%q}`, time.Now().Add(time.Hour).Format(time.RFC3339))
+					default:
+						githubtest.Unexpected(t, w, r)
+					}
+				}})
+				_, pemText := testKeyPEM(t)
+				client, err := New(&auth.AppConfig{ClientID: "Iv1.testclient", PEM: pemText}, base)
+				if err != nil {
+					t.Fatalf("new client: %v", err)
+				}
+				want := strings.ReplaceAll(row.want, "{base}", base)
+				if answer != "" && !row.data {
+					want += ": " + answer
+				}
+				if err := row.call(context.Background(), client); err == nil || err.Error() != want {
+					t.Fatalf("the call GitHub answered %d answered %v, want %q", row.status, err, want)
+				}
+			})
+		}
+	}
+}
+
+// A request GitHub gave no answer to is noted, with the error the caller is given: a transport
+// error, and the client's own RequestTimeout ending while the caller's context is live. A request
+// whose caller's context ended is not noted, since the caller's end -- a pass's own bound, or the
+// process shutting down -- is no failure of GitHub's. Both are marked sent.
+func TestSendNotesARequestGitHubDidNotAnswerUnlessItsCallerEnded(t *testing.T) {
+	t.Run("a transport error", func(t *testing.T) {
+		closed := httptest.NewServer(http.NotFoundHandler())
+		closed.Close()
+		_, pemText := testKeyPEM(t)
+		client, err := New(&auth.AppConfig{ClientID: "Iv1.testclient", PEM: pemText}, closed.URL)
+		if err != nil {
+			t.Fatalf("new client: %v", err)
+		}
+		ctx, attempt := githubreads.Begin(context.Background())
+		_, _, _, readErr := client.Read(ctx, "installation-token", "/repos/acme/web")
+		if readErr == nil {
+			t.Fatal("a read of a closed server succeeded")
+		}
+		sent, failed, cause := attempt.Outcome()
+		if !sent || !failed || cause != readErr.Error() || !strings.HasPrefix(cause, "GET "+closed.URL+"/repos/acme/web: ") {
+			t.Fatalf("sent %v, failed %v, cause %q; want sent and the read's own error %q", sent, failed, cause, readErr)
+		}
+	})
+
+	t.Run("the client's own timeout", func(t *testing.T) {
+		client := hangingGitHub(t, nil)
+		saved := RequestTimeout
+		RequestTimeout = 50 * time.Millisecond
+		t.Cleanup(func() { RequestTimeout = saved })
+		ctx, attempt := githubreads.Begin(context.Background())
+		_, _, _, readErr := client.Read(ctx, "installation-token", "/repos/acme/web")
+		if !errors.Is(readErr, context.DeadlineExceeded) {
+			t.Fatalf("a read past RequestTimeout: err = %v, want the deadline", readErr)
+		}
+		sent, failed, cause := attempt.Outcome()
+		if !sent || !failed || cause != readErr.Error() {
+			t.Fatalf("sent %v, failed %v, cause %q; want sent and the read's own error %q", sent, failed, cause, readErr)
+		}
+	})
+
+	t.Run("a caller that ended", func(t *testing.T) {
+		arrived := make(chan struct{}, 1)
+		client := hangingGitHub(t, arrived)
+		caller, end := context.WithCancel(context.Background())
+		defer end()
+		go func() {
+			<-arrived
+			end()
+		}()
+		ctx, attempt := githubreads.Begin(caller)
+		_, _, _, readErr := client.Read(ctx, "installation-token", "/repos/acme/web")
+		if !errors.Is(readErr, context.Canceled) {
+			t.Fatalf("a read whose caller ended: err = %v, want the cancel", readErr)
+		}
+		if sent, failed, cause := attempt.Outcome(); !sent || failed {
+			t.Fatalf("sent %v, failed %v, cause %q; want sent and nothing noted", sent, failed, cause)
+		}
+	})
+}
+
+// hangingGitHub is a client of a GitHub that answers no request until the request's own context
+// ends, signalling arrived, when it is not nil, as each request reaches it.
+func hangingGitHub(t *testing.T, arrived chan<- struct{}) *Client {
+	t.Helper()
+	base := githubtest.Server(t, githubtest.Spec{Handle: func(_ http.ResponseWriter, r *http.Request) {
+		if arrived != nil {
+			select {
+			case arrived <- struct{}{}:
+			default:
+			}
+		}
+		<-r.Context().Done()
+	}})
+	_, pemText := testKeyPEM(t)
+	client, err := New(&auth.AppConfig{ClientID: "Iv1.testclient", PEM: pemText}, base)
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+	return client
+}
+
 func TestGraphQLPostsQueryAndVariablesWithAnInstallationToken(t *testing.T) {
 	fake := &fakeGitHub{t: t}
 	fake.graphQLResponse = map[string]any{"data": map[string]any{"ok": true}}
@@ -635,6 +974,9 @@ func TestNilClientAnswersErrNoAppKey(t *testing.T) {
 	}
 	if _, err := client.CheckSource(context.Background(), "legion", "arch"); !errors.Is(err, ErrNoAppKey) {
 		t.Fatalf("nil client check: got %v, want ErrNoAppKey", err)
+	}
+	if token, statuses, err := client.RepositoryTokenWithStatuses(context.Background(), "legion", "arch"); token != "" || statuses || !errors.Is(err, ErrNoAppKey) {
+		t.Fatalf("nil client RepositoryTokenWithStatuses: got (%q, %v, %v), want no token, no statuses and ErrNoAppKey", token, statuses, err)
 	}
 }
 

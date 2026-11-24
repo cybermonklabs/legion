@@ -2,7 +2,7 @@
  *  what Escape and a click outside do, and the key that toggles it.
  *
  *  Each reads what the page draws over one fixed answer, so each runs against a recording
- *  rather than against a harness (packages/dispatch/AGENTS.md, "The stubbed layer"). The row
+ *  rather than against a harness (packages/dispatch/README.md, "The stubbed layer"). The row
  *  that answers an ask in the drawer over a live conversation stayed in `inbox-drawer.e2e.ts`.
  */
 import { expect } from "@playwright/test";

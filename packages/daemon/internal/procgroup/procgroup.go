@@ -2,13 +2,17 @@
 // child's own child (a helper it spawned, reparented once the direct child is gone) holding its
 // pipes open forever. The stop it gives every such command is SIGTERM to the whole group, a grace
 // in which a command that handles SIGTERM can clean up after itself, and SIGKILL to the group only
-// where something of it is still there when the grace is over.
+// where something of it is still there when the grace is over. It also runs a command through the
+// start its caller chose (Starter, Run), which is how a process that reaps children it does not
+// hold, a container's PID 1, keeps each exit of its own commands for the wait that reads it.
 package procgroup
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -161,16 +165,108 @@ func KilledByContext(cmd *exec.Cmd) (killed func() bool) {
 // Err turns cmd.Run's error into what a caller should propagate: nil whenever cmd has its own
 // real exit to report through cmd.ProcessState.ExitCode() instead — whether that is an ordinary
 // *exec.ExitError or exec.ErrWaitDelay (a clean exit whose I/O draining outlived WaitDelay; Go
-// returns this only once the process itself already exited, Cmd.Run's doc). Any other error (the
-// command never started, or Run failed some other way) is returned unchanged, for the caller to
+// returns this only once the process itself already exited, Cmd.Run's doc). A command a signal
+// ended has no exit of its own (ExitCode answers -1), so its *exec.ExitError (`signal: killed`)
+// is returned unchanged: the kill is what happened, and a caller that read the exit code instead
+// would report a killed command as one that ran and printed nothing. Any other error (the command
+// never started, or Run failed some other way) is returned unchanged too, for the caller to
 // propagate as its own.
 func Err(err error) error {
-	if err == nil {
-		return nil
-	}
-	var exited *exec.ExitError
-	if errors.As(err, &exited) || errors.Is(err, exec.ErrWaitDelay) {
+	if err == nil || Ended(err).Exited != nil || errors.Is(err, exec.ErrWaitDelay) {
 		return nil
 	}
 	return err
+}
+
+// Ending is how a command ended, read out of its run's error (Ended).
+type Ending struct {
+	// Exited is the run's *exec.ExitError when the command exited on its own, so that its
+	// ExitCode is the status the command chose, and nil otherwise.
+	Exited *exec.ExitError
+	// Signal is the signal's own words (`signal: killed`) when a signal ended the command, which
+	// leaves it no status: its ExitCode answers -1.
+	Signal string
+}
+
+// String is the ending as a failure's message names it: `exit 3`, the signal's words, or "" for
+// a run's error that says neither.
+func (e Ending) String() string {
+	if e.Exited != nil {
+		return fmt.Sprintf("exit %d", e.Exited.ExitCode())
+	}
+	return e.Signal
+}
+
+// Ran is whether the command reached an end of its own: an exit or a signal's death. A run's error
+// that says neither (a start that failed) is false.
+func (e Ending) Ran() bool {
+	return e.Exited != nil || e.Signal != ""
+}
+
+// ExitedWith is whether the command exited with code, an exit of its own: a signal's death, whose
+// ExitCode answers -1, never is.
+func (e Ending) ExitedWith(code int) bool {
+	return e.Exited != nil && e.Exited.ExitCode() == code
+}
+
+// Ended reads err, the error a command's run answered, as how the command ended. Both of the
+// Ending's fields are empty for any err that says neither: nil, a start that failed,
+// exec.ErrWaitDelay. Code that reads a status or a signal out of a run's error reads it here, so
+// a signal's death is never read as the status -1; a caller that reads the status from
+// cmd.ProcessState passes the run's error through Err instead.
+func Ended(err error) Ending {
+	var ended *exec.ExitError
+	if !errors.As(err, &ended) || ended.ProcessState == nil {
+		return Ending{}
+	}
+	if ended.Exited() {
+		return Ending{Exited: ended}
+	}
+	return Ending{Signal: ended.String()}
+}
+
+// Said is err with output beneath it, on a line of its own, when err is a signal's death (Ended)
+// and output, trimmed, says anything: a command a signal ended answered no status, but what it
+// printed before the signal may say why it was failing, and a caller that propagates err alone
+// would drop it, where the same command's failed exit carries it. Any other err is returned
+// unchanged: an exit's caller reads the output beside its status itself, and a command that never
+// started printed nothing. A caller whose command can print a credential scrubs output first.
+func Said(err error, output string) error {
+	if trimmed := strings.TrimSpace(output); trimmed != "" && Ended(err).Signal != "" {
+		return fmt.Errorf("%w\n%s", err, trimmed)
+	}
+	return err
+}
+
+// Starter starts cmd and answers done, which the caller calls once cmd.Wait has read cmd's exit,
+// and only when the start succeeded. The pod's launcher is its container's PID 1 and reaps every
+// exited child it does not hold, so it passes one that holds the child out of that reaper until
+// its own wait has read the exit (internal/launcher's pidGuard): a child that reaper took first
+// fails its own wait with `waitid: no child processes`, or under gVisor at times `wait: no child
+// processes` or `waitid: no such process`. Every other process passes NoReaper. There is no
+// default: every caller names the one it runs under, so code the launcher reaches cannot start a
+// child through one it did not choose (internal/launcher's
+// TestEveryChildTheLaunchersProcessWaitsForStartsWhereNoReapTakesIt reads every start that process
+// reaches).
+type Starter func(cmd *exec.Cmd) (done func(), err error)
+
+// NoReaper is the Starter of a process that reaps no child it did not start itself: cmd.Start,
+// and nothing to do once the wait has read the exit.
+func NoReaper(cmd *exec.Cmd) (func(), error) {
+	return func() {}, cmd.Start()
+}
+
+// Run is cmd.Run with the start the caller chose (Starter, which may not be nil): a start that
+// fails is answered as it is, with cmd.Process left nil as Run's own leaves it, and otherwise
+// cmd.Wait's answer, with done called once the wait has read the exit.
+func Run(cmd *exec.Cmd, start Starter) error {
+	if start == nil {
+		panic("procgroup.Run: no Starter for " + cmd.Path + "; pass NoReaper outside a process that reaps")
+	}
+	done, err := start(cmd)
+	if err != nil {
+		return err
+	}
+	defer done()
+	return cmd.Wait()
 }

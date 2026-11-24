@@ -21,9 +21,8 @@ type issueSeed struct {
 }
 
 // seedIssues replaces project's issues with issues, in order, each parent written before its child.
-// deliveryTestPool's database is shared by the package's tests, so a test owns only the projects it
-// names. One delete statement clears them, so a parent chain or a cycle a failed run left is
-// removed whole.
+// A test may seed one project twice. One delete statement clears its issues, so a parent chain or
+// a cycle the earlier seed wrote is removed whole.
 func seedIssues(t *testing.T, ctx context.Context, pool *store.Pool, project string, issues []issueSeed) {
 	t.Helper()
 	if _, err := pool.Exec(ctx, `delete from issues where project_key = $1`, project); err != nil {
@@ -181,6 +180,47 @@ func TestIssueAncestorsStopsAtTheDepthCap(t *testing.T) {
 		want := map[int][]string{1: {"LIVED-1"}, 2: {"LIVED-1", "LIVED-3"}, 32: {"LIVED-1", "LIVED-2", "LIVED-3"}}[maxDepth]
 		if got := keysOf(ancestors); !slices.Equal(got, want) {
 			t.Fatalf("IssueAncestors(LIVED-2) over a cycle, maxDepth %d = %v, want %v", maxDepth, got, want)
+		}
+	}
+}
+
+// IssueAncestors answers the issues whose component choice a key can inherit, and a key inherits
+// only from ancestors of its own project: the walk ends at the first ancestor of another project
+// as at a root. BETA-1 under ALPHA-1 has none, BETA-3 under ALPHA-2 under BETA-4 has none, and
+// ALPHA-2 under BETA-4 has none, while BETA-2 under BETA-1 has BETA-1 and ALPHA-5 under ALPHA-1
+// has ALPHA-1. Keys of two projects read together each keep to their own.
+func TestIssueAncestorsStopsAtTheProjectEdge(t *testing.T) {
+	pool, ctx := deliveryTestPool(t)
+	seedIssues(t, ctx, pool, "ALPHA", []issueSeed{
+		{key: "ALPHA-1"},
+		{key: "ALPHA-2"},
+		{key: "ALPHA-5", parent: "ALPHA-1"},
+	})
+	seedIssues(t, ctx, pool, "BETA", []issueSeed{
+		{key: "BETA-1", parent: "ALPHA-1"},
+		{key: "BETA-2", parent: "BETA-1"},
+		{key: "BETA-4"},
+		{key: "BETA-3", parent: "ALPHA-2"},
+	})
+	setParent(t, ctx, pool, "ALPHA-2", "BETA-4")
+
+	for _, tc := range []struct {
+		keys []string
+		want []string
+	}{
+		{keys: []string{"BETA-1"}, want: nil},
+		{keys: []string{"BETA-3"}, want: nil},
+		{keys: []string{"ALPHA-2"}, want: nil},
+		{keys: []string{"BETA-2"}, want: []string{"BETA-1"}},
+		{keys: []string{"ALPHA-5"}, want: []string{"ALPHA-1"}},
+		{keys: []string{"BETA-2", "ALPHA-5"}, want: []string{"ALPHA-1", "BETA-1"}},
+	} {
+		ancestors, err := IssueAncestors(ctx, pool, tc.keys, 32)
+		if err != nil {
+			t.Fatalf("IssueAncestors(%v): %v", tc.keys, err)
+		}
+		if got := keysOf(ancestors); !slices.Equal(got, tc.want) {
+			t.Errorf("IssueAncestors(%v) = %v, want %v", tc.keys, got, tc.want)
 		}
 	}
 }

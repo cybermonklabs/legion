@@ -2,6 +2,7 @@
   "url": "https://github.com/cybermonklabs/legion",
   "default_permissions": {
     "actions": "write",
+    "attestations": "read",
     "checks": "read",
     "contents": "write",
     "issues": "write",

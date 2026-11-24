@@ -16,21 +16,28 @@ package api
 //     and a message's project is written when the row is inserted and updated by no route: no
 //     `update ... set project_key` and no `update ... set issue_key` exists outside the
 //     migrations and the tests, and the three writes that take another issue's project into
-//     account move nothing: a parent and a rank neighbour outside the issue's own project are
-//     refused, while a `blocked_by` target may be an issue of any project, which the write
+//     account move nothing: a rank neighbour outside the issue's own project is refused, while
+//     a parent and a `blocked_by` target may each be an issue of any project, which the write
 //     refuses only to a caller whose credential names one project (`PROJECT_SCOPE`, written
 //     inside the write because this check reads the project of the object the path names and no
 //     key in the body). So the project this check reads before the handler runs is the project
 //     the handler will write, and the check needs no transaction of its own.
 //   - The check is a no-op for a credential that carries no project: a browser cookie, a personal
 //     agent token, a Kubernetes service-account token and the shared token name none, and so do
-//     the two access tokens the broker scopes to a person rather than to one project, each of
-//     which reaches brokerTokenActor with no Project. One is a dev box session's, unscoped here
-//     with no second mechanism of its own; the other is a machine's that names a service and no
-//     person, whose every write writeNeedsASignedInPerson refuses below. Both carry
-//     `project_scope` `person`. That is the rule and not a transitional measure: every caller
-//     that exists today writes exactly what it wrote before, which is what lets this deploy
-//     before anything presents a broker token.
+//     four access tokens the broker issues, each of which reaches brokerTokenActor with no
+//     Project. Two of them the broker scopes to a person rather than to one project, and both
+//     carry `project_scope` `person`: a dev box session's, unscoped here with no second mechanism
+//     of its own, and a machine's that names a service and no person, whose every write
+//     writeNeedsASignedInPerson refuses below. The third is the `named` token of an account
+//     entry that names no project (`<service account>==<person>`, the shared public-session
+//     account's), which names its person and writes wherever Dispatch's own rules let it
+//     (brokerTokenActor). The fourth is a read-only token, which carries `project_scope` `none`
+//     and the scope `read` alone, names a service and no person, and never reaches this check:
+//     the read-only gate register puts outside it answers that token
+//     403 READ_ONLY_TOKEN on every route the read list does not name, every write among them
+//     (refuseReadOnlyToken, readScopeRoutes). That is the rule and not a transitional measure:
+//     every caller that exists today writes exactly what it wrote before, which is what lets
+//     this deploy before anything presents a broker token.
 //
 // For a credential that does name a project, the check fails closed: only a target that
 // resolves to that credential's own project reaches the handler. A target that resolves to
@@ -62,7 +69,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
-	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
@@ -84,9 +91,10 @@ const (
 // without resolving anything: a browser cookie, a personal agent token, a Kubernetes
 // service-account token and the shared token each name no project and prove no session, so a
 // request presenting no DPoP-bound token is outside both checks. A credential that does not
-// resolve is outside them too: its own refusal is the handler's to write.
+// resolve is outside them too: its refusal is written further in, by the keyed layer for a keyed
+// write and by the handler for any other.
 func (s *server) brokerCredentialActor(r *http.Request) (model.Actor, bool) {
-	if _, presented := brokertoken.Presented(r); !presented {
+	if _, presented := ciphertoken.Presented(r); !presented {
 		return model.Actor{}, false
 	}
 	actor, _, err := s.optionalActor(r)
@@ -220,8 +228,10 @@ func (s *server) projectOfMessage(ctx context.Context, q queryer, r *http.Reques
 // projectOfCheckResult is one hop to the project of the issue the result was recorded on,
 // since the check_results table holds no project of its own
 // (store/migrations/20261102122200_check_results.up.sql). It reads issue_key and not
-// check_issue_key: a result recorded on a child against a parent's check belongs to the child,
-// and both issues are of one project anyway, since an issue's parent is of its own project.
+// check_issue_key: a result recorded on a child against a parent's check belongs to the child.
+// The two issues can be of different projects, since an issue's parent may be of another
+// project, so a retraction refuses a scoped caller a check of another project itself
+// (refuseCheckOutsideCallerProject), as the record route does.
 func (s *server) projectOfCheckResult(ctx context.Context, q queryer, r *http.Request) (string, error) {
 	return scanProjectKey(q.QueryRow(ctx, `
 		select coalesce(i.project_key, '')
@@ -229,6 +239,30 @@ func (s *server) projectOfCheckResult(ctx context.Context, q queryer, r *http.Re
 		left join issues i on i.key = c.issue_key
 		where c.id = $1
 	`, r.PathValue("id")))
+}
+
+// refuseCheckOutsideCallerProject refuses a caller whose credential names one project, caller, a
+// check whose issue, checkIssue, is of another project: 403 PROJECT_SCOPE, naming the issue and
+// both projects. The results routes reach such a check through a parent of another project
+// (resolveCheck reads the Verification documents of every issue above the recording one), and a
+// result and its retraction are appended to the check's issue, which the pre-handler check,
+// reading only the path's object, never judged. A caller that names no project (caller "") is
+// let through, as everywhere else. An issue with no row resolves to no project and is refused,
+// failing closed as the pre-handler check does.
+func refuseCheckOutsideCallerProject(ctx context.Context, q queryer, caller, checkIssue string) error {
+	if caller == "" {
+		return nil
+	}
+	project, err := scanProjectKey(q.QueryRow(ctx, `select project_key from issues where key = $1`, checkIssue))
+	if err != nil {
+		return err
+	}
+	if project == caller {
+		return nil
+	}
+	return errorf(http.StatusForbidden, codeProjectScope,
+		"this request's credential may write project %s; the check's issue %s belongs to project %s",
+		caller, checkIssue, project)
 }
 
 // scanProjectKey reads a resolver's one column, answering no project for a target that does not
@@ -398,6 +432,11 @@ func addressesOneSession(route apiRoute) bool {
 // session that accepted a delivery or answered an ask under it would write as nobody. The
 // refusal's message names `agent-secrets login`, the command that signs a person in on that
 // machine, since running it is the whole remedy.
+//
+// A read-only token names a service and no person too, but it is no such caller: it reads only
+// what the read list names, and signing a person in is no remedy for it. It never reaches this
+// check, since the read-only gate register puts outside it has already answered it 403
+// READ_ONLY_TOKEN (refuseReadOnlyToken).
 //
 // Every other credential is unaffected: a cookie, a personal token, a service-account token, the
 // shared token and a broker token that does name a person each reach the handler as before, at

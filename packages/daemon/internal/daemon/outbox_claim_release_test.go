@@ -172,7 +172,7 @@ func (r *claimReleaseRig) heldByOperator() {
 	if err != nil {
 		r.t.Fatalf("the project token of LEGION: %v", err)
 	}
-	if err := pgx.BeginFunc(context.Background(), r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		_, err := record.NewStore().OpenTreeLifecycle(context.Background(), tx, token, claimTree, treelifecycle.AuthorityOperator)
 		return err
 	}); err != nil {
@@ -274,6 +274,7 @@ func seedControllerClaim(t *testing.T, pool *store.Pool, project, session string
 // Dispatch's answers, and that an issue's release row waiting on its holder holds nothing else of
 // that issue back.
 func TestReleaseClaimRow(t *testing.T) {
+	t.Parallel()
 	t.Run("holders", testReleaseClaimHolders)
 	t.Run("the record", testReleaseClaimRecord)
 	t.Run("answers", testReleaseClaimAnswers)
@@ -390,9 +391,9 @@ func testReleaseClaimRecord(t *testing.T) {
 // refusal no retry repairs ends the row with that refusal logged; and an outage, whatever its
 // shape, is ridden out and the next attempt releases the claim.
 func testReleaseClaimAnswers(t *testing.T) {
-	// A claim release's backoff climbs to retryBackoff's cap, so one advance of the cap brings
+	// A claim release's backoff climbs to record.RetryBackoffMost, so one advance of the cap brings
 	// every attempt but the one the hour ends on due again.
-	const capped = 64 * time.Second
+	const capped = record.RetryBackoffMost
 	for _, tc := range []struct {
 		name string
 		// age is how old the row already is at its first attempt.
@@ -499,7 +500,7 @@ func testReleaseClaimLane(t *testing.T) {
 	runLanes(t, runner, clock)
 
 	commitRows(t, pool, runner.records, "release", mustOutboxRow(t, claimIssue, record.ClaimRelease{}, clock.Now()))
-	backoff := retryBackoff(0)
+	backoff := record.RetryBackoff(0)
 	testwait.Eventually(t, "the release waited on its holder and its lane armed the backoff", func() bool {
 		live, _ := clock.armed(backoff)
 		return live == 1 && len(client.releases()) == 1
@@ -516,7 +517,7 @@ func testReleaseClaimLane(t *testing.T) {
 	// the wait above saw, so the count is waited for rather than read once: read once, it can run
 	// between the two and find a delivered row still there.
 	var left int
-	if !testwait.Holds(testwait.Bounded(t, time.Minute, time.Second), testwait.Poll, func() bool {
+	if !testwait.Holds(testwait.Remaining(t), testwait.Poll, func() bool {
 		left = outboxRowsOf(t, pool, claimIssue)
 		return left == 1
 	}) {

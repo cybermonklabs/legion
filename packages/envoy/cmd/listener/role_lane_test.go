@@ -35,20 +35,20 @@ import (
 func TestRoleLaneForwarderPublishesEachHoldersForwardsInOrderWithoutWaitingForOutcomes(t *testing.T) {
 	const perHolder = 50
 	harness := newListenerDeliveryHarness(t)
-	silent, live := contracts.AgentSubject("ses_forwarder_silent"), contracts.AgentSubject("ses_forwarder_live")
+	silent, live := contracts.LegacyAgentSubject("ses_forwarder_silent"), contracts.LegacyAgentSubject("ses_forwarder_live")
 	release, settling := make(chan struct{}), make(chan struct{})
 	var mu sync.Mutex
 	published := map[string][]string{}
 	var settled atomic.Int32
 	cfg := harness.config
-	cfg.forwardRole = func(subject string, item contracts.Envelope, _ string, _ time.Duration) (func() error, error) {
+	cfg.forwardRole = func(subject string, item contracts.Envelope, _ string, _ time.Duration) (func() (bus.StoredAck, error), error) {
 		mu.Lock()
 		published[subject] = append(published[subject], item.EventID)
 		mu.Unlock()
 		if subject == silent {
-			return func() error { <-release; return bus.ErrForwardNotStored }, nil
+			return func() (bus.StoredAck, error) { <-release; return bus.StoredAck{}, bus.ErrForwardNotStored }, nil
 		}
-		return func() error { settled.Add(1); <-settling; return nil }, nil
+		return func() (bus.StoredAck, error) { settled.Add(1); <-settling; return bus.StoredAck{}, nil }, nil
 	}
 	forwarder := newRoleForwarder(cfg)
 	closeOnce := func(held chan struct{}) {
@@ -64,7 +64,7 @@ func TestRoleLaneForwarderPublishesEachHoldersForwardsInOrderWithoutWaitingForOu
 	for i := range perHolder {
 		for _, sessionID := range []string{"ses_forwarder_silent", "ses_forwarder_live"} {
 			item := listenerTestEnvelope(contracts.RoleTopicPrefix+"forwarder-"+sessionID, fmt.Sprintf("forwarder-%s-%d", sessionID, i))
-			handed[contracts.AgentSubject(sessionID)] = append(handed[contracts.AgentSubject(sessionID)], item.EventID)
+			handed[contracts.LegacyAgentSubject(sessionID)] = append(handed[contracts.LegacyAgentSubject(sessionID)], item.EventID)
 			forwarder.enqueue(roleForward{item: item, sessionID: sessionID})
 		}
 	}
@@ -149,7 +149,7 @@ type roleLaneFrame struct {
 func receiveRoleForwards(t *testing.T, conn *natsgo.Conn, sessionID string) <-chan roleLaneFrame {
 	t.Helper()
 	frames := make(chan roleLaneFrame, 1024)
-	subscription, err := conn.Subscribe(contracts.AgentSubject(sessionID), func(msg *natsgo.Msg) {
+	subscription, err := conn.Subscribe(contracts.LegacyAgentSubject(sessionID), func(msg *natsgo.Msg) {
 		arrived := time.Now()
 		var item contracts.Envelope
 		if err := json.Unmarshal(msg.Data, &item); err != nil {
@@ -307,7 +307,7 @@ func TestRoleLaneForwardsAndStoresEachRoleMessageOnceAcrossTwoListeners(t *testi
 	}
 	frames := gatherForwards(holderFrames, messages, 10*time.Second, time.Second)
 	forwards := settledRoleForwards(role, messages, listeners...)
-	stored := storedForwards(t, client, contracts.AgentSubject(holderID))
+	stored := storedForwards(t, client, contracts.LegacyAgentSubject(holderID))
 	t.Logf("%d role messages: the holder received %d forwards, the listeners logged %d, the stream stores %d", messages, len(frames), forwards, stored)
 	if len(frames) != messages || forwards != messages || stored != messages {
 		t.Fatalf("%d role messages: the holder received %d forwards, the listeners logged %d, the stream stores %d; want %d of each", messages, len(frames), forwards, stored, messages)
@@ -447,7 +447,7 @@ func TestRoleLaneRefusedSharedQueueFallsBackToMachineGroupsAndStoresOneCopy(t *t
 	if forwards := settledRoleForwards(role, 2*messages, listeners...); forwards != 2*messages {
 		t.Fatalf("the listeners logged %d forwards, want %d, every message from each", forwards, 2*messages)
 	}
-	if stored := storedForwards(t, client, contracts.AgentSubject(holderID)); stored != messages {
+	if stored := storedForwards(t, client, contracts.LegacyAgentSubject(holderID)); stored != messages {
 		t.Fatalf("the stream stores %d forwards on the holder's agent subject, want one per message, %d", stored, messages)
 	}
 }

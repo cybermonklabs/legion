@@ -1,0 +1,3 @@
+kind: Added
+body: |-
+  `EnvoyApiError` carries `retryAfterSeconds`, the `retry_after_seconds` of the listener's 429 `sender_rate_limited`, and its message is the listener's sentence. The client does not send a refused message again.

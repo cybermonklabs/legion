@@ -1,34 +1,10 @@
-import { expect, jest, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { expect, type Mock, spyOn, test } from "bun:test";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { ReactNode } from "react";
 
-import { realClock, tick } from "../../__tests__/fake-clock";
-import { userOnFakeClock } from "../../__tests__/user";
-import { ApiError, api } from "../../api/client";
-import { ArtifactDropZone, ArtifactUploadRow, useArtifactUpload } from "./ArtifactUpload";
-
-function TestHarness(): ReactNode {
-  const upload = useArtifactUpload({ issue: "CORE-1" });
-  return (
-    <ArtifactDropZone upload={upload}>
-      <ArtifactUploadRow upload={upload} />
-    </ArtifactDropZone>
-  );
-}
-
-function renderHarness() {
-  const queryClient = new QueryClient({
-    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
-  });
-  queryClient.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
-  return render(
-    <QueryClientProvider client={queryClient}>
-      <TestHarness />
-    </QueryClientProvider>
-  );
-}
+import { ApiError, api, NetworkError } from "../../api/client";
+import { captureUploadBase, ReplacingUploadNote } from "./ArtifactUpload";
+import { renderHarness, UPLOADED } from "./artifact-upload-fixture";
 
 test("choosing a file stages it behind a summary field instead of uploading immediately", async () => {
   const user = userEvent.setup();
@@ -76,6 +52,10 @@ test("confirming the staged file uploads it with the typed summary", async () =>
       summary: "First draft",
     },
   });
+  // The issue holds no notes.md yet, so this upload has no base to name.
+  const ownerArtifactText = spyOn(api, "ownerArtifactText").mockRejectedValue(
+    new ApiError(404, { code: "ARTIFACT_NOT_FOUND", error: "artifact not found" })
+  );
   const view = renderHarness();
 
   try {
@@ -96,40 +76,286 @@ test("confirming the staged file uploads it with the typed summary", async () =>
   } finally {
     view.unmount();
     uploadArtifact.mockRestore();
+    ownerArtifactText.mockRestore();
   }
 });
 
-// Dispatch stored the file and lost its answer (`409 KEY_COMMITTED`): the staged file and its
-// summary go, the row says what was stored, and the row's Upload is the picker again, so a second
-// press sends nothing.
-test("an upload answered KEY_COMMITTED lets go of the staged file, says it was stored, and a second press sends nothing", async () => {
-  jest.useFakeTimers();
-  const user = userOnFakeClock();
-  const uploadArtifact = spyOn(api, "uploadArtifact").mockRejectedValue(
-    new ApiError(409, { code: "KEY_COMMITTED", error: "already made" })
+/** Stages `notes.md` and presses Upload, waiting until `text` has answered the base read, which
+ *  the choice of the file starts. It drives the control as a person does (`userEvent`), as every
+ *  other case in this file does. */
+async function uploadNotes(text: Mock<typeof api.ownerArtifactText>): Promise<void> {
+  const user = userEvent.setup();
+  const file = new File(["content"], "notes.md", { type: "text/markdown" });
+  await user.upload(screen.getByLabelText("Upload artifact"), [file]);
+  await screen.findByText("notes.md");
+  await waitFor(() => expect(text).toHaveBeenCalledTimes(1));
+  await user.click(screen.getByRole("button", { name: "Upload" }));
+}
+
+test("an upload over a document the issue already holds names the base it replaces", async () => {
+  const ownerArtifactText = spyOn(api, "ownerArtifactText").mockResolvedValue({
+    markdown: "# Notes\n",
+    token: "sha256:live-notes",
+    version: 1,
+  });
+  const uploadArtifact = spyOn(api, "uploadArtifact").mockResolvedValue(UPLOADED);
+  const view = renderHarness();
+
+  try {
+    await uploadNotes(ownerArtifactText);
+    await waitFor(() => expect(uploadArtifact).toHaveBeenCalledTimes(1));
+    // The name is read as Dispatch resolves an upload's: by the owner's own artifact route.
+    expect(ownerArtifactText.mock.calls[0]).toEqual([{ issue: "CORE-1" }, "notes.md"]);
+    const [, input] = uploadArtifact.mock.calls[0] ?? [];
+    expect(input?.precondition).toEqual({ document: "sha256:live-notes" });
+  } finally {
+    view.unmount();
+    uploadArtifact.mockRestore();
+    ownerArtifactText.mockRestore();
+  }
+});
+
+test("the first upload of a name has no base to name, and names none", async () => {
+  const ownerArtifactText = spyOn(api, "ownerArtifactText").mockRejectedValue(
+    new ApiError(404, { code: "ARTIFACT_NOT_FOUND", error: "artifact not found" })
   );
+  const uploadArtifact = spyOn(api, "uploadArtifact").mockResolvedValue(UPLOADED);
+  const view = renderHarness();
+
+  try {
+    await uploadNotes(ownerArtifactText);
+    await waitFor(() => expect(uploadArtifact).toHaveBeenCalledTimes(1));
+    const [, input] = uploadArtifact.mock.calls[0] ?? [];
+    expect(input?.precondition).toBeUndefined();
+  } finally {
+    view.unmount();
+    uploadArtifact.mockRestore();
+    ownerArtifactText.mockRestore();
+  }
+});
+
+// The window this upload guards runs from the choice of the file to the post: the token is read
+// when the person picks what to upload, so a write landing while they type a summary is refused
+// rather than written over. A read at the press would guard that press and nothing more.
+test("the base is read when the file is chosen, and the press sends that one", async () => {
+  const user = userEvent.setup();
+  const ownerArtifactText = spyOn(api, "ownerArtifactText")
+    .mockResolvedValueOnce({ markdown: "# Notes\n", token: "sha256:chosen", version: 1 })
+    .mockResolvedValue({ markdown: "# Notes\n", token: "sha256:moved-on", version: 2 });
+  const uploadArtifact = spyOn(api, "uploadArtifact").mockResolvedValue(UPLOADED);
   const view = renderHarness();
 
   try {
     const file = new File(["content"], "notes.md", { type: "text/markdown" });
     await user.upload(screen.getByLabelText("Upload artifact"), [file]);
     await screen.findByText("notes.md");
-    await user.click(screen.getByRole("button", { name: "Upload" }));
-
-    const made = await screen.findByTestId("landed-without-answer");
-    expect(made.textContent).toBe(
-      "The upload of notes.md was made, but Dispatch lost its answer, so it may take a moment to appear."
-    );
-    expect(screen.queryByLabelText("Summary (optional)")).not.toBeInTheDocument();
-    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    await waitFor(() => expect(ownerArtifactText).toHaveBeenCalledTimes(1));
+    expect(uploadArtifact).not.toHaveBeenCalled();
 
     await user.click(screen.getByRole("button", { name: "Upload" }));
-    await tick(20);
-    expect(uploadArtifact).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(uploadArtifact).toHaveBeenCalledTimes(1));
+    expect(ownerArtifactText).toHaveBeenCalledTimes(1);
+    const [, input] = uploadArtifact.mock.calls[0] ?? [];
+    expect(input?.precondition).toEqual({ document: "sha256:chosen" });
   } finally {
-    realClock();
     view.unmount();
     uploadArtifact.mockRestore();
+    ownerArtifactText.mockRestore();
+  }
+});
+
+// Dispatch decides a document by the media type alone, as `mime.ParseMediaType` reads it
+// (`artifactKind` in the server's `api/artifacts.go`): `text/markdown; charset=utf-8`, which a
+// browser does declare, is `text/markdown` there. A page comparing the string the browser gave
+// would read no base for it and replace the document naming nothing.
+test("a markdown file whose declared type carries a charset names its base", async () => {
+  const user = userEvent.setup();
+  const ownerArtifactText = spyOn(api, "ownerArtifactText").mockResolvedValue({
+    markdown: "# Notes\n",
+    token: "sha256:live-notes",
+    version: 1,
+  });
+  const uploadArtifact = spyOn(api, "uploadArtifact").mockResolvedValue(UPLOADED);
+  const view = renderHarness();
+
+  try {
+    const file = new File(["content"], "notes.md", { type: "text/markdown; charset=utf-8" });
+    await user.upload(screen.getByLabelText("Upload artifact"), [file]);
+    await screen.findByText("notes.md");
+    await waitFor(() => expect(ownerArtifactText).toHaveBeenCalledTimes(1));
+    await user.click(screen.getByRole("button", { name: "Upload" }));
+
+    await waitFor(() => expect(uploadArtifact).toHaveBeenCalledTimes(1));
+    const [, input] = uploadArtifact.mock.calls[0] ?? [];
+    expect(input?.precondition).toEqual({ document: "sha256:live-notes" });
+  } finally {
+    view.unmount();
+    uploadArtifact.mockRestore();
+    ownerArtifactText.mockRestore();
+  }
+});
+
+// Two answers mean there is no base to name, and no others: the owner holds no document under
+// that name, and the document's tree is outside the Proof schema, which an upload repairs. A
+// read that failed any other way is carried back, because an upload naming no base replaces the
+// document, and "the page could not read it" is no reason to do that.
+test("only a missing document and a tree outside the Proof schema mean no base to name", async () => {
+  const file = new File(["content"], "notes.md", { type: "text/markdown" });
+  const owner = { issue: "CORE-1" };
+  const text = spyOn(api, "ownerArtifactText");
+
+  try {
+    text.mockRejectedValueOnce(
+      new ApiError(404, { code: "ARTIFACT_NOT_FOUND", error: "artifact not found" })
+    );
+    expect(await captureUploadBase(owner, file)).toEqual({ token: undefined });
+
+    text.mockRejectedValueOnce(
+      new ApiError(409, {
+        code: "DOC_SCHEMA",
+        error:
+          "document is outside the Proof schema; replace the document from markdown to repair it",
+      })
+    );
+    expect(await captureUploadBase(owner, file)).toEqual({ token: undefined });
+
+    const unreachable = new NetworkError(
+      "/api/v1/issues/CORE-1/artifacts/notes.md/text",
+      new TypeError("Failed to fetch")
+    );
+    text.mockRejectedValueOnce(unreachable);
+    expect(await captureUploadBase(owner, file)).toEqual({ unreadable: unreachable });
+
+    const lapsed = new ApiError(401, { code: "AUTH_NO_IDENTITY", error: "not signed in" });
+    text.mockRejectedValueOnce(lapsed);
+    expect(await captureUploadBase(owner, file)).toEqual({ unreadable: lapsed });
+
+    const down = new ApiError(503, { code: "UNAVAILABLE", error: "the server is down" });
+    text.mockRejectedValueOnce(down);
+    expect(await captureUploadBase(owner, file)).toEqual({ unreadable: down });
+  } finally {
+    text.mockRestore();
+  }
+});
+
+// What the row says when that read failed: nothing was uploaded, and what Dispatch said of the
+// read, which here names the two documents the filename answers to. The staged file stays, so
+// the next press reads the token again.
+test("a base read Dispatch refused ends the upload with its own message and posts nothing", async () => {
+  const ambiguous =
+    '"notes.md" names 2 documents on this issue; use a slug: notes-md (notes.md), ' +
+    "notes-md-2 (notes.md)";
+  const ownerArtifactText = spyOn(api, "ownerArtifactText").mockRejectedValue(
+    new ApiError(400, { code: "ARTIFACT_REFERENCE_AMBIGUOUS", error: ambiguous })
+  );
+  const uploadArtifact = spyOn(api, "uploadArtifact").mockResolvedValue(UPLOADED);
+  const view = renderHarness();
+
+  try {
+    await uploadNotes(ownerArtifactText);
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toBe(
+      `Could not read the document this upload would replace, so nothing was uploaded. ${ambiguous}`
+    );
+    expect(uploadArtifact).not.toHaveBeenCalled();
+    expect(screen.getByText("notes.md")).not.toBeNull();
+  } finally {
+    view.unmount();
+    uploadArtifact.mockRestore();
+    ownerArtifactText.mockRestore();
+  }
+});
+
+// The base the dashboard reads for itself can be behind the live document by the time the upload
+// lands — an agent writing that document, or another person uploading it — which is the race the
+// base exists to catch, and the dashboard is now a caller that meets it. What the person reads
+// then is whatever the server wrote, and the server writes for a caller holding the `dispatch`
+// command: a person uploading in the browser has no command to run and no token to paste, so the
+// row must say the document changed under them and what to do in the dashboard.
+test("a refused upload tells the person the document changed, not a command to run", async () => {
+  const ownerArtifactText = spyOn(api, "ownerArtifactText").mockResolvedValue({
+    markdown: "# Notes\n",
+    token: "sha256:stale-notes",
+    version: 1,
+  });
+  const uploadArtifact = spyOn(api, "uploadArtifact").mockRejectedValue(
+    // The sentence the server sends, read from a live Dispatch at this head:
+    // POST /api/v1/issues/CORE-11/artifacts with a base behind the live document.
+    new ApiError(409, {
+      code: "PRECONDITION_FAILED",
+      error:
+        "document edit precondition failed: document changed; read the document with " +
+        "`dispatch doc-read`, which prints `Document token: sha256:…`, and upload again naming " +
+        'that token as `--precondition-json \'{"document":"sha256:…"}\'`',
+    })
+  );
+  const view = renderHarness();
+
+  try {
+    await uploadNotes(ownerArtifactText);
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("changed");
+    expect(alert.textContent).not.toContain("dispatch doc-read");
+    expect(alert.textContent).not.toContain("--precondition-json");
+  } finally {
+    view.unmount();
+    uploadArtifact.mockRestore();
+    ownerArtifactText.mockRestore();
+  }
+});
+
+// `PRECONDITION_REQUIRED` means this upload named no base, not that the document changed under
+// it. The page names one for every document whose token it could read and ends the upload where
+// that read failed, so what reaches this is a document created between the page's read and its
+// post. Told "this document changed while you were uploading it", a person whose upload was the
+// first of that name would be told something untrue.
+test("an upload Dispatch required a version of is told it named none, not that the document changed", async () => {
+  const ownerArtifactText = spyOn(api, "ownerArtifactText").mockRejectedValue(
+    new ApiError(404, { code: "ARTIFACT_NOT_FOUND", error: "artifact not found" })
+  );
+  const uploadArtifact = spyOn(api, "uploadArtifact").mockRejectedValue(
+    // The sentence the server sends when a replacement names no version, which it refuses
+    // whatever the deployment (`api/artifacts.go` in the server).
+    new ApiError(400, {
+      code: "PRECONDITION_REQUIRED",
+      error:
+        'an upload replacing document "notes.md" must name the token of the version it ' +
+        "replaces: read the " +
+        "document with `dispatch doc-read`, which prints `Document token: sha256:…`, and " +
+        'upload again naming that token as `--precondition-json \'{"document":"sha256:…"}\'`',
+    })
+  );
+  const view = renderHarness();
+
+  try {
+    await uploadNotes(ownerArtifactText);
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toBe(
+      "The page could not say which text this upload replaces, and Dispatch requires it. " +
+        "Open the document to see what it says now, then upload again."
+    );
+  } finally {
+    view.unmount();
+    uploadArtifact.mockRestore();
+    ownerArtifactText.mockRestore();
+  }
+});
+
+// The words of this note live here and are asserted here, once. The Plan tab and the
+// Verification tab both render it and their cases ask only that it is there, so this is the
+// case that fails when the sentence a person reads changes - including the flag, which is the
+// one thing in it a person types.
+test("the replacing-upload note says a later upload names the version it replaces, and how", () => {
+  const view = render(<ReplacingUploadNote />);
+
+  try {
+    expect(screen.getByTestId("replacing-upload-note").textContent).toBe(
+      "A later upload under that name replaces the document, so it names the token of the " +
+        "version it replaces: add --precondition-json with the document token " +
+        "dispatch doc-read prints."
+    );
+  } finally {
+    view.unmount();
   }
 });
 

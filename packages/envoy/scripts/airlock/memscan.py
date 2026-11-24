@@ -21,10 +21,11 @@ while time.time() < deadline and not os.path.exists(ready) and child.poll() is N
 
 result = {"pid": child.pid, "scanned": False, "regions": 0, "bytes": 0,
           "memory_hits": [0] * len(needles), "environ_hits": [0] * len(needles),
-          "scan_error": ""}
+          "environ_bytes": 0, "scan_error": ""}
 try:
     with open(f"/proc/{child.pid}/environ", "rb") as f:
         environ = f.read()
+    result["environ_bytes"] = len(environ)
     for i, n in enumerate(needles):
         result["environ_hits"][i] = environ.count(n)
 except OSError as e:

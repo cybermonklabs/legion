@@ -12,9 +12,11 @@ import (
 	"testing"
 	"time"
 
+	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/id"
+	"github.com/sjawhar/envoy/internal/testnats"
 )
 
 // connectPublisher opens a bus client of the test's own, apart from the listener's: a publish
@@ -77,6 +79,22 @@ func awaitDurableState(t *testing.T, client *bus.Client, durable string, pending
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
+}
+
+// awaitSessionConsumerStored waits for the state file of sessionID's consumer to hold the position
+// the server reports for it, read through conn, a connection of the test's on the consumer's
+// account (testnats.AwaitConsumerStored, which says why a delete of a one-copy consumer followed by
+// a create of its name waits for that). A test calls it right before the step that has the
+// listener delete the consumer after it delivered or was acked - a deregistration, a delete and
+// its restore, a relay restart at the ack floor - once the server has taken every ack the test's
+// session sent: the wait sees only the state the server already holds.
+func awaitSessionConsumerStored(t *testing.T, conn *natsgo.Conn, sessionID string) {
+	t.Helper()
+	name, ok := bus.SessionConsumerName(sessionID)
+	if !ok {
+		t.Fatalf("%s names no session consumer", sessionID)
+	}
+	testnats.AwaitConsumerStored(t, conn, bus.Stream, name)
 }
 
 // awaitSessionMachine waits up to 10 s for listener's GET /v1/sessions to list sessionID as

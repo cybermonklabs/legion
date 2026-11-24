@@ -1,0 +1,47 @@
+{
+  "id": 7539,
+  "issue_key": "ACME-1",
+  "artifact_id": null,
+  "project": "ACME",
+  "seq": 212,
+  "type": "message.answered",
+  "actor": {
+    "kind": "session",
+    "id": "01a13c57-d826-7242-80fe-5f0670188b11",
+    "origin": {
+      "host": "lor",
+      "machine": "lorem ipsum d",
+      "cwd": "lorem ipsum dolor sit ",
+      "tmux": "lorem i",
+      "pane": "lo",
+      "session_title": "lorem ipsum dolor sit"
+    },
+    "owner": "alice@example.com"
+  },
+  "notify": false,
+  "created_at": "2026-10-20T21:29:28.814332Z",
+  "payload": {
+    "id": "378f0c9f-c729-4a3f-81a0-7daad53891e3",
+    "body": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lore",
+    "author": {
+      "id": "01a13c57-d826-7242-80fe-5f0670188b11",
+      "kind": "session",
+      "owner": "alice@example.com",
+      "origin": {
+        "cwd": "lorem ipsum dolor sit ",
+        "host": "lor",
+        "pane": "lo",
+        "tmux": "lorem i",
+        "machine": "lorem ipsum d",
+        "session_title": "lorem ipsum dolor sit"
+      }
+    },
+    "target": null,
+    "issue_key": "ACME-1",
+    "created_at": "2026-10-20T21:29:28.814332Z",
+    "deliveries": [],
+    "reply_body": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit ame",
+    "in_reply_to": "e300c1df-7053-4a73-b94b-9b4d45a83fe8",
+    "broadcast_id": null
+  }
+}

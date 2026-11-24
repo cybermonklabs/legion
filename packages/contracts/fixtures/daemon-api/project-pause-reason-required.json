@@ -1,0 +1,4 @@
+{
+  "code": "PAUSE_REASON_REQUIRED",
+  "error": "a pause needs a reason: say in reason why the project is paused; nothing was paused"
+}

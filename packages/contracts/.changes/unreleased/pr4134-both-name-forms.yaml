@@ -1,0 +1,14 @@
+kind: Changed
+custom:
+  Issue: pr4134
+body: |-
+  Two exported builders change signature to name a project: `agentSubject(session)` becomes
+  `agentSubject(project, session)` and `dispatchIssueSubject(key, type)` becomes
+  `dispatchIssueSubject(project, key, type)`, with the Go twins `AgentSubject` and
+  `DispatchIssueSubject` changed the same way. Their old output stays as `legacyAgentSubject(session)`
+  and `legacyDispatchIssueSubject(key, type)` (Go `LegacyAgentSubject`, `LegacyDispatchIssueSubject`),
+  which every caller in this repository now uses. New exports: `NO_PROJECT`, `roleSubject`,
+  `legionWakeSubject`, and in `subject-project.ts` `issueProject`, `roleProject`, `subjectProject`,
+  `subjectProjectFamilies`, `canonicalTopic`, `legacyTwin`, `topicForms`, `canonicalRole`,
+  `issueEventKey`, `roleClaimKey`, `parseRoleClaimKey` and `claimProject`, each with a Go twin read
+  from one shared fixture (`fixtures/subject-project.json`).

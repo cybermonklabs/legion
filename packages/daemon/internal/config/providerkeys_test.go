@@ -30,6 +30,8 @@ case "$2:$3" in
   EMPTY_KEY:--value) printf '\n' ;;
   FAILING_VALUE_KEY:--no-request) echo '{"key":"FAILING_VALUE_KEY","tier":"human"}' ;;
   FAILING_VALUE_KEY:--value) echo 'AGENT NOTICE: TIMEOUT' >&2; exit 4 ;;
+  KILLED_VALUE_KEY:--no-request) echo '{"key":"KILLED_VALUE_KEY","tier":"human"}' ;;
+  KILLED_VALUE_KEY:--value) echo 'AGENT NOTICE: waiting for a grant' >&2; kill -KILL $$ ;;
   *) echo "stub: unexpected $*" >&2; exit 99 ;;
 esac
 `
@@ -182,6 +184,8 @@ func TestMaterializeProviderKeysRefuses(t *testing.T) {
 		{"the tier is neither", "ODD_TIER_KEY", true, `provider_keys.ENV_ODD_TIER_KEY: secrets get ODD_TIER_KEY --no-request reported tier "admin", which is neither agent nor human`},
 		{"the value is empty", "EMPTY_KEY", true, "provider_keys.ENV_EMPTY_KEY: secrets get EMPTY_KEY --value printed no value"},
 		{"the value fails", "FAILING_VALUE_KEY", true, "provider_keys.ENV_FAILING_VALUE_KEY: secrets get FAILING_VALUE_KEY --value failed (exit 4): AGENT NOTICE: TIMEOUT"},
+		// A run a signal ended has no status: read as one, it was `failed (exit -1)`.
+		{"the value's run is killed", "KILLED_VALUE_KEY", true, "provider_keys.ENV_KILLED_VALUE_KEY: secrets get KILLED_VALUE_KEY --value failed (signal: killed): AGENT NOTICE: waiting for a grant"},
 		{"no secrets command", "AGENT_KEY", false, "provider_keys.AGENT_ENV: the secrets command is not on PATH, so AGENT_KEY cannot be read"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -218,7 +222,7 @@ func TestProviderKeysMayNotNameAnAgentSecretsVariable(t *testing.T) {
 }
 
 // A provider key named for a gh variable the daemon sets on every pane and pod is refused by the
-// loader, naming the key and that every pane sets it, so `legion start --check-config` refuses the
+// loader, naming the key and that every pane sets it, so `legion config check` refuses the
 // file under either runtime rather than the deployment stopping on every pane's shim; a key of
 // another name passes.
 func TestProviderKeysMayNotNameAGhVariableEveryPaneSets(t *testing.T) {

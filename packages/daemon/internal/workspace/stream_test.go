@@ -74,7 +74,7 @@ func TestTheCachesStreamRunsPastFetchTimeoutWhileItKeepsReceiving(t *testing.T) 
 	defer cancel()
 	windowsOf := newFakeWindows()
 	stream := &countingReader{reader: bytes.NewReader(bytes.Repeat([]byte{'p'}, windows*chunk)), window: windowsOf.window}
-	go stream.watchStall(ctx, cancel)
+	stream.watchStall(ctx, cancel)
 
 	buffer := make([]byte, chunk)
 	for window := range windows {
@@ -108,7 +108,7 @@ func TestTheCachesStreamEndsWhenItFallsBelowTheLowSpeedBound(t *testing.T) {
 	defer cancel()
 	windowsOf := newFakeWindows()
 	stream := &countingReader{reader: &stoppedSender{ctx: ctx, left: sent}, window: windowsOf.window}
-	go stream.watchStall(ctx, cancel)
+	stream.watchStall(ctx, cancel)
 
 	if _, err := io.ReadFull(stream, make([]byte, sent)); err != nil {
 		t.Fatalf("the stream's first %d bytes: %v", sent, err)

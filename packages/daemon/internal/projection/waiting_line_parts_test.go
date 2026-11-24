@@ -37,8 +37,8 @@ func TestWaitingLinePartAndKeyReachTheProjectedView(t *testing.T) {
 		issues: []record.Issue{
 			lineIssue("LEGION-10", "LEGION-10", "in_progress", phase.Admitted, "M"),
 			lineIssue("LEGION-11", "LEGION-10", "todo", phase.Admitted, "N"),
-			// The member that owes its worker a start stands at testing and not at a phase past
-			// its review, which needs none of the cap's slots and so stands in no line
+			// The member that owes its worker a start stands at testing and not in accepting,
+			// retro or merging, which need none of the cap's slots and so stand in no line
 			// (record.PhaseKeepsSlot), as internal/record's own fixture has it.
 			lineIssue("LEGION-12", "LEGION-10", "in_progress", phase.Testing, "O"),
 			lineIssue("LEGION-20", "LEGION-20", "todo", phase.Admitted, "A"),
@@ -56,7 +56,7 @@ func TestWaitingLinePartAndKeyReachTheProjectedView(t *testing.T) {
 			{Issue: "LEGION-40", Index: 1, AdmittedAt: answeredAt}},
 	}
 
-	got, err := Project(context.Background(), nil, store, "LEGION", nil, nil, nil, nil, projectedAt)
+	got, err := Project(context.Background(), Inputs{Store: store, Project: "LEGION", Now: projectedAt})
 	if err != nil {
 		t.Fatalf("Project: %v", err)
 	}

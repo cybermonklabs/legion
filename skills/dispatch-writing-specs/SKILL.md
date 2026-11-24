@@ -1,6 +1,6 @@
 ---
 name: dispatch-writing-specs
-description: "Use in a session with Dispatch before you write or change a spec, ask, comment or message a person reads. It replaces superpowers' brainstorming there."
+description: "Use when you write or change a spec, ask, comment or message a person reads, in a session with Dispatch. It replaces superpowers' brainstorming there."
 ---
 
 # Writing specs
@@ -24,9 +24,9 @@ Part | Content
 `Problem` | What goes wrong, for whom, with counts
 `Goals and non-goals` | What is in and out of scope
 `Requirements` | a `:::requirement` block each, `**R1.**` on, its source (`From:`)
-`Verification` | the issue's `verification.md`, a `:::check` block each: `serves`, `surface`, `run`, `when`, `negative_control`. A check carrying `ci_check` is CI's and takes no `run`
+`Verification` | the issue's `verification.md`, a `:::check` block each: `serves`, `surface`, `run` (where it names tests, specific ones), `when`, `negative_control`. For a whole test suite, name its CI job in `ci_check`: a check carrying `ci_check` is CI's and takes no `run`
 `Design` | How it meets them; a value and its reason for each limit, size and time
-`Decisions` | One line: `The decisions are in dispatch://KEY/artifact/decisions-md.`
+`Decisions` | The choices the spec rests on (Decisions below)
 
 `serves` and `needs` name a block of this issue or an ancestor. Another agent can build and check the work from these alone. A small change gets a few sentences per part, no matrix; split a large design into children.
 
@@ -47,7 +47,7 @@ For each spec, ask, comment and message:
 
 - Name the concrete case and its numbers, then the choice in those terms, never "Which option?".
 - A choice inside what the person asked for, one their messages favour, routine cleanup, sequencing, naming, a choice between equivalent options, and a fix you can make are yours.
-- Ask with an [ask block](skill://dispatch/SKILL.md#asks-and-ask-blocks): 2 to 4 options, answerable on a phone, and name nothing the reader cannot see from it.
+- Ask with an [ask block](skill://dispatch/SKILL.md#asks-and-ask-blocks): 2 to 4 options, short and self-contained: a person answers it with no other reading.
 - For each technical term you coined in this session, count by exact match the files holding it, in the repositories the work touches and in Dispatch. Expand or drop a term with a single-digit count. Read the draft for a coinage of common words too.
 - Measure each claim the ask rests on, its premise and each option's precondition. Where you cannot, mark the claim unverified and name the missing measurement; call an option unavailable only where a precondition demonstrably fails. No unmeasured number goes in a premise.
 - Before you pass a question on as one only an attended or privileged act answers, try the source that answers it, then the other records holding it. Keep a privileged read for what only the live system knows.
@@ -61,12 +61,7 @@ For each spec, ask, comment and message:
 
 ## Decisions
 
-Choices—answered asks included—earn `decisions.md` `##` sections only if a disagreeing reader would act differently; keep others to one spec line each.
-
-- The heading names the choice; the text gives the reason and options weighed.
-- Link each spec block it shaped, `dispatch://KEY/spec#b-<id>`, and a person's decision its ask, `dispatch://KEY/ask/<id>`.
-- An unsure section adds an `Unsure:` paragraph: what would change your mind.
-- A replaced section moves under a final `## Replaced` as a `###`.
+A choice earns an entry in the spec's `## Decisions` part only if a disagreeing reader would act differently; keep others to one spec line each. Write it in the spec, never in a separate document: the choice first, then the reason and the options weighed, as a `:::decision` block once the server's block types include `decision`. A person's answered ask is their decision: it stays in the spec where it was asked.
 
 ## Old specs
 

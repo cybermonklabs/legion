@@ -7,7 +7,6 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/claudelaunch"
-	"github.com/sjawhar/legion/daemon/internal/omplaunch"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 )
@@ -48,25 +47,27 @@ func ClaudeConfigDir(stateDir string, token claim.Token) string {
 // writeClaudeMCPConfig writes the pane's MCP configuration (claudelaunch.MCPConfig) into configDir,
 // 0600, and returns its path. The pane's Claude Code reads it off the daemon's own disk, which is
 // why the writing stays here; a pod's launcher writes the same document into its own directory.
+// configDir is the pane's own, which the pane can write, so the file is replaced by rename
+// (runtime.ReplaceFile) and never opened where it stands: a fifo the pane left at its path never
+// holds the spawn waiting for a reader, and a link there is never written through.
 func writeClaudeMCPConfig(configDir string, launch ClaudeLaunch) (string, error) {
 	raw, err := claudelaunch.MCPConfig(launch.Bun, launch.PluginDir, configDir)
 	if err != nil {
 		return "", err
 	}
 	path := filepath.Join(configDir, "mcp.json")
-	if err := os.WriteFile(path, raw, 0o600); err != nil {
+	if err := runtime.ReplaceFile(path, string(raw)); err != nil {
 		return "", fmt.Errorf("write the Claude Code MCP configuration: %w", err)
 	}
 	return path, nil
 }
 
 // claudeInnerCommand is the command the shim runs for a Claude Code role: the agent command
-// claudelaunch.Argv builds from the pane's boot-resolved paths, every word quoted for the pane's
-// shell, and the one system prompt word every pane gets, whose `$(cat …)` that shell reads.
-func claudeInnerCommand(legion string, launch ClaudeLaunch, mcpConfig, session string, resume bool, parts runtime.PromptParts) string {
+// claudelaunch.Argv builds from the pane's boot-resolved paths, ending in
+// `--append-system-prompt-file` on promptFile, every word quoted for the pane's shell.
+func claudeInnerCommand(legion string, launch ClaudeLaunch, mcpConfig, session string, resume bool, promptFile string) string {
 	paths := claudelaunch.Paths{Legion: legion, Claude: launch.Binary, PluginDir: launch.PluginDir}
-	return shellprefix.Command(claudelaunch.Argv(paths, mcpConfig, session, resume)) + " " +
-		omplaunch.SystemPromptArgument(parts)
+	return shellprefix.Command(claudelaunch.Argv(paths, mcpConfig, session, resume, promptFile))
 }
 
 // claudeEnvironment are the -e pairs a Claude Code pane carries beside every pane's: tmux's form of
@@ -91,8 +92,9 @@ func (claudeLauncher) SessionsDir(spec runtime.SpawnSpec, host Host, _ map[strin
 }
 
 // Launch is the inner command and the extra -e pairs of a Claude Code launch: the claim's
-// directory made, its MCP configuration written, and the session it starts or continues.
-func (l claudeLauncher) Launch(spec runtime.SpawnSpec, host Host) (inner string, pairs []string, err error) {
+// directory made, its MCP configuration written, the session it starts or continues, and
+// promptFile as the system prompt.
+func (l claudeLauncher) Launch(spec runtime.SpawnSpec, host Host, promptFile string) (inner string, pairs []string, err error) {
 	configDir := ClaudeConfigDir(host.StateDir, spec.Claim)
 	if err := os.MkdirAll(configDir, 0o700); err != nil {
 		return "", nil, fmt.Errorf("spawn %s: the Claude Code directory: %w", spec.Claim, err)
@@ -110,5 +112,6 @@ func (l claudeLauncher) Launch(spec runtime.SpawnSpec, host Host) (inner string,
 	if err != nil {
 		return "", nil, fmt.Errorf("spawn %s: %w", spec.Claim, err)
 	}
-	return claudeInnerCommand(host.Legion, l.launch, mcpConfig, session, resume, spec.Prompt), claudeEnvironment(configDir), nil
+	return claudeInnerCommand(host.Legion, l.launch, mcpConfig, session, resume, promptFile),
+		claudeEnvironment(configDir), nil
 }

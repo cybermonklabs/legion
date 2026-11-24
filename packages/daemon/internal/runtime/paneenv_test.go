@@ -4,19 +4,22 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/legion/daemon/internal/ompdirs"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 	"github.com/sjawhar/legion/daemon/internal/podsafety"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
 // A pane variable that would move the session a resume reads, override what the runtime sets on a
-// Claude Code pane, take a launch secret's pointer, or put a password on tmux's command line is
-// refused with its reason, which never holds the value; any other variable is the operator's.
+// Claude Code pane or a resumed Oh My Pi pane, take a launch secret's pointer, or put a password on
+// tmux's command line is refused with its reason, which never holds the value; any other variable
+// is the operator's.
 func TestPaneVariableRefusalNamesWhyAndNeverTheValue(t *testing.T) {
 	const (
 		password   = "hunter2-pane"
 		session    = "it decides where Oh My Pi keeps the session a resume reads, which the runtime places itself"
 		claude     = "the runtime sets it on every Claude Code pane itself, after the operator's variables"
+		resumed    = "the runtime sets it on every resumed Oh My Pi pane itself, after the operator's variables"
 		withSecret = "its value is a URL carrying a password: a secret reaches a pane as a file (provider_keys), never as a value on tmux's command line"
 	)
 	for _, tc := range []struct {
@@ -27,8 +30,13 @@ func TestPaneVariableRefusalNamesWhyAndNeverTheValue(t *testing.T) {
 		{"OMP_SESSION_SQL_DSN", "/etc/acme/dsn", session},
 		{"PI_CODING_AGENT_DIR", "/srv/agent", session},
 		{"PI_CONFIG_DIR", ".elsewhere", session},
+		{"OMP_CONFIG_ROOT", "/srv/omp", session},
 		{"CLAUDE_CONFIG_DIR", "/srv/claude", claude},
 		{"CLAUDE_CODE_DISABLE_CRON", "0", claude},
+		// A resumed Oh My Pi pane is held to the session it resumes; the operator may not turn that
+		// off for every pane, nor set it on the fresh ones.
+		{"OMP_SESSION_EXCLUSIVE", "0", resumed},
+		{"OMP_SESSION_EXCLUSIVE", "1", resumed},
 		// Claude Code's background tasks are the operator's to set, as its other variables are: the
 		// runtime sets nothing that turns them off, so no value of the operator's is overridden.
 		{"CLAUDE_CODE_DISABLE_BACKGROUND_TASKS", "0", ""},
@@ -56,9 +64,10 @@ func TestPaneVariableRefusalNamesWhyAndNeverTheValue(t *testing.T) {
 
 // The names that place a session are the ones the Sandbox runtime refuses in an operator's pod for
 // the same reason, read from the constants it builds its refusal from (ompsessions' session
-// variables and the pod baseline's reserved names), which this package cannot import.
+// variables, the pod baseline's reserved names, and ompdirs' config root variable). ompsessions
+// imports package runtime, so runtime spells its names out.
 func TestPaneVariableRefusalCoversTheSandboxRuntimesSessionNames(t *testing.T) {
-	names := []string{ompsessions.StorageVariable, ompsessions.DSNFileVariable, ompsessions.DSNFileName}
+	names := []string{ompsessions.StorageVariable, ompsessions.DSNFileVariable, ompsessions.DSNFileName, ompdirs.ConfigRootVariable}
 	for _, v := range podsafety.Variables() {
 		if v.Reserved != "" {
 			names = append(names, v.Name)

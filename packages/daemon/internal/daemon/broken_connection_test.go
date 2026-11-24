@@ -41,6 +41,7 @@ import (
 // backend and nothing else: the package's tests run under the race detector against one shared
 // PostgreSQL, where a kill by database or by login would end another test's connection.
 func TestATurnStartSurvivesABrokenDatabaseConnection(t *testing.T) {
+	t.Parallel()
 	// A database of this test's own, and a pool of its own on it: the reads below and the kill go
 	// over a connection the daemon does not own and the kill does not end.
 	pool := isolatedOutboxPool(t)
@@ -93,9 +94,13 @@ func TestATurnStartSurvivesABrokenDatabaseConnection(t *testing.T) {
 	testwait.Eventually(t, "the claim to read working in the database", func() bool {
 		return storedClaimState(t, pool, token) == supervise.StateWorking
 	})
-	if !strings.Contains(logs.String(), loggedMessage(owedWriteMadeLine)) {
-		t.Fatalf("the daemon never logged %q: %s", owedWriteMadeLine, logs.String())
-	}
+	// The line is waited for rather than read once: the row and the line are written by the one
+	// decision but not in one step, so a loaded machine can serve the working row to the wait
+	// above before the line reaches the log (measured on 2026-11-14, under another Go suite of
+	// this pod, where this read failed at 0.59s and the line stood in the log it printed).
+	testwait.Eventually(t, "the daemon to log the claim write it made for the broken connection", func() bool {
+		return strings.Contains(logs.String(), loggedMessage(owedWriteMadeLine))
+	})
 
 	// No daemon was restarted: the one boot this test started is the one that wrote the row.
 	if count, _ := boots(t, cfg); count != 1 {

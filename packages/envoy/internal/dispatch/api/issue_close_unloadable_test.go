@@ -19,6 +19,7 @@ import (
 // older release made and restoring for its reopen, succeed rather than fail on that document for
 // good.
 func TestClosingAnIssueWithAnUnloadableDocumentWithdrawsItsAsksAndReopeningRestoresThem(t *testing.T) {
+	t.Parallel()
 	// An hour, so no settlement timer loads the unloadable document between the requests.
 	f := newRepairFixtureSettlingAfter(t, time.Hour)
 	issue := createInteractionIssue(t, f.handler, "TEST", "Closing beside an unloadable document", "Context\n")
@@ -41,7 +42,7 @@ func TestClosingAnIssueWithAnUnloadableDocumentWithdrawsItsAsksAndReopeningResto
 	if closed.Code != http.StatusOK {
 		t.Fatalf("close beside the unloadable notes: status=%d body=%s", closed.Code, closed.Body.String())
 	}
-	requireWithdrawn(t, f.handler, issue.Key, plainAsk, model.Actor{Kind: "user", ID: "alice"})
+	requireWithdrawn(t, f.handler, issue.Key, plainAsk, model.Actor{Kind: "user", ID: "alice", Proven: true})
 	reopened := dispatchRequest(t, f.handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]string{"status": "todo"}, "alice")
 	if reopened.Code != http.StatusOK {
 		t.Fatalf("reopen beside the unloadable notes: status=%d body=%s", reopened.Code, reopened.Body.String())
@@ -71,6 +72,7 @@ func TestClosingAnIssueWithAnUnloadableDocumentWithdrawsItsAsksAndReopeningResto
 // so once it commits the block reads resolved, as the withdrawn ask's row does, rather than open
 // on a closed issue until a reopen. The reopen then opens the block again with its ask.
 func TestRebuildingAClosedIssuesUnloadableDocumentShowsItsWithdrawnDecisionBlockResolved(t *testing.T) {
+	t.Parallel()
 	f := newRepairFixture(t)
 	issue := createInteractionIssue(t, f.handler, "TEST", "Rebuilding a closed issue's document", "Context\n")
 	uploaded := sessionRequest(t, f.handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]any{
@@ -94,7 +96,7 @@ func TestRebuildingAClosedIssuesUnloadableDocumentShowsItsWithdrawnDecisionBlock
 	if closed := dispatchRequest(t, f.handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]string{"status": "done"}, "alice"); closed.Code != http.StatusOK {
 		t.Fatalf("close beside the unloadable notes: status=%d body=%s", closed.Code, closed.Body.String())
 	}
-	requireWithdrawn(t, f.handler, issue.Key, blockAsk, model.Actor{Kind: "user", ID: "alice"})
+	requireWithdrawn(t, f.handler, issue.Key, blockAsk, model.Actor{Kind: "user", ID: "alice", Proven: true})
 
 	rebuilt := dispatchRequest(t, f.handler, http.MethodPost, "/api/v1/artifacts/"+notes+"/rebuild", map[string]any{}, "alice")
 	if rebuilt.Code != http.StatusOK {
@@ -107,7 +109,7 @@ func TestRebuildingAClosedIssuesUnloadableDocumentShowsItsWithdrawnDecisionBlock
 	if strings.Contains(live, open) {
 		t.Fatalf("the rebuilt notes' live text:\n%s\nshows the withdrawn decision block open on a closed issue", live)
 	}
-	requireWithdrawn(t, f.handler, issue.Key, blockAsk, model.Actor{Kind: "user", ID: "alice"})
+	requireWithdrawn(t, f.handler, issue.Key, blockAsk, model.Actor{Kind: "user", ID: "alice", Proven: true})
 
 	if reopened := dispatchRequest(t, f.handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]string{"status": "todo"}, "alice"); reopened.Code != http.StatusOK {
 		t.Fatalf("reopen: status=%d body=%s", reopened.Code, reopened.Body.String())

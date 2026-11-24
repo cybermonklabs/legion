@@ -1,0 +1,4 @@
+kind: Added
+body: |-
+  `host:Listener`, `gcp:NatsHub` (under `listener`), `gcp:ClusteredNatsHub` (under `tailnet.listener`), `gcp:Dispatch` and `aws:WebhookListener` take `senderMessagesPerMinute` (1 to 60000) and `senderMessageBurst` (1 or more, only with a rate), and render the listener's two sender limit variables only when they are set.
+  Each component refuses a value outside those bounds, naming the input's path, before it registers a resource, and `envoy-infra render webhook-listener-env` takes `--sender-messages-per-minute` and `--sender-message-burst`.

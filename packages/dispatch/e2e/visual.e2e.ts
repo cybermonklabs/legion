@@ -24,9 +24,13 @@
  *  `./users` reaches no further than `./api` and the harness ports, so both are safe.
  *
  *  ONE SEED FOR THE WHOLE FILE. No row resets the database and no row seeds it: the corpus every
- *  baseline was taken against is the one the host wrote once. What that costs is that a row
- *  cannot assume the page is as a row before it left it - a row that wrote would be seen by
- *  every row after it - so each row signs in and navigates afresh, and no row writes.
+ *  baseline was taken against is the one the host wrote once. What that asks of a row is that its
+ *  page write nothing, since a write would be seen by every row after it, so each row signs in and
+ *  navigates afresh, and the seed writes first each read mark a page of the shot set writes as it
+ *  draws - the broadcast page's read of its replies and the Spec tab's read of the spec
+ *  (`e2e/review-seed.ts`) - so a page's own write changes nothing any row compares. Every other
+ *  write a row's page tries, to the API or on a document socket, is stopped before it reaches the
+ *  corpus and fails that row by name (`guardSharedCorpus`, `e2e/visual-guard.ts`).
  *
  *  WHAT WOULD DRIFT BETWEEN TWO RUNS OF ONE PAGE, and what is done about each:
  *
@@ -75,11 +79,20 @@ import {
   type ReviewedRoute,
   type ReviewSeed,
   railInboxLink,
+  type SeededReadMarks,
   shotRoutes,
+  topBarInboxBadge,
   type VisualSeed,
   waitForRouteSettled,
 } from "./review-routes";
 import { withAlice } from "./users";
+import {
+  CORPUS_WRITE_MESSAGE,
+  guardSharedCorpus,
+  UNLISTED_READ_MESSAGE,
+  unlistedShotReads,
+  unlistedShotViews,
+} from "./visual-guard";
 import { workspaceSessions } from "./workspace";
 
 /** Both schemes in one row, as `e2e/accessibility.e2e.ts` reads them: a sign-in and a navigation
@@ -97,7 +110,7 @@ const SKIP_REASON =
 
 // The live registry, put back after Playwright's own `globalSetup` cleared it. The host's seed
 // runs before Playwright starts (`e2e/visual-run.sh`), and `e2e/global-setup.ts:198` resets the
-// fake Envoy when its sentinel check ends, so the sessions `seedWorkspace()` wrote are gone by the
+// fake Envoy when its sentinel check ends, so the sessions `seedWorkspace` wrote are gone by the
 // time the first row opens a page: the Agents page then draws "No agents are connected." and
 // every shot of it would be a baseline of an empty registry. The database half of the corpus is
 // untouched by that reset, which is why only this half is written again here. `./agents` and
@@ -113,10 +126,13 @@ test.beforeAll(async () => {
  *  show up only as the late rows of a run differing from their baselines. `e2e/visual-seed.ts`
  *  always writes the field, so a file that lacks it did not come from it. */
 function readVisualSeed(path: string): VisualSeed {
-  const seed = JSON.parse(readFileSync(path, "utf8")) as ReviewSeed & {
+  // The file as e2e/visual-seed.ts writes it, read without trusting the two fields every row
+  // needs, which the checks below hold.
+  const seed = JSON.parse(readFileSync(path, "utf8")) as Omit<ReviewSeed, "readMarks"> & {
+    readonly readMarks?: SeededReadMarks;
     readonly seededAt?: string;
   };
-  const { seededAt } = seed;
+  const { readMarks, seededAt } = seed;
   if (seededAt === undefined) {
     throw new Error(
       `${path}, which DISPATCH_E2E_VISUAL_SEED names, carries no \`seededAt\`, so this row ` +
@@ -124,7 +140,14 @@ function readVisualSeed(path: string): VisualSeed {
         "pace. `e2e/visual-seed.ts` writes that field on every seed."
     );
   }
-  return { ...seed, seededAt };
+  if (readMarks === undefined) {
+    throw new Error(
+      `${path}, which DISPATCH_E2E_VISUAL_SEED names, carries no \`readMarks\`, so this row's ` +
+        "guard would let its page write no read mark again and fail it on the seed's own. " +
+        "`e2e/visual-seed.ts` writes that field on every seed."
+    );
+  }
+  return { ...seed, readMarks, seededAt };
 }
 
 /** One row's work, which the desktop and the phone rows share: the project they run in is the
@@ -137,6 +160,8 @@ async function shoot(browser: Browser, route: ReviewedRoute): Promise<void> {
   }
   const seed = readVisualSeed(seedPath);
   await withAlice(browser, async (page) => {
+    // Before the first navigation, so every write the page tries is stopped and named.
+    const writes = await guardSharedCorpus(page, seed.readMarks);
     // The page's clock, pinned a minute after the corpus was written. Every relative label
     // these pages draw - "just now", "2 minutes ago", "0m", "Updated just now" - is that
     // label's own time against `Date.now()`, so without this a row read "just now" in a run
@@ -188,13 +213,18 @@ async function shoot(browser: Browser, route: ReviewedRoute): Promise<void> {
         // the number's pill, for the reason the header above is: the pill's width can move
         // with the digit, and the link is a full-width row of the rail whose box holds still.
         // The cost is the rail's "Inbox" label, which is in no baseline. The phone rows draw
-        // no rail, so on them this matches nothing. The number itself is proven by its own
-        // tests, not by these pixels.
+        // no rail; they draw the same number in the compact top bar's badge, which is masked
+        // for the same reason. That badge is a pill in a row, so its own box is what the mask
+        // paints: a one-digit count holds that box still, and a count of 10 or more would
+        // widen it and move the badge beside it. CI run 44308307388 read 6 on `issue-spec`'s
+        // phone row against the baseline's 5, with nothing else moved in that badge. The
+        // number itself is proven by its own tests, not by these pixels.
         //
-        // Why it is not waited for instead: the number CI draws after the broadcast row's
-        // read mark is not the number this seed gives anywhere else. The baselines read 7 on
-        // rows 1-4 and 5 from row 5 on. CI run 43517763817 read 6 in light and 5 in dark on
-        // `broadcast`, and an earlier run read 6 on `issue-activity`. A host run of this
+        // Why it is not waited for instead: the number CI drew after the broadcast page's
+        // read mark was not the number this seed gave anywhere else. These were measured while
+        // that mark was still the page's own, before the seed wrote it first: the baselines
+        // read 7 on rows 1-4 and 5 from row 5 on. CI run 43517763817 read 6 in light and 5 in
+        // dark on `broadcast`, and an earlier run read 6 on `issue-activity`. A host run of this
         // file's own path (`e2e/visual-seed.ts` on a `e2e/harness-up.ts` stack, the rows in
         // host Chromium, alice's counts read every 3 s for six minutes) read 7 on rows 1-4
         // and 6 on every row after the read mark, for three passes over the rows. After the
@@ -204,8 +234,10 @@ async function shoot(browser: Browser, route: ReviewedRoute): Promise<void> {
         // ruled out. In the host run every delivery attempt of the seed stayed `sent`, and
         // none was accepted as `user_turn`, so the sweep owed nothing. CI run 43517763817
         // logs no resend from the sweep. Its count went from 7 to 5 about 16 s after its
-        // seed, and the read mark was the only write the page made. No seed state can pin a
-        // step that was never found, so this mask stands in for one.
+        // seed, and the read mark was the only write the page made. The seed now writes that
+        // mark before any row (`e2e/review-seed.ts`), so no row's page moves the number; the
+        // drop CI drew past it was never explained, no seed state can pin a step that was never
+        // found, and so this mask stands in for one.
         //
         // Nothing else is masked, and the Decisions panel is why that matters. It prints the
         // id of the spec block a decision shaped until the reference graph answers, and a
@@ -225,6 +257,7 @@ async function shoot(browser: Browser, route: ReviewedRoute): Promise<void> {
             .last(),
           page.getByText(/, as of /),
           railInboxLink(page),
+          topBarInboxBadge(page),
         ],
         // MEASURED, both numbers, by starting at zero.
         // (docs/solutions/testing/a-tolerance-is-measured-by-setting-it-to-zero-and-ships-with
@@ -285,6 +318,14 @@ async function shoot(browser: Browser, route: ReviewedRoute): Promise<void> {
         maxDiffPixels: 20,
       });
     }
+    // The server answers the page's reads and live views itself, so a write it made while
+    // answering one is outside what the guard stops; the Go test that holds those writes sends
+    // the routes and view kinds its list names, and any other fails the row here, by name.
+    expect(
+      [...unlistedShotReads(writes.reads), ...unlistedShotViews(writes.views)],
+      UNLISTED_READ_MESSAGE
+    ).toEqual([]);
+    expect(writes.stopped, CORPUS_WRITE_MESSAGE).toEqual([]);
   });
 }
 

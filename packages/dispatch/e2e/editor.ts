@@ -14,6 +14,7 @@ import type { Ask } from "../web/src/api/types";
 
 import { readField } from "../web/src/features/doc/sync-frame";
 import { createIssue, createProject, getArtifactBlocks, getArtifactText, getIssue } from "./api";
+import { settledState } from "./settled";
 import { asUser } from "./users";
 
 export function documentEditor(page: Page): Locator {
@@ -247,13 +248,19 @@ export function openedThreadCard(page: Page, project: string, rootId: string): L
 }
 
 // On the phone layout the margin is a bottom sheet over the document. Acting on a selection
-// opens it; close it again before selecting another range, as a person would.
+// opens it; close it again before selecting another range, as a person would. The sheet says
+// whether it is open, and is read once the page has drawn it rather than at the instant it
+// attaches.
 export async function setSheet(page: Page, project: string, open: boolean): Promise<void> {
   if (project !== "iphone") {
     return;
   }
   const sheet = page.getByTestId("margin-sheet");
-  if ((await sheet.getAttribute("data-expanded")) !== String(open)) {
+  const shown = await settledState("the margin sheet", [
+    ["open", sheet.and(page.locator('[data-expanded="true"]'))],
+    ["shut", sheet.and(page.locator('[data-expanded="false"]'))],
+  ]);
+  if (shown !== (open ? "open" : "shut")) {
     if (open) {
       await page.getByRole("button", { name: /Open review panel/ }).click();
     } else {
@@ -320,19 +327,6 @@ export function needsYouCards(page: Page): Locator {
   return page.locator('[data-margin-section="needs-you"]');
 }
 
-export async function replyInThread(page: Page, rootId: string, body: string): Promise<void> {
-  const card = threadCard(page, rootId);
-  if ((await card.getAttribute("aria-expanded")) !== "true") {
-    await card.getByRole("button").click();
-  }
-  const phoneThread = page.getByRole("dialog", { name: "Thread" });
-  const thread = (await phoneThread.count()) === 0 ? card : phoneThread;
-  const composer = thread.getByRole("form", { name: "Comment composer" });
-  const reply = composer.getByRole("textbox", { name: "Reply" });
-  await reply.fill(body);
-  await reply.press("Control+Enter");
-  await expect(composer.getByRole("textbox", { name: "Reply" })).toHaveValue("");
-}
 /** Document sockets the page has opened since the call, open or closed: every document's, or with
  *  `documentId` that document's alone, for a page that holds another document beside it. */
 export function countDocumentSockets(page: Page, documentId?: string): () => number {
@@ -485,18 +479,24 @@ export async function documentTransport(
 /**
  * Holds the first request `page` makes for a URL matching `url` and lets every later one through,
  * so a test decides when that one download ends: `held` resolves with its route once the page has
- * made it, for the test to abort or continue. Install it before the navigation that makes the
- * request. The route stays installed for the page's life on purpose. A `{ times: 1 }` route does
- * not stay: Playwright removes an expiring route from the page before its handler runs, and a page
- * left with no route stops intercepting while that request is still held (playwright-core 1.63,
+ * made it, for the test to abort or continue. `method` narrows the request held to that method's
+ * first, for a URL the page also reaches with another: every request of another method goes
+ * through, before and after it. Install it before the navigation that makes the request. The
+ * route stays installed for the page's life on purpose. A `{ times: 1 }` route does not stay:
+ * Playwright removes an expiring route from the page before its handler runs, and a page left
+ * with no route stops intercepting while that request is still held (playwright-core 1.63,
  * `Page._onRoute`). In Chromium the reload a failed chunk starts then got no response in 12 of 40
  * runs.
  */
-export async function holdFirstRequest(page: Page, url: RegExp): Promise<{ held: Promise<Route> }> {
+export async function holdFirstRequest(
+  page: Page,
+  url: RegExp,
+  options: { method?: string } = {}
+): Promise<{ held: Promise<Route> }> {
   const first = Promise.withResolvers<Route>();
   let holding = false;
   await page.route(url, async (route) => {
-    if (!holding) {
+    if (!holding && (options.method === undefined || route.request().method() === options.method)) {
       holding = true;
       first.resolve(route);
       return;

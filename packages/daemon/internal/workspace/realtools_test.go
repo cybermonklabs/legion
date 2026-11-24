@@ -7,7 +7,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
+	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -116,7 +119,12 @@ const slowCleanFilter = "sleep 300; cat"
 // `filter.slow.clean` sleeps past the budget and whose .gitattributes points every path at that
 // filter, and the add runs through execRunner.Run, the runner provisioning's own git goes
 // through, under a budget shorter than the sleep: what the row reads is the production stop's
-// own SIGTERM reaching a real git that holds a real lock.
+// own SIGTERM reaching a real git that holds a real lock. That the git left on its SIGTERM, and
+// not on the SIGKILL the stop sends a group that outlives procgroup.StopGrace, is read from the
+// git's own wait status, not from a clock: git's lockfile handler removes its lock and raises the
+// signal again, so a git its SIGTERM ended ends signaled SIGTERM, and one the SIGKILL ended ends
+// signaled SIGKILL. The row holds no wall-clock ceiling, which a loaded runner can pass with
+// nothing wrong.
 func TestARealGitStoppedAtItsBudgetLeavesNoLock(t *testing.T) {
 	git := realTool(t, "git")
 	root := t.TempDir()
@@ -138,6 +146,14 @@ func TestARealGitStoppedAtItsBudgetLeavesNoLock(t *testing.T) {
 	appeared := whenLockAppears(filepath.Join(repository, ".git", "index.lock"), done)
 	run := NewRunner(budget, map[string]string{"git": git})
 
+	var ended atomic.Pointer[os.ProcessState]
+	hook := func(command Command, state *os.ProcessState) {
+		if command.Dir == repository && slices.Equal(command.Argv, []string{"git", "add", "work.txt"}) {
+			ended.Store(state)
+		}
+	}
+	exitedHook.Store(&hook)
+	t.Cleanup(func() { exitedHook.Store(nil) })
 	started := time.Now()
 	result, err := run.Run(context.Background(), Command{Dir: repository, Argv: []string{"git", "add", "work.txt"}, Timeout: budget})
 	elapsed := time.Since(started)
@@ -160,9 +176,21 @@ func TestARealGitStoppedAtItsBudgetLeavesNoLock(t *testing.T) {
 	if locks := locksUnder(t, filepath.Join(repository, ".git")); len(locks) > 0 {
 		t.Errorf("the git left %v under .git after %s: the budget's end gave it no SIGTERM to remove its lock on, and every later git and jj of this repository fails on it", locks, elapsed)
 	}
-	if elapsed > budget+procgroup.StopGrace/2 {
-		t.Errorf("the run took %s, past its %s budget plus half the %s grace: a git that leaves on its SIGTERM must end the grace, not sit out its whole span", elapsed, budget, procgroup.StopGrace)
+	state := ended.Load()
+	status, ok := waitStatus(state)
+	if !ok || !status.Signaled() || status.Signal() != syscall.SIGTERM {
+		t.Errorf("the git ended %v after %s, want it ended by its SIGTERM: the stop sends SIGKILL only to a group that outlived its %s grace, and a git the SIGKILL ended ran no handler for its lock", state, elapsed, procgroup.StopGrace)
 	}
+}
+
+// waitStatus is state's wait status, and whether there is one: no state, or one whose Sys is no
+// syscall.WaitStatus, has none.
+func waitStatus(state *os.ProcessState) (syscall.WaitStatus, bool) {
+	if state == nil {
+		return 0, false
+	}
+	status, ok := state.Sys().(syscall.WaitStatus)
+	return status, ok
 }
 
 // jjWorkingCopyFiles is how large the working copy of TestARealJJStoppedAtItsBudgetIsRecorded is.
@@ -262,7 +290,7 @@ func stoppedAtTheIndexLock(t *testing.T, jj, work string, files int) (time.Durat
 
 	started := time.Now()
 	go func() {
-		out, err := RunCommand(ctx, nil, budget, started, setupEnvironment(), work, nil, []string{jj, "status"})
+		out, err := RunCommand(ctx, procgroup.NoReaper, budget, started, setupEnvironment(), work, nil, []string{jj, "status"})
 		returned <- outcome{out: out, err: err, elapsed: time.Since(started)}
 	}()
 	var took time.Time

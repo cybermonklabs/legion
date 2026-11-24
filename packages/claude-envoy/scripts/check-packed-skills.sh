@@ -31,7 +31,10 @@ refuse() {
 listing=$(tar -tvzf "$tar_file")
 members=$(tar -tzf "$tar_file")
 
-if ! printf '%s\n' "$members" | grep -qxF package/skills/dispatch-first/SKILL.md; then
+# Each lookup reads the listing from a here-string, never from `printf … | grep -q`: grep -q exits
+# at its first match, and a printf still writing then dies of SIGPIPE, which pipefail turns into
+# exit 141 and so into a refusal of a member the tarball holds.
+if ! grep -qxF package/skills/dispatch-first/SKILL.md <<<"$members"; then
   refuse "$tar_file holds no package/skills/dispatch-first/SKILL.md, which the dispatch-first hook reads on every session: pack it with the prepack that resolves skills/<name> (scripts/pack-skills.sh)"
 fi
 
@@ -42,7 +45,7 @@ fi
 
 names=$(printf '%s\n' "$members" | sed -n 's|^package/skills/\([^/]*\)/.*|\1|p' | sort -u)
 while IFS= read -r name; do
-  if ! printf '%s\n' "$members" | grep -qxF "package/skills/$name/SKILL.md"; then
+  if ! grep -qxF "package/skills/$name/SKILL.md" <<<"$members"; then
     refuse "$tar_file packs package/skills/$name with no SKILL.md, so the skill it ships is incomplete"
   fi
 done <<< "$names"

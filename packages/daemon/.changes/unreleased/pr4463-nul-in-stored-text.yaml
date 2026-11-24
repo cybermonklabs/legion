@@ -1,0 +1,9 @@
+kind: Fixed
+body: |-
+    A NUL character or a byte that is not UTF-8 in any text the daemon stores no longer makes PostgreSQL refuse the write: the store replaces each NUL and each run of invalid bytes with U+FFFD, and in `jsonb` each `\u0000` escape and each lone surrogate escape, so a GitHub or Dispatch event and a worker's frame holding one apply instead of failing or being delivered again with no end.
+    A far side's error text is stored cut to 2048 runes, with its whole text in the log, and no URL query or userinfo from an error text reaches a claim, the state, the store, an API answer or the daemon's own log (its slog handlers); in the log lines of `worker-shim`, `claude-bridge`, `launcher` and `workspace-init` the rule removes the query and the userinfo of every URL they write, not only an error's, and in an issue pod the `roles` container's log applies it to every agent's output too (role-init's stdout and stderr are the launcher's role-log writers).
+    The daemon now refuses to start on a `postgres_dsn` whose `default_query_exec_mode` is `exec` or `simple_protocol`, because the store's rule needs the parameter types those modes do not read, and `legion config check` makes the same refusal.
+    `legion config check` now also refuses a `postgres_dsn` pgx cannot parse, such as a malformed URL, a bad `pool_*` key or an `sslrootcert`, `sslcert` or `sslkey` file it cannot read, as the daemon refuses to start on one, and reads the `PG*` environment variables for what the DSN leaves unset, as the daemon does.
+time: 2026-11-19T03:46:35Z
+custom:
+    Issue: pr4463

@@ -86,10 +86,14 @@
 # Environment: LOADTEST_ROOT (default ${TMPDIR:-/tmp}/dispatch-loadtest); LOADTEST_SRC (default: the
 # checkout holding this script); LOADTEST_DISPATCH_SRC (default LOADTEST_SRC: the checkout
 # envoy-dispatch is built from); the ports, which follow LOADTEST_ROOT (common.sh: the root's block
-# k of the path's sha256 modulo 200 gives postgres 15000+10k, proxy 15001+10k, nats 15002+10k,
-# nats_monitor 15003+10k, listener 15004+10k, dispatch 15005+10k, pprof 15006+10k, proxy_stats
-# 15007+10k, envoy_proxy 15008+10k), so two roots on one machine hold the same 9 ports about 1 pair
-# in 200 and otherwise none, and a collision is refused by start, not shared; LOADTEST_PG_PORT,
+# k of the path's sha256 modulo 200 gives postgres B+10k, proxy B+1+10k, nats B+2+10k,
+# nats_monitor B+3+10k, listener B+4+10k, dispatch B+5+10k, pprof B+6+10k, proxy_stats B+7+10k,
+# envoy_proxy B+8+10k, where B is 15000 unless the ephemeral range, ip_local_port_range, starts
+# below 17000, and then the 2000 ports just below it, so no stack port is inside that range; setup
+# refuses when no 2000 ports fit below it above 1023), so two roots on one machine hold the same 9
+# ports about 1 pair in 200 and otherwise none, and a collision is refused by start, not shared;
+# start refuses a port inside the ephemeral range; LOADTEST_PORT_RANGE_FILE reads the range from
+# another file than /proc/sys/net/ipv4/ip_local_port_range, for a test; LOADTEST_PG_PORT,
 # LOADTEST_PROXY_PORT, LOADTEST_PROXY_STATS_PORT (the proxy's wire counts), LOADTEST_NATS_PORT,
 # LOADTEST_NATS_MONITOR_PORT, LOADTEST_LISTENER_PORT, LOADTEST_DISPATCH_PORT, LOADTEST_PPROF_PORT
 # and LOADTEST_ENVOY_PROXY_PORT each override their own port, read by setup into stack.json
@@ -131,7 +135,10 @@ PPROF_OVERLAY=$here/zz_loadtest_pprof.go.txt
 DISPATCH_BINARIES=("$BIN/envoy-dispatch" "$BIN/dispatch-seed" "$BIN/dispatch-seed-stock")
 # Processes in stop order, and in start order (envoy_proxy and dispatch are started by seed and
 # reset).
-PROCESSES=(dispatch envoy_proxy listener nats proxy postgres)
+PROCESSES=(dispatch envoy_proxy listener issuer nats proxy postgres)
+# Dispatch's token for the listener's audience, which dev-oidc-issuer writes beside the listener
+# (start_listener).
+ISSUER_TOKEN_FILE=$RUN/dispatch-listener-token
 START_ORDER=(postgres proxy nats listener envoy_proxy dispatch)
 # The stack.json port keys (PORT_KEYS), each one's environment variable (PORT_VAR) and the default
 # ports of this root, which follow LOADTEST_ROOT, are common.sh's (stack_ports).
@@ -214,14 +221,17 @@ stack_set() {
 set_pid() { stack_set '.pids[$n] = $p' --arg n "$1" --argjson p "$2"; }
 
 # write_stack_json writes stack.json on the first setup, with this root's ports (stack_ports: the
-# defaults that follow LOADTEST_ROOT, each one overridden by its LOADTEST_*_PORT). A later setup
-# keeps the ports the file records and moves only those whose variable this environment sets, so a
-# rerun with no port variable set keeps the stack's ports; it refuses to move a port while the
+# defaults that follow LOADTEST_ROOT, below the machine's ephemeral range, each one overridden by its
+# LOADTEST_*_PORT). A later setup keeps the ports the file records and moves only those whose
+# variable this environment sets, and those inside the ephemeral range (port_in_ephemeral), which a
+# stack recorded before its blocks moved below that range holds: those take this root's default. So
+# a rerun with no port variable set keeps the stack's ports; it refuses to move a port while the
 # stack runs. The name, tokens and pids are kept.
 write_stack_json() {
-  local ports k p var args=()
+  local ports k p var defaults args=()
+  defaults=$(stack_ports "$ROOT") || die "no block of the stack's ports fits below this machine's ephemeral range (common.sh, port_base, says why above)"
   if [ ! -f "$STACK" ]; then
-    while read -r k p; do args+=(--argjson "$k" "$p"); done < <(stack_ports "$ROOT")
+    while read -r k p; do args+=(--argjson "$k" "$p"); done <<<"$defaults"
     ports=$(jq -n "${args[@]}" '$ARGS.named')
     (
       umask 077
@@ -237,15 +247,21 @@ write_stack_json() {
   while read -r k p; do recorded[$k]=$p; done < <(jq -r '(.ports // {}) | to_entries[] | "\(.key) \(.value)"' "$STACK")
   while read -r k p; do
     var=${PORT_VAR[$k]}
-    args+=(--argjson "$k" "${!var:-${recorded[$k]:-$p}}")
-  done < <(stack_ports "$ROOT")
+    if [ -n "${!var:-}" ]; then
+      args+=(--argjson "$k" "${!var}")
+    elif [ -n "${recorded[$k]:-}" ] && ! port_in_ephemeral "${recorded[$k]}"; then
+      args+=(--argjson "$k" "${recorded[$k]}")
+    else
+      args+=(--argjson "$k" "$p")
+    fi
+  done <<<"$defaults"
   ports=$(jq -n "${args[@]}" '$ARGS.named')
   if [ "$(jq -c .ports "$STACK")" != "$(jq -c . <<<"$ports")" ]; then
     for k in "${PROCESSES[@]}"; do
-      running "$k" && die "the port variables in the environment move ports of $STACK while $k is running; stack.sh stop first"
+      running "$k" && die "the port variables in the environment, or the ephemeral range, move ports of $STACK while $k is running; stack.sh stop first"
     done
     stack_set '.ports = $ports' --argjson ports "$ports"
-    note "ports in $STACK updated from the environment: $(jq -c . <<<"$ports")"
+    note "ports in $STACK updated from the environment and the ephemeral range ($(ephemeral_range)): $(jq -c . <<<"$ports")"
   fi
   stack_set '.root = $root' --arg root "$ROOT"
 }
@@ -263,6 +279,7 @@ binary_of() {
     proxy | envoy_proxy) printf '%s\n' "$BIN/loadgen" ;;
     nats) printf '%s\n' "$BIN/nats-server" ;;
     listener) printf '%s\n' "$BIN/envoy-listener" ;;
+    issuer) printf '%s\n' "$BIN/dev-oidc-issuer" ;;
     dispatch) printf '%s\n' "${DISPATCH_BINARIES[@]}" ;;
   esac
 }
@@ -396,10 +413,15 @@ port_holder() {
 # (common.sh: a block out of 200, so about 1 pair of roots in 200 collides), and then all 7 ports
 # are the same, so the refusal names the block and both remedies. It says that only of a port this
 # root's block still sets: a port stack.json recorded under another block, or one a LOADTEST_*_PORT
-# overrides, is held by whoever holds it, which this root's block says nothing about.
+# overrides, is held by whoever holds it, which this root's block says nothing about. It refuses
+# first, whoever holds it, a port inside the machine's ephemeral range, which any outgoing
+# connection may take as its source port before this process binds it.
 check_port() {
   local name=$1 key=$2 p holders block
   p=$(port "$key")
+  if port_in_ephemeral "$p"; then
+    die "port $p ($key, for $name) is inside this machine's ephemeral range $(ephemeral_range | tr ' ' '-') (ip_local_port_range), so any outgoing connection may take it as its source port before $name binds it; rerun stack.sh setup with no port variable set, which moves every recorded port inside that range to this root's block below it, or set ${PORT_VAR[$key]} to a port outside that range and rerun stack.sh setup with it set, then stack.sh start"
+  fi
   port_open "$p" || return 0
   holders=$(port_holder "$p")
   [ -n "$holders" ] &&
@@ -461,14 +483,33 @@ start_nats() {
   note "nats pid $(pid_of nats) on 127.0.0.1:$(port nats), monitor $(port nats_monitor), store $store"
 }
 
+# listener_up sends the listener's bearer on curl's standard input, in no command line.
 listener_up() {
-  curl -fsS --max-time 2 -H "Authorization: Bearer $(jq -r .listener_token "$STACK")" \
-    "http://127.0.0.1:$(port listener)/v1/sessions"
+  printf 'Authorization: Bearer %s' "$(jq -r .listener_token "$STACK")" |
+    curl -fsS --max-time 2 -H @- "http://127.0.0.1:$(port listener)/v1/sessions"
 }
 
+# start_listener starts dev-oidc-issuer, the stand-in for Dispatch's service-account token issuer,
+# then the listener verifying its tokens. Dispatch presents the token the issuer writes and keeps
+# fresh (ISSUER_TOKEN_FILE) as its identity at the listener, the one the listener takes a send's
+# role mark from (ENVOY_DISPATCH_PRINCIPAL): without it Dispatch refuses every send for a `role:`
+# route, which the replay's role-routed issues make. The issuer serves a port the kernel picks,
+# which only the listener reads, and is stopped and started with it (stack.sh stop listener stops
+# both); its key lives in its memory, so a listener verifies only the tokens of the issuer started
+# beside it, and Dispatch reads the token file at each call.
+ISSUER_AUDIENCE=envoy-listener-loadtest
+ISSUER_PRINCIPAL=system:serviceaccount:loadtest:dispatch
+issuer_url() { grep -o 'issuer listening url=[^ ]*' "$LOGS/issuer.out" | tail -n1 | cut -d= -f2-; }
 start_listener() {
   running listener && return 0
   check_port listener listener
+  # shellcheck disable=SC2034
+  local issuer_env=("${base_env[@]}")
+  stop_one issuer
+  spawn issuer "$LOGS/issuer.out" issuer_env "$BIN/dev-oidc-issuer" \
+    --token "$ISSUER_AUDIENCE=$ISSUER_PRINCIPAL=$ISSUER_TOKEN_FILE"
+  wait_for "dev-oidc-issuer to report its URL" 30 issuer "$LOGS/issuer.out" issuer_url
+  set_pid issuer "$(pid_of issuer)"
   local log=$LOGS/listener.out
   # internal/config/config.go Load: the listener's settings.
   # shellcheck disable=SC2034
@@ -477,11 +518,14 @@ start_listener() {
     "ENVOY_LISTEN_HOST=127.0.0.1"
     "ENVOY_MACHINE_ID=$(stack_name)"
     "NATS_URLS=nats://127.0.0.1:$(port nats)"
-    "ENVOY_API_TOKEN=$(jq -r .listener_token "$STACK")")
+    "ENVOY_API_TOKEN=$(jq -r .listener_token "$STACK")"
+    "ENVOY_OIDC_ISSUER=$(issuer_url)"
+    "ENVOY_OIDC_AUDIENCE=$ISSUER_AUDIENCE"
+    "ENVOY_DISPATCH_PRINCIPAL=$ISSUER_PRINCIPAL")
   spawn listener "$log" listener_env "$BIN/envoy-listener"
   wait_for "the listener's /v1/sessions" 60 listener "$log" listener_up
   set_pid listener "$(pid_of listener)"
-  note "listener pid $(pid_of listener) on 127.0.0.1:$(port listener)"
+  note "listener pid $(pid_of listener) on 127.0.0.1:$(port listener), Dispatch's identity from dev-oidc-issuer pid $(pid_of issuer) at $(issuer_url)"
 }
 
 dispatch_healthy() {
@@ -572,7 +616,8 @@ launch_dispatch() {
     "GOMAXPROCS=$procs"
     "NATS_URLS=nats://127.0.0.1:$(port nats)"
     "ENVOY_URL=http://127.0.0.1:$envoy_port"
-    "ENVOY_TOKEN=$(jq -r .listener_token "$STACK")")
+    "ENVOY_TOKEN=$(jq -r .listener_token "$STACK")"
+    "ENVOY_ACCOUNT_TOKEN_FILE=$ISSUER_TOKEN_FILE")
   # LOADTEST_DISPATCH_ENV names a file of NAME=value lines appended to that environment, which is
   # how the spec-loop stack points Dispatch at `loadgen stub-embed` (DISPATCH_EMBEDDER=azure, the
   # DISPATCH_AZURE_* settings and SSL_CERT_FILE for the stub's own certificate). It is a file
@@ -695,9 +740,10 @@ cmd_setup() {
     note "building envoy-dispatch from $DISPATCH_SRC/packages/envoy into $BIN"
     (cd -- "$DISPATCH_SRC/packages/envoy" && go build -o "$BIN/envoy-dispatch" ./cmd/dispatch)
   fi
-  note "building envoy-listener and loadgen from $ENVOY_SRC into $BIN"
+  note "building envoy-listener, dev-oidc-issuer and loadgen from $ENVOY_SRC into $BIN"
   (cd -- "$ENVOY_SRC" &&
     go build -o "$BIN/envoy-listener" ./cmd/listener &&
+    go build -o "$BIN/dev-oidc-issuer" ./cmd/dev-oidc-issuer &&
     go build -o "$BIN/loadgen" ./loadtest)
   if [ -z "$commit" ]; then
     local dirty tree=""

@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/pglisten"
 )
@@ -38,11 +39,12 @@ type deliverySubscription struct {
 
 // Subscribe answers one subscribe frame on conn, and reports whether conn's sub now follows the
 // frame's view. The socket has refused a frame with no sub (subscribeLive). A view the matching GET
-// route would refuse is an INVALID_QUERY error frame naming the sub, a malformed view or a resume
-// seq that is not a decimal change position INVALID_FRAME, and a sub id conn already holds is then
-// left as it was. Otherwise conn's sub follows the view from now on: it is answered a snapshot, or,
-// on a resume, the delta against the revisions the page holds (a snapshot when the page applied
-// nothing since before the oldest kept change, OldestChangeSeq() - 1), and later only the deltas.
+// route would refuse is an error frame naming the sub and carrying the code that route answers; a
+// malformed view, or a resume seq that is not a decimal change position, is INVALID_FRAME; and a
+// sub id conn already holds is then left as it was. Otherwise conn's sub follows the view from now
+// on: it is answered a snapshot, or, on a resume, the delta against the revisions the page holds
+// (a snapshot when the page applied nothing since before the oldest kept change,
+// OldestChangeSeq() - 1), and later only the deltas.
 // Right after that first answer, or where it would be for a resume with nothing to catch up, conn
 // is sent the freshness verdict the hub knows: the hub sends its open pages a verdict only when it
 // changes, and a page keeps the last one it was sent, so a socket that was down at a change, or a
@@ -174,7 +176,9 @@ func (g *hubGeneration) leaveLocked(sub *deliverySub) {
 
 // The channels the delivery hub listens on. delivery_changes carries no payload and is notified as
 // a delivery_changes row commits (migration 0100); delivery_freshness carries the settings row's
-// freshness columns as JSON (0100).
+// freshness columns as JSON (0100); legion.StateChannel carries a project key and is notified by
+// the sampler after each read of that project's Legion daemon, which is the only thing that moves
+// a Legion board besides Dispatch's own events.
 const (
 	deliveryChangesChannel   = "delivery_changes"
 	deliveryFreshnessChannel = "delivery_freshness"
@@ -240,8 +244,11 @@ type hubGeneration struct {
 	// Each wake holds at most one pending signal: what it asks for covers every signal before it.
 	wakeWork, wakeChanges, connected chan struct{}
 	barrier                          chan chan struct{}
-	// feeds hands the intake the relay subscription seedEvents took; one slot, as one runs at a
-	// time.
+	// feeds hands the intake the relay subscription seedEvents took. It has no slot: a hand-over
+	// completes only as the intake takes it, so a subscription is always either the intake's, which
+	// it cancels as it returns, or still seedEvents', which cancels it once g has ended. A slot
+	// could hold one the intake never took past g's end, which neither would cancel, and the relay
+	// would keep its generation, its LISTEN connection and its reads of the event log for it.
 	feeds chan hubEventFeed
 
 	views map[string]*deliveryView // by canonical view key
@@ -342,15 +349,17 @@ type deliverySub struct {
 }
 
 // deliveryLiveSpec is a subscribed view, resolved: its kind, its window (a preset's length in days,
-// or a custom range), its query without from and to, a pipeline view's pinned at, and the
-// canonical key identical views share.
+// or a custom range), its query without from and to, a pipeline view's pinned at, a legion
+// view's project, and the canonical key identical views share.
 type deliveryLiveSpec struct {
 	kind     string
 	preset   int
 	from, to time.Time
 	query    url.Values
 	at       *time.Time
-	key      string
+	// project is the project a legion view's board shows; every other kind names none.
+	project string
+	key     string
 }
 
 // deliveryFreshnessHeard is the freshness row as the hub last heard it, and the population's
@@ -371,15 +380,15 @@ type deliveryFreshnessVerdict struct {
 
 // deliveryHubNote is one thing the hub did, for a test's observe.
 type deliveryHubNote struct {
-	what  string // "recompute begin", "recompute position", "recompute read", "recompute end", "connected", "events seeded", "event", "feed closed"
+	what  string // "recompute begin", "recompute position", "recompute read", "recompute end", "connected", "feed ready", "events seeded", "event", "feed closed"
 	view  string // the view's key
 	cause string
 	sent  int
 	// through is the newest change position a recompute's read took, which a "recompute position"
 	// note makes as the read takes it and a "recompute read" note carries on.
 	through int64
-	// eventID is the event an "event" note applied, or the head an "events seeded" note's feed
-	// began at.
+	// eventID is the event an "event" note applied, or the head a "feed ready" or "events seeded"
+	// note's feed began at.
 	eventID int64
 }
 
@@ -428,7 +437,7 @@ func (h *deliveryHub) startLocked() *hubGeneration {
 		ready:    make(chan struct{}),
 		wakeWork: make(chan struct{}, 1), wakeChanges: make(chan struct{}, 1), connected: make(chan struct{}, 1),
 		barrier: make(chan chan struct{}),
-		feeds:   make(chan hubEventFeed, 1),
+		feeds:   make(chan hubEventFeed),
 		views:   map[string]*deliveryView{},
 		conns:   map[deliveryLiveConn]map[string]*deliverySub{},
 		p0:      map[string]struct{}{},
@@ -436,7 +445,7 @@ func (h *deliveryHub) startLocked() *hubGeneration {
 	listener := &pglisten.Listener{
 		Owner:       "dispatch",
 		Dial:        h.dial,
-		Channels:    []string{deliveryChangesChannel, deliveryFreshnessChannel},
+		Channels:    []string{deliveryChangesChannel, deliveryFreshnessChannel, legion.StateChannel},
 		ListenIdle:  h.listenIdle,
 		PingTimeout: h.pingTimeout,
 		Backoff:     h.backoff,
@@ -482,13 +491,30 @@ func (h *deliveryHub) note(n deliveryHubNote) {
 }
 
 // onNotify routes one notification to g, on the listener's goroutine: a change wakes the intake's
-// catch-up of the change log, and a freshness row is applied at once, reading nothing.
+// catch-up of the change log, a freshness row is applied at once, reading nothing, and a read of a
+// Legion daemon marks that project's board.
 func (h *deliveryHub) onNotify(g *hubGeneration, channel, payload string) {
 	switch channel {
 	case deliveryChangesChannel:
 		signal(g.wakeChanges)
 	case deliveryFreshnessChannel:
 		h.applyFreshness(g, payload)
+	case legion.StateChannel:
+		h.dirtyLegionBoard(g, payload)
+	}
+}
+
+// dirtyLegionBoard marks the board of the project a read of a Legion daemon just recorded. The
+// sampler announces every read, failed or not: the header carries the read itself, so a board
+// whose daemon stopped answering moves as surely as one whose issues did.
+func (h *deliveryHub) dirtyLegionBoard(g *hubGeneration, project string) {
+	now := h.clock.Now()
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, view := range g.views {
+		if view.spec.classes().reads == viewReadsLegion && view.spec.project == project {
+			h.markDirtyLocked(g, view, now, deliveryCauseChange)
+		}
 	}
 }
 

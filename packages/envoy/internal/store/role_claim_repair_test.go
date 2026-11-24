@@ -54,7 +54,7 @@ func newRepairRig(t *testing.T, seed func(roles natsgo.KeyValue)) *repairRig {
 		seed(roles)
 	}
 	rig := &repairRig{t: t, conn: conn, clock: &manualClock{at: repairBase}, waits: &kvwatchtest.Waits{}}
-	rig.reg, err = Open(conn, WithReplicas(1), WithClock(rig.clock.Now), WithRoleClaimWatch(kvwatch.WithAfterFunc(rig.waits.After)))
+	rig.reg, err = Open(t.Context(), conn, WithReplicas(1), WithClock(rig.clock.Now), WithRoleClaimWatch(kvwatch.WithAfterFunc(rig.waits.After)))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -144,7 +144,7 @@ func (rig *repairRig) register(sessionID, instance string, topics ...string) Int
 	if err != nil {
 		rig.t.Fatalf("write %s's registration: %v", sessionID, err)
 	}
-	if _, err := rig.reg.RenewRoleClaims(ctx, sessionID, instance, row); err != nil {
+	if _, err := rig.reg.RenewRoleClaims(ctx, sessionID, instance, row, nil); err != nil {
 		rig.t.Fatalf("renew %s's role claims: %v", sessionID, err)
 	}
 	return row
@@ -311,7 +311,7 @@ func TestTheFirstReadOfAnEpochCountsNoRepair(t *testing.T) {
 	recreated := testnats.RecreateKeyValue(t, js, &natsgo.KeyValueConfig{Bucket: bus.RoleClaimBucket, Replicas: 1, Storage: natsgo.FileStorage})
 	putRoleClaim(t, recreated, "reviewer", "ses_a")
 	putRoleClaim(t, recreated, "lead", "ses_c")
-	if err := rig.reg.Rewatch(rig.conn); err != nil {
+	if err := rig.reg.Rewatch(context.Background(), rig.conn); err != nil {
 		t.Fatalf("Rewatch: %v", err)
 	}
 	want := map[string][]string{"ses_a": {"reviewer"}, "ses_c": {"lead"}}

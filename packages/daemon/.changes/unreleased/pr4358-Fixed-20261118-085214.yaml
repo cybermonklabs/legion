@@ -1,0 +1,5 @@
+kind: Fixed
+body: The merger's prompt dequeues a pull request with `dequeuePullRequest(input:{id:…})`. It named the input field `pullRequestId`, which GitHub's `DequeuePullRequestInput` does not accept, so the dequeue on a closed design gate was refused.
+time: 2026-11-18T08:52:14.166243636Z
+custom:
+    Issue: pr4358

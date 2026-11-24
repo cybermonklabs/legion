@@ -54,13 +54,13 @@
 # the three proofs are theirs, and neither writes this rule a second time.
 #
 # Every exit names the source that served the bytes — `github-release`, `ghcr-mirror`, `npm`,
-# `pypi` or `pulumi-releases` — except the one curl answers with exit 23, which names none,
-# because no source is what failed. ci_tools_extract's unwritable destination is that same
-# fault of this run and not that exit, and its callers do name a source, as the rule above
+# `pypi`, `pulumi-releases` or `helm-releases` — except the one curl answers with exit 23, which
+# names none, because no source is what failed. ci_tools_extract's unwritable destination is that
+# same fault of this run and not that exit, and its callers do name a source, as the rule above
 # says. A failure leaves no file at the destination, so a call site that checks the exit
 # status never runs a half-written or unverified file, and one that does not check it finds
 # nothing to run.
-# Those five words are the whole vocabulary of a source, and a row writes one of them on each of
+# Those six words are the whole vocabulary of a source, and a row writes one of them on each of
 # its two sides, in `primary_source` and in `second_source`, so a line, a refusal and the
 # manifest say one word for one source. A call site takes the word from the row with
 # ci_tools_source_name below and writes none of its own: a row that moved to another source
@@ -76,11 +76,12 @@
 #                           It is most rows' primary, and it is a second source as well: Pulumi
 #                           publishes the CLI tarball as a release asset and serves those same
 #                           bytes from get.pulumi.com.
-#   pypi, pulumi-releases   the same two URL fields, through the CI_TOOLS_URL_BASE seam. Two
-#                           words for the one fetch ci_tools__fetch_url makes, because the word
-#                           is the service a line and a refusal name and PyPI is not
-#                           get.pulumi.com: PyPI serves uv's wheel, get.pulumi.com serves the
-#                           docker provider plugin's tarball and the CLI's.
+#   pypi, pulumi-releases,  the same two URL fields, through the CI_TOOLS_URL_BASE seam. Three
+#   helm-releases           words for the one fetch ci_tools__fetch_url makes, because the word
+#                           is the service a line and a refusal name, and PyPI, get.pulumi.com
+#                           and get.helm.sh are three services: PyPI serves uv's wheel,
+#                           get.pulumi.com serves the docker provider plugin's tarball and the
+#                           CLI's, and get.helm.sh serves helm's.
 #   ghcr-mirror             the row's blob in the package `registry:` names.
 #   npm                     the row's `npm_package` and `npm_member`.
 #
@@ -124,11 +125,14 @@
 #   ci_tools_github_url <url>             that URL with the CI_TOOLS_GITHUB_BASE seam in place
 #                                         of its https://github.com prefix.
 #   ci_tools_curl <file> <max_time>
-#                 <url> [argument…]       the one fetch this file makes: <url> into <file>,
-#                                         under the retry ladder and the bounds every source is
-#                                         read with. .github/scripts/mirror-ci-tools.sh fetches
-#                                         the asset it pushes with it, so the copy is filled
-#                                         with the same ladder an install reads it under.
+#                 <url> [argument…]       the one fetch this file makes of a request that carries
+#                                         no credential: <url> into <file>, under the retry
+#                                         ladder and the bounds every source is read with, and
+#                                         following redirects. .github/scripts/mirror-ci-tools.sh
+#                                         fetches the asset it pushes with it, so the copy is
+#                                         filled with the same ladder an install reads it under.
+#                                         A request that carries a credential follows no
+#                                         redirect (ci_tools__curl_held, ci_tools_registry_head).
 #   ci_tools_extract <archive> <member>
 #                    <destination> <url>  that member of that archive at <destination>, read by
 #                                         the suffix of the address it came from rather than by
@@ -152,6 +156,13 @@
 #                                         owner of that address: ci_tools_blob_url and every
 #                                         URL .github/scripts/mirror-ci-tools.sh pushes to and
 #                                         reads back are built from it.
+#   ci_tools_registry_head <token>
+#                  <headers> <url> [arg…] the HTTP status of one HEAD of the package with <token>
+#                                         as its bearer, the answer's headers in <headers>. The
+#                                         bearer goes with the first request alone, and a
+#                                         redirect to an https store is followed with none.
+#                                         .github/scripts/mirror-ci-tools.sh and the
+#                                         tool-fallback job read the package with it.
 #   ci_tools_token_of <file>              the `.token` of a registry token response. It is the
 #                                         one reader of such an answer this repository has, and
 #                                         ci_tools_ghcr_token below reads every token with it.
@@ -221,15 +232,17 @@
 #                          this file by any path finds the manifest without naming it.
 #   CI_TOOLS_GITHUB_BASE   default https://github.com. The URL a `github-release` side of a row
 #                          writes — its `primary`, its `second_url` — and a row's `mirror_from`
-#                          begin with that string, and this file replaces exactly that prefix.
+#                          where that is a release asset begin with that string, and this file
+#                          replaces exactly that prefix. A `mirror_from` at another host, which
+#                          the helm row's is, does not begin with it and is fetched as written.
 #   CI_TOOLS_GHCR_BASE     default https://ghcr.io, read by ci_tools__ghcr alone, so every
 #                          address of the package is built the one way.
 #   CI_TOOLS_NPM_BASE      default https://registry.npmjs.org.
-#   CI_TOOLS_URL_BASE      default empty, which fetches the URL a `pypi` or `pulumi-releases`
-#                          side of a row writes exactly as the row wrote it. Set, it replaces
-#                          that URL's scheme and host and keeps its path, so a row written at
-#                          files.pythonhosted.org whose path is /packages/u/uv.whl is fetched
-#                          under CI_TOOLS_URL_BASE=http://127.0.0.1:9/url at
+#   CI_TOOLS_URL_BASE      default empty, which fetches the URL a `pypi`, `pulumi-releases` or
+#                          `helm-releases` side of a row writes exactly as the row wrote it.
+#                          Set, it replaces that URL's scheme and host and keeps its path, so a
+#                          row written at files.pythonhosted.org whose path is /packages/u/uv.whl
+#                          is fetched under CI_TOOLS_URL_BASE=http://127.0.0.1:9/url at
 #                          http://127.0.0.1:9/url/packages/u/uv.whl. The host is named here
 #                          without a path after it because rule 3 of
 #                          .github/scripts/check-ci-tools.sh reads every file under .github/
@@ -379,12 +392,12 @@ ci_tools_field() {
 # file would name and then refuse to fetch cannot exist. Adding a source is an edit in each of
 # the places ci_tools__source_fetch below names, which that one comment lists.
 #
-# Neither side is a constant. Most rows' primary is a GitHub release asset and the pulumi CLI's
-# is get.pulumi.com, and a third party fetches the primary bytes of jj (mise) and of Bun
-# (oven-sh/setup-bun), which is why those rows carry an empty `primary` and a `primary_source`
-# all the same: the word is what their action says about bytes it did not fetch here. The row is
-# read either way, so a call site that names no row of the manifest is refused here rather than
-# answered with a word about a tool this file knows nothing of.
+# Neither side is a constant. Most rows' primary is a GitHub release asset, the pulumi CLI's
+# is get.pulumi.com and helm's is get.helm.sh, and a third party fetches the primary bytes of jj
+# (mise) and of Bun (oven-sh/setup-bun), which is why those rows carry an empty `primary` and a
+# `primary_source` all the same: the word is what their action says about bytes it did not fetch
+# here. The row is read either way, so a call site that names no row of the manifest is refused
+# here rather than answered with a word about a tool this file knows nothing of.
 ci_tools_source_name() {
   if [ "$#" -ne 2 ]; then
     ci_tools__error "ci_tools_source_name takes a row and primary or second, and this call gave $#"
@@ -505,9 +518,11 @@ ci_tools__tempfile() {
   mktemp "$directory/ci-tools-${row//[^A-Za-z0-9._-]/-}.XXXXXX"
 }
 
-# ci_tools_curl <file> <max_time> <url> [curl argument…]: the one fetch this file makes, and the
-# one .github/scripts/mirror-ci-tools.sh makes for the asset it copies, so the bytes a copy is
-# filled with are fetched under the ladder an install reads them under.
+# ci_tools_curl <file> <max_time> <url> [curl argument…]: the one fetch this file makes of a
+# request that carries no credential, and the one .github/scripts/mirror-ci-tools.sh makes for
+# the asset it copies, so the bytes a copy is filled with are fetched under the ladder an install
+# reads them under. A request that carries one goes through ci_tools__curl_held below, this same
+# ladder less `-L`.
 # `--fail` is what keeps a 504's body out of <file>, `--retry 7 --retry-all-errors` rides out a
 # flap of the service, and `--max-time` bounds one attempt, so a hung attempt becomes the exit
 # code that sends the caller to the second source. Exit 23 is the one exit that sends it
@@ -545,6 +560,71 @@ ci_tools_curl() {
   local file=$1 max_time=$2 url=$3
   shift 3
   curl -fsSL --retry 7 --retry-all-errors --retry-max-time 60 --max-time "$max_time" -o "$file" "$@" "$url"
+}
+
+# ci_tools__curl_held <file> <max_time> <url> [curl argument…]: ci_tools_curl for a request that
+# carries a credential: the same ladder less `-L`, so curl follows no redirect and the credential
+# reaches the origin <url> names and no origin a `Location` names. curl's own rule drops an
+# `Authorization` header and a `-u` password on a redirect to another host, port or scheme, but a
+# fetch that leans on it still hands the other origin a request, takes that origin's answer as
+# the package's, and is only as safe as the curl a runner has.
+# It writes `<status> <redirect address>` on standard output, the address empty where the answer
+# is no redirect. `--fail` makes a 4xx or 5xx curl exit 22 as before, so exit 0 is a 2xx or a 3xx,
+# and a 3xx is one answer, which no `--retry` repeats. The caller reads that line: the token
+# request refuses a redirect, and the blob request follows it in a request handed no credential.
+# For a `Location` that is a path, curl writes the address against the request's own, and with a
+# `-u` credential it writes that user and password into it (curl 8.5.0, measured 2026-11-17), so
+# the token request's line can hold the push credential. That is no leak: the token request
+# refuses every 3xx and prints the address through ci_tools__redirect_target, which keeps its
+# scheme, host and port and drops the user part, and the line goes nowhere else. The blob request
+# carries its bearer as a header, which no address holds.
+# `-q` comes first because curl reads ~/.curlrc before its command line and `-q` there is the one
+# way to read none: a .curlrc that names `location` or `location-trusted` would make this call
+# follow the redirect, and location-trusted would send it the credential.
+ci_tools__curl_held() {
+  local file=$1 max_time=$2 url=$3
+  shift 3
+  curl -q -fsS --retry 7 --retry-all-errors --retry-max-time 60 --max-time "$max_time" -o "$file" \
+    -w '%{http_code} %{redirect_url}' "$@" "$url"
+}
+
+# ci_tools__redirect_target <address>: what a line names of the address a redirect points at, its
+# scheme and its host and port alone, since the path and the query can carry a signed grant and
+# the user part a credential; and `no address` where the redirect named none.
+ci_tools__redirect_target() {
+  local url=$1 authority
+  if [ -z "$url" ]; then
+    printf 'no address\n'
+    return 0
+  fi
+  authority=${url#*://}
+  authority=${authority%%[/?#]*}
+  printf '%s://%s\n' "${url%%://*}" "${authority##*@}"
+}
+
+# ci_tools__store_proto: the protocols the request after a registry's redirect may use, for curl's
+# `--proto`. That request names the store's address as a command-line URL, where curl's redirect
+# protocol filter does not apply, so without it a `Location` of file://, gopher://, dict://, scp://
+# or sftp:// would be read. It is https alone, and https and http under CI_TOOLS_REDIRECT_HTTP=1,
+# which .github/scripts/ci-tools.test.sh and .github/scripts/mirror-ci-tools.test.sh set for their
+# http stand-ins and which no workflow and no action sets.
+ci_tools__store_proto() {
+  if [ "${CI_TOOLS_REDIRECT_HTTP:-}" = 1 ]; then
+    printf '=http,https\n'
+  else
+    printf '=https\n'
+  fi
+}
+
+# ci_tools__store_address <address>: whether a registry's redirect names a store this file reads,
+# which is an address `--proto` above admits. The request after the redirect checks it before it
+# is made, so a refused one makes no request at all and the refusal names the scheme.
+ci_tools__store_address() {
+  case $1 in
+    https://*) return 0 ;;
+    http://*) [ "${CI_TOOLS_REDIRECT_HTTP:-}" = 1 ] ;;
+    *) return 1 ;;
+  esac
 }
 
 # ci_tools__curl_report <curl's exit> <the file curl was given> <what every other exit says>:
@@ -656,25 +736,44 @@ ci_tools_ghcr_token() {
     return 1
   fi
   local max_time=${1:-60} scope=${2:-pull} credential=${3:-}
-  local base path url token_file token status=0
-  # A credential is passed to curl as its own argument and never spliced into the URL, so the
-  # secret reaches no log line and no process name of a redirect.
+  local base path url token_file token answer status=0 config=''
+  # A credential reaches curl in a config on standard input (`-K -`): never as an argument, where
+  # every process of the runner could read it, and never spliced into the URL, where it would reach
+  # a log line and the process name of a redirect. Inside the config's double quotes a backslash
+  # and a double quote are escaped. The config is a here-string the shell writes before curl
+  # starts, not a pipe from printf: a curl that takes no `-K -` never reads it, and a printf that
+  # wrote after such a curl had exited would end a pipeline under pipefail with 141.
+  # The request follows no redirect (ci_tools__curl_held): ghcr.io answers it itself (200,
+  # measured 2026-11-17), the credential is for the package alone, and the token it answers is the
+  # bearer of every request after it, so a token another origin answered is no token of this run.
   local -a authentication=()
-  [ -z "$credential" ] || authentication=(-u "$credential")
+  if [ -n "$credential" ]; then
+    authentication=(-K -)
+    credential=${credential//\\/\\\\}
+    config="user = \"${credential//\"/\\\"}\""
+  fi
   ci_tools__ghcr base path || return 1
   token_file=$(ci_tools__tempfile ghcr-token) || {
     printf 'this run could not make a temporary file for the %s token\n' "$scope"
     return 1
   }
   url="$base/token?service=ghcr.io&scope=repository:$path:$scope"
-  ci_tools_curl "$token_file" "$max_time" "$url" \
-    ${authentication[@]+"${authentication[@]}"} || status=$?
+  answer=$(ci_tools__curl_held "$token_file" "$max_time" "$url" \
+    ${authentication[@]+"${authentication[@]}"} <<<"$config") || status=$?
   if [ "$status" -ne 0 ]; then
     rm -f -- "$token_file"
     ci_tools__curl_report "$status" "$token_file" \
       "the $scope token request failed (curl exit $status)"
     return
   fi
+  case $answer in
+    3*)
+      rm -f -- "$token_file"
+      printf 'the %s token request answered %s, a redirect to %s, which this run does not follow\n' \
+        "$scope" "${answer%% *}" "$(ci_tools__redirect_target "${answer#* }")"
+      return 1
+      ;;
+  esac
   token=$(ci_tools_token_of "$token_file") || token=''
   rm -f -- "$token_file"
   if [ -z "$token" ]; then
@@ -753,6 +852,49 @@ ci_tools_blob_url() {
   printf '%s/blobs/sha256:%s\n' "$registry_url" "$digest"
 }
 
+# ci_tools_registry_head <token> <headers> <url> [curl argument…]: the HTTP status of one HEAD of
+# the package, with <token> as its bearer and the answer's headers in the file <headers>. It is
+# the HEAD .github/scripts/mirror-ci-tools.sh reads a blob and a tag with, and the one the
+# tool-fallback job (.github/workflows/ci-job-tool-fallback.yaml) reads each copy with. The curl
+# arguments, an `Accept` header for a manifest, carry no credential.
+# The bearer reaches curl on standard input from printf, a shell builtin, so it is in no
+# process's command line, and it goes with the first request alone, which follows no redirect.
+# ghcr.io answers a HEAD of a blob and of a manifest itself (200, measured 2026-11-17 for every
+# ghcr-mirror row), but a registry may answer a HEAD of a blob with a redirect to the store that
+# holds it, as ghcr.io answers a GET. Such a redirect is followed in a request of its own, handed
+# no bearer, and the status printed is that of its last answer, whose headers are the ones
+# <headers> then holds. That request reads a store at an https address alone
+# (ci_tools__store_address and ci_tools__store_proto above). A redirect that names no address,
+# or an address of another scheme, is printed as its own status, which no caller reads as a
+# copy, beside a refusal that names it. A request the service did not answer at all reads 000.
+# The first request puts `-q` first, for the reason ci_tools__curl_held gives.
+ci_tools_registry_head() {
+  if [ "$#" -lt 3 ]; then
+    ci_tools__error "ci_tools_registry_head takes a token, a headers file and a URL, and this call gave $#"
+    return 1
+  fi
+  local token=$1 headers=$2 url=$3 answer status location
+  shift 3
+  answer=$(printf 'Authorization: Bearer %s' "$token" |
+    curl -q -sS -o /dev/null -D "$headers" -w '%{http_code} %{redirect_url}' -I -H @- "$@" "$url") ||
+    answer=000
+  status=${answer%% *}
+  case $status in
+    3*)
+      location=${answer#* }
+      if [ -z "$location" ]; then
+        ci_tools__error "a HEAD of $url answered $status, a redirect that names no address"
+      elif ! ci_tools__store_address "$location"; then
+        ci_tools__error "a HEAD of $url answered $status, a redirect to $(ci_tools__redirect_target "$location"), which this run does not follow: it reads a store at an https address alone"
+      else
+        status=$(curl -sS --proto "$(ci_tools__store_proto)" -o /dev/null -D "$headers" -w '%{http_code}' \
+          -I -L "$@" "$location") || status=000
+      fi
+      ;;
+  esac
+  printf '%s\n' "$status"
+}
+
 # ci_tools__fetch_ghcr <row> <side> <max_time> <file>: the row's blob from the copy in the
 # package the manifest's `registry:` names, read with the anonymous pull token above. The blob
 # is already the bytes the digest names, so nothing is taken out of it.
@@ -762,7 +904,7 @@ ci_tools_blob_url() {
 # returns the write error itself where this run is what could not write the token or the blob.
 ci_tools__fetch_ghcr() {
   local row=$1 max_time=$3 file=$4
-  local url token status=0
+  local url token answer location status=0
   url=$(ci_tools_blob_url "$row") || return 1
   # The token helper prints what went wrong in place of a token, and this is the caller that
   # reports it: the sentence belongs in the refusal this row's fetch builds, and its status
@@ -772,11 +914,40 @@ ci_tools__fetch_ghcr() {
     printf '%s\n' "$token"
     return "$status"
   fi
-  ci_tools_curl "$file" "$max_time" "$url" -H "Authorization: Bearer $token" || status=$?
+  # The bearer reaches curl on standard input from printf, a shell builtin, so it is in no
+  # process's command line, and it goes with this one request, which follows no redirect.
+  # ghcr.io answers a blob's GET with a 307 to pkg-containers.githubusercontent.com, the store
+  # that holds it (measured 2026-11-17 for the crane and changie rows), and the address it names
+  # carries a grant of its own. So the store is read in a request of its own, handed no header,
+  # and the bearer reaches the package and no other origin. That request reads a store at an
+  # https address alone (ci_tools__store_address and ci_tools__store_proto above): the `-L` this
+  # request had left the scheme to curl's redirect filter, which refuses file://.
+  answer=$(printf 'Authorization: Bearer %s' "$token" |
+    ci_tools__curl_held "$file" "$max_time" "$url" -H @-) || status=$?
   if [ "$status" -ne 0 ]; then
     ci_tools__curl_report "$status" "$file" "the blob request failed (curl exit $status)"
     return
   fi
+  case $answer in
+    3*)
+      location=${answer#* }
+      if [ -z "$location" ]; then
+        printf 'the blob request answered %s, a redirect that names no address\n' "${answer%% *}"
+        return 1
+      fi
+      if ! ci_tools__store_address "$location"; then
+        printf 'the blob request answered %s, a redirect to %s, which this run does not follow: it reads a store at an https address alone\n' \
+          "${answer%% *}" "$(ci_tools__redirect_target "$location")"
+        return 1
+      fi
+      ci_tools_curl "$file" "$max_time" "$location" --proto "$(ci_tools__store_proto)" || status=$?
+      if [ "$status" -ne 0 ]; then
+        ci_tools__curl_report "$status" "$file" \
+          "the blob request answered ${answer%% *}, a redirect to $(ci_tools__redirect_target "$location"), and that store did not serve the blob (curl exit $status)"
+        return
+      fi
+      ;;
+  esac
   return 0
 }
 
@@ -1007,9 +1178,9 @@ ci_tools__fetch_release() {
   ci_tools__fetch_address "$1" "$2" "$3" "$4" ci_tools_github_url
 }
 
-# ci_tools__fetch_url <row> <side> <max_time> <file>: the `pypi` and `pulumi-releases` words on
-# either side, which is the whole address the row writes, read through the CI_TOOLS_URL_BASE
-# seam.
+# ci_tools__fetch_url <row> <side> <max_time> <file>: the `pypi`, `pulumi-releases` and
+# `helm-releases` words on either side, which is the whole address the row writes, read through
+# the CI_TOOLS_URL_BASE seam.
 ci_tools__fetch_url() {
   ci_tools__fetch_address "$1" "$2" "$3" "$4" ci_tools__seamed_url
 }
@@ -1043,15 +1214,15 @@ ci_tools__source_fetch() {
   local row=$1 side=$2 word=$3 __variable=$4
   case "$side/$word" in
     */github-release) printf -v "$__variable" '%s' ci_tools__fetch_release ;;
-    */pypi | */pulumi-releases) printf -v "$__variable" '%s' ci_tools__fetch_url ;;
+    */pypi | */pulumi-releases | */helm-releases) printf -v "$__variable" '%s' ci_tools__fetch_url ;;
     second/ghcr-mirror) printf -v "$__variable" '%s' ci_tools__fetch_ghcr ;;
     second/npm) printf -v "$__variable" '%s' ci_tools__fetch_npm ;;
     primary/*)
-      ci_tools__error "$row: the manifest's primary_source is '$word', and this file reads github-release, pypi and pulumi-releases as a primary"
+      ci_tools__error "$row: the manifest's primary_source is '$word', and this file reads github-release, pypi, pulumi-releases and helm-releases as a primary"
       return 1
       ;;
     *)
-      ci_tools__error "$row: the manifest's second_source is '$word', and this file reads github-release, ghcr-mirror, npm, pypi and pulumi-releases"
+      ci_tools__error "$row: the manifest's second_source is '$word', and this file reads github-release, ghcr-mirror, npm, pypi, pulumi-releases and helm-releases"
       return 1
       ;;
   esac

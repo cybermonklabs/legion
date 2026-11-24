@@ -25,23 +25,44 @@ import (
 
 // holderPublisher is the listener as a role publish meets it: a role topic in absent has no live
 // holder, and the publish is refused as the listener refuses it (notify.ErrNoHolder); any other
-// publish is delivered and kept, in order.
+// publish is delivered, and recorded in order. keeps is whether the listener keeps a kept publish
+// (PublishKept) for a claim whose holder is not live, as the listener of
+// cybermonklabs/legion#4079 does: with it, a kept publish to a topic in absent is kept for the
+// role's next holder and recorded in kept, and without it that publish is refused as a keep:
+// false publish is, which is what a listener before #4079 answers a claim whose holder is gone.
 type holderPublisher struct {
 	mu        sync.Mutex
 	absent    map[string]bool
+	keeps     bool
 	attempts  int
 	delivered []outboxPublish
+	kept      []outboxPublish
 }
 
 func (p *holderPublisher) Publish(_ context.Context, topic, message string, payload any, key string) error {
+	_, err := p.answer(outboxPublish{topic: topic, message: message, key: key, payload: payload})
+	return err
+}
+
+func (p *holderPublisher) PublishKept(_ context.Context, topic, message string, payload any, key string) (bool, error) {
+	return p.answer(outboxPublish{topic: topic, message: message, key: key, payload: payload, keep: true})
+}
+
+// answer is the one body of both publishes: whether the listener kept the message, and its
+// refusal.
+func (p *holderPublisher) answer(published outboxPublish) (bool, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.attempts++
-	if p.absent[topic] {
-		return fmt.Errorf("publish notice to %s: listener returned 404 Not Found: {\"reason\":\"unclaimed\"}: %w", topic, notify.ErrNoHolder)
+	if p.absent[published.topic] {
+		if published.keep && p.keeps {
+			p.kept = append(p.kept, published)
+			return true, nil
+		}
+		return false, fmt.Errorf("publish notice to %s: listener returned 404 Not Found: {\"reason\":\"unclaimed\"}: %w", published.topic, notify.ErrNoHolder)
 	}
-	p.delivered = append(p.delivered, outboxPublish{topic: topic, message: message, key: key, payload: payload})
-	return nil
+	p.delivered = append(p.delivered, published)
+	return false, nil
 }
 
 func (p *holderPublisher) setAbsent(topics ...string) {
@@ -79,6 +100,13 @@ func (p *holderPublisher) snapshot() (int, []outboxPublish) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.attempts, append([]outboxPublish(nil), p.delivered...)
+}
+
+// keptCopies is every message the listener's kept lane holds for a role's next holder, in order.
+func (p *holderPublisher) keptCopies() []outboxPublish {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]outboxPublish(nil), p.kept...)
 }
 
 // noticeTree records a root, its child and the child's child, all of tree LEGION-1.
@@ -138,13 +166,17 @@ func mustClaimToken(t *testing.T, issue string, role claim.Role) claim.Token {
 	return token
 }
 
-// Every notice is architect-facing, so it goes to the architect that owns its issue, by the
-// TypeScript daemon's rule (owningArchitect): the nearest issue at or above it whose sub-architect
-// claim runs (not suspended, failed or retired), else the tree root; a child's close or status
-// change starts at its parent. The walk stays inside the issue's tree: admission records a Dispatch
+// Every notice but a catch-up goes to the architect that owns its issue, by the TypeScript daemon's
+// rule (record.OwningArchitect): the nearest issue at or above it whose architect claim holds its
+// role (not failed or retired, and not suspended except by the idle release), else the tree root;
+// a child's close or status change, and a worker-died or worker-stalled about a child's
+// architect, start at its parent. A catch-up goes to the architect of its own issue alone
+// (noticeArchitect). The walk stays inside the issue's tree: admission records a Dispatch
 // re-parent as it comes and leaves the issue's tree as it was, so a parent that is not an issue of
-// that tree — not recorded, or recorded in another tree — ends the walk at the tree's root.
+// that tree — not recorded, or recorded in another tree — ends the walk at the tree's root. The
+// runs are the outbox's own (holdsRole), over the claim's state alone.
 func TestTheArchitectThatOwnsANotice(t *testing.T) {
+	t.Parallel()
 	root, child, unrecorded, elsewhere := "LEGION-1", "LEGION-2", "LEGION-77", "LEGION-50"
 	tree := map[string]record.Issue{
 		root:       {Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root},
@@ -186,7 +218,9 @@ func TestTheArchitectThatOwnsANotice(t *testing.T) {
 			if kind == "" {
 				kind = "phase-finished"
 			}
-			got, err := owningArchitect("legion", tree, tree[tc.issue], kind, func(token claim.Token) bool { return claimRuns(states[token]) })
+			got, err := record.OwningArchitect("legion", tree, tree[tc.issue], record.NoticeStartsAtParent(kind, ""), func(token claim.Token) bool {
+				return holdsRole(supervise.ClaimView{Claim: supervise.Claim{State: states[token]}})
+			})
 			if want := mustClaimToken(t, tc.owner, claim.RoleArchitect); err != nil || got != want {
 				t.Fatalf("owner = %s, %v; want %s", got, err, want)
 			}
@@ -198,6 +232,7 @@ func TestTheArchitectThatOwnsANotice(t *testing.T) {
 // since every issue topic is a subject that issue's phase workers subscribe to, and no worker's role
 // topic.
 func TestANoticeGoesToTheOwningArchitectsRoleTopicAlone(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	noticeTree(t, pool, records, false)
@@ -231,8 +266,12 @@ func TestANoticeGoesToTheOwningArchitectsRoleTopicAlone(t *testing.T) {
 // row at a time, and a machine holds its lock through the runtime call its decision makes, so a
 // read of the architect's claim that waited would hold every row behind it for as long as a
 // Sandbox relaunch waits on the cluster (LEGION-650). The architect is launching, so the notice
-// goes to its role topic, as it would once the launch returned.
+// goes to its role topic, as it would once the launch returned. The publish goes through the
+// outbox's hold gate (outbox.publish, supervise.Machine.HoldsItsSession), which must not wait on
+// the launch either (review round 13 of #4220); its control, the gate reading the hold under the
+// machine's lock, fails here with "the notice waited on its architect's launch in the runtime".
 func TestANoticeIsRoutedWhileItsArchitectLaunches(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	noticeTree(t, pool, records, false)
@@ -267,11 +306,14 @@ func TestANoticeIsRoutedWhileItsArchitectLaunches(t *testing.T) {
 	}
 }
 
-// A sub-architect whose suspension is in the runtime holds its role no longer: a notice of its
-// issue's child goes up to the tree's root, as it would once the suspension returned, never to the
-// session being stopped. The routing reads the claim without waiting on the suspension, so it reads
-// the stop in flight from the machine's View (supervise.ClaimView.Stopping) (LEGION-650).
+// A sub-architect whose suspension by the daemon is in the runtime holds its role no longer: a
+// notice that would reach it (here a notice of its issue's child, which has no architect of its
+// own) goes up to the architect above it, here the tree root's, as it would once the suspension
+// returned, never to the session being stopped. The routing reads the claim without waiting on
+// the suspension, so it reads the stop in flight from the machine's View
+// (supervise.ClaimView.Stopping) (LEGION-650).
 func TestANoticeIsNotRoutedToASubArchitectBeingSuspended(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	noticeTree(t, pool, records, false)
@@ -318,9 +360,11 @@ func TestANoticeIsNotRoutedToASubArchitectBeingSuspended(t *testing.T) {
 
 // A role publish with no live holder is the ordinary state while the owning architect relaunches:
 // its claim has not ended, so the notice is held and retried on the outbox's backoff, logged once
-// for the row rather than on every attempt. The notices behind it for the same tree wait too, so
-// once the architect holds its role again every held notice arrives, in the order it was written.
+// for the row rather than on every attempt. The notices behind it for the same architect wait too,
+// so once the architect holds its role again every held notice arrives, in the order it was
+// written.
 func TestANoticeHeldForAnAbsentArchitectArrivesInOrderOnceItReturns(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	noticeTree(t, pool, records, false)
@@ -383,6 +427,7 @@ func TestANoticeHeldForAnAbsentArchitectArrivesInOrderOnceItReturns(t *testing.T
 // The order held is each architect's own: a notice held for the root architect while it relaunches
 // does not hold a later notice for a sub-architect that is running, which is delivered at once.
 func TestANoticeHeldForOneArchitectHoldsNoOtherArchitectsNotice(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	noticeTree(t, pool, records, false)
@@ -404,11 +449,14 @@ func TestANoticeHeldForOneArchitectHoldsNoOtherArchitectsNotice(t *testing.T) {
 	}
 }
 
-// A sub-architect the workflow suspended (a human closed or moved its child) is not coming back for
-// a notice: nothing resumes it but re-admission. A notice that would reach it goes to the architect
-// above instead, and so does the child's close, which starts at the parent; neither waits on the
-// suspended claim, and neither holds up the tree's later notices.
+// A sub-architect the workflow suspended (a person moved its child out of the workflow) is not
+// coming back for a notice: only its child's next first phase start, after a todo (a person's, or
+// the rerun_child of the architect above), or an operator's resume or delivery starts it again. A
+// notice that would reach it goes to the architect above instead, and so does the child's close,
+// which starts at the parent; neither waits on the suspended claim, and neither holds up the
+// tree's later notices.
 func TestNoNoticeWaitsOnASuspendedSubArchitect(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	noticeTree(t, pool, records, false)
@@ -436,11 +484,14 @@ func TestNoNoticeWaitsOnASuspendedSubArchitect(t *testing.T) {
 	}
 }
 
-// A notice whose owning architect has ended waits on nobody: a claim that retired or failed will
-// not hold its role again, and a lingering tree's architect is suspended until re-admission, which
-// starts it with the tree's record rather than the notices of its close. Such a row finishes
-// without delivery, with one log line naming the notice kind and the issue.
+// A notice whose owning architect has ended waits on nobody: a claim that retired or failed comes
+// back only through a new start (an operator's retry, a re-admission, or for a child's architect
+// its child's next phase start), whose ready queues a catch-up of its own, and a lingering tree's
+// architect is suspended until re-admission, which starts it with the tree's record rather than
+// the notices of its close. Such a row finishes without delivery, with one log line naming the
+// notice kind and the issue.
 func TestANoticeForAnEndedArchitectFinishesWithoutDelivery(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		state   supervise.ClaimState
@@ -476,11 +527,60 @@ func TestANoticeForAnEndedArchitectFinishesWithoutDelivery(t *testing.T) {
 	}
 }
 
+// A task-stopped notice of an owner's stop_task names the architect that made the call
+// (record.Notice.StoppedBy), and that architect is answered by its own call: the executor
+// finishes the row without publishing when the architect the notice's issue reaches is the one
+// that stopped the task, with one log line, and publishes it to that architect when it is
+// another claim. The route takes the stop from any architect of the issue's tree, so the two
+// differ in both directions: the root's architect stopping a child whose sub-architect runs, and
+// the child's own sub-architect stopping it.
+func TestATaskStoppedNoticeReachesNoArchitectThatStoppedTheTask(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, issue, stoppedBy string
+		want                   []string
+	}{
+		{name: "a root's task stopped by the root's architect", issue: "LEGION-1", stoppedBy: "LEGION-1"},
+		{name: "a child's task stopped by the root's architect, its sub-architect running", issue: "LEGION-2", stoppedBy: "LEGION-1",
+			want: []string{"task-stopped to LEGION-2"}},
+		{name: "a child's task stopped by its own sub-architect", issue: "LEGION-2", stoppedBy: "LEGION-2"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := isolatedOutboxPool(t)
+			records := record.NewStore()
+			noticeTree(t, pool, records, false)
+			sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
+			architectClaim(t, sup, "LEGION-1", supervise.StateWorking)
+			architectClaim(t, sup, "LEGION-2", supervise.StateWorking)
+			by := mustClaimToken(t, tc.stoppedBy, claim.RoleArchitect)
+			why := "task a of " + tc.issue + " was stopped by its owner"
+			enqueueOutbox(t, pool, records, mustOutboxRow(t, tc.issue, record.Notice{Kind: "task-stopped", Role: claim.RoleTester, Phase: phase.Testing,
+				StoppedBy: by, Reason: why + ", the architect " + string(by)}, time.Now()))
+			var logged bytes.Buffer
+			publisher := &holderPublisher{}
+			runner := &outbox{log: slog.New(slog.NewTextHandler(&logged, nil)), pool: pool, dispatchProject: "LEGION", records: records, notices: publisher, supervisor: sup,
+				project: "legion", now: time.Now}
+
+			if err := runner.RunOnce(context.Background()); err != nil {
+				t.Fatalf("run the notice: %v", err)
+			}
+			_, delivered := publisher.snapshot()
+			if got := deliveredKinds(t, delivered); !slices.Equal(got, tc.want) || outboxRows(t, pool) != 0 {
+				t.Fatalf("delivered %v with %d rows left, want %v and the row finished", got, outboxRows(t, pool), tc.want)
+			}
+			if tc.want == nil && !strings.Contains(logged.String(), "its architect stopped the task itself") {
+				t.Fatalf("log %q, want the line that the row finished because its architect stopped the task itself", logged.String())
+			}
+		})
+	}
+}
+
 // A root architect the operator suspended outside a linger comes back when the operator resumes it
 // (`legion claims resume` or `deliver`), so its notices are held for it, not finished: the row waits,
 // logged once, and is delivered once the architect holds its role again. The fence is per
 // architect, so the held rows hold no other architect's notices.
 func TestANoticeForAnOperatorSuspendedRootIsHeldUntilItHoldsItsRoleAgain(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	noticeTree(t, pool, records, false)
@@ -517,6 +617,7 @@ func TestANoticeForAnOperatorSuspendedRootIsHeldUntilItHoldsItsRoleAgain(t *test
 // though the closed child has a running sub-architect of its own, and when the root returns the
 // close arrives first, though the later notice falls due before the held close does.
 func TestAHeldChildCloseHoldsTheArchitectsLaterNotices(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	noticeTree(t, pool, records, false)
@@ -568,10 +669,12 @@ func reparent(t *testing.T, pool *store.Pool, records record.Store, parent strin
 }
 
 // A child re-parented under an issue the workflow has not recorded stays in its tree: its notice
-// goes to the tree's root architect, and neither it nor the tree's other notices wait on the
-// unrecorded parent. The root's own notice and a grandchild's, to the grandchild's running
-// sub-architect, are delivered on the same tick.
+// goes to its own architect while that holds its role, else to the tree's root architect (the
+// child has none here), and neither it nor the tree's other notices wait on the unrecorded parent.
+// The root's own notice and a grandchild's, to the grandchild's running sub-architect, are
+// delivered on the same tick.
 func TestANoticeOfAChildReparentedOutsideTheRecordReachesItsTreesRoot(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	noticeTree(t, pool, records, false)
@@ -593,9 +696,11 @@ func TestANoticeOfAChildReparentedOutsideTheRecordReachesItsTreesRoot(t *testing
 	}
 }
 
-// A child re-parented under another tree's root stays in its own tree: its notices, its close
-// included, go to its own tree's root architect, never to the other tree's.
+// A child re-parented under another tree's root stays in its own tree: its notices go to its own
+// architect while that holds its role, else, as its close does, to its own tree's root architect;
+// none goes to the other tree's.
 func TestANoticeOfAChildReparentedUnderAnotherTreeStaysWithItsOwnTree(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	noticeTree(t, pool, records, false)
@@ -620,6 +725,7 @@ func TestANoticeOfAChildReparentedUnderAnotherTreeStaysWithItsOwnTree(t *testing
 // claim token) holds back no later notice of its tree, and finishes undelivered on its own attempt
 // with one log line: retrying cannot change the record, and the outbox has no dead-letter path.
 func TestAnUnroutableNoticeHoldsNothingBackAndFinishesOnItsOwnAttempt(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	noticeTree(t, pool, records, false)
@@ -655,6 +761,7 @@ func TestAnUnroutableNoticeHoldsNothingBackAndFinishesOnItsOwnAttempt(t *testing
 // own tree: the tree's issues are read by tree, so the other tree's issues are no parents of it, and
 // its notice goes to its own tree's owner.
 func TestANoticeOfAChildMovedUnderAnotherTreesSubArchitectStaysWithItsOwnTree(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	noticeTree(t, pool, records, false)
@@ -680,6 +787,7 @@ func TestANoticeOfAChildMovedUnderAnotherTreesSubArchitectStaysWithItsOwnTree(t 
 // A notice of a tree whose root is not recorded has no architect to go to: it finishes undelivered
 // on its first attempt, with one error line, instead of waiting on a root that cannot be read.
 func TestANoticeOfATreeWhoseRootIsNotRecordedFinishesUndelivered(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	root := "LEGION-1"
@@ -700,11 +808,13 @@ func TestANoticeOfATreeWhoseRootIsNotRecordedFinishesUndelivered(t *testing.T) {
 	}
 }
 
-// A newer ready drops every catch-up the outbox holds (DropCatchUps), a row the runner has already
-// leased included. The runner executes a leased row from memory, so the notice executor reads the
-// row under its lease in the tree's snapshot and publishes nothing when the row is gone: the
-// architect is told the fresh catch-up alone, not the dropped one first.
+// A newer ready of an architect drops every catch-up the outbox holds for that architect's issue
+// (DropCatchUps), a row the runner has already leased included. The runner executes a leased row
+// from memory, so the notice executor reads the row under its lease in the tree's snapshot and
+// publishes nothing when the row is gone: the architect is told the fresh catch-up alone, not the
+// dropped one first.
 func TestACatchUpDroppedUnderItsLeaseIsNotPublished(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	ctx := context.Background()
@@ -718,7 +828,7 @@ func TestACatchUpDroppedUnderItsLeaseIsNotPublished(t *testing.T) {
 	clock := time.Now()
 	enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-1", catchUp(1), clock))
 	var leased record.OutboxRow
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		due, err := records.DueRows(ctx, tx, "LEGION", "LEGION-1", nil, clock)
 		if err != nil {
 			return err
@@ -735,7 +845,7 @@ func TestACatchUpDroppedUnderItsLeaseIsNotPublished(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("lease the first catch-up: %v", err)
 	}
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.DropCatchUps(ctx, tx, "LEGION-1", clock); err != nil {
 			return err
 		}

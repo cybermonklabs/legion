@@ -2,6 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fixtureSecret } from "../../../packages/test-fixtures/src/fixture-secret";
 
 const probe = join(import.meta.dir, "dispatch-live-events.ts");
 const servers: Server<undefined>[] = [];
@@ -463,6 +464,53 @@ test("--from-whoami resumes the feed from whoami's event_head under the cookie i
     { subscribing_in: 0.2 },
     { event: { id: 42, note: "committed while loading", type: "comment.created" } },
   ]);
+});
+
+// The coordinator's ruling on the review of 81d860a8f7: a whoami answer with no event_head is named
+// in one line with the credential the probe sent redacted, as the Dispatch client names a body
+// that is not Dispatch's own, never quoted whole: whatever answered can echo the cookie back.
+test("--from-whoami names a refusal that echoes the cookie in one line, the cookie redacted", async () => {
+  const directory = scratch();
+  const cookieFile = join(directory, "cookie");
+  const cookie = `dispatch_session=${fixtureSecret("cookie")}`;
+  writeFileSync(cookieFile, `${cookie}\n`, { mode: 0o600 });
+  const server = Bun.serve({
+    fetch(request) {
+      if (new URL(request.url).pathname !== "/auth/whoami") {
+        return new Response("not found", { status: 404 });
+      }
+      return Response.json(
+        {
+          error: "not signed in",
+          you_sent: request.headers.get("cookie"),
+          detail: "x".repeat(400),
+        },
+        { status: 401 }
+      );
+    },
+    hostname: "127.0.0.1",
+    port: 0,
+  });
+  servers.push(server);
+
+  const result = await run(
+    "--url",
+    `http://127.0.0.1:${server.port}`,
+    "--cookie-file",
+    cookieFile,
+    "--from-whoami"
+  );
+
+  expect(result.code).toBe(1);
+  expect(result.stderr).toStartWith(
+    "dispatch-live-events: GET /auth/whoami answered 401 with a body that is not a sign-in answer " +
+      'naming its event_head ("{\\"error\\":\\"not signed in\\",\\"you_sent\\":\\"[redacted]\\"'
+  );
+  expect(result.stderr).not.toContain(cookie.slice("dispatch_session=".length));
+  expect(result.stderr).not.toContain("dispatch_session=");
+  expect(result.stderr.trimEnd()).not.toContain("\n");
+  expect(result.stderr.length).toBeLessThan(400);
+  expect(result.stdout).toEqual([]);
 });
 
 test("--from-whoami signs in as a person and reads its own start", async () => {

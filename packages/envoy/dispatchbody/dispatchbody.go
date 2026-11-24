@@ -7,8 +7,11 @@
 // The answer is the server's own. Check splits the body with the splitter behind every Dispatch
 // route that takes one (internal/dispatch/itemblocks) and returns its refusal unchanged, so a
 // caller refuses exactly what Dispatch refuses rather than approximating it with a reader of its
-// own. That splitter is an internal package, unreachable from another module; this package is the
-// one public door onto it, which is why it exists at all.
+// own. NulInJSON is the walk Dispatch's input layer reads every JSON request body with for a
+// U+0000 (internal/dispatch/text), so a caller that stores a body's strings in PostgreSQL finds
+// the string Dispatch would refuse, by the same reading. That splitter and that walk are internal
+// packages, unreachable from another module; this package is the one public door onto them, which
+// is why it exists at all.
 package dispatchbody
 
 import (
@@ -16,7 +19,18 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
+
+// NulInJSON is the first string of the JSON value data that holds U+0000 - a member name or a
+// value, in the order data writes them, every copy of a repeated member among them - and its
+// place in data: planReason, tasks[0].text, a member's name with each U+0000 written as the six
+// characters \u0000, or "body" for a bare string. found is false when no string holds one, and
+// when data stops being JSON before one. The caller refuses with its own wording, saying where in
+// value the U+0000 stands in its own count, and never sends value back.
+func NulInJSON(data []byte) (place, value string, found bool) {
+	return text.NulInJSON("", data)
+}
 
 // Check answers the first rule Dispatch holds body to that it breaks, or nil when it breaks
 // none: an *itemblocks.CountExceeded for a body of more blocks than ItemBlocks, else an

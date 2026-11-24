@@ -31,7 +31,7 @@ func connectNATS(t testing.TB) (*natsgo.Conn, func()) {
 
 func openStore(t testing.TB, conn *natsgo.Conn) *Store {
 	t.Helper()
-	st, err := Open(conn, logging.New("test"), WithReplicas(1), WithTTL(time.Hour))
+	st, err := Open(t.Context(), conn, logging.New("test"), WithReplicas(1), WithTTL(time.Hour))
 	if err != nil {
 		t.Fatalf("open cistore: %v", err)
 	}
@@ -483,7 +483,7 @@ func TestRewatchRestartsStoppedWatcher(t *testing.T) {
 		t.Fatalf("connect replacement: %v", err)
 	}
 	defer replacement.Close()
-	if err := s.Rewatch(replacement); err != nil {
+	if err := s.Rewatch(context.Background(), replacement); err != nil {
 		t.Fatalf("rewatch store: %v", err)
 	}
 	if err := s.Ping(); err != nil {

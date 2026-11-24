@@ -1044,6 +1044,149 @@ describe("the related-item check", () => {
   });
 });
 
+// The review an issue's specification already carries when a question is opened on it
+// (WriteAdvice.standing_review). The server decides whether a review stands; the command decides
+// what it reads like and where it sits.
+describe("dispatch_ask's standing review", () => {
+  const changedSince = "Say what changed since that review in a reply on this ask.";
+  const askArgs = { issue: "DSP-42", question: "Should the billing service retry?" };
+  // Every question runs the related-item check too, so its line sits between the asked line and
+  // the review in each case below; here it finds nothing.
+  const noRelatedLine = "Related-item check searched (meaning and keywords) and found nothing.";
+  const emptyCheck: Suggestions = { outcome: "none", search: "meaning_and_keywords", related: [] };
+
+  async function askWithReview(review: NonNullable<WriteAdvice["standing_review"]>) {
+    return await executeWrite(
+      "dispatch_ask",
+      askArgs,
+      advice({ suggestions: emptyCheck, standing_review: review })
+    );
+  }
+
+  test("an approval names the person, the version, the time and the reason, between the asked line and the follow line", async () => {
+    const result = await askWithReview({
+      by: "alice",
+      at: "2026-09-12T13:20:00Z",
+      state: "approved",
+      version: 4,
+      reason: "The rollback path is named.",
+    });
+
+    expect(result.text).toBe(
+      [
+        askedLine,
+        noRelatedLine,
+        'alice approved this issue\'s spec at version 4 on 2026-09-12T13:20:00Z: "The rollback path is named."',
+        changedSince,
+        followsLine,
+      ].join("\n")
+    );
+  });
+
+  test("a request for changes says so", async () => {
+    const result = await askWithReview({
+      by: "alice",
+      at: "2026-09-12T13:20:00Z",
+      state: "changes_requested",
+      version: 4,
+      reason: "The rollback path is missing.",
+    });
+
+    expect(result.text.split("\n")[2]).toBe(
+      'alice asked for changes on this issue\'s spec at version 4 on 2026-09-12T13:20:00Z: "The rollback path is missing."'
+    );
+  });
+
+  test("a review with no reason says so rather than quoting nothing", async () => {
+    const result = await askWithReview({
+      by: "alice",
+      at: "2026-09-12T13:20:00Z",
+      state: "approved",
+      version: 4,
+    });
+    const lines = result.text.split("\n");
+
+    expect(lines[2]).toBe(
+      "alice approved this issue's spec at version 4 on 2026-09-12T13:20:00Z, and gave no reason."
+    );
+  });
+
+  test("the reason is printed as the server cut it, with no second cut here", async () => {
+    // The server cuts the reason by characters (firstCharacters in standing_review_advice.go),
+    // which is where the 500 is decided and proven. Cutting again here would count UTF-16 code
+    // units and could split a character the server kept whole, so the line prints what it was sent.
+    const reason = "é".repeat(500);
+    const result = await askWithReview({
+      by: "alice",
+      at: "2026-09-12T13:20:00Z",
+      state: "approved",
+      version: 4,
+      reason,
+    });
+
+    expect(result.text.split("\n")[2]).toBe(
+      `alice approved this issue's spec at version 4 on 2026-09-12T13:20:00Z: "${reason}"`
+    );
+  });
+
+  test("a carried review names the version its carry reason gives, the carry's own time, and no reason", async () => {
+    const result = await askWithReview({
+      by: "alice",
+      at: "2026-09-14T09:05:00Z",
+      state: "approved",
+      version: 7,
+      // The stored reason is Dispatch's carry sentence, which the line never prints.
+      reason:
+        "Carried forward from the approval of version 5: the answer to a decision block was the whole change since it.",
+      // The version the carry names is what says the review is one, with no second field to
+      // disagree with it.
+      carried_from_version: 5,
+    });
+    const lines = result.text.split("\n");
+
+    expect(lines.slice(2, 4)).toEqual([
+      "alice's approval of this issue's spec was carried forward from the approval of version 5, and Dispatch recorded that carry on 2026-09-14T09:05:00Z.",
+      changedSince,
+    ]);
+    expect(result.text).not.toContain("version 7");
+    expect(result.text).not.toContain("the answer to a decision block");
+  });
+
+  test("the cadence line stays last", async () => {
+    const result = await executeWrite(
+      "dispatch_ask",
+      askArgs,
+      advice({
+        session_writes_since_human: 3,
+        suggestions: emptyCheck,
+        standing_review: {
+          by: "alice",
+          at: "2026-09-12T13:20:00Z",
+          state: "approved",
+          version: 4,
+          reason: "The rollback path is named.",
+        },
+      })
+    );
+    const lines = result.text.split("\n");
+
+    expect(lines.slice(0, 5)).toEqual([
+      askedLine,
+      noRelatedLine,
+      'alice approved this issue\'s spec at version 4 on 2026-09-12T13:20:00Z: "The rollback path is named."',
+      changedSince,
+      followsLine,
+    ]);
+    expect(lines.at(-1)).toStartWith("Posted. You've sent 3 messages on DSP-42");
+  });
+
+  test("advice carrying no review prints nothing new", async () => {
+    const result = await executeWrite("dispatch_ask", askArgs, advice({ suggestions: emptyCheck }));
+
+    expect(result.text).toBe([askedLine, noRelatedLine, followsLine].join("\n"));
+  });
+});
+
 describe("dispatch_doc_edit's decision block checks", () => {
   const askBlock =
     ':::ask{urgency="med"}\nShould webhook deliveries back off exponentially?\n:::\n';
@@ -1124,6 +1267,27 @@ describe("dispatch_doc_edit's decision block checks", () => {
     expect(result.text.split("\n")[2]).toEndWith("--query 'Original title'");
   });
 
+  test("an older server's count on a replace searches by the ask block its with holds", async () => {
+    const result = await executeWrite(
+      "dispatch_doc_edit",
+      {
+        issue: "DSP-42",
+        artifact: "spec",
+        ops: [{ op: "replace", find: "draft", with: askBlock }],
+      },
+      advice({ decision_blocks_added: 1 })
+    );
+
+    expect(result.text).toBe(
+      [
+        appliedLine,
+        "1 new decision block:",
+        "No related-item check was made: the server sent no check result. Search before you rely on this being new: dispatch search --project DSP --query 'Should webhook deliveries'",
+        "Document token: sha256:edited",
+      ].join("\n")
+    );
+  });
+
   test("an edit that added no block prints no check", async () => {
     const result = await executeWrite(
       "dispatch_doc_edit",
@@ -1149,7 +1313,7 @@ describe("a document write that superseded a person's approval", () => {
   const stored =
     "Stored version 15, superseding version 14, which alice approved. That approval is stale until someone approves version 15 or a later write stores the text of version 14 again exactly, with no decision block in it decided since.";
   const nextStep =
-    "Meant to change the approved design? Request approval with `dispatch request-approval`. Meant a correction beside it? Tell the tree's architect, and keep the next one in a comment or in the plan.";
+    "Meant to change the approved design? Request approval with `dispatch request-approval`. Meant a correction beside it? Tell the issue's architect, and keep the next one in a comment or in the plan.";
   const supersededLine = `${stored} ${nextStep}`;
   const superseded = { approved_version: 14, version: 15, approved_by: "alice" };
   const editArgs = {
@@ -1211,6 +1375,251 @@ describe("a document write that superseded a person's approval", () => {
 
     expect(result.text).not.toContain("design gate");
     expect(result.text).not.toContain("superseding version");
+  });
+
+  // Dispatch refuses an approval request on a plan with 409 PLAN_APPROVED_BY_REVIEW, whoever
+  // approved it: it refuses by the document, not by the review. So a write that made a plan's
+  // approval stale names `dispatch plan-approve` as the way to approve it again, and never
+  // `dispatch request-approval`, for a plan review's approval and for a person's approval of a
+  // plan alike (a person approves a plan from its document header: the reviews route has no plan
+  // check). Each answer below says the document is a plan as Dispatch answers it, role `plan` and
+  // slug `plan-md`, which is what the architect's ruling keys on
+  // (dispatch://INFRA-3327/comment/d19c71f5-6186-44f0-9017-858947155b75). Each row also puts a
+  // review `kind` on `superseded_approval`, which Dispatch does not send, and it decides nothing.
+  const planUpload = { issue: "DSP-42", name: "plan.md", content: "# Plan\n\nTwo.\n", force: true };
+  const planEdit = {
+    issue: "DSP-42",
+    artifact: "plan.md",
+    ops: [{ op: "replace", find: "One.", with: "Two." }],
+  };
+  test.each([
+    [
+      "dispatch_artifact",
+      "a plan review",
+      planUpload,
+      "01a1b464-9df7-7298-a78f-4ff4f8284ce7",
+      "plan_review",
+    ],
+    [
+      "dispatch_doc_edit",
+      "a plan review",
+      planEdit,
+      "01a1b464-9df7-7298-a78f-4ff4f8284ce7",
+      "plan_review",
+    ],
+    ["dispatch_artifact", "a person", planUpload, "alice", "person"],
+    ["dispatch_doc_edit", "a person", planEdit, "alice", "person"],
+  ])("%s on a plan %s approved names dispatch plan-approve, not dispatch request-approval", async (tool, _approver, args, approvedBy, kind) => {
+    const plan = {
+      id: "artifact-43",
+      issue_key: "DSP-42",
+      project: "DSP",
+      name: "plan.md",
+      slug: "plan-md",
+      role: "plan",
+      primary: false,
+    };
+    const superseded = { approved_version: 1, version: 2, approved_by: approvedBy, kind };
+    const staled = advice({ superseded_approval: superseded });
+    const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const target = new URL(String(url));
+      const method = init?.method ?? "GET";
+      const body = init?.body === undefined ? {} : JSON.parse(String(init.body));
+      if (target.pathname === "/api/v1/issues/DSP-42" && method === "GET") {
+        return response({
+          key: "DSP-42",
+          title: "Original title",
+          status: "in_progress",
+          labels: [],
+          route: null,
+          parent: null,
+          external_links: [],
+          primary_artifact_id: "artifact-42",
+          artifacts: [
+            {
+              id: "artifact-42",
+              issue_key: "DSP-42",
+              project: "DSP",
+              name: "spec.md",
+              slug: "spec",
+              primary: true,
+            },
+            plan,
+          ],
+        });
+      }
+      if (target.pathname === "/api/v1/issues/DSP-42/artifacts" && method === "GET") {
+        return response([plan]);
+      }
+      if (target.pathname === "/api/v1/markdown/round-trip" && method === "POST") {
+        return response({ markdown: body.markdown });
+      }
+      if (target.pathname === "/api/v1/issues/DSP-42/artifacts" && method === "POST") {
+        return response(withAdvice({ artifact: plan, version: { number: 2 } }, staled));
+      }
+      if (target.pathname === "/api/v1/artifacts/artifact-43/edits" && method === "POST") {
+        return response(
+          withAdvice({ applied: 1, version: { number: 2 }, token: "sha256:edited" }, staled)
+        );
+      }
+      if (target.pathname === "/api/v1/projects/DSP/architecture-sources" && method === "GET") {
+        return new Response("[]", { headers: { "Content-Type": "application/json" } });
+      }
+      throw new Error(`unexpected request: ${method} ${target.pathname}`);
+    };
+
+    const result = await executeDispatchTool({
+      tool,
+      args,
+      cwd: "/workspace",
+      host: "omp",
+      sessionId: "session-1",
+      config,
+      env: {},
+      exec: repoExec(),
+      fetchImpl: fetchImpl as typeof fetch,
+      subscriptions: async () => [],
+    });
+
+    expect(result.text).toContain(
+      `Stored version 2, superseding version 1, which ${approvedBy} approved.`
+    );
+    expect(result.text).toContain("dispatch plan-approve");
+    expect(result.text).not.toContain("dispatch request-approval");
+  });
+
+  // A role belongs to an issue's documents alone, and the slug fallback that names a role-less
+  // `plan-md` a plan exists for an issue document whose role column a rolling deploy left null
+  // (dispatch://INFRA-3327/comment/6a7a54ba-a1c3-4de8-a7b7-504a422f48cf). So an issue's plan.md
+  // with no role is still a plan and names `dispatch plan-approve`, while a project document named
+  // plan.md is a plain document: a person's approval of it comes back through a request, which
+  // Dispatch then accepts, and `dispatch plan-approve`, which takes an issue alone, cannot reach
+  // it. Each document is answered as Dispatch answers it: no role key on either.
+  const roleLessPlan = {
+    id: "artifact-43",
+    issue_key: "DSP-42",
+    project: "DSP",
+    name: "plan.md",
+    slug: "plan-md",
+    primary: false,
+  };
+  const projectPlan = {
+    id: "artifact-91",
+    issue_key: null,
+    project: "DSP",
+    name: "plan.md",
+    slug: "plan-md",
+    primary: false,
+  };
+  test.each([
+    ["dispatch_artifact", "an issue's plan.md with no role", planUpload, roleLessPlan, true],
+    ["dispatch_doc_edit", "an issue's plan.md with no role", planEdit, roleLessPlan, true],
+    [
+      "dispatch_artifact",
+      "a project document named plan.md",
+      { project: "DSP", name: "plan.md", content: "# Plan\n\nTwo.\n", force: true },
+      projectPlan,
+      false,
+    ],
+    [
+      "dispatch_doc_edit",
+      "a project document named plan.md",
+      {
+        project: "DSP",
+        artifact: "plan.md",
+        ops: [{ op: "replace", find: "One.", with: "Two." }],
+      },
+      projectPlan,
+      false,
+    ],
+  ])("%s on %s a person approved names the command that restores it", async (tool, _which, args, document, isPlan) => {
+    const superseded = { approved_version: 1, version: 2, approved_by: "alice" };
+    const staled =
+      document.issue_key === null
+        ? { decision_blocks: 0, decision_blocks_added: 0, superseded_approval: superseded }
+        : advice({ superseded_approval: superseded });
+    const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const target = new URL(String(url));
+      const method = init?.method ?? "GET";
+      const body = init?.body === undefined ? {} : JSON.parse(String(init.body));
+      if (target.pathname === "/api/v1/issues/DSP-42" && method === "GET") {
+        return response({
+          key: "DSP-42",
+          title: "Original title",
+          status: "in_progress",
+          labels: [],
+          route: null,
+          parent: null,
+          external_links: [],
+          primary_artifact_id: "artifact-42",
+          artifacts: [
+            {
+              id: "artifact-42",
+              issue_key: "DSP-42",
+              project: "DSP",
+              name: "spec.md",
+              slug: "spec",
+              primary: true,
+            },
+            roleLessPlan,
+          ],
+        });
+      }
+      if (target.pathname === "/api/v1/issues/DSP-42/artifacts" && method === "GET") {
+        return response([roleLessPlan]);
+      }
+      if (target.pathname === "/api/v1/projects/DSP/artifacts" && method === "GET") {
+        return response([projectPlan]);
+      }
+      if (
+        (target.pathname === "/api/v1/projects/DSP/artifacts/plan-md" ||
+          target.pathname === "/api/v1/projects/DSP/artifacts/plan.md") &&
+        method === "GET"
+      ) {
+        return response(projectPlan);
+      }
+      if (target.pathname === "/api/v1/markdown/round-trip" && method === "POST") {
+        return response({ markdown: body.markdown });
+      }
+      if (
+        (target.pathname === "/api/v1/issues/DSP-42/artifacts" ||
+          target.pathname === "/api/v1/projects/DSP/artifacts") &&
+        method === "POST"
+      ) {
+        return response(withAdvice({ artifact: document, version: { number: 2 } }, staled));
+      }
+      if (target.pathname === `/api/v1/artifacts/${document.id}/edits` && method === "POST") {
+        return response(
+          withAdvice({ applied: 1, version: { number: 2 }, token: "sha256:edited" }, staled)
+        );
+      }
+      if (target.pathname === "/api/v1/projects/DSP/architecture-sources" && method === "GET") {
+        return new Response("[]", { headers: { "Content-Type": "application/json" } });
+      }
+      throw new Error(`unexpected request: ${method} ${target.pathname}`);
+    };
+
+    const result = await executeDispatchTool({
+      tool,
+      args,
+      cwd: "/workspace",
+      host: "omp",
+      sessionId: "session-1",
+      config,
+      env: {},
+      exec: repoExec(),
+      fetchImpl: fetchImpl as typeof fetch,
+      subscriptions: async () => [],
+    });
+
+    expect(result.text).toContain("Stored version 2, superseding version 1, which alice approved.");
+    if (isPlan) {
+      expect(result.text).toContain("`dispatch plan-approve --issue DSP-42 --version 2`");
+      expect(result.text).not.toContain("dispatch request-approval");
+    } else {
+      expect(result.text).toContain("Request approval with `dispatch request-approval`");
+      expect(result.text).not.toContain("plan-approve");
+    }
   });
 });
 

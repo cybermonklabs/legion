@@ -1,0 +1,25 @@
+kind: Fixed
+body: |-
+  The federated token of an `azure` grant behind the airlock reaches only Microsoft's token
+  authority, inside the exchange the broker makes, and only as the application and in the tenant
+  its own azure-login secret names. The proxy now refuses a token request sent to any host but
+  `login.microsoftonline.com`, or whose `client_id` is not the secret's `client_id`, or whose
+  token endpoint is not the secret's `tenant_id`'s, with a 403 naming the entry and the field and
+  no value, before the broker's federated token goes into the exchange, so nothing reaches any
+  endpoint. The exchange's form is the proxy's own: the federated flow's two fields, the secret's
+  `client_id`, the command's `scope` (and its `resource` at the v1 endpoint) and the federated
+  token, and no other field the command wrote. An access token a broker pod exchanges for itself
+  is held to the same host and ids and sent the same form. A request that is no token request
+  and carries the federated token's placeholder in a header, to any host the entry binds and
+  whatever that entry's kind, is refused `403 FEDERATED_TOKEN_SWAP_REFUSED` and reaches no host;
+  a request carrying an access token's placeholder is swapped as before. Before, the exchange was
+  made at whichever host of the entry the command posted to, as whatever application and tenant
+  it named, and with every field of its form, and the header swap put the federated token itself
+  into any other call that carried its placeholder, so a holder of one azure grant could ask for
+  a token as any application that trusts the broker's federated identity, or hand that
+  identity's token to any host the entry binds. `scope` stays the command's own, since one
+  application asks for tokens of several resources. The broker's local stack names its stand-in
+  authority with `BROKER_AIRLOCK_TEST_AZURE_AUTHORITY`, which a production start refuses; any
+  other start refuses a value of it that no rules entry could bind (an address, a label opening
+  or closing with `-`), a `*.` suffix, which is no one host, and a value that holds a capital
+  letter.

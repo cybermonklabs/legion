@@ -19,7 +19,8 @@ import (
 )
 
 // seedPhaseWorker is a claim of role on issue in the state the ready fact finds it: ready, with or
-// without a task pending, as a worker whose process has just come back up.
+// without a task pending, as a worker whose process has just come back up. A claim a fixture
+// already recorded for the role (seedRoundOneRows records the reviewer's) takes that state.
 func seedPhaseWorker(t *testing.T, pool *pgxpool.Pool, issue string, role claim.Role, pending string) claim.Token {
 	t.Helper()
 	project, err := claim.ProjectToken("LEGION")
@@ -32,7 +33,9 @@ func seedPhaseWorker(t *testing.T, pool *pgxpool.Pool, issue string, role claim.
 	}
 	if _, err := pool.Exec(t.Context(), `insert into claims (token, project, tree, issue, role, generation, session, session_file,
 		state, launch_failures, prompt_failures, prompt_retires, uncertain_streak)
-		values ($1, $2, $3, $4, $5, 2, 'ses', '/sessions/ses.jsonl', 'ready', 0, 0, 0, 0)`,
+		values ($1, $2, $3, $4, $5, 2, 'ses', '/sessions/ses.jsonl', 'ready', 0, 0, 0, 0)
+		on conflict (token) do update set project = excluded.project, generation = excluded.generation, session = excluded.session,
+		session_file = excluded.session_file, state = excluded.state`,
 		string(token), project, issue, issue, string(role)); err != nil {
 		t.Fatalf("seed the %s %s: %v", issue, role, err)
 	}
@@ -77,6 +80,119 @@ func TestAReadyWorkerHoldingItsPhaseWithNothingPendingIsGivenItsPhaseTask(t *tes
 	}
 }
 
+// A start of the worker's phase already queued for its claim, and not yet run, covers the claim's
+// ready: the outbox will deliver that start's task, so a second ready before it runs queues
+// nothing more (queuedRowCovers). Without it a worker whose process comes up twice before its
+// start runs would be sent its phase's task twice, one prompt more than the work it has.
+func TestAQueuedStartOfThePhaseCoversASecondReadyOfItsWorker(t *testing.T) {
+	pool := migratedPool(t)
+	seedIssue(t, pool, record.Issue{Key: "LEGION-209", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
+		Tree: "LEGION-209", Project: "LEGION", Title: "a child", Phase: phase.Testing, Generation: 1, Status: "testing", Rank: "U", HandedOver: true})
+	seedSlot(t, pool, record.Slot{Issue: "LEGION-209", Index: 0})
+	seedPhaseWorker(t, pool, "LEGION-209", claim.RoleTester, "")
+	engine := testEngine(config.DesignGateRootIssues, nil)
+
+	for _, id := range []string{"supervise:tester:2:ready", "supervise:tester:2:ready-again"} {
+		if _, err := intake.ApplyFact(t.Context(), pool, "supervise", id,
+			intake.ClaimReady{Issue: "LEGION-209", Role: claim.RoleTester, Launch: 2}, engine, admissionStub{}); err != nil {
+			t.Fatalf("apply %s: %v", id, err)
+		}
+	}
+
+	if got := superviseRequests(t, pool, "start"); !sameCounts(got, map[string]int{"LEGION-209/tester": 1}) {
+		t.Fatalf("two readies queued starts %v, want the first one's start alone: the start it queued for testing has not run, so it covers the second", got)
+	}
+}
+
+// A tester whose claim becomes ready holding only the daemon's own delivery of a relaunch's record
+// (supervise.Delivery.Relaunch) holds no task: that delivery carries no run, phase or entry, only
+// the sentence of what the relaunch ended. So it is queued its phase's resume task, as a claim
+// holding nothing is, rather than left with nothing to do once it has read that sentence.
+func TestAReadyWorkerHoldingOnlyARelaunchDeliveryIsGivenItsPhaseTask(t *testing.T) {
+	pool := migratedPool(t)
+	seedIssue(t, pool, record.Issue{Key: "LEGION-209", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
+		Tree: "LEGION-209", Project: "LEGION", Title: "a child", Phase: phase.Testing, Generation: 1, Status: "testing", Rank: "U", HandedOver: true})
+	seedSlot(t, pool, record.Slot{Issue: "LEGION-209", Index: 0})
+	token := seedPhaseWorker(t, pool, "LEGION-209", claim.RoleTester, "")
+	relaunch := supervise.Delivery{ID: "relaunch:WORD", Task: "Your previous process ended because its pod was replaced."}
+	if !relaunch.Relaunch() {
+		t.Fatalf("%s reads as no relaunch delivery", relaunch.ID)
+	}
+	if _, err := pool.Exec(t.Context(), `insert into pending_task_deliveries (claim_token, delivery_id, task, queued_at)
+		values ($1, $2, $3, now())`, string(token), relaunch.ID, relaunch.Task); err != nil {
+		t.Fatalf("seed the tester's delivery of the relaunch's record: %v", err)
+	}
+
+	if _, err := intake.ApplyFact(t.Context(), pool, "supervise", "supervise:tester:2:ready",
+		intake.ClaimReady{Issue: "LEGION-209", Role: claim.RoleTester, Launch: 2},
+		testEngine(config.DesignGateRootIssues, nil), admissionStub{}); err != nil {
+		t.Fatalf("apply the ready: %v", err)
+	}
+
+	if got, want := superviseRequests(t, pool, "start"), map[string]int{"LEGION-209/tester": 1}; !sameCounts(got, want) {
+		t.Fatalf("the ready queued starts %v, want %v: the delivery of the relaunch's record is no task", got, want)
+	}
+}
+
+// A start queued for news of the approved design alone (record.SuperviseRequest.News) names the
+// worker's phase, so that it finishes once the issue has left that phase, but it carries no task
+// of the phase: its executor hands the worker only the news, and nothing at all where the record
+// owes it nothing when it runs. So a tester whose claim becomes ready with only such a start
+// queued for it, and nothing pending, is queued its phase's resume task beside that start, as a
+// claim with nothing queued is.
+func TestAReadyWorkerWithOnlyANewsOnlyStartQueuedIsGivenItsPhaseTask(t *testing.T) {
+	pool := migratedPool(t)
+	issue := record.Issue{Key: "LEGION-209", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
+		Tree: "LEGION-209", Project: "LEGION", Title: "a child", Phase: phase.Testing, Generation: 1, Status: "testing", Rank: "U", HandedOver: true}
+	seedIssue(t, pool, issue)
+	seedSlot(t, pool, record.Slot{Issue: "LEGION-209", Index: 0})
+	seedPhaseWorker(t, pool, "LEGION-209", claim.RoleTester, "")
+	seedOutboxRow(t, pool, "LEGION-209", record.SuperviseRequest{Op: "start", Tree: "LEGION-209", Role: claim.RoleTester,
+		Generation: 1, Phase: phase.Testing, News: true})
+
+	engine := testEngine(config.DesignGateRootIssues, nil)
+	if _, err := intake.ApplyFact(t.Context(), pool, "supervise", "supervise:tester:2:ready",
+		intake.ClaimReady{Issue: "LEGION-209", Role: claim.RoleTester, Launch: 2},
+		engine, admissionStub{}); err != nil {
+		t.Fatalf("apply the ready: %v", err)
+	}
+
+	starts := superviseRowsOf(t, pool, "LEGION-209", "start")
+	if len(starts) != 2 || !starts[0].News || starts[1].News || !starts[1].ResumeTask || starts[1].Task != phaseResumeTask(t, pool, engine, issue.Key) {
+		t.Fatalf("the starts after the ready = %+v, want the news-only start and, beside it, the phase's resume task: a start of news alone carries no task of the phase", starts)
+	}
+}
+
+// A tester whose claim becomes ready holding only a task of news of the approved design alone —
+// the news-only start's delivery, which the record marks in its own column
+// (pending_task_deliveries.news_only) — holds no work of its phase: the task names the phase and
+// the run so that it is dropped once the issue leaves the phase, and asks the worker only to read
+// what changed. So it is queued its phase's resume task, as a claim holding nothing is, rather than
+// left with the news alone.
+func TestAReadyWorkerHoldingOnlyANewsTaskIsGivenItsPhaseTask(t *testing.T) {
+	pool := migratedPool(t)
+	seedIssue(t, pool, record.Issue{Key: "LEGION-209", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
+		Tree: "LEGION-209", Project: "LEGION", Title: "a child", Phase: phase.Testing, Generation: 1, Status: "testing", Rank: "U", HandedOver: true})
+	seedSlot(t, pool, record.Slot{Issue: "LEGION-209", Index: 0})
+	token := seedPhaseWorker(t, pool, "LEGION-209", claim.RoleTester, "")
+	if _, err := pool.Exec(t.Context(), `insert into pending_task_deliveries (claim_token, delivery_id, task, phase, generation,
+		queued_at, design_news, news_only) values ($1, 'outbox:7', 'The approved design changed.', 'testing', 1, now(),
+		'{"task":"","items":[{"issue":"LEGION-209","audience":"holder","step":"spec","artifact":"artifact-spec","from":3,"to":4}]}', true)`,
+		string(token)); err != nil {
+		t.Fatalf("seed the tester's news task: %v", err)
+	}
+
+	if _, err := intake.ApplyFact(t.Context(), pool, "supervise", "supervise:tester:2:ready",
+		intake.ClaimReady{Issue: "LEGION-209", Role: claim.RoleTester, Launch: 2},
+		testEngine(config.DesignGateRootIssues, nil), admissionStub{}); err != nil {
+		t.Fatalf("apply the ready: %v", err)
+	}
+
+	if got, want := superviseRequests(t, pool, "start"), map[string]int{"LEGION-209/tester": 1}; !sameCounts(got, want) {
+		t.Fatalf("the ready queued starts %v, want %v: a task of news alone is no task of the phase", got, want)
+	}
+}
+
 // A role that does not hold the issue's phase is given nothing: its phase is over, and the phase
 // that is running belongs to another claim.
 func TestAReadyWorkerThatDoesNotHoldTheIssuesPhaseIsGivenNothing(t *testing.T) {
@@ -94,6 +210,33 @@ func TestAReadyWorkerThatDoesNotHoldTheIssuesPhaseIsGivenNothing(t *testing.T) {
 
 	if got := superviseRequests(t, pool, "start"); !sameCounts(got, map[string]int{}) {
 		t.Fatalf("the ready queued starts %v, want none: the implementer works no phase of this issue", got)
+	}
+}
+
+// R2: a phase worker whose claim becomes ready while its issue stands at admitted is given
+// nothing. Admitted is the architect's own phase (phase.RoleFor), and the architect's ready never
+// reaches this path (claimReady sends it the catch-up instead), so a worker's ready there finds a
+// phase no phase worker holds.
+func TestArchitectUnchangedByAReadyWorkerOfAnIssueAtAdmitted(t *testing.T) {
+	for _, role := range []claim.Role{claim.RolePlanner, claim.RoleImplementer} {
+		t.Run(string(role), func(t *testing.T) {
+			pool := migratedPool(t)
+			seedIssue(t, pool, record.Issue{Key: "LEGION-209", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
+				Tree: "LEGION-209", Project: "LEGION", Title: "a root writing its design", Phase: phase.Admitted, Generation: 1,
+				Status: "in_progress", Rank: "U", HandedOver: true})
+			seedSlot(t, pool, record.Slot{Issue: "LEGION-209", Index: 0})
+			seedPhaseWorker(t, pool, "LEGION-209", role, "")
+
+			if _, err := intake.ApplyFact(t.Context(), pool, "supervise", "supervise:"+string(role)+":2:ready",
+				intake.ClaimReady{Issue: "LEGION-209", Role: role, Launch: 2},
+				testEngine(config.DesignGateRootIssues, nil), admissionStub{}); err != nil {
+				t.Fatalf("apply the ready: %v", err)
+			}
+
+			if got := superviseRequests(t, pool, "start"); !sameCounts(got, map[string]int{}) {
+				t.Fatalf("the ready queued starts %v, want none: no phase worker works admitted", got)
+			}
+		})
 	}
 }
 

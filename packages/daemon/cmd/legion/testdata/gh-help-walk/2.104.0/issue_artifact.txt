@@ -1,0 +1,27 @@
+Working with issue artifacts in the GitHub CLI is in preview and subject to change without notice.
+
+Issue artifacts are Markdown documents, HTML documents and links attached to an issue.
+They are not GitHub Actions artifacts; to download those, use `gh run download`.
+
+
+USAGE
+  gh issue artifact <command> [flags]
+
+AVAILABLE COMMANDS
+  create:        Create issue artifacts (preview)
+  delete:        Delete issue artifacts (preview)
+  download:      Download issue artifacts (preview)
+  edit:          Edit an issue artifact (preview)
+  list:          List artifacts on an issue (preview)
+  view:          View an issue artifact (preview)
+
+INHERITED FLAGS
+      --help[=true|false]        Show help for command
+  -R, --repo [HOST/]OWNER/REPO   Select another repository using the [HOST/]OWNER/REPO format
+
+LEARN MORE
+  Use `gh <command> <subcommand> --help` for more information about a command.
+  Read the manual at https://cli.github.com/manual
+  Learn about exit codes using `gh help exit-codes`
+  Learn about accessibility experiences using `gh help accessibility`
+

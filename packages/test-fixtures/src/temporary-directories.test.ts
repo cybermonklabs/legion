@@ -6,13 +6,14 @@ import {
   mkdirSync,
   realpathSync,
   rmSync,
+  statfsSync,
   statSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
-import { temporaryDirectories, temporaryDirectory } from "./temporary-directories";
+import { memoryRoot, temporaryDirectories, temporaryDirectory } from "./temporary-directories";
 
 const makeDirectory = temporaryDirectories("test-fixtures-per-test");
 
@@ -106,6 +107,104 @@ test("removed the one-shot directory when its suite ended", () => {
   expect(fromTheOneShot).not.toBe("");
   expect(existsSync(fromTheOneShot)).toBe(false);
 });
+
+/** The path the describe under a given root below made, which the row after it finds removed. */
+let fromTheGivenRoot = "";
+
+// The root is itself a one-shot directory, made by the outer `beforeAll` before the inner one
+// makes the directory under it and removed after the inner `afterAll`, so the row between the two
+// reads the inner directory gone from a root that is still there.
+describe("a one-shot directory under a root it is given", () => {
+  const root = temporaryDirectory("test-fixtures-given-root");
+
+  describe("the directory reserved under that root", () => {
+    const under = temporaryDirectory("test-fixtures-under-root", { root });
+
+    test("makes its directory under the root it is given", () => {
+      fromTheGivenRoot = under;
+      expect(existsSync(under)).toBe(true);
+      expect(dirname(under)).toBe(root);
+      expect(basename(under)).toStartWith("test-fixtures-under-root-");
+    });
+  });
+
+  test("removed the directory under the given root when its suite ended", () => {
+    expect(fromTheGivenRoot).not.toBe("");
+    expect(existsSync(root)).toBe(true);
+    expect(existsSync(fromTheGivenRoot)).toBe(false);
+  });
+});
+
+/** A mountinfo file holding the root mount, then `mounts`, each a line of `/proc/self/mountinfo`. */
+function mountinfo(...mounts: string[]): string {
+  const file = join(makeDirectory("mountinfo"), "mountinfo");
+  const lines = ["26 1 8:1 / / rw,relatime shared:1 - ext4 /dev/sda1 rw", ...mounts];
+  writeFileSync(file, lines.map((line) => `${line}\n`).join(""));
+  return file;
+}
+
+/** A line of `/proc/self/mountinfo` that mounts a filesystem of `type` at `at` with `options`;
+ *  `id` orders two mounts at one path. */
+function mountAt(at: string, options: string, type = "tmpfs", id = 32): string {
+  return `${id} 28 0:26 / ${at} ${options} shared:3 - ${type} ${type} rw`;
+}
+
+// Each row stands a directory of its own in for /dev/shm (`at`), so the room and the permissions it
+// reads are the row's, whatever the host's /dev/shm holds.
+
+test("names /dev/shm where it is a writable tmpfs that allows exec", () => {
+  const at = makeDirectory("mount");
+  expect({
+    alone: memoryRoot({ mountinfo: mountinfo(mountAt(at, "rw,nosuid,nodev")), at }),
+    // The last mount at a path is the one a process sees.
+    overNoexec: memoryRoot({
+      mountinfo: mountinfo(mountAt(at, "rw,noexec"), mountAt(at, "rw,nosuid,nodev", "tmpfs", 40)),
+      at,
+    }),
+    withRoom: memoryRoot({ need: 1, mountinfo: mountinfo(mountAt(at, "rw")), at }),
+  }).toEqual({ alone: at, overNoexec: at, withRoom: at });
+});
+
+test("names tmpdir() where /dev/shm is noexec, read-only, not a tmpfs or not mounted", () => {
+  const at = makeDirectory("mount");
+  const cases = {
+    noexec: mountinfo(mountAt(at, "rw,noexec")),
+    readOnly: mountinfo(mountAt(at, "ro,nosuid,nodev")),
+    notTmpfs: mountinfo(mountAt(at, "rw,relatime", "ext4")),
+    notMounted: mountinfo(),
+    noexecOverWritable: mountinfo(mountAt(at, "rw"), mountAt(at, "rw,noexec", "tmpfs", 40)),
+    unreadable: join(makeDirectory("no-mountinfo"), "mountinfo"),
+  };
+  expect(
+    Object.fromEntries(
+      Object.entries(cases).map(([name, file]) => [name, memoryRoot({ mountinfo: file, at })])
+    )
+  ).toEqual(Object.fromEntries(Object.keys(cases).map((name) => [name, tmpdir()])));
+});
+
+test("names tmpdir() where the tmpfs has less room than the caller needs", () => {
+  const at = makeDirectory("mount");
+  const { blocks, bsize } = statfsSync(at);
+  // More than the whole filesystem holds, so more than it has free whatever else writes there.
+  const need = blocks * bsize + 1;
+  expect(memoryRoot({ need, mountinfo: mountinfo(mountAt(at, "rw")), at })).toBe(tmpdir());
+});
+
+// Root may write in and search any directory whatever its mode, so as root the row proves nothing.
+test.skipIf(process.getuid?.() === 0)(
+  "names tmpdir() where this process may not write in or search the tmpfs",
+  () => {
+    const unwritable = makeDirectory("unwritable");
+    chmodSync(unwritable, 0o555);
+    const unsearchable = makeDirectory("unsearchable");
+    chmodSync(unsearchable, 0o666);
+    const judged = (at: string) => memoryRoot({ mountinfo: mountinfo(mountAt(at, "rw")), at });
+    expect({ unwritable: judged(unwritable), unsearchable: judged(unsearchable) }).toEqual({
+      unwritable: tmpdir(),
+      unsearchable: tmpdir(),
+    });
+  }
+);
 
 /** The path the skipped describe below reserved, which no hook of that describe ever makes. */
 let fromTheSkippedDescribe = "";

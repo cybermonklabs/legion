@@ -1,11 +1,16 @@
-# The held-port image's build reads the wrapper's sources, the package it imports and the
-# manifests of the infra workspace, nothing else of the repository root it takes as its context.
+# The held-port image's build reads the infra workspace's two modules, packages/envoy and the
+# envoy-infra module under it, nothing else of the repository root it takes as its context. It
+# leaves out what the root .dockerignore leaves out of packages/envoy but infra, which this build
+# compiles: test files, internal/integration, internal/smoke, deploy, the changelog fragments and
+# build output.
 *
-!packages/envoy/go.mod
-!packages/envoy/go.sum
-!packages/envoy/listenfd
-!packages/envoy/infra/go.mod
-!packages/envoy/infra/go.sum
-!packages/envoy/infra/go.work
-!packages/envoy/infra/go.work.sum
-!packages/envoy/infra/host/heldportwrapper
+!packages/envoy
+packages/envoy/**/*_test.go
+packages/envoy/internal/integration/
+packages/envoy/internal/smoke/
+packages/envoy/deploy/
+packages/envoy/.changes/
+**/node_modules
+**/dist
+**/build
+**/coverage

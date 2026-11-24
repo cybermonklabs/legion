@@ -1,0 +1,5 @@
+kind: Fixed
+body: The merger's role prompt takes a pull request out of the merge queue with `dequeuePullRequest(input:{id:$pr})`, the input GitHub accepts; it sent `input:{pullRequestId:$pr}` before, which GitHub refuses, so the dequeue failed and the queue merged the pull request anyway.
+time: 2026-11-18T12:57:29.299529115Z
+custom:
+    Issue: pr4415

@@ -46,9 +46,9 @@ func InterestReapAllowance(grace time.Duration) time.Duration {
 //
 // A candidate is deleted at exactly the revision the copy holds for it when the delete is sent
 // (reapInterest), so a write that lands after the re-read is kept: the delete fails with
-// JetStream's wrong last sequence (10071, nats.ErrKeyExists), and the candidate counts as
-// skipped. Where the copy holds no revision for it, the row and the revision come from the
-// bucket instead, and the delete is made only for the very row this pass judged.
+// JetStream's wrong last sequence (bus.IsCASConflict), and the candidate counts as skipped. Where
+// the copy holds no revision for it, the row and the revision come from the bucket instead, and
+// the delete is made only for the very row this pass judged.
 func (r *Registry) Reap(live func(sessionID string) (bool, error), graceWindow time.Duration) (int, error) {
 	now := r.now().UnixMilli()
 	allowanceMs := InterestReapAllowance(graceWindow).Milliseconds()
@@ -103,8 +103,8 @@ func (r *Registry) Reap(live func(sessionID string) (bool, error), graceWindow t
 // candidates behind it too.
 //
 // The delete is fenced on the revision the copy holds for the key (deleteInterestAt), and a
-// write since then makes JetStream refuse it with wrong last sequence (10071, which nats.go
-// names nats.ErrKeyExists): the interest is kept, false and no error.
+// write since then makes JetStream refuse it with wrong last sequence (bus.IsCASConflict): the
+// interest is kept, false and no error.
 //
 // A copy that holds no revision for the key, because a watch moved the epoch since its read
 // began (kvwatch.Copy.FenceFor), names no revision for the delete to be fenced on, and that
@@ -121,7 +121,7 @@ func (r *Registry) reapInterest(ctx context.Context, sessionID string, judged in
 	revision := r.cache.FenceFor(epoch, sessionID)
 	r.mu.RUnlock()
 	if revision == 0 {
-		item, read, err := r.getWithRevision(ctx, sessionID, true)
+		item, read, err := r.getWithRevision(ctx, sessionID, readBucket)
 		switch {
 		case errors.Is(err, nats.ErrKeyNotFound), errors.Is(err, ErrMalformedInterest):
 			return false, nil
@@ -172,18 +172,24 @@ type RoleClaimSweep struct {
 // (RoleClaim.HandedBack): a marked claim whose own renewal has lapsed is freed whatever isAlive
 // says. Nothing can move that renewal again, since no registration renews a marked claim
 // (renewRoleClaim), so the lapse is final rather than a holder briefly out of touch. The mark
-// is what makes freeing it safe where a session id would not be: it is the holder's own word
-// that it gave the role up, written by a release only that holder's session could make
-// (Registry.releaseReadRoleClaim, over a claim naming a process that release did not name), and
-// a second process that resumed the session id cannot write it, because such a release states
-// an instance and a release that states one frees the claims of that process and marks nothing.
+// is the session's own word that it gave the role up, written by a hand-back of that role's lane
+// topic that stated no process (Registry.markRoleClaimHandedBack, over a claim of that session
+// the release could not free, whether it names a process or none). Any process of the session
+// can send that release - a client built before a release named its process, or any caller that
+// leaves client_instance_id out of POST /v1/interests/unsubscribe; no current client sends it for
+// a role's lane, since pi-envoy's and claude-envoy's hand-back of a role states its instance - so
+// the mark is not proof that the holder itself gave the role up; it is what the window below is
+// for.
 //
 // A marked claim is freed one live window after its last renewal and not at once, and that
-// window is load-bearing: a holder an older client's hand-back marked wrongly claims the role
-// again at its next heartbeat and has it back, the record that grant writes carrying no mark
-// (SetRoleWithPrevious). The window must stay longer than a heartbeat. Nothing else holds a
-// marked claim: the restart grace is for a holder to register again and no registration renews
-// a marked claim, so the release gives it none (releaseReadExpiredRoleClaim).
+// window is load-bearing: a holder whose claim names its process and a hand-back marked wrongly
+// claims the role again at its next heartbeat and has it back, the record that grant writes
+// carrying no mark (SetRoleWithPrevious). A marked claim that names no process is not granted
+// back to a soft claim inside the window (POST /v1/roles/set weighs it by its renewal); its
+// holder takes it back with an outright claim, or claims it once the reaper has freed it. The
+// window must stay longer than a heartbeat. Nothing else holds a marked claim: the restart grace
+// is for a holder to register again and no registration renews a marked claim, so the release
+// gives it none (releaseReadExpiredRoleClaim).
 //
 // Only a claim neither rule keeps is released (releaseReadExpiredRoleClaim, which weighs
 // sessionTTL, the restart grace, and reads the renewal no second time: this pass has read it

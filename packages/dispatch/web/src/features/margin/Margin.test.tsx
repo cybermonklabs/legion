@@ -1,4 +1,4 @@
-import { expect, spyOn, test } from "bun:test";
+import { expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
@@ -6,22 +6,35 @@ import { type ReactNode, useEffect, useState } from "react";
 import { MemoryRouter, useLocation, useNavigate } from "react-router-dom";
 
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
+import { RegisterRouteDocument } from "../../__tests__/draft-matrix-fixture";
+import { realClock } from "../../__tests__/fake-clock";
 import { graphNode } from "../../__tests__/graph-fixture";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
+import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { ApiError, api } from "../../api/client";
 import type { Ask, AskRead, Comment, IssueAskRow, IssueDetails } from "../../api/types";
+import { heldSends } from "../conversation/held-sends";
+import { SendMovedError } from "../conversation/send-request";
 import type { RetypeOutcome } from "../doc/editor";
 import { buildIssuePath, buildProjectPath } from "../refs/routes";
+import { SendStoppedError } from "../writes/keyed-write";
 import { Margin } from "./Margin";
-import { type DocumentBridge, MarginProvider, useMargin } from "./margin-context";
+import {
+  type DocumentBridge,
+  MarginProvider,
+  marginComposeSendKey,
+  useMargin,
+} from "./margin-context";
 import {
   anchoredAsk,
   comment,
+  DESKTOP_WIDTH,
   issue,
+  PHONE_WIDTH,
   SelectedItemLabel,
   specArtifact,
   stubDocumentBridge,
-  stubMatchMedia,
+  stubViewport,
 } from "./margin-fixture";
 
 const secondIssue: IssueDetails = {
@@ -187,7 +200,7 @@ test("clicking a document mark opens its thread in the margin and stays on the d
   queryClient.setQueryData(["asks", issue.key], []);
   queryClient.setQueryData(["user-state"], {});
   queryClient.setQueryData(["comments", issue.key], [comment]);
-  const restoreMatchMedia = stubMatchMedia(false);
+  const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
   const specPath = buildIssuePath({ key: issue.key, kind: "spec" });
   const view = render(
     <MemoryRouter initialEntries={[specPath]}>
@@ -238,7 +251,7 @@ test("focusItemForMark opens the matching thread in the compact sheet", async ()
   queryClient.setQueryData(["asks", issue.key], []);
   queryClient.setQueryData(["user-state"], {});
   queryClient.setQueryData(["comments", issue.key], [comment]);
-  const restoreMatchMedia = stubMatchMedia(true);
+  const restoreMatchMedia = stubViewport(PHONE_WIDTH);
   const view = render(
     <MemoryRouter initialEntries={[buildIssuePath({ key: issue.key, kind: "issue" })]}>
       <QueryClientProvider client={queryClient}>
@@ -662,7 +675,8 @@ test("a reply typed into an answered ask's thread survives leaving the Comments 
 
   try {
     await screen.findByRole("heading", { name: "Needs you" });
-    await user.click(screen.getByRole("radio", { name: "Ship" }));
+    // "Ship" is a Markdown label (`MarkdownBody`), unnamed until the lazy Markdown engine loads.
+    await user.click(await screen.findByRole("radio", { name: "Ship" }));
     await user.click(screen.getByRole("button", { name: "Answer" }));
     const field = await screen.findByRole("textbox", { name: "Reply" });
     await user.click(field);
@@ -993,7 +1007,10 @@ test("composeForMark rejects when the composer is dismissed unsaved", async () =
   }
 });
 
-function fakeBridge(retype: (markId: string, kind: string) => RetypeOutcome): {
+function fakeBridge(
+  retype: (markId: string, kind: string) => RetypeOutcome,
+  artifactId = specArtifact.id
+): {
   bridge: DocumentBridge;
   removed: string[];
   retyped: [string, string][];
@@ -1001,7 +1018,7 @@ function fakeBridge(retype: (markId: string, kind: string) => RetypeOutcome): {
   const removed: string[] = [];
   const retyped: [string, string][] = [];
   return {
-    bridge: stubDocumentBridge(specArtifact.id, {
+    bridge: stubDocumentBridge(artifactId, {
       removeMark(markId) {
         removed.push(markId);
       },
@@ -1024,30 +1041,47 @@ function RegisterBridge({ bridge }: { bridge: DocumentBridge }): ReactNode {
   return null;
 }
 
-/** What a remounted `ProofDocument` does (a new artifact): the old editor
- *  unregisters and a fresh one registers, while the margin and its open composer stay. */
+/** What a remounted `ProofDocument` does (a new artifact): the old editor unregisters and a fresh
+ *  one registers, while the margin and its open composer stay. It does so at once, or in two
+ *  steps, with the fresh editor still binding between them. */
 function ReopenDocument({ bridge }: { bridge: DocumentBridge }): ReactNode {
   const { registerDocument } = useMargin();
   return (
-    <button
-      onClick={() => {
-        registerDocument(undefined);
-        registerDocument(bridge);
-      }}
-      type="button"
-    >
-      Reopen the document
-    </button>
+    <>
+      <button
+        onClick={() => {
+          registerDocument(undefined);
+          registerDocument(bridge);
+        }}
+        type="button"
+      >
+        Reopen the document
+      </button>
+      <button onClick={() => registerDocument(undefined)} type="button">
+        Close the document's editor
+      </button>
+      <button onClick={() => registerDocument(bridge)} type="button">
+        Bind the reopened editor
+      </button>
+    </>
   );
 }
 
-function renderMarginWithBridge(bridge: DocumentBridge, reopened?: DocumentBridge) {
-  const queryClient = new QueryClient({
+/** The query client a margin test renders under, which a test can seed before the margin draws. */
+function marginQueryClient(): QueryClient {
+  return new QueryClient({
     defaultOptions: {
       mutations: { retry: false },
       queries: { retry: false, staleTime: Number.POSITIVE_INFINITY },
     },
   });
+}
+
+function renderMarginWithBridge(
+  bridge: DocumentBridge,
+  reopened?: DocumentBridge,
+  queryClient = marginQueryClient()
+) {
   queryClient.setQueryData(["issue", issue.key], issue);
   queryClient.setQueryData(["inbox"], []);
   queryClient.setQueryData(["asks", issue.key], []);
@@ -1176,6 +1210,42 @@ test("the margin removes the composer's mark when the composer is cancelled or r
     expect(screen.queryByRole("form", { name: "Comment composer" })).not.toBeInTheDocument();
     // The replaced document is told nothing more once the document reopened onto `reopened`.
     expect(fake.removed).toEqual(["m-1-ask"]);
+  } finally {
+    view.unmount();
+  }
+});
+
+// While a document's editor is still binding, the margin already shows that document's compose
+// (`useMarginSheet` follows the route), so the reader can close it before any bridge of that
+// document is registered. Its mark is in that document alone: the margin takes it out once the
+// document binds its editor again, and asks the editor that went nothing.
+test("a compose closed while its document's editor is still binding takes its mark out once the editor binds", async () => {
+  const user = userEvent.setup();
+  const retype = (markId: string, kind: string) => ({
+    markId: `${markId}-${kind}`,
+    placement: null,
+    quote: "selected",
+  });
+  const fake = fakeBridge(retype);
+  const reopened = fakeBridge(retype);
+  const view = renderMarginWithBridge(fake.bridge, reopened.bridge);
+  const removed = () => ({ first: [...fake.removed], reopened: [...reopened.removed] });
+
+  try {
+    await user.click(screen.getByRole("button", { name: "Compose first" }));
+    const composer = await screen.findByRole("form", { name: "Comment composer" });
+    await user.click(screen.getByRole("button", { name: "Close the document's editor" }));
+    // Nothing is typed, so Close ends the compose at once.
+    await user.click(within(composer).getByRole("button", { name: "Close" }));
+    await waitFor(() =>
+      expect(screen.getByLabelText("First composer outcome").textContent).toBe("composer closed")
+    );
+    const whileBinding = removed();
+    await user.click(screen.getByRole("button", { name: "Bind the reopened editor" }));
+    expect({ bound: removed(), whileBinding }).toEqual({
+      bound: { first: [], reopened: ["m-1"] },
+      whileBinding: { first: [], reopened: [] },
+    });
   } finally {
     view.unmount();
   }
@@ -1566,6 +1636,379 @@ test("a newer compose on a document whose send is out waits on it, after visits 
     getMyState.mockRestore();
     listComments.mockRestore();
     createComment.mockRestore();
+  }
+});
+
+// One compose is open per document (`composeForMark`): a compose on the second document leaves
+// the first document's compose open, its mark with it, and a newer compose replaces only the one
+// on its own document, whose editor is the one registered then. So the margin takes each replaced
+// or cancelled compose's provisional mark out of that compose's own document, and never asks
+// another document to remove it.
+test("a compose on another document leaves the first open with its mark, and each newer compose takes out its own document's mark", async () => {
+  const user = userEvent.setup();
+  const retype = (markId: string, kind: string) => ({
+    markId: `${markId}-${kind}`,
+    placement: null,
+    quote: "selected",
+  });
+  const first = fakeBridge(retype);
+  const second = fakeBridge(retype, "artifact-2");
+  const queryClient = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  queryClient.setQueryData(["issue", issue.key], issue);
+  queryClient.setQueryData(["issue", secondIssue.key], secondIssue);
+  const getIssue = spyOn(api, "getIssue").mockImplementation(async (key) =>
+    key === "CORE-2" ? secondIssue : issue
+  );
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue([]);
+  const listIssueAsks = spyOn(api, "listIssueAsks").mockResolvedValue([]);
+  const getMyState = spyOn(api, "getMyState").mockResolvedValue({});
+  const listComments = spyOn(api, "listComments").mockResolvedValue([]);
+
+  const view = render(
+    <MemoryRouter initialEntries={[buildIssuePath({ key: "CORE-1", kind: "issue" })]}>
+      <QueryClientProvider client={queryClient}>
+        <MarginProvider>
+          <RegisterRouteDocument first={first.bridge} second={second.bridge} />
+          <MarkComposerProbe />
+          <SecondDocumentCompose />
+          <NavigateToSecondIssue />
+          <NavigateToFirstIssue />
+          <Margin />
+        </MarginProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  const removed = () => ({ first: [...first.removed], second: [...second.removed] });
+
+  try {
+    await user.click(screen.getByRole("button", { name: "Compose first" }));
+    const opened = await screen.findByRole("form", { name: "Comment composer" });
+    await user.click(within(opened).getByLabelText("Comment"));
+    await user.paste("On the first");
+
+    await user.click(screen.getByRole("button", { name: "Open second issue" }));
+    await waitFor(() =>
+      expect(screen.queryByRole("form", { name: "Comment composer" })).not.toBeInTheDocument()
+    );
+    await user.click(screen.getByRole("button", { name: "Compose on the second document" }));
+    const onSecond = await screen.findByRole("form", { name: "Comment composer" });
+    expect(within(onSecond).getByText("elsewhere")).toBeTruthy();
+    // The first document's compose is still open, and neither document lost a mark.
+    expect({
+      outcome: screen.getByLabelText("First composer outcome").textContent,
+      removed: removed(),
+    }).toEqual({ outcome: "idle", removed: { first: [], second: [] } });
+
+    await user.click(screen.getByRole("button", { name: "Back to the first issue" }));
+    const back = await screen.findByRole("form", { name: "Comment composer" });
+    await waitFor(() => expect(within(back).getByText("selected")).toBeTruthy());
+    expect(within(back).getByLabelText<HTMLTextAreaElement>("Comment").value).toBe("On the first");
+
+    // A newer compose on the first document replaces its compose, and its mark leaves that
+    // document; the second document's compose stays open with its own.
+    await user.click(screen.getByRole("button", { name: "Compose second" }));
+    await waitFor(() =>
+      expect(screen.getByLabelText("First composer outcome").textContent).toBe(
+        "replaced by a newer composer"
+      )
+    );
+    expect({
+      outcome: screen.getByLabelText("Second document composer outcome").textContent,
+      removed: removed(),
+    }).toEqual({ outcome: "idle", removed: { first: ["m-1"], second: [] } });
+
+    // Closing the second document's compose there takes its mark out of that document alone.
+    await user.click(screen.getByRole("button", { name: "Open second issue" }));
+    const stillOpen = await screen.findByRole("form", { name: "Comment composer" });
+    await waitFor(() => expect(within(stillOpen).getByText("elsewhere")).toBeTruthy());
+    await user.click(within(stillOpen).getByRole("button", { name: "Close" }));
+    await waitFor(() =>
+      expect(screen.getByLabelText("Second document composer outcome").textContent).toBe(
+        "composer closed"
+      )
+    );
+    expect(removed()).toEqual({ first: ["m-1"], second: ["m-3"] });
+  } finally {
+    view.unmount();
+    getIssue.mockRestore();
+    getInbox.mockRestore();
+    listIssueAsks.mockRestore();
+    getMyState.mockRestore();
+    listComments.mockRestore();
+  }
+});
+
+/** The line beside a newer compose that offers the draft kept for the words `quote`. */
+const offerLine = (quote: string) =>
+  `You wrote this draft for other words: “${quote}”. It is kept here:`;
+
+// A newer compose on the same document is the host's move for the open one, which carries
+// nothing: it opens a composer of its own with an empty field, read only while the first
+// compose's draft waits beside it naming the words it was written for. Only the reader's own
+// press puts that draft in the field, or drops it.
+test("a newer compose on the document offers the open compose's draft beside it, and only the reader's press takes it", async () => {
+  const user = userEvent.setup();
+  const fake = fakeBridge((markId, kind) => ({
+    markId: `${markId}-${kind}`,
+    placement: null,
+    quote: "selected",
+  }));
+  const view = renderMarginWithBridge(fake.bridge);
+  const shown = () => {
+    const composer = screen.getByRole("form", { name: "Comment composer" });
+    const field = within(composer).getByLabelText<HTMLTextAreaElement>("Comment");
+    return {
+      field: field.value,
+      offered: within(composer).queryByText(offerLine("selected")) !== null,
+      readOnly: field.readOnly,
+      sendRefused:
+        within(composer).queryByText("Use your draft or discard it before you send.") !== null,
+    };
+  };
+
+  try {
+    await user.click(screen.getByRole("button", { name: "Compose first" }));
+    const first = await screen.findByRole("form", { name: "Comment composer" });
+    await user.click(within(first).getByLabelText("Comment"));
+    await user.paste("why?");
+
+    await user.click(screen.getByRole("button", { name: "Compose second" }));
+    await waitFor(() =>
+      expect(
+        within(screen.getByRole("form", { name: "Comment composer" })).getByText("second")
+      ).toBeTruthy()
+    );
+    await screen.findByText(offerLine("selected"));
+    expect(shown()).toEqual({ field: "", offered: true, readOnly: true, sendRefused: true });
+
+    await user.click(screen.getByRole("button", { name: "Use my draft" }));
+    expect(shown()).toEqual({ field: "why?", offered: false, readOnly: false, sendRefused: false });
+
+    // Taken, the draft is the second compose's: a newer compose offers it for those words, and
+    // Discard my draft drops it with nothing put in the field.
+    await user.click(screen.getByRole("button", { name: "Compose first" }));
+    await screen.findByText(offerLine("second"));
+    await user.click(screen.getByRole("button", { name: "Discard my draft" }));
+    await waitFor(() => expect(screen.queryByText(offerLine("second"))).toBeNull());
+    const composer = screen.getByRole("form", { name: "Comment composer" });
+    const field = within(composer).getByLabelText<HTMLTextAreaElement>("Comment");
+    expect({
+      field: field.value,
+      quote: within(composer).queryByText("selected") !== null,
+    }).toEqual({ field: "", quote: true });
+  } finally {
+    view.unmount();
+  }
+});
+
+// A stopped send may have been delivered where it went, and a draft taken from it into another
+// compose goes as a new message under a key of its own. So when a stopped compose gives way to a
+// newer one on its document, the offer beside the newer compose says what the stopped send's
+// note said, in the words a stopped send moved elsewhere carries (`SendMovedError`), before the
+// reader can press Use my draft. Taken, the draft is carried here as the reader's own move carries
+// a stopped send (`HeldSends.carryInto`), so the same words stay with Discard draft until this
+// compose sends it or the reader discards it.
+test("a stopped compose that gives way to a newer one is offered saying it may have been delivered, and says so until discarded", async () => {
+  const user = userEvent.setup();
+  const fake = fakeBridge((markId, kind) => ({
+    markId: `${markId}-${kind}`,
+    placement: null,
+    quote: "selected",
+  }));
+  const queryClient = marginQueryClient();
+  const owner = { issueKey: issue.key, kind: "issue" } as const;
+  const createComment = spyOn(api, "createComment").mockRejectedValue(
+    new ApiError(503, { code: "UNAVAILABLE", error: "the server is down" })
+  );
+  jest.useFakeTimers();
+  try {
+    act(() => {
+      heldSends(queryClient).send(marginComposeSendKey(specArtifact.id), {
+        anchor: markComposerAnchor,
+        ask: { multiple: false, options: [], urgency: "med" },
+        draft: { body: "Stopped words", mentions: [], replacement: "" },
+        edit: undefined,
+        kind: "comment",
+        owner,
+        plainDelivery: "steer",
+        replyTo: null,
+        sendKey: "stopped-send",
+      });
+    });
+    await stopTheLateWrite(queryClient);
+  } finally {
+    realClock();
+  }
+  const view = renderMarginWithBridge(fake.bridge, undefined, queryClient);
+  const stoppedNote = new SendStoppedError().message;
+  const movedWords = new SendMovedError({ owner, replyTo: null }).message;
+
+  try {
+    await screen.findByText(stoppedNote);
+    await user.click(screen.getByRole("button", { name: "Compose second" }));
+    const offer = (await screen.findByText(offerLine("selected"))).closest('[role="status"]');
+    expect({
+      draft: offer?.textContent?.includes("Stopped words") ?? false,
+      stoppedNoteLeft: screen.queryByText(stoppedNote) !== null,
+      stoppedWords: offer?.textContent?.includes(movedWords) ?? false,
+    }).toEqual({ draft: true, stoppedNoteLeft: false, stoppedWords: true });
+
+    await user.click(screen.getByRole("button", { name: "Use my draft" }));
+    const taken = screen.getByRole("form", { name: "Comment composer" });
+    expect({
+      field: within(taken).getByLabelText<HTMLTextAreaElement>("Comment").value,
+      offered: screen.queryByText(offerLine("selected")) !== null,
+      stoppedWords: within(taken).queryByText(movedWords) !== null,
+    }).toEqual({ field: "Stopped words", offered: false, stoppedWords: true });
+    await user.click(within(taken).getByRole("button", { name: "Discard draft" }));
+    expect({
+      compose: screen.queryAllByRole("textbox", { name: "Comment" }).length,
+      stoppedWords: screen.queryByText(movedWords) !== null,
+    }).toEqual({ compose: 0, stoppedWords: false });
+  } finally {
+    view.unmount();
+    createComment.mockRestore();
+  }
+});
+
+// A draft kept for an ask keeps its options and settings (`AwayDraft.ask`) and its kind, and Use
+// my draft puts them back with its question. Offered beside a compose of another kind, the offer
+// says the kind it was written as, so options it brings back are never hidden with no word. While
+// the offer waits, the newer compose's own ask fields are read only, as its question is, so taking
+// the draft writes over nothing the reader typed.
+test("Use my draft puts back an ask's options and settings with its question, offered as an ask", async () => {
+  const user = userEvent.setup();
+  const fake = fakeBridge((markId, kind) => ({
+    markId: `${markId}-${kind}`,
+    placement: null,
+    quote: markId.startsWith("m-1") ? "selected" : "second",
+  }));
+  const view = renderMarginWithBridge(fake.bridge);
+  const composer = () => screen.getByRole("form", { name: "Comment composer" });
+  const switchToAsk = async () => {
+    const kinds = within(composer()).getByRole("group", { name: "Kind" });
+    await user.click(within(kinds).getByRole("button", { name: "Ask" }));
+    await within(composer()).findByLabelText("Question");
+  };
+  const askFields = () => {
+    const shown = within(composer());
+    return {
+      description: shown.getByLabelText<HTMLInputElement>("Option 1 description").value,
+      // A control inside a disabled fieldset is disabled, which its own property does not show.
+      disabled: shown.getByLabelText("Option 1 label").closest("fieldset[disabled]") !== null,
+      first: shown.getByLabelText<HTMLInputElement>("Option 1 label").value,
+      high: shown.getByRole("button", { name: "High" }).getAttribute("aria-pressed"),
+      multiple: shown.getByRole<HTMLInputElement>("checkbox", { name: "Allow multiple" }).checked,
+      question: shown.getByLabelText<HTMLTextAreaElement>("Question").value,
+      second: shown.queryByLabelText<HTMLInputElement>("Option 2 label")?.value ?? "(none)",
+    };
+  };
+
+  try {
+    await user.click(screen.getByRole("button", { name: "Compose first" }));
+    await screen.findByRole("form", { name: "Comment composer" });
+    await switchToAsk();
+    const first = within(composer());
+    await user.click(first.getByLabelText("Question"));
+    await user.paste("Which one?");
+    await user.click(first.getByRole("button", { name: "High" }));
+    await user.click(first.getByRole("checkbox", { name: "Allow multiple" }));
+    await user.click(first.getByLabelText("Option 1 label"));
+    await user.paste("Ship");
+    await user.click(first.getByLabelText("Option 1 description"));
+    await user.paste("Proceed now");
+    await user.click(first.getByRole("button", { name: "Add option" }));
+    await user.click(first.getByLabelText("Option 2 label"));
+    await user.paste("Hold");
+
+    await user.click(screen.getByRole("button", { name: "Compose second" }));
+    // The newer compose is a comment, so the offer names the kind the draft was written as.
+    await screen.findByText(
+      "You wrote this draft as an ask, for other words: “selected”. It is kept here:"
+    );
+    const asComment = screen.queryByText(offerLine("selected")) !== null;
+    await switchToAsk();
+    const asAsk = screen.queryByText(offerLine("selected")) !== null;
+    const waiting = askFields();
+    await user.click(screen.getByRole("button", { name: "Use my draft" }));
+    expect({ asAsk, asComment, taken: askFields(), waiting }).toEqual({
+      asAsk: true,
+      asComment: false,
+      taken: {
+        description: "Proceed now",
+        disabled: false,
+        first: "Ship",
+        high: "true",
+        multiple: true,
+        question: "Which one?",
+        second: "Hold",
+      },
+      waiting: {
+        description: "",
+        disabled: true,
+        first: "",
+        high: "false",
+        multiple: false,
+        question: "",
+        second: "(none)",
+      },
+    });
+  } finally {
+    view.unmount();
+  }
+});
+
+// A closed issue refuses a suggestion, so a suggestion compose ends when its issue closes. One that
+// offers a draft stays, showing it, until the reader drops it. It offers no Use my draft: taken
+// into a field that cannot send, the draft would go with the compose once nothing is offered.
+test("a suggestion compose that offers a draft when its issue closes stays with it, offers only Discard my draft, and ends once it is dropped", async () => {
+  const user = userEvent.setup();
+  const fake = fakeBridge((markId, kind) => ({
+    markId: `${markId}-${kind}`,
+    placement: null,
+    quote: markId.startsWith("m-1") ? "selected" : "second",
+  }));
+  const queryClient = marginQueryClient();
+  const view = renderMarginWithBridge(fake.bridge, undefined, queryClient);
+  try {
+    await user.click(screen.getByRole("button", { name: "Compose first" }));
+    const first = await screen.findByRole("form", { name: "Comment composer" });
+    await user.click(within(first).getByLabelText("Comment"));
+    await user.paste("why?");
+    await user.click(screen.getByRole("button", { name: "Compose second" }));
+    await screen.findByText(offerLine("selected"));
+    const second = screen.getByRole("form", { name: "Comment composer" });
+    const kinds = within(second).getByRole("group", { name: "Kind" });
+    await user.click(within(kinds).getByRole("button", { name: "Suggest" }));
+    await within(second).findByLabelText("Reason");
+    act(() => {
+      queryClient.setQueryData(["issue", issue.key], {
+        ...issue,
+        closed_at: "2026-09-09T01:00:00Z",
+      });
+    });
+    // A closed issue's compose draws no kind switch.
+    await waitFor(() => expect(screen.queryByRole("group", { name: "Kind" })).toBeNull());
+    const closed = screen.getByRole("form", { name: "Comment composer" });
+    const offer = within(closed)
+      .getByText(/for other words: “selected”/)
+      .closest('[role="status"]');
+    expect({
+      draft: offer?.textContent?.includes("why?") ?? false,
+      drop: within(closed).queryByRole("button", { name: "Discard my draft" }) !== null,
+      sendRefused:
+        within(closed).queryAllByText("This issue is closed. Reopen it to send.").length > 0,
+      take: within(closed).queryByRole("button", { name: "Use my draft" }) !== null,
+    }).toEqual({ draft: true, drop: true, sendRefused: true, take: false });
+
+    await user.click(within(closed).getByRole("button", { name: "Discard my draft" }));
+    await waitFor(() =>
+      expect(screen.queryByRole("form", { name: "Comment composer" })).toBeNull()
+    );
+  } finally {
+    view.unmount();
   }
 });
 

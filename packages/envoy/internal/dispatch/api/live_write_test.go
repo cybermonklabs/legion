@@ -30,6 +30,7 @@ import (
 // count, 4 on CI's runner).
 
 func TestEditArtifactRollbackNeverReachesTheRoom(t *testing.T) {
+	t.Parallel()
 	f := newHeldWriteFixture(t, 50*time.Millisecond)
 	f.connectPlainSocket(t)
 	responses := f.startFailingEdit(t)
@@ -63,6 +64,7 @@ func TestEditArtifactRollbackNeverReachesTheRoom(t *testing.T) {
 }
 
 func TestBrowserTypingDuringAHeldEditKeepsOnlyItsOwnText(t *testing.T) {
+	t.Parallel()
 	f := newHeldWriteFixture(t, 50*time.Millisecond)
 	peer := f.connectPeer(t)
 	responses := f.startFailingEdit(t)
@@ -85,6 +87,7 @@ func TestBrowserTypingDuringAHeldEditKeepsOnlyItsOwnText(t *testing.T) {
 }
 
 func TestBrowserTypingNextToAHeldEditKeepsItsText(t *testing.T) {
+	t.Parallel()
 	f := newHeldWriteFixture(t, 50*time.Millisecond)
 	peer := f.connectPeer(t)
 	responses := f.startFailingEdit(t)
@@ -102,6 +105,7 @@ func TestBrowserTypingNextToAHeldEditKeepsItsText(t *testing.T) {
 }
 
 func TestReconnectingBrowserCannotBringBackAHeldEdit(t *testing.T) {
+	t.Parallel()
 	f := newHeldWriteFixture(t, 50*time.Millisecond)
 	peer := f.connectPeer(t)
 	responses := f.startFailingEdit(t)
@@ -121,6 +125,7 @@ func TestReconnectingBrowserCannotBringBackAHeldEdit(t *testing.T) {
 }
 
 func TestCommentQueuedBehindAHeldEditAnchorsOnlyCommittedText(t *testing.T) {
+	t.Parallel()
 	f := newHeldWriteFixture(t, time.Hour)
 	f.connectPlainSocket(t)
 	responses := f.startFailingEdit(t)
@@ -144,6 +149,7 @@ func TestCommentQueuedBehindAHeldEditAnchorsOnlyCommittedText(t *testing.T) {
 }
 
 func TestSuggestionAcceptRollbackNeverReachesTheRoom(t *testing.T) {
+	t.Parallel()
 	f := newHeldWriteFixture(t, 50*time.Millisecond)
 	f.connectPlainSocket(t)
 	earlierResponse := sessionRequest(t, f.handler, http.MethodPost, "/api/v1/issues/"+f.issue.Key+"/comments", map[string]any{
@@ -195,6 +201,7 @@ func TestSuggestionAcceptRollbackNeverReachesTheRoom(t *testing.T) {
 }
 
 func TestCommentProjectionFailureNeverReachesTheRoom(t *testing.T) {
+	t.Parallel()
 	for _, action := range []string{"reply", "resolve"} {
 		t.Run(action, func(t *testing.T) {
 			f := newHeldWriteFixture(t, time.Hour, func(failure *postApplyFailureDocs) {
@@ -239,13 +246,15 @@ func TestCommentProjectionFailureNeverReachesTheRoom(t *testing.T) {
 }
 
 func TestDocumentUploadRollbackNeverReachesTheRoom(t *testing.T) {
+	t.Parallel()
 	f := newHeldWriteFixture(t, time.Hour)
 	f.connectPlainSocket(t)
 	closeTestGate(f.failure.releaseBeforeApply)
 	responses := make(chan *httptest.ResponseRecorder, 1)
+	base := uploadBaseField(t, f.handler, f.issue.PrimaryArtifactID)
 	go func() {
 		responses <- multipartRequest(t, f.handler, "/api/v1/issues/"+f.issue.Key+"/artifacts", map[string]string{
-			"name": "spec.md",
+			"name": "spec.md", "precondition": base,
 		}, "spec.md", "text/markdown", []byte("after"), "alice")
 	}()
 	waitForPostApply(t, f.failure)
@@ -569,7 +578,7 @@ func (f *heldWriteFixture) assertArtifactKeyShareLockAvailable(t *testing.T) {
 	if err := tx.QueryRow(context.Background(), `
 		select id::text from artifacts where id = $1 for key share nowait
 	`, f.issue.PrimaryArtifactID).Scan(&lockedID); err != nil {
-		t.Fatalf("settlement holds artifact lock while waiting for issue lock: %v", err)
+		t.Fatalf("settlement holds an artifact row lock while waiting for the issue's owner lock: %v", err)
 	}
 }
 
@@ -701,9 +710,9 @@ func (d *postApplyFailureDocs) ProjectMark(ctx context.Context, artifactID, mark
 	return errors.New("forced post-projection failure")
 }
 
-func (d *postApplyFailureDocs) ReplaceText(ctx context.Context, artifactID, markdown string, actor model.Actor) (string, error) {
+func (d *postApplyFailureDocs) ReplaceText(ctx context.Context, artifactID, markdown string, actor model.Actor, precondition *model.EditPrecondition) (string, error) {
 	d.waitBeforeApply()
-	_, err := d.API.ReplaceText(ctx, artifactID, markdown, actor)
+	_, err := d.API.ReplaceText(ctx, artifactID, markdown, actor, precondition)
 	if err != nil {
 		return "", err
 	}

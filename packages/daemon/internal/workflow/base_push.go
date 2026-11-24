@@ -5,6 +5,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/legion/daemon/internal/classify"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 )
 
@@ -27,16 +28,17 @@ import (
 // push however many pull requests sit on it, rather than once per pull request. The first read is
 // one indexed lookup of the open pull requests recorded on that base
 // (record.Store.OpenPullRequestsOnBase), so a push to a branch Legion records no pull request on -
-// every push of the other automation a mapped repository carries - ends the transaction there,
+// every push of the other automation a heard repository carries - ends the transaction there,
 // having written nothing. A pull request whose recorded base is still the empty one no read has
 // filled matches no push: the daemon's next read of that pull request - at a handoff, at its
 // start, or for a round waiting on the merge state - fills the base, and from then on its base's
 // pushes find it.
 //
 // The one walk both records the move and asks for the read a moved base calls for
-// (askMergeStateFor), which is why a base push is the one fact Apply's askMergeState leaves
-// alone: what tells a redelivered push from a first delivery is the commit the record held when
-// the push arrived, and this walk is the last reader of it.
+// (askMergeStateFor, under the gate's base-push reason, classify.MergeStateFactBasePush), which
+// is why a base push is the one fact Apply's askMergeState leaves alone: what tells a redelivered
+// push from a first delivery is the commit the record held when the push arrived, and this walk
+// is the last reader of it.
 func (e *Engine) basePush(ctx context.Context, tx pgx.Tx, fact intake.BasePush) (intake.Result, error) {
 	open, err := e.store.OpenPullRequestsOnBase(ctx, tx, fact.Repo, fact.Branch)
 	if err != nil {
@@ -62,14 +64,17 @@ func (e *Engine) basePush(ctx context.Context, tx pgx.Tx, fact intake.BasePush) 
 		if err := e.store.PutPullRequest(ctx, tx, *own); err != nil {
 			return intake.Result{}, err
 		}
-		// A base that moved is what takes a head from clean to behind, which is the one answer
-		// that holds an approved issue in reviewing, so every pull request this push moved is
-		// read for. The read is asked for here rather than from Apply's askMergeState because
-		// the line above has just overwritten what tells a redelivery from a first delivery: a
-		// second walk after the handler would find every pull request on the base recorded at
-		// this push's commit and ask for all of their reads again, however many times the push
-		// was delivered.
-		if err := e.askMergeStateFor(ctx, tx, own); err != nil {
+		// A base that moved is what takes a head from clean to behind, which holds an approved
+		// issue in reviewing, or to conflicting, which needs a merge forward once the issue's
+		// review is over (dispatch://INFRA-4374 R0) and leaves a record in testing or reviewing
+		// reading a state GitHub no longer answers (R4). So every pull request this push moved is
+		// read for where the push owes a read (askMergeStateFor): an issue in testing through
+		// merging, by the gate (classify.MergeStateReadOwed), or a round that waits on the merge
+		// state. The read is asked for here rather than from Apply's askMergeState because the line
+		// above has just overwritten what tells a redelivery from a first delivery: a second walk
+		// after the handler would find every pull request on the base recorded at this push's
+		// commit and ask for all of their reads again, however many times the push was delivered.
+		if err := e.askMergeStateFor(ctx, tx, own, classify.MergeStateFactBasePush); err != nil {
 			return intake.Result{}, err
 		}
 	}

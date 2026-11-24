@@ -10,6 +10,7 @@ import {
   createIssue,
   createProject,
   createProjectDocument,
+  getInbox,
   getIssue,
   patchIssue,
   replyToCommentDelivery,
@@ -17,7 +18,11 @@ import {
   resolveAsk,
   snoozeAsk,
 } from "./api";
-import type { SeededInboxRow } from "./local-instance-support";
+import {
+  awaitDecisionBlock,
+  awaitSeededInbox,
+  type SeededInboxRow,
+} from "./local-instance-support";
 import { sessionIds } from "./session-ids";
 
 // One realistic workspace, built through the public API, that fills every surface only a human
@@ -92,48 +97,29 @@ export interface SeededWorkspace {
   >;
   readonly broadcast: { readonly id: string; readonly sessionIds: readonly string[] };
   readonly directMessage: string;
-  /** The rows the unfiltered Inbox read returns for alice once the seed has settled: the open
-   *  asks on open issues and documents, the snoozed one among them, under Later. The answered
-   *  ask and the retracted ask are absent. The Inbox page opens on the reader's own work - every
-   *  issue here is alice's, and the document's question waits on CORE's default assignee, alice
-   *  too - so her default list is these rows. */
-  readonly inbox: readonly SeededInboxRow[];
-}
-
-/** The spec's decision block becomes an ask only when the document service settles the spec,
- *  which happens after `createIssue` answers. Waits for that ask and gives back its block id:
- *  the service may retract the ask and write it again for the same block, so the block id, not
- *  the ask id, names the decision's Inbox row. */
-async function waitForSpecAsk(issueKey: string): Promise<string> {
-  const deadline = Date.now() + 15_000;
-  for (;;) {
-    const blockIds = new Set(
-      ((await getIssue(issueKey)).open_asks ?? []).flatMap((ask) =>
-        ask.block_id ? [ask.block_id] : []
-      )
-    );
-    if (blockIds.size > 1) {
-      throw new Error(
-        `seedWorkspace: ${issueKey}'s open asks name more than one block: ${[...blockIds].join(", ")}`
-      );
-    }
-    const [blockId] = blockIds;
-    if (blockId !== undefined) return blockId;
-    if (Date.now() > deadline) {
-      throw new Error(`seedWorkspace: ${issueKey}'s spec decision was not indexed within 15 s`);
-    }
-    const tick = Promise.withResolvers<void>();
-    setTimeout(tick.resolve, 100);
-    await tick.promise;
-  }
+  /** The pass line of the seed's wait for its Inbox rows:
+   *  `inbox rows: 5 of 5 declared rows matched in 1 read`. */
+  readonly inboxLine: string;
 }
 
 /** Seeds the workspace into an empty database and the fake Envoy. Every write goes through the
  *  public API, as alice for a human and through the agent bearer for a session. A session's
  *  write carries its title in `origin`, as an agent's Dispatch tools stamp it (`toolActor` in
  *  `packages/envoy-client/src/dispatch-execute.ts`), so the surfaces that read the stamped title
- *  rather than the live registry (the Inbox's author chip) name it too. */
-export async function seedWorkspace(): Promise<SeededWorkspace> {
+ *  rather than the live registry (the Inbox's author chip) name it too.
+ *
+ *  It waits twice for what the document service settles after a write answered: for the spec's
+ *  decision block (`awaitDecisionBlock`), and at the end for the Inbox rows it declares
+ *  (`awaitSeededInbox`), which every caller reads next. Each wait gets the whole of `boundMs`, the
+ *  bound its caller's own checks use, so a browser row's seed gives up before the row's own
+ *  clock ends it and hides the wait's message. The abort of `signal` stops the Inbox wait. */
+export async function seedWorkspace({
+  boundMs,
+  signal,
+}: {
+  readonly boundMs: number;
+  readonly signal?: AbortSignal;
+}): Promise<SeededWorkspace> {
   const actor = (id: string, origin: Omit<ActorOrigin, "session_title"> = {}): Actor => {
     const session = workspaceSessions.find((candidate) => candidate.session_id === id);
     if (session === undefined) throw new Error(`seedWorkspace: no workspace session ${id}`);
@@ -189,7 +175,11 @@ export async function seedWorkspace(): Promise<SeededWorkspace> {
   // newest first, so without this the "asked" and "updated the issue" rows swapped places
   // between two runs of the drift probe. Waiting here puts the ask before the patch in every
   // run.
-  const decisionBlockId = await waitForSpecAsk(workflow.key);
+  const decisionBlockId = await awaitDecisionBlock(
+    workflow.key,
+    async () => (await getIssue(workflow.key)).open_asks ?? [],
+    boundMs
+  );
   await Promise.all([
     patchIssue(workflow.key, { labels: ["dispatch"], priority: 1, status: "in_progress" }),
     patchIssue(broadcastOrder.key, { status: "needs_review" }),
@@ -302,6 +292,30 @@ export async function seedWorkspace(): Promise<SeededWorkspace> {
     actor(sessionIds.planner)
   );
 
+  // The rows the unfiltered Inbox read returns for alice once the seed has settled: the open asks
+  // on open issues and documents, the snoozed one among them. Every issue here is alice's, and the
+  // document's question waits on CORE's default assignee, alice too, so her default list is these.
+  const inbox: readonly SeededInboxRow[] = [
+    { askId: blocking.id, kind: "ask", made: `the blocking ask on ${folds.key}` },
+    { askId: snoozed.id, kind: "ask", made: `the snoozed ask on ${snooze.key}` },
+    { askId: rotation.id, kind: "ask", made: `the rotate ask on ${rotate.key}` },
+    { askId: documentAsk.id, kind: "ask", made: "the runbook document's ask" },
+    {
+      blockId: decisionBlockId,
+      issueKey: workflow.key,
+      kind: "block",
+      made: `the spec decision block on ${workflow.key}`,
+    },
+  ];
+  // Every caller reads the Inbox next, and it can list other rows for a moment after the writes
+  // above answered: a 25 ms sampler read five wrong rows here about 230 ms before these five
+  // stood (dispatch://INFRA-3052, comment 169c05c4-ab16-4a28-a470-e703dcee23ac). So the seed is
+  // done only once these rows stand.
+  const matched = await awaitSeededInbox(inbox, () => getInbox({ login: "alice" }), {
+    boundMs,
+    signal,
+  });
+
   return {
     asks: {
       answered: answered.id,
@@ -316,18 +330,7 @@ export async function seedWorkspace(): Promise<SeededWorkspace> {
       sessionIds: (broadcast.recipients ?? []).map((recipient) => recipient.session_id),
     },
     directMessage: directMessage.id,
-    inbox: [
-      { askId: blocking.id, kind: "ask", made: `the blocking ask on ${folds.key}` },
-      { askId: snoozed.id, kind: "ask", made: `the snoozed ask on ${snooze.key}` },
-      { askId: rotation.id, kind: "ask", made: `the rotate ask on ${rotate.key}` },
-      { askId: documentAsk.id, kind: "ask", made: "the runbook document's ask" },
-      {
-        blockId: decisionBlockId,
-        issueKey: workflow.key,
-        kind: "block",
-        made: `the spec decision block on ${workflow.key}`,
-      },
-    ],
+    inboxLine: matched.line,
     issues: {
       broadcastOrder: broadcastOrder.key,
       child: child.key,

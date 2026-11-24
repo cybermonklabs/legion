@@ -15,15 +15,18 @@
 # second round-2 construction); the person's own retry of it, in another mode, is their turn. The
 # page must then show each message once, while the session's stream still holds the turns it
 # tagged (its ring lives in the process, so a restart empties it). Then pi-envoy stops, and the
-# person sends it a Send, which Dispatch records as a failed attempt to it. After `--continue`, a
+# person sends it a Send asking for a running session (connected_only), which the listener refuses
+# and Dispatch records as a failed attempt to it: without that ask the stopped session, which
+# Envoy still knows, would have the Send stored and its attempt queued. After `--continue`, a
 # replay of the accepted Send's own envelope, and a frame forged with the listener token naming
 # the Send made while it was down once that attempt is more than a minute old (Deep's second
 # construction), must each inject nothing. Then the listener drops the session's registration, the
-# person's Send to it fails, and a frame a bare bus client publishes on the session's subject
-# inside that minute, naming the failed attempt, must inject nothing either (Deep's first round-2
-# construction). Last, Dispatch's record says the session took the Send and the Aside at attempt
-# 1, the carded Send at its retry, and nothing else. Each check prints `== <name>`, what it
-# observed, and `ok <name>`; the first that fails ends the run non-zero, naming it.
+# person's Send to it, asking for a running session too, fails, and a frame a bare bus client
+# publishes on the session's subject inside that minute, naming the failed attempt, must inject
+# nothing either (Deep's first round-2 construction). Last, Dispatch's record says the session took
+# the Send and the Aside at attempt 1, the carded Send at its retry, and nothing else. Each check
+# prints `== <name>`, what it observed, and `ok <name>`; the first that fails ends the run
+# non-zero, naming it.
 #
 # Run it as `bash scripts/e2e/dispatch-user-turns.sh` from a checkout, devbox only. The session's model
 # is Anthropic, on the route LEGION_E2E_MODEL_ROUTE names (`gateway`, the default, or `key-file`):
@@ -31,9 +34,9 @@
 # (lib/install-model-gateway.sh), so LEGION_E2E_MODEL_GATEWAY_URL is required and the keyring must be
 # unlocked; `key-file` reads the 0600 file LEGION_E2E_ANTHROPIC_KEY_FILE names on every call
 # (lib/install-key-file-model-route.sh), for a devbox with no Hawk gateway. DISPATCH_USER_TURNS_OMP
-# names another Oh My Pi (a mise tool spec such as github:sjawhar/oh-my-pi@<version>) in place of the
-# pinned one. DISPATCH_USER_TURNS_ONLY=spec-edit runs `session-registers` and the two spec-edit
-# checks alone, then ends: the spec-edit live check, which needs none of the others;
+# names another Oh My Pi (a mise tool spec such as github:cybermonklabs/oh-my-pi@<version>) in
+# place of the pinned one. DISPATCH_USER_TURNS_ONLY=spec-edit runs `session-registers` and the two
+# spec-edit checks alone, then ends: the spec-edit live check, which needs none of the others;
 # DISPATCH_USER_TURNS_ONLY=spec-edit-card stops after the first of them, the card's arrival.
 # Everything the run creates is its own and goes on any exit: its scratch directory, the isolated
 # profile under the HOME it gives Oh My Pi (make_omp_home, lib/omp-home.sh), the key command a
@@ -79,19 +82,23 @@ fail() { echo "FAIL $check: $*" >&2; exit 1; }
 . "$root/scripts/e2e/lib/leftovers.sh"
 # shellcheck source-path=SCRIPTDIR source=lib/omp-home.sh
 . "$root/scripts/e2e/lib/omp-home.sh"
+# Every program the run execs from here on carries its mark, and the sweep in cleanup ends what
+# carries it and nothing else (marked_processes, lib/process-tree.sh); a start that clears its
+# environment (`env -i`) names the mark itself, and a fork of this shell that execs nothing carries
+# none and is stopped by its pid (run_marks' comment there).
+export LEGION_E2E_RUN=$work
 
 tm() { tmux -S "$work/tmux.sock" "$@"; }
 
 # Unconditional: every run removes what it made, whatever it ended on.
 cleanup() {
-  local p
   set +e
   tm capture-pane -p -t user >"$evidence/checks/session.pane" 2>/dev/null
   [ -z "$session_file" ] || cp "$session_file" "$evidence/session.jsonl" 2>/dev/null
   tm kill-server >/dev/null 2>&1
   stop_pid "$dispatch_pid"
   stop_pid "$listener_pid"
-  for p in $(run_processes); do kill -KILL "$p" 2>/dev/null; done
+  stop_marked_processes "$work"
   docker rm -f -v "$nats_container" "$pg_container" >/dev/null 2>&1
   rm -rf "$work"
   [ -n "$ok" ] || echo "dispatch user turns e2e: FAIL (check $check)"
@@ -173,24 +180,27 @@ registered() {
 unlisted() {
   listener "http://127.0.0.1:$envoy_port/v1/sessions" | jq -e --arg d "$session_cwd" 'all(.[]; .dir != $d)' >/dev/null
 }
-# session_gone: no process of the session (Oh My Pi or a tool it runs) is left in session_cwd.
-session_gone() {
-  local p
-  for p in /proc/[0-9]*; do [ "$(readlink "$p/cwd" 2>/dev/null)" != "$session_cwd" ] || return 1; done
-}
+# session_gone: the session's Oh My Pi has exited, by the pid its pane recorded as it started it
+# (record_pid_sh and recorded_pid, lib/process-tree.sh), which execs `mise x`, which execs Oh My Pi:
+# that process's Envoy plugin is what holds the session on the listener, which the next wait reads.
+# No walk of the machine's /proc by working directory: one took 26 s over 28,165 entries at load
+# 453, against this wait's 30 s.
+session_gone() { ! recorded_pid "$work/session.pid" "$omp_exe" >/dev/null; }
 human() { curl -fsS -H "X-Dispatch-User: $login" -H 'Content-Type: application/json' "$@"; }
-bearer() { curl -fsS -H "Authorization: Bearer $(cat "$work/dispatch-token")" -H 'Content-Type: application/json' "$@"; }
+# bearer sends the run's Dispatch token on curl's standard input, in no command line; its callers
+# give their bodies with -d.
+bearer() { printf 'Authorization: Bearer %s' "$(cat "$work/dispatch-token")" | curl -fsS -H @- -H 'Content-Type: application/json' "$@"; }
 listener() { curl -fsS -H "@$work/envoy-auth-header" -H 'Content-Type: application/json' "$@"; }
 page() { bun "$root/scripts/e2e/lib/dispatch-user-turns.ts" "$@"; }
 
-# The operator's shell less the running session's own Oh My Pi variables (controller-start-tmux.sh's
-# operator_env), with the run's HOME and profile, and this run's listener, NATS and Dispatch.
-# OMP_SKIP_SETUP keeps a fresh profile's first launch out of the first-run setup wizard, which
-# otherwise holds the terminal for the whole run (packages/tui/src/setup/wizard.ts at the pin).
+# The operator's shell less the running session's own Oh My Pi variables (omp_session_unsets,
+# lib/omp-home.sh), with the run's HOME and profile, and this run's listener, NATS and Dispatch. The
+# profile's model route shuts the first-run setup wizard (omp_setup_wizard_off, lib/omp-home.sh),
+# which otherwise holds the terminal for the whole run.
 launch_session() {
   local command
-  command=$(printf '%q ' env -u OMP_SESSION_ID -u OMPCODE -u PI_CONFIG_FILES -u ENVOY_NATS_URL -u LEGION_OMP_PATH \
-    HOME="$omp_home" OMP_PROFILE="$profile" OMP_SKIP_SETUP=1 \
+  command=$(printf '%q ' sh -c "$record_pid_sh" record-pid "$work/session.pid" env "${omp_session_unsets[@]}" \
+    HOME="$omp_home" OMP_PROFILE="$profile" \
     ENVOY_URL="http://127.0.0.1:$envoy_port" ENVOY_TOKEN_FILE="$work/envoy-token" ENVOY_NATS_URL="$nats_url" \
     DISPATCH_URL="http://127.0.0.1:$dispatch_port" DISPATCH_TOKEN_FILE="$work/dispatch-token" \
     mise x "$omp_tool" -- omp "$@")
@@ -204,6 +214,10 @@ mkdir -p "$session_cwd"
 refuse_leftovers legion-e2e-user-turns
 make_omp_home "$omp_home"
 mise where "$omp_tool" >/dev/null 2>&1 || mise install "$omp_tool" >&2
+# The program the session's Oh My Pi runs: what `mise x $omp_tool -- omp` execs. session_gone knows
+# the session by it, so it is the binary itself (native_program, lib/process-tree.sh): a script's
+# or a mise shim's process runs another file, and the wait for the session to end would pass at once.
+omp_exe=$(native_program "$(mise where "$omp_tool")/bin/omp") || fail "the Oh My Pi $omp_tool: $omp_exe"
 (cd "$root" && bun install --frozen-lockfile >/dev/null)
 (cd "$root/packages/envoy" && go build -o "$work/envoy-listener" ./cmd/listener && go build -o "$work/dispatch" ./cmd/dispatch)
 (cd "$root/packages/dispatch" && bun run build:web >"$evidence/logs/build-web.log" 2>&1) || fail "the SPA did not build; see $evidence/logs/build-web.log"
@@ -214,7 +228,9 @@ docker run -d --name "$pg_container" --cpus 2 --memory 2g --mount type=tmpfs,des
   -p "127.0.0.1::5432" mirror.gcr.io/pgvector/pgvector@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11 >/dev/null
 pg_port=$(docker port "$pg_container" 5432/tcp | head -1 | sed 's/.*://')
 until_true 60 "Postgres to accept TCP connections" docker exec "$pg_container" pg_isready -h 127.0.0.1 -p 5432 -U dispatch -d dispatch
-docker run -d --name "$nats_container" --cpus 1 --memory 512m -p 127.0.0.1::4222 nats:2.10 -js >/dev/null
+# shellcheck source-path=SCRIPTDIR source=lib/nats-image.sh
+. "$root/scripts/e2e/lib/nats-image.sh"
+docker run -d --name "$nats_container" --cpus 1 --memory 512m -p 127.0.0.1::4222 "$nats_image" -js >/dev/null
 until_true 90 "NATS to be ready" sh -c "docker logs '$nats_container' 2>&1 | grep -q 'Server is ready'"
 nats_url="nats://127.0.0.1:$(docker port "$nats_container" 4222/tcp | head -1 | sed 's/.*://')"
 
@@ -228,12 +244,12 @@ nats_url="nats://127.0.0.1:$(docker port "$nats_container" 4222/tcp | head -1 | 
 # start_held); `env -i` clears the descriptor's variable the helper sets, so each names its own: the
 # helper hands the socket over as descriptor 3.
 start_held listener envoy_port ENVOY_LISTEN_FD -- \
-  env -i PATH="$PATH" HOME=/nonexistent ENVOY_LISTEN_FD=3 ENVOY_API_TOKEN="$(cat "$work/envoy-token")" PORT='{port}' \
+  env -i PATH="$PATH" HOME=/nonexistent LEGION_E2E_RUN="$work" ENVOY_LISTEN_FD=3 ENVOY_API_TOKEN="$(cat "$work/envoy-token")" PORT='{port}' \
   ENVOY_LISTEN_HOST=127.0.0.1 ENVOY_MACHINE_ID="legion-e2e-user-turns-$$" NATS_URLS="$nats_url" \
   "$work/envoy-listener"
 until_true 60 "the Envoy listener" listener "http://127.0.0.1:$envoy_port/v1/sessions"
 start_held dispatch dispatch_port DISPATCH_LISTEN_FD -- \
-  env -i PATH="$PATH" HOME=/nonexistent XDG_CONFIG_HOME=/nonexistent XDG_DATA_HOME=/nonexistent \
+  env -i PATH="$PATH" HOME=/nonexistent LEGION_E2E_RUN="$work" XDG_CONFIG_HOME=/nonexistent XDG_DATA_HOME=/nonexistent \
   DATABASE_URL="postgres://dispatch:dispatch@127.0.0.1:$pg_port/dispatch?sslmode=disable" \
   DISPATCH_AGENT_TOKEN="$(cat "$work/dispatch-token")" DISPATCH_LISTEN_FD=3 \
   DISPATCH_IDENTITY=header:X-Dispatch-User DISPATCH_IDENTITY_HEADER_TRUSTED=1 DISPATCH_LISTEN_HOST=127.0.0.1 DISPATCH_PORT='{port}' \
@@ -347,6 +363,10 @@ issue=$(human -X POST "http://127.0.0.1:$dispatch_port/api/v1/issues" -d '{"proj
 begin session-registers
 launch_session
 until_true 90 "the session to register with the listener" registered
+# The session's own process, by the pid its pane recorded: the later wait for it to end
+# (session_gone) holds only once this has held, so it can fail.
+recorded_pid "$work/session.pid" "$omp_exe" >/dev/null ||
+  fail "the pane's recorded process ($(cat "$work/session.pid" 2>&1)) does not run $omp_exe"
 row=$(listener "http://127.0.0.1:$envoy_port/v1/sessions" | jq -c --arg d "$session_cwd" 'first(.[] | select(.dir == $d))')
 session_id=$(jq -r .session_id <<<"$row")
 jq -e '.capabilities | index("aside") and index("btw") and index("steer")' <<<"$row" >/dev/null ||
@@ -812,14 +832,22 @@ pass
 
 offline_body="LEGION-394 $run Send while the session is down: my label for it is CHARLIE$run. What is my label?"
 begin a-send-while-the-session-is-down-fails
+# The session was SIGKILLed and the listener has dropped it, but Envoy still knows it from its
+# 30-day record, so a plain Send to it would be stored, recorded queued and accepted once the
+# session runs again. This Send asks for a session that is running now (connected_only, as the
+# live view's model and thinking switch asks), so the listener refuses the stopped session 409 and
+# stores nothing, and Dispatch records the one attempt failed with the listener's reason. The
+# forged frame of a-frame-forged-after-the-restart-naming-an-old-send-gets-a-card rests on that
+# failed attempt: Dispatch accepts a pending, sent or queued attempt and refuses a failed one.
 offline=$(human -X POST "http://127.0.0.1:$dispatch_port/api/v1/agents/$session_id/messages" -H "Idempotency-Key: offline-$run" \
-  -d "$(jq -nc --arg b "$offline_body" '{body: $b, delivery: "steer"}')")
+  -d "$(jq -nc --arg b "$offline_body" '{body: $b, delivery: "steer", connected_only: true}')")
 offline_sent=$SECONDS
 offline_id=$(jq -r .id <<<"$offline")
 note "message $offline_id: $(jq -c '.deliveries[0] | {attempt, delivery, session_id, state, error}' <<<"$offline")"
 jq -e --arg s "$session_id" '.deliveries == [.deliveries[0]] and .deliveries[0].attempt == 1 and
-  .deliveries[0].session_id == $s and .deliveries[0].state == "failed"' <<<"$offline" >/dev/null ||
-  fail "the Send made while the session is down is not one failed attempt to $session_id: $offline"
+  .deliveries[0].session_id == $s and .deliveries[0].state == "failed" and
+  .deliveries[0].error == "the session is stopped"' <<<"$offline" >/dev/null ||
+  fail "the Send made while the session is down, asking for a running session, is not one failed attempt to $session_id reading \"the session is stopped\": $offline"
 pass
 
 begin a-replay-after-restart-gets-a-card
@@ -839,7 +867,8 @@ old_forged_body="LEGION-394 $run forged after the restart: forger text."
 begin a-frame-forged-after-the-restart-naming-an-old-send-gets-a-card
 # Deep's second construction. With the listener token alone, a session forges a frame naming the
 # person's Send that never reached this session, whose attempt names it, and pi-envoy restarted.
-# Dispatch refuses its accept: the attempt failed, and it is more than a minute old.
+# Dispatch refuses its accept: the attempt failed, because that Send asked for a running session
+# and the listener refused the stopped one, and it is more than a minute old.
 wait_for=$((65 - (SECONDS - offline_sent)))
 if [ "$wait_for" -gt 0 ]; then
   note "waiting ${wait_for}s, until the Send made while the session was down is more than a minute old"
@@ -855,20 +884,24 @@ pass
 unlisted_body="LEGION-394 $run Send while the listener lists no session: my label for it is ECHO$run. What is my label?"
 unlisted_forged_body="LEGION-394 $run forged for the failed Send: forger text."
 begin a-frame-forged-for-a-failed-send-inside-the-minute-gets-a-card
-# Deep's first round-2 construction. The listener drops the session's registration, so the
-# person's Send to it fails without a frame ever leaving, and the person is shown "Failed". A frame
-# a bare bus client publishes on the session's subject inside that minute names the failed
-# attempt: Dispatch refuses to accept a failed attempt, so it stays a card.
+# Deep's first round-2 construction. The listener drops the session's registration, and the
+# person's Send to it asks for a session that is running now (connected_only): Envoy still knows
+# the session from its 30-day record, so a plain Send would be stored and recorded queued, and a
+# queued attempt is one Dispatch accepts. Asking for a running session, the Send is refused 409
+# without a frame ever leaving, its attempt fails with the listener's reason, and the person is
+# shown "Failed". A frame a bare bus client publishes on the session's subject inside that minute
+# names the failed attempt: Dispatch refuses to accept a failed attempt, so it stays a card.
 listener -X DELETE "http://127.0.0.1:$envoy_port/v1/sessions/$session_id" >/dev/null
 until_true 30 "the listener to drop the session" unlisted
 unlisted_send=$(human -X POST "http://127.0.0.1:$dispatch_port/api/v1/agents/$session_id/messages" -H "Idempotency-Key: unlisted-$run" \
-  -d "$(jq -nc --arg b "$unlisted_body" '{body: $b, delivery: "steer"}')")
+  -d "$(jq -nc --arg b "$unlisted_body" '{body: $b, delivery: "steer", connected_only: true}')")
 unlisted_sent=$SECONDS
 unlisted_id=$(jq -r .id <<<"$unlisted_send")
 note "message $unlisted_id: $(jq -c '.deliveries[0] | {attempt, delivery, session_id, state, error}' <<<"$unlisted_send")"
 jq -e --arg s "$session_id" '.deliveries == [.deliveries[0]] and .deliveries[0].attempt == 1 and
-  .deliveries[0].session_id == $s and .deliveries[0].state == "failed"' <<<"$unlisted_send" >/dev/null ||
-  fail "the Send to a session the listener does not list is not one failed attempt to $session_id: $unlisted_send"
+  .deliveries[0].session_id == $s and .deliveries[0].state == "failed" and
+  .deliveries[0].error == "the session is stopped"' <<<"$unlisted_send" >/dev/null ||
+  fail "the Send to a session the listener does not list, asking for a running session, is not one failed attempt to $session_id reading \"the session is stopped\": $unlisted_send"
 unlisted_cards=$(cards "$unlisted_forged_body")
 forge_on_bus "$unlisted_id" "$unlisted_forged_body" "forged-failed-$run"
 forged_after=$((SECONDS - unlisted_sent))

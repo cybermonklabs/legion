@@ -67,7 +67,7 @@ while [ $# -gt 0 ]; do
     shift 2
     ;;
   --omp)
-    [ $# -ge 2 ] && [ -n "$2" ] || refuse "--omp needs a value: the mise tool spec of the Oh My Pi to run (github:sjawhar/oh-my-pi@<version>)"
+    [ $# -ge 2 ] && [ -n "$2" ] || refuse "--omp needs a value: the mise tool spec of the Oh My Pi to run (github:cybermonklabs/oh-my-pi@<version>)"
     omp_spec=$2
     shift 2
     ;;

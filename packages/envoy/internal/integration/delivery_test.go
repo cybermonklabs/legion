@@ -49,12 +49,12 @@ func setupTestEnv(t *testing.T, options ...testEnvOption) *testEnv {
 	t.Cleanup(client.Close)
 
 	// Set up interest registry (NATS KV)
-	registry, err := store.Open(client.Conn, store.WithReplicas(1))
+	registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("failed to create registry: %v", err)
 	}
 
-	sessions, err := session.OpenSessionRegistry(client.Conn, session.WithSessionReplicas(1), session.WithSessionTTL(opts.sessionTTL))
+	sessions, err := session.OpenSessionRegistry(t.Context(), client.Conn, session.WithSessionReplicas(1), session.WithSessionTTL(opts.sessionTTL))
 	if err != nil {
 		t.Fatalf("failed to create session registry: %v", err)
 	}
@@ -70,7 +70,7 @@ func setupTestEnv(t *testing.T, options ...testEnvOption) *testEnv {
 // registeredSubjects is what a registration stores as the session's topics: its own agent subject
 // and each topic it follows.
 func registeredSubjects(sessionID string, topics []string) []string {
-	return append([]string{contracts.AgentSubject(sessionID)}, topics...)
+	return append([]string{contracts.LegacyAgentSubject(sessionID)}, topics...)
 }
 
 // registerInterest subscribes interest in the KV store (envoy_interests bucket).

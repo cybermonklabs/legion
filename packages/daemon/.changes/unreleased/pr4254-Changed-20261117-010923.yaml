@@ -1,0 +1,5 @@
+kind: Changed
+body: The notice publisher and the controller liveness probe send and read the Envoy listener's bodies as the listener's own types (`github.com/sjawhar/envoy/listenerwire`), so a field the listener changes reaches them through the compiler rather than through a copy. A notice publish no longer sends an empty `dedupe_key`.
+time: 2026-11-17T01:09:23.689133991Z
+custom:
+    Issue: pr4254

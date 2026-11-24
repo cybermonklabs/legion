@@ -44,6 +44,7 @@ func editAdviceDocument(t *testing.T, handler http.Handler, artifactID, markdown
 // it held open is what the design-gate list beside it answers. The edit after it says nothing:
 // that approval was already stale, and the second edit superseded none.
 func TestDocumentEditAdviceNamesTheApprovalItSuperseded(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	createAdviceProject(t, handler, "GATE")
 	spec := "# Transport\n\nThe design, as approved.\n"
@@ -66,10 +67,38 @@ func TestDocumentEditAdviceNamesTheApprovalItSuperseded(t *testing.T) {
 	}
 }
 
+// A plan review's approval, recorded through /plan-reviews, goes stale like a person's: the plan
+// edit that supersedes it reports it, named by the review's session. No request for a person's
+// approval restores a plan's approval (Dispatch refuses one on any plan, PLAN_APPROVED_BY_REVIEW,
+// whoever approved it), so the client names `dispatch plan-approve` rather than
+// `dispatch request-approval` for a plan, which it reads from the document's role.
+func TestPlanEditAdviceNamesThePlanReviewsApprovalItSuperseded(t *testing.T) {
+	t.Parallel()
+	handler := newTestHandler(t)
+	createAdviceProject(t, handler, "PLANGATE")
+	spec := "# Transport\n\nThe design.\n"
+	issue := createAdviceIssue(t, handler, "PLANGATE", "Reviewed plan", &spec)
+	plan := uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "plan.md", "# Plan\n\nThe plan, as reviewed.\n")
+	recorded := sessionRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+plan.Artifact.ID+"/plan-reviews",
+		map[string]any{"actor": adviceSessionActor("session-plan-review"), "version": 1})
+	if recorded.Code != http.StatusCreated {
+		t.Fatalf("record the plan review: status=%d body=%s", recorded.Code, recorded.Body.String())
+	}
+
+	advice := editAdviceDocument(t, handler, plan.Artifact.ID, "A step the review never read.")
+	superseded := advice.SupersededApproval
+	if superseded == nil || superseded.ApprovedVersion != 1 || superseded.Version != 2 ||
+		superseded.ApprovedBy != "session-plan-review" {
+		t.Fatalf("plan edit superseded_approval = %#v, want version 2 superseding the plan review's "+
+			"approval of 1 by session-plan-review", superseded)
+	}
+}
+
 // The negative that keeps the warning worth reading: a document nobody approved, and one whose
 // newest review requested changes, each raise nothing. A changes request had already closed the
 // gate, and its reviewer said why.
 func TestDocumentEditAdviceSupersedesNoApprovalWhenThereIsNone(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	createAdviceProject(t, handler, "NOGATE")
 	spec := "# Draft\n\nNobody has approved this.\n"
@@ -92,6 +121,7 @@ func TestDocumentEditAdviceSupersedesNoApprovalWhenThereIsNone(t *testing.T) {
 // An upload that replaces an approved document supersedes its approval exactly as an edit does:
 // this route always writes a version, so a replacement of an approved spec closes its gate too.
 func TestDocumentUploadAdviceNamesTheApprovalItSuperseded(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	createAdviceProject(t, handler, "UPGATE")
 	spec := "# Transport\n\nThe design, as approved.\n"
@@ -101,6 +131,7 @@ func TestDocumentUploadAdviceNamesTheApprovalItSuperseded(t *testing.T) {
 	replaced := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]any{
 		"actor": adviceSessionActor("session-editor"),
 		"name":  "spec.md", "content": "# Transport\n\nThe design, rewritten.\n",
+		"precondition": uploadBase(t, handler, issue.PrimaryArtifactID),
 	})
 	advice := adviceFromResponse(t, replaced.Code, replaced.Body.String())
 	superseded := advice.SupersededApproval
@@ -116,6 +147,7 @@ func TestDocumentUploadAdviceNamesTheApprovalItSuperseded(t *testing.T) {
 // artifact.approved event reopens the gate. The rows are a real document's and a real person's
 // approval; the version argument stands for the version each write stored.
 func TestNewestReviewAsApprovalReportsOnlyTheVersionItSuperseded(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	createAdviceProject(t, handler, "RULE")
 	spec := "# Rule\n\nApproved once.\n"
@@ -150,6 +182,7 @@ func TestNewestReviewAsApprovalReportsOnlyTheVersionItSuperseded(t *testing.T) {
 // approval of the version it stored commits after it with an earlier created_at - and reading by
 // created_at there reports a gate the write did not close.
 func TestNewestReviewAsApprovalReadsTheOrderTheReviewsCommittedIn(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	createAdviceProject(t, handler, "ORDER")
 	spec := "# Order\n\nApproved once.\n"
@@ -185,6 +218,7 @@ func newestApprovalOf(t *testing.T, database *store.Store, artifactID string, ve
 // A project document's edit carries no issue state, so its whole advice is the document report:
 // the approval it superseded rides it there too, beside the block count.
 func TestProjectDocumentEditAdviceCarriesTheApprovalItSuperseded(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	createAdviceProject(t, handler, "PROJGATE")
 	upload := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects/PROJGATE/artifacts", map[string]string{

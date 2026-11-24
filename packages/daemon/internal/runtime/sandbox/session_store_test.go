@@ -16,9 +16,12 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/shim"
 )
 
-// The two session stores a runtime takes as a test names them: the providers Secret key the
-// postgres store's URL lives under, and the Cloud SQL instance, database and IAM login the
-// cloudsql-iam store signs in with.
+// The four session stores a runtime takes as a test names them: the providers Secret key the
+// postgres store's URL lives under; the Cloud SQL instance, database and IAM login the
+// cloudsql-iam store signs in with; that same store signing in as the Google service account
+// the pod impersonates, whose IAM login the store's user is; and that store again, its launcher
+// impersonating the account with the session writer token of testWriterAudience in place of the
+// pod's own credentials.
 var (
 	postgresStore = ompsessions.Store{Kind: ompsessions.StorePostgres, DSNSecret: "SESSION_DSN"}
 	cloudSQLStore = ompsessions.Store{Kind: ompsessions.StoreCloudSQLIAM, Database: ompsessions.Database{
@@ -26,7 +29,21 @@ var (
 		Name:     "legion_sessions",
 		User:     "legion-sessions@example-project.iam",
 	}}
+	cloudSQLImpersonatingStore = func() ompsessions.Store {
+		store := cloudSQLStore
+		store.Database.ImpersonateServiceAccount = "legion-sessions@example-project.iam.gserviceaccount.com"
+		return store
+	}()
+	cloudSQLWriterStore = func() ompsessions.Store {
+		store := cloudSQLImpersonatingStore
+		store.Database.WriterAudience = testWriterAudience
+		return store
+	}()
 )
+
+// testWriterAudience is the tests' writer audience, a workload identity provider's full resource
+// name (ompsessions.ValidWriterAudience).
+const testWriterAudience = "//iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/legion-writers/providers/legion-cluster"
 
 // providersItems are the keys pod's providers volume projects, nil when it mounts none.
 func providersItems(pod corev1.PodSpec) []corev1.KeyToPath {
@@ -46,8 +63,12 @@ func providersItems(pod corev1.PodSpec) []corev1.KeyToPath {
 // URL into Oh My Pi's environment; the image probe mounts the key too, so a Secret that lacks it
 // refuses boot. Under cloudsql-iam no pod and no probe mounts a session key at all: the file is the
 // generation's own, written beside the socket the pod's one launcher proxies to the instance for
-// that generation of that role, and the launcher is told the instance, the database and the login.
-// The image probe tells its Oh My Pi nothing of the store under either.
+// that generation of that role, and the launcher is told the instance, the database and the login,
+// then the service account it impersonates where the store names one, then the writer audience it
+// impersonates that account with where the store names one. A store that names neither tells the
+// launcher no such flag at all: an empty one would change the command of every pod a deployment
+// that impersonates nobody already runs. The image probe tells its Oh My Pi nothing of the store
+// under any of them.
 func TestASessionDatabaseIsWhereEveryRoleKeepsItsSession(t *testing.T) {
 	projection := corev1.KeyToPath{Key: "SESSION_DSN", Path: "OMP_SESSION_SQL_DSN"}
 	proxyFlags := []string{
@@ -55,17 +76,27 @@ func TestASessionDatabaseIsWhereEveryRoleKeepsItsSession(t *testing.T) {
 		"--session-database", cloudSQLStore.Database.Name,
 		"--session-user", cloudSQLStore.Database.User,
 	}
+	impersonatingFlags := slices.Concat(proxyFlags, []string{
+		"--session-impersonate-service-account", cloudSQLImpersonatingStore.Database.ImpersonateServiceAccount,
+	})
+	writerFlags := slices.Concat(impersonatingFlags, []string{"--session-writer-audience", testWriterAudience})
+	databaseFile := func(g uint64) string { return generationDir(g) + "/OMP_SESSION_SQL_DSN" }
 	for _, tc := range []struct {
+		name  string
 		store ompsessions.Store
 		// dsnFile is the URL file every generation of this store is pointed at; projected is
-		// whether the providers volume carries the session key.
+		// whether the providers volume carries the session key; proxy is the run of flags the
+		// pod's launcher carries, in order, nil where it must carry none of the three.
 		dsnFile   func(generation uint64) string
 		projected bool
+		proxy     []string
 	}{
-		{store: postgresStore, dsnFile: func(uint64) string { return ProvidersDir + "/OMP_SESSION_SQL_DSN" }, projected: true},
-		{store: cloudSQLStore, dsnFile: func(g uint64) string { return generationDir(g) + "/OMP_SESSION_SQL_DSN" }},
+		{name: "postgres", store: postgresStore, dsnFile: func(uint64) string { return ProvidersDir + "/OMP_SESSION_SQL_DSN" }, projected: true},
+		{name: "cloudsql-iam", store: cloudSQLStore, dsnFile: databaseFile, proxy: proxyFlags},
+		{name: "cloudsql-iam impersonating a service account", store: cloudSQLImpersonatingStore, dsnFile: databaseFile, proxy: impersonatingFlags},
+		{name: "cloudsql-iam impersonating it with the writer token", store: cloudSQLWriterStore, dsnFile: databaseFile, proxy: writerFlags},
 	} {
-		t.Run(string(tc.store.Kind), func(t *testing.T) {
+		t.Run(tc.name, func(t *testing.T) {
 			opts := testOptions()
 			opts.SessionStore = tc.store
 			r, err := configure(opts)
@@ -84,10 +115,21 @@ func TestASessionDatabaseIsWhereEveryRoleKeepsItsSession(t *testing.T) {
 					// The launcher's flags are the pod's one container's, an issue pod's `roles`
 					// serving every workflow role or the controller's own, which is the container
 					// workerOf read.
-					wantFlags := tc.store.Kind == ompsessions.StoreCloudSQLIAM
 					podLauncher := containerNamed(t, pod, worker.Name)
-					if got := containsSequence(podLauncher.Command, proxyFlags); got != wantFlags {
-						t.Errorf("the pod's launcher carries the session proxy's flags: %t (%q), want %t", got, podLauncher.Command, wantFlags)
+					wantFlags, flags := tc.proxy != nil, tc.proxy
+					if !wantFlags {
+						flags = proxyFlags
+					}
+					if got := containsSequence(podLauncher.Command, flags); got != wantFlags {
+						t.Errorf("the pod's launcher carries the session proxy's flags %q: %t (%q), want %t", flags, got, podLauncher.Command, wantFlags)
+					}
+					impersonates := tc.store.Database.ImpersonateServiceAccount != ""
+					if got := slices.Contains(podLauncher.Command, "--session-impersonate-service-account"); got != impersonates {
+						t.Errorf("the pod's launcher carries --session-impersonate-service-account: %t (%q), want %t", got, podLauncher.Command, impersonates)
+					}
+					writes := tc.store.Database.WriterAudience != ""
+					if got := slices.Contains(podLauncher.Command, "--session-writer-audience"); got != writes {
+						t.Errorf("the pod's launcher carries --session-writer-audience: %t (%q), want %t", got, podLauncher.Command, writes)
 					}
 					dsnFile := tc.dsnFile(spec.Generation)
 					if env["OMP_SESSION_STORAGE"] != "sql" || env["OMP_SESSION_SQL_DSN_FILE"] != dsnFile {
@@ -96,10 +138,11 @@ func TestASessionDatabaseIsWhereEveryRoleKeepsItsSession(t *testing.T) {
 					}
 					// The agent reads the URL at the path its own namespaces show it; the
 					// container holds the volume behind it at the fixed path in the controller's
-					// pod and under the role's own directory in an issue pod, which role-init
-					// binds back to the fixed path.
+					// single-role form, and under the role's own directory where the launcher runs
+					// the roles-dir form — an issue pod's, and the controller's under a writer
+					// audience — which role-init binds back to the fixed path.
 					held := dsnFile
-					if worker.Name == runtime.IssuePodContainer {
+					if _, rolesDir := flagValue(podLauncher.Command, "--roles-dir"); rolesDir {
 						held = strings.Replace(dsnFile, LauncherPrivateDir, roleDir(spec.Role)+"/private", 1)
 					}
 					switch tc.store.Kind {
@@ -191,14 +234,65 @@ func withoutSessionKey(pod *corev1.Pod) *corev1.Pod {
 	return out
 }
 
+// A pod's session store is read back from its own spec (heldSessionStore), and under cloudsql-iam
+// from the session proxy's flags its launcher carries. The kind comes from the three every such
+// launcher is told, the instance, the database and the login, so a pod whose launcher impersonates
+// a service account is a cloudsql-iam pod exactly as one that signs in as itself is: the reap guard
+// and a kept launch, which read the kind alone, take the two alike. The account follows the three
+// where the pod carries it, and the writer audience follows the account, so the flags read back
+// name each, and a change of either is a change of store — in the controller's pod too, whose
+// launcher runs the roles-dir form under a writer audience.
+func TestAPodsSessionStoreIsReadFromItsThreeRequiredFlags(t *testing.T) {
+	three := []string{
+		"--session-instance", cloudSQLStore.Database.Instance,
+		"--session-database", cloudSQLStore.Database.Name,
+		"--session-user", cloudSQLStore.Database.User,
+	}
+	for _, tc := range []struct {
+		name  string
+		store ompsessions.Store
+		proxy []string
+	}{
+		{"signing in as the pod itself", cloudSQLStore, three},
+		{"impersonating a service account", cloudSQLImpersonatingStore, slices.Concat(three, []string{
+			"--session-impersonate-service-account", cloudSQLImpersonatingStore.Database.ImpersonateServiceAccount,
+		})},
+		{"impersonating a service account with the writer token", cloudSQLWriterStore, slices.Concat(three, []string{
+			"--session-impersonate-service-account", cloudSQLWriterStore.Database.ImpersonateServiceAccount,
+			"--session-writer-audience", testWriterAudience,
+		})},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			opts := testOptions()
+			opts.SessionStore = tc.store
+			r, err := configure(opts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for name, spec := range map[string]runtime.SpawnSpec{"an issue pod": workerSpec(t), "the controller's pod": controllerSpec(t)} {
+				t.Run(name, func(t *testing.T) {
+					kind, key, proxy := heldSessionStore(podOf(t, r, spec))
+					if kind != ompsessions.StoreCloudSQLIAM || key != "" || !slices.Equal(proxy, tc.proxy) {
+						t.Errorf("heldSessionStore = %s, key %q, proxy %q; want %s, no key, proxy %q",
+							kind, key, proxy, ompsessions.StoreCloudSQLIAM, tc.proxy)
+					}
+				})
+			}
+		})
+	}
+}
+
 // A pod carries its whole session store for its life — the providers volume's projection under
 // postgres, its launchers' proxy flags under cloudsql-iam — so a pod created under any other store
 // than a pod created now would get has drifted, and its update round replaces it: its next
 // generation would name a URL file the pod has no way to produce, and the workers in it are asked
-// to push their work before it is ended. A change of kind in either direction counts, and so does
-// a changed key, or a changed instance, database or login under the same kind. A pod an earlier
-// release created under the file store, which configure now refuses, has drifted under either
-// database store.
+// to do the steps of their update message (supervise.UpdateTask) before it is ended. A change of
+// kind in either direction counts, and so does a changed key, or a changed instance, database or
+// login under the same kind, or a change of the service account the launcher impersonates: one
+// named where the pod has none, none where it has one, or another one — the row for another
+// account keeps the login, so the account is all that differs. Two cloudsql-iam pods that name no
+// account, or the same one, have not drifted. A pod an earlier release created under the file
+// store, which configure now refuses, has drifted under either database store.
 func TestAPodUnderAnotherSessionStoreHasDrifted(t *testing.T) {
 	runtimeFor := func(store ompsessions.Store) *Runtime {
 		t.Helper()
@@ -213,11 +307,15 @@ func TestAPodUnderAnotherSessionStoreHasDrifted(t *testing.T) {
 	postgres := runtimeFor(postgresStore)
 	otherKey := runtimeFor(ompsessions.Store{Kind: ompsessions.StorePostgres, DSNSecret: "OTHER_SESSION_DSN"})
 	cloudSQL := runtimeFor(cloudSQLStore)
+	impersonating := runtimeFor(cloudSQLImpersonatingStore)
 	moved := func(edit func(*ompsessions.Database)) *Runtime {
 		database := cloudSQLStore.Database
 		edit(&database)
 		return runtimeFor(ompsessions.Store{Kind: ompsessions.StoreCloudSQLIAM, Database: database})
 	}
+	otherAccount := moved(func(d *ompsessions.Database) {
+		d.ImpersonateServiceAccount = "legion-sessions-next@example-project.iam.gserviceaccount.com"
+	})
 	pod := func(r *Runtime) *corev1.Pod { return &corev1.Pod{Spec: podOf(t, r, workerSpec(t))} }
 	fileStorePod := withoutSessionKey(pod(postgres))
 	for name, tc := range map[string]struct {
@@ -225,16 +323,20 @@ func TestAPodUnderAnotherSessionStoreHasDrifted(t *testing.T) {
 		pod   *corev1.Pod
 		moved bool
 	}{
-		"a file-store pod under postgres":            {postgres, fileStorePod, true},
-		"a postgres pod under another key":           {otherKey, pod(postgres), true},
-		"a file-store pod under cloudsql-iam":        {cloudSQL, fileStorePod, true},
-		"a postgres pod under cloudsql-iam":          {cloudSQL, pod(postgres), true},
-		"a cloudsql-iam pod under postgres":          {postgres, pod(cloudSQL), true},
-		"a cloudsql-iam pod under another instance":  {moved(func(d *ompsessions.Database) { d.Instance = "example-project:us-central1:other-instance" }), pod(cloudSQL), true},
-		"a cloudsql-iam pod under another database":  {moved(func(d *ompsessions.Database) { d.Name = "legion_sessions_next" }), pod(cloudSQL), true},
-		"a cloudsql-iam pod under another login":     {moved(func(d *ompsessions.Database) { d.User = "legion-sessions-next@example-project.iam" }), pod(cloudSQL), true},
-		"a postgres pod under the same key":          {postgres, pod(postgres), false},
-		"a cloudsql-iam pod under the same database": {cloudSQL, pod(cloudSQL), false},
+		"a file-store pod under postgres":                 {postgres, fileStorePod, true},
+		"a postgres pod under another key":                {otherKey, pod(postgres), true},
+		"a file-store pod under cloudsql-iam":             {cloudSQL, fileStorePod, true},
+		"a postgres pod under cloudsql-iam":               {cloudSQL, pod(postgres), true},
+		"a cloudsql-iam pod under postgres":               {postgres, pod(cloudSQL), true},
+		"a cloudsql-iam pod under another instance":       {moved(func(d *ompsessions.Database) { d.Instance = "example-project:us-central1:other-instance" }), pod(cloudSQL), true},
+		"a cloudsql-iam pod under another database":       {moved(func(d *ompsessions.Database) { d.Name = "legion_sessions_next" }), pod(cloudSQL), true},
+		"a cloudsql-iam pod under another login":          {moved(func(d *ompsessions.Database) { d.User = "legion-sessions-next@example-project.iam" }), pod(cloudSQL), true},
+		"a cloudsql-iam pod without an account under one": {impersonating, pod(cloudSQL), true},
+		"a cloudsql-iam pod with an account under none":   {cloudSQL, pod(impersonating), true},
+		"a cloudsql-iam pod under another account":        {otherAccount, pod(impersonating), true},
+		"a postgres pod under the same key":               {postgres, pod(postgres), false},
+		"a cloudsql-iam pod under the same database":      {cloudSQL, pod(cloudSQL), false},
+		"a cloudsql-iam pod under the same account":       {impersonating, pod(impersonating), false},
 	} {
 		t.Run(name, func(t *testing.T) {
 			moved := tc.r.driftedInPod(tc.pod, workerSpec(t).Role)

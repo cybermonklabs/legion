@@ -1,0 +1,15 @@
+kind: Added
+body: |-
+  Broker: the new optional setting `BROKER_JUDGE_MODEL_ACCOUNT` names a Google service account.
+  With it set, the model judge presents that account's identity token, which the broker mints at
+  IAM Service Account Credentials `generateIdToken` with the pod's own access token. A broker
+  whose pods run as a bare Workload Identity principal, which gets no identity token from the
+  metadata server, can now run the judge. With it unset, the judge reads the metadata server's
+  identity token as before. A mint that fails hands the request to its person with an error that
+  names the account and the audience, and the judge never falls back to the metadata server's
+  identity token. The `model judge state=on` boot line names the identity: `identity=metadata` or
+  the account. Two new log lines: INFO `broker: a pending request's record is signed for another
+  broker address; it is ended, and its session's new request replaces it` (`request`,
+  `record_id`, `new_request`, `enrollment`), and WARN `broker: a grant's approval chain does
+  not verify; it releases nothing` (`grant`, `record_id`, `enrollment`, `at` of `values`,
+  `airlock` or `reuse`, `reason`).

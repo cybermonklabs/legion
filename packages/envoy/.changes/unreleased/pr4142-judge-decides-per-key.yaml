@@ -1,0 +1,21 @@
+kind: Changed
+body: |-
+    Who decides a request is a setting of its keys. A key whose airlock rules entry gives the model
+    judge seconds, and that carries no `admin` tag, is the judge's: a request whose every key that
+    needs a decision is such a key is held for the judge for two minutes (`requests.judge_until`),
+    on no person's list, with `judge_deciding: true` and no `approve_url`, a read-only approval
+    page, and `403 JUDGE_DECIDES` from the decision routes. A key the session gets at once may
+    stand beside them; the judge decides nothing of it and its grant releases it too. The judge
+    grants the request or refuses it, and a refusal is final: the agent reads `the model judge
+    refused this request: <reason>. This request will not be granted. Tell whoever gave you this
+    work.`, and `agent-secrets` exits 77. A request the judge decides gets at most the shortest
+    judge seconds of the keys it decides, and that when it names no lifetime, before any max-grant
+    tag is read; a request a person decides keeps the ordinary lifetime rules. A request the judge
+    cannot decide goes to its person once, as an ordinary card. No request has to cite
+    anything: the judge reads the Dispatch issue and ask a reason points at as data. A rules entry
+    may carry `guidance`, the key owner's instruction to the judge, which ends no grant when it
+    changes, and may bind no host, saying only who decides the key. The model answers `grant` or
+    `deny`. `GET /v1/settings` answers `judge_keys` (seconds and guidance), and `agent-secrets
+    secret show` prints `decides:` and `guidance:`. A broker from before this change refuses a
+    rules file that uses `guidance` or an entry with no host, so roll the rules file back before
+    rolling the broker back past this release.

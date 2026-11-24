@@ -3,11 +3,13 @@
  * A stand-in for the Legion daemon that serves exactly the routes a phase worker's `legion` tool
  * hits in a skill scenario: the worker's claim registration (`claims/register`, `claims/ready`,
  * the daemon's claim routes the plugin boots through), the grant the tool mints in-process before
- * each of its own daemon calls (`grants`), the issue's record (`GET /legion/v1/state`, the tool's
- * `read_record`) and the phase completion (`handoff/complete`, the tool's `handoff_complete`, the
- * one route here that redeems a grant). No credential route and no grant file: a pane's `gh` and
- * `git` read the rig's token from the gh files under its `GH_CONFIG_DIR`, which `daemon-pane.go`
- * writes, and no agent runs `legion` from bash.
+ * each of its own daemon calls (`grants`), the issue's record (`GET /legion/v1/issues/<key>/record`,
+ * the tool's `read_record` and the reminder's own check, with `GET /legion/v1/state` beside it),
+ * the health route (`GET /healthz`, which the tool's `read_build` reads for the contract this
+ * stand-in states on it) and the phase completion (`handoff/complete`, the tool's
+ * `handoff_complete`, the one route here that redeems a grant). No credential route and no grant
+ * file: a pane's `gh` and `git` read the rig's token from the gh files under its `GH_CONFIG_DIR`,
+ * which `daemon-pane.go` writes, and no agent runs `legion` from bash.
  *
  * Every request and response body is the Go daemon's (`@legion/contracts/legion-api`): the
  * tool's grant request, its completion, and the state document. The grant rule mirrors the real
@@ -36,8 +38,11 @@ import { isLegionRole, roleToken } from "@legion/contracts";
 import {
   LegionGrantRequest,
   LegionHandoffCompleteRequest,
+  LegionHealthResponse,
   LegionStateResponse,
 } from "@legion/contracts/legion-api";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import pkg from "../../package.json";
 import { DAEMON_MODULE, runDaemonPane } from "./daemon-pane";
 
 const GRANT_TTL_MS = 60_000;
@@ -62,7 +67,9 @@ if (!isLegionRole(role)) {
 /** Encoded exactly as the daemon encodes it (`legion-<project>-<key>-<role>`, lower-cased),
  * since the worker claims this token on the real Envoy and Envoy rejects uppercase. */
 const ROLE_TOKEN = roleToken(project, issue, role);
-const SESSION_SECRET = "rig-secret";
+/** The worker's registration secret: random, as the daemon's is, since the pane holds it and
+ * scrubs it from every line it prints (`@legion/contracts/held-secrets`). */
+const SESSION_SECRET = fixtureSecret("reg");
 
 const startedAt = new Date().toISOString();
 /** The phase the role works and the word of the handoff record it ends with, empty when none. */
@@ -71,7 +78,7 @@ const [PHASE = "", HANDOFF_WORD = ""] = runDaemonPane(DAEMON_MODULE, ["phase", r
  * (`workflow.RoleFor`, through daemon-pane.go), on the rig's one repository. `capabilities` is the
  * deployment's capability report, `strandedClaims` the claims nothing will wake, `heldOutboxRows`
  * the lifecycle rows held behind their issues' running ones, `consumers` the lag of the daemon's
- * durable consumers and `repositories` the project's mapping, each of which the reader requires;
+ * durable consumers and `repositories` the repositories the live records name, each of which the reader requires;
  * the rig has no deployment to report on, its one claim runs, it has no outbox and no NATS, so
  * the first four are the empty lists the daemon's MarshalJSON emits when there is none.
  * `wakesWaiting`, the wakes the pacing holds until their turn, is optional to the reader; the rig
@@ -99,15 +106,23 @@ const STATE = LegionStateResponse.parse({
   wakesWaiting: [],
   capabilities: [],
   repositories: {
-    owners: ["sjawhar"],
-    mapped: [{ repo: "sjawhar/legion-smoke", default: true }],
-    refused: [],
+    live: [{ repo: "sjawhar/legion-smoke", apps: { implement: true, review: true } }],
     withoutWebhookApp: [],
     caches: [],
   },
   settings: { review_round_cap: 3, worker_boot_timeout_seconds: 120 },
   consumers: [],
 });
+
+/** `GET /healthz`: that this stand-in is serving, and the project its state names, which is the
+ * one word the controller's boot check reads. The contract goes in the header beside it
+ * (below), where the tool's `read_build` reads it. */
+const HEALTH = LegionHealthResponse.parse({ status: "ok", project });
+
+/** The response header the daemon states its own contract in
+ * (`packages/daemon/internal/api/server.go`). The number is this plugin build's own
+ * `legion.daemonApiVersion`, which is the contract a daemon this build pairs with speaks. */
+const DAEMON_CONTRACT_HEADER = "Legion-Daemon-Contract";
 
 interface LogLine {
   readonly at: string;
@@ -232,6 +247,43 @@ function handle(path: string, body: unknown): { response: Response; mintedGrantI
   }
 }
 
+/** `GET /legion/v1/issues/<key>/record`, and the key it names. */
+const RECORD_ROUTE = /^\/legion\/v1\/issues\/([^/]+)\/record$/;
+
+/** The answer to one request: the POST routes `handle` serves, then the three GET routes, then
+ * the 404 every other request gets. */
+function answer(
+  method: string,
+  path: string,
+  body: unknown
+): { response: Response; mintedGrantId?: string } {
+  if (method === "POST") return handle(path, body);
+  if (method === "GET") {
+    if (path === "/healthz") {
+      return {
+        response: Response.json(HEALTH, {
+          headers: { [DAEMON_CONTRACT_HEADER]: String(pkg.legion.daemonApiVersion) },
+        }),
+      };
+    }
+    if (path === "/legion/v1/state") return { response: json(200, STATE) };
+    const record = RECORD_ROUTE.exec(path);
+    if (record !== null) {
+      const held = STATE.issues[decodeURIComponent(record[1] ?? "")];
+      return {
+        response:
+          held === undefined
+            ? json(404, {
+                code: "RECORD_NOT_FOUND",
+                error: `The daemon has no record for ${record[1]}`,
+              })
+            : json(200, held),
+      };
+    }
+  }
+  return { response: json(404, { error: `no route for ${method} ${path}` }) };
+}
+
 const server = Bun.serve({
   hostname: "127.0.0.1",
   port: Number(portArg),
@@ -245,12 +297,7 @@ const server = Bun.serve({
         body = undefined;
       }
     }
-    const { response, mintedGrantId } =
-      request.method === "POST"
-        ? handle(path, body)
-        : request.method === "GET" && path === "/legion/v1/state"
-          ? { response: json(200, STATE) }
-          : { response: json(404, { error: `no route for ${request.method} ${path}` }) };
+    const { response, mintedGrantId } = answer(request.method, path, body);
     const line: LogLine = {
       at: new Date().toISOString(),
       path,

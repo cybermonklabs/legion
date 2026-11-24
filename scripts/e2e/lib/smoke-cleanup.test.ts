@@ -133,7 +133,7 @@ const guard4b = nameMissingHelpers(stage4bScript, rig, workflowLib);
 const guard3 = nameMissingHelpers(stage3Script, rig, workflowLib);
 const libs = `. "$root/scripts/e2e/lib/rig.sh"
 . "$root/scripts/e2e/lib/workflow.sh"
-stop_tree() { :; }; stop_pid() { :; }; run_processes() { :; }
+stop_tree() { :; }; stop_pid() { :; }; run_processes() { :; }; stop_marked_processes() { :; }
 proof_human='sjawhar-agent[bot]'`;
 
 // Stage 4b's driver from the start of `done`'s checkpoint: tree 1 merged, the proof human
@@ -217,9 +217,9 @@ interface RunResult {
   branches: string[];
   pr: (n: number) => PullRequest["state"] | undefined;
 }
-// What a merged proof pull request leaves on the smoke main: its retro learning, and a `.legion/`
-// handoff only a merge from before handoffs moved to the Dispatch issue carries, which the cleanup
-// still removes (smoke_main_leftovers).
+// What an earlier merged proof pull request can leave on the smoke main: a retro learning, from a
+// merge made before retro stopped committing, and a `.legion/` handoff only a merge from before
+// handoffs moved to the Dispatch issue carries, which the cleanup still removes (smoke_main_leftovers).
 const leftovers = [".legion/LEGION-1/plan.json", "docs/solutions/testing/smoke.md"];
 
 let runs = 0;

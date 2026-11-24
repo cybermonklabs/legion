@@ -25,10 +25,10 @@ func ChildCycleReason(child, ancestor string) string {
 	return fmt.Sprintf("%s is blocked_by %s, which stands above it on its own Dispatch parent chain, so neither can start until a person takes that link off", child, ancestor)
 }
 
-// ChildrenFirstNotice is what the tree's architect is told when a parent's own first phase begins
-// to wait for its children: the parent, each open child with the Dispatch status that holds it,
-// what ends the wait, and each cycle among them. It is told once per issue and run of its tree —
-// the mark's key is the issue, its tree and that tree's root generation (admit's
+// ChildrenFirstNotice is what the architect that owns a parent is told when the parent's own first
+// phase begins to wait for its children: the parent, each open child with the Dispatch status that
+// holds it, what ends the wait, and each cycle among them. It is told once per issue and run of
+// its tree — the mark's key is the issue, its tree and that tree's root generation (admit's
 // tellChildrenFirst) — so a child filed later during one wait tells nobody again, while a
 // re-admitted tree, whose architect writes its spec anew, and a sub-parent handed over to a tree
 // of its own are told anew.
@@ -43,15 +43,17 @@ func ChildrenFirstNotice(wait record.ChildWait) record.Notice {
 	}
 	reason := fmt.Sprintf("%s starts no phase of its own while Dispatch shows an open child under it: %s. "+
 		"Each one must be released and run until it leaves the workflow, closed, moved to icebox, or moved out from under %s, to another parent or to none; %s starts its own first phase when the last of them has. "+
-		"Move a child to icebox "+parkRule+", and cite that reason in a comment on the child. "+
+		"A child you released and a child you did not release leave by the same status write. %s "+
 		"A released child, a held one included, stays under %s, because this wait ends when that child leaves the workflow. "+
 		"Move out from under %s only a child you have not released and that should not run now. "+
-		"Move it under another issue of the same tree that has started a phase and has not reached accepting, and never under an issue it waits on. "+
-		"After the move, ask the person on your tree's root (dispatch ask) when that child's work should run or stop: "+
-		"release it when they say to run it; when they say to stop it, close it, or move it to icebox under the rule when they say its work should wait, citing their answer. "+
-		"Hold the acceptance of the issue you moved it under, and of the root, until they answer. "+
-		"Where the tree holds no issue to move the child under, ask the person.",
-		wait.Parent, strings.Join(named, ", "), wait.Parent, wait.Parent, wait.Parent, wait.Parent)
+		"Move it under another issue you own (the root's architect owns every issue of the tree, a child's architect its own issue and the issues under it) "+
+		"that has started a phase and has not reached accepting, and never under an issue it waits on. "+
+		"After the move, have the person on your tree's root asked when that child's work should run or stop: "+
+		"the root's architect asks with dispatch ask, and a child's architect sends the question to the architect above it. "+
+		"Release it when they say to run it; when they say to stop it, close it, or move it to icebox under the rule when they say its work should wait, citing their answer. "+
+		"Until they answer, sign off neither the issue you moved it under nor any issue above it that you accept. "+
+		"Where you own no such issue to move the child under, have the person asked the same way.",
+		wait.Parent, strings.Join(named, ", "), wait.Parent, wait.Parent, record.EndChildRule, wait.Parent, wait.Parent)
 	if len(cycles) > 0 {
 		reason += " " + strings.Join(cycles, " ") + "."
 	}

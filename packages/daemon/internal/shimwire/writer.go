@@ -32,11 +32,36 @@ type Writer struct {
 // NewWriter writes frames to dst.
 func NewWriter(dst io.Writer) *Writer {
 	w := &Writer{dst: dst}
-	w.json = json.NewEncoder(&w.buf)
-	// JSON.stringify does not escape <, > or &, and a prompt message is arbitrary task text. A
-	// Go peer writes the same bytes the shipped one does.
-	w.json.SetEscapeHTML(false)
+	w.json = newFrameEncoder(&w.buf)
 	return w
+}
+
+// newFrameEncoder is the encoder every frame line is encoded with, the Writer's and FrameLen's:
+// JSON.stringify does not escape <, > or &, and a prompt message is arbitrary task text, so a Go
+// peer writes the same bytes the shipped one does.
+func newFrameEncoder(dst io.Writer) *json.Encoder {
+	encoder := json.NewEncoder(dst)
+	encoder.SetEscapeHTML(false)
+	return encoder
+}
+
+// FrameLen is the length of the line WriteFrame writes for f, its newline included, which a peer
+// reads no longer than MaxFrameBytes. It encodes f into a counter that keeps only the length, so
+// a frame is measured without a second copy of what it carries beside the encoder's own buffer.
+func FrameLen(f Frame) (int, error) {
+	var line byteCount
+	if err := newFrameEncoder(&line).Encode(f); err != nil {
+		return 0, fmt.Errorf("encode the %s frame: %w", f.FrameType(), err)
+	}
+	return int(line), nil
+}
+
+// byteCount is an io.Writer that keeps nothing of what it is written but its length.
+type byteCount int
+
+func (c *byteCount) Write(p []byte) (int, error) {
+	*c += byteCount(len(p))
+	return len(p), nil
 }
 
 // WriteFrame encodes f and writes it as one line.

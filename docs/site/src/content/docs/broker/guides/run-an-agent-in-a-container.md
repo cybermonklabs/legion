@@ -41,8 +41,9 @@ machine, and `enroll` writes the enrollment id to
 as one whose agent connects at launch, needs its launcher to create
 `$AGENT_SECRETS_KEY_DIR/enrollment.pending` before the box starts and remove it once `enroll` has
 written the id. While that file is there, and for up to 160 seconds, a call waits up to
-`AGENT_SECRETS_ENROLL_WAIT` (20 seconds by default) for the enrollment. Without it, a call made
-before enrollment fails at once.
+`AGENT_SECRETS_ENROLL_WAIT` (20 seconds by default) for the enrollment, and says on stderr that it
+waits and for which of `key.pem` and `enrollment`. Without it, a call made before enrollment fails
+at once.
 
 `enroll` waits up to 30 seconds for the helper's answer, and the helper ends its call to the
 broker after 20 seconds. If `enroll` fails with `ENROLL_OUTCOME_UNKNOWN`, or says
@@ -68,6 +69,7 @@ $ agent-secrets self
 enrollment_id: edd9a18c-41ff-46f9-8a15-bddb30f0abc3
 kind: session
 operator: ada@example.com
+projects: -
 lease_expires_at: 2026-10-03T03:39:03Z
 source: the broker AGENT_SECRETS_URL names (AWS Secrets Manager)
 $ agent-secrets DEMO_READ_TOKEN -- printenv DEMO_READ_TOKEN
@@ -89,15 +91,18 @@ A box nobody unenrolls ends anyway once `agent-secrets renew` stops. Its lease l
 
 ```console
 $ agent-secrets self
-agent-secrets self: proof invalid: not live (PROOF_INVALID); asked the broker AGENT_SECRETS_URL names (AWS Secrets Manager)
+agent-secrets self: proof invalid: not live (PROOF_INVALID) (answer <answer id>); asked the broker AGENT_SECRETS_URL names (AWS Secrets Manager)
 ```
 
-On its next run, within `BROKER_SWEEP_SECONDS`, the broker's sweep ends the
-enrollment: its grants are revoked, its pending requests are cancelled and leave the approver's
-Inbox (approving one now answers `request is already decided`), and the broker logs:
+The answer id names the broker's log line for that refusal
+([Refusals and the answer id](/legion/broker/operate/#refusals-and-the-answer-id)). On its next
+run, within `BROKER_SWEEP_SECONDS`, the broker's sweep ends the enrollment: its grants are
+revoked, its pending requests are cancelled and leave the approver's Inbox (approving one now
+answers `request is already decided`), and the broker logs one JSON line, here with its time left
+out:
 
-```text
-INFO broker sweeper: ended an enrollment whose lease lapsed enrollment_id=edd9a18c-41ff-46f9-8a15-bddb30f0abc3 kind=session runtime_id=example-box-1 slot="" lease_expired_at=2026-10-03T03:39:03.386Z grants_revoked=1 requests_cancelled=1
+```json
+{"time":"<time>","severity":"INFO","message":"broker sweeper: ended an enrollment whose lease lapsed","enrollment_id":"edd9a18c-41ff-46f9-8a15-bddb30f0abc3","kind":"session","runtime_id":"example-box-1","slot":"","lease_expired_at":"2026-10-03T03:39:03.386Z","grants_revoked":1,"requests_cancelled":1,"left_dormant":false,"handed_to":""}
 ```
 
 A lapsed lease cannot be renewed: to use the box again, start over from step 1 with a new key.

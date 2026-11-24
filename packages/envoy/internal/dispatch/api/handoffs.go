@@ -49,7 +49,7 @@ type createHandoffInput struct {
 // createHandoff records one phase handoff: POST /api/v1/issues/{key}/handoffs/{phase}. Only a
 // bearer naming its session writes one, since the Legion daemon accepts a handoff only from the
 // session that holds the phase's claim. The version is the next of the issue's phase, taken under
-// the issue's row lock, and handoff.recorded is appended in the same transaction. A handoff gets
+// the issue's owner lock, and handoff.recorded is appended in the same transaction. A handoff gets
 // no write advice and no reference edges, and its event notifies no one (events.Broker.Notify
 // wakes on a person's writes only).
 func (s *server) createHandoff(w http.ResponseWriter, r *http.Request) {

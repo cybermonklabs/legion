@@ -17,8 +17,8 @@ func TestTheMirrorTakesAChildOutFromUnderItsParent(t *testing.T) {
 	st := migratedStore(t)
 	records := NewStore()
 	inTx(t, st, func(tx pgx.Tx) {
-		must(t, records.PutDispatchIssue(ctx, tx, DispatchIssueRow{
-			Key: "LEGION-900", Project: "LEGION", Status: "todo", Parent: "LEGION-800", Seq: 5}))
+		must(t, records.PutDispatchIssue(ctx, tx, DispatchReading{Key: "LEGION-900", Project: "LEGION", Seq: 5,
+			Status: Carry("todo"), Parent: Carry("LEGION-800"), Blockers: Carry[[]string](nil)}))
 		children, err := records.DispatchChildren(ctx, tx, "LEGION", []string{"LEGION-800"})
 		if err != nil {
 			t.Fatalf("read the children of LEGION-800: %v", err)
@@ -28,8 +28,8 @@ func TestTheMirrorTakesAChildOutFromUnderItsParent(t *testing.T) {
 		}
 
 		// The person takes the parent off the child, and Dispatch reports it with no parent.
-		must(t, records.PutDispatchIssue(ctx, tx, DispatchIssueRow{
-			Key: "LEGION-900", Project: "LEGION", Status: "todo", Seq: 6}))
+		must(t, records.PutDispatchIssue(ctx, tx, DispatchReading{Key: "LEGION-900", Project: "LEGION", Seq: 6,
+			Status: Carry("todo"), Parent: Carry(""), Blockers: Carry[[]string](nil)}))
 		children, err = records.DispatchChildren(ctx, tx, "LEGION", []string{"LEGION-800"})
 		if err != nil {
 			t.Fatalf("read the children of LEGION-800: %v", err)

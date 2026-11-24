@@ -55,7 +55,7 @@ func TestMigrateFromSeveralProcessesAtOnceOnAnEmptyDatabase(t *testing.T) {
 }
 
 // A set in which two files share a version is refused whole, before the runner touches the
-// database. The runner records a migration by its version alone, so a set it accepted would apply
+// database. The runner applies every version it has not recorded, so a set it accepted would apply
 // the first file of the pair, pass over the second as already applied, and report success. Two
 // timestamped files share a version only where one author's file carries the moment another's was
 // created rather than its own; the refusal is the same, since the runner reads the identifier and

@@ -27,123 +27,32 @@ import (
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// TestMain removes the NATS server the package's tests share (testnats.Main).
-func TestMain(m *testing.M) { os.Exit(testnats.Main(m)) }
+// TestMain removes the NATS server the package's tests share (testnats.Main) and the databases
+// their pools are cloned on (storetest.Run).
+func TestMain(m *testing.M) { os.Exit(storetest.Run(func() int { return testnats.Main(m) })) }
 
-// deliveryTestPool opens a real Postgres pool from DISPATCH_TEST_DATABASE_URL, migrates it, and
-// returns it; a test that needs it skips (not fails) when the variable is unset, matching every
-// other Postgres-backed test in this module's convention. The database is the server's own and
-// outlives the run, so it is repaired before it is migrated (repairDroppedTables) and truncated
-// rather than created afresh.
+// deliveryTestPool returns the pool of a database of the test's own, with the test's context:
+// storetest.Open's clone of the template this test process migrated once, dropped after the test,
+// which skips the test (not fails it) when DISPATCH_TEST_DATABASE_URL is unset. A clone holds no
+// row another test or an earlier run wrote, so nothing is truncated or repaired first.
+//
+// The database is never the one DISPATCH_TEST_DATABASE_URL names. Migrating that one runs each
+// CREATE INDEX CONCURRENTLY there, and a concurrent build waits for every session of its own
+// database holding a snapshot older than the build's (PostgreSQL's WaitForOlderSnapshots). In CI
+// and on a shared machine that database is the server's postgres, where every other package's
+// harness creates and drops its databases, so another package's create database could hold the
+// build past its lock bound and fail whichever test migrated first (dispatch://INFRA-3904).
 func deliveryTestPool(t *testing.T) (*store.Pool, context.Context) {
 	t.Helper()
-	url := os.Getenv("DISPATCH_TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("DISPATCH_TEST_DATABASE_URL must be set to run Postgres-backed delivery tests")
-	}
-	ctx := t.Context()
-	pgxPool, err := pgxpool.New(ctx, url)
-	if err != nil {
-		t.Fatalf("pgxpool.New: %v", err)
-	}
-	t.Cleanup(pgxPool.Close)
-	pool := store.NewPool(pgxPool)
-	repairDroppedTables(t, ctx, pool)
-	st := &store.Store{Pool: pool}
-	if err := st.Migrate(ctx); err != nil {
-		t.Fatalf("Migrate: %v", err)
-	}
-	// Every delivery table is truncated before the test, not after: a failed previous run's rows
-	// (useful to inspect) are cleared by the next run that needs a clean slate, not hidden by one
-	// that crashes before its own cleanup runs. duty_passes is cleared with them: this database
-	// is the server's own and outlives the run, where storetest's clones do not, so a reconcile
-	// pass an earlier run recorded inside ReconcileInterval would make this run's pass skip for
-	// a period it did not serve (duty.Exclusive). duty_holds too: an intake an earlier test
-	// abandoned leaves its durable's hold to lapse, and this test's intake would stand by for it.
-	for _, table := range []string{"delivery_run_jobs", "delivery_runs", "delivery_pull_requests", "pull_request_heads", "branch_commits", "delivery_reconcile_progress", "delivery_settings", "duty_passes", "duty_holds"} {
-		if _, err := pool.Exec(ctx, "delete from "+table); err != nil {
-			t.Fatalf("truncate %s: %v", table, err)
-		}
-	}
-	return pool, ctx
+	return storetest.Open(t).Pool, t.Context()
 }
 
 // branchCommitsMigration is the migration that creates branch_commits, the one table a test of
 // this package drops to make a write of it fail the way a write fails (withoutBranchCommits).
-// The repair below and that test's own cleanup both replay it to put the table back, rather
-// than keeping a second copy of its `create table` here and in step with it by hand: Migrate
-// skips every version schema_migrations already records, so forgetting the version makes the
-// table exactly as the migration does.
+// Putting the table back replays it, rather than keeping a second copy of its `create table`
+// here and in step with it by hand: Migrate skips every version schema_migrations already
+// records, so forgetting the version makes the table exactly as the migration does.
 const branchCommitsMigration = 20261107234701
-
-// repairDroppedTables forgets the recorded version of branch_commits when the database is
-// missing the table, so the Migrate that follows creates it again.
-//
-// A test that drops the table puts it back itself (withoutBranchCommits), which is the fast
-// path and the ordinary one, and which runs this same repair. What this one is for is the run
-// that never got to its cleanup: `go test -timeout` kills the binary outright, and the table
-// is then missing from a database that is the server's own and outlives the run, while
-// schema_migrations still records the migration that creates it. Nothing would make it again
-// — Migrate applies the versions the database does not record — so every later run of this
-// package would fail at the truncate above, until someone repaired the database by hand.
-//
-// It reads the table from the catalogue (to_regclass answers null for a name that is no
-// relation) rather than trying a read of it and reading the failure, since a failed statement
-// of this kind aborts nothing here but would have to be told apart from a database that is
-// unreachable. A database that has no schema_migrations at all is a fresh one with no version
-// recorded and nothing dropped, and there is nothing to forget.
-func repairDroppedTables(t *testing.T, ctx context.Context, pool *store.Pool) {
-	t.Helper()
-	var migrated bool
-	if err := pool.QueryRow(ctx, "select to_regclass('schema_migrations') is not null").Scan(&migrated); err != nil {
-		t.Fatalf("look for schema_migrations: %v", err)
-	}
-	if !migrated {
-		return
-	}
-	var present bool
-	if err := pool.QueryRow(ctx, "select to_regclass('branch_commits') is not null").Scan(&present); err != nil {
-		t.Fatalf("look for branch_commits: %v", err)
-	}
-	if present {
-		return
-	}
-	if _, err := pool.Exec(ctx, "delete from schema_migrations where version = $1::bigint", branchCommitsMigration); err != nil {
-		t.Fatalf("forget the migration of branch_commits, which a run that died left dropped: %v", err)
-	}
-}
-
-// A table a test dropped and never put back is made again by the next deliveryTestPool, so the
-// run after the one `-timeout` killed mid-test runs against the schema its migrations describe.
-// Without that repair the table stays missing while schema_migrations records its version, and
-// every later run of this package fails at the truncate of it.
-//
-// The drop here has no cleanup of its own on purpose: what is under test is that the harness
-// repairs a database nobody put back, and the second deliveryTestPool is what leaves the
-// database as the next test finds it.
-func TestTheHarnessMakesAgainATableADeadRunLeftDropped(t *testing.T) {
-	pool, ctx := deliveryTestPool(t)
-	if _, err := pool.Exec(ctx, "drop table branch_commits"); err != nil {
-		t.Fatalf("drop branch_commits as a run killed mid-test leaves it: %v", err)
-	}
-
-	next, nextCtx := deliveryTestPool(t)
-	var rows int
-	if err := next.QueryRow(nextCtx, "select count(*) from branch_commits").Scan(&rows); err != nil {
-		t.Fatalf("read branch_commits from the harness that should have made it again: %v", err)
-	}
-	if rows != 0 {
-		t.Fatalf("branch_commits holds %d rows after being made again, want the empty table its migration makes", rows)
-	}
-	var recorded bool
-	if err := next.QueryRow(nextCtx,
-		"select exists(select 1 from schema_migrations where version = $1::bigint)", branchCommitsMigration).Scan(&recorded); err != nil {
-		t.Fatalf("read whether the branch_commits migration is recorded again: %v", err)
-	}
-	if !recorded {
-		t.Fatalf("schema_migrations does not record %d after the repair, so the next Migrate would make the table a second time", branchCommitsMigration)
-	}
-}
 
 // deliveryTestLeases is the lease pool an intake takes its durable's hold and consumer lease on
 // (intakeHoldName, consumerLease), taken from the test's own pool. Each lease is held on a
@@ -187,12 +96,10 @@ func seedDeliverySettings(t *testing.T, ctx context.Context, pool *store.Pool) D
 }
 
 // deliveryProject is the project this package's issue fixtures write their issues in, and
-// deliveryRepo the repository it owns by default. One project owns it because repo_projects'
-// primary key is the repository (migration 0005_repo_projects), so only one project can map
-// acme/widgets, and the attribution now holds a pull request's issue to the repository the pull
-// request is in (delivery's attributionHeld): an issue of a project that maps nothing resolves
-// to no repository and would attribute nobody. The key is a neutral one, since the head, the
-// attribution and the deployed fixtures all seed into it.
+// deliveryRepo its default repository. The attribution holds a pull request's issue to the
+// repository the pull request is in (delivery's attributionHeld): an issue of a project with no
+// default resolves to no repository and would attribute nobody. The key is a neutral one, since
+// the head, the attribution and the deployed fixtures all seed into it.
 const (
 	deliveryProject = "DLVY"
 	deliveryRepo    = "acme/widgets"
@@ -207,38 +114,32 @@ const (
 	deployedIssueBand    = 2000
 )
 
-// seedProjectRepository writes project key, named name, and maps repo to it as that project's
-// default, which is what makes an issue of the project resolve to repo (refs.IssueRepoTerms).
-// Idempotent: the fixtures that call it run per test, and the tests of this package share one
-// database.
+// seedProjectRepository writes project key, named name, with repo as its default repository,
+// which is what makes an issue of the project resolve to repo (refs.IssueRepoTerms).
+// Idempotent: the fixtures that call it run per test, and one test can call it more than once.
 func seedProjectRepository(t *testing.T, ctx context.Context, pool *store.Pool, key, name, repo string) {
 	t.Helper()
 	if _, err := pool.Exec(ctx, `
-		insert into projects (key, name, default_assignee) values ($1, $2, 'alice') on conflict do nothing
-	`, key, name); err != nil {
-		t.Fatalf("seed the project: %v", err)
-	}
-	if _, err := pool.Exec(ctx, `
-		insert into repo_projects (repo, project, created_by, is_default)
-		values ($1, $2, '{"kind":"system","id":"delivery-test"}'::jsonb, true)
-		on conflict do nothing
-	`, repo, key); err != nil {
-		t.Fatalf("map the repository to the project: %v", err)
+		insert into projects (key, name, default_assignee, default_repo) values ($1, $2, 'alice', $3)
+		on conflict (key) do update set default_repo = excluded.default_repo
+	`, key, name, repo); err != nil {
+		t.Fatalf("seed the project with its default repository: %v", err)
 	}
 }
 
-// seedDeliveryProject writes deliveryProject and maps deliveryRepo to it as its default, so
-// every issue the fixtures seed resolves to the repository their pull requests are in.
-// Idempotent: each fixture calls it, and the tests of this package share one database.
+// seedDeliveryProject writes deliveryProject with deliveryRepo as its default, so every issue
+// the fixtures seed resolves to the repository their pull requests are in.
+// Idempotent: each fixture calls it, and one test can use several fixtures.
 func seedDeliveryProject(t *testing.T, ctx context.Context, pool *store.Pool) {
 	t.Helper()
 	seedProjectRepository(t, ctx, pool, deliveryProject, "Delivery", deliveryRepo)
 }
 
 // publishPullRequestEnvelope publishes one notifications.github.<owner>.<repo>.pr.<number>
-// envelope (the shape intake.go's handlePullRequestEnvelope reads) and waits for the publish to
-// be acknowledged by JetStream before returning.
-func publishPullRequestEnvelope(t *testing.T, natsClient *bus.Client, owner, repo string, number int, fields map[string]string) {
+// envelope (the shape intake.go's handlePullRequestEnvelope reads), waits for the publish to be
+// acknowledged by JetStream, and answers the stream sequence the stream stored it at. The publish
+// has the 5 s bound Client.Publish gives one.
+func publishPullRequestEnvelope(t *testing.T, natsClient *bus.Client, owner, repo string, number int, fields map[string]string) uint64 {
 	t.Helper()
 	payload, err := json.Marshal(fields)
 	if err != nil {
@@ -253,9 +154,13 @@ func publishPullRequestEnvelope(t *testing.T, natsClient *bus.Client, owner, rep
 		TraceID:       "test-trace",
 		IssuedAt:      time.Now().Unix(),
 	}
-	if err := natsClient.Publish(envelope); err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	stored, err := natsClient.PublishAckWithin(ctx, envelope)
+	if err != nil {
 		t.Fatalf("publish envelope: %v", err)
 	}
+	return stored.Sequence
 }
 
 // publishGitHubEnvelope publishes one envelope on topic carrying payload as it stands, for a payload
@@ -421,18 +326,30 @@ func intakeTestClient(t *testing.T) *bus.Client {
 }
 
 // awaitBoundDurable waits for the intake to have created its durable and subscribed to it, so a
-// test that means to publish into a bound consumer does not race the bind.
+// test that means to publish into a bound consumer does not race the bind. Its one bound is what
+// the test binary's deadline leaves less boundDurableSpare (testwait.Remaining): a bind that is
+// merely slow on a loaded machine still passes, and one that never comes fails the row with time
+// left for its cleanups.
 func awaitBoundDurable(t *testing.T, natsClient *bus.Client) {
 	t.Helper()
-	var err error
-	waitFor(t, 20*time.Second, func() bool {
-		var info *natsgo.ConsumerInfo
-		info, err = natsClient.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
-		return err == nil && info.PushBound && info.Config.MaxAckPending == intakeMaxAckPending
+	var state string
+	waitFor(t, testwait.Remaining(t, boundDurableSpare), func() bool {
+		info, err := natsClient.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
+		if err != nil {
+			state = err.Error()
+			return false
+		}
+		state = fmt.Sprintf("push_bound=%t max_ack_pending=%d", info.PushBound, info.Config.MaxAckPending)
+		return info.PushBound && info.Config.MaxAckPending == intakeMaxAckPending
 	}, func() string {
-		return fmt.Sprintf("intake never bound its durable: %v", err)
+		return fmt.Sprintf("intake never bound its durable with max_ack_pending=%d: %s", intakeMaxAckPending, state)
 	})
 }
+
+// boundDurableSpare is what awaitBoundDurable leaves of the test binary's deadline for a failed
+// row's cleanups: stopping its intakes, which wait out their stop's deadline, and dropping its
+// database.
+const boundDurableSpare = time.Minute
 
 // awaitRuns waits for the intake to have stored want delivery_runs rows, and fails with the
 // stream's message count and the consumer's whole state when it does not -- the numbers that say

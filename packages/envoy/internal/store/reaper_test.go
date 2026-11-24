@@ -44,8 +44,7 @@ func putRenewedRoleClaim(t *testing.T, kv natsgo.KeyValue, role, holder, instanc
 
 // putHandedBackRoleClaim stores that same claim carrying the mark its holder's own release left
 // on it (RoleClaim.HandedBack), which is the one thing that frees a claim past a holder session
-// isAlive reports alive. It names a process because a hand-back marks no claim that names none:
-// such a claim its own session's release frees outright.
+// isAlive reports alive.
 func putHandedBackRoleClaim(t *testing.T, kv natsgo.KeyValue, role, holder, instance string, answered time.Time) {
 	t.Helper()
 	storeRoleClaim(t, kv, role, RoleClaim{
@@ -262,7 +261,7 @@ func restoredRoleClaimRegistry(t *testing.T, seed func(roles natsgo.KeyValue, st
 	start := time.Date(2026, 11, 6, 9, 30, 0, 0, time.UTC)
 	seed(raw, start)
 	var elapsed atomic.Int64
-	reg, err := Open(conn, WithReplicas(1), WithClock(func() time.Time { return start.Add(time.Duration(elapsed.Load())) }))
+	reg, err := Open(t.Context(), conn, WithReplicas(1), WithClock(func() time.Time { return start.Add(time.Duration(elapsed.Load())) }))
 	if err != nil {
 		t.Fatalf("open a registry over the stored claims: %v", err)
 	}

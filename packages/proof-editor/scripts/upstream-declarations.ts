@@ -2,8 +2,8 @@
  * Rebuilds `upstream/`, the declarations for the upstream editor modules this package imports.
  *
  * proof-sdk ships TypeScript sources and no declarations, and those sources do not type-check
- * (see AGENTS.md § The upstream boundary), so no consumer's tsc program may open them. `tsc
- * --emitDeclarationOnly --noCheck` reads them anyway — it infers and writes the declarations
+ * (see docs/upstream.md, "Resolving the modules"), so no consumer's tsc program may open them.
+ * `tsc --emitDeclarationOnly --noCheck` reads them anyway — it infers and writes the declarations
  * without reporting the tree's own errors — and what it writes is the real shape of every value
  * and type crossing the boundary.
  *

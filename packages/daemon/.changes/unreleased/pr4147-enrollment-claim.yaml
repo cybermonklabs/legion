@@ -1,0 +1,6 @@
+kind: Changed
+body: |-
+  The daemon states each role process's claim token when it enrols the pod with the secrets broker,
+  so the role's next generation or replacement pod reads, cancels and is granted the requests the pod
+  before it made. A broker from before the field refuses it as unknown (`400 INVALID_ENROLLMENT`),
+  and the daemon then enrols the pod once more without it; every other refusal is one call.

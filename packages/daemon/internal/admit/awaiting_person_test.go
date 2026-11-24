@@ -90,8 +90,8 @@ func seedDispatchClaim(t *testing.T, pool *pgxpool.Pool, issue, holder string) {
 	t.Helper()
 	inTx(t, pool, func(tx pgx.Tx) {
 		records := record.NewStore()
-		if err := records.PutDispatchIssue(context.Background(), tx, record.DispatchIssueRow{
-			Key: issue, Project: testProject, Status: "in_progress", Seq: 8}); err != nil {
+		if err := records.PutDispatchIssue(context.Background(), tx, record.DispatchReading{Key: issue, Project: testProject, Seq: 8,
+			Status: record.Carry("in_progress"), Parent: record.Carry(""), Blockers: record.Carry[[]string](nil)}); err != nil {
 			t.Fatalf("record the Dispatch mirror of %s: %v", issue, err)
 		}
 		if err := records.PutDispatchClaim(context.Background(), tx, issue, holder, 9); err != nil {
@@ -336,8 +336,7 @@ func TestAHandBackNoLongerWithThePersonIsTakenIn(t *testing.T) {
 func TestAHeldRootIsNotDecidedBeforeTheConsumerCatchesUp(t *testing.T) {
 	pool := migratedPool(t)
 	admission := awaitingRig(t, pool, 1)
-	admission.pending = map[string]intake.DispatchIssue{"LEGION-208": {Key: "LEGION-208", Status: "todo", Seq: 20}}
-	admission.target = 100
+	admission.holdDeferred(map[string]intake.DispatchIssue{"LEGION-208": {Key: "LEGION-208", Status: "todo", Seq: 20}}, 100)
 	tick(t, pool, admission, "tick-held")
 	if got := issue(t, pool, "LEGION-208").Phase; got != phase.Admitted {
 		t.Fatalf("phase = %s, want the held root left where it stands", got)

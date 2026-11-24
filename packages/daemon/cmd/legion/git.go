@@ -16,8 +16,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/lookpath"
 )
 
-// gitUsage is the help of `legion git`. No line of it starts with `legion git` and a word: the docs
-// site's CLI generator (docs/site/generators/legion-cli.sh) reads such a line as a subcommand.
+// gitUsage is the help of `legion git`, which reads its own arguments (passThrough), --help among
+// them.
 const gitUsage = `usage: legion git --real <git> -- <git argument>…
        legion git --after <directory> -- <git argument>…
 

@@ -1,12 +1,16 @@
-import { expect, spyOn, test } from "bun:test";
+import { expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
+import { realClock } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerIssuePatches } from "../../__tests__/send-answers";
-import { ApiError, api } from "../../api/client";
+import { stopTheLateWrite } from "../../__tests__/stop-late-write";
+import { userOnFakeClock } from "../../__tests__/user";
+import { ApiError, api, NetworkError } from "../../api/client";
 import type { ArchitectureSource, ArchitectureTree, IssueComponents } from "../../api/types";
+import { stoppedWriteNote } from "../writes/keyed-write";
 import { IssueComponentsLine } from "./IssueComponentsLine";
 
 const tree: ArchitectureTree = {
@@ -134,6 +138,7 @@ function renderLine(components: IssueComponents, architecture: ArchitectureTree 
     listProjectArchitectureSources,
     patchIssue,
     q: within(view.container),
+    queryClient,
     unmountAll: () => {
       view.unmount();
       getArchitecture.mockRestore();
@@ -264,5 +269,38 @@ test("an explicit set naming components of two sources shows each as a bare id c
     );
   } finally {
     view.unmountAll();
+  }
+});
+
+// A save the reader stopped may have been made: the line says so, and that a new save is a press
+// of its own, rather than the stopped write's own words, which are a composer's, of a message.
+test("components the reader stopped say they may have been saved, not a message's words", async () => {
+  const view = renderLine(
+    { mode: "inherit", ids: [], unknown: [], reason: null, inherited_from: null },
+    tree
+  );
+  try {
+    view.patchIssue.mockRejectedValue(
+      new NetworkError("/api/v1/issues/CORE-7", new TypeError("Failed to fetch"))
+    );
+    await userEvent
+      .setup()
+      .click(await view.q.findByRole("button", { name: "Edit components of CORE-7" }));
+    const option = await screen.findByRole("option", { name: "dispatch-server · Dispatch server" });
+    jest.useFakeTimers();
+    const user = userOnFakeClock();
+    await user.click(option);
+    screen.getByRole("combobox", { name: "Search components" }).focus();
+    await user.keyboard("{Escape}");
+    await stopTheLateWrite(view.queryClient);
+    expect(view.q.getByRole("alert").textContent).toBe(
+      stoppedWriteNote("the components of CORE-7", "saved", {
+        anew: "They are read again from Dispatch, and saving them again sends a new write.",
+      })
+    );
+  } finally {
+    realClock();
+    view.unmountAll();
+    view.queryClient.clear();
   }
 });

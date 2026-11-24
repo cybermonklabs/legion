@@ -1,8 +1,40 @@
 // The asks a gated Dispatch call opens for a person, read from the call's arguments as its
 // --dry-run prints them: a `dispatch ask`; each ask block in the markdown a `dispatch doc-edit`
-// inserts, a `dispatch issue` spec holds, or a `dispatch artifact` upload holds; and each block a
-// `dispatch doc-edit` retypes into an ask. A `replace`'s `with` opens no block (`dispatch doc-edit
-// --help`), and `dispatch edit-ask`, `comment`, `message` and `request-approval` open no new ask.
+// inserts or writes over a match, a `dispatch issue` spec holds, or a `dispatch artifact` upload
+// holds; and each block a `dispatch doc-edit` retypes into an ask. `dispatch edit-ask`, `comment`,
+// `message` and `request-approval` open no new ask.
+//
+// A `replace`'s `with` is read with no front matter read in it: `newAsks` cannot know whether the
+// match sits at the document's start, which is what the server's front-matter reading needs, and
+// reading front matter where there is none would hide an ask block the server opens. The gate
+// fails closed, as `refuseRemovingOpenDecisionBlocks` does: it over-reports where the server
+// would refuse the operation (a match in a heading, in a table cell, or in a typed block whose
+// rule cannot hold the blocks) or write the text as literal code (a match in a code block).
+//
+// A `with` is read as every string the server might parse, never as the caller sent it alone.
+// The server does not parse that string: `replacementMarkdown` cuts the matched block's own
+// marker off the first line, `applyReplace` cuts a leading `[x] ` or `[ ] ` off what that leaves
+// where the match opens a task item's text, and `pmdoc.ParseFragment` parses the rest
+// (packages/envoy/internal/dispatch/docs/edits.go). The gate reads the call's arguments before
+// the call goes out (packages/envoy-client/src/dispatch-cli.ts, and
+// packages/pi-envoy/extensions/askgate/breaker.ts:66), so the server's own answer does not exist
+// yet and cannot be read. The client therefore scans every string the server might parse and
+// takes the union: the `with` as sent, and the `with` with a leading block marker or task
+// checkbox taken off its first line. The gate already fails closed and over-reports deliberately;
+// a reading that is not the server's can only add an ask to review, or drop an ask holding no
+// text where an ask the union holds carries words, so the words a person will be asked are never
+// hidden. `LEADING_STRIP` copies the server's own patterns (pmdoc's leadingHeadingMarker,
+// leadingOrderedMarker and leadingBulletMarker in
+// packages/envoy/internal/dispatch/pmdoc/markers.go:46-48, and leadingTaskCheckbox in
+// packages/envoy/internal/dispatch/pmdoc/tasks.go:103), so it is a server rule to keep in step:
+// a pattern this copy holds and the server does not costs one more candidate reading, while a
+// marker the server learns to strip and this copy does not hides the string the server parses.
+// Reading those two sites whenever the strip changes is what holds the copy in step. The server
+// strips one marker (`replacementMarkdown`) and then one checkbox over a task item's text
+// (`applyReplace`, packages/envoy/internal/dispatch/docs/edits.go); each later strip of the loop
+// here adds one more candidate reading rather than a server rule. When the server strips is not
+// read here: that needs the document, which the client does not have, so the strip is lexical
+// and every reading is scanned.
 //
 // The Dispatch server decides which lines of markdown are ask blocks, so the scan reads markdown as
 // its parser does: goldmark's block structure (`parseBlocks`, `openBlocks` and the default block
@@ -14,13 +46,16 @@
 // container; an opener four columns past its container's lines is code or paragraph text; a typed
 // block that opened with N colons closes only at a line of N colons or more, which closes it
 // whatever block inside it the line would continue; and an opener's attributes are read as the
-// server reads them, so a `#` inside a quoted value is no id and an opener whose attributes the
-// server refuses opens nothing. A document's front matter is no markdown, and an empty list item
-// or one numbered other than 1 opens no list where the browser editor's parser would not let it
-// interrupt the block before it. HTML blocks, which the server refuses in a write, are not read.
+// server reads them (typed-block-opener.ts), so a `#` inside a quoted value is no id and an opener
+// whose attributes the server refuses opens nothing. A document's front matter is no markdown,
+// and an empty list item or one numbered other than 1 opens no list where the browser editor's
+// parser would not let it interrupt the block before it. HTML blocks, which the server refuses
+// in a write, are not read.
 // The server's table of inserts and the ask blocks it adds
 // (packages/envoy/internal/dispatch/api/testdata/decision-block-inserts.json) holds this reading
 // to the server's.
+
+import { refusedDirective, runOf, typedOpenerAt } from "./typed-block-opener";
 
 /** A new ask a call opens for a person. */
 export interface NewAsk {
@@ -50,14 +85,18 @@ export function newAsks(toolName: string, input: Readonly<Record<string, unknown
     case "dispatch_artifact":
       return typeof input.content === "string" ? askBlocks(input.content) : [];
     case "dispatch_doc_edit":
-      return (Array.isArray(input.ops) ? input.ops : []).flatMap((op: unknown): NewAsk[] => {
-        if (typeof op !== "object" || op === null) return [];
-        const { op: kind, markdown, type, block } = op as Record<string, unknown>;
+      return editOps(input).flatMap((op): NewAsk[] => {
+        const { op: kind, markdown, with: replacement, type, block } = op;
         // Inserted text reads a closed front-matter block as front matter only where it lands at
         // the document's start (pmdoc.ParseFragment's opensDocument); a "start" anchor is that.
         if (kind === "insert" && typeof markdown === "string") {
-          const { before, after } = op as Record<string, unknown>;
-          return scanAsks(markdown, before === "start" || after === "start");
+          return scanAsks(markdown, op.before === "start" || op.after === "start");
+        }
+        // A `with` is read as an `insert`'s markdown is, over each string the server might parse
+        // it as: the module comment says why the scan reads it that way and what that
+        // over-reports.
+        if (kind === "replace" && typeof replacement === "string") {
+          return replacementAsks(replacement);
         }
         if (kind === "retype" && type === "ask" && typeof block === "string") {
           return [{ kind: "retype", id: block, text: "", opening: "" }];
@@ -67,6 +106,36 @@ export function newAsks(toolName: string, input: Readonly<Record<string, unknown
     default:
       return [];
   }
+}
+
+/**
+ * How many asks a call opens for a person, which is what a record of the call reports. Each entry
+ * `newAsks` reports counts one, except a `replace`'s: `newAsks` reports the asks of every string
+ * the server might parse one `with` as (`replacementReadings`), and those readings are
+ * alternatives of one text, of which the server parses exactly one. A `replace` therefore counts
+ * as the most asks any one of its readings opens (`scanAsks` over each reading). The gate reads
+ * the call before it goes out and cannot know which reading the server takes; the largest reading
+ * can only over-count the asks the write carries, where any smaller one could hide some of them.
+ * Nothing is grouped by `id` or by `opening`: two asks the call writes count two, whatever they
+ * share.
+ */
+export function newAskCount(toolName: string, input: Readonly<Record<string, unknown>>): number {
+  if (toolName !== "dispatch_doc_edit") return newAsks(toolName, input).length;
+  let count = 0;
+  for (const op of editOps(input)) {
+    count +=
+      op.op === "replace" && typeof op.with === "string"
+        ? Math.max(...replacementReadings(op.with).map((text) => scanAsks(text, false).length))
+        : newAsks(toolName, { ops: [op] }).length;
+  }
+  return count;
+}
+
+/** A `dispatch doc-edit`'s operations, each an object; anything else in `ops` is no operation. */
+function editOps(input: Readonly<Record<string, unknown>>): Record<string, unknown>[] {
+  return (Array.isArray(input.ops) ? input.ops : []).filter(
+    (op: unknown): op is Record<string, unknown> => typeof op === "object" && op !== null
+  );
 }
 
 /** A `dispatch ask`: its question, then its options as the bullet list an ask block holds them in. */
@@ -138,6 +207,67 @@ function scanAsks(markdown: string, frontMatter: boolean): NewAsk[] {
     return { kind: "block", ...(id === undefined ? {} : { id }), text, opening: openingOf(text) };
   });
 }
+
+/**
+ * The ask blocks a `replace`'s `with` opens, over every string the server might parse it as
+ * (replacementReadings), merged by the whole ask and not by its id alone: two readings that open
+ * one id with different text are two variants of what a person would be asked, and both are
+ * reported, since the client cannot know which reading the server parses and the gate may not
+ * hide the words the server writes into the ask. The gate over-reports deliberately: a variant
+ * the server never writes costs the rules model a second reading of nearly the same words, where
+ * a hidden one would let words no one reviewed reach a person.
+ *
+ * The one variant dropped is an empty one standing beside words, which gives the rules model
+ * nothing to match on. An ask that carries an id drops its empty variant only where another
+ * variant of that same id carries text; an ask with no id, whose empty reading carries nothing to
+ * pair it on, is dropped where any reported ask carries text. Where every reading opens an empty
+ * ask and nothing else, it is kept, so an ask block written empty still reaches review.
+ *
+ * The order is the order the readings opened the asks in, which for the `with` as sent is
+ * document order.
+ */
+function replacementAsks(replacement: string): NewAsk[] {
+  // An ask's `kind` and `opening` follow from its id and its text, so the two are the whole
+  // variant. JSON holds them apart, where a separator character an id may itself hold would let
+  // two different pairs read as one key.
+  const variants = new Map<string, NewAsk>();
+  for (const reading of replacementReadings(replacement)) {
+    for (const ask of scanAsks(reading, false)) {
+      const key = JSON.stringify([ask.id ?? null, ask.text]);
+      if (!variants.has(key)) variants.set(key, ask);
+    }
+  }
+  const found = [...variants.values()];
+  const idsWithText = new Set(
+    found.flatMap((ask) => (ask.text !== "" && ask.id !== undefined ? [ask.id] : []))
+  );
+  const anyText = found.some((ask) => ask.text !== "");
+  return found.filter(
+    (ask) => ask.text !== "" || (ask.id === undefined ? !anyText : !idsWithText.has(ask.id))
+  );
+}
+
+/**
+ * Every string the server might parse a `with` as: the `with` as sent, then what each strip of a
+ * leading block marker or task checkbox off its first line leaves. Each strip takes at least two
+ * characters, so the readings are few and the loop ends.
+ */
+function replacementReadings(replacement: string): string[] {
+  const readings = [replacement];
+  let text = replacement;
+  for (let strip = LEADING_STRIP.exec(text); strip !== null; strip = LEADING_STRIP.exec(text)) {
+    text = text.slice(strip[0].length);
+    readings.push(text);
+  }
+  return readings;
+}
+
+/**
+ * A leading list or heading marker (pmdoc's `LeadingBlockMarker`, whose leading spaces and tabs
+ * belong to the marker) or a leading task checkbox (pmdoc's `LeadingTaskCheckbox`), which the
+ * server cuts off a `with` whose first line carries the matched block's own.
+ */
+const LEADING_STRIP = /^(?:[ \t]*(?:#{1,6}|[0-9]{1,9}[.)]|[-*+])[ \t]+|\[[ xX]\][ \t]+)/u;
 
 /** An ask block the scan has opened: its id, and the lines of its body as written in it. */
 interface Draft {
@@ -510,7 +640,7 @@ const BLOCK_PARSERS: readonly BlockParser[] = [
     interrupts: true,
     indented: false,
     open(scan, parent, line, width, at) {
-      const opener = typedOpener(line.text.slice(at));
+      const opener = typedOpenerAt(line.text, at);
       if (opener === undefined) return undefined;
       let draft: Draft | undefined;
       if (opener.name === "ask") {
@@ -761,113 +891,8 @@ function setextUnderline(text: string): boolean {
   return /^(?:=+|-+)[ \t]*$/.test(text);
 }
 
-/** The number of `char` in a row from `index`. */
-function runOf(text: string, index: number, char: string): number {
-  let end = index;
-  while (text.charAt(end) === char) end++;
-  return end - index;
-}
-
 /** directive.go's `fenceColons`: the colons `text` holds when they are all it holds but spaces. */
 function fenceColons(text: string): number {
   const trimmed = text.replace(/^[ \t]+|[ \t]+$/g, "");
   return /^:+$/.test(trimmed) ? trimmed.length : 0;
-}
-
-/** directive.go's `directiveNameByte`. */
-function nameChar(char: string): boolean {
-  return /^[A-Za-z0-9_-]$/.test(char);
-}
-
-/**
- * directive.go's `ParseTypedDirectiveOpen`: three colons or more, a name, then `{` at once, and
- * the line ends with `}`, the attributes between them read as the server reads them.
- */
-function typedOpener(
-  text: string
-): { name: string; id: string | undefined; colons: number } | undefined {
-  const colons = runOf(text, 0, ":");
-  if (colons < 3) return undefined;
-  const rest = text.slice(colons);
-  let nameEnd = 0;
-  while (nameEnd < rest.length && nameChar(rest.charAt(nameEnd))) nameEnd++;
-  if (nameEnd === 0 || rest.charAt(nameEnd) !== "{" || !rest.endsWith("}")) return undefined;
-  const attributes = directiveAttributes(rest.slice(nameEnd + 1, -1));
-  if (attributes === undefined) return undefined;
-  return { name: rest.slice(0, nameEnd), id: attributes.id, colons };
-}
-
-/** directive.go's `unsupportedDirectiveReason`: a line of directive syntax the server refuses. */
-function refusedDirective(text: string): boolean {
-  if (text.startsWith(":::")) return text !== ":::" && typedOpener(text) === undefined;
-  if (text.startsWith("::")) return text.length > 2 && nameChar(text.charAt(2));
-  return text.length > 1 && nameChar(text.charAt(1)) && text.includes("{");
-}
-
-/** The whitespace Go's `unicode.IsSpace` finds in a byte of the attributes: ASCII's. */
-function attributeSpace(char: string): boolean {
-  return char === " " || (char >= "\t" && char <= "\r");
-}
-
-/** The key that holds a block's id among a directive's attributes (pmdoc's `BlockIDAttr`). */
-const BLOCK_ID_ATTRIBUTE = "blockId";
-
-/**
- * directive.go's `parseDirectiveAttributes`, for the block's id alone: `#id` or `blockId="…"`,
- * undefined when the server refuses the attributes. A quoted id holding an escape or a character
- * reference is not decoded, and reads as no id.
- */
-function directiveAttributes(value: string): { id: string | undefined } | undefined {
-  const named = new Set<string>();
-  let id: string | undefined;
-  let offset = 0;
-  const name = () => {
-    const start = offset;
-    while (offset < value.length && nameChar(value.charAt(offset))) offset++;
-    return value.slice(start, offset);
-  };
-  while (offset < value.length) {
-    while (offset < value.length && attributeSpace(value.charAt(offset))) offset++;
-    if (offset === value.length) break;
-    const sigil = value.charAt(offset);
-    if (sigil === "#") {
-      offset++;
-      const read = name();
-      if (read === "" || named.has(BLOCK_ID_ATTRIBUTE)) return undefined;
-      named.add(BLOCK_ID_ATTRIBUTE);
-      id = read;
-    } else if (sigil === ".") {
-      offset++;
-      if (name() === "") return undefined;
-      named.add("class");
-    } else {
-      const key = name();
-      if (key === "" || named.has(key)) return undefined;
-      named.add(key);
-      // A name alone is an empty value; the browser editor reads a name up to a space.
-      if (offset === value.length || value.charAt(offset) === " ") continue;
-      if (value.charAt(offset) !== "=" || value.charAt(offset + 1) !== '"') return undefined;
-      offset += 2;
-      const start = offset;
-      let escaped = false;
-      while (offset < value.length && (value.charAt(offset) !== '"' || escaped)) {
-        escaped = value.charAt(offset) === "\\" && !escaped;
-        offset++;
-      }
-      if (offset === value.length) return undefined;
-      const quoted = value.slice(start, offset);
-      if (!goQuoted(quoted)) return undefined;
-      if (key === BLOCK_ID_ATTRIBUTE) id = /[\\&]/.test(quoted) ? undefined : quoted;
-      offset++;
-    }
-    if (offset < value.length && !attributeSpace(value.charAt(offset))) return undefined;
-  }
-  return { id };
-}
-
-/** Whether Go's `strconv.Unquote` reads `body` between double quotes: its escapes, and no line feed. */
-function goQuoted(body: string): boolean {
-  return /^(?:[^\\\n"]|\\(?:[abfnrtv\\"]|x[0-9A-Fa-f]{2}|[0-3][0-7]{2}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}))*$/.test(
-    body
-  );
 }

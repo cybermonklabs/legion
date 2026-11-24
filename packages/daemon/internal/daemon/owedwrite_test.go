@@ -125,6 +125,18 @@ func (s *switchStore) PutClaimStep(ctx context.Context, token claim.Token, step 
 	return s.now().PutClaimStep(ctx, token, step)
 }
 
+func (s *switchStore) HoldSessions(ctx context.Context, project string, token claim.Token, holds []supervise.Hold) ([]claim.Token, error) {
+	return s.now().HoldSessions(ctx, project, token, holds)
+}
+
+func (s *switchStore) ClaimHolds(ctx context.Context, project string, token claim.Token) ([]supervise.Hold, error) {
+	return s.now().ClaimHolds(ctx, project, token)
+}
+
+func (s *switchStore) ReleaseHolds(ctx context.Context, c supervise.Claim, holds []supervise.Hold) ([]supervise.Hold, error) {
+	return s.now().ReleaseHolds(ctx, c, holds)
+}
+
 // detachedWrites is the real store as the rig hands it out: every call Machine.write bounds runs
 // with the claim-write deadline off it. The bound a row names is the bound of a store that
 // withholds its answer, and a healthy write to a real database is not that store. One value
@@ -159,6 +171,15 @@ func (s detachedWrites) PutClaimAndDelivery(ctx context.Context, c supervise.Cla
 
 func (s detachedWrites) RetireDelivery(ctx context.Context, c supervise.Claim, deliveryID string) error {
 	return withoutTheClaimWriteDeadline(ctx, func(ctx context.Context) error { return s.Store.RetireDelivery(ctx, c, deliveryID) })
+}
+
+func (s detachedWrites) ReleaseHolds(ctx context.Context, c supervise.Claim, holds []supervise.Hold) ([]supervise.Hold, error) {
+	var freed []supervise.Hold
+	err := withoutTheClaimWriteDeadline(ctx, func(ctx context.Context) (err error) {
+		freed, err = s.Store.ReleaseHolds(ctx, c, holds)
+		return err
+	})
+	return freed, err
 }
 
 // withoutTheClaimWriteDeadline runs call on a context that keeps the values of ctx and drops
@@ -373,11 +394,15 @@ func newOwedWriteRig(t *testing.T, write time.Duration, roles ...owedRole) *owed
 }
 
 // boot builds the supervision over the store the rig holds and takes up every claim the store
-// holds now, which is what a daemon's boot does. It is called again by the restart test, so a
-// second supervision is this one and not a test's own arrangement; the rig's handles read the
-// newest from here on.
+// holds now, which is what a daemon's boot does: it holds every recorded session name first, as
+// the boot does before restore builds a machine (holdRecordedSessions). It is called again by the
+// restart test, so a second supervision is this one and not a test's own arrangement; the rig's
+// handles read the newest from here on.
 func (r *owedWriteRig) boot() {
 	r.t.Helper()
+	if _, err := r.st.HoldRecordedSessions(r.ctx, owedProject); err != nil {
+		r.t.Fatalf("hold the recorded session names: %v", err)
+	}
 	logs := &syncBuffer{}
 	switcher := &switchStore{target: r.real}
 	sup := newSupervisor(r.ctx, r.st, owedProject, r.t.TempDir(), quietLogger())
@@ -508,6 +533,7 @@ func (r *owedWriteRig) owedTurnStart(role claim.Role) {
 // which is what every other claim's event and every read of this claim then waits for
 // (TestNoDecisionWaitsOnTheClaimWhoseWriteTheDatabaseHasNotTaken).
 func TestTheRepairDeadlineEndsADecisionsWaitOnADatabaseThatHasStoppedAnswering(t *testing.T) {
+	t.Parallel()
 	// The bound this row measures, and the bound that catches a wait which is not bounded at all:
 	// the blocked store never answers, so an unbounded decision returns at no time this test
 	// could name. What claimWrite bounds is the write put to that blocked store and nothing
@@ -566,6 +592,7 @@ func TestTheRepairDeadlineEndsADecisionsWaitOnADatabaseThatHasStoppedAnswering(t
 // claim, a read of it, and the stop all wait on, and a decision that waits out the connection's
 // own patience holds every one of them for the length of the outage.
 func TestNoDecisionWaitsOnTheClaimWhoseWriteTheDatabaseHasNotTaken(t *testing.T) {
+	t.Parallel()
 	// claimWrite is what the architect's blocked writes are measured by, and all that it is: the
 	// implementer's writes and this row's own repair reach the real database, which the rig hands
 	// out with the claim-write deadline off it (detachedWrites).
@@ -661,6 +688,7 @@ func TestNoDecisionWaitsOnTheClaimWhoseWriteTheDatabaseHasNotTaken(t *testing.T)
 // it. The next boot reads the stored row, takes the claim up from it, and the claim decides
 // again.
 func TestAnOwedWriteAcrossARestartIsLostAndTheStoredClaimIsTakenUp(t *testing.T) {
+	t.Parallel()
 	rig := newOwedWriteRig(t, unmeasuredClaimWrite, owedRole{claim.RoleArchitect, supervise.StateReady})
 	rig.refuse(claim.RoleArchitect, brokenConnection())
 	rig.owedTurnStart(claim.RoleArchitect)
@@ -713,6 +741,7 @@ func TestAnOwedWriteAcrossARestartIsLostAndTheStoredClaimIsTakenUp(t *testing.T)
 // whatever bound the other rows name. A row taking production's own 5 s default instead would
 // swallow the delay and prove nothing.
 func TestARealWriteTheDatabaseIsSlowToTakeIsNotCutShortByTheRowsBound(t *testing.T) {
+	t.Parallel()
 	const claimWrite = 250 * time.Millisecond
 	const slow = 4 * claimWrite
 	rig := newOwedWriteRig(t, claimWrite, owedRole{claim.RoleArchitect, supervise.StateReady})
@@ -747,6 +776,7 @@ func TestARealWriteTheDatabaseIsSlowToTakeIsNotCutShortByTheRowsBound(t *testing
 // did with the report: written in the transaction that applies the fact, keyed on the claim and
 // the generation the report named (terminalEventID), and never written by anything else.
 func TestTheOwedReportsReachTheDaemonOnceTheRepairLands(t *testing.T) {
+	t.Parallel()
 	rig := newOwedWriteRig(t, unmeasuredClaimWrite, owedRole{claim.RoleArchitect, supervise.StateRegistered})
 	// The daemon's own durable-state path over the rig's real pool, as the workflow installs it
 	// on every machine of its supervisor (workflowRuntime.attach).

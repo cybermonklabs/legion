@@ -1,6 +1,10 @@
 import type { ReactNode } from "react";
 
 import {
+  pageInkFill,
+  pageLineBorder,
+  pageMutedText,
+  pageQuietText,
   primaryButtonBg,
   primaryButtonEnabledHoverBg,
   secondaryButtonBorder,
@@ -8,6 +12,7 @@ import {
   secondaryButtonText,
   textMutedHoverToSecondary,
 } from "../theme/classes";
+import { useTooltips } from "./tooltips";
 
 /** The one pin glyph: an outline that fills with `currentColor` once pinned. */
 function PinIcon({ pinned }: { pinned: boolean }): ReactNode {
@@ -44,21 +49,36 @@ export function PinButton({
   onClick: () => void;
   pinned: boolean;
   quiet?: boolean;
+  /** A shorter tooltip than `label`, for a host whose label names a long thing. Drawn only on
+   *  a surface that offers tooltips (`components/tooltips.tsx`). */
   title?: string;
 }): ReactNode {
+  const tooltips = useTooltips();
   const resting = quiet
     ? textMutedHoverToSecondary
     : `${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}`;
+  // Inside `NoTooltips` each colour is one of the new issue page's: pinned is filled with the
+  // page's ink, as its one filled control is; unpinned is its header control's rule and muted
+  // words, or quiet words that turn muted under the pointer for a quiet pin.
+  const look = tooltips
+    ? pinned
+      ? `${primaryButtonBg} ${primaryButtonEnabledHoverBg}`
+      : resting
+    : pinned
+      ? pageInkFill
+      : quiet
+        ? `${pageQuietText} hover:text-page-muted`
+        : `${pageLineBorder} ${pageMutedText}`;
   return (
     <button
       aria-label={label}
       aria-pressed={pinned}
       className={`flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-lg disabled:cursor-not-allowed disabled:opacity-50 ${
         quiet ? "" : "md:min-h-8 md:min-w-8"
-      } ${pinned ? `${primaryButtonBg} ${primaryButtonEnabledHoverBg}` : resting} ${className ?? ""}`}
+      } ${look} ${className ?? ""}`}
       disabled={disabled}
       onClick={onClick}
-      title={title ?? label}
+      title={tooltips ? (title ?? label) : undefined}
       type="button"
     >
       <PinIcon pinned={pinned} />

@@ -3,7 +3,7 @@
  *
  *  Two spec files share this: `machines.e2e.ts`, whose rows read a drawing against the clock,
  *  and `machines.stub.e2e.ts`, whose rows read only what the page draws from a fixed answer
- *  (packages/dispatch/AGENTS.md, "The stubbed layer"). The layout strings, the cells they name
+ *  (packages/dispatch/README.md, "The stubbed layer"). The layout strings, the cells they name
  *  and the proportions each pane must hold live here so the two cannot drift apart.
  */
 import { expect, type Locator, type Page } from "@playwright/test";
@@ -149,16 +149,20 @@ export async function assertPaneProportions(
   cells: readonly Cell[],
   size: WindowSize
 ): Promise<void> {
-  const whole = await drawing.locator('[data-testid="window-layout"]').boundingBox();
+  const layout = drawing.locator('[data-testid="window-layout"]');
+  await expect(layout).toBeVisible();
+  // The wait above drew the layout, and a drawn element has a box, so the box is there.
+  const whole = await layout.boundingBox();
   if (whole === null) throw new Error("the drawing has no box");
   const boxes = drawing.locator('[data-testid="window-pane"]');
   expect(await boxes.evaluateAll((panes) => panes.map((pane) => pane.dataset.pane))).toEqual(
     cells.map((cell) => cell.paneId)
   );
   for (const cell of cells) {
-    const box = await drawing
-      .locator(`[data-testid="window-pane"][data-pane="${cell.paneId}"]`)
-      .boundingBox();
+    const pane = drawing.locator(`[data-testid="window-pane"][data-pane="${cell.paneId}"]`);
+    await expect(pane).toBeVisible();
+    // The wait above drew the pane, and a drawn element has a box, so the box is there.
+    const box = await pane.boundingBox();
     if (box === null) throw new Error(`pane ${cell.paneId} has no box`);
     const widthShare = cell.width / size.columns;
     const heightShare = cell.height / size.rows;
@@ -181,7 +185,7 @@ export async function assertPaneProportions(
 // k5: the machine page draws each tmux server's windows and panes.
 // ---------------------------------------------------------------------------------------------
 
-export const DRAW_HOST = "sami-devbox";
+export const DRAW_HOST = "sand-devbox";
 /** The parts are in socket order, so the person's socket is the first part and the Legion
  *  daemon's private one the second. */
 export const PERSON_SOCKET = "/tmp/tmux-1000/default";
@@ -319,7 +323,7 @@ export function lonePlace(paneNumber: number): TmuxPlace {
 // k9: the drawing holds its proportions at a laptop width and a phone width.
 // ---------------------------------------------------------------------------------------------
 
-export const WIDTH_HOST = "sami-laptop";
+export const WIDTH_HOST = "sand-laptop";
 
 export const widthIds = {
   agentsFirst: "019a1c53-8f6d-7a0c-9b5b-6c3d7e0f1a53",

@@ -7,6 +7,7 @@ import (
 	"slices"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/reearth/ygo/crdt"
 
@@ -51,11 +52,20 @@ func (s *Service) InjectUnknownElementForTest(ctx context.Context, artifactID st
 }
 
 // AfterSettleLockForTest sets the hook every settlement runs once it holds its document's owner
-// row - its issue's row, for an issue's document - and before it reads the room. Tests in package
+// lock - its issue's, for an issue's document - and before it reads the room. Tests in package
 // api hold a settlement there to race an issue's close against it. It is set before the service
 // settles anything, since a settlement reads it unlocked.
 func (s *Service) AfterSettleLockForTest(hook func(room string)) {
 	s.afterSettleLock = hook
+}
+
+// ResumeOwedSettlementsForTest runs one pass of the settlement resumption
+// (resumeOwedSettlements): it arms the settlement of at most settlementResumeBatch documents whose
+// pending-settlement row is at least age old, those no pass has tried first, as
+// RunSettlementResumption's pass does once a minute under its lease. Tests in package api run it
+// with age 0 to settle a document that nothing else settles, whether or not its issue is closed.
+func (s *Service) ResumeOwedSettlementsForTest(ctx context.Context, age time.Duration) error {
+	return s.resumeOwedSettlements(ctx, age)
 }
 
 // AppendRenderOnlySchemaViolationForTest appends to artifactID's stored history a tree the

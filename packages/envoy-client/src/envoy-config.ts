@@ -18,9 +18,9 @@ import { hasErrnoCode, messageFor } from "./errors";
 import { jsonErrorPosition } from "./json-position";
 import { sendable } from "./secret-file";
 
-/** Where a caller runs: one of the two plugins (and the `dispatch` command, which takes its host
- * plugin's rule), or a script outside any of them (`command`). */
-export type EnvoyHarness = "omp" | "claude" | "command";
+/** Where a caller runs: one of the three plugin hosts (and the `dispatch` command, which takes its
+ * host plugin's rule), or a script outside any of them (`command`). */
+export type EnvoyHarness = "omp" | "claude" | "codex" | "command";
 
 /** The variables a read consults, by name, over whatever else the environment holds. */
 export type EnvoyConfigEnvironment = {
@@ -36,6 +36,23 @@ export type EnvoyConfigEnvironment = {
 
 /** How long a `!` command may run before its field is an error. */
 const COMMAND_TIMEOUT_MS = 10_000;
+
+/** Tests only: the variable that sets that bound, for a test that holds a command on its own gate
+ * while it waits on other processes, which a loaded host can stretch past 10 s (claude-envoy's
+ * answers-hook rows set it to their own timeout). It is taken only as whole ms written in digits,
+ * from 1 to `LONGEST_TIMEOUT_MS`; unset, or any other value, the bound is `COMMAND_TIMEOUT_MS`. */
+const COMMAND_TIMEOUT_VARIABLE = "ENVOY_COMMAND_TIMEOUT_MS";
+
+/** The longest `timeout` Bun's `spawnSync` keeps: 1.4.4 wraps 2^31 ms or more, which then ends a
+ * 2 s `sleep` after about 74 ms. */
+const LONGEST_TIMEOUT_MS = 2_147_483_647;
+
+/** How long a `!` command run with `env` may run. */
+export function commandTimeoutMs(env: EnvoyConfigEnvironment): number {
+  const text = env[COMMAND_TIMEOUT_VARIABLE] ?? "";
+  const ms = /^[1-9]\d*$/.test(text) ? Number(text) : Number.NaN;
+  return ms <= LONGEST_TIMEOUT_MS ? ms : COMMAND_TIMEOUT_MS;
+}
 
 /** A variable's value, with an empty one read as unset: the one meaning of `""` for every variable
  * Dispatch and Envoy read. */
@@ -67,7 +84,9 @@ function neutralConfig(env: EnvoyConfigEnvironment): { path: string } | { error:
   return { path: path.resolve(configHome, "legion", "envoy.json") };
 }
 
-/** The variable naming each plugin's own directory. */
+/** The variable naming each plugin's own directory. Codex has none here: `CODEX_HOME` is the
+ * person's own Codex configuration, which Envoy never reads or writes, so a Codex session reads the
+ * file `ENVOY_CONFIG_FILE` names, else the neutral one. */
 const HARNESS_DIRECTORY_VARIABLE = {
   omp: "PI_CODING_AGENT_DIR",
   claude: "CLAUDE_CONFIG_DIR",
@@ -91,6 +110,7 @@ function namedDirectory(harness: PluginHarness, env: EnvoyConfigEnvironment): st
  * (`namedDirectory`), or for a command the first one named of Oh My Pi's and Claude Code's, in
  * that order, Claude Code's only under `CLAUDE_CODE_CHILD_SESSION=1`. */
 function harnessDirectory(harness: EnvoyHarness, env: EnvoyConfigEnvironment): string | undefined {
+  if (harness === "codex") return undefined;
   for (const plugin of harness === "command" ? PLUGIN_HARNESSES : [harness]) {
     // A shell outside Claude Code can export CLAUDE_CONFIG_DIR too; only Claude Code sets
     // CLAUDE_CODE_CHILD_SESSION=1, in every Bash, hook and status line command it runs.
@@ -147,6 +167,12 @@ const EnvoySectionSchema = z.strictObject({
   natsUrls: z.array(z.string().trim().min(1, "must not be empty")).optional(),
   token: z.string().optional(),
   natsSeed: z.string().optional(),
+  // `broker` or `none`, which `envoySettings` reads (`NATS_AUTH_VAR`); another value turns off
+  // inbound messages alone, naming it, rather than the whole file.
+  natsAuth: z.string().optional(),
+  // `nats` or `listener`, which `envoySettings` reads (`ENVOY_INBOUND`): how the session takes its
+  // inbound messages. Another value turns off inbound messages alone, naming it.
+  inbound: z.string().optional(),
 });
 
 // A top-level `natsUrls` is refused before this schema runs (`parseFile`): it belongs in
@@ -347,6 +373,7 @@ const commandOutcomes: Map<string, KeptOutcome> = processGlobal[COMMAND_OUTCOMES
 processGlobal[COMMAND_OUTCOMES] = commandOutcomes;
 
 function runCommand(command: string, env: EnvoyConfigEnvironment, cwd: string): CommandOutcome {
+  const timeoutMs = commandTimeoutMs(env);
   const childEnv: Record<string, string> = {};
   for (const [name, variable] of Object.entries(env)) {
     if (variable !== undefined) childEnv[name] = variable;
@@ -367,7 +394,7 @@ function runCommand(command: string, env: EnvoyConfigEnvironment, cwd: string): 
         stdin: "ignore",
         stdout: fd,
         stderr: "ignore",
-        timeout: COMMAND_TIMEOUT_MS,
+        timeout: timeoutMs,
         detached: true,
       });
     } catch (error) {
@@ -384,7 +411,7 @@ function runCommand(command: string, env: EnvoyConfigEnvironment, cwd: string): 
     }
     if (result.exitedDueToTimeout) {
       return {
-        failure: `did not finish within ${COMMAND_TIMEOUT_MS / 1000} s, and does not run again in this process`,
+        failure: `did not finish within ${timeoutMs / 1000} s, and does not run again in this process`,
         timedOut: true,
       };
     }
@@ -417,7 +444,8 @@ export type CommandMode = "run" | "kept";
  * A value from the chosen file: as written, or, for one starting with `!`, its command's trimmed
  * stdout. The command runs under `/bin/sh -c` with `env`, in the directory of the file that names
  * it (never the session's working directory, so a relative command or a directory-configured shim
- * resolves against that file), in its own process group, for at most 10 s. Its value is kept for
+ * resolves against that file), in its own process group, for at most 10 s (`commandTimeoutMs`:
+ * a test can set another bound). Its value is kept for
  * the process, shared by every copy of this module loaded in it, keyed by the command, its file and
  * its working directory; so is a run out of time, while a failure that ended on its own (a non-zero
  * exit, empty output, more than one line) is kept for 60 s, then the command runs again. Its exit

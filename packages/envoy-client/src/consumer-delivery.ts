@@ -1,4 +1,4 @@
-import { agentSubject } from "@legion/contracts";
+import { legacyAgentSubject, topicForms } from "@legion/contracts";
 import { z } from "zod";
 import {
   type DedupeIdentity,
@@ -8,7 +8,7 @@ import {
 } from "./delivery";
 import { type DeliveryLedger, envoyNoticeText } from "./delivery-ledger";
 import { messageFor } from "./errors";
-import { registrationTopics, subjectsOverlap } from "./stream-topics";
+import { subjectsOverlap } from "./stream-topics";
 import {
   type DeliveryAnswer,
   type DeliveryRequest,
@@ -27,7 +27,7 @@ export function deliverSubject(sessionID: string): string {
   return `${DELIVER_SUBJECT_PREFIX}${sessionID}`;
 }
 
-/** The headers of a relay frame. */
+/** The headers of a relay frame, and of the listener's connection probe. */
 export const RelayHeader = {
   /** The subject the stream stored the message on. */
   subject: "Envoy-Subject",
@@ -41,6 +41,14 @@ export const RelayHeader = {
   storedAt: "Envoy-Stored-At",
   /** `true` only on the first frame after the relay restarted below the stream's first sequence. */
   gap: "Envoy-Gap",
+  /**
+   * `1` on the listener's connection probe, which is no frame: a core request on this session's
+   * relay subject with this header alone and no body, sent when someone sends to the session. Any
+   * answer, or none within the listener's second, reads connected; NATS no-responders reads
+   * stopped. It never carries a frame header, so it can never decode as a frame and move the
+   * resume point (`receive` answers it before the decode).
+   */
+  probe: "Envoy-Probe",
 } as const;
 
 /**
@@ -301,6 +309,13 @@ export interface ConsumerDelivery {
    * it changed.
    */
   setFollowed(topics: Iterable<string>): void;
+  /**
+   * Forgets only `topics`, keeping every other follow and its stamp: what a registration the
+   * listener refused for some topics does, since another registration may have added a topic
+   * since this one took the follows (`setFollowed`), and that one's frames must still be handed
+   * over. Persists the snapshot when it changed.
+   */
+  unfollow(topics: Iterable<string>): void;
   /** Offers the snapshot to the host's `persist`, when it changed: call it after a frame is
    *  written. */
   persist(): void;
@@ -332,11 +347,21 @@ function parseIdentity(data: string) {
 }
 
 /**
- * Whether a followed topic, expanded as the subscription it stands for, reaches `subject`: the
- * one "does this topic reach this frame" check the follow filter asks.
+ * Whether a followed topic, expanded as the subscription it stands for, reaches a frame whose
+ * subject reads as `forms`: the one "does this topic reach this frame" check the follow filter
+ * asks. The caller passes the frame's forms, which it reads once per frame rather than once per
+ * followed topic.
+ *
+ * Both sides are read in every form of their name while the rename that put a project into an
+ * issue's, an agent's and a role's name is under way (`topicForms`, dispatch://INFRA-3862): the
+ * listener's consumer filters carry both forms, so a frame arrives in a form the session did not
+ * follow in, and this client is the last reader of it. Comparing the spellings as they stand
+ * would drop every such frame, and drop it in silence (`receive` answers `done` and the resume
+ * point passes it). Until the old form is refused only.
  */
-function reaches(topic: string, subject: string): boolean {
-  return expandSubscriptionTopics([topic]).some((pattern) => subjectsOverlap(pattern, subject));
+function reaches(topic: string, forms: readonly string[]): boolean {
+  const patterns = topicForms(topic).flatMap((form) => expandSubscriptionTopics([form]));
+  return forms.some((form) => patterns.some((pattern) => subjectsOverlap(pattern, form)));
 }
 
 function every(ms: number, callback: () => void): () => void {
@@ -360,7 +385,12 @@ export function createConsumerDelivery(options: ConsumerDeliveryOptions): Consum
   const render = options.render ?? renderInbound;
   const now = options.now ?? Date.now;
   const repeat = options.every ?? every;
-  const ownSubject = agentSubject(sessionID);
+  // The session's own inbox, in the old form and under any project: every form of such a subject
+  // holds the old form (`topicForms`), which no other session's does, so a frame on any of them
+  // is its own, whenever the stream stored it. Named because the follow filter and the persisted
+  // follow times must read it the same way.
+  const ownSubject = legacyAgentSubject(sessionID);
+  const ownsSubject = (subject: string): boolean => topicForms(subject).includes(ownSubject);
 
   let currentEpoch: ConsumerEpoch = { id: newEpoch(), startedAt: now() };
   // When each followed topic was first followed, on the host's clock.
@@ -435,10 +465,11 @@ export function createConsumerDelivery(options: ConsumerDeliveryOptions): Consum
   };
 
   const followedAt = (subject: string): number | undefined => {
-    if (subject === ownSubject) return Number.NEGATIVE_INFINITY;
+    if (ownsSubject(subject)) return Number.NEGATIVE_INFINITY;
+    const forms = topicForms(subject);
     let earliest: number | undefined;
     for (const [topic, at] of follows) {
-      if (!reaches(topic, subject)) continue;
+      if (!reaches(topic, forms)) continue;
       if (earliest === undefined || at < earliest) earliest = at;
     }
     return earliest;
@@ -602,6 +633,13 @@ export function createConsumerDelivery(options: ConsumerDeliveryOptions): Consum
   }
 
   const receive = (message: RelayMessage) => {
+    // The listener's connection probe asks only whether this subscription is here, and the
+    // answer says so. It reaches no host, ledger, dedupe cache or resume point, and is logged by
+    // nobody: a session that is sent to often would otherwise log every send to it.
+    if (message.headers?.get(RelayHeader.probe) === "1") {
+      if (message.reply !== undefined && message.reply !== "") send(message.reply, "done");
+      return;
+    }
     const decoded = decodeRelayFrame(message);
     if ("error" in decoded) {
       // Redelivery cannot fix a frame that does not decode, so it is acked away.
@@ -751,10 +789,14 @@ export function createConsumerDelivery(options: ConsumerDeliveryOptions): Consum
       for (const topic of topics) {
         // The session's own agent subject is always followed (`followedAt`), so it is never one of
         // the follow times a host persists.
-        if (topic === ownSubject) continue;
+        if (ownsSubject(topic)) continue;
         next.set(topic, follows.get(topic) ?? at);
       }
       follows = next;
+      persist();
+    },
+    unfollow(topics) {
+      for (const topic of topics) follows.delete(topic);
       persist();
     },
     persist,
@@ -815,6 +857,19 @@ export function inboundUnavailableNoticeText(why: string): string {
   });
 }
 
+/**
+ * What a session that was told its inbound is unavailable is told once a registration is
+ * accepted again, worded once for every host: without it the outage notice is the last word the
+ * session has, and a session that recovered a few seconds later reads itself as deaf for its life.
+ */
+export function inboundRestoredNoticeText(): string {
+  return envoyNoticeText({
+    notice: "Envoy inbound restored",
+    detail:
+      "The listener accepted this session's registration and gave it its durable consumer, so Envoy messages reach it again, the ones the stream stored during the outage first.",
+  });
+}
+
 /** One session's outage report (`inboundUnavailable`). */
 export interface InboundUnavailable {
   /**
@@ -822,19 +877,25 @@ export interface InboundUnavailable {
    * this outage already told it.
    */
   refused(error: unknown): void;
-  /** A registration was accepted: the next outage tells the session again. */
+  /** A registration was accepted: ends the outage, telling the session so through the host's
+   *  `restored` when it was told of the outage, and the next outage tells the session again. */
   accepted(): void;
 }
 
 /**
- * Says once per outage that the session receives nothing. The listener refuses a registration it
- * can give no consumer, and the host registers again at every heartbeat, so a host that told the
- * session each time would tell it every tick for as long as the outage lasts; one that never told
- * it again would leave a second outage silent. `tell` takes the listener's own message
- * (`messageFor`), which each host words with `inboundUnavailableNoticeText` and shows where it
- * shows a gap notice.
+ * Says once per outage that the session receives nothing, and that it receives again once a
+ * registration is accepted. The listener refuses a registration it can give no consumer, and the
+ * host registers again at every heartbeat, so a host that told the session each time would tell
+ * it every tick for as long as the outage lasts; one that never told it again would leave a second
+ * outage silent; and one that never said the outage ended would leave the session believing it
+ * deaf after it recovered. `tell` takes the listener's own message (`messageFor`), which each host
+ * words with `inboundUnavailableNoticeText`, and `restored` is worded with
+ * `inboundRestoredNoticeText`; each host shows both where it shows a gap notice.
  */
-export function inboundUnavailable(tell: (why: string) => void): InboundUnavailable {
+export function inboundUnavailable(
+  tell: (why: string) => void,
+  restored: () => void
+): InboundUnavailable {
   let told = false;
   return {
     refused(error) {
@@ -843,75 +904,9 @@ export function inboundUnavailable(tell: (why: string) => void): InboundUnavaila
       tell(messageFor(error));
     },
     accepted() {
+      if (!told) return;
       told = false;
+      restored();
     },
   };
-}
-
-/** What a registration needs of a session's relay; `ConsumerDelivery` is one. */
-export type RegisteringRelay = Pick<ConsumerDelivery, "setFollowed" | "registration">;
-
-/** What `registerWithRelay` is handed; `Result` is the host client's registration answer. */
-export interface RelayRegistration<Result> {
-  /**
-   * The relay this registration asks the listener for a consumer on, or `undefined` when the
-   * session holds no relay subject (no NATS connection yet, or inbound off for this session).
-   */
-  readonly relay: RegisteringRelay | undefined;
-  /** This session's own agent subject, which every registration carries. */
-  readonly ownAgentSubject: string;
-  /** Every topic the session follows now, filtered by `registrationTopics`. */
-  readonly followed: Iterable<string>;
-  /** The Legion roles this session holds, which decide the controller notice lane it may follow. */
-  readonly roles?: readonly string[];
-  /** This session's outage report, told once per outage. */
-  readonly outage: InboundUnavailable;
-  /** Sends the registration carrying these topics and this delivery request. */
-  readonly send: (topics: readonly string[], delivery: DeliveryRequest) => Promise<Result>;
-  /**
-   * Takes the answer's consumer, once the registration was accepted: the host drops it when it
-   * has since left the session or closed the relay this asked for.
-   */
-  readonly answered: (result: Result) => void;
-}
-
-/**
- * One registration, as every host that holds a relay makes it: the topics the listener will
- * store (`registrationTopics`), stamped on the relay before the registration carries them, then
- * sent, with the outage told once whichever way it ends.
- *
- * A session with no relay subject open is refused here rather than registered: every
- * registration asks for consumer delivery, a session receives only what its own consumer holds,
- * and one carrying no relay would be refused `409 not_requested` and leave nothing registered.
- * The host's next heartbeat tries again.
- */
-export function registerWithRelay<Result>({
-  relay,
-  ownAgentSubject,
-  followed,
-  roles,
-  outage,
-  send,
-  answered,
-}: RelayRegistration<Result>): Promise<Result> {
-  if (relay === undefined) {
-    const refused = new Error(
-      "this session holds no relay subject, so the listener can give it no consumer and it can receive nothing"
-    );
-    outage.refused(refused);
-    return Promise.reject(refused);
-  }
-  const topics = registrationTopics(ownAgentSubject, followed, roles);
-  relay.setFollowed(topics);
-  return send(topics, relay.registration()).then(
-    (result) => {
-      outage.accepted();
-      answered(result);
-      return result;
-    },
-    (error: unknown) => {
-      outage.refused(error);
-      throw error;
-    }
-  );
 }

@@ -1,4 +1,4 @@
-import type { MutationKey } from "@tanstack/react-query";
+import { hashKey, type MutationKey } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 
@@ -29,10 +29,12 @@ import {
   textPrimaryOnSurface,
   textSecondaryOnSurface,
 } from "../../theme/classes";
-import { useHeldSendsUnder } from "../conversation/held-sends";
+import { useHeldSend, useHeldSendsUnder } from "../conversation/held-sends";
+import { KeptReply } from "../conversation/KeptReply";
 import { MentionComposer } from "../conversation/MentionComposer";
 import { passageItem, ReplyQuote } from "../conversation/ReplyQuote";
 import type { SaveCommentEdit } from "../conversation/send-request";
+import { useUnsentDrafts } from "../conversation/unsent-drafts";
 import { AgentName } from "../refs/AgentName";
 import { CopyRefButton } from "../refs/CopyRefButton";
 import { MarkdownBody } from "../refs/MarkdownBody";
@@ -121,6 +123,10 @@ export interface ThreadCardProps {
   pendingAction: boolean;
   /** Renders the root and reply delivery attempts where the owner has event-sourced deliveries. */
   renderDeliveries?(comment: ThreadComment): ReactNode;
+  /** The host's own control that opens this thread again, which the card names when it keeps a
+   *  reply the reader left - the Conversation's Expand thread. A card with none draws a Reply of
+   *  its own beside the line. */
+  reopenControl?: string;
   /** Names the reply composer's send and the thread the held-send store holds it for, so the
    *  reply composer that mounts whenever the card expands shows a reply still out, or its refusal
    *  and draft, whatever unmounted the last one; and a host that holds its own Replies while one
@@ -134,8 +140,10 @@ export interface ThreadCardProps {
   selected?: boolean;
   thread: Thread;
   viewerLogin: string;
-  /** The comment whose inline editor is open; owned by the margin so a card that moves between
-   *  the anchored and discussion lists (a remount) keeps an edit in progress. */
+  /** The comment whose inline editor is open; owned by the host - the margin, the Conversation by
+   *  thread - so a card drawn again keeps an edit in progress: one that moves between the anchored
+   *  and discussion lists, or a phone thread view opened again. The editor keeps what the reader
+   *  wrote while the card is closed or gone (`useKeptDrafts`'s `awayName`). */
   editingCommentId: string | undefined;
   /** The comment whose edit save is in flight; owned with the shared editor state. */
   savingCommentEditId: string | undefined;
@@ -250,6 +258,7 @@ export function ThreadCard({
   pendingAction,
   pulseOrphanBlock = true,
   renderDeliveries,
+  reopenControl,
   replyMutationKey,
   thread,
   viewerLogin,
@@ -329,7 +338,10 @@ export function ThreadCard({
      no reply, it shows only a reply of its own still out or its refusal, and still sends
      (`finishing`). `contents`, so the composer's own box is the one laid out. It sits next to
      the newest message: under the root in Newest first, at the foot of the thread in Oldest
-     first. */
+     first. Its Cancel reply, and Escape in its field, close the thread and keep the draft for
+     it, typed or refused or stopped, which the closed card says (`keptReply`). It answers the
+     card's own comment alone, which leaves the page with the card, so no line of it can outlive
+     the comment it names, and it is handed no `listed`. */
   const replyComposer = expanded ? (
     <div className="contents" hidden={hideReplyComposer}>
       <MentionComposer
@@ -347,6 +359,31 @@ export function ThreadCard({
       />
     </div>
   ) : null;
+  // A reply the card keeps while it is closed - typed and never sent, or a send Dispatch refused
+  // or the reader stopped - is out of sight with its composer, under the thread's reply send name
+  // (`MentionComposer`'s `inline`). The card says so, whose comment it answers and how to go on
+  // with it, until the reader opens the thread again: nothing is sent until they press.
+  const heldReply = useHeldSend(replyMutationKey);
+  const unsentReply = useUnsentDrafts().useKept(
+    replyMutationKey === undefined ? "" : hashKey(replyMutationKey)
+  );
+  const keptReply =
+    !expanded && (heldReply?.status === "refused" || unsentReply) ? (
+      <div className="mt-2 flex flex-wrap items-center gap-3">
+        <p className={`text-sm ${textMutedOnSurfaceMuted}`} role="status">
+          <KeptReply actor={root.author} press={reopenControl ?? "Reply"} />
+        </p>
+        {reopenControl === undefined ? (
+          <button
+            className={`font-medium ${linkText} ${linkHoverText}`}
+            onClick={onToggle}
+            type="button"
+          >
+            Reply
+          </button>
+        ) : null}
+      </div>
+    ) : null;
 
   return (
     <>
@@ -584,6 +621,7 @@ export function ThreadCard({
             </span>
           </button>
         )}
+        {keptReply}
         {composerFirst ? null : replyComposer}
         {expanded ? null : renderDeliveries?.(root)}
         {actionFailure === undefined ? null : (

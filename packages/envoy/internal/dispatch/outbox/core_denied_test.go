@@ -77,7 +77,7 @@ func publishedDestinations(t *testing.T, database *store.Store, eventID int64) (
 
 // holderSubject is the agent subject of roleHolder, every role's holder in a test that runs the
 // outbox with heldRoles.
-var holderSubject = contracts.AgentSubject(roleHolder)
+var holderSubject = contracts.LegacyAgentSubject(roleHolder)
 
 // A role route whose forward to its holder NATS denies (a per-client grant without the holder's
 // agent subject) is not published: the outbox does not record the destination, does not mark the
@@ -300,7 +300,7 @@ func TestRunRetriesAnIssueTopicNATSDenies(t *testing.T) {
 		Store: database, Publisher: client, Broker: broker, Listen: database.Pool.Listener,
 		PublishFailures: registry.NewCounter("envoy_dispatch_outbox_publish_failures_total",
 			"Destinations of an outbox publish attempt that did not reach NATS"),
-	}, 10*time.Second)
+	})
 	defer stop()
 
 	// A denial the outbox counts settles the wait through attempt_count; one it reads as an
@@ -552,7 +552,7 @@ func TestRunCountsADeniedSubjectOncePerRefusedMessage(t *testing.T) {
 		Store: database, Publisher: client, Broker: broker, Listen: database.Pool.Listener,
 		PublishFailures: registry.NewCounter("envoy_dispatch_outbox_publish_failures_total",
 			"Destinations of an outbox publish attempt that did not reach NATS"),
-	}, 10*time.Second)
+	})
 	defer stop()
 
 	// An outage line settles the wait as a counted attempt does, so the assertions below name it

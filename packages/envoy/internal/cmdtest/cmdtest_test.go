@@ -67,9 +67,16 @@ func heldPortChild() int {
 
 // A held port stays bound from HoldPort until the process it was passed to serves on it, with only
 // that process holding it once Start returns: another program's bind in the meantime is refused,
-// the process serves on the socket, and the port is free again once it exits.
+// the process serves on the socket, and nothing holds the socket once it exits.
 func TestHeldPortStaysHeldUntilItsProcessServes(t *testing.T) {
 	held := HoldPort(t)
+	// The socket's inode names it whoever holds a descriptor of it, which a port does not: once the
+	// socket is closed, another program may bind the port and listen there.
+	var stat syscall.Stat_t
+	if err := syscall.Fstat(int(held.file.Fd()), &stat); err != nil {
+		t.Fatalf("read the held socket's inode: %v", err)
+	}
+	inode := strconv.FormatUint(stat.Ino, 10)
 	cmd := exec.Command(os.Args[0])
 	cmd.Env = append(os.Environ(), heldPortChildEnv+"=1")
 	held.Pass(cmd, heldPortFD)
@@ -88,6 +95,9 @@ func TestHeldPortStaysHeldUntilItsProcessServes(t *testing.T) {
 	}
 	if !errors.Is(err, syscall.EADDRINUSE) {
 		t.Fatalf("another listener's bind of %s before the child served: %v; want address already in use", held.Addr, err)
+	}
+	if !SocketListens(t, inode) {
+		t.Fatalf("/proc/net/tcp lists no listening socket of inode %s while the child holds it, so it cannot say when nothing does", inode)
 	}
 
 	if _, err := io.WriteString(serve, "serve\n"); err != nil {
@@ -116,13 +126,11 @@ func TestHeldPortStaysHeldUntilItsProcessServes(t *testing.T) {
 		t.Fatalf("the child exited %d:\n%s", code, child.Output.String())
 	}
 
-	// The test's cleanup has not run yet, so a bind that succeeds now shows Start closed the test's
-	// copy, and the child released its own on exit.
-	rebound, err := net.Listen("tcp", held.Addr)
-	if err != nil {
-		t.Fatalf("bind %s after the child exited: %v; want it free", held.Addr, err)
+	// The test's cleanup has not run yet, so no listening socket of the inode now shows Start closed
+	// the test's copy, and the child released its own on exit.
+	if SocketListens(t, inode) {
+		t.Fatalf("a socket of inode %s still listens after the child exited: the test's copy or the child's was left open", inode)
 	}
-	_ = rebound.Close()
 }
 
 // StartThen runs afterExit once the process has exited and before it closes Exited, so a test

@@ -1,7 +1,7 @@
 //go:build e2e
 
 // The Burstable issue pod live proof's driver (scripts/e2e/burstable-kind.sh, which builds it with
-// `-tags e2e`, owns the throwaway kind cluster it runs on, runs `legion start --check-config` on
+// `-tags e2e`, owns the throwaway kind cluster it runs on, runs `legion config check` on
 // the files this writes, and reads the pods' QoS class back with kubectl). Two legion.yaml files,
 // one giving the issue pod a memory request below its limit and one with no `resources` block,
 // are each read by the daemon's own loader and translated by the daemon's own sandboxOptions, and

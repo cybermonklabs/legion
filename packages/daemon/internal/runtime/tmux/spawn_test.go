@@ -15,6 +15,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
@@ -50,7 +51,8 @@ func TestProvisionBoundIsZero(t *testing.T) {
 
 // A `-P -F` report is three tokens from new-window and two from split-window; anything else is a
 // launch failure naming the command and tmux's stderr, never the report (parsePaneReport, tmux.ts,
-// and tmux.test.ts's openWindow cases for a malformed report).
+// and tmux.test.ts's openWindow cases for a malformed report). A command that did not succeed is a
+// launch failure too, even where it printed a well-formed report before a signal ended it.
 func TestReadPaneReport(t *testing.T) {
 	report, err := readPaneReport("new-window", result{stdout: "@42 %1 4242\n"}, true)
 	if err != nil || report != (paneReport{window: "@42", pane: "%1", pid: 4242}) {
@@ -69,6 +71,8 @@ func TestReadPaneReport(t *testing.T) {
 		{"new-window", result{stdout: "GH_TOKEN=leaked-value\n", stderr: "unexpected output"}, true, "tmux new-window did not report a window id: unexpected output"},
 		{"new-window", result{stdout: "@42 leaked 1\n"}, true, "tmux new-window did not report a pane id: tmux printed nothing on stderr"},
 		{"split-window", result{stdout: "%7 0\n"}, false, "tmux split-window did not report a pane pid: tmux printed nothing on stderr"},
+		{"new-window", result{exitCode: -1, signal: "signal: killed", stdout: "@7 %9 4242\n", stderr: "lost server"}, true, "tmux new-window was ended by signal: killed: lost server"},
+		{"split-window", result{exitCode: 1, stdout: "%7 5151\n", stderr: "no space for new pane"}, false, "tmux split-window failed (exit 1): no space for new pane"},
 	} {
 		_, err := readPaneReport(tc.command, tc.result, tc.window)
 		if err == nil || err.Error() != tc.want {
@@ -365,7 +369,11 @@ func TestValidateSpawnSpecRefusesACollisionWithAProviderKey(t *testing.T) {
 
 // The runtime reads the provider-env directory once, at construction — boot, before any pane — and
 // refuses a key every pane already carries, or one whose pointer every pane carries, rather than
-// open panes whose shim would refuse to start or drop the key without a word.
+// open panes whose shim would refuse to start or drop the key without a word. It also refuses,
+// with runtime.PaneVariableRefusal's reason, a key that places the session a resume reads or that
+// a launcher tells a Claude Code pane or a resumed Oh My Pi pane after the operator's variables:
+// the shim exports a provider key into Oh My Pi's environment, where it would act as the pane
+// variable of that name, which pane_env refuses.
 func TestNewRefusesAProviderKeyEveryPaneCarries(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -376,6 +384,10 @@ func TestNewRefusesAProviderKeyEveryPaneCarries(t *testing.T) {
 		{"a variable the runtime sets", "LEGION_TREE", "tmux runtime: provider key LEGION_TREE is a variable every pane already carries"},
 		{"PATH", "PATH", "tmux runtime: provider key PATH is a variable every pane already carries"},
 		{"one whose pointer every pane carries", "LEGION_BOOT_TOKEN", "tmux runtime: provider key LEGION_BOOT_TOKEN would not reach OMP: every pane carries LEGION_BOOT_TOKEN_FILE"},
+		{"one a resumed Oh My Pi pane is told", "OMP_SESSION_EXCLUSIVE", "tmux runtime: provider key OMP_SESSION_EXCLUSIVE: the runtime sets it on every resumed Oh My Pi pane itself, after the operator's variables"},
+		{"one a Claude Code pane is told", "CLAUDE_CONFIG_DIR", "tmux runtime: provider key CLAUDE_CONFIG_DIR: the runtime sets it on every Claude Code pane itself, after the operator's variables"},
+		{"Oh My Pi's config root", "OMP_CONFIG_ROOT", "tmux runtime: provider key OMP_CONFIG_ROOT: it decides where Oh My Pi keeps the session a resume reads, which the runtime places itself"},
+		{"Oh My Pi's config directory", "PI_CONFIG_DIR", "tmux runtime: provider key PI_CONFIG_DIR: it decides where Oh My Pi keeps the session a resume reads, which the runtime places itself"},
 		{"a file not named for a variable", "KEY.tmp", `tmux runtime: provider-env entry "KEY.tmp" is not named for an environment variable`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -467,6 +479,7 @@ func TestRuntimeOwnedIsWhatEveryPaneIsToldByTheRuntime(t *testing.T) {
 		EnvoyURL: "http://127.0.0.1:9020", NATSURLs: []string{"nats://a:4222"},
 		DispatchURL: "http://127.0.0.1:18766", DispatchTokenFile: "/state/secrets/" + runtime.DispatchTokenFileName,
 		GHOwnersDir: "/state/secrets/legion-omp-legion-43-tester-gh", GHDefault: "acme", GH: "/usr/bin/gh",
+		LeakCheckManifestSHA256: strings.Repeat("5e", 32),
 	}
 	owned := maps.Clone(runtimeOwned)
 	maps.Copy(owned, composed)
@@ -494,6 +507,37 @@ func TestRuntimeOwnedIsWhatEveryPaneIsToldByTheRuntime(t *testing.T) {
 	}
 	if ownedNames["PUBLIC_LEAK_CHECK"] {
 		t.Error("PUBLIC_LEAK_CHECK is in ownedNames, so a spec that points its pane at another copy of the check is refused")
+	}
+}
+
+// A pane is told the deployment's checker (leakguard.CheckerVar) exactly where the deployment
+// names a shared leak check, once and with the setting's own value: it is the sign that the
+// deployment runs a check, under which a pane with no check refuses its public writes. A pane's
+// `legion gh` trusts its read rule under the program that rule was proven against, not under this
+// checker. A deployment that names none tells its panes nothing of it, so they refuse no write for
+// the check's absence.
+func TestAPaneIsToldTheDeploymentsCheckerOnlyWhereItNamesOne(t *testing.T) {
+	checker := strings.Repeat("5e", 32)
+	for _, tc := range []struct {
+		name, sha string
+		want      []string
+	}{
+		{name: "a deployment that names a check", sha: checker, want: []string{checker}},
+		{name: "a deployment that names none", sha: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			spec := testSpec()
+			in := PaneInputs{StateDir: "/state", Workspace: "/state/workspaces/LEGION-43", LeakCheckManifestSHA256: tc.sha}
+			var told []string
+			for _, pair := range panePairs(spec, in, secretFiles("/state", spec)) {
+				if value, ok := strings.CutPrefix(pair, leakguard.CheckerVar+"="); ok {
+					told = append(told, value)
+				}
+			}
+			if !slices.Equal(told, tc.want) {
+				t.Errorf("the pane was told %s %q, want %q", leakguard.CheckerVar, told, tc.want)
+			}
+		})
 	}
 }
 

@@ -24,6 +24,8 @@ function describe(event: DispatchEvent): string | AgentPart[] {
       return `Project created: ${event.payload.name}`;
     case "project.updated":
       return `Project updated: ${event.payload.name}`;
+    // No build writes this event now: a project's default repository is on the project. An event
+    // retained from an earlier build keeps its wording.
     case "settings.repo_project.updated":
       return `${event.payload.deleted ? "Repository mapping removed" : "Repository mapping updated"}: ${event.payload.mapping.repo}`;
     // No write clears a default now: a project always names somebody. An event retained from
@@ -81,9 +83,11 @@ function describe(event: DispatchEvent): string | AgentPart[] {
     case "message.answered":
       return event.payload.body;
     case "message.delivery":
-      // A duplicate attempt reached the listener and the stream stored nothing new; its state is
-      // still `sent`, so reporting the state alone would read as a fresh delivery.
-      return event.payload.duplicate === true
+      // A queued attempt reads as queued, a queued repeat included: the listener holds it for a
+      // session that is not running. Any other duplicate attempt reached the listener and the
+      // stream stored nothing new; its state is still `sent`, so reporting the state alone would
+      // read as a fresh delivery.
+      return event.payload.state !== "queued" && event.payload.duplicate === true
         ? `Message already delivered: ${capabilityLabel(event.payload.delivery)}`
         : `Message ${event.payload.state}: ${capabilityLabel(event.payload.delivery)}`;
     case "message.accepted":
@@ -103,7 +107,7 @@ function describe(event: DispatchEvent): string | AgentPart[] {
         : "Comment re-anchored after an edit";
     case "comment.delivery":
       // Same rule as message.delivery above.
-      return event.payload.duplicate === true
+      return event.payload.state !== "queued" && event.payload.duplicate === true
         ? `Comment already delivered: ${capabilityLabel(event.payload.delivery)}`
         : `Comment ${event.payload.state}: ${capabilityLabel(event.payload.delivery)}`;
     case "issue.created":
@@ -129,9 +133,9 @@ function describe(event: DispatchEvent): string | AgentPart[] {
     case "artifact.removed":
       return `Removed ${event.payload.artifact.name}`;
     case "artifact.approved":
-      return `Approved v${event.payload.version}`;
+      return `Approved ${event.payload.name} v${event.payload.version}`;
     case "artifact.changes_requested":
-      return `Changes requested on v${event.payload.version}`;
+      return `Changes requested on ${event.payload.name} v${event.payload.version}`;
     case "artifact.version":
       return `Saved ${event.payload.name} v${event.payload.version.number}`;
     case "artifact.human_edited":

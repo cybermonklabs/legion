@@ -14,8 +14,10 @@ import (
 // process.
 type Launcher interface {
 	// Launch is spec's inner command and the -e pairs its pane carries beside every pane's, with
-	// whatever the harness keeps under the state directory for the claim made.
-	Launch(spec runtime.SpawnSpec, host Host) (inner string, pairs []string, err error)
+	// whatever the harness keeps under the state directory for the claim made. promptFile is the
+	// file launch wrote the claim's composed prompt to (runtime.WriteSystemPrompt), which the
+	// command names as the agent's system prompt.
+	Launch(spec runtime.SpawnSpec, host Host, promptFile string) (inner string, pairs []string, err error)
 	// Marker is what the command line of a pane's process holds while the pane runs this harness:
 	// the last tier of verifyPane (runsAgent).
 	Marker() string
@@ -23,7 +25,8 @@ type Launcher interface {
 	// whose environment is env (the pane's: the daemon's allow-listed variables, the XDG base
 	// directories under the state directory, and the operator's pane variables) in workDir, keeps
 	// its sessions, one folder per working directory: where a resume looks for a recorded session
-	// that was carried onto this host from elsewhere (sessionFileOf).
+	// that was carried onto this host from elsewhere (sessionFileOf), and for the file of a
+	// session the claim recorded by its id alone (sessionFileByID).
 	SessionsDir(spec runtime.SpawnSpec, host Host, env map[string]string, workDir string) (string, error)
 }
 
@@ -44,9 +47,17 @@ type ompLauncher struct {
 	invocation string
 }
 
-// Launch is innerCommand; an Oh My Pi pane carries no pairs of its own.
-func (l ompLauncher) Launch(spec runtime.SpawnSpec, _ Host) (string, []string, error) {
-	return innerCommand(l.prefix, l.invocation, spec.ResumeSessionFile, spec.Prompt), nil, nil
+// Launch is innerCommand on promptFile. An Oh My Pi pane carries one pair of its own, and only when
+// it resumes a recorded session: runtime.SessionExclusiveVariable set to 1, so a resume of a
+// session another live process still holds ends the pane's Oh My Pi rather than moving it onto a
+// session id the daemon never recorded. The pair comes after the operator's pane variables, which
+// may not name it (runtime.PaneVariableRefusal). A fresh launch carries no pairs.
+func (l ompLauncher) Launch(spec runtime.SpawnSpec, _ Host, promptFile string) (string, []string, error) {
+	var pairs []string
+	if spec.ResumeSessionFile != "" {
+		pairs = []string{"-e", runtime.SessionExclusiveVariable + "=" + runtime.SessionExclusiveValue}
+	}
+	return innerCommand(l.prefix, l.invocation, spec.ResumeSessionFile, promptFile), pairs, nil
 }
 
 // Marker is "omp", which the invocation in an Oh My Pi pane's command line names.

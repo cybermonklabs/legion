@@ -1,0 +1,58 @@
+kind: Added
+body: |-
+  A project can be paused and resumed as a whole. The controller calls
+  `POST /legion/v1/project/pause` and `POST /legion/v1/project/resume`, and the operator runs
+  `legion project pause --reason <text>` and `legion project resume`. While the project is paused,
+  the daemon admits no issue, launches no session and hands no task to any session but the
+  controller's. Each other session stops: an idle one at once, and one in a turn when that turn
+  ends. Its conversation is kept, and its pod is kept from the idle release, the unowned-pod
+  release and an update round until a session of it runs again. Every task, notice, start and wake
+  that arrives meanwhile waits: in the outbox, or with its claim for a task that a claim already
+  holds. The resume lets each held launch out through the wake pacing, once for each session. The
+  pause holds across a restart. `legion state` and the state route show the pause and the last
+  pause, and the daemon logs each pause, stop, resume and released row. A daemon under
+  `runtime: tmux`, with `idle_minutes: 0` or with `worker_wakes_per_minute: 0` refuses a pause with
+  `PAUSE_UNAVAILABLE`, and `legion config check` prints `pause unavailable: <setting>`.
+  While paused, the operations that would start a turn of another session answer `PROJECT_PAUSED`.
+  A claim of another project's issue, which `legion claims spawn` makes under the daemon's own
+  project, is paused like any other claim. The architect-stalled wake and the stalled-tree notice
+  tell nothing while the project is paused, and count no time that a pause held the project. After
+  the resume, the wake of a session that the pause stopped, and the wake taken for a notice, a
+  hook's prompt, a merge-queue removal or a merge forward's message that the pause held, are
+  wakes of that pause, which `read_release_records` counts as `heldByPause`. An update round over
+  a pod that the pause held counts no time until the wake pacing has let out every launch that the
+  pause held for a session of the pod, those wakes included. The round's own ask is queued only for
+  a session that is ready, and an ask that the pause held wakes, after the resume, a session that
+  the pause stopped. A role message of the daemon's own that the pause held for a session that a
+  pause stopped reaches that session once it is back and holds its role, across a second pause
+  too, and its publish is what wakes the session; one held for a session that no pause stopped,
+  such as one an idle release had released before the pause, finishes undelivered and wakes
+  nothing, as a role message to a released session does.
+  A production check's look that began before the pause ended counts its two hours from the
+  resume, or from its session's last ready after the resume where that is later, and nothing while
+  that session is still starting.
+  Six changes apply in every project, also when no pause is ever made. The stuck clock of a
+  resume starts when the wake pacing lets the launch out, not when the wake arrived, so a launch
+  that waited its turn in a long queue is not warned stuck for that wait. The architect-stalled
+  wake no longer counts an architect's wait for its launch in the wake pacing: its took-nothing
+  arm counts a task only while the architect's agent is up, from that agent's last ready, and its
+  slow-before-gate arm counts from the architect's first confirmation of its entry's task where
+  that is later, and after a pause from no earlier than the let-out of the launch that the pause
+  held for it. The slow-before-gate arm still counts that wait while no turn has confirmed the
+  entry's task, so a root whose architect never takes it is still told. A `suspend` row that
+  takes over a released role cancels only that role's backstop, so another role of the pod, such
+  as a worker waiting on a deploy, keeps its own. Every wake's `start` row carries the wake's kind
+  (`wakeKind`), and the pause's `pause` where one held it. On a database that other projects'
+  daemons share, the daemon reads an issue record by its key only where the record is of its own
+  project, and it writes, changes or deletes no outbox row keyed by another project's issue, since
+  only that project's daemon runs such a row. So an operator's spawn of another project's issue
+  finds no record here: its ready, a failure of it, a lost session, a session store fault, a memory
+  guard kill and an operator's retry write no row of that issue and change no record of that
+  project, its role changes queue no role-holders publication of that project, and the idle
+  release releases no pod of it. A new pod restores a saved workspace only of an issue that its own
+  project records, so it never takes the workspace another project's daemon saved for its own pod.
+  The daemon API contract is 178. Before a rollback to an earlier release, do three things in this
+  order (docs/kubernetes.md, "Rolling back the project pause"). Resume the project. Resume one role
+  of each pod that a pause still holds, because an earlier release reads no hold and deletes a held
+  pod in which no role is live, with its unpushed work. Then, with the daemon stopped, run the
+  three statements of the migration `20261115194357_project_pause.up.sql`.

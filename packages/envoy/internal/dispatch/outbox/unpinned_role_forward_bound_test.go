@@ -142,9 +142,9 @@ func TestAForwardPastItsBoundIsHeldAsARowAndStopsHoldingTheHoldersLaterEvents(t 
 			unnamedForwardBound, attempts, publishFailure(failure), reached)
 	}
 	_, _, reached := eventState(t, rig.database, comment.ID)
-	if slices.Contains(reached, roleTopic) || slices.Contains(reached, contracts.AgentSubject(holder)) {
+	if slices.Contains(reached, roleTopic) || slices.Contains(reached, contracts.LegacyAgentSubject(holder)) {
 		t.Fatalf("the comment reached %v past the bound, want neither %s nor %s among them: the copy is the row's, not the event's",
-			reached, roleTopic, contracts.AgentSubject(holder))
+			reached, roleTopic, contracts.LegacyAgentSubject(holder))
 	}
 	if rows := heldDestinations(t, rig.database, commentID); !slices.Contains(rows, roleTopic) {
 		t.Fatalf("the comment holds fallback rows %v past the bound, want %s among them: the forward is held as a row of the role's own topic, keyed by its holder, rather than published under the event's own key",

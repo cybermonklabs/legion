@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -101,8 +102,10 @@ type RequestOptions struct {
 // WindowUntil returns a Sender whose sends all go out on one connection, or not at all. Its first
 // send waits, within publishAcknowledgementTimeout, for the client to have a connection, and pins
 // the window to it. Every later send checks that connection first and answers ErrUnavailable at
-// once, without sending, once it has been lost or has reconnected since, so a window does not go
-// on sending across a connection it saw fail.
+// once, without sending, once it has been lost or has reconnected since (window.current), so a
+// window does not go on sending across a connection it saw fail. That check reads no state of
+// nats.go's and waits for no lock nats.go holds, which a reconnect's handshake and a write to a slow
+// socket hold: it reads whether nats.go has reported the connection's life over (connLife).
 //
 // A window keeps no order of its own between its sends. Its answers come back in whatever order
 // the server and the stream give them, and a JetStream publish NATS did not acknowledge may still
@@ -146,12 +149,23 @@ type window struct {
 	// deadline, when not nil, is the moment the window's sends stop writing (WindowUntil).
 	deadline func() time.Time
 
-	// pinning guards conn, js and reconnects while the first send pins them (pin); they never
-	// change after it.
-	pinning    sync.Mutex
-	conn       *nats.Conn
-	js         nats.JetStreamContext
-	reconnects uint64
+	// pinning guards conn, js and life, which the first send sets (pinFirst) and nothing changes
+	// after. It is held only to read and to set them: no wait for a connection and no read of
+	// nats.go's state is made under it.
+	pinning sync.Mutex
+	conn    *nats.Conn
+	js      nats.JetStreamContext
+	// life is the life of conn the window pinned (connLife.current), closed once nats.go has
+	// reported that life over.
+	life <-chan struct{}
+	// afterConnected and pinCountRead are nil outside the row that stages a drop between the
+	// connected read and the life pin. The second runs after the count read and before pinIf.
+	afterConnected atomic.Pointer[func()]
+	pinCountRead   atomic.Pointer[func()]
+	// connectionWaitEntered, when set, runs as a first send begins its wait for a connection
+	// (pinFirst). It is nil outside tests: a row sets it on the window it drives, to see two first
+	// sends wait side by side.
+	connectionWaitEntered atomic.Pointer[func()]
 }
 
 func (w *window) PublishAsync(item contracts.Envelope) <-chan error {
@@ -202,24 +216,79 @@ func (w *window) send(subject string, item contracts.Envelope, msgID string) (fu
 }
 
 // pin pins the window to the client's connection at its first send, waiting up to wait for the
-// client to have one, and at every later one answers ErrUnavailable unless that connection is
-// still connected and has not reconnected.
+// client to have one, and at every later one answers ErrUnavailable once that connection is no
+// longer current (current).
+//
+// It holds pinning only to read and to set the pin. The first send's wait for a connection, and its
+// reads of the connection, are made with it released and end at wait whatever nats.go is doing
+// (Bounded): nats.go holds its connection lock through a reconnect's dial and handshake.
+// The check of a pinned connection waits for no lock nats.go holds
+// (current), so no send of the window waits for a handshake, nor behind another send that does.
 func (w *window) pin(wait time.Duration) error {
 	w.pinning.Lock()
-	defer w.pinning.Unlock()
-	if w.conn == nil {
-		ctx, cancel := context.WithTimeout(context.Background(), wait)
-		defer cancel()
-		if err := w.client.ensureConnWithContext(ctx); err != nil {
-			return fmt.Errorf("bus: %w: %w", ErrUnavailable, err)
+	pinned := w.life != nil
+	w.pinning.Unlock()
+	if !pinned {
+		if err := w.pinFirst(wait); err != nil {
+			return err
 		}
-		w.client.mu.Lock()
-		w.conn, w.js = w.client.Conn, w.client.js
-		w.client.mu.Unlock()
-		w.reconnects = w.conn.Stats().Reconnects
 	}
 	if !w.current() {
 		return fmt.Errorf("bus: %w: the window's connection was lost or reconnected since its first send", ErrUnavailable)
+	}
+	return nil
+}
+
+// pinFirst waits up to wait for the client to have a connection, with pinning released, and pins
+// the window to its current life (connLife), unless another send pinned it first. It takes that
+// life before it reads connected; a report of its end after either read closes the channel and the
+// loop tries the connection again. The reconnect count records a life only while that same channel
+// is still current and unpinned.
+func (w *window) pinFirst(wait time.Duration) error {
+	ctx, cancel := context.WithTimeout(context.Background(), wait)
+	defer cancel()
+	type connection struct {
+		conn *nats.Conn
+		js   nats.JetStreamContext
+		life <-chan struct{}
+	}
+	if entered := w.connectionWaitEntered.Load(); entered != nil {
+		(*entered)()
+	}
+	got, _, err := Bounded(ctx, func() (connection, error) {
+		for {
+			if err := w.client.ensureConnWithContext(ctx); err != nil {
+				return connection{}, err
+			}
+			w.client.mu.Lock()
+			pinned := connection{conn: w.client.Conn, js: w.client.js}
+			w.client.mu.Unlock()
+			life := lifeOf(pinned.conn)
+			ch := life.current()
+			if !pinned.conn.IsConnected() {
+				continue
+			}
+			if connected := w.afterConnected.Load(); connected != nil {
+				(*connected)()
+			}
+			count := pinned.conn.Stats().Reconnects
+			if read := w.pinCountRead.Load(); read != nil {
+				(*read)()
+			}
+			if !life.pinIf(ch, count) {
+				continue
+			}
+			pinned.life = ch
+			return pinned, nil
+		}
+	})
+	if err != nil {
+		return fmt.Errorf("bus: %w: %w", ErrUnavailable, err)
+	}
+	w.pinning.Lock()
+	defer w.pinning.Unlock()
+	if w.life == nil {
+		w.conn, w.js, w.life = got.conn, got.js, got.life
 	}
 	return nil
 }
@@ -252,10 +321,47 @@ func (w *window) pinToSend() error {
 	return pinned
 }
 
-// current reports whether the window's connection is connected and has not reconnected since the
-// window pinned it.
+// ConnLockWait is how long a caller that holds a lock of its own, or that something holding one
+// waits for, waits for a call to NATS before it takes nats.go's connection lock as held by a
+// reconnect. nats.go holds that lock for microseconds to write or read a frame, and for a whole
+// reconnect attempt, the dial and the handshake (v1.53.1 doReconnect, nats.go:3458-3485), up to the
+// attempt's connect timeout (connectTimeout), or the hub's authorization timeout while its auth
+// service holds the CONNECT. A call kept waiting longer is answered as a reconnect in progress: an
+// intake's stop goes on without it (internal/dispatch/delivery). On a box loaded enough to keep such
+// a call waiting this long, the caller answers a loss it need not have, which costs it what a loss
+// costs and holds it no longer.
+const ConnLockWait = 100 * time.Millisecond
+
+// current reports whether the window's connection is still in the life the window pinned: nats.go
+// has reported it neither reconnecting, disconnected nor closed since (connLife). It reads no state
+// of nats.go's and takes no lock but pinning, so a reconnect's handshake and a write to a slow socket
+// that hold nats.go's connection lock change nothing here: a healthy connection stays current, and
+// one nats.go has reported lost is lost at once. A window pinned after a reconnect landed, and before
+// the client heard of it, pinned the life that reconnect began, and keeps it.
+//
+// nats.go's report of a life's end reaches connLife and ends the life when its drain goroutine
+// runs, so a send can be checked between the report and the drain. While nats.go is reconnecting
+// it refuses that write (unsent); only a goroutine kept from running through a whole reconnect
+// attempt lets the write land on the reconnected connection.
 func (w *window) current() bool {
-	return w.conn.IsConnected() && w.conn.Stats().Reconnects == w.reconnects
+	select {
+	case <-w.lifeEnded():
+		return false
+	default:
+		return true
+	}
+}
+
+// lifeEnded is the channel closed when the life the window pinned ends (connLife), the one current
+// reads: a wait that must end at the loss selects on it, rather than on the client's connection
+// event and a read of current after it. The client hears of a loss on nats.go's callback goroutine
+// (onDisconnect) and connLife on its drain goroutine, in either order, so a wait that woke on the
+// client's event could read the life as current, wait for the client's next event, and get none
+// while the connection kept failing to reconnect.
+func (w *window) lifeEnded() <-chan struct{} {
+	w.pinning.Lock()
+	defer w.pinning.Unlock()
+	return w.life
 }
 
 // sendJetStream publishes data, an envelope's encoding, to the stream on subject, under msgID as
@@ -270,12 +376,15 @@ func (w *window) sendJetStream(subject, msgID string, data []byte) (func() error
 	if msgID != "" {
 		options = append(options, nats.MsgId(msgID))
 	}
+	// The refusal signal is taken before the message goes out, so a violation of this send closes
+	// it whenever it is recorded (acknowledged).
+	signal := w.client.refusalSignal()
 	sentAt := time.Now()
 	future, err := w.js.PublishMsgAsync(&nats.Msg{Subject: subject, Data: data}, options...)
 	if err != nil {
 		return nil, w.unsent(err, len(data))
 	}
-	return func() error { return w.acknowledged(future, subject, sentAt) }, nil
+	return func() error { return w.acknowledged(future, subject, sentAt, signal) }, nil
 }
 
 // requestReplies is how many replies to one Request wait to be read: it expects the stream's
@@ -309,7 +418,8 @@ const requestReplies = 4
 //     a flush that could not confirm the publish comes back and once more before the timeout is
 //     answered;
 //   - ErrUnavailable once the window's connection is lost or reconnects before an answer, whether
-//     the loss came before the flush, during it, or after it;
+//     the loss came before the flush, during it, or after it: the moment connLife ends the life
+//     the window pinned, whether or not the client has heard of the loss yet (lifeEnded);
 //   - when the stream did not acknowledge the copy within opts.Timeout on a connection that
 //     stayed current, an error wrapping ErrNotAcknowledged, and ErrPublishUnconfirmed with the
 //     flush's own reason when the flush failed or could not confirm the publish.
@@ -334,13 +444,13 @@ func (w *window) request(subject string, item contracts.Envelope, opts RequestOp
 	if err != nil {
 		return nil, err
 	}
-	// Taken before the pin reads the connection, so every connection event from here on wakes the
-	// wait for the answer.
-	changed := w.client.ConnectionChanged()
 	if err := w.pinToSend(); err != nil {
 		return nil, err
 	}
-	inbox := nats.NewInbox()
+	// The life the pin holds the window to: it never changes once pinned, so its end, at any moment
+	// from here on, is the loss this request answers.
+	ended := w.lifeEnded()
+	inbox := w.conn.NewInbox()
 	replies := make(chan *nats.Msg, requestReplies)
 	inboxSub, err := w.conn.ChanSubscribe(inbox, replies)
 	if err != nil {
@@ -355,7 +465,10 @@ func (w *window) request(subject string, item contracts.Envelope, opts RequestOp
 	deadline := time.Now().Add(cmp.Or(opts.Timeout, publishAcknowledgementTimeout))
 	before := observe(w.conn)
 	// Read right before the send, so the request takes only a violation the server reported of
-	// its own message and never one an earlier send of the subject earned (deniedPublish).
+	// its own message and never one an earlier send of the subject earned (deniedPublish); the
+	// refusal signal is taken first, so a violation of this send closes it whenever it is
+	// recorded.
+	signal := w.client.refusalSignal()
 	sentAt := time.Now()
 	if err := w.conn.PublishMsg(msg); err != nil {
 		_ = inboxSub.Unsubscribe()
@@ -446,27 +559,45 @@ func (w *window) request(subject string, item contracts.Envelope, opts RequestOp
 		lost := func() error {
 			return fmt.Errorf("bus: %w: the window's connection was lost or reconnected before the request to %q was answered", ErrUnavailable, subject)
 		}
-		timer := time.NewTimer(time.Until(deadline))
-		defer timer.Stop()
+		var expired <-chan time.Time
+		var flushSettled func()
+		if expiry := w.client.requestExpiry; expiry != nil {
+			expired, flushSettled = expiry(deadline)
+		}
+		if expired == nil {
+			timer := time.NewTimer(time.Until(deadline))
+			defer timer.Stop()
+			expired = timer.C
+		}
+		// The record answers the request as soon as the violation is recorded too
+		// (refusalSignal), so a refusal the flush could not name is not left to the timeout. The
+		// signal was taken before the message went out, so a violation recorded since closes it,
+		// and it is taken again on each wake before the record is read.
 		for {
 			select {
+			case <-signal:
+				signal = w.client.refusalSignal()
+				if denial := denied(); denial != nil {
+					return denial
+				}
 			case err := <-flushed:
 				if settled := settleFlush(err); settled != nil {
 					return settled
+				}
+				if flushSettled != nil {
+					flushSettled()
 				}
 			case reply := <-replies:
 				if settled, err := outcome(reply); settled {
 					return err
 				}
-			case <-changed:
+			case <-ended:
+				// The loss is the answer, though a reply that arrived with it still counts.
 				if settled, err := drained(); settled {
 					return err
 				}
-				if !w.current() {
-					return lost()
-				}
-				changed = w.client.ConnectionChanged()
-			case <-timer.C:
+				return lost()
+			case <-expired:
 				// The request is out of time: its answer is the timeout's.
 				if settled, err := drained(); settled {
 					return err
@@ -475,8 +606,10 @@ func (w *window) request(subject string, item contracts.Envelope, opts RequestOp
 					return lost()
 				}
 				if flushed != nil {
-					// The flush is bounded by this very deadline, so it is returning now, and
-					// what it says belongs in the timeout's answer.
+					// The flush is bounded by this very deadline, so in production, where the
+					// timeout fires at the deadline, it is returning now; under a test's expiry
+					// (requestExpiry) the flush can run on until the deadline. Either way, what it
+					// says belongs in the timeout's answer.
 					if settled := settleFlush(<-flushed); settled != nil {
 						return settled
 					}
@@ -540,27 +673,41 @@ func (w *window) Probe(timeout time.Duration) error {
 // the connection failed or nats.go reported the disconnect, ErrNotAcknowledged when the
 // acknowledgement ran out of time or the server answered with no responders on a connection that
 // stayed current, or the server's refusal, a full stream's as ErrStreamFull.
-func (w *window) acknowledged(future nats.PubAckFuture, topic string, sentAt time.Time) error {
-	select {
-	case <-future.Ok():
-		return nil
-	case err := <-future.Err():
-		// A denied publish is acknowledged by nothing, so the violation the connection reported
-		// (deniedPublish) is the only evidence of it, read under this send's own subject and its
-		// own send time. A window sends every destination of one event on one connection, so a
-		// grant that denies several of them has the server report a violation of each: the record
-		// answers each send with its own, where the connection's one last error held only the one
-		// that landed last and left every other denied send to report this arm's ErrUnavailable.
-		if denied := w.client.deniedPublish(topic, sentAt); denied != nil {
-			return denied
+//
+// A denied publish is acknowledged by nothing, so the violation the connection reported
+// (deniedPublish) is the only evidence of it, read under this send's own subject and its own send
+// time, and it answers the publish as soon as it is recorded rather than at the end of the
+// acknowledgement's own wait: signal is the refusal signal sendJetStream took before it put the
+// message on the wire (refusalSignal), so any violation recorded since closes it, and the record is
+// read only then and on the error arm. A publish the stream acknowledges reads no record, as at
+// main.
+func (w *window) acknowledged(future nats.PubAckFuture, topic string, sentAt time.Time, signal <-chan struct{}) error {
+	for {
+		select {
+		case <-future.Ok():
+			return nil
+		case err := <-future.Err():
+			// A window sends every destination of one event on one connection, so a grant that
+			// denies several of them has the server report a violation of each: the record
+			// answers each send with its own, where the connection's one last error held only the
+			// one that landed last and left every other denied send to report the ErrUnavailable
+			// below.
+			if denied := w.client.deniedPublish(topic, sentAt); denied != nil {
+				return denied
+			}
+			if !w.current() || errors.Is(err, nats.ErrDisconnected) {
+				return fmt.Errorf("bus: %w: %w", ErrUnavailable, err)
+			}
+			if errors.Is(err, nats.ErrAsyncPublishTimeout) || errors.Is(err, nats.ErrNoResponders) {
+				return fmt.Errorf("bus: %w: %w", ErrNotAcknowledged, err)
+			}
+			return streamFull(err)
+		case <-signal:
+			signal = w.client.refusalSignal()
+			if denied := w.client.deniedPublish(topic, sentAt); denied != nil {
+				return denied
+			}
 		}
-		if !w.current() || errors.Is(err, nats.ErrDisconnected) {
-			return fmt.Errorf("bus: %w: %w", ErrUnavailable, err)
-		}
-		if errors.Is(err, nats.ErrAsyncPublishTimeout) || errors.Is(err, nats.ErrNoResponders) {
-			return fmt.Errorf("bus: %w: %w", ErrNotAcknowledged, err)
-		}
-		return streamFull(err)
 	}
 }
 

@@ -26,9 +26,9 @@ func TestLoadReturnsForwardMigrationsInVersionOrder(t *testing.T) {
 		t.Fatalf("Load: %v", err)
 	}
 	want := []Migration{
-		{Version: 2, Name: "0002_second.up.sql", SQL: "select 2"},
-		{Version: 9, Name: "9_ninth.up.sql", SQL: "select 9"},
-		{Version: 10, Name: "0010_tenth.up.sql", SQL: "select 10"},
+		{Version: 2, Name: "0002_second.up.sql", SQL: "select 2", Checksum: sha256Hex("select 2")},
+		{Version: 9, Name: "9_ninth.up.sql", SQL: "select 9", Checksum: sha256Hex("select 9")},
+		{Version: 10, Name: "0010_tenth.up.sql", SQL: "select 10", Checksum: sha256Hex("select 10")},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("Load = %+v, want %+v", got, want)
@@ -49,9 +49,9 @@ func TestLoadAcceptsAVersionPastTheIntegerColumn(t *testing.T) {
 		t.Fatalf("Load: %v", err)
 	}
 	want := []Migration{
-		{Version: 140, Name: "0140_last_numbered.up.sql", SQL: "select 140"},
-		{Version: 2147483648, Name: "2147483648_big.up.sql", SQL: "select 2147483648"},
-		{Version: 20261030120000, Name: "20261030120000_stamped.up.sql", SQL: "select 1030"},
+		{Version: 140, Name: "0140_last_numbered.up.sql", SQL: "select 140", Checksum: sha256Hex("select 140")},
+		{Version: 2147483648, Name: "2147483648_big.up.sql", SQL: "select 2147483648", Checksum: sha256Hex("select 2147483648")},
+		{Version: 20261030120000, Name: "20261030120000_stamped.up.sql", SQL: "select 1030", Checksum: sha256Hex("select 1030")},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("Load = %+v, want %+v", got, want)

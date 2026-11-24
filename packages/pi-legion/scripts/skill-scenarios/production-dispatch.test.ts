@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { bearerCredential } from "@legion/envoy-client/bearer";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import {
   checkoutAbove,
@@ -48,26 +49,26 @@ function json(value: unknown, status = 200): Response {
   });
 }
 
+/** The Dispatch token every test hands the client: random, as a real one is, since the client
+ * holds it (`@legion/contracts/held-secrets`). */
+const DISPATCH_TOKEN = fixtureSecret("dsp");
 const credentials: DispatchCredentials = {
   url: "http://dispatch.test",
-  credential: bearerCredential("dispatch-token"),
+  credential: bearerCredential(DISPATCH_TOKEN),
 };
 /** The credentials as these tests compare them: the bearer the credential presents. */
 const presented = (found: DispatchCredentials) => ({
   url: found.url,
   token: found.credential.secret(),
 });
-const presentedCredentials = { url: "http://dispatch.test", token: "dispatch-token" };
+const presentedCredentials = { url: "http://dispatch.test", token: DISPATCH_TOKEN };
 const noSleep = async () => {};
 
 test("DISPATCH_URL with DISPATCH_TOKEN gives the server and the token", () => {
   const home = dir("home-variables");
   expect(
     presented(
-      resolveDispatch(
-        { HOME: home, DISPATCH_URL: "http://dispatch.test/", DISPATCH_TOKEN: "dispatch-token" },
-        home
-      )
+      resolveDispatch({ HOME: home, DISPATCH_URL: "http://dispatch.test/", DISPATCH_TOKEN }, home)
     )
   ).toEqual(presentedCredentials);
 });
@@ -77,7 +78,7 @@ test("the envoy.json ENVOY_CONFIG_FILE names gives the server and the token", ()
   const file = path.join(home, "envoy.json");
   writeFileSync(
     file,
-    JSON.stringify({ dispatch: { serverUrl: "http://dispatch.test", token: "dispatch-token" } })
+    JSON.stringify({ dispatch: { serverUrl: "http://dispatch.test", token: DISPATCH_TOKEN } })
   );
   expect(presented(resolveDispatch({ HOME: home, ENVOY_CONFIG_FILE: file }, home))).toEqual(
     presentedCredentials
@@ -105,7 +106,7 @@ test("a read is one GET with the bearer and nothing else", async () => {
   expect(sent[0]?.init.body).toBeUndefined();
   expect(sent[0]?.init.headers).toEqual({
     Accept: "application/json",
-    Authorization: "Bearer dispatch-token",
+    Authorization: `Bearer ${DISPATCH_TOKEN}`,
   });
 });
 
@@ -232,4 +233,26 @@ test("mapLimit keeps the order and runs at most the limit at once", async () => 
   expect(await pending).toEqual([10, 20, 30, 40, 50, 60, 70]);
   expect(started.toSorted((a, b) => a - b)).toEqual([1, 2, 3, 4, 5, 6, 7]);
   expect(most).toBe(3);
+});
+
+test("a read hands the credential its share of the deadline its request runs on", async () => {
+  // A broker credential waiting on a pod's missing registration stops at the deadline it is
+  // given, naming the session; one given none waits until the registration lands. It is given
+  // the request's deadline less the request's reserve (`credentialDeadline`), so one that hands
+  // over its live token when its wait ends leaves the request that reserve.
+  const given: (AbortSignal | undefined)[] = [];
+  const bearer = bearerCredential(DISPATCH_TOKEN);
+  const credential = {
+    ...bearer,
+    headers: (method: string, url: string, session?: string, signal?: AbortSignal) => {
+      given.push(signal);
+      return bearer.headers(method, url, session, signal);
+    },
+  };
+  const { fetch, sent } = fakeFetch(() => json([{ id: "c1" }]));
+  const dispatch = new ProductionDispatch({ ...credentials, credential }, fetch, noSleep);
+  await dispatch.comments("ACME-1");
+  expect(given[0], "the read handed its credential no deadline").toBeInstanceOf(AbortSignal);
+  expect(sent[0]?.init.signal, "the request ran on no deadline").toBeInstanceOf(AbortSignal);
+  expect(sent[0]?.init.signal).not.toBe(given[0]);
 });

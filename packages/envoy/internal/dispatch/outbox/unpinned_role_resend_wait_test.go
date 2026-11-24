@@ -53,7 +53,7 @@ func TestAFallbackRowWaitsWhileItsUnnamedMentionIsOwedAResend(t *testing.T) {
 	}
 	dueNow(t, rig.database, comment.ID)
 	holding(t, rig.deps()).scan(ctx, unfenced{})
-	row := readHeldCopy(t, rig.database, commentID, contracts.AgentSubject(holder))
+	row := readHeldCopy(t, rig.database, commentID, contracts.LegacyAgentSubject(holder))
 	t.Logf("after lease: row settled=%v published=%v attempts=%d; event published=%v; claimant got %d",
 		row.settled, row.published, row.attempts, publishedAt(t, rig.database, comment.ID) != nil, len(claimant.received()))
 
@@ -61,7 +61,7 @@ func TestAFallbackRowWaitsWhileItsUnnamedMentionIsOwedAResend(t *testing.T) {
 	// unnamed by the outbox.
 	publishFallbackCopies(ctx, rig.deps(), unfenced{}, holdingProcess(t, rig.database))
 	time.Sleep(time.Second)
-	row = readHeldCopy(t, rig.database, commentID, contracts.AgentSubject(holder))
+	row = readHeldCopy(t, rig.database, commentID, contracts.LegacyAgentSubject(holder))
 	got := claimant.received()
 	t.Logf("after fallback pass: row settled=%v published=%v; claimant got %+v", row.settled, row.published, got)
 	if row.published || len(got) != 0 {
@@ -120,8 +120,7 @@ func TestAClaimantsWaitingCopyKeepsTheOwnersEventOrder(t *testing.T) {
 	dueNow(t, rig.database, first.ID)
 	dueNow(t, rig.database, second.ID)
 	holding(t, rig.deps()).scan(ctx, unfenced{})
-	time.Sleep(time.Second)
-	order := keysOf(claimant.received())
+	order := keysOf(claimant.receivedNow(t, rig.client))
 	want := []string{fmt.Sprintf("dispatch-%d", first.ID), fmt.Sprintf("dispatch-%d", second.ID)}
 	t.Logf("claimant order %v", order)
 	if !slices.Equal(order, want) {

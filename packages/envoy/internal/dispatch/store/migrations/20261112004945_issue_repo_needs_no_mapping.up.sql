@@ -1,0 +1,48 @@
+-- 20261112004945_issue_repo_needs_no_mapping.up.sql
+--
+-- INFRA-2543: an issue's own repository is any `owner/name`, one its project maps, one another
+-- project maps, or one no project maps. 0113 held the narrower rule in the schema with the
+-- composite foreign key issues_repo_mapped_to_project, so an issue could name only a repository
+-- its own project mapped, and a mapping an issue named could be neither deleted nor moved to
+-- another project (23503, which the API answered REPO_PROJECT_IN_USE). The release carrying this
+-- migration refuses none of the three: it drops the mapping check the two issue writes made
+-- (api/issue_repo.go) and the refusal that stood on this key, and the mapping is left deciding
+-- the project's default repository and what the Legion daemon prepares, which is all it is for.
+--
+-- The second drop goes with the first. 0113 added repo_projects_repo_project_key, unique on
+-- (repo, project), only because a referenced column list needs a unique constraint over it;
+-- `repo` is already the primary key of repo_projects, so the pair is unique whatever this
+-- constraint says, and no statement reads (repo, project) as a pair, so nothing is left for it
+-- to serve once the foreign key is gone. The foreign key depends on it, so the drops are in this
+-- order and no other. `restrict` is the default and is written out: it says each drop takes
+-- nothing with it but the constraint named (and the unique constraint's own backing index), and
+-- it is the form the census's catalog-only exemption admits, which `cascade` is not.
+--
+-- Rollback cost. A build from before this release reads and writes issues.repo exactly as it
+-- did, and its own mapping check still refuses an unmapped repository on a create and on a
+-- patch, so it serves on the schema this drop leaves; what it loses is the database's half of a
+-- rule its code still holds. What a rollback cannot undo for free is the rows this release
+-- stored: an issue naming a repository its project does not map is a row the foreign key would
+-- have refused, so putting the constraints back fails while any such issue exists. A rollback
+-- that must restore them clears those rows first, on the release still serving:
+-- `update issues set repo = null where repo is not null and (repo, project_key) not in
+-- (select repo, project from repo_projects)`, which costs those issues their own repository and
+-- leaves them resolving through their parent chain and their project's default again. That is
+-- the rollback cost of a contracting drop, as 0141_drop_broadcast_idempotency_keys and
+-- 20261110004829_drop_default_branch_commits each have one (cmd/dispatch/README.md, "Database
+-- migrations").
+--
+-- No `if exists`: 0113 adds both constraints unconditionally, so every database recording that
+-- version holds them, and `if exists` would pass over a schema that is not the one we think it
+-- is.
+--
+-- Each statement is a metadata-only `alter table` form: it writes catalog rows, reads and
+-- rewrites no row of either table, and holds ACCESS EXCLUSIVE for that write alone, bounded by
+-- the runner's lock_timeout (pgmigrate.LockTimeout, 5 s). Dropping the foreign key takes that
+-- lock on repo_projects too, the table it references, since the key's triggers sit on both; the
+-- second statement names that table anyway, so the locks this migration takes are the tables it
+-- names. Both statements are catalog-only as pgmigrate reads them (catalogOnlyAlterTable), so
+-- the deploy census weighs neither issues nor repo_projects against its 1 GiB bound, and the
+-- migration drops no table, so no foreign key carries the census on to a third.
+alter table issues drop constraint issues_repo_mapped_to_project restrict;
+alter table repo_projects drop constraint repo_projects_repo_project_key restrict;

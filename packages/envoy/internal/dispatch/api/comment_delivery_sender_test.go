@@ -48,7 +48,11 @@ type mentionListener struct {
 	// (dropRepeats); delivered holds the keys it has taken.
 	dedupe    bool
 	delivered map[string]struct{}
-	arrived   chan string
+	// landed, when set, is called with each send the listener hands its recipient - recorded,
+	// neither refused nor answered as a repeat - while the listener's lock is held, so a test can
+	// place it in one order with copies that reach the recipient some other way.
+	landed  func(mentionListenerSend)
+	arrived chan string
 }
 
 // mentionStall is one held-back send: reached is closed when that send arrives at the listener,
@@ -99,6 +103,23 @@ func newMentionListener(t *testing.T) (*httptest.Server, *mentionListener) {
 			writeSessionRecord(t, w, senderTestSessions, strings.TrimPrefix(r.URL.Path, "/v1/registry/"))
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/roles/reviewer":
 			_, _ = w.Write([]byte(`{"role":"reviewer","holder":"s1","title":"planner","capabilities":["steer"]}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/roles/unheld":
+			// The listener's own refusal for a role no session claims (writeRoleHolderError).
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"error":"no holder for role unheld","reason":"unclaimed"}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/roles/lapsed":
+			// The listener's own refusal for a role whose holder the registry calls gone
+			// (writeRoleHolderError, reason holder_lapsed).
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"error":"holder ses_gone of role lapsed is gone","reason":"holder_lapsed","holder":"ses_gone","holder_state":"gone"}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/roles/unreadable":
+			// The listener's 500 for a claim record it cannot decode (writeRoleClaimUnreadable).
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"error":"envoy: the claim record of role unreadable is unreadable: decode role claim"}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/roles/broken":
+			w.WriteHeader(http.StatusServiceUnavailable)
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/roles/garbled":
+			_, _ = w.Write([]byte(`{"role":`))
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/sessions":
 			_, _ = w.Write([]byte(senderTestSessions))
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/messages/send":
@@ -131,10 +152,14 @@ func newMentionListener(t *testing.T) (*httptest.Server, *mentionListener) {
 				_, repeat = state.delivered[frame]
 				state.delivered[frame] = struct{}{}
 			}
-			state.sends = append(state.sends, mentionListenerSend{
+			landedSend := mentionListenerSend{
 				session: request.TargetSession, body: request.Message,
 				key: request.IdempotencyKey, duplicate: repeat,
-			})
+			}
+			state.sends = append(state.sends, landedSend)
+			if state.landed != nil && !refused && !repeat {
+				state.landed(landedSend)
+			}
 			gate := state.held[request.TargetSession]
 			answer := state.answers[request.TargetSession]
 			delete(state.answers, request.TargetSession)
@@ -266,6 +291,17 @@ func (l *mentionListener) sent() []mentionListenerSend {
 	return slices.Clone(l.sends)
 }
 
+// bodiesTo is the body of every send the listener took for session, in the order it took them.
+func (l *mentionListener) bodiesTo(session string) []string {
+	bodies := []string{}
+	for _, send := range l.sent() {
+		if send.session == session {
+			bodies = append(bodies, send.body)
+		}
+	}
+	return bodies
+}
+
 // unclaimedPending reports whether the comment's attempt for target is pending with no sender's
 // claim on it: the shape of an attempt whose send the mention sender refused, and of one whose
 // claim lapsed.
@@ -323,6 +359,7 @@ func allSent(attempts []model.CommentDelivery) bool {
 // sessions whose sends are all held answers at once, with its attempts pending, and they settle
 // once the sends are released.
 func TestMentionSendsRunAfterTheCommentHasAnswered(t *testing.T) {
+	t.Parallel()
 	listener, state := newMentionListener(t)
 	handler, database := newTargetedMessageHandler(t, listener.URL)
 	release := state.hold("s1", "s2", "s3")
@@ -363,6 +400,7 @@ func TestMentionSendsRunAfterTheCommentHasAnswered(t *testing.T) {
 // same lane. While the first comment's send is held, the second's attempt waits on that lane
 // under this process's claim, with its send not started.
 func TestMentionSendsReachOneRecipientInTheOrderItsCommentsWereAccepted(t *testing.T) {
+	t.Parallel()
 	listener, state := newMentionListener(t)
 	handler, database := newTargetedMessageHandler(t, listener.URL)
 	release := state.hold("s1")
@@ -397,6 +435,7 @@ func TestMentionSendsReachOneRecipientInTheOrderItsCommentsWereAccepted(t *testi
 // A recipient whose send is held - a slow or unanswering session - does not hold back the
 // sends to anyone else.
 func TestABlockedMentionRecipientDoesNotHoldBackAnother(t *testing.T) {
+	t.Parallel()
 	listener, state := newMentionListener(t)
 	handler, database := newTargetedMessageHandler(t, listener.URL)
 	release := state.hold("s1")
@@ -430,6 +469,7 @@ func TestABlockedMentionRecipientDoesNotHoldBackAnother(t *testing.T) {
 // round trip rather than one each: three lookups of 200 ms each, seen from the listener, all
 // finish within 400 ms of the first one starting.
 func TestMentionLookupsOfOneCommentRunAtOnce(t *testing.T) {
+	t.Parallel()
 	const lookup = 200 * time.Millisecond
 	var mu sync.Mutex
 	looked := map[string]bool{}
@@ -588,6 +628,7 @@ func commentWithAnUnansweredLookup(t *testing.T, lookup unansweredLookup) unansw
 // one session, so the event suppresses the route by that string and the session hears the
 // comment once, from the mention.
 func TestAnUnansweredMentionOfTheRouteItselfSuppressesTheRouteCopy(t *testing.T) {
+	t.Parallel()
 	got := commentWithAnUnansweredLookup(t, unansweredLookup{
 		route: "session:s1", mention: "session:s1", hungPath: "/v1/registry/s1",
 	})
@@ -599,7 +640,7 @@ func TestAnUnansweredMentionOfTheRouteItselfSuppressesTheRouteCopy(t *testing.T)
 	if len(got.sends) != 1 || got.sends[0].session != "s1" {
 		t.Fatalf("the listener took sends %#v, want the one mention's, to s1", got.sends)
 	}
-	if slices.Contains(got.destinations, contracts.AgentSubject("s1")) {
+	if slices.Contains(got.destinations, contracts.LegacyAgentSubject("s1")) {
 		t.Fatalf("the outbox published comment.created to %v, want s1's topic left out: the mention delivered it",
 			got.destinations)
 	}
@@ -611,6 +652,7 @@ func TestAnUnansweredMentionOfTheRouteItselfSuppressesTheRouteCopy(t *testing.T)
 // sender pins s1 on the attempt row when it sends, and the outbox reads that row rather than the
 // payload, so the route copy to s1 is left to the mention and s1 hears the comment once.
 func TestAnUnansweredMentionOfAnotherStringForTheRouteIsLeftToThatMention(t *testing.T) {
+	t.Parallel()
 	got := commentWithAnUnansweredLookup(t, unansweredLookup{
 		route: "session:s1", mention: "role:reviewer", hungPath: "/v1/roles/reviewer",
 	})
@@ -621,7 +663,7 @@ func TestAnUnansweredMentionOfAnotherStringForTheRouteIsLeftToThatMention(t *tes
 	if len(got.sends) != 1 || got.sends[0].session != "s1" {
 		t.Fatalf("the listener took sends %#v, want the one mention's, to s1", got.sends)
 	}
-	if slices.Contains(got.destinations, contracts.AgentSubject("s1")) {
+	if slices.Contains(got.destinations, contracts.LegacyAgentSubject("s1")) {
 		t.Fatalf("the outbox published comment.created to %v, want s1's topic left out: the attempt row names s1 though the payload's mention names nobody, and the mention delivered the comment",
 			got.destinations)
 	}
@@ -631,13 +673,14 @@ func TestAnUnansweredMentionOfAnotherStringForTheRouteIsLeftToThatMention(t *tes
 // s1's lookup goes unanswered: the comment's mentions name s1, so the author route leaves s1 to
 // the mention, and s1 hears the reply once, from it.
 func TestAnUnansweredSessionMentionOfTheRootAuthorSuppressesTheAuthorCopy(t *testing.T) {
+	t.Parallel()
 	got := commentWithAnUnansweredLookup(t, unansweredLookup{
 		mention: "session:s1", hungPath: "/v1/registry/s1", replyToS1: true,
 	})
 	if len(got.sends) != 1 || got.sends[0].session != "s1" {
 		t.Fatalf("the listener took sends %#v, want the one mention's, to s1", got.sends)
 	}
-	if slices.Contains(got.destinations, contracts.AgentSubject("s1")) {
+	if slices.Contains(got.destinations, contracts.LegacyAgentSubject("s1")) {
 		t.Fatalf("the outbox published comment.created to %v, want s1's topic left out: the mention delivered it",
 			got.destinations)
 	}
@@ -648,13 +691,14 @@ func TestAnUnansweredSessionMentionOfTheRootAuthorSuppressesTheAuthorCopy(t *tes
 // row when it sends, which is what the author route reads, so s1 is left to the mention there
 // too and hears the reply once.
 func TestAnUnansweredRoleMentionHeldByTheRootAuthorIsLeftToThatMention(t *testing.T) {
+	t.Parallel()
 	got := commentWithAnUnansweredLookup(t, unansweredLookup{
 		mention: "role:reviewer", hungPath: "/v1/roles/reviewer", replyToS1: true,
 	})
 	if len(got.sends) != 1 || got.sends[0].session != "s1" {
 		t.Fatalf("the listener took sends %#v, want the one mention's, to s1", got.sends)
 	}
-	if slices.Contains(got.destinations, contracts.AgentSubject("s1")) {
+	if slices.Contains(got.destinations, contracts.LegacyAgentSubject("s1")) {
 		t.Fatalf("the outbox published comment.created to %v, want s1's topic left out: the attempt row names s1 though the payload's mention names nobody, and the mention delivered the reply",
 			got.destinations)
 	}
@@ -664,6 +708,7 @@ func TestAnUnansweredRoleMentionHeldByTheRootAuthorIsLeftToThatMention(t *testin
 // to s1 under another string - role:reviewer, which s1 holds - suppresses the route copy for s1:
 // s1 hears the comment once, from the mention.
 func TestARouteWhoseOwnLookupGoesUnansweredIsSuppressedForTheSessionItNames(t *testing.T) {
+	t.Parallel()
 	got := commentWithAnUnansweredLookup(t, unansweredLookup{
 		route: "session:s1", mention: "role:reviewer", hungPath: "/v1/registry/s1", pinned: true,
 	})
@@ -675,7 +720,7 @@ func TestARouteWhoseOwnLookupGoesUnansweredIsSuppressedForTheSessionItNames(t *t
 	if len(got.sends) != 1 || got.sends[0].session != "s1" {
 		t.Fatalf("the listener took sends %#v, want the one mention's, to s1", got.sends)
 	}
-	if slices.Contains(got.destinations, contracts.AgentSubject("s1")) {
+	if slices.Contains(got.destinations, contracts.LegacyAgentSubject("s1")) {
 		t.Fatalf("the outbox published comment.created to %v, want s1's topic left out: the mention delivered it",
 			got.destinations)
 	}
@@ -686,6 +731,8 @@ func TestARouteWhoseOwnLookupGoesUnansweredIsSuppressedForTheSessionItNames(t *t
 // route's own lookup runs beside the mentions' lookups, not after them, so the two timeouts do not
 // add up.
 func TestAListenerThatAnswersNoLookupDelaysARoutedCommentByOneTimeoutAtMost(t *testing.T) {
+	// Not parallel: it holds the answer to under 500 ms of wall clock, and among this package's
+	// parallel tests on CI's runner it answered in 589 ms (job 137359069610).
 	listener, state := newMentionListener(t)
 	letMentionAnswer := state.holdLookups("/v1/registry/s1")
 	defer letMentionAnswer()
@@ -731,6 +778,7 @@ func ageAttempts(t *testing.T, database *store.Store, commentIDs ...string) {
 // claim. The next process's delivery sweep sends such an attempt once it has waited a claim
 // lease, and leaves alone one whose claim is live, which another process's sender holds.
 func TestTheSweepSendsAMentionAStoppedProcessLeftAndLeavesALiveClaimAlone(t *testing.T) {
+	t.Parallel()
 	listener, state := newMentionListener(t)
 	stopping, stop := context.WithCancel(t.Context())
 	handler, database, deps, _ := newRegisteredTestServer(t, testServerOptions{envoyURL: listener.URL, lifetime: stopping})
@@ -780,6 +828,7 @@ func TestTheSweepSendsAMentionAStoppedProcessLeftAndLeavesALiveClaimAlone(t *tes
 // refused by the old process's sender and its attempt stays pending with no claim. The
 // successor's delivery sweep sends it, once.
 func TestARollingUpdatesSuccessorSendsTheMentionTheOldProcessAcceptedWhileDraining(t *testing.T) {
+	t.Parallel()
 	listener, state := newMentionListener(t)
 	stopping, stop := context.WithCancel(t.Context())
 	handler, database, deps, _ := newRegisteredTestServer(t, testServerOptions{envoyURL: listener.URL, lifetime: stopping})
@@ -821,6 +870,7 @@ func TestARollingUpdatesSuccessorSendsTheMentionTheOldProcessAcceptedWhileDraini
 // meanwhile leaves each of them to it and each reaches its recipient once, in the order its
 // comment was accepted.
 func TestTheSweepLeavesABusySendersUnstartedSendsToIt(t *testing.T) {
+	t.Parallel()
 	listener, state := newMentionListener(t)
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{envoyURL: listener.URL})
 	issue := createInteractionIssue(t, handler, "TEST", "A busy sender", "before")
@@ -858,12 +908,14 @@ func TestTheSweepLeavesABusySendersUnstartedSendsToIt(t *testing.T) {
 
 // A mention past the sender's queue bound is not queued: the claim its attempt committed with is
 // given back, so the attempt is pending and unclaimed, and the delivery sweep, once the queue has
-// room and the attempt has waited a claim lease, sends it, once.
+// room and the attempt has waited a claim lease, sends it, once. The bound counts the send in
+// flight as well as the queued one (mentionSender.held), so a capacity of two holds both.
 func TestAMentionPastTheQueueBoundIsSentOnceTheQueueDrains(t *testing.T) {
+	t.Parallel()
 	listener, state := newMentionListener(t)
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{envoyURL: listener.URL})
 	served.mentions.mu.Lock()
-	served.mentions.capacity = 1
+	served.mentions.capacity = 2
 	served.mentions.mu.Unlock()
 	release := state.hold("s1")
 	defer release()
@@ -907,6 +959,58 @@ func TestAMentionPastTheQueueBoundIsSentOnceTheQueueDrains(t *testing.T) {
 	}
 }
 
+// The queue's bound holds at a capacity of one: the send in flight takes the one place
+// (mentionSender.held), so a second mention, accepted while the first is in flight, is not
+// queued. The claim its attempt committed with is given back, so the attempt is pending and
+// unclaimed, and the delivery sweep sends it once it has waited a claim lease: once, after the
+// first.
+func TestAQueueOfOneRefusesASecondSendWhileTheFirstIsInFlight(t *testing.T) {
+	t.Parallel()
+	listener, state := newMentionListener(t)
+	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{envoyURL: listener.URL})
+	served.mentions.mu.Lock()
+	served.mentions.capacity = 1
+	served.mentions.mu.Unlock()
+	release := state.hold("s1")
+	defer release()
+	issue := createInteractionIssue(t, handler, "TEST", "A queue of one", "before")
+	post := func(body string) string {
+		return decodeMentionedComment(t, postMentionedComment(t, handler, issue.Key, map[string]any{
+			"body": body, "mentions": []map[string]any{{"target": "session:s1"}},
+		})).ID
+	}
+
+	sending := post("in flight")
+	state.awaitSend(t)
+	refused := post("past the bound")
+	queued, inflight := queuedAndInFlight(served.mentions)
+	t.Logf("with the first send in flight: queued %d, in flight %d, of a capacity of 1", queued, inflight)
+	if !unclaimedPending(t, database, refused, "session:s1") {
+		t.Fatal("the second attempt, accepted while the first send was in flight, kept the claim it committed with: the queue took it past its capacity of 1")
+	}
+	if queued+inflight > 1 {
+		t.Fatalf("the queue holds %d sends and %d in flight, past its capacity of 1", queued, inflight)
+	}
+
+	release()
+	if settled := settledCommentDeliveries(t, database, sending); !allSent(settled) {
+		t.Fatalf("comment %s attempts = %#v, want it sent", sending, settled)
+	}
+	if !unclaimedPending(t, database, refused, "session:s1") {
+		t.Fatal("the attempt past the bound was taken before it waited a claim lease")
+	}
+	ageAttempts(t, database, refused)
+	if err := served.resumeOwedDeliveries(context.Background()); err != nil {
+		t.Fatalf("resume the owed deliveries: %v", err)
+	}
+	if settled := settledCommentDeliveries(t, database, refused); !allSent(settled) {
+		t.Fatalf("comment %s attempts = %#v, want it sent by the delivery sweep", refused, settled)
+	}
+	if sent := state.sent(); len(sent) != 2 || sent[0].body != "in flight" || sent[1].body != "past the bound" {
+		t.Fatalf("sends = %#v, want each comment sent once, in order", sent)
+	}
+}
+
 // runOutboxBeside runs the outbox beside the test, as a Dispatch process runs it beside its API,
 // publishing through publisher every event it decides on, until the test ends.
 func runOutboxBeside(t *testing.T, deps Deps, publisher outbox.Publisher) {
@@ -933,22 +1037,44 @@ func runOutboxBeside(t *testing.T, deps Deps, publisher outbox.Publisher) {
 func withMentionClaimRefresh(t *testing.T, served *server, period time.Duration) {
 	t.Helper()
 	served.mentions.wait()
-	served.mentions = newMentionSender(served.lifetime, period,
-		served.sendCommentMention, served.refreshMentionClaims, served.releaseMentionClaims)
+	served.mentions = newMentionSender(served.lifetime, period, served.sendCommentMention,
+		served.refreshMentionClaims, served.rereadMentionClaims, served.releaseMentionClaims)
+}
+
+// rereadNone is the reread of a fake mention sender whose refresh never fails, so the sender never
+// asks it: it answers no row's claim as the sender's.
+func rereadNone(context.Context, []mentionClaim) ([]mentionClaim, error) { return nil, nil }
+
+// queuedAndInFlight is how many sends sender holds on its lanes, not started yet, and how many it
+// holds in flight.
+func queuedAndInFlight(sender *mentionSender) (queued, inflight int) {
+	sender.mu.Lock()
+	defer sender.mu.Unlock()
+	for _, sends := range sender.lanes {
+		queued += len(sends)
+	}
+	return queued, len(sender.held) - queued
 }
 
 // ageQueuedClaims moves every claim the sender holds on a send that has not started back by by,
 // on the attempt row and in the sender's own record together: what a lane held that long leaves
-// behind when nothing writes those claims again. It holds the sender's lock throughout, so no
-// refresh records anything until every row and its record agree again.
+// behind when nothing writes those claims again. A send in flight is left as it is, its try having
+// claimed its row for itself. It holds the sender's lock throughout, so no refresh records
+// anything until every row and its record agree again.
 func ageQueuedClaims(t *testing.T, database *store.Store, sender *mentionSender, by time.Duration) {
 	t.Helper()
 	sender.mu.Lock()
 	defer sender.mu.Unlock()
-	if len(sender.claims) == 0 {
+	var queued []mentionKey
+	for _, sends := range sender.lanes {
+		for _, send := range sends {
+			queued = append(queued, send.key())
+		}
+	}
+	if len(queued) == 0 {
 		t.Fatal("the mention sender holds no queued send whose claim could age")
 	}
-	for key := range sender.claims {
+	for _, key := range queued {
 		// A refresh whose statement ran but whose result is not recorded yet leaves the row newer
 		// than the map (refreshHeldClaims), so the claim aged is the one the row carries, and the
 		// map is set to it: that refresh then finds the map changed and records nothing over it.
@@ -960,27 +1086,31 @@ func ageQueuedClaims(t *testing.T, database *store.Store, sender *mentionSender,
 		`, key.comment, key.target, key.attempt, by.Seconds()).Scan(&aged); err != nil {
 			t.Fatalf("age the claim on the queued attempt of %s for %s: %v", key.comment, key.target, err)
 		}
-		sender.claims[key] = aged
+		state := sender.held[key]
+		state.claimed = aged
+		sender.held[key] = state
 	}
 }
 
-// awaitRefreshedClaims waits until every comment's attempt for target is under a live claim
-// again, for at most 10 s: the sender's refresh loop has written the claims it holds.
+// awaitRefreshedClaims waits until every comment's attempt for target is under a claim written in
+// the last 5 s, for at most 10 s: the sender's refresh loop has written the claims it holds again.
 func awaitRefreshedClaims(t *testing.T, database *store.Store, commentIDs []string, target string) {
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
 	for {
-		refreshed := 0
-		for _, comment := range commentIDs {
-			if claimedPending(t, database, comment, target) {
-				refreshed++
-			}
+		var refreshed int
+		if err := database.Pool.QueryRow(context.Background(), `
+			select count(*) from comment_deliveries
+			where comment_id = any($1::uuid[]) and target = $2 and attempt = 1 and state = 'pending'
+			  and claimed_at > now() - interval '5 seconds'
+		`, commentIDs, target).Scan(&refreshed); err != nil {
+			t.Fatalf("read the claims on the queued attempts: %v", err)
 		}
 		if refreshed == len(commentIDs) {
 			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("%d of %d queued attempts are still under a lapsed claim: nothing wrote the sender's claims again",
+			t.Fatalf("%d of %d queued attempts are still under the claim they aged to: nothing wrote the sender's claims again",
 				len(commentIDs)-refreshed, len(commentIDs))
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -1000,8 +1130,11 @@ func postMentionOfS1(t *testing.T, handler http.Handler, issueKey, body string) 
 // committed with, and the sender's refresh loop (keepClaims) writes each of those claims again
 // before it lapses, so a lane held longer than a claim lease keeps them: a delivery sweep pass
 // that runs while every attempt is old enough to be owed takes none of them and sends nothing
-// past the send in flight.
+// past the send in flight. The claims age to just short of a lease: one a lease old with no
+// refresh committed has lapsed, and the refresh no longer writes it (refreshMentionClaims), which
+// TestALostRefreshNeverRevivesALapsedClaim covers.
 func TestAHeldLaneKeepsItsQueuedCommentsInOrderThroughASweep(t *testing.T) {
+	t.Parallel()
 	listener, state := newMentionListener(t)
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{
 		envoyURL: listener.URL, envoyTimeout: 30 * time.Second,
@@ -1024,10 +1157,11 @@ func TestAHeldLaneKeepsItsQueuedCommentsInOrderThroughASweep(t *testing.T) {
 		}
 	}
 	// The lane has now been held longer than a claim lease: every attempt was opened that long
-	// ago, and the claims the sender took on the sends waiting on it are that old too.
+	// ago, and the claims the sender took on the sends waiting on it were last written all but a
+	// lease ago, so they lapse within seconds unless the refresh writes them again.
 	comments := append([]string{sending}, queued...)
 	ageAttempts(t, database, comments...)
-	ageQueuedClaims(t, database, served.mentions, model.DeliveryClaimLapse+time.Second)
+	ageQueuedClaims(t, database, served.mentions, model.DeliveryClaimLapse-5*time.Second)
 	awaitRefreshedClaims(t, database, queued, "session:s1")
 	if err := served.resumeOwedDeliveries(context.Background()); err != nil {
 		t.Fatalf("resume the owed deliveries: %v", err)
@@ -1050,6 +1184,7 @@ func TestAHeldLaneKeepsItsQueuedCommentsInOrderThroughASweep(t *testing.T) {
 // the lane fall to the delivery sweep as soon as their claims lapse, and its pass sends them past
 // the send still in flight, out of the order the comments were accepted.
 func TestASweepTakesTheQueuedMentionsOfALaneWhoseClaimsLapsed(t *testing.T) {
+	t.Parallel()
 	listener, state := newMentionListener(t)
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{
 		envoyURL: listener.URL, envoyTimeout: 30 * time.Second,
@@ -1103,6 +1238,7 @@ func TestASweepTakesTheQueuedMentionsOfALaneWhoseClaimsLapsed(t *testing.T) {
 // already holds: its next refresh writes that claim again, so the attempt stays this process's
 // and the delivery sweep leaves it alone. The repeat queues no second send.
 func TestAKeyedRepeatOfAQueuedMentionLeavesTheSenderHoldingTheNewClaim(t *testing.T) {
+	t.Parallel()
 	listener, state := newMentionListener(t)
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{
 		envoyURL: listener.URL, envoyTimeout: 30 * time.Second,
@@ -1156,6 +1292,7 @@ func TestAKeyedRepeatOfAQueuedMentionLeavesTheSenderHoldingTheNewClaim(t *testin
 // latest, so the lane sends nothing, settles it failed as superseded and gives its claim back:
 // the recipient is handed one copy, the Retry's.
 func TestARetryWhileTheFirstAttemptIsQueuedLeavesTheRecipientOneCopy(t *testing.T) {
+	t.Parallel()
 	listener, state := newMentionListener(t)
 	handler, database, _, _ := newRegisteredTestServer(t, testServerOptions{
 		envoyURL: listener.URL, envoyTimeout: 30 * time.Second,
@@ -1217,17 +1354,20 @@ func unclaimedSettled(t *testing.T, database *store.Store, commentID, target str
 // so the attempts are left pending and unclaimed for the next delivery sweep pass rather than
 // held by a claim nothing writes again.
 func TestTheMentionDrainGivesBackItsClaimsAfterItsSendContextIsCancelled(t *testing.T) {
+	t.Parallel()
 	lifetime, stop := context.WithCancel(context.Background())
 	defer stop()
 	started, finish := make(chan struct{}), make(chan struct{})
 	var released []mentionClaim
 	var releaseErr error
 	sender := newMentionSender(lifetime, time.Hour,
-		func(context.Context, mentionSend) {
+		func(context.Context, mentionSend) (mentionSend, bool) {
 			close(started)
 			<-finish
+			return mentionSend{}, false
 		},
 		func(context.Context, []mentionClaim) ([]mentionClaim, error) { return nil, nil },
+		rereadNone,
 		func(ctx context.Context, held []mentionClaim) error {
 			releaseErr = ctx.Err()
 			released = append(released, held...)

@@ -14,6 +14,7 @@ import {
   textPrimaryOnCanvas,
 } from "../../theme/classes";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
+import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { CredentialDecisionButtons } from "./CredentialDecisionButtons";
 import { CredentialRecordFacts } from "./CredentialRecordFacts";
@@ -59,10 +60,13 @@ function MachineLoginDecision({
  * looked up here, and only denied. Decision 13 of the shared broker contract:
  * only this code-lookup route selects a
  * `launcher_credential` record, and deciding it sends the same code again, so this is the one
- * place a machine record gets Approve/Deny buttons. A looked-up login already decided shows its
- * decision, and so does one decided here, in their place, so a second click never reaches the
- * broker's already-decided refusal. Below it, the machine logins the viewer may revoke that can
- * still reach a secret: their own machines' and every service's.
+ * place a machine record gets Approve/Deny buttons, and only while the broker reads it as
+ * pending. A looked-up login already decided shows its decision, and so does one decided here, in
+ * their place, so a second click never reaches the broker's already-decided refusal. A login whose
+ * deadline passed before anybody decided it reads as expired, before the broker's sweep ends it
+ * and after, and the broker refuses every decision of it: it shows that in one line, with no
+ * buttons. Below it, the machine logins the viewer may revoke that can still reach a secret:
+ * their own machines', their own pods' and every service's.
  */
 export function MachineLoginPage(): ReactNode {
   const [code, setCode] = useState("");
@@ -74,6 +78,7 @@ export function MachineLoginPage(): ReactNode {
     inline: true,
     label: () => "Lookup of a machine login code",
     onSettled: () => submitGuard.release(),
+    method: "POST",
     write: (lookupCode: string, bounds) => api.lookupMachineCredential(lookupCode, bounds),
   });
   // A lookup Dispatch answered with nothing it kept shows nothing until it is looked up again.
@@ -83,6 +88,7 @@ export function MachineLoginPage(): ReactNode {
 
   // Each is typed by its answer, which its callbacks read.
   const approve = useKeyedWrite<DecisionResponse>({
+    method: "POST",
     write: (_variables, bounds) =>
       api.approveCredentialRecord(record?.record_id ?? "", { code: lookedUpCode }, bounds),
     inline: true,
@@ -96,6 +102,7 @@ export function MachineLoginPage(): ReactNode {
     },
   });
   const deny = useKeyedWrite<StateResponse>({
+    method: "POST",
     write: (_variables, bounds) =>
       api.denyCredentialRecord(record?.record_id ?? "", { code: lookedUpCode }, bounds),
     inline: true,
@@ -169,28 +176,38 @@ export function MachineLoginPage(): ReactNode {
           Look up
         </button>
       </form>
+      {/* A lookup the reader stopped may have been made, and Look up is a press of its own, under
+          a key of its own. */}
       {lookup.isError ? (
         <p className={dangerText}>
-          {apiErrorMessage(lookup.error, "Could not look up that code.")}
+          {lookup.error instanceof SendStoppedError
+            ? stoppedWriteNote("the lookup of that code", "made", {
+                anew: "Look up sends the code in the field as a new lookup.",
+              })
+            : apiErrorMessage(lookup.error, "Could not look up that code.")}
         </p>
       ) : null}
       {view === undefined ? null : (
         <div className="space-y-4">
           <CredentialRecordFacts record={view.record} />
-          {view.decided === null ? (
-            <CredentialDecisionButtons
-              approve={view.record.service === null ? approve : undefined}
-              deny={deny}
-              submitGuard={submitGuard}
-            />
-          ) : (
+          {view.record.state === "expired" ? (
+            <p className={`text-sm font-medium ${textPrimaryOnCanvas}`}>
+              This login expired before anyone decided it.
+            </p>
+          ) : view.decided !== null ? (
             <MachineLoginDecision
               credentialId={view.decided.credential_id}
               event={view.decided.event}
               host={view.record.identifiers?.[0] ?? ""}
               service={view.record.service}
             />
-          )}
+          ) : view.record.state === "pending" ? (
+            <CredentialDecisionButtons
+              approve={view.record.service === null ? approve : undefined}
+              deny={deny}
+              submitGuard={submitGuard}
+            />
+          ) : null}
         </div>
       )}
       <MachineLoginsSection />

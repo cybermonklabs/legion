@@ -41,9 +41,10 @@ export type ActorOrigin = z.output<typeof ActorOriginSchema>;
 /** The OAuth scopes a Dispatch credential can hold, mirroring Go's `model.ScopePerson` and
  *  `model.ScopeApprove` and the `agent_tokens.scopes` check that stores them: `person` acts as
  *  the credential's own person on every route a person reaches through the dashboard, and
- *  `approve` settles what a person settles — a document review, the answer of an approval ask, a
- *  machine-login decision or revoke, and minting, changing or revoking a personal token. A
- *  credential holding `approve` holds `person` too. */
+ *  `approve` settles what a person settles — a document review, a decision's Keep, the answer of
+ *  an approval ask, a machine-login decision, a credential-grant, machine-login or sign-in revoke,
+ *  and minting, changing or revoking a personal token. A credential holding `approve` holds
+ *  `person` too, and no token the secrets broker issued holds `approve`. */
 export const DISPATCH_SCOPES = ["person", "approve"] as const;
 export type DispatchScope = (typeof DISPATCH_SCOPES)[number];
 
@@ -53,22 +54,33 @@ export type DispatchScope = (typeof DISPATCH_SCOPES)[number];
  *
  *  `scopes` is the set that credential held at the act, recorded with it and never read back
  *  from the token: a person who narrows a token afterwards narrows what it may do next, and
- *  does not un-approve what it approved while it held `approve`. */
+ *  does not un-approve what it approved while it held `approve`.
+ *
+ *  `session_proven` is `true` only when the credential itself proved `session` (a broker-issued
+ *  token's own session); a session a personal token's request named is recorded without it. */
 export const ActorActSchema = z
   .strictObject({
     session: z.string().optional(),
+    session_proven: z.literal(true).optional(),
     token_id: z.string().optional(),
     token_name: z.string().optional(),
     scopes: z.array(z.enum(DISPATCH_SCOPES)).optional(),
   })
   .readonly();
 
+/** `proven` is `true` only when the write's credential itself proved the actor's `id`: a
+ *  browser's person, a person a credential acts for, or a broker-issued token's session. The
+ *  server sets it and never reads it from a body; an actor whose `id` the request only named (the
+ *  shared agent token, a personal token or a service token naming a session) and every row
+ *  written before the mark carry none, so a reader that trusts only proven writers trusts no
+ *  claimed one. */
 export const ActorSchema = z.union([
   z
     .strictObject({
       kind: z.literal("user"),
       id: z.string(),
       act: ActorActSchema.optional(),
+      proven: z.literal(true).optional(),
     })
     .readonly(),
   z
@@ -86,6 +98,7 @@ export const ActorSchema = z.union([
        *  none, a browser cookie, a personal token and a broker token scoped to its person
        *  included. */
       project: z.string().optional(),
+      proven: z.literal(true).optional(),
     })
     .readonly(),
   /** A server-owned writer, such as the architecture importer
@@ -241,24 +254,31 @@ export const ProjectSchema = z
      *  gates nothing and one that has not published yet alike: neither holds a step waiting for
      *  a person. */
     gated_steps: z.array(z.enum(GATED_STEPS)).optional(),
+    /** The project's default repository, `owner/name`: an issue that names no repository, and
+     *  whose parent chain names none, resolves to it.
+     *  `PUT /api/v1/projects/{key}/default-repository` sets and clears it. Absent when the
+     *  project has none, and from a Dispatch older than the field. */
+    default_repo: z.string().optional(),
     created_at: z.string(),
   })
   .readonly();
 
+/** A row of `GET /api/v1/settings/repo-projects`, the one route that still reads the repository
+ *  mapping. Nothing writes the rows now: they stay as the migration of `Project.default_repo`
+ *  left them, for the Legion daemons that read the route at boot, and the next release removes
+ *  the route. The retained event `settings.repo_project.updated` carries one as `mapping`. */
 export const RepoProjectSchema = z
   .strictObject({
     repo: z.string(),
     project: z.string(),
-    /** The project's default repository: an issue with no repository of its own and none on its
-     *  parent chain resolves to it. At most one mapping of a project is its default. */
+    /** Whether the row was its project's default repository. The migration copied each default
+     *  to `Project.default_repo`, which is what an issue resolves to now. */
     default: z.boolean(),
     /** The full `owner/name` this repository is called today, null for one that was never
-     *  renamed. Dispatch holds both names of a renamed repository and canonicalises every
-     *  comparison through this field, so an issue recorded under the old name is held to a pull
-     *  request on the new one. `PUT /api/v1/settings/repo-projects/{owner}/{repo}` takes it:
-     *  absent or null leaves the stored pair alone, `""` clears it. Optional here because a
-     *  client written before the field existed builds this shape without it; Dispatch always
-     *  answers it. */
+     *  renamed. Dispatch reads each pair once at boot: it writes the new name in place of the old
+     *  one in every stored repository field, and compares a repository under the new name.
+     *  Optional here because a client written before the field existed builds this shape
+     *  without it; Dispatch always answers it. */
     renamed_to: z.string().nullable().optional(),
     created_by: ActorSchema,
     created_at: z.string(),
@@ -288,6 +308,9 @@ export const ArchitectureSourceSchema = z
   })
   .readonly();
 
+/** `settings.repo_project.updated`: a write of the repository mapping, which no build makes
+ *  now. The events an earlier build stored stay as history, so the type stays for them.
+ *  `deleted` is true for a write that removed the mapping, and false for one that set it. */
 export const RepoProjectUpdatedEventPayloadSchema = z
   .strictObject({ mapping: RepoProjectSchema, deleted: z.boolean() })
   .readonly();

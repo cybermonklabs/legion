@@ -171,7 +171,7 @@ func TestTheShimsCommandEndsWithTheShimsStop(t *testing.T) {
 		// been ended for, which on this path is the agent's whole grace. A bound that did not
 		// subtract it would spend that span a second time after the grace, and the stop of an
 		// agent that ignores its SIGTERM would run past the floor the daemon's configuration
-		// refuses a worker_stop_timeout_seconds under (shim.MinStopGrace, which AGENTS.md names)
+		// refuses a worker_stop_timeout_seconds under (shim.MinStopGrace, which that refusal names)
 		// — the point at which the launcher SIGKILLs the shim, leaving the warm-up's lease behind.
 		span := procgroup.StopGrace + procgroup.WaitDelay
 		drain := clock.nextAny(t, "the drain of the commands the daemon asked for")

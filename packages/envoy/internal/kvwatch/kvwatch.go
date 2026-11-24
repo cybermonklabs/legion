@@ -10,8 +10,8 @@
 // legacy one: the legacy watcher arms an init timer while its scan is pending, and that timer's
 // callback can send on the channels the subscription's end has just closed, a "send on closed
 // channel" panic in a goroutine nats.go owns that ends the process whenever the subscription ends
-// mid-scan -- a Stop, nats.go's own unsubscribe, a connection closed or drained (nats.go v1.50.0
-// kv.go:1145-1172, unfixed through v1.55.0). The jetstream watcher has no timer and closes its
+// mid-scan -- a Stop, nats.go's own unsubscribe, a connection closed or drained (nats.go v1.55.0
+// kv.go:1210-1236, unfixed through v1.55.0). The jetstream watcher has no timer and closes its
 // updates only on its subscription goroutine's exit, so no send can follow the close, and a watcher
 // may be stopped at any moment provided it is read until it closes. It has no idle bound either, so
 // the watcher owns its scan's: a read whose scan delivers nothing for ScanIdleTimeout ends as timed
@@ -88,6 +88,15 @@ type Read struct {
 	// MaxAge is the stream's MaxAge, the bucket's TTL, as the watch read it before it installed
 	// this read: a bucket recreated with another TTL moves it. 0 keeps records for good.
 	MaxAge time.Duration
+	// LastSeq is the stream's last sequence as the same read of it found it, before the watch
+	// created this read's watcher: a record at a later revision was stored after the read's first
+	// request. 0 is a stream that had stored nothing.
+	LastSeq uint64
+	// StreamRead numbers that read of the stream among every one this watcher's watches began
+	// (Watcher.StreamReads), counting from 1: a key a write site applied once that read had begun,
+	// at a revision past LastSeq, is the read's evidence of it (Copy.BeginRead); a take the fence
+	// dropped is no evidence.
+	StreamRead uint64
 }
 
 // Watcher is one cache's KV watcher, from New.
@@ -203,6 +212,9 @@ type Watcher struct {
 	// epoch is the current read's Read.Epoch, and bound its stale bound (boundFor).
 	epoch uint64
 	bound time.Duration
+	// streamReads counts the reads of the bucket's stream that this watcher's watches began, each
+	// one the start of a read (Read.StreamRead), whether or not its watch then installed.
+	streamReads uint64
 
 	// completedOnce is set by the first read that completed, and following while the copy follows
 	// the bucket: from a read's completion until the next stop (stopFollowing, watch). staleSince is
@@ -297,7 +309,7 @@ func (w *Watcher) Start() {
 	}
 	w.mu.Unlock()
 	go func() {
-		err := w.watch(w.first, 0)
+		err := w.watch(context.Background(), w.first, 0)
 		if err == nil {
 			return
 		}
@@ -338,17 +350,22 @@ func (w *Watcher) Start() {
 // rewatched by the listener's self-health rebuild on the monitor's tick instead
 // (cmd/listener/main.go, rewatchListenerKVWatchers, called from rebuildListenerDependencies).
 // Either way the wait armed at the stop reports the outage once, at bus.RepairGrace (closed). The
-// error is returned unchanged, which its caller already logs.
-func (w *Watcher) Rewatch(conn *nats.Conn) error {
+// error is returned unchanged, which its caller already logs. The move waits on nothing past ctx,
+// which a reconnect hook passes as the run's context: the bucket's open, the stream read and the
+// watcher's create are made under it, and the legacy lookup and the previous watcher's consumer
+// delete, which nats.go gives no context, are waited for only until it ends (bus.OpenKeyValue,
+// watch). So a move on a connection that drops ends at the drop; the watcher a move installs does
+// not end with ctx (watch).
+func (w *Watcher) Rewatch(ctx context.Context, conn *nats.Conn) error {
 	js, err := conn.JetStream(nats.MaxWait(10 * time.Second))
 	if err != nil {
 		return fmt.Errorf("open %s JetStream: %w", w.name, err)
 	}
-	kv, err := bus.OpenKeyValue(conn, js, w.bucket)
+	kv, err := bus.OpenKeyValue(ctx, conn, js, w.bucket)
 	if err != nil {
 		return fmt.Errorf("open %s KV bucket: %w", w.name, err)
 	}
-	if err := w.watch(kv, 0); err != nil {
+	if err := w.watch(ctx, kv, 0); err != nil {
 		return fmt.Errorf("watch %s KV bucket: %w", w.name, err)
 	}
 	return nil
@@ -377,6 +394,15 @@ func (w *Watcher) Epoch() uint64 {
 	w.mu.RLock()
 	defer w.mu.RUnlock()
 	return w.epoch
+}
+
+// StreamReads is how many reads of the bucket's stream this watcher's watches have begun, each the
+// start of a read: a copy stamps with it a key a write site applied in a read's gap, after that
+// read's stream read and before its BeginRead (Copy.stamp).
+func (w *Watcher) StreamReads() uint64 {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	return w.streamReads
 }
 
 // Err is the current watcher's terminal error, or nil while it runs.
@@ -429,9 +455,13 @@ func (w *Watcher) WaitReady(ctx context.Context) error {
 // Each watcher lives in a context of its own (subscription): nats.go ends the subscription when
 // that context ends and parks a goroutine on it until then (bus.KeyValue.WatchKeys), so it is
 // cancelled once the watcher is stopped or has ended, never before. Its create request is bounded
-// by nats.go itself, since the context carries no deadline (WatchKeys): a create that fails is the
-// watch's error, as a failed stream read is, and leaves nothing to stop.
-func (w *Watcher) watch(kv bus.KeyValue, expect uint64) error {
+// by nats.go itself, since the context carries no deadline (WatchKeys), and by run: the stream read
+// is made under run, and a run that ends while the create is in flight cancels the watcher's
+// context, which ends the create; a watcher the create still returned then is discarded as an
+// overtaken one is. A create that fails is the watch's error, as a failed stream read is. A run that
+// ends after the create returned leaves the watcher's context alone (context.AfterFunc's stop), so
+// the watcher never ends with the hook run that installed it.
+func (w *Watcher) watch(run context.Context, kv bus.KeyValue, expect uint64) error {
 	w.mu.Lock()
 	stopped := w.stopped
 	if stopped {
@@ -440,6 +470,10 @@ func (w *Watcher) watch(kv bus.KeyValue, expect uint64) error {
 		w.watching++
 	}
 	disconnects := w.disconnects
+	// Counted before the stream read is sent, so a take stamped with this count or a later one
+	// came after it.
+	w.streamReads++
+	streamRead := w.streamReads
 	w.mu.Unlock()
 	if stopped {
 		return nil
@@ -449,13 +483,23 @@ func (w *Watcher) watch(kv bus.KeyValue, expect uint64) error {
 	// watcher's create request are part of it, not just the entries that follow.
 	started := time.Now()
 	sent := w.now()
-	state, err := kv.ReadStreamState()
+	state, err := kv.ReadStreamState(run)
 	if err != nil {
 		return err
 	}
 	stream := state.Created
 	ctx, cancel := context.WithCancel(context.Background())
+	abandon := context.AfterFunc(run, cancel)
 	watcher, err := kv.WatchKeys(ctx, jetstream.AllKeys)
+	if !abandon() {
+		// run ended while the create was in flight, and cancelled the watcher's context.
+		if err == nil {
+			sub := &subscription{watcher: watcher, cancel: cancel}
+			sub.retireWithin(run, abandonedDrain)
+		}
+		cancel()
+		return fmt.Errorf("create the %s watcher: %w", w.name, run.Err())
+	}
 	if err != nil {
 		cancel()
 		return err
@@ -495,10 +539,7 @@ func (w *Watcher) watch(kv bus.KeyValue, expect uint64) error {
 	if older || (expect != 0 && w.generation != expect) {
 		w.mu.Unlock()
 		w.applyMu.Unlock()
-		go sub.discard()
-		// Stop reports a consumer the server has lost, or a subscription already ended, to its
-		// caller, and neither is worth a line.
-		_ = sub.stop()
+		sub.retireWithin(run, abandonedDrain)
 		return nil
 	}
 	previous := w.watcher
@@ -533,7 +574,7 @@ func (w *Watcher) watch(kv bus.KeyValue, expect uint64) error {
 	idle := make(chan struct{}, 1)
 	idleSince := w.now()
 	w.armIdle(w.scanIdle, idle)
-	read := Read{Epoch: w.epoch, Recreated: recreated, MaxAge: state.MaxAge}
+	read := Read{Epoch: w.epoch, Recreated: recreated, MaxAge: state.MaxAge, LastSeq: state.LastSeq, StreamRead: streamRead}
 	w.mu.Unlock()
 	w.cache.BeginRead(read)
 	w.applyMu.Unlock()
@@ -543,8 +584,21 @@ func (w *Watcher) watch(kv bus.KeyValue, expect uint64) error {
 	}
 	if previous != nil {
 		// Its consume goes on reading it until it closes. Stop reports a consumer the server has
-		// lost to its caller, never at ERROR.
-		_ = previous.stop()
+		// lost to its caller, never at ERROR. Stop deletes the consumer nats.go created for the
+		// previous watcher, a request that takes no context, so it is waited for only until run
+		// ends: a reconnect hook's run whose connection drops while that delete is unanswered ends
+		// at the drop rather than at the request's own bound, and the stop goes on by itself
+		// (TestAWatchsRunDoesNotWaitOutThePreviousWatchersDelete). A run that does not end waits
+		// for it, so a caller that returns from a live Rewatch has the previous watcher stopped.
+		stopped := make(chan struct{})
+		go func() {
+			_ = previous.stop()
+			close(stopped)
+		}()
+		select {
+		case <-stopped:
+		case <-run.Done():
+		}
 	}
 	go w.consume(sub, generation, read, started, idle, idleSince)
 	return nil

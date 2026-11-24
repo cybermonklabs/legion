@@ -52,6 +52,7 @@ func hubSessionTitles(t *testing.T, body json.RawMessage) map[string]string {
 // session that never stamped a title is held by its bare id throughout, which is the limit chosen
 // for INFRA-1368: nothing backfills a name for it.
 func TestTheLiveHubKeepsASessionsNameWhenAnEventCarriesNoTitle(t *testing.T) {
+	t.Parallel()
 	var pause *notePause
 	rig := newHubRig(t, func(hub *deliveryHub) { pause = pauseNotes(hub) })
 	seedHubSettings(t, rig.database)
@@ -79,7 +80,7 @@ func TestTheLiveHubKeepsASessionsNameWhenAnEventCarriesNoTitle(t *testing.T) {
 	start := rig.mark()
 	titled := appendHubEvent(t, rig, projectOwner("HUB").event("user_state.updated",
 		model.Actor{Kind: "session", ID: named, Origin: &model.ActorOrigin{SessionTitle: "Release sender"}}, map[string]any{}))
-	rig.waitFor(t, start, eventFeedWait, "the titled write on the hub's feed", func(note deliveryHubNote) bool {
+	rig.waitForEvent(t, start, "the titled write on the hub's feed", func(note deliveryHubNote) bool {
 		return note.what == "event" && note.eventID == titled.ID
 	})
 	delta := conn.delta(t, 5*time.Second, "t")
@@ -133,7 +134,7 @@ func writeWithoutATitle(t *testing.T, rig *hubRig, session string) {
 	start := rig.mark()
 	written := appendHubEvent(t, rig, projectOwner("HUB").event("user_state.updated",
 		model.Actor{Kind: "session", ID: session}, map[string]any{}))
-	rig.waitFor(t, start, eventFeedWait, "the write carrying no origin on the hub's feed", func(note deliveryHubNote) bool {
+	rig.waitForEvent(t, start, "the write carrying no origin on the hub's feed", func(note deliveryHubNote) bool {
 		return note.what == "event" && note.eventID == written.ID
 	})
 	recordSessionTitles(t, rig.database, time.Now().UTC(), map[string]string{session: ""})

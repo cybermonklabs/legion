@@ -1,0 +1,4 @@
+kind: Added
+body: |-
+  The Dispatch API's shapes carry an issue's step records and their write, and the tool spec
+  `dispatch_steps` reads an issue's steps.

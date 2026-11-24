@@ -20,6 +20,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // Consumer delivery of the simulated sessions: each session registers with `delivery: {consumer:
@@ -148,15 +149,15 @@ func (r *relaySessions) wrote(session int, streamID string, seq uint64) {
 // and its resume point once it has one, as the plugin sends at every registration, unless
 // LOADTEST_NO_RESUME=1 asks for registrations without one, as a plugin that never wrote a frame
 // sends.
-func (r *relaySessions) delivery(session int) map[string]any {
-	d := map[string]any{"consumer": true, "epoch": r.epochs[session%len(r.epochs)]}
+func (r *relaySessions) delivery(session int) *listenerwire.SubscribeDelivery {
+	d := &listenerwire.SubscribeDelivery{Consumer: true, Epoch: r.epochs[session%len(r.epochs)]}
 	if os.Getenv("LOADTEST_NO_RESUME") == "1" {
 		return d
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.streams[session] != "" && r.written[session] > 0 {
-		d["resume"] = map[string]any{"stream_id": r.streams[session], "seq": r.written[session]}
+		d.Resume = &listenerwire.SubscribeResume{StreamID: r.streams[session], Seq: new(r.written[session])}
 	}
 	return d
 }
@@ -164,9 +165,18 @@ func (r *relaySessions) delivery(session int) map[string]any {
 // handler takes session's relay frames: it answers `received` at once, counts a first frame of
 // each stream sequence as a receipt (an agent-topic one when the frame's subject is the session's
 // agent subject), then answers `done`, which moves the session's resume point, and records the
-// frame with that answer, as the plugin answers done once the frame is written.
+// frame with that answer, as the plugin answers done once the frame is written. The send route's
+// connection probe (bus.ConnectionProbeHeader) is answered done, as the plugin answers it before
+// it decodes anything, and counted as nothing: not a frame, a receipt, a duplicate, an
+// undecodable frame or a reply error.
 func (r *relaySessions) handler(ns *natsSessions, session int, agentSubject string, nonce int64) nats.MsgHandler {
 	return func(m *nats.Msg) {
+		if m.Header.Get(bus.ConnectionProbeHeader) == "1" {
+			if m.Reply != "" {
+				_ = m.Respond(relayReplyDone)
+			}
+			return
+		}
 		now := time.Now().UnixNano()
 		r.reply(m, relayReplyReceived)
 		r.frameCount.Add(1)

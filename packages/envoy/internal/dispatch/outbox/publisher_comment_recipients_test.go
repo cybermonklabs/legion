@@ -278,7 +278,7 @@ func checkSessionRecipients(t *testing.T, database *store.Store, checks []recipi
 		}
 		want := make([]string, 0, len(check.want))
 		for _, sessionID := range check.want {
-			want = append(want, contracts.AgentSubject(sessionID))
+			want = append(want, contracts.LegacyAgentSubject(sessionID))
 		}
 		topics := row.destinations
 		if got := agentTopics(topics); !slices.Equal(got, want) {
@@ -514,8 +514,8 @@ func TestAFailedRecipientQueryBacksOffOnlyTheEventsThatNeededItAfterTheirOwnerTo
 				reply := seedThreadComment(t, database, "T-1", "", sami, &root)
 				return appendCommentEvent(t, database, broker, "comment.created", sami, model.Comment{ID: reply, ReplyTo: &root})
 			},
-			wantComment:  []string{commentTopic, roleTopic, contracts.AgentSubject("session-claimant")},
-			wantMessages: []string{messageTopic, roleTopic, contracts.AgentSubject("session-claimant")},
+			wantComment:  []string{commentTopic, roleTopic, contracts.LegacyAgentSubject("session-claimant")},
+			wantMessages: []string{messageTopic, roleTopic, contracts.LegacyAgentSubject("session-claimant")},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -565,7 +565,7 @@ func TestAReplyToAnIDThatIsNoUUIDReachesNoThreadSessionAndPublishes(t *testing.T
 		t.Fatalf("scan batch: %v", err)
 	}
 	got := readEventRow(t, database, replied.ID)
-	want := []string{"notifications.dispatch.issue.T-1.comment.created", roleTopic, contracts.AgentSubject(claimant.ID)}
+	want := []string{"notifications.dispatch.issue.T-1.comment.created", roleTopic, contracts.LegacyAgentSubject(claimant.ID)}
 	if got.publishedAt == nil || got.attempts != 0 || got.nextAttempt != nil || !slices.Equal(got.destinations, want) {
 		t.Fatalf("the reply to a non-uuid id has published_at %v, attempt_count %d, next_attempt_at %v and published_destinations %v, want it published to %v with no attempt counted",
 			got.publishedAt, got.attempts, got.nextAttempt, got.destinations, want)
@@ -694,7 +694,7 @@ func TestALaterEventReachesNoSessionTheFailedRecipientReadOfAnEarlierOneMissedBe
 			}
 			want := []string{}
 			for _, sessionID := range tc.wantFirst {
-				want = append(want, contracts.AgentSubject(sessionID))
+				want = append(want, contracts.LegacyAgentSubject(sessionID))
 			}
 			if got := agentTopics(held.destinations); !slices.Equal(got, want) {
 				t.Fatalf("the later event reached sessions %v in the first batch, want %v, the ones the failed event listed", got, want)
@@ -710,7 +710,7 @@ func TestALaterEventReachesNoSessionTheFailedRecipientReadOfAnEarlierOneMissedBe
 			}
 			var order []string
 			for _, item := range publisher.all() {
-				if item.Topic == contracts.AgentSubject(rooter.ID) {
+				if item.Topic == contracts.LegacyAgentSubject(rooter.ID) {
 					order = append(order, item.SourceEventID)
 				}
 			}
@@ -769,11 +769,11 @@ func TestABrokenCreditListBacksOffItsEventAndHoldsOnlyItsOwnersLaterSessionCopie
 		t.Fatalf("the comment on the broken document has published_at %v, attempt_count %d and next_attempt_at %v, want it backed off",
 			failed.publishedAt, failed.attempts, failed.nextAttempt)
 	}
-	if want := []string{"notifications.dispatch.issue.T-1.comment.created", contracts.AgentSubject(claimant.ID)}; !slices.Equal(failed.destinations, want) {
+	if want := []string{"notifications.dispatch.issue.T-1.comment.created", contracts.LegacyAgentSubject(claimant.ID)}; !slices.Equal(failed.destinations, want) {
 		t.Fatalf("the comment on the broken document recorded published_destinations %v, want %v", failed.destinations, want)
 	}
 	held := readEventRow(t, database, resolved.ID)
-	if want := []string{"notifications.dispatch.issue.T-1.comment.resolved", contracts.AgentSubject(claimant.ID)}; !slices.Equal(held.destinations, want) {
+	if want := []string{"notifications.dispatch.issue.T-1.comment.resolved", contracts.LegacyAgentSubject(claimant.ID)}; !slices.Equal(held.destinations, want) {
 		t.Fatalf("the issue's later event recorded published_destinations %v, want %v: its owner topic and the claimant the failed event listed", held.destinations, want)
 	}
 	if held.publishedAt != nil || held.attempts != 0 || held.nextAttempt == nil || held.nextAttempt.After(*failed.nextAttempt) {
@@ -781,19 +781,19 @@ func TestABrokenCreditListBacksOffItsEventAndHoldsOnlyItsOwnersLaterSessionCopie
 			held.publishedAt, held.attempts, held.nextAttempt, *failed.nextAttempt)
 	}
 	for _, item := range publisher.all() {
-		if item.SourceEventID == fmt.Sprint(resolved.ID) && item.Topic == contracts.AgentSubject(rooter.ID) {
+		if item.SourceEventID == fmt.Sprint(resolved.ID) && item.Topic == contracts.LegacyAgentSubject(rooter.ID) {
 			t.Fatalf("the issue's later event reached %s, a session the failed event may yet reach first", rooter.ID)
 		}
 	}
 	for _, event := range []model.Event{otherReplied, otherResolved} {
 		row := readEventRow(t, database, event.ID)
-		if row.publishedAt == nil || row.attempts != 0 || !slices.Equal(agentTopics(row.destinations), []string{contracts.AgentSubject(other.ID)}) {
+		if row.publishedAt == nil || row.attempts != 0 || !slices.Equal(agentTopics(row.destinations), []string{contracts.LegacyAgentSubject(other.ID)}) {
 			t.Fatalf("the other issue's %s event has published_at %v, attempt_count %d and published_destinations %v, want it published to %s",
 				event.Type, row.publishedAt, row.attempts, row.destinations, other.ID)
 		}
 	}
 	row := readEventRow(t, database, anchored.ID)
-	if want := []string{"notifications.dispatch.issue.T-2.comment.created", contracts.AgentSubject(credited.ID)}; row.publishedAt == nil || row.attempts != 0 || !slices.Equal(row.destinations, want) {
+	if want := []string{"notifications.dispatch.issue.T-2.comment.created", contracts.LegacyAgentSubject(credited.ID)}; row.publishedAt == nil || row.attempts != 0 || !slices.Equal(row.destinations, want) {
 		t.Fatalf("the other issue's comment on a healthy document has published_at %v, attempt_count %d and published_destinations %v, want it published to %v",
 			row.publishedAt, row.attempts, row.destinations, want)
 	}
@@ -841,7 +841,7 @@ func TestABrokenRowOfAnEventThatIsNotDueFailsNoOtherOwnersRecipientRead(t *testi
 		t.Fatalf("scan the batch beside the broken reply: %v", err)
 	}
 	row := readEventRow(t, database, otherReplied.ID)
-	if row.publishedAt == nil || row.attempts != 0 || !slices.Equal(agentTopics(row.destinations), []string{contracts.AgentSubject(other.ID)}) {
+	if row.publishedAt == nil || row.attempts != 0 || !slices.Equal(agentTopics(row.destinations), []string{contracts.LegacyAgentSubject(other.ID)}) {
 		t.Fatalf("the other issue's reply has published_at %v, attempt_count %d and published_destinations %v, want it published to %s",
 			row.publishedAt, row.attempts, row.destinations, other.ID)
 	}
@@ -907,29 +907,29 @@ func TestAnEventBehindAnotherThatIsNotDueIsHeldOnlyOnTheKeysTheOtherCouldStillOw
 				spec := seedDocument(t, database, new("T-1"), "spec", reached, []model.Actor{reached})
 				breakDocumentCredits(t, database, spec)
 				earlier := reply(t, database, broker, spec, reached)
-				waitOut(t, database, earlier, topic, contracts.AgentSubject(reached.ID))
+				waitOut(t, database, earlier, topic, contracts.LegacyAgentSubject(reached.ID))
 				return earlier, reply(t, database, broker, "", reached, unreached)
 			},
-			want: []string{topic, contracts.AgentSubject(reached.ID)},
+			want: []string{topic, contracts.LegacyAgentSubject(reached.ID)},
 		},
 		{
 			name: "the earlier event's reads answer and its send to one session failed",
 			arrange: func(t *testing.T, database *store.Store, broker *events.Broker) (model.Event, model.Event) {
 				earlier := reply(t, database, broker, "", reached, stalled)
-				waitOut(t, database, earlier, topic, contracts.AgentSubject(reached.ID))
+				waitOut(t, database, earlier, topic, contracts.LegacyAgentSubject(reached.ID))
 				return earlier, reply(t, database, broker, "", reached, unreached, stalled)
 			},
-			want: []string{topic, contracts.AgentSubject(reached.ID), contracts.AgentSubject(unreached.ID)},
+			want: []string{topic, contracts.LegacyAgentSubject(reached.ID), contracts.LegacyAgentSubject(unreached.ID)},
 		},
 		{
 			name:  "the earlier event's reads answer and its role route is pending",
 			route: new("role:reviewer"),
 			arrange: func(t *testing.T, database *store.Store, broker *events.Broker) (model.Event, model.Event) {
 				earlier := reply(t, database, broker, "", reached)
-				waitOut(t, database, earlier, topic, contracts.AgentSubject(reached.ID))
+				waitOut(t, database, earlier, topic, contracts.LegacyAgentSubject(reached.ID))
 				return earlier, reply(t, database, broker, "", reached, unreached)
 			},
-			want: []string{topic, contracts.AgentSubject(reached.ID), contracts.AgentSubject(unreached.ID)},
+			want: []string{topic, contracts.LegacyAgentSubject(reached.ID), contracts.LegacyAgentSubject(unreached.ID)},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

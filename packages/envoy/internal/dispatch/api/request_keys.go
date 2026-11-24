@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -64,7 +65,8 @@ import (
 //     its key commits nothing more: its next commit is refused.
 //   - A write that also delivers to sessions keeps its own recovery point (Brandur Leach,
 //     "Implementing Stripe-like Idempotency Keys in Postgres"): it commits what it made into the
-//     row in its own transaction (bindRequestKeyRecovery), and a repeat that finds that point is
+//     row in its own transaction (bindRequestKeyRecovery, or queueRequestKeyRecovery where that
+//     transaction sends its writes as one batch), and a repeat that finds that point is
 //     answered by its route's keyedReplay - whatever delivery is still owed put on its way, then
 //     what it made read again - rather than from the stored bytes or KEY_COMMITTED, however its
 //     first request ended: the single-session send, the broadcast, an issue message and a comment,
@@ -73,10 +75,17 @@ import (
 //     delivery sweep resumes it (resumeOwedDeliveries), and a repeat only sooner.
 //   - Every answer to a keyed request the layer judged carries the key back in the Idempotency-Key
 //     response header, a 5xx included: an earlier Dispatch ignores the header and answers without
-//     it, so a client retries a 5xx under its key only where the echo says the key was judged.
+//     it, so a check can tell a Dispatch that judges the key from one that does not. The agents'
+//     client reads no /healthz, and every Dispatch that carries b1c42d1d7d runs this layer, so it
+//     sends a failed write again under its key whatever the echo says. It reads the echo only to
+//     settle a refusal: a fresh 4xx, or a 422 KEY_REUSED, that echoes exactly its key is final
+//     (answerEvent, packages/envoy-client), so a change that drops or moves the echo turns such
+//     a refusal back into an unsettled write.
 //
 // A write without the header runs as it always did, unkeyed, and is logged at DEBUG: a script, a
-// test and the Legion daemon's outbox send writes that name no intent, and are expected to.
+// test and the Legion daemon's outbox send writes that name no intent, and are expected to. A write
+// with the header never runs unkeyed: a caller the layer cannot resolve is answered that refusal,
+// and a body past its route's limit the route's 413, and neither runs the handler.
 
 const (
 	// keyedAnswerKept is the largest answer a key keeps. A larger one is still answered in full, but
@@ -234,7 +243,7 @@ type resolvedCaller struct {
 func (s *server) keyedWrites(method, pattern string, handler http.HandlerFunc, replay keyedReplay) http.HandlerFunc {
 	wildcards := patternWildcards(pattern)
 	keepsAnswer := !answerHoldsSecret[method+" "+pattern]
-	bodyLimit, _ := routeBody(method, pattern)
+	bodyLimit, tooLarge := routeBody(method, pattern)
 	run := handler
 	if s.deps.TestHooksEnabled {
 		run = s.slowedByTestHook(handler)
@@ -252,13 +261,12 @@ func (s *server) keyedWrites(method, pattern string, handler http.HandlerFunc, r
 		}
 		actor, human, err := s.optionalActor(r)
 		if err != nil {
-			// The handler refuses a caller it cannot resolve as it always has, and nothing is kept.
-			handler(w, r)
+			s.writeAuthenticationError(w, err)
 			return
 		}
 		r = r.WithContext(context.WithValue(r.Context(), resolvedCallerKey{}, resolvedCaller{actor: actor, human: human}))
 		if r.ContentLength > bodyLimit {
-			handler(w, r)
+			s.writeHandlerError(w, tooLarge)
 			return
 		}
 		login := requestKeyLogin(actor, human)
@@ -301,16 +309,16 @@ func (s *server) keyedWrites(method, pattern string, handler http.HandlerFunc, r
 			return
 		}
 		if body.size > bodyLimit {
-			r.Body = io.NopCloser(io.MultiReader(replayable, r.Body))
-			handler(w, r)
+			// A body that declared no length and ran past the limit as it was spooled: refused as
+			// the declared one is, and no handler runs without the key.
+			s.writeHandlerError(w, tooLarge)
 			return
 		}
 		r.Body = io.NopCloser(replayable)
 
 		// Every answer from here on - run, replayed or refused, stored or not, a 5xx included - names
-		// the key back, so a client can tell a Dispatch that judged its key from one that ignored the
-		// header, and retries a 5xx under the key only against the first: an earlier Dispatch would
-		// run the write again.
+		// the key back, so a check can tell a Dispatch that judged its key from one that ignored the
+		// header.
 		w.Header().Set(contracts.IdempotencyKeyHeader, key)
 		claim, answered := s.claimRequestKey(w, r, login, key, hex.EncodeToString(digest.Sum(nil)), replay)
 		if answered {
@@ -355,7 +363,7 @@ func (s *server) keyedWrites(method, pattern string, handler http.HandlerFunc, r
 // write's own limit (handoffRequestLimit) for that one, the markdown round trip's
 // (markdownRoundTripLimit) for that one, and a JSON body (decodeJSON) for every other. The
 // limit is the most the keyed layer spools before its handler runs - a body past it is
-// refused by the route's handler whatever its key, so it runs unkeyed rather than spooled - and
+// refused whatever its key, so the layer answers the 413 itself rather than spool it - and
 // the most an early answer discards before it is written (drainBeforeAnswer). One answer serves
 // all three layers and the handler, so none of them can disagree with another.
 func routeBody(method, pattern string) (limit int64, tooLarge *apiError) {
@@ -923,9 +931,9 @@ func answerHeldKey(w http.ResponseWriter, r *http.Request, key string, held held
 //
 // The body is read for at most drainTime (readFor): one that stops arriving is answered 409
 // KEY_IN_FLIGHT, which is what the key said, and the connection closes after it. A body past the
-// route's limit is answered as its route answers one (routeBody), unkeyed, as a request whose
-// body is past the limit runs unkeyed. Either keeps the read's deadline for net/http's own reads
-// after the answer; only a body read to its end lifts it.
+// route's limit is answered the route's 413 (routeBody), as a first request's body past it is.
+// Either keeps the read's deadline for net/http's own reads after the answer; only a body read to
+// its end lifts it.
 func (s *server) answerDrainedRepeat(
 	w http.ResponseWriter, r *http.Request, method, pattern string, wildcards []string, login, key string, replay keyedReplay,
 ) {
@@ -1136,29 +1144,66 @@ type recoveryPoint interface {
 	messageRecovery | broadcastRecovery | commentRecovery
 }
 
+// requestKeyRecoveryUpdate is the one statement a recovery point is bound with, run at once
+// (bindRequestKeyRecovery) or queued in a write phase (queueRequestKeyRecovery). It writes the
+// point only while the key is still this request's: a row another attempt took over, answered or
+// bound already matches nothing, and no row affected is that refusal.
+const requestKeyRecoveryUpdate = `
+	update request_keys set recovery = $4
+	where login = $1 and idempotency_key = $2 and attempt = $3 and status is null and recovery is null
+`
+
+// requestKeyRecoveryArgs are requestKeyRecoveryUpdate's arguments for point under the keyed request
+// ctx carries; keyed is false for a request without a key, which binds nothing.
+func requestKeyRecoveryArgs[T recoveryPoint](ctx context.Context, point T) (args []any, keyed bool, err error) {
+	claim, ok := ctx.Value(requestKeyClaimKey{}).(requestKeyClaim)
+	if !ok {
+		return nil, false, nil
+	}
+	encoded, err := json.Marshal(point)
+	if err != nil {
+		return nil, false, fmt.Errorf("encode a recovery point: %w", err)
+	}
+	return []any{claim.login, claim.key, claim.attempt, encoded}, true, nil
+}
+
 // bindRequestKeyRecovery commits point as the recovery point of the keyed request ctx carries, in
 // tx, the transaction that commits what the request made, so the two commit together or not at all.
 // A request without a key binds nothing. A request whose key a repeat has taken over is refused
 // (errRequestKeyTakenOver), and its transaction must roll back: the repeat makes the write instead.
+// A transaction that writes in two phases queues the same statement in its write phase instead
+// (queueRequestKeyRecovery), since this one would take a transaction id in the read phase.
 func bindRequestKeyRecovery[T recoveryPoint](ctx context.Context, tx pgx.Tx, point T) error {
-	claim, ok := ctx.Value(requestKeyClaimKey{}).(requestKeyClaim)
-	if !ok {
-		return nil
+	args, keyed, err := requestKeyRecoveryArgs(ctx, point)
+	if err != nil || !keyed {
+		return err
 	}
-	encoded, err := json.Marshal(point)
-	if err != nil {
-		return fmt.Errorf("encode a recovery point: %w", err)
-	}
-	tag, err := tx.Exec(ctx, `
-		update request_keys set recovery = $4
-		where login = $1 and idempotency_key = $2 and attempt = $3 and status is null and recovery is null
-	`, claim.login, claim.key, claim.attempt, encoded)
+	tag, err := tx.Exec(ctx, requestKeyRecoveryUpdate, args...)
 	if err != nil {
 		return fmt.Errorf("commit a recovery point: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
 		return errRequestKeyTakenOver
 	}
+	return nil
+}
+
+// queueRequestKeyRecovery is bindRequestKeyRecovery for a transaction whose writes go out as one
+// pipelined batch (INFRA-636): the same statement, queued at the place the write makes it, whose
+// refusal the batch reports as it reads that statement's result. The refusal comes back from the
+// write phase rather than before it, so the statements queued after it have run by then and the
+// transaction the caller abandons rolls them back with this one.
+func queueRequestKeyRecovery[T recoveryPoint](ctx context.Context, b *store.WriteBatch, point T) error {
+	args, keyed, err := requestKeyRecoveryArgs(ctx, point)
+	if err != nil || !keyed {
+		return err
+	}
+	b.Queue("commit a recovery point", requestKeyRecoveryUpdate, args...).Exec(func(tag pgconn.CommandTag) error {
+		if tag.RowsAffected() == 0 {
+			return errRequestKeyTakenOver
+		}
+		return nil
+	})
 	return nil
 }
 

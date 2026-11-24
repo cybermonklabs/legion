@@ -1,0 +1,9 @@
+kind: Fixed
+body: |-
+    A token mint whose upstream, GitHub or Google, ended the TLS exchange with an alert, or met one
+    from the broker, now says the upstream `answered, but the TLS exchange failed`, where it said
+    `could not be reached`. What the mint retries, and what it counts as possibly sent, is
+    unchanged.
+time: 2026-11-20T13:42:02.479307689Z
+custom:
+    Issue: pr4566

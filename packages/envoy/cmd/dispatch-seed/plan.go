@@ -7,6 +7,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/rank"
+	"github.com/sjawhar/envoy/internal/fold"
 )
 
 // seedPlan is every row the run will write, with its key, its uuid and its time, decided before
@@ -44,8 +45,8 @@ type seedPlan struct {
 	deepest   int
 }
 
-// projectPlan is one project with its default repository mapping and the second repository the
-// issues that carry one of their own use.
+// projectPlan is one project with its default repository and the second repository the issues
+// that carry one of their own use.
 type projectPlan struct {
 	Key        string
 	Name       string
@@ -83,7 +84,8 @@ type documentPlan struct {
 	Versions int
 	Primary  bool
 	Large    bool
-	// Chain is the document this one's text mentions, for the chains refs.Closure walks, or -1.
+	// Chain is the document this one's text mentions, for the chains main's eight-hop closure
+	// statement walked (mainClosureQuery in refs/closure_test.go), or -1.
 	Chain int
 }
 
@@ -151,9 +153,10 @@ type componentPlan struct {
 	Depends string
 }
 
-// chainLength is how many documents one mention chain holds. refs.Closure follows mentions for
-// eight hops and marks a ninth truncated, so a chain of nine documents is exactly a closure that
-// reaches its bound.
+// chainLength is how many documents one mention chain holds. main's closure statement
+// (mainClosureQuery in refs/closure_test.go) followed mentions for eight hops and marked a ninth
+// truncated, so a chain of nine documents is exactly a walk of that statement that reaches its
+// bound. refs.Closure reads one hop, so it follows no chain past the first document it reaches.
 const chainLength = 9
 
 // parentChainCap is the deepest parent chain the seed writes. The spec asks for chains of one to
@@ -192,8 +195,8 @@ func (p *seedPlan) planProjects() {
 		p.projects[index] = projectPlan{
 			Key:     key,
 			Name:    p.vocabulary.phrase(p.random, 3) + " project",
-			Repo:    fmt.Sprintf("seedorg/%s", lower(key)),
-			OwnRepo: fmt.Sprintf("seedorg/%s-service", lower(key)),
+			Repo:    fmt.Sprintf("seedorg/%s", fold.ASCII(key)),
+			OwnRepo: fmt.Sprintf("seedorg/%s-service", fold.ASCII(key)),
 			Issues:  issues,
 		}
 	}
@@ -292,7 +295,8 @@ func removeIndex(values []int, value int) []int {
 
 // planDocuments gives every issue its primary document and spreads the rest over the issues and
 // the projects. The first documents are the ones with 28 versions and the ones whose latest
-// version is large, and the first chains of them are the mention chains the closure walks.
+// version is large, and the first chains of them are the mention chains main's closure statement
+// walked.
 func (p *seedPlan) planDocuments() {
 	s := p.sizes
 	p.documents = make([]documentPlan, s.Documents)
@@ -325,8 +329,8 @@ func (p *seedPlan) planDocuments() {
 		}
 		p.documents[index] = document
 	}
-	// The chains: document j of a chain mentions document j+1, so a closure from the head walks
-	// chainLength-1 hops of artifact-to-artifact mentions and the same number of
+	// The chains: document j of a chain mentions document j+1, so main's closure statement walked
+	// chainLength-1 hops of artifact-to-artifact mentions from the head and the same number of
 	// artifact-to-block ones.
 	chains := max(1, len(p.documents)/200)
 	for chain := range chains {
@@ -507,14 +511,4 @@ func (p *seedPlan) planMessages() {
 		}
 		p.messages[index] = message
 	}
-}
-
-func lower(value string) string {
-	out := []byte(value)
-	for index := range out {
-		if out[index] >= 'A' && out[index] <= 'Z' {
-			out[index] += 'a' - 'A'
-		}
-	}
-	return string(out)
 }

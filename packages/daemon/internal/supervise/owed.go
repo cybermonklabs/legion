@@ -22,6 +22,18 @@ type owedClaimWrite struct {
 	// first is still owed adds its report here instead of replacing it, since the two name
 	// different transitions and the daemon acts on each.
 	reports []owedReport
+	// stops are the project pause's stops whose transaction did not land (Deps.PauseStopped,
+	// decision 6 of dispatch://INFRA-3759's plan), oldest first and one per pause, each with the
+	// pause's id and whether the role is owed a launch. While any is owed, every claim write the
+	// machine makes is that transaction (putStops): the repair, and each write that settles this
+	// mark when it lands — putClaim, putClaimAndPending, and retirePending, which writes them
+	// before its retirement — so no write of a stopped claim lands without the pause's records,
+	// and the one that lands is the repair, as this mark's rule is. A write that settles no mark
+	// leaves them where they are: queue, takeBackPending, interrupted and providerErrorClears
+	// write the claim beside a delivery and settle nothing, so the stop stays owed and the next
+	// repair makes it. Each goes off the mark as its own transaction lands, so a stop of one
+	// pause is never written twice for a later one that fails.
+	stops []PauseStop
 }
 
 // owedReport is one report a decision would have made had its write landed, kept until the write
@@ -41,10 +53,11 @@ type owedReport struct {
 }
 
 // owedWriteLine is the one message a write left owed is logged under, at Warn, both where the
-// write failed and where a repair of it failed again. It is pinned as a constant because an
-// operator and a production check read it whole: a search for this line is the search for every
-// claim whose row is behind the daemon's memory, and a message that varied by call site would
-// answer that search with a part of the answer.
+// write failed and where a repair of it failed again, and at Info where the daemon's own stop cut
+// the write short (oweWrite). It is pinned as a constant because an operator and a production
+// check read it whole: a search for this line is the search for every claim whose row is behind
+// the daemon's memory, and a message that varied by call site would answer that search with a
+// part of the answer.
 const owedWriteLine = "supervise: a claim write the database did not take"
 
 // repairedWriteLine is the close of that story, at Info: the owed write was made, and the row is
@@ -66,9 +79,24 @@ const repairedWriteLine = "supervise: a claim write the database did not take wa
 // store's transaction rather than about the shape of the error. Asking writeOwed there would be
 // asking the wrong question, and would answer by accident: the sentinel carries no SQLSTATE, so
 // the rule owes it, but it would stop owing it the day the refusal is spelled as a server error.
+//
+// A write the daemon's own stop cut short is logged at Info instead. The stop cancels the context
+// the machine was built with (supervision.halt in internal/daemon), and the context of each
+// decision a route still runs when the API's drain ends, so such a write ended because the daemon
+// is going, not because the database refused it or did not answer. That is the stop ending a
+// decision by design, which the daemon logs at Info too (supervisor.decisionFailed); at Warn the
+// line would send whoever reads it to a database that refused nothing. The write is owed all the
+// same: a route's decision on the claim during the drain makes it at its head (repair), and
+// otherwise the mark goes with the process and the next boot takes the claim up from its row, as
+// it takes up every decision the stop ends. A write that ran out its own deadline while the daemon
+// stopped waited on the database, and stays at Warn.
 func (m *Machine) oweWrite(method string, err error) {
 	if m.owedWrite == nil {
 		m.owedWrite = &owedClaimWrite{}
+	}
+	if errors.Is(err, context.Canceled) && m.ctx.Err() != nil {
+		m.log.Info(owedWriteLine, "store", method, "error", err, "owed", true)
+		return
 	}
 	m.log.Warn(owedWriteLine, "store", method, "error", err, "owed", true)
 }
@@ -146,9 +174,14 @@ func (m *Machine) repair(ctx context.Context) {
 		return
 	}
 	method, pending := "PutClaim", m.claim.Pending
-	var err error
 	if pending != nil {
 		method = "PutClaimAndDelivery"
+	}
+	if len(m.owedWrite.stops) > 0 {
+		method = "PauseStopped"
+	}
+	var err error
+	if pending != nil {
 		err = m.putClaimAndPending(ctx)
 	} else {
 		err = m.putClaim(ctx)
@@ -162,7 +195,7 @@ func (m *Machine) repair(ctx context.Context) {
 		return
 	}
 	m.log.Warn(owedWriteLine, "store", method, "error", err, "owed", false,
-		"droppedReports", len(m.owedWrite.reports))
+		"droppedReports", len(m.owedWrite.reports), "droppedStops", len(m.owedWrite.stops))
 	m.owedWrite = nil
 }
 

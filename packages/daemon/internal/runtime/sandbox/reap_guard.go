@@ -33,9 +33,10 @@ func (r *Runtime) guardSessionVolumeReap(ctx context.Context, s *sandbox) error 
 }
 
 // sessionVolumeClaims identifies the claims whose file sessions could be on
-// s's Sandbox-owned issue volume. An issue Sandbox owns such a volume only in
-// the superseded disk shape; a controller Sandbox always owns its working
-// volume. Repository caches and current issue pods carry no claim session.
+// s's Sandbox-owned issue volume. An issue Sandbox owns such a volume when its
+// pod keeps its volume (keptVolume) or when it is of the release before the
+// pod-owned disk. A controller Sandbox always owns its working volume.
+// Repository caches and issue pods on an ephemeral disk carry no claim session.
 func (r *Runtime) sessionVolumeClaims(s *sandbox) (func(supervise.Claim) bool, bool) {
 	kind, err := podKindOf(s.Labels)
 	if err != nil || !ownsIssueVolume(s) {
@@ -55,8 +56,10 @@ func (r *Runtime) sessionVolumeClaims(s *sandbox) (func(supervise.Claim) bool, b
 	}
 }
 
-// ownsIssueVolume is whether a Sandbox owns the issue claim template. The
-// current issue-pod shape owns none; its pod owns an ephemeral disk instead.
+// ownsIssueVolume is whether a Sandbox owns the issue claim template. An issue
+// Sandbox owns one when its pod keeps its volume (keptVolume) or when it is of
+// the release before the pod-owned disk. Every other issue Sandbox owns none:
+// its pod owns an ephemeral disk instead.
 func ownsIssueVolume(s *sandbox) bool {
 	for _, template := range s.Spec.VolumeClaimTemplates {
 		if template.Metadata.Name == issueVolume {

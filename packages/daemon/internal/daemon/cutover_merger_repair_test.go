@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
@@ -41,18 +42,20 @@ import (
 // cutoverRelease is the directory of what this test keeps of legion-v19.57.3, the release the
 // deployments ran when the cutover began: migrations.txt, the name of every migration the tag
 // embeds (jj file list -r legion-v19.57.3 packages/daemon/internal/store/migrations), and the
-// tag's own text of the four migrations of that list whose text main has changed since
+// tag's own text of the five migrations of that list whose text main has changed since
 // (cutoverReleaseText).
 const cutoverRelease = "testdata/legion-v19.57.3"
 
-// cutoverReleaseText names the four migrations legion-v19.57.3 shares with this head whose text
+// cutoverReleaseText names the five migrations legion-v19.57.3 shares with this head whose text
 // this head has changed, which the record is built from at the tag's own text (jj file show -r
-// legion-v19.57.3 <path>). Two of them changed only in their comments (0067_phase_assignment and
-// 20261109191929_outbox_write_mark), and they are kept at the tag's text all the same, so the
-// record is built from the tag's own text of every migration it embeds. Every other migration of
-// the tag is applied from the embedded set, whose text for those versions is the tag's.
-var cutoverReleaseText = []string{"0067_phase_assignment", "20261109191929_outbox_write_mark",
-	"20261110225246_backward_moves_and_cap_told", "20261110235320_design_gates_publish"}
+// legion-v19.57.3 <path>). Three of them changed only in their comments (0052_dispatch_issues,
+// 0067_phase_assignment and 20261109191929_outbox_write_mark), and they are kept at the tag's text
+// all the same, so the record is built from the tag's own text of every migration it embeds.
+// Every other migration of the tag is applied from the embedded set, whose text for those versions
+// is the tag's.
+var cutoverReleaseText = []string{"0052_dispatch_issues", "0067_phase_assignment",
+	"20261109191929_outbox_write_mark", "20261110225246_backward_moves_and_cap_told",
+	"20261110235320_design_gates_publish"}
 
 // The daemon's own lines this test reads: the repair's one record per boot (workflow's
 // cutoverMergerRepair, and the daemon's repairCutoverMergers for a boot that finds the repair
@@ -82,11 +85,11 @@ const cutoverStoredSeq = 5
 // that a closed design gate held: once the gate opens the test makes the row due at once, and the
 // outbox's sweep, every outboxLease (30 seconds), wakes the row's lane to run it. A try of that
 // row that read the gate closed just before the test opened it can still record its retry after
-// the test made the row due, which puts the row back on its backoff, up to the outbox's 64 seconds
-// (retryBackoff), so the bound stays above that. It is the bound a fault is reported at, so a slow
-// machine is no failure, and a start that never comes fails here rather than at the package's
-// deadline. cutoverPoll is how often a wait asks: most questions are a read of the daemon's claims
-// over its API or of its database.
+// the test made the row due, which puts the row back on its backoff, up to the outbox's 64
+// seconds (record.RetryBackoff), so the bound stays above that. It is the bound a fault is
+// reported at, so a slow machine is no failure, and a start that never comes fails here rather
+// than at the package's deadline. cutoverPoll is how often a wait asks: most questions are a read
+// of the daemon's claims over its API or of its database.
 const (
 	cutoverWait = 90 * time.Second
 	cutoverPoll = 100 * time.Millisecond
@@ -107,7 +110,7 @@ const cutoverIdleTick = 250 * time.Millisecond
 //
 // The record is built as legion-v19.57.3 leaves it, not as this head would write it. The test
 // applies by hand exactly the migrations the tag embeds (cutoverRelease's migrations.txt), in
-// version order: the four whose text main has changed since at the tag's own text, and the rest
+// version order: the five whose text main has changed since at the tag's own text, and the rest
 // from the embedded set. A cut of the embedded set at the tag's newest version would be wrong:
 // this head embeds migrations below that version which the tag does not, because a version is the
 // moment its migration was written and not the moment it merged. The list internal/store's
@@ -117,7 +120,7 @@ const cutoverIdleTick = 250 * time.Millisecond
 // merging, and the merger's claim carries the same token as the one its worker took. Then
 // Store.Migrate applies the rest of this head's migrations, as a deployment's roll does:
 // 20261029120700 moves the issues in `awaiting_merge` to merging, 20261110233602 takes the slot
-// mark off every queued start of a phase past the review, and the fill of 20261111225552 puts
+// mark off every queued start of accepting, retro or merging, and the fill of 20261111225552 puts
 // each merger at entry 1, given and served, which is where a merger that took its merging task
 // stands after the upgrade. The fill records no task for that entry: it reads only a start that
 // still carries the slot mark, and S's (below), the one start the old record still holds, has
@@ -184,8 +187,8 @@ const cutoverIdleTick = 250 * time.Millisecond
 // Dispatch is liveDispatch, which records every message the daemon posts and lists every issue
 // at a sequence below the one the record stores (cutoverStoredSeq). A claim's process is
 // cutoverAgent, which says hello on the worker stream with the launch's boot token, registers and
-// says ready over the claim routes as the plugin does, and records every prompt and ends its turn
-// at once.
+// says ready over the claim routes as the plugin does, records every task it is given, and ends
+// each prompt's turn at once.
 //
 // The first boot:
 //
@@ -197,8 +200,11 @@ const cutoverIdleTick = 250 * time.Millisecond
 //     takes the mark the slot rule gives `merging` and no mark of the repair's own (decision D9
 //     of dispatch://INFRA-3274's plan), which is no mark, since `merging` holds no slot
 //     (record.KeepsSlot), so it is claimable at once, as any start of `merging` is.
-//   - E's merger is not started while its gate is closed, and gets exactly one task once the test
-//     opens the gate.
+//   - E's merger is not started while its gate is closed, and gets exactly one merging task once
+//     the test opens the gate. The opening approves version 2 of the spec over the version 1 the
+//     upgrade recorded the merger's phase as having taken (20261119203047_design_news), so the
+//     merger also gets the news of that version once (dispatch://INFRA-175), and its start waits
+//     until what changed is recorded (mergerWaitsForTheDesignGate).
 //   - A's merger is relaunched and gets exactly one task, the merging task; G's merger claim is
 //     resumed and gets exactly one task, the same merging task. That is the architect's case,
 //     decision D8 of the plan: no start the boot makes gives either a second merging task. The
@@ -225,6 +231,7 @@ const cutoverIdleTick = 250 * time.Millisecond
 // has received exactly one cutover message on G and one on E over both boots, and none on A, D,
 // O, B, N, C, T or S.
 func TestTheCutoverStartsTheMergersTheOldBuildLeftStopped(t *testing.T) {
+	t.Parallel()
 	rig := newCutoverRig(t)
 	ctx := context.Background()
 
@@ -299,7 +306,8 @@ func TestTheCutoverStartsTheMergersTheOldBuildLeftStopped(t *testing.T) {
 		}
 	}
 
-	// E: the gate holds the start the repair owed, and the start goes on once the gate opens.
+	// E: the gate holds the start the repair owed, and the start goes on once the gate opens and
+	// what changed in the version it approved is recorded.
 	rig.await(t, "E's merger start held by its tree's closed design gate", func() bool {
 		return strings.Contains(rig.startWaits(t, rig.e.key), "design gate")
 	})
@@ -309,14 +317,14 @@ func TestTheCutoverStartsTheMergersTheOldBuildLeftStopped(t *testing.T) {
 	approved := 2
 	putOutboxGate(t, rig.pool, rig.records, record.DesignGate{Issue: rig.e.key, Step: record.DesignStepSpec, ArtifactID: "spec-" + rig.e.key,
 		LatestVersion: 2, ApprovedVersion: &approved, EverOpened: true})
-	// The held start waits on its row's backoff, up to the outbox's 64 seconds (retryBackoff):
-	// made due now, it runs at the outbox's next sweep.
+	// The held start waits on its row's backoff, up to the outbox's 64 seconds
+	// (record.RetryBackoff): made due now, it runs at the outbox's next sweep.
 	if _, err := rig.pool.Exec(ctx, "update outbox set next_at = now() where issue = $1 and kind = 'supervise'", rig.e.key); err != nil {
 		t.Fatalf("let the backoff of E's merger start go: %v", err)
 	}
 	rig.connect(t, rig.e)
 	rig.settled(t, rig.e)
-	rig.toldOnce(t, rig.e)
+	rig.toldOnceWithNews(t, rig.e, 2)
 
 	// D's merger, every role of G and E but the merger, and T's tester: nothing starts them.
 	rig.notStarted(t, rig.d.merger, "D's merger has nothing to do: its pull request merged")
@@ -338,10 +346,11 @@ func TestTheCutoverStartsTheMergersTheOldBuildLeftStopped(t *testing.T) {
 	rig.releaseAgain(t, rig.g)
 	rig.matchesTheSelection(t, rig.g)
 	// The whole first boot gave each merger one task: the release that stopped G's merger, and
-	// everything this daemon did after the counts above, gave none.
+	// everything this daemon did after the counts above, gave none. E's merger was told the news
+	// of the version its opening approved besides, once.
 	rig.toldOnce(t, rig.a)
 	rig.toldOnce(t, rig.g)
-	rig.toldOnce(t, rig.e)
+	rig.toldOnceWithNews(t, rig.e, 2)
 	rig.toldTheQueuedTask(t, rig.s)
 	rig.keptItsReady(t, rig.s, "S's merger: the start the old record queued for it already covers it (StartFor)")
 	rig.daemon.stop()
@@ -402,6 +411,10 @@ type cutoverRig struct {
 	built   *built
 	board   *liveDispatch
 	o       overrides
+	// engine is the workflow engine the daemon booted on cfg builds (engineConfig), which
+	// composes every task it sends a merger, so the task a test expects is the one it composes
+	// (resumeTaskOf).
+	engine *workflow.Engine
 	// daemon is the running boot, and logs is its log alone, so each boot's records are read
 	// apart.
 	daemon *daemon
@@ -476,7 +489,8 @@ func newCutoverRig(t *testing.T) *cutoverRig {
 		t.Fatal(err)
 	}
 	rig := &cutoverRig{cfg: cfg, project: project, pool: st.Pool(), records: record.NewStore(), built: &built{},
-		board: newLiveDispatch(t, cfg.Project), agents: map[claim.Token][]*cutoverAgent{}, upgraded: map[string]cutoverMergerRow{}}
+		engine: workflow.New(record.NewStore(), engineConfig(cfg, "", nil), quietLogger()),
+		board:  newLiveDispatch(t, cfg.Project), agents: map[claim.Token][]*cutoverAgent{}, upgraded: map[string]cutoverMergerRow{}}
 	rig.board.lists = true
 	rig.cfg.DispatchURL = rig.board.url
 	for i, issue := range []*cutoverIssue{&rig.a, &rig.g, &rig.e, &rig.d, &rig.op, &rig.b, &rig.n, &rig.c, &rig.te, &rig.s} {
@@ -498,7 +512,7 @@ func newCutoverRig(t *testing.T) *cutoverRig {
 	// given and served, with no task recorded for that entry, S's included, whose start the old
 	// record still holds but which 20261110233602 unmarked before the fill read the marked starts.
 	// A merger left behind its entry would be sent the same resume task by another rule
-	// (workflow's sendOwedEntry, for an entry with no task), so the prompts the test counts would
+	// (workflow's sendOwedEntry, for an entry with no task), so the tasks the test counts would
 	// not tell the two records apart.
 	for _, issue := range rig.roots() {
 		var entry, given, served int64
@@ -540,7 +554,7 @@ func newCutoverRig(t *testing.T) *cutoverRig {
 }
 
 // cutoverReleaseStore is a database of this test's own carrying exactly the migrations
-// legion-v19.57.3 embeds, applied by hand in version order (applyMigrationsByHand): the four of
+// legion-v19.57.3 embeds, applied by hand in version order (applyMigrationsByHand): the five of
 // cutoverReleaseText at the tag's own text, and every other one from the embedded set. Each name
 // the list holds must be the embedded migration of its version, so a migration renamed or
 // renumbered since the tag is named here rather than applied as something else.
@@ -733,8 +747,8 @@ func cutoverAssignment(issue string, p phase.Phase) string {
 }
 
 // cutoverSlotRepairTask is the task legion-v19.57.3's repair of a slot whose worker held no task
-// (its ResumeSlottedWorker) wrote on a start of issue's merger on merging: that release's
-// ResumePhaseTask, whose title the old record gives as the key. That release's withApprovedHead
+// (its ResumeSlottedWorker) wrote on a start of issue's merger on merging: that release's resume
+// task, whose title the old record gives as the key. That release's withApprovedHead
 // appends no approved head, since the record holds no review round's approval.
 func cutoverSlotRepairTask(issue string) string {
 	return fmt.Sprintf("Continue %s. Issue: %s. Phase: merging. Resume the existing phase work.", issue, issue)
@@ -746,7 +760,7 @@ func cutoverSlotRepairTask(issue string) string {
 func (r *cutoverRig) startOrOweMark(t *testing.T) bool {
 	t.Helper()
 	ctx := context.Background()
-	tx, err := r.pool.Begin(ctx)
+	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -755,8 +769,12 @@ func (r *cutoverRig) startOrOweMark(t *testing.T) bool {
 	if err := r.records.PutIssue(ctx, tx, control); err != nil {
 		t.Fatalf("record the control issue: %v", err)
 	}
+	task, err := r.engine.ResumeTask(ctx, tx, control)
+	if err != nil {
+		t.Fatalf("compose the control issue's resume task: %v", err)
+	}
 	if err := workflow.StartOrOwe(ctx, tx, r.records, control.Key, record.SuperviseRequest{Op: "start", Tree: control.Tree,
-		Role: claim.RoleMerger, Generation: control.Generation, Phase: phase.Merging, Task: workflow.ResumePhaseTask(control),
+		Role: claim.RoleMerger, Generation: control.Generation, Phase: phase.Merging, Task: task,
 		ResumeTask: true, RuleResume: true}, time.Now()); err != nil {
 		t.Fatalf("owe the control issue's merger a start: %v", err)
 	}
@@ -863,11 +881,11 @@ func (r *cutoverRig) connect(t *testing.T, issue cutoverIssue) {
 // settled waits until issue's merger has been told something and nothing more is coming for it:
 // no start of it left in the outbox, and its claim idle with no task pending. A start that would
 // give it a second task is one of those two until its prompt is sent, and the agent ends every
-// turn at once, so a task delivered after this shows as a second prompt or a pending task.
+// turn at once, so a task delivered after this shows as a second task or a pending task.
 func (r *cutoverRig) settled(t *testing.T, issue cutoverIssue) {
 	t.Helper()
 	r.await(t, issue.key+"'s merger to be told its task and hold nothing more", func() bool {
-		if len(r.prompts(issue.merger)) == 0 || r.startsQueued(t, issue.key, claim.RoleMerger) != 0 {
+		if len(r.tasks(issue.merger)) == 0 || r.startsQueued(t, issue.key, claim.RoleMerger) != 0 {
 			return false
 		}
 		held := r.daemon.claim(issue.merger)
@@ -875,35 +893,59 @@ func (r *cutoverRig) settled(t *testing.T, issue cutoverIssue) {
 	})
 }
 
-// toldOnce holds that issue's merger was given exactly one prompt over its whole life in this
-// test, and that it is the merging task: the resume task of the phase it holds
-// (workflow.ResumePhaseTask), read from the issue as the record holds it now.
+// toldOnce holds that issue's merger was given exactly one task over its whole life in this
+// test, and that it is the merging task: the resume task of the phase it holds, as the daemon's
+// engine composes it from the issue as the record holds it now (resumeTaskOf).
 func (r *cutoverRig) toldOnce(t *testing.T, issue cutoverIssue) {
 	t.Helper()
-	stands := readIssue(t, r.pool, issue.key)
-	if stands == nil {
-		t.Fatalf("read %s: the record does not hold it", issue.key)
-	}
-	want := workflow.ResumePhaseTask(*stands)
-	if told := r.prompts(issue.merger); len(told) != 1 || told[0] != want {
-		t.Fatalf("%s's merger was prompted %q, want once with its merging task %q", issue.key, told, want)
+	want := resumeTaskOf(t, r.pool, r.engine, issue.key)
+	if told := r.tasks(issue.merger); len(told) != 1 || told[0] != want {
+		t.Fatalf("%s's merger was given the tasks %q, want once with its merging task %q", issue.key, told, want)
 	}
 }
 
-// toldTheQueuedTask holds that issue's merger was given exactly one prompt over its whole life in
+// toldOnceWithNews holds that issue's merger was given exactly two tasks over its whole life in
+// this test, in either order: its merging task once, as toldOnce reads it, and once the news of
+// the approved design its phase is owed, which names the command that reads version of the
+// issue's spec. The start the repair owed hands the merger work it was already on, so it carries
+// no news (record.SuperviseRequest.Entry); the reconcile's news-only start
+// (record.SuperviseRequest.News) is what tells it, and the two run in whichever order the
+// outbox's backoff gives them. The daemon's own delivery of a relaunch's record is no task and is
+// not counted (cutoverAgent.told); a news-only start that takes its place carries the record's
+// sentence in front of the news, and is counted as the news.
+func (r *cutoverRig) toldOnceWithNews(t *testing.T, issue cutoverIssue, version int) {
+	t.Helper()
+	task := resumeTaskOf(t, r.pool, r.engine, issue.key)
+	read := fmt.Sprintf("dispatch doc-read --issue %s --artifact spec-%s --version %d", issue.key, issue.key, version)
+	told := r.tasks(issue.merger)
+	merging, news := 0, 0
+	for _, given := range told {
+		switch {
+		case given == task:
+			merging++
+		case strings.Contains(given, read):
+			news++
+		}
+	}
+	if len(told) != 2 || merging != 1 || news != 1 {
+		t.Fatalf("%s's merger was given the tasks %q, want its merging task %q once and once the news that names %q", issue.key, told, task, read)
+	}
+}
+
+// toldTheQueuedTask holds that issue's merger was given exactly one task over its whole life in
 // this test, and that it is the task of the start the old record queued for it
 // (cutoverSlotRepairTask).
 func (r *cutoverRig) toldTheQueuedTask(t *testing.T, issue cutoverIssue) {
 	t.Helper()
 	want := cutoverSlotRepairTask(issue.key)
-	if told := r.prompts(issue.merger); len(told) != 1 || told[0] != want {
-		t.Fatalf("%s's merger was prompted %q, want once with the task of the start the old record queued for it, %q: no other start gives it a second task",
+	if told := r.tasks(issue.merger); len(told) != 1 || told[0] != want {
+		t.Fatalf("%s's merger was given the tasks %q, want once with the task of the start the old record queued for it, %q: no other start gives it a second task",
 			issue.key, told, want)
 	}
 }
 
-// prompts is every prompt token's processes were given, oldest first.
-func (r *cutoverRig) prompts(token claim.Token) []string {
+// tasks is every task token's processes were given, oldest first (cutoverAgent.told).
+func (r *cutoverRig) tasks(token claim.Token) []string {
 	r.mu.Lock()
 	agents := slices.Clone(r.agents[token])
 	r.mu.Unlock()
@@ -1178,17 +1220,18 @@ func cutoverMethods(calls []fake.Call) []string {
 // cutoverAgent is one launch of a claim's process on the daemon's worker stream: the shim and the
 // Oh My Pi behind it, as far as this test needs them. It says hello with the launch's boot token,
 // answers the protocol negotiation and every question about whether a turn is running, records
-// each prompt, and takes the prompt's turn to its end at once, so a task the daemon gives it is
-// over before the next one could arrive and every task it is ever given is a prompt it recorded.
-// It is the shape of daemon_test.go's shim and wake_wave_refresh_test.go's waveTurn, serving on a
-// goroutine of its own because the daemon prompts it whenever a task reaches its claim.
+// each task it is given (every prompt but the daemon's own delivery of a relaunch's record), and
+// takes each prompt's turn to its end at once, so a task the daemon gives it is over before the
+// next one could arrive and every task it is ever given is one it recorded. It is the shape of
+// daemon_test.go's shim and wake_wave_refresh_test.go's waveTurn, serving on a goroutine of its
+// own because the daemon prompts it whenever a task reaches its claim.
 type cutoverAgent struct {
 	conn  net.Conn
 	lines *bufio.Reader
-	// mu orders the serving goroutine's writes and its record of prompts against the test's reads.
-	mu      sync.Mutex
-	writer  *shimwire.Writer
-	prompts []string
+	// mu orders the serving goroutine's writes and its record of tasks against the test's reads.
+	mu     sync.Mutex
+	writer *shimwire.Writer
+	tasks  []string
 }
 
 // dialCutoverAgent connects a process to the worker stream at address and returns once the
@@ -1248,7 +1291,13 @@ func (a *cutoverAgent) serve() {
 			a.send(shimwire.Response{ID: f.ID, Command: shimwire.TypeGetState, Success: true, Data: data})
 		case shimwire.Prompt:
 			a.mu.Lock()
-			a.prompts = append(a.prompts, f.Message)
+			// The daemon's own delivery of a relaunch's record (supervise.Delivery.Relaunch) is
+			// no task: it tells the relaunched process what its relaunch ended, and a merger
+			// relaunched onto the current plugin is given it at its ready, before any task
+			// (dispatch://INFRA-3276 R3). What this rig counts is the tasks a merger is given.
+			if !(supervise.Delivery{ID: f.DeliveryID}).Relaunch() {
+				a.tasks = append(a.tasks, f.Message)
+			}
 			a.mu.Unlock()
 			a.send(shimwire.Response{ID: f.ID, Command: shimwire.TypePrompt, Success: true})
 			a.send(shimwire.AgentStart{})
@@ -1269,9 +1318,10 @@ func (a *cutoverAgent) send(frame shimwire.Frame) {
 	_ = a.writer.WriteFrame(frame)
 }
 
-// told is every prompt this process was given, oldest first.
+// told is every task this process was given, oldest first: every prompt but the daemon's own
+// delivery of a relaunch's record.
 func (a *cutoverAgent) told() []string {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	return slices.Clone(a.prompts)
+	return slices.Clone(a.tasks)
 }

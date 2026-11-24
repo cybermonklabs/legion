@@ -49,7 +49,7 @@ func TestR17UnrelatedAuthorCopyFirstPass(t *testing.T) {
 	firstPass := time.Since(start)
 	_, _, reached := eventState(t, rig.database, comment.ID)
 	attempts, due := nextAttempt(t, rig.database, comment.ID)
-	sentFirst := slices.Contains(reached, contracts.AgentSubject(author))
+	sentFirst := slices.Contains(reached, contracts.LegacyAgentSubject(author))
 	var reread time.Duration
 	if due != nil {
 		reread = time.Until(*due)
@@ -116,9 +116,8 @@ func TestR17UnrelatedAuthorCopyOrder(t *testing.T) {
 	}
 	dueNow(t, rig.database, first.ID)
 	holding(t, rig.deps()).scan(ctx, unfenced{})
-	time.Sleep(time.Second)
 	var order []string
-	for _, item := range u.received() {
+	for _, item := range u.receivedNow(t, rig.client) {
 		order = append(order, item.DedupeKey)
 	}
 	t.Logf("R17 ORDER: event N=%d N+1=%d; ses-u received dedupe keys in order %v", first.ID, second.ID, order)

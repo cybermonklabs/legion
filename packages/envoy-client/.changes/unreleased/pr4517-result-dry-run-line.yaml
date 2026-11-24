@@ -1,0 +1,6 @@
+kind: Fixed
+body: |-
+  `dispatch result --dry-run` of a record prints the arguments and then the pull-request body line
+  Dispatch would write for the record, which now keeps only plain words, with no word holding
+  `://`, a private or Dispatch host, or an issue key, and records nothing. It needs Dispatch on, as
+  the record does. A retraction's dry run still sends nothing.

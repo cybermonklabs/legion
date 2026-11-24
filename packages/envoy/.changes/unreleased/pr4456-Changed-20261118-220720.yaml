@@ -1,0 +1,15 @@
+kind: Changed
+body: |-
+  `scripts/database-skips.sh` is the one skip counter of the module's database-backed packages.
+  It takes the packages to run (`./internal/broker/...` and `./cmd/broker/` by default), the
+  variables they need (`--var`, which prints `database_skips=UNKNOWN` and runs nothing when one
+  is unset), `--race` and `--timeout`, and holds each line of its expected-skip table to a reason
+  and to a test the run holds. A package with test files that ran no test, all its tests skipped
+  or its `TestMain` returning first, prints `database_skips=UNKNOWN`, and a failed test fails the
+  count. CI's `envoy-go-race-api` job runs the Dispatch API through it, so a skipped test there
+  fails the job where it passed unseen before, and `envoy-go` runs `./cmd/broker/` through it and
+  tests the counter itself first (`scripts/database-skips.test.sh`). No release changes what it
+  ships.
+time: 2026-11-18T22:07:20Z
+custom:
+    Issue: pr4456

@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
 // holdingListener is a fake Envoy listener that holds the first send of every idempotency key
@@ -142,6 +143,7 @@ var sweepRoutes = map[string]sweepRoute{
 // drops if the first frame did land; a second pass sends nothing more, and the dead sender's late
 // outcome changes nothing.
 func TestTheDeliverySweepFinishesEveryDeliveringRouteOnce(t *testing.T) {
+	t.Parallel()
 	for name, route := range sweepRoutes {
 		t.Run(name, func(t *testing.T) {
 			listener := newHoldingListener(t)
@@ -266,6 +268,7 @@ func TestTheDeliverySweepFinishesEveryDeliveringRouteOnce(t *testing.T) {
 // connection while a mention is still being sent leaves that send to finish, and its attempt
 // settles as what the listener answered rather than as cut off or pending.
 func TestACommentsMentionFinishesWhenItsClientGivesUp(t *testing.T) {
+	t.Parallel()
 	for name, path := range map[string]func(issue, document string) string{
 		"an issue comment":   sweepRoutes["a comment's mention"].path,
 		"a document comment": sweepRoutes["a document comment's mention"].path,
@@ -343,6 +346,7 @@ func TestACommentsMentionFinishesWhenItsClientGivesUp(t *testing.T) {
 // later retry overtook, one opened inside the last minute that its writer has not claimed yet, and
 // one past the window a repeat is recognised in are each left alone.
 func TestTheDeliverySweepLeavesWhatIsNotOwed(t *testing.T) {
+	t.Parallel()
 	listener, sends := newBroadcastListener(t, agentSessions)
 	_, database, _, served := newRegisteredTestServer(t, testServerOptions{envoyURL: listener.URL})
 	author, err := json.Marshal(model.Actor{Kind: "user", ID: "alice"})
@@ -390,6 +394,7 @@ func TestTheDeliverySweepLeavesWhatIsNotOwed(t *testing.T) {
 // The maintenance loop's pass is what runs the sweep: started as cmd/dispatch starts it, with the
 // server's resume, it sends what a dead process owed without anybody asking.
 func TestTheMaintenanceLoopResumesOwedDeliveries(t *testing.T) {
+	t.Parallel()
 	listener, sends := newBroadcastListener(t, agentSessions)
 	_, database, _, served := newRegisteredTestServer(t, testServerOptions{envoyURL: listener.URL})
 	author, err := json.Marshal(model.Actor{Kind: "user", ID: "alice"})
@@ -567,6 +572,7 @@ func (rig sweepRig) strandMentionAttempts(rows pgx.Rows, ago string, mentioned b
 // worth and one more of each cause, all older than the closed issue's three sendable attempts. A
 // second pass changes nothing.
 func TestTheDeliverySweepSettlesWhatItCannotSend(t *testing.T) {
+	t.Parallel()
 	listener, sends := newBroadcastListener(t, agentSessions)
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{envoyURL: listener.URL})
 	rig := sweepRig{t: t, database: database}
@@ -682,6 +688,7 @@ func TestTheDeliverySweepSettlesWhatItCannotSend(t *testing.T) {
 // retry's to answer, and its sender settles it superseded once its own send has landed
 // (supersedeOvertakenAttempts); a message's is left as it stands.
 func TestTheDeliverySweepSendsTheAttemptItFoundOwed(t *testing.T) {
+	t.Parallel()
 	t.Run("a comment's mention", func(t *testing.T) {
 		listener, sends := newBroadcastListener(t, agentSessions)
 		handler, database, _, served := newRegisteredTestServer(t, testServerOptions{envoyURL: listener.URL})
@@ -771,6 +778,7 @@ func TestTheDeliverySweepSendsTheAttemptItFoundOwed(t *testing.T) {
 // whatever its indexes: the assertion is that the index serves the query, as the custom plan a
 // statement's first runs get and as the generic plan Postgres may cache for it afterwards.
 func TestTheSweepsKeyedSendReadUsesItsPartialIndex(t *testing.T) {
+	t.Parallel()
 	_, database, _, served := newRegisteredTestServer(t, testServerOptions{})
 	ctx := context.Background()
 	tx, err := database.Pool.Begin(ctx)
@@ -807,5 +815,61 @@ func TestTheSweepsKeyedSendReadUsesItsPartialIndex(t *testing.T) {
 	}
 	if generic := explain("execute owed_keyed_sends(60, 86400, 100)"); !planReadsIndex(t, generic, "request_keys_owed_sends") {
 		t.Errorf("the generic plan reads no request_keys_owed_sends:\n%s", generic)
+	}
+}
+
+// The sweep settles a mention attempt nothing can send under the comment's owner lock, taken
+// before the attempt's update (settleUndeliverableMention), so a writer of the comment that holds
+// that lock - an edit that puts the mention back - is waited for, and the settle waits for it
+// holding no transaction id. The test holds the lock and requires exactly that, then lets the
+// settle through and requires the attempt settled failed.
+func TestTheSweepSettlesAnUndeliverableMentionBehindItsOwnersLockHoldingNoTransactionID(t *testing.T) {
+	t.Parallel()
+	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
+	rig := sweepRig{t: t, database: database}
+	issue := createTestIssue(t, handler, "STUCK", "A mention that is gone")
+	gone := rig.strandMentions(issue, 1, "10 minutes", false)
+	ctx := context.Background()
+	owed, _, err := served.undeliverableDeliveries(ctx)
+	if err != nil || len(owed) != 1 {
+		t.Fatalf("the pass reads %v (%v), want the one attempt whose mention is gone", owed, err)
+	}
+
+	holder, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the holder: %v", err)
+	}
+	defer func() { _ = holder.Rollback(ctx) }()
+	if err := store.LockOwner(ctx, holder, store.IssueOwner(issue)); err != nil {
+		t.Fatalf("hold the comment's owner lock: %v", err)
+	}
+	type settle struct {
+		settled bool
+		err     error
+	}
+	settled := make(chan settle, 1)
+	go func() {
+		ok, err := served.settleUndeliverableMention(ctx, owed[0])
+		settled <- settle{settled: ok, err: err}
+	}()
+	if early, answered, holdingXid := storetest.AwaitOwnerLockWaiter(t, database, "the sweep's settle", settled); answered {
+		t.Fatalf("the settle answered (%v, %v) while this test held the comment's owner lock", early.settled, early.err)
+	} else if holdingXid != 0 {
+		t.Fatalf("the settle waits for the comment's owner lock with a transaction id already open: it failed the " +
+			"attempt before it took that lock, under a writer holding the comment's owner")
+	}
+	if err := holder.Rollback(ctx); err != nil {
+		t.Fatalf("release the owner lock: %v", err)
+	}
+	select {
+	case got := <-settled:
+		if got.err != nil || !got.settled {
+			t.Fatalf("the settle once the lock was released = %v (%v), want the attempt settled", got.settled, got.err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("the settle never answered once the owner lock was released")
+	}
+	if failed := rig.count(`select count(*) from comment_deliveries where comment_id = any($1::uuid[]) and state = 'failed'`, gone); failed != 1 {
+		t.Fatalf("%d attempts of the stranded mention are failed, want its one", failed)
 	}
 }

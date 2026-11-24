@@ -25,7 +25,7 @@ import {
   inFieldFilter,
 } from "./grouping";
 import type { InboxListRow } from "./list-row";
-import { MARK_ALL_REFUSED_TEXT, type MarkAllRead } from "./mark-all";
+import { MARK_ALL_REFUSED_TEXT, MARK_ALL_STOPPED_TEXT, type MarkAllRead } from "./mark-all";
 import { EVERYONE_FILTER_VALUE, inAssigneeFilter, UNASSIGNED_FILTER_VALUE } from "./sections";
 import { ViewMenu, type ViewMenuProps } from "./ViewMenu";
 
@@ -104,7 +104,7 @@ export function InboxBar({
   assignees: readonly string[] | undefined;
   filters: InboxFilters;
   /** The list's own **Mark all read** (`mark-all.ts`): the bar offers it while there is an
-   *  unread Reply or Agent row to mark, and says so when a press was refused. */
+   *  unread Reply or Agent row to mark, and says so when a press was refused or stopped. */
   markAll: MarkAllRead;
   onAssigneesChange: (next: readonly string[] | undefined) => void;
   onClearAgent: () => void;
@@ -210,9 +210,15 @@ export function InboxBar({
             Mark all read
           </button>
         ) : null}
-        {markAll.refused ? (
+        {markAll.failure === "refused" ? (
           <p className={`text-sm ${dangerText}`} data-inbox-mark-all-refused="" role="alert">
             {MARK_ALL_REFUSED_TEXT}
+          </p>
+        ) : markAll.failure === "stopped" ? (
+          // A press the reader stopped may have marked the rows: no refusal, and the list is read
+          // again rather than brought back.
+          <p className={`text-sm ${dangerText}`} data-inbox-mark-all-stopped="" role="alert">
+            {MARK_ALL_STOPPED_TEXT}
           </p>
         ) : null}
         {/* The right end of the row. */}

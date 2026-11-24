@@ -1,0 +1,10 @@
+kind: Fixed
+body: |-
+  An unconfirmed `envoy-send` prints its resend command only where its `ENVOY_URL` is a plain
+  http(s) URL, as every client names a configured URL. One with user info, of any length, or a
+  query or fragment, is never printed: the key is printed with how to resend the original, and
+  that the command holds `ENVOY_URL`, which is not printed. Before, a user and password shorter
+  than 10 characters passed the scrub of held secrets and the printed command carried them whole.
+time: 2026-11-18T18:26:18Z
+custom:
+    Issue: pr4140

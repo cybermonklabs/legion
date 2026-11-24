@@ -155,6 +155,7 @@ func sqlStatementsOf(text string) []string {
 var rowWritingStatement = regexp.MustCompile(`(?i)\b(insert|update|delete|truncate|copy)\b`)
 
 func TestAskAskedOf(t *testing.T) {
+	t.Parallel()
 	// Handing a question to a person is one person asking another, so the route is the person's
 	// alone: the deployment's shared bearer holds no person to hand one from.
 	t.Run("the shared agent bearer and an anonymous caller are refused", func(t *testing.T) {
@@ -415,15 +416,18 @@ func TestAskAskedOf(t *testing.T) {
 		}
 	})
 
+	// This case came from main's pull request #3429 ("a person hands a question to the person it
+	// is for", merged 2026-11-11T00:53Z), where the block left the document through a delete on
+	// the edits route. This branch's R5 (dispatch://INFRA-1520) refuses such a batch, so the
+	// removal now runs through a person's own editor, the seam R5 exempts. What the case proves
+	// is unchanged: asked_of survives the block's removal, the settlement's retraction and the
+	// restore.
 	t.Run("the person survives a block settlement's restore", func(t *testing.T) {
-		handler, _ := blockAskHandler(t)
+		handler, _, documentService := blockAskHandlerWithDocuments(t)
 		issue, askID := seedBlockAsk(t, handler, "A block ask handed on", "decision", transportAsk, "Which transport?")
 		handAskOn(t, handler, askID, "bob", "alice")
 
-		if deleted := dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/edits",
-			map[string]any{"ops": []map[string]string{{"op": "delete", "block": "decision"}}}, "alice"); deleted.Code != http.StatusOK {
-			t.Fatalf("delete the ask block: status=%d body=%s", deleted.Code, deleted.Body.String())
-		}
+		removeBlockAsABrowserDoes(t, documentService, issue.PrimaryArtifactID, "decision")
 		settleDocument(t, handler, issue.PrimaryArtifactID, issue.Key, "after-delete")
 		if retracted := readBlockAsk(t, handler, askID); retracted.State != "resolved" {
 			t.Fatalf("the ask whose block was deleted is %q, want the settlement to have retracted it", retracted.State)

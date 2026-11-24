@@ -1,13 +1,16 @@
 package api
 
 import (
+	"encoding/json"
 	"maps"
 	"net/url"
 	"slices"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
@@ -76,9 +79,10 @@ type Settings struct {
 	LingerHours          float64 `json:"linger_hours"`
 	ProductionCheckHours float64 `json:"production_check_hours"`
 	// PodUpdateGraceMinutes is `pod_update_grace_minutes`, a decimal number of minutes: how long
-	// a pod's update round waits for its roles after it opens. An answer from every role ends the
-	// round before it, and no answer holds the round past it. It is a decimal so a live proof can
-	// drive the bound inside one run.
+	// a pod's update round waits for its roles after it opens. An answer from every role the round
+	// asks ends the round before it once no turn runs and no claim's activity report holds it
+	// (internal/daemon's roundEnd.holding), and no answer, turn or background work holds the round
+	// past it. It is a decimal so a live proof can drive the bound inside one run.
 	PodUpdateGraceMinutes float64 `json:"pod_update_grace_minutes"`
 	// StalledTreeNoticeHours is `stalled_tree_notice_hours`, a decimal number of hours as the two
 	// hour keys above are: how long a tree this daemon runs may be quiet before the daemon tells the
@@ -130,6 +134,31 @@ type Settings struct {
 	// one default hook for a file that names no key. It carries no hook's words: see
 	// HookSettings.
 	Hooks []HookSettings `json:"hooks"`
+	// maxFixAttemptsShown is set on the copy the state route serves a caller below the contract
+	// that removed `max_fix_attempts` from this block (api's withMaxFixAttempts, below
+	// shaping.go's fixAttemptsContract). Such a reader types `max_fix_attempts` as a positive
+	// integer and refuses the whole body without the key (answers.go's typedSettings), and the
+	// stand-in is what it reads there. It is a flag of the block's own and the stand-in is a
+	// constant, as PullRequestView.fixAttemptsShown is.
+	maxFixAttemptsShown bool
+}
+
+// MarshalJSON writes the stand-in on the one body that carries it and leaves the key off every
+// other, as PullRequestView.MarshalJSON writes `fixAttempts`: the key is written by a pointer of
+// the outer value rather than by a field of the block, so no body this contract writes can carry
+// it.
+func (s Settings) MarshalJSON() ([]byte, error) {
+	type wire Settings
+	type standIn struct {
+		wire
+		MaxFixAttempts *int `json:"max_fix_attempts,omitempty"`
+	}
+	out := standIn{wire: wire(s)}
+	if s.maxFixAttemptsShown {
+		maxFixAttempts := maxFixAttemptsStandIn
+		out.MaxFixAttempts = &maxFixAttempts
+	}
+	return json.Marshal(out)
 }
 
 // RuntimeSettings is `runtime`: its name, the kubernetes block under that runtime alone, and the
@@ -151,8 +180,8 @@ type TmuxSettings struct {
 
 // KubernetesSettings is the settled `runtime.kubernetes` block without its credential file
 // (`kubeconfig`, `context`), the session store's own fields (`session_dsn_secret`, the credential
-// source, and `session_database`, the instance and login behind it) and the operator's `pod`
-// pieces, which every pod reads from its own spec.
+// source, and `session_database`, the instance, login and service account behind it) and the
+// operator's `pod` pieces, which every pod reads from its own spec.
 type KubernetesSettings struct {
 	Namespace    string               `json:"namespace"`
 	Image        string               `json:"image"`
@@ -170,11 +199,6 @@ type KubernetesSettings struct {
 	// Setup is the argv every role runs before each start of its Oh My Pi, `[]` while the
 	// file sets none: every pod runs it, so every pod knows it, as with `omp_launch_prefix`.
 	Setup []string `json:"setup"`
-	// SkillsRepository is the skills marketplace every issue pod's roles install from
-	// (`runtime.kubernetes.skills_repository`), as `<owner>/<name>`; empty while the file names
-	// none. It is a public repository name, not a credential, and every pod's init container
-	// carries it on its command line already.
-	SkillsRepository string `json:"skills_repository"`
 	// TestPostgres is whether every issue pod serves its own PostgreSQL for tests, which every
 	// role of such a pod is told as LEGION_TEST_PG_DSN, so every pod may read it.
 	TestPostgres    bool                    `json:"test_postgres"`
@@ -185,6 +209,50 @@ type KubernetesSettings struct {
 	// credential, and a role reads both to know whether its own pod may go away under it, so
 	// every pod may read them.
 	IdleRelease IdleReleaseSettings `json:"idle_release"`
+	// MemoryGuard is the settled `runtime.kubernetes.memory_guard`: whether each issue pod's
+	// launcher, and the launcher of the controller's pod, runs a memory guard, and the shares, wait
+	// and interval each runs by. None of it is a credential, and a role reads it to know when a
+	// process of its own may be ended under it, so every pod may read it.
+	MemoryGuard MemoryGuardSettings `json:"memory_guard"`
+	// VolumeTrim is the settled `runtime.kubernetes.volume_trim`: whether each issue pod's
+	// launcher runs a cache trimmer, and the marks, age and period it runs by. None of it is a
+	// credential, and a role reads it to know whether a cache on its pod's volume may be swept
+	// out from under a build it left running, so every pod may read it.
+	VolumeTrim VolumeTrimSettings `json:"volume_trim"`
+	// Sandbox is the settled `runtime.kubernetes.sandbox`: the sandbox of the project's issue
+	// pods and of its controller's pod, which follows `type` alone, the issues whose pods run in
+	// the other one, and where a microVM pod runs. Every member is a word, an issue key, a class
+	// name, or the cluster's Workload Identity pool and identity provider, which name the cluster
+	// and grant nothing, so no member is a credential.
+	Sandbox SandboxSettings `json:"sandbox"`
+}
+
+// SandboxSettings is the settled `runtime.kubernetes.sandbox`: `type` is gvisor when the file
+// names none, `canary_issues` is `[]` when it names none, and `microvm` is absent when the file
+// names no such block.
+type SandboxSettings struct {
+	Type         string           `json:"type"`
+	CanaryIssues []string         `json:"canary_issues"`
+	MicroVM      *MicroVMSettings `json:"microvm,omitempty"`
+}
+
+// MicroVMSettings is `runtime.kubernetes.sandbox.microvm`: the ComputeClass of the microVM pods'
+// nodes, absent in a block no issue pod uses that names none; the microVM issue pods' workspace
+// volume's class, `runtime.kubernetes.storage_class` when the block names none, which the
+// controller's disk is on in either sandbox; whether a microVM issue pod keeps that volume, false
+// when the block names none; and the metadata endpoint's two members, absent while the block names
+// none.
+type MicroVMSettings struct {
+	ComputeClass string            `json:"compute_class,omitempty"`
+	StorageClass string            `json:"storage_class"`
+	KeepVolume   bool              `json:"keep_volume"`
+	Metadata     *MetadataSettings `json:"metadata,omitempty"`
+}
+
+// MetadataSettings is `runtime.kubernetes.sandbox.microvm.metadata`.
+type MetadataSettings struct {
+	WorkloadPool     string `json:"workload_pool"`
+	IdentityProvider string `json:"identity_provider"`
 }
 
 // IdleReleaseSettings is the settled `runtime.kubernetes.idle_release`. Zero `idle_minutes` is
@@ -192,6 +260,33 @@ type KubernetesSettings struct {
 type IdleReleaseSettings struct {
 	IdleMinutes     int `json:"idle_minutes"`
 	BackstopMinutes int `json:"backstop_minutes"`
+}
+
+// MemoryGuardSettings is the settled `runtime.kubernetes.memory_guard`, by the kind of pod a
+// guard runs in: every issue pod's, and the project controller's pod's.
+type MemoryGuardSettings struct {
+	IssuePods     MemoryGuardPodSettings `json:"issue_pods"`
+	ControllerPod MemoryGuardPodSettings `json:"controller_pod"`
+}
+
+// MemoryGuardPodSettings is one kind of pod's settled memory guard. `enabled` false is the guard
+// switched off, and the pod's launcher is then handed no settings at all.
+type MemoryGuardPodSettings struct {
+	Enabled              bool `json:"enabled"`
+	ActPercent           int  `json:"act_percent"`
+	FloorPercent         int  `json:"floor_percent"`
+	WaitSeconds          int  `json:"wait_seconds"`
+	IntervalMilliseconds int  `json:"interval_milliseconds"`
+}
+
+// VolumeTrimSettings is the settled `runtime.kubernetes.volume_trim`. `enabled` false is the
+// trimmer switched off, and the pod's launcher is then handed no settings at all.
+type VolumeTrimSettings struct {
+	Enabled         bool `json:"enabled"`
+	HighPercent     int  `json:"high_percent"`
+	LowPercent      int  `json:"low_percent"`
+	MinAgeMinutes   int  `json:"min_age_minutes"`
+	IntervalSeconds int  `json:"interval_seconds"`
 }
 
 // SchedulingSettings is `runtime.kubernetes.scheduling`; the selector and the tolerations are `{}`
@@ -228,8 +323,8 @@ type ReservationSettings struct {
 }
 
 // RepositoryCacheSettings is the settled `runtime.kubernetes.repository_cache`: each repository
-// cache's volume, its fetch period, how long an unmapped repository's cache is kept, and its one
-// container's reservation in a pod's shape.
+// cache's volume, its fetch period, how long the cache of a repository no live record names is
+// kept, and its one container's reservation in a pod's shape.
 type RepositoryCacheSettings struct {
 	Volume         string              `json:"volume"`
 	RefreshMinutes int                 `json:"refresh_minutes"`
@@ -238,11 +333,13 @@ type RepositoryCacheSettings struct {
 }
 
 // AgentSecretsSettings is `runtime.kubernetes.agent_secrets` without `token_file`, the path of the
-// daemon's own login token.
+// daemon's own login token. ExchangeAudience is absent where the block names none, so a deployment
+// that never set it reads exactly as before the key existed.
 type AgentSecretsSettings struct {
 	URL                string `json:"url"`
 	Audience           string `json:"audience"`
 	TokenExpirySeconds int    `json:"token_expiry_seconds"`
+	ExchangeAudience   string `json:"exchange_audience,omitempty"`
 }
 
 // PluginsSettings is `runtime.kubernetes.plugins`.
@@ -251,16 +348,31 @@ type PluginsSettings struct {
 	PiEnvoy  string `json:"pi_envoy"`
 }
 
-// ProjectSettings is one `projects.<KEY>` entry; its repositories are Dispatch's mapping, which
-// the state's `repositories` shows, never this file's.
+// ProjectSettings is one `projects.<KEY>` entry. It names no repository the project works in: an
+// issue's repository is Dispatch's resolution of it, and the state's `repositories` shows the
+// repositories the live records name.
 type ProjectSettings struct {
 	SlackChannels []string       `json:"slack_channels"`
 	Memory        MemorySettings `json:"memory"`
+	// Experiments is `projects.<KEY>.experiments` as the file writes it, in the file's order, and
+	// `[]` for a project that declares none under that key, as `slack_channels` is for one that
+	// names none: the key always rides the wire, so a reader tells a project that declares no
+	// experiment under the key from a daemon too old to know the key. The `memory` block is no
+	// part of it: it stands under `memory` above, as the file writes it, and the two are mapped to
+	// one list of experiments only below the loader (config.Project.ExperimentsDeclared).
+	Experiments []ExperimentSettings `json:"experiments"`
 	// ProductionCheck is `production_check` as the file writes it: the role that works the
 	// production check a merge closing one of the project's issues opens, or the word `off`
 	// for the project that opens none (config.Project.ProductionCheckWord), never the empty string
 	// the role takes for off.
 	ProductionCheck string `json:"production_check"`
+	// DefaultSteps is `default_steps` as the file writes it, each step one word (`planner`, or
+	// `acceptance:owner`): the steps a task runs when its plan block names neither steps nor a
+	// sub-owner, and the steps of the one task of an issue whose owner gives no plan or whose
+	// experiment's group takes none. It is what the project runs by default
+	// (config.Project.RunsByDefault), so a project that names none shows today's line up to the
+	// owner's acceptance rather than no step.
+	DefaultSteps []string `json:"default_steps"`
 	// Deploys is `projects.<KEY>.deploys`, reported while the loader still accepts the key and
 	// reads nothing from it (config's readProject, which warns a project that sets it): no
 	// deploy run wakes a production check any more. It is the deprecated key's resolved value,
@@ -270,6 +382,50 @@ type ProjectSettings struct {
 	Deploys []DeploySettings `json:"deploys"`
 }
 
+// DeclaredExperiments is every experiment this project declares, as the daemon's own loader
+// builds the list: the `memory` block's experiment first, then the `experiments` key's own in the
+// file's order (config.Project.ExperimentsDeclared, which this reverses the two keys back
+// through). A project that declares `experiments.memory` writes no block, since the loader refuses
+// the two together, so its `memory` experiment is one of the key's own and stands at its place in
+// the file's order (config.Project.MemoryIsBlock). key
+// is the project's own Dispatch key, which is the map key the settings carry this project under
+// and which each arm's overlay key path begins with.
+//
+// The settings carry the two keys as the file writes them — the block under `memory`, the key's
+// own under `experiments` — because that is what an operator reads them for, so a reader that
+// must answer for every experiment the deployment draws, as `legion state` does when it counts
+// each one's arms, asks here rather than writing the mapping a second time.
+//
+// A project whose settings carry no `memory` block and no experiment of its own declares the
+// memory experiment all the same, at mode off: every tree such a project opens is drawn for it
+// and recorded at no arm, so `legion state` prints that project's memory line with the arms its
+// issues hold, as it printed one before any experiment was declared.
+//
+// The daemon serves the settings from the same configuration it declares its experiments from
+// (internal/daemon's source), so this answers what that daemon drew for.
+func (p ProjectSettings) DeclaredExperiments(key string) []config.Experiment {
+	project := config.Project{
+		Memory: config.Memory{
+			Mode:             p.Memory.Mode,
+			ConfigFiles:      p.Memory.ConfigFiles,
+			InstructionsPath: p.Memory.Instructions,
+		},
+		Experiments: make([]config.Experiment, 0, len(p.Experiments)),
+	}
+	for _, experiment := range p.Experiments {
+		declared := config.Experiment{
+			Name: experiment.Name, Mode: experiment.Mode, Unit: experiment.Unit, Roles: experiment.Roles, OnVariant: experiment.OnVariant,
+			Variants: make([]config.Variant, 0, len(experiment.Variants)),
+		}
+		for _, variant := range experiment.Variants {
+			declared.Variants = append(declared.Variants, config.Variant{Name: variant.Name, Weight: variant.Weight,
+				ConfigFiles: variant.ConfigFiles, InstructionsPath: variant.Instructions, Plan: config.PlanGroup(variant.Plan)})
+		}
+		project.Experiments = append(project.Experiments, declared)
+	}
+	return project.ExperimentsDeclared("projects." + key)
+}
+
 // MemorySettings is a project's `memory` block as the file writes it: the mode each new tree is
 // drawn under, absent for a project that names no block, which is off (config.Memory.Word); the
 // Oh My Pi overlays every role of a memory-group tree names after the operator's and its own, `[]`
@@ -277,9 +433,37 @@ type ProjectSettings struct {
 // system prompt, absent when the block names none. The paths are the operator's own file names,
 // which no credential rides in.
 type MemorySettings struct {
-	Mode         config.MemoryMode `json:"mode,omitempty"`
-	ConfigFiles  []string          `json:"config_files"`
-	Instructions string            `json:"instructions,omitempty"`
+	Mode         config.ExperimentMode `json:"mode,omitempty"`
+	ConfigFiles  []string              `json:"config_files"`
+	Instructions string                `json:"instructions,omitempty"`
+}
+
+// ExperimentSettings is one `projects.<KEY>.experiments.<name>` block as the file writes it: the
+// name it is declared under, the mode each new unit it covers is drawn under, the unit one draw
+// covers, the issue roles whose launches load its arms (absent where the block names none, which
+// is every issue role), the arm `on` gives every unit (absent where the block names none), and the
+// arms it draws among in the file's order.
+type ExperimentSettings struct {
+	Name      string                `json:"name"`
+	Mode      config.ExperimentMode `json:"mode"`
+	Unit      config.ExperimentUnit `json:"unit"`
+	Roles     []claim.Role          `json:"roles,omitempty"`
+	OnVariant string                `json:"on_variant,omitempty"`
+	Variants  []VariantSettings     `json:"variants"`
+}
+
+// VariantSettings is one arm of an experiment as the file writes it: its name, the weight a
+// random draw gives it against its siblings, the Oh My Pi overlays each role its experiment
+// reaches of a unit drawn into it names, `[]` for an arm that names none, the one instructions
+// file such a role's system prompt takes, absent where the arm names none, and how the issues
+// drawn into it are done (`plan`), absent where the arm names none. The paths are the operator's
+// own file names, which no credential rides in, as the `memory` block's are.
+type VariantSettings struct {
+	Name         string   `json:"name"`
+	Weight       int      `json:"weight"`
+	ConfigFiles  []string `json:"config_files"`
+	Instructions string   `json:"instructions,omitempty"`
+	Plan         string   `json:"plan,omitempty"`
 }
 
 // DeploySettings is the shape one `projects.<KEY>.deploys` entry had while the daemon read the
@@ -412,7 +596,9 @@ func SettingsOf(cfg config.Config) Settings {
 				ConfigFiles:  stringsOf(project.Memory.ConfigFiles),
 				Instructions: project.Memory.InstructionsPath,
 			},
+			Experiments:     experimentsOf(project.Experiments),
 			ProductionCheck: project.ProductionCheckWord(),
+			DefaultSteps:    plan.Words(project.RunsByDefault()),
 			Deploys:         []DeploySettings{},
 		}
 		settings.Projects[key] = entry
@@ -505,10 +691,9 @@ func kubernetesSettingsOf(block *config.Kubernetes) *KubernetesSettings {
 			Issue:      reservationSettingsOf(block.Resources.Issue),
 			Controller: reservationSettingsOf(block.Resources.Controller),
 		},
-		SessionStore:     string(block.SessionStore.Kind),
-		Setup:            stringsOf(block.Setup),
-		SkillsRepository: skillsRepositorySetting(block.SkillsRepository),
-		TestPostgres:     block.TestPostgres,
+		SessionStore: string(block.SessionStore.Kind),
+		Setup:        stringsOf(block.Setup),
+		TestPostgres: block.TestPostgres,
 		RepositoryCache: RepositoryCacheSettings{
 			Volume:         block.RepositoryCache.Volume,
 			RefreshMinutes: block.RepositoryCache.RefreshMinutes,
@@ -519,16 +704,37 @@ func kubernetesSettingsOf(block *config.Kubernetes) *KubernetesSettings {
 			IdleMinutes:     block.IdleRelease.IdleMinutes,
 			BackstopMinutes: block.IdleRelease.BackstopMinutes,
 		},
+		Sandbox: SandboxSettings{
+			Type:         string(block.Sandbox.Type),
+			CanaryIssues: stringsOf(block.Sandbox.CanaryIssues),
+		},
+		MemoryGuard: MemoryGuardSettings{
+			IssuePods:     memoryGuardPodSettingsOf(block.MemoryGuard.IssuePods),
+			ControllerPod: memoryGuardPodSettingsOf(block.MemoryGuard.ControllerPod),
+		},
+		VolumeTrim: VolumeTrimSettings{
+			Enabled:         block.VolumeTrim.Enabled,
+			HighPercent:     block.VolumeTrim.HighPercent,
+			LowPercent:      block.VolumeTrim.LowPercent,
+			MinAgeMinutes:   block.VolumeTrim.MinAgeMinutes,
+			IntervalSeconds: block.VolumeTrim.IntervalSeconds,
+		},
 	}
 	maps.Copy(settings.Scheduling.NodeSelector, block.Scheduling.NodeSelector)
 	for i, toleration := range block.Scheduling.Tolerations {
 		settings.Scheduling.Tolerations[i] = TolerationSettings{Key: toleration.Key, Operator: toleration.Operator, Value: toleration.Value, Effect: toleration.Effect}
 	}
 	if broker := block.AgentSecrets; broker != nil {
-		settings.AgentSecrets = &AgentSecretsSettings{URL: broker.URL, Audience: broker.Audience, TokenExpirySeconds: broker.TokenExpirySeconds}
+		settings.AgentSecrets = &AgentSecretsSettings{URL: broker.URL, Audience: broker.Audience, TokenExpirySeconds: broker.TokenExpirySeconds, ExchangeAudience: broker.ExchangeAudience}
 	}
 	if plugins := block.Plugins; plugins != nil {
 		settings.Plugins = &PluginsSettings{PiLegion: pluginSourceOf(plugins.PiLegion), PiEnvoy: pluginSourceOf(plugins.PiEnvoy)}
+	}
+	if microVM := block.Sandbox.MicroVM; microVM != nil {
+		settings.Sandbox.MicroVM = &MicroVMSettings{ComputeClass: microVM.ComputeClass, StorageClass: microVM.StorageClass, KeepVolume: microVM.KeepVolume}
+		if metadata := microVM.Metadata; metadata != nil {
+			settings.Sandbox.MicroVM.Metadata = &MetadataSettings{WorkloadPool: metadata.WorkloadPool, IdentityProvider: metadata.IdentityProvider}
+		}
 	}
 	return settings
 }
@@ -539,6 +745,14 @@ func reservationSettingsOf(reservation config.Reservation) ReservationSettings {
 		CPU: reservation.CPU, CPURequest: reservation.CPURequest,
 		Memory: reservation.Memory, MemoryRequest: reservation.MemoryRequest,
 		EphemeralStorage: reservation.EphemeralStorage, EphemeralStorageRequest: reservation.EphemeralStorageRequest,
+	}
+}
+
+// memoryGuardPodSettingsOf is one pod kind's settled memory guard as the state shows it.
+func memoryGuardPodSettingsOf(guard config.MemoryGuardPodConfig) MemoryGuardPodSettings {
+	return MemoryGuardPodSettings{
+		Enabled: guard.Enabled, ActPercent: guard.ActPercent, FloorPercent: guard.FloorPercent,
+		WaitSeconds: guard.WaitSeconds, IntervalMilliseconds: guard.IntervalMilliseconds,
 	}
 }
 
@@ -559,14 +773,24 @@ func stringsOf(values []string) []string {
 	return append([]string{}, values...)
 }
 
-// skillsRepositorySetting is repository as `<owner>/<name>`, and "" for the zero repository, which
-// is what a file naming no skills marketplace leaves: ghrepo's own String() of the zero value is
-// not the empty string.
-func skillsRepositorySetting(repository ghrepo.Repository) string {
-	if repository.IsZero() {
-		return ""
+// experimentsOf is the project's `experiments` key as the settings carry it, in the file's
+// order and `[]` on the wire for a project that declares none under that key, each with its arms
+// in the file's order too: the order a draw reads the weights in, which is why neither is a
+// mapping here.
+func experimentsOf(experiments []config.Experiment) []ExperimentSettings {
+	declared := make([]ExperimentSettings, 0, len(experiments))
+	for _, experiment := range experiments {
+		entry := ExperimentSettings{
+			Name: experiment.Name, Mode: experiment.Mode, Unit: experiment.Unit, Roles: slices.Clone(experiment.Roles), OnVariant: experiment.OnVariant,
+			Variants: make([]VariantSettings, 0, len(experiment.Variants)),
+		}
+		for _, variant := range experiment.Variants {
+			entry.Variants = append(entry.Variants, VariantSettings{Name: variant.Name, Weight: variant.Weight,
+				ConfigFiles: stringsOf(variant.ConfigFiles), Instructions: variant.InstructionsPath, Plan: string(variant.Plan)})
+		}
+		declared = append(declared, entry)
 	}
-	return repository.String()
+	return declared
 }
 
 // endpointOf is one address key's value as the state shows it: the scheme, the host and the path,

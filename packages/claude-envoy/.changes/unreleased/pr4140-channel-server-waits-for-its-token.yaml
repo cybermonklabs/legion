@@ -1,0 +1,15 @@
+kind: Fixed
+body: |-
+  With `NATS_AUTH=broker`, the channel server waits for its broker token for as long as it runs:
+  through a pod session not registered yet, a secrets broker that does not answer, and a 5xx, the
+  token client saying what it waits on: a pending registration once, every 30 minutes and when it
+  ends, any other failure at each wait. It waits for ready for its life, since it has nothing to
+  do until it holds a token; a session switch's follow waits for ready for 20 s; every other
+  caller of the broker credential fails fast. It used to fail its start after 20 s, and
+  Claude Code does not restart a channel server that ended, so the session had no delivery for
+  its life. A refusal no trade cures still ends the start, naming it. A tool call before the
+  session is up says what the start waits on ("it waits for this session's broker token, and its
+  stderr says what each trade came to"), where it said only that the server was still starting.
+time: 2026-11-17T12:39:04Z
+custom:
+    Issue: pr4140

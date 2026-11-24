@@ -37,9 +37,11 @@ request() {
     "$@"
 }
 
+# agent_request sends the agent's bearer on standard input from printf, a shell builtin, so it is
+# in no command line; its callers give their bodies with -d.
 agent_request() {
-  curl -fsS \
-    -H "Authorization: Bearer ${agent_token}" \
+  printf 'Authorization: Bearer %s' "$agent_token" | curl -fsS \
+    -H @- \
     -H "Content-Type: application/json" \
     "$@"
 }

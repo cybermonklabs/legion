@@ -134,16 +134,18 @@ func TestTwoUnpinnedRoleMentionsHoldTheirCopiesAsBefore(t *testing.T) {
 	seedDelivery(t, rig.database, commentID, firstTarget, "", "pending")
 	seedDelivery(t, rig.database, commentID, secondTarget, "", "pending")
 
+	before := time.Now()
 	holding(t, rig.deps()).scan(ctx, unfenced{})
+	after := time.Now()
 
 	if forwards := recv.received(); len(forwards) != 0 {
 		t.Fatalf("%s was sent %+v while two mentions of the comment were live and pinned to no session, want nothing: one key serves one mention, so neither copy can carry the key the mention that reaches this host will repeat",
 			holder, forwards)
 	}
 	_, _, reached := eventState(t, rig.database, comment.ID)
-	if slices.Contains(reached, contracts.AgentSubject(holder)) || slices.Contains(reached, contracts.RoleTopicPrefix+routed) {
+	if slices.Contains(reached, contracts.LegacyAgentSubject(holder)) || slices.Contains(reached, contracts.RoleTopicPrefix+routed) {
 		t.Fatalf("the comment reached %v, want neither the route %s nor %s among them: both copies wait for the comment's two unpinned mentions",
-			reached, route, contracts.AgentSubject(holder))
+			reached, route, contracts.LegacyAgentSubject(holder))
 	}
 	if at := publishedAt(t, rig.database, comment.ID); at != nil {
 		t.Fatalf("published_at = %v while two unpinned mentions of the comment are live", at)
@@ -152,8 +154,8 @@ func TestTwoUnpinnedRoleMentionsHoldTheirCopiesAsBefore(t *testing.T) {
 	if attempts != 0 {
 		t.Fatalf("attempt_count = %d while the copies wait on two unpinned mentions, want 0: a wait is no failure", attempts)
 	}
-	if due == nil || !due.After(time.Now()) || due.After(time.Now().Add(mentionPendingDelay+time.Second)) {
-		t.Fatalf("next_attempt_at = %v, want about %v from now, the wait a blocked event takes", due, mentionPendingDelay)
+	if !waitsFromScan(due, before, after) {
+		t.Fatalf("next_attempt_at = %v, want mentionPendingDelay = %v from the scan, the wait a blocked event takes", due, mentionPendingDelay)
 	}
 
 	// Both senders resolve, find no session, and fail their attempts, as they do within a round

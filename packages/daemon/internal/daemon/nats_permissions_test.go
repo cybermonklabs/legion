@@ -19,14 +19,17 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 	tcnats "github.com/testcontainers/testcontainers-go/modules/nats"
 
-	"github.com/sjawhar/envoy/daemonpermissions"
+	"github.com/sjawhar/envoy/natsgrant"
 	"github.com/sjawhar/envoy/testnatsimages"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/natsauth"
+	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
+	"github.com/sjawhar/legion/daemon/internal/testnkeys"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -39,14 +42,15 @@ const (
 	wakeGrantSubject = "notifications.legion.wake"
 )
 
-// The deployment and this proof share daemonpermissions.Grant: core wraps the same values as the
+// The deployment and this proof share natsgrant.Daemon: core wraps the same values as the
 // NATS server grant, while this test drives the daemon's real connection, durable consumers,
 // acknowledgements, and exceptions subscription through it.
 func TestDaemonPermissionsOnRealServers(t *testing.T) {
+	t.Parallel()
 	for _, image := range testnatsimages.Images {
 		t.Run(image.Name, func(t *testing.T) {
 			t.Run("the daemon restarts, reads its consumers' lag, acknowledges Dispatch, GitHub and the listener's wake, and receives exceptions", func(t *testing.T) {
-				grant := daemonpermissions.Grant()
+				grant := natsgrant.Daemon()
 				daemonSeed, admin, js, server, uri := startDaemonGrantServer(t, image.Ref, grant)
 				defer admin.Close()
 				stream := createDaemonNotificationStream(t, js)
@@ -125,7 +129,7 @@ func TestDaemonPermissionsOnRealServers(t *testing.T) {
 
 			t.Run("without the dispatch consumer-create permission, the daemon and server report it", func(t *testing.T) {
 				const removed = "$JS.API.CONSUMER.CREATE.ENVOY_NOTIFICATIONS.>"
-				grant := daemonpermissions.Grant()
+				grant := natsgrant.Daemon()
 				held := len(grant.Publish)
 				grant.Publish = slices.DeleteFunc(grant.Publish, func(subject string) bool { return subject == removed })
 				if len(grant.Publish) != held-1 {
@@ -180,16 +184,24 @@ func daemonGrantConfig(uri string) config.Config {
 	}
 }
 
-// grantWorkflow is the workflow the grant tests connect: its project's mapping serves
-// sjawhar/legion, the repository the fixtures' events name, so GitHub intake hears it, and a
-// stand-in GitHub names it, as preparing the Dispatch fixture's todo issue reads it.
+// grantWorkflow is the workflow the grant tests connect: a record of its project names
+// sjawhar/legion, the repository the fixtures' events name, so GitHub intake hears it from the
+// boot's read of the records (heardAtBoot), and a stand-in GitHub names it, as preparing the
+// Dispatch fixture's todo issue reads it.
 func grantWorkflow(t *testing.T, logs *syncBuffer) *workflowRuntime {
 	t.Helper()
 	repos := newRepositories("CAPTURE", ghrepo.Renames{})
-	repos.set([]mappedRepository{{Repo: ghrepo.MustParse("sjawhar/legion"), Default: true}}, nil)
+	repos.fill(ghrepo.MustParse("sjawhar/legion"))
 	github := newNamedGitHub(t, map[string]string{"sjawhar/legion": "sjawhar/legion@main"})
-	return &workflowRuntime{pool: isolatedOutboxPool(t), records: projectRecords{Store: record.NewStore(), project: "CAPTURE"},
+	w := &workflowRuntime{pool: isolatedOutboxPool(t), records: projectRecords{Store: record.NewStore(), project: "CAPTURE"},
 		repositories: repos, defaultBranches: newDefaultBranches(roleTokens{}, repos, github.url, defaultBranchTTL, time.Now), log: grantLogger(logs)}
+	if err := store.Transact(t.Context(), w.pool, func(ctx context.Context, tx pgx.Tx) error {
+		return w.records.PutIssue(ctx, tx, record.Issue{Key: "CAPTURE-90", Tree: "CAPTURE-90", Project: "CAPTURE", Title: "a tree on sjawhar/legion",
+			Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "A", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion"})
+	}); err != nil {
+		t.Fatalf("record the tree whose repository GitHub intake hears: %v", err)
+	}
+	return w
 }
 
 func connectDaemonGrant(t *testing.T, uri, seed string, logs *syncBuffer) *workflowRuntime {
@@ -285,10 +297,10 @@ func createDaemonNotificationStream(t *testing.T, js jetstream.JetStream) jetstr
 	return stream
 }
 
-func startDaemonGrantServer(t *testing.T, image string, grant daemonpermissions.Permissions) (string, *nats.Conn, jetstream.JetStream, *tcnats.NATSContainer, string) {
+func startDaemonGrantServer(t *testing.T, image string, grant natsgrant.Permissions) (string, *nats.Conn, jetstream.JetStream, *tcnats.NATSContainer, string) {
 	t.Helper()
-	daemonSeed, daemonPublic := testnats.User(t)
-	adminSeed, adminPublic := testnats.User(t)
+	daemonSeed, daemonPublic := testnkeys.User(t)
+	adminSeed, adminPublic := testnkeys.User(t)
 	// The server's configuration reads JSON, but not Go's HTML escaping of '>' as \u003e.
 	var permissions strings.Builder
 	encoder := json.NewEncoder(&permissions)

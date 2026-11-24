@@ -51,7 +51,7 @@ func (r *keptRig) startRow(tree string) int64 {
 		r.t.Fatal(err)
 	}
 	var id int64
-	if err := pgx.BeginFunc(r.ctx, r.store.Pool(), func(tx pgx.Tx) error {
+	if err := Transact(r.ctx, r.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		id, err = record.NewStore().EnqueueID(r.ctx, tx, row)
 		return err
@@ -162,7 +162,7 @@ func TestADeliveryRewriteDoesNotTakeARowAnotherTreeHolds(t *testing.T) {
 	// there) and whose architect holds it.
 	r.issue(moved, moved)
 	newStart := r.startRow(moved)
-	if err := pgx.BeginFunc(r.ctx, r.store.Pool(), func(tx pgx.Tx) error {
+	if err := Transact(r.ctx, r.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		return record.NewStore().ClaimKeptDecisions(r.ctx, tx, moved, record.KeptDecisions{Decisions: []record.DecisionMark{{Ref: ref, At: r.at}}}, newStart)
 	}); err != nil {
 		t.Fatalf("claim the decision for the new tree's start: %v", err)
@@ -204,7 +204,7 @@ func TestAHoldReleaseLeavesAClaimThatCounts(t *testing.T) {
 
 	r.issue(moved, moved)
 	catchUp := r.startRow(moved)
-	if err := pgx.BeginFunc(r.ctx, r.store.Pool(), func(tx pgx.Tx) error {
+	if err := Transact(r.ctx, r.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		return record.NewStore().ClaimKeptDecisions(r.ctx, tx, moved, record.KeptDecisions{Decisions: []record.DecisionMark{{Ref: ref, At: r.at}}}, catchUp)
 	}); err != nil {
 		t.Fatalf("claim the decision for the new tree: %v", err)
@@ -273,7 +273,7 @@ func TestTwoComposersNeverBothNameOneKeptDecision(t *testing.T) {
 	r.issue(tree, tree)
 	r.keep(tree, ref, 0)
 
-	first, err := r.store.Pool().Begin(r.ctx)
+	first, err := r.store.Pool().BeginTx(r.ctx, pgx.TxOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -292,7 +292,7 @@ func TestTwoComposersNeverBothNameOneKeptDecision(t *testing.T) {
 	second := make(chan composed, 1)
 	go func() {
 		var named record.KeptDecisions
-		err := pgx.BeginFunc(r.ctx, r.store.Pool(), func(tx pgx.Tx) error {
+		err := Transact(r.ctx, r.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 			var pid int32
 			if err := tx.QueryRow(r.ctx, `select pg_backend_pid()`).Scan(&pid); err != nil {
 				return err
@@ -353,12 +353,14 @@ func TestTwoComposersNeverBothNameOneKeptDecision(t *testing.T) {
 // forgot it (the daemon's settleTold) while a start row's task still named it, the delivery that
 // task was queued as having been retired, which left the row KEPT for the catch-up to name. A
 // write of that delivery afterwards must leave the row gone: the architect has been told, and a
-// row standing again is one the tree's next start or catch-up names and tells a second time,
-// which is the fault seed 24 of the daemon's
-// TestADecisionHeldInTheOldArchitectsTaskAtAHandOverReachesTheChild reports at random
-// (dispatch://INFRA-2339). The put-back is for one case alone, which the first test of this file
-// holds: this delivery's own confirmation told the row and the machine took that confirmation
-// back.
+// row standing again is one the tree's next start or catch-up names and tells a second time
+// (dispatch://INFRA-2339). It is not what made seed 24 of the daemon's
+// TestADecisionHeldInTheOldArchitectsTaskAtAHandOverReachesTheChild tell a decision twice at
+// random: in that schedule the put-back inserts no row, and the second telling came from the
+// kept-decision model's own lease, written inside a drop of the root's catch-ups, so the drop
+// deleted a row it had read unleased (dispatch://INFRA-2836). The put-back is for one case alone,
+// which the first test of this file holds: this delivery's own confirmation told the row and the
+// machine took that confirmation back.
 //
 // The sequence is driven on the store directly and names no route of the machine's: a start row
 // that runs again queues nothing on a claim that already records it (supervise's queue,
@@ -384,7 +386,7 @@ func TestADeliveryWrittenOverNoConfirmationDoesNotPutBackADecisionAnotherRowTold
 
 	var told record.KeptDecisions
 	var catchUp int64
-	if err := pgx.BeginFunc(r.ctx, r.store.Pool(), func(tx pgx.Tx) error {
+	if err := Transact(r.ctx, r.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		told, catchUp, err = r.compose(tx, tree)
 		return err
@@ -394,7 +396,7 @@ func TestADeliveryWrittenOverNoConfirmationDoesNotPutBackADecisionAnotherRowTold
 	if len(told.Decisions) != 1 {
 		t.Fatalf("the catch-up named %v, want %s: the retired task left it KEPT", keptRefs(told), ref)
 	}
-	if err := pgx.BeginFunc(r.ctx, r.store.Pool(), func(tx pgx.Tx) error {
+	if err := Transact(r.ctx, r.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		return record.NewStore().ForgetKeptDecisions(r.ctx, tx, tree, told, catchUp)
 	}); err != nil {
 		t.Fatalf("tell what the catch-up named: %v", err)

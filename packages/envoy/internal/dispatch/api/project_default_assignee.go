@@ -5,6 +5,8 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // A project's default assignee is the last step of the chain that decides who a question
@@ -117,18 +119,19 @@ func (s *server) putProjectDefaultAssignee(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	defer tx.Rollback(r.Context())
-	// The default this write moves from, read under the project row's own lock in the
-	// transaction that replaces it: two of these at once then name the pair each really moved,
-	// and the update below takes no lock this read has not already taken. The level is `for no
-	// key update`, which serialises this write against the other writers of the row and still
-	// lets a foreign key take its key share, as the room lock's rule requires of every lock on
-	// projects (TestNoForUpdateOnOwnerTables, docs/persistence.go's lockDocumentRoom). An
-	// unknown project is 404 NOT_FOUND here (pgx.ErrNoRows, writeHandlerError), before anything
-	// is written.
+	// The project's owner lock before its row's update, as every projects writer takes them
+	// (createIssue, lockEventOwner): taking the row first and the lock at the append below would
+	// wait, holding the row, on a create that holds the lock and waits for the row. The default
+	// this write moves from is read under that lock, in the statement after it
+	// (store.LockOwnerAndRead), in the transaction that replaces it: every writer of the default
+	// takes this lock first, so two of these at once name the pair each really moved, and no row
+	// lock is taken for it - the lock assigns no transaction id, and the update below is the
+	// first statement that writes. An unknown project is 404 NOT_FOUND here (pgx.ErrNoRows,
+	// writeHandlerError), before anything is written.
 	var previous string
-	if err := tx.QueryRow(r.Context(), `
-		select default_assignee from projects where key = $1 for no key update
-	`, key).Scan(&previous); err != nil {
+	if err := store.LockOwnerAndRead(r.Context(), tx, store.ProjectOwner(key), `
+		select default_assignee from projects where key = $1
+	`, []any{key}, &previous); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}

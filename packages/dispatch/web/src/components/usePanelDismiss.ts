@@ -28,6 +28,7 @@ export function usePanelDismiss({
   useEffect(() => {
     if (!open) return;
     const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.isComposing) return;
       if (event.key !== "Escape") return;
       // The panel is what Escape acts on while it stands open, not the view behind it.
       event.stopPropagation();

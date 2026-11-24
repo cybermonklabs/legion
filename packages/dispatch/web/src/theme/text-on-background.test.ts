@@ -67,12 +67,30 @@ interface SwatchPair {
 const RESTING_TOKEN_PATTERN =
   /^(dark:)?(hover:|disabled:|focus:|focus-visible:|enabled:hover:|enabled:)?(bg|text)-([a-z]+-\d{2,3}|white|black)$/;
 
+/** A `bg-`/`text-` token of the issue page's palette (`classes.ts`'s `PAGE_COLORS`), which
+ * carries both schemes in its one name: `styles.css` swaps the value behind it in the dark
+ * scheme, so it is read through the swatch pair the palette says it renders. */
+const PAGE_TOKEN_PATTERN =
+  /^(hover:|disabled:|focus:|focus-visible:|enabled:hover:|enabled:)?(bg|text)-([a-z][a-z-]*[a-z])$/;
+
+/** `PAGE_COLORS` looked up by a token's name read from a class string, which may be no key. */
+const pageColors: Readonly<Partial<Record<string, classes.ColorPair>>> = classes.PAGE_COLORS;
+
 function classifyComposite(value: string): { bg?: SwatchPair; text?: SwatchPair } {
   const resting: {
     bg: Partial<Record<"light" | "dark", string>>;
     text: Partial<Record<"light" | "dark", string>>;
   } = { bg: {}, text: {} };
   for (const token of value.split(/\s+/).filter(Boolean)) {
+    const page = PAGE_TOKEN_PATTERN.exec(token);
+    const colors = page === null ? undefined : pageColors[page[3] ?? ""];
+    if (page !== null && colors !== undefined) {
+      if (page[1] !== undefined) continue;
+      const side = resting[page[2] as "bg" | "text"];
+      side.light = colors.light.name;
+      side.dark = colors.dark.name;
+      continue;
+    }
     const match = RESTING_TOKEN_PATTERN.exec(token);
     if (match === null) continue;
     const [, darkPrefix, modifier, prop, swatch] = match;
@@ -121,6 +139,19 @@ test("classifies a non-trivial number of background and text composites", () => 
   // A regression guard on the classification itself.
   expect(bgComposites.size).toBeGreaterThan(15);
   expect(textComposites.size).toBeGreaterThan(30);
+});
+
+test("reads a page token through the swatch pair PAGE_COLORS says it renders", () => {
+  // `pageInkFill` is `bg-page-ink text-page-paper`: neither token names a Tailwind shade, so
+  // only the page-token branch can resolve them.
+  expect(classes.pageInkFill).toBe("bg-page-ink text-page-paper");
+  const expected = {
+    bg: { dark: "slate-100", light: "page-ink" },
+    text: { dark: "slate-950", light: "page-paper" },
+  };
+  expect(classifyComposite(classes.pageInkFill)).toEqual(expected);
+  expect(bgComposites.get("pageInkFill")).toEqual(expected.bg);
+  expect(textComposites.get("pageInkFill")).toEqual(expected.text);
 });
 
 // ------------------------------------------------------------------------------------------

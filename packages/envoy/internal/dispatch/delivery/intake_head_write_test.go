@@ -43,7 +43,7 @@ func TestAnEnvelopeWhoseHeadRowCouldNotBeStoredIsHandedBack(t *testing.T) {
 
 	natsClient := intakeTestClient(t)
 	startIntake(t, newIntake(natsClient, pool, deliveryTestLeases(t, pool),
-		newFakeGitHub(t).newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool)))
+		newFakeGitHub(t).newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
 	awaitBoundDurable(t, natsClient)
 	before := deliveryConsumerInfo(t, natsClient).Delivered.Consumer
 
@@ -130,7 +130,7 @@ func startHeadWriteProcess(t *testing.T, pool *store.Pool, natsURL string, hold 
 	t.Cleanup(process.release)
 
 	process.intake = newIntake(client, second.Pool, process.leases, github, events.NewBroker(),
-		loadedSettingsCache(t, t.Context(), second.Pool))
+		loadedSettingsCache(t, t.Context(), second.Pool), unrenamed())
 	runCtx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
@@ -304,7 +304,7 @@ func TestADeliveryWhoseHoldHasLapsedAnswersNothingOfItsOwn(t *testing.T) {
 		t.Fatalf("take the hold this row lapses: %v", err)
 	}
 	if hold == nil {
-		t.Fatal("the hold this row lapses is held by another process, though the harness truncates duty_holds")
+		t.Fatal("the hold this row lapses is held by another process, though the test's database is its own")
 	}
 	delivery := &intakeDelivery{hold: hold, subject: natsgo.NewInbox()}
 	if !delivery.mayAnswer() {

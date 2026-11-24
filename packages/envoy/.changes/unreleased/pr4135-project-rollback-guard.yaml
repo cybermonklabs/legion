@@ -1,0 +1,20 @@
+kind: Added
+body: |-
+  `agent-secrets secret create` and `retag` write `rollback-guard:project-tags` into a secret's
+  `requesters` tag beside a `dispatch-project` or `project-channels` tag, after the list it names,
+  keep it while either tag remains (`--requesters none` then keeps the guard alone), and take it
+  out with the last of the two. A broker from legion-envoy-v29.23.0, the first to read
+  `requesters`, up to the release before the project tags refuses such a secret as
+  `requesters-malformed` rather than serve it by owner and tier to every session; a broker older
+  than legion-envoy-v29.23.0 reads no `requesters` tag and serves it. This broker reads the entry
+  as no requester. `secret show` and `--json` print `requesters` without it and say whether the
+  secret carries it (`rollback_guard`). Never roll back past this release while a secret carries a
+  project tag without the guard, and never past legion-envoy-v29.23.0 while one carries a project
+  tag at all: a tag a console wrote is served by every earlier broker, and a guarded one by every
+  broker before legion-envoy-v29.23.0. The broker also refuses a secret whose tag key differs from
+  `dispatch-project` or `project-channels` only in case or separators
+  (`project-tag-misspelled`), rather than read it as untagged, and `project-channels` is now in
+  the policy version, so adding it through a console reaches the airlock's held values.
+time: 2026-11-16T06:41:22Z
+custom:
+    Issue: pr4135

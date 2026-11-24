@@ -41,3 +41,20 @@ func census(ctx context.Context, databaseURL string, fsys fs.FS, options pgmigra
 	defer conn.Close(ctx)
 	return pgmigrate.Census(ctx, conn, migrations, "schema_migrations", options)
 }
+
+// CheckVersions reads what schema_migrations, on the database databaseURL names, records of each
+// version against the migrations this binary embeds, and what the runner's next boot would do
+// with each row (pgmigrate.CheckVersions). It holds one connection of its own, in a read-only
+// transaction, and writes nothing.
+func CheckVersions(ctx context.Context, databaseURL string) (*pgmigrate.VersionCheck, error) {
+	migrations, err := pgmigrate.Load(migrationFiles, "migrations")
+	if err != nil {
+		return nil, fmt.Errorf("migrations refused: %w", err)
+	}
+	conn, err := pgx.Connect(ctx, databaseURL)
+	if err != nil {
+		return nil, fmt.Errorf("connect: %w", err)
+	}
+	defer conn.Close(ctx)
+	return pgmigrate.CheckVersions(ctx, conn, migrations, versionTable)
+}
