@@ -12,6 +12,11 @@ afterEach(async () => {
 
 const NOW = Date.parse("2026-10-13T21:53:36Z");
 
+/** How long ago most locks here were last written, and how the note prints it: a Go duration
+ * rounded to the second, as gitlocknote_test.go's noteAge and ageWords. */
+const NOTE_AGE_MS = (31 * 60 + 4) * 1000;
+const AGE_WORDS = "31m4s";
+
 /** A git lock file at `name` (which may name directories under it) in a scratch directory, last
  * written `ageMs` before NOW. */
 async function staleLock(name: string, ageMs: number): Promise<string> {
@@ -35,9 +40,9 @@ function jjLockFailure(lock: string): string {
   return `2: The lock for resource '${lock.slice(0, -5)}' could not be obtained after 1.00s after 16 attempt(s). The lockfile at '${lock}' might need manual deletion.`;
 }
 
-/** The note for one lock 31m4s old, which most rows here read. */
+/** The note for one lock NOTE_AGE_MS old, which most rows here read. */
 async function oneNote(): Promise<{ lock: string; text: string }> {
-  const lock = await staleLock("index.lock", (31 * 60 + 4) * 1000);
+  const lock = await staleLock("index.lock", NOTE_AGE_MS);
   return {
     lock,
     text: await staleGitLockNote(`fatal: Unable to create '${lock}': File exists.`, NOW),
@@ -45,7 +50,7 @@ async function oneNote(): Promise<{ lock: string; text: string }> {
 }
 
 test("names each git lock the output reports that is still there, with how long ago it was written", async () => {
-  const index = await staleLock("index.lock", (31 * 60 + 4) * 1000);
+  const index = await staleLock("index.lock", NOTE_AGE_MS);
   const ref = await staleLock("main.lock", (2 * 3600 + 5) * 1000);
   const output = [
     "Error: Failed to reset Git HEAD state",
@@ -53,7 +58,7 @@ test("names each git lock the output reports that is still there, with how long 
     gitLockFailure(ref),
   ].join("\n");
   expect(await staleGitLockNote(output, NOW)).toBe(
-    `${daemonNote(index, "31m4s")}\n${daemonNote(ref, "2h0m5s")}`
+    `${daemonNote(index, AGE_WORDS)}\n${daemonNote(ref, "2h0m5s")}`
   );
 });
 
@@ -68,10 +73,15 @@ test("says nothing of output that names no lock, or names one already gone", asy
 // by the same rows as gitlocknote_test.go's: the path ends at the first closing text after its
 // opening, so two locks one report names on one line are two paths; and a path stays on its line,
 // so an opening cut off at the end of a line takes nothing from the next line's report.
-type Lock = { index: string; ref: string };
-const quotedCases: [string, (lock: Lock) => string, (lock: Lock) => string[]][] = [
+type LockPair = { index: string; ref: string };
+const quotedCases: [string, (locks: LockPair) => string, (locks: LockPair) => string[]][] = [
   ["git's report", ({ index }) => gitLockFailure(index), ({ index }) => [index]],
   ["jj's report", ({ index }) => jjLockFailure(index), ({ index }) => [index]],
+  [
+    "both reports of one lock, two lines",
+    ({ index }) => `${jjLockFailure(index)}\n${gitLockFailure(index)}`,
+    ({ index }) => [index],
+  ],
   [
     "two locks git names on one line",
     ({ index, ref }) => `${gitLockFailure(index)} ${gitLockFailure(ref)}`,
@@ -93,16 +103,15 @@ const quotedCases: [string, (lock: Lock) => string, (lock: Lock) => string[]][] 
     ({ index }) => [index],
   ],
 ];
-for (const [name, output, locks] of quotedCases) {
+for (const [name, output, named] of quotedCases) {
   test(`names a lock whose path holds a single quote: ${name}`, async () => {
-    const age = (31 * 60 + 4) * 1000;
-    const lock = {
-      index: await staleLock("tmp-sq'x/it's here/index.lock", age),
-      ref: await staleLock("tmp-sq'x/it's here/main.lock", age),
+    const locks = {
+      index: await staleLock("tmp-sq'x/it's here/index.lock", NOTE_AGE_MS),
+      ref: await staleLock("tmp-sq'x/it's here/main.lock", NOTE_AGE_MS),
     };
-    expect(await staleGitLockNote(output(lock), NOW)).toBe(
-      locks(lock)
-        .map((path) => daemonNote(path, "31m4s"))
+    expect(await staleGitLockNote(output(locks), NOW)).toBe(
+      named(locks)
+        .map((lock) => daemonNote(lock, AGE_WORDS))
         .join("\n")
     );
   });
@@ -134,13 +143,13 @@ function daemonNote(lock: string, age: string): string {
 // it word for word.
 test("is word for word the note the daemon renders for the same lock and age", async () => {
   const { lock, text } = await oneNote();
-  expect(text).toBe(daemonNote(lock, "31m4s"));
+  expect(text).toBe(daemonNote(lock, AGE_WORDS));
 });
 
 test("names the lock and tells the role to run the command again", async () => {
   const { lock, text } = await oneNote();
   expect(
-    text.startsWith(`git lock ${lock} was last written 31m4s ago and blocks this command.`)
+    text.startsWith(`git lock ${lock} was last written ${AGE_WORDS} ago and blocks this command.`)
   ).toBe(true);
   expect(text).toContain("Run the command again in about 16 minutes.");
 });
