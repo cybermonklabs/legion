@@ -204,7 +204,8 @@ type FetchReport struct {
 // logs or returns carries one, wherever git echoed it, nor a query value or user information of
 // any URL git names, a redirect's Location among them. What the repository cache streamed - a tar
 // entry's name, a ref fsck names, a ref or a HEAD a line logs - is the cache's words, or a
-// stand-in's at its address, and prints with each run of the cache's token redacted.
+// stand-in's at its address, and prints with each run of the cache's token redacted, as written
+// and percent-decoded (cacheWords).
 //
 // A failure whose cause is outside the issue's volume wraps ErrOutsideVolume, and keeps its text:
 // a read of the provisioning token that failed, a cache named without its token, the wait for the
@@ -242,9 +243,9 @@ func Fetch(ctx context.Context, run Runner, request FetchRequest) (FetchReport, 
 		// A line Fetch logs can name what the cache streamed, a ref it held or the branch its HEAD
 		// named (pruneToGitHub, followHead), which is the cache's words, or a stand-in's at its
 		// address, and can echo the bearer the /tar request carried: each run of that token is
-		// redacted from every line (oauth2call.Tokens).
+		// redacted from every line, as written and percent-decoded (cacheWords).
 		log := request.Log
-		request.Log = func(line string) { log(oauth2call.Tokens(line, -1, request.CacheToken)) }
+		request.Log = func(line string) { log(cacheWords(line, request.CacheToken)) }
 	}
 	credential, err := github.open(request.Repo, "", "")
 	if err != nil {
@@ -774,7 +775,7 @@ func unpackCache(ctx context.Context, run Runner, request FetchRequest, staging 
 		if err != nil {
 			return 0, fmt.Errorf("read the repository cache's tar: %w", err)
 		}
-		if err := unpackEntry(staging, response, header, archive); err != nil {
+		if err := unpackEntry(staging, response, request.CacheToken, header, archive); err != nil {
 			return 0, err
 		}
 	}
@@ -848,10 +849,10 @@ func verifyCache(ctx context.Context, run Runner, request FetchRequest, staging 
 	}
 	// fsck names the refs it reads, and a ref's name is the cache's words, or a stand-in's at its
 	// address, which can echo the bearer the /tar request carried: the stderr its failure prints
-	// has each run of that token redacted (oauth2call.Tokens).
+	// has each run of that token redacted, as written and percent-decoded (cacheWords).
 	fsck := slices.Concat(feedGit, []string{"--git-dir=" + staging, "fsck", "--connectivity-only", "--no-dangling", "--no-progress"})
 	result, err := runCommandTimeout(ctx, run, fsck, isolatedGitConfig, staging, left)
-	result.Stderr = oauth2call.Tokens(result.Stderr, -1, request.CacheToken)
+	result.Stderr = cacheWords(result.Stderr, request.CacheToken)
 	if _, err := checkedResult(fsck, result, err); err != nil {
 		return fmt.Errorf("the repository cache's history is not whole: %w", err)
 	}
@@ -960,54 +961,72 @@ func remaining(request FetchRequest, deadline time.Time, what string) (time.Dura
 
 // unpackEntry writes one entry of the repository cache's tar into staging, refusing one a feed does
 // not take. The entry's name is the cache's words, or a stand-in's at the cache's address, which
-// can echo the bearer the /tar request carried: it is decided on as it came, and printed only as
-// the rule reads it, with the credentials the requests that led to response carried redacted
-// (oauth2call.StreamedWords), and a write of it that failed names it so (entryFailure).
-func unpackEntry(staging string, response *http.Response, header *tar.Header, body io.Reader) error {
+// can echo token, the bearer the /tar request carried: it is decided on as it came, and printed
+// only as entryWords gives it, and a write of it that failed names it so (entryFailure).
+func unpackEntry(staging string, response *http.Response, token string, header *tar.Header, body io.Reader) error {
 	name := strings.TrimSuffix(header.Name, "/")
 	if !filepath.IsLocal(filepath.FromSlash(name)) || path.Clean(name) != name {
-		return fmt.Errorf("the repository cache's tar holds %q, which is not a path inside the feed", oauth2call.StreamedWords(response, name))
+		return fmt.Errorf("the repository cache's tar holds %q, which is not a path inside the feed", entryWords(response, token, name))
 	}
 	dir := header.Typeflag == tar.TypeDir
 	if !dir && header.Typeflag != tar.TypeReg {
-		return fmt.Errorf("the repository cache's tar holds %q, which is neither a regular file nor a directory", oauth2call.StreamedWords(response, name))
+		return fmt.Errorf("the repository cache's tar holds %q, which is neither a regular file nor a directory", entryWords(response, token, name))
 	}
 	if !FeedEntry(name, dir) {
-		return fmt.Errorf("the repository cache's tar holds %q, which is not one of a repository's refs or packs", oauth2call.StreamedWords(response, name))
+		return fmt.Errorf("the repository cache's tar holds %q, which is not one of a repository's refs or packs", entryWords(response, token, name))
 	}
 	target := filepath.Join(staging, filepath.FromSlash(name))
 	if dir {
 		if err := os.MkdirAll(target, 0o755); err != nil {
-			return entryFailure(response, "write", name, err)
+			return entryFailure(response, token, "write", name, err)
 		}
 		return nil
 	}
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-		return entryFailure(response, "write", name, err)
+		return entryFailure(response, token, "write", name, err)
 	}
 	file, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
 	if err != nil {
-		return entryFailure(response, "write", name, err)
+		return entryFailure(response, token, "write", name, err)
 	}
 	if _, err := io.Copy(file, body); err != nil {
 		_ = file.Close()
-		return entryFailure(response, "read", name, err)
+		return entryFailure(response, token, "read", name, err)
 	}
 	if err := file.Close(); err != nil {
-		return entryFailure(response, "write", name, err)
+		return entryFailure(response, token, "write", name, err)
 	}
 	return nil
 }
 
 // entryFailure is err, a read or a write (what) of the tar's entry name that failed, as an error
-// that names the entry as unpackEntry prints it (oauth2call.StreamedWords), and of a failure on a
-// path the operation and the system's reason alone: the path holds the name as it came. It unwraps
-// to that reason, so a full volume still reads as one.
-func entryFailure(response *http.Response, what, name string, err error) error {
+// that names the entry as unpackEntry prints it (entryWords), and of a failure on a path the
+// operation and the system's reason alone: the path holds the name as it came. It unwraps to that
+// reason, so a full volume still reads as one.
+func entryFailure(response *http.Response, token, what, name string, err error) error {
 	if onPath := (*fs.PathError)(nil); errors.As(err, &onPath) {
 		err = fmt.Errorf("%s: %w", onPath.Op, onPath.Err)
 	}
-	return fmt.Errorf("%s %s from the repository cache's tar: %w", what, oauth2call.StreamedWords(response, name), err)
+	return fmt.Errorf("%s %s from the repository cache's tar: %w", what, entryWords(response, token, name), err)
+}
+
+// entryWords is name, an entry's name the repository cache's tar in response holds, as an error
+// prints it: with each run of token, the bearer the /tar request carried, redacted as written and
+// percent-decoded (cacheWords), and then as another party's words, printed only as the rule reads
+// them, with the credentials the requests that led to response carried redacted
+// (oauth2call.StreamedWords).
+func entryWords(response *http.Response, token, name string) oauth2call.RemoteText {
+	return oauth2call.StreamedWords(response, cacheWords(name, token))
+}
+
+// cacheWords is text that names what the repository cache streamed - its words, or a stand-in's at
+// its address - with each run of token, the bearer the /tar request carried, redacted in the two
+// readings the git scrubs redact a provisioning token in (scrubTokens): the text as it is written
+// (oauth2call.Tokens), and its percent-decoded reading (redactDecoded), the only one that shows a
+// run some or all of whose characters the text writes as %XX escapes.
+func cacheWords(text, token string) string {
+	credentials := []string{token}
+	return oauth2call.Tokens(redactDecoded(text, credentials), -1, credentials...)
 }
 
 // countingReader counts what it reads and holds the repository cache's answer to the low-speed
