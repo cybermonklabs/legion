@@ -5,9 +5,10 @@
 -- supervise.Claim.LastStartFailureAt: the time, by the daemon's clock, at which it recorded the
 -- cause in claims.last_death_cause and in claims.last_start_failure, null where that cause is
 -- empty. claims.last_death_digest and claims.last_start_failure_digest are
--- supervise.Claim.LastDeathDigest and supervise.Claim.LastStartFailureDigest: the SHA-256 of the
--- cause text the time dates, as the row stores it (supervise.CauseDigest), null where the time
--- is. Each time and its digest are set and cleared only together with their cause, in the one
+-- supervise.Claim.LastDeathDigest and supervise.Claim.LastStartFailureDigest: the 64-bit FNV-1a of
+-- the cause text the time dates, as the row stores it, in 8 bytes (supervise.CauseDigest), null
+-- where the time is. It tells whether the time is still the cause's and protects nothing. Each
+-- time and its digest are set and cleared only together with their cause, in the one
 -- statement that writes it (supervise.Claim.LastDeathAt states the rule), so a cause recorded
 -- again with the same text is given its new time. A claim keeps its death's cause through every
 -- later ready, and a reader of the state took a cause of days before for the current one, since

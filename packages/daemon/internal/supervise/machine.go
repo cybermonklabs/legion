@@ -20,9 +20,9 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"log/slog"
 	"slices"
 	"strings"
@@ -3885,13 +3885,16 @@ func deathCause(observation runtime.Observation) string {
 	return storetext.FarSideText(fmt.Sprintf("%s: %s", observation.Kind, observation.Detail))
 }
 
-// CauseDigest is the digest a cause's time is stored with (Claim.LastDeathDigest): the SHA-256 of
-// the cause's text as the claim holds it and the store writes it, after deathCause's bound and the
-// far side's text rules (storetext.FarSideText, storetext.FarSideError). The store reads a time
-// back only while its digest is CauseDigest of the cause the row holds.
+// CauseDigest is the digest a cause's time is stored with (Claim.LastDeathDigest): the 64-bit
+// FNV-1a of the cause's text as the claim holds it and the store writes it, after deathCause's
+// bound and the far side's text rules (storetext.FarSideText, storetext.FarSideError), in 8 bytes.
+// The store reads a time back only while its digest is CauseDigest of the cause the row holds. It
+// detects a cause written again without its time and protects nothing: the text it is taken of
+// stands in plain beside it in the same row, so it is no cryptographic hash and needs none.
 func CauseDigest(cause string) []byte {
-	sum := sha256.Sum256([]byte(cause))
-	return sum[:]
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(cause))
+	return h.Sum(nil)
 }
 
 // AbandonedSession is a session a claim stopped resuming: the id and transcript path it recorded
