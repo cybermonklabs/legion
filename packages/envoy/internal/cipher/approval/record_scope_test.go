@@ -10,7 +10,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 )
 
 // TestThePagePrintsTheKindAsTheRecordReadIt: the page prints each name's kind, hosts and allow
@@ -21,7 +21,7 @@ import (
 // printed as policy.RowWords words it, a row of the profile's own host included.
 func TestThePagePrintsTheKindAsTheRecordReadIt(t *testing.T) {
 	const live = `[{"name": "open", "hosts": ["api.open.example"], "ways": ["swap"]}]`
-	local := secrets.NewLocal(
+	local := awstest.NewLocal(
 		policytest.Proxied(policytest.Secret("DEEL_TOKEN", "ada@example.com", policy.TierHuman, "deel-v1"), "open"),
 		policytest.Secret("DEEL_SOURCE", "ada@example.com", policy.TierHuman, "source-v1"),
 	)

@@ -11,12 +11,14 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/api"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 	"github.com/sjawhar/envoy/internal/testwait"
+
+	// thePeersTold is the reread's notice to the other pods, as TestStopWaitsForARereadRunAfterItsAnswer
+	// records it beside the stop's own steps.
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
 )
 
-// thePeersTold is the reread's notice to the other pods, as TestStopWaitsForARereadRunAfterItsAnswer
-// records it beside the stop's own steps.
 const thePeersTold = "the other pods were told to reread"
 
 // TestStopWaitsForARereadRunAfterItsAnswer: a reread the API answered 202 for runs after its
@@ -28,7 +30,7 @@ const thePeersTold = "the other pods were told to reread"
 //
 // The named revert: drop the WaitDetached call from stop.
 func TestStopWaitsForARereadRunAfterItsAnswer(t *testing.T) {
-	local := secrets.NewLocal(policytest.Secret("WORKER_TOKEN", policy.OwnerShared, policy.TierAgent, "v1"))
+	local := awstest.NewLocal(policytest.Secret("WORKER_TOKEN", policy.OwnerShared, policy.TierAgent, "v1"))
 	entered := make(chan string, 1)
 	release := make(chan struct{})
 	loader := policytest.Loader(local)
@@ -40,7 +42,7 @@ func TestStopWaitsForARereadRunAfterItsAnswer(t *testing.T) {
 	var ran steps
 	detached := &api.Detached{}
 	mux := http.NewServeMux()
-	api.Register(mux, api.Deps{Policy: current, SecretsStore: secrets.StoreAWS, SecretsPrefix: policytest.Prefix, SecretsKMSKey: policytest.KeyARN,
+	api.Register(mux, api.Deps{Policy: current, SecretsStore: aws.Name, SecretsPrefix: policytest.Prefix, SecretsKMSKey: policytest.KeyARN,
 		Detached: detached, NotifyReread: func(context.Context, string, []string) { ran.record(thePeersTold) }})
 	srv := httptest.NewServer(mux)
 	defer srv.Close()

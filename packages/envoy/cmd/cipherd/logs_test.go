@@ -17,6 +17,7 @@ import (
 	"google.golang.org/grpc/grpclog"
 
 	"github.com/sjawhar/envoy/internal/cipher/answer"
+	"github.com/sjawhar/envoy/internal/cipher/awssdk"
 	"github.com/sjawhar/envoy/internal/cipher/config"
 	"github.com/sjawhar/envoy/internal/cipher/logmask"
 	"github.com/sjawhar/envoy/internal/cipher/placeholder"
@@ -148,7 +149,7 @@ func TestTheBrokersLogMasksWhatALibraryWrites(t *testing.T) {
 
 	t.Run("the AWS SDK", func(t *testing.T) {
 		isolateAWS(t)
-		awsCfg, err := loadAWSConfig(t.Context())
+		awsCfg, err := awssdk.LoadConfig(t.Context())
 		if err != nil {
 			t.Fatalf("load the AWS configuration: %v", err)
 		}
@@ -158,10 +159,10 @@ func TestTheBrokersLogMasksWhatALibraryWrites(t *testing.T) {
 			awsCfg.Logger.Logf(smithylogging.Debug, "a debug line of the SDK's")
 		})
 		aws := func(text string) func(map[string]any) bool {
-			return func(line map[string]any) bool { return line["message"] == awsSDKMessage && line["text"] == text }
+			return func(line map[string]any) bool { return line["message"] == awssdk.Message && line["text"] == text }
 		}
 		if imds, ok := logtest.LineWhere(lines, aws("falling back to IMDSv1: token "+logmask.Mark)); !ok || imds["severity"] != "WARNING" {
-			t.Errorf("the AWS SDK's warning = %v; want %q at WARNING, its text masked (log: %q)", imds, awsSDKMessage, written)
+			t.Errorf("the AWS SDK's warning = %v; want %q at WARNING, its text masked (log: %q)", imds, awssdk.Message, written)
 		}
 		if _, ok := logtest.LineWhere(lines, aws(strings.Repeat("y", answer.FieldBytes))); !ok {
 			t.Errorf("no line of the AWS SDK is its long warning cut to %d bytes: %q", answer.FieldBytes, written)
@@ -246,7 +247,7 @@ func (r *redirectedStderr) point(w io.Writer) {
 }
 
 // TestOpenStoreLoadsTheAWSConfigurationWithTheBrokersLogger: the AWS configuration openStore
-// loads for the AWS store, or an IAM database, is the one with awsLog as its logger, whose lines
+// loads for the AWS store, or an IAM database, is the one with awssdk.Log as its logger, whose lines
 // are the broker's own rather than the SDK's own log.Logger on stderr.
 func TestOpenStoreLoadsTheAWSConfigurationWithTheBrokersLogger(t *testing.T) {
 	isolateAWS(t)
@@ -255,7 +256,7 @@ func TestOpenStoreLoadsTheAWSConfigurationWithTheBrokersLogger(t *testing.T) {
 		t.Fatalf("openStore: %v", err)
 	}
 	t.Cleanup(st.Close)
-	if _, ok := awsCfg.Logger.(awsLog); !ok {
-		t.Fatalf("openStore's AWS configuration logs through %T; want awsLog, the broker's own", awsCfg.Logger)
+	if _, ok := awsCfg.Logger.(awssdk.Log); !ok {
+		t.Fatalf("openStore's AWS configuration logs through %T; want awssdk.Log, the broker's own", awsCfg.Logger)
 	}
 }

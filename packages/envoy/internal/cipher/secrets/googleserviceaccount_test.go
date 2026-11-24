@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 )
 
 // serviceAccountEmail is the account a google-service-account secret of a person's fleet names.
@@ -354,7 +355,7 @@ func TestGoogleServiceAccountScopes(t *testing.T) {
 func TestAGoogleProfileAsksForItsOwnScopes(t *testing.T) {
 	source := policytest.TypeSecret("GCP_FLEET", "ada@example.com", policy.TierHuman, policy.TypeGoogleServiceAccount, serviceAccountValue)
 	source.Tags[policy.TagScopes] = "bigquery cloud-platform"
-	current := policytest.ProfiledCurrent(t, secrets.NewLocal(source),
+	current := policytest.ProfiledCurrent(t, awstest.NewLocal(source),
 		policytest.ProfilesFile(`{"name": "GCP_FLEET_BIGQUERY", "source": "GCP_FLEET", "google": {"scopes": ["bigquery"]}}`))
 	served, ok := current.Get().Secrets["GCP_FLEET_BIGQUERY"]
 	if !ok {

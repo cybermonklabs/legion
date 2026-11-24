@@ -33,7 +33,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/reread"
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -146,7 +146,7 @@ const narrowedOwner = "ada@example.com"
 // The named revert: remove the Catchup call from boot.
 func TestBootLoadsThePolicyAgainAfterTheFirstListen(t *testing.T) {
 	st := storetest.Open(t)
-	secretStore := secrets.NewLocal(policytest.Secret(retaggedWhileBooting, policy.OwnerShared, policy.TierAgent, "v1"))
+	secretStore := awstest.NewLocal(policytest.Secret(retaggedWhileBooting, policy.OwnerShared, policy.TierAgent, "v1"))
 	loader := policytest.Loader(secretStore)
 
 	readTheStore := make(chan struct{})    // the first load has read the secret store

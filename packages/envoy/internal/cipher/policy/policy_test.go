@@ -9,7 +9,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/record"
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 )
 
 const (
@@ -25,7 +25,7 @@ const (
 // anyone for a shared one; a shared agent-tier secret goes to everyone; a service's secret goes
 // to that service alone.
 func TestEvaluateFollowsOwnerAndTierAlone(t *testing.T) {
-	store := secrets.NewLocal(
+	store := awstest.NewLocal(
 		policytest.Secret("PERSON_AGENT", owner, policy.TierAgent, "v"),
 		policytest.Secret("PERSON_HUMAN", owner, policy.TierHuman, "v"),
 		policytest.Secret("SHARED_AGENT", policy.OwnerShared, policy.TierAgent, "v"),
@@ -79,7 +79,7 @@ func TestEvaluateFollowsOwnerAndTierAlone(t *testing.T) {
 	for name, row := range table {
 		for who, want := range row {
 			got, err := set.Evaluate(name, requesters[who])
-			want.Source = secrets.LocalARN(policytest.ID(name))
+			want.Source = awstest.ARN(policytest.ID(name))
 			if err != nil || got != want {
 				t.Errorf("Evaluate(%s, %s) = %+v, %v; want %+v", name, who, got, err, want)
 			}
@@ -95,7 +95,7 @@ func TestEvaluateFollowsOwnerAndTierAlone(t *testing.T) {
 // to that session, so it asks the owner, or anyone for a shared secret, and a service's own secret,
 // which no person approves, is denied. Withholding one name changes no other name's answer.
 func TestEvaluateTreatsAWithheldNameAsHumanTier(t *testing.T) {
-	store := secrets.NewLocal(
+	store := awstest.NewLocal(
 		policytest.Secret("PERSON_AGENT", owner, policy.TierAgent, "v"),
 		policytest.Secret("PERSON_HUMAN", owner, policy.TierHuman, "v"),
 		policytest.Secret("SHARED_AGENT", policy.OwnerShared, policy.TierAgent, "v"),
@@ -132,7 +132,7 @@ func TestEvaluateTreatsAWithheldNameAsHumanTier(t *testing.T) {
 		{"SERVICE_AGENT", withheld(policy.Requester{Service: legion}, "PERSON_AGENT"), policy.Decision{Outcome: policy.Automatic}},
 	} {
 		got, err := set.Evaluate(c.name, c.requester)
-		c.want.Source = secrets.LocalARN(policytest.ID(c.name))
+		c.want.Source = awstest.ARN(policytest.ID(c.name))
 		if err != nil || got != c.want {
 			t.Errorf("Evaluate(%s, %+v) = %+v, %v; want %+v", c.name, c.requester, got, err, c.want)
 		}
@@ -159,10 +159,10 @@ func TestRequesters(t *testing.T) {
 		aditya = "aditya@example.com"
 		daemon = "legion-daemon"
 	)
-	listed := func(name, owner, tier, requesters string) secrets.LocalSecret {
+	listed := func(name, owner, tier, requesters string) awstest.LocalSecret {
 		return policytest.ListedSecret(name, owner, tier, requesters, "v")
 	}
-	store := secrets.NewLocal(
+	store := awstest.NewLocal(
 		listed("GCLOUD_DEMO", sami, policy.TierHuman, daemon+" "+sami),
 		listed("AZURE_ADMIN", sami, policy.TierHuman, jason+" "+daemon+" "+sami),
 		listed("DEV_PERSON", aditya, policy.TierAgent, aditya),
@@ -215,7 +215,7 @@ func TestRequesters(t *testing.T) {
 	for name, row := range table {
 		for who, want := range row {
 			got, err := set.Evaluate(name, requesters[who])
-			want.Source = secrets.LocalARN(policytest.ID(name))
+			want.Source = awstest.ARN(policytest.ID(name))
 			if err != nil || got != want {
 				t.Errorf("Evaluate(%s, %s) = %+v, %v; want %+v", name, who, got, err, want)
 			}
@@ -234,7 +234,7 @@ func TestRequesters(t *testing.T) {
 // the group's secrets included. A name the set does not serve is still ErrUnknownSecret.
 func TestARestrictedMemberIsDeniedEverySecret(t *testing.T) {
 	const outsider = "outsider@outside.example"
-	store := secrets.NewLocal(
+	store := awstest.NewLocal(
 		policytest.Secret("OWN_AGENT", outsider, policy.TierAgent, "v"),
 		policytest.Secret("PERSON_HUMAN", owner, policy.TierHuman, "v"),
 		policytest.Secret("SHARED_AGENT", policy.OwnerShared, policy.TierAgent, "v"),
@@ -267,7 +267,7 @@ func TestARestrictedMemberIsDeniedEverySecret(t *testing.T) {
 		t.Fatalf("the set serves %d secrets, the table names %d; refused: %v", len(set.Secrets), len(unmarked), loaded.Refused)
 	}
 	for name, want := range unmarked {
-		source := secrets.LocalARN(policytest.ID(name))
+		source := awstest.ARN(policytest.ID(name))
 		want.Source = source
 		if got, err := set.Evaluate(name, policy.Requester{Operator: outsider}); err != nil || got != want {
 			t.Errorf("Evaluate(%s, the person unmarked) = %+v, %v; want %+v", name, got, err, want)

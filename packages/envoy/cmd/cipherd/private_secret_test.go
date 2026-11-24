@@ -18,7 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess/projectaccesstest"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 )
@@ -62,7 +62,7 @@ func TestThePrivateSecretGoesOnlyToTheSessionThatNamesIt(t *testing.T) {
 	if err := os.WriteFile(tokenFile, []byte(dispatch.Token+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	store := &requesterStore{path: filepath.Join(t.TempDir(), "fake-secrets.json"), rows: []secrets.LocalSecret{
+	store := &requesterStore{path: filepath.Join(t.TempDir(), "fake-secrets.json"), rows: []awstest.LocalSecret{
 		requesterRow(privSecret, policy.OwnerShared, policy.TierAgent, privValue, map[string]string{policy.TagProject: privateProject}),
 		requesterRow(plainSecret, policy.OwnerShared, policy.TierAgent, plainValue, nil),
 		requesterRow(lateSecret, policy.OwnerShared, policy.TierAgent, "late-value", map[string]string{policy.TagProject: lateProject}),

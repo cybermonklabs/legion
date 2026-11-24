@@ -6,7 +6,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 )
 
 // TestTypeTagWinsAndOldTagLogsOnce: type wins over the old kind tag, an empty type wins too, and
@@ -35,7 +35,7 @@ func TestTypeTagWinsAndOldTagLogsOnce(t *testing.T) {
 			for key, value := range row.tags {
 				secret.Tags[key] = value
 			}
-			loader := policytest.Loader(secrets.NewLocal(secret))
+			loader := policytest.Loader(awstest.NewLocal(secret))
 			for range 2 {
 				set, err := loader.Load(t.Context())
 				if err != nil {

@@ -101,7 +101,7 @@ type Deps struct {
 	Detached *Detached
 	// SecretsPrefix is BROKER_SECRETS_PREFIX, the namespace GET /v1/settings answers.
 	SecretsPrefix string
-	// SecretsStore is BROKER_SECRETS_STORE, the store GET /v1/settings names: secrets.StoreAWS or
+	// SecretsStore is BROKER_SECRETS_STORE, the store GET /v1/settings names: aws.Name or
 	// secrets.StoreGCP.
 	SecretsStore string
 	// SecretsKMSKey is the agent-secrets key GET /v1/settings answers: the AWS store's key ARN

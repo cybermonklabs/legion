@@ -6,7 +6,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 )
 
 // TestAPrivateProjectSecretTagOfAPublicProjectAnswersAsTheMergeBase is the head half of
@@ -15,7 +15,7 @@ import (
 // cell must answer exactly as the merge base answered the untagged grid
 // (testdata/evaluate-merge-base.json): a public project's tag changes no answer.
 func TestAPrivateProjectSecretTagOfAPublicProjectAnswersAsTheMergeBase(t *testing.T) {
-	store, names := gridSecrets(func(s *secrets.LocalSecret) { s.Tags[policy.TagProject] = pubProject })
+	store, names := gridSecrets(func(s *awstest.LocalSecret) { s.Tags[policy.TagProject] = pubProject })
 	loader := policytest.Loader(store, gridService)
 	loader.ProjectChecks = true
 	set, err := loader.Load(context.Background())

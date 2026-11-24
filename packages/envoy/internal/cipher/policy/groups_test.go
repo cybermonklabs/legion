@@ -10,7 +10,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/record"
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 )
 
 // The groups and people of the group tests: example.com names alone, since the repository is
@@ -25,7 +25,7 @@ const (
 )
 
 // loadOnly loads store's namespace once, with the services registered.
-func loadOnly(t *testing.T, store *secrets.Local, services ...string) *policy.Set {
+func loadOnly(t *testing.T, store *awstest.Local, services ...string) *policy.Set {
 	t.Helper()
 	set, err := policytest.Loader(store, services...).Load(context.Background())
 	if err != nil {
@@ -37,7 +37,7 @@ func loadOnly(t *testing.T, store *secrets.Local, services ...string) *policy.Se
 // TestTheOwnerTagTakesAGroup: an owner tag group:<address> loads, the secret is served with that
 // owner, and the set answers it as group-owned; a person's secret is not.
 func TestTheOwnerTagTakesAGroup(t *testing.T) {
-	set := loadOnly(t, secrets.NewLocal(
+	set := loadOnly(t, awstest.NewLocal(
 		policytest.Secret("TEAM_KEY", approversOwner, policy.TierHuman, "v"),
 		policytest.Secret("DEEL_API_KEY", "ada@example.com", policy.TierHuman, "v"),
 	))
@@ -61,7 +61,7 @@ func TestMalformedGroupEntriesAreRefused(t *testing.T) {
 	for _, entry := range []string{"group:", "group:Upper@example.com", "group:nobody"} {
 		owned := policytest.Secret("TEAM_KEY", entry, policy.TierHuman, "v")
 		listed := policytest.ListedSecret("LISTED_KEY", policy.OwnerShared, policy.TierHuman, entry, "v")
-		set := loadOnly(t, secrets.NewLocal(owned, listed), "nobody")
+		set := loadOnly(t, awstest.NewLocal(owned, listed), "nobody")
 		if got := set.Refused[policytest.ID("TEAM_KEY")].Reason; got != policy.ReasonOwnerTagMalformed {
 			t.Errorf("owner %q: refused %q, want %s", entry, got, policy.ReasonOwnerTagMalformed)
 		}
@@ -120,7 +120,7 @@ func TestRequesterRuleHoldsAGroupOwnedServiceAccountSecretToItsGroup(t *testing.
 	if reason := policy.TagRules(owned(policy.TierHuman, reviewersOwner)); reason != policy.ReasonRequestersNotOwner {
 		t.Fatalf("TagRules(another group) = %q, want %s", reason, policy.ReasonRequestersNotOwner)
 	}
-	set := loadOnly(t, secrets.NewLocal(policytest.TypeSecret("ROBOT_TOKEN", approversOwner, policy.TierHuman, policy.TypeGoogleServiceAccount, policytest.TypeValue(policy.TypeGoogleServiceAccount))))
+	set := loadOnly(t, awstest.NewLocal(policytest.TypeSecret("ROBOT_TOKEN", approversOwner, policy.TierHuman, policy.TypeGoogleServiceAccount, policytest.TypeValue(policy.TypeGoogleServiceAccount))))
 	if _, served := set.Secrets["ROBOT_TOKEN"]; !served {
 		t.Fatalf("a google-service-account secret owned by %s listing its group is refused: %v", approversOwner, set.Refused)
 	}
@@ -131,7 +131,7 @@ func TestRequesterRuleHoldsAGroupOwnedServiceAccountSecretToItsGroup(t *testing.
 // included, and for anyone once the group is stale; a human-tier one is an approval request to the
 // group; a requesters entry naming a group admits a member and refuses a non-member.
 func TestEvaluateAdmitsAGroupMember(t *testing.T) {
-	loaded := loadOnly(t, secrets.NewLocal(
+	loaded := loadOnly(t, awstest.NewLocal(
 		policytest.Secret("TEAM_KEY", approversOwner, policy.TierAgent, "v"),
 		policytest.Secret("TEAM_ADMIN_KEY", approversOwner, policy.TierHuman, "v"),
 		policytest.ListedSecret("LISTED_KEY", policy.OwnerShared, policy.TierAgent, approversOwner, "v"),
@@ -209,7 +209,7 @@ func (d *turningDirectory) Want([]string)                 {}
 // member as not on the list, which ends a grant for good: the one look finds the group stale, and
 // the member is denied as the group unread, which pauses a grant.
 func TestARequestersGroupIsReadInOneLook(t *testing.T) {
-	loaded := loadOnly(t, secrets.NewLocal(
+	loaded := loadOnly(t, awstest.NewLocal(
 		policytest.ListedSecret("LISTED_KEY", policy.OwnerShared, policy.TierAgent, approversOwner, "v"),
 	))
 	turning := &turningDirectory{}
@@ -231,7 +231,7 @@ func TestARequestersGroupIsReadInOneLook(t *testing.T) {
 func TestEvaluateReadsTheRequestersGroupBeforeTheProject(t *testing.T) {
 	tagged := policytest.ListedSecret("PRIV_LISTED", policy.OwnerShared, policy.TierAgent, approversOwner, "v")
 	tagged.Tags[policy.TagProject] = "PRIV"
-	loader := policytest.Loader(secrets.NewLocal(tagged))
+	loader := policytest.Loader(awstest.NewLocal(tagged))
 	loader.ProjectChecks = true
 	loaded, err := loader.Load(context.Background())
 	if err != nil {
@@ -268,7 +268,7 @@ func TestEvaluateReadsTheRequestersGroupBeforeTheProject(t *testing.T) {
 // load names it.
 func TestALoadNamesItsGroupsAndARereadDoesNot(t *testing.T) {
 	const a, b = "a@example.com", "b@example.com"
-	store := secrets.NewLocal(policytest.Secret("A_KEY", record.GroupPrefix+a, policy.TierHuman, "v"))
+	store := awstest.NewLocal(policytest.Secret("A_KEY", record.GroupPrefix+a, policy.TierHuman, "v"))
 	fake := groupstest.New()
 	cur := groupCurrent(t, store, fake)
 	if got := fake.Wants(); !slices.EqualFunc(got, [][]string{{a}}, slices.Equal) {
@@ -301,7 +301,7 @@ func TestALoadNamesItsGroupsAndARereadDoesNot(t *testing.T) {
 func TestGroupNamesIsEveryGroupAServedSecretNames(t *testing.T) {
 	refused := policytest.Secret("REFUSED_KEY", record.GroupPrefix+"refused@example.com", policy.TierHuman, "v")
 	delete(refused.Tags, policy.TagTier)
-	set := loadOnly(t, secrets.NewLocal(
+	set := loadOnly(t, awstest.NewLocal(
 		policytest.Secret("TEAM_KEY", reviewersOwner, policy.TierHuman, "v"),
 		policytest.ListedSecret("LISTED_KEY", approversOwner, policy.TierHuman, approversOwner+" "+reviewersOwner+" ada@example.com", "v"),
 		policytest.Secret("DEEL_API_KEY", "ada@example.com", policy.TierHuman, "v"),
@@ -313,7 +313,7 @@ func TestGroupNamesIsEveryGroupAServedSecretNames(t *testing.T) {
 }
 
 // groupCurrent is the live policy over store with fake as its loader's group directory.
-func groupCurrent(t *testing.T, store *secrets.Local, fake *groupstest.Directory) *policy.Current {
+func groupCurrent(t *testing.T, store *awstest.Local, fake *groupstest.Directory) *policy.Current {
 	t.Helper()
 	loader := policytest.Loader(store)
 	loader.Groups = fake
@@ -328,7 +328,7 @@ func groupCurrent(t *testing.T, store *secrets.Local, fake *groupstest.Directory
 // a reread that changes a secret makes live, each carry the loader's group directory, so every
 // decision on a set Get answers asks the same reader; a set no Current published carries none.
 func TestEachPublishedSetCarriesTheLoadersDirectory(t *testing.T) {
-	store := secrets.NewLocal(policytest.Secret("DEEL_API_KEY", "ada@example.com", policy.TierAgent, "v1"))
+	store := awstest.NewLocal(policytest.Secret("DEEL_API_KEY", "ada@example.com", policy.TierAgent, "v1"))
 	fake := groupstest.New()
 	cur := groupCurrent(t, store, fake)
 	if got := cur.Get().Groups(); got != record.Groups(fake) {

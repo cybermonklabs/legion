@@ -12,7 +12,8 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	awsstore "github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 )
 
 // TestCreateWritesTheProjectTag: create --project writes the secret's dispatch-project tag, the
@@ -40,7 +41,7 @@ func TestCreateWritesTheProjectTag(t *testing.T) {
 		}
 	})
 	t.Run("the broker's refusal", func(t *testing.T) {
-		local := secrets.NewLocal()
+		local := awstest.NewLocal()
 		startSecretBroker(t, func(name string) Reread { return Reread{Name: name, Reason: policy.ReasonProjectUnchecked} })
 		useAWS(t, local, testAccount, adaSignIn)
 		useStdin(t, "stored-value")
@@ -48,7 +49,7 @@ func TestCreateWritesTheProjectTag(t *testing.T) {
 		if code != 1 || !strings.Contains(stdout, "reason="+policy.ReasonProjectUnchecked) || !strings.Contains(stderr, policy.ReasonProjectUnchecked) {
 			t.Fatalf("create under a broker that cannot check projects: exit %d stdout %q stderr %q; want exit 1 naming %s", code, stdout, stderr, policy.ReasonProjectUnchecked)
 		}
-		if got := secrets.TagMap(describe(t, local, "PRIV_KEY").Tags)[policy.TagProject]; got != "PRIV" {
+		if got := awsstore.TagMap(describe(t, local, "PRIV_KEY").Tags)[policy.TagProject]; got != "PRIV" {
 			t.Fatalf("PRIV_KEY's project tag = %q, want PRIV: the write stands and the broker's answer says why it is not served", got)
 		}
 	})
@@ -97,7 +98,7 @@ func TestShowPrintsTheProject(t *testing.T) {
 	tagged := policytest.Secret("PRIV_KEY", "ada@example.com", policy.TierAgent, "v1")
 	tagged.Tags[policy.TagProject] = "PRIV"
 	plain := policytest.Secret("PLAIN_KEY", "ada@example.com", policy.TierAgent, "v1")
-	local := secrets.NewLocal(tagged, plain)
+	local := awstest.NewLocal(tagged, plain)
 	startSecretBroker(t, servedBy(local))
 	useAWS(t, local, testAccount, adaSignIn)
 
@@ -187,7 +188,7 @@ func TestShowPrintsTheProject(t *testing.T) {
 // The refusal does not print the value it refused (valueNotPrinted), as no tag flag's refusal does.
 func TestAMalformedProjectIsRefusedBeforeAnyWrite(t *testing.T) {
 	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
-	local := secrets.NewLocal(policytest.Secret("API_KEY", "ada@example.com", policy.TierAgent, "v1"))
+	local := awstest.NewLocal(policytest.Secret("API_KEY", "ada@example.com", policy.TierAgent, "v1"))
 	writes := &countingTagWrites{Local: local}
 	startSecretBroker(t, servedBy(local))
 	useAWS(t, writes, testAccount, adaSignIn)

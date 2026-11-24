@@ -5,7 +5,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 )
 
 // TestAProfileKeepsItsDigestWhenItsProxyStringMovesToItsSourcesTag: a profile served behind the
@@ -27,7 +27,7 @@ func TestAProfileKeepsItsDigestWhenItsProxyStringMovesToItsSourcesTag(t *testing
 			source.Tags[policy.TagJudge] = judge
 			source.Tags[policy.TagGuidance] = "grant a reason that holds k14-grant"
 		}
-		set := policytest.ProfiledCurrent(t, secrets.NewLocal(source), policytest.KindsFile(profile)).Get()
+		set := policytest.ProfiledCurrent(t, awstest.NewLocal(source), policytest.KindsFile(profile)).Get()
 		secret, ok := set.Secrets["AIRLOCK_JUDGE_PROBE"]
 		if !ok {
 			t.Fatalf("AIRLOCK_JUDGE_PROBE was not served: %+v", set.Refused)

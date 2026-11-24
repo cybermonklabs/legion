@@ -11,7 +11,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 )
 
 // The three Secret Manager prefixes of these rows, in one placeholder project: the one the broker
@@ -35,7 +35,7 @@ const (
 // configured prefix itself, which leaves no remainder after either.
 //
 // The policy rows load a real policy through the loader on Secret Manager resource names
-// (secrets.ResourceNamed), and hold stillAllowed, the re-check of a release and of a reuse, and
+// (awstest.ResourceNamed), and hold stillAllowed, the re-check of a release and of a reuse, and
 // readSource, the release's read, to the same answers, so each goes through the rule.
 //
 // The named reverts: compare by the part after the prefix alone, and the type, neither-prefix
@@ -89,7 +89,7 @@ func TestSourceCountsThroughTheSecondPrefix(t *testing.T) {
 	appKey := policytest.TypeSecret("APP_KEY", policy.OwnerShared, policy.TierAgent, policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp))
 	appKey.Name = movedConfigured + "app-key"
 	loader := policy.Loader{
-		Store:  secrets.ResourceNamed(policytest.Store(secrets.NewLocal(stored, appKey))),
+		Store:  awstest.ResourceNamed(policytest.Store(awstest.NewLocal(stored, appKey))),
 		Prefix: movedConfigured,
 		Profiles: policytest.Profiles(t, policytest.ProfilesFile(
 			`{"name": "APP_READ", "source": "APP_KEY", "github": {"accounts": ["acme"], "permissions": {"metadata": "read"}}}`)),

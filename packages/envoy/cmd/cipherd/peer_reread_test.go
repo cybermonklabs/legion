@@ -12,15 +12,15 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 )
 
-// abandoningCall is a secrets.Local behind which the caller of one kind of call goes away while
+// abandoningCall is a awstest.Local behind which the caller of one kind of call goes away while
 // it is in flight: once cut names it ("GetSecretValue" or "DescribeSecret"), that call ends its
 // caller's context through cancel and fails as the AWS SDK does once a context has ended. Every
 // other call is Local's.
 type abandoningCall struct {
-	*secrets.Local
+	*awstest.Local
 	cut    string
 	cancel context.CancelFunc
 }
@@ -68,7 +68,7 @@ func TestAPeersRereadThatMergedTheTagsItReadRan(t *testing.T) {
 	} {
 		t.Run("ended during "+row.name, func(t *testing.T) {
 			driven++
-			local := secrets.NewLocal(policytest.TypeSecret("APP_KEY", "ada@example.com", policy.TierAgent, policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp)))
+			local := awstest.NewLocal(policytest.TypeSecret("APP_KEY", "ada@example.com", policy.TierAgent, policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp)))
 			store := &abandoningCall{Local: local}
 			loader := policytest.Loader(local)
 			loader.Store = policytest.StoreThrough(local, store)
@@ -112,7 +112,7 @@ func TestAPeersRereadThatMergedTheTagsItReadRan(t *testing.T) {
 // source is behind a kind (policytest.Proxied), so its profiles are behind it too, as the names the
 // proxy holds values of are.
 func TestAPeersRereadDropsEveryNameServedFromTheValueItRead(t *testing.T) {
-	local := secrets.NewLocal(policytest.Proxied(policytest.Secret("STORED_TOKEN", "ada@example.com", policy.TierAgent, "stored-v1"), "example"))
+	local := awstest.NewLocal(policytest.Proxied(policytest.Secret("STORED_TOKEN", "ada@example.com", policy.TierAgent, "stored-v1"), "example"))
 	loader := policytest.Loader(local)
 	loader.Profiles = policytest.Profiles(t, policytest.KindsFile(
 		`{"name": "STORED_TOKEN_READ", "source": "STORED_TOKEN"}`,
@@ -148,7 +148,7 @@ func TestAPeersRereadDropsEveryNameServedFromTheValueItRead(t *testing.T) {
 // The named revert: peerReread drops current.RereadNames(name) whatever the version did; the two
 // rows of an unmoved github-app source then drop its names and this test fails.
 func TestAPeersRereadDropsAMintedSourcesNamesOnlyWhenItMovedTheValueVersion(t *testing.T) {
-	local := secrets.NewLocal(
+	local := awstest.NewLocal(
 		policytest.TypeSecret("APP_KEY", "ada@example.com", policy.TierAgent, policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp)),
 		policytest.Proxied(policytest.Secret("STORED_TOKEN", "ada@example.com", policy.TierAgent, "stored-v1"), "example"))
 	loader := policytest.Loader(local)

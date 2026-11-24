@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/answer"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
 )
 
 // settingsResponse is GET /v1/settings's answer: the store the agent secrets live in and, per
@@ -97,7 +98,7 @@ func (s *server) readSettings(w http.ResponseWriter, r *http.Request) {
 		resp.GCPProject = secrets.GCPProject(s.deps.SecretsPrefix)
 	default:
 		resp.KMSKeyARN = s.deps.SecretsKMSKey
-		resp.AWSRegion, resp.AWSAccountID = secrets.AWSKeyARNParts(s.deps.SecretsKMSKey)
+		resp.AWSRegion, resp.AWSAccountID = aws.KeyARNParts(s.deps.SecretsKMSKey)
 	}
 	if m := s.deps.Machine; m != nil && m.Policy != nil {
 		set := m.Policy.Get()

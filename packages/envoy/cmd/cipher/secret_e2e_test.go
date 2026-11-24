@@ -1,7 +1,7 @@
 // packages/envoy/cmd/cipher/secret_e2e_test.go
 //
 // The secret forms against the real broker (ciphertest.NewRig: real handlers, real Postgres), its
-// secrets.Local standing in for Secrets Manager as the CLI's AWS. They skip without
+// awstest.Local standing in for Secrets Manager as the CLI's AWS. They skip without
 // BROKER_TEST_DATABASE_URL, as every rig test does.
 package main
 
@@ -16,12 +16,12 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/ciphertest"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 )
 
 // secretsLocalWithoutValue is an agent-tier secret owner holds with no value, which the broker
 // refuses as no-current-value.
-func secretsLocalWithoutValue(name, owner string) secrets.LocalSecret {
+func secretsLocalWithoutValue(name, owner string) awstest.LocalSecret {
 	return policytest.Secret(name, owner, policy.TierAgent, "")
 }
 

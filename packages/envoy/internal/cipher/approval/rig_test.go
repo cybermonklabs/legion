@@ -33,7 +33,8 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 	"github.com/sjawhar/envoy/internal/cipher/store"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/cipherclient"
@@ -87,7 +88,7 @@ type rig struct {
 // and the hold gate (withHold). A rig holding a client serves a secret tagged with a project, as
 // cmd/cipherd's does (Loader.ProjectChecks).
 type rigSetup struct {
-	secrets  []secrets.LocalSecret
+	secrets  []awstest.LocalSecret
 	projects projectaccess.Access
 	profiles string
 	groups   record.Directory
@@ -115,7 +116,7 @@ func newRig(t *testing.T, setups ...func(*rigSetup)) *rig {
 	if setup.hold != nil {
 		gate = setup.hold(st)
 	}
-	local := secrets.NewLocal(append([]secrets.LocalSecret{
+	local := awstest.NewLocal(append([]awstest.LocalSecret{
 		policytest.Secret("TEST_SECRET", ada, policy.TierHuman, "test-v1"),
 		policytest.Secret("SECOND_SECRET", ada, policy.TierHuman, "second-v1"),
 		policytest.Secret("THIRD_SECRET", ada, policy.TierHuman, "third-v1"),
@@ -172,7 +173,7 @@ func newRig(t *testing.T, setups ...func(*rigSetup)) *rig {
 		Enroll:        enr, Machine: reqMachine, MachineLogin: mach,
 		OAuth: provider, DeviceLogin: mach.LoginDevice, TokenHooks: mach.TokenHooks(),
 		Proof:  &proof.Verifier{Skew: time.Minute, Lookup: enr.Lookup, LookupLauncher: enr.AuthenticateLauncher, Replay: enr.Replay},
-		Policy: current, SecretsStore: secrets.StoreAWS, SecretsPrefix: policytest.Prefix, SecretsKMSKey: policytest.KeyARN,
+		Policy: current, SecretsStore: aws.Name, SecretsPrefix: policytest.Prefix, SecretsKMSKey: policytest.KeyARN,
 		Approval: page,
 		Hold:     gate,
 	})
@@ -191,9 +192,9 @@ func newRig(t *testing.T, setups ...func(*rigSetup)) *rig {
 // retag puts changed into the rig's secret store, replacing each secret of the same name, and
 // reloads the policy, as the broker's next refresh does after someone edits a secret in Secrets
 // Manager. It is how a test moves the policy under a request that is already pending.
-func (r *rig) retag(t *testing.T, changed ...secrets.LocalSecret) {
+func (r *rig) retag(t *testing.T, changed ...awstest.LocalSecret) {
 	t.Helper()
-	local := r.machine.Secrets.(secrets.AWS).Client.(*secrets.Local)
+	local := r.machine.Secrets.(aws.Store).Client.(*awstest.Local)
 	for _, s := range changed {
 		local.Put(s)
 	}

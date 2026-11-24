@@ -9,7 +9,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/record"
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 )
 
 const (
@@ -27,7 +27,7 @@ const (
 func TestAnApprovalStopsWhenItsSecretChangesHands(t *testing.T) {
 	for name, c := range map[string]struct {
 		secret, approver, value string
-		handedOver              secrets.LocalSecret
+		handedOver              awstest.LocalSecret
 	}{
 		"a shared human-tier secret its requester approved, handed to a person": {
 			secret: "SHARED_KEY", approver: mallory, value: "shared-v1",

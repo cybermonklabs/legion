@@ -22,11 +22,12 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 	smtypes "github.com/aws/aws-sdk-go-v2/service/secretsmanager/types"
+
 	"github.com/sjawhar/envoy/internal/cipher/helper"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -36,7 +37,7 @@ import (
 // reads the broker's whole answer: `broker: serving` and exit 0.
 func TestASecretFormSignsItsRereadAsThisProcesssSession(t *testing.T) {
 	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
-	local := secrets.NewLocal()
+	local := awstest.NewLocal()
 	broker := startSecretBroker(t, servedBy(local))
 	useAWS(t, local, testAccount, adaSignIn)
 	useStdin(t, "v1")
@@ -59,7 +60,7 @@ func TestASecretFormSignsItsRereadAsThisProcesssSession(t *testing.T) {
 func TestASecretFormWithNoBrokerIdentitySendsItsRereadUnsigned(t *testing.T) {
 	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
 	t.Run("a stored secret", func(t *testing.T) {
-		local := secrets.NewLocal()
+		local := awstest.NewLocal()
 		broker := startSecretBroker(t, servedBy(local))
 		withNoBrokerIdentity(t)
 		useAWS(t, local, testAccount, adaSignIn)
@@ -77,7 +78,7 @@ func TestASecretFormWithNoBrokerIdentitySendsItsRereadUnsigned(t *testing.T) {
 		}
 	})
 	t.Run("a type secret whose tag the store kept", func(t *testing.T) {
-		local := secrets.NewLocal()
+		local := awstest.NewLocal()
 		broker := startSecretBroker(t, servedBy(local))
 		withNoBrokerIdentity(t)
 		useAWS(t, local, testAccount, adaSignIn)
@@ -111,7 +112,7 @@ func requireTypeUnchecked(t *testing.T, form, stdout, stderr string, code int, b
 // CreateSecret, a set's PutSecretValue or a retag's TagResource, whichever the form writes with,
 // and counts each plant, so a row that planted nothing fails rather than passing on nothing.
 type plantingStore struct {
-	*secrets.Local
+	*awstest.Local
 	t       *testing.T
 	found   string // the type tag to leave: a type, tagNone for none, or "" to plant nothing
 	planted *int
@@ -160,7 +161,7 @@ func (p plantingStore) TagResource(ctx context.Context, in *secretsmanager.TagRe
 // typedWrite sets local and the stdin up for form's typed write of LOGIN_KEY as google-login and
 // answers the form's arguments: a create of a new secret, a set of a google-login secret's value,
 // or a retag of a stored secret that holds a login to google-login.
-func typedWrite(t *testing.T, local *secrets.Local, form string) []string {
+func typedWrite(t *testing.T, local *awstest.Local, form string) []string {
 	t.Helper()
 	login := policytest.TypeValue(policy.TypeGoogleLogin)
 	switch form {
@@ -168,12 +169,12 @@ func typedWrite(t *testing.T, local *secrets.Local, form string) []string {
 		useStdin(t, login)
 		return []string{"create", "LOGIN_KEY", "--owner", "me", "--tier", "agent", "--type", policy.TypeGoogleLogin}
 	case "set":
-		local.Put(secrets.LocalSecret{Name: policytest.ID("LOGIN_KEY"), KmsKeyID: policytest.KeyARN,
+		local.Put(awstest.LocalSecret{Name: policytest.ID("LOGIN_KEY"), KmsKeyID: policytest.KeyARN,
 			Tags: policytest.TypeSecret("LOGIN_KEY", "ada@example.com", policy.TierAgent, policy.TypeGoogleLogin, "").Tags, Value: "old"})
 		useStdin(t, login+"\n")
 		return []string{"set", "LOGIN_KEY"}
 	default:
-		local.Put(secrets.LocalSecret{Name: policytest.ID("LOGIN_KEY"), KmsKeyID: policytest.KeyARN,
+		local.Put(awstest.LocalSecret{Name: policytest.ID("LOGIN_KEY"), KmsKeyID: policytest.KeyARN,
 			Tags: policytest.Secret("LOGIN_KEY", "ada@example.com", policy.TierAgent, "").Tags, Value: login})
 		return []string{"retag", "LOGIN_KEY", "--type", policy.TypeGoogleLogin}
 	}
@@ -195,7 +196,7 @@ func TestATypedWriteReadsItsTypeTagBack(t *testing.T) {
 					kept = "the right tag"
 				}
 				t.Run(form+" leaving "+kept+" with "+identity, func(t *testing.T) {
-					local := secrets.NewLocal()
+					local := awstest.NewLocal()
 					broker := startSecretBroker(t, servedBy(local))
 					if identity == "no broker identity" {
 						withNoBrokerIdentity(t)
@@ -263,7 +264,7 @@ func TestARereadThatRanAndFailedIsNotSentAgainUnsigned(t *testing.T) {
 		{http.StatusBadRequest, "SECRET_NAME_INVALID"},
 	} {
 		t.Run(fmt.Sprintf("%d %s", row.status, row.code), func(t *testing.T) {
-			local := secrets.NewLocal()
+			local := awstest.NewLocal()
 			broker := startSecretBroker(t, servedBy(local))
 			broker.failSignedRereads(row.status, row.code)
 			useAWS(t, local, testAccount, adaSignIn)
@@ -290,7 +291,7 @@ func TestASignedRereadAnsweredAsUnsignedSaysWhy(t *testing.T) {
 	because := errSignedRereadMissingProof.Error()
 	for _, form := range []string{"a stored secret's create", "a type secret's create"} {
 		t.Run(form, func(t *testing.T) {
-			local := secrets.NewLocal()
+			local := awstest.NewLocal()
 			broker := startSecretBroker(t, servedBy(local))
 			upstream, err := url.Parse(os.Getenv("AGENT_SECRETS_URL"))
 			if err != nil {
@@ -331,7 +332,7 @@ func TestASignedRereadAnsweredAsUnsignedSaysWhy(t *testing.T) {
 // is late against a deadline of 0, beyond the time this process was held up (requireOnTime).
 func TestASecretWriteDoesNotWaitOnAMachineRegistrationInProgress(t *testing.T) {
 	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375); it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past (main.requireOnTime, onTimeWithin at waits_test.go:239).
-	local := secrets.NewLocal()
+	local := awstest.NewLocal()
 	broker := startSecretBroker(t, servedBy(local))
 	withNoBrokerIdentity(t)
 	dir := seedMachineCache(t)
@@ -380,7 +381,7 @@ func TestASecretWriteDoesNotWaitOnAMachineRegistrationInProgress(t *testing.T) {
 // unsigned reread and tells the operator to renew the machine's session with agent-secrets self.
 func TestASecretWriteWithALapsedMachineCacheSessionNamesTheMachineCure(t *testing.T) {
 	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
-	local := secrets.NewLocal()
+	local := awstest.NewLocal()
 	broker := startSecretBroker(t, servedBy(local))
 	broker.lapseSignedRereads()
 	withNoBrokerIdentity(t)
@@ -457,7 +458,7 @@ func TestATypedWriteExitsOnItsTagWhenTheBrokersViewCannotBeChecked(t *testing.T)
 				name = row.name + ", another tag"
 			}
 			t.Run(name, func(t *testing.T) {
-				local := secrets.NewLocal()
+				local := awstest.NewLocal()
 				broker := startSecretBroker(t, servedBy(local))
 				row.setup(t, broker)
 				planted := 0
@@ -492,7 +493,7 @@ func TestASecretWriteWithNoIdentityTradesNothingAndWaitsOnNothing(t *testing.T) 
 	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_reread_test.go:504); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
 	for _, row := range []string{"a launcher still enrolling", "a machine with no session yet"} {
 		t.Run(row, func(t *testing.T) {
-			local := secrets.NewLocal()
+			local := awstest.NewLocal()
 			startSecretBrokerWith(t, Settings{SecretsPrefix: policytest.Prefix, KMSKeyARN: policytest.KeyARN, AWSAccountID: testAccount,
 				AWSRegion: "us-east-1", SecretTypeTag: true, GoogleExchangeAudience: "agent-secrets-vm"}, servedBy(local))
 			withNoBrokerIdentity(t)
@@ -547,18 +548,18 @@ func TestATypedWriteReadsItsTypeTagBackWhenTheBrokerFailsItsReread(t *testing.T)
 	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
 	for _, row := range []struct {
 		name   string
-		broker func(t *testing.T, local *secrets.Local)
+		broker func(t *testing.T, local *awstest.Local)
 		says   string
 	}{
-		{"a reread the broker could not be asked for", func(t *testing.T, local *secrets.Local) {
+		{"a reread the broker could not be asked for", func(t *testing.T, local *awstest.Local) {
 			startSecretBroker(t, servedBy(local)).failRereads(http.StatusServiceUnavailable)
 		}, "could not be asked to reread LOGIN_KEY"},
-		{"a reread the broker answers with the secret refused", func(t *testing.T, _ *secrets.Local) {
+		{"a reread the broker answers with the secret refused", func(t *testing.T, _ *awstest.Local) {
 			startSecretBroker(t, func(name string) Reread { return Reread{Name: name, Reason: policy.ReasonOwnerTagMissing} })
 		}, "refuses LOGIN_KEY after the write"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			local := secrets.NewLocal()
+			local := awstest.NewLocal()
 			row.broker(t, local)
 			planted := 0
 			useAWS(t, plantingStore{Local: local, t: t, found: policy.TypeGitHubApp, planted: &planted}, testAccount, adaSignIn)

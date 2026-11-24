@@ -7,11 +7,13 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
+
+	// guarded is list, a requesters list ("" for none), with the project tags' rollback guard after it,
+	// as the requesters tag a secret carrying a project tag holds.
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 )
 
-// guarded is list, a requesters list ("" for none), with the project tags' rollback guard after it,
-// as the requesters tag a secret carrying a project tag holds.
 func guarded(list string) string {
 	if list == "" {
 		return policy.RequestersRollbackGuard
@@ -124,7 +126,7 @@ func TestRetagTakesTheGuardOutOfAListWithTheLastProjectTag(t *testing.T) {
 		listed := policytest.Secret("LISTED_KEY", "ada@example.com", policy.TierHuman, "v1")
 		listed.Tags[policy.TagProject] = "PRIV"
 		listed.Tags[policy.TagRequesters] = guarded("ada@example.com")
-		local := secrets.NewLocal(listed)
+		local := awstest.NewLocal(listed)
 		startSecretBroker(t, servedBy(local))
 		writes := &countingTagWrites{Local: local}
 		useAWS(t, writes, testAccount, adaSignIn)
@@ -141,7 +143,7 @@ func TestRetagTakesTheGuardOutOfAListWithTheLastProjectTag(t *testing.T) {
 		if _, _, code := runSecret("retag", "LISTED_KEY", "--project", "none"); code != 1 {
 			t.Fatalf("retag --project none with UntagResource refused: exit %d, want 1", code)
 		}
-		if tags := secrets.TagMap(describe(t, local, "LISTED_KEY").Tags); tags[policy.TagProject] != "PRIV" || tags[policy.TagRequesters] != guarded("ada@example.com") {
+		if tags := aws.TagMap(describe(t, local, "LISTED_KEY").Tags); tags[policy.TagProject] != "PRIV" || tags[policy.TagRequesters] != guarded("ada@example.com") {
 			t.Fatalf("a refused removal left tags %v, want the project and the guard as they were", tags)
 		}
 	})
@@ -168,7 +170,7 @@ func TestShowPrintsRequestersWithoutTheGuard(t *testing.T) {
 	guardedKey.Tags[policy.TagRequesters] = guarded("ada@example.com")
 	bare := policytest.Secret("BARE_KEY", "ada@example.com", policy.TierAgent, "v1")
 	bare.Tags[policy.TagProject] = "PRIV"
-	local := secrets.NewLocal(guardedKey, bare)
+	local := awstest.NewLocal(guardedKey, bare)
 	startSecretBroker(t, servedBy(local))
 	useAWS(t, local, testAccount, adaSignIn)
 	for _, c := range []struct {

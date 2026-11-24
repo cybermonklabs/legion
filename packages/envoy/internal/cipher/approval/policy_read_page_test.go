@@ -11,13 +11,15 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess/projectaccesstest"
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
+
+	// retagOnAsk is a projectaccess.Access that, once armed, runs retag the first time it is asked
+	// about project, before it passes the question on: a policy refresh that lands while the page's
+	// pending list asks Dispatch about one of its rows. It runs on the broker's handler goroutine, so
+	// it keeps retag's error for the test to read rather than failing t there.
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 )
 
-// retagOnAsk is a projectaccess.Access that, once armed, runs retag the first time it is asked
-// about project, before it passes the question on: a policy refresh that lands while the page's
-// pending list asks Dispatch about one of its rows. It runs on the broker's handler goroutine, so
-// it keeps retag's error for the test to read rather than failing t there.
 type retagOnAsk struct {
 	inner   projectaccess.Access
 	project string
@@ -62,7 +64,7 @@ func TestThePagePrintsNoOtherRequestOnAPolicyItsRuleDidNotCheck(t *testing.T) {
 	front.retag = func() error {
 		tagged := policytest.Secret("SHARED_SECRET", policy.OwnerShared, policy.TierHuman, "shared-v1")
 		tagged.Tags[policy.TagProject] = privProject
-		r.machine.Secrets.(secrets.AWS).Client.(*secrets.Local).Put(tagged)
+		r.machine.Secrets.(aws.Store).Client.(*awstest.Local).Put(tagged)
 		return r.machine.Policy.Refresh(context.Background())
 	}
 	mainSession, mainKey := r.benSession(t, "ben-main-box")

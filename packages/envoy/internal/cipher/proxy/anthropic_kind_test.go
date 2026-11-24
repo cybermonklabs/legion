@@ -33,6 +33,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 	"github.com/sjawhar/envoy/internal/cipher/store"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
@@ -89,7 +90,7 @@ var (
 // stored is the secret as the store holds it: type anthropic-federation, of profileOperator at
 // tier human, admin, a max-grant of an hour and its owner as its one requester
 // (policytest.TypeSecret), the proxy tag anthropic, and proxy-narrowed=true for N.
-func (f federationSecret) stored() secrets.LocalSecret {
+func (f federationSecret) stored() awstest.LocalSecret {
 	value, _ := json.Marshal(map[string]string{
 		"organization_id": f.organization, "federation_rule_id": f.rule, "service_account_id": f.target,
 		"service_account": f.account, "workspace_id": f.workspace,
@@ -174,7 +175,7 @@ func newAnthropicRig(t *testing.T) *anthropicRig {
 	ciphertokentest.NewMetadataStand(t)
 	k := &anthropicRig{st: storetest.Open(t), iam: ciphertokentest.NewIAMStand(t), exchange: newExchangeStand(t)}
 	file := policytest.KindsFileOf(anthropicKindJSON, `{"name": "`+secretN.name+`", "allow": `+adminRowsJSON+`}`)
-	local := secrets.NewLocal(secretN.stored(), secretK.stored())
+	local := awstest.NewLocal(secretN.stored(), secretK.stored())
 	k.machine = &requests.Machine{
 		Store: k.st, Policy: policytest.ProfiledCurrent(t, local, file), Secrets: policytest.Store(local),
 		PendingTTL: 12 * time.Hour, Audience: profileAudience, Skew: time.Minute,

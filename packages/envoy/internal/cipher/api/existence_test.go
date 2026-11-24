@@ -25,13 +25,15 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 	"github.com/sjawhar/envoy/internal/testwait"
+
+	// answerRead is one answer as requireSameAnswers compares it: its status and its body, the body
+	// as JSON with answer_id taken out, since that member names the one answer it is in and is new on
+	// every answer, so it says nothing of what the call named.
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
 )
 
-// answerRead is one answer as requireSameAnswers compares it: its status and its body, the body
-// as JSON with answer_id taken out, since that member names the one answer it is in and is new on
-// every answer, so it says nothing of what the call named.
 type answerRead struct {
 	status int
 	body   string
@@ -162,7 +164,7 @@ func TestTheDecideRoutesAnswerACallerTheyDoNotAuthenticateTheSameForEveryRecordI
 
 // refusedSecret is a secret the broker holds and refuses to serve, for its missing owner tag: a
 // third answer a reread could give, beside served and absent.
-func refusedSecret(name string) secrets.LocalSecret {
+func refusedSecret(name string) awstest.LocalSecret {
 	secret := policytest.Secret(name, testApprover, policy.TierAgent, "v1")
 	delete(secret.Tags, policy.TagOwner)
 	return secret
@@ -243,7 +245,7 @@ const heldFor = 5 * time.Second
 // name. Before, the answer waited on the store, which takes one call to say it holds no secret by
 // a name and more to describe one it holds.
 func TestARereadAnswersACallerWithNoSessionAtOnceAndRereadsAfter(t *testing.T) {
-	local := secrets.NewLocal(policytest.Secret("WORKER_TOKEN", policy.OwnerShared, policy.TierAgent, "worker-v1"))
+	local := awstest.NewLocal(policytest.Secret("WORKER_TOKEN", policy.OwnerShared, policy.TierAgent, "worker-v1"))
 	entered := make(chan string, 8)
 	release := make(chan struct{})
 	released := false
@@ -260,7 +262,7 @@ func TestARereadAnswersACallerWithNoSessionAtOnceAndRereadsAfter(t *testing.T) {
 	}
 	notified := make(chan string, 8)
 	mux := http.NewServeMux()
-	api.Register(mux, api.Deps{Policy: cur, SecretsStore: secrets.StoreAWS, SecretsPrefix: policytest.Prefix, SecretsKMSKey: policytest.KeyARN,
+	api.Register(mux, api.Deps{Policy: cur, SecretsStore: aws.Name, SecretsPrefix: policytest.Prefix, SecretsKMSKey: policytest.KeyARN,
 		RereadOverallLimit: &rereadsFreely,
 		NotifyReread:       func(_ context.Context, name string, _ []string) { notified <- name }})
 	// NEW_KEY is in the store only from now on, so only a reread can make the broker serve it.
@@ -315,7 +317,7 @@ func TestARereadAnswersACallerWithNoSessionAtOnceAndRereadsAfter(t *testing.T) {
 }
 
 // failingDescriber fails every DescribeSecret as a throttled Secrets Manager does.
-type failingDescriber struct{ secrets.SecretsManagerAPI }
+type failingDescriber struct{ aws.SecretsManagerAPI }
 
 func (failingDescriber) DescribeSecret(context.Context, *secretsmanager.DescribeSecretInput, ...func(*secretsmanager.Options)) (*secretsmanager.DescribeSecretOutput, error) {
 	return nil, &throttled{}
@@ -332,7 +334,7 @@ func (*throttled) Error() string {
 // has no caller to be told of it, so it is the broker's failure and it logs the ERROR line
 // "broker: reread secret failed" that an operator's alert counts, naming the secret.
 func TestARereadNoCallerWaitsOnLogsTheStoresFailure(t *testing.T) {
-	local := secrets.NewLocal()
+	local := awstest.NewLocal()
 	loader := policytest.Loader(local)
 	loader.Store = policytest.StoreThrough(local, failingDescriber{SecretsManagerAPI: local})
 	cur, err := policy.NewCurrent(t.Context(), loader, time.Hour)
@@ -340,7 +342,7 @@ func TestARereadNoCallerWaitsOnLogsTheStoresFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	mux := http.NewServeMux()
-	api.Register(mux, api.Deps{Policy: cur, SecretsStore: secrets.StoreAWS, SecretsPrefix: policytest.Prefix, SecretsKMSKey: policytest.KeyARN})
+	api.Register(mux, api.Deps{Policy: cur, SecretsStore: aws.Name, SecretsPrefix: policytest.Prefix, SecretsKMSKey: policytest.KeyARN})
 	logged := policytest.CaptureLog(t)
 	recorder := httptest.NewRecorder()
 	mux.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/secrets/NEW_KEY/reread", nil))
@@ -357,7 +359,7 @@ func TestARereadNoCallerWaitsOnLogsTheStoresFailure(t *testing.T) {
 
 // panickingDescriber panics on every DescribeSecret, as a store client with a defect of its own
 // would.
-type panickingDescriber struct{ secrets.SecretsManagerAPI }
+type panickingDescriber struct{ aws.SecretsManagerAPI }
 
 func (panickingDescriber) DescribeSecret(context.Context, *secretsmanager.DescribeSecretInput, ...func(*secretsmanager.Options)) (*secretsmanager.DescribeSecretOutput, error) {
 	panic("a store client's own defect")
@@ -368,7 +370,7 @@ func (panickingDescriber) DescribeSecret(context.Context, *secretsmanager.Descri
 // so a panic there would stop the whole broker. It recovers the panic, identifies the reread
 // step and the panic in one ERROR line, and the broker goes on answering.
 func TestAPanicInARereadNoCallerWaitsOnLeavesTheBrokerServing(t *testing.T) {
-	local := secrets.NewLocal()
+	local := awstest.NewLocal()
 	loader := policytest.Loader(local)
 	loader.Store = policytest.StoreThrough(local, panickingDescriber{SecretsManagerAPI: local})
 	cur, err := policy.NewCurrent(t.Context(), loader, time.Hour)
@@ -376,7 +378,7 @@ func TestAPanicInARereadNoCallerWaitsOnLeavesTheBrokerServing(t *testing.T) {
 		t.Fatal(err)
 	}
 	mux := http.NewServeMux()
-	api.Register(mux, api.Deps{Policy: cur, SecretsStore: secrets.StoreAWS, SecretsPrefix: policytest.Prefix, SecretsKMSKey: policytest.KeyARN})
+	api.Register(mux, api.Deps{Policy: cur, SecretsStore: aws.Name, SecretsPrefix: policytest.Prefix, SecretsKMSKey: policytest.KeyARN})
 	logged := policytest.CaptureLog(t)
 	recorder := httptest.NewRecorder()
 	mux.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/secrets/NEW_KEY/reread", nil))
@@ -395,11 +397,11 @@ func TestAPanicInARereadNoCallerWaitsOnLeavesTheBrokerServing(t *testing.T) {
 }
 
 func TestAPanicInARereadsPeerNoticeNamesTheStep(t *testing.T) {
-	local := secrets.NewLocal(policytest.Secret("NEW_KEY", testApprover, policy.TierAgent, "v1"))
+	local := awstest.NewLocal(policytest.Secret("NEW_KEY", testApprover, policy.TierAgent, "v1"))
 	mux := http.NewServeMux()
 	api.Register(mux, api.Deps{
 		Policy:        policytest.Current(t, local),
-		SecretsStore:  secrets.StoreAWS,
+		SecretsStore:  aws.Name,
 		SecretsPrefix: policytest.Prefix,
 		SecretsKMSKey: policytest.KeyARN,
 		NotifyReread:  func(context.Context, string, []string) { panic("a peer-notice defect") },

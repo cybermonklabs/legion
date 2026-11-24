@@ -11,7 +11,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 )
 
 // TestTheRereadAnOpenOutcomeNamesReachesTheBroker: a retag whose tag write's answer is lost, and
@@ -31,7 +31,7 @@ import (
 func TestTheRereadAnOpenOutcomeNamesReachesTheBroker(t *testing.T) {
 	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
 	t.Run("the retag prints the command", func(t *testing.T) {
-		local := secrets.NewLocal(policytest.Secret("API_KEY", "ada@example.com", policy.TierHuman, "v1"))
+		local := awstest.NewLocal(policytest.Secret("API_KEY", "ada@example.com", policy.TierHuman, "v1"))
 		broker := startSecretBroker(t, servedBy(local))
 		broker.failRereads(http.StatusServiceUnavailable)
 		useAWS(t, &raceOnTag{secretsAPI: local, loseAnswer: "tag"}, testAccount, adaSignIn)
@@ -60,7 +60,7 @@ func TestTheRereadAnOpenOutcomeNamesReachesTheBroker(t *testing.T) {
 		{name: "a broker refusing the reread", refuse: http.StatusTooManyRequests, wantSaid: "returned error: 429"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			local := secrets.NewLocal(policytest.Secret("API_KEY", "ada@example.com", policy.TierHuman, "v1"))
+			local := awstest.NewLocal(policytest.Secret("API_KEY", "ada@example.com", policy.TierHuman, "v1"))
 			broker := startSecretBroker(t, servedBy(local))
 			broker.failRereads(c.refuse)
 			home := t.TempDir()

@@ -1,4 +1,4 @@
-package secrets
+package aws
 
 import (
 	"context"
@@ -15,12 +15,13 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager/types"
 
 	"github.com/sjawhar/envoy/internal/cipher/secretstore"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 )
 
 // stubSMAPI answers GetSecretValue with out and err; its other Secrets Manager calls are an empty
 // Local's, which a Read never makes.
 type stubSMAPI struct {
-	*Local
+	*awstest.Local
 	out *secretsmanager.GetSecretValueOutput
 	err error
 }
@@ -53,16 +54,16 @@ func TestHasCurrentVersionIsTheRuleListServesBy(t *testing.T) {
 // stagedSecrets answers ListSecrets and DescribeSecret with one secret, dev/key, whose versions
 // carry stages; its other calls are an empty Local's.
 type stagedSecrets struct {
-	*Local
+	*awstest.Local
 	stages map[string][]string
 }
 
 func (s stagedSecrets) ListSecrets(context.Context, *secretsmanager.ListSecretsInput, ...func(*secretsmanager.Options)) (*secretsmanager.ListSecretsOutput, error) {
-	return &secretsmanager.ListSecretsOutput{SecretList: []types.SecretListEntry{{Name: aws.String("dev/key"), ARN: aws.String(LocalARN("dev/key")), SecretVersionsToStages: s.stages}}}, nil
+	return &secretsmanager.ListSecretsOutput{SecretList: []types.SecretListEntry{{Name: aws.String("dev/key"), ARN: aws.String(awstest.ARN("dev/key")), SecretVersionsToStages: s.stages}}}, nil
 }
 
 func (s stagedSecrets) DescribeSecret(context.Context, *secretsmanager.DescribeSecretInput, ...func(*secretsmanager.Options)) (*secretsmanager.DescribeSecretOutput, error) {
-	return &secretsmanager.DescribeSecretOutput{Name: aws.String("dev/key"), ARN: aws.String(LocalARN("dev/key")), VersionIdsToStages: s.stages}, nil
+	return &secretsmanager.DescribeSecretOutput{Name: aws.String("dev/key"), ARN: aws.String(awstest.ARN("dev/key")), VersionIdsToStages: s.stages}, nil
 }
 
 // TestAWSListingNamesTheVersionGetSecretValueReads: List and Describe answer, as a Listing's
@@ -79,7 +80,7 @@ func TestAWSListingNamesTheVersionGetSecretValueReads(t *testing.T) {
 		{map[string][]string{"v-pending": {"AWSPENDING"}}, ""},
 		{nil, ""},
 	} {
-		store := AWS{Client: stagedSecrets{Local: NewLocal(), stages: tc.stages}}
+		store := Store{Client: stagedSecrets{Local: awstest.NewLocal(), stages: tc.stages}}
 		listed, err := store.List(ctx, "dev/", secretstore.ReadOptions{})
 		if err != nil || len(listed) != 1 || listed[0].Version != tc.want {
 			t.Fatalf("List over stages %v = %+v, %v; want one listing of version %q", tc.stages, listed, err, tc.want)
@@ -96,10 +97,10 @@ func TestAWSListingNamesTheVersionGetSecretValueReads(t *testing.T) {
 // one without the tag, or with any version, is not.
 func TestAWSListingIsUnfilledOnlyForATaggedSecretWithNoVersion(t *testing.T) {
 	ctx := context.Background()
-	tagged := LocalSecret{Name: "dev/tagged-empty", Tags: map[string]string{secretstore.CreateLabel: "0123456789abcdef0123456789abcdef"}}
-	untagged := LocalSecret{Name: "dev/untagged-empty", Tags: map[string]string{}}
-	filled := LocalSecret{Name: "dev/tagged-filled", Tags: map[string]string{secretstore.CreateLabel: "0123456789abcdef0123456789abcdef"}, Value: "v1"}
-	store := AWS{Client: NewLocal(tagged, untagged, filled)}
+	tagged := awstest.LocalSecret{Name: "dev/tagged-empty", Tags: map[string]string{secretstore.CreateLabel: "0123456789abcdef0123456789abcdef"}}
+	untagged := awstest.LocalSecret{Name: "dev/untagged-empty", Tags: map[string]string{}}
+	filled := awstest.LocalSecret{Name: "dev/tagged-filled", Tags: map[string]string{secretstore.CreateLabel: "0123456789abcdef0123456789abcdef"}, Value: "v1"}
+	store := Store{Client: awstest.NewLocal(tagged, untagged, filled)}
 	listed, err := store.List(ctx, "dev/", secretstore.ReadOptions{})
 	if err != nil || len(listed) != 3 {
 		t.Fatalf("List = %+v, %v; want three listings", listed, err)
@@ -117,7 +118,7 @@ func TestAWSListingIsUnfilledOnlyForATaggedSecretWithNoVersion(t *testing.T) {
 }
 
 func TestAWSReadReturnsErrNotFoundOnResourceNotFoundException(t *testing.T) {
-	r := AWS{Client: stubSMAPI{err: &types.ResourceNotFoundException{}}}
+	r := Store{Client: stubSMAPI{err: &types.ResourceNotFoundException{}}}
 	_, err := r.Read(context.Background(), "arn:aws:secretsmanager:us-east-1:1:secret:missing")
 	if !errors.Is(err, secretstore.ErrNotFound) {
 		t.Fatalf("expected ErrNotFound, got %v", err)
@@ -130,11 +131,11 @@ func TestAWSReadReturnsErrNotFoundOnResourceNotFoundException(t *testing.T) {
 // and from a Local holding such a secret.
 func TestAWSReadReturnsErrNotFoundForASecretScheduledForDeletion(t *testing.T) {
 	scheduled := &types.InvalidRequestException{Message: aws.String("You can't perform this operation on the secret because it was marked for deletion.")}
-	if _, err := (AWS{Client: stubSMAPI{err: scheduled}}).Read(context.Background(), "arn:aws:secretsmanager:us-east-1:1:secret:deleting"); !errors.Is(err, secretstore.ErrNotFound) {
+	if _, err := (Store{Client: stubSMAPI{err: scheduled}}).Read(context.Background(), "arn:aws:secretsmanager:us-east-1:1:secret:deleting"); !errors.Is(err, secretstore.ErrNotFound) {
 		t.Fatalf("Read(InvalidRequestException) = %v, want ErrNotFound", err)
 	}
-	deleting := LocalSecret{Name: "dev/agent-secrets/deleting", Value: "v", DeletedAt: new(time.Date(2026, 10, 12, 0, 0, 0, 0, time.UTC))}
-	if v, err := (AWS{Client: NewLocal(deleting)}).Read(context.Background(), deleting.Name); !errors.Is(err, secretstore.ErrNotFound) || v != "" {
+	deleting := awstest.LocalSecret{Name: "dev/agent-secrets/deleting", Value: "v", DeletedAt: new(time.Date(2026, 10, 12, 0, 0, 0, 0, time.UTC))}
+	if v, err := (Store{Client: awstest.NewLocal(deleting)}).Read(context.Background(), deleting.Name); !errors.Is(err, secretstore.ErrNotFound) || v != "" {
 		t.Fatalf("Read(a Local secret scheduled for deletion) = %q, %v; want ErrNotFound and no value", v, err)
 	}
 }
@@ -147,7 +148,7 @@ func TestAWSReadOfAValueThatIsNotTextIsErrValueNotText(t *testing.T) {
 		"binary": {SecretBinary: []byte{0xff, 0x00}},
 		"empty":  {SecretString: aws.String("")},
 	} {
-		_, err := (AWS{Client: stubSMAPI{out: out}}).Read(context.Background(), "arn:aws:secretsmanager:us-east-1:1:secret:"+name)
+		_, err := (Store{Client: stubSMAPI{out: out}}).Read(context.Background(), "arn:aws:secretsmanager:us-east-1:1:secret:"+name)
 		if !errors.Is(err, secretstore.ErrValueNotText) || errors.Is(err, secretstore.ErrNotFound) || strings.Contains(err.Error(), "\xff") {
 			t.Fatalf("Read(a %s value) = %v; want ErrValueNotText, never quoting the bytes", name, err)
 		}
@@ -156,7 +157,7 @@ func TestAWSReadOfAValueThatIsNotTextIsErrValueNotText(t *testing.T) {
 
 func TestAWSReadWrapsGenericErrorInsteadOfMappingToErrNotFound(t *testing.T) {
 	boom := errors.New("boom")
-	r := AWS{Client: stubSMAPI{err: boom}}
+	r := Store{Client: stubSMAPI{err: boom}}
 	source := "arn:aws:secretsmanager:us-east-1:1:secret:present"
 	_, err := r.Read(context.Background(), source)
 	if errors.Is(err, secretstore.ErrNotFound) {
@@ -188,7 +189,7 @@ func TestLocalFromFileServesTheFileAsSecretsManagerWould(t *testing.T) {
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatalf("write fixture: %v", err)
 	}
-	local, err := LocalFromFile(path)
+	local, err := awstest.FromFile(path)
 	if err != nil {
 		t.Fatalf("LocalFromFile: %v", err)
 	}
@@ -220,12 +221,12 @@ func TestLocalFromFileServesTheFileAsSecretsManagerWould(t *testing.T) {
 		t.Fatalf("ListSecrets(dev/agent-secrets/) = %+v; want demo-key and unseeded-key", listed)
 	}
 	for _, id := range []string{"dev/agent-secrets/demo-key", aws.ToString(entry.ARN)} {
-		v, err := AWS{Client: local}.Read(ctx, id)
+		v, err := Store{Client: local}.Read(ctx, id)
 		if err != nil || v != "demo-v1" {
 			t.Fatalf("Read(%s) = %v, want the value", id, err)
 		}
 	}
-	if _, err := (AWS{Client: local}).Read(ctx, "dev/agent-secrets/missing"); !errors.Is(err, secretstore.ErrNotFound) {
+	if _, err := (Store{Client: local}).Read(ctx, "dev/agent-secrets/missing"); !errors.Is(err, secretstore.ErrNotFound) {
 		t.Fatalf("Read(missing) = %v, want ErrNotFound", err)
 	}
 
@@ -233,14 +234,14 @@ func TestLocalFromFileServesTheFileAsSecretsManagerWould(t *testing.T) {
 	if len(unseeded) != 1 || len(unseeded[0].SecretVersionsToStages) != 0 {
 		t.Fatalf("ListSecrets(unseeded-key) = %+v; want it listed with no version", unseeded)
 	}
-	if _, err := (AWS{Client: local}).Read(ctx, "dev/agent-secrets/unseeded-key"); !errors.Is(err, secretstore.ErrNotFound) {
+	if _, err := (Store{Client: local}).Read(ctx, "dev/agent-secrets/unseeded-key"); !errors.Is(err, secretstore.ErrNotFound) {
 		t.Fatalf("Read(unseeded-key) = %v, want ErrNotFound", err)
 	}
-	local.Put(LocalSecret{Name: "dev/agent-secrets/unseeded-key", KmsKeyID: "alias/dev", Tags: map[string]string{"owner": "shared", "tier": "agent"}, Value: "seeded-v1"})
+	local.Put(awstest.LocalSecret{Name: "dev/agent-secrets/unseeded-key", KmsKeyID: "alias/dev", Tags: map[string]string{"owner": "shared", "tier": "agent"}, Value: "seeded-v1"})
 	if seeded := listByPrefix("dev/agent-secrets/unseeded-key"); len(seeded) != 1 || currentStages(seeded[0]) != 1 {
 		t.Fatalf("ListSecrets(unseeded-key) after its value was put = %+v; want one AWSCURRENT version", seeded)
 	}
-	if v, err := (AWS{Client: local}).Read(ctx, "dev/agent-secrets/unseeded-key"); err != nil || v != "seeded-v1" {
+	if v, err := (Store{Client: local}).Read(ctx, "dev/agent-secrets/unseeded-key"); err != nil || v != "seeded-v1" {
 		t.Fatalf("Read(unseeded-key) after its value was put = %q, %v; want seeded-v1", v, err)
 	}
 }
@@ -262,7 +263,7 @@ func TestLocalFromFileFollowsTheFile(t *testing.T) {
 		return `{"secrets": [{"name": "dev/agent-secrets/new-key", "kms_key_id": "alias/dev", "tags": {"owner": "shared", "tier": "agent"}, "value": "` + value + `"}]}`
 	}
 	write(`{"secrets": []}`)
-	local, err := LocalFromFile(path)
+	local, err := awstest.FromFile(path)
 	if err != nil {
 		t.Fatalf("LocalFromFile: %v", err)
 	}
@@ -280,16 +281,16 @@ func TestLocalFromFileFollowsTheFile(t *testing.T) {
 	if err := describe(); err != nil {
 		t.Fatalf("DescribeSecret(new-key) after the file gained it = %v", err)
 	}
-	if v, err := (AWS{Client: local}).Read(ctx, "dev/agent-secrets/new-key"); err != nil || v != "new-v1" {
+	if v, err := (Store{Client: local}).Read(ctx, "dev/agent-secrets/new-key"); err != nil || v != "new-v1" {
 		t.Fatalf("Read(new-key) = %q, %v; want new-v1", v, err)
 	}
 
 	write(secret("new-v2"))
-	if v, err := (AWS{Client: local}).Read(ctx, "dev/agent-secrets/new-key"); err != nil || v != "new-v2" {
+	if v, err := (Store{Client: local}).Read(ctx, "dev/agent-secrets/new-key"); err != nil || v != "new-v2" {
 		t.Fatalf("Read(new-key) after its value was edited = %q, %v; want new-v2", v, err)
 	}
-	local.Put(LocalSecret{Name: "dev/agent-secrets/new-key", KmsKeyID: "alias/dev", Value: "put-v3"})
-	if v, err := (AWS{Client: local}).Read(ctx, "dev/agent-secrets/new-key"); err != nil || v != "put-v3" {
+	local.Put(awstest.LocalSecret{Name: "dev/agent-secrets/new-key", KmsKeyID: "alias/dev", Value: "put-v3"})
+	if v, err := (Store{Client: local}).Read(ctx, "dev/agent-secrets/new-key"); err != nil || v != "put-v3" {
 		t.Fatalf("Read(new-key) after a Put with the file unchanged = %q, %v; want put-v3", v, err)
 	}
 
@@ -318,7 +319,7 @@ func currentStages(entry types.SecretListEntry) int {
 }
 
 func TestLocalFromFileRejectsMissingFile(t *testing.T) {
-	_, err := LocalFromFile(filepath.Join(t.TempDir(), "missing.json"))
+	_, err := awstest.FromFile(filepath.Join(t.TempDir(), "missing.json"))
 	if err == nil {
 		t.Fatal("expected an error for a missing file")
 	}
@@ -339,7 +340,7 @@ func TestLocalFromFileNeverQuotesTheFile(t *testing.T) {
 			if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 				t.Fatalf("write fixture: %v", err)
 			}
-			_, err := LocalFromFile(path)
+			_, err := awstest.FromFile(path)
 			if err == nil {
 				t.Fatal("expected an error for a file that does not parse")
 			}
