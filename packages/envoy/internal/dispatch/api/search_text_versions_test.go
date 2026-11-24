@@ -51,6 +51,7 @@ import (
 // message's hold their whole bodies, read from the comment's first blocks and from the message's
 // row, and at the end every item's version is its last, equal to its present column.
 func TestTheKeywordTableHoldsEachVersionOfEachItem(t *testing.T) {
+	t.Parallel()
 	live := true
 	sent := []map[string]any{}
 	listener := sessionListener(t, &live, &sent)
@@ -264,6 +265,7 @@ func TestTheKeywordTableHoldsEachVersionOfEachItem(t *testing.T) {
 // earlier event the rows it starts, and the table is the one a fill run on the quiet database from
 // no row writes.
 func TestTheKeywordFillWritesWhileTheServerAnswers(t *testing.T) {
+	t.Parallel()
 	filled, quiet := newKeywordServer(t), newKeywordServer(t)
 	backlog := seedKeywordBacklog(t, filled.database, filled.deps.Events, 2000)
 	seedKeywordBacklog(t, quiet.database, quiet.deps.Events, 2000)
@@ -343,6 +345,7 @@ func TestTheKeywordFillWritesWhileTheServerAnswers(t *testing.T) {
 // says it continues and the cursor moves, and every event, those written under the lock included,
 // gets its rows.
 func TestTheKeywordFillPausesWhileTheAnswersReadIsSlow(t *testing.T) {
+	t.Parallel()
 	server := newKeywordServer(t)
 	backlog := seedKeywordBacklog(t, server.database, server.deps.Events, 4000)
 	last := backlog[len(backlog)-1].ID

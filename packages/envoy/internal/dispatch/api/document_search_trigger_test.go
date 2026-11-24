@@ -30,7 +30,12 @@ const (
 
 func newDocumentSearchTriggerFixture(t *testing.T) documentSearchTriggerFixture {
 	t.Helper()
-	handler, database := newTestHandlerWithStore(t)
+	// settle: an hour, so the document's room does not settle between a test's own writes of
+	// artifact_versions: a settlement then versions the room's text as one more number, which is
+	// none of these tests' subject. At the test server's default of 20 ms, under load one did,
+	// and document_search named version 5 where the test wrote 4 (envoy-go-race-api job
+	// 137442425018).
+	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
 	issue := createInteractionIssue(t, handler, "TRIG", "Range survey", "The herd crosses in spring.")
 	document := uploadIssueDocument(t, handler, issue.Key, "field-notes.md", "# Field notes\n\nQuagga sightings in the north.\n")
 	uploadIssueDocument(t, handler, issue.Key, "field-notes.md", "# Field notes\n\nZebra sightings in the north.\n")
@@ -87,6 +92,7 @@ func requireDocumentSearchRow(t *testing.T, database *store.Store, artifactID st
 // reads, so the route answers nothing for it, and the document's row holds the latest version's
 // words alone.
 func TestAWordOnlyAnOldVersionHoldsFindsNothing(t *testing.T) {
+	t.Parallel()
 	fixture := newDocumentSearchTriggerFixture(t)
 	requireDocumentSearchRow(t, fixture.database, fixture.document, 2, triggerWord, triggerOldWord)
 	if response := searchResponse(t, fixture.handler, "q="+triggerOldWord); len(response.Results) != 0 {
@@ -104,6 +110,7 @@ func TestAWordOnlyAnOldVersionHoldsFindsNothing(t *testing.T) {
 // what writes it. That is what keeps the table right while a build without this change is still
 // serving.
 func TestAVersionAnOlderBuildWritesReachesDocumentSearch(t *testing.T) {
+	t.Parallel()
 	fixture := newDocumentSearchTriggerFixture(t)
 	if _, err := fixture.database.Pool.Exec(context.Background(), `
 		insert into artifact_versions (artifact_id, number, markdown, authors)
@@ -118,6 +125,7 @@ func TestAVersionAnOlderBuildWritesReachesDocumentSearch(t *testing.T) {
 // make, and which a repair would make - rewrites its vector (migration 0058's BEFORE trigger),
 // and document_search follows it.
 func TestAnEditOfTheLatestVersionUpdatesDocumentSearch(t *testing.T) {
+	t.Parallel()
 	fixture := newDocumentSearchTriggerFixture(t)
 	if _, err := fixture.database.Pool.Exec(context.Background(), `
 		update artifact_versions set markdown = '# Field notes' || chr(10) || chr(10) || 'Oryx sightings in the north.' || chr(10)
@@ -132,6 +140,7 @@ func TestAnEditOfTheLatestVersionUpdatesDocumentSearch(t *testing.T) {
 // on the trigger's upsert refuses a row whose number is below the one already stored, so a
 // repair of an old version cannot make search answer its words.
 func TestAnEditOfAnOlderVersionLeavesDocumentSearchAsItWas(t *testing.T) {
+	t.Parallel()
 	fixture := newDocumentSearchTriggerFixture(t)
 	before := requireDocumentSearchRow(t, fixture.database, fixture.document, 2, triggerWord, "")
 	if _, err := fixture.database.Pool.Exec(context.Background(), `
@@ -151,6 +160,7 @@ func TestAnEditOfAnOlderVersionLeavesDocumentSearchAsItWas(t *testing.T) {
 // one document can commit in either order, and the guard, not the commit order, decides which
 // version search reads.
 func TestAnOlderVersionCommittedLastLeavesTheHigherNumber(t *testing.T) {
+	t.Parallel()
 	fixture := newDocumentSearchTriggerFixture(t)
 	ctx := context.Background()
 	late, err := fixture.database.Pool.Begin(ctx)
@@ -181,6 +191,7 @@ func TestAnOlderVersionCommittedLastLeavesTheHigherNumber(t *testing.T) {
 // keeps it out: a column list does not restrict an insert, and without the guard the highest
 // number would blank the document's row.
 func TestABinaryVersionLeavesTheDocumentsRowAsItWas(t *testing.T) {
+	t.Parallel()
 	fixture := newDocumentSearchTriggerFixture(t)
 	before := requireDocumentSearchRow(t, fixture.database, fixture.document, 2, triggerWord, "")
 	if _, err := fixture.database.Pool.Exec(context.Background(), `

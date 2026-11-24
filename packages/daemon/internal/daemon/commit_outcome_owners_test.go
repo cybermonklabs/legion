@@ -72,6 +72,7 @@ func ownerFamilies() []ownerFamily {
 // time. A commit that never landed runs none of it, and the retry that makes the change runs it
 // once.
 func TestAnOwnerWhoseCommitReplyIsLostKeepsItsSuccessWork(t *testing.T) {
+	t.Parallel()
 	for _, family := range ownerFamilies() {
 		t.Run(family.name, func(t *testing.T) {
 			t.Run("reply_lost", func(t *testing.T) {
@@ -464,6 +465,7 @@ type podHoldRow struct {
 // A cancel's hook that runs late, after a newer pass recorded a hold of another reason, leaves
 // that newer streak as it is: the cancel's hold committed with the cancel, and the hook only logs.
 func TestALateCancelHookLeavesANewerHoldStreak(t *testing.T) {
+	t.Parallel()
 	rig := newCancelRig(t)
 	ctx := context.Background()
 	fired := rig.fault.Cut("delete from issue_releases", testdb.CutAfterCommitRefusing)
@@ -520,6 +522,7 @@ func TestALateCancelHookLeavesANewerHoldStreak(t *testing.T) {
 // and the refused branch resumes a claim still released. The take's line follows the store's
 // answer.
 func TestAWakeWhoseTakeOutcomeIsUnknownIsResumedByItsRetry(t *testing.T) {
+	t.Parallel()
 	rig := newIdleRig(t)
 	ctx := context.Background()
 	rig.w.releaseIdlePod(ctx, rig.issue.Key)
@@ -587,6 +590,7 @@ func seedStoppedIssue(t *testing.T, rig *idleRig, key string) {
 // outcome was unknown is not counted, even when the watcher runs its hook while the pass is still
 // running. The pass is held open before its second issue while the store answers the first.
 func TestAnUnownedPassCountsOnlyTheReleasesItsTransactionsAnswered(t *testing.T) {
+	t.Parallel()
 	rig := newIdleRig(t)
 	rig.stoppedImplementer(t, false)
 	seedStoppedIssue(t, rig, "LEGION-209")
@@ -715,6 +719,7 @@ const pauseStopMatch = "update project_pause_stops"
 // owes it; its line and wakes follow the store's answer, and the stop made again then adds
 // nothing.
 func TestAPauseStopWhoseCommitReplyIsLostKeepsItsSuccessWork(t *testing.T) {
+	t.Parallel()
 	replyLost := func(t *testing.T, r *pauseStopRig) {
 		t.Helper()
 		fired := r.fault.Cut(pauseStopMatch, testdb.CutAfterCommit)

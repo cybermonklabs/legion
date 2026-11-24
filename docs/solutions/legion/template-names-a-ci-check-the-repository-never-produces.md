@@ -15,7 +15,7 @@ tags:
   - attribution
   - docs-hygiene
 date: 2026-09-13
-status: active
+status: superseded in part — An issue's steps now run in any order the plan validator allows, and a task may leave out any step but the implementer's, so a fixed order of steps here holds only for the default steps.
 module: skills
 related_issues:
   - "LEGION-38"

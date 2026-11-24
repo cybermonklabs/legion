@@ -59,6 +59,7 @@ const (
 // reach: a new read that answers more than the read it stands beside, or an old read that
 // quietly answers something else. Each sub-test holds one half of that.
 func TestTheStoreAddsNoReachAndNoReadChangesShape(t *testing.T) {
+	t.Parallel()
 	t.Run("the person read is one route and takes no kind, filter or traversal", onePersonRead)
 	t.Run("the person read admits a person and nobody else", personReadReach)
 	t.Run("every route the table held before this child keeps the shape the contracts declare", declaredShapesUnchanged)

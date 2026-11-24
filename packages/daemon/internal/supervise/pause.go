@@ -117,10 +117,11 @@ func (m *Machine) dropEndedPauseHold() {
 	m.dropHeld()
 }
 
-// launchMet is whether a launch of the claim waits on the machine now: a wake parked in the pacing
-// or held by the pause's gate (Machine.wake), or a relaunch waiting its retry (Machine.relaunch).
-// A pause's stop that meets one owes the role that launch (PauseStop.LaunchOwed), and it is read
-// before the stop lets the process go, which drops both (letGo).
+// launchMet is whether a launch of the claim waits on the machine now: a wake parked in the pacing,
+// held by the pause's gate or waiting at its issue pod's gate (Machine.wake), or a relaunch waiting
+// its retry (Machine.relaunch). A pause's stop that meets one owes the role that launch
+// (PauseStop.LaunchOwed), and it is read before the stop lets the process go, which drops both
+// (letGo).
 func (m *Machine) launchMet() bool { return m.wake != nil || m.relaunch != nil }
 
 // holdsTask is whether the claim holds a task no turn has taken: its pending delivery, while it
@@ -132,8 +133,9 @@ func (m *Machine) holdsTask() bool {
 }
 
 // pauseGate is the gate's hold of a launch while the project is paused (decision 7), reached from
-// the wake gate before its exempt return (reserveWake), from a parked wake's turn (wakeNow), and
-// from a dropped wake taken up again (reparkWake). The launch runs nothing, takes no token from
+// the wake gate before its exempt return (reserveWake), from a parked wake's turn (wakeNow), from a
+// dropped wake taken up again (reparkWake), and from the grant of a start parked at its issue pod's
+// gate (podStartDue). The launch runs nothing, takes no token from
 // the pacing and arms no retry: it waits on the machine as a parked wake does (waitOnMachine),
 // with no timer and no moment (wake.pause). A claim that records no process is written launching
 // and persisted, so a restart finds a launch to relaunch, which meets the gate again
@@ -213,15 +215,16 @@ func pauseStopDue(m *Machine, ctx context.Context, _ Event) error {
 // was held for has ended (decision 7): a reservation from the limiter, told to the daemon as the
 // moment the pacing lets it out (wakeLetOut, decision 14), then its timer, exactly as the wake gate
 // parks a launch (reserveWake, parkWake). A launch the reservation lets out now runs now, and a
-// daemon whose pacing is off runs it now, unpaced. Its callers are the gate's own stop finding no
-// pause open (pauseStopDue) and the resume's event (resumePause).
+// daemon whose pacing is off runs it now, unpaced. So does a launch that passed the wake gate
+// before the pause's gate held it (wake.ran): it took its token there. Its callers are the gate's
+// own stop finding no pause open (pauseStopDue) and the resume's event (resumePause).
 func (m *Machine) letOutHeldLaunch(ctx context.Context) error {
 	waiting := m.wake
 	waiting.pause = 0
 	m.disarm(TimerPause)
 	now := m.deps.Clock.Now()
 	reserve := m.deps.WakePace.Reserve
-	if reserve == nil {
+	if reserve == nil || waiting.ran {
 		m.wake = nil
 		waiting.at, waiting.reserved = now, now
 		return m.runWake(ctx, waiting, false)

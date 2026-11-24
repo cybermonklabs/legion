@@ -11,8 +11,7 @@ import (
 // author per writing update.
 func TestMigrate0084KeepsEveryOwedSettlementAndStartsWithNoPendingAuthors(t *testing.T) {
 	ctx := context.Background()
-	store := openEmptyTestStore(t)
-	migrateThrough(t, store, 83)
+	store := openMigratedTestStore(t, 83)
 	var artifactID string
 	if err := store.Pool.QueryRow(ctx, `
 		with p as (insert into projects (key, name) values ('CORE', 'Core') returning key),

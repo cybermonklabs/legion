@@ -200,6 +200,14 @@ type sessionDelivery struct {
 	// corrects it (fenceFilterWrite). It runs for every such read, so a test that moves the row
 	// once moves it under the first write alone.
 	afterStoredRowRead func()
+	// registrationCallBudget bounds the consumer calls a registration makes before it answers: its
+	// own consumer call (consumerFor), timed from before it waits for the session's lock, and the
+	// repair its confirm makes (confirmRegistered). Zero is sessionConsumerCallTimeout, which every
+	// listener main builds runs with. It is a seam for a test whose own work runs inside those
+	// bounds, as a session's consumer lock it holds while it writes, or afterRepairPlan running a
+	// whole registration on another listener in each pass: such a test gives the calls what is left
+	// of the test binary's deadline here, so the bound does not count the test's work.
+	registrationCallBudget time.Duration
 	// locks keeps the consumer calls made for one session one at a time: a registration's create or
 	// filter update, an unsubscribe's filter update, the relay's restart at the ack floor, which
 	// deletes the consumer and creates it again when a message awaits an ack, and the one delete
@@ -244,7 +252,7 @@ type sessionDelivery struct {
 	// read and written in session_consumer_delete.go alone, where the delete lifecycle is; a
 	// field of this type is declared with the type.
 	deleteMu   sync.Mutex
-	deletes    sync.WaitGroup
+	deletes    inflight
 	deletesOff bool
 	// grantMu guards the refusal episode below.
 	grantMu sync.Mutex
@@ -341,9 +349,18 @@ func (m *sessionDelivery) confirmRegistered(ctx context.Context, d *listenerDeps
 	if m == nil || m.consumers == nil {
 		return
 	}
-	ctx, cancel := context.WithTimeout(ctx, sessionConsumerCallTimeout)
+	ctx, cancel := context.WithTimeout(ctx, m.registrationCallBudgetOr())
 	defer cancel()
 	m.repairRegistered(ctx, d, sessionID, ackFloor, repairAfterRegistration)
+}
+
+// registrationCallBudgetOr is the bound on a registration's consumer calls
+// (registrationCallBudget): sessionConsumerCallTimeout unless a test set one.
+func (m *sessionDelivery) registrationCallBudgetOr() time.Duration {
+	if m.registrationCallBudget == 0 {
+		return sessionConsumerCallTimeout
+	}
+	return m.registrationCallBudget
 }
 
 // repairAfterRegistration and repairAfterDelete name what a repair of a session's consumer
@@ -570,7 +587,9 @@ func (m *sessionDelivery) mark() uint64 { return m.marks.Add(1) }
 
 // drain drains the session-consumer connection, so the acks the relays sent reach the server,
 // within sessionConsumerDrain or what is left of ctx if that is less; with nothing left of ctx it
-// closes the connection. The relays are stopped first (sessionRelays.stop).
+// closes the connection and says so at WARN, since an ack the connection had not yet sent is then
+// lost and the server delivers its message again. The relays are stopped first
+// (sessionRelays.stop).
 func (m *sessionDelivery) drain(ctx context.Context) {
 	if m == nil || m.consumers == nil {
 		return
@@ -581,6 +600,7 @@ func (m *sessionDelivery) drain(ctx context.Context) {
 	}
 	if timeout <= 0 {
 		m.consumers.Close()
+		m.logger.Warn("session consumer connection closed without a drain: the shutdown's HTTP window was spent")
 		return
 	}
 	if err := m.consumers.Drain(timeout); err != nil {
@@ -740,7 +760,7 @@ func (m *sessionDelivery) consumerFor(ctx context.Context, body listenerwire.Sub
 	if m.grantRefused() {
 		return sessionDeliveryOutcome{}, noGrantRefusal(body.SessionID), noUnlock
 	}
-	ctx, cancel := context.WithTimeout(ctx, sessionConsumerCallTimeout)
+	ctx, cancel := context.WithTimeout(ctx, m.registrationCallBudgetOr())
 	defer cancel()
 	streamID, err := m.consumers.StreamID(ctx)
 	if err != nil {
@@ -974,7 +994,38 @@ type sessionLock struct {
 
 // lock takes sessionID's lock and returns the func that releases it.
 func (l *sessionLocks) lock(sessionID string) (unlock func()) {
+	held := l.join(sessionID)
+	held.Lock()
+	return l.releaser(sessionID, held)
+}
+
+// lockWithin is lock waiting no longer than ctx: it answers ctx's error, holding nothing, when
+// the lock is not free before ctx ends. A wait it gave up on takes the lock once it is free and
+// lets it go at once, so the lock passes on as it would have.
+func (l *sessionLocks) lockWithin(ctx context.Context, sessionID string) (unlock func(), err error) {
+	held := l.join(sessionID)
+	release := l.releaser(sessionID, held)
+	taken := make(chan struct{})
+	go func() {
+		held.Lock()
+		close(taken)
+	}()
+	select {
+	case <-taken:
+		return release, nil
+	case <-ctx.Done():
+		go func() {
+			<-taken
+			release()
+		}()
+		return nil, ctx.Err()
+	}
+}
+
+// join counts a caller in on sessionID's lock, creating the lock for its first caller.
+func (l *sessionLocks) join(sessionID string) *sessionLock {
 	l.mu.Lock()
+	defer l.mu.Unlock()
 	if l.locks == nil {
 		l.locks = map[string]*sessionLock{}
 	}
@@ -984,8 +1035,11 @@ func (l *sessionLocks) lock(sessionID string) (unlock func()) {
 		l.locks[sessionID] = held
 	}
 	held.users++
-	l.mu.Unlock()
-	held.Lock()
+	return held
+}
+
+// releaser is the func that releases held, sessionID's lock, and counts its caller out.
+func (l *sessionLocks) releaser(sessionID string, held *sessionLock) func() {
 	return func() {
 		held.Unlock()
 		l.mu.Lock()
@@ -1022,32 +1076,62 @@ func (m *sessionDelivery) sessionConsumerFilter(sessionID string, topics []strin
 	filter := make([]string, 0, len(topics)+1)
 	filter = append(filter, contracts.LegacyAgentSubject(sessionID))
 	for _, topic := range topics {
-		if m.stream.DeployedStreamCaptures(topic) && bus.CheckFilterSubject(topic) == nil {
+		if filterTakes(m.stream, topic) {
 			filter = append(filter, topic)
 		}
 	}
 	return filter
 }
 
-// storedRowFilter is sessionConsumerFilter of topics, sessionID's interest row as read from
-// registry, less each topic reaching a private stream subject that is not the session's own
-// (store.Registry.FollowableTopics), and counts each topic of the filter that is in the old form of
-// its name (store.Registry.CountStoredLegacyTopics): a stored row read into a filter is a reader of
-// the old form for as long as the row holds one. Every read of a stored row into a filter comes
-// through here (registeredTarget, storedFilterStep, sessionRelays.storedFilter); a registration's
-// own plan does not, since the subscribe route judged its topics and counted their old forms as
-// it took them (store.MergedTopics). A row is a record any writer of the bucket can store, so the
-// rule a registration applies is applied to what is read here again: a row under the session's own
-// key that names another session's inbox would otherwise put that session's messages in this
-// session's consumer at its next restart. The controller roles that rule reads are read within
-// ctx, and an error is returned for a read that did not answer or failed: the caller builds no
-// filter then.
+// filterTakes reports whether a session consumer's filter can hold topic: the deployed stream
+// stores it, as stream last read its subjects (bus.Client.DeployedStreamCaptures, which a nil
+// stream answers from the subjects this build compiles), and the server takes it as a filter
+// subject (bus.CheckFilterSubject). sessionConsumerFilter says why each half is there.
+func filterTakes(stream *bus.Client, topic string) bool {
+	return stream.DeployedStreamCaptures(topic) && bus.CheckFilterSubject(topic) == nil
+}
+
+// storedTopicFiltered reports whether the consumer filter built from a stored row of sessionID
+// holds topic, a topic of that row or of the session's known-session record: the row's rule keeps
+// it, with the controller roles the session holds read from their claim records
+// (store.LaneHolders.Keeps), and the filter takes it (filterTakes). It is the one judgment of a
+// stored topic: storedRowFilter builds every filter of a stored row with it, and a publish counts
+// a session only through a topic it holds (recipientCounts), so the count and the filter cannot
+// judge a stored topic apart. holders is the claims of the lanes the caller's answer turns on
+// (store.Registry.ReadLaneHolders); a lane whose role it weighed no claim of is held by nobody.
+func storedTopicFiltered(stream *bus.Client, holders store.LaneHolders, sessionID, topic string) bool {
+	return holders.Keeps(sessionID, topic) && filterTakes(stream, topic)
+}
+
+// storedRowFilter is the filter of sessionID's consumer built from topics, its interest row as
+// read from registry: its agent subject and each topic storedTopicFiltered holds, which leaves out
+// each topic reaching a private stream subject that is not the session's own (another session's
+// inbox, a failed-delivery lane, a controller notice lane whose role the session does not hold, a
+// wildcard reaching one) as well as each topic the filter cannot take. None of those is logged. It
+// counts each topic of the filter that is in the old form of its name
+// (store.Registry.CountStoredLegacyTopics): a stored row read into a filter is a reader of the old
+// form for as long as the row holds one. Every read of a stored row into a filter comes through
+// here (registeredTarget, storedFilterStep, sessionRelays.storedFilter); a registration's own plan
+// does not, since the subscribe route judged its topics and counted their old forms as it took
+// them (store.MergedTopics). A row is a record any writer of the bucket can store, so the rule a
+// registration applies is applied to what is read here again: a row under the session's own key
+// that names another session's inbox would otherwise put that session's messages in this
+// session's consumer at its next restart. The claims of the controller roles whose lanes the row
+// names are read from the role bucket stream's leader within ctx
+// (store.Registry.ReadLaneHolders), and an error is returned for a read that did not answer or
+// failed: the caller builds no filter then.
 func (m *sessionDelivery) storedRowFilter(ctx context.Context, registry *store.Registry, sessionID string, topics []string) ([]string, error) {
-	topics, err := registry.FollowableTopics(ctx, sessionID, topics)
+	holders, err := registry.ReadLaneHolders(ctx, topics)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("decide whether %s holds a controller notice lane: %w", sessionID, err)
 	}
-	filter := m.sessionConsumerFilter(sessionID, topics)
+	filter := make([]string, 0, len(topics)+1)
+	filter = append(filter, contracts.LegacyAgentSubject(sessionID))
+	for _, topic := range topics {
+		if storedTopicFiltered(m.stream, holders, sessionID, topic) {
+			filter = append(filter, topic)
+		}
+	}
 	registry.CountStoredLegacyTopics(sessionID, filter)
 	return filter, nil
 }

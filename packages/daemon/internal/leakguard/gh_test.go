@@ -116,9 +116,31 @@ func TestAGhCallThatWritesNothingRunsTheSharedCheckAlone(t *testing.T) {
 	}
 }
 
-// theStop is the sentence a setup failure says of a shared check its bound stopped
-// (stoppedError.said): the whole seconds the check ran, then the bound it was given.
-var theStop = regexp.MustCompile(`^the shared public leak check ran (\d+) s and was stopped by its bound of (\d+) s$`)
+// theStop is the sentence a setup failure says of a shared check its context stopped
+// (stoppedError.said): the whole seconds the check ran, then the bound it was given or the cancel.
+var theStop = regexp.MustCompile(`^the shared public leak check ran (\d+) s and was stopped by (?:its bound of (\d+) s|a cancel)$`)
+
+// sharedStop is the shared check's stop as failed says it, failing t where failed says something
+// else: the whole seconds the check ran, and the bound it was given, or a cancel where byBound is
+// false.
+func sharedStop(t *testing.T, failed *SetupFailure) (ran, bound int64, byBound bool) {
+	t.Helper()
+	said := theStop.FindStringSubmatch(failed.Why)
+	if said == nil {
+		t.Fatalf("the setup failure says %q, want the shared check stopped by its bound or a cancel", failed.Error())
+	}
+	ran, err := strconv.ParseInt(said[1], 10, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if said[2] == "" {
+		return ran, 0, false
+	}
+	if bound, err = strconv.ParseInt(said[2], 10, 64); err != nil {
+		t.Fatal(err)
+	}
+	return ran, bound, true
+}
 
 // stoppedByItsBound fails t unless failed is the shared check stopped by its bound, said with the
 // seconds the guard counted: a bound no longer than ceiling, the caller's own, and a run no shorter
@@ -129,21 +151,23 @@ var theStop = regexp.MustCompile(`^the shared public leak check ran (\d+) s and 
 // seconds.
 func stoppedByItsBound(t *testing.T, failed *SetupFailure, ceiling time.Duration) {
 	t.Helper()
-	said := theStop.FindStringSubmatch(failed.Why)
-	if said == nil {
-		t.Fatalf("the setup failure says %q, want the shared check stopped by its bound", failed.Error())
+	ran, bound, byBound := sharedStop(t, failed)
+	if !byBound || bound > wholeSeconds(ceiling) || ran < bound {
+		t.Fatalf("the setup failure says %q, want the shared check stopped by a bound no longer than the caller's %d s, after a run no shorter than its bound",
+			failed.Error(), wholeSeconds(ceiling))
 	}
-	ran, err := strconv.ParseInt(said[1], 10, 64)
-	if err != nil {
-		t.Fatal(err)
-	}
-	bound, err := strconv.ParseInt(said[2], 10, 64)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if bound > wholeSeconds(ceiling) || ran < bound {
-		t.Fatalf("the setup failure says %q: a bound of %d s and a run of %d s, want a bound no longer than the caller's %d s and a run no shorter than its bound",
-			failed.Error(), bound, ran, wholeSeconds(ceiling))
+}
+
+// stoppedByACancel fails t unless failed is the shared check stopped by a cancel, said with a run
+// no shorter than atLeast, the time the check had run when the cancel came. The run is measured
+// from the check's start to the end of its stop, and on a loaded machine the stop takes longer
+// after the cancel, so it is read against that floor and never for its exact seconds.
+func stoppedByACancel(t *testing.T, failed *SetupFailure, atLeast time.Duration) {
+	t.Helper()
+	ran, _, byBound := sharedStop(t, failed)
+	if byBound || ran < wholeSeconds(atLeast) {
+		t.Fatalf("the setup failure says %q, want the shared check stopped by a cancel after a run no shorter than the %d s it had run when the cancel came",
+			failed.Error(), wholeSeconds(atLeast))
 	}
 }
 

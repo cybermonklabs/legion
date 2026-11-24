@@ -100,6 +100,7 @@ func wantField(t *testing.T, line map[string]any, field string, want ...claim.Ro
 // Every claim answers at once, so the round ends at once, before its bound, and the line of the
 // replacement says no bound made it. No line of a bounded end is written (R8's other half).
 func TestPodUpdateBoundEveryAnswerEndsTheRoundBeforeTheBound(t *testing.T) {
+	t.Parallel()
 	roles := []claim.Role{claim.RoleImplementer, claim.RoleTester}
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
 	clocks := rig.replacementClocks()
@@ -134,6 +135,7 @@ func TestPodUpdateBoundEveryAnswerEndsTheRoundBeforeTheBound(t *testing.T) {
 // logged with the claims that answered and those that did not. Nobody is told: a round that
 // waits on its roles is no stall.
 func TestPodUpdateBoundReplacesThePodOfAClaimThatNeverAnswers(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t,
 		podUpdateRole{role: claim.RoleImplementer, state: supervise.StateWorking, session: true, inPod: true, contract: readyWorker(claim.RoleImplementer).contract},
 		readyWorker(claim.RoleTester),
@@ -190,6 +192,7 @@ func TestPodUpdateBoundReplacesThePodOfAClaimThatNeverAnswers(t *testing.T) {
 // One claim answers while another, which answered too, is still in a turn. Before the bound the
 // replacement waits for that turn; at the bound it cuts it.
 func TestPodUpdateBoundCutsTheTurnOfAnAnsweredClaim(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t,
 		podUpdateRole{role: claim.RoleImplementer, state: supervise.StateWorking, session: true, inPod: true, contract: readyWorker(claim.RoleImplementer).contract},
 		readyWorker(claim.RoleTester),
@@ -225,6 +228,7 @@ func TestPodUpdateBoundCutsTheTurnOfAnAnsweredClaim(t *testing.T) {
 // the bound as the sweep's reading does, so it does not refuse the replacement: read without the
 // bound, it would refuse it as errReplacementNotDue and no pod would ever be replaced.
 func TestPodUpdateBoundIsReadByTheLastWordBeforeTheReplacement(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
 	rig.drifts(podUpdateDrift)
 
@@ -270,6 +274,7 @@ func TestPodUpdateBoundIsReadByTheLastWordBeforeTheReplacement(t *testing.T) {
 // waitsForOperator), and it does: no ReplacePod is called however long the clock runs. Once the
 // operator resumes the suspended claim, after the bound, the bound ends the round.
 func TestPodUpdateSuspensionHoldsThePodPastTheBoundUntilTheOperatorResumes(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
 	rig.drifts(podUpdateDrift)
 
@@ -314,6 +319,7 @@ func TestPodUpdateSuspensionHoldsThePodPastTheBoundUntilTheOperatorResumes(t *te
 // production check greps it, so it must not be written here. The line that every replacement
 // writes is written, with atTheBound false.
 func TestPodUpdateBoundLineIsNotWrittenWhenTheAnswersEndARoundPastItsBound(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
 	rig.drifts(podUpdateDrift)
 
@@ -353,6 +359,7 @@ func TestPodUpdateBoundLineIsNotWrittenWhenTheAnswersEndARoundPastItsBound(t *te
 // bound the pod is not replaced, at that sweep or at the podless sweeps after it, and the
 // controller is told once, naming the suspension.
 func TestPodUpdateSuspensionOfTheOnlyClaimHoldsThePodPastTheBound(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer))
 	rig.drifts(podUpdateDrift)
 
@@ -390,6 +397,7 @@ func TestPodUpdateSuspensionOfTheOnlyClaimHoldsThePodPastTheBound(t *testing.T) 
 // ReplacePod is called — not at that sweep and not at the sweeps after it. Read the hold
 // before the pod, the round would wait for the resume of a claim on a pod that no longer exists.
 func TestPodUpdateEndsTheRoundOfAnOperatorsSuspensionWhenItsPodIsGone(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer))
 	rig.drifts(podUpdateDrift)
 
@@ -436,6 +444,7 @@ func TestPodUpdateEndsTheRoundOfAnOperatorsSuspensionWhenItsPodIsGone(t *testing
 // nothing is replaced. Read the hold first, the round would wait for the operator's resume over a
 // pod that is gone, and tell the controller of a suspension that holds nothing.
 func TestPodUpdateEndsTheRoundOfAnOperatorsSuspensionWhenAnotherPodIsInItsPlace(t *testing.T) {
+	t.Parallel()
 	const overAGonePod = "supervise: the pod this issue's update round was opened over is gone; the round is over"
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
 	rig.drifts(podUpdateDrift)
@@ -483,6 +492,7 @@ func TestPodUpdateEndsTheRoundOfAnOperatorsSuspensionWhenAnotherPodIsInItsPlace(
 // what holds the round — the operator's suspension, and no claim recording a process in a pod —
 // and the sweeps after it tell nothing more, however long the round stays open.
 func TestPodUpdateTellsAPodlessRoundAnOperatorHoldsOncePastItsBound(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer))
 	rig.drifts(podUpdateDrift)
 
@@ -529,6 +539,7 @@ func TestPodUpdateTellsAPodlessRoundAnOperatorHoldsOncePastItsBound(t *testing.T
 // last word (replacementDue) can see it, and it refuses the replacement: no pod is replaced
 // under an operator's hold, whatever the clock says.
 func TestPodUpdateSuspensionInTheLaunchTurnRefusesTheReplacement(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
 	rig.drifts(podUpdateDrift)
 
@@ -572,6 +583,7 @@ func TestPodUpdateSuspensionInTheLaunchTurnRefusesTheReplacement(t *testing.T) {
 // A round whose claims never answer is told to nobody at any clock: before its bound it waits on
 // its roles, which is no stall, at its bound the bound ends it, and after it there is no round.
 func TestPodUpdateBoundTellsNobodyOfARoundWhoseClaimsNeverAnswer(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
 	rig.drifts(podUpdateDrift)
 
@@ -631,6 +643,7 @@ func suspendedAfterTheSnapshot(t *testing.T, by supervise.SuspendSource) (*podUp
 // told once, naming the refusal, as a refused ReplacePod is told, and later sweeps tell nothing
 // more.
 func TestPodUpdateBoundToldOnceOfARoundWithNoProcessInItsPod(t *testing.T) {
+	t.Parallel()
 	t.Run("replaced by issue and told nothing", func(t *testing.T) {
 		rig, group := suspendedAfterTheSnapshot(t, supervise.SuspendedByDaemon)
 		rig.clockAt(podUpdateBound.Add(-time.Minute))
@@ -731,6 +744,7 @@ func TestPodUpdateBoundToldOnceOfARoundWithNoProcessInItsPod(t *testing.T) {
 // before the round's only claim was suspended, with every read after the sweep's drift read
 // failing (podUnreadAfterTheDriftRead).
 func TestAnUnreadablePodIsToldOncePastItsBound(t *testing.T) {
+	t.Parallel()
 	unread := errors.New("the API server did not answer the read of the Sandbox")
 
 	// toldOnce makes one sweep a minute before the round's bound and three from the bound on,
@@ -876,6 +890,7 @@ const podUpdateDeployReset = `update claims
 // the round past its bound and replaces the pod, and no role is ever asked, because each claim
 // already holds the mark this release reads as its ask.
 func TestPodUpdateRoundOpenAtTheDeployStartsItsBoundAndItsAskAgain(t *testing.T) {
+	t.Parallel()
 	deploy := podUpdateStart.Add(3 * time.Hour)
 	roles := []claim.Role{claim.RoleImplementer, claim.RoleTester}
 	leftByTheEarlierRelease := func(role claim.Role) podUpdateRole {
@@ -924,11 +939,10 @@ func TestPodUpdateRoundOpenAtTheDeployStartsItsBoundAndItsAskAgain(t *testing.T)
 			for range 3 {
 				next.tick()
 			}
-			text := supervise.UpdateTask(podUpdateRound, podUpdateDrift, deploy.Add(podUpdateGrace))
 			asked := map[claim.Role]int{}
 			for _, ask := range next.asks() {
 				asked[ask.Role]++
-				if ask.Text != text {
+				if text := supervise.UpdateTask(ask.Role, podUpdateRound, podUpdateDrift, deploy.Add(podUpdateGrace)); ask.Text != text {
 					t.Errorf("the ask to the %s says:\n%s\nwant the end at the deploy plus the grace:\n%s", ask.Role, ask.Text, text)
 				}
 			}
@@ -956,6 +970,7 @@ func TestPodUpdateRoundOpenAtTheDeployStartsItsBoundAndItsAskAgain(t *testing.T)
 //
 // The control is a reset that also clears update_signalled_at: then the tester is asked as well.
 func TestPodUpdateRoundOpenAtTheDeployKeepsItsAnswerAndAsksOnlyTheUnanswered(t *testing.T) {
+	t.Parallel()
 	deploy := podUpdateStart.Add(3 * time.Hour)
 	unanswered := readyWorker(claim.RoleImplementer)
 	unanswered.round, unanswered.reasons = podUpdateRound, podUpdateDrift
@@ -983,11 +998,10 @@ func TestPodUpdateRoundOpenAtTheDeployKeepsItsAnswerAndAsksOnlyTheUnanswered(t *
 	for range 3 {
 		next.tick()
 	}
-	text := supervise.UpdateTask(podUpdateRound, podUpdateDrift, deploy.Add(podUpdateGrace))
 	asked := map[claim.Role]int{}
 	for _, ask := range next.asks() {
 		asked[ask.Role]++
-		if ask.Text != text {
+		if text := supervise.UpdateTask(ask.Role, podUpdateRound, podUpdateDrift, deploy.Add(podUpdateGrace)); ask.Text != text {
 			t.Errorf("the ask to the %s says:\n%s\nwant the end at the deploy plus the grace:\n%s", ask.Role, ask.Text, text)
 		}
 	}
@@ -1016,6 +1030,7 @@ func TestPodUpdateRoundOpenAtTheDeployKeepsItsAnswerAndAsksOnlyTheUnanswered(t *
 // bound replaced nothing either: the line of a bounded end is not written, and the line of the
 // round's end says no bound made it.
 func TestPodUpdateBoundLineIsNotWrittenWhenTheRuntimeFindsNoPodToReplace(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
 	rig.drifts(podUpdateDrift)
 
@@ -1048,6 +1063,7 @@ func TestPodUpdateBoundLineIsNotWrittenWhenTheRuntimeFindsNoPodToReplace(t *test
 // the operator resumes it and its agent is ready in the round's pod, the next sweep asks it, and
 // it is asked exactly once however many sweeps follow. The other role is asked once all along.
 func TestPodUpdateAsksAClaimOnceItsAgentIsReady(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t,
 		readyWorker(claim.RoleImplementer),
 		podUpdateRole{role: claim.RoleTester, state: supervise.StateSuspended, session: true,

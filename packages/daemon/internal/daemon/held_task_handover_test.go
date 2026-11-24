@@ -42,6 +42,7 @@ const (
 // (supervise's Deps.RootTask, the daemon's rootTask), and what the record still shows in this
 // root's tree is what goes.
 func TestAHeldTaskIsSentWithoutTheDecisionsAHandOverGaveToTheChild(t *testing.T) {
+	t.Parallel()
 	rig := newHeldTaskRig(t)
 	rig.waitForSlot()
 	onTheRoot := rig.decide(heldTaskRoot)
@@ -102,6 +103,7 @@ func TestAHeldTaskIsSentWithoutTheDecisionsAHandOverGaveToTheChild(t *testing.T)
 // claim (supervise.Claim.DeliveredRows) so no retry gives it again, and a prompt would tell this
 // architect a decision of a tree it no longer holds.
 func TestAHeldTaskNamingOnlyTheHandedOverChildsDecisionsIsRetired(t *testing.T) {
+	t.Parallel()
 	rig := newHeldTaskRig(t)
 	rig.waitForSlot()
 	onTheChild := rig.decide(heldTaskChild)
@@ -147,6 +149,7 @@ func TestAHeldTaskNamingOnlyTheHandedOverChildsDecisionsIsRetired(t *testing.T) 
 // The control is the same delivery of no entry, which a release before the architect held an
 // entry queued, and whose narrowing is the decisions' own text alone.
 func TestTheHeldTaskOfARootAHandOverCarriedInKeepsItsPhaseWhenADecisionLeaves(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()

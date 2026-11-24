@@ -46,6 +46,7 @@ const (
 // NATS server grant, while this test drives the daemon's real connection, durable consumers,
 // acknowledgements, and exceptions subscription through it.
 func TestDaemonPermissionsOnRealServers(t *testing.T) {
+	t.Parallel()
 	for _, image := range testnatsimages.Images {
 		t.Run(image.Name, func(t *testing.T) {
 			t.Run("the daemon restarts, reads its consumers' lag, acknowledges Dispatch, GitHub and the listener's wake, and receives exceptions", func(t *testing.T) {

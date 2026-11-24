@@ -1,10 +1,11 @@
 import { describe, expect, test } from "bun:test"
-import { chmodSync, readdirSync, readFileSync, writeFileSync } from "node:fs"
+import { chmodSync, existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { agentStreamControlSubject } from "@legion/contracts"
 import type { DispatchDelivery, RenderInboundResult } from "@legion/envoy-client/delivery"
 import type { DispatchClient } from "@legion/envoy-client/dispatch-http"
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories"
+import type { Subprocess } from "bun"
 import { sessionAdmission } from "../src/channel-connection"
 import type { ChannelConnection, ChannelTopicSubscription } from "../src/channel-topics"
 import { startCodexAgentStream } from "../src/codex/codex-agent-stream"
@@ -69,12 +70,18 @@ describe("the Codex session record", () => {
     expect(recordOfProcess(record, exited)).toBe(false)
   })
 
-  test("Codex's shared app server is told apart from a codex process of its own", () => {
-    // `sleep 5; :` so the shell cannot exec sleep in its own place, which would drop app-server
-    // from its arguments. `-c` takes a value for codex as for sh, so the subcommand is app-server.
-    const shared = Bun.spawn(["sh", "-c", "sleep 5; :", "app-server"])
-    const own = Bun.spawn(["sh", "-c", "sleep 5; :"])
+  test("Codex's shared app server is told apart from a codex process of its own", async () => {
+    // Each shell waits on a read of its stdin, a pipe nothing writes, so it neither execs anything
+    // in its own place, which would drop app-server from its arguments, nor ends before the test
+    // kills it. `-c` takes a value for codex as for sh, so the subcommand is app-server. Both start
+    // before either is waited for, so the `finally` kills each of them whichever wait fails.
+    const sharedArgv = ["sh", "-c", "read line; :", "app-server"]
+    const ownArgv = ["sh", "-c", "read line; :"]
+    const shared = Bun.spawn(sharedArgv, { stdin: "pipe" })
+    const own = Bun.spawn(ownArgv, { stdin: "pipe" })
     try {
+      await untilListedAs(shared, sharedArgv)
+      await untilListedAs(own, ownArgv)
       expect(sharedAppServer(shared.pid)).toBe(true)
       expect(sharedAppServer(own.pid)).toBe(false)
     } finally {
@@ -154,6 +161,42 @@ describe("the Codex session record", () => {
     ).toBe(process.ppid)
   })
 })
+
+/** Whether this machine lists its processes under /proc, as Linux does. */
+const HAS_PROC = existsSync("/proc/self/cmdline")
+
+/** Whether the machine lists process `pid` as running `argv`: exactly, from /proc/<pid>/cmdline,
+ *  or where there is no /proc, from the space-separated list `ps` prints. */
+function listedAs(pid: number, argv: readonly string[]): boolean {
+  if (HAS_PROC) {
+    try {
+      return readFileSync(`/proc/${pid}/cmdline`, "utf8") === argv.map((arg) => `${arg}\0`).join("")
+    } catch {
+      return false
+    }
+  }
+  const ps = Bun.spawnSync(["ps", "-o", "args=", "-p", String(pid)])
+  return ps.exitCode === 0 && ps.stdout.toString().trim() === argv.join(" ")
+}
+
+/**
+ * Waits until the machine lists `child` as running `argv`, the arguments it was started with. On
+ * Linux, Bun.spawn returns from a vfork while the child is still inside its execve, and until that
+ * exec has laid out the new arguments, /proc/<pid>/cmdline reads the test process's own arguments
+ * or nothing at all: right after a spawn, on a loaded box, the read was empty in most of a
+ * thousand tries. The child tells nobody when its exec is done, so the wait polls. The row's own
+ * deadline is its only bound, and a child that ends first fails the row by name.
+ */
+async function untilListedAs(child: Subprocess, argv: readonly string[]): Promise<void> {
+  while (!listedAs(child.pid, argv)) {
+    if (child.exitCode !== null || child.signalCode !== null) {
+      throw new Error(
+        `${JSON.stringify(argv)} ended (${child.exitCode ?? child.signalCode}) before the machine listed it as running`,
+      )
+    }
+    await Bun.sleep(5)
+  }
+}
 
 /** A connection that records what is published, the subjects subscribed and given up, and hands
  *  control messages to the stream. `closeForGood` closes it as nats.js closes one for good. */
