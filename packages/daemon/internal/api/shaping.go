@@ -575,6 +575,7 @@ var stateNarrowings = []stateNarrowing{
 	{contract: repositoriesLiveContract, state: withoutRepositoriesLive,
 		dropped: "repositories.live, served as contract 152's owners, mapped, refused and withoutWebhookApp"},
 	{contract: assignmentPlanContract, issue: withoutAssignmentPlans, dropped: "the issues' assignments' plan"},
+	{contract: priorityContract, issue: withoutPriority, dropped: "the issues' priority and their waitingLine's priority"},
 }
 
 // valueStrip is one strip of a value from the state: what it takes off the state's own values,
@@ -1033,6 +1034,27 @@ const cachesSourceContract = 213
 // change's own number, and it is the last number of answers.go's SupportedContracts, which names
 // the constant rather than its number for that reason.
 const assignmentPlanContract = 220
+
+// priorityContract is the daemon contract that added each issue's own Dispatch `priority` and
+// its waitingLine's `priority`, the priority that placed it in the line (version.go's 221,
+// dispatch://INFRA-3576 R1). A plugin before it is served every issue without either key
+// (withoutPriority). It is a literal of its own and never DaemonAPIVersion, for the reason
+// assignmentPlanContract is, and it is the last number of answers.go's SupportedContracts.
+const priorityContract = 221
+
+// withoutPriority is the issue with no `priority` and a waitingLine with no `priority`, the two
+// keys priorityContract added to the state; every other key stays. The waiting line's view is
+// copied before it is changed, so the state the source answered is left as it was.
+func withoutPriority(issue Issue) (Issue, bool) {
+	moved := issue.Priority != nil
+	issue.Priority = nil
+	if issue.WaitingLine != nil && issue.WaitingLine.Priority != nil {
+		line := *issue.WaitingLine
+		line.Priority = nil
+		issue.WaitingLine, moved = &line, true
+	}
+	return issue, moved
+}
 
 // withoutGatedSteps is the issue with no `gatedSteps`, the field gatedStepsContract added to the
 // state; nothing else of that contract is on the route. The field is `omitempty`, and a root of a

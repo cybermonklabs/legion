@@ -12,7 +12,9 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -734,6 +736,13 @@ type Issue struct {
 	// reading on this wire.
 	Ancestry  []string   `json:"ancestry,omitempty"`
 	Architect *ClaimView `json:"architect,omitempty"`
+	// Priority is the issue's own Dispatch priority (record.Issue.Priority): its number, 0 for P0
+	// to 3 for P3, or null for an issue with none (dispatch://INFRA-3576 R1). It is the issue's
+	// own and never its tree root's; the priority that placed a member of the line is its
+	// waitingLine's. It is set on every issue the workflow records, and absent on an issue it does
+	// not record (an operator's claim, Unrecorded) and from every issue of the body served a caller
+	// below priorityContract (shaping.go's withoutPriority).
+	Priority *PriorityView `json:"priority,omitempty"`
 	// Workers is keyed by the role that holds the claim; the vocabulary of a claim belongs to
 	// `internal/claim`, which the runtime, the worker stream, and the supervisor all speak
 	// without importing this package.
@@ -909,6 +918,34 @@ type WaitingOnView struct {
 	Since       *time.Time    `json:"since,omitempty"`
 	AnsweredAt  *time.Time    `json:"answeredAt,omitempty"`
 	AnsweredBy  record.Answer `json:"answeredBy,omitempty"`
+}
+
+// PriorityView is a Dispatch priority on this wire, as Dispatch sends one: its number, 0 for P0
+// to 3 for P3, or null for none (record.Priority). A field of it is a pointer with `omitempty`,
+// so a view that carries the field says null for none, and a body served a caller below the
+// contract that added it carries no key at all.
+type PriorityView record.Priority
+
+// MarshalJSON writes the priority's number, or null for none.
+func (p PriorityView) MarshalJSON() ([]byte, error) {
+	if record.Priority(p) == record.NoPriority {
+		return []byte("null"), nil
+	}
+	return strconv.AppendInt(nil, int64(p)-1, 10), nil
+}
+
+// UnmarshalJSON reads the number back, 0 for P0 to 3 for P3; null reads as none.
+func (p *PriorityView) UnmarshalJSON(data []byte) error {
+	var level *int
+	if err := json.Unmarshal(data, &level); err != nil {
+		return err
+	}
+	priority, read := record.DispatchPriority(level)
+	if !read {
+		return fmt.Errorf("priority %s is no priority Dispatch sends", data)
+	}
+	*p = PriorityView(priority)
+	return nil
 }
 
 // MarshalJSON keeps `workers` an object on the wire for an issue that has no worker yet.
@@ -1452,6 +1489,11 @@ type WaitingLineView struct {
 	RootRank  string     `json:"rootRank,omitempty"`
 	OwnRank   string     `json:"ownRank,omitempty"`
 	RootKey   string     `json:"rootKey,omitempty"`
+	// Priority is the priority that placed the member (record.LineEntry.Priority): the issue's
+	// own, else its tree root's, as a number from 0 for P0 to 3 for P3, or null for a member
+	// neither it nor its tree root has a priority for, whose band stands after P3. It is the first
+	// key of the whole line; Part, PartPlace and PartLength count within its band.
+	Priority *PriorityView `json:"priority,omitempty"`
 	// Reason is the rendered sentence of this member's wait, the one answer a person reads: what
 	// put it in the line and when, where it stands in its own part, and what that place means
 	// for the slot it waits for. The projection renders it from the fields above and the length
