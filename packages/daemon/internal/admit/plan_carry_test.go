@@ -112,7 +112,7 @@ func seedOwnersPlanAtAcceptance(t *testing.T, tx pgx.Tx, key string, givenBy cla
 		steps = append(steps, record.PlanStep{Issue: key, Generation: 1, Task: "a", Position: i + 1, Role: step.Role, AgentKey: step.Key,
 			Type: roles[step.Role].Type})
 	}
-	steps = record.NameAgents(nil, steps)
+	steps = record.NameAgents(nil, steps, nil)
 	store := record.NewStore()
 	if err := store.PutPlan(ctx, tx, v, []record.PlanTask{task}, steps); err != nil {
 		t.Fatalf("put the owner's plan of %s: %v", key, err)

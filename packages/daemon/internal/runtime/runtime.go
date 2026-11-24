@@ -916,27 +916,40 @@ func (id GitIdentity) Env() map[string]string {
 // ActsAs answers, for a claim token, the role whose App the claim's slot holds while it does some
 // other work than its stored role's, and false where it gives none: the owner's step is such work,
 // which the daemon's owner function decides. A runtime is given one in its options (nil by
-// default), and SlotRole, the one function that answers a slot's App role, reads it.
+// default), and SlotRoles, the one function that answers a slot's App role, reads it.
 type ActsAs func(ctx context.Context, token claim.Token) (claim.Role, bool, error)
 
-// SlotRole is the role whose App the slot of token holds: the role actsAs gives the token where
-// actsAs is set and gives one, else role, which its caller reads: at a launch, the role of the
-// step the claim is launched for; at a refresh, the role the slot's process was launched as where
-// the slot records that launch for the stored claim's generation or a later one, and otherwise the
-// claim's stored role (the sandbox runtime's slotAppRole, the tmux runtime's paneRole). It is never
-// the slot's name: a keyed agent's slot is named by its agent, and that agent can do a step of
-// another role. Each write of a slot's gh credential asks it, so a re-roled claim's slot holds the
-// App of the role its process was launched as.
-func SlotRole(ctx context.Context, actsAs ActsAs, token claim.Token, role claim.Role) (claim.Role, error) {
+// SlotRoles asks actsAs once for token and answers the one rule of the role whose App the slot of
+// token holds: the role actsAs gives the token where actsAs is set and gives one, whatever role it
+// is asked of, and else the role it is asked of. A caller reads that role at a launch as the role
+// of the step the claim is launched for; at a refresh as the role the slot's process was launched
+// as where the slot records that launch for the stored claim's generation or a later one, and
+// otherwise the claim's stored role (the sandbox runtime's slotAppRole, the tmux runtime's
+// paneRole); and the sandbox runtime's slotAppChanges reads it of several roles of one claim,
+// which is why the ask and the rule are parted. It is never the slot's name: a keyed agent's slot
+// is named by its agent, and that agent can do a step of another role. Each write of a slot's gh
+// credential asks it, so a re-roled claim's slot holds the App of the role its process was
+// launched as.
+func SlotRoles(ctx context.Context, actsAs ActsAs, token claim.Token) (func(claim.Role) claim.Role, error) {
 	if actsAs == nil {
-		return role, nil
+		return func(role claim.Role) claim.Role { return role }, nil
 	}
 	acting, ok, err := actsAs(ctx, token)
 	if err != nil {
-		return "", fmt.Errorf("the role whose App the slot of %s holds: %w", token, err)
+		return nil, fmt.Errorf("the role whose App the slot of %s holds: %w", token, err)
 	}
-	if ok {
-		return acting, nil
+	if !ok {
+		return func(role claim.Role) claim.Role { return role }, nil
 	}
-	return role, nil
+	return func(claim.Role) claim.Role { return acting }, nil
+}
+
+// SlotRole is SlotRoles of one role: the role whose App the slot of token holds, where its caller
+// reads role for that slot.
+func SlotRole(ctx context.Context, actsAs ActsAs, token claim.Token, role claim.Role) (claim.Role, error) {
+	roles, err := SlotRoles(ctx, actsAs, token)
+	if err != nil {
+		return "", err
+	}
+	return roles(role), nil
 }

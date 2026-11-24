@@ -53,7 +53,7 @@ func TestAnOwedStartOfAnotherStepsRoleIsEnded(t *testing.T) {
 					{Issue: key, Generation: 1, Task: "a", Position: 1, Role: "implementer", Type: "implementation"},
 					{Issue: key, Generation: 1, Task: "a", Position: 2, Role: string(checker), Type: "testing"},
 					{Issue: key, Generation: 1, Task: "a", Position: 3, Role: string(linter), Type: "testing"},
-				})
+				}, nil)
 				if err := records.PutPlan(ctx, tx, v, []record.PlanTask{task}, steps); err != nil {
 					t.Fatalf("seed the plan of %s: %v", key, err)
 				}

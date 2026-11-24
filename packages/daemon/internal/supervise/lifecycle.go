@@ -44,8 +44,17 @@ type StartWork struct {
 	LeaveSession string
 }
 
-// leaves is whether start asks the claim to leave the session it records now (StartWork's
-// LeaveSession).
+// Leaves is whether start asks the claim to leave the session it records now (StartWork's
+// LeaveSession): the one test of it, which the machine's own resume and retry ask before they
+// refuse a session the claim does not hold (resumeByRule, retry) and the outbox's start asks
+// before it suspends a claim that still runs that session (internal/daemon's suspendToLeave).
+func (m *Machine) Leaves(start StartWork) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.leaves(start)
+}
+
+// leaves is Leaves under the machine's lock, which every caller inside the machine already holds.
 func (m *Machine) leaves(start StartWork) bool {
 	return start.LeaveSession != "" && m.claim.Session == start.LeaveSession
 }

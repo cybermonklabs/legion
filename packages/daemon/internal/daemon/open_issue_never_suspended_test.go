@@ -348,7 +348,7 @@ func TestOpenIssueSuspensionInvariantKeepsTheExceptions(t *testing.T) {
 				steps := record.NameAgents(nil, []record.PlanStep{
 					{Issue: root.Key, Generation: root.Generation, Task: "a", Position: 1, Role: "implementer", Type: "implementation"},
 					{Issue: root.Key, Generation: root.Generation, Task: "a", Position: 2, Role: "reviewer", Type: "review"},
-				})
+				}, nil)
 				return records.PutPlan(ctx, tx, v, []record.PlanTask{task}, steps)
 			}); err != nil {
 				t.Fatal(err)

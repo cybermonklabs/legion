@@ -15,6 +15,32 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/wait"
 )
 
+// readyClaimForStart makes machine's claim, which the start payload reaches, the claim that start
+// brings back: it takes the role of the step the start is for where it holds another
+// (reroleForStep), and it leaves the session a key's agent recorded where the start leaves one
+// (suspendToLeave). Each asks a claim that still runs a process to suspend and is a wait
+// (wait.ErrWaiting) until it runs nothing, each judges the step again under the machine's lock,
+// and a step the issue left before that lock is supervise.ErrStepLeft with nothing of the claim
+// changed: the outbox's start then finishes the row without acting, since the start of the step
+// the issue stands in now readies its claim in the same way. It is the one step between the
+// outbox's fences and the request that brings the claim back, so a reader asking what a start
+// does to a claim before it starts it reads this and no other place.
+func (r *outbox) readyClaimForStart(ctx context.Context, machine *supervise.Machine, token claim.Token, row record.OutboxRow,
+	issue record.Issue, payload record.SuperviseRequest, work supervise.StartWork) error {
+	// A start of no entry — a wake, a resume, a role admission brings back — starts the claim
+	// with the role it holds; the steps of one key are one claim, and its next step may be of
+	// another role.
+	if payload.Entry > 0 && payload.Phase != "" && machine.Claim().Role != payload.Role {
+		if err := r.reroleWaitsForCredential(ctx, row, issue, token, payload.Role); err != nil {
+			return err
+		}
+		if err := r.reroleForStep(ctx, machine, token, row, payload); err != nil {
+			return err
+		}
+	}
+	return r.suspendToLeave(ctx, machine, token, row, payload, work)
+}
+
 // reroleForStep gives machine's claim the role of payload, the start of the step its agent is
 // started for, and is a wait (wait.ErrWaiting) while the claim still runs a process. That process
 // runs the role it was started with, so the start asks it to suspend, as the daemon and keeping its
@@ -66,9 +92,10 @@ func suspendUntilIdle(ctx context.Context, machine *supervise.Machine, token cla
 }
 
 // stepStands says whether the step a start of a phase entry (payload) is for is still the work its
-// issue asks of the role, read from the record again (startStands). The suspension and the re-role a
-// start asks of its claim judge it again under the machine's lock (supervise.Standing,
-// reroleForStep), since a move or a later entry can commit between the fences' read and that lock.
+// issue asks of the role, read from the record again: whether every fence of the outbox's run of
+// the row holds (fenceOf), the one judgment of them. The suspension and the re-role a start asks of
+// its claim judge it again under the machine's lock (supervise.Standing, reroleForStep), since a
+// move or a later entry can commit between the fences' read and that lock.
 func (r *outbox) stepStands(ctx context.Context, row record.OutboxRow, payload record.SuperviseRequest) (bool, error) {
 	stands := false
 	err := store.TransactWith(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
@@ -76,34 +103,14 @@ func (r *outbox) stepStands(ctx context.Context, row record.OutboxRow, payload r
 		if err != nil || issue == nil {
 			return err
 		}
-		rows, err := r.records.Phases(ctx, tx, row.Issue)
-		if err != nil {
-			return err
-		}
-		stands = startStands(*issue, rows, payload)
-		return nil
+		fence, err := fenceOf(*issue, payload, func() ([]record.PhaseRow, error) { return r.records.Phases(ctx, tx, row.Issue) })
+		stands = err == nil && fence == fenceHolds
+		return err
 	})
 	if err != nil {
 		return false, fmt.Errorf("read the step of start row %d of %s again: %w", row.ID, row.Issue, err)
 	}
 	return stands, nil
-}
-
-// startStands is the start's own fence of a start of a phase entry (payload), the one the outbox's
-// start judges before it acts: the issue runs the generation the start serves, holds the work of
-// the start's role at the phase it serves (record.Issue.HoldsQueued, which at the phase step, where
-// every step of a role the deployment defines stands, names the step's role), and its role's phases
-// row names no later entry than the start's. All three, and not a part of them: a move from one
-// step of the phase step to the next raises no entry on the earlier step's row and leaves the
-// phase as it was, so only the step's role says that the earlier step's start is no longer the work.
-func startStands(issue record.Issue, rows []record.PhaseRow, payload record.SuperviseRequest) bool {
-	if issue.Generation != payload.Generation {
-		return false
-	}
-	if payload.Phase != "" && !issue.HoldsQueued(payload.Role, payload.Phase) {
-		return false
-	}
-	return payload.Entry == 0 || payload.Phase == "" || payload.Entry >= record.PhaseRowOf(rows, payload.Role).Entry
 }
 
 // reroleWaitsForCredential is the fence the start of an entry that re-roles its claim, token,

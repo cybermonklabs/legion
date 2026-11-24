@@ -103,9 +103,9 @@ func TestThePlanStepAgentMigrationNamesEveryStepItFinds(t *testing.T) {
 	}
 	first := record.NameAgents(nil, []record.PlanStep{
 		{Generation: 1, Task: "a", Position: 1, Role: "implementer", AgentKey: "k"}, {Generation: 1, Task: "a", Position: 2, Role: "tester", AgentKey: "k"},
-		{Generation: 1, Task: "a", Position: 3, Role: "reviewer"}, {Generation: 1, Task: "a", Position: 4, Role: "acceptance", AgentKey: "owner"}})
+		{Generation: 1, Task: "a", Position: 3, Role: "reviewer"}, {Generation: 1, Task: "a", Position: 4, Role: "acceptance", AgentKey: "owner"}}, nil)
 	second := record.NameAgents(first, []record.PlanStep{
-		{Generation: 2, Task: "a", Position: 1, Role: "tester", AgentKey: "k"}, {Generation: 2, Task: "a", Position: 2, Role: "reviewer"}})
+		{Generation: 2, Task: "a", Position: 1, Role: "tester", AgentKey: "k"}, {Generation: 2, Task: "a", Position: 2, Role: "reviewer"}}, nil)
 	if second[0].Agent != "implementer" {
 		t.Fatalf("NameAgents named key k %q in generation 2, want implementer, its generation 1 name: the case is not the one this test holds", second[0].Agent)
 	}

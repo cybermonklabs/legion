@@ -24,17 +24,6 @@ import (
 // invalidOperatorToken is every operator route's one refusal.
 const invalidOperatorToken = "Invalid operator token"
 
-// SpawnRequest is the operator's spawn: the claim on Role of Issue, in the tree Tree roots.
-// Prompt is an optional test override; without it the daemon composes the role prompt itself.
-// Task, when set, is its first delivery, queued before the agent is ready and sent once it is.
-type SpawnRequest struct {
-	Tree   string     `json:"tree"`
-	Issue  string     `json:"issue"`
-	Role   claim.Role `json:"role"`
-	Prompt string     `json:"prompt,omitempty"`
-	Task   string     `json:"task,omitempty"`
-}
-
 // DeliverRequest gives a claim a task.
 type DeliverRequest struct {
 	Task string `json:"task"`
