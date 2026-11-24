@@ -1162,8 +1162,11 @@ each state a route names (the Peek drawer open, rows or agents selected). At eac
 `measureLayout` (`e2e/layout-measure.ts`) in the page: a page that scrolls sideways, a box that
 does for anything but a code block, one picture wider than the box, a data table or a board's
 lanes, something cut off at a side with no ellipsis, a closed `data-layout-group` showing more
-entries than its cap, and a
-group the route must mark (`requiredGroups`) that no element marks. The rows are
+entries than its cap, and a group the route must mark (`requiredGroups`) that no element marks.
+Each direct child of a `data-layout-group` element is one entry, except the one "+N" control,
+which is marked `data-layout-more`; so each child must be one chip, since a child that draws
+several chips still counts as one and its group can show more chips than its cap and pass. The
+rows are
 `e2e/layout-rule.stub.e2e.ts`, in the stubbed layer on every pull request: their HTTP answers are
 recorded as every stubbed row's are, and the document and live sockets beside the HAR
 (`e2e/layout-sockets.ts`); `bun run e2e:stub:record -- layout-rule.stub` records them again after

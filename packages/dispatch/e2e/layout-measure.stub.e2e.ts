@@ -521,6 +521,31 @@ test("a layout reading fails when a pinned face does not load @pr", async ({ pag
   await expect(pinFontFaces(page)).rejects.toThrow("Liberation Sans 700");
 });
 
+// A page can replace its document after `page.goto` returns: the app reloads when a lazy chunk
+// fails to download, which a loaded box provokes (`net::ERR_NETWORK_CHANGED`, seen in a trace of
+// the agents row). The layout sheet reaches the new document without another call, so the reading
+// taken there is still in the pinned faces and with no transitions.
+test("the layout sheet reaches a document the page replaces on its own @pr", async ({ page }) => {
+  const origin = "http://layout-reload.test";
+  await page.route(`${origin}/`, (route) =>
+    route.fulfill({ body: "<!doctype html><p>words</p>", contentType: "text/html" })
+  );
+  await page.goto(`${origin}/`);
+  await pinFontFaces(page);
+  const firstDocument = await page.evaluate(() => performance.timeOrigin);
+  await Promise.all([page.waitForEvent("load"), page.evaluate(() => window.location.reload())]);
+  expect(await page.evaluate(() => performance.timeOrigin)).not.toBe(firstDocument);
+  const sheet = await page.evaluate(() => {
+    const style = document.getElementById("layout-pinned-sheet");
+    return {
+      fontFaces: style?.textContent?.match(/@font-face/g)?.length ?? 0,
+      noTransitions: style?.textContent?.includes("transition: none !important") ?? false,
+      transition: getComputedStyle(document.querySelector("p") as Element).transitionDuration,
+    };
+  });
+  expect(sheet).toEqual({ fontFaces: 10, noTransitions: true, transition: "0s" });
+});
+
 test("a layout reading fails on a blank page and on an entry its reading did not match @pr", async ({
   page,
 }) => {

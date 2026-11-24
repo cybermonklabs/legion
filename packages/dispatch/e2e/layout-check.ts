@@ -69,11 +69,24 @@ export const PINNED_FACE_SHEET = [
   ':root { --font-mono: "Liberation Mono", monospace; --font-sans: "Liberation Sans", sans-serif; }',
 ].join("\n");
 
-const servedPages = new WeakSet<Page>();
+/** The sheet every document a layout row loads gets before it draws: no transitions, so a width
+ *  change is read settled (as `e2e/accessibility.e2e.ts` says of colours), and the pinned faces. */
+const LAYOUT_SHEET = `*, *::before, *::after { transition: none !important; }\n${PINNED_FACE_SHEET}`;
+/** The id of that sheet's `style` element, so it is added to a document once. */
+const LAYOUT_SHEET_ID = "layout-pinned-sheet";
 
-async function servePinnedFaces(page: Page): Promise<void> {
-  if (servedPages.has(page)) return;
-  servedPages.add(page);
+const pinnedPages = new WeakSet<Page>();
+
+/** Adds the layout sheet to every document the page loads from now on, before its first frame,
+ *  and answers the faces' requests from `e2e/fonts/`; once per page. An init script, not a style
+ *  tag added after the load: a page can replace its document after `page.goto` returns - a
+ *  reload for a chunk that failed to download (`features/shell/DeploymentResilience.tsx`),
+ *  which a loaded box can provoke - and a tag added then lands in the old document, or fails
+ *  with "Execution context was destroyed". The script runs before the document's own scripts,
+ *  when it may hold no root element yet, so it waits for the root element if it has to. */
+async function installLayoutSheet(page: Page): Promise<void> {
+  if (pinnedPages.has(page)) return;
+  pinnedPages.add(page);
   await page.route(`**${PINNED_FACE_PATH}**`, async (route) => {
     const asked = new URL(route.request().url()).pathname.slice(PINNED_FACE_PATH.length);
     const face = PINNED_FACES.find((candidate) => `${candidate.dir}/${candidate.file}` === asked);
@@ -86,19 +99,34 @@ async function servePinnedFaces(page: Page): Promise<void> {
       contentType: "font/ttf",
     });
   });
+  await page.addInitScript(addLayoutSheet, { id: LAYOUT_SHEET_ID, sheet: LAYOUT_SHEET });
 }
 
-/** Draws the page's text in the pinned faces, and waits until each has loaded: answers their
- *  requests from `e2e/fonts/`, adds their sheet (with Tailwind's two font variables opened with
- *  them) to the current document, and fails unless every face loaded. A route that stopped
+/** Adds the sheet to the document it runs in, once: now when the document has a root element,
+ *  else as soon as it has one. Runs in the page, so it closes over nothing. */
+function addLayoutSheet({ id, sheet }: { id: string; sheet: string }): void {
+  const add = (): boolean => {
+    if (document.getElementById(id) !== null) return true;
+    const root = document.documentElement;
+    if (root === null) return false;
+    const style = document.createElement("style");
+    style.id = id;
+    style.textContent = sheet;
+    root.appendChild(style);
+    return true;
+  };
+  if (add()) return;
+  const observer = new MutationObserver(() => {
+    if (add()) observer.disconnect();
+  });
+  observer.observe(document, { childList: true });
+}
+
+/** Fails unless every pinned face loaded in the page's current document. A route that stopped
  *  answering, or a sheet that never reached the page, would leave the text in the host's own
  *  faces, which only a host with other fonts than CI's would show; `document.fonts.ready`
- *  resolves either way, so each face is asked for by its family and weight. A navigation drops
- *  the sheet, so call it after each load, before reading anything whose size follows its text:
- *  the layout rows do, and so may any row that measures text, such as a header's height. */
-export async function pinFontFaces(page: Page): Promise<void> {
-  await servePinnedFaces(page);
-  await page.addStyleTag({ content: PINNED_FACE_SHEET });
+ *  resolves either way, so each face is asked for by its family and weight. */
+async function expectPinnedFacesLoaded(page: Page): Promise<void> {
   const wanted = PINNED_FACES.map(({ family, weight }) => ({ family, weight }));
   const unloaded = await page.evaluate(async (faces) => {
     const missing: string[] = [];
@@ -117,6 +145,17 @@ export async function pinFontFaces(page: Page): Promise<void> {
   expect(unloaded, "pinned faces that did not load: the font route or the sheet is broken").toEqual(
     []
   );
+}
+
+/** Draws the page's text in the pinned faces, and waits until each has loaded in the current
+ *  document. From the first call on, every document the page loads gets the sheet before it
+ *  draws; the current one gets it now if it has not. Call it before reading anything whose size
+ *  follows its text: the layout rows do, and so may any row that measures text, such as a
+ *  header's height. */
+export async function pinFontFaces(page: Page): Promise<void> {
+  await installLayoutSheet(page);
+  await page.evaluate(addLayoutSheet, { id: LAYOUT_SHEET_ID, sheet: LAYOUT_SHEET });
+  await expectPinnedFacesLoaded(page);
 }
 
 /** One reading: a route, in one of its states or as it loads, at one width. */
@@ -279,18 +318,36 @@ export function judgeReading(
   return failures;
 }
 
+/** How many times a load is issued again after the browser cancels it with
+ *  `net::ERR_NETWORK_CHANGED`. Chromium cancels every request in flight when it sees the host's
+ *  network addresses change, which a busy host does as other jobs start containers: a lazy chunk
+ *  it cancels makes the app reload itself (`features/shell/DeploymentResilience.tsx`), and a
+ *  document it cancels fails `page.goto` before anything is drawn (both seen in traces of the
+ *  agents row under load). Nothing was committed then, so loading again is the same load. */
+const NETWORK_CHANGE_RETRIES = 2;
+
+/** Loads `address` fresh and waits until `route` has settled. The layout sheet is already in
+ *  every document the page loads (`installLayoutSheet`), so a document the page replaces on its
+ *  own after the load has it too, and the settle wait follows the page to that document. */
 async function loadSettled(page: Page, route: LayoutRoute, address: string): Promise<void> {
-  await page.goto(address);
-  // A width transition would be read part-way, as `e2e/accessibility.e2e.ts` says of colours:
-  // the sheet makes the first frame after the load the settled one.
-  await page.addStyleTag({ content: "*, *::before, *::after { transition: none !important; }" });
-  await pinFontFaces(page);
+  for (let retries = 0; ; retries += 1) {
+    try {
+      await page.goto(address);
+      break;
+    } catch (error) {
+      const changed = error instanceof Error && error.message.includes("net::ERR_NETWORK_CHANGED");
+      if (!changed || retries >= NETWORK_CHANGE_RETRIES) throw error;
+    }
+  }
   await waitForRouteSettled(page, route);
 }
 
+/** Reads the settled page: the pinned faces loaded in the document that is current now, then
+ *  `measureLayout` with the entries `place` may match. */
 async function measureSettledPage(page: Page, place: ReadingPlace): Promise<LayoutReading> {
   // A web font that lands after the wait widens every line it sets.
   await page.evaluate(() => document.fonts.ready.then(() => undefined));
+  await expectPinnedFacesLoaded(page);
   return await page.evaluate(
     measureLayout,
     entriesAt(place, layoutBreaches).map((entry) => entry.element)
@@ -302,6 +359,7 @@ async function measureSettledPage(page: Page, place: ReadingPlace): Promise<Layo
  *  after every reading, with every failure `judgeReading` found. */
 export async function checkLayout(page: Page, route: LayoutRoute, seed: LayoutSeed): Promise<void> {
   await route.prepare?.(page.context());
+  await installLayoutSheet(page);
   // A minute after the seed, held there: a relative time ("just now", "2 minutes ago", "3 weeks
   // ago") widens its column with the gap between the seed and the read, which moves with the
   // run's pace on the stack and with the recording's age in a replay. `setFixedTime` keeps the

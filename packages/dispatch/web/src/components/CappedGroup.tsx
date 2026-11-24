@@ -18,12 +18,14 @@ export const LAYOUT_GROUP_MAX = 10;
  * button stays where it was in the DOM while the rest are inserted before it, so it keeps the
  * focus across the press.
  *
- * Each child is one entry and draws one element: the group element's direct children are what
- * `e2e/layout-measure.ts` counts against the cap, leaving out the control marked
- * `data-layout-more`. The group element carries `data-layout-group={name}`, and
- * `data-layout-max` whenever its cap is not 10, so the measure sees a cap above the rule's too;
- * while the reader has it open it carries `data-layout-open` too, since then it shows more than
- * its cap by the reader's own choice.
+ * Each direct child of the group element is one entry, except the one "+N" control, which is
+ * marked `data-layout-more`: that is what `e2e/layout-measure.ts` counts against the cap. So
+ * each child must be one chip. A child that draws several chips - a Fragment, or a component
+ * that renders a few - is still one entry, and the group can show more chips than its cap and
+ * pass. The group element carries `data-layout-group={name}`, and `data-layout-max` whenever
+ * its cap is not 10, so the measure sees a cap above the rule's too; while the reader has it open
+ * it carries `data-layout-open` too, since then it shows more than its cap by the reader's own
+ * choice.
  *
  * `label` is the group in words, a plural noun ("labels"), which ends the button's name: "Show 3
  * more labels", and "Show fewer labels" while open. `className` lays the group out; `contents`
