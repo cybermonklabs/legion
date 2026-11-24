@@ -141,7 +141,8 @@ type ExternalAccountIdentity struct {
 	ServiceAccount string
 	// Audience is the `aud` of the identity token minted, the broker's Google exchange audience.
 	Audience string
-	// HTTP is the client every call goes through; nil is http.DefaultClient.
+	// HTTP is the client every call goes through, as a copy that follows no redirect (clientOf,
+	// postGoogle); nil is http.DefaultClient.
 	HTTP *http.Client
 	// IAMCredentialsURL is Google's own IAM Credentials service unless a test names a stand-in.
 	IAMCredentialsURL string
