@@ -57,7 +57,7 @@ ROUTE_ITEMS = ({"key": "models.yml", "path": "models.yml"}, {"key": "overlay.yml
 # passes, and one that lasts past them stops the run.
 RETRY_PAUSES = (5, 15, 45, 90)
 # How long the preflight's Job may run, in seconds: its checks, no judge, and its calls of point 2's
-# model, which end at the first one not answered (`s10_sandbox.PROBE_TIMEOUT` at most).
+# model, whose own timeout bounds each blocking step of a call; this deadline bounds the whole probe.
 PREFLIGHT_DEADLINE = 900
 # How long, in seconds, a Job's pod may wait to be started on a node before the run stops: twenty
 # times the waits measured for this sandbox (about 3 minutes), so only an outage of the cluster's

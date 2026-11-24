@@ -1231,6 +1231,7 @@ class StageTest(Base):
                 {"status": 200, "type": "error", "model": None, "error": "overloaded_error", "message": "busy"}])}},
             "fewer calls than the probe makes": {"preflight_record": {"probe": probe_of(
                 self.pins.model, probe_of(self.pins.model)["calls"][1:])}},
+            "a record that held the gateway key": {"preflight_record": {"keyFound": ["record.json"]}},
         }
         for name, changes in cases.items():
             with self.subTest(name=name):
@@ -1817,7 +1818,8 @@ class SandboxTest(unittest.TestCase):
 
     def gateway(self, answers):
         """A stand-in gateway on this host, and the requests it took: each connection answered in
-        turn by `answers`, each a status and a JSON body, the last one again once they run out."""
+        turn by `answers`, each a status and a body (bytes as they are, anything else as JSON), the
+        last one again once they run out."""
         listener = socket.socket()
         listener.bind(("127.0.0.1", 0))
         listener.listen()
@@ -1843,7 +1845,7 @@ class SandboxTest(unittest.TestCase):
                         body += connection.recv(65536)
                     taken.append((head.decode("latin-1"), json.loads(body)))
                     status, answer = answers[min(len(taken), len(answers)) - 1]
-                    text = json.dumps(answer).encode()
+                    text = answer if isinstance(answer, bytes) else json.dumps(answer).encode()
                     connection.sendall(f"HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: "
                                        f"{len(text)}\r\nConnection: close\r\n\r\n".encode() + text)
 
@@ -1855,14 +1857,19 @@ class SandboxTest(unittest.TestCase):
         url, taken = self.gateway([(200, {"type": "message", "model": "claude-opus-5-5",
                                           "content": [{"type": "text", "text": "ready"}]})])
         probe = SANDBOX.probe_gateway(model, KEY, url=url, timeout=5)
+        sessions = [call.pop("session") for call in probe["calls"]]
         self.assertEqual(probe, {"model": model, "calls": [{"status": 200, "type": "message", "model": "claude-opus-5-5"}]
                                  * SANDBOX.PROBE_CALLS})
         self.assertIsNone(SANDBOX.probe_refusal(probe, model))
         self.assertEqual(len(taken), SANDBOX.PROBE_CALLS)
-        for head, body in taken:
+        # Each call is a session of its own, named where the gateway reads omp's session id, so the
+        # gateway pins each call to an organization by its id, not every call by their shared text.
+        self.assertEqual(len(set(sessions)), SANDBOX.PROBE_CALLS)
+        for (head, body), session in zip(taken, sessions):
             self.assertTrue(head.startswith("POST /v1/messages HTTP/1.1"))
             self.assertIn(f"x-api-key: {KEY.decode()}", head)
             self.assertEqual(body, {"model": "claude-opus-5-5", "max_tokens": 1,
+                                    "metadata": {"user_id": f"user_s10_account_preflight_session_{session}"},
                                     "messages": [{"role": "user", "content": SANDBOX.PROBE_PROMPT}]})
 
     def test_the_probe_ends_at_the_first_call_not_answered_and_its_record_holds_no_key(self):
@@ -1884,10 +1891,13 @@ class SandboxTest(unittest.TestCase):
         refusal = SANDBOX.probe_refusal(probe, model)
         for part in ("call 3", "401", "authentication_error"):
             self.assertIn(part, refusal)
-        # A body that is no JSON is kept as text, its start only.
-        url, _ = self.gateway([(502, "x" * 1000)])
-        [bad] = SANDBOX.probe_gateway(model, KEY, url=url, timeout=5)["calls"]
-        self.assertEqual((bad["status"], bad["error"], len(bad["message"])), (502, "no message", SANDBOX.PROBE_MESSAGE_WIDTH))
+        # A body that is no JSON object, or no JSON at all, is kept as text, its start only.
+        for body in ("x" * 1000, b"<html>" + b"bad gateway " * 100 + b"</html>"):
+            with self.subTest(body=body[:8]):
+                url, _ = self.gateway([(502, body)])
+                [bad] = SANDBOX.probe_gateway(model, KEY, url=url, timeout=5)["calls"]
+                self.assertEqual((bad["status"], bad["error"], len(bad["message"])),
+                                 (502, "no message", SANDBOX.PROBE_MESSAGE_WIDTH))
 
     def test_a_gateway_that_takes_no_connection_is_one_call_with_no_status(self):
         closed = socket.socket()
@@ -1895,14 +1905,37 @@ class SandboxTest(unittest.TestCase):
         self.addCleanup(closed.close)
         url = f"http://127.0.0.1:{closed.getsockname()[1]}/v1/messages"
         probe = SANDBOX.probe_gateway("anthropic/claude-opus-5-5", KEY, url=url, timeout=5)
-        self.assertEqual(probe["calls"], [{"status": None, "type": None, "model": None,
-                                           "error": "ConnectionRefusedError", "message": None}])
+        [call] = probe["calls"]
+        self.assertEqual({key: value for key, value in call.items() if key != "session"},
+                         {"status": None, "type": None, "model": None, "error": "ConnectionRefusedError", "message": None})
         self.assertIn("answered None", SANDBOX.probe_refusal(probe, "anthropic/claude-opus-5-5"))
+
+    def test_a_gateway_that_takes_the_call_and_never_answers_is_one_call_with_no_status(self):
+        listener = socket.socket()
+        listener.bind(("127.0.0.1", 0))
+        listener.listen()
+        self.addCleanup(listener.close)
+        held = []
+
+        def hold():
+            try:
+                held.append(listener.accept()[0])
+            except OSError:
+                return
+
+        threading.Thread(target=hold, daemon=True).start()
+        self.addCleanup(lambda: [one.close() for one in held])
+        url = f"http://127.0.0.1:{listener.getsockname()[1]}/v1/messages"
+        probe = SANDBOX.probe_gateway("anthropic/claude-opus-5-5", KEY, url=url, timeout=0.5)
+        [call] = probe["calls"]
+        self.assertEqual((call["status"], call["error"]), (None, "TimeoutError"))
 
     def test_the_probe_must_name_the_judges_model_and_make_every_call_each_answered(self):
         model = "anthropic/claude-opus-5-5"
         self.assertIsNone(SANDBOX.probe_refusal(probe_of(model), model))
         answered = probe_of(model)["calls"]
+        # The model under its full name passes, as `s10_transcripts.model_problems` takes a judge's.
+        self.assertIsNone(SANDBOX.probe_refusal(probe_of(model, [dict(one, model=model) for one in answered]), model))
         cases = {"no probe": (None, "no probe"),
                  "another model": (probe_of("anthropic/claude-opus-4-8"), "no probe"),
                  "calls that are no list": ({"model": model, "calls": None}, "no probe"),
@@ -1910,6 +1943,9 @@ class SandboxTest(unittest.TestCase):
                  "a refused call": (probe_of(model, answered[:4] + [REFUSED]), "call 5"),
                  "a 200 that is no message": (probe_of(model, [{"status": 200, "type": "error"}]),
                                               "answered 200 with no message"),
+                 "a message another model served": (probe_of(model, answered[:2] + [dict(answered[2], model="claude-sonnet-5")]
+                                                             + answered[3:]), "call 3"),
+                 "a message that names no model": (probe_of(model, [dict(one, model=None) for one in answered]), "None"),
                  "a call that is no object": (probe_of(model, answered[:9] + ["ok"]), "call 10")}
         for name, (probe, reason) in cases.items():
             with self.subTest(name=name):
@@ -1935,6 +1971,26 @@ class SandboxTest(unittest.TestCase):
                     probe.assert_called_once_with(model, KEY)
                     self.assertEqual(record["probe"], probe_of(model))
                 self.assertNotIn("omp", record)
+
+    def test_a_record_field_holding_the_key_is_replaced_in_the_printed_result_and_named(self):
+        # The gateway's error type echoes the key: the record that reaches the pod's log holds none
+        # of it, and names itself among the files that held it, so the driver refuses the preflight.
+        model = "anthropic/claude-opus-5-5"
+        echoed = {"type": "error", "error": {"type": "authentication_error " + KEY.decode(), "message": "refused"}}
+        url, _ = self.gateway([(401, echoed)])
+        printed = io.StringIO()
+        with mock.patch.dict(os.environ, {SANDBOX.MODE_VARIABLE: "preflight", SANDBOX.PROBE_MODEL_VARIABLE: model}), \
+                mock.patch.object(SANDBOX, "checked", return_value=([], None)), \
+                mock.patch.object(SANDBOX, "layout_of", return_value=LAYOUT), \
+                mock.patch.object(SANDBOX, "gateway_key", return_value=KEY), \
+                mock.patch.object(SANDBOX, "GATEWAY_URL", url), \
+                contextlib.redirect_stdout(printed):
+            SANDBOX.main()
+        files = JOB.result_of(printed.getvalue())
+        self.assertNotIn(KEY, b"".join(files.values()))
+        record = json.loads(files["record.json"])
+        self.assertEqual(record["keyFound"], ["record.json"])
+        self.assertEqual(record["probe"]["calls"][0]["error"], "authentication_error " + SANDBOX.KEY_REDACTION.decode())
 
     def test_the_gateway_key_is_redacted_from_every_file(self):
         files = {"a": b"x " + KEY + b" y " + KEY, "b": b"nothing"}

@@ -51,10 +51,12 @@ Each request, once, in the inventory's order (point 6):
   holds ends there: `finish_judgement` gives `never_decide:waiting-legion-root` with no judge.
   Before each `started.json`, the sandbox's preflight runs (`preflight`): the sandbox's Job with
   no bundle, every check of it made and made again here, and its calls of point 2's model to
-  point 2's gateway with the Job's own key, each of which must be answered with a message
-  (`s10_sandbox.probe_refusal`); its result kept under `preflights/`. Any failure stops the run
-  before the request has started, so a gateway that refuses the judges' model, from the run's
-  start or from a later request, costs no request, and the same command resumes once it answers.
+  point 2's gateway with the Job's own key, each a session of its own and each of which must be
+  answered with a message by that model (`s10_sandbox.probe_refusal`); its result kept under
+  `preflights/`. Any failure stops the run before the request has started, so a refusal the probe
+  meets, at the run's start or before a later request, costs no request, and the same command
+  resumes once the gateway answers. A refusal that starts after a passed probe can still make that
+  request's deviation.
 - Else the five bundles and the five calls are kept under `--out`, and only then is the request
   sent to the sandbox (`s10_sandbox.py`, one Kubernetes Job, `s10_job.py`), whose one `omp -p`
   makes those five calls. Its result is read from the Job's log, the Job is deleted, and every
@@ -632,6 +634,7 @@ def preflight(context):
         refusal = SANDBOX.probe_refusal(record.get("probe"), context.pins.model)
         if refusal is not None:
             problems.append(refusal)
+    held = sorted(set(held) | set((record or {}).get("keyFound") or []))
     if held:
         problems.append(f"the gateway key's bytes were in the preflight's {held}")
     if problems:

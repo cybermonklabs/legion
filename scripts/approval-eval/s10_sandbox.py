@@ -34,10 +34,11 @@ sandbox) with the bundles and the calls sent beside it. In order, before any jud
 Each of those refusals stops the run, since every later request would meet the same sandbox. The
 driver's preflight, made before each request starts, is named so (`MODE_VARIABLE`) and sends no
 file: every check above, no judge, and then `PROBE_CALLS` calls of point 2's model, which the
-driver names (`PROBE_MODEL_VARIABLE`), to point 2's gateway with the Job's own key
-(`probe_gateway`): the path each judge's calls take, from this pod through its egress to the
-gateway and on to the model. The driver refuses the preflight unless each call was answered with
-a message (`probe_refusal`), so no request starts while the gateway refuses the judges.
+driver names (`PROBE_MODEL_VARIABLE`), to point 2's gateway with the Job's own key, each in a
+session of its own (`probe_gateway`): the path each judge's calls take, from this pod through its
+egress to the gateway and on to the model. The driver refuses the preflight unless each call was
+answered with a message by that model (`probe_refusal`), so no request starts while the probe
+finds the gateway refusing the judges' model.
 
 Then, as point 5 has it (version 6), it records the recursive relative-path and type manifests of
 the work tree, `WORK`, and the skill tree (`manifests_now`): the first must hold exactly
@@ -73,6 +74,7 @@ import subprocess
 import sys
 import tarfile
 import urllib.parse
+import uuid
 
 # The runtime of point 2, by content: what the shadow run's own session measured in its pod.
 OMP = "/opt/omp/bin/omp"
@@ -224,14 +226,17 @@ MODES = ("preflight", "request")
 GATEWAY_URL = "http://model-gateway.model-gateway.svc.cluster.local:4000/v1/messages"
 # The variable the driver names point 2's model in for the preflight's calls, as `provider/model`.
 PROBE_MODEL_VARIABLE = "S10_PROBE_MODEL"
-# How many calls of that model the preflight makes, each asking for one token, and how long each
-# may take in seconds: a gateway that refuses one call in three passes ten calls with odds of
-# (2/3)^10, under 2 in 100, and the first refused call ends the probe, so a refusing gateway costs
-# one timeout at most within the preflight's deadline.
-PROBE_CALLS = 10
+# How many calls of that model the preflight makes, each asking for one token in a session of its
+# own, and how long each blocking step of a call may wait, in seconds. The gateway pins each session
+# to one of the model's organizations by its id, as it pins each judge's session, so where a share w
+# of sessions is refused, thirty calls all pass with odds of (1 - w)^30: under 1 in 20 for w = 1/10,
+# and about 5 in a million for w = 1/3, where one of the model's two organizations refuses every
+# session and takes a third of them. The first call not answered ends the probe, and the preflight
+# Job's deadline bounds the whole probe.
+PROBE_CALLS = 30
 PROBE_TIMEOUT = 60
 PROBE_PROMPT = "Reply with the one word: ready."
-# How much of a refused call's error message the record keeps.
+# How much of a refused call's error message, or of its body where it gives none, the record keeps.
 PROBE_MESSAGE_WIDTH = 300
 
 # The lines the result is printed in, on the pod's log.
@@ -605,9 +610,9 @@ def redact_key(files, key):
 
 def probe_call(parts, body, headers, timeout, key):
     """One call of the preflight's probe, as `probe_gateway` records it: its status, None where
-    none came in `timeout` seconds, and the answer's `type` and `model`; for a call not answered
-    200 with a message, also its error and the start of the message its body gives, with the
-    key's bytes replaced before the message is cut."""
+    none came, and the answer's `type` and `model`; for a call not answered 200 with a message,
+    also its error and the start of the message its body gives, with the key's bytes replaced
+    before the message is cut. `timeout` bounds each blocking step of the call, not the call."""
     connection = http.client.HTTPConnection(parts.hostname, parts.port or 80, timeout=timeout)
     try:
         connection.request("POST", parts.path, body=body, headers=headers)
@@ -632,37 +637,49 @@ def probe_call(parts, body, headers, timeout, key):
     return made
 
 
-def probe_gateway(model, key, url=GATEWAY_URL, calls=PROBE_CALLS, timeout=PROBE_TIMEOUT):
-    """The preflight's calls of `model` (point 2's, as `provider/model`) to the gateway at `url`,
-    each sent as a judge's `anthropic-messages` call is, with `key`, the Job's own gateway key,
-    and asking for one token: `calls` of them, or fewer where one is not answered 200 with a
-    message, which ends the probe. Its record names the model and each call (`probe_call`), never
-    a key, a header or a whole body."""
-    parts = urllib.parse.urlsplit(url)
-    body = json.dumps({"model": str(model).partition("/")[2], "max_tokens": 1,
-                       "messages": [{"role": "user", "content": PROBE_PROMPT}]}).encode("utf-8")
+def probe_gateway(model, key, url=None, calls=PROBE_CALLS, timeout=PROBE_TIMEOUT):
+    """The preflight's calls of `model` (point 2's, as `provider/model`) to the gateway at `url`
+    (`GATEWAY_URL` unless a test names another), on the endpoint and model group a judge's calls
+    take, with `key`, the Job's own gateway key: `calls` of them, or fewer where one is not answered
+    200 with a message, which ends the probe. Unlike a judge's call, each asks for one token, with no
+    thinking and no stream, so it shows that the gateway serves the model, not how it serves a long
+    turn. Each call is a session of its own, named in `metadata.user_id` in the form whose session
+    id the gateway reads, so the gateway pins each call to an organization by that id as it pins
+    each judge's session, and not every call to one organization by their shared text. Its record
+    names the model and, for each call, its session and what `probe_call` records; never a key or a
+    header, and of a body at most `PROBE_MESSAGE_WIDTH` characters."""
+    parts = urllib.parse.urlsplit(url or GATEWAY_URL)
     headers = {"content-type": "application/json", "anthropic-version": "2023-06-01"}
     if key:
         headers["x-api-key"] = key.decode("utf-8", "replace")
     made = []
     while len(made) < calls and (not made or "error" not in made[-1]):
-        made.append(probe_call(parts, body, headers, timeout, key))
+        session = f"s10-preflight-{uuid.uuid4()}"
+        body = json.dumps({"model": str(model).partition("/")[2], "max_tokens": 1,
+                           "metadata": {"user_id": f"user_s10_account_preflight_session_{session}"},
+                           "messages": [{"role": "user", "content": PROBE_PROMPT}]}).encode("utf-8")
+        made.append({"session": session, **probe_call(parts, body, headers, timeout, key)})
     return {"model": model, "calls": made}
 
 
 def probe_refusal(probe, model):
     """Why the preflight's probe shows that the gateway does not serve `model`, point 2's, to the
     sandbox, or None: the probe named `model`, and made `PROBE_CALLS` calls, each answered 200 with
-    a message."""
+    a message by `model`, under its own name or its name without the provider, as
+    `s10_transcripts.model_problems` holds a judge's served model."""
     if not isinstance(probe, dict) or probe.get("model") != model or not isinstance(probe.get("calls"), list):
         return f"the preflight recorded no probe of the judges' model {model}"
+    served = {model, str(model).split("/", 1)[-1]}
     for index, call in enumerate(probe["calls"], 1):
         call = call if isinstance(call, dict) else {}
         if call.get("status") != 200 or call.get("type") != "message":
             said = f" ({call.get('error')}: {call.get('message')})" if call.get("error") else ""
             return (f"call {index} of the preflight's {PROBE_CALLS} calls of {model} to the gateway was answered "
                     f"{call.get('status')} with no message{said}, so no request starts while the gateway refuses "
-                    "the judges")
+                    "the judges' model")
+        if call.get("model") not in served:
+            return (f"call {index} of the preflight's {PROBE_CALLS} calls of {model} to the gateway was answered by "
+                    f"{call.get('model')!r}, so no request starts while the gateway serves the judges another model")
     if len(probe["calls"]) != PROBE_CALLS:
         return f"the preflight made {len(probe['calls'])} calls of {model} to the gateway, not {PROBE_CALLS}"
     return None
@@ -716,8 +733,8 @@ def run_omp(environ):
 
 def collected(record, listing, omp_output):
     """The files the result carries: the listing, omp's output, every transcript, the answers, and
-    the record last, each with the gateway key's bytes replaced; the record names the files that
-    held them (`keyFound`)."""
+    the record last, each with the gateway key's bytes replaced, the record's own text too; the
+    record names the files that held them (`keyFound`)."""
     files = {"listing.txt": ("\n".join(listing) + "\n").encode("utf-8")}
     if omp_output is not None:
         files["omp-stdout.txt"], files["omp-stderr.txt"] = omp_output
@@ -729,8 +746,14 @@ def collected(record, listing, omp_output):
     if os.path.exists(RESULTS_FILE):
         with open(RESULTS_FILE, "rb") as handle:
             files["results.json"] = handle.read()
-    files, record["keyFound"] = redact_key(files, gateway_key())
-    files["record.json"] = (json.dumps(record, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    key = gateway_key()
+    files, record["keyFound"] = redact_key(files, key)
+    text = (json.dumps(record, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    if key and key in text:
+        # A field of the record (an answer the probe kept, say) held the key: it is named, and replaced.
+        record["keyFound"] = [*record["keyFound"], "record.json"]
+        text = (json.dumps(record, indent=2, sort_keys=True) + "\n").encode("utf-8").replace(key, KEY_REDACTION)
+    files["record.json"] = text
     return files
 
 
