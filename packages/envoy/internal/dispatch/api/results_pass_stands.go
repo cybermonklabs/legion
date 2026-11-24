@@ -57,7 +57,7 @@ func passStandsOf(check model.CheckBlock, compared comparison) model.CheckPassSt
 	if compared.reason == model.ReasonRepositoryUnreadable {
 		return model.CheckPassStands{Answer: model.PassStandsUnknown}
 	}
-	if (len(compared.subjects) == 0 && check.CI != nil && check.CI.State == model.CIStateUnread) || compared.unordered {
+	if len(compared.subjects) == 0 && check.CI != nil && check.CI.State == model.CIStateUnread {
 		return model.CheckPassStands{Answer: model.PassStandsUnknown, Reason: model.PassStandsReasonReadFailed}
 	}
 	conflicted := passAndFailCommits(check)
