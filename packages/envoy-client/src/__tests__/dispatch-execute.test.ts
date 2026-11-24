@@ -16709,6 +16709,64 @@ describe("executeDispatchTool", () => {
       details: { issue: "DSP-42" },
     });
   });
+
+  // dispatch://KEY/comments names the issue's comments: dispatch read asks the route that lists
+  // them, GET /api/v1/issues/{key}/comments, and nothing else, and prints them in the route's
+  // order, each with its id, author and time, its quote, the comment it replies to and its body.
+  test("reads an issue's comments from a Dispatch comments reference", async () => {
+    const requested: string[] = [];
+    const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
+      const target = new URL(String(url));
+      requested.push(target.pathname);
+      if (target.pathname === "/api/v1/issues/ACME-10/comments") {
+        return response([
+          {
+            id: "c-1",
+            issue_key: "ACME-10",
+            author: { kind: "user", id: "alice" },
+            body: "Split the export in two: CSV first.",
+            anchor: { quote: "CSV and PDF export" },
+            reply_to: null,
+            created_at: "2026-11-20T09:00:00Z",
+          },
+          {
+            id: "c-2",
+            issue_key: "ACME-10",
+            author: { kind: "session", id: "session-7" },
+            body: "Agreed.",
+            reply_to: "c-1",
+            created_at: "2026-11-20T10:00:00Z",
+          },
+        ]);
+      }
+      throw new Error(`unexpected request: ${target.pathname}`);
+    };
+
+    const result = await executeDispatchTool({
+      tool: "dispatch_read",
+      args: { ref: "dispatch://ACME-10/comments" },
+      cwd: "/workspace",
+      host: "omp",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+
+    expect(requested).toEqual(["/api/v1/issues/ACME-10/comments"]);
+    expect(result).toEqual({
+      text: [
+        "Comments: ACME-10",
+        "c-1 · user alice · 2026-11-20T09:00:00Z",
+        "> CSV and PDF export",
+        "Body: Split the export in two: CSV first.",
+        "c-2 · session session-7 · 2026-11-20T10:00:00Z",
+        "Reply to: c-1",
+        "Body: Agreed.",
+      ].join("\n"),
+      details: { issue: "ACME-10" },
+    });
+  });
 });
 
 test("resolves an ask as the calling session", async () => {
