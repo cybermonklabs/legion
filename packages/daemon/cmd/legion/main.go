@@ -287,7 +287,7 @@ func checkConfig(configPath string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "repository rename: %s and %s are one repository wherever the daemon compares a name; keep the pair configured for as long as any record names %s\n",
 			rename.From, rename.To, rename.From)
 	}
-	deployment := daemon.Deployment(cfg)
+	deployment := cfg.Deployment()
 	for _, gap := range deployment.OpenFromConfiguration() {
 		fmt.Fprintln(stdout, gap.OpenLine())
 	}

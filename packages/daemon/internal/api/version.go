@@ -2303,7 +2303,7 @@ package api
 // release of main before this change lands, the one just before it included. The bound is named
 // by the entry and not by a number because a forward merge can move the number, as the history
 // below records, and a number written into prose stays where it was. That row does not fail
-// alone: `WaitingNotices` reads every waiting notice row of the project, `pacedCatchUps`
+// alone: `WaitingNotices` reads every waiting notice row of the project, `PacedCatchUpsTx`
 // returns on the first it cannot decode, and its one caller is the state read, so one row fails
 // `GET /legion/v1/state` for the whole project until somebody deletes it — the chain
 // `store/migrations/20261109060737_drop_awaiting_slot_notice.up.sql` records as this
