@@ -324,12 +324,20 @@ const legionClaimView = z.object({
    * running agent — a launcher that refused the start, a failed init container, a pod that never
    * became ready. Each is absent until it happens, and the two are separate because they answer
    * separate questions: a claim that cannot start and a claim that keeps dying are different
-   * faults. `lastReady` is when the claim's agent last said it could be prompted, which dates the
-   * death: a death older than it is one the agent running now has already survived. The daemon
-   * drops the start failure when the agent says it is ready, so one it records is from after
-   * `lastReady`; a claim an older daemon left waiting can still carry one from before. */
+   * faults. `lastReady` is when the claim's agent last said it could be prompted. `lastDeathAt`
+   * and `lastStartFailureAt` (contract 256) are when the daemon recorded the cause beside each:
+   * absent when that cause is, and beside a cause a daemon before 256 recorded, which wrote no
+   * time, except after a rollback (the daemon's migration 20261124073512's header); a cause
+   * recorded again with the same text carries its new time. `lastDeathAt` dates the
+   * death: one before `lastReady` is a death the agent running now has survived. The daemon drops
+   * the start failure, with its time, when the agent says it is ready, so one it records is from
+   * after `lastReady`; a claim an older daemon left waiting can still carry one from before, with
+   * no time. A caller in a pod whose plugin declares a contract below 256 is served neither time
+   * (the daemon's `withoutCauseTimes`). */
   lastDeathCause: nonEmptyString.optional(),
+  lastDeathAt: timestamp.optional(),
   lastStartFailure: nonEmptyString.optional(),
+  lastStartFailureAt: timestamp.optional(),
   lastReady: timestamp.optional(),
   /** What the daemon last saw this claim's agent do; absent for a claim whose agent has neither
    * begun a turn nor made a call the daemon saw. A caller in a pod whose plugin declares a
@@ -1359,7 +1367,7 @@ export const LegionProjectReleaseRequest = z.strictObject({
 });
 
 /** `api.ProjectReleaseResponse`, the body of `POST` and `GET /legion/v1/operator/project/release`
- * and the state's `projectRelease` (contract 253): the release's record id (none on a dry run),
+ * and the state's `projectRelease` (contract 258): the release's record id (none on a dry run),
  * when it started and when it deletes every pod still waiting (`boundAt`), that `bound` as a Go
  * duration, when it finished and when a boot ended it (`endedBy` `boot`), each absent until it
  * happens, and its result: one line per Sandbox of the project and one per claim it stopped,
@@ -1571,8 +1579,8 @@ const legionPaused = z.object({
  * open, and it is optional for the reason `wakesWaiting` is: the route strips it for a caller below
  * 228, read the same way (`api.stateFor`, `withoutIntakeGiveUps`), since a reader before 228
  * refuses the key whether its lists are empty or not. `projectRelease` is the project's newest
- * project release, the body its own `GET` answers (contract 253), absent while none was ever
- * recorded and for a caller below 253, read the same way (`api.stateFor`, `withoutProjectRelease`).
+ * project release, the body its own `GET` answers (contract 258), absent while none was ever
+ * recorded and for a caller below 258, read the same way (`api.stateFor`, `withoutProjectRelease`).
  */
 export const LegionStateResponse = z.object({
   daemon: daemonInfo.optional(),
@@ -2048,11 +2056,17 @@ export const LegionOperatorClaimResponse = z.object({
   lastTurnEnd: timestamp.optional(),
   /** Why the claim's process was last found gone, why its last start did not produce a running
    * agent, and when its agent last said it could be prompted; each absent until it happens. The
-   * two causes answer separate questions and never overwrite each other. `lastReady` dates the
-   * death; the daemon drops the start failure when the agent says it is ready.
+   * two causes answer separate questions and never overwrite each other. `lastDeathAt` and
+   * `lastStartFailureAt` (contract 256) are when the daemon recorded the cause beside each, absent
+   * when that cause is and beside a cause a daemon before 256 recorded, except after a rollback
+   * (the daemon's migration 20261124073512's header). `lastDeathAt` dates the
+   * death: one before `lastReady` is a death the running agent survived. The daemon drops the
+   * start failure, with its time, when the agent says it is ready.
    * `legion claims list --json` serves them. */
   lastDeathCause: nonEmptyString.optional(),
+  lastDeathAt: timestamp.optional(),
   lastStartFailure: nonEmptyString.optional(),
+  lastStartFailureAt: timestamp.optional(),
   lastReady: timestamp.optional(),
   /** What the daemon last saw this claim's agent do; absent for a claim whose agent has neither
    * begun a turn nor made a call the daemon saw. These routes are the only surface a
@@ -2184,7 +2198,7 @@ export const LegionProjectResumeResponse = z.object({
 });
 
 /** `api.PauseHeldPodView` — one pod a pause still holds, as a refused project release names it
- * (contract 253): the pod's `issue`, the `pause` that holds it, `heldAt`, when the hold began, and
+ * (contract 258): the pod's `issue`, the `pause` that holds it, `heldAt`, when the hold began, and
  * `claims`, the claims of the pod stored suspended by `released`, the source a pause stops a role
  * by, in token order and never null. An operator's `legion claims resume --claim <token>` of one
  * of them runs a role of the pod again, and that role's ready ends the hold. */
@@ -2201,11 +2215,11 @@ const legionPauseHeldPod = z.object({
  * `PAUSE_UNAVAILABLE` names the `setting` that turns the pause off, and none from a daemon that
  * runs no workflow; `PROJECT_ALREADY_PAUSED` and `PROJECT_PAUSED` name the `pause` that stands;
  * `PROJECT_NOT_PAUSED` names the `lastPause`, where one has ended. `legion project release`'s
- * `PROJECT_PAUSED` (contract 253) names the `pause` where one stands and `heldPods`, each pod a
+ * `PROJECT_PAUSED` (contract 258) names the `pause` where one stands and `heldPods`, each pod a
  * pause still holds, where one does: the release of a daemon process that has run none refuses
  * while the project is paused and while a pod that a pause stopped is still held after the resume,
  * since it would delete such a pod unread. A pause while a project release runs answers
- * `PROJECT_RELEASING` (contract 253), which names nothing beside its sentence, and the sentence
+ * `PROJECT_RELEASING` (contract 258), which names nothing beside its sentence, and the sentence
  * names the release. A blank reason's refusal (`PAUSE_REASON_REQUIRED`) names nothing beside its
  * sentence and is the plain refusal (`LegionErrorResponse`). The daemon client reads a refusal's
  * code and sentence alone (`LegionErrorResponse`), and the sentence says which pause it is, so
@@ -2393,7 +2407,7 @@ export const LegionIssueStatusRequest = z.strictObject({
  * that is not a controller's (`CONTROLLER_REQUIRED`), a blank reason (`PAUSE_REASON_REQUIRED`),
  * a deployment whose configuration cannot hold a pause (`PAUSE_UNAVAILABLE`), a project that
  * is paused already (`PROJECT_ALREADY_PAUSED`) and a pause while a project release of the project
- * runs (`PROJECT_RELEASING`, contract 253). */
+ * runs (`PROJECT_RELEASING`, contract 258). */
 export const LegionProjectPauseRequest = z.strictObject({
   grantId: nonEmptyString,
   reason: nonEmptyString,

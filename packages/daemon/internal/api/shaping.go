@@ -584,6 +584,7 @@ var stateNarrowings = []stateNarrowing{
 	{contract: intakeGiveUpsContract, state: withoutIntakeGiveUps, dropped: "intakeGiveUps"},
 	{contract: podHoldContract, issue: withoutPodHold, dropped: "the issues' podHold"},
 	{contract: priorityContract, issue: withoutPriority, dropped: "the issues' priority and their waitingLine's priority"},
+	{contract: causeTimesContract, issue: withoutCauseTimes, dropped: "the claim views' lastDeathAt and lastStartFailureAt"},
 	{contract: projectReleaseContract, state: withoutProjectRelease, dropped: "projectRelease"},
 }
 
@@ -1084,10 +1085,10 @@ func withoutPodHold(issue Issue) (Issue, bool) {
 	return issue, moved
 }
 
-// priorityContract is the daemon contract that added each issue's own Dispatch `priority` and its
-// waitingLine's `priority`, the priority that placed it in the line (version.go's 250). A plugin
-// before it is served every issue without either key (withoutPriority). It is a literal of its own
-// and never DaemonAPIVersion, for the reason assignmentPlanContract is, and answers.go's
+// priorityContract is the daemon contract that added each issue's own Dispatch `priority` and
+// its waitingLine's `priority`, the priority that placed it in the line (version.go's 250). A
+// plugin before it is served every issue without either key (withoutPriority). It is a literal
+// of its own and never DaemonAPIVersion, for the reason assignmentPlanContract is, and answers.go's
 // SupportedContracts names the constant.
 const priorityContract = 250
 
@@ -1105,7 +1106,7 @@ func withoutPriority(issue Issue) (Issue, bool) {
 	return issue, moved
 }
 
-// projectReleaseContract is the daemon contract that added the project release (version.go's 253,
+// projectReleaseContract is the daemon contract that added the project release (version.go's 258,
 // dispatch://INFRA-3583). It added keys to two answers a plugin parses: `projectRelease`, the
 // project's newest project release and its result, to the state, and `heldPods`, each pod a pause
 // still holds, to a refusal (api.PauseFailure, which the release's own route answers while a pause
@@ -1115,23 +1116,43 @@ func withoutPriority(issue Issue) (Issue, bool) {
 // reads the state with a strict schema and would refuse the whole body for a key it does not name,
 // and one built after strips the key instead, so the strip is what keeps the release from a caller
 // that did not ask for it. The roles a running release asks are such callers, and they are asked to
-// push and end their turn on that same body. repositoriesLiveContract stands below it, and the four
+// push and end their turn on that same body. repositoriesLiveContract stands below it, and the five
 // rows of stateNarrowings between the two are assignmentPlanContract's, which takes each
 // assignment's `plan` off below 220, intakeGiveUpsContract's, which takes `intakeGiveUps` off below
-// 228, podHoldContract's, which takes each issue's `podHold` off below 246, and priorityContract's,
-// which takes each issue's `priority` and its waiting line's `priority` off below 250, so a caller
-// at or above repositoriesLiveContract and below this contract, 202 to 252, is served the `live`
-// block and not `projectRelease`. The release's six enumerated fields (answers.go's releaseOutcomes
-// and the rows beside it) arrived with the key at this contract and ride its band, so no value
-// strip is owed. The release's own two routes answer the `legion` command, which is built from the
-// daemon's own commit, so their bodies are no row of answers.go's Answers.
+// 228, podHoldContract's, which takes each issue's `podHold` off below 246, priorityContract's,
+// which takes each issue's `priority` and its waiting line's `priority` off below 250, and
+// causeTimesContract's, which takes each claim view's `lastDeathAt` and `lastStartFailureAt` off
+// below 256, so a caller at or above repositoriesLiveContract and below this contract, 202 to 257,
+// is served the `live` block and not `projectRelease`. The release's six enumerated fields
+// (answers.go's releaseOutcomes and the rows beside it) arrived with the key at this contract and
+// ride its band, so no value strip is owed. The release's own two routes answer the `legion`
+// command, which is built from the daemon's own commit, so their bodies are no row of answers.go's
+// Answers.
 //
 // It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
-// that constant, and the contract these keys arrived at stays where it is. It moves only with
-// the number version.go's dispatch://INFRA-3583 entry declares, and it is the last number of
-// answers.go's SupportedContracts, which names the constant rather than its number for that
-// reason, as it names cachesSourceContract.
-const projectReleaseContract = 253
+// that constant, and the contract these keys arrived at stays where it is. It moves only with the
+// number version.go's dispatch://INFRA-3583 entry declares, and it is the last number of
+// answers.go's SupportedContracts, which names the constant rather than its number for that reason,
+// as it names cachesSourceContract.
+const projectReleaseContract = 258
+
+// causeTimesContract is the daemon contract that added each claim view's `lastDeathAt` and
+// `lastStartFailureAt`, the time the daemon recorded the claim's `lastDeathCause` and its
+// `lastStartFailure` (version.go's 256). A plugin before it is served
+// every claim view without the two keys (withoutCauseTimes): its reader strips a key it does not
+// name, so the band is what keeps the times from a caller that did not ask for them rather than
+// what keeps such a caller reading. The two are one band because each dates the cause beside it
+// and both arrive at this one number. The causes themselves stay as stateMachineContract serves
+// them. The contract removed no key and added no value to an enumeration: the two are times. It
+// put the same keys on the operator claim too, and the operator routes are not served down,
+// because their reader is the `legion` built with this daemon. priorityContract stands below it
+// with no row of stateNarrowings between the two, so a caller from that contract to 255 is served
+// 250's keys.
+//
+// It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
+// that constant, and the contract the keys arrived at stays where it is. It moves only with this
+// change's own number, and answers.go's SupportedContracts names the constant.
+const causeTimesContract = 256
 
 // withoutGatedSteps is the issue with no `gatedSteps`, the field gatedStepsContract added to the
 // state; nothing else of that contract is on the route. The field is `omitempty`, and a root of a
@@ -1205,6 +1226,16 @@ func withoutAssignmentPlans(issue Issue) (Issue, bool) {
 		issue.Assignments[i].Plan = ""
 	}
 	return issue, true
+}
+
+// withoutCauseTimes is the issue with no claim view carrying `lastDeathAt` or
+// `lastStartFailureAt`, the two keys causeTimesContract added to the claim views; every other key
+// of each view stays, its causes among them.
+func withoutCauseTimes(issue Issue) (Issue, bool) {
+	return withEachClaimView(issue, func(view ClaimView) ClaimView {
+		view.LastDeathAt, view.LastStartFailureAt = nil, nil
+		return view
+	})
 }
 
 // withoutRepositoryApps is state whose `repositories` block carries no `apps` on any entry of

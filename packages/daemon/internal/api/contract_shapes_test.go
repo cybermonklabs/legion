@@ -530,7 +530,7 @@ func stateCarryingEveryDeclaredValue(t *testing.T) State {
 	}
 }
 
-// releaseCarryingEveryDeclaredValue is the third state body's project release (contract 253): a
+// releaseCarryingEveryDeclaredValue is the third state body's project release (contract 258): a
 // release a boot ended, which carries every value of the six fields answers.go's EnumeratedFields
 // declares under `projectRelease`, and the three keys the populated state's finished release
 // (goldenProjectRelease) carries none of: `endedAt`, `endedBy` and the result's `failure`. One
@@ -721,7 +721,7 @@ func answerFixtures(t *testing.T) map[AnswerID]answerFixture {
 		// goldens hold (TestPauseRouteGoldens): the setting that turns the pause off, the
 		// pause that stands, and the last pause, ended, which between them carry every key of
 		// a PauseFailure but one, and the project release's refusal while a pause holds the
-		// project (contract 253), which carries that one, `heldPods`. Their pause is the
+		// project (contract 258), which carries that one, `heldPods`. Their pause is the
 		// controller's, richer than the goldens' operator's (controllerPause). The plan
 		// refusal names a cause of the whole plan and a cause of one task, the two kinds a
 		// reason takes.
@@ -2126,7 +2126,7 @@ type answerField struct {
 // of it carries `endedAt` or `endedBy`. Both are realised by the resume's answer, whose pause is
 // ended, and by the refusal's `lastPause`.
 //
-// The last is a dry run's mark on the project release the state carries (contract 253): the
+// The last is a dry run's mark on the project release the state carries (contract 258): the
 // state carries the project's newest recorded release, and a dry run is answered and never
 // recorded (ProjectReleaseResponse), so no state body carries `dryRun`. The release's own routes,
 // which answer a dry run, answer the `legion` command, and are no row of Answers.

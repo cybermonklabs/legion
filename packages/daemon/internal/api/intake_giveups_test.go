@@ -735,9 +735,10 @@ func TestAnOlderPluginContractGetsTheStateWithoutIntakeGiveUps(t *testing.T) {
 		t.Errorf("a caller at %d is served `intakeGiveUps` %s, want the state's %s", intakeGiveUpsContract, served, want)
 	}
 	// The caller stands below every row of stateNarrowings above the give-ups' row too, the pod
-	// hold's (podHoldContract), the waiting line's priority's (priorityContract) and the project
-	// release's (projectReleaseContract), so the log holds the give-ups' line first and then one
-	// line for each of those rows, each naming the caller's contract (narrowingsExpected).
+	// hold's (podHoldContract), the waiting line's priority's (priorityContract), the claim views'
+	// cause times' (causeTimesContract) and the project release's (projectReleaseContract), so the
+	// log holds the give-ups' line first and then one line for each of those rows, each naming the
+	// caller's contract (narrowingsExpected).
 	lines := narrowingsExpected(populatedState(t), intakeGiveUpsContract-1)
 	if len(lines) == 0 || lines[0] != "intakeGiveUps" || len(narrowings) != len(lines) {
 		t.Fatalf("the daemon logged %+v for a caller at %d, want one line for each of %v, the first saying it dropped intakeGiveUps",
