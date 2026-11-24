@@ -1,0 +1,18 @@
+kind: Changed
+body: |-
+  `bun run gen:go` carries each tool argument's bounds into Go as `ToolField.Min` and
+  `ToolField.Max` (`min` and `max` in JSON): a text's length in UTF-16 units, a list's count of
+  items, or a number's value. `MAX_ISSUE_LABELS`, `ISSUE_LABEL_MAX` and `MAX_ISSUE_COMPONENTS` join
+  the limits `dispatch-api-limits.ts` exports, generated into Go as `contracts.MaxIssueLabels`,
+  `contracts.IssueLabelMax` and `contracts.MaxIssueComponents`, which the server enforces and the
+  issue tools take as their bounds. `dispatch_issue` and `dispatch_issue_update` refuse a
+  `components` of mode explicit with no ids, and of mode none with no reason or one Go's
+  `strings.TrimSpace` empties (`goBlankPattern`), as the server does; `dispatch_review` holds its
+  reason to the same rule. `dispatch_issue`'s `external` says it takes owner/repo#n and imports it
+  into the project the call names, answering an issue already imported there and refusing one
+  imported into another project with 400 `EXTERNAL_PROJECT_MISMATCH`. `dispatch_suggest`'s
+  `replace_with` says the replacement is markdown whose blocks stand where the quoted text stood
+  (over a heading's whole text, in the heading's place), that a table cell takes text alone, and
+  how to move a section with suggestions. `dispatch_doc_edit` says a find that opens with `# `
+  matches a heading at any level whose whole text is the rest, and `dispatch_read` names
+  `dispatch://KEY/comments`, an issue's comments.

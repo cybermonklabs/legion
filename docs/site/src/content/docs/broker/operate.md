@@ -627,7 +627,7 @@ broker refuses to start, naming the entry or the account, on:
   could then enrol the person's pods as its own workers;
 - a mapped account whose login service a `BROKER_VM_SERVICES` entry names, since the broker
   registers those services as owners a secret may name too;
-- a mapped account that `BROKER_EXCHANGE_ACCOUNTS` maps to another person;
+- a mapped account that `BROKER_EXCHANGE_ACCOUNTS` maps to another person or lists with no person;
 - a mapped account that a `BROKER_POD_REGISTRARS` entry names as its registrar, since the person's
   pod would then choose the session names other pods exchange under (a mapped account on the pod
   side of an entry is not refused);
@@ -756,7 +756,28 @@ setting says. A roll serves the previous release beside this one against one dat
 A pod trades its own projected ServiceAccount token, minted for `BROKER_EXCHANGE_K8S_AUDIENCE`, at
 the token exchange for a Dispatch access token. `BROKER_EXCHANGE_ACCOUNTS` lists the accounts whose
 tokens write as one person: in the one Dispatch project the entry names, or, for an entry that names
-no project (`<service account>==<person>`), wherever Dispatch's own rules let that person write.
+no project (`<service account>==<person>`), wherever Dispatch's own rules let that person write. An
+entry may name neither a person nor a project (`<service account>==`, or
+`<service account>===<session>` to fix its session): its tokens name no person and no project and
+name the account as their service, so they act as the account itself, write wherever Dispatch's own
+rules let a credential naming no project write, and are recorded under that account. That includes
+the writes that belong to the deployment rather than to one project and need no OAuth scope:
+priorities (`POST`, `PATCH` and `DELETE /api/v1/priorities`), a new project with its default
+assignee (`POST /api/v1/projects`), the delivery settings (`PUT /api/v1/settings/delivery`), a
+project's Legion daemon URL (`PUT` and `DELETE /api/v1/projects/{key}/legion/daemon`) and default
+repository (`PUT /api/v1/projects/{key}/default-repository`), and the delivery session groups
+(`POST`, `PATCH` and `DELETE /api/v1/delivery/session-groups`). The broker refuses to start on an
+entry that names a project and no person: an entry that names a project names its person, so no
+token held to a project is personless. A broker of a build older than the entry naming no person
+refuses to start on one, and an Envoy listener or a Dispatch of a build older than it answers such
+a token `401`, so deploy the broker, Dispatch and every Envoy listener before you write one. For the
+same reason, before you roll the broker, Dispatch or an Envoy listener back to a build older than
+this release, remove every entry that names no person and redeploy the broker: an older broker
+refuses to start on such an entry and restarts in a loop, and an older Dispatch or listener answers
+the account's tokens `401`. Bring the session images' pi-envoy and claude-envoy builds that carry
+the same release's `dispatch` command there first too: an older `dispatch whoami` ignores
+Dispatch's `sign_in_required` and tells such a session that its writes are refused, though they
+succeed.
 `BROKER_EXCHANGE_READ_ACCOUNTS` lists the accounts whose tokens only read, as whitespace-separated
 `<service account>=<service>=<session>` entries, for example
 `BROKER_EXCHANGE_READ_ACCOUNTS=system:serviceaccount:example-ns:example-reader=example-reader=example-reader-session`.

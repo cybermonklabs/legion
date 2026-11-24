@@ -6,7 +6,6 @@ import type { MarginSection } from "../web/src/features/issue-page/page-structur
 import { CONTROL_LABELS } from "../web/src/features/issue-page/page-words";
 import { setLiveSessions } from "./agents";
 import {
-  baseUrlOf,
   claimIssue,
   createAsk,
   createComment,
@@ -16,6 +15,7 @@ import {
   createProject,
   getIssueEvents,
   getMyState,
+  handAskOn,
   patchIssue,
   putArchitectureSource,
   putIssueState,
@@ -23,7 +23,6 @@ import {
   requestApproval,
   reviewArtifact,
   syncArchitectureSource,
-  userHeaders,
 } from "./api";
 import { seedFakeGithub } from "./fake-github-helpers";
 
@@ -228,14 +227,14 @@ export async function seedDetailsIssue(): Promise<DetailsSeed> {
     blockTitles.push(waiter.title);
   }
   // The spec's request waits on ONE's assignee, alice, until she hands it on to bob, who has
-  // signed in (`PUT /api/v1/asks/{id}/asked-of`, which `e2e/api.ts` has no wrapper for).
+  // signed in (`PUT /api/v1/asks/{id}/asked-of`).
   const requested = await requestApproval(
     one.primary_artifact_id ?? "",
     { summary: "Read it back." },
     asPlanner
   );
   if (requested.ask === null) throw new Error("ONE's approval request opened no ask");
-  await handOn(requested.ask.id, "bob");
+  await handAskOn(requested.ask.id, "bob");
   await createComment(one.key, { body: UNPINNED_COMMENT });
   await createAsk(one.key, { question: QUESTION }, asPlanner);
   const pinned = await createComment(one.key, {
@@ -268,20 +267,4 @@ export async function seedDetailsIssue(): Promise<DetailsSeed> {
     priorityId: priority.id,
     titles: { blocks: blockTitles, three: three.title },
   };
-}
-
-/** Hands the open ask `id` to `login`, as alice does from its card. */
-async function handOn(id: string, login: string): Promise<void> {
-  // The person it is handed to has signed in, which the route requires of them.
-  await userHeaders(login);
-  const response = await fetch(new URL(`/api/v1/asks/${id}/asked-of`, baseUrlOf()), {
-    body: JSON.stringify({ asked_of: login }),
-    headers: { ...(await userHeaders("alice")), "Content-Type": "application/json" },
-    method: "PUT",
-  });
-  if (!response.ok) {
-    throw new Error(
-      `handing ${id} on to ${login} failed: ${response.status} ${await response.text()}`
-    );
-  }
 }

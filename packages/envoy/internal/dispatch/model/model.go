@@ -81,6 +81,14 @@ type Credential struct {
 	// requirement; it narrows what this credential may call rather than widening it. False for
 	// every other credential.
 	ReadOnly bool
+	// ProjectScope is a broker-issued token's project scope as the broker answered it
+	// (ciphertoken.Caller.ProjectScope): `named` for a token an operator's entry mapped, `person`
+	// for one acting as its person or for a machine nobody signed in on, `none` for a read-only
+	// token. It is what tells a token that names a service and no person apart: a `named` one is
+	// an account entry's that names no person, whose writes are recorded under its account
+	// (writeNeedsASignedInPerson), and a `person` one is a machine's that nobody signed in on,
+	// which writes nothing. Empty for every other credential.
+	ProjectScope string
 }
 
 // Holds reports whether the credential holds one scope. A nil Credential holds none, so a
@@ -867,6 +875,11 @@ type SearchResult struct {
 	// Ask is set on ask hits and nil on every other kind; an ask removed between the search and
 	// the read of its state keeps it nil too.
 	Ask *SearchAsk `json:"ask,omitempty"`
+	// Author is who wrote a comment, a message or an ask hit, read from the item's row once
+	// GET /api/v1/search ran (api.attachAskStates, api.attachItemAuthors), so a reader of the hit
+	// alone can say who said it. It is nil on an issue hit and a document hit, and on an item
+	// removed after the search ran.
+	Author *Actor `json:"author,omitempty"`
 }
 
 // SearchQueryReading is how GET /api/v1/search read the words it was given: Operators names the
