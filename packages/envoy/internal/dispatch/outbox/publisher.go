@@ -139,6 +139,11 @@ type Deps struct {
 	// model.MentionCopyHeldWarnAfter, which is what cmd/dispatch runs. A test shortens it, so it
 	// need not wait a claim lease out; it is unexported, so no importer can.
 	heldCopyWarnAfter time.Duration
+	// clock is the time a role forward's acknowledgement is judged at (roleForward.forward,
+	// roles.ForwardStoredTooLate), and nil is time.Now, which is what cmd/dispatch runs. A test
+	// moves it past a forward's fence and acknowledgement window while the forward waits, which no
+	// test could otherwise wait out; it is unexported, so no importer can.
+	clock func() time.Time
 	// lanes is what the batches of one scan share: the owners they hold in flight, the outbox
 	// pool's one statement at a time, and the wake a released owner gives the scan (Outbox.scan).
 	// A batch run with none - one by itself, as this package's tests run it - holds no owner,
@@ -153,6 +158,14 @@ func (d Deps) forwardAckTimeout() time.Duration {
 		return d.forwardAckWait
 	}
 	return roleForwardAckTimeout
+}
+
+// now is the outbox's clock (clock), time.Now unless a test set one.
+func (d Deps) now() time.Time {
+	if d.clock != nil {
+		return d.clock()
+	}
+	return time.Now()
 }
 
 // countPublishFailure counts one destination of a publish attempt that did not reach it, under

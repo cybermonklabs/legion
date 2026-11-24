@@ -652,7 +652,11 @@ role message costs the read of its topic and role and nothing
 else. A forward to a holder from the role lane, the publish route or Dispatch's outbox whose
 resolution is 55 minutes old when its publish starts (`roles.ForwardFenceAge`, the keep window
 less one sweep interval) resolves the holder again first, so a forward the previous holder was
-chosen for is stored inside the window a takeover's passes read. Delivery stays at least once: a
+chosen for is stored inside the window a takeover's passes read. The outbox judges the stream's
+acknowledgement of its forward the same way: one stored later than that fence and its
+acknowledgement window (`roleForwardAckTimeout`, 5 s) after the resolution is no delivery
+(`roles.ForwardStoredTooLate`), and the event stays pending for the next read to resolve the
+holder again. Delivery stays at least once: a
 frame the previous holder was being handed at the takeover, one it acknowledged out of order above
 its floor, and every role message of the hour before a takeover whose holder's floor is unknown
 can reach both sessions.
@@ -710,7 +714,15 @@ from the kept lane by its sequence, under the next attempt (`bus.KeptAttemptMsgI
 it to the session that holds the role by then (`keepExpiredCopiesAgain`); nothing else of the
 event is sent again. After the third keep (`maxRoleKeeps`) has expired, the outbox stops and
 appends a `role.undelivered` event on the event's own issue, document or project, written by a
-system actor so it reaches no role, which a person reads in that owner's history. An
+system actor so it reaches no role, which a person reads in that owner's history. It also notes
+the event in `outbox_role_undelivered_notes` for a message on the event's issue, or on the issue of
+the document a document event is about: the first such note of a role on an issue opens a
+one-hour window, every later note of that role there joins it, and once the hour has ended the
+outbox posts one message naming every event of the window, through the issue message route's own
+writer (`api.Background.PostSystemMessage`) under the same system actor, so it wakes no route
+either. The window is kept in Postgres, so a restart does not lose it. An event of no issue and
+of no issue's document never has a copy kept for a role, since the route is read from the issue
+alone (`readBatchSQL`, `coalesce(i.route, ai.route)`), and such an expiry logs one Error line. An
 `unresponsive` holder's event stays pending and is retried, as a read that failed is, until that
 session answers or its record passes the gone horizon: a copy kept for it would spend one of
 those three keeps on a session that is still alive. The outbox raises no exception.

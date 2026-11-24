@@ -790,6 +790,18 @@ func (f *roleForward) send(ctx context.Context, deps Deps, sender bus.Sender, it
 // event resolves the holder again: a takeover's copy of the previous holder's role messages reads
 // that holder's subject for the record's life (cmd/listener role_takeover.go), and a forward
 // started on a fresher resolution is stored where that copy reads it.
+//
+// The fence bounds when the send starts and not when the stream stores it: a forward that passed
+// the fence and then stalled - a goroutine the machine did not run, a connection that held the
+// publish - can be stored on the previous holder's subject after that takeover record has ended,
+// and no copy would carry it to the role's next holder. So the stream's acknowledgement is judged
+// again on this process's clock (Deps.now): a forward stored later than roles.ForwardFenceAge and
+// its acknowledgement window (Deps.forwardAckTimeout, the wait its Request runs under) after its
+// resolution is no delivery (roles.ForwardStoredTooLate). Its answer wraps
+// roles.ErrForwardStoredTooLate, so the destination stays pending and the next read of the event
+// resolves the holder again, as a stale resolution's does. The copy stored on the previous holder's
+// subject stays there, and the next holder is forwarded the event under the same key the stream
+// and its host drop a repeat of, so it takes it once.
 func (f *roleForward) forward(deps Deps, sender bus.Sender, item contracts.Envelope) <-chan error {
 	if now := time.Now(); roles.ResolutionTooOld(f.resolvedAt, now) {
 		age := now.Sub(f.resolvedAt)
@@ -799,10 +811,21 @@ func (f *roleForward) forward(deps Deps, sender bus.Sender, item contracts.Envel
 	}
 	item.DedupeKey = contracts.RoleForwardDedupeKey(item, f.holder)
 	subject := contracts.LegacyAgentSubject(f.holder)
-	return sender.Request(subject, item, bus.RequestOptions{
+	ackWindow := deps.forwardAckTimeout()
+	stored := sender.Request(subject, item, bus.RequestOptions{
 		MsgID:   bus.ForwardMsgID(item.DedupeKey, subject),
-		Timeout: deps.forwardAckTimeout(),
+		Timeout: ackWindow,
 	})
+	answer := make(chan error, 1)
+	go func() {
+		err := <-stored
+		if now := deps.now(); err == nil && roles.ForwardStoredTooLate(f.resolvedAt, now, ackWindow) {
+			err = fmt.Errorf("forward to %s: %w (resolved %s before the stream stored it)",
+				f.holder, roles.ErrForwardStoredTooLate, now.Sub(f.resolvedAt).Round(time.Second))
+		}
+		answer <- err
+	}()
+	return answer
 }
 
 // keep stores item on the role's kept lane (bus.KeptRoleSubject) with one JetStream publish,

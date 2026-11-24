@@ -257,7 +257,10 @@ for the role again, up to three times in all; a session that holds the role by t
 instead. If the third keep also ends with no session taking it, Dispatch stops and appends a
 `role.undelivered` event to the event's own issue, document or project. That event names the
 event, the role and how many times it was kept, and it shows in that issue's history. It
-notifies no route, so it is never itself sent to the role.
+notifies no route, so it is never itself sent to the role. Dispatch also posts a message on the
+issue, or on the issue of the document the event is about: one message for each role in each
+hour, posted when that hour ends, naming every event the role did not take on that issue in the
+hour. Dispatch writes the message itself, so it is not sent to the role either.
 
 ### What a restored session gets
 
