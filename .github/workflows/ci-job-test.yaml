@@ -288,9 +288,9 @@ on:
           scripts/daemon-contract-order.test.sh and what it tests.
         type: string
         required: false
-      worker_image_contract_order_test:
+      image_order_test:
         description: >-
-          ci.yaml's needs.changes.outputs.worker_image_contract_order_test:
+          ci.yaml's needs.changes.outputs.image_order_test:
           .github/scripts/worker-image-contract-order.test.sh and what it tests.
         type: string
         required: false
@@ -581,7 +581,7 @@ jobs:
         run: bash scripts/daemon-contract-order.test.sh
 
       - name: Test the worker image's contract order step (a scratch repository)
-        if: inputs.changes-result != 'success' || inputs.worker_image_contract_order_test == 'true'
+        if: inputs.changes-result != 'success' || inputs.image_order_test == 'true'
         run: bash .github/scripts/worker-image-contract-order.test.sh
 
       - name: Test the architecture-check action's go-path mode
