@@ -180,7 +180,7 @@ const roleClaimReleaseAttempts = 3
 // delete ctx abandoned may still land after this answer, and that is safe: it deletes only the
 // revision it read, the claim this release authorised, and a claim written since is kept.
 //
-// A delete that lost that condition (nats.ErrKeyExists) met a record written since the read, and
+// A delete that lost that condition (bus.IsCASConflict) met a record written since the read, and
 // the writers it could have met are told apart by reading the claim again rather than by
 // answering success to all of them: the release goes on while the record the re-read returned is
 // still the grant it read (RoleClaim.sameGrant) and it may still free that record
@@ -265,7 +265,7 @@ func (r *Registry) releaseReadRoleClaim(ctx context.Context, sessionID, role str
 // a role no record claims.
 //
 // The write is conditional on the revision the claim was read at, and a lost compare-and-swap
-// (nats.ErrKeyExists) is read the way the release's delete reads one, through the same loop
+// (bus.IsCASConflict) is read the way the release's delete reads one, through the same loop
 // (writeRoleClaim): the claim is read again and the mark written at the revision that record
 // stands at, up to roleClaimReleaseAttempts writes in all, while the record is still the claim
 // this hand-back read - the same session and the same grant (RoleClaim.sameGrant), still
@@ -381,7 +381,7 @@ func (r *Registry) releaseReadExpiredRoleClaim(ctx context.Context, role string,
 		return ExpiredRoleClaimReleased, nil
 	case errors.Is(err, nats.ErrKeyNotFound):
 		return ExpiredRoleClaimMissing, nil
-	case errors.Is(err, nats.ErrKeyExists):
+	case bus.IsCASConflict(err):
 		return ExpiredRoleClaimSuperseded, nil
 	default:
 		return ExpiredRoleClaimRetained, fmt.Errorf("release role %s's expired claim held by %s: %w", role, claim.HolderSessionID, err)

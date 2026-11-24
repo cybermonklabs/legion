@@ -216,6 +216,7 @@ var (
 // TestTheControllerPodRunsInTheProjectsSandbox's with its uid and the sandbox its shape records,
 // and `at=` naming the step: first-boot, second-boot, relaunch.
 func TestTheDaemonsControllerMovesIntoTheProjectsSandboxAtItsNextLaunch(t *testing.T) {
+	t.Parallel()
 	gvisor := controllerSandboxSetting{name: "gvisor", sandbox: config.SandboxConfig{Type: config.SandboxGVisor, MicroVM: controllerSandboxBlock()}}
 	microVM := controllerSandboxSetting{name: "microvm", sandbox: config.SandboxConfig{Type: config.SandboxMicroVM, MicroVM: controllerSandboxBlock()}}
 	for _, direction := range []struct {

@@ -74,10 +74,7 @@ type issueVolume struct {
 
 func newIssueVolume(t *testing.T) *issueVolume {
 	t.Helper()
-	realJJ, err := exec.LookPath("jj")
-	if err != nil {
-		t.Fatalf("workspace-init's tests drive a real jj: %v", err)
-	}
+	realJJ := fixturegit.CompiledJJ(t)
 	realGit, err := exec.LookPath("git")
 	if err != nil {
 		t.Fatalf("workspace-init's tests drive a real git: %v", err)

@@ -438,7 +438,7 @@ while [[ $# -gt 0 ]]; do
       account_and_file="${2#*=}"
       printf 'fake-token-for-%s\n' "${account_and_file%%=*}" >"${account_and_file#*=}"
       ;;
-    --code-flow) code_clients="$code_clients ${2%%=*}:$(stat -c %a "${2#*=}")" ;;
+    --code-flow) secret_and_uri="${2#*=}" && code_clients="$code_clients ${2%%=*}:$(stat -c %a "${secret_and_uri%%=*}"):${secret_and_uri#*=}" ;;
     --device-flow) device_clients="$device_clients ${2%%=*}:$(stat -c %a "${2#*=}")" ;;
     --sign-in-as) sign_in_as="$2" ;;
     *)
@@ -969,6 +969,10 @@ assert_instance_ready() {
     fail "$label did not point its broker at its own database with pool_max_conns=10: $(grep 'fake broker: database' "${work_dir}/logs/broker.log")"
   grep -qF "fake dispatch: database=${server_url}/dev_stack_dispatch_${run_suffix}${query} server-url=" "${work_dir}/logs/dispatch.log" ||
     fail "$label did not point Dispatch at its own database with the URL's query string alone: $(grep 'fake dispatch: database' "${work_dir}/logs/dispatch.log")"
+  # The issuer's one code-flow client is the broker's, with a 0600 secret and the approval page's
+  # loopback callback, which the real issuer registers and redirects to alone.
+  grep -qF "fake issuer: code-flow dev-stack-broker:600:http://127.0.0.1/signin/callback " "${work_dir}/logs/dev-oidc-issuer.log" ||
+    fail "$label did not serve the broker's code-flow client with its loopback callback: $(grep 'fake issuer: code-flow' "${work_dir}/logs/dev-oidc-issuer.log")"
   assert_pod_registrars "$label" "${work_dir}/logs/broker.log"
 }
 

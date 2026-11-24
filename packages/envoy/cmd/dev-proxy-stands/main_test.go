@@ -25,7 +25,9 @@ import (
 	"github.com/sjawhar/envoy/internal/cmdtest"
 )
 
-// buildStands builds the command into a directory of the test's own and returns its path.
+func TestMain(m *testing.M) { os.Exit(cmdtest.Main(m)) }
+
+// buildStands builds the command and returns its path.
 func buildStands(t *testing.T) string {
 	t.Helper()
 	return cmdtest.BuildCommand(t, cmdtest.Command{Name: "dev-airlock-stands", Env: append(os.Environ(), "GOTOOLCHAIN=go1.27.3")})

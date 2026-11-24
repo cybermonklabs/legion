@@ -34,15 +34,17 @@ var clusterRange = netip.MustParsePrefix("100.64.0.0/10")
 // it is spelled out here.
 var thisNetworkRange = netip.MustParsePrefix("0.0.0.0/8")
 
-// The IPv6 forms that carry an IPv4 address (carriedIPv4). The network sends a packet for such an
-// address to the IPv4 address inside it: a NAT64 translator rewrites it as a packet to that
-// address, and a 6to4 or Teredo relay, or a host that still routes the IPv4-compatible form,
-// carries it there inside an IPv4 packet. So where the network has such a translator or relay
-// and it passes the address on, a tunnel to 64:ff9b::a9fe:a9fe is a connection to
-// 169.254.169.254, the node's metadata server. The proxy refuses each such address by the
-// address it carries rather than rely on every translator and relay to refuse it. netip's
-// predicates read none of these as the address they carry, and the IPv4-mapped form is read as
-// its IPv4 address already (netaddr.Canonical).
+// The IPv6 forms that carry an IPv4 address (carriedIPv4). A network with a translator or relay
+// for a form sends a packet for such an address to the IPv4 address inside it: a NAT64
+// translator rewrites it as a packet to that address, and a 6to4, Teredo or ISATAP relay, or a
+// host that still routes the IPv4-compatible form, carries it there inside an IPv4 packet. So
+// where the network passes the address on, a tunnel to 64:ff9b::a9fe:a9fe is a connection to
+// 169.254.169.254, the node's metadata server. The IPv4-translated form of SIIT names an IPv6
+// node rather than an IPv4 destination (RFC 2765 section 2.1), but a translator or host that
+// reads its last 32 bits reaches the IPv4 address there, so it is refused the same way. The
+// proxy refuses each such address by the address it carries rather than rely on every translator
+// and relay to refuse it. netip's predicates read none of these as the address they carry, and
+// the IPv4-mapped form is read as its IPv4 address already (netaddr.Canonical).
 var (
 	// 64:ff9b::/96, NAT64's well-known prefix (RFC 6052): the IPv4 address is the last 32 bits.
 	nat64Prefix = netip.MustParsePrefix("64:ff9b::/96")
@@ -54,6 +56,10 @@ var (
 	// ::/96, the IPv4-compatible form RFC 4291 deprecated: the IPv4 address is the last 32 bits.
 	// :: and ::1 are inside it, and localRule's fixed rules refuse each as itself first.
 	ipv4CompatiblePrefix = netip.MustParsePrefix("::/96")
+	// ::ffff:0:0:0/96, the IPv4-translated form of SIIT (RFC 2765), which RFC 6145 replaced: the
+	// IPv4 address is the last 32 bits. It is not the IPv4-mapped ::ffff:0:0/96, which
+	// netaddr.Canonical reads as its IPv4 address.
+	ipv4TranslatedPrefix = netip.MustParsePrefix("::ffff:0:0:0/96")
 	// 64:ff9b:1::/48, the local-use translation prefix (RFC 8215), which IANA lists as not
 	// globally reachable. A network places translation prefixes of its own choosing inside it,
 	// for mechanisms of its own choosing, so the address alone does not say where an IPv4 address
@@ -415,13 +421,14 @@ type carried struct {
 	form string
 }
 
-// carriedIPv4 answers the IPv4 addresses addr carries in one of the forms above, n of them: two
-// for a Teredo address, its server's and its client's, one for each other form, and none for an
-// IPv4 address or an IPv6 address in no such form. addr is read as netaddr.Canonical answers it,
-// as localRule hands it over: a zoned address is inside no prefix (netip.Prefix.Contains), so it
-// would carry nothing. An array rather than a slice, since every address of every dial is read
-// here.
-func carriedIPv4(addr netip.Addr) (held [2]carried, n int) {
+// carriedIPv4 answers the IPv4 addresses addr carries in one of the forms above or in an ISATAP
+// interface identifier, n of them: a Teredo address's server and client, the address one other
+// form carries, and beside either the address an ISATAP identifier carries; none for an IPv4
+// address or an IPv6 address in no such form. addr is read as netaddr.Canonical answers it, as
+// localRule hands it over, with no zone: a zoned address is inside no prefix
+// (netip.Prefix.Contains), so it would carry no address of the prefix forms. An array rather
+// than a slice, since every address of every dial is read here.
+func carriedIPv4(addr netip.Addr) (held [3]carried, n int) {
 	if !addr.Is6() {
 		return held, 0
 	}
@@ -430,17 +437,27 @@ func carriedIPv4(addr netip.Addr) (held [2]carried, n int) {
 	switch {
 	case nat64Prefix.Contains(addr):
 		held[0] = carried{at(12), "the NAT64 form (64:ff9b::/96) of"}
-		return held, 1
+		n = 1
 	case sixToFourPrefix.Contains(addr):
 		held[0] = carried{at(2), "the 6to4 form (2002::/16) of"}
-		return held, 1
+		n = 1
 	case teredoPrefix.Contains(addr):
 		held[0] = carried{at(4), "a Teredo address (2001::/32) whose server is"}
 		held[1] = carried{netip.AddrFrom4([4]byte{^a[12], ^a[13], ^a[14], ^a[15]}), "a Teredo address (2001::/32) whose client is"}
-		return held, 2
+		n = 2
 	case ipv4CompatiblePrefix.Contains(addr):
 		held[0] = carried{at(12), "the IPv4-compatible form (::/96) of"}
-		return held, 1
+		n = 1
+	case ipv4TranslatedPrefix.Contains(addr):
+		held[0] = carried{at(12), "the IPv4-translated form (::ffff:0:0:0/96) of"}
+		n = 1
 	}
-	return held, 0
+	// ISATAP (RFC 5214): the interface identifier 0:5efe, or 200:5efe for a globally unique IPv4
+	// address, then that address, under any /64 prefix, a 6to4 one among them. So it is read
+	// beside the prefixes above, and an address may carry one IPv4 address in each.
+	if a[8]&^0x02 == 0 && a[9] == 0 && a[10] == 0x5e && a[11] == 0xfe {
+		held[n] = carried{at(12), "the ISATAP form (interface identifier 0:5efe or 200:5efe) of"}
+		n++
+	}
+	return held, n
 }

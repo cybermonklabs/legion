@@ -26,6 +26,7 @@ func createThreadComment(t *testing.T, handler http.Handler, issueKey string, in
 	return decodeBody[model.Comment](t, response)
 }
 func TestMentionedCommentDeliversAndProjectsResolvedMention(t *testing.T) {
+	t.Parallel()
 	sent := []map[string]any{}
 	const sessions = `[{"session_id":"s1","title":"planner","capabilities":["aside","btw","steer"]}]`
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -191,6 +192,7 @@ func countCommentRows(t *testing.T, handler http.Handler, issueKey string) int {
 }
 
 func TestReopenCommentClearsResolutionAndReprojects(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Reopen comment", "before")
 	root := createThreadComment(t, handler, issue.Key, map[string]any{
@@ -232,6 +234,7 @@ func TestReopenCommentClearsResolutionAndReprojects(t *testing.T) {
 }
 
 func TestReplyToResolvedRootReopensIt(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Reply reopens root", "before")
 	root := createThreadComment(t, handler, issue.Key, map[string]any{"body": "root"}, "alice")
@@ -258,6 +261,7 @@ func TestReplyToResolvedRootReopensIt(t *testing.T) {
 // Accepting or rejecting a suggestion takes its mark out of the document. A reply still joins
 // that thread, and it leaves the decision as it was: who decided it and when, with no reopen.
 func TestReplyToADecidedSuggestionLandsAndKeepsTheDecision(t *testing.T) {
+	t.Parallel()
 	for _, action := range []string{"accept", "reject"} {
 		t.Run(action, func(t *testing.T) {
 			handler := newTestHandler(t)
@@ -292,6 +296,7 @@ func TestReplyToADecidedSuggestionLandsAndKeepsTheDecision(t *testing.T) {
 }
 
 func TestReplyToNestedCommentUsesThreadRoot(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Thread root replies", "before")
 	root := createThreadComment(t, handler, issue.Key, map[string]any{"body": "root"}, "alice")
@@ -316,6 +321,7 @@ func TestReplyToNestedCommentUsesThreadRoot(t *testing.T) {
 }
 
 func TestReplyToAskClarificationContinuesAskThread(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Ask clarification", "before")
 	askResponse := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/asks", map[string]any{
@@ -374,6 +380,7 @@ func resolveAskAs(kind string) func(t *testing.T, handler http.Handler, issueKey
 // carries none, its comment.created names the ask's state and no ask_waiting_on, and the ask's
 // WaitingOn stays empty. The ask stays closed as it was.
 func TestAReplyUnderAClosedAskJoinsItsThreadAndRecordsNoTurn(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name string
 		// close takes the open ask askID on issueKey to the state and resolution kind below.
@@ -491,6 +498,7 @@ func TestAReplyUnderAClosedAskJoinsItsThreadAndRecordsNoTurn(t *testing.T) {
 }
 
 func TestCreateCommentSeparatesMalformedAndWrongOwnerThreadIDs(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Thread IDs", "before")
 	otherResponse := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]string{
@@ -556,6 +564,7 @@ func TestCreateCommentSeparatesMalformedAndWrongOwnerThreadIDs(t *testing.T) {
 }
 
 func TestCommentReplyToNumberedAskListsOpenAsks(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Reply target", "A spec")
 	first := createEditableAsk(t, handler, issue.Key)
@@ -577,6 +586,7 @@ func TestCommentReplyToNumberedAskListsOpenAsks(t *testing.T) {
 }
 
 func TestCreateCommentRejectsReplySuggestions(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Reply suggestions", "before")
 	root := createThreadComment(t, handler, issue.Key, map[string]any{"body": "root"}, "alice")
@@ -615,6 +625,7 @@ func TestCreateCommentRejectsReplySuggestions(t *testing.T) {
 }
 
 func TestEditCommentIsAuthorOnly(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Edit comment", "before")
 	comment := createThreadComment(t, handler, issue.Key, map[string]any{
@@ -658,6 +669,7 @@ func TestEditCommentIsAuthorOnly(t *testing.T) {
 // edits the comment stored under "Alice" as her own. The comment is written by the route and its
 // author then restated under "Alice", in case only, as such a build stored it.
 func TestACommentStoredUnderAnotherCaseIsEditableByItsAuthor(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Edit a comment stored in another case", "before")
 	comment := createThreadComment(t, handler, issue.Key, map[string]any{"body": "before edit"}, "alice")
@@ -678,6 +690,7 @@ func TestACommentStoredUnderAnotherCaseIsEditableByItsAuthor(t *testing.T) {
 }
 
 func TestResolveRecordsWhoAndWhen(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Resolution metadata", "before")
 	started := time.Now().UTC().Add(-time.Minute)
@@ -725,6 +738,7 @@ func TestResolveRecordsWhoAndWhen(t *testing.T) {
 // created_at - so a host in another zone answering "2026-10-01T17:00:01.12-07:00" where this one
 // answers "2026-10-02T00:00:01.12Z" is a different server to every one of those readers.
 func TestAPIWritesStoredTimestampsInUTC(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Timestamps", "The quick brown fox")
 	comment := createThreadComment(t, handler, issue.Key, map[string]any{"body": "written first"}, "alice")

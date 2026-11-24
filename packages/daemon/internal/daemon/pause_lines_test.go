@@ -101,6 +101,7 @@ func pauseLines() []pauseLine {
 // reaches PostgreSQL: the transaction rolls back, its write is not there, and no line is. The
 // owner runs again on the direct store and commits: the write is there, and the line once.
 func TestAPauseLineOfACommittedWriteIsWrittenOnlyOnceItsTransactionCommits(t *testing.T) {
+	t.Parallel()
 	for _, tc := range pauseLines() {
 		t.Run(tc.name, func(t *testing.T) {
 			r, act, wrote := tc.seed(t)

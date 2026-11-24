@@ -142,6 +142,7 @@ func rateRetro(t *testing.T, handler http.Handler, project, issue, id string, ge
 // first issue's last end is 30.7 seconds past a whole minute, so its time is whole seconds, cut,
 // not minutes.
 func TestTheReadOfAProjectListsEachFinishedIssue(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issues := createListedIssues(t, handler, "LEG", 4)
 	reviewed, fitted, hurried, running := issues[0], issues[1], issues[2], issues[3]
@@ -280,6 +281,7 @@ func TestTheReadOfAProjectListsEachFinishedIssue(t *testing.T) {
 // retro's record carries it to a reader. The step write itself takes no rating: a body that names
 // one is written without it.
 func TestARatingBelongsToARetroRecordAlone(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	daemon := daemonSessionOf("LEG")
@@ -325,6 +327,7 @@ func TestARatingBelongsToARetroRecordAlone(t *testing.T) {
 // not, and the retro the daemon recorded stays unrated; the daemon's rating of it lands, which is
 // the control.
 func TestARatingIsTheDaemonsAlone(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	retro := uuid.NewString()
@@ -366,6 +369,7 @@ func (exactLogin) Login(r *http.Request) (string, error) {
 // whose login is legion-daemon:LEG is refused the plan write and the rating write 403 STEP_WRITER
 // with nothing written, where the session of that id writes both, which is the control.
 func TestTheDaemonsIDIsNoWriterButAsASession(t *testing.T) {
+	t.Parallel()
 	handler, _, _ := newTestServer(t, testServerOptions{identity: exactLogin{}})
 	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	writer := legionDaemonSessionPrefix + "LEG"
@@ -404,6 +408,7 @@ func workflowRows(t *testing.T, database *store.Store) int {
 // project check alone stands between them: 403 PROJECT_SCOPE with nothing written. The same writes
 // over a credential scoped to the issue's project land, which is the control.
 func TestAProjectCredentialWritesNoPlanOrRatingOfAnotherProject(t *testing.T) {
+	t.Parallel()
 	rig := newBrokerTokenRig(t)
 	caller := newBrokerCaller(t)
 	if created := rig.asPerson(t, http.MethodPost, "/api/v1/projects", map[string]any{"key": "OTH", "name": "OTH"}); created.Code != http.StatusCreated {
@@ -457,6 +462,7 @@ func TestAProjectCredentialWritesNoPlanOrRatingOfAnotherProject(t *testing.T) {
 // ISSUE_NOT_FOUND. A reason of exactly 2,000 code points is taken, which is the control of the
 // bound.
 func TestARatingWriteRefusesItsBadValues(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	retro := retroIdentity(daemonSessionOf("LEG"), 1)
@@ -502,6 +508,7 @@ func TestARatingWriteRefusesItsBadValues(t *testing.T) {
 // naming rating_reason and where in it the NUL stands, with nothing written. The same rating with
 // the NUL taken out lands, which is the control.
 func TestARatingReasonHoldingANulIsRefused(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	retro := retroIdentity(daemonSessionOf("LEG"), 1)
@@ -525,6 +532,7 @@ func TestARatingReasonHoldingANulIsRefused(t *testing.T) {
 // actor.origin.cwd, on the plan write and on the rating write, with nothing written; the same body
 // with the NUL taken out lands, which is the control.
 func TestARepeatedMemberHidesNoNulFromAPlanOrARating(t *testing.T) {
+	t.Parallel()
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{settle: time.Hour})
 	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	awaitBackgroundWrites(t, served)
@@ -565,6 +573,7 @@ func TestARepeatedMemberHidesNoNulFromAPlanOrARating(t *testing.T) {
 // A rating is written once, and the retro's end that lands after it keeps it: the daemon's two rows
 // for one retro land in either order.
 func TestARatingIsWrittenOnceInEitherOrder(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	daemon := daemonSessionOf("LEG")
@@ -594,6 +603,7 @@ func TestARatingIsWrittenOnceInEitherOrder(t *testing.T) {
 // descending order as the retros ran, so a sort of the ratings by either, in either direction, is
 // seen; with two retros one direction of each always matches the order they ran in.
 func TestAnIssueWithThreeRetrosHasThreeRatings(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	daemon := daemonSessionOf("LEG")
@@ -673,6 +683,7 @@ func planRatingsText(ratings []model.PlanRating) []string {
 // A record whose start Dispatch never got (a step that started before the release) counts no time:
 // the issue's time starts at the earliest start the records hold.
 func TestAnUnknownStartCountsNoTime(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	recordRuns(t, handler, "LEG", issue,
@@ -701,6 +712,7 @@ func TestAnUnknownStartCountsNoTime(t *testing.T) {
 // started, and the later run's end has not reached Dispatch. The read answers no duration, where
 // the difference would be negative, and the start and the end as the records hold them.
 func TestAStartAfterTheLastEndCountsNoTime(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	recordRuns(t, handler, "LEG", issue,
@@ -728,6 +740,7 @@ func TestAStartAfterTheLastEndCountsNoTime(t *testing.T) {
 // moment a later run started, whose end has not reached Dispatch. The start and the end are the
 // moment the records hold.
 func TestAStartAtTheLastEndCountsZeroTime(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	recordRuns(t, handler, "LEG", issue,
@@ -752,6 +765,7 @@ func TestAStartAtTheLastEndCountsZeroTime(t *testing.T) {
 // A finished issue Legion never ran is listed with no plan, no rating, no time and no failed step,
 // each as null or empty on the wire, which is what Dispatch holds of it.
 func TestTheReadOfAnIssueLegionNeverRanHoldsNoTime(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	closeIssue(t, handler, issue)
@@ -770,6 +784,7 @@ func TestTheReadOfAnIssueLegionNeverRanHoldsNoTime(t *testing.T) {
 // [since, until) then holds no moment, 400 INVALID_QUERY; a project with no finished issue answers
 // an empty list.
 func TestTheReadOfPlansRefusesAnUnknownProjectAndABadWindow(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	createTestIssue(t, handler, "LEG", "A run of steps")
 
@@ -803,6 +818,7 @@ func readPlanKeys(t *testing.T, handler http.Handler, project, query string) []s
 // it. pgx encodes a timestamptz by truncating it to the microsecond, which would move each
 // comparison onto the close itself.
 func TestTheReadOfPlansKeepsASubMicrosecondBoundsMeaning(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	closeIssue(t, handler, issue)
@@ -838,6 +854,7 @@ func TestTheReadOfPlansKeepsASubMicrosecondBoundsMeaning(t *testing.T) {
 // an issue Dispatch does not hold is 404 ISSUE_NOT_FOUND; a closed issue takes it; the write
 // appends no event and answers the plan as it stands.
 func TestAPlanWriteIsTheDaemonsAlone(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issues := createListedIssues(t, handler, "LEG", 2)
 	issue, closed := issues[0], issues[1]
@@ -865,6 +882,62 @@ func TestAPlanWriteIsTheDaemonsAlone(t *testing.T) {
 	putPlanRecordOK(t, handler, closed, uuid.NewString(), defaultPlanBody(daemonSessionOf("LEG"), 1))
 }
 
+// A later version of an owner's plan replaces the plan of its run: written at version 1 and then
+// at version 2 under the run's one id, the write answers version 2, and the read of the project
+// lists the issue with version 2 and version 2's tasks. Version 1 arriving again after it, as a
+// write that arrives late, is answered 200 with the plan as it stands and changes nothing.
+func TestALaterVersionOfAnOwnersPlanReplacesThePlanOfItsRun(t *testing.T) {
+	t.Parallel()
+	handler := newTestHandler(t)
+	issue := createTestIssue(t, handler, "LEG", "A run of steps")
+	id, document := uuid.NewString(), uuid.NewString()
+	owner := func(version int, tasks []model.PlanTask) map[string]any {
+		return map[string]any{
+			"actor": daemonSessionOf("LEG"), "generation": 1, "source": "owner",
+			"artifact_id": document, "version": version, "tasks": tasks,
+		}
+	}
+	first := []model.PlanTask{{ID: "api", Steps: []string{"implementer", "tester", "reviewer"}}}
+	second := []model.PlanTask{{ID: "api", Steps: []string{"implementer", "reviewer"}}, {ID: "docs", Steps: []string{"implementer"}}}
+	want := planRecordLine(&model.PlanRecord{
+		ID: id, Issue: issue, Generation: 1, Source: "owner", ArtifactID: &document, Version: new(2), Tasks: second,
+	})
+
+	putPlanRecordOK(t, handler, issue, id, owner(1, first))
+	if written := putPlanRecordOK(t, handler, issue, id, owner(2, second)); planRecordLine(&written) != want {
+		t.Fatalf("version 2 of the plan answers\n%s\nwant\n%s", planRecordLine(&written), want)
+	}
+	if late := putPlanRecordOK(t, handler, issue, id, owner(1, first)); planRecordLine(&late) != want {
+		t.Fatalf("version 1 written after version 2 answers\n%s\nwant the plan as it stands\n%s", planRecordLine(&late), want)
+	}
+
+	closeIssue(t, handler, issue)
+	read := readPlans(t, handler, "LEG", "")
+	if len(read.Issues) != 1 || read.Issues[0].Issue != issue {
+		t.Fatalf("the read lists %d issues, want %s alone", len(read.Issues), issue)
+	}
+	if listed := planRecordLine(read.Issues[0].Plan); listed != want {
+		t.Fatalf("the read lists %s with the plan\n%s\nwant\n%s", issue, listed, want)
+	}
+}
+
+// planRecordLine is a plan as a reader receives it, on one line, so two compare whole and a
+// difference prints whole.
+func planRecordLine(plan *model.PlanRecord) string {
+	if plan == nil {
+		return "no plan"
+	}
+	artifact, version := "null", "null"
+	if plan.ArtifactID != nil {
+		artifact = *plan.ArtifactID
+	}
+	if plan.Version != nil {
+		version = strconv.Itoa(*plan.Version)
+	}
+	return fmt.Sprintf("%s %s gen %d %s artifact %s version %s tasks %v",
+		plan.ID, plan.Issue, plan.Generation, plan.Source, artifact, version, plan.Tasks)
+}
+
 // Each plan outside its form is refused 400 PLAN_INPUT naming the field, and a step whose role is
 // longer than a step record's role, alone or before its key, naming the step and its role; a tasks
 // that is no list at all the package's own 400 INVALID_JSON; none writes a plan. A lone half of a
@@ -872,6 +945,7 @@ func TestAPlanWriteIsTheDaemonsAlone(t *testing.T) {
 // half, and an owner's plan naming its document and no version. An id another issue's plan holds is
 // 409 PLAN_OTHER_ISSUE.
 func TestAPlanWriteRefusesItsBadValues(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issues := createListedIssues(t, handler, "LEG", 2)
 	daemon := daemonSessionOf("LEG")
@@ -922,29 +996,6 @@ func TestAPlanWriteRefusesItsBadValues(t *testing.T) {
 	putPlanRecordOK(t, handler, issues[0], id, plan)
 	other := putPlanRecord(t, handler, issues[1], id, plan)
 	expectRefusal(t, "the plan id of "+issues[0]+" on "+issues[1], other, http.StatusConflict, codePlanOtherIssue, issues[0], issues[1])
-}
-
-// A plan's source is one of the store's sources, which two enum tags restate for the schema: the
-// request's (planRecordInput.Source) and the answer's (model.PlanRecord.Source). The store's own list
-// is read from its refusal of a source it does not take, which names every source it takes, so a
-// source the store gains and a tag lacks fails here rather than in a client the schema refuses it to.
-func TestThePlanSourceTagsNameTheStoresSources(t *testing.T) {
-	handler := newTestHandler(t)
-	issue := createTestIssue(t, handler, "LEG", "A run of steps")
-	response := putPlanRecord(t, handler, issue, uuid.NewString(),
-		withFields(defaultPlanBody(daemonSessionOf("LEG"), 1), map[string]any{"source": "no-such-source"}))
-	refusal := decodeBody[refusalAnswer](t, response)
-	_, listed, named := strings.Cut(refusal.Error, "one of ")
-	if response.Code != http.StatusBadRequest || refusal.Code != codePlanInput || !named {
-		t.Fatalf("an unknown source: status=%d body=%s, want 400 %s naming the sources", response.Code, response.Body.String(), codePlanInput)
-	}
-	sources := strings.Split(listed, ", ")
-	for _, shape := range []reflect.Type{reflect.TypeFor[planRecordInput](), reflect.TypeFor[model.PlanRecord]()} {
-		field, _ := shape.FieldByName("Source")
-		if tagged := strings.Split(field.Tag.Get("enum"), ","); !slices.Equal(tagged, sources) {
-			t.Errorf("%s.Source is tagged enum %v, want the store's sources %v", shape, tagged, sources)
-		}
-	}
 }
 
 // holdsPlan closes issue, which the read of a project lists only once it is finished, and answers

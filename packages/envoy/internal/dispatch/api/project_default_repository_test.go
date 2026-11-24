@@ -74,6 +74,7 @@ func lastProjectUpdate(t *testing.T, database *store.Store, project string) map[
 // value the row holds appends none. A project with no default carries no default_repo member, in
 // the list and in the event alike.
 func TestAProjectsDefaultRepositoryIsSetAndCleared(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	createTestProject(t, handler, "CORE", "BARE")
 
@@ -131,6 +132,7 @@ func TestAProjectsDefaultRepositoryIsSetAndCleared(t *testing.T) {
 // refused naming repo, and the project keeps the default it had. A body without repo is not
 // read as a clear, so a malformed write cannot remove a default. An unknown project is 404.
 func TestADefaultRepositoryThatIsNoRepositoryIsRefused(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	createTestProject(t, handler, "CORE")
 	setDefaultRepository(t, handler, "CORE", "acme/widgets")
@@ -168,6 +170,7 @@ func TestADefaultRepositoryThatIsNoRepositoryIsRefused(t *testing.T) {
 // by name, though the path names that very project. A person writes it, and so does the
 // credential the deployment configured, which acts for no person and names no project.
 func TestTheDefaultRepositoryIsADeploymentWrite(t *testing.T) {
+	t.Parallel()
 	rig := newBrokerTokenRig(t)
 	caller := newBrokerCaller(t)
 	const token = "a-token-that-may-not-move-a-projects-default-repository"
@@ -223,6 +226,7 @@ func TestTheDefaultRepositoryIsADeploymentWrite(t *testing.T) {
 // above it before the default. The resolution reads the default as it stands, so a moved default
 // moves every issue that takes it and no other, and a cleared one leaves them with none.
 func TestAnIssueResolvesToItsProjectsDefaultRepository(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	createTestProject(t, handler, "CORE")
 	setDefaultRepository(t, handler, "CORE", "acme/widgets")
@@ -301,6 +305,7 @@ func repoName(repo *string) string {
 // no write of the route stores an old name. A name that only begins like the old one is no name
 // of the pair and is stored as it is given.
 func TestADefaultRepositoryUnderARenamedNameIsStoredUnderItsNewName(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{
 		renames: refs.NewRenames([]store.RepoRename{{From: "sjawhar/legion", To: "cybermonklabs/legion"}}),
 	})
@@ -328,6 +333,7 @@ func TestADefaultRepositoryUnderARenamedNameIsStoredUnderItsNewName(t *testing.T
 // route writes the project's own column, the issue reads resolve the default from it, and a
 // results read resolves the check's issue to it, compares at that repository and answers 200.
 func TestAResultsReadResolvesTheDefaultRepositoryWithRepoProjectsDropped(t *testing.T) {
+	t.Parallel()
 	handler, database := resultsGitHub(t, map[string]bool{"acme/widgets": true}, func(base, head string) string {
 		if base == "main" && head == mergeCommit {
 			return "behind"

@@ -25,6 +25,7 @@ import (
 // the outbox drops the fence: the merge can no longer land, so the drop settles as a fact does and
 // ends the merge stopped, once. A fact after it that writes the member ends nothing more.
 func TestADroppedHandOverFenceEndsTheMergeItHeldOpen(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		drop func(t *testing.T, runner *outbox, row record.OutboxRow, payload record.StatusWrite)
@@ -109,6 +110,7 @@ func TestADroppedHandOverFenceEndsTheMergeItHeldOpen(t *testing.T) {
 // drop reads the fence again under the lock every fact applies under and deletes it only while it
 // is still cancelled, so the fence the fact put stands after the drop, not cancelled.
 func TestAFenceAFactPutsAgainOutlivesTheDropOfTheCancelledOne(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()

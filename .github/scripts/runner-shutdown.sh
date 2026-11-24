@@ -91,12 +91,12 @@
 # shutdown killed, one per line, and returns 0. It reads the commit's check runs on its first
 # question and keeps them in a variable for the rest of that shell, but both callers take its
 # output through `$(…)`, which is a subshell: ci-ok.sh in one call naming its `failed` jobs,
-# ci-ok-report.sh:122 one job per call. The variable dies with the subshell, so a call made
+# ci-ok-report.sh:180 one job per call. The variable dies with the subshell, so a call made
 # that way reads the route again and the keeping saves nothing across such calls — asking job
 # by job costs one read of the check runs per job. It returns 1, having warned, when GitHub
 # refused one of its reads at every attempt gh-read.sh made or the environment above is
 # incomplete: the caller then keeps every failure a failure and the verdict stays the failing one,
-# which is how ci-ok-report.sh:196-201 answers a refused jobs list too. Every warning goes to
+# which is how ci-ok-report.sh:249-260 answers a refused jobs list too. Every warning goes to
 # stderr, where the job log holds it as gh-read.sh's own attempts are held, so a caller may read
 # the job names off this function's stdout.
 
