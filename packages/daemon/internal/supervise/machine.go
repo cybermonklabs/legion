@@ -3770,25 +3770,34 @@ func (m *Machine) relaunchDeath(ctx context.Context, ended string, uncharged boo
 // death ends where it lands (died, endHeld): run here, a launch the burst lets straight out would
 // let the process go with the hold (letGo), and the claim would run where it should be suspended.
 // The turn such a replay carries is left spent, as a dropped wake leaves its token spent — but
-// for a relaunch the report parked at a later moment than that turn, which moves to the turn
-// (takeEarlierTurn): that report came after the boot's pass reserved the turn, so its own moment
-// is behind every turn the pass handed out, and the relaunch would otherwise lose its owed place.
+// for a relaunch a report parked at a later moment than that turn, which moves to the turn
+// (takeEarlierTurn): a report that came after the boot's pass reserved the turn parks its own
+// moment behind every turn the pass handed out, and the relaunch would otherwise lose its owed
+// place. Moving a wake that already waits launches nothing a hold would forbid that the wake
+// would not launch at its own moment, so the move asks nothing of a hold.
+//
+// It writes one line for each claim whose relaunch it raises or moves, which is what the boot's
+// count of recorded deaths is read against.
 func relaunchRecordedDeath(m *Machine, ctx context.Context, ev Event) error {
 	recorded := ev.(RecordedDeath)
+	relaunching := func() {
+		m.log.Warn("supervise: relaunching a process the previous daemon found dead; its relaunch did not survive the restart",
+			"incarnation", m.claim.Locator.Incarnation, "generation", m.claim.Generation, "lastDeathCause", m.claim.LastDeathCause)
+	}
 	switch {
 	case m.claim.Generation != recorded.Generation || !m.claim.DeathCharged || m.claim.Locator == nil:
 		m.log.Info("supervise: the claim's record moved on from the death the boot read; nothing is relaunched for it",
 			"generation", m.claim.Generation, "read", recorded.Generation, "deathCharged", m.claim.DeathCharged)
 		return nil
-	case m.held == nil && m.takeEarlierTurn(recorded.Turn):
+	case m.takeEarlierTurn(recorded.Turn):
+		relaunching()
 		return nil
 	case m.launchMet() || m.held != nil:
 		m.log.Info("supervise: the recorded death already has its relaunch, or a held suspension that its report ends; the boot raises nothing",
 			"launchWaiting", m.launchMet(), "heldSuspension", m.held != nil)
 		return nil
 	}
-	m.log.Warn("supervise: relaunching a process the previous daemon found dead; its relaunch did not survive the restart",
-		"incarnation", m.claim.Locator.Incarnation, "generation", m.claim.Generation, "lastDeathCause", m.claim.LastDeathCause)
+	relaunching()
 	return m.relaunchDeath(ctx, endDied(m.claim.LastDeathCause), m.endUncharged("died"), recorded.Turn)
 }
 

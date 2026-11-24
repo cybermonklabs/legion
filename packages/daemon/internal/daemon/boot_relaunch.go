@@ -176,10 +176,13 @@ func recordedDeaths(claims []supervise.Claim) []claim.Token {
 // waiting), a launch since, a report that found the process running, or a suspension held for the
 // claim, whose end the death's own report decides. The replay decides each of those nothing
 // (supervise's relaunchRecordedDeath), so the pass reserves such a claim no turn, which would be
-// left spent and put every wake behind it an interval late. A report that comes between this read
-// and the replay's post parks its relaunch behind every turn the pass reserved; the replay then
-// moves that wake to the turn the pass handed it (supervise's takeEarlierTurn), so the owed order
-// holds, and it is the report's later turn that is left spent.
+// left spent and put every wake behind it an interval late. A report of the death decided before
+// this read keeps the turn it reserved itself, which can run ahead of the owed order. One decided
+// after this read and before the pass reserves its turns takes a turn ahead of the pass's, so the
+// replay moves nothing and the turn the pass handed it is left spent. One decided after the pass
+// reserved parks its relaunch behind every turn the pass handed out, and the replay moves that
+// wake to the turn the pass handed it (supervise's takeEarlierTurn), leaving the report's later
+// turn spent.
 func (s *supervision) recordedDeath(token claim.Token) (*bootRelaunch, bool) {
 	m, ok := s.supervisor.Machine(token)
 	if !ok {

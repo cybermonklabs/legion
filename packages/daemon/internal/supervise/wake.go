@@ -361,7 +361,12 @@ func (m *Machine) parkWake(ctx context.Context, waiting *wake, after time.Durati
 // wake moves only to a turn earlier than its own that has not passed by an interval or more,
 // which reserveWake would reserve afresh for the same reason: run now, a turn that late would let
 // out at once every launch the pass reserved before it. A turn that has come runs the wake at
-// once, through its timer.
+// once, through its timer. Only a wake of the pacing's own moves: a launch the pause's gate holds
+// or one waiting for its pod's start has no moment of the pacing's to move.
+//
+// The role's resume clock keeps the report's later moment (Deps.WakeLetOut, whose store write
+// never moves a clock back), so nothing is told here: that clock only bounds when a launch is
+// warned stuck, and a launch that runs earlier than it is warned later, never wrongly.
 func (m *Machine) takeEarlierTurn(turn time.Time) bool {
 	w := m.wake
 	now := m.deps.Clock.Now()
@@ -371,7 +376,6 @@ func (m *Machine) takeEarlierTurn(turn time.Time) bool {
 	m.log.Info("supervise: the relaunch a report of the recorded death parked takes the turn the boot reserved for it",
 		"due", w.at, "turn", turn)
 	w.at = turn
-	m.wakeLetOut(turn)
 	m.arm(TimerWake, max(turn.Sub(now), 0), "")
 	return true
 }

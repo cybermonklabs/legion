@@ -1510,9 +1510,9 @@ func TestTheBootsReplayOfAnEarlierGenerationRelaunchesNothing(t *testing.T) {
 
 // A report of a recorded death that reaches the machine after the boot's pass reserved that
 // death's turn and before the pass's replay parks the relaunch at a turn of its own, behind every
-// turn the pass reserved. The replay moves that wake to the turn the pass handed it, so the owed
-// order holds whichever of the two reaches the machine first, and the relaunch is charged no
-// second launch failure and launches once.
+// turn the pass reserved. The replay moves that wake to the turn the pass handed it, so a report
+// that lands after the pass reserved costs the relaunch no place in the owed order, and the
+// relaunch is charged no second launch failure and launches once.
 //
 // The negative control is the replay deciding nothing over the waiting wake, as it does for a
 // relaunch it finds parked at an earlier turn: the wake stays at the report's later turn.
@@ -1539,6 +1539,57 @@ func TestTheBootsReplayMovesARelaunchItsReportParkedLaterToTheReplaysTurn(t *tes
 	h.wantStarts(h.token, 2)
 	if held := h.m.View().WakeWaiting; held != nil {
 		t.Fatalf("the claim still waits on wake %+v after its turn, want none: the report's later turn is spent, not run", *held)
+	}
+}
+
+// The replay moves only a wake of the pacing's own, to a turn earlier than that wake's which has
+// not passed by an interval or more (takeEarlierTurn); over any other relaunch the report raised,
+// it decides nothing, and the relaunch waits where the report put it. A turn later than the
+// report's would move the relaunch back; one passed by an interval would let it out at once, ahead
+// of every turn the boot's pass reserved after it; and a launch the pause's gate holds has no
+// moment to move, and moved would run while the project is paused.
+func TestTheBootsReplayMovesNoRelaunchOutsideItsRule(t *testing.T) {
+	for _, row := range []struct {
+		name   string
+		paused bool
+		turn   func(now, due time.Time) time.Time
+	}{
+		{name: "a turn after the report's", turn: func(_, due time.Time) time.Time { return due.Add(wakeInterval) }},
+		{name: "a turn passed by an interval", turn: func(now, _ time.Time) time.Time { return now.Add(-wakeInterval) }},
+		{name: "a launch the pause's gate holds", paused: true, turn: func(now, _ time.Time) time.Time { return now.Add(wakeInterval) }},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			h := pacedHarness(t, wakeRate)
+			h.reach(StateReady)
+			queueAhead(h, 1)
+			dead := h.locator()
+			h.observe(runtime.Gone)
+			flag := &pauseFlag{}
+			stops := &stopTransaction{store: h.store}
+			h.deps.Paused, h.deps.PauseStopped = flag.Paused, stops.PauseStopped
+			h.restart()
+			queueAhead(h, 3)
+			if row.paused {
+				flag.set(7)
+			}
+			h.must(RuntimeObservation{Observation: runtime.Observation{Locator: dead, Kind: runtime.Gone, At: h.clock.Now()}})
+			waiting := h.m.View().WakeWaiting
+			due := h.clock.Now().Add(10 * wakeInterval)
+			if waiting != nil {
+				due = waiting.At
+			}
+			if row.paused != (waiting == nil) {
+				t.Fatalf("the report's relaunch publishes wake %+v with the project paused %v, want one only where no pause holds it", waiting, row.paused)
+			}
+
+			h.must(RecordedDeath{Claim: h.token, Generation: h.claim().Generation, Turn: row.turn(h.clock.Now(), due)})
+
+			if got := h.m.View().WakeWaiting; (got == nil) != (waiting == nil) || got != nil && *got != *waiting {
+				t.Fatalf("the claim names wake %+v after the replay, want the report's %+v: the replay moves nothing outside its rule", got, waiting)
+			}
+			h.advance(2 * wakeInterval)
+			h.wantStarts(h.token, 1)
+		})
 	}
 }
 
