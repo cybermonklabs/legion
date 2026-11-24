@@ -218,9 +218,9 @@ default steps, the reviewer's approval). That step's notice of it comes to you f
 for another issue when neither its own architect nor an architect between it and the root holds its
 role. You then read `dispatch results --issue <issue>` at the head that step passed, the tester's
 handoff where a tester step comes before yours, and the reviewer's approval of the head by SHA
-where a reviewer step comes before yours, and, where that head carries a reviewer's text commit,
-that commit and the implementer's accepting comment, or its push and the reviewer's approval of
-that head (the daemon refuses a sign-off while an issue beneath it
+where a reviewer step comes before yours; where the reviewer pushed a text commit, also that
+commit and the implementer's comment that accepts it, or the implementer's push and the reviewer's
+approval of the head that push made (the daemon refuses a sign-off while an issue beneath it
 is still in the workflow, `SIGNOFF_CHILD_IN_WORKFLOW`; a parent's acceptance waits for its last round,
 `skill://legion-architect`, section 4). A task with no `acceptance:owner` step has no `accepting`:
 its last step passing starts the retro, or holds a parent before its retro.
@@ -235,14 +235,16 @@ Then
 `sign_off` (which moves the task to its next step, or to retro where your acceptance is its last
 step) or send it back with `request_backward_move` (`issue`, `to` the phase of an earlier step of
 the task, and `reason`). Your acceptance comment names each check with its result.
-Where the approved head carries a reviewer's text commit, hold `sign_off` until the implementer's
-answer has come, and ask the implementer on its role topic for it if the issue reached `accepting`
-without one; if it still does not answer, read the reviewer's commit yourself and accept or send
-the issue back on that read, saying so on the issue.
+Where the reviewer pushed a text commit or left a thread for the implementer's last chance, hold
+`sign_off` until the implementer, or you in its place, has answered and the reviewer has approved
+the head that the answer left (your daemon part below says what you do while you wait). Then
+check three things: that the reviewer's commit and the implementer's correction change no code
+that runs; that an agent that did not make each commit recorded each pass that holds at it; and
+that each such reason holds when you read it against the change. Say on the issue what you read
+and decided.
 The gate is the `before_merge` checks of the issue's own Verification document, read at the
 issue's own head: each needs a pass standing at that head, which
-`dispatch results --issue <issue>` shows, or one carried to it under the carry rule your daemon
-part below states. A result a child recorded against one of the root's
+`dispatch results --issue <issue>` shows. A result a child recorded against one of the root's
 checks proves nothing for the root, and a child that carries part of a root requirement proves
 that part with a check on the child's own Verification document whose `serves` names the
 requirement, which clears the root's coverage flag for it. The root's own checks are proven in

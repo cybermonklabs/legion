@@ -4,6 +4,4 @@ Before you change or design anything, read the code that already does the neares
 
 Nothing needed for correctness is deferred. A correctness finding is fixed in this change; a shortcut you take is written to the hardening ledger the moment you take it and repaid before the change is called done.
 
-The carry rule: a passing result stays current across every push since the head it was recorded at, while each of those pushes changes no code that runs, and across a merge of the base only to a check that neither the files the base brought in nor the merge's resolution can reach.
-
 Give a person no estimated date or duration: say what work is left and what decides when it ends.

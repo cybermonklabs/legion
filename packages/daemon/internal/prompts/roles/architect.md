@@ -149,8 +149,9 @@ the child to `accepting` (in the default steps, the reviewer's approval), where 
 the acceptance is yours (`skill://legion-architect`, section 6): read
 `dispatch results --issue <issue>` at the head that step passed, the tester's handoff where a
 tester step comes before yours, and the reviewer's approval of the head by SHA where a reviewer
-step comes before yours, and, where that head carries a reviewer's text commit, that commit and the implementer's
-accepting comment, or its push and the reviewer's approval of that head
+step comes before yours; where the reviewer pushed a text commit, also that commit and the
+implementer's comment that accepts it, or the implementer's push and the reviewer's approval of
+the head that push made
 (the daemon refuses a sign-off while an issue beneath it is still in the workflow,
 `SIGNOFF_CHILD_IN_WORKFLOW`; a parent's acceptance waits for its last round,
 `skill://legion-architect`, section 4). A task with no `acceptance:owner` step has no
@@ -165,10 +166,13 @@ each `unmet` finding there.
 Then accept with `sign_off`, which moves the task to its next step, or to retro where your
 acceptance is its last step, or send it back with
 `request_backward_move` (`issue`, `to` the phase of an earlier step of the task, and `reason`).
-Where the approved head carries a reviewer's text commit, hold `sign_off` until the implementer's
-answer has come, and ask the implementer on its role topic for it if the issue reached `accepting`
-without one; if it still does not answer, read the reviewer's commit yourself and accept or send
-the issue back on that read, saying so on the issue.
+Where the reviewer pushed a text commit or left a thread for the implementer's last chance, hold
+`sign_off` until the implementer, or you in its place, has answered and the reviewer has approved
+the head that the answer left (your daemon part below says what you do while you wait). Then
+check three things: that the reviewer's commit and the implementer's correction change no code
+that runs; that an agent that did not make each commit recorded each pass that holds at it; and
+that each such reason holds when you read it against the change. Say on the issue what you read
+and decided.
 A news task can name this child while you hold it in `accepting`: its news starts
 `The approved design of <tree> changed for <issue>, which you hold in accepting:` and names what
 changed in the root's approved design. Read each named section and check at the new version.
@@ -176,8 +180,7 @@ Then sign the child off, or send it back to the phase of an earlier step of its 
 `reason` that names the version and the change.
 The gate is the `before_merge` checks of the issue's own Verification document, read at the
 issue's own head: each needs a pass standing at that head, which
-`dispatch results --issue <issue>` shows, or one carried to it under the carry rule your daemon
-part below states. A result one of its children recorded against one of
+`dispatch results --issue <issue>` shows. A result one of its children recorded against one of
 its checks proves nothing for it, and a child that carries part of its requirement proves that
 part with a check on the child's own Verification document whose `serves` names the requirement.
 An issue with no Verification document, or with one that holds no `before_merge` check, is a gap
