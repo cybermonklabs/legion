@@ -236,8 +236,6 @@ func (g *GoogleAccount) generateIDToken() (string, error) {
 	req.Header.Set("Authorization", "Bearer "+access)
 	resp, err := redirects.Refused(cmp.Or(g.HTTP, http.DefaultClient)).Do(req)
 	if err != nil {
-		// net/http's error can quote the answering party's words (a Location that does not parse,
-		// read before any redirect policy), so it is named by its class alone (redact.Class).
 		return "", fmt.Errorf("call generateIdToken: %w", redact.Class(err))
 	}
 	defer resp.Body.Close()

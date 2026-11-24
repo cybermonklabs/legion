@@ -231,9 +231,6 @@ func readCloudSQLSeries(ctx context.Context, client *http.Client, base, token, p
 		req.Header.Set("Authorization", "Bearer "+token)
 		resp, err := client.Do(req)
 		if err != nil {
-			// net/http's error can quote the answering party's words (a Location that does not
-			// parse, which it reads before any redirect policy), which can echo the access token,
-			// so the failure is named by its class (redact.Class).
 			return nil, fmt.Errorf("the read of %s for %s failed: %w", metric, databaseID, redact.Class(err))
 		}
 		read, readErr := redact.ReadAnswer(resp, 1<<22)

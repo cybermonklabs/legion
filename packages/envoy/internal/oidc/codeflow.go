@@ -451,9 +451,6 @@ func (f *CodeFlow) Revoke(ctx context.Context, refreshToken string) error {
 	request.SetBasicAuth(url.QueryEscape(issuer.config.ClientID), url.QueryEscape(issuer.config.ClientSecret))
 	response, err := f.http.Do(request)
 	if err != nil {
-		// net/http's error can quote the answering party's words (a Location that does not parse,
-		// read before the client's redirect policy), so it is named by its class alone
-		// (redact.Class).
 		return fmt.Errorf("oidc: revoke: %w", redact.Class(err))
 	}
 	defer response.Body.Close()

@@ -775,10 +775,7 @@ func checkNATSServerName(ctx context.Context, client *http.Client, monURL, name 
 	return nil
 }
 
-// guardGet reads url, with bearer as the request's bearer when it is not empty. A read that got no
-// answer fails as url allows (redact.Cause): a transport failure's own text beside a clean URL, or
-// its class. net/http's own error can quote a Location that did not parse (Go reads one before any
-// redirect policy), which can echo the bearer.
+// guardGet reads url, with bearer as the request's bearer when it is not empty.
 func guardGet(ctx context.Context, client *http.Client, url, bearer string) (int, redact.Answer, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
