@@ -1300,9 +1300,11 @@ func (d Deps) check() error {
 // of any outage worth the name. A database that stops answering holds the machine's lock for up to
 // about twice this per bounded call that holds a connection, and for at most defaultClaimAcquire,
 // this and the commit's settle together (37 s) for one that queues first, the bounds
-// store.BoundAfterAcquire states. The write it cuts short is not lost: a bare context deadline is
-// a write the server never answered, which writeOwed owes, so the claim write is marked and made
-// again at the claim's next decision (owes, repair).
+// store.BoundAfterAcquire states; a call such a bound cuts is made once more at once (write,
+// claimWriteTries), so a decision's write holds the lock for up to twice that before it is owed.
+// The write a second cut leaves is not lost: a bare context deadline is a write the server never
+// answered, which writeOwed owes, so the claim write is marked and made again at the claim's next
+// decision (owes, repair).
 //
 // It counts the write and not the wait in the pool's queue (Deps.BoundWrite). Counted from before
 // that wait, it was the queue's bound too: a boot relaunches every unfinished claim at once, each
@@ -4595,12 +4597,44 @@ func (m *Machine) forgetSend() {
 // of the record — PhaseHolds, RootHears, RootTask, DesignNews, TreeClosable — which decide what
 // the next write will say rather than hold the row, and whose failure costs the decision and
 // nothing after it. The deadline is what keeps a database that has stopped answering from holding
-// the machine's lock for the length of the outage; a write it cuts short is owed and made again
-// at the claim's next decision (owes, repair).
+// the machine's lock for the length of the outage.
+//
+// A call the deadline cut short while the decision's own context still runs is made once more, at
+// once, under a fresh deadline (claimWriteTries, cutByBound): one write a loaded database answered
+// past defaultClaimWrite then costs its decision nothing. Before, such a write was owed and made
+// again only at the claim's next decision, and the decisions that wait on their write came back
+// far later than the database did: a launch whose write as launching was cut was tried again at
+// the probe interval (writeTry, relaunchAtProbe), and the boot's release of an uncertain launch at
+// the daemon's next orphan sweep (ReleaseUncertainLaunch; dispatch://INFRA-3904). Every call that
+// comes here can be made twice, because a cut call's commit may have landed whatever its answer
+// said, which is why the repair already makes it again (writeOwed). A second cut is owed as every
+// write the database did not take is (owes, repair). A failure that is not a cut — a connection
+// that broke, a statement refused, a refusal of the store's own — is answered at once and is not
+// made again here, so an outage that refuses connections costs each write no second try.
 func (m *Machine) write(ctx context.Context, call func(context.Context) error) error {
-	writing, cancel := m.bounded(ctx)
-	defer cancel()
-	return call(writing)
+	for try := 1; ; try++ {
+		writing, cancel := m.bounded(ctx)
+		err := call(writing)
+		cancel()
+		if err == nil || try == claimWriteTries || !cutByBound(ctx, err) {
+			return err
+		}
+		m.log.Warn(claimWriteAgainLine, "try", try, "bound", m.deps.claimWrite(), "error", err)
+	}
+}
+
+// claimWriteTries is how many times write makes one store call the claim-write bound cuts short:
+// the call, and once more. One more is what a single slow answer needs; a database that answers
+// no write within the bound twice in a row is one the repair waits out, without the machine
+// holding its lock through a third bound.
+const claimWriteTries = 2
+
+// cutByBound is whether err is a store call that the claim-write bound ended before the database
+// answered (bounded): a deadline, while the decision's own context still runs. A call the daemon's
+// stop ended carries the stop's cancellation, or a deadline once ctx has ended, and is not made
+// again: the daemon is going.
+func cutByBound(ctx context.Context, err error) bool {
+	return ctx.Err() == nil && errors.Is(err, context.DeadlineExceeded)
 }
 
 // bounded is ctx for one bounded store call of a decision: the wait in the store's pool queue

@@ -229,6 +229,10 @@ func TestTheOwedWriteErrorsAreTheOnesNoServerAnsweredAbout(t *testing.T) {
 		// thing another row passes or fails on.
 		err  func(t *testing.T) error
 		owed bool
+		// madeAgain is a failure the decision makes its write once more for before it is owed:
+		// a cut of the claim-write bound (Machine.write, claimWriteTries). Every other failure is
+		// answered at the one write.
+		madeAgain bool
 	}{
 		{
 			// The measured failure to dial: nothing listens at the address, so the statement
@@ -262,10 +266,12 @@ func TestTheOwedWriteErrorsAreTheOnesNoServerAnsweredAbout(t *testing.T) {
 		{
 			// The write this change's own deadline cut short (Timeouts.ClaimWrite): the wait for
 			// an answer ended before any answer came, and the statement may or may not have been
-			// applied, which is the same unknown as a connection that died under it.
-			name: "a write the deadline cut short",
-			err:  func(*testing.T) error { return context.DeadlineExceeded },
-			owed: true,
+			// applied, which is the same unknown as a connection that died under it. The decision
+			// makes it once more before it is owed (cutByBound), and this store cuts that one too.
+			name:      "a write the deadline cut short",
+			err:       func(*testing.T) error { return context.DeadlineExceeded },
+			owed:      true,
+			madeAgain: true,
 		},
 		{
 			// Class 08, connection exception: the connection itself is what failed, whatever
@@ -346,8 +352,12 @@ func TestTheOwedWriteErrorsAreTheOnesNoServerAnsweredAbout(t *testing.T) {
 			if err := h.handle(StreamTurnStart{Claim: testToken}); !errors.Is(err, refusal) {
 				t.Fatalf("the turn start returned %v, want the store's refusal %v", err, refusal)
 			}
-			if asked := counted.writes()[attempted:]; !slices.Equal(asked, []string{"PutClaim"}) {
-				t.Fatalf("the failed decision asked for %v, want the one claim write", asked)
+			want := []string{"PutClaim"}
+			if tc.madeAgain {
+				want = []string{"PutClaim", "PutClaim"}
+			}
+			if asked := counted.writes()[attempted:]; !slices.Equal(asked, want) {
+				t.Fatalf("the failed decision asked for %v, want %v", asked, want)
 			}
 			h.wantState(StateWorking)
 			if owed := h.m.owedWrite != nil; owed != tc.owed {

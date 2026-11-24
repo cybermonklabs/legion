@@ -66,6 +66,13 @@ const owedWriteLine = "supervise: a claim write the database did not take"
 // caught up from one that is still behind.
 const repairedWriteLine = "supervise: a claim write the database did not take was made"
 
+// claimWriteAgainLine is the line of a store call of a decision that the claim-write bound cut
+// short and that the decision makes again at once (Machine.write), at Warn: the database answered
+// that call past defaultClaimWrite, which a healthy one never does, so an operator sees a slow
+// database here before any write is owed. A write made again that lands owes nothing and is
+// followed by no owed line; one that is cut again is owed, under owedWriteLine.
+const claimWriteAgainLine = "supervise: a claim write the bound cut short; making it again in this decision"
+
 // oweWrite marks the claim write owed and says so in the log: the row the store holds is behind
 // what memory holds, and the claim's next decision is to make that write again (repair). A
 // machine that already owes one keeps the single mark, since the repair writes the claim as it
