@@ -314,16 +314,15 @@ func TestAPhaseWorkerIsToldWhatALateReportsAnswerMeans(t *testing.T) {
 // sentence that named one of them as if every issue ran it now says where it runs and, where it
 // does not, who holds its duty: the order of the starts is the order of the steps of the issue's
 // plan; `accepting` and the sign-off are the owner's only where the task holds `acceptance:owner`;
-// the move back names an earlier step's phase; a failed step goes back to the implementer or to
-// the earlier step its completion names. A parent with no `acceptance:owner` step gets no reading
-// of its finished whole from its owner, and each part says so in one sentence where it speaks of a
-// parent and its children. Each part gives `register_plan` and `stop_task` with the arguments of
-// the daemon's routes. The words the parts carried before are gone from both, and from the
-// architect's three daemon parts in go/, which Compose joins to them (architect-root.md or
-// architect.md, then architect-common.md): a retired phrase there reaches its reader as surely as
-// one in a role part. Each of the three is read by its name, so a part that is missing fails the
-// read rather than passing with nothing read. This shows the text is loaded, never that an owner
-// follows it.
+// the move back names an earlier step's phase. A parent with no `acceptance:owner` step gets no
+// reading of its finished whole from its owner, and each part says so in one sentence where it
+// speaks of a parent and its children. Each part gives `register_plan` and `stop_task` with the
+// arguments of the daemon's routes. The words the parts carried before are gone from both, and
+// from the architect's three daemon parts in go/, which Compose joins to them (architect-root.md
+// or architect.md, then architect-common.md): a retired phrase there reaches its reader as surely
+// as one in a role part. Each of the three is read by its name, so a part that is missing fails
+// the read rather than passing with nothing read. This shows the text is loaded, never that an
+// owner follows it.
 func TestTheArchitectRolePartsNameOnlyTheStepsAnIssuesTaskRuns(t *testing.T) {
 	// A parent with no acceptance step gets no reading of its whole: Legion holds it before its
 	// retro (`retro-held`), so a parent whose work the owner wants to read is given the step. Held
@@ -337,7 +336,6 @@ func TestTheArchitectRolePartsNameOnlyTheStepsAnIssuesTaskRuns(t *testing.T) {
 		"A task with no `acceptance:owner` step has no `accepting`",
 		"`to` the phase of an earlier step of the task, and `reason`",
 		"is a gap that a tester step and a reviewer step name and neither refuses",
-		"goes back to the implementer, or to the earlier step its completion names",
 	}
 	retired := []string{
 		"fixed workflow table",
