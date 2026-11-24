@@ -3534,8 +3534,9 @@ A store that #5278's release migrated reports 20261123212127 after them: `202611
 A rollback of a store that #4590's release or a later one migrated runs #4903's way back and the steps of [Rolling back the release that gives up on intake messages](#rolling-back-the-release-that-gives-up-on-intake-messages) first, and those steps delete rows alone and keep the version row of `20261120144241_intake_failures`, which stands below 20261123212127, so that store reports 20261123212127 after the two blocks, as one that #5278's release migrated does.
 A rollback of a store that #5303's release migrated runs the way back in the header of `20261123224717_members_owed.up.sql` first, which deletes that version's row, so that store reports 20261123212127 after the two blocks, as one that #5278's release migrated does.
 On a store that the release that counts each step's models migrated, run [its way back](#rolling-back-the-release-that-counts-each-steps-models) first.
-That way back deletes the row of 20261124012813.
-So that store reports 20261123212127 after the two blocks, as a store that #5303's release migrated does.
+That way back deletes the row of 20261124012813 and leaves the store as one that #5303's release migrated.
+Then run that store's step above, the way back in the header of `20261123224717_members_owed.up.sql`.
+The store then reports 20261123212127 after the two blocks.
 
 To roll a release at contract 94 back to contract 87, stop the daemon and run the eleven statements below.
 On a store that a release at contract 146 migrated, run the contract 146 block above first; on one that cybermonklabs/legion#3995 migrated, its four statements before that block; on one that cybermonklabs/legion#4115 migrated, the three statements of [Rolling back the project pause](#rolling-back-the-project-pause) after those four statements and before that block, once that section's first two steps are done; and on one that cybermonklabs/legion#4464 migrated, its own block after those four statements and before that block.
@@ -3543,6 +3544,9 @@ On a store that cybermonklabs/legion#4598 migrated, run that release's one state
 Those three touch no row in common, so any of them runs first.
 Every store that cybermonklabs/legion#3995's release migrated is such a store on all three counts, since that release carries #4598, #4581 and #4573.
 On a store that [the release that counts each step's models](#rolling-back-the-release-that-counts-each-steps-models) migrated, run that section's way back before all of these.
+That way back deletes the row of 20261124012813 and leaves the store as one that #5303's release migrated.
+Then run the way back in the header of `20261123224717_members_owed.up.sql`, which that migration's entry below gives.
+The store then reports 20261123212127 after the eleven statements, as the last entry of the list below says.
 The eleven statements, after that block where it runs, leave the store at the earlier release's schema, but for what the later migrations that the list after the block leaves standing added, and the store then reports its highest recorded row (`schemaVersion` in `internal/store/store.go`), since neither block deletes a version row but its own:
 20261112180548, the earlier release's own version, on a store the release at contract 94 migrated, which records it above this migration's own 20261111225552;
 20261114031356, the highest row neither block deletes, on a store #3711's release at contract 146 migrated;
