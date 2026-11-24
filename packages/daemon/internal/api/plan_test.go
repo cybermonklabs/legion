@@ -148,11 +148,10 @@ func TestRegisterPlanTakesAPlanAndRefusesWithReasons(t *testing.T) {
 }
 
 // register_plan judges a plan against the deployment the server is given (Options.Deployment),
-// whose roles are the ones the daemon's settings define: with checker in it, `implementer checker` is taken;
-// without it, the plan is refused naming checker; and `reviewer implementer` is refused with the
-// reason of a step that reads a pull request before the implementer, whatever the deployment.
+// the roles the daemon's settings define: with checker in it, `implementer checker` is taken;
+// without it, the plan is refused naming checker; and `reviewer implementer`, a step that reads
+// its task's pull request before the implementer, is taken, whatever the deployment.
 func TestRegisterPlanTakesARoleTheDeploymentDefines(t *testing.T) {
-	readsBeforeTheImplementer := PlanReason{Task: "a", Reason: "step 1 of task a names reviewer, and no step before it names the role implementer, whose pull request reviewer reads; a role of this deployment that reports pass or fail needs none. This release of Legion does not carry it out yet."}
 	for _, tc := range []struct {
 		name       string
 		deployment plan.Deployment
@@ -162,7 +161,7 @@ func TestRegisterPlanTakesARoleTheDeploymentDefines(t *testing.T) {
 		{"checker in the deployment", checkerDeployment(), "implementer checker", nil},
 		{"checker in no deployment", plan.Deployment{Roles: plan.BuiltinRoles()}, "implementer checker",
 			[]PlanReason{{Task: "a", Reason: "step 2 of task a names the role checker, which neither the deployment nor the plan defines."}}},
-		{"a review before the implementer", checkerDeployment(), "reviewer implementer", []PlanReason{readsBeforeTheImplementer}},
+		{"a review before the implementer", checkerDeployment(), "reviewer implementer", nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h, facts, statuses := planHarness(t)
@@ -364,9 +363,11 @@ func seedMember(t *testing.T, h *harness, key, tree string) {
 	}
 }
 
-// Who owns a recorded issue is one rule, record.ArchitectOfTree: an architect of the issue's tree
-// now, the root's or a sub-architect's, the rule the workflow holds the giver of a stored plan to
-// at the issue's first step. A sub-architect, the architect of LEGION-211, gives a plan for
+// Who owns a recorded issue for register_plan and stop_task is one rule, record.ArchitectOfTree:
+// an architect of the issue's tree now, the root's or a sub-architect's, the rule the workflow
+// holds the giver of a stored plan to at the issue's first step (the steps of the key owner are
+// narrower, the issue's own architect's alone, record.OwnerClaim). A sub-architect, the architect
+// of LEGION-211, gives a plan for
 // LEGION-209 while LEGION-211 stands in the tree LEGION-208. Once LEGION-211 stands in a tree of
 // its own it is no architect of that tree, whatever tree its claim was registered in:
 // register_plan and stop_task both refuse it, and the root's architect is still taken.

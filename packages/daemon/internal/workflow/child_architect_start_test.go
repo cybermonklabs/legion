@@ -67,8 +67,9 @@ func branchRowsOf(queued []heldRow) []int {
 }
 
 // A child's first phase start, which admission's promotion makes when the waiting line gives the
-// child its slot (Engine.StartFirstPhase), starts the child's own architect beside its planner. The
-// outbox holds, on the child and in this order, the row that creates the child's branch, the
+// child its slot (Engine.StartFirstPhase), starts the child's own architect beside the agent of its
+// first step, here the planner, the first of today's line, which this child with no plan rows walks.
+// The outbox holds, on the child and in this order, the row that creates the child's branch, the
 // start of the child's architect, and the planner's start, so the outbox, which runs an issue's
 // starts oldest first, starts the architect before the worker it owns, and both after the branch
 // exists. The architect's start is the plain one (childArchitectStart): no phase, no task, no

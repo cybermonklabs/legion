@@ -159,8 +159,8 @@ type Population struct {
 // them, since the read takes no project and the metrics look up their own, which is what places
 // an issue in a tree, and in the window's scope per role, which is what a metric counts — the
 // handoffs and observations of the window's issues, the issues of the project the daemon
-// reports, the issues Legion sessions created in the window, and the merge time of each finished
-// issue's pull request.
+// reports, the issues Legion sessions created in the window, and the merge time of the pull
+// request of each finished issue that has one.
 //
 // github may be nil, and a GitHub read that fails is not an error: a merge time Dispatch cannot
 // reach leaves that issue with none, since no metric's rule is written in terms of one.
@@ -657,9 +657,11 @@ func (p *Population) fillReportedTrees() {
 	}
 }
 
-// readMergeTimes reads the merge time of each issue's pull request from the delivery population,
-// and fetches the ones that population does not hold yet from GitHub (delivery.FetchPullRequest),
-// up to fetchedMergeTimesCap of them. A fetch that fails leaves the issue with no merge time.
+// readMergeTimes reads the merge time of the pull request of each issue that has one from the
+// delivery population (an issue with none, such as a task that ends at its retro, keeps no merge
+// time), and fetches the ones that population does not hold yet from GitHub
+// (delivery.FetchPullRequest), up to fetchedMergeTimesCap of them. A fetch that fails leaves the
+// issue with no merge time.
 func (p *Population) readMergeTimes(ctx context.Context, pool *store.Pool, github *githubapp.Client, keys []string) error {
 	rows, err := pool.Query(ctx, `
 		select issue_key, repo, number, merged_at

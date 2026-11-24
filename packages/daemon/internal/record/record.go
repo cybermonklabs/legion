@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
@@ -291,6 +292,15 @@ type Issue struct {
 	// generation), "" where the run has no plan rows or its task stands at no step. It is read
 	// only: PutIssue writes nothing of it, and workflow's moveTask sets it on the issue it moves.
 	StepRole claim.Role
+	// PlaceRole is the role of the claim that works the place where the issue's one task stands,
+	// running or stopped (plan_tasks.running_kind step or retro): the architect where the agent
+	// there is the owner of the task (a step of the key owner, or the retro of a task whose last step
+	// of the type implementation is the owner's or that has none), the step's role at a step, and
+	// at the retro the role of the task's last step of the type implementation: the claim's role of
+	// PlaceWorker (Worker.ClaimRole); "" with no plan rows, at the merge, and while no place runs. It
+	// is read with the issue from its plan rows, and only read: PutIssue writes nothing of it, and
+	// workflow's moveTask sets it on the issue it moves (Walk.PlaceRole, the same rule).
+	PlaceRole claim.Role
 }
 
 // Repository is the repository the record names (Repo) in the spelling the record keeps: what
@@ -486,11 +496,13 @@ func (i Issue) AwaitingPerson() bool { return i.Phase == phase.AwaitingPerson &&
 // (KeepsSlot).
 func (i Issue) Answered() bool { return i.AwaitingPerson() && i.Awaiting.AnsweredAt != nil }
 
-// WorkingPhase is the phase the issue's worker works: the phase its hold left while it is held —
-// the one whose worker's claim failed — and the phase it stands in otherwise. It is the one rule:
-// workflow.RoleFor(i.WorkingPhase()) is the role whose failure holds the issue, the role the
-// stranded report names, and the role the operator's retry of a phase worker acts for (api's
-// retryClaim), which read it here rather than each keeping a copy to drift from.
+// WorkingPhase is the phase the agent of the issue's place works: the phase its hold left while it
+// is held — the one whose agent's claim failed — and the phase it stands in otherwise. It is the
+// one rule: i.RoleAt(i.WorkingPhase()) is the role whose failure holds the issue where a phase
+// worker works the place, the role the stranded report names of a phase worker, and the role the
+// operator's retry starts that phase again for (api's restartWorkedPhase), the owner's at a place
+// of its own among them: the role of the claim that works the task's place, the architect at a
+// step or a retro the owner does. Each reads it here rather than keeping a copy to drift from.
 func (i Issue) WorkingPhase() phase.Phase {
 	if i.Hold != nil {
 		return i.Hold.From
@@ -498,14 +510,33 @@ func (i Issue) WorkingPhase() phase.Phase {
 	return i.Phase
 }
 
-// RoleAt is the role that works the issue at p: the role of the step its task stands at
-// (StepRole) for phase.Step, whose role the plan names, and phase.RoleFor(p) for every other
-// phase.
+// RoleAt is the role that works the issue at p: the role of the claim that works its task's place
+// (PlaceRole) where it is set and p is the phase the issue works (WorkingPhase: its phase, or the
+// one its hold left), a phase that place runs as (placeRunsAs), so the owner's step and the
+// owner's retro answer the architect; otherwise the role of the step its task stands at (StepRole)
+// for phase.Step, whose role the plan names, and phase.RoleFor(p) for every other phase.
 func (i Issue) RoleAt(p phase.Phase) claim.Role {
+	if i.PlaceRole != "" && p == i.WorkingPhase() && placeRunsAs(i.PlaceRole, p) {
+		return i.PlaceRole
+	}
 	if p == phase.Step {
 		return i.StepRole
 	}
 	return phase.RoleFor(p)
+}
+
+// placeRunsAs says whether a place whose claim's role is role runs as p: the retro, whatever role
+// does it; a step of the owner (the architect) at any phase a step runs as; and any other step at
+// the phase its role runs as (plan.RunsAs). Admitted, held, merging, done and awaiting_person are
+// none.
+func placeRunsAs(role claim.Role, p phase.Phase) bool {
+	switch p {
+	case phase.Retro:
+		return true
+	case phase.Planning, phase.Implementing, phase.Testing, phase.Reviewing, phase.Accepting, phase.Step:
+		return role == claim.RoleArchitect || plan.RunsAs(string(role)) == p
+	}
+	return false
 }
 
 // EventMark places a Dispatch event in its issue's event log: its sequence on the issue (Seq) and
@@ -591,9 +622,10 @@ type PhaseRow struct {
 	// record and which the implementer's plugin holds to be its pushed @- on
 	// legion/<issue>@origin; and the commit retro and merging stand on.
 	HandoffCommit string
-	// Pass counts the moves the issue has made back into an earlier phase, each of which opens one
-	// more run of the implementing, testing and reviewing stretch. It tells one pass through a
-	// phase from the last, which is what the handoff completion key is built on (internal/api's
+	// Pass counts the moves the issue has made back to an earlier step (to an earlier phase, on an
+	// issue with no plan rows), each of which opens one more run of the steps from that one on. It
+	// tells one pass through a phase from the last, which is what the handoff completion key is
+	// built on (internal/api's
 	// handoffPosition), and so it is never reset while the record of the work stands: a completion
 	// at a commit an earlier pass already reported has to be a fact of its own.
 	Pass int
@@ -604,10 +636,12 @@ type PhaseRow struct {
 	HandoffRecord  string
 	HandoffVersion int
 	// Rounds is how many review rounds the issue has had while this role held it, counted on the
-	// implementer's row alone (workflow's recordRound): a review that requested changes ends one,
-	// and nothing else opens one — a tester's fail and a worker's backward move each raise Pass
-	// and leave this count where it stands. What review_round_cap bounds is Rounds less
-	// ConflictRounds.
+	// implementer's row alone (workflow's recordRound): a review step's request for changes ends one
+	// where the step's agent is not the owner — the reviewer's, the fail of the agent of a step
+	// `acceptance`, the fail of a step of the type review that runs as step — and nothing else opens
+	// one: a tester's fail, a worker's backward move and the owner's fail of its own review step
+	// each raise Pass and leave this count where it stands. What review_round_cap bounds is Rounds
+	// less ConflictRounds.
 	Rounds int
 	// ConflictRounds is how many of Rounds were opened while the daemon's record held the pull
 	// request's own head as conflicting with its base (PullRequest.ConflictingHead): a round the
@@ -648,29 +682,40 @@ type PhaseRow struct {
 	// reviewer's own review-App session (told from any other review-App session's by its Legion
 	// footer) or an account with write access to the repository submitted for the round that carried
 	// one (workflow's DecidesRound), kept until the round ends, since the reviewer's completion can
-	// come after the review it posted. Nil until a review decides.
+	// come after the review it posted. Nil until a review decides. A review step no review on GitHub
+	// decides keeps none, since its verdict ends it: the reviewer's of an issue with no pull request
+	// record, and one the owner does (workflow's settleRound).
 	Decision *ReviewDecision
-	// ReviewedHead is the commit the daemon last recorded as read by the reviewer's own deciding
-	// review of the entry that stood: the head named in the Legion footer of a review that
-	// approved or requested changes, submitted as the review App from the session the claims
-	// record holds for the claim the daemon starts the reviewer under (workflow's review,
-	// byReviewer and reviewersClaim), in the first round as in every later one. Only the
-	// reviewer's row holds it. A person's review does not move it, since the reviewer did not read
-	// that commit; neither does another review-App session's review or a review that decides
-	// nothing, and while the reviewer's claim records no session no review-App review decides the
-	// round or moves it (workflow's RefusedWhileNoSession). Unlike Decision it outlives its round:
-	// no entry into a phase clears it (workflow's clearHandoff, whose list of fields does not hold
-	// it), so the task of the reviewer's next round names it (workflow's namingTheReviewRound) and
-	// the reviewer reads the difference from it to the head. Only a review of the entry that stands
-	// moves it: the row holds the task of an entry (EntryTask), and the review's footer names that
-	// entry (Entry, intake.PullRequestReview.LegionEntry). No time is compared. A review that names
-	// no entry, or another one, decides its round and leaves the commit where it stands, so the
-	// next round reads more: from an older commit, or the whole change. A new generation clears it
-	// (ClearGeneration), and the clear empties the entry's task until the next start raises an
-	// entry, so the first review of a re-admitted root, of a child run again and of an adopted
-	// member reads the whole change, and a review of an entry before the clear moves nothing,
-	// however late it is applied; a carried hand-over keeps its rows, and the commit with them.
-	// Empty until such a review, and on every row the release before the column wrote.
+	// ReviewedHead is the commit the daemon last recorded as read by this row's step of the type
+	// review. On the reviewer's row, where reviews on GitHub decide the round, it is the commit read
+	// by the reviewer's own deciding review of the entry that stood: the head named in the Legion
+	// footer of a review that approved or requested changes, submitted as the review App from the
+	// session the claims record holds for the claim the daemon starts the reviewer under
+	// (workflow's review, byReviewer and reviewersClaim), in the first round as in every later one.
+	// A person's review does not move it, since the reviewer did not read that commit; neither does
+	// another review-App session's review or a review that decides nothing, and while the reviewer's
+	// claim records no session no review-App review decides the round or moves it (workflow's
+	// RefusedWhileNoSession). On the row of any other step of the type review, which no review on
+	// GitHub decides — the reviewer of an issue with no pull request record, the agent of a step
+	// `acceptance`, a role of that type the deployment or the plan defines, and a review step the
+	// owner does — it is the commit that step's completion, or the owner's report of it, named with
+	// its verdict
+	// (workflow's recordStepReview), and where the owner ends a review step of its own with sign_off
+	// or request_backward_move, the head of the pull request it acted on (workflow's
+	// recordOwnersReview). Unlike Decision it outlives its round: no entry into a phase clears it
+	// (workflow's clearHandoff, whose list of fields does not hold it), so the task of the step's
+	// next run names it (workflow's namingTheReviewRound) and its agent reads the difference from it
+	// to the head. A review or a completion moves it only for the entry that stands: the row holds
+	// the task of an entry (EntryTask), and the review's footer names that entry (Entry,
+	// intake.PullRequestReview.LegionEntry), as a completion carries it. No time is compared. A
+	// review that names no entry, or another one, decides its round and leaves the commit where it
+	// stands, so the next round reads more: from an older commit, or the whole change. A new
+	// generation clears it (ClearGeneration), and the clear empties the entry's task until the next
+	// start raises an entry, so the first review of a re-admitted root, of a child run again and of
+	// an adopted member reads the whole change, and a review of an entry before the clear moves
+	// nothing, however late it is applied; a carried hand-over keeps its rows, and the commit with
+	// them. Empty until such a review or completion, and on every row the release before the column
+	// wrote.
 	ReviewedHead string
 	// CompletedAt is when the workflow applied the role's completion of its current phase, zero until
 	// then. The reviewer's orders the reviews its round receives against the completion (workflow's
@@ -745,16 +790,18 @@ type PhaseRow struct {
 	// take.
 	EntryMovedBack bool
 	// StepTask and StepPlace are the step this row runs, for an issue with plan rows: the plan's
-	// task (PlanTask.Task) and the step's place in it, from 1 for a step and 0 for the retro on the
-	// implementer's row and for the merge on the merger's row, written by the start that raises the
-	// entry (workflow's enter). With the issue and the role they are the row's key, so a role that
-	// stands at two steps of a task has a row for each, and each row's handoff, completion, entry and
-	// decision above are the facts of its step's run (PhaseRowAt reads the row of a step). An issue
-	// with no plan rows keeps "" and 0, one row for each role, and so does every row the release
-	// before the column wrote. A new generation folds the rows of each role into the one whose entry
-	// is the highest and clears both fields with the entry's task (ClearGeneration), since the task
-	// ids belong to one generation's plan; a carried hand-over keeps its rows, and the step with
-	// them.
+	// task (PlanTask.Task) and the step's place in it, from 1 for a step and 0 for the retro, on the
+	// row of the place's role (PlaceWorker's Worker.Role), and for the merge on the merger's row,
+	// written by the start that raises the entry (workflow's enter). At a step the place's role is
+	// the step's own role, whoever does the step. At the retro it is the role of the retro's agent,
+	// the implementer where the owner does it. With the issue and the role they are the row's key,
+	// so a role that stands at two steps of a task has a row for each, and each row's handoff,
+	// completion, entry and decision above are the facts of its step's run (PhaseRowAt reads the
+	// row of a step). An issue with no plan rows keeps "" and 0, one row for each role, and so does
+	// every row the release before the column wrote. A new generation folds the rows of each role
+	// into the one whose entry is the highest and clears both fields with the entry's task
+	// (ClearGeneration), since the task ids belong to one generation's plan; a carried hand-over
+	// keeps its rows, and the step with them.
 	StepTask  string
 	StepPlace int
 }
@@ -795,7 +842,9 @@ type PhaseEntry struct {
 }
 
 // ReviewDecision is what one review decided: its state (changes_requested or approved), its body,
-// handed to the next implementer, and the head it was written on, whose code an approval approves.
+// handed to the step the work goes back to (the implementer, in the default steps), and the head
+// it was written on, whose code an approval approves. A review step no review on GitHub decides
+// keeps none (PhaseRow.Decision).
 //
 // ToldStuckHead and ToldStuckState are the daemon's own mark beside it rather than anything the
 // review said: the head and GitHub's merge state an approval of this decision was last reported
@@ -1094,27 +1143,63 @@ type ConflictRead struct {
 // hold and no notice, tells its agent that its own assignment and its completion stand
 // (MergeForwardMessage.Message), and covers that step alone: once the task stands elsewhere at the
 // same head, the ask is made again, with the hold and the notice.
+// Agent is the claim the ask reached, the agent of the task's implementation step where the issue
+// stood (workflow's implementationAgent), and "" where no task step does that work: what says whose
+// ask it is (OwnersMergeForward), whatever that step's role is called, and who pushed the merge,
+// whom the landing tells nothing (workflow's mergeForwardLanded). Role is the role the ask was made
+// as, that step's role, "" in a record of the release before, which asked the implementer: the one
+// builder of the ask's message reads both (MergeForward.Ask). Told is whom the ask's message
+// reached, by the one rule of told an owner-step's run holds too (OwnerTold: the launch and the
+// session of the owner's claim, the daemon's ownerToldMark, Store.MarkMergeForwardTold), and the
+// zero OwnerTold, which reached nobody, until it reached one: a record with no told key, an ask not
+// yet delivered or one the release before wrote, reads as that zero. A fresh session of the owner
+// holds nothing of the one told, so the owner's catch-up at a launch names an open ask its session
+// was not told (workflow's untoldMergeForward).
 // AskedAt is when the ask was written. Landed is the first new head that arrived after the ask, ""
-// until one does; ReviewAsked is whether that landing asked the reviewer to read the merge, which
-// it does when the issue stands past review and its task has a reviewer step (workflow's
-// mergeForwardLanded), and which the merger's task and its landed message read. Earlier is every
-// merge forward that landed before this ask in the same stretch of work, oldest first: a later ask
-// replaces the one the record holds, so when the head a merge left conflicts in its turn and is
-// merged forward again, Earlier is what still names the head the first merge replaced
+// until one does; ReviewAsked is whether that landing queued a review of the merge for the
+// reviewer, which it does when the issue stands past review and its task has a reviewer step
+// (workflow's mergeForwardLanded), and which the merger's task and its landed message read. Earlier
+// is every merge forward that landed before this ask in the same stretch of work, oldest first: a
+// later ask replaces the one the record holds, so when the head a merge left conflicts in its turn
+// and is merged forward again, Earlier is what still names the head the first merge replaced
 // (PullRequest.MergeForward says how long the stretch lasts). It is stored as the jsonb of
-// pull_requests.merge_forward (migration 20261119003157), null for nil; the jsonb takes Earlier
-// and Own with no migration of their own, and leaves each out while it is empty. Migration
-// 20261123060645 marks Own on each ask the release before recorded in implementing.
+// pull_requests.merge_forward (migration 20261119003157), null for nil; the jsonb takes Earlier,
+// Own, Agent, Role and Told with no migration of their own, and leaves each out while it is empty.
+// Migration 20261123060645 marks Own on each ask the release before recorded in implementing.
 type MergeForward struct {
 	Head        string               `json:"head"`
 	Base        string               `json:"base"`
 	Phase       phase.Phase          `json:"phase"`
 	Own         bool                 `json:"own,omitempty"`
+	Agent       claim.Token          `json:"agent,omitempty"`
+	Role        claim.Role           `json:"role,omitempty"`
+	Told        OwnerTold            `json:"told,omitzero"`
 	Why         ConflictWhy          `json:"why"`
 	AskedAt     time.Time            `json:"askedAt"`
 	Landed      string               `json:"landed,omitempty"`
 	ReviewAsked bool                 `json:"reviewAsked,omitempty"`
 	Earlier     []LandedMergeForward `json:"earlier,omitempty"`
+}
+
+// Ask is the message that asks m's agent for the merge forward of the pull request numbered pull,
+// the one builder of it, which the workflow's ask and its ask again both use: to the claim the ask
+// reached (Agent), as the role it was made as (Role, the implementer for a record of the release
+// before), with the head, the base, the phase and why the record holds, and covering covers, the
+// step of the message it stands in for (MergeForwardMessage.Covers).
+func (m MergeForward) Ask(pull int, covers MergeForwardStep) MergeForwardMessage {
+	role := m.Role
+	if role == "" {
+		role = claim.RoleImplementer
+	}
+	return MergeForwardMessage{Role: role, Claim: m.Agent, Step: MergeForwardAsk, Head: m.Head, Base: m.Base, Phase: m.Phase,
+		PullRequest: pull, Why: m.Why, Covers: covers}
+}
+
+// MergeForwardOpen says whether pr holds an ask of a merge forward that has not ended by the pull
+// request's own state: pr is open and holds an ask (MergeForward) that has not landed. It is the
+// pull request's half of whether a merge forward asked of the owner is open (OwnersMergeForward).
+func (pr PullRequest) MergeForwardOpen() bool {
+	return pr.State == PullRequestOpen && pr.MergeForward != nil && pr.MergeForward.Landed == ""
 }
 
 // LandedMergeForward is a merge forward that landed before the ask the record holds
@@ -1145,12 +1230,17 @@ const (
 	ConflictCheckNotGreen ConflictWhy = "required-check-not-green"
 )
 
-// MergeForwardPhases is the phases a merge forward is asked in: implementing, where the work
-// already is, every phase after it up to the merge, which the issue keeps while the implementer
-// merges (dispatch://INFRA-4374 R1), and step, where a role the deployment or the issue's plan defines runs, after the
-// implementer or before it (a step before it has no pull request, so nothing is asked there). An
-// issue that stands in none of them - before its implementation, or out of the workflow - has no
-// pull request work to merge forward. They are also the phases a head move is read for a conflict
+// MergeForwardPhases is the phases a merge forward is asked in: implementing, testing, reviewing,
+// step, accepting, retro and merging — every phase a step runs as but planning, then the retro and
+// the merge, which the issue keeps while the agent asked merges (dispatch://INFRA-4374 R1): the
+// agent of the task's last step of the type implementation at or before its place, else the
+// task's last such step, the owner where that step's key is owner, and the implementer for a run
+// with no plan rows. Step is where a role the deployment or the plan defines runs. A step
+// that stands in one of them before any step opened the pull request has none to merge forward,
+// so nothing is asked there. An issue that stands in none of them is asked nothing: out of the
+// workflow, at admitted, and in planning, which in the default steps comes before the pull request
+// (a planner step a plan puts after its implementer step is asked nothing until the issue moves on
+// into one of these phases). They are also the phases a head move is read for a conflict
 // in (classify.MergeStateReadOwed), since that read is what can lead to the ask. Both read it
 // through StandsIn, so a hold from one of them counts as standing there.
 var MergeForwardPhases = []phase.Phase{phase.Implementing, phase.Testing, phase.Reviewing, phase.Step, phase.Accepting, phase.Retro, phase.Merging}
@@ -1736,8 +1826,8 @@ type ReleaseRetry struct {
 }
 
 // HandedOverRoot is a root a hand-over created: the generation at which the child became a root of
-// its own, carrying its phase, phase rows and pull request, and whether its old root's gate came
-// with them.
+// its own, carrying its phase, its phase rows and its pull request where it has one, and whether
+// its old root's gate came with them.
 type HandedOverRoot struct {
 	Issue       string
 	Generation  uint64
@@ -2143,6 +2233,22 @@ type Store interface {
 	// own, and answers true; it queues nothing (workflow's OpenUncountedRuns). False, and nothing
 	// written, where the place's row is open or ended.
 	OpenUncountedStep(ctx context.Context, tx pgx.Tx, issue string, place StepPlace, run func(starts int64) StepRecord) (bool, error)
+	// CountOwnerRestart spends one of the limit restarts of the owner of place on issue in the run
+	// there, answering the count with it and true, or false with nothing spent once limit are
+	// spent or where the place has no row (Postgres.CountOwnerRestart). A new run of the place
+	// starts with none spent (RaiseStepStarts, OpenUncountedStep).
+	CountOwnerRestart(ctx context.Context, tx pgx.Tx, issue string, place StepPlace, limit int) (int, bool, error)
+	// ResetOwnerRestarts gives the owner of place on issue every restart of the run there again,
+	// for the operator's retry of the owner (Postgres.ResetOwnerRestarts).
+	ResetOwnerRestarts(ctx context.Context, tx pgx.Tx, issue string, place StepPlace) error
+	// MarkOwnerStepTold records that the owner-step of the run step names reached told, the
+	// owner's claim the outbox published it to, while that run is the place's open run
+	// (Postgres.MarkOwnerStepTold). A new run of the place has reached none (RaiseStepStarts,
+	// OpenUncountedStep).
+	MarkOwnerStepTold(ctx context.Context, tx pgx.Tx, issue string, step NoticeStep, told OwnerTold) error
+	// OwnerStepTold is the owner's claim the owner-step of the latest run of place on issue last
+	// reached, the zero OwnerTold for none (Postgres.OwnerStepTold).
+	OwnerStepTold(ctx context.Context, tx pgx.Tx, issue string, place StepPlace) (OwnerTold, error)
 	// StepRuns is every row of starts of each of issues, by issue and place, in one read: what the
 	// end of a step's run reads of the issues one fact touched (workflow's settleRuns).
 	StepRuns(ctx context.Context, tx pgx.Tx, issues []string) ([]IssueStepRun, error)
@@ -2177,6 +2283,10 @@ type Store interface {
 	// PlansOfEarlierOwners is the version in force of each generation of issue whose giver is no
 	// architect of the issue's tree now (ArchitectOfTree): the plans its first step passes over.
 	PlansOfEarlierOwners(ctx context.Context, tx pgx.Tx, issue Issue) ([]PlanVersion, error)
+	// PlansInForce is the version in force of each generation of each issue of keys, with the role
+	// of its task's first step, each issue's newest first: the one read the phase each of them
+	// starts its run in is judged from (ReadFirstPhases).
+	PlansInForce(ctx context.Context, tx pgx.Tx, keys []string) ([]PlanInForce, error)
 	// CarryPlan copies the plan of issue at from to to, with every role it defines: with carried,
 	// each task where it stands; without, each task waiting at no act with its counts at 0. It
 	// writes nothing where from has no plan rows.
@@ -2332,6 +2442,25 @@ type Store interface {
 	// root: the stalled-tree rule asks it of the trees it is about to tell (admit's
 	// tellStalledTrees), on every fact, every tick and every boot.
 	ControllerNoticesPending(ctx context.Context, tx pgx.Tx, project string, kind NoticeKind, issues []string, role claim.Role) (map[string]struct{}, error)
+	// OwnerStepPending says whether the outbox still holds an unpublished owner-step of the run
+	// step names on issue, so an owner-step told again is never queued behind the one it repeats
+	// (workflow's owedOwnersStep and restart); an owner-step of another run holds back nothing
+	// (Postgres.OwnerStepPending).
+	OwnerStepPending(ctx context.Context, tx pgx.Tx, issue string, step NoticeStep) (bool, error)
+	// SlotWritePending says whether the outbox still holds a supervise slot_credential row of the
+	// claim token queued before the row before (workflow's ownerSlotCredential and
+	// mergeForwardWriteBack): the write of an owner's slot back to its own App, which a later notice
+	// to that claim waits for (the daemon's deliverNotice).
+	SlotWritePending(ctx context.Context, tx pgx.Tx, token claim.Token, before int64) (bool, error)
+	// MergeForwardAskPending says whether the outbox still holds a merge-forward ask of issue's
+	// head head to the claim token, so an ask told again is never queued behind the one it repeats
+	// (workflow's askOwnerAgain; Postgres.MergeForwardAskPending).
+	MergeForwardAskPending(ctx context.Context, tx pgx.Tx, issue string, token claim.Token, head string) (bool, error)
+	// MarkMergeForwardTold records told, whom a merge-forward ask of issue's head head to agent
+	// reached (OwnerTold), on the merge forward the record holds (MergeForward.Told), while the
+	// record's ask is still of that head and agent and has not landed (Postgres.MarkMergeForwardTold).
+	// It is the one record that a session holds the ask's message: a delivered row is deleted.
+	MarkMergeForwardTold(ctx context.Context, tx pgx.Tx, issue, head string, agent claim.Token, told OwnerTold) error
 
 	// PersonHandoverPending says whether outbox still holds a dispatch_status row of issue whose
 	// kind is PersonHandoverStatusRow: a finished row is deleted, so any such row
@@ -2669,14 +2798,17 @@ func TreeLingers(ctx context.Context, store Store, tx pgx.Tx, tree string) (bool
 
 // ArchitectOfTree says whether architect is an architect of issue's tree now: the architect of the
 // tree's root (issue.Tree), or of a member the record holds in that tree, a sub-architect. It is
-// the one rule of who owns an issue, and both readers of that hold to it: an architect's call on a
-// recorded issue (api's architectForIssue and register_plan) and the giver of a stored plan at the
+// the rule of which architects own an issue, and both its readers hold to it: an architect's call
+// on a recorded issue (api's architectForIssue and register_plan) and the giver of a stored plan
+// at the
 // issue's first step (PlansOfEarlierOwners, which the workflow's gateOpened reads). So an
 // architect whose issue moved to another tree, or whose tree the issue left, is no owner of it any
 // longer, whatever tree its claim was registered in. A claim whose agent is not the architect is
 // none; a member whose key yields no claim token holds no claim, so it matches nothing. The tree
 // root's architect, the owner of most issues, is answered from issue alone; only another
-// architect costs the read of the tree.
+// architect costs the read of the tree. The owner of a task's steps of the key owner is narrower:
+// the issue's own architect alone (OwnerClaim), whom the notice owner-step reaches and whose
+// report of such a step alone is taken.
 func ArchitectOfTree(ctx context.Context, store Store, tx pgx.Tx, architect claim.Token, issue Issue) (bool, error) {
 	if _, agent, ok := architect.Cut(); !ok || agent != claim.Agent(claim.RoleArchitect) {
 		return false, nil
@@ -2697,6 +2829,191 @@ func ArchitectOfTree(ctx context.Context, store Store, tx pgx.Tx, architect clai
 		return false, err
 	}
 	return slices.ContainsFunc(members, func(member Issue) bool { return architectOf(member.Key) }), nil
+}
+
+// OwnerClaim is the claim of the owner of issue's task by rule: the architect of issue itself,
+// whatever architect runs now. It decides who owns the task's steps of the key owner and who may
+// act on them: the notice owner-step reaches it, and the owner's report of its own step is taken
+// from it alone. Which claim runs such a step, and is named on its record, is the workflow's to
+// decide (its owner's agent): the issue's own architect while it can hold its role, else an
+// architect above it.
+func OwnerClaim(issue Issue) (claim.Token, error) {
+	project, err := claim.ProjectToken(issue.Project)
+	if err != nil {
+		return "", fmt.Errorf("the owner of %s: %w", issue.Key, err)
+	}
+	token, err := claim.NewToken(project, issue.Key, claim.RoleArchitect)
+	if err != nil {
+		return "", fmt.Errorf("the owner of %s: %w", issue.Key, err)
+	}
+	return token, nil
+}
+
+// OwnersPlace says whether the place where issue's task stands now is the owner's own to work: a
+// step of the key owner or the owner's retro, where the claim that works the place is the
+// architect (PlaceRole, the walk's Walk.PlaceRole), and, on an issue with no plan rows, accepting,
+// which today's line gives the architect. It is RoleAt of the phase the issue stands in, the rule a
+// move back reads of its requester (workflow's backwardRefusal), read for the architect: a step
+// another agent does is not the owner's, the fresh agent of acceptance's among them, and neither
+// is admitted, a held issue, the merge or an issue out of the workflow. sign_off is taken only
+// where it holds, and the architect's catch-up names exactly the issues where it holds.
+func (i Issue) OwnersPlace() bool {
+	return i.Hold == nil && i.Phase != phase.Admitted && i.RoleAt(i.Phase) == claim.RoleArchitect
+}
+
+// OwnersRowRole is the role of the phases row the owner's run raises its entry on where issue's
+// task stands at a place of its plan rows the owner works (OwnersPlace, where the claim that works
+// the place, PlaceRole, is the architect), and "" everywhere else. It is the role of that place
+// (PlaceWorker's Worker.Role, which workflow's startOwnersStep raises the entry on): at a step of
+// the key owner, the owner's acceptance among them, the step's own role (StepRole), and at the
+// owner's retro the role of the owner's retro (ownersRetroRole). There the role that works the
+// issue (RoleAt) is the architect, whose own row and claim count the architect's own starts and
+// not the step that runs, so a reader of the entry of the issue's place reads this role's row
+// instead (projection.Project). It is "" at a place another agent works, at admitted, while the
+// issue is held, and on an issue with no plan rows, whose accepting the architect works as itself,
+// on its own row.
+func (i Issue) OwnersRowRole() claim.Role {
+	if i.PlaceRole != claim.RoleArchitect || !i.OwnersPlace() {
+		return ""
+	}
+	if i.Phase == phase.Retro {
+		return ownersRetroRole
+	}
+	return i.StepRole
+}
+
+// StepWorker is the worker of the step issue's task stands at in p, as a message to that worker is
+// addressed (the workflow's addressRoles): the role of the phases row that step's run raises its
+// entry on, and the claim the message reaches where that is not the row's to name. At a place the
+// owner works the role is OwnersRowRole, the step's own role, and not RoleAt's architect, whose own
+// row counts the architect's own starts, and the claim is the owner's (OwnerClaim): the owner does
+// that step, since its owner-step and its report are the owner's, whatever the step's row names.
+// The row can name the architect above, which the start writes there while the issue's own
+// architect holds no role (the workflow's ownerAgent), and a message to the row's claim would reach
+// an architect that does not do the step. So the owner at its own tester or reviewer step is that
+// step's worker, and each message to that worker reaches it (the workflow's mergeForward,
+// mergeForwardLanded and tellGateMoved). Everywhere else the role is RoleAt(p) and the claim "",
+// for the role's phases row to name (WorkerClaim). err is OwnerClaim's, for an issue whose key
+// makes no claim token.
+func (i Issue) StepWorker(p phase.Phase) (claim.Role, claim.Token, error) {
+	if role := i.OwnersRowRole(); role != "" && p == i.Phase {
+		return StepRecipient(i, role, true)
+	}
+	return StepRecipient(i, i.RoleAt(p), false)
+}
+
+// MergeForwardWorker is the worker a hold or a landed of a merge forward (step) goes to where
+// issue's task stands at at, and whether it goes there: the worker of the step the task stands at
+// (Issue.StepWorker: the step's own role and the owner's claim at a place the owner works, so the
+// owner at its own step is held and told as a fresh worker of that step is), and whether step
+// reaches that role (MergeForwardReaches). It is the one rule of that worker, which the workflow's
+// mergeForward and mergeForwardLanded read.
+func MergeForwardWorker(step MergeForwardStep, issue Issue, at phase.Phase) (claim.Role, claim.Token, bool, error) {
+	worker, token, err := issue.StepWorker(at)
+	return worker, token, err == nil && MergeForwardReaches(step, worker), err
+}
+
+// OwnerActsAs is the role whose App the owner's slot holds while the owner works the place issue's
+// task stands at as another role, and false where it does not: the rule of the place
+// (OwnersPlaceActsAs), at a place of the owner's (PlaceRole is the architect) of an issue held by
+// nothing. While the issue is held, which a stopped task holds too, the owner does no act (the
+// route complete_step refuses a report of a step), and its slot holds its own App. A merge forward
+// asked of the owner is an act as the implementer whatever place the owner works, which the
+// daemon's ActsAs answers ahead of this one (OwnersMergeForward, internal/daemon's ownerSlotRole).
+// The daemon's ActsAs reads steps only for an issue at its retro, and nil steps elsewhere change
+// nothing here.
+func OwnerActsAs(issue Issue, steps []PlanStep) (claim.Role, bool) {
+	if issue.Hold != nil || issue.PlaceRole != claim.RoleArchitect {
+		return "", false
+	}
+	return OwnersPlaceActsAs(issue.Phase, issue.StepRole, steps)
+}
+
+// OwnersPlaceActsAs is the role whose App the owner's slot holds while the owner does the place of
+// its task that runs as p, a step of role or the retro, with steps the task's plan rows, and false
+// where the slot holds the owner's own App through it. At a step of the key owner, with p the phase
+// that step runs as (plan.RunsAs), it is that step's role. At the owner's retro it is the role the
+// retro is done as (RetroActsAs): the role of the task's last step of the type implementation,
+// which is the owner's, so the owner's gh acts through its retro as the App that opened the pull
+// request, the one App GitHub lets resolve its review threads, as a fresh implementer's retro does;
+// a retro the owner does as itself, of a task with no step of that type, is false. It is the one
+// rule of what the owner's place switches its slot to: what the slot holds while the place runs
+// (OwnerActsAs) and whether the end of its run gives the slot its own App back (workflow's endStep).
+func OwnersPlaceActsAs(p phase.Phase, role claim.Role, steps []PlanStep) (claim.Role, bool) {
+	if p == phase.Retro {
+		if acts := RetroActsAs(steps); acts != claim.RoleArchitect {
+			return acts, true
+		}
+		return "", false
+	}
+	if role == "" || plan.RunsAs(string(role)) != p {
+		return "", false
+	}
+	return role, true
+}
+
+// ActiveInWorkflow says whether the issue is in the workflow and held by nothing, where its roles
+// act on its task: the issue's half of whether a merge forward asked of the owner is open
+// (OwnersMergeForward).
+func (i Issue) ActiveInWorkflow() bool {
+	return i.Hold == nil && InWorkflow(i)
+}
+
+// OwnersMergeForward says whether the record holds a merge forward of pr, the pull request of
+// issue, asked of issue's owner (OwnerClaim) that has not ended: an act as the implementer, for
+// which the owner's slot holds the implement App (the daemon's ActsAs). The ask is the owner's
+// where the claim it reached (MergeForward.Agent, the agent of the task's implementation step) is
+// the owner's, whatever that step's role is called; an ask of another agent leaves the owner's slot
+// alone. It has not ended while the issue is in the workflow and held by nothing
+// (Issue.ActiveInWorkflow) and pr holds the ask open (PullRequest.MergeForwardOpen). Each other
+// state of the two records is an end of it: the landing; the clear of the ask on a move into the
+// implementation step, a new generation of the issue or its leave; the close or the merge of the
+// pull request, and a delete of its record; a hold, a stopped task's among them; and the issue's
+// leave. It is the one predicate of the question: the workflow asks it before and after each write
+// of either record, queuing the write-back of the owner's slot where the write ends the ask and
+// asking the owner again where the write opens it again (its ownersMergeForwardWritten), and the
+// daemon's ActsAs asks it, beside its own read of the tree's linger, at each write of the owner's
+// slot (internal/daemon's ownerSlotRole). The linger is no part of it: every role of a tree that
+// lingers is suspended, the daemon's ActsAs answers the owner's own App there, and the owner's next
+// launch writes that App.
+func OwnersMergeForward(issue Issue, pr *PullRequest) bool {
+	if !issue.ActiveInWorkflow() || pr == nil || !pr.MergeForwardOpen() {
+		return false
+	}
+	owner, err := OwnerClaim(issue)
+	return err == nil && pr.MergeForward.Agent == owner
+}
+
+// OwnerSlotWriteBack is the supervise slot_credential that writes the slot of the owner of issue's
+// task (OwnerClaim) back to the App of the owner's own role (internal/daemon's slotCredential): the
+// row the end of each act the owner does as a role of another App than its own queues, a step or a
+// retro (workflow's ownerSlotCredential: endStep where workflow's actsAsOwnApp is false, and
+// endOffWalk for each run off its walk whose start named an architect) and a merge forward asked
+// of it (workflow's mergeForwardWriteBack). ok is false for an issue whose key makes no claim
+// token, which has no owner's slot.
+func OwnerSlotWriteBack(issue Issue) (SuperviseRequest, bool) {
+	owner, err := OwnerClaim(issue)
+	if err != nil {
+		return SuperviseRequest{}, false
+	}
+	return SuperviseRequest{Op: "slot_credential", Tree: issue.Tree, Role: claim.RoleArchitect, Claim: owner, Generation: issue.Generation}, true
+}
+
+// RetroActsAs is the role the retro of a task is done as, read from steps, the task's plan rows:
+// the role of its last step of the type implementation, whose agent does the retro (PlaceWorker),
+// so the retro's gh acts as the App that step acted as; and the architect where the task has no
+// such step, whose retro the owner does as itself. Where that step's role is one a plan defines,
+// the answer is that role, whose App its type decides, as it does for the step.
+func RetroActsAs(steps []PlanStep) claim.Role {
+	var task string
+	if len(steps) > 0 {
+		task = steps[0].Task
+	}
+	retro, ok := PlaceWorker(task, TaskPlace{Kind: PlaceRetro}, steps)
+	if !ok || retro.Step < 1 || retro.Step > len(steps) {
+		return claim.RoleArchitect
+	}
+	return claim.Role(steps[retro.Step-1].Role)
 }
 
 // OwnerRule is which architects own an issue for an architect's request on it, the rule the
@@ -2721,8 +3038,9 @@ const (
 // or recorded in another tree, a cycle) ends at the tree root, whose architect owns the issue: a
 // human's re-parent in Dispatch leaves an issue's tree as it was (admit's recordObservation),
 // except a root that never ran, which joins its parent's live tree (workflow/adopt.go), and the
-// notice router ends the same walk at the same place (internal/daemon's owningArchitect), so the
-// architect the reviewer's phase-finished notice reaches is the one that may accept the issue. An
+// notice router ends the same walk at the same place (internal/daemon's noticeArchitect, for every
+// notice but an owner-step), so the architect the reviewer's phase-finished notice reaches is the
+// one that may sign the issue off where its acceptance is the owner's (OwnersPlace). An
 // architect this answers true for is an architect of the issue's tree (ArchitectOfTree), since the
 // walk stays in that tree. The route judges it on its own read and the fact again under the lock,
 // so the two never judge different rules.
@@ -2821,17 +3139,19 @@ func (i Issue) CarriesRun() bool { return i.Phase != phase.Admitted && i.Phase !
 
 // HoldsQueued says whether work of role queued for phase queuedFor — a start, an owed start, or the
 // task a start delivers — is the work of the place the issue stands at now: the issue stands in
-// queuedFor and, at the phase step, at a step of role (StepRole). Every role a deployment defines
-// runs as step, so a start or a task queued for the step of one role names a phase that still
+// queuedFor and, at the phase step, at a step of role (StepRole). Every role a deployment or a
+// plan defines runs as step, so a start or a task queued for the step of one role names a phase
+// that still
 // reads the same while the task stands at the step of another; the role is what tells the two
 // apart. At step the role names the step. A role can stand at two steps of a task, one agent doing
 // both (plan.Supported), and work queued for either reads the same here: the entry the work is of
 // and the claim it is for tell the two apart, which the outbox's fence on a start (the role's row
-// now and its entry, StartLeft) and the claim's given entry compare beside this. Away
-// from step the phase alone is compared: one role works several phases (the implementer
-// implementing and retro), and a phase names its one role. It is the one definition of that
-// question, which the four judges of queued work ask, each on its own read: the outbox before it
-// runs a start (daemon's supervise), the
+// now and its entry, StartLeft) and the claim's given entry compare beside this. Away from step
+// the phase alone is compared: a role can work several phases (the implementer implementing and
+// the retro, where the retro is its), and away from step work is queued for a phase only for the
+// role that works the issue's place there (a step's own role; at the retro, the role its agent
+// runs as). It is the one definition of that question, which the four judges of queued work ask,
+// each on its own read: the outbox before it runs a start (daemon's supervise), the
 // admission pass before it lets an owed start take a slot (admit's finishFencedStarts), the
 // supervisor before it sends a queued task (PhaseHolds), and the supervisor again before it
 // brings a claim back for a start (supervise.StartWork, through PhaseHolds).

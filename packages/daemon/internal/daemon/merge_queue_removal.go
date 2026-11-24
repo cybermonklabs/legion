@@ -148,17 +148,24 @@ func (r *outbox) mergeQueueRemoval(ctx context.Context, row record.OutboxRow, pa
 		r.log.Info("outbox merge-queue removal finished undelivered: the issue left merging at that head", append(attributes, "why", left)...)
 		return nil
 	}
-	return r.deliverHeld(ctx, row, heldMessage{issue: issue, token: token, role: claim.RoleMerger,
+	delivered, err := r.deliverHeld(ctx, row, heldMessage{issue: issue, token: token, role: claim.RoleMerger,
 		what: "the merge-queue removal of " + row.Issue, message: payload.Message(row.Issue, pr.Repo), attributes: attributes,
-		claimEnded: "outbox merge-queue removal finished undelivered: the merger's claim has failed or retired",
-		delivered:  "outbox merge-queue removal delivered to the merger"})
+		delivered: "outbox merge-queue removal delivered to the merger"})
+	if err == nil && delivered.ended != "" {
+		r.log.Info("outbox merge-queue removal finished undelivered: the merger's claim has failed or retired", append(attributes, "state", delivered.ended)...)
+	}
+	return err
 }
 
-// heldMessage is one message a row delivers to a role of its issue and holds until a session of
-// that role takes it (deliverHeld): the issue, the role's claim token and the role, what names the
-// message in the row's waits and errors ("the merge-queue removal of LEGION-208"), the text
-// published, the attributes of the row's log lines, and the two lines the delivery itself logs: the
-// row's end on a claim that failed or retired, and the delivery.
+// heldMessage is one message a row delivers to a claim of its issue and holds until a session of
+// that claim takes it (deliverHeld): the issue, the token of the claim the message reaches, the
+// role the message names (a merge-forward message to the owner reaches the owner's claim, whatever
+// role it names), what names the message in the row's waits and errors ("the merge-queue removal
+// of LEGION-208"), the text published, the attributes of the row's log lines, and the line the
+// delivery logs. holds, where it is set, is what the message waits for once the claim's session
+// runs and before it is published, even while that session holds the role: the owner's slot
+// holding the App of the role the message asks an act as (mergeForwardMessage's ownerSlotActs).
+// It answers nil once the message may be published, and a wait or an error that the row answers.
 type heldMessage struct {
 	issue      record.Issue
 	token      claim.Token
@@ -166,44 +173,58 @@ type heldMessage struct {
 	what       string
 	message    string
 	attributes []any
-	claimEnded string
 	delivered  string
+	holds      func(ctx context.Context) error
 }
 
-// deliverHeld publishes m's message to the Envoy topic of m's role, and to nothing else, and holds
-// the row until a session of that role takes it: the delivery a merge-queue removal and a
-// merge-forward message share (mergeQueueRemoval, mergeForwardMessage), once each has read what
-// ends its row on its own terms. It stops nothing it reaches, as a hook prompt stops nothing. A
-// released role is woken (wakeForDelivery), and the row waits on its backoff until the woken
-// session holds the role, or, while the wake pacing holds that resume, for its turn, reading the
-// claim again at most parkedWakeBound apart (parkedWait), as it waits while the listener answers
-// that nobody holds the role (notify.ErrNoHolder) or that its holder is unresponsive
+// heldDelivery is what deliverHeld did with a held message where it answered no wait and no error:
+// ended is the state of the role's claim where that claim has failed or retired and nothing was
+// published, "" where the message was published. Of a published message, told is the role's claim
+// as it was read before the publish, and recipient the session the listener says it forwarded the
+// publish to, "" where it names none: whom the message reached, which a message to the owner records
+// (ownerToldMark). What a claim's end does to the row is its caller's to decide.
+type heldDelivery struct {
+	ended     supervise.ClaimState
+	told      supervise.Claim
+	recipient string
+}
+
+// deliverHeld publishes m's message to the Envoy topic of m's claim (m.token), and to nothing
+// else, and holds the row until a session of that claim takes it: the delivery a merge-queue
+// removal and a merge-forward message share (mergeQueueRemoval, mergeForwardMessage), once each
+// has read what ends its row on its own terms. It stops nothing it reaches, as a hook prompt stops
+// nothing. A released role is woken (wakeForDelivery), and the row waits on its backoff until the
+// woken session holds the role, or, while the wake pacing holds that resume, for its turn, reading
+// the claim again at most parkedWakeBound apart (parkedWait), as it waits while the listener
+// answers that nobody holds the role (notify.ErrNoHolder) or that its holder is unresponsive
 // (notify.ErrHolderUnresponsive). A role with no claim yet, its start still owed, is no end
 // either: the row waits for it.
 //
-// It reads, in this order, what ends or holds the row. The row finishes undelivered, logging
-// m.claimEnded, once the role's claim has failed or retired, since that claim will not hold its
-// role again. While the root's design gate is closed (designGateClosed) a released role is neither
-// woken nor told, and the row waits for the gate to open: a role the gate holds may not know the
-// gate closed, and woken by this message it would work against the gate. A role whose session
-// holds it is told at once, gate or none, and m.delivered is logged. The three other answers of
-// the confirmed publish route keep the ordinary retry, as they do for a hook prompt: a holder that
-// did not confirm in time (notify.ErrNotDelivered), one that does not advertise the delivery mode
-// (notify.ErrRefusedByHolder), and a forward the listener's own NATS grant denies
-// (notify.ErrPublishDenied).
-func (r *outbox) deliverHeld(ctx context.Context, row record.OutboxRow, m heldMessage) error {
+// It reads, in this order, what ends or holds the row. A role's claim that has failed or retired
+// is reported to the caller (heldDelivery.ended), with nothing published, and the caller decides
+// whether its row waits for the claim's next start or ends. While the root's design gate is closed
+// (designGateClosed) a released role is neither woken nor told, and the row waits for the gate to
+// open: a role the gate holds may not know the gate closed, and woken by this message it would
+// work against the gate. A role whose session holds it is told, gate or none, once m.holds, where
+// it is set, answers nil: until then the row waits, though the session holds the role. Once the
+// message is published, m.delivered is logged; the publish answers the session the listener
+// forwarded it to (publishTo), which it reports beside the claim read before the publish. The
+// three other answers of the confirmed publish route keep the ordinary retry, as they do for a
+// hook prompt: a holder that did not confirm in time (notify.ErrNotDelivered), one that does not
+// advertise the delivery mode (notify.ErrRefusedByHolder), and a forward the listener's own NATS
+// grant denies (notify.ErrPublishDenied).
+func (r *outbox) deliverHeld(ctx context.Context, row record.OutboxRow, m heldMessage) (heldDelivery, error) {
 	held := r.supervisedClaim(m.token)
 	if held.State == supervise.StateFailed || held.State == supervise.StateRetired {
-		r.log.Info(m.claimEnded, append(m.attributes, "state", held.State)...)
-		return nil
+		return heldDelivery{ended: held.State}, nil
 	}
 	if held.Released() {
 		closed, err := r.designGateClosed(ctx, m.issue)
 		if err != nil {
-			return err
+			return heldDelivery{}, err
 		}
 		if closed {
-			return wait.Errorf("%s waits for the design gate of %s to open before it wakes the released %s", m.what, m.issue.Tree, m.role)
+			return heldDelivery{}, wait.Errorf("%s waits for the design gate of %s to open before it wakes the released %s", m.what, m.issue.Tree, m.role)
 		}
 	}
 	// This runs before the publish, which would otherwise answer ErrNoHolder for the released
@@ -211,24 +232,32 @@ func (r *outbox) deliverHeld(ctx context.Context, row record.OutboxRow, m heldMe
 	// holds is waited for until it runs, the claim read again at its turn or parkedWakeBound on,
 	// whichever comes first (parkedWait).
 	if waits, turn, err := r.wakeForDelivery(ctx, m.token, m.what, row.HeldByPause); err != nil {
-		return err
+		return heldDelivery{}, err
 	} else if !turn.IsZero() {
-		return r.parkedWait(turn, fmt.Sprintf("%s waits for its %s's launch, which the wake pacing holds until %s",
+		return heldDelivery{}, r.parkedWait(turn, fmt.Sprintf("%s waits for its %s's launch, which the wake pacing holds until %s",
 			m.what, m.role, turn.UTC().Format(time.RFC3339)))
 	} else if waits {
-		return wait.Errorf("%s waits for its %s's released pod to come back", m.what, m.role)
+		return heldDelivery{}, wait.Errorf("%s waits for its %s's released pod to come back", m.what, m.role)
 	}
-	published := r.publish(ctx, notify.RoleTopicPrefix+string(m.token), m.message, m.message, record.OutboxKey(row.ID))
+	// The slot is written and asked only once the session runs: a released claim's pod has no slot
+	// to write, and its launch writes the App the runtime judges then.
+	if m.holds != nil {
+		if err := m.holds(ctx); err != nil {
+			return heldDelivery{}, err
+		}
+	}
+	told := r.supervisedClaim(m.token).Claim
+	recipient, published := r.publishTo(ctx, notify.RoleTopicPrefix+string(m.token), m.message, m.message, record.OutboxKey(row.ID))
 	switch {
 	case published == nil:
 		r.log.Info(m.delivered, m.attributes...)
-		return nil
+		return heldDelivery{told: told, recipient: recipient}, nil
 	case errors.Is(published, notify.ErrNoHolder):
-		return wait.Errorf("%s waits for a session to hold its %s's role: %w", m.what, m.role, published)
+		return heldDelivery{}, wait.Errorf("%s waits for a session to hold its %s's role: %w", m.what, m.role, published)
 	case errors.Is(published, notify.ErrHolderUnresponsive):
-		return wait.Errorf("%s waits for its %s, whose session the listener reports %s: %w", m.what, m.role, notify.StateUnresponsive, published)
+		return heldDelivery{}, wait.Errorf("%s waits for its %s, whose session the listener reports %s: %w", m.what, m.role, notify.StateUnresponsive, published)
 	}
-	return fmt.Errorf("publish %s to its %s: %w", m.what, m.role, published)
+	return heldDelivery{}, fmt.Errorf("publish %s to its %s: %w", m.what, m.role, published)
 }
 
 // mergingAt reads, in one transaction, what a merge-queue row reads of its issue before it acts:

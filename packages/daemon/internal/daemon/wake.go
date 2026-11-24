@@ -424,12 +424,19 @@ func (r *outbox) logRefusedByOpenResume(ctx context.Context, issue string, role 
 }
 
 // armBackstops arms the backstop of a release that completed: backstop_minutes from now, for the
-// worker of the pod's open phase, the claim the record gives the step of the open phase's role
-// (workflow.OpenWorker, read in a transaction of its own), where that claim stands released
-// serving the issue's run. That claim can be a keyed agent's, whose token names another role,
-// beside the role's own claim of an earlier version of the plan, which works no step and gets none.
-// An architect gets none — nothing of its own is due, and a sub-architect woken for nothing would
-// hold a pod open for the backstop period — and neither does an issue whose phase no role works.
+// one released claim the workflow names (workflow.BackstopTargetAt, read in a transaction of its
+// own, and matched by workflow.BackstopClaim): at the owner's own place (a step of the key owner
+// other than its acceptance, or the owner's retro) the owner, which may wait there on something no
+// CI settlement reports, a deploy say; at any other place the worker of the pod's open phase, the
+// claim the record gives the step of the open phase's role (workflow.OpenRoleOf, which at step is
+// the role of the running step, read with the issue, and record.WorkerClaim), where that claim
+// stands released serving the issue's run. That claim can be a keyed agent's, whose token names
+// another role, beside the role's own claim of an earlier version of the plan, which works no step
+// and gets none. An architect off its own place gets none: nothing of its own is due, and a
+// sub-architect woken for nothing would hold a pod open for the backstop period. Neither does the
+// owner at its acceptance: a parent can wait there while its children run, and their notices wake
+// it, so a backstop would wake it for nothing at each release. Neither does an issue whose phase no
+// role works.
 //
 // It also cancels the backstops the release before this one armed: that pod is gone, and its
 // backstop has nothing left to bring back.
@@ -440,31 +447,31 @@ func (r *outbox) armBackstops(ctx context.Context, issue record.Issue) error {
 	if r.backstop <= 0 {
 		return nil
 	}
-	var worker claim.Token
+	var role claim.Role
+	var target claim.Token
 	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
 		var err error
-		worker, err = workflow.OpenWorker(ctx, r.records, tx, r.project, issue)
+		role, target, err = workflow.BackstopTargetAt(ctx, r.records, tx, r.project, issue)
 		return err
 	}); err != nil {
-		return fmt.Errorf("the open phase's worker of %s: %w", issue.Key, err)
+		return fmt.Errorf("the claim a backstop of %s is armed for: %w", issue.Key, err)
 	}
-	if worker == "" {
+	if role == "" {
 		return nil
 	}
-	role := workflow.OpenRoleOf(issue)
 	released, err := r.trees.ReleasedClaimsIn(ctx, r.project, issue.Key)
 	if err != nil {
 		return err
 	}
 	for _, c := range released {
-		if c.Token != worker || c.ServingGeneration != issue.Generation {
+		if !workflow.BackstopClaim(issue, role, target, c) {
 			continue
 		}
 		due := r.now().UTC().Add(r.backstop)
 		r.log.Info("wake: the release of an issue's pod arms its open phase's backstop",
-			"issue", issue.Key, "role", role, "claim", worker, "due", due.Format(time.RFC3339))
+			"issue", issue.Key, "role", role, "claim", target, "due", due.Format(time.RFC3339))
 		return r.trees.ArmPodBackstop(ctx, store.PodWakeBackstop{Project: r.project, Issue: issue.Key,
-			Claim: worker, Role: role, DueAt: due})
+			Claim: target, Role: role, DueAt: due})
 	}
 	return nil
 }

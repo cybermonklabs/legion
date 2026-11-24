@@ -12,8 +12,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// Each issue carries the entry the role of its current phase stands on and the entry that role
-// was given, in every shape the claim of that role can be in: a live claim level with its entry,
+// Each issue carries the entry the role that works it (record.Issue.RoleAt) stands on and the entry
+// that role was given, in every shape the claim of that role can be in: a live claim level with its entry,
 // a claim the daemon suspended behind it, a retired claim behind it, and a role the daemon holds
 // no claim row of at all, which was given nothing. The given number is the claim's and not the
 // phases row's: LEGION-30's row names a token of an earlier run, and the number served is the
@@ -179,7 +179,7 @@ func sameInstant(got, want *time.Time) bool {
 }
 
 // A tree's own root carries its architect's handshake of its current run in every phase it stands
-// in, and the entry numbers of the role of that phase beside it (dispatch://INFRA-2614, k5 of the
+// in, and the entry numbers of the role that works it (record.Issue.RoleAt) beside it (dispatch://INFRA-2614, k5 of the
 // Verification document at version 10). A real architect registers its design gate in its first
 // turn, so its root waits on a person and then stands in a phase a phase role works: the two
 // times are still the architect's handshake there, read as the architect's and never as that
@@ -188,8 +188,9 @@ func sameInstant(got, want *time.Time) bool {
 // whose new architect entry is not queued yet, and so does a root whose architect recorded no
 // handshake, whatever its phase role recorded.
 //
-// An issue that is not a tree's root carries the handshake of the role of its current phase, as it
-// carries that role's numbers, and in a phase no role works — done and held — neither the numbers
+// An issue that is not a tree's root carries the handshake of the role that works it
+// (record.Issue.RoleAt: the architect at a step or a retro the owner does), as it carries that
+// role's numbers, and in a phase no role works — done and held — neither the numbers
 // nor the times, whichever role's row and claim it holds and however far behind that claim
 // stands: no row of it is read, the sweep passes it over and a difference written for it would
 // stand for ever.
@@ -278,12 +279,99 @@ func TestARootCarriesItsArchitectHandshakeOfThisRunInEveryPhase(t *testing.T) {
 			t.Fatalf("%s is in no issue of the projected state; this test proves nothing", key)
 		}
 		if view.PhaseEntry != want.PhaseEntry || view.GivenEntry != want.GivenEntry {
-			t.Errorf("%s at %s is projected with entry %d given %d, want entry %d given %d: the numbers are the role's that works that phase (phase.RoleFor)",
+			t.Errorf("%s at %s is projected with entry %d given %d, want entry %d given %d: the numbers are the role's that works the issue (record.Issue.RoleAt)",
 				key, view.Phase, view.PhaseEntry, view.GivenEntry, want.PhaseEntry, want.GivenEntry)
 		}
 		if !sameInstant(view.EntryQueuedAt, want.EntryQueuedAt) || !sameInstant(view.EntryConfirmedAt, want.EntryConfirmedAt) {
 			t.Errorf("%s at %s at run %d is projected with its entry queued %v and confirmed %v, want %v and %v",
 				key, view.Phase, view.Generation, view.EntryQueuedAt, view.EntryConfirmedAt, want.EntryQueuedAt, want.EntryConfirmedAt)
+		}
+	}
+}
+
+// At a place the owner of an issue's task works itself (record.Issue.OwnersPlace with plan rows: a
+// step of the key owner, its acceptance among them, or the owner's retro), the role that works the
+// issue is the architect (record.Issue.RoleAt), and the architect's own row and claim are not the
+// step that runs: the owner's run raises its entry on the row of the place's own role
+// (record.PlaceWorker's role, workflow's startOwnersStep), the step's role at a step and the
+// implementer at the owner's retro, and the owner is told the step by a notice (owner-step), which
+// gives no claim an entry. So such an issue carries the entry of that row, read as every reader
+// with no walk reads one role's row (record.PhaseRowOf: the row whose entry was raised last, so the
+// retro's and not the row of an earlier step of the same role), and no given entry: neither the
+// architect claim's, which counts the architect's own starts, nor that of a claim of the step's role
+// left from a step another agent did. Each fixture holds an architect row and claim on another entry,
+// which the code before this rule served. A step another agent does keeps its role's own two
+// numbers, and so does accepting on an issue with no plan rows, which the architect works as
+// itself on its own row.
+func TestAPlaceTheOwnerWorksCarriesTheEntryOfItsStepsOwnRowAndNoGivenEntry(t *testing.T) {
+	const project = "LEGION"
+	earlier, later := projectedAt.Add(-2*time.Hour), projectedAt.Add(-time.Hour)
+	issue := func(key string, p phase.Phase, stepRole, placeRole claim.Role) record.Issue {
+		return record.Issue{Key: key, Project: project, Tree: "LEGION-120", Phase: p, Generation: 1, Status: "in_progress",
+			Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Rank: key,
+			StepRole: stepRole, PlaceRole: placeRole}
+	}
+	row := func(key string, role claim.Role, entry int64, raised time.Time, place int) record.PhaseRow {
+		return record.PhaseRow{Issue: key, Role: role, Claim: claim.Token(key + "-" + string(role)),
+			Entry: entry, EntryRaisedAt: raised, StepTask: "task", StepPlace: place}
+	}
+	held := func(key string, role claim.Role, given int64) supervise.Claim {
+		return supervise.Claim{Token: claim.Token(key + "-" + string(role)), Issue: key, Role: role,
+			State: supervise.StateIdle, Session: "ses_" + key + "_" + string(role), GivenEntry: given}
+	}
+	store := projectionStore{
+		issues: []record.Issue{
+			// Step 1, `implementer:owner`.
+			issue("LEGION-121", phase.Implementing, claim.RoleImplementer, claim.RoleArchitect),
+			// The owner's retro, after an implementer step another agent did and a last step of the
+			// type implementation that is the owner's.
+			issue("LEGION-122", phase.Retro, "", claim.RoleArchitect),
+			// `acceptance:owner`.
+			issue("LEGION-123", phase.Accepting, claim.RoleAcceptance, claim.RoleArchitect),
+			// Step 1, `implementer` with no key: another agent does it.
+			issue("LEGION-124", phase.Implementing, claim.RoleImplementer, claim.RoleImplementer),
+			// Accepting on an issue with no plan rows.
+			issue("LEGION-125", phase.Accepting, "", ""),
+		},
+		phases: map[string][]record.PhaseRow{
+			"LEGION-121": {row("LEGION-121", claim.RoleArchitect, 2, earlier, 0), row("LEGION-121", claim.RoleImplementer, 1, later, 1)},
+			"LEGION-122": {row("LEGION-122", claim.RoleArchitect, 3, earlier, 0), row("LEGION-122", claim.RoleImplementer, 4, earlier, 1),
+				row("LEGION-122", claim.RoleImplementer, 5, later, 0)},
+			"LEGION-123": {row("LEGION-123", claim.RoleArchitect, 2, earlier, 0), row("LEGION-123", claim.RoleAcceptance, 1, later, 3)},
+			"LEGION-124": {row("LEGION-124", claim.RoleArchitect, 2, earlier, 0), row("LEGION-124", claim.RoleImplementer, 3, later, 1)},
+			"LEGION-125": {row("LEGION-125", claim.RoleArchitect, 2, earlier, 0)},
+		},
+	}
+	got, err := Project(context.Background(), Inputs{Store: store, Project: project, Claims: []supervise.Claim{
+		held("LEGION-121", claim.RoleArchitect, 2),
+		held("LEGION-122", claim.RoleArchitect, 3),
+		held("LEGION-122", claim.RoleImplementer, 4),
+		held("LEGION-123", claim.RoleArchitect, 2),
+		held("LEGION-124", claim.RoleArchitect, 2),
+		held("LEGION-124", claim.RoleImplementer, 2),
+		held("LEGION-125", claim.RoleArchitect, 2),
+	}, Now: projectedAt})
+	if err != nil {
+		t.Fatalf("Project: %v", err)
+	}
+	for _, want := range []struct {
+		key                    string
+		phaseEntry, givenEntry int64
+		why                    string
+	}{
+		{"LEGION-121", 1, 0, "the implementer's row the owner's step raised, and no given entry"},
+		{"LEGION-122", 5, 0, "the implementer's row the owner's retro raised, not the earlier step's, and no given entry"},
+		{"LEGION-123", 1, 0, "the acceptance row the owner's acceptance raised, and no given entry"},
+		{"LEGION-124", 3, 2, "the implementer's own row and claim, as at every step another agent does"},
+		{"LEGION-125", 2, 2, "the architect's own row and claim, which works accepting with no plan rows as itself"},
+	} {
+		view, known := got.Issues[want.key]
+		if !known {
+			t.Fatalf("%s is in no issue of the projected state; this test proves nothing", want.key)
+		}
+		if view.PhaseEntry != want.phaseEntry || view.GivenEntry != want.givenEntry {
+			t.Errorf("%s at %s is projected with entry %d given %d, want entry %d given %d: %s",
+				want.key, view.Phase, view.PhaseEntry, view.GivenEntry, want.phaseEntry, want.givenEntry, want.why)
 		}
 	}
 }

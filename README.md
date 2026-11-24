@@ -1,9 +1,11 @@
 # Legion
 
-Legion runs teams of coding agents on the issues you hand it, and brings each one back as a pull
-request that is ready to merge. Root processes own issue trees: each root issue gets an architect
-that writes its spec and splits the work, and the daemon runs a planner, an implementer, a tester, a
-reviewer and a merger over each change. The Legion daemon keeps the durable state, gives each agent
+Legion runs teams of coding agents on the issues you hand it, and brings each one back done: as a
+pull request that is ready to merge, where the work changes code. Root processes own issue trees:
+each root issue gets an architect that writes its spec and splits the work, and the daemon runs the
+steps of each issue's plan, by default a planner, an implementer, a tester, a reviewer and the
+architect's acceptance, then a merger where there is a pull request; the architect can do any step
+itself. The Legion daemon keeps the durable state, gives each agent
 its credentials and routes the events between them. Issues, specs and every decision a person makes
 live in Dispatch. Legion is for people who want agents to work tracked issues end to end while they
 keep the decisions: what to build, whether the spec is right, the answers to the agents' questions,
@@ -19,15 +21,18 @@ The coordinator: a Go daemon and the `legion` CLI. The daemon works the Dispatch
 `legion`: you label an issue yourself, or ask the controller session the operator starts to label
 it for you, and an agent that finds a problem outside its issue asks you before anything is filed.
 Each admitted issue gets an architect, which writes the spec, splits the work and asks you what
-only you can answer. Once you approve the spec, the daemon runs the phase workers in turn: planner,
-implementer, tester, reviewer and merger. Each agent is an [Oh My Pi](https://github.com/cybermonklabs/oh-my-pi) session, in a tmux
+only you can answer. Once you approve the spec, the daemon runs the steps of each issue's plan in
+turn, by default planner, implementer, tester, reviewer and the architect's acceptance, then a
+merger where there is a pull request; the architect can do any step itself. Each agent is an [Oh My Pi](https://github.com/cybermonklabs/oh-my-pi) session, in a tmux
 pane on one host or in an [Agent Sandbox](https://github.com/kubernetes-sigs/agent-sandbox)
-pod on Kubernetes, and each phase records a handoff on the issue in Dispatch for the next role,
-and a restarted agent, to read. The daemon writes the issue's status back to Dispatch as it moves
-from Todo through In Progress, Testing, Needs Review and Retro to Done. The architect accepts the
-reviewed change, the merger posts `READY` on the issue and submits the merge, the pull request
-merges under the repository's own rules and closes the issue, and the implementer then checks the
-change in production once it is deployed, recording that on the pull request.
+pod on Kubernetes, and each planning, implementation, test and review step records a handoff on
+the issue in Dispatch for the next step, and a restarted agent, to read. The daemon writes the
+issue's status back to Dispatch as it moves from Todo through In Progress, Testing, Needs Review
+and Retro to Done. On the default steps, the architect accepts the reviewed change, the merger
+posts `READY` on the issue and submits the merge, the pull request merges under the repository's
+own rules and closes the issue, and the tester then checks the change in production once it is
+deployed, recording that on the pull request. An issue with no pull request is Done
+when its retro ends, with no merge and no production check.
 
 [Legion's documentation](https://cybermonklabs.github.io/legion/legion/) ·
 [a walkthrough video of one issue](https://cybermonklabs.github.io/legion/legion/walkthrough/)

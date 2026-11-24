@@ -248,6 +248,16 @@ func TestEveryExchangedFrameRoundTripsItsWireLine(t *testing.T) {
 			LauncherLeakCheckResult{ID: "leak-check-leak-check-v15-2c26b46b68ff", Index: 0,
 				Error: "the shared public leak check could not be installed: the pod's launcher was served leak-check-v15, not its own pin leak-check-v16"},
 		},
+		{
+			"launcher_credential_check",
+			`{"type":"launcher_credential_check","id":"credential-check-1","hostsFile":"acme/hosts.yml","tokenDigest":"2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae"}`,
+			LauncherCredentialCheck{ID: "credential-check-1", HostsFile: "acme/hosts.yml", TokenDigest: "2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae"},
+		},
+		{
+			"launcher_credential_check_result",
+			`{"type":"launcher_credential_check_result","id":"credential-check-1","ok":true}`,
+			LauncherCredentialCheckResult{ID: "credential-check-1", OK: true},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			decoded, err := Decode([]byte(tc.line))

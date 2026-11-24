@@ -70,9 +70,9 @@ func legionFooter(session, head string) string {
 
 // legionEntryFooter is legionFooter naming entry too: the entry of the round the review is of, the
 // number the reviewer's task in reviewing ends with (reviewround.EntryLabel), written as the
-// reviewer's texts have an agent write it, a quoted number (`"entry":"<n>"`). Only the reviewer's
-// own review that names the entry its phases row stands at moves the commit the reviewer read
-// (workflow's review); a footer with no entry still decides the round.
+// reviewer's texts have an agent write it, a quoted number (`"entry":"<n>"`). Of the reviews on
+// GitHub, only the reviewer's own review that names the entry its phases row stands at moves the
+// commit the reviewer read (workflow's review); a footer with no entry still decides the round.
 func legionEntryFooter(session, head string, entry int64) string {
 	return fmt.Sprintf("\n\n<!-- legion: {\"session\":%q,\"phase\":\"review\",\"head\":%q,\"entry\":\"%d\"} -->", session, head, entry)
 }
@@ -616,11 +616,12 @@ func TestTheReadSetsAsideAReviewAppReviewFromAnotherSession(t *testing.T) {
 }
 
 // In this reviewer's first round the reviewer submits the review of its first round before it
-// completes, and its row names no claim, as a row that runs no step of a plan does. The read still
-// tells the reviewer's own review from another review-App session's by the session the claims
-// record holds for the claim of the worker on the reviewer's step, here the reviewer role's own
-// token (workflow.Engine.ReviewerSession), so the controller's approval it lists is set aside and
-// kept as refused, and the round stays undecided, as in a later round.
+// completes, and its row names no claim, as a row that runs no step of a plan does, on an issue
+// with no plan rows as here. The read still tells the reviewer's own review from another
+// review-App session's by the session the claims record holds for the claim of the worker on the
+// reviewer's step, here the reviewer role's own token (workflow.Engine.ReviewerSession), so the
+// controller's approval it lists is set aside and kept as refused, and the round stays undecided,
+// as in a later round.
 func TestTheReadSetsAsideAnotherSessionsReviewInTheReviewersFirstRound(t *testing.T) {
 	pool := isolatedOutboxPool(t)
 	seedCapture(t, pool, phase.Reviewing, "needs_review", record.PhaseRow{Issue: "CAPTURE-1", Role: claim.RoleReviewer})

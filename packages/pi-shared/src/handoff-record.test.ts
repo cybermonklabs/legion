@@ -134,11 +134,16 @@ test("a record naming no head, or one of another shape, leaves those three witho
 });
 
 test("every other completion reports the commit the workspace stands on, and reads no record", async () => {
-  // Retro and the merger's READY write no record. The architect leaves no phase, so it reports @-
-  // wherever its issue stands, in another role's file-backed phase too.
+  // Retro and the merger's READY write no record. The architect's handoff_complete ends no phase
+  // (it reports a step of its own with complete_step), so it reports @- wherever its issue stands,
+  // in another role's file-backed phase too.
   for (const [phase, role] of [
     ["retro", "implementer"],
     ["merging", "merger"],
+    // The fresh agent of the role `acceptance` completes `accepting` with a verdict and writes no
+    // handoff record, so it asks Dispatch for none: the daemon would refuse a record it does not
+    // read for that phase.
+    ["accepting", "acceptance"],
     ["admitted", "architect"],
     ["accepting", "architect"],
     ["implementing", "architect"],
@@ -173,9 +178,11 @@ test("a role of the deployment reports the commit the workspace stands on, and r
 });
 
 test("a reviewer whose review moved its issue on reports its own newest review record and the head it names", async () => {
-  // A request for changes moves the issue to implementing at once, an approval to accepting once
-  // the pull request is mergeable, and the reviewer completes after it: the daemon records that
-  // completion on reviewing, the phase the reviewer left, and reads its review record back.
+  // Where the issue has a pull request and its review step is not the owner's, a request for
+  // changes moves the issue back at once (here to implementing), an approval on to the task's next
+  // step once the pull request is mergeable (here accepting), and the reviewer completes after it:
+  // the daemon records that completion on reviewing, the phase the reviewer left, and reads its
+  // review record back.
   for (const phase of ["implementing", "accepting"] as const) {
     const { jj, calls } = fakeJj();
     const { latestHandoff, reads } = recordingDispatch();
@@ -254,7 +261,9 @@ const PUSH_IT = "is not on legion/LEGION-208@origin: push it";
  * `sends` and `reads` are what `findHandoffReport` does, and the test holds it to them. `daemon`
  * documents the contract and is not asserted here: what the daemon answers that completion from a
  * finished role, one whose completion of the phase it is of was already taken, read from
- * `packages/daemon/internal`. `phase.Of(role, at)` is the phase a completion is of
+ * `packages/daemon/internal`, for an issue with no plan rows, whose completions the engine judges
+ * by `phase.Of(role, at)` alone (one with plan rows is judged by the place its task stands at,
+ * `completionOf`). `phase.Of(role, at)` is the phase a completion is of
  * (`completedPhase` mirrors it). Where it is `at`, the role works the issue's phase
  * (`phase.RoleFor(at)`), and the engine takes a completion naming a new record, or for retro and
  * merging a commit: 200. Otherwise workflow's `leftItsPhase` records a left phase's completion
@@ -265,7 +274,8 @@ const PUSH_IT = "is not on legion/LEGION-208@origin: push it";
  * completion of a done issue from a session working no look `409 CHECK_LOOK_NOT_SERVED` (the
  * `legion` tool never asks this module there), one of an issue it does not record (`unrecorded`)
  * `404 ISSUE_NOT_FOUND`, and the engine answers every architect's `409 ACCEPTANCE_IS_SIGN_OFF`,
- * since the architect accepts with sign_off. A row that sends nothing makes no request.
+ * since the architect accepts with sign_off and reports a step of its own with complete_step. A
+ * row that sends nothing makes no request.
  */
 const COMPLETIONS: Readonly<Record<LegionRole, Readonly<Record<LegionPhase, CompletionRow>>>> = {
   planner: {
@@ -366,8 +376,10 @@ const COMPLETIONS: Readonly<Record<LegionRole, Readonly<Record<LegionPhase, Comp
   },
 };
 
-/** The role that works each phase, as the daemon's `phase.RoleFor` answers; a phase absent here is
- * one no role works. */
+/** The role that works each phase, as the daemon's `phase.RoleFor` answers, which is who works it
+ * on an issue with no plan rows (on one with plan rows the issue's `placeRole` can name another:
+ * the owner, the fresh agent of acceptance, or the retro's agent); a phase absent here is one no
+ * role works. */
 const WORKER: Readonly<Partial<Record<LegionPhase, LegionRole>>> = {
   planning: "planner",
   implementing: "implementer",
@@ -435,7 +447,7 @@ test("every role in every phase: a phase the issue has left runs no workspace ch
       // reads nothing of the workspace. Dispatch holds a record naming a head for every word here,
       // so neither shape the rule sends `@-` alone for is a row of this table (LEFT_WITHOUT_HEAD
       // below holds them): `@-` is sent for a left phase only where that phase writes no record
-      // (the merger's merging, the implementer's retro).
+      // (the merger's merging, and the retro of an implementer that did it).
       if (WORKER[phase] !== role) {
         if (want.reads === "@- and origin") wrong.push(`${at} runs the workspace check`);
         if (typeof sends === "object" && "record" in sends && want.reads !== "nothing") {

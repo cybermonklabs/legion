@@ -2,12 +2,13 @@
 
 Read it when you review or approve, or work a look of a closed issue's production check.
 Your role prompt gives the review submission, its footer, the thread rule, the CI read and the forward-merge confirmation; this page gives the rest.
-The merger's steps are all in its role prompt.
+With no pull request, or at `reviewer:owner`, the step ends by its verdict, not by a review on GitHub.
+With no pull request, skip what reads GitHub.
 
 ## The reviewer
 
-1. Read CI on GitHub and the issue's results with `dispatch results --issue <issue>`, never from a handoff.
-2. When the diff the round reads touches runtime code (the whole change, or the difference from the commit your task names), run `task(agent="thermonuclear-deep-review")` and `task(agent="thermonuclear-code-quality")` once at the head the round reviews, and `wait` for each result: each runs as a job of its own.
+1. Read CI on GitHub and `dispatch results --issue <issue>` (`--at <head>` with no pull request), never a handoff.
+2. The round reads the whole change, or the difference from the commit your task names. When that diff touches runtime code, run `task(agent="thermonuclear-deep-review")` and `task(agent="thermonuclear-code-quality")` once at the head the round reviews, and `wait` for each result.
    Each agent reviews only the diff its task supplies: name in each task the commit, the head and `git diff <sha> <head>`, or the whole change.
    The last two sentences of your task, `Last reviewed commit: <sha>.` and `Review entry: <n>.`, are the daemon's; your role prompt says how to read them.
 3. A result that carries no report, or that names another place for it, is a failed run, not a verdict: run that agent again, or read its transcript.
@@ -53,7 +54,7 @@ Never approve a head while a required item has no run; sort it in this order.
 Cases 2, 3, 4 and 6 end: tell the architect, do not approve, and wait with a `WAITING` line naming what you wait on.
 
 1. Read `gh pr view <n> --repo <o>/<r> --json mergeable,mergeStateStatus` first.
-   `DIRTY` takes the implementer's forward merge: the daemon asks for it and names the new head.
+   `DIRTY` takes a forward merge: the daemon asks for it and names the new head.
    `UNKNOWN`: read each minute for up to five minutes, then report it to the architect as a refused read.
 2. A fork head whose runs stand `action_required` waits on a maintainer.
    Never close and reopen it.
@@ -68,13 +69,13 @@ Cases 2, 3, 4 and 6 end: tell the architect, do not approve, and wait with a `WA
    Approve only once the item's run concluded green.
    One close and reopen covers every item of the head: name the others to the architect in the same message.
    A head with any item in case 2 or 3 takes no remedy, and an item with no run once the reopen's runs concluded is never reopened.
-6. Anything else: tell the architect, do not approve, and wait.
+6. Anything else.
 
 ### The issue's checks
 
 - Approval is gated by the issue's own `before_merge` checks, as your role prompt says;
   a `ci_check` check as `skill://legion-worker/references/ci-checks.md` says.
-  With no tester step, the implementer's evidence for each is what you read.
+  With no tester step, the implementer's evidence for each, if any, is what you read.
   A check whose `run` is a whole test suite with no pass standing is a finding for the architect: wait for its rewrite, and request no changes for it.
 
 ### A merge of the base is reviewed for what it changed
@@ -88,14 +89,14 @@ gh api --paginate repos/<o>/<r>/pulls/<n>/reviews --jq '.[] | {id, state, submit
 
 ## The production check after the close
 
-- `projects.<KEY>.production_check` in `legion.yaml` is `tester` (the default) or `off`, under which the close opens no check.
+- `projects.<KEY>.production_check` in `legion.yaml` is `tester` (the default) or `off`, under which the close opens no check. Nor does an issue with no pull request.
   A check keeps the role it opened with, and only that role may report on it (`CHECK_ROLE_MISMATCH`).
 
 - Reach the deploy as the deployment instructions say.
-  When they name an agent or a role, `envoy_publish` the merge commit to its topic with `expects_reply: false` and await no reply.
+  When they name an agent or a role, `envoy_publish` the merge commit to its topic with `expects_reply: false`.
   Open a `dispatch ask` only where the instructions name nobody; the look still ends `pending`.
 
-- A staging pass is no production pass: staging may lack resources production runs.
+- A staging pass is no production pass.
 
 - Report each look's verdict as your role prompt says.
   A `fail` follows `skill://legion-worker/references/findings.md`: file no issue.

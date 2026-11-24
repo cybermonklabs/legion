@@ -17,7 +17,8 @@ import (
 // (ArchitectAtWork). It is wider than record.AtWork at admitted — a root whose design gate has
 // opened is still a root whose own architect is the only role at work on the root itself — and it
 // is no wider than the work the rule has to send: a root past admitted under its own power has a
-// phase role that owns its work, the hand-over row of this generation is what says a root stands
+// phase role that owns its work, or stands at a step of its own architect's, which its owner-step
+// notice tells it, the hand-over row of this generation is what says a root stands
 // in the run a hand-over carried it into (record.Store.HandedOverRoot), and the one entry such a
 // root's architect is owed past admitted is a resume's its claim was not given, which the
 // admission pass that resumed the root can have promoted past admitted.

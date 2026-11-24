@@ -145,9 +145,10 @@ test("the request is the claim's own", () => {
   });
 });
 
-// A claim's token names its agent, and its role is the role of the step it runs now: a claim of
-// the agent implementer that runs a tester's step reports for its own token. The fault: the token
-// spelled from the role, `…-tester`, a claim the session does not hold, which the daemon refuses.
+// A claim's token names its agent, and its role can be another: a keyed agent's claim holds the
+// role of the step it runs now, so a claim of the agent implementer that runs a tester's step
+// reports for its own token. The fault: the token spelled from the role, `…-tester`, a claim the
+// session does not hold, which the daemon refuses.
 test("a session reports its activity for the token it registered, whatever role it holds now", () => {
   const report = sessionActivity([], { nextReminderAt: null }, AT);
   const reroled = {

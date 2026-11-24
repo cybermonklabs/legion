@@ -16,15 +16,24 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// A child's own architect's claim failing holds nothing, even at accepting, its own phase. While
-// that claim no longer holds its role the child's notices go on up to the architect above it,
-// which must hear why: the failure is one worker-died on the child, naming the architect, the
-// child's phase and the failure the fact carries, whose reason names the child and says its
-// notices come to the reader until the daemon starts the child's architect again. The owner walk
-// sends it above the child (record.OwningArchitect). The controller hears nothing of it, since an
-// architect inside the tree is left to act. A done child, a child that left the workflow and a
-// child of a lingering tree tell nobody: a done child's claims were closed (retired, sessions
-// kept), a parked child's were suspended, and a lingering tree holds its members where they stood.
+// A child's own architect's claim failing holds nothing, even at accepting where its acceptance is
+// its own. While that claim no longer holds its role the child's notices go on up to the architect
+// above it, an owner-step aside, which goes to the child's own architect alone (noticeArchitect):
+// when that claim has failed, it is told the step again when it runs again, where its session has
+// not had it (claimReady). The architect above must hear why: the failure is one worker-died on
+// the child, naming the architect, the child's phase and the failure the fact carries, whose
+// reason names the child.
+// For a child at a place its own architect does not end alone, as here in testing, the reason says
+// its notices come to the reader until it runs again, and that the daemon starts it again at the
+// child's next phase start. At a step of its own other than its acceptance, or at its retro, the
+// daemon starts it again at once, at most OwnerRestarts times in that step's run
+// (restartFailedOwner). Then the stranded list names it for the operator's retry or the
+// controller's fresh_session. The owner walk sends the worker-died above the child
+// (record.OwningArchitect). Here the controller hears nothing of it, since an architect inside the
+// tree is left to act. It hears each failure past the restarts at a place only that architect ends.
+// A done child, a child that left the workflow and a child of a lingering tree tell nobody: a done
+// child's claims were closed (retired, sessions kept), a parked child's were suspended, and a
+// lingering tree holds its members where they stood.
 func TestASubArchitectsFailedClaimTellsTheArchitectAboveIt(t *testing.T) {
 	const sentence = "the architect's process died with its catch-up outstanding, and its relaunches ran out"
 	root, until := "LEGION-208", time.Date(2026, 9, 26, 13, 0, 0, 0, time.UTC)
@@ -57,14 +66,13 @@ func TestASubArchitectsFailedClaimTellsTheArchitectAboveIt(t *testing.T) {
 		// One row in the whole outbox: the worker-died, and no controller copy beside it.
 		assertOutboxKinds(t, pool, []string{string(record.OutboxKindNotice)})
 		died := record.Notice{Kind: "worker-died", Role: claim.RoleArchitect, Phase: phase.Testing,
-			Reason: "LEGION-209's own architect failed; its notices come to you until it runs again, and the daemon starts it again at LEGION-209's next phase start",
 			Failure: &record.NoticeFailure{Cause: string(supervise.CauseDied), Detail: sentence,
 				LaunchFailures: record.FailureBudget{Count: 1, Limit: 3},
 				Deaths:         record.FailureBudget{Count: 3, Limit: 3},
 				PromptFailures: record.FailureBudget{Count: 2, Limit: 5},
 				PromptRetires:  record.FailureBudget{Count: 1, Limit: 2},
 				Death:          "the pod was evicted"}}
-		if got, want := noticeRows(t, pool), []record.OutboxPayload{died}; !sameNotices(got, want) {
+		if got, want := unreadReasons(noticeRows(t, pool), true), []record.OutboxPayload{died}; !sameNotices(got, want) {
 			t.Fatalf("notice rows = %+v, want %+v: one worker-died naming the failure", got, want)
 		}
 		var on string

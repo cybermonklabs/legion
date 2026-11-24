@@ -6,7 +6,10 @@ Read it when GitHub reports the pull request `CONFLICTING`, the daemon's merge-f
 
 The agent of the task's implementation step (the implementer, in the default steps) merges the base into the issue branch only when GitHub reports it `CONFLICTING`, the daemon's merge-forward message asks it (*The daemon's ask*, below), the controller asks because of a conflict, the architect's backward move names a parent's last round, the change needs something only the base has, or the pull request was retargeted. Never to refresh CI or pick up the default branch: each merge is a new head that reruns CI and can void a review. Never with `jj rebase`, which rewrites pushed commits (*A wrong pushed commit*, below).
 
-Before you race another tree's pull request on shared files, `envoy_publish` to the agent of its implementing step that runs now (`dispatch steps --issue <KEY>` names it: an issue can have two implementer agents), ask when its next push lands, and merge once, after it.
+Before you race another tree's pull request on shared files, ask the agent of its implementation step when its next push lands.
+`envoy_publish` to that agent's role topic, which `dispatch steps --issue <KEY>` names, since an issue can have two implementer agents.
+Where its task has no step of the type implementation, ask its architect.
+Merge once, after that push.
 
 1. Merge the bookmark, never `@`, with the base, in one new commit. `base` is the pull request's base branch, JSON-quoted so jj reads it as a string literal:
 
@@ -34,8 +37,8 @@ Every role reads a merge of the base the same way:
 
 A head that conflicts with its base keeps the issue in its phase. The daemon reads GitHub twice, at least a minute apart, and acts only on a conflict both reads report, and only when the next step needs a mergeable head: the issue stands in `accepting`, `retro` or `merging`; a check the base requires has no green result on the head, since GitHub runs no check on a conflicting head; the base requires a pull request to be current with it; or the daemon could not read the base's rules.
 
-- The agent of the task's implementation step (the implementer, in the default steps) gets a merge-forward message on its role topic. Merge the base forward in `$LEGION_WORKSPACE`, the one workspace every role of the issue shares, so another role's work can sit in it: before this merge's `jj new`, run the two path lists of step 2 of `skill://legion-worker` again, even when this turn already ran a `jj new`, and read `skill://legion-worker/references/foreign-path.md` for any path you did not write. Then merge as *Reintegrating the base* says and push the issue branch, with no handoff and no completion for the merge. In `implementing` and `retro` the phase is the implementer's, and its assignment and its completion stand.
-- In `testing`, `reviewing` and `merging`, the phase's worker is told to stop writing the workspace: stop at once, complete nothing at the old head (the merger merges and enqueues nothing), and keep your turn and its jobs. When the push lands you are told the new head: read the merge as above and go on at that head.
+- It asks the agent of the task's last step of the type implementation at or before the issue's place, else the task's last such step. That agent, the implementer on an issue with no plan, gets a merge-forward message on its role topic. Merge the base forward in `$LEGION_WORKSPACE`, the one workspace every role of the issue shares, so another role's work can sit in it: before this merge's `jj new`, run the two path lists of step 2 of `skill://legion-worker` again, even when this turn already ran a `jj new`, and read `skill://legion-worker/references/foreign-path.md` for any path you did not write. Then merge as *Reintegrating the base* says and push the issue branch, with no handoff and no completion for the merge. At its own step that agent is told nothing more, and its assignment there and its completion stand.
+- Elsewhere, the agent of the step or retro the issue stands at is told to stop writing the workspace, unless it is that same agent. Stop at once, complete nothing at the old head (the merger merges and enqueues nothing), and keep your turn and its jobs. When the push lands you are told the new head: read the merge as above and go on at that head.
 
 ## A wrong pushed commit
 

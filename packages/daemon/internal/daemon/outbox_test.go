@@ -2616,9 +2616,10 @@ func TestPhaseHoldsAnswersFromTheIssuesCurrentPhase(t *testing.T) {
 	}{
 		{name: "the issue's own phase and run", issue: "LEGION-208", queuedFor: phase.Implementing, generation: 2, want: true},
 		{name: "a phase the issue has not reached", issue: "LEGION-208", queuedFor: phase.Testing, generation: 2, want: false},
-		// One role works several phases — the implementer implementing and retro, and the role the
-		// check records each of its looks — and a task written for one of them is not the work of
-		// another, which the role alone cannot tell.
+		// One role can work several phases — the implementer implementing and, where its step is
+		// the task's last of the type implementation, the retro, and the role the check records each
+		// of its looks — and a task written for one of them is not the work of another, which the
+		// role alone cannot tell.
 		{name: "another phase of the same role", issue: "LEGION-208", queuedFor: phase.Retro, generation: 2, want: false},
 		// A re-admission restarts the issue in the phase it stood in: the run that is over's task
 		// of that phase is not the new run's work.

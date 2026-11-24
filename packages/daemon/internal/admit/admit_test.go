@@ -238,18 +238,19 @@ func TestApplyFactReadmitsLingeringRootAndIgnoresOwnStatusEcho(t *testing.T) {
 // A tree that closed retired every member's claim, so a re-admitted root's children sit mid-phase
 // with nothing running: the architect cannot release a child already in the workflow, and only a
 // worker's own handoff moves it. Admission starts each mid-phase child's role with its architect,
-// whichever mid-phase that is — retro included, whose role is the implementer's (phase.RoleFor)
-// — and tells it to carry that phase on: the run whose handoff began the phase is over, and a start
-// with no task leaves the resumed agent holding its old transcript with nothing asked of it.
+// whichever mid-phase that is — retro included, whose role on a child with no plan rows, as here,
+// is the implementer's (phase.RoleFor) — and tells it to carry that phase on: the run whose handoff
+// began the phase is over, and a start with no task leaves the resumed agent holding its old
+// transcript with nothing asked of it.
 //
-// A child in accepting waits on the architect that owns it, here the tree's, which the promotion
-// starts, so no task is queued for it; its branch row is, because every member past admitted gets
-// one. No child here holds a claim row, the durable record that a role has run, so no role of any
-// of them is brought back by a task-less start — and such a start, which these effects leave out,
-// would not be counted here anyway.
+// A child in accepting with no plan rows, as here, waits on the architect that owns it, here the
+// tree's, which the promotion starts, so no task is queued for it; its branch row is, because
+// every member past admitted gets one. No child here holds a claim row, the durable record that a
+// role has run, so no role of any of them is brought back by a task-less start — and such a
+// start, which these effects leave out, would not be counted here anyway.
 //
 // The testing child's start waits for its issue's admission slot and the retro child's does not:
-// an issue past its review holds no slot (record.KeepsSlot), so the mark the start carries is
+// an issue in retro holds no slot (record.KeepsSlot), so the mark the start carries is
 // the phase the start is for (workflow.StartOrOwe) and the retro row is claimable at once.
 func TestReadmissionStartsTheTreesMidPhaseChildren(t *testing.T) {
 	pool := migratedPool(t)

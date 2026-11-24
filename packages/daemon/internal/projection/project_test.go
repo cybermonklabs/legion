@@ -834,12 +834,14 @@ func TestTheWaitingLinePlaceIsOnEachListedIssue(t *testing.T) {
 }
 
 // admission.active is every issue the slots table holds a row for: the projection names the row
-// holders it finds and reads no phase of its own. An issue holds one of the cap's rows from the
-// moment the daemon starts it until its work is past its review (record.KeepsSlot), except while
-// it waits on another issue before then, when it gives the row back and is not named here
-// (admit's releaseSlotsForWaits), so a root waiting on a person is named there though no worker
-// of it is running this second. An issue with no row of its own waits for nothing here: it
-// stands in neither list.
+// holders it finds and reads no phase of its own. An issue holds one of the cap's rows while the
+// daemon has started it in a phase that keeps one (record.KeepsSlot): every phase but accepting,
+// retro and merging, which hold none (in the default steps, the phases after its review), so an
+// issue whose first step is an acceptance starts on none, and a step after accepting takes one
+// again. It gives the row back while it waits on another issue in a phase that keeps one, and is
+// not named here then (admit's releaseSlotsForWaits). A root waiting on a person keeps its row,
+// so it is named here though no worker of it is running this second. An issue with no row of its
+// own waits for nothing here: it stands in neither list.
 func TestAdmissionActiveNamesTheIssuesHoldingARow(t *testing.T) {
 	waiting := lineIssue("LEGION-10", "LEGION-10", "in_progress", phase.AwaitingPerson, "A")
 	waiting.Awaiting = &record.Awaiting{Ask: "ask-q", Since: record.EventMark{Seq: 5, At: projectedAt.Add(-time.Hour)}}
@@ -1210,13 +1212,14 @@ func TestProjectShowsWhatAReviewRoundWaitsOnFromGitHub(t *testing.T) {
 	}
 }
 
-// An issue at step is worked by the role of its running step, which no phase names
-// (phase.RoleFor answers none for step), so the served issue names that role (`stepRole`,
-// record.Issue.StepRole) and carries that role's entry and the entry its claim was given, as an
-// issue at testing carries its tester's; a child at step carries that role's handshake too, as a
-// child at testing carries its tester's. An issue held from step names the role too, as it names
-// `heldFrom`, and carries neither number, as every held issue does. An issue at a phase of
-// Legion's names no `stepRole`, whatever its plan rows say runs there: its phase names the role.
+// An issue at step whose step's agent is not the owner is worked by the role of its running step,
+// which no phase names (phase.RoleFor answers none for step), so the served issue names that role
+// (`stepRole`, record.Issue.StepRole) and carries that role's entry and the entry its claim was
+// given, as an issue at testing carries its tester's; a child at step carries that role's handshake
+// too, as a child at testing carries its tester's. An issue held from step names the role too, as
+// it names `heldFrom`, and carries neither number, as every held issue does. An issue at a phase of
+// Legion's names no `stepRole`, whatever its plan rows say runs there: its phase names the role of
+// its step, and `placeRole` the role of the claim that works it.
 func TestTheServedStateNamesTheRunningDeploymentRole(t *testing.T) {
 	const project, checker = "LEGION", claim.Role("checker")
 	issue := func(key string, p phase.Phase, running claim.Role) record.Issue {
@@ -1276,7 +1279,7 @@ func TestTheServedStateNamesTheRunningDeploymentRole(t *testing.T) {
 		document := wire(t, view)
 		served, carried := document["stepRole"]
 		if want.stepRole == "" && carried {
-			t.Errorf("%s is served stepRole %v, want no stepRole: its phase names its role", want.key, served)
+			t.Errorf("%s is served stepRole %v, want no stepRole: its phase names the role of its step", want.key, served)
 		}
 		if want.stepRole != "" && served != want.stepRole {
 			t.Errorf("%s is served stepRole %v, want %q: %s", want.key, served, want.stepRole, canonical(t, document))

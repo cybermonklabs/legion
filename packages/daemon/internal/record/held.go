@@ -47,8 +47,8 @@ const (
 	// HeldAcceptedAncestor is an issue beneath an ancestor the daemon has already accepted:
 	// nothing of it starts before that ancestor closes (HeldUnderAccepted).
 	HeldAcceptedAncestor HeldReason = "accepted_ancestor"
-	// HeldChildrenBeforeRetro is a parent whose plan has no acceptance step, held before its retro
-	// while issues beneath it are still in the workflow (HoldForChildren, HeldForChildren). heldBy
+	// HeldChildrenBeforeRetro is a parent whose task's last step is not an acceptance, held before
+	// its retro while issues beneath it are still in the workflow (HoldForChildren, HeldForChildren). heldBy
 	// names each of them (OpenBeneath). Once none of them is open beneath it in a tree that runs,
 	// the hold ends and the daemon starts the retro itself (workflow's releaseHeldParents). It stands below every
 	// word that speaks of the issue's tree, a Dispatch link or an ancestor, because each of those
@@ -68,16 +68,18 @@ const (
 	HeldTaskStopped HeldReason = "task_stopped"
 	// HeldAtWork is the ladder's `!KeepsSlot(issue)` for an issue not standing in held: an issue
 	// that keeps none of the cap's slots where it stands, whose workers run as they did and which
-	// no other issue holds. KeepsSlot is InWorkflow and a phase up to the review
+	// no other issue holds. KeepsSlot is InWorkflow and a phase that keeps a slot
 	// (PhaseKeepsSlot, over StandsAt), and HeldList keeps only InWorkflow candidates, so the
-	// issues that read this word are the ones past their review — in accepting, retro or merging
-	// — whose sign-off, retro and merge run on no slot at all. An issue held from one of those
+	// issues that read this word are the ones in accepting, retro or merging (in the default
+	// steps, past their review), whose acceptance, retro and merge run on no slot at all. An issue
+	// held from one of those
 	// phases keeps no slot either, but its hold stopped its work, so it does not read this word:
 	// a parent held there for its children reads children_before_retro, a stopped task reads
 	// task_stopped, and any other hold falls to unclassified (HeldReasonOf states why at the
 	// clause). Of the issues that read it, one whose tree runs is served no `why` (projection's
-	// atWorkPastReview), so `why` serves this word's sentence only to a member past its review of
-	// a tree that runs nothing. This is the one statement of that; every other reader points here.
+	// atWorkPastReview), so `why` serves this word's sentence only to a member in one of those
+	// phases of a tree that runs nothing. This is the one statement of that; every other reader
+	// points here.
 	HeldAtWork HeldReason = "at_work"
 	// HeldUnclassified is an issue none of the words above is true of (C2). The record holds
 	// it in the workflow and no rule here says what it waits for, which is a gap in the words

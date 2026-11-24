@@ -1,6 +1,6 @@
 # Decomposing a tree
 
-Read this before you read a child's handoff, create or adopt children, review a child's spec, split work across repositories, record a wait on outside work, or attach architecture components.
+Read this before you act on a child or its handoff, split work across repositories, record a wait, or attach architecture components.
 
 ## Reading the tree
 
@@ -20,8 +20,9 @@ A refused release writes nothing: release the rest again without the child it na
 
 - `ISSUE_NOT_OWNED`: the issue is another architect's; send the move to the architect above you.
 
-- `CHILD_UNDER_ACCEPTED_PARENT`: an ancestor is already accepted.
-  Take it back with `request_backward_move`, or release once it has closed.
+- `CHILD_UNDER_ACCEPTED_PARENT`: an ancestor is in `retro` or `merging`.
+  Only the agent of that phase moves it back (`request_backward_move`): the retro's (you, at yours) or the merger.
+  Else release once it has closed.
 
 ## Creating children
 
@@ -37,7 +38,6 @@ A refused release writes nothing: release the rest again without the child it na
    A repeated change is one child, and deleting what this tree replaced is this tree's work.
 
 3. Post the verdict and your folds as one `dispatch comment` on your own issue whose first line is exactly `Red-team verdict for <your issue key>:`.
-   The controller's weekly audit reads that line.
 
 4. Check each survivor's spec with a fresh `task(agent="plan-gap-analyst")` against `skill://dispatch-writing-specs`, `wait` for it, and fix what it flags.
 
@@ -56,20 +56,22 @@ A refused release writes nothing: release the rest again without the child it na
 
 - Pass no `--assignee` unless a person names one: the default keeps the tree's questions in one Inbox.
 
-- As a child's own architect, in the turn you file its children, send one `envoy_publish` to each agent that holds its plan: the agent of each planner step where its task names one, else of each implementer step, at `notifications.role.<token>` (below).
+- As a child's own architect, in the turn you file its children, send one `envoy_publish` to each agent holding its plan, at `notifications.role.<token>` (below).
+  Each is the agent of a planner step where its task names one, else of its first step if not yours.
   The message names each child you filed, with its key and repository, and says that the plan now covers only this issue's own part and the join with those children's work.
-  Send it even when you also stop the task or give a later plan: each such agent keeps its session and what it read of the whole issue.
+  Send it even when you stop the task or give a later plan: each such agent keeps what it read of the whole issue.
 
-- Every child names the running system its criteria are proven on (the command, service or page its implementer proves them on and a tester step drives) and the repository skill that drives it;
-  building a missing path is this tree's work.
+- Every child names the running system its criteria are proven on, and the repository skill that drives it.
+  That system is the command, service or page its implementation step proves them on and a tester step drives, where it has them.
+  Building a missing path is this tree's work.
 
 - Where the project has architecture components, give each child a `check` for the update of `.dispatch/architecture/<id>.md` of each component its pull request changes.
 
-- `dispatch steps --issue <KEY>` gives each step run's `agent` token; a role token (`legion-acme-legion-41-architect`) reaches the agent named for that role.
+- A role token is `legion-<project>-<key>-<agent>`, project and key lower-cased, the agent named by its first step's role (`<role>-2` for a second): `legion-acme-legion-41-architect`.
+  A step keyed `owner` is the issue's own architect's.
+  `dispatch steps --issue <KEY>` gives each step run's `agent` token.
 
 ## Reviewing a child's spec
-
-No person reads a child's spec: review every version of it and of its Verification document, whoever wrote it, before the child's work goes on with that version.
 
 1. Have a fresh `task(agent="plan-reviewer")`, told the documents are a child's spec and its Verification document, read them against your own spec (a root's at its approved version, a child's at the version its parent approved) with this mandate:
    "Does this version serve each requirement of the parent spec that it names?
@@ -88,15 +90,17 @@ No person reads a child's spec: review every version of it and of its Verificati
    Spec review of <child key> v<n> by <parent key>: changes requested
    ```
 
-As the child's architect: tell the architect above you of each new version, naming each document and its version;
-tell your workers of it only after its approving comment; answer `changes requested` with a new version.
-A decision only a person can make goes to the architect above you, never into your spec.
+As the child's architect: tell the architect above you of each new version of each document.
+Tell your workers of it only after its approving comment.
+Answer `changes requested` with a new version.
+A decision only a person can make goes to a person on your issue, never into your spec.
 
 ## Across repositories
 
 Split a change across repositories into children of one repository each, choosing it at creation (`dispatch issue … --repo <owner/name>`).
-Release a child that builds on another repository's change only after that pull request merges, never by `--blocked-by`, which starts it at the blocker's close, and name the merged commit in its task (`gh api repos/<owner>/<repo>/pulls/<n> --jq .merge_commit_sha`);
-for a repository that pins the other one by commit (a lock file or dependency pin), the pin is that merged commit.
+Release a child that builds on another repository's change only after that pull request merges, never by `--blocked-by`, which starts it at the blocker's close.
+Name the merged commit in its task (`gh api repos/<owner>/<repo>/pulls/<n> --jq .merge_commit_sha`).
+For a repository that pins the other one by commit, the pin is that merged commit.
 Your `gh` reads every repository your App is installed on (`-R owner/repo`).
 
 ## Recording a wait on other work
@@ -107,7 +111,7 @@ Legion starts the issue once its blockers close.
 
 ## A root with no code of its own
 
-When every change lands through children, the root's implementer opens its pull request on an empty commit.
+When every change lands through children, the agent of the root's implementation step, where it has one, opens its pull request on an empty commit.
 Plan no code for the root, and create no child only to give it a commit.
 
 ## Architecture components
@@ -117,8 +121,8 @@ A project's components are the `.dispatch/architecture/` files Dispatch imports 
 - They exist: attach the root before you decompose, so every child inherits them:
   `dispatch issue-update --issue <root> --components-json '{"mode":"explicit","ids":[…]}'`.
 
-- They do not: the root's first pull request writes `.dispatch/architecture/<id>.md` for each planned component (front matter `title`, `parent`, `depends_on`, `external`;
-  no `paths`) in the repository that holds it, with an id no other source uses.
-  Leave the root on `inherit` until it merges (an earlier attach answers `400 COMPONENTS_INPUT`), then run `dispatch architecture-sync --project <KEY>` and attach.
+- They do not: the root's pull request (else a child's) writes `.dispatch/architecture/<id>.md` for each planned component in the repository that holds it.
+  The file has the front matter `title`, `parent`, `depends_on` and `external`, no `paths`, and an id no other source uses.
+  Leave the root on `inherit` until that pull request merges (an earlier attach answers `400 COMPONENTS_INPUT`), then run `dispatch architecture-sync --project <KEY>` and attach.
 
 - Give a child its own `--components-json` only for a narrower set, and `{"mode":"none","reason":"…"}` when it changes no code a component describes.

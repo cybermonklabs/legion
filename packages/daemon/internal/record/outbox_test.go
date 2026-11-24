@@ -69,6 +69,7 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 		RoleHoldersPublish{Issue: "LEGION-208"},
 		IssueBranch{Generation: 2},
 		SuperviseRequest{Op: "issue_close", Tree: "LEGION-208", Role: claim.RoleTester, Generation: 3, Reason: "LEGION-209 is done"},
+		SuperviseRequest{Op: "slot_credential", Tree: "LEGION-208", Role: claim.RoleArchitect, Claim: "legion-legion-legion-208-architect", Generation: 3},
 		IssueSuspend{Tree: "LEGION-208", Generation: 3, TreeGeneration: 7},
 		SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 3, Task: "Production check of LEGION-208", CheckLook: 2, CheckOpenedAt: now},
 		CheckWakeDue{Look: 2, OpenedAt: now, Reason: "the tester's own wake"},
@@ -454,6 +455,7 @@ func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 		{name: "an issue close naming a linger", payload: SuperviseRequest{Op: "issue_close", Tree: "LEGION-208", Role: claim.RoleTester, Generation: 3, Linger: 7}, reason: "only a tree close"},
 		{name: "start without tree", payload: SuperviseRequest{Op: "start", Role: claim.RoleArchitect}, reason: "start requires tree"},
 		{name: "start without role", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208"}, reason: "start requires role"},
+		{name: "a slot credential naming no claim", payload: SuperviseRequest{Op: "slot_credential", Tree: "LEGION-208", Role: claim.RoleArchitect, Generation: 3}, reason: "names the claim whose slot it writes"},
 		{name: "a role message without a role", payload: RoleMessage{Body: "Pull request #42 settled."}, reason: "role message requires role"},
 		{name: "a role message without a body", payload: RoleMessage{Role: "legion.sjawhar-legion.LEGION-208.architect"}, reason: "role message requires body"},
 		{name: "a gated-steps publish without a project", payload: GatedStepsPublish{Steps: []DesignStep{DesignStepSpec}}, reason: "requires the project whose row it writes"},
@@ -502,6 +504,10 @@ func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 		{name: "a merge-forward ask naming a head that landed", payload: MergeForwardMessage{Role: claim.RoleImplementer, Step: MergeForwardAsk, Head: "c0de", Landed: "d00d", Base: "main", Phase: phase.Testing, PullRequest: 42, Why: ConflictCheckNotGreen}, reason: "a merge-forward landed or review names the head that landed"},
 		{name: "a merge-forward landed with no head that landed", payload: MergeForwardMessage{Role: claim.RoleTester, Step: MergeForwardLanded, Head: "c0de", Base: "main", Phase: phase.Testing, PullRequest: 42}, reason: "a merge-forward landed or review names the head that landed"},
 		{name: "a merge-forward review with no head that landed", payload: MergeForwardMessage{Role: claim.RoleReviewer, Step: MergeForwardReview, Head: "c0de", Base: "main", Phase: phase.Accepting, PullRequest: 42}, reason: "a merge-forward landed or review names the head that landed"},
+		// The two rows below hold only that the payload is refused (an empty reason): the error is no
+		// text an agent reads, and its words are the code's to change.
+		{name: "an owner-step notice that names no run", payload: Notice{Kind: OwnerStepNotice, Role: claim.RoleImplementer, Phase: phase.Implementing, Reason: "Step 1 of 2: implementer:owner."}},
+		{name: "an ask that covers a landed", payload: MergeForwardMessage{Role: claim.RoleImplementer, Step: MergeForwardAsk, Head: "c0de", Base: "main", Phase: phase.Accepting, PullRequest: 42, Why: ConflictCheckNotGreen, Covers: MergeForwardLanded}},
 		{name: "a check look bound without a look", payload: CheckLook{}, reason: "check look bound requires the look it bounds"},
 		{name: "unsupported payload", payload: unsupportedOutboxPayload{}, reason: "unknown outbox payload"},
 	} {
@@ -1107,6 +1113,11 @@ func TestAPublishedNoticeIsStillAValidOutboxPayload(t *testing.T) {
 			Reason: "The first step of LEGION-209 took no plan of an earlier owner: version 1 of document 6a1f0c3e-2b7d-4e5a-9c81-3d4f5e6a7b80, given by legion-legion-legion-208-architect. It runs the default steps. To run a plan it did not take, give it again with register_plan as your own."},
 		{Kind: "retro-held", Role: claim.RoleImplementer, Phase: phase.Retro,
 			Reason: "LEGION-208 passed its last step, and Legion holds it before its retro while these issues beneath it are still in the workflow: LEGION-209. A parent's head proves its children's merged work. Run each one to done, or park one with park_child only when a person asked for that move, or when the work is done, folded into another issue or no longer needed; Legion starts the retro when the last one leaves."},
+		{Kind: OwnerStepNotice, Role: claim.RoleImplementer, Phase: phase.Implementing,
+			Reason:    "LEGION-208 implementing. Task: a. Step 1 of 2: implementer:owner. Steps: 1 implementer:owner, 2 reviewer, then Legion's retro, and its merge where the issue has a pull request.",
+			OwnerStep: &NoticeStep{Task: "a", Kind: "step", Place: 1, Starts: 1}},
+		{Kind: MergeForwardLostNotice, Role: claim.RoleImplementer, Phase: phase.Testing,
+			Reason: "the merge-forward ask of head c0de did not reach the implementer: its claim has retired"},
 		{Kind: VolumeNearFullNotice, Role: claim.RoleArchitect,
 			Reason: "the volume LEGION-208's roles share on pod pod-uid was still above its low mark when the sweep ended",
 			Volume: &VolumeNearFull{PodUID: "pod-uid", Trimmer: "trim-1", Episode: 2, RaisedBy: "rise",

@@ -180,12 +180,13 @@ func lastCatchUp(t *testing.T, pool *pgxpool.Pool) record.CatchUp {
 	return *got
 }
 
-// An issue in accepting waits for the architect that owns it alone: no worker runs there, and the
+// An issue in accepting whose acceptance is the owner's (record.Issue.OwnersPlace) waits for the
+// architect that owns it alone: no worker runs there. On an issue with no plan rows, as here, the
 // one phase-finished notice that moved it there reaches no architect whose claim has failed: it
 // passes a child's failed architect for the one above, and ends undelivered when a root's has
-// failed (the outbox's notice), so a retried architect was never told. Its catch-up is its only
-// wake, and it names every issue in accepting whose acceptance is that architect's, whatever each
-// is waiting for: the acceptance itself is refused while an issue beneath it is still in the
+// failed (the outbox's notice), so a retried architect was never told. Its catch-up is then its
+// only wake, and it names every issue in accepting whose acceptance is that architect's, whatever
+// each is waiting for: the acceptance itself is refused while an issue beneath it is still in the
 // workflow (signOff), and the catch-up is what tells the architect the issue is there to be
 // decided.
 func TestACatchUpNamesEveryIssueWaitingForTheArchitectsAcceptance(t *testing.T) {

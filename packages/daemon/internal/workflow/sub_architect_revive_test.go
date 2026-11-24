@@ -93,8 +93,8 @@ type reviveMove struct {
 	apply    func(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string)
 }
 
-// plannerCompletes is the planner's completion of planning, which moves the issue to implementing
-// and starts its implementer.
+// plannerCompletes is the planner's completion of planning, which moves an issue with no plan rows,
+// as these are, to implementing and starts its implementer.
 var plannerCompletes = reviveMove{
 	name: "the planner's completion", from: phase.Planning, to: phase.Implementing,
 	seed: func(t *testing.T, pool *pgxpool.Pool, key string) {
@@ -111,8 +111,9 @@ var plannerCompletes = reviveMove{
 }
 
 // reviewerApproves is the review App's approval of the head the issue's pull request stands at,
-// its checks green and GitHub reporting it clean, which moves the issue to accepting: a phase
-// whose role is the architect, so no worker is started. The reviewer's claim is seeded under the
+// its checks green and GitHub reporting it clean, which moves the issue to accepting, whose
+// acceptance on an issue with no plan rows is the architect's, so no worker is started. The
+// reviewer's claim is seeded under the
 // token the daemon starts the reviewer under, on the session ses-reviewer (seedRoleClaim), which
 // the approval's footer names (reviewBody): a review of the review App decides its round only when
 // its footer names the session that claim records (byReviewer).
@@ -149,7 +150,7 @@ func (move reviveMove) moved(t *testing.T, pool *pgxpool.Pool, engine *Engine, k
 
 // A child's own architect whose claim has failed starts again at the child's next phase start:
 // every transition that starts a phase of the child, the move into accepting among them, whose
-// role is the architect itself. The start is the plain one (childArchitectStart),
+// role is the architect itself on a child with no plan rows. The start is plain (childArchitectStart),
 // queued on the child in the transaction that moves it, and the outbox's start retries the failed
 // claim with fresh budgets in its session, or in a new one once supervise's Machine.forgetSession
 // has dropped that (this start asks for no new session). The engine reads the claim's state in that

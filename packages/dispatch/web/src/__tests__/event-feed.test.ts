@@ -521,7 +521,8 @@ const rules: Record<string, Rule> = {
       })
     ),
     page: { inboxHolds: false },
-    // The close is the merge's end, which the merge step's record comes with.
+    // The close ends the task's last run, its merge, or its retro where the issue has no pull
+    // request, and that run's step record comes with it.
     refreshes: ["detail", "parent", "summary", "projects", "replies", "agentsPicker", "steps"],
     spares: ["inbox", "projectInbox", "unrelatedDetail", "otherSteps"],
   },

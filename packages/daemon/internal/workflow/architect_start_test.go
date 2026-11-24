@@ -23,9 +23,10 @@ const readmittedLead = "LEGION-208 is yours and its tree ran at an earlier gener
 
 // The closing sentence of each shape: what starts the tree's next work, and whether more is coming
 // to the architect, as each holds of the root its shape is written for. A carried root's depends on
-// the phase it stands in, so it has one for a phase a worker works, one for accepting, which is the
-// architect's own, one for held, which no worker works, and one for merging once its pull request
-// has merged, which the merge itself ended.
+// the place it stands at, so it has one for a phase a worker works, one for a place that is the
+// architect's own (accepting on a root with no plan rows, as here, or a step of the key owner), one
+// for held, which no worker works, and one for merging once its pull request has merged, which the
+// merge itself ended.
 const (
 	freshClosing         = " Nothing else starts this tree, and no message is coming."
 	carriedClosing       = " The daemon starts that phase's own worker itself."
@@ -149,7 +150,7 @@ func TestTheArchitectTaskOfEachShape(t *testing.T) {
 				"Decompose nothing and release no child." + carriedClosing,
 		},
 		{
-			name: "a root a hand-over carried into accepting, the architect's own phase",
+			name: "a root with no plan rows a hand-over carried into accepting, the architect's own place",
 			start: ArchitectStart{Root: rootAt(phase.Accepting),
 				Carried: true, GateCarried: true, Gate: record.TreeGate{Steps: specGated}},
 			want: "LEGION-208 is yours and stands in accepting, in the run a hand-over carried it into, with the design gate that hand-over brought. " +

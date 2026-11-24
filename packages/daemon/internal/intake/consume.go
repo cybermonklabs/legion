@@ -165,9 +165,11 @@ type ConsumerSpec struct {
 	Now func() time.Time
 	// ReviewPermission answers whether review's author has write access or higher to its
 	// repository, which is what lets a review decide a review round
-	// (PullRequestReview.AuthorCanWrite). The workflow decides inside a transaction and performs no
-	// I/O, so the answer is read here, before the fact is applied, only for a review that decides
-	// (PullRequestReview.Decides) and has an author, and within AckWait, which bounds this one read
+	// (PullRequestReview.AuthorCanWrite), where a review decides one at all: none decides a review
+	// step the owner does (workflow's settleRound). The workflow decides inside a transaction and
+	// performs no I/O, so the answer is read here, before the fact is applied, only for a review
+	// that decides (PullRequestReview.Decides) and has an author, and within AckWait, which bounds
+	// this one read
 	// and not the delivery (the delivery mechanism: HandlerLimit's comment above), and
 	// HandlerLimit is what ends a handling that never returns. The bound here is what keeps one
 	// slow GitHub answer from holding the fact. An author GitHub gives no write access is false;

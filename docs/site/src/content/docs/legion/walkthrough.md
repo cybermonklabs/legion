@@ -1,11 +1,14 @@
 ---
 title: Walkthrough
-description: One issue going through Legion from handover to the merge that closes it and the production check your project's production_check setting opens after it, as you see it in Dispatch, and an example Legion daemon in the operator's terminal.
+description: One issue going through Legion's default steps, from handover to the merge that closes it and the production check your project's production_check setting opens after it, as you see it in Dispatch, and an example Legion daemon in the operator's terminal.
 sidebar:
   order: 6
 ---
 
-This page follows one issue through Legion, step by step, and each step names what you see. The
+This page follows one issue through Legion's default steps (a planner, an implementer that opens a
+pull request, a tester and a reviewer, then the architect's acceptance, the retro and the merge),
+and each step names what you see. An issue whose plan names other steps, or whose steps open no
+pull request, goes another way ([the plan of an issue](/legion/legion/concepts/#the-plan-of-an-issue)). The
 screenshots and the narrated video show example data: a Storefront project in Dispatch. The two
 terminal recordings in [the operator's view](#the-operators-view) show an example daemon:
 `legion status`, `legion state` and `legion claims list`, then the controller starting and

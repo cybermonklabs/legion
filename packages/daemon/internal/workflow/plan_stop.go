@@ -27,9 +27,10 @@ import (
 // a failed claim's hold is written (claimFailed). The hold keeps the task's place (moveTask) and the
 // slot of the phase it is from (record.KeepsSlot reads record.StandsAt), and it writes no Dispatch
 // status, since held has none (PhaseStatus). The process of the step's role is stopped with its
-// session kept (the op step_stop, whose source is the daemon's, said as its reason), except for
-// accepting, whose architect is the owner itself and runs no process of Legion's for the step, and a
-// phase no role works. The stop's row names the claim of the agent that ran the step, read here in
+// session kept (the op step_stop, whose source is the daemon's, said as its reason), except at a
+// place the owner works (record.Issue.RoleAt is the architect: an acceptance it does, a step of
+// the key owner, its retro), which runs no process of Legion's for the step, and a phase no role
+// works. The stop's row names the claim of the agent that ran the step, read here in
 // the fact's transaction (workerClaim), and the outbox stops that claim: a restart of the task before
 // the row runs enters the first step and writes its agent on the role's row, and a row resolved when
 // it runs would stop that agent and leave the stopped step's running. The task's state is the
@@ -79,10 +80,11 @@ func (e *Engine) stopTask(ctx context.Context, tx pgx.Tx, issue record.Issue, w 
 }
 
 // StoppedStepRole is the role whose process the stop of issue's task stopped (stopTask's
-// step_stop): the role that works the step a task-stopped hold is from (record.Issue.RoleAt, at
-// step the role of the deployment or of the issue's plan that runs it), and no role for an issue held for any other
-// reason or not held, for a stop at a phase no role works, and for a stop at accepting, whose
-// architect is the owner itself and runs no process of Legion's for the step. That role starts
+// step_stop): the role that works the step a task-stopped hold is from (record.Issue.RoleAt: the
+// role of the claim that works that place, at step the role of the deployment that runs it, and
+// the role acceptance for the fresh agent of a step acceptance with no key), and no role for an
+// issue held for any other reason or not held, for a stop at a phase no role works, and for a stop
+// at a place the owner works, which runs no process of Legion's for the step. That role starts
 // again only when its task does: a later version of the plan that starts the task again, or a
 // person's todo on a stopped root, clears the hold in the same write that queues the role's start
 // (restartTask), and every other start of that role while the hold stands finishes without acting
@@ -215,8 +217,9 @@ func (e *Engine) taskStopped(ctx context.Context, tx pgx.Tx, fact intake.TaskSto
 		StoppedBy: fact.By, Reason: why + ", the architect " + string(fact.By)})
 }
 
-// restartTask starts w's task of issue again at its first step, in the
-// caller's transaction, for reason, which that step's worker is told. It runs on a person's todo
+// restartTask starts w's task of issue again at its first step, in the caller's transaction, for
+// reason, which that step's agent is told (the owner, by an owner-step notice, where the step is
+// its own). It runs on a person's todo
 // on a root held for the stopped task (releaseHeldRoot), and for a later version of the plan that
 // changes the stopped task or replaces it with a task of another id, where the work of the stopped
 // task ran: it stood at an act of its line (record.TaskPlace.Started). A task stopped before its
@@ -228,7 +231,8 @@ func (e *Engine) taskStopped(ctx context.Context, tx pgx.Tx, fact intake.TaskSto
 // issue stands in the phase of step 1. The Dispatch status of that phase is queued over the
 // status Dispatch shows, not through Engine.status: a hold changes no status, so the record still
 // reads the status of the phase the hold is from (releaseHeldRoot says the same of a release).
-// Step 1's role is started at a raised entry (start), which writes the start of its step, and its
+// Step 1's agent is started at a raised entry (start, which tells the owner instead where the step
+// is its own: startOwnersStep), which writes the start of its step, and its
 // entry counts as a move back, since it asks for the work again from the first step. The step the
 // issue stood in ended when the task stopped (stopTask), so none is ended here. A task that ran
 // raises its pass, so that a completion of this run takes a key of its own (the completion key
@@ -275,8 +279,9 @@ func (e *Engine) restartTask(ctx context.Context, tx pgx.Tx, issue record.Issue,
 	}
 	e.logOnCommit(ctx, "workflow: a stopped task starts again at its first step", "issue", issue.Key, "tree", issue.Tree, "task", w.Task,
 		"act", "task_restarted", "from", from, "to", first, "reason", reason)
-	// The role of the task's first step (Walk.RoleAt), so a first step of a role the deployment
-	// defines starts that role again.
+	// The role of the task's first step (Walk.RoleAt), whose row is cleared and whose start starts
+	// that role again, a role the deployment defines among them, or tells the owner where the owner
+	// does that step (start, startOwnersStep).
 	role := w.RoleAt(record.TaskPlace{Kind: record.PlaceStep, Position: 1})
 	if err := e.clearHandoff(ctx, tx, issue, role); err != nil {
 		return err

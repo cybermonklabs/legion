@@ -85,9 +85,10 @@ func TestALaunchOfAReroledClaimWritesItsSlotsCredentialAtOnce(t *testing.T) {
 	start := lastStart(t, g, keyed)
 	want := shimwire.LauncherGitHubCredential{HostsFile: "sjawhar/" + ghconfig.HostsFile, TokenDigest: digest("ghs_review")}
 	// The launcher may wait for the files no longer than the launch waits on its start before the
-	// stop grace: what remains of the start bound its launcher wait answered (awaitRoleLauncher).
+	// stop grace: what remains of the start bound its launcher wait answered (awaitRoleLauncher), or
+	// the kubelet's projection bound from the write where that is longer (secretProjectionBound).
 	names := func(got *shimwire.LauncherGitHubCredential) bool {
-		bound := max(g.r.bootTimeout, g.r.keptVolumeBound)
+		bound := max(g.r.bootTimeout, g.r.keptVolumeBound, secretProjectionBound)
 		return got != nil && got.HostsFile == want.HostsFile && got.TokenDigest == want.TokenDigest &&
 			got.WaitMs > 0 && time.Duration(got.WaitMs)*time.Millisecond <= bound
 	}
@@ -122,6 +123,75 @@ func TestALaunchOfAReroledClaimWritesItsSlotsCredentialAtOnce(t *testing.T) {
 	g.spawn(testSpec(t, refreshed, claim.RoleTester, testTree))
 	if lines := waits(); len(lines) != 2 || !strings.Contains(lines[1], "slot=planner") || !strings.Contains(lines[1], "app=review") {
 		t.Fatalf("the launch after the refresher's write logged %q, want a line naming the slot planner and the App review", lines)
+	}
+}
+
+// A launch into a kept pod that writes its slot's credential gives the launcher at least the
+// kubelet's projection bound (secretProjectionBound) to see the write in the slot's gh files, and
+// waits on its start at least that long itself, however little of the start bound is left: the
+// kubelet rewrites a Secret's files only at the pod's next sync, which the boot timeout does not
+// follow. Here the start bound is the rig's boot timeout of 2 s. Key a's claim `…-implementer`
+// re-roled to tester launches into the issue pod: its start names a bound no shorter than
+// secretProjectionBound, and while its launcher holds the start past the boot timeout and the
+// stop grace, as a launcher does while the files lag, the launch still waits; once the launcher
+// answers, the launch succeeds.
+//
+// The control: on a rig whose boot timeout is longer than secretProjectionBound, the same launch
+// names that longer bound, so the projection bound never shortens a launch's wait.
+func TestALaunchIntoAKeptPodWaitsAsLongAsTheKubeletTakesToProjectItsCredential(t *testing.T) {
+	keyed := claim.Token("legion-legion-legion-208-implementer")
+	// The rig's credential renders each role its own App's token (staticCredential), so the
+	// re-roled claim's launch writes its slot for another App than the slot held.
+	spec := testSpec(t, keyed, claim.RoleTester, testTree)
+	// named is the bound the start of spec's launch names on the launcher's wait for its credential.
+	named := func(t *testing.T, g *rig) time.Duration {
+		t.Helper()
+		start := lastStart(t, g, keyed)
+		if start.Generation != spec.Generation || start.GitHubCredential == nil {
+			t.Fatalf("the launch into the kept pod sent the start %+v, want one of generation %d naming a credential: this case proves nothing", start, spec.Generation)
+		}
+		return time.Duration(start.GitHubCredential.WaitMs) * time.Millisecond
+	}
+
+	g := newRig(t, nil)
+	g.spawn(rootSpec(t))
+	g.launcher(keyed)
+	hold := make(chan struct{})
+	g.commandsMu.Lock()
+	g.holdStart = hold
+	g.commandsMu.Unlock()
+	launched := make(chan error, 1)
+	go func() { _, err := g.r.Spawn(g.ctx, spec); launched <- err }()
+	testwait.WithinPolling(t, 10*time.Second, 5*time.Millisecond, "the launch's start to reach its launcher", func() bool {
+		return slices.ContainsFunc(g.sent(keyed), func(frame shimwire.Frame) bool {
+			start, ok := frame.(shimwire.LauncherStart)
+			return ok && start.Generation == spec.Generation
+		})
+	})
+	if bound := named(t, g); bound < secretProjectionBound-time.Second || bound > secretProjectionBound {
+		t.Fatalf("the start names a bound of %s on the launcher's wait for its credential, want about %s: the boot timeout of %s leaves the kubelet too little",
+			bound, secretProjectionBound, g.opts.BootTimeout)
+	}
+	held := g.opts.BootTimeout + g.opts.TerminationGrace + time.Second
+	select {
+	case err := <-launched:
+		t.Fatalf("the launch ended (%v) while its launcher held the start, before %s, want it still waiting on the start", err, held)
+	case <-time.After(held):
+	}
+	g.commandsMu.Lock()
+	g.holdStart = nil
+	g.commandsMu.Unlock()
+	close(hold)
+	if err := <-launched; err != nil {
+		t.Fatalf("the launch into the kept pod, once its launcher answered the start: %v", err)
+	}
+
+	long := secretProjectionBound + time.Minute
+	control := newRig(t, nil, withOptions(func(o *Options) { o.BootTimeout = long }))
+	control.spawn(rootSpec(t))
+	control.spawn(spec)
+	if bound := named(t, control); bound <= secretProjectionBound || bound > long {
+		t.Fatalf("control: with a boot timeout of %s the start names a bound of %s, want the longer start bound", long, bound)
 	}
 }
 

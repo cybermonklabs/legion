@@ -78,6 +78,12 @@ func (e *Engine) passOverEarlierOwners(ctx context.Context, tx pgx.Tx, issue rec
 // telling names (tellPassedOver). Every plan_steps row of the issue is read first, before anything
 // is passed over or written, so the default steps are named from the rows that show which names a
 // key held, as a version an owner gives is (record.NameAgents).
+//
+// Admission reads the phase the first step of that plan runs as before this settles it, for the
+// slot the promotion that starts the step takes or does not take (record.ReadFirstPhases), from
+// these same sources in this same order: a source added, dropped or moved here is one there too,
+// or the promotion grants a row the next pass takes back, or starts a step that keeps a slot on
+// none.
 func (e *Engine) planFirstStep(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
 	steps, err := e.store.PlanStepsOf(ctx, tx, issue.Key)
 	if err != nil {
@@ -140,6 +146,12 @@ func (e *Engine) defaultRows(issue record.Issue, earlier []record.PlanStep, sess
 		StepsByDefault: true, State: record.TaskWaiting}
 	return version, []record.PlanTask{task}, record.NameAgents(earlier, sessions, planSteps(plan.RolesOf(plan.Plan{}, e.cfg.Deployment), issue.Key, issue.Generation, defaultTask, e.cfg.DefaultSteps))
 }
+
+// DefaultSteps is the project's default steps (Config.DefaultSteps), which the run of an issue
+// whose owner gave no plan takes at its first step (defaultRows), and which admission reads the
+// phase of that step from before the step runs (record.ReadFirstPhases). The slice is the engine's
+// own, which the caller does not change.
+func (e *Engine) DefaultSteps() []plan.Step { return e.cfg.DefaultSteps }
 
 // planSteps is steps as the rows of the steps of task of issue's plan at generation: each at its
 // place from 1, with its agent key and the type its role has in roles, the roles the plan's steps
@@ -241,9 +253,9 @@ func (e *Engine) rateRetro(ctx context.Context, tx pgx.Tx, issue record.Issue, r
 }
 
 // planHold says whether issue is held by its plan rather than by a failure: its owner stopped its
-// task (record.HoldTaskStopped), or, as a parent whose plan has no acceptance step, it waits for
-// the issues beneath it in place of its retro (record.HoldForChildren). No path that resumes the
-// work of a held issue resumes such a hold: a later version of the plan or a person's todo on a
+// task (record.HoldTaskStopped), or, as a parent whose task's last step is not an acceptance, it
+// waits for the issues beneath it in place of its retro (record.HoldForChildren). No path that
+// resumes the work of a held issue resumes such a hold: a later version of the plan or a person's todo on a
 // root ends a task's stop (restartTask, or waitForFirstStep for a task stopped before its first
 // step), and the parent's retro starts once nothing beneath it is open (releaseHeldParents). stored says whether the
 // issue's run has plan rows: no plan holds a run that has none, so a hold of either reason on such

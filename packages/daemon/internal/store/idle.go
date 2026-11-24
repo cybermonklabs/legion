@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/pods"
+	"github.com/sjawhar/legion/daemon/internal/store/plansql"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
@@ -478,18 +479,20 @@ func (s *Store) CancelIssueRelease(ctx context.Context, project, issue string, r
 
 // ReleaseCancelPause is what a cancel made while the project is paused needs beside the store
 // (decision 12 of dispatch://INFRA-3759): the moment the stops it records, the pod's hold and a
-// backstop's due time are stamped with (At, the caller's clock), the backstop the stop of the
-// issue's open phase's worker arms (the idle release's backstop_minutes; zero arms none, as
-// where the deployment releases no pod), and the claim that works an issue's open phase, read in
-// the cancel's transaction (OpenWorker, the workflow's workflow.OpenWorker: at step, the claim the
-// record gives the running step, which can be a keyed agent's beside the role's own claim), which
-// the store does not restate (nil arms no backstop). At is required of every cancel, since whether
-// the project is paused is read inside the cancel's own transaction; a cancel made while the
-// project runs reads nothing else of it.
+// backstop's due time are stamped with (At, the caller's clock), the backstop the stop transaction
+// arms (the idle release's backstop_minutes; zero arms none, as where the deployment releases no
+// pod), and which claim it arms it for, read in the cancel's transaction (BackstopTarget, the
+// workflow's workflow.BackstopTargetAt), which the store does not restate (nil arms no backstop).
+// BackstopTarget is given the issue's key and answers a role, "" for none, and the token of the
+// claim: the owner's, the architect's, at a step or a retro of its own other than its acceptance,
+// meant whatever run it serves; elsewhere the claim the record gives the step of the open phase's
+// role, which can be a keyed agent's beside the role's own claim, meant where it serves the issue's
+// run. At is required of every cancel, since whether the project is paused is read inside the
+// cancel's own transaction; a cancel made while the project runs reads nothing else of it.
 type ReleaseCancelPause struct {
-	At         time.Time
-	Backstop   time.Duration
-	OpenWorker func(ctx context.Context, tx pgx.Tx, issue string) (claim.Token, error)
+	At             time.Time
+	Backstop       time.Duration
+	BackstopTarget func(ctx context.Context, tx pgx.Tx, issue string) (claim.Role, claim.Token, error)
 }
 
 // ReleaseCancelled is what one cancel of a release did (CancelIssueRelease). Resumed are the roles
@@ -512,20 +515,22 @@ type ReleaseCancelled struct {
 // owes it one (openPodResume); on the first record of its stop, the pod's hold, whatever the
 // pod's other roles do, as the stop transaction holds it while its pause stands: an update round
 // past its bound or an idle rule would otherwise take a pod that holds the stopped roles'
-// unpushed work; and, for the worker of the issue's open phase serving the issue's generation, its
-// backstop, which the record arms only where the stop owes no launch. That worker is a claim
-// (ReleaseCancelPause.OpenWorker), read once for the cancel: at step a keyed agent's claim works the
-// step beside the role's own claim, which gets none. A wake taken since is left open: it is the
-// launch the role is owed, and its start row runs at the resume. The caller holds the issue's lock
-// and held's row for share.
+// unpushed work; and, for the claim BackstopTarget names, read once for the cancel, its backstop,
+// which the record arms only where the stop owes no launch. Which claim that is, is the rule every
+// path that arms a backstop reads (pods.BackstopClaim): the owner at a step or a retro of its own
+// other than its acceptance, whatever run it served last; elsewhere the claim of the place's worker
+// serving the issue's generation, so at step a keyed agent's claim works the step beside the role's
+// own claim, which gets none. A wake taken since is left open: it is the launch the role is owed,
+// and its start row runs at the resume. The caller holds the issue's lock and held's row for share.
 func stopReleasedForPause(ctx context.Context, tx pgx.Tx, project, issue string, held Pause, roles []releasedRole,
 	standing issueStanding, paused ReleaseCancelPause) error {
 	at := paused.At.UTC()
+	var target claim.Role
 	var worker claim.Token
-	if paused.Backstop > 0 && paused.OpenWorker != nil {
+	if paused.Backstop > 0 && paused.BackstopTarget != nil {
 		var err error
-		if worker, err = paused.OpenWorker(ctx, tx, issue); err != nil {
-			return fmt.Errorf("read the worker of %s's open phase: %w", issue, err)
+		if target, worker, err = paused.BackstopTarget(ctx, tx, issue); err != nil {
+			return fmt.Errorf("read the claim a backstop of %s's pod is armed for: %w", issue, err)
 		}
 	}
 	for _, r := range roles {
@@ -535,7 +540,7 @@ func stopReleasedForPause(ctx context.Context, tx pgx.Tx, project, issue string,
 		}
 		rec := PauseStopRecord{Pause: held, Stop: PauseStopClaim{Claim: r.token, Tree: r.tree, Issue: issue,
 			Role: r.role, Generation: r.generation}, At: at, LaunchOwed: owed, HoldPod: true}
-		if worker != "" && r.token == worker && r.serving == standing.generation {
+		if pods.BackstopClaim(target, worker, r.token, r.serving, standing.generation) {
 			rec.Backstop = &PodWakeBackstop{Project: project, Issue: issue, Claim: r.token, Role: r.role, DueAt: at.Add(paused.Backstop)}
 		}
 		if _, err := RecordPauseStopTx(ctx, tx, rec); err != nil {
@@ -673,23 +678,22 @@ func deleteIssueRelease(ctx context.Context, db execer, project, issue string) e
 // takes its root's project when the workflow writes it, so the root of a record of this project
 // is this project's too.
 //
-// The view's StepRole is the subquery record.issueColumns ends with, written here a second time
-// over the alias i, since store and record import neither each other: the role of the step the
-// task of the issue's generation stands at, "" where its plan rows hold none or the task stands
-// at no step.
+// The view's StepRole and PlaceRole are the two subqueries record.issueColumns ends with, over the
+// alias i (plansql): the role of the step the task of the issue's generation stands at, and the role
+// of the claim that works the task's place, which a test holds equal to the issue's read.
 func readIdleView(ctx context.Context, tx pgx.Tx, project, issue string) (pods.IdleView, error) {
 	view := pods.IdleView{Issue: issue, Project: project}
 	var issueGeneration, rootGeneration int64
-	var issuePhase, rootPhase, stepRole string
+	var issuePhase, rootPhase, stepRole, placeRole string
 	err := tx.QueryRow(ctx, `select i.tree, i.phase, i.status, i.generation, i.linger_until,
 		root.phase, root.status, root.generation, root.linger_until,
 		root.phase = 'awaiting_person', root.awaiting_answered_at is not null,
-		coalesce((select s.role from plan_tasks t join plan_steps s on s.issue = t.issue and s.generation = t.generation and s.task = t.task and s.position = t.position
-			where t.issue = i.key and t.generation = i.generation and t.running_kind = 'step'), '')
+		`+plansql.StepRole("i")+`,
+		`+plansql.PlaceRole("i")+`
 		from issues i join issues root on root.key = i.tree where i.key = $1 and lower(i.project) = $2`, issue, project).Scan(
 		&view.Tree, &issuePhase, &view.Status, &issueGeneration, &view.LingerUntil,
 		&rootPhase, &view.Root.Status, &rootGeneration, &view.Root.LingerUntil,
-		&view.Root.AwaitingPerson, &view.Root.Answered, &stepRole)
+		&view.Root.AwaitingPerson, &view.Root.Answered, &stepRole, &placeRole)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 		return view, nil
@@ -698,7 +702,7 @@ func readIdleView(ctx context.Context, tx pgx.Tx, project, issue string) (pods.I
 	}
 	view.Found = true
 	view.Phase, view.Root.Phase = phase.Phase(issuePhase), phase.Phase(rootPhase)
-	view.StepRole = claim.Role(stepRole)
+	view.StepRole, view.PlaceRole = claim.Role(stepRole), claim.Role(placeRole)
 	view.Generation, view.Root.Generation = uint64(issueGeneration), uint64(rootGeneration)
 
 	claims, err := tx.Query(ctx, `select c.token, c.role, c.state, c.plugin_contract, c.serving_generation,

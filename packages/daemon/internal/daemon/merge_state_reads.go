@@ -33,7 +33,9 @@ import (
 // would not merge from tells the architect that owns the issue and the reviewer, once for that
 // head and state, in the review-stuck notice the round writes - but only once the CI settlement
 // standing for the head says every check GitHub reported on it has concluded, since until then the
-// state says no more than that a check is running (workflow's reviewRound, stuckMergeState).
+// state says no more than that a check is running (workflow's reviewRound, stuckMergeState). A
+// review step the issue's owner does has no round, so no such notice is written for it (workflow's
+// settleRound).
 //
 // mergeStateLadderReads and mergeStateLadderWait have two more users, the outbox's reads of one
 // pull request: the merge-queue read (merge_queue_removal.go's mergeQueueRead), which reads a pull

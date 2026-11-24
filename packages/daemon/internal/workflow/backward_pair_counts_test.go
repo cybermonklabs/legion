@@ -83,8 +83,8 @@ func reviewerRequestsChanges(t *testing.T, pool *pgxpool.Pool, engine *Engine, r
 		Body: reviewBody("the round "+round+" findings", head)})
 }
 
-// architectMovesBack is the architect's own move of the issue out of accepting, the one phase it
-// holds, back to the phase named.
+// architectMovesBack is the architect's own move of the issue out of accepting, which it holds on
+// this issue with no plan rows, back to the phase named.
 func architectMovesBack(t *testing.T, pool *pgxpool.Pool, engine *Engine, to phase.Phase) {
 	t.Helper()
 	standsIn(t, pool, phase.Accepting, "needs_review")
@@ -135,9 +135,9 @@ func marksConflicting(t *testing.T, pool *pgxpool.Pool, engine *Engine, head str
 // built from it (record.PhaseRow.Pass, api's handoffPosition) and two passes through
 // one phase that carried the same number would collide.
 //
-// The review rounds review_round_cap bounds are counted apart from the pairs, and only a review
-// that requested changes opens one (recordRound): of the five moves here the one review's is the
-// only round, and no move at the conflicting head makes a second.
+// The review rounds review_round_cap bounds are counted apart from the pairs, and of the five
+// moves here only the review's request for changes opens one (recordRound): it is the only round,
+// and no move at the conflicting head makes a second.
 func TestEveryBackwardMoveIsCountedByItsPair(t *testing.T) {
 	pool := migratedPool(t)
 	// The cap is set above every round this proof opens: what it posts is another test's subject
@@ -174,7 +174,7 @@ func TestEveryBackwardMoveIsCountedByItsPair(t *testing.T) {
 		t.Fatalf("after the four moves back the implementer's row counts %d passes, want 4: every move back raises the pass, whatever kind it is", pass)
 	}
 	if rounds, conflicts := implementerRounds(t, pool), implementerConflictRounds(t, pool); rounds != 1 || conflicts != 0 {
-		t.Fatalf("after the four moves back the implementer's row counts %d review rounds of which %d conflict rounds, want the one review's round and no conflict round: a round is a review that requested changes alone (recordRound), and none of these was made at a conflicting head", rounds, conflicts)
+		t.Fatalf("after the four moves back the implementer's row counts %d review rounds of which %d conflict rounds, want the one review's round and no conflict round: of these moves only the review's request for changes opens a round (recordRound), and none of them was made at a conflicting head", rounds, conflicts)
 	}
 
 	// The fifth move is made while the record holds the pull request's own head conflicting with

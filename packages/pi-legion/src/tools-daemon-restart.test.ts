@@ -79,6 +79,7 @@ function liveDaemon(refuse?: { path: string; status: number; body: object }) {
         "/legion/v1/gates/register": "gate-register.json",
         "/legion/v1/plans/register": "plan-register.json",
         "/legion/v1/tasks/stop": "task-stop.json",
+        "/legion/v1/steps/complete": "step-complete.json",
       }[route];
       if (fixture === undefined) return new Response("no route", { status: 404 });
       return new Response(daemonFixture(fixture), {
@@ -327,6 +328,56 @@ test("register_plan and stop_task wait out a restarting daemon", async () => {
     expect(clock.waits).toEqual([500, 1000]);
     expect(updates).toHaveLength(1);
   }
+});
+
+// The owner's report of its own step (contract 227) waits out a restart too, the whole attempt
+// again: the record that says which role's report it carries, that report, a fresh grant and the
+// post, which goes through the contract's request schema to the route with the step it names. A
+// repeat after a report that landed finds the step no longer running and changes nothing.
+test("complete_step waits out a restarting daemon and posts the report of the place's role", async () => {
+  const posted: unknown[] = [];
+  const live = liveDaemon();
+  const client = restartingClient(live.url, refusingOrigin(), 2);
+  const clock = virtualClock();
+  const tool = toolFor(
+    "architect",
+    {
+      ...client,
+      completeStep: async (input) => {
+        posted.push(input);
+        return client.completeStep(input);
+      },
+    },
+    clock,
+    [],
+    "LEGION-208"
+  );
+
+  const { result, updates } = await run(tool, {
+    op: "complete_step",
+    issue: "LEGION-208",
+    step: 1,
+    summary: "Built and pushed.",
+  });
+
+  expect(result).toEqual({ content: [{ type: "text", text: "{}" }], details: {} });
+  expect(live.answered).toEqual([
+    "/legion/v1/issues/LEGION-208/record",
+    "/legion/v1/grants",
+    "/legion/v1/steps/complete",
+  ]);
+  expect(posted.at(-1)).toEqual({
+    grantId: JSON.parse(daemonFixture("grant.json")).grantId,
+    issue: "LEGION-208",
+    step: 1,
+    summary: "Built and pushed.",
+    handoffId: HANDOFF_ID,
+    handoffVersion: 1,
+    commit: COMMIT,
+  });
+  expect(clock.waits).toEqual([500, 1000]);
+  expect(updates).toHaveLength(1);
+  expect(updates[0]).toContain("complete_step");
 });
 
 test("an aborted call stops waiting and sends nothing more, even with the daemon back up", async () => {

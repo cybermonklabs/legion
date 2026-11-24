@@ -487,7 +487,8 @@ func populatedState(t *testing.T) State {
 				// every phase it stands in (internal/projection), so they say when the task of the
 				// architect's last entry was queued to its claim and when a turn of it confirmed it.
 				// LEGION-210, LEGION-212 and LEGION-207 carry none of the four. The projection writes
-				// neither number because no role works held, awaiting_person or done (phase.RoleFor).
+				// neither number because no role works held, awaiting_person or done
+				// (record.Issue.RoleAt answers none there, as phase.RoleFor does).
 				// It writes neither time because the times are an architect claim's, which it shows
 				// as the issue's `architect`, and none of the three carries one. The fixture gives an
 				// architect claim to LEGION-208 alone: LEGION-210 and LEGION-211 hold none in the
@@ -720,19 +721,22 @@ func populatedState(t *testing.T) State {
 			// ladder, not assumed). Its tree is no live tree and no draw reached it, so it carries
 			// no memory group.
 			// LEGION-240 stands at step: its task runs the step of checker, a role the deployment
-			// defines, which the phase alone does not name (`stepRole`). It holds a slot and is at
+			// defines, which the phase alone does not name (`stepRole`), and the checker is the
+			// claim that works that place (`placeRole`). It holds a slot and is at
 			// work (deploymentRolesContract), but its pod was built before the deployment defined
 			// the checker, so the checker's start waits for that pod's update round or its release
 			// (record.Store.StartsWaitingForPod): the issue names the checker in `startWaitsForPod`
 			// and no claim of the checker exists yet, so it carries no worker.
 			// LEGION-241 is held from that step, its checker's claim failed, so its hold names the
-			// phase it left and the role of that step, and the failed claim stays its worker, keyed
+			// phase it left and the role of that step, its task keeps the place the checker works,
+			// and the failed claim stays its worker, keyed
 			// by the role of the deployment, as LEGION-210's failed implementer stays its own.
 			"LEGION-240": {
 				Key:              "LEGION-240",
 				Generation:       1,
 				Phase:            phase.Step,
 				StepRole:         "checker",
+				PlaceRole:        "checker",
 				Status:           "in_progress",
 				Tree:             "LEGION-240",
 				Repo:             "acme/widgets",
@@ -746,6 +750,7 @@ func populatedState(t *testing.T) State {
 				Phase:         phase.Held,
 				HeldFrom:      string(phase.Step),
 				StepRole:      "checker",
+				PlaceRole:     "checker",
 				Status:        "in_progress",
 				Tree:          "LEGION-241",
 				Repo:          "acme/widgets",
@@ -844,9 +849,9 @@ func populatedState(t *testing.T) State {
 					},
 					claim.RoleReviewer: {Claim: ClaimView{Session: "ses_reviewer_218", State: "idle"}, Pass: 1},
 				},
-				// Reviewing names the reviewer, so the issue carries its entry numbers as every
-				// issue whose phase names a phase worker role does: its reviewer was handed the
-				// round's one entry and holds it.
+				// Reviewing names the reviewer on this issue with no plan rows, so the issue carries
+				// its entry numbers as every issue whose working role (record.Issue.RoleAt) is a
+				// phase worker does: its reviewer was handed the round's one entry and holds it.
 				PhaseEntry: 1,
 				GivenEntry: 1,
 				PullRequest: &PullRequestView{
@@ -980,8 +985,9 @@ func populatedState(t *testing.T) State {
 		// state's read builds it (PauseStateTx). LEGION-208's implementer is still in the turn the
 		// pause found it in, so the pause waits on its stop. Two rows are held for the pause: the
 		// start of LEGION-211's released implementer that a wake queued, which names its claim, and
-		// a notice for LEGION-209's architect, which names none (the tree walk routes a notice at
-		// run time), so it carries no `claim`.
+		// a notice for LEGION-209's architect, which names none (a notice is routed at run time:
+		// an owner-step to its issue's own architect, every other by the tree walk), so it carries
+		// no `claim`.
 		Paused: pausedViewOf(store.Pause{
 			ID: 7, Project: "LEGION", Since: pausedSince, Reason: "the model provider is refusing every turn",
 			By: store.PauseActor{Kind: store.PauseByController, Session: "ses_controller"},
@@ -1039,7 +1045,7 @@ func populatedState(t *testing.T) State {
 			},
 			WithoutWebhookApp: []WebhookAppGapView{{
 				Repo:   "zeta/tools",
-				Reason: "Dispatch's GitHub App is not installed on zeta/tools: GitHub sends Legion none of its events, nothing redelivers them, and no periodic pass makes up for them, so its issues stand still until the App is installed",
+				Reason: "Dispatch's GitHub App is not installed on zeta/tools: GitHub sends Legion none of its events, nothing redelivers them, and no periodic pass makes up for them, so its issues that wait on a pull request stand still until the App is installed",
 			}},
 			Caches: []CacheView{{
 				Repo: "acme/legacy", Sandbox: "legion-legion-cache-acme-legacy-0a1b2c3d", State: "starting", RetainedUntil: time.Date(2026, 10, 23, 9, 0, 0, 0, time.UTC),
@@ -1840,6 +1846,12 @@ func TestOwnerPlanRouteGoldens(t *testing.T) {
 		}},
 	})})
 	golden(t, "task-stop.json", EmptyResponse{})
+}
+
+// The owner's report of a step of its own (contract 227) has a fixture named for its route, as the
+// routes above have: the empty object of a fact route, which `@legion/contracts` parses.
+func TestCompleteStepRouteGolden(t *testing.T) {
+	golden(t, "step-complete.json", CompleteStepResponse{})
 }
 
 // The table of answers a plugin parses (answers.go): one row per response schema, the routes

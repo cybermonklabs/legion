@@ -1,6 +1,6 @@
 # Tests named before code
 
-Read it when you write a plan or review one: the planner, and the plan reviewer the planner runs. A plan that names each case's test before the code lets the implementer meet every case in one round, rather than one review round per case.
+Read it when you write a plan or review one: the planner, and the plan reviewer the planner runs. A plan that names each case's test lets a later implementation step meet every case in one round, rather than one review round per case.
 
 ## The trace
 

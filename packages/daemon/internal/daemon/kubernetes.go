@@ -658,6 +658,10 @@ func sandboxRuntime(rc *rest.Config, opts sandbox.Options, served func(ghrepo.Re
 			// check.
 			opts.Tokens = newImplementTokens(apps, serving)
 			opts.GitHubCredential = appauth.GitHubCredential(apps, served, renames, installed, left, opts.RoleApps, opts.Log)
+			// While an owner acts as another role, its slot holds that role's App: ownerActsAs
+			// answers which, for each of the owner's acts it lists, and every write of a slot's gh
+			// files, the refresh's and a launch's, asks it through runtime.SlotRole.
+			opts.ActsAs = ownerActsAs(st.Pool(), record.NewStore())
 			opts.ControllerCredential = appauth.ControllerCredential(apps, served, renames, installed, left, opts.Log)
 			opts.GitHubDirs = func(repo ghrepo.Repository, roles []appauth.AppRole) []string {
 				return appauth.GitHubDirs(served, renames, installed, left, roles, repo)

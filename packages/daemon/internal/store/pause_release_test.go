@@ -32,18 +32,20 @@ func servingReleasedClaim(t *testing.T, st *Store, role claim.Role) {
 	}
 }
 
-// implementingWorker is the open phase's worker as workflow.OpenWorker names it for the phases
-// these tests use, read from the issue in tx: the implementer's own claim while the issue
-// implements, and nobody otherwise.
-func implementingWorker(ctx context.Context, tx pgx.Tx, issue string) (claim.Token, error) {
+// implementingWorker is the claim a backstop is armed for as workflow.BackstopTargetAt names it for
+// the places these tests use, where no plan rows give a role, read from the issue in tx: the
+// implementer's own claim, serving the issue's run, while the issue implements, and nobody
+// otherwise.
+func implementingWorker(ctx context.Context, tx pgx.Tx, issue string) (claim.Role, claim.Token, error) {
 	var stands string
 	if err := tx.QueryRow(ctx, `select phase from issues where key = $1`, issue).Scan(&stands); err != nil {
-		return "", err
+		return "", "", err
 	}
 	if phase.Phase(stands) != phase.Implementing {
-		return "", nil
+		return "", "", nil
 	}
-	return claim.NewToken("legion", issue, claim.RoleImplementer)
+	token, err := claim.NewToken("legion", issue, claim.RoleImplementer)
+	return claim.RoleImplementer, token, err
 }
 
 // endPause ends pause at at as the operator, as the resume's transaction writes the end.
@@ -169,10 +171,11 @@ func TestASaveOfAReleaseOfAnotherProjectsIssueActsWhileOnlyThatProjectIsPaused(t
 }
 
 // Decision 12 of dispatch://INFRA-3759: a cancel made while the project is paused queues no resume.
-// It records each role the release had stopped as stopped by the pause, holds the pod whatever
-// the pod's other roles do, and arms the backstop of the open phase's worker serving the issue's
-// generation, as the stop transaction does while its pause stands; the architect gets none. A role
-// a wake already owes a launch keeps that wake, owes the launch in its stop, and gets no backstop.
+// It records each role the release had stopped as stopped by the pause, and holds the pod whatever
+// the pod's other roles do. It arms the backstop the stop transaction arms while its pause stands,
+// for the claim BackstopTarget names. Here that is the implementer serving the issue's generation,
+// and the architect, which does no step of its own here, gets none. A role a wake already owes a
+// launch keeps that wake, owes the launch in its stop, and gets no backstop.
 func TestACancelWhileThePausedProjectHoldsItRecordsTheStopsAndQueuesNoResume(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -211,7 +214,7 @@ func TestACancelWhileThePausedProjectHoldsItRecordsTheStopsAndQueuesNoResume(t *
 			at := pausedAt.Add(time.Minute)
 
 			cancelled, err := st.CancelIssueRelease(ctx, "legion", rootIssue, resumeRow, record.OutOfWorkflow,
-				ReleaseCancelPause{At: at, Backstop: time.Hour, OpenWorker: implementingWorker})
+				ReleaseCancelPause{At: at, Backstop: time.Hour, BackstopTarget: implementingWorker})
 			if err != nil {
 				t.Fatalf("cancel the release while paused: %v", err)
 			}
@@ -244,7 +247,7 @@ func TestACancelWhileThePausedProjectHoldsItRecordsTheStopsAndQueuesNoResume(t *
 				t.Fatalf("the implementer's backstops due an hour after the cancel = %d, want %d", n, wantBackstops)
 			}
 			if n := pauseCount(t, st, `select count(*) from pod_wake_backstops where issue = $1 and role = 'architect'`, rootIssue); n != 0 {
-				t.Fatalf("the architect's backstops = %d, want none: an architect's phase is its own", n)
+				t.Fatalf("the architect's backstops = %d, want none: the implementer works the issue's place, not its architect", n)
 			}
 			if held, open := heldOpenResume(t, st, claim.RoleImplementer); open != tc.woken || (open && held != pause.ID) {
 				t.Fatalf("the implementer's open resume = pause %d, open %t; want open %t, held by pause %d: the cancel leaves the wake that owes the launch",
@@ -290,7 +293,7 @@ func TestACancelOfAReleaseOfAnotherProjectsIssueReadsThisProjectsPause(t *testin
 	}
 
 	cancelled, err := st.CancelIssueRelease(ctx, "legion", otherIssue, resume, record.OutOfWorkflow,
-		ReleaseCancelPause{At: pausedAt.Add(time.Minute), Backstop: time.Hour, OpenWorker: implementingWorker})
+		ReleaseCancelPause{At: pausedAt.Add(time.Minute), Backstop: time.Hour, BackstopTarget: implementingWorker})
 	if err != nil {
 		t.Fatalf("cancel the release of %s while LEGION is paused: %v", otherIssue, err)
 	}
@@ -319,7 +322,7 @@ func TestAReleaseCancelWithNoMomentIsRefused(t *testing.T) {
 	pauseLegion(t, st, pausedAt)
 
 	_, err := st.CancelIssueRelease(context.Background(), "legion", rootIssue, resumeRow, record.OutOfWorkflow,
-		ReleaseCancelPause{Backstop: time.Hour, OpenWorker: implementingWorker})
+		ReleaseCancelPause{Backstop: time.Hour, BackstopTarget: implementingWorker})
 	if err == nil || !strings.Contains(err.Error(), "ReleaseCancelPause.At") {
 		t.Fatalf("a cancel with no moment = %v, want it refused naming ReleaseCancelPause.At", err)
 	}

@@ -102,7 +102,10 @@ type specs struct {
 	// promise a reach the role does not have. Under runtime: kubernetes the Apps read are the
 	// POD's (sandbox.PodAppRoles): an issue pod projects only the directories both Apps' bundles
 	// hold, so an owner one App alone reaches is in no container of that pod and `legion gh`
-	// refuses it there, while a tmux pane holds the role's own bundle and reads that App alone.
+	// refuses it there, while a tmux pane holds one App's bundle and reads that App alone: the
+	// role's own, or the App of the role the architect acts as (ownerActsAs): the implementer's
+	// while a merge forward asked of it has not ended, whatever step it does then, else the step's
+	// at a step of its plan whose key is owner or at the retro of one.
 	// The daemon answers it from what GitHub last answered of that App's installations
 	// (appauth.Installed, plan.appOwners): the boot's proof of the App's key first, then the last
 	// gh bundle of it, which costs no read of its own on a launch. It is asked for the App the
@@ -371,16 +374,16 @@ type stepWorker struct {
 // stepWorkersOf is each step of p, by task and place, with the claim of its agent
 // (record.StepToken): the token of the name of the step's agent, which every step of a task with
 // stored plan rows holds, its default steps included, and for a step of the key owner, whose agent
-// is the tree's architect and has no name on the issue, that architect's token. A nil plan has no
-// step.
-func stepWorkersOf(project, issue, tree string, p *record.StoredPlan) ([]stepWorker, error) {
+// has no name on the issue, the token of the issue's own architect, the owner by rule. A nil plan
+// has no step.
+func stepWorkersOf(project, issue string, p *record.StoredPlan) ([]stepWorker, error) {
 	if p == nil {
 		return nil, nil
 	}
 	var workers []stepWorker
 	for _, task := range slices.Sorted(maps.Keys(p.Steps)) {
 		for _, step := range p.Steps[task] {
-			token, err := record.StepToken(project, issue, tree, step)
+			token, err := record.StepToken(project, issue, step)
 			if err != nil {
 				return nil, fmt.Errorf("the agent of step %d of task %s of %s: %w", step.Position, task, issue, err)
 			}
@@ -405,7 +408,7 @@ func (w *workflowRuntime) stepWorkers(ctx context.Context, project string, c sup
 		if err != nil {
 			return err
 		}
-		workers, err = stepWorkersOf(project, issue.Key, issue.Tree, p)
+		workers, err = stepWorkersOf(project, issue.Key, p)
 		return err
 	}); err != nil {
 		return nil, fmt.Errorf("read the step agents of %s: %w", c.Token, err)
@@ -567,13 +570,15 @@ func (s specs) controllerSpawnSpec(ctx context.Context, c supervise.Claim) (runt
 // rolePromptPaths is the role prompt of c, whose role resolved to resolved (resolveClaimRole). It
 // keeps an explicit operator prompt as a narrow test override, which replaces the prompt alone.
 // Every ordinary claim uses the role prompts daemon boot snapshotted below its state directory
-// (prompts.New): Legion's roles their composed parts (prompts.Composer.Compose), a role the plan of
-// c's issue defines the daemon's own copy of the plan's prompt (planRolePromptFile) between the
-// headless mechanics and Legion's worker part (prompts.Composer.ComposeStep), and a role the
-// deployment defines its own prompt file in that same place. Whose definition the name takes is
-// the resolution's: a deployment that took the name of a role a plan in force defines leaves that
-// issue the plan's role, until a version of the plan changes it. A role nobody defines is refused,
-// naming the issue and the role, with no prompt.
+// (prompts.New): Legion's roles their composed parts (prompts.Composer.Compose) — the six roles of a
+// claim, and acceptance, Legion's role of a step that is no claim role, whose fresh agent a plan
+// step `acceptance` with no key asks for (plan.IsLegionName) — a role the plan of c's issue defines
+// the daemon's own copy of the plan's prompt (planRolePromptFile) between the headless mechanics and
+// Legion's worker part (prompts.Composer.ComposeStep), and a role the deployment defines its own
+// prompt file in that same place. Whose definition the name takes is the resolution's: a deployment
+// that took the name of a role a plan in force defines leaves that issue the plan's role, until a
+// version of the plan changes it. A role nobody defines is refused, naming the issue and the role,
+// with no prompt.
 func (s specs) rolePromptPaths(c supervise.Claim, resolved claimRole) ([]string, error) {
 	switch resolved.source {
 	case stepplan.SourceLegion:
@@ -683,7 +688,7 @@ func addressingFragment(project string, c supervise.Claim, architect claim.Token
 	// redo work that is already pushed (dispatch://INFRA-714 R8). A session the launcher could not
 	// look up was not deleted, and a store may hold it still, so its words say neither that it was
 	// lost nor that no store holds it.
-	const readFirst = "Read your issue and the committed handoffs in your workspace before you continue. " +
+	const readFirst = "Read your issue and the handoffs recorded on it before you continue. " +
 		"Then tell the architect named above what you found, unless you are your tree's root architect."
 	switch c.SessionLost {
 	case "":
@@ -747,7 +752,8 @@ func workerRepositoriesClause(owners []string) string {
 // nothing of — the case cmd/legion's own gh tests pin, where a repository of such an owner is
 // answered from that owner's directory.
 //
-// It names no repository list: a role's token is its App's own, with no repository narrowing,
+// It names no repository list: a role's token is an App's own (its role's App, or, while the owner
+// does a step of the key owner, the App of that step's role), with no repository narrowing,
 // so the project's repositories are no bound on the work and the list would be a whole
 // installation's worth of names — 216 of them for this deployment's largest owner when that
 // spec was written. What the agent needs is the account its token acts on and that it reaches
@@ -856,7 +862,8 @@ func ModelsFragment(models []string) string {
 	return "The models of this deployment, which a role of your plan can name: " + strings.Join(models, ", ") + "."
 }
 
-// stepRoleOrder is the order the owner is told Legion's five roles of a step in: the line's own.
+// stepRoleOrder is the order the owner is told Legion's five roles of a step in: the order of today's
+// line and of the default steps, which binds no plan, since a plan's steps stand in any order.
 var stepRoleOrder = []string{"planner", "implementer", "tester", "reviewer", "acceptance"}
 
 // SlackChannelsFragment names the project's Slack channels, the list the controller answers

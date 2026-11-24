@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"slices"
 	"time"
@@ -14,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/steprecord"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/plan"
 )
 
@@ -215,14 +217,14 @@ func (s PlanStep) AgentName() claim.Agent {
 	return claim.Agent(plan.StoredAgentName(s.Task, s.Position, plan.Step{Role: s.Role, Key: s.AgentKey}, string(s.Agent)))
 }
 
-// StepToken is the claim token of the agent of step, a step of issue, whose tree is tree, in
-// project (already a claim.ProjectToken): the one rule of a step's token, which the workflow writes
-// when the step starts and a launch's addressing names. A step of the key owner is the tree's
-// architect's, whose token names the tree and no name on the issue; every other step's is the token
-// of its agent's name (AgentName), so the steps of one key are one claim.
-func StepToken(project, issue, tree string, step PlanStep) (claim.Token, error) {
+// StepToken is the claim token of the agent of step, a step of issue, in project (already a
+// claim.ProjectToken): the token a launch's addressing names for the step. A step of the key owner
+// is the owner's, the issue's own architect by rule (OwnerClaim), whose token names the issue and
+// no name of an agent; every other step's is the token of its agent's name (AgentName), so the
+// steps of one key are one claim.
+func StepToken(project, issue string, step PlanStep) (claim.Token, error) {
 	if step.PlanAgent().Owner() {
-		return claim.NewToken(project, tree, claim.RoleArchitect)
+		return claim.NewToken(project, issue, claim.RoleArchitect)
 	}
 	return claim.AgentToken(project, issue, step.AgentName())
 }
@@ -567,6 +569,123 @@ func (s *Postgres) PlansOfEarlierOwners(ctx context.Context, tx pgx.Tx, issue Is
 		}
 	}
 	return earlier, nil
+}
+
+// PlanInForce is the version in force of one generation of an issue's plan (PlanVersion, the
+// highest version there, whatever its source) and the role of the first step of its task, "" where
+// the task names none: what the phase the issue's run starts in is judged from before its first
+// step settles the plan (ReadFirstPhases).
+type PlanInForce struct {
+	Version   PlanVersion
+	FirstRole string
+}
+
+// PlansInForce is the version in force of each generation of each issue of keys, with the role of
+// its task's first step, in one read: each issue's in the order OwnersNewestPlan judges them, the
+// latest given first and, of two given at one moment, the later generation's. A generation with no
+// plan rows is none of them. A plan of this release holds one task (StoredPlan.Task), so the first
+// step of the first task by id is the first step of the task its run walks.
+func (s *Postgres) PlansInForce(ctx context.Context, tx pgx.Tx, keys []string) ([]PlanInForce, error) {
+	describe := fmt.Sprintf("read the plans in force of %d issues", len(keys))
+	rows, err := tx.Query(ctx, `select v.issue, v.generation, v.version, v.source, v.artifact_id, v.given_by, v.given_at,
+		coalesce((select s.role from plan_steps s where s.issue = v.issue and s.generation = v.generation
+			order by s.task, s.position limit 1), '')
+		from issue_plans v
+		where v.issue = any($1) and v.version = (select max(version) from issue_plans newest
+			where newest.issue = v.issue and newest.generation = v.generation)
+		order by v.issue, v.given_at desc, v.generation desc`, keys)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", describe, err)
+	}
+	plans, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (PlanInForce, error) {
+		var inForce PlanInForce
+		version, err := scanPlanVersion(scanThen{row: row, after: []any{&inForce.FirstRole}})
+		inForce.Version = version
+		return inForce, err
+	})
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", describe, err)
+	}
+	return plans, nil
+}
+
+// ReadFirstPhases is the phase the run of each issue of issues starts in, by key, for each issue
+// whose promotion moves it into the first step of its plan: one standing at admitted in the
+// workflow under its tree's open design gate (gates, by root key, as LineFacts.Gates holds them),
+// whose first phase the waiting line offers (LineFirstPhase) or whose row it gives back first, in
+// the same pass (LineWaitingOnIssue). Every other issue has no entry: a root at admitted under a
+// gate that is not open is its architect writing the design, and its promotion leaves it there.
+//
+// The phase is the one the first step of the plan that step walks runs as, the first of its line
+// (plan.Line), read before the step settles the plan, from the sources the step settles it from
+// and in their order (workflow's planFirstStep): the plan in force of the issue's own generation,
+// unless an earlier owner gave it, which the step passes over (PlansOfEarlierOwners); else the
+// newest plan in force an owner of the issue gave, of any generation (OwnersNewestPlan); else
+// defaults, the project's default steps, which the caller passes because this package holds no
+// project's settings. An owner is an architect of the issue's tree now (ArchitectOfTree).
+//
+// It is one read for every issue (Store.PlansInForce), and none where no issue stands so: the line
+// is judged on every fact, and three reads for each child waiting for a slot would cost a round
+// trip apiece on each of them. The giver of a plan is judged as the first step judges it, from the
+// issue alone for the tree root's architect and from a read of the tree for a sub-architect.
+func ReadFirstPhases(ctx context.Context, tx pgx.Tx, store Store, issues []Issue, gates map[string]TreeGate, defaults []plan.Step) (map[string]phase.Phase, error) {
+	starting := make(map[string]Issue)
+	for _, issue := range issues {
+		if issue.Phase == phase.Admitted && InWorkflow(issue) && gates[issue.Tree].Open() {
+			starting[issue.Key] = issue
+		}
+	}
+	if len(starting) == 0 {
+		return nil, nil
+	}
+	plans, err := store.PlansInForce(ctx, tx, slices.Sorted(maps.Keys(starting)))
+	if err != nil {
+		return nil, err
+	}
+	own, owners := make(map[string]PlanInForce), make(map[string]PlanInForce)
+	for _, inForce := range plans {
+		issue := starting[inForce.Version.Issue]
+		if inForce.Version.Source == PlanSourceOwner {
+			owner, err := ArchitectOfTree(ctx, store, tx, inForce.Version.GivenBy, issue)
+			if err != nil {
+				return nil, fmt.Errorf("judge the giver of the plan of %s at generation %d: %w", issue.Key, inForce.Version.Generation, err)
+			}
+			if !owner {
+				continue
+			}
+			if _, seen := owners[issue.Key]; !seen {
+				owners[issue.Key] = inForce
+			}
+		}
+		if inForce.Version.Generation == issue.Generation {
+			own[issue.Key] = inForce
+		}
+	}
+	byDefault := phase.Retro
+	if len(defaults) > 0 {
+		byDefault = firstOfLine(defaults[0].Role)
+	}
+	phases := make(map[string]phase.Phase, len(starting))
+	for key := range starting {
+		taken, ok := own[key]
+		if !ok {
+			taken, ok = owners[key]
+		}
+		phases[key] = byDefault
+		if ok {
+			phases[key] = firstOfLine(taken.FirstRole)
+		}
+	}
+	return phases, nil
+}
+
+// firstOfLine is the first phase of the line of a task whose first step names role (plan.Line):
+// the phase that step runs as (plan.RunsAs), or the retro of a task that names no step, role "".
+func firstOfLine(role string) phase.Phase {
+	if role == "" {
+		return phase.Retro
+	}
+	return plan.RunsAs(role)
 }
 
 // CarryPlan copies the plan of issue at generation from to generation to: every version, every

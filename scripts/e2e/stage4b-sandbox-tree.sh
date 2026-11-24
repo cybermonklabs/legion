@@ -9,6 +9,13 @@
 # the controls' pods) use the admin context. It is the production-EKS driver LEGION-206
 # Requirement 12 asks for.
 #
+# Every issue of the run walks the project's default steps, `planner implementer tester reviewer
+# acceptance:owner` (the run's legion.yaml names none, and no architect is told to give a plan):
+# as far as each issue gets, its implementer opens its pull request, its architect does one step of
+# its own, the acceptance, whose App is the review App the architect already acts as, the
+# implementer does its retro, and a merger merges its pull request. Each sentence below that names
+# a step, a role's App or a pull request holds of those steps.
+#
 # Four roots run under admission_cap 4, a cap of the issues the daemon has started rather than of trees
 # (dispatch://INFRA-980). Tree 1 runs the whole workflow with real agents to `done`, through one
 # changes-requested review round whose thread the reviewer opens, lingers, and closes; while its
@@ -4784,11 +4791,12 @@ pass
 begin tree-reviewed
 send_agent "$tree1" tester "Stage 4b proof test operation: inspect the implementer's actual one-file change and pull request #$pr_number, run a focused observable check, record the required test handoff with verdict pass, then call the legion tool's handoff_complete with verdict pass."
 on_tree "$tree1" wait_for_phase "$tree1" reviewing 1200
-# No move back has counted the implementer a round yet: the conflict of conflict-no-takeover moved
-# nothing (dispatch://INFRA-4374), and a move back is what counts one, as every move back does
-# since #1850 (workflow/engine.go movesBack → recordRound). So tree 1 stands at round 0 here and at
-# round 1 once the review below requests changes; `round_line 1` and `round_correction_pushed 1`
-# below label that round.
+# No review has counted tree 1's task a round yet: the conflict of conflict-no-takeover moved
+# nothing (dispatch://INFRA-4374), and a round is counted only by a review's request for changes or
+# the fail of a review step that runs as step, each only where that step's agent is not the architect
+# (workflow/engine.go transition → recordRound); every other move back counts a pass, not a round
+# (recordPass). So tree 1 stands at round 0 here and at round 1 once the review below requests
+# changes; `round_line 1` and `round_correction_pushed 1` below label that round.
 assert_handoff_record "$tree1" tester testing 0
 on_tree "$tree1" wait_for_worker "$tree1" reviewer
 record_resident "$tree1" reviewer || fail "tree 1's reviewer has no session and pod to keep: $(claim_view "$tree1" reviewer)"
@@ -4889,16 +4897,17 @@ review_thread "$bot_thread_id" >"$evidence/bot-thread-at-approval.json" ||
 [ "$decision" = approve ] ||
   fail "the reviewer requested changes again on its re-review of pull request #$pr_number; its thread then read $(jq -c . "$evidence/review-thread-at-approval.json")"
 note "the reviewer approved pull request #$pr_number at its head; its thread then read isResolved $(jq -r .isResolved "$evidence/review-thread-at-approval.json"), the bot's isResolved $(jq -r .isResolved "$evidence/bot-thread-at-approval.json")"
-# The approval moves tree 1 to accepting, where no worker starts and the board keeps needs_review:
-# the tree's architect, told by the reviewer's phase-finished notice, accepts with sign_off or sends
-# the issue back. The wait is for accepting itself, read within a poll of the reviewer's completion;
+# The approval moves tree 1 to accepting, its step acceptance:owner, where no worker starts and the
+# board keeps needs_review: the tree's architect, told of that step by an owner-step notice (the
+# reviewer's phase-finished notice comes too), accepts with sign_off or sends the issue back. The
+# wait is for accepting itself, read within a poll of the reviewer's completion;
 # the architect acts on no notice under the proof's instructions, so the issue stands there until
 # children-first-acceptance's prompt. A root in accepting holds no admission slot: its work is
 # past its review, so the daemon takes the row back there, while its tree stays live and its
 # architect keeps its pod.
 on_tree "$tree1" until_true 900 "$tree1 to leave reviewing for accepting" issue_phase "$tree1" accepting
 state_file accepting
-until_true 180 "the architect to receive the reviewer's phase-finished notice, its acceptance cue" notice_delivered "$tree1" architect \
+until_true 180 "the architect to receive the reviewer's phase-finished notice, which comes beside its owner-step" notice_delivered "$tree1" architect \
   "$(notice_needle phase-finished "$tree1")"'\n  message:\n    kind: phase-finished\n    role: reviewer\n    phase: reviewing'
 # No worker starts at accepting: the implementer's claim holds no retro task (a start row's task is
 # the claim's `pending` until the turn it started ends; the implementer may still be in the turn
@@ -6486,18 +6495,28 @@ await_merger_merge "$repo" "$pr_number" --delete-branch
 handoff_pushes=$(pull_request_legion_only_commits) || fail "could not read the commits of pull request #$pr_number"
 [ -z "$handoff_pushes" ] || fail "merged pull request #$pr_number carries commits that change only .legion/: $(tr '\n' ' ' <<<"$handoff_pushes")"
 note "merged pull request #$pr_number holds $(gh api --paginate "repos/$repo/pulls/$pr_number/commits" --jq '.[].sha' | grep -c .) commits, none changing only .legion/"
-# The merge closes tree 1 at once (closeMerged): children 3 and 4 left the workflow at their parks
-# in children-first-acceptance, so no issue beneath the root holds its close. The daemon logs no
-# wait for the issues beneath it, and so tells its architect no pr-merged notice.
+# The merge closes tree 1 on the merge itself (the comment above): closeMerged finds nothing of the
+# tree in the workflow and makes the table's move to done at once. Its wait for the issues beneath a
+# merged issue is entered only with one of them still in the workflow, and the architect's pr-merged
+# notice is that wait's own (closeMergedTelling), so neither the wait's log line
+# (internal/workflow/pullrequest.go, closeMerged) nor the notice may appear here.
 on_tree "$tree1" wait_for_phase "$tree1" "done" 900
 phase_change_logged "$tree1" merging "done" pull_request_merged ||
   fail "the daemon log has no \"workflow: phase changed\" line moving $tree1 from merging to done on pull_request_merged"
+# The log the phase change was just read from is the one the wait's line would be in, so a count of
+# 0 below is read from a log that holds tree 1's lines.
 merge_waits=$(log_lines "workflow: a merged issue's close waits for the issues beneath it" | jq -c --arg issue "$tree1" 'select(.issue == $issue)' | grep -c . || true)
 [ "$merge_waits" = 0 ] ||
-  fail "the daemon logged $tree1's merged close waiting for the issues beneath it $merge_waits times, with none of its tree in the workflow"
+  fail "the daemon logged $tree1's merged close waiting for the issues beneath it $merge_waits times, though $child3 and $child4 left the workflow at children-first-acceptance: $(log_lines "workflow: a merged issue's close waits for the issues beneath it" | jq -c --arg issue "$tree1" 'select(.issue == $issue)' | tail -1)"
+# A count of pr-merged notices is only as good as the read of the session it counts in: the
+# architect's session must show the notices it was delivered earlier in the run, or a 0 says nothing,
+# and the check fails, as every check of this driver that cannot be read does (fail exits 1).
+delivered=$(notice_deliveries "$tree1" architect "summary: ")
+[ "$delivered" -ge 1 ] ||
+  fail "$tree1's pr-merged count cannot be read: its architect session shows no delivered notice at all, so a count of 0 there would say nothing"
 merged_notices=$(notice_deliveries "$tree1" architect "$(notice_needle pr-merged "$tree1")")
 [ "$merged_notices" = 0 ] ||
-  fail "the merge that closed $tree1 told its architect pr-merged $merged_notices times, want none"
+  fail "$tree1's architect was told $merged_notices pr-merged notices, which only a close that waits for the issues beneath it sends: $(notice_line "$tree1" architect "$(notice_needle pr-merged "$tree1")" | tail -1 | cut -c1-300)"
 until_true 120 "the daemon's done status on the Dispatch board" dispatch_status_is "$tree1" "done"
 state_file merged-closed
 # No issue of tree 1 holds an admission slot once it closes: the root's row went when it reached

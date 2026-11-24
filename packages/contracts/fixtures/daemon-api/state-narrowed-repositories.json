@@ -7,7 +7,7 @@
     "startedAt": "2026-09-22T09:15:02Z"
   },
   "contract": {
-    "daemon": 222,
+    "daemon": 227,
     "caller": 199
   },
   "admission": {
@@ -816,7 +816,7 @@
     {
       "name": "github",
       "status": "unchecked",
-      "detail": "no session has reported yet (dispatch://LEGION-631): reads and writes GitHub through its plain `gh` and `git` on its role's App token file"
+      "detail": "no session has reported yet (dispatch://LEGION-631): reads and writes GitHub through its plain `gh` and `git` on the App token file of the role it works as"
     },
     {
       "name": "secrets",
@@ -936,7 +936,7 @@
     "withoutWebhookApp": [
       {
         "repo": "zeta/tools",
-        "reason": "Dispatch's GitHub App is not installed on zeta/tools: GitHub sends Legion none of its events, nothing redelivers them, and no periodic pass makes up for them, so its issues stand still until the App is installed"
+        "reason": "Dispatch's GitHub App is not installed on zeta/tools: GitHub sends Legion none of its events, nothing redelivers them, and no periodic pass makes up for them, so its issues that wait on a pull request stand still until the App is installed"
       }
     ],
     "caches": [

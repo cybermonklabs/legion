@@ -504,10 +504,14 @@ func TestABackstopReadTwiceFiresOnce(t *testing.T) {
 	}
 }
 
-// R5: an architect gets no backstop. OpenRoleOf is the one statement of "the worker of the open
-// phase" — whose claim a release and a pause's stop arm a backstop for (OpenWorker) and which role
-// a CI settlement wakes — and it answers none for a phase the architect works and none for a phase
-// no role works. Admitted and accepting are the two the architect works (phase.RoleFor).
+// R5: an architect gets no backstop as the worker of an open phase. OpenRoleOf is the one statement
+// of "the worker of the open phase" — which role a CI settlement wakes, which live claim has a
+// phase reminder armed in it and which role a release arms a backstop for — and it answers none
+// where the architect works the issue's place and none for a phase no role works (the owner's own
+// backstop at its own place is TestTheBackstopWakesTheReleasedOwnerAtItsOwnStep's). By the phase
+// alone (OpenRoleOf of an issue with no role of a plan), as for an issue with no plan rows, admitted and
+// accepting are the two the architect works; with plan rows a step or a retro the owner does is
+// the architect's too, and a step acceptance with no key is the fresh agent's (record.Issue.RoleAt).
 func TestAnArchitectGetsNoBackstop(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -517,7 +521,7 @@ func TestAnArchitectGetsNoBackstop(t *testing.T) {
 		{name: "implementing", p: phase.Implementing, want: claim.RoleImplementer},
 		{name: "testing", p: phase.Testing, want: claim.RoleTester},
 		{name: "admitted is the architect's", p: phase.Admitted},
-		{name: "accepting is the architect's", p: phase.Accepting},
+		{name: "accepting, by the phase alone, is the architect's", p: phase.Accepting},
 		{name: "awaiting a person", p: phase.AwaitingPerson},
 		{name: "done", p: phase.Done},
 	} {
@@ -845,6 +849,66 @@ func TestASettlementTellsTheRoleItWokeNoMessageOfItself(t *testing.T) {
 				Role: string(wakeToken(t, tc.woken)), At: wakeAt, Report: "report-1"})
 			oneWake(t, rig.pool, tc.woken, pods.WakeChecks, "head1", "build")
 		})
+	}
+}
+
+// newOwnerWakeRig is the rig with LEGION-208 at step 1 of `implementer:owner tester`, the owner's
+// own step, which the gate's opening started, and the owner's released claim serving no run. It
+// answers the rig and the owner's claim.
+func newOwnerWakeRig(t *testing.T) (wakeRig, claim.Token) {
+	t.Helper()
+	rig := newWakeRig(t)
+	owner := wakeToken(t, claim.RoleArchitect)
+	setWakeIssuePhase(t, rig.pool, phase.Admitted)
+	seedTreeLifecycle(t, rig.pool, "LEGION-208")
+	seedStepsPlan(t, rig.pool, "LEGION-208", wakeIssueGeneration, "implementer:owner", "tester")
+	move(t, rig.pool, rig.engine, "LEGION-208", TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
+	if _, err := rig.pool.Exec(context.Background(), `update claims set serving_generation = 0 where token = $1`, string(owner)); err != nil {
+		t.Fatalf("leave the owner's claim serving no run: %v", err)
+	}
+	return rig, owner
+}
+
+// R2 at the owner's own place: a step of the key owner is the owner's work, so a settlement on the
+// head of the issue's pull request wakes the owner's released claim, the issue's own architect,
+// with the settlement's task, as it wakes a released worker at a worker's step. On
+// `implementer:owner tester` the owner pushed, opened the pull request and ended its turn waiting
+// for the checks, and the idle release took its pod, the owner's claim among the claims it
+// suspended. That claim serves no run here, as a child's architect started with no task serves
+// none (childArchitectStart): an architect is told its steps by notices, which no delivery of a run
+// carries, and the owner is the issue's by rule whatever run its claim served last. The woken owner
+// is told no role message of the settlement that woke it: neither as the owner, nor as the
+// implementer, whose row at the owner's implementer step names the owner's claim. The control is
+// the wake as it was, which reads the worker of the open phase alone (OpenRoleOf), names none at
+// the owner's place and so wakes nobody, while the role message the owner is sent in its place
+// finishes undelivered, since its claim is released (the outbox's roleMessage).
+func TestASettlementWakesTheReleasedOwnerAtItsOwnStep(t *testing.T) {
+	rig, owner := newOwnerWakeRig(t)
+	assertWalksAt(t, rig.pool, rig.engine, "LEGION-208", phase.Implementing, stepPlace(1))
+
+	rig.apply("settled", settlement("head1", "build"))
+
+	oneWake(t, rig.pool, claim.RoleArchitect, pods.WakeChecks, "head1", "build")
+	if starts := superviseRowsOf(t, rig.pool, "LEGION-208", "start"); len(starts) != 1 || starts[0].Claim != owner {
+		t.Fatalf("the settlement's starts = %+v, want the one wake naming the owner's claim %s", starts, owner)
+	}
+	if told := roleMessageTokens(t, rig.pool); slices.Contains(told, string(owner)) {
+		t.Fatalf("the settlement's role messages = %v, want none to the owner %s: its wake task names the settlement", told, owner)
+	}
+}
+
+// R5 at the owner's own place: the backstop a release arms for the owner at its own step
+// (internal/daemon's armBackstops) brings the owner back when it comes due, for a step that waits
+// on something no CI settlement reports, a deploy say: the backstop of the role architect wakes the
+// owner's released claim (record.OwnerClaim), whatever run its claim served last, with the
+// backstop's task.
+func TestTheBackstopWakesTheReleasedOwnerAtItsOwnStep(t *testing.T) {
+	rig, owner := newOwnerWakeRig(t)
+	rig.apply("backstop", armBackstop(t, rig.pool, owner, claim.RoleArchitect, wakeAt.Add(-time.Minute)))
+
+	oneWake(t, rig.pool, claim.RoleArchitect, pods.WakeBackstop)
+	if starts := superviseRowsOf(t, rig.pool, "LEGION-208", "start"); len(starts) != 1 || starts[0].Claim != owner {
+		t.Fatalf("the backstop's starts = %+v, want the one wake naming the owner's claim %s", starts, owner)
 	}
 }
 

@@ -43,13 +43,18 @@ type Hook struct {
 
 // DefaultWorkBackPrompt is the words of the one hook a deployment that writes no `hooks:` key
 // runs (DefaultHooks). It is prose for the role that reads it, and it asks for one thing: that
-// the worker says what is in its way, so the architect can read all three answers together.
+// the worker says what is in its way, so the architect can read the answers of the task's workers
+// together.
 const DefaultWorkBackPrompt = "We read no progress on this issue: its work has gone back the number of times recorded below. Report to the architect what is in your way, in your own words. The architect takes a step back, reads what each of you says, and decides the path. Carry on with the work while you wait, and say so if you read it as on track."
 
 // DefaultHooks is the hook a deployment that names no `hooks:` key runs: every fifth move back of
-// any kind puts DefaultWorkBackPrompt in front of the three roles that do the work of a round.
-// The architect is not among them, and no hook may name it: the daemon's own wake to an architect
-// is a notice. The answer is a fresh slice, so a caller that sorts or trims it leaves the next
+// any kind puts DefaultWorkBackPrompt in front of the three roles that do the work of a round in
+// the default steps, the implementer, the tester and the reviewer, each where the task has a step
+// that does its work; each is the agent of the task's step of the role's type, whether that step's
+// role is the role itself or a role the deployment or the plan defines (the workflow's fireHook),
+// and the reviewer's never the acceptance's. No hook may name the architect: the daemon's own
+// wake to an architect is a notice; where the architect does one of those steps itself, the hook
+// reaches it there. The answer is a fresh slice, so a caller that sorts or trims it leaves the next
 // caller's answer whole.
 func DefaultHooks() []Hook {
 	return []Hook{{
@@ -152,8 +157,10 @@ func readHookEvery(value *yaml.Node, field string) (int, error) {
 // readHookRoles is a hook's `roles`: the roles its words are put in front of, at least one, each
 // a role of an issue: a Legion role, or a name of the role grammar (claim.IsRole), which
 // checkDeploymentRoleKeys holds to a role of `roles` once every key is read. The architect is
-// refused: the daemon's own wake to an architect is a notice it writes itself, and a hook writes
-// none.
+// refused as a hook's own role (hookRoleRefusal): the daemon's own wake to an architect is a notice
+// it writes itself. A Legion role of a step that the hook names can still be the owner's work:
+// where the task's step that does that role's work has the key owner (`tester:owner`, say), the
+// hook's prompt for that role reaches the owner's architect claim (the workflow's workAgent).
 func readHookRoles(value *yaml.Node, field string) ([]claim.Role, error) {
 	key := field + ".roles"
 	if value == nil {
@@ -173,11 +180,23 @@ func readHookRoles(value *yaml.Node, field string) ([]claim.Role, error) {
 			return nil, fmt.Errorf("%s names %q, which is not a Legion role (%s)", key, name, runtime.JoinRoles(claim.Roles))
 		}
 		if role == claim.RoleArchitect {
-			return nil, fmt.Errorf("%s names the architect, which no hook writes to: the daemon's own wake to an architect is a notice", key)
+			return nil, &hookRoleRefusal{field: key, role: role}
 		}
 		roles = append(roles, role)
 	}
 	return roles, nil
+}
+
+// hookRoleRefusal is the refusal of a role a hook's `roles` may not name (readHookRoles): field is
+// the key that names it, `hooks[<i>].roles`, and role the role it names, the architect. A reader
+// that needs either takes it from these fields (errors.As), not from the sentence.
+type hookRoleRefusal struct {
+	field string
+	role  claim.Role
+}
+
+func (r *hookRoleRefusal) Error() string {
+	return fmt.Sprintf("%s names the %s, which is no hook's own role: the daemon's own wake to an architect is a notice it writes itself", r.field, r.role)
 }
 
 // readHookMoves is a hook's `moves`: the moves back it selects, each written "<from>-<to>" as the

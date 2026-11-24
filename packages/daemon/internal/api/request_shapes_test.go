@@ -66,6 +66,7 @@ var pluginRequests = map[string]reflect.Type{
 	"POST /legion/v1/phase/backward":          reflect.TypeFor[PhaseBackwardRequest](),
 	"POST /legion/v1/phase/retry":             reflect.TypeFor[PhaseRetryRequest](),
 	"POST /legion/v1/signoff":                 reflect.TypeFor[SignOffRequest](),
+	"POST /legion/v1/steps/complete":          reflect.TypeFor[CompleteStepRequest](),
 	"POST /legion/v1/roots/close":             reflect.TypeFor[RootCloseRequest](),
 	"POST /legion/v1/children/park":           reflect.TypeFor[ChildRequest](),
 	"POST /legion/v1/children/rerun":          reflect.TypeFor[ChildRequest](),

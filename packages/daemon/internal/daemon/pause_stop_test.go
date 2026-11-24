@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -15,6 +16,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/pause"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	stepplan "github.com/sjawhar/legion/daemon/internal/plan" // the package's own `plan` type holds the bare name
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
@@ -351,6 +353,153 @@ func TestAStopOwedToAClaimRunningAgainRecordsTheStopAlone(t *testing.T) {
 	}
 	if got := r.count(`select count(*) from project_pause_pod_holds where issue = $1`, pauseIssue); got != 0 {
 		t.Fatalf("holds of %s's pod = %d, want none: its roles run", pauseIssue, got)
+	}
+}
+
+// seedPauseRigPlan gives LEGION-208 the plan of one task whose steps are words, each `role` or
+// `role:key`, of the types types, its task running at step at, and stands the issue in stands, the
+// phase that step runs as.
+func seedPauseRigPlan(t *testing.T, r *pauseRig, words string, types []stepplan.Type, at int, stands phase.Phase) {
+	t.Helper()
+	records := record.NewStore()
+	if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
+		v := record.PlanVersion{Issue: pauseIssue, Generation: 1, Version: 1, ArtifactID: "plan-artifact", Source: record.PlanSourceOwner,
+			GivenBy: mustClaimToken(t, pauseIssue, claim.RoleArchitect), GivenAt: time.Now().UTC()}
+		task := record.PlanTask{Issue: pauseIssue, Generation: 1, Task: "a", PlanVersion: 1, BlockText: "Build the widget.", State: record.TaskWaiting}
+		var steps []record.PlanStep
+		for i, word := range strings.Fields(words) {
+			role, key, _ := strings.Cut(word, ":")
+			steps = append(steps, record.PlanStep{Issue: pauseIssue, Generation: 1, Task: "a", Position: i + 1, Role: role, AgentKey: key, Type: types[i]})
+		}
+		if err := records.PutPlan(r.ctx, tx, v, []record.PlanTask{task}, record.NameAgents(nil, nil, steps)); err != nil {
+			return err
+		}
+		if err := records.MoveTask(r.ctx, tx, pauseIssue, 1, "a", record.TaskPlace{Kind: record.PlaceStep, Position: at}, record.TaskRunning); err != nil {
+			return err
+		}
+		_, err := tx.Exec(r.ctx, `update issues set phase = $2 where key = $1`, pauseIssue, string(stands))
+		return err
+	}); err != nil {
+		t.Fatalf("seed the plan %q of %s at step %d: %v", words, pauseIssue, at, err)
+	}
+}
+
+// pauseStopPlaces are the places TestAPauseStopArmsTheBackstopOfTheRoleThatWorksThePlace and
+// TestACancelWhilePausedArmsTheBackstopOfTheRoleThatWorksThePlace stand LEGION-208 at: the plan of
+// its one task, the step its task runs at and the phase that step runs as, the role whose released
+// claim is stopped there and the run that claim serves, and whether the claim is the one that
+// works the place and so gets a backstop. The owner's claim serves no run, as a child's architect
+// started with no task serves none: an architect is told its steps by notices, which no delivery
+// of a run carries.
+var pauseStopPlaces = []struct {
+	name    string
+	steps   string
+	types   []stepplan.Type
+	at      int
+	stands  phase.Phase
+	role    claim.Role
+	serving uint64
+	armed   bool
+}{
+	{"the fresh agent of acceptance at accepting", "implementer acceptance", []stepplan.Type{stepplan.TypeImplementation, stepplan.TypeReview}, 2,
+		phase.Accepting, claim.RoleAcceptance, 1, true},
+	{"a role of the deployment at step", "implementer checker", []stepplan.Type{stepplan.TypeImplementation, stepplan.TypeTesting}, 2,
+		phase.Step, "checker", 1, true},
+	{"the implementer at the owner's implementer step", "implementer:owner tester", []stepplan.Type{stepplan.TypeImplementation, stepplan.TypeTesting}, 1,
+		phase.Implementing, claim.RoleImplementer, 1, false},
+	{"the owner at its own implementer step", "implementer:owner tester", []stepplan.Type{stepplan.TypeImplementation, stepplan.TypeTesting}, 1,
+		phase.Implementing, claim.RoleArchitect, 0, true},
+	{"the owner at its own acceptance", "implementer acceptance:owner", []stepplan.Type{stepplan.TypeImplementation, stepplan.TypeReview}, 2,
+		phase.Accepting, claim.RoleArchitect, 0, false},
+}
+
+// releasedAt is role's claim of LEGION-208 as a release left it, serving the run serving.
+func (r *pauseRig) releasedAt(role claim.Role, serving uint64) supervise.Claim {
+	c := r.claim(role, supervise.StateSuspended)
+	c.ServingGeneration = serving
+	return c
+}
+
+// wantBackstopOf fails unless LEGION-208's backstops are one of role, where armed, and none
+// otherwise, fired or not.
+func (r *pauseRig) wantBackstopOf(role claim.Role, armed bool) {
+	r.t.Helper()
+	rows, err := r.pool.Query(r.ctx, `select role from pod_wake_backstops where issue = $1 order by role`, pauseIssue)
+	if err != nil {
+		r.t.Fatalf("read the backstops of %s: %v", pauseIssue, err)
+	}
+	got, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		r.t.Fatalf("read the backstops of %s: %v", pauseIssue, err)
+	}
+	var want []string
+	if armed {
+		want = []string{string(role)}
+	}
+	if !slices.Equal(got, want) {
+		r.t.Fatalf("the backstops of %s are of %q, want %q", pauseIssue, got, want)
+	}
+}
+
+// A pause's stop of a released claim arms the backstop of the claim that works the issue's place
+// (workflow.BackstopClaim), and of no other: the fresh agent of a step `acceptance` with no key,
+// at accepting, and a role the deployment defines, at step, each get one, as the worker of the
+// place serving the issue's run; at the owner's implementer step of `implementer:owner tester` the
+// implementer gets none, since no worker works that step, and the owner gets one, whatever run its
+// claim served last, since that step is its own work and may wait on something no CI settlement
+// reports. The control is the role read from the phase alone, which names nobody at accepting or
+// at step, the implementer at implementing, and never the owner.
+func TestAPauseStopArmsTheBackstopOfTheRoleThatWorksThePlace(t *testing.T) {
+	t.Parallel()
+	for _, tc := range pauseStopPlaces {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newPauseRig(t, tc.role)
+			seedPauseRigPlan(t, r, tc.steps, tc.types, tc.at, tc.stands)
+			held := r.pauseLegion()
+
+			r.mustStop(r.releasedAt(tc.role, tc.serving), supervise.PauseStop{Pause: held.ID})
+
+			r.wantBackstopOf(tc.role, tc.armed)
+		})
+	}
+}
+
+// A cancel of a release made while the project is paused records the claim the release had
+// stopped as stopped by the pause, and arms the backstop the stop transaction arms, of the claim
+// that works the issue's place and no other (TestAPauseStopArmsTheBackstopOfTheRoleThatWorksThePlace),
+// with what the outbox's cancel gives the store (releaseCancelPause). The control is the stop's:
+// the role read from the phase alone.
+func TestACancelWhilePausedArmsTheBackstopOfTheRoleThatWorksThePlace(t *testing.T) {
+	t.Parallel()
+	for _, tc := range pauseStopPlaces {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newPauseRig(t)
+			released := r.releasedAt(tc.role, tc.serving)
+			if err := r.st.PutClaim(r.ctx, released); err != nil {
+				t.Fatalf("seed the released %s: %v", tc.role, err)
+			}
+			seedPauseRigPlan(t, r, tc.steps, tc.types, tc.at, tc.stands)
+			// The release's mark names the claims it suspended by their tokens, as its stops record
+			// them on the base (store.ReleaseSuspendedClaim).
+			if _, err := r.pool.Exec(r.ctx, `insert into issue_releases
+				(project, issue, generation, first_row, boundary_row, last_row, started_row, role, suspended, marked_at)
+				values ('legion', $1, 1, 18, 20, 22, 0, 'architect', $2, now())`, pauseIssue, []string{string(released.Token)}); err != nil {
+				t.Fatalf("mark the release of %s: %v", pauseIssue, err)
+			}
+			held := r.pauseLegion()
+			resume := func(claim.Token, claim.Role, uint64) (store.IdleReleaseRow, error) {
+				return store.IdleReleaseRow{}, errors.New("a cancel while paused queues no resume")
+			}
+
+			runner := &outbox{records: record.NewStore(), project: "legion", backstop: time.Hour, now: time.Now}
+			cancelled, err := r.st.CancelIssueRelease(r.ctx, "legion", pauseIssue, resume, record.OutOfWorkflow,
+				runner.releaseCancelPause())
+			if err != nil || cancelled.Pause != held.ID || len(cancelled.Stopped) != 1 || cancelled.Stopped[0] != tc.role {
+				t.Fatalf("the cancel while paused = %+v, %v; want the %s stopped by pause %d", cancelled, err, tc.role, held.ID)
+			}
+
+			r.wantBackstopOf(tc.role, tc.armed)
+		})
 	}
 }
 
@@ -1061,7 +1210,7 @@ func (r *pauseRig) backstopsDue() []string {
 }
 
 // The worker of an issue's open phase gets a backstop when a pause stops it, and at step that
-// worker is the claim the record gives the running step (workflow.OpenWorker): here the agent of a
+// worker is the claim the record gives the running step (workflow.BackstopTargetAt): here the agent of a
 // key, on the checker's step, whose token names the implementer. The pause's stop of that claim
 // arms its backstop; the stop of the checker's own claim beside it, which works no step, arms none.
 func TestAPauseStopOfAStepsWorkerArmsItsBackstop(t *testing.T) {
@@ -1081,9 +1230,9 @@ func TestAPauseStopOfAStepsWorkerArmsItsBackstop(t *testing.T) {
 
 // A cancel of a release made while the project is paused records the claims the release stopped as
 // stopped by the pause, and arms the backstop of the open phase's worker as the stop transaction
-// does: at step, the claim the record gives the running step (workflow.OpenWorker), here the agent
-// of a key, and not the checker's own claim beside it. The release's mark names both claims by
-// their tokens, as its stops record them (store.ReleaseSuspendedClaim).
+// does: at step, the claim the record gives the running step (workflow.BackstopTargetAt), here the
+// agent of a key, and not the checker's own claim beside it. The release's mark names both claims
+// by their tokens, as its stops record them (store.ReleaseSuspendedClaim).
 func TestAPausedCancelOfAReleaseArmsTheBackstopOfTheStepsWorker(t *testing.T) {
 	r := newPauseRig(t)
 	worker, other := r.atTheCheckersStep()

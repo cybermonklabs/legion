@@ -1339,12 +1339,14 @@ func launchVariants(st *store.Store, declared []config.Experiment, stateDir stri
 // directory, and the listener's address is the `--connect` every pane's shim is started with;
 // providerEnvDir, when set, is the `--provider-env-dir` beside it. The workflow's App tokens, when
 // the daemon has them, are every tree pane's gh bundle (appauth.GitHubCredential, minted as the
-// App the pane's role acts as on its issue, as the boot's one reader of a claim's App answers it
-// (roleApps): a role the plan in force of the issue defines as the App of its type, and any other
-// role the deployment defines as the App its github_app names, deploymentApps) and the controller
-// pane's own (appauth.ControllerCredential), which its refresh asks by the default owner its
-// launch recorded, both built over the owner accounts each
-// App is installed on, which the bundle reads at every build (appauth.Manager.InstalledOwners:
+// App of the role runtime.SlotRole answers for the pane, as the boot's one reader of a claim's App
+// answers it (roleApps): its own role's, a role the plan in force of the pane's issue defines
+// acting as the App of its type, any other role the deployment defines acting as the App its
+// github_app names (deploymentApps), and, while the pane's architect acts as another role on its
+// own issue (ownerActsAs), that role's) and the controller pane's own
+// (appauth.ControllerCredential), which its refresh asks by the default owner its launch recorded,
+// both built over the owner accounts each App is installed on, which the bundle reads at every
+// build (appauth.Manager.InstalledOwners:
 // from GitHub each time under the App's JWT; in token mode the App's token_command's release of
 // every installation, which may be that of a run that finished up to appauth's finishedRunKeep
 // before) and no repository list bounds, and over served, the rename rule's answer of whether a
@@ -1373,6 +1375,10 @@ func tmuxRuntime(cfg config.Config, project string, launchers map[runtime.Backen
 			// reads the roles' Apps the runtime's walks hold (opts.RoleApps), one reader for
 			// both.
 			opts.GitHubCredential, opts.GH = appauth.GitHubCredential(tokens, served, cfg.RepositoryRenames, installed, left, opts.RoleApps, log), gh
+			// While an owner acts as another role, its pane holds that role's App: ownerActsAs
+			// answers which, for each of the owner's acts it lists, and every write of a pane's gh
+			// files, the refresh's and a spawn's, asks it through runtime.SlotRole.
+			opts.ActsAs = ownerActsAs(st.Pool(), record.NewStore())
 			opts.ControllerCredential = appauth.ControllerCredential(tokens, served, cfg.RepositoryRenames, installed, left, log)
 			opts.ClaimRepository = claimRepository(st.ClaimIssue, repository)
 			opts.ClaimRole = st.ClaimRole
@@ -1592,6 +1598,12 @@ type supervision struct {
 	// transaction each. The workflow sets it where it attaches, before supervision restores or
 	// launches any claim, as it sets enqueue above.
 	applySweepFacts func(ctx context.Context, facts []sweptFact) error
+	// openRuns reads, for each of issues, the latest run of a step that started and has not ended
+	// (workflowRuntime.openRuns), in one read-only transaction; nil in a deployment with no
+	// workflow. The silence sweep reads it for the issues of the architects it finds idle, so the
+	// fact it mints for such an owner is keyed on the run it is silent over (ownerSilentEventID):
+	// a run that starts later is a new fact, and a run that has not started mints none.
+	openRuns func(ctx context.Context, issues []string) (map[string]record.IssueStepRun, error)
 	// backstopMu guards backstopOwed: the owner notices of turns the stall backstop ended that
 	// the store has refused, by claim, waiting for the next sweep to write them
 	// (stallBackstopped, tellStallsOwed). A mutex, because the machine's own goroutine records

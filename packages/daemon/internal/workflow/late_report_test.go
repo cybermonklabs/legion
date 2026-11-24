@@ -194,8 +194,9 @@ func TestALateReportIsTakenAfterAnEventAndRefusedAfterAStop(t *testing.T) {
 		move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
 		move(t, pool, engine, root.Key, TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{})
 		move(t, pool, engine, root.Key, TriggerTesterPassed, record.TaskPlace{}, record.PhaseRow{})
-		// The type is forged: no plan of this release writes it. Each failed step a plan can hold
-		// comes after its implementer (plan.Supported), so only a stored type that no plan gives
+		// The type is forged: no plan of this release writes the type review on a step of the role
+		// implementer. Without it the reviewer's fail goes back to step 1, the task's one step of
+		// the type implementation before it, so only the forged type, which leaves no such step,
 		// stops the task here (returnTarget).
 		if _, err := pool.Exec(t.Context(), "update plan_steps set type = 'review' where issue = $1 and task = 'a' and position = 1", root.Key); err != nil {
 			t.Fatalf("store the implementer step's type as review: %v", err)

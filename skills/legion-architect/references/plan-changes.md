@@ -18,8 +18,9 @@ Your role prompt says what `stop_task` does, what holds a stopped task and what 
   A stop you make yourself sends you no notice: the 200 answer of `stop_task` is the record.
   Then give a later version that changes the task, or end the work: `park_child` for a child, under the park rule; `dispatch ask` on the root for a root.
 
-- **`retro-held`:** a parent's task passed its last step with no `acceptance:owner` step to wait in, while issues beneath it are still in the workflow.
-  Legion holds it before its retro, so that it merges after them, and starts the retro when the last one leaves.
+- **`retro-held`:** a parent's task passed its last step, which is no `acceptance:owner` step and no `acceptance` step to wait in.
+  Issues beneath it are still in the workflow.
+  Legion holds it before its retro, so that it closes after them, and starts the retro when the last one leaves.
   Run each issue it names to done, or park one with `park_child` under the park rule.
   `retry_or_escalate` refuses that hold, a retry and an escalation alike: while issues beneath it are in the workflow, `409 HELD_FOR_CHILDREN` names each of them; with none left, the answer says that its tree lingers or that its root waits in the admission line.
   A `todo` on the root leaves it held.

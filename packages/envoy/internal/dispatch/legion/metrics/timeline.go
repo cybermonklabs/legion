@@ -49,10 +49,10 @@ var childWorkingPhases = []string{
 // when it parks a root, and the gate treats both as parked (daemon workflow/gate.go).
 var parkedStatuses = []string{"backlog", "icebox"}
 
-// The statuses the workflow writes with the phases a fallback timeline reads: the implementer's
-// `in_progress`, the tester's `testing`, `needs_review` for both the reviewer's and the
-// architect's, and `retro`, which the workflow writes as the implementer's retro starts and keeps
-// through the merger's merging (daemon workflow/table.go's phaseStatus).
+// The statuses the workflow writes with the phases a fallback timeline reads: `in_progress` for
+// implementing, `testing` for testing, `needs_review` for both reviewing and accepting, and
+// `retro`, which the workflow writes as the retro starts, whoever does it, and keeps through
+// merging where the issue has a pull request (daemon workflow/table.go's phaseStatus).
 const (
 	statusImplementing = "in_progress"
 	statusTesting      = "testing"
@@ -77,21 +77,24 @@ const (
 var sentBackStatuses = []string{statusTesting, statusNeedsReview, statusRetro}
 
 // phaseOrder is the workflow's order of the phases a fallback timeline names, the order the
-// daemon's table moves an issue through. One rule reads it: a role's first event starts that
-// role's phase only where the issue has not reached that phase already (phaseSteps).
+// daemon's table moves an issue of the default steps through (a plan in another order moves by its
+// own). One rule reads it: a role's first event starts that role's phase only where the issue has
+// not reached that phase already (phaseSteps).
 var phaseOrder = []string{
 	phaseDesign, legion.PhasePlanning, legion.PhaseImplementing, legion.PhaseTesting,
 	legion.PhaseReviewing, legion.PhaseAccepting, legion.PhaseRetro, legion.PhaseMerging,
 }
 
 // rolePhase is the phase each role's first event on the issue starts, until the issue is first
-// sent back (phaseSteps). The implementer works two phases, implementing and retro, "because the
-// daemon gives retro to the implementer" (RoleFor in packages/daemon/internal/phase), and its
-// first event starts the first of them: retro starts at the `retro` status the workflow writes
-// for it (statusPhase). The merger's first event starts merging, which the event log tells from
-// retro by nothing else, since the workflow keeps the status `retro` through both: so before
-// observations an issue holds no merging after its first send-back, and a retro there runs on to
-// the next status or the close. No mark of the event log names awaiting merge.
+// sent back (phaseSteps). The implementer's bar holds two phases, implementing and retro, "because
+// the daemon gives retro to the implementer" (the spec's words: RoleFor in
+// packages/daemon/internal/phase still answers the implementer for retro, while the agent of the
+// task's last step of the type implementation, or the issue's architect, does it), and the
+// implementer's first event starts the first of them: retro starts at the `retro` status the
+// workflow writes for it (statusPhase). The merger's first event starts merging, which the event
+// log tells from retro by nothing else, since the workflow keeps the status `retro` through both:
+// so before observations an issue holds no merging after its first send-back, and a retro there
+// runs on to the next status or the close. No mark of the event log names awaiting merge.
 var rolePhase = map[string]string{
 	"architect":   phaseDesign,
 	"planner":     legion.PhasePlanning,
@@ -101,14 +104,16 @@ var rolePhase = map[string]string{
 	"merger":      legion.PhaseMerging,
 }
 
-// handoffStarts is the phase each handoff word starts, as the daemon's phase.Handoff pairs them:
-// the planner's `plan` starts implementing, the implementer's `implement` starts testing, the
-// tester's `test` starts reviewing and the reviewer's `review` starts accepting ("Accepting
-// starts at the `review` handoff"). The spec's "a handoff starts the next phase" is this map: a
-// handoff ends the phase it names and leaves no hour between the two. Retro and merging write
-// none, since each reports the commit it stands on, and accepting ends at the architect's
-// sign-off, which is no handoff (the daemon's phase.Handoff); a word Legion never writes names no
-// phase.
+// handoffStarts is the phase each handoff word starts in the default steps' order, the one order
+// the fallback timeline reads: the planner's `plan` starts implementing, the implementer's
+// `implement` starts testing, the tester's `test` starts reviewing and the reviewer's `review`
+// starts accepting ("Accepting starts at the `review` handoff"), each word the one the daemon's
+// phase.Handoff pairs with the phase it ends. The spec's "a handoff starts the next phase" is this
+// map: a handoff ends the phase it names and leaves no hour between the two. Retro and merging
+// write none, since each reports the commit it stands on, and accepting ends at the owner's
+// sign-off or at the verdict of a fresh agent of acceptance, neither of which is a handoff (the
+// daemon's phase.Handoff); a word Legion never writes names no phase. A plan in another order
+// moves on to its own next step, which this map does not read.
 var handoffStarts = map[string]string{
 	"plan":      legion.PhaseImplementing,
 	"implement": legion.PhaseTesting,
@@ -518,12 +523,14 @@ func statusPhase(previous, status string) (phase string, sendBack, named bool) {
 	case statusRetro:
 		return legion.PhaseRetro, false, true
 	case statusImplementing:
-		// The workflow writes `in_progress` twice over: once where it admits an issue out of the
-		// queue or out of parked, and once for every send-back to implementing, whatever phase
-		// the issue comes back from (workflow/table.go's TriggerTesterFailed,
-		// TriggerReviewRejected and TriggerBackward all write it, and before
-		// cybermonklabs/legion#4464 a conflict's move did too). Only the send-back, a move out of
-		// `testing`, `needs_review` or `retro`, names a phase.
+		// The workflow writes `in_progress` wherever a move enters planning, implementing or a
+		// step from a phase of another status (workflow/table.go's phaseStatus): where it admits
+		// an issue out of the queue or out of parked, on every send-back to implementing
+		// (TriggerTesterFailed, TriggerReviewRejected and TriggerBackward each write the status of
+		// the phase they enter, and before cybermonklabs/legion#4464 a conflict's move did too),
+		// and, in a plan of another order, on a move on or back into planning or a step. Only a
+		// move out of `testing`, `needs_review` or `retro` names a phase here, read as the
+		// send-back to implementing that it is in the default steps.
 		if slices.Contains(sentBackStatuses, previous) {
 			return legion.PhaseImplementing, true, true
 		}

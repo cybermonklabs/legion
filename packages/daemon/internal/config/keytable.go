@@ -169,7 +169,7 @@ var topLevelKeys = func() []keyDescriptor {
 		},
 		{
 			Name: "admission_cap", Default: "`4`, or `LEGION_ADMISSION_CAP` in the daemon's environment", RequiredBy: "no",
-			Description: "How many issues, roots and children alike, hold a slot at once; an issue takes a slot when the daemon starts it and keeps it until it is done, and the rest wait in line.",
+			Description: "How many issues, roots and children alike, hold a slot at once; an issue holds one while the daemon has started it in a phase that keeps one, every phase but accepting, retro and merging, until it is done (so an issue whose first step is an acceptance starts on none, and a step after accepting takes one again), and gives it back while it waits on another issue; the rest wait in line.",
 			Read:        reads(readInt, func(f *fileConfig, v *int) { f.AdmissionCap = v }),
 		},
 		{
@@ -273,7 +273,7 @@ var topLevelKeys = func() []keyDescriptor {
 		},
 		{
 			Name: "github_apps", Default: "none: a file that configures the workflow is refused without it", RequiredBy: "when any of `dispatch_url`, `dispatch_token_file` and `projects` is set, and when runtime is kubernetes: every pod's workspace is cloned with the implement App's token",
-			Description: "The implement App (the identity of the implementer, the merger and each role of an issue's plan of the type implementation) and the review App (every other role's, but a role of `roles` works as the App its `github_app` names), each with its id and its private key, from which the daemon mints every agent's GitHub token, which carries that App's permissions over every repository its installation holds (INFRA-2543).",
+			Description: "The implement App (the identity of the implementer, the merger and every other role that works as it: a role a plan defines of the type implementation, a role of the deployment whose `github_app` names it) and the review App (every other role's), each with its id and its private key, from which the daemon mints every agent's GitHub token, which carries that App's permissions over every repository its installation holds (INFRA-2543). While the architect does a step of its own (a step of the key `owner`), its slot works as the App of that step's role, and as its own again at the step's end.",
 			Read:        reads(readGitHubApps, func(f *fileConfig, v *GitHubApps) { f.GitHubApps = v }),
 		},
 		{
@@ -506,7 +506,7 @@ var nestedKeys = []memberGroup{
 		{Name: "every", Default: "none: a hook that names no `every` is refused", RequiredBy: "yes",
 			Description: "How many of the moves it counts fire the hook: it fires when those counts, added up, are a whole multiple of this number."},
 		{Name: "roles", Default: "none: a hook that names no `roles` is refused", RequiredBy: "yes",
-			Description: "The roles its words are put in front of, at least one, each one of implementer, tester, reviewer, planner and merger or a role of `roles`; the architect is refused, since the daemon's own wake to an architect is a notice."},
+			Description: "The roles its words are put in front of, at least one, each one of implementer, tester, reviewer, planner and merger or a role of `roles`; the architect is refused, since the daemon's own wake to an architect is a notice. A hook naming a role whose step the architect does itself (a step of the key `owner`) reaches the architect while it does that step."},
 		{Name: "prompt", Default: "the words come from `prompt_file`", RequiredBy: "when the hook names no `prompt_file`: a hook carries the words it puts in front of its roles",
 			Description: "The words themselves, written in the file."},
 		{Name: "prompt_file", Default: "the words come from `prompt`", RequiredBy: "when the hook names no `prompt`: a hook carries the words it puts in front of its roles",
@@ -528,9 +528,9 @@ var nestedKeys = []memberGroup{
 	}},
 	{Path: "github_apps", Members: []member{
 		{Name: "implement", Default: "none: a file that names no implement App is refused", RequiredBy: "yes",
-			Description: "The App the implementer, the merger and each role of an issue's plan of the type implementation work as, and each role of `roles` whose `github_app` names it, whose token clones every pod's workspace and pushes and lands the change; no review ever comes from it."},
+			Description: "The App the implementer, the merger, each role of an issue's plan of the type implementation and each role of `roles` whose `github_app` names it work as, and the architect's slot while it acts as one of them (at an implementation step of its own, through the retro of a task whose last such step is its own, and while a merge forward asked of it has not ended), whose token clones every pod's workspace and pushes and lands the change; Legion asks it for no review."},
 		{Name: "review", Default: "none: a file that names no review App is refused", RequiredBy: "yes",
-			Description: "The App every other role works as — the architect, the planner, the tester, the reviewer, a role of `roles` whose `github_app` names it and each role of an issue's plan of another type or of none — whose token writes the reviews and the check runs the implement App may not."},
+			Description: "The App every other role works as — the architect, planner, tester, reviewer and acceptance, a role of `roles` whose `github_app` names it, and a role a plan defines of any other type or of none — whose token writes the reviews and the check runs the implement App may not; the architect's slot works as the implement App instead at an implementation step of its own, through the retro of a task whose last such step is its own, and while a merge forward asked of it has not ended."},
 	}},
 	{Path: "github_apps.<APP>", Members: []member{
 		{Name: "app_id", Default: "none: an App that names no id is refused", RequiredBy: "yes",
@@ -550,7 +550,7 @@ var nestedKeys = []memberGroup{
 		{Name: "commit_issue_trailer_repos", Default: "a pane stamps no commit with its issue key", RequiredBy: "no",
 			Description: "The repositories whose commits carry their issue key, as the `Dispatch: <KEY>` trailer the pane's jj appends, so a squash landing the branch carries the key; the load checks each name's shape and refuses two names of one repository, and a pane working any other repository stamps nothing."},
 		{Name: "default_steps", Default: "`[" + strings.Join(defaultStepWords, ", ") + "]`, today's line up to the owner's acceptance", RequiredBy: "no",
-			Description: "The steps a task runs when its plan block names neither steps nor a sub-owner, and the steps of the one task of an issue whose owner gives no plan, each entry one step: a role, or a role and the key of its agent, as `acceptance:owner`; Legion's retro and merge follow them, and the loader refuses an empty list and each list this release would refuse as a task's steps, with the reason, but one: a key that names one agent for roles of two models or two harnesses is taken with a warning, its later such step runs as an agent of its own, and the next release refuses it. Name it only once every daemon that reads the file runs this release: an earlier daemon refuses the whole file (`Unknown key \"projects.<KEY>.default_steps\"`)."},
+			Description: "The steps a task runs when its plan block names neither steps nor a sub-owner, and the steps of the one task of an issue whose owner gives no plan, each entry one step: a role, or a role and the key of its agent, as `acceptance:owner`; Legion's retro follows them, and its merge where the issue has a pull request, and the loader refuses an empty list and each list this release would refuse as a task's steps, with the reason, but one: a key that names one agent for roles of two models or two harnesses is taken with a warning, its later such step runs as an agent of its own, and the next release refuses it. Name it only once every daemon that reads the file runs this release: an earlier daemon refuses the whole file (`Unknown key \"projects.<KEY>.default_steps\"`)."},
 		{Name: "deploys", Default: "", RequiredBy: "no",
 			Description: "Removed: the daemon no longer wakes a production check from a deploy run, so the workflows this key names configure nothing; a project that still sets it is warned about once at boot and the key is read for nothing."},
 		{Name: "experiments", Default: "every tree and issue of the project runs on the deployment's own settings", RequiredBy: "no",

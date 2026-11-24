@@ -6,7 +6,7 @@ Read this when a wake or the walk sends you a tree whose wait has a cause that s
 
 Each wait has a fixed `<key>`, the same at every run, and a `<cause>`, its wording today. Build the key exactly from `read_state`:
 
-- an escalated hold: `held <ISSUE> in <heldFrom> (<role>) at <failure.at>`, from `issues.<ISSUE>.heldFrom`, that phase's role and `issues.<ISSUE>.workers.<role>.claim.failure.at`;
+- an escalated hold: `held <ISSUE> in <heldFrom> (<role>) at <failure.at>`, from `issues.<ISSUE>.heldFrom`, the role that works its place (`issues.<ISSUE>.placeRole`, else that phase's role) and `issues.<ISSUE>.workers.<role>.claim.failure.at`;
 - a failed root architect: `architect failed: <cause word> at <failure.at>`, from `issues.<KEY>.architect.failure`'s `cause` and `at`;
 - an event outside Legion: `event: <the event>` (below).
 

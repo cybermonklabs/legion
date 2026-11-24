@@ -116,12 +116,12 @@ func TreeMember(issue Issue) bool {
 // about does.
 //
 // The tree of a root is that root and the issues under it the workflow still runs (TreeMember),
-// and nothing else. A child the record shows as done is no member: its pull request goes on
-// drawing GitHub events — a comment, a deployment, a late check run — long after the work
-// stopped, and each of those stamps that child's record (Store.MarkIssueMoved). Counted, they
-// would keep a finished tree's quiet time at zero for as long as anyone kept writing on an old
-// pull request. The root itself is a member whatever its own status says, because a tree is
-// measured from its root even when that root alone is left.
+// and nothing else. A child the record shows as done is no member: where it has a pull request,
+// that pull request goes on drawing GitHub events — a comment, a deployment, a late check run —
+// long after the work stopped, and each of those stamps that child's record
+// (Store.MarkIssueMoved). Counted, they would keep a finished tree's quiet time at zero for as
+// long as anyone kept writing on an old pull request. The root itself is a member whatever its
+// own status says, because a tree is measured from its root even when that root alone is left.
 //
 // A tree's movement is the newest of two kinds of fact: the MovedAt of each member — when the
 // daemon last saw that issue move (Issue.MovedAt) — and the step times of the claims of those

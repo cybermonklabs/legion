@@ -410,10 +410,11 @@ func aLookAdoptsNothing(r *adoptionRig) {
 }
 
 // theArchitectsStartAdoptsNothing: the start admission writes for a tree's root architect names no
-// phase, since an architect works no phase of its own. That start carries a task only when the root
-// keeps a decision nobody in its tree heard (ParkedDecisionTask), so a person answers an ask of the
-// root while it waits in `todo` for its slot; the controller's tick then admits it, the architect's
-// start launches the architect, and its ready sends the task naming that decision.
+// phase, since an architect's claim is started for its tree and not for a step: a step of its own
+// issue's task reaches it as an owner-step notice, and no start. That start carries a task only
+// when the root keeps a decision nobody in its tree heard (ParkedDecisionTask), so a person answers
+// an ask of the root while it waits in `todo` for its slot; the controller's tick then admits it,
+// the architect's start launches the architect, and its ready sends the task naming that decision.
 func theArchitectsStartAdoptsNothing(r *adoptionRig) {
 	const ask = "ask-1"
 	r.put(record.Issue{Key: adoptionWaitingRoot, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
@@ -519,13 +520,13 @@ func aReadyOwnersResumeTaskIsAdoptedOnce(r *adoptionRig) {
 	r.wantNothingSent(issue.Key, claim.RoleImplementer)
 }
 
-// aPhaseStartWaitsOutATurn: a transition starts its phase's worker on one row that carries the
-// task and names the phase (Engine.started, through workflow.StartOrOwe), so that task adopts, and
-// because it adopts it waits while another claim of the issue is in a turn (supervise's
-// sendPending). The planner completes planning from inside its turn, as the handoff route applies
-// that completion, and the implementer the transition creates comes up while that turn still runs:
-// its task is held, unsent and unadopted, until the planner's turn ends, and then adopted once, as
-// the implementer's App.
+// aPhaseStartWaitsOutATurn: a transition into a step a worker does starts that worker on one row
+// that carries the task and names the phase (Engine.started, through workflow.StartOrOwe), so that
+// task adopts, and because it adopts it waits while another claim of the issue is in a turn
+// (supervise's sendPending). The planner completes planning from inside its turn, as the handoff
+// route applies that completion, and the implementer the transition creates comes up while that
+// turn still runs: its task is held, unsent and unadopted, until the planner's turn ends, and then
+// adopted once, as the implementer's App.
 func aPhaseStartWaitsOutATurn(r *adoptionRig) {
 	issue := record.Issue{Key: adoptionPlanningRoot, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
 		Project: adoptionProject, Tree: adoptionPlanningRoot, Title: "Workflow", Phase: phase.Planning, Generation: 1,

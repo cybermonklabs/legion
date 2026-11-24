@@ -251,8 +251,9 @@ test("the mention picker offers the issue's stopped roles and sends one as a rol
     const field = form.getByLabel("Comment");
     await field.fill("@");
 
-    // The roles no live agent holds, in workflow order: the implementer, then the reviewer, each
-    // drawn by the newest session of its token. The tester is live, so it is a live option alone.
+    // The roles no live agent holds, in the order of `LEGION_ROLES`: the implementer, then the
+    // reviewer, each drawn by the newest session of its token. The tester is live, so it is a live
+    // option alone.
     const listbox = page.getByRole("listbox", { name: "Mention suggestions" });
     const notRunning = listbox.getByRole("group", { name: "Not running" });
     await expect(notRunning.getByRole("option")).toHaveCount(2);

@@ -285,13 +285,13 @@ func TestTheEntrySweepAppliesNoFactWhileNoRoleIsBehindItsEntry(t *testing.T) {
 }
 
 // A role whose phase its issue has left is no part of the sweep's gate, because it is no part of
-// the pass the sweep's fact makes: that pass reads the role of each slotted issue's current
-// phase and nothing else (phase.RoleFor, admit's owedEntryRoles), so it would never send such
-// a role anything. The past role's phases row stands where the last transition that handed it
-// work left it, above the entry its claim was given — here a claim retired with its delivery
-// unconfirmed — and a gate reading the phases rows of the issue rather than asking the pass
-// would read true for the life of the slot: a fact and a row of processed_events a minute over
-// a project where no role waits for work.
+// the pass the sweep's fact makes: that pass reads, of each slotted issue, the role that works the
+// place it stands at, and of a root its own architect, and no other role (workflow.OpenRoleOf,
+// admit's owedEntryRoles), so it would never send such a role anything. The past role's phases
+// row stands where the last transition that handed it work left it, above the entry its claim was
+// given — here a claim retired with its delivery unconfirmed — and a gate reading the phases rows
+// of the issue rather than asking the pass would read true for the life of the slot: a fact and a
+// row of processed_events a minute over a project where no role waits for work.
 //
 // The role of the issue's own phase is level while that is so, and the sweep applies nothing,
 // pass after pass. The moment that role goes behind, the same sweep applies its fact and sends

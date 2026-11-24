@@ -52,10 +52,13 @@ import (
 // an implement role now holds the implement App's token — for the issue's owner the App's own
 // installation token, which writes, where the provisioning token is that same App narrowed to
 // reading, so the two are no longer one lease (INFRA-1254) — read-only in its own gh directory
-// (GHConfigDir), and a review role the review App's. What the fetch container's boundary still
-// keeps is that no review role ever holds the implement App's token, which is what lets the
-// daemon read a push's App from the App that made it, and so tell the review App's red tests
-// from the implementer's code. A plant that
+// (GHConfigDir), and a review role the review App's, save the architect's slot, which holds the
+// App of a step it does itself while it does that step, and of its own implementation step through
+// the retro (runtime.ActsAs). What the fetch container's boundary still keeps is that no slot holds
+// the implement App's token but while it works as a role of the type implementation, which is what
+// lets the daemon read a push's App
+// from the App that made it, and so tell the review App's red tests from the implementation's
+// code. A plant that
 // an agent's own git triggers after provisioning runs under that agent's role: its clone's
 // helper is `legion git-credential` (workspace.GitHubCredentialHelper), which answers from the gh
 // files of the process running it (its LEGION_GH_OWNERS_DIR and GH_CONFIG_DIR), and here, with

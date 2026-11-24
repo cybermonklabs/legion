@@ -34,7 +34,7 @@ When the run gives no result, the line reads `CI run <name> has no result (<case
 
 ## What each role does
 
-- The implementer copies each such check's `Pull request line` into the `Checks` block.
+- The implementation step's agent copies each such check's `Pull request line` into the `Checks` block.
   The next role that writes the body reads `dispatch results` again and replaces a no-result line.
 
 - The tester runs and records only the checks with no `ci_check`.
@@ -43,8 +43,16 @@ When the run gives no result, the line reads `CI run <name> has no result (<case
 
 - The reviewer waits for a run still going by its name, and neither approves nor requests changes for that check until it concludes.
 
+- On an issue with no pull request each such check reads `no_head`.
+  No run can prove it, so its words are wrong for that task.
+  The tester names it in `implementerProof.how`, sends it to the architect and fails no round for it.
+  The reviewer and the fresh agent of `acceptance` send it to the architect.
+  They hold their verdict with a `WAITING` line until the check is rewritten.
+  Or they `fail` with no `return_to`, which stops a task with no implementation step before theirs for its owner.
+  No reviewer or acceptance step passes while such a check stands, and the retro holds its completion for it (`skill://legion-retro`).
+
 - A job the repository runs on a pull request only under the label `full-ci` (on cybermonklabs/legion, the slow suites and the full browser lane) reads `skipped` without it.
-  The implementer adds the label, then pushes, because the workflow starts on a push and not on a label.
+  The implementation step's agent adds the label, then pushes, because the workflow starts on a push and not on a label.
   The label stays on while a `ci_check` of the issue names such a job.
 
 ## A name that no run answers
@@ -56,10 +64,12 @@ When the head's checks have settled and no run of the name answers:
 2. A held-back job reads `skipped`, not absent: the label cures it.
 
 3. Otherwise the check's words are wrong.
-   Each tester and reviewer step sends it to the architect as a finding with `envoy_publish`; with neither step, the implementer sends it during retro.
+   Each tester and reviewer step sends it to the architect as a finding with `envoy_publish`.
+   With neither step, the retro's agent sends it during retro.
    No role fails the round or requests changes for it.
 
 ## What the evidence is
 
 The named job is the check's proof at the head, and no role repeats it, even when it is a unit or integration suite.
-It proves only that the job passed there: the tester, or the implementer with no tester step, still proves the real surface with the checks CI cannot run.
+It proves only that the job passed there.
+The tester, or with no tester step the implementation step's agent, still proves the real surface with the checks CI cannot run.

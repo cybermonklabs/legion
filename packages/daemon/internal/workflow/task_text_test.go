@@ -111,7 +111,7 @@ func TestATaskNamesItsWorkingCopyItsStepAndTheReportsBeforeIt(t *testing.T) {
 	seedStepsPlan(t, pool, root.Key, root.Generation, "implementer", "reviewer")
 	const continued = "Continue root. Issue: LEGION-208. Phase: "
 	const working = " Working copy: branch legion/LEGION-208, directory /work/LEGION-208."
-	const steps = " Steps: 1 implementer, 2 reviewer then Legion's retro and merge."
+	steps := stepsLine([]string{"implementer", "reviewer"})
 	const text = "Build the widget."
 
 	move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
@@ -226,13 +226,13 @@ func TestATaskNamesTheNewReportOfAStepThatRanAgain(t *testing.T) {
 		completes(t, pool, engine, claim.RolePlanner, "plan", 2)
 		implementer := lastStart(t, pool, root.Key, claim.RoleImplementer)
 		if !strings.Contains(implementer, " Task: a. Step 2 of 3: implementer.") ||
-			!strings.Contains(implementer, " Steps: 1 planner, 2 implementer, 3 tester then Legion's retro and merge. Step 1 (planner) reported: plan version 2. Handoff: plan version 2 (") {
+			!strings.Contains(implementer, stepsLine([]string{"planner", "implementer", "tester"})+" Step 1 (planner) reported: plan version 2. Handoff: plan version 2 (") {
 			t.Fatalf("the implementer's task after the new plan = %q, want step 2 naming the planner's new report", implementer)
 		}
 
 		completes(t, pool, engine, claim.RoleImplementer, "implement", 2)
 		tester := lastStart(t, pool, root.Key, claim.RoleTester)
-		if want := " Steps: 1 planner, 2 implementer, 3 tester then Legion's retro and merge. Step 1 (planner) reported: plan version 2. Step 2 (implementer) reported: implement version 2."; !strings.Contains(tester, " Task: a. Step 3 of 3: tester.") ||
+		if want := stepsLine([]string{"planner", "implementer", "tester"}) + " Step 1 (planner) reported: plan version 2. Step 2 (implementer) reported: implement version 2."; !strings.Contains(tester, " Task: a. Step 3 of 3: tester.") ||
 			!strings.Contains(tester, want) {
 			t.Fatalf("the tester's task of the second pass = %q, want step 3 holding %q", tester, want)
 		}
@@ -346,10 +346,9 @@ func TestEachTaskLabelIsOneThePromptsName(t *testing.T) {
 	}
 
 	for template, values := range map[string][]string{
-		"`Working copy: branch legion/<KEY>, directory <dir>.`":         {"<KEY>", "LEGION-208", "<dir>", "/work"},
-		"`Task: <id>. Step <i> of <n>: <step>.`":                        {"<id>", "a", "<i>", "2", "<n>", "2", "<step>", "reviewer"},
-		"`Steps: 1 <step>, 2 <step>, … then Legion's retro and merge.`": {"1 <step>, 2 <step>, …", "1 implementer:a, 2 reviewer"},
-		"`Step <j> (<step>) reported: <word> version <v>.`":             {"<j>", "1", "<step>", "implementer:a", "<word>", "implement", "<v>", "1"},
+		"`Working copy: branch legion/<KEY>, directory <dir>.`": {"<KEY>", "LEGION-208", "<dir>", "/work"},
+		"`Task: <id>. Step <i> of <n>: <step>.`":                {"<id>", "a", "<i>", "2", "<n>", "2", "<step>", "reviewer"},
+		"`Step <j> (<step>) reported: <word> version <v>.`":     {"<j>", "1", "<step>", "implementer:a", "<word>", "implement", "<v>", "1"},
 	} {
 		if !strings.Contains(readers, template) {
 			t.Errorf("no prompt or skill a worker reads spells out %s", template)
@@ -373,7 +372,7 @@ func TestEachTaskLabelIsOneThePromptsName(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		want := " " + strings.NewReplacer("<id>", "a").Replace(strings.Trim(noStep, "`")) + " Steps: 1 implementer:a, 2 reviewer then Legion's retro and merge."
+		want := " " + strings.NewReplacer("<id>", "a").Replace(strings.Trim(noStep, "`")) + stepsLine([]string{"implementer:a", "reviewer"})
 		if !strings.HasSuffix(at.String(), want) {
 			t.Errorf("the task of %s ends %q, want it to end %q, the words of %s and the task's steps", p, at, want, noStep)
 		}

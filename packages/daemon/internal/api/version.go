@@ -3043,18 +3043,18 @@ package api
 // hold it and the two new routes' requests; no recorded request field leaves.
 // One value set of `GET /legion/v1/state` and of `GET /legion/v1/issues/{key}/record` gets
 // wider: an issue's `holdReason` takes `task-stopped` (its owner stopped its task) and `children`
-// (a parent whose plan has no acceptance step waits, before its retro, for the issues beneath it)
-// beside `escalated`. Every reader below 211 reads the field with `z.literal("escalated")`, which
-// admits that one value as an enumeration of one would, and the reader of 211 reads it with a
-// `z.enum` of the three, so the field is a row of answers.go's EnumeratedFields: `escalated` is
-// recorded at the floor, and the two new words at 211. A caller whose contract (the one it states,
-// else its pod's lowest) is below 211 is served an issue held for either new reason with no
-// `holdReason`, as a hold of no reason is served (shaping.go's valueStrips,
-// `withoutUnadmittedHoldReason`).
+// (a parent whose task's last step is not an acceptance waits, before its retro, for the issues
+// beneath it) beside `escalated`. Every reader below 211 reads the field with
+// `z.literal("escalated")`, which admits that one value as an enumeration of one would, and the
+// reader of 211 reads it with a `z.enum` of the three, so the field is a row of answers.go's
+// EnumeratedFields: `escalated` is recorded at the floor, and the two new words at 211. A caller
+// whose contract (the one it states, else its pod's lowest) is below 211 is served an issue held
+// for either new reason with no `holdReason`, as a hold of no reason is served (shaping.go's
+// valueStrips, `withoutUnadmittedHoldReason`).
 // A second value set gets wider with it: `admission.held`'s `reason` takes
-// `children_before_retro` (a parent whose plan has no acceptance step, held before its retro,
-// with `heldBy` naming each issue beneath it still in the workflow) and `task_stopped` (a task
-// that was stopped, held where it keeps no slot, with no `heldBy`), in that order between
+// `children_before_retro` (a parent whose task's last step is not an acceptance, held before its
+// retro, with `heldBy` naming each issue beneath it still in the workflow) and `task_stopped` (a
+// task that was stopped, held where it keeps no slot, with no `heldBy`), in that order between
 // `accepted_ancestor` and `at_work` (`record.HeldReasons`); both read `unclassified` before. The
 // plugin reads the word as a `z.enum`, so a caller whose contract is below 211 is served each row
 // of either word as `unclassified` with no `heldBy`, the row it read for that issue before
@@ -3145,4 +3145,47 @@ package api
 // requests, made between 2026-11-22T04:42:58Z and 04:46:33Z, found 220 the highest number
 // declared and none at 222. Read the base's own number and every open pull request again at the
 // next merge rather than from this line.)
-const DaemonAPIVersion = 222
+//
+// 227: the owner of an issue, its own architect, reports a step of its own: a step whose key is
+// owner, or the retro of a task whose retro is the owner's. A new route, `POST
+// /legion/v1/steps/complete` (`grantId`, `issue`, `step`, `summary`, and, as a completion of that
+// place carries them, `verdict`, `commit`, `handoffId`, `handoffVersion`, `returnTo`, `planRating`
+// and `planReason`), the architect's `complete_step`, takes it; `step` names the step by its place
+// in the task, 1 for its first, and 0 for the retro. It answers the empty object every fact route
+// answers. It refuses a grant of any claim but the issue's own architect `403 NOT_THE_OWNER`, a
+// step that does not run now or whose agent is not the owner `409 OWNER_STEP_NOT_RUNNING`, a step
+// below 0 `400 INVALID_STEP`, and otherwise as the completion route refuses a report of that place.
+// The owner's failed acceptance that names no step to return to, with no step of the type
+// implementation before it, stops the task as any such failed step does. No plugin below 227
+// calls it. A reviewer of an issue with no pull request record reports its step on `POST
+// /legion/v1/handoff/complete` with the verdict `pass` or `fail` and a commit (`400
+// STEP_VERDICT_REQUIRED`, `400 MISSING_FIELD`), as the owner's review step does on the new route,
+// since no review on GitHub decides either; `VERDICT_ROLE_FORBIDDEN` now reads `only a tester, a
+// role of the deployment or of the plan, the role acceptance, a reviewer of an issue with no pull
+// request, and the owner in a review step report a verdict`. `POST /legion/v1/signoff` refuses a
+// sign-off of an acceptance that is not its owner's own step, a step `acceptance` with no key,
+// whose fresh agent ends it with its own verdict, `409 SIGNOFF_NOT_THE_OWNERS`. Each issue of the
+// state, and the record route's issue, gains `placeRole`, the role of the claim that works its
+// task's place (record.Issue.PlaceRole): the architect at a step or a retro the owner does, and
+// otherwise the step's own role (`acceptance` for the fresh agent of a step `acceptance` with no
+// key) or, at the retro, the role its agent runs as; it is absent on an issue with no plan rows
+// and at the merge. So a reader such as `legion state` names who works an issue at accepting,
+// which the phase alone names as the architect. A
+// caller below 227 is served each issue without it (one band of shaping.go at
+// `completeStepContract`, withoutPlaceRole): a plugin before INFRA-1048 reads an issue as a strict
+// object. The request records of 227 hold the new route's request, and no recorded request field
+// leaves. A claim of the role `acceptance`, the fresh agent of a step `acceptance` with no key, is
+// a role outside Legion's six, which 221's band already leaves out of the state served a caller
+// below 221. The two notice kinds this entry adds (`owner-step`, and `merge-forward-lost` for an
+// ask or a review of a merge forward that did not reach its agent) ride inside a notice row's
+// payload, as 189's does, and are no key or value of an answer a plugin parses. From this entry the
+// last number
+// of answers.go's SupportedContracts is
+// `api.completeStepContract`; `deploymentRolesContract` stays 221 and `strandedTokenContract` 222.
+// (This entry takes 227, the lowest number above 222 (the stranded claims' token, the entry
+// above) that no other open pull request declares: a reading of `const DaemonAPIVersion` at the
+// head of each of the 509 open pull requests, made between 2026-11-23T22:55:43Z and 22:56:54Z,
+// read all 509 and found 227 declared by this change alone. 236 and 238, which this entry took at
+// earlier readings, were declared by other open pull requests by then. Read the base's own number
+// and every open pull request again at the next merge rather than from this line.)
+const DaemonAPIVersion = 227

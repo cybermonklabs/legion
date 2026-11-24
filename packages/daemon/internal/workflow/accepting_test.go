@@ -29,11 +29,13 @@ func seedAccepting(t *testing.T, pool *pgxpool.Pool) {
 		Decision: &record.ReviewDecision{State: "approved", Head: "head"}})
 }
 
-// R2: the reviewer's approval moves the issue into accepting and starts no worker, though
-// accepting is a phase phase.RoleFor answers the architect for. The board already reads
-// needs_review, so no status is written; the architect that owns the issue is already live, so no
-// worker is started, no architect phases row is written and no entry is raised (a start is what
-// raises one); the reviewer's phase-finished is the architect's cue to accept.
+// R2: on an issue with no plan rows, whose acceptance is its architect's, the reviewer's approval
+// moves the issue into accepting and starts no worker, though accepting is a phase phase.RoleFor
+// answers the architect for. The board already reads needs_review, so no status is written; the
+// architect that owns the issue is already live, so no worker is started, no architect phases row
+// is written and no entry is raised (a start is what raises one); the reviewer's phase-finished is
+// the architect's cue to accept. A plan's step acceptance:owner tells the owner with an owner-step
+// notice too, and a step acceptance with no key starts its fresh agent.
 func TestAnApprovalMovesTheIssueIntoAcceptingStartingNobody(t *testing.T) {
 	pool := migratedPool(t)
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Reviewing, Generation: 1, Status: "needs_review", Rank: "U"})
@@ -88,10 +90,10 @@ func TestSignOffIsRefusedOutsideAccepting(t *testing.T) {
 	}
 }
 
-// The architect's sign_off in accepting moves the issue to retro with the status retro and starts
-// the implementer there, its task naming the phase, the review's handoff record (the reviewer's
-// completion seeded here reported no commit) and the pull request; the architect that just acted is
-// told nothing.
+// On an issue with no plan rows, whose retro is the implementer's, the architect's sign_off in
+// accepting moves the issue to retro with the status retro and starts the implementer there, its
+// task naming the phase, the review's handoff record (the reviewer's completion seeded here
+// reported no commit) and the pull request; the architect that just acted is told nothing.
 func TestSignOffInAcceptingStartsRetro(t *testing.T) {
 	pool := migratedPool(t)
 	seedAccepting(t, pool)
@@ -139,10 +141,11 @@ func TestTheArchitectsCompletionInAcceptingIsRefused(t *testing.T) {
 	}
 }
 
-// The send-back from accepting to implementing or testing, by the architect that owns the issue, is
-// a backward move it requests: that phase's role is started with the reason, and the implementer
-// is counted a pass, as every move back into an earlier phase counts one. The review rounds are
-// untouched, since no review requested changes. The move writes no architect phase row.
+// On an issue with no plan rows, the send-back from accepting to implementing or testing, by the
+// architect that owns the issue, is a backward move it requests: that phase's role is started with
+// the reason, and the implementer is counted a pass, as every move back into an earlier phase
+// counts one. The review rounds are untouched, since no review requested changes. The move writes
+// no architect phase row.
 func TestTheArchitectsBackwardMoveFromAcceptingStartsThePhaseAndCountsAPass(t *testing.T) {
 	for _, tc := range []struct {
 		to     phase.Phase
@@ -193,8 +196,8 @@ func TestTheArchitectsBackwardMoveFromAcceptingStartsThePhaseAndCountsAPass(t *t
 	}
 }
 
-// Accepting is the architect's phase: a planner's backward move from it is refused, moving and
-// counting nothing.
+// On an issue with no plan rows accepting is the architect's place: a planner's backward move from
+// it is refused, moving and counting nothing.
 func TestAPlannersBackwardMoveFromAcceptingIsRefused(t *testing.T) {
 	pool := migratedPool(t)
 	seedAccepting(t, pool)
@@ -244,8 +247,9 @@ func TestArchitectUnchangedByABackwardMoveFromAdmitted(t *testing.T) {
 	}
 }
 
-// A backward move onto accepting from a later phase writes needs_review, the status the board shows
-// for the phase, and starts nobody.
+// On an issue with no plan rows, a backward move onto accepting from a later phase writes
+// needs_review, the status the board shows for the phase, and starts nobody: the acceptance is the
+// architect's.
 func TestABackwardMoveOntoAcceptingWritesNeedsReview(t *testing.T) {
 	for _, from := range []phase.Phase{phase.Retro, phase.Merging} {
 		t.Run(string(from), func(t *testing.T) {
@@ -277,12 +281,13 @@ func seedAcceptingChild(t *testing.T, pool *pgxpool.Pool, key, parent string, at
 	seedIssue(t, pool, record.Issue{Key: key, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "child", Parent: &parent, Phase: at, Generation: 1, Status: status, Rank: "U"})
 }
 
-// A sign-off of an issue with nothing beneath it is taken whatever the rest of the tree does: a
-// child done, a child parked, a sibling elsewhere. The rule that nothing beneath an issue held
-// its acceptance is gone (dispatch://INFRA-980, "A parent is accepted after its children"): an
-// issue beneath that is still in the workflow now refuses the sign-off
-// (TestSignOffIsRefusedWhileAnIssueBeneathIsInTheWorkflow), because a parent's head proves its
-// children's merged work and must carry their merges.
+// On an issue with no plan rows, whose acceptance is its architect's, a sign-off of an issue with
+// nothing beneath it is taken whatever the rest of the tree does: a child done, a child parked, a
+// sibling elsewhere. The rule that nothing beneath an issue held its acceptance is gone
+// (dispatch://INFRA-980, "A parent is accepted after its children"): an issue beneath that is
+// still in the workflow now refuses the sign-off
+// (TestSignOffIsRefusedWhileAnIssueBeneathIsInTheWorkflow), because a parent is accepted on work
+// that carries its children's.
 func TestSignOffIsAcceptedWhenNothingBeneathIsInTheWorkflow(t *testing.T) {
 	for _, tc := range []struct {
 		name string

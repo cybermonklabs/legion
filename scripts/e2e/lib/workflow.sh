@@ -2,7 +2,11 @@
 # The Go workflow proof's vocabulary, shared by the stage proofs that drive a Dispatch issue through
 # the Go daemon's workflow with real agents: Dispatch, the daemon's state, each phase's worker, the
 # handoffs the daemon accepted, the smoke repository's pull request under the proof human, and the
-# negative controls. A stage proof sources lib/rig.sh first.
+# negative controls. A stage proof sources lib/rig.sh first. No stage proof that sources it gives a
+# plan, so each issue runs the project's default steps (`planner implementer tester reviewer
+# acceptance:owner`), and where a helper below names a phase's worker, the implementer's pull
+# request and its rounds, the reviewer's review on GitHub, the architect's acceptance, the
+# implementer's retro or the merge, it names a step of that plan.
 #
 # Sourced, never run. The caller sets
 #   work           the run's scratch directory, holding the files the lib reads: legion, the Go
@@ -433,10 +437,12 @@ read_app_logins() {
   review_app_login=$(jq -er .review <<<"$github_app_logins") || fail "lib/app-logins.ts printed no review App login: $github_app_logins"
   note "the implement App acts on GitHub as $implement_app_login and the review App as $review_app_login (GET /apps/<slug>)"
 }
-# role_app ROLE prints the bot login of the App ROLE acts as, as REST names it: the implement App's
-# for the implementer and the merger, the review App's for every other role. role_app_slug ROLE
-# prints the bare slug GraphQL names that bot by (`author { login }` drops the `[bot]`). Each fails,
-# saying so, before read_app_logins has run.
+# role_app ROLE prints the bot login of the App ROLE acts as on its own claim, as REST names it: the
+# implement App's for the implementer and the merger, the review App's for every other role. It does
+# not name the App an architect's slot holds while the architect does a step of its own plan, which
+# is that step's role's (the implement App's at `implementer:owner`). role_app_slug ROLE prints the
+# bare slug GraphQL names that bot by (`author { login }` drops the `[bot]`). Each fails, saying so,
+# before read_app_logins has run.
 role_app() {
   local login
   case "$1" in implementer | merger) login=$implement_app_login ;; *) login=$review_app_login ;; esac
@@ -641,9 +647,9 @@ release_smoke_main() {
   exec {smoke_main_fd}>&-
   note "released $repo main ($smoke_main_lock)"
 }
-# smoke_main_leftovers prints each path on the smoke repository's main under docs/solutions/, the
-# retro learnings merged proof pull requests carried there before retro stopped committing, or under
-# .legion/, which only a merge from before handoffs moved to Dispatch can have left.
+# smoke_main_leftovers prints each path on the smoke repository's main under docs/solutions/ or
+# under .legion/, which only a merge from before retro stopped committing and handoffs moved to
+# Dispatch can have left.
 smoke_main_leftovers() {
   gh api "repos/$repo/git/trees/main?recursive=1" \
     --jq '.tree[] | select(.type == "blob") | .path | select(startswith(".legion/") or startswith("docs/solutions/"))'
@@ -1014,6 +1020,22 @@ close_unpassed_run_pull_requests() {
   close_smoke_cleanup >&2 || true
   return 0
 }
+# implementer_pull_request ISSUE prints the number of the one open pull request on ISSUE's branch,
+# legion/ISSUE, of the smoke repository: the completion route applies an implementer's completion
+# in implementing only once GitHub shows one open there (implementationPullRequest in
+# packages/daemon/internal/api/handoff.go). It fails naming what GitHub listed when that is none or
+# more than one, and fails when the listing fails, whose reason gh writes to stderr. The call gets
+# 60 s.
+implementer_pull_request() {
+  local listed
+  listed=$(timeout 60 gh -R "$repo" pr list --head "legion/$1" --state open --json number --jq '[.[].number] | join(" ")') ||
+    fail "GitHub did not list the open pull requests on $repo legion/$1 (gh's reason is above)"
+  case "$listed" in
+    '') fail "$repo has no open pull request on legion/$1, which the completion route requires before it applies an implementer's completion in implementing" ;;
+    *' '*) fail "$repo has more than one open pull request on legion/$1: #${listed// /, #}" ;;
+  esac
+  printf '%s\n' "$listed"
+}
 
 # ---- the handoffs the daemon accepted -------------------------------------------------------------
 
@@ -1383,13 +1405,15 @@ worker_sessions() {
 # to, published on that architect's role topic, whatever role it names: a review-stuck notice can
 # name the reviewer's topic for the architect to ask, and a task-stopped notice names the role of
 # the phase the task stopped in. So a phase worker's session holds none, and a line here is a
-# notice routed to the wrong session.
+# notice routed to the wrong session. The kinds the capture names are the daemon's list,
+# validNoticeKinds in packages/daemon/internal/record/outbox.go, and worker-notices.test.ts holds
+# the capture to it.
 worker_notices() {
   local f role
   while IFS=$'\t' read -r f role; do
     jq -R -r --arg file "${f##*/}" --arg role "$role" '
       fromjson? | select(.customType == "envoy-message") | (.content | tostring)
-      | capture("summary: (?<summary>(phase-finished|worker-died|worker-stalled|worker-silent|worker-background-stalled|held|pr-blocked|pr-merged|pr-closed-unmerged|pull-request-missing|message-refused|design-approved|design-changes-requested|carried-gate-opened|child-closed|child-status|children-first|child-release-stalled|child-not-recorded|catch-up|checks-red|review-stuck|status-reasserted|session-lost|session-forgotten|session-store-fault|task-stopped|plan-not-taken|retro-held) on [^\\n]*)")
+      | capture("summary: (?<summary>(phase-finished|worker-died|worker-stalled|worker-silent|worker-background-stalled|held|pr-blocked|pr-merged|pr-closed-unmerged|pull-request-missing|message-refused|design-approved|design-changes-requested|carried-gate-opened|child-closed|child-status|children-first|child-release-stalled|child-not-recorded|catch-up|checks-red|review-stuck|status-reasserted|volume-near-full|session-lost|session-forgotten|session-store-fault|task-stopped|plan-not-taken|retro-held|owner-step|merge-forward-lost) on [^\\n]*)")
       | "\($file) \($role) \(.summary)"' "$f"
   done < <(worker_sessions "$1")
 }

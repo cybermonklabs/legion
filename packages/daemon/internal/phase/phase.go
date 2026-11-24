@@ -26,9 +26,9 @@ const (
 	Implementing   Phase = "implementing"
 	Testing        Phase = "testing"
 	Reviewing      Phase = "reviewing"
-	// Step is a step of a role the deployment or the issue's plan defines: none of Legion's own roles works it, and
-	// the role that does is the one the issue's plan names for the step it stands at, so RoleFor
-	// names none.
+	// Step is a step of a role the deployment or the issue's plan defines: no phase of Legion's
+	// names its role, which is the one the plan names for the step the issue stands at, so RoleFor
+	// names none. That step's agent works it, the architect where the step's key is owner.
 	Step      Phase = "step"
 	Accepting Phase = "accepting"
 	Retro     Phase = "retro"
@@ -43,12 +43,14 @@ var All = []Phase{
 	Merging, Done, Held,
 }
 
-// Order is the line an issue walks forward, and the only phases a move back is read against. It
-// differs from All: All is every phase the daemon writes, admitted, awaiting_person, done and
-// held among them, while Order holds the seven working phases alone, in the order the workflow
-// advances them. A phase outside Order has no place in that line, so no move into it and no move
-// out of it is a move back: an issue put on held, or closed as done, went nowhere backward, and
-// MovesBack answers false for it.
+// Order is today's line, the phases an issue with no plan rows walks forward, and the phases
+// MovesBack reads a move back against. It differs from All: All is every phase the daemon writes,
+// admitted, awaiting_person, done and held among them, while Order holds the seven working phases
+// alone, in the order today's line advances them; a task of a plan walks its own steps' order and
+// moves back by it (workflow's Walk.MovesBack). A phase outside Order has no place in that line, so
+// MovesBack answers false for a move into it or out of it: an issue put on held, or closed as done,
+// went nowhere backward. Step is the one phase outside Order that a task of a plan moves back from
+// or to (MovePairs).
 //
 // Both internal/config and internal/workflow read this set: the loader refuses a hook written for
 // a move pair the daemon never counts, and the engine counts the rounds. It lives here, not in
@@ -119,8 +121,8 @@ func Pair(from, to Phase) string {
 // backwardPairs is built once, in the order the backward rows of today's line are generated: each
 // phase of Order paired with every phase before it, 21 pairs. There is no pair beyond the pairs
 // of Order, since the merger merges the head it read and the daemon closes the issue from the
-// merged pull request: no phase of this workflow waits for a merge somebody else makes
-// (dispatch://INFRA-714).
+// merged pull request, or at its retro's end where the issue has none: no phase of this workflow
+// waits for a merge somebody else makes (dispatch://INFRA-714).
 var backwardPairs = buildBackwardPairs()
 
 // movePairs is built once: backwardPairs, then each phase of Order paired with every phase after
@@ -170,9 +172,11 @@ func buildMovePairSet() map[string]bool {
 // tester's, and the reviewer's, each under the word its role's prompt spells
 // (internal/prompts/roles/*.md), the phase of the record whose newest version the `legion` tool's
 // `handoff_complete` reads and names (packages/pi-shared/src/handoff-record.ts). The writer is the
-// role the workflow starts on the phase (RoleFor, whose tests tie the two). Retro and merging
-// write none, and report the commit they stand on; accepting is the architect's sign-off, no
-// handoff at all; and step, whose role the deployment or the issue's plan defines, writes none either.
+// role whose step runs as the phase (RoleFor, whose tests tie the two), whichever agent does that
+// step: the owner writes it for a step of its own, which it reports with complete_step (api's
+// completeStep). Retro and merging write none, and report the commit they stand on; accepting
+// ends with none, by the owner's sign-off or by the verdict of the fresh agent of acceptance; and
+// step, whose role the deployment or the plan defines, writes none either.
 func Handoff(p Phase) (word string, writer claim.Role, ok bool) {
 	switch p {
 	case Planning:
@@ -192,19 +196,23 @@ func Handoff(p Phase) (word string, writer claim.Role, ok bool) {
 // record the `legion` tool's `handoff_complete` reads for a phase with a handoff (Handoff, whose
 // writer a test holds to this; packages/pi-shared/src/handoff-record.ts). A phase no role works —
 // awaiting_person, done, held — has none, and neither has step, whose role is the one the issue's
-// plan names rather than one of the phase's. Admitted and accepting are the architect's, and
-// neither phase starts a worker. On a root both are its own architect's. On a child both are the
-// architect that owns it: its own while that claim holds its role, else the one above. At
-// admitted that is the one above, since the child's own architect has not started yet or a leave
-// suspended or retired it, unless a person set the child back to todo while it ran or was held:
-// that re-entry starts and stops nothing, so a child's own architect that held its role still
-// holds it (workflow's ReenterChild). Every site that starts, resumes or reports a phase's worker
-// skips the architect, so it skips both phases (workflow's start, admit's startMidPhaseMembers,
-// workflow's booted and Stranded).
+// plan names rather than one of the phase's. Admitted and accepting are the architect's. RoleFor
+// reads the phase alone: on an issue with plan rows the role that works the task's place is
+// record.Issue.RoleAt's, `acceptance` where the fresh agent of a step `acceptance` with no key
+// accepts, and the architect at any step or retro the owner does. On a root, admitted and the
+// owner's acceptance are its own architect's. On a child they are the architect that owns it: its
+// own while that claim holds its role, else the one above. At admitted that is the one above,
+// since the child's own architect has not started yet or a leave suspended or retired it, unless
+// a person set the child back to todo while it ran or was held: that re-entry starts and stops
+// nothing, so a child's own architect that held its role still holds it (workflow's
+// ReenterChild). Every site that starts, resumes or reports a phase's worker skips the architect,
+// so it skips admitted and every place the owner works (workflow's start, admit's
+// startMidPhaseMembers, workflow's booted and Stranded).
 //
 // It stands in this package, with the phase vocabulary it reads, rather than in internal/workflow,
 // which starts the roles: the state projection names the role each issue's entry numbers are of
-// (projection.Project), admission starts the mid-phase children of a tree it re-admits on each
+// (projection.Project, through record.Issue.RoleAt), admission starts the mid-phase children of a
+// tree it re-admits on each
 // child's own phase's role, and `legion state` reads the same role back for its line
 // (cmd/legion's entriesBehind). internal/workflow's own tests import internal/projection, so the
 // projection cannot reach a workflow function at all.
@@ -230,10 +238,14 @@ func RoleFor(p Phase) claim.Role {
 // LeftBy is the phase role has left when the issue, standing at at, no longer stands in a phase
 // that role works: RoleFor read the other way round, the one phase each role works, and, for the
 // implementer, which works two, implementing while the issue stands before retro and retro once
-// it stands past it. A role the deployment or the issue's plan defines works step alone, so step is the phase it has
-// left wherever the issue stands. A completion that arrives after the issue moved on without its
-// role is of this phase (Of). The architect works admitted and accepting, signs accepting off and
-// completes nothing, so it leaves no phase here, and neither does a name that is no role.
+// it stands past it. A role the deployment or the plan defines answers step wherever the issue
+// stands, since the phase alone does not say which role's agent did the task's retro: where the
+// task's plan rows are read, the retro's agent has left the retro once the issue stands past it,
+// whichever role it is (record.PhaseLeftBy, which reads them and answers this for every other
+// role). A completion that arrives after the issue moved on without its role is of this phase
+// (Of). The architect leaves no phase here, and neither does a name that is no role: the architect
+// signs an acceptance off, and its report of a step of its own is the completion of that step's
+// role (api's completeStep).
 func LeftBy(role claim.Role, at Phase) Phase {
 	switch role {
 	case claim.RolePlanner:
@@ -257,13 +269,15 @@ func LeftBy(role claim.Role, at Phase) Phase {
 }
 
 // Of is the phase role's completion is of while the issue stands at at: at when role works it
-// (RoleFor), and otherwise the phase role has left (LeftBy). The workflow records a completion on
-// this phase (workflow's leftItsPhase) and the completion route reads its handoff record against
-// it (api's handoffComplete), so the two read one answer. It is "" for the architect anywhere but
-// admitted and accepting, the two phases it works, since the architect leaves no phase. At
-// admitted that answer is the issue's phase, the one the route read for the architect's
-// completion while RoleFor named no role there, and the workflow refuses an architect's
-// completion before it reads this at all.
+// (RoleFor), and otherwise the phase role has left (LeftBy). It reads the phase alone, so the
+// workflow judges by it only a completion of a run with no plan rows (workflow's completionOf),
+// where the completion route's own reading, the issue's phase where record.Issue.RoleAt names the
+// role and record.PhaseLeftBy, which is LeftBy with no plan rows, elsewhere (api's
+// answerCompletion), gives the same answer. It is "" for the
+// architect anywhere but admitted and accepting, the two phases RoleFor gives it, since the
+// architect leaves no phase. At admitted that answer is the issue's phase, the one the route read
+// for the architect's completion while RoleFor named no role there, and the workflow refuses an
+// architect's completion before it reads this at all.
 func Of(role claim.Role, at Phase) Phase {
 	if RoleFor(at) == role {
 		return at

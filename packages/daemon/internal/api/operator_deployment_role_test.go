@@ -106,26 +106,3 @@ func TestAFreshSessionOfADeploymentRolesClaimRestartsItsStep(t *testing.T) {
 		t.Fatalf("the fresh session applied %#v, want RestartPhase{LEGION-209, checker}", applied[0])
 	}
 }
-
-// The roles a claim can be on are Legion's six, each role the deployment defines and each role the
-// plan of an issue defines: the controller's fresh_session and compact say so when they refuse the
-// role controller.
-func TestTheRoleListNamesARoleOfTheDeployment(t *testing.T) {
-	const roles = "role must be one of architect, planner, implementer, tester, reviewer, merger, a role of this deployment, or a role of the issue's plan; the project's controller is none of them, "
-	for _, tc := range []struct {
-		route, ending string
-		harness       func(t *testing.T) *harness
-	}{
-		{"/legion/v1/claims/fresh-session", "and its own claim takes no fresh session", func(t *testing.T) *harness { return freshSessionHarness(t, &phaseRestarter{}) }},
-		{"/legion/v1/claims/compact", "and the controller does not compact its own session", func(t *testing.T) *harness { return compactHarness(t, nil) }},
-	} {
-		t.Run(tc.route, func(t *testing.T) {
-			h := tc.harness(t)
-			grant := controllerGrant(t, h)
-
-			recorder := h.request(http.MethodPost, tc.route, ClaimRequest{GrantID: grant.GrantID, Issue: "LEGION-209", Role: "controller"}, nil)
-
-			refusedSaying(t, recorder, http.StatusBadRequest, "INVALID_ROLE", roles+tc.ending)
-		})
-	}
-}

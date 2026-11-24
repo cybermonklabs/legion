@@ -11,7 +11,8 @@ import (
 
 // Each agent of a version gets one name, the last part of its claim token: the steps of one key
 // share it, a step with no key gets the role it is on, and the owner gets none, since its claim is
-// the tree's architect. A later version keeps the name a key already has, and an agent beside it
+// an architect's, the issue's own (OwnerClaim). A later version keeps the name a key already has,
+// and an agent beside it
 // that would take the same name gets a name of its own, `implementer-2`.
 func TestNameAgentsGivesOneNameToEachAgentAndKeepsAKeysName(t *testing.T) {
 	steps := []PlanStep{
@@ -348,7 +349,7 @@ func TestAStepWithNoKeyTakesANameWhereItsPlacesRowHoldsNone(t *testing.T) {
 				t.Fatalf("the names = %q, want %q", agentNames(got), tc.want)
 			}
 			for _, step := range got {
-				if _, err := StepToken("legion", "LEGION-209", "LEGION-208", step); err != nil {
+				if _, err := StepToken("legion", "LEGION-209", step); err != nil {
 					t.Errorf("step %d, %s, has no claim token: %v", step.Position, step.Role, err)
 				}
 			}
@@ -432,10 +433,11 @@ func TestTheOwnersEarlierRowsNameNoAgent(t *testing.T) {
 	}
 }
 
-// A step's token is the tree's architect's for a step of the key owner, whose agent has no name on
-// the issue, and the token of its agent's name on the issue otherwise, so the steps of one key are
-// one claim. A name outside the agent grammar has no token.
-func TestStepTokenIsTheTreeArchitectsForTheOwnerAndItsAgentsOtherwise(t *testing.T) {
+// A step's token is the issue's own architect's for a step of the key owner, the owner by rule
+// (OwnerClaim), whose agent has no name on the issue, and the token of its agent's name on the
+// issue otherwise, so the steps of one key are one claim. A name outside the agent grammar has no
+// token.
+func TestStepTokenIsTheOwnersForTheOwnerAndItsAgentsOtherwise(t *testing.T) {
 	for _, tc := range []struct {
 		step PlanStep
 		want claim.Token
@@ -443,14 +445,14 @@ func TestStepTokenIsTheTreeArchitectsForTheOwnerAndItsAgentsOtherwise(t *testing
 		{PlanStep{Task: "t", Position: 1, Role: "implementer", AgentKey: "a", Agent: "implementer"}, "legion-legion-legion-209-implementer"},
 		{PlanStep{Task: "t", Position: 2, Role: "tester", AgentKey: "a", Agent: "implementer"}, "legion-legion-legion-209-implementer"},
 		{PlanStep{Task: "t", Position: 3, Role: "reviewer", Agent: "reviewer"}, "legion-legion-legion-209-reviewer"},
-		{PlanStep{Task: "t", Position: 4, Role: "acceptance", AgentKey: "owner"}, "legion-legion-legion-208-architect"},
+		{PlanStep{Task: "t", Position: 4, Role: "acceptance", AgentKey: "owner"}, "legion-legion-legion-209-architect"},
 	} {
-		got, err := StepToken("legion", "LEGION-209", "LEGION-208", tc.step)
+		got, err := StepToken("legion", "LEGION-209", tc.step)
 		if err != nil || got != tc.want {
 			t.Errorf("StepToken(step %d) = %q, %v; want %q", tc.step.Position, got, err, tc.want)
 		}
 	}
-	if got, err := StepToken("legion", "LEGION-209", "LEGION-208", PlanStep{Task: "t", Position: 1, Role: "implementer", Agent: "Implementer"}); err == nil {
+	if got, err := StepToken("legion", "LEGION-209", PlanStep{Task: "t", Position: 1, Role: "implementer", Agent: "Implementer"}); err == nil {
 		t.Errorf("StepToken of a step named outside the agent grammar = %q, want a refusal", got)
 	}
 }

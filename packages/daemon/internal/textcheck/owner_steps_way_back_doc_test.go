@@ -29,3 +29,35 @@ func TestTheOwnerStepsWayBackIsOneTextInTheHeaderAndTheGuide(t *testing.T) {
 		Why: "internal/store's test runs the header's block and an operator the guide's"},
 		ownerStepsWayBackSection, ownerStepsWayBackMark)
 }
+
+// No migration header carries the statements of the rollback below the release whose owner does a
+// step, so they stand in two files: a fenced block of docs/kubernetes.md, under "Rolling back below
+// the release whose owner does a step", which is where an operator reads them, and internal/store's
+// owner_does_a_step_way_back_extract.txt, a copy of that block committed beside the test that runs
+// it (TestTheOwnerDoesAStepWayBackLeavesItsProjectOnlyRowsTheReleaseBeforeReads). That test reads
+// the copy and not the guide, so an edit of the guide alone starts this run and not the daemon's
+// Go lane, and this test holds the copy to the guide's block.
+const (
+	// ownerDoesAStepExtract is the committed copy, read from the package whose test runs it.
+	ownerDoesAStepExtract = "../store/owner_does_a_step_way_back_extract.txt"
+	// ownerDoesAStepSection is the heading of the guide's section that gives the block.
+	ownerDoesAStepSection = "Rolling back below the release whose owner does a step"
+	// ownerDoesAStepMark is the line that deletes the owner-step notices, which no other block of
+	// the guide carries.
+	ownerDoesAStepMark = "delete from outbox where kind = 'notice' and payload->>'kind' = 'owner-step' and split_part(issue, '-', 1) = '<PROJECT>';"
+)
+
+// The committed copy of the statements of the rollback below the release whose owner does a step
+// is the guide's own block, line for line. An edit to either side alone fails here: a line changed
+// in the guide and not in the copy would otherwise never reach internal/store's test, which runs
+// the copy and not the guide. A copy with nothing under its header fails too, since a check of it
+// would compare nothing.
+func TestTheOwnerDoesAStepWayBackExtractIsTheGuidesBlock(t *testing.T) {
+	copied := quotedBody(t, ownerDoesAStepExtract)
+	if copied == "" {
+		t.Fatalf("%s carries nothing under its `#` header: internal/store's test has no copy of the guide's block to run", ownerDoesAStepExtract)
+	}
+	assertIsTheGuidesBlock(t, heldBlock{Text: copied, Name: ownerDoesAStepExtract, Label: "the extract",
+		Why: "internal/store's test runs the extract's block and an operator the guide's"},
+		ownerDoesAStepSection, ownerDoesAStepMark)
+}

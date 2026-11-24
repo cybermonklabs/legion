@@ -142,10 +142,11 @@ func startActs(queued record.QueuedSupervise, stop int64, current phase.Phase) b
 // body StartFor reads the same rows with.
 //
 // Two tests the caller holds are deliberately not here, because each is about the issue rather
-// than about the role's entry: that the role is the one the issue's current phase names
-// (phase.RoleFor), and that a worker of the issue has work where it stands (record.AtWork).
-// admit's owedEntryRoles answers both from the records it has already read for the whole pass,
-// and asking them here would mean reading the issue again per role.
+// than about the role's entry: that the role is the one that works the issue where it stands
+// (OpenRoleOf, which names none at a place the owner works), and that a worker of the issue has
+// work where it stands (record.AtWork). admit's owedEntryRoles answers both, through
+// phaseWorkerOf, from the records it has already read for the whole pass, and asking them here
+// would mean reading the issue again per role.
 //
 // Where StartFor asks what a re-admitted tree's promotion must start, and so weighs whether the
 // claim may already have a process, this reads nothing of the claim's state: a registered, ready

@@ -2,11 +2,13 @@
 // that actually runs it — a pane on the daemon's private tmux server today, a pod in a cluster
 // at Stage 4.
 //
-// The boundary carries process facts only: a runtime spawns, stops, and observes processes, and
-// says `Alive`, `Gone`, `NotRecordedProcess`, or `Uncertain` about them. What the agent inside
-// the process is doing — that it connected, acknowledged a prompt, started or ended a turn — is
-// the worker stream's to report, a peer source beside this one. Both reach the supervisor, which
-// is the only place the two kinds of fact meet.
+// The boundary carries process facts, and the gh credential of each slot: a runtime spawns, stops,
+// and observes processes, and says `Alive`, `Gone`, `NotRecordedProcess`, or `Uncertain` about
+// them, and it writes a slot's gh credential and says whether the slot holds it (SlotCredentials),
+// which the daemon asks of it for an act of an owner's: a step, a retro or a merge forward asked of
+// it. What the agent inside the process is doing — that it connected, acknowledged a prompt,
+// started or ended a turn — is the worker stream's to report, a peer source beside this one. Both
+// reach the supervisor, which is the only place the two kinds of fact meet.
 //
 // The connection contract (`Conn`, `Conns`) lives here rather than in the stream package so that
 // this package and its fake depend on methods rather than on the stream's structs; the stream's
@@ -25,6 +27,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/wait"
 )
 
 // Runtime is what the supervisor has instead of a process table. Every method is about one
@@ -858,29 +861,68 @@ func (id GitIdentity) Env() map[string]string {
 }
 
 // ActsAs answers, for a claim token, the role whose App the claim's slot holds while it does some
-// other work than its stored role's, and false where it gives none: the owner's step is such work,
-// which the daemon's owner function decides. A runtime is given one in its options (nil by
-// default), and SlotRole, the one function that answers a slot's App role, reads it.
+// other work than its stored role's, and false where it gives none. The daemon's owner function
+// decides it (internal/daemon's ownerActsAs, which lists the owner's acts): a merge forward asked of
+// the owner, which it does as the implementer, a step of the owner's own plan, and the owner's
+// retro of a task whose last implementation step was its own. A runtime is given one in its options
+// (nil by default). Acting is the one ask of it, and SlotRole, the one function that answers a
+// slot's App role, answers from that ask.
 type ActsAs func(ctx context.Context, token claim.Token) (claim.Role, bool, error)
 
-// SlotRole is the role whose App the slot of token holds: the role actsAs gives the token where
-// actsAs is set and gives one, else role, which its caller reads: at a launch, the role of the
-// step the claim is launched for; at a refresh, the role the slot's process was launched as where
-// the slot records that launch for the stored claim's generation or a later one, and otherwise the
-// claim's stored role (the sandbox runtime's slotAppRole, the tmux runtime's paneRole). It is never
-// the slot's name: a keyed agent's slot is named by its agent, and that agent can do a step of
-// another role. Each write of a slot's gh credential asks it, so a re-roled claim's slot holds the
-// App of the role its process was launched as.
-func SlotRole(ctx context.Context, actsAs ActsAs, token claim.Token, role claim.Role) (claim.Role, error) {
+// Acting is the one ask of actsAs for token: the role actsAs gives the token and true, and false
+// where actsAs is nil or gives none. A failed ask is its error, which names the slot whose App role
+// was asked. SlotRole answers from it, and so does a reader that needs only whether actsAs gives
+// the token a role (the sandbox runtime's slotAppChanges).
+func Acting(ctx context.Context, actsAs ActsAs, token claim.Token) (claim.Role, bool, error) {
 	if actsAs == nil {
-		return role, nil
+		return "", false, nil
 	}
 	acting, ok, err := actsAs(ctx, token)
 	if err != nil {
-		return "", fmt.Errorf("the role whose App the slot of %s holds: %w", token, err)
+		return "", false, fmt.Errorf("the role whose App the slot of %s holds: %w", token, err)
+	}
+	return acting, ok, nil
+}
+
+// SlotRole is the role whose App the slot of token holds: the role actsAs gives the token where
+// actsAs is set and gives one (Acting), else role, which its caller reads: at a launch, the role of
+// the step the claim is launched for; at a refresh, the role the slot's process was launched as
+// where the slot records that launch for the stored claim's generation or a later one, and
+// otherwise the claim's stored role (the sandbox runtime's slotAppRole, the tmux runtime's
+// paneRole). It is never the slot's name: a keyed agent's slot is named by its agent, and that
+// agent can do a step of another role. Each write of a slot's gh credential asks it, so a re-roled
+// claim's slot holds the App of the role its process was launched as.
+func SlotRole(ctx context.Context, actsAs ActsAs, token claim.Token, role claim.Role) (claim.Role, error) {
+	acting, ok, err := Acting(ctx, actsAs, token)
+	if err != nil {
+		return "", err
 	}
 	if ok {
 		return acting, nil
 	}
 	return role, nil
 }
+
+// SlotCredentials writes and reads the gh credential of a slot, which the daemon asks of a runtime
+// before it tells an owner an act whose App the owner's slot must hold (a merge forward asked of
+// it, a step or a retro: ActsAs), and at that act's end. Both runtimes answer it.
+type SlotCredentials interface {
+	// WriteSlotCredential brings the slot of token to the gh credential of the App of the role
+	// SlotRole answers for it now, where the slot does not hold it already. The runtime decides that
+	// role itself, in the one serialization every write of the slot is made under (the tmux
+	// runtime's launch lock, the slot Secret's resourceVersion), as its refresh and a launch do: so
+	// no write judged before another lands after it, and no caller's earlier reading of which act
+	// of the owner's runs, a step, a retro or a merge forward, decides the App. A slot with no live
+	// process to read it is left to the claim's next launch, which judges and writes the same way.
+	WriteSlotCredential(ctx context.Context, token claim.Token) error
+	// SlotHoldsCredential answers nil once the slot's gh files hold the credential of the App of
+	// role, a wait (ErrSlotCredentialPending) while they do not, and ErrAwaitsPodUpdate for a pod
+	// whose launcher cannot tell. It reads what the files hold, after every write of the slot that
+	// began before it.
+	SlotHoldsCredential(ctx context.Context, token claim.Token, role claim.Role) error
+}
+
+// ErrSlotCredentialPending is a slot whose gh files do not hold the credential asked of it yet
+// (SlotCredentials.SlotHoldsCredential): a wait (wait.ErrWaiting), which a later ask answers again
+// once the files hold it.
+var ErrSlotCredentialPending = wait.New("the slot's gh files do not hold the credential of its step yet")

@@ -8,6 +8,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/plan"
 )
 
 // The claim of a role's worker is the claim its row names while that row runs a step of the
@@ -85,11 +86,12 @@ func TestARolesRowNowIsTheRowWithTheHighestEntry(t *testing.T) {
 }
 
 // The row of a role where a task stands: the row of its step there where that step is the role's;
-// else the row of the role's latest step before it, the retro and the merge standing after every
-// step; else the row of its first step after it, so a read or a write before the role's first step
-// reaches that step's row, as the one row of a role did. A role the task gives no place has its row
-// at place 0. A row that does not stand yet is the zero row stamped with the role, the task and the
-// place it stands at. An issue with no plan rows has one row for each role (PhaseRowOf).
+// else the row of the role's latest step before it, the retro and the merge (which a task reaches
+// only where its issue has a pull request) standing after every step; else the row of its first
+// step after it, so a read or a write before the role's first step reaches that step's row, as the
+// one row of a role did. A role the task gives no place has its row at place 0. A row that does not
+// stand yet is the zero row stamped with the role, the task and the place it stands at. An issue
+// with no plan rows has one row for each role (PhaseRowOf).
 func TestPhaseRowAtIsTheRowOfARolesStepWhereTheTaskStands(t *testing.T) {
 	steps := []PlanStep{{Task: "t", Position: 1, Role: "implementer"}, {Task: "t", Position: 2, Role: "reviewer"}, {Task: "t", Position: 3, Role: "implementer"}}
 	rows := []PhaseRow{
@@ -134,6 +136,18 @@ func TestPhaseRowAtIsTheRowOfARolesStepWhereTheTaskStands(t *testing.T) {
 	// until its step's row stands, as it was before the step was written on it.
 	if got := PhaseRowAt([]PhaseRow{rows[1], rows[4]}, claim.RoleImplementer, "t", step(1), steps); got.Entry != 9 || got.StepTask != "" {
 		t.Fatalf("PhaseRowAt with the implementer's row of no step = %+v, want that row", got)
+	}
+	// The retro stands after every step for the role of its agent (PlaceWorker): the role of the
+	// task's last step of the type implementation, the implementer where the owner does it. In
+	// `coder checker`, coder of that type, the coder's row at the retro is its row of place 0, the
+	// row the retro's entry is raised on, and its step's row is read while the checker's step runs.
+	coded := []PlanStep{{Task: "t", Position: 1, Role: "coder", Type: plan.TypeImplementation}, {Task: "t", Position: 2, Role: "checker", Type: plan.TypeTesting}}
+	coderRows := []PhaseRow{{Role: "coder", StepTask: "t", StepPlace: 1, Entry: 1}, {Role: "coder", StepTask: "t", StepPlace: 0, Entry: 2}}
+	if got := PhaseRowAt(coderRows, "coder", "t", retro, coded); !reflect.DeepEqual(got, coderRows[1]) {
+		t.Fatalf("PhaseRowAt(coder, the retro of coder checker) = %+v, want the coder's row of the retro %+v", got, coderRows[1])
+	}
+	if got := PhaseRowAt(coderRows, "coder", "t", step(2), coded); !reflect.DeepEqual(got, coderRows[0]) {
+		t.Fatalf("PhaseRowAt(coder, step 2 of coder checker) = %+v, want the coder's step row %+v", got, coderRows[0])
 	}
 }
 

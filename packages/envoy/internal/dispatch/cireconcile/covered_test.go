@@ -163,9 +163,9 @@ func TestEveryCoveredRepositoryIsReadHoweverTheDatabaseCollatesTheNames(t *testi
 }
 
 // A repository an issue names and no project maps is reconciled like any other, so a head there
-// settles. An issue's own repository is any `owner/name`, and work on such an issue opens pull
-// requests whose heads the listener records and whose settlements the Legion daemon waits for;
-// a repair that read repo_projects alone would never read those heads, so a webhook GitHub
+// settles. An issue's own repository is any `owner/name`, and work on such an issue can open pull
+// requests there, whose heads the listener records and whose settlements the Legion daemon waits
+// for; a repair that read repo_projects alone would never read those heads, so a webhook GitHub
 // never delivered there would hold the head short of a check for ever -- and silently, since
 // nothing ever asked GitHub about that repository to skip it.
 func TestAHeadSettlesInARepositoryOnlyAnIssueNames(t *testing.T) {

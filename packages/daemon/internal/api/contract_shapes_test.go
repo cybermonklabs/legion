@@ -698,7 +698,7 @@ func answerFixtures(t *testing.T) map[AnswerID]answerFixture {
 					Failure: Failure{Code: "PLAN_REFUSED", Error: "Legion does not take this plan: each reason below names its cause."},
 					Reasons: []PlanReason{
 						{Task: "", Reason: "The plan holds two tasks. This release of Legion does not carry it out yet."},
-						{Task: "a", Reason: "Task a names no implementer. This release of Legion does not carry it out yet."},
+						{Task: "a", Reason: "task a names merges. This release of Legion does not carry it out yet."},
 					},
 				},
 			},

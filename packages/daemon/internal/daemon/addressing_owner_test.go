@@ -121,7 +121,7 @@ func TestTheAddressingNamesTheAgentOfEachStep(t *testing.T) {
 		{Issue: "LEGION-209", Generation: 1, Task: "a", Position: 2, Role: "tester", Type: "testing", AgentKey: "a", Agent: "implementer"},
 		{Issue: "LEGION-209", Generation: 1, Task: "a", Position: 3, Role: "reviewer", Type: "review", Agent: "reviewer"},
 	}
-	workers, err := stepWorkersOf("legion", "LEGION-209", "LEGION-208", &record.StoredPlan{Steps: map[string][]record.PlanStep{"a": steps}})
+	workers, err := stepWorkersOf("legion", "LEGION-209", &record.StoredPlan{Steps: map[string][]record.PlanStep{"a": steps}})
 	if err != nil {
 		t.Fatalf("the step agents: %v", err)
 	}

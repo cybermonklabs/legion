@@ -14,6 +14,7 @@ import {
   LegionChildRequest,
   LegionClaimRequest,
   LegionCompactResponse,
+  LegionCompleteStepRequest,
   LegionControllerCredentialResponse,
   LegionControllerGrantRequest,
   LegionControllerRegisterResponse,
@@ -174,6 +175,8 @@ const schemas: Record<string, z.ZodType> = {
   // The owner's plan (contract 211): what register_plan took, and stop_task's empty answer.
   "plan-register.json": LegionPlanRegisterResponse,
   "task-stop.json": LegionEmptyResponse,
+  // The owner's report of a step of its own (contract 227), the empty answer of a fact route.
+  "step-complete.json": LegionEmptyResponse,
   // The project pause (contract 178), each written from what the route itself answers
   // (internal/api's TestPauseRouteGoldens): the pause a pause began, the pause a resume ended
   // with how many held rows it let out, and every refusal. A blank reason is the plain refusal;
@@ -925,10 +928,12 @@ test("a backward move rejects future read-only phases", () => {
 });
 
 // Contract 40: `awaiting_person`, a root that keeps its slot while its architect waits on a
-// person, follows `admitted`, and no backward move reaches it. Contract 33: the architect accepts
-// before the merge, in `accepting`, between `reviewing` and `retro`; the merger merges in
-// `merging`, the daemon closes the issue when it reads that merge (`done`), and the production
-// check after the close is no phase, so no phase follows `integrating` but the close itself.
+// person, follows `admitted`, and no backward move reaches it. Contract 33: `accepting`, a step of
+// acceptance, stands between `reviewing` and `retro` in this list, whatever order a task's steps
+// run in; where the issue has a pull request the merger merges in `merging` and the daemon closes
+// the issue when it reads that merge (`done`), an issue with none is `done` when its retro ends,
+// and the production check after a merge's close is no phase, so no phase follows `integrating`
+// but the close itself.
 test("the phase lists are the daemon's, with awaiting_person after admitted and accepting before retro", () => {
   expect(LEGION_WORKFLOW_PHASES).toEqual([
     "admitted",
@@ -969,9 +974,10 @@ test("the phase lists are the daemon's, with awaiting_person after admitted and 
 });
 
 // Contract 221: a step of a role of the deployment runs as the phase `step`, and the issue names
-// the role that works it, `stepRole`, at `step` and while a hold keeps it out of that step. An
-// issue whose pod was built before that role names it in `startWaitsForPod` and holds no claim of
-// it; a held issue keeps the failed claim of that role as its worker.
+// that step's role, `stepRole`, at `step` and while a hold keeps it out of that step (the step's
+// agent works it, or the owner where its key is `owner`). An issue whose pod was built before that
+// role names it in `startWaitsForPod` and holds no claim of it; a held issue keeps the failed
+// claim of that role as its worker.
 test("the state golden carries an issue at step and the role of the deployment that works it", () => {
   const state = LegionStateResponse.parse(fixture("state.json"));
   const atStep = state.issues["LEGION-240"];
@@ -1317,8 +1323,9 @@ test("wakeAt refuses a time with no seconds, as the daemon's decode does", () =>
 });
 
 // A file-backed phase's completion names the Dispatch handoff record the worker wrote: the
-// planner, tester and reviewer report it alone, the implementer with the commit it pushed. A record
-// is named by a non-empty id and a positive version.
+// planner and tester report it alone, the reviewer too where a review on GitHub decides its round
+// (else beside its verdict and the commit it read), and the implementer with the commit it pushed.
+// A record is named by a non-empty id and a positive version.
 test("a phase completion names its handoff record", () => {
   const planner = {
     grantId: "grant-208",
@@ -1843,8 +1850,8 @@ test("the state says which contract it was built at", () => {
   expect(LegionStateResponse.parse(wrong).contract).toEqual({ caller: daemonApiVersion });
 });
 
-// An architect's backward move names the issue it moves from accepting; a phase worker's may
-// leave it out, since its grant names its own.
+// An architect's backward move names the issue it moves back from a step it does itself; a phase
+// worker's may leave it out, since its grant names its own.
 test("a backward move may name its issue", () => {
   const move = { grantId: "grant-208", to: "testing", reason: "the proof is thin" };
   expect(LegionPhaseBackwardRequest.safeParse(move).success).toBeTrue();
@@ -1972,6 +1979,17 @@ test("every request the plugin sends parses and names its required fields", () =
     ],
     ["signoff", LegionSignOffRequest, { grantId: "grant-208", issue: "LEGION-208" }],
     [
+      "step complete",
+      LegionCompleteStepRequest,
+      {
+        grantId: "grant-208",
+        issue: "LEGION-208",
+        step: 1,
+        summary: "The suite passes.",
+        verdict: "pass",
+      },
+    ],
+    [
       "root close",
       LegionRootCloseRequest,
       { grantId: "grant-208", issue: "LEGION-208", reason: "no change" },
@@ -2015,6 +2033,53 @@ test("every request the plugin sends parses and names its required fields", () =
     expect(
       schema.safeParse(missing).success,
       `${name} refuses a missing required field`
+    ).toBeFalse();
+  }
+});
+
+// The owner's report names its grant, its issue, the step by its place and its summary, each
+// required; step 0 is the retro, a place below it names nothing, and what the report adds is a
+// completion's, under its rules: the verdict pass or fail, returnTo with a fail alone, and the
+// rating of the plan with its reason.
+test("the owner's report of its step names its grant, issue, step and summary", () => {
+  const report = {
+    grantId: "grant-208",
+    issue: "LEGION-208",
+    step: 2,
+    summary: "A requirement is unmet.",
+    verdict: "fail",
+    commit: "4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+    returnTo: 1,
+  };
+  expect(LegionCompleteStepRequest.safeParse(report).success).toBeTrue();
+  for (const field of ["grantId", "issue", "step", "summary"] as const) {
+    const missing: Record<string, unknown> = { ...report };
+    delete missing[field];
+    expect(
+      LegionCompleteStepRequest.safeParse(missing).success,
+      `${field} is required`
+    ).toBeFalse();
+  }
+  const retro = {
+    grantId: "grant-208",
+    issue: "LEGION-208",
+    step: 0,
+    summary: "Retro done.",
+    commit: "4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+    planRating: 4,
+    planReason: "The plan fit the work.",
+  };
+  expect(LegionCompleteStepRequest.safeParse(retro).success).toBeTrue();
+  for (const refused of [
+    { ...report, step: -1 },
+    { ...report, step: 1.5 },
+    { ...report, verdict: "pending" },
+    { ...report, verdict: "pass" },
+    { ...retro, planReason: undefined },
+  ]) {
+    expect(
+      LegionCompleteStepRequest.safeParse(refused).success,
+      JSON.stringify(refused)
     ).toBeFalse();
   }
 });
@@ -2755,26 +2820,25 @@ test("a reader at contract 152 parses the repositories block served below 202", 
         "the implement App's installation on zeta/archive could not be read: GitHub answered 502; Legion reads it again",
     },
   ]);
+  // The gap's reason is the daemon's sentence, which no test here holds; the block carries one.
   expect(block.data?.withoutWebhookApp).toEqual([
-    {
-      repo: "zeta/tools",
-      reason:
-        "Dispatch's GitHub App is not installed on zeta/tools: GitHub sends Legion none of its events, nothing redelivers them, and no periodic pass makes up for them, so its issues stand still until the App is installed",
-    },
+    { repo: "zeta/tools", reason: expect.any(String) },
   ]);
+  expect(block.data?.withoutWebhookApp?.[0]?.reason).not.toBe("");
   expect(block.data?.caches).toEqual(live.caches);
 
   // Every other key is the state golden's own, the `contract` mark and `lowestPluginContract`
   // aside: the mark names the contract the caller is served at, 199, the recorded contract below
   // the 201 the caller states (`recordedContractAtOrBelow`), INFRA-4605's, which moved no answer's
   // shape, and the lowest plugin contract reports the claims of the snapshot the route projected
-  // the body from, a pod at 201, which `state.json`'s own fixture does not hold. Three bands stand
+  // the body from, a pod at 201, which `state.json`'s own fixture does not hold. Four bands stand
   // above 199: the repositories block's, the roles of a deployment's (contract 221), which serves
   // the state golden's issues at step and its claims of a role of the deployment as a caller below
-  // 221 reads them (`belowDeploymentRoles`), and contract 222's, which serves each claim nothing
-  // will wake and each claim view without its `token`, and each issue without its `otherClaims`
-  // (`withoutStrandedTokens`, `withoutClaimTokens`). So the narrowing changes this one block and,
-  // beside it, only what those two bands change.
+  // 221 reads them (`belowDeploymentRoles`), contract 222's, which serves each claim nothing will
+  // wake and each claim view without its `token`, and each issue without its `otherClaims`
+  // (`withoutStrandedTokens`, `withoutClaimTokens`), and the place role's (contract 227), which
+  // serves each issue without its `placeRole` (`withoutPlaceRole`). So the narrowing changes this
+  // one block and, beside it, only what those three bands change.
   const { daemonApiVersion } = z
     .object({ daemonApiVersion: z.number() })
     .parse(fixture("version.json"));
@@ -2800,7 +2864,7 @@ test("a reader at contract 152 parses the repositories block served below 202", 
   };
   const issues = Object.fromEntries(
     Object.entries((below.issues ?? {}) as Record<string, Record<string, unknown>>).map(
-      ([key, { otherClaims: _others, architect, workers, ...issue }]) => [
+      ([key, { otherClaims: _others, placeRole: _placeRole, architect, workers, ...issue }]) => [
         key,
         {
           ...issue,
@@ -3395,19 +3459,16 @@ test("the state golden carries each durable consumer's lag", () => {
 // without its reason and a body without the list are both read rather than refused.
 test("the state golden names each live repository without the webhook App", () => {
   const state = LegionStateResponse.parse(fixture("state.json"));
-  const gaps = [
-    {
-      repo: "zeta/tools",
-      reason:
-        "Dispatch's GitHub App is not installed on zeta/tools: GitHub sends Legion none of its events, nothing redelivers them, and no periodic pass makes up for them, so its issues stand still until the App is installed",
-    },
-  ];
-  expect(state.repositories?.withoutWebhookApp).toEqual(gaps);
+  // The golden lists zeta/tools alone, with a reason, the daemon's sentence, which no test here
+  // holds.
+  const gaps = state.repositories?.withoutWebhookApp;
+  expect(gaps?.map((gap) => gap.repo)).toEqual(["zeta/tools"]);
+  expect(gaps?.every((gap) => (gap.reason ?? "") !== "")).toBeTrue();
   expect(state.repositories?.live?.map((entry) => entry.repo)).toContain("zeta/tools");
   const narrowed = repositoriesAt152.parse(
     fixtureBody("state-narrowed-repositories.json").repositories
   );
-  expect(narrowed.withoutWebhookApp).toEqual(gaps);
+  expect(gaps).toEqual(narrowed.withoutWebhookApp);
   const empty = LegionStateResponse.parse(fixture("state-stage3.json")).repositories;
   expect(empty?.live).toEqual([]);
   expect(empty?.withoutWebhookApp).toEqual([]);

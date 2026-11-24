@@ -260,7 +260,9 @@ func TestEachPhaseStartsAtItsRolesFirstEventAndEndsWhereTheNextStarts(t *testing
 
 // TestRetroIsOnTheImplementersBar: one bar per role, "implementer (implementing and retro, because
 // the daemon gives retro to the implementer: `RoleFor` in packages/daemon/internal/phase/phase.go)
-// ... and merger (merging and awaiting merge)" (the spec's metric 2). Before observations the
+// ... and merger (merging and awaiting merge)" (the spec's metric 2). RoleFor still answers the
+// implementer for retro, and the bar holds the retro's hours whoever does it: the agent of the
+// task's last step of the type implementation, or the issue's architect. Before observations the
 // `retro` status starts retro, and the merger's first event starts merging for this issue, which
 // is never sent back: after a send-back a role's first event starts no phase at all (the spec's
 // "No re-entry by a first event"). On the observed timeline the daemon names all three.
@@ -301,7 +303,7 @@ func TestRetroIsOnTheImplementersBar(t *testing.T) {
 			report := Compute(population, ScopeAll, hour(24))
 			implementer, merger := barOf(t, report, "implementer").Hours, barOf(t, report, "merger").Hours
 			if implementer != one.implementer || merger != one.merger {
-				t.Fatalf("the implementer's bar = %g hours and the merger's %g, want %g and %g: retro's hours are the implementer's",
+				t.Fatalf("the implementer's bar = %g hours and the merger's %g, want %g and %g: retro's hours are on the implementer's bar",
 					implementer, merger, one.implementer, one.merger)
 			}
 		})

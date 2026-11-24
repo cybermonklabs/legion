@@ -977,9 +977,9 @@ func TestTheArchitectWakeBoundStartsAgainWhenARootIsReadmitted(t *testing.T) {
 }
 
 // A root a hand-over carried in raises the gate arm not at all. It stands in a phase of the run
-// that carried it, where its tree's work already runs under a phase worker, and that arm reads a
-// root standing at admitted. The sweep's architect reach does serve such a root, so the quiet is
-// the arm's own reading and not a root the pass never looked at.
+// that carried it, where its tree's work already runs under the agent of its place (a phase
+// worker here), and that arm reads a root standing at admitted. The sweep's architect reach does
+// serve such a root, so the quiet is the arm's own reading and not a root the pass never looked at.
 func TestTheGateArchitectWakeIsNotRaisedForARootAHandoverCarriedIn(t *testing.T) {
 	pool := migratedPool(t)
 	registerController(t, pool)

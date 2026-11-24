@@ -21,12 +21,12 @@ var (
 // starts, stops and stored roles) and the mode change with physical starts: a later re-admission
 // starts only after this patch, and makes a Sandbox of its own rather than resuming this one. No
 // database transaction spans a Kubernetes call. Once the pod is gone the Sandbox is deleted
-// (deleteStoredSandbox), with the Secret it owns of each slot of its pod — each holding a launcher
-// token and a rendered `gh` credential bundle — so a close leaves the issue nothing. An ephemeral
-// disk was the pod's own and went with it. A kept volume (keptVolume) is the Sandbox's own claim,
-// and the foreground delete takes it with the Sandbox: a close deletes a kept volume too. The
-// issue's next launch, if a person sets it todo again, makes the Sandbox afresh (ensureSandbox).
-// The parent's Sandbox is another issue's and is never touched.
+// (deleteStoredSandbox), with the role Secrets it owns, one for each slot of the pod — each holding a launcher token and a
+// rendered `gh` credential bundle — so a close leaves the issue nothing. An ephemeral disk was the
+// pod's own and went with it. A kept volume (keptVolume) is the Sandbox's own claim, and the
+// foreground delete takes it with the Sandbox: a close deletes a kept volume too. The issue's next
+// launch, if a person sets it todo again, makes the Sandbox afresh (ensureSandbox). The parent's
+// Sandbox is another issue's and is never touched.
 func (r *Runtime) SuspendIssue(ctx context.Context, issue, tree string, authorize func(context.Context) (bool, error)) error {
 	return r.endIssuePod(ctx, issue, tree, authorize, false)
 }

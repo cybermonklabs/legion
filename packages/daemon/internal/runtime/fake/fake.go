@@ -25,6 +25,7 @@ var (
 	_ runtime.IssuePodReader     = (*Runtime)(nil)
 	_ runtime.LaunchSessionNamer = (*Runtime)(nil)
 	_ runtime.IssueVolumeReader  = (*Runtime)(nil)
+	_ runtime.SlotCredentials    = (*Runtime)(nil)
 )
 
 // Call is one method the caller called, with the arguments it called it with. A method that does
@@ -47,6 +48,10 @@ type Call struct {
 	Tree string
 	// Issue is IssuePod's issue.
 	Issue string
+	// Claim is WriteSlotCredential's and SlotHoldsCredential's: the claim whose slot is written or
+	// read. Role is SlotHoldsCredential's: the role whose App the slot is asked to hold.
+	Claim claim.Token
+	Role  claim.Role
 }
 
 // SpawnResult is one scripted answer to Spawn or Resume.
@@ -112,6 +117,7 @@ type Runtime struct {
 	holdReplace  func()
 	replaceNoPod bool
 	holdResume   func()
+	slotHolds    error
 	queue        []runtime.Observation
 	minted       int
 }
@@ -306,6 +312,32 @@ func (r *Runtime) HoldResume(hold func()) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.holdResume = hold
+}
+
+// ScriptSlotHolds makes every later SlotHoldsCredential answer err, as a runtime answers a slot whose
+// gh files do not hold the credential yet (runtime.ErrSlotCredentialPending) or a pod whose
+// launcher cannot say (runtime.ErrAwaitsPodUpdate); nil, the default, is a slot that holds it.
+func (r *Runtime) ScriptSlotHolds(err error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.slotHolds = err
+}
+
+// WriteSlotCredential records its call and writes nothing: the fake holds no slots, and judges no
+// role for one.
+func (r *Runtime) WriteSlotCredential(_ context.Context, token claim.Token) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls = append(r.calls, Call{Method: "WriteSlotCredential", Claim: token})
+	return nil
+}
+
+// SlotHoldsCredential records its call and answers what ScriptSlotHolds set, nil by default.
+func (r *Runtime) SlotHoldsCredential(_ context.Context, token claim.Token, role claim.Role) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls = append(r.calls, Call{Method: "SlotHoldsCredential", Claim: token, Role: role})
+	return r.slotHolds
 }
 
 func (r *Runtime) fail(method string, err error) {

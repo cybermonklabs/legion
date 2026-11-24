@@ -608,6 +608,7 @@ var stateNarrowings = []stateNarrowing{
 			"stranded claims, waiting wakes and pause stops of a deployment's roles"},
 	{contract: strandedTokenContract, state: withoutStrandedTokens, issue: withoutClaimTokens,
 		dropped: "the stranded claims' token, the claim views' token and the issues' otherClaims"},
+	{contract: completeStepContract, issue: withoutPlaceRole, dropped: "the issues' placeRole"},
 }
 
 // valueStrip is one strip of a value from the state: what it takes off the state's own values,
@@ -1034,8 +1035,8 @@ const pauseContract = 178
 //
 // It is a literal of its own and never DaemonAPIVersion: the number a later contract takes
 // moves that constant, and the contract this block arrived at stays where it is. It moves only
-// with this change's own number, and it is the last number of answers.go's SupportedContracts,
-// which names the constant rather than its number for that reason.
+// with this change's own number, and answers.go's SupportedContracts names the constant rather
+// than its number for that reason.
 const repositoriesLiveContract = 202
 
 // deploymentRolesContract is the daemon contract that added the roles a deployment defines to the
@@ -1067,15 +1068,15 @@ const deploymentRolesContract = 221
 // longer name one claim.
 //
 // It is a literal of its own and never DaemonAPIVersion, for the reason deploymentRolesContract
-// gives, and it is the last number of answers.go's SupportedContracts, which names the constant
-// rather than its number for that reason.
+// gives, and answers.go's SupportedContracts names the constant rather than its number for that
+// reason.
 const strandedTokenContract = 222
 
 // withoutDeploymentRoles is the issue as a caller below deploymentRolesContract reads it: an issue
 // at step is at work, so it is served as implementing — its Dispatch status is in_progress, as
-// step's is; it keeps its slot and is at work, as step does; none of the phases an older
-// controller reads as past review or as a wait describes it; and every plan this daemon takes
-// holds an implementer — and it stays in `issues` and in `admission.active`, which the daemon
+// step's is; it keeps its slot and is at work, as step does; and none of the phases an older
+// controller reads as past review or as a wait describes it — and it stays in `issues` and in
+// `admission.active`, which the daemon
 // computes before any narrowing. A hold from step is served as a hold from implementing, a pending
 // task at step as one at implementing, and `stepRole` and `startWaitsForPod` are cleared. An
 // issue's workers keep the deployment role's key, which such a caller reads as a record keyed by
@@ -1523,6 +1524,17 @@ func withoutStrandedTokens(state State) (State, bool) {
 	}
 	state.StrandedClaims = stranded
 	return state, true
+}
+
+// withoutPlaceRole is the issue as a caller below completeStepContract reads it: with no
+// `placeRole`, the key that contract added. A plugin before INFRA-1048 reads an issue as a strict
+// object and refuses the whole state over a key it does not know, and a later plugin below the
+// contract strips it. The issue is a value of its own, so clearing the field leaves the state the
+// source answered as it was.
+func withoutPlaceRole(issue Issue) (Issue, bool) {
+	moved := issue.PlaceRole != ""
+	issue.PlaceRole = ""
+	return issue, moved
 }
 
 // withoutClaimTokens is the issue whose claim views carry no `token` and which carries no

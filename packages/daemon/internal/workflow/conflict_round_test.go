@@ -82,13 +82,13 @@ func recordedHead(t *testing.T, pool *pgxpool.Pool) string {
 //
 // The conflict is a confirmed one, two CONFLICTING reads of the head a minute apart
 // (marksConflicting), and it moves no issue (dispatch://INFRA-4374 R1): every move at the
-// conflicting head is a role's. Three are made here, one for each way this release makes one: a
-// worker's own backward move (TriggerBackward, request_backward_move), here the architect's from
-// accepting, a tester's fail at that same head, and the review App's request for changes at it.
-// Each raises the implementer's pass, because a completion's key is built from that number
-// (record.PhaseRow.Pass, api/handoff.go), and the review's is the only one that opens a review
-// round at all - the cap counts rounds, and only a review that requested changes opens one
-// (recordRound). That round is a conflict round, so with review_round_cap=3 and two counted
+// conflicting head is a role's. Three are made here, of three kinds: a worker's own backward move
+// (TriggerBackward, request_backward_move), here the architect's from accepting, a tester's fail
+// at that same head, and the review App's request for changes at it. Each raises the
+// implementer's pass, because a completion's key is built from that number (record.PhaseRow.Pass,
+// api/handoff.go), and the review's is the only one of them that opens a review round - the cap
+// counts rounds, and a review step's request for changes opens one where the step's agent is not
+// the owner (recordRound). That round is a conflict round, so with review_round_cap=3 and two counted
 // rounds already behind the issue the three moves write no cap message and no pr-blocked notice.
 //
 // Then the implementer's forward merge moves the recorded head, which is what answers a conflict,
@@ -201,7 +201,8 @@ func TestConflictRoundsCostTheCapNothing(t *testing.T) {
 // confirmed conflict needs no merge, so the two reads record their judgement and ask and move
 // nothing (workflow's mergeability, classify.ConflictNeedsMerge): what the rounds below are read
 // against is the mark the record holds. The round itself is the review App's request for changes,
-// because that is what opens a review round at all in this release (recordRound).
+// a review step's request for changes by an agent other than the owner, which opens a review round
+// (recordRound).
 func TestAConflictRoundCountsAgainstNoCapUntilTheMarkIsCleared(t *testing.T) {
 	for _, tc := range []struct {
 		name string

@@ -16,7 +16,9 @@ import (
 
 // Walk is the line of phases an issue's run walks, and where its task stands on it. A run with
 // plan rows (record.Store.Plan at the issue's generation) walks the line of its one task's steps
-// (plan.Line): each step runs as the phase of its role, then Legion's own retro and merge. A run
+// (plan.Line): each step runs as the phase of its role, then Legion's own retro, and its merge
+// where the issue has a pull request record (a task whose issue has none is done when its retro
+// ends, TableOf). A run
 // with none, which is every issue that ran before plan rows existed, walks today's line,
 // phase.Order, as the steps of the task default (todaysSteps), with Stored false, and its table is
 // Table, row for row. Every behaviour that differs from today reads Stored and nothing else; the
@@ -35,7 +37,8 @@ type Walk struct {
 	Text string
 	// Steps are the task's steps, by place from 1: todaysSteps where the run has no plan rows.
 	Steps []record.PlanStep
-	// Line is the phases the task walks: one for each step, then retro and merging.
+	// Line is the phases of the task's line: one for each step, then retro and merging, which a
+	// task whose issue has no pull request record does not walk: its retro moves it to done.
 	Line []phase.Phase
 	// State and Place are where the task stands (record.PlanTask); zero where the run has no
 	// plan rows, whose place is the issue's phase alone.
@@ -111,90 +114,97 @@ func (w Walk) PlaceOf(p phase.Phase) (record.TaskPlace, bool) {
 	return record.TaskPlace{}, false
 }
 
-// AgentAt is the name of the agent that does the work of place on w (record.PlanStep.AgentName), the
-// one place the workflow names a step's agent: the agent of the step stepAt gives, so the steps of
-// one key name one agent and the retro names the agent that runs it. It is "" for the merge, for a
-// walk with no plan rows, for a step of the key owner, whose claim is no name on the issue, and for
-// a place the task does not hold: there the role stands for the agent (Engine.stepToken).
+// AgentAt is the name of the agent that does the work of place on w (record.Worker.Name), the one
+// place the workflow names a step's agent: for a step, the agent of that step, so the steps of one
+// key name one agent; for the retro, the agent that does it (record.PlaceWorker). It is "" for the
+// merge, for a walk with no plan rows, where the agent is the owner (OwnerAt), whose claim is no
+// name on the issue, and for a place the task does not hold: there the role stands for the agent
+// (Engine.stepToken).
 func (w Walk) AgentAt(place record.TaskPlace) claim.Agent {
-	if step, ok := w.stepAt(place); ok {
-		return step.AgentName()
+	if !w.Stored {
+		return ""
 	}
-	return ""
-}
-
-// stepAt is the step whose agent does the work of place on w (stepOfWork), the one place the
-// workflow reads a step's agent from (Engine.stepToken): for a step, that step, so the steps of one
-// key are one agent; for the retro, the task's last step of the type implementation, which runs it.
-// A walk with no plan rows holds none, and neither does the merge or a place the task does not
-// hold: there the role stands for the agent.
-func (w Walk) stepAt(place record.TaskPlace) (record.PlanStep, bool) {
-	if at := w.stepOfWork(place); at > 0 {
-		return w.Steps[at-1], true
-	}
-	return record.PlanStep{}, false
+	worker, _ := w.workerAt(place)
+	return worker.Name(w.Steps)
 }
 
 // agentIDAt is the identity of the agent that does the work of place on w (plan.Agent.ID), the
-// agent AgentAt names, of the same step (stepOfWork): the agent of its key or of its own task and
-// place. It is "" where AgentAt is: for the merge, for a walk with no plan rows, for a step of the
-// key owner and for a place the task does not hold. A start of the work of place names it
+// agent AgentAt names, of the same worker (workerAt): the agent of its key or of its own task and
+// place. It is "" where AgentAt is: for the merge, for a walk with no plan rows, where the owner does
+// the place and for a place the task does not hold. A start of the work of place names it
 // (record.SuperviseRequest.Agent), and the claim it reaches starts in a new session where its
-// session is another agent's (supervise.Claim.SessionAgent).
+// session is another agent's (supervise.Claim.SessionAgent). AgentAt names the agent whose claim
+// the start runs on (Engine.stepToken), and both read the one rule of who works a place
+// (record.PlaceWorker), so the two are always one agent.
 func (w Walk) agentIDAt(place record.TaskPlace) plan.AgentID {
-	at := w.stepOfWork(place)
-	if at == 0 {
+	if !w.Stored {
 		return ""
 	}
-	step := w.Steps[at-1]
-	agent := plan.AgentOf(w.Task, at, plan.Step{Role: step.Role, Key: step.AgentKey})
-	if agent.Owner() {
+	worker, ok := w.workerAt(place)
+	if !ok || worker.Owner() || worker.Step < 1 {
 		return ""
 	}
-	return agent.ID()
+	return worker.Agent.ID()
 }
 
-// stepOfWork is the place, from 1, of the step whose agent does the work of place on w: the step
-// itself, and for the retro the task's last step of the type implementation (implementationPlace),
-// which runs it. It is 0 for the merge, for a walk with no plan rows and for a place the task does
-// not hold. It is the one rule of which agent works a place: stepAt gives that step, whose agent's
-// claim the start of the place's work runs on (Engine.stepToken), AgentAt names that agent, and
-// agentIDAt gives the identity the start names, so the two are always one agent.
-func (w Walk) stepOfWork(place record.TaskPlace) int {
+// OwnerAt says whether the agent that does the work of place on w, a stored walk, is the owner of
+// its task: a step of the key owner, or the retro of a task whose retro is the owner's
+// (record.PlaceWorker). The engine runs such a place by the architect that owns the issue now
+// (Engine.ownerAgent), never by a worker. It is the one statement of "the owner works this place"
+// the workflow reads.
+func (w Walk) OwnerAt(place record.TaskPlace) bool {
 	if !w.Stored {
-		return 0
+		return false
 	}
-	switch place.Kind {
-	case record.PlaceStep:
-		if place.Position >= 1 && place.Position <= len(w.Steps) {
-			return place.Position
-		}
-	case record.PlaceRetro:
-		if step, ok := w.implementationPlace(place); ok {
-			return step.Position
-		}
-	}
-	return 0
+	worker, ok := w.workerAt(place)
+	return ok && worker.Owner()
+}
+
+// workerAt is who works place of w's task, read from its steps (record.PlaceWorker); a walk with no
+// plan rows reads todaysSteps, whose last step of the type implementation is the implementer's.
+func (w Walk) workerAt(place record.TaskPlace) (record.Worker, bool) {
+	return record.PlaceWorker(w.Task, place, w.Steps)
 }
 
 // implementationPlace is the place of the step whose agent does the implementation work of w's
-// task where it stands at place, the one rule of that agent whatever its role is called: the last
-// step of the type implementation (record.PlanStep.Type) at or before place, so a step of that type
-// is its own, and every step stands before the retro and the merge; where none stands there - a
-// task sent back to a step before every step of that type, or a place its line does not hold - the
-// task's last step of that type, whose agent made the head the task stands on. That agent runs the
-// retro (AgentAt), is asked to merge the base forward (mergeForward) and is told what CI said of its
-// head (tellChecks), each on the claim the start of its step names (Engine.implementationAgent).
+// task where it stands at place (workPlace of the role implementer): the last step of the type
+// implementation (record.PlanStep.Type) at or before place, and where none stands there - a task
+// sent back to a step before every step of that type, or a place its line does not hold - the
+// task's last step of that type, whose agent made the head the task stands on. That agent is asked
+// to merge the base forward (mergeForward) and is told what CI said of its head (tellChecks), each
+// on the claim the start of its step names (Engine.implementationAgent). At the retro, which stands
+// past every step, it is the task's last step of that type, whose agent runs the retro (AgentAt,
+// record.PlaceWorker); at a step it can be an earlier step of that type, whose agent need not.
 // A walk with no plan rows names its implementer's step. ok is false for a task with no step of
 // that type.
 func (w Walk) implementationPlace(place record.TaskPlace) (record.TaskPlace, bool) {
+	return w.workPlace(place, claim.RoleImplementer)
+}
+
+// workPlace is the place of the step whose agent does the work of role, one of Legion's roles of a
+// step, in w's task where it stands at place, the one rule of that agent whatever its step's role
+// is called: a step of role's type (plan.BuiltinRole) whose role is role itself or a role the
+// deployment or the plan defines, and never another of Legion's roles, so the reviewer's work is
+// never the acceptance's, whose type is review too. It is the last such step at or before place, so
+// a step of that work is its own, and every step stands before the retro and the merge; where none
+// stands there, it is the task's last such step. ok is false for a task with no such step, and for
+// a role that is none of Legion's roles of a step.
+func (w Walk) workPlace(place record.TaskPlace, role claim.Role) (record.TaskPlace, bool) {
+	def, ok := plan.BuiltinRole(string(role))
+	if !ok {
+		return record.TaskPlace{}, false
+	}
 	reached := len(w.Steps)
 	if place.Kind == record.PlaceStep && place.Position >= 1 && place.Position <= len(w.Steps) {
 		reached = place.Position
 	}
 	last := 0
 	for i := len(w.Steps) - 1; i >= 0; i-- {
-		if w.Steps[i].Type != plan.TypeImplementation {
+		step := w.Steps[i]
+		if step.Type != def.Type {
+			continue
+		}
+		if _, legion := plan.BuiltinRole(step.Role); legion && step.Role != def.Name {
 			continue
 		}
 		if i < reached {
@@ -284,7 +294,7 @@ func (w Walk) runPlace(row record.PhaseRow, reported phase.Phase) (record.TaskPl
 	}
 	place := row.StepPlace
 	if row.StepTask == "" {
-		place = record.RolePlace(row.Role, w.Place, w.Steps)
+		place = record.RolePlace(row.Role, w.Task, w.Place, w.Steps)
 	}
 	if place < 1 || place > len(w.Steps) || w.Line[place-1] != reported || claim.Role(w.Steps[place-1].Role) != row.Role {
 		return record.TaskPlace{}, false
@@ -343,9 +353,10 @@ func issuePhaseOf(w Walk, place record.TaskPlace, state record.TaskState) phase.
 // (record.Store.MoveTask), the place of the row that moves it: a move to done passes the place the
 // task keeps, and a move to admitted, where a task waits for its first step (waitForFirstStep), no
 // place, the task at no act. It sets issue.Phase to the phase that place derives (issuePhaseOf),
-// which must be to, and issue.StepRole to the role of the step at that place ("" at the retro, the
-// merge or no act), in the caller's transaction and before the caller's write of issue
-// (WriteIssue), so a caller that reads the issue after the move reads the role a fresh read gives.
+// which must be to, issue.StepRole to the role of the step at that place ("" at the retro, the
+// merge or no act) and issue.PlaceRole to the role of the claim that works it (Walk.PlaceRole), in
+// the caller's transaction and before the caller's write of issue (WriteIssue), so a caller that
+// reads the issue after the move reads the roles a fresh read gives.
 // w then stands where the task does, for whatever the caller reads of it after the move. A run
 // with no plan rows has no task to move, and issue.Phase is to, as it always was. A move to where
 // the task already stands writes nothing. The caller clears or keeps issue.Hold itself.
@@ -368,7 +379,26 @@ func (e *Engine) moveTask(ctx context.Context, tx pgx.Tx, issue *record.Issue, w
 	if step, ok := w.planStepAt(place); ok {
 		issue.StepRole = claim.Role(step.Role)
 	}
+	issue.PlaceRole = w.PlaceRole(place)
 	return nil
+}
+
+// PlaceRole is the role of the claim that works place on w, a stored walk (record.Worker.ClaimRole):
+// the architect where the agent there is the owner of the task (OwnerAt: a step of the key owner,
+// or a retro the owner does), the step's own role at any other step (acceptance for a fresh agent
+// of acceptance, and a role the deployment or the plan defines as itself), and at the retro the
+// role of the agent that does it (record.PlaceWorker); "" for the merge, for no act, and for a
+// walk with no plan rows. It is the rule the store's read of the issue states again in SQL
+// (record.Issue.PlaceRole), which a test holds to this one.
+func (w Walk) PlaceRole(place record.TaskPlace) claim.Role {
+	if !w.Stored {
+		return ""
+	}
+	worker, ok := w.workerAt(place)
+	if !ok {
+		return ""
+	}
+	return worker.ClaimRole()
 }
 
 // WriteIssue writes issue (record.Store.PutIssue), and is the one write of an issue of the workflow
@@ -396,7 +426,9 @@ func (e *Engine) WriteIssue(ctx context.Context, tx pgx.Tx, issue record.Issue) 
 // writeIssueOn is WriteIssue's check and write on w, the walk of issue's run as the caller holds
 // it: WriteIssue's own read, or a workflow move, which read w and moved its task on it (moveTask),
 // so w is where the store holds the task: moveTask writes the place and the state it sets on w,
-// in the same transaction.
+// in the same transaction. A write that holds the issue, releases its hold or takes it out of the
+// workflow ends or opens again a merge forward asked of its owner (issueWritten), read before the
+// write replaces the record it reads.
 func (e *Engine) writeIssueOn(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk) error {
 	if w.Stored {
 		at, task := record.StandsAt(issue), issuePhaseOf(w, w.Place, w.State)
@@ -408,6 +440,9 @@ func (e *Engine) writeIssueOn(ctx context.Context, tx pgx.Tx, issue record.Issue
 			return fmt.Errorf("put %s at generation %d: it stands in %s, and its task %s is %s at %+v, which stands in %s",
 				issue.Key, issue.Generation, stands, w.Task, w.State, w.Place, task)
 		}
+	}
+	if err := e.issueWritten(ctx, tx, issue); err != nil {
+		return err
 	}
 	return e.store.PutIssue(ctx, tx, issue)
 }
@@ -456,20 +491,18 @@ func failsIn(p phase.Phase, trigger TriggerKind) bool {
 }
 
 // returnTarget is the place the failed step of w's task, standing at w.Place, returns the work to
-// when the completion names none: the first step before it whose recorded type is implementation
-// (record.PlanStep.Type). ok is false where no step before it has that type: the task then stops
-// (stopUnreturned). A step of a role the deployment defines may stand before its task's
-// implementer, and a stored type that no plan gives may stand anywhere; each reaches that answer.
+// when the completion names none (record.ReturnTarget): the first step before it whose recorded
+// type is implementation. ok is false where no step before it has that type: the task then stops
+// (stopUnreturned).
 func (w Walk) returnTarget() (record.TaskPlace, bool) {
-	if w.Place.Kind != record.PlaceStep || w.Place.Position < 1 || w.Place.Position > len(w.Steps) {
+	if w.Place.Kind != record.PlaceStep {
 		return record.TaskPlace{}, false
 	}
-	for i, step := range w.Steps[:w.Place.Position-1] {
-		if step.Type == plan.TypeImplementation {
-			return record.TaskPlace{Kind: record.PlaceStep, Position: i + 1}, true
-		}
+	to, ok := record.ReturnTarget(w.Steps, w.Place.Position)
+	if !ok {
+		return record.TaskPlace{}, false
 	}
-	return record.TaskPlace{}, false
+	return record.TaskPlace{Kind: record.PlaceStep, Position: to}, true
 }
 
 // returnsUnnamed says whether trigger is the fail of the step of w's stored task that issue stands
@@ -620,25 +653,28 @@ func (w Walk) planStepAt(place record.TaskPlace) (record.PlanStep, bool) {
 }
 
 // RoleAt is the role that works the step of w's task at place: for a step, the worker of the
-// phase its role runs as (phase.RoleFor of plan.RunsAs: the architect for the owner's acceptance),
-// and the role itself where it runs as step, a role the deployment or the plan defines; the implementer at the
-// retro and the merger at the merge; and "" at no act or at a place the task does not hold. On a
-// task whose roles are Legion's own it answers phase.RoleFor of the phase the place derives.
+// phase its role runs as (phase.RoleFor of plan.RunsAs), which is the role itself for every role
+// but acceptance, and the role itself where it runs as step, a role the deployment defines; for a
+// step of the role acceptance, the architect where the agent there is the owner (OwnerAt), who
+// signs it off, and the role acceptance where it is any other agent, the fresh agent of
+// acceptance; at the retro the role of the agent that does it (record.PlaceWorker: the role of the
+// task's last step of the type implementation, else the implementer, on whose row the owner's
+// retro is recorded); the merger at the merge; and "" at no act or at a place the task does not
+// hold. On a task whose roles are Legion's own and whose acceptance is the owner's it answers
+// phase.RoleFor of the phase the place derives.
 func (w Walk) RoleAt(place record.TaskPlace) claim.Role {
-	switch place.Kind {
-	case record.PlaceRetro:
-		return phase.RoleFor(phase.Retro)
-	case record.PlaceMerge:
+	if place.Kind == record.PlaceMerge {
 		return phase.RoleFor(phase.Merging)
 	}
-	step, ok := w.planStepAt(place)
-	if !ok {
-		return ""
+	worker, ok := w.workerAt(place)
+	if !ok || place.Kind == record.PlaceRetro {
+		return worker.Role
 	}
-	if runs := plan.RunsAs(step.Role); runs != phase.Step {
-		return phase.RoleFor(runs)
+	runs := plan.RunsAs(string(worker.Role))
+	if runs == phase.Step || (runs == phase.Accepting && !w.OwnerAt(place)) {
+		return worker.Role
 	}
-	return claim.Role(step.Role)
+	return phase.RoleFor(runs)
 }
 
 // endingRole is the role whose step a move of w's task out of from ends, read on the walk before

@@ -6,8 +6,9 @@ import (
 	"testing"
 )
 
-// The architect accepts before the merge and the merge closes the issue, so production_check is no
-// phase. An issue the old daemon left there, or held from there, has its pull request merged, so
+// The acceptance comes before the merge, and the merge closes an issue with a pull request (one
+// with none closes at its retro's end), so production_check is no phase. An issue the old daemon
+// left there, or held from there, has its pull request merged, so
 // 0049 moves it to the phase that waited for that merge and 20261029120700 moves it on to `merging`, where
 // the daemon's boot closes it; the phase constraints then admit accepting and refuse
 // production_check.

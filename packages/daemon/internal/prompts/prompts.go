@@ -127,8 +127,12 @@ func (c *Composer) Part(name string) string {
 }
 
 // Compose returns the shared role parts followed by this daemon's parts: the role's own, then the
-// text every architect (architect-common.md) or every phase worker (worker-common.md) shares. The
-// runtime appends addressing and deployment instructions after these paths.
+// text every architect (architect-common.md) or every phase worker (worker-common.md) shares. A
+// phase worker's shared parts are core/common.md, its own core, the headless mechanics and its own
+// part; the merger composes no core, so it has the last two alone. The role acceptance, the fresh
+// agent a plan step `acceptance` with no key asks for (none of claim.Roles), has no core of its
+// own: its own part takes that core's place, before the headless mechanics. The runtime appends
+// addressing and deployment instructions after these paths.
 func (c *Composer) Compose(role claim.Role, isRoot bool) (Parts, error) {
 	if c == nil {
 		return Parts{}, fmt.Errorf("compose role prompt: nil composer")
@@ -147,6 +151,8 @@ func (c *Composer) Compose(role claim.Role, isRoot bool) (Parts, error) {
 		daemonParts = []string{name + ".md", "worker-common.md"}
 	case claim.RoleMerger:
 		shared, daemonParts = []string{"mechanics/headless.md", "merger.md"}, []string{"merger.md", "worker-common.md"}
+	case claim.RoleAcceptance:
+		shared, daemonParts = []string{"core/common.md", "acceptance.md", "mechanics/headless.md"}, []string{"acceptance.md", "worker-common.md"}
 	default:
 		return Parts{}, fmt.Errorf("compose role prompt: unsupported role %q", role)
 	}

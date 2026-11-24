@@ -55,6 +55,9 @@ func (e *Engine) putPullRequest(ctx context.Context, tx pgx.Tx, pr record.PullRe
 	if err := e.store.PutPullRequest(ctx, tx, pr); err != nil {
 		return err
 	}
+	if err := e.pullRequestWritten(ctx, tx, recorded, pr); err != nil {
+		return err
+	}
 	if recorded != nil && !pullRequestNews(*recorded, pr) {
 		return nil
 	}
@@ -215,8 +218,9 @@ func (e *Engine) pullRequestOpened(ctx context.Context, tx pgx.Tx, fact intake.P
 // pullRequestSynchronized records the pull request's new head and what the move leaves standing
 // (classify.AdvancePullRequestHead). It reads no CI result: a settlement moves nothing, in any
 // phase, and the roles that work the issue were told what it said when it arrived (checks,
-// dispatch://INFRA-714/spec R1). In reviewing the head's arrival re-asks the round (settleRound):
-// any push may change code, so an approval of the previous head does not approve the new one
+// dispatch://INFRA-714/spec R1). In reviewing the head's arrival re-asks the round (settleRound,
+// which settles nothing at a review step the owner does): any push may change code, so an
+// approval of the previous head does not approve the new one
 // (classify.ApprovalStands), whether the push that left it is known yet or not. The push's own
 // handler re-asks it again when it arrives, and a round stuck the same way at the same head is
 // told once (stuckAs). A synchronize that moves nothing - a redelivery, or one carrying no head -
@@ -387,8 +391,10 @@ func (e *Engine) reaskRound(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 //
 // In reviewing, after the architect's notice, the merge settles the review round (settleRound):
 // an approval that stands on the head the pull request merged at ends the round and moves the
-// issue to accepting, since a merged pull request leaves the round nothing to wait on
-// (reviewRound). Without this, an approval that came before the merge would hold the issue in
+// issue on to its task's next step (accepting on the default steps), since a merged pull request
+// leaves the round nothing to wait on (reviewRound); a review step the owner does is settled by no
+// review, and ends by its report. Without this, an approval that came before the merge would hold
+// the issue in
 // reviewing: no read of the merged pull request ever comes (askMergeStateFor), and once the
 // reviewer has completed no other fact settles the round. An approval of a head other than the
 // one the merge names ends no round: once its reviewer has completed, the round is stuck on other
@@ -718,7 +724,7 @@ func (e *Engine) pullRequestMissing(ctx context.Context, tx pgx.Tx, fact intake.
 	}
 	return intake.Result{}, e.notice(ctx, tx, issue.Key, record.Notice{Kind: "pull-request-missing", Role: claim.RoleArchitect,
 		Reason: fmt.Sprintf("%s's implementer completed at %s, and GitHub shows no open pull request on %s %s, so %s stays in implementing. "+
-			"Tell its implementer (envoy_publish to `%s%s`) to open the pull request from %s; the daemon records it and moves %s to testing once it is open. "+
+			"Open the pull request from %s, or tell its implementer to (envoy_publish to `%s%s`) where the implementer step is not yours; the daemon records it and moves %s to the next step of its task once it is open. "+
 			"When the work should not go on, decide %s's phase as for a pull request closed without merging.",
-			issue.Key, fact.HandoffCommit, fact.Repo, fact.Branch, issue.Key, notify.RoleTopicPrefix, worker, fact.Branch, issue.Key, issue.Key)})
+			issue.Key, fact.HandoffCommit, fact.Repo, fact.Branch, issue.Key, fact.Branch, notify.RoleTopicPrefix, worker, issue.Key, issue.Key)})
 }

@@ -34,15 +34,17 @@ const reviewPermissionTTL = 5 * time.Minute
 type permissionKey struct{ repository, login string }
 
 // reviewerCanWrite answers intake's ConsumerSpec.ReviewPermission: whether review's author has
-// write access or higher to its repository, which is what lets a review decide a review round. It
-// reads GitHub's collaborator permission for the user
-// (`GET /repos/{owner}/{repo}/collaborators/{username}/permission`), which every App's Metadata
-// read permission reaches, with the review App's installation token. The answer's `permission` is
-// GitHub's legacy summary of the role: `admin` or `write` is write access or higher - a maintainer
-// reads as `write` there - and `read`, `none` or anything else is not. An answer for another
-// account than the author (GitHub resolves some logins to another user) is not either, and logged.
+// write access or higher to its repository, which is what lets the review of any author but the
+// review App decide the round of a review step a reviewer does; no review on GitHub decides a
+// review step the owner does (workflow's settleRound). It reads GitHub's collaborator permission
+// for the user (`GET /repos/{owner}/{repo}/collaborators/{username}/permission`), which every
+// App's Metadata read permission reaches, with the review App's installation token. The answer's
+// `permission` is GitHub's legacy summary of the role: `admin` or `write` is write access or
+// higher - a maintainer reads as `write` there - and `read`, `none` or anything else is not. An
+// answer for another account than the author (GitHub resolves some logins to another user) is not
+// either, and logged.
 //
-// GitHub is not asked about the review App's own reviews, which decide by its login and the
+// GitHub is not asked about the review App's own reviews, which are judged by its login and the
 // reviewer's recorded session (workflow's DecidesRound), nor about a review on a pull request the
 // daemon does not record, which the workflow drops; both are answered false. An account answered
 // no write access stands so for reviewPermissionTTL; write access is never kept

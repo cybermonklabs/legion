@@ -119,9 +119,11 @@ const nonEmpty = z.string().min(1);
 /** The tester's handoff as the tester role's prompt spells it (the `test` shape; nothing in the
  * daemon holds it to one), as far as the score reads it: the stamps the tester writes itself
  * (`schemaVersion` 1, `phase` test and its `issue`), the verdict on the implementer's recorded
- * results, and the failures, each naming the check it is against. What the tester ran is no part
- * of the handoff: it is a result recorded against a `check` block of the issue's Verification
- * document (`dispatch result`), which the pull request body carries one line of per check. The
+ * results (`implementerProof`, whose `how` says there are none where no implementer step stands
+ * before the tester's), and the failures, each naming the check it is against. What the tester ran
+ * is no part of the handoff: it is a result recorded against a `check` block of the issue's
+ * Verification document (`dispatch result`), which the pull request body, where the issue has one,
+ * carries one line of per check. The
  * body carries
  * neither a time nor a `previousHandoff`, since Dispatch records when each handoff was written and
  * versions it; the object is loose, so a body from a checkout whose prompt still asks for

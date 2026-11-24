@@ -18,8 +18,9 @@ import (
 )
 
 // claimReady tells an architect at each launch the issues it owns. For a child's own architect it
-// is the first instruction: a child's first phase start launches that architect with no task, and
-// a re-entered child resumes its session. A tree's root architect is launched with the task its
+// is the first instruction, beside the owner-step notice of a first step of the child's that is its
+// own: a child's first phase start launches that architect with no task, and a re-entered child
+// resumes its session. A tree's root architect is launched with the task its
 // record derives (ArchitectStartTask, Engine.StartArchitect), which names the decisions kept while
 // nobody in its tree could hear them (ParkedDecisionTask), or with none where the derivation gives
 // none, and a re-admitted tree resumes its session. A claim the provider refused out of its launch
@@ -30,7 +31,9 @@ import (
 // does a start that finds the claim still running (the outbox's start), as the TypeScript daemon
 // sends the overseer catch-up at every ready of an active root (onTreeReady). A relaunch in the
 // same generation is told again: it may be an architect that died during the turn a catch-up
-// started, resumed idle, or a fresh agent whose workspace was lost, and nothing else wakes either.
+// started, resumed idle, or a fresh agent whose workspace was lost, and nothing else wakes either
+// but the owner-step of a step of its own that started and has not ended, which is told again
+// after the catch-up to a session that was not given it (owedOwnersStep, toldThisSession).
 // The ready is one fact per launch (workflowRuntime.applyTerminal keys it by the claim's launch
 // generation), so the boot's replay of a ready already applied tells nothing more, and one never
 // applied tells it once. The catch-up a root architect's ready writes names every decision nobody
@@ -86,7 +89,22 @@ func (e *Engine) claimReady(ctx context.Context, tx pgx.Tx, fact intake.ClaimRea
 	if fact.Paced && e.cfg.Reserve != nil {
 		paced = e.cfg.Reserve(now)
 	}
-	return intake.Result{}, QueueCatchUp(ctx, tx, e.store, e.cfg.Steps, *issue, fact.Launch, fact.Relaunch, now, paced)
+	if err := QueueCatchUp(ctx, tx, e.store, e.cfg.Steps, *issue, fact.Launch, fact.Relaunch, now, paced); err != nil {
+		return intake.Result{}, err
+	}
+	// The catch-up names the owner's own step (treeCatchUp) and points at its owner-step notice,
+	// which the session ready now may never have been given. So the step is told again after it
+	// where its run started and has not ended, and no owner-step of that run is still queued
+	// (owedOwnersStep). Nor may an owner-step of that run have reached the session the claim runs in
+	// (toldThisSession).
+	owed, ok, err := e.owedOwnersStep(ctx, tx, *issue)
+	if err != nil || !ok {
+		return intake.Result{}, err
+	}
+	if told, err := e.toldThisSession(ctx, tx, *issue, owed, fact.Launch); err != nil || told {
+		return intake.Result{}, err
+	}
+	return intake.Result{}, e.tellOwedStep(ctx, tx, *issue, owed, "the owner's catch-up at its launch")
 }
 
 // QueueCatchUp is the one composer of an architect's catch-up, which both the ready (claimReady)
@@ -127,7 +145,7 @@ func (e *Engine) claimReady(ctx context.Context, tx pgx.Tx, fact intake.ClaimRea
 // that wake writes when it runs (the daemon's wakeRan). The pair is written only where the
 // pacing reserved something: a catch-up it held to no moment reports no wait, having had none.
 func QueueCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []record.DesignStep, issue record.Issue, launch uint64, relaunch string, now, paced time.Time) error {
-	catchUp, awaiting, err := treeCatchUp(ctx, tx, store, steps, issue)
+	catchUp, awaiting, ownStep, err := treeCatchUp(ctx, tx, store, steps, issue)
 	if err != nil {
 		return err
 	}
@@ -154,6 +172,16 @@ func QueueCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []re
 	if len(awaiting) > 0 {
 		reason += fmt.Sprintf("; in accepting, waiting for your acceptance, which no worker gives: %s (read the evidence, then sign_off or request_backward_move)", strings.Join(awaiting, ", "))
 	}
+	if ownStep != "" {
+		reason += fmt.Sprintf("; at a step of yours, which no worker does: %s at %s (do it as its owner-step notice says, then report it with complete_step)", issue.Key, ownStep)
+	}
+	asked, err := untoldMergeForward(ctx, tx, store, issue, launch)
+	if err != nil {
+		return err
+	}
+	if asked != nil {
+		reason += "; " + untoldAskWords(issue, *asked)
+	}
 	if relaunch != "" {
 		reason = relaunch + "\n\n" + reason
 	}
@@ -164,6 +192,41 @@ func QueueCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []re
 		notice.PacedAt, notice.PacedFrom = paced, now
 	}
 	return EnqueueNaming(ctx, tx, store, issue.Key, issue.Tree, notice, kept, at)
+}
+
+// untoldMergeForward is the pull request whose merge forward the record holds asked of issue's
+// owner and still open (record.OwnersMergeForward) where the owner's claim as it is ready now at
+// launch was not told it, and nil where no such ask stands: no ask row of it is still queued, whose
+// delivery tells it (record.Store.MergeForwardAskPending), and the mark of whom its ask reached
+// (record.MergeForward.Told, the zero OwnerTold while it reached nobody) does not hold the session
+// or the launch the claim runs at now, by the one rule of told an owner-step is judged by too
+// (toldNow). A fresh session — after the owner's claim failed, or a launch whose resume of the
+// session told failed — holds nothing of the one told, and the ask asks an act that no step's
+// notice repeats, so the catch-up of that launch names it (untoldAskWords). A resumed session holds
+// the ask's message and is not told it again, and no second message of the ask is written for it.
+func untoldMergeForward(ctx context.Context, tx pgx.Tx, store record.Store, issue record.Issue, launch uint64) (*record.PullRequest, error) {
+	pr, err := store.PullRequest(ctx, tx, issue.Key)
+	if err != nil || !record.OwnersMergeForward(issue, pr) {
+		return nil, err
+	}
+	asked := pr.MergeForward
+	if pending, err := store.MergeForwardAskPending(ctx, tx, issue.Key, asked.Agent, asked.Head); err != nil || pending {
+		return nil, err
+	}
+	if told, err := toldNow(ctx, tx, store, issue, asked.Told, launch); err != nil || told {
+		return nil, err
+	}
+	return pr, nil
+}
+
+// untoldAskWords is how the catch-up names the open merge forward of pr, the pull request of
+// issue, asked of its owner and not told to the owner's session now (untoldMergeForward), with its
+// head and base, as the ask would.
+func untoldAskWords(issue record.Issue, pr record.PullRequest) string {
+	asked := pr.MergeForward
+	return fmt.Sprintf("a merge forward the daemon asked of you, still open and not told to this session: pull request #%d of %s at head %s conflicts with %s; "+
+		"merge %s forward in the issue workspace and push the issue branch, with no handoff and no completion for the merge",
+		pr.Number, issue.Key, asked.Head, asked.Base, asked.Base)
 }
 
 // queuedRowCovers is whether a row the outbox already holds for this role covers its phase: a
@@ -185,8 +248,10 @@ func queuedRowCovers(run record.RoleRun, root record.Issue, current phase.Phase)
 // (dispatch://INFRA-714 R7).
 //
 // The conditions are the ones a resume by rule already uses (resume.go's booted), read for this
-// one claim: the issue is recorded and in the workflow, the worker of its open phase (OpenRoleOf,
-// the role of its running step at step) is this claim's, its tree does not linger, and its phase's
+// one claim: the issue is recorded and in the workflow, the worker of its open phase (OpenRoleOf:
+// the role of the claim that works the task's place, and none where the owner does that step or
+// retro, whose owner is told by an owner-step notice instead) is this claim's, its tree does not
+// linger, and its phase's
 // own terminating fact has not arrived (PhaseFinished) — a merged root stands in merging for as
 // long as the rest of its tree runs, and its merger must not be handed merging again at every
 // launch. A claim of another project's issue finds no record here, as a claim of an issue nobody
@@ -220,9 +285,10 @@ func queuedRowCovers(run record.RoleRun, root record.Issue, current phase.Phase)
 // reads no slot and carries no entry, the claim being on the entry its row names already; the
 // owed entry's start takes the slot mark the slot rule gives its phase, as every start
 // Engine.started builds does (StartOrOwe), so it waits for the issue's admission slot in a phase
-// up to the review and for none past it (record.KeepsSlot). Most often an issue up to its review
-// holds that slot already: a claim whose agent has just said it is ready is running, and
-// admission has long since given its tree a slot. The one such issue at work that holds none is
+// that keeps one and for none in accepting, retro or merging (record.KeepsSlot). Most often an
+// issue in a phase that keeps one holds that slot already: a claim whose agent has just said it is
+// ready is running, and admission has long since given its tree a slot. The one such issue at work
+// that holds none is
 // one that gave its row back to wait on another issue (admit's releaseSlotsForWaits,
 // record.Issue.ReleasedForWaitAt), and the two branches still hold for it: the wait stops none of
 // its work, so a level claim's resume is no new work and goes at once, while an owed entry's work
@@ -294,27 +360,34 @@ func (e *Engine) readyWorkerTask(ctx context.Context, tx pgx.Tx, fact intake.Cla
 // child's own generation: a child registers no gate and no hand-over creates one, so its catch-up
 // states no step and is neither handed over nor carried.
 //
-// With it come the keys, in key order, of the listed issues waiting for this architect's
-// acceptance (awaitingAcceptance). No worker runs in accepting, and the one phase-finished notice
-// that moved an issue there went to the architect that owned the issue then: a root's ends
-// undelivered while the root's architect claim has failed (the outbox's notice), and a child's
-// went past its failed architect to the architect above it (the owner walk). So an architect that
-// comes back learns of the wait from its catch-up alone; the reason names these keys so that the
-// catch-up, which a revived architect reads as its issues already running, says what is the
-// architect's own to do.
-func treeCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []record.DesignStep, issue record.Issue) (record.CatchUp, []string, error) {
+// With it comes what of the listed issues is the architect's own to do, by the one rule of the
+// owner's place (record.Issue.OwnersPlace): no worker does it, and the notices that told it — the
+// phase-finished that moved an issue into accepting, the owner-step of a step of the key owner,
+// a step acceptance:owner among them — went to an architect that may have failed or lost its
+// session since, so an architect that comes back learns of it from its catch-up, which a revived
+// architect reads as its issues already running, and of a step of its own also from that step's
+// owner-step: the one still queued for it, or else one told again after the catch-up where the
+// session ready now has not had it (claimReady, owedOwnersStep, toldThisSession). The keys, in
+// key order, of the listed
+// issues waiting in accepting for this architect's acceptance (awaitingAcceptance): an issue with
+// no plan rows, or a step `acceptance:owner`, whose sign_off an architect above takes as well.
+// And, where issue's own task stands at another step of its owner's or at the owner's retro, which
+// only issue's own architect reports (complete_step), that place in words ("" for none). An issue
+// whose place another agent works, the fresh agent of acceptance's among them, is neither: that
+// agent ends it.
+func treeCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []record.DesignStep, issue record.Issue) (record.CatchUp, []string, string, error) {
 	catchUp := record.CatchUp{Generation: issue.Generation, Gates: []record.CatchUpGate{}}
 	if claim.IsTreeRoot(issue.Key, issue.Tree) {
 		handed, err := ArchitectCarried(ctx, tx, store, issue)
 		if err != nil {
-			return record.CatchUp{}, nil, err
+			return record.CatchUp{}, nil, "", err
 		}
 		if handed != nil {
 			catchUp.HandedOver, catchUp.Carried = true, handed.GateCarried
 		}
 		gates, err := store.GatesOf(ctx, tx, issue.Key)
 		if err != nil {
-			return record.CatchUp{}, nil, err
+			return record.CatchUp{}, nil, "", err
 		}
 		required := classify.RequiredSteps(steps)
 		catchUp.Gates = make([]record.CatchUpGate, 0, len(required))
@@ -333,7 +406,7 @@ func treeCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []rec
 	}
 	members, err := store.TreeIssues(ctx, tx, issue.Tree)
 	if err != nil {
-		return record.CatchUp{}, nil, err
+		return record.CatchUp{}, nil, "", err
 	}
 	owned := map[string]bool{issue.Key: true}
 	for _, under := range record.Beneath(issue, members) {
@@ -341,6 +414,7 @@ func treeCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []rec
 	}
 	catchUp.Issues = make([]record.CatchUpIssue, 0, len(owned))
 	var accepting []record.Issue
+	var ownStep string
 	for _, member := range members {
 		if !owned[member.Key] {
 			continue
@@ -353,21 +427,47 @@ func treeCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []rec
 			listed.Parent = *member.Parent
 		}
 		catchUp.Issues = append(catchUp.Issues, listed)
-		if member.Phase == phase.Accepting && record.InWorkflow(member) {
+		if !record.InWorkflow(member) || !member.OwnersPlace() {
+			continue
+		}
+		switch {
+		case member.Phase == phase.Accepting:
 			accepting = append(accepting, member)
+		case member.Key == issue.Key:
+			words, err := ownersPlaceWords(ctx, tx, store, member)
+			if err != nil {
+				return record.CatchUp{}, nil, "", err
+			}
+			ownStep = words
 		}
 	}
 	awaiting, err := awaitingAcceptance(ctx, tx, store, issue, accepting)
 	if err != nil {
-		return record.CatchUp{}, nil, err
+		return record.CatchUp{}, nil, "", err
 	}
-	return catchUp, awaiting, nil
+	return catchUp, awaiting, ownStep, nil
+}
+
+// ownersPlaceWords is the place issue's task stands at, which its owner works (OwnersPlace), as
+// the catch-up names it (record.OwnersPlaceWords), read from the plan rows of its run.
+func ownersPlaceWords(ctx context.Context, tx pgx.Tx, store record.Store, issue record.Issue) (string, error) {
+	stored, err := store.Plan(ctx, tx, issue.Key, issue.Generation)
+	if err != nil || stored == nil {
+		return "", err
+	}
+	task, err := stored.Task()
+	if err != nil {
+		return "", fmt.Errorf("the owner's place of %s: %w", issue.Key, err)
+	}
+	return record.OwnersPlaceWords(task.Task, task.Place, stored.Steps[task.Task]), nil
 }
 
 // awaitingAcceptance is the keys, in the order given, of accepting — issues of issue's tree that
-// wait in accepting and are still in the workflow — whose acceptance is issue's architect's: the
-// architect the phase-finished notice that moved each there goes to, which is the owner walk from
-// the issue itself over the architect claims this transaction reads (record.ReadOwnerWalk). So a
+// wait in accepting at an acceptance their owner does (record.Issue.OwnersPlace: an issue with no
+// plan rows, or a step acceptance:owner) and are still in the workflow — whose acceptance is
+// issue's architect's: the architect the phase-finished notice that moved each there goes to,
+// which is the owner walk from the issue itself over the architect claims this transaction reads
+// (record.ReadOwnerWalk). So a
 // root's architect is not asked to accept an issue whose own architect, or an architect between
 // the two, holds its role, and is asked to accept one whose architects up to the root have all
 // failed, retired, never started, or been suspended by the workflow or an operator (a claim the

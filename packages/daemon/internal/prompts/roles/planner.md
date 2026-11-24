@@ -35,7 +35,7 @@ A missing check never blocks the plan. When a check's call fails (the task retur
 
 ## An open decision
 
-While a decision you sent to whoever owns the plan is outstanding, end the turn with a line that begins WAITING, naming the decision, who holds it and when you sent it. Do not finish the phase with the decision still open: a plan that ships an open decision hands the choice to whoever implements it, unseen. This is about a decision its owner must make; a check's other findings never block the plan, and its rejection of the goal or of a requirement does, as above. An answer that changes what the plan builds or how it is proven gets a plan review of the changed plan, and `rounds` counts it, because a plan an answer changed and no reviewer read is the gap this rule closes. That review runs the loop above.
+While a decision you sent to whoever owns the plan is outstanding, end the turn with a line that begins WAITING, naming the decision, who holds it and when you sent it. Do not finish the phase with the decision still open. A plan that ships an open decision hands the choice to whoever works from the plan, unseen. This is about a decision its owner must make; a check's other findings never block the plan, and its rejection of the goal or of a requirement does, as above. An answer that changes what the plan builds or how it is proven gets a plan review of the changed plan, and `rounds` counts it, because a plan an answer changed and no reviewer read is the gap this rule closes. That review runs the loop above.
 
 ## Plan handoff
 

@@ -50,8 +50,7 @@
 # App is proved once to lib/app-logins.ts, which reads its bot login and
 # refuses a credential that is not its id's App's, before the run writes anything and never in
 # this shell), and the smoke repository
-# sjawhar/legion-smoke, where the implementer pushes a branch and opens a pull request from it,
-# which the teardown closes.
+# sjawhar/legion-smoke, where the implementer pushes a branch and opens its pull request.
 set -Eeuo pipefail
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
@@ -140,9 +139,9 @@ collect_transcripts() {
 }
 
 # remove_run_branch closes any pull request of the run's project on the smoke repository and deletes
-# the issue's branch, which the implementer pushed: the pull request the implementer opens for its
-# completion is closed here, so neither outlives the run. It makes no gh call before the proof human
-# is established.
+# the issue's branch, which the implementer pushed: the implementer's own pull request is one of
+# them, closed here however the run ends, so neither outlives it. It makes no gh call before the
+# proof human is established.
 remove_run_branch() {
   [ -n "$proof_human" ] && [ -n "$issue" ] || return 0
   close_run_pull_requests >&2 || printf "some of this run's pull requests may still be open on %s (above)\n" "$repo" >&2
@@ -822,10 +821,9 @@ until_true 300 "the reminded implementer's turn to end" issue_worker_state "$iss
 note "the implementer ended a turn with implementing still open: Claude Code carried its Stop hook's block back as Stop hook feedback naming \"$stall_reminder_needle\", and took one more turn on it"
 pass
 
-# The daemon refuses a completion of implementing while no pull request is open on the issue branch
-# (HANDOFF_NO_PULL_REQUEST, packages/daemon/internal/api/handoff.go), so the implementer opens one
-# before handoff_complete, and exactly one is open on the branch; the teardown closes it
-# (remove_run_branch).
+# The implementer opens its pull request before it completes: the completion route applies an
+# implementer's completion in implementing only while one is open on its branch, and answers 409
+# HANDOFF_NO_PULL_REQUEST otherwise (implementer_pull_request, lib/workflow.sh).
 begin claude-implementer-handoff
 marker="claude-proof-marker-$ptoken-$RANDOM$RANDOM"
 send_agent "$issue" implementer "Claude backend proof implementation operation ($marker): make the smallest one-file change this issue's spec describes in your $repo workspace, commit it on legion/$issue, push the branch to origin, write the required implementation handoff with dispatch handoff-write, open a pull request from legion/$issue to the repository's default branch, then call the legion tool's handoff_complete with a concise summary. Do not merge."
@@ -837,9 +835,10 @@ files=$(smoke_commit_files "$commit") || exit 1
 open_prs=$(gh -R "$repo" pr list --state open --head "legion/$issue" --json number --jq length) ||
   fail "could not list the open pull requests on $repo branch legion/$issue"
 [ "$open_prs" = 1 ] || fail "$repo has $open_prs open pull requests on legion/$issue at the implementer's completion, want exactly 1"
+pr_number=$(implementer_pull_request "$issue") || exit 1
 legion_handoff_in || fail "the transcript $transcript holds no successful legion handoff_complete call"
 until_true 300 "the implementer's turn to end" issue_worker_state "$issue" implementer idle
-note "handoff_complete through mcp__legion__legion named the implementer's Dispatch handoff record, written under its Claude Code session $session, and its pushed commit $commit on $repo, which changes nothing under .legion/, with one pull request open on legion/$issue"
+note "handoff_complete through mcp__legion__legion named the implementer's Dispatch handoff record, written under its Claude Code session $session, and its pushed commit $commit on $repo, which changes nothing under .legion/, with its pull request #$pr_number the one open on legion/$issue"
 pass
 
 # Background work on the Claude Code backend. The runtime sets no

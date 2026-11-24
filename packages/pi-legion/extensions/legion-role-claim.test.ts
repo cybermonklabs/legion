@@ -255,6 +255,7 @@ test("keeps a Legion role claimant fresh regardless of extension initialization 
       boolean: property,
       array: property,
       enum: property,
+      union: property,
       unknown: property,
       discriminatedUnion: () => ({}),
     },

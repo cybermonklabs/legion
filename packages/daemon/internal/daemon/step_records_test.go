@@ -459,10 +459,11 @@ const planStepAgentMigration = "_plan_step_agent.up.sql"
 // again, which every release before it writes its phases rows by.
 const phaseStepKeyMigration = "_phase_step_key.up.sql"
 
-// The record of a member of a tree: a child's acceptance is the work of the architect that owns
-// the child when its step starts, so the record of its step 5 names that architect, with the
-// session its claim holds and the model that answered it last. The child stands in reviewing under
-// the walk's root, on a pull request of its own; a person's approval moves it to accepting.
+// The record of a member of a tree: the acceptance of a child with no plan rows, as here, is the
+// work of the architect that owns the child when its step starts, so the record of its step 5
+// names that architect, with the session its claim holds and the model that answered it last. The
+// child stands in reviewing under the walk's root, on a pull request of its own; a person's
+// approval moves it to accepting.
 //   - The child's own architect holds its role: a launch an earlier daemon began, which the boot
 //     relaunches. It signs the child off through its own route while its last answer waits on its
 //     claim's feed (heldRequest), so the record's model is the one its stream read ahead of the
@@ -521,9 +522,10 @@ func TestAChildsAcceptanceRecordNamesItsOwningArchitect(t *testing.T) {
 	})
 }
 
-// childInAccepting seeds a child of the walk's root in reviewing (seedChildInReviewing) and has a
-// person approve its pull request's head (publishReview), which moves it to accepting, the step of
-// the architect that owns it; it answers the child's key once the child stands there.
+// childInAccepting seeds a child of the walk's root in reviewing (seedChildInReviewing), with no
+// plan rows, and has a person approve its pull request's head (publishReview), which moves it to
+// accepting, where the architect that owns it accepts it; it answers the child's key once the
+// child stands there.
 func (r *stepRecordsRig) childInAccepting() string {
 	r.t.Helper()
 	child, number := r.seedChildInReviewing()

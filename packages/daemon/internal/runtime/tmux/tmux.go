@@ -104,7 +104,9 @@ type Options struct {
 	RoleApps appauth.RoleApps
 	// ActsAs answers the role whose App a claim's pane holds while the claim does work other than
 	// its stored role's (runtime.ActsAs), which runtime.SlotRole reads at each mint of a pane's gh
-	// files. Optional: nil gives every pane its claim's stored role.
+	// files. Optional: nil gives every pane the role SlotRole's caller reads, the role of the step a
+	// launch is for, and at a refresh the role the pane was launched as, else the claim's stored
+	// role.
 	ActsAs runtime.ActsAs
 	// ControllerCredential is the daemon's function for the controller's own gh bundle
 	// (appauth.ControllerCredential). The refresher asks it for the owner the pane's launch
@@ -123,9 +125,9 @@ type Options struct {
 	// directory, which the pane's own user can write. Required with GitHubCredential.
 	ClaimRepository func(ctx context.Context, token claim.Token) (ghrepo.Repository, error)
 	// ClaimRole is a claim's stored role, from the daemon's own state: the role whose App the pane
-	// of a claim this runtime adopted without seeing its launch holds (runtime.SlotRole), since the
-	// claim's token names its agent and not its role. Optional: without it such a pane keeps its
-	// gh files until it is launched again.
+	// of a claim this runtime adopted without seeing its launch holds (runtime.SlotRole), unless
+	// the runtime's ActsAs gives another, since the claim's token names its agent and not its role.
+	// Optional: without it such a pane keeps its gh files until it is launched again.
 	ClaimRole func(ctx context.Context, token claim.Token) (claim.Role, error)
 	// Launchers are how a pane runs each harness the daemon resolved at boot (Launcher), by backend:
 	// a spec whose backend (runtime.Of) has none is refused. At least one, and only backends the
@@ -253,7 +255,7 @@ type Runtime struct {
 	run func(ctx context.Context, argv []string) (result, error)
 	// readProc reads a /proc file; a field for the same reason.
 	readProc func(path string) ([]byte, error)
-	// writeBundle writes a claim's gh bundle for the credential refresh (writeWatchedBundle); New
+	// writeBundle writes a claim's gh bundle for a watched pane's write (writePaneCredential); New
 	// sets it to ghconfig.WriteBundle. A field so an in-package test can hold the refresh inside its
 	// write, under the launch lock, while a relaunch of the same claim runs.
 	writeBundle func(root string, bundle ghconfig.Bundle) ([]string, error)
@@ -261,9 +263,10 @@ type Runtime struct {
 	// launchMu serializes everything that decides which window a pane lands in and every change
 	// to the private server's set of panes the runtime must not race: session creation, a launch's
 	// refusal of a claim whose process still runs and the files it then writes for the claim, window
-	// choice, the pane's opening and recording, orphan reaping, and the scrub. A refresh's write of
-	// a claim's gh directory takes it too, to judge under it that its pane is still watched
-	// (writeWatchedBundle).
+	// choice, the pane's opening and recording, orphan reaping, and the scrub. Every other write of
+	// a claim's gh directory takes it too, and judges under it that its pane is still watched and the
+	// role whose App it writes (writePaneCredential), and a read of what the directory holds takes
+	// it (SlotHoldsCredential).
 	launchMu sync.Mutex
 
 	trackedMu sync.Mutex

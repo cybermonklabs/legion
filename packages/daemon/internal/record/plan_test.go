@@ -349,10 +349,12 @@ func TestOwnersNewestPlanReadsOnlyAnOwnersGift(t *testing.T) {
 }
 
 // An architect of an issue's tree now is the architect of the tree's root, or of a member the
-// record holds in that tree, a sub-architect: the one rule of who owns an issue, which an
+// record holds in that tree, a sub-architect: the rule of which architects own an issue, which an
 // architect's call on a recorded issue and the giver of a plan at the issue's first step are both
-// held to. The architect of another tree is not, nor the architect of an issue that stood in the
-// tree and now stands in a tree of its own, nor a claim that is no architect's.
+// held to. The owner of the task's steps of the key owner is narrower, the issue's own architect
+// alone (OwnerClaim). The architect of another tree is not an architect of the issue's tree, nor
+// the architect of an issue that stood in the tree and now stands in a tree of its own, nor a
+// claim that is no architect's.
 func TestArchitectOfTreeIsTheRootsOrAMembersArchitect(t *testing.T) {
 	st := migratedStore(t)
 	ctx := context.Background()

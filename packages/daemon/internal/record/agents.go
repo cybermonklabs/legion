@@ -49,8 +49,9 @@ func KeySessionsOf(claims []IssueClaim) KeySessions {
 // (supervise.Claim.SessionAgent), so each later agent with no key of a role needs no new number, and
 // so no new slot of its pod.
 //
-//  1. A step of the key owner has no name: its agent is the tree's architect, whose token names the
-//     tree and no name on the issue.
+//  1. A step of the key owner has no name: its agent is an architect, the issue's own
+//     (OwnerClaim) or one above that runs the step for it (workflow's ownerAgent), whose token
+//     names its issue and its role and no name of an agent.
 //  2. Each other key that an earlier row names takes the name of its latest such row, and a key no
 //     earlier row names takes the name whose claim holds its session, each only where it is the
 //     key that held that name last. The key that held a name last is the key of the latest earlier

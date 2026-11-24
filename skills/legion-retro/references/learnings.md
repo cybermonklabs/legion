@@ -16,8 +16,8 @@ or a repository guide.
   `skills/legion-worker/references/tools.md`; the librarian decides.
 - **What it replaces**, when an instruction the repository carries is wrong: quote it and its path.
 
-Drop a point that cites no file, symbol, quoted text or commit of this pull request, and a point
-that only restates what a skill already says.
+Drop a point that cites no file, symbol, quoted text or commit of this pull request (of the task's
+work, where it has none). Also drop a point that only restates what a skill already says.
 
 ## Find what already covers the topic
 
@@ -39,7 +39,7 @@ dispatch comment --issue '<KEY>' --body-file - <<'EOF'
 
 <the rule, a few imperative lines>
 
-Evidence: <file and symbol, or text quoted from it, of this pull request, and what went wrong>.
+Evidence: <file and symbol, or text quoted from it, of this pull request or of the task's work, and what went wrong>.
 Belongs in: <the skill, prompt or guide>.
 Replaces: <the instruction and its path>, or nothing.
 EOF

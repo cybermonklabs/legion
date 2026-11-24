@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/experiment"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
@@ -713,35 +714,58 @@ func (s *server) retryClaim(w http.ResponseWriter, r *http.Request) {
 // it. It answers every refusal itself and reports the status its caller's success answer takes.
 // Whether the retry goes through the issue's phase is restartWorkedPhase's to decide: where it
 // starts that phase again, a relaunched phase worker is handed the phase's task, since a worker
-// relaunched outside its own phase is handed none and does nothing. Every claim it does not reach,
-// an architect among them, is the machine's to answer (machineRetry), relaunched on its own with
-// whatever task it still holds. It is how an operator relaunches the claims a runtime failed to
-// launch — every failed claim in turn, with `legion claims retry --failed` — once the cause is
-// gone.
+// relaunched outside its own phase is handed none and does nothing. Every claim it does not reach
+// is the machine's to answer (machineRetry), relaunched on its own with whatever task it still
+// holds. An architect is the machine's to relaunch in every case, since no phase start starts it.
+// Where it is the owner of its issue's task standing at a place of its own (ownersOwnPlace), the
+// phase's restart then tells it its step again, and the answer is that restart's 202. The restart
+// queues one more owner-step, where none of the step's open run is still queued. A restart refused
+// after the relaunch is logged and the relaunch answered. The claim runs again, and is told the
+// step it owes when it does (workflow's owedOwnersStep). That holds where no owner-step of the
+// step's open run is still queued and its session has not had one. It is how an operator
+// relaunches the claims a runtime failed to launch — every failed claim in turn, with
+// `legion claims retry --failed` — once the cause is gone.
 //
 // The session is the claim's own either way: this start relaunches the recorded one, or a new one
 // once supervise's Machine.forgetSession has dropped it. A caller that wants a new session forgets
 // it before calling here (freshSession), which is also what reaches a claim this start refuses.
 func (s *server) retryStart(w http.ResponseWriter, r *http.Request, m *supervise.Machine, token claim.Token, fresh bool) (int, bool) {
 	c := m.Claim()
-	if failedOrRetired(c.State) {
-		if status, refusal, restarted := s.restartWorkedPhase(r, token, c, fresh); restarted {
-			if refusal != "" {
-				s.refuse(w, r, status, refusal)
-				return 0, false
-			}
+	if !failedOrRetired(c.State) {
+		return s.machineRetry(w, r, m, token, fresh)
+	}
+	if c.Role == claim.RoleArchitect {
+		status, ok := s.machineRetry(w, r, m, token, fresh)
+		if !ok {
+			return 0, false
+		}
+		told, refusal, restarted := s.restartWorkedPhase(r, token, c, fresh)
+		switch {
+		case !restarted:
+			return status, true
+		case refusal != "":
+			s.log.Warn("api: a retry relaunched an architect, and the restart that tells an owner its step again was refused", "claim", token, "issue", c.Issue, "refusal", refusal)
 			return status, true
 		}
+		return told, true
+	}
+	if status, refusal, restarted := s.restartWorkedPhase(r, token, c, fresh); restarted {
+		if refusal != "" {
+			s.refuse(w, r, status, refusal)
+			return 0, false
+		}
+		return status, true
 	}
 	return s.machineRetry(w, r, m, token, fresh)
 }
 
 // restartWorkedPhase starts again the phase the claim's role works, which is what hands a
-// relaunched phase worker that phase's task. Both recoveries run it: the retry of a failed or
-// retired claim (retryStart), and the fresh session of a phase worker that comes back owing no
-// task (freshSession). restarted is false for a claim no phase start reaches — an architect, a
-// claim whose issue works another role's phase or has left the workflow, and any claim on a daemon
-// that records no issues — and its caller starts such a claim another way.
+// relaunched phase worker that phase's task, and tells the owner of a task its step again. Both
+// recoveries run it: the retry of a failed or retired claim (retryStart), and the fresh session of
+// a claim that comes back owing no task (freshSession). restarted is false for a claim no phase
+// start reaches — an architect but the owner at a place of its own (ownersOwnPlace), a claim whose
+// issue works another role's phase or has left the workflow, and any claim on a daemon that
+// records no issues — and its caller starts such a claim another way.
 //
 //   - an issue held for that worker's own role (record.Issue.RoleAt of the phase it is held from,
 //     which at step is the role of its running step, a role the deployment or the issue's plan defines) is
@@ -749,22 +773,33 @@ func (s *server) retryStart(w http.ResponseWriter, r *http.Request, m *supervise
 //     it was held from comes back, and its role is started on it;
 //   - an issue standing in that worker's own phase has that phase started again
 //     (intake.RestartPhase). It is where an operator's stop leaves an issue, since a stop is no
-//     death and holds nothing, and where a failure the workflow could not hold leaves one.
+//     death and holds nothing, and where a failure the workflow could not hold leaves one. For the
+//     owner at a step or a retro of its own the restart starts no run. It gives the owner the
+//     daemon's restarts of that step's run again (workflow's restart). It queues one more
+//     owner-step with the retry's task, where none of the step's open run is still queued. Its
+//     caller has relaunched the claim itself.
 //
 // Either way the start is the workflow's, so a restart that ran reports 202, for its caller to
 // answer with the claim as it is until that start runs. A restart that did not run reports the
-// status and the sentence it is refused with, and writes neither itself, because the two
-// callers answer a refusal differently: the retry gives it as its own answer (retryStart),
-// while the fresh session has started the claim before it gets here and answers success with
-// the refusal named in it (freshSession). A restart that leaves the issue held relaunched
+// status and the sentence it is refused with, and writes neither itself, because the
+// callers answer a refusal differently: the retry of a phase worker gives it as its own answer
+// (retryStart), the retry of the owner logs it after the relaunch, and the fresh session has
+// started the claim before it gets here and answers success with the refusal named in it
+// (freshSession). A restart that leaves the issue held relaunched
 // nothing (a lingering tree's members stay where they stood), so it is refused naming the issue
 // rather than reported as a restart.
 func (s *server) restartWorkedPhase(r *http.Request, token claim.Token, c supervise.Claim, fresh bool) (status int, refusal string, restarted bool) {
-	if !isPhaseWorker(c.Role) || s.pool == nil {
+	if !claim.IsRole(c.Role) || s.pool == nil {
 		return 0, "", false
 	}
-	if stopping := s.stopRefusal("retry"); stopping != "" {
-		return http.StatusServiceUnavailable, stopping, true
+	// A phase worker is refused during the daemon's stop before its issue is read, as it always
+	// was; an architect only once the read says it is the owner at a place of its own, so the retry
+	// of any other architect during a stop is the machine's alone, with no refusal to report.
+	architect := c.Role == claim.RoleArchitect
+	if !architect {
+		if stopping := s.stopRefusal("retry"); stopping != "" {
+			return http.StatusServiceUnavailable, stopping, true
+		}
 	}
 	recorded, err := s.recordedIssue(r.Context(), c.Issue)
 	if err != nil {
@@ -773,6 +808,14 @@ func (s *server) restartWorkedPhase(r *http.Request, token claim.Token, c superv
 	}
 	if recorded == nil || recorded.RoleAt(recorded.WorkingPhase()) != c.Role {
 		return 0, "", false
+	}
+	if architect {
+		if !ownersOwnPlace(*recorded, token) {
+			return 0, "", false
+		}
+		if stopping := s.stopRefusal("retry"); stopping != "" {
+			return http.StatusServiceUnavailable, stopping, true
+		}
 	}
 	working := recorded.WorkingPhase()
 	// The fact names the claim it restarts the phase for, which the workflow holds to the claim
@@ -800,6 +843,17 @@ func (s *server) restartWorkedPhase(r *http.Request, token claim.Token, c superv
 	}
 	s.log.Info("api: a retry restarted a phase", "claim", token, "issue", c.Issue, "phase", working)
 	return http.StatusAccepted, "", true
+}
+
+// ownersOwnPlace says whether token, an architect's claim, is the owner of issue's task by rule,
+// the issue's own architect (record.OwnerClaim), and the task stands at a place the owner works:
+// a step of the key owner, its acceptance among them, or the owner's retro, where the claim of
+// the place is the architect (record.Issue.PlaceRole). There the workflow's restart tells the
+// owner its step again (workflow's restart). An architect anywhere else — a root at admitted, a
+// sub-architect of another issue, an issue with no plan rows — has no step a restart tells it.
+func ownersOwnPlace(issue record.Issue, token claim.Token) bool {
+	owner, err := record.OwnerClaim(issue)
+	return err == nil && owner == token && issue.PlaceRole == claim.RoleArchitect
 }
 
 // machineRetry is the retry an architect or a phase worker that runs nothing gets from its own

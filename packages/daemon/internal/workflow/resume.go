@@ -25,8 +25,10 @@ import (
 // so a write the daemon lost before the restart is put back by it. The controller tick runs the
 // same repair, so no later loss waits for a restart.
 //
-// Third, the resume by rule: every claim of this project that owns its issue's current phase and
-// that the daemon or its own exit suspended (supervise's ByRule) is started again. Nothing else
+// Third, the resume by rule: every phase worker of this project that owns its issue's current
+// phase and that the daemon or its own exit suspended (supervise's ByRule) is started again. An
+// architect at a place it works itself, an acceptance it does, a step of the key owner or its
+// retro, is no phase worker, so this resume starts none there (suspendedPhaseOwners). Nothing else
 // would start it: the phase's start ran before the restart, a re-admission's starts are queued
 // only when a tree is re-admitted, and the next start is the next phase's. This is the one trigger
 // main did not have, so it acts on no other source: an operator's suspension holds until the
@@ -57,8 +59,8 @@ import (
 // the task that takes its phase on (ResumeTask), which the outbox does not deliver to a claim
 // still holding its phase's task. Either start resumes the claim by rule and takes the slot mark
 // the slot rule gives its phase (StartOrOwe), as every start of a phase worker does, so it waits
-// for the issue's admission slot in a phase up to the review and for none past it. A role a start
-// already covers (StartFor) gets no second.
+// for the issue's admission slot in a phase that keeps one and for none in accepting, retro or
+// merging (record.KeepsSlot). A role a start already covers (StartFor) gets no second.
 //
 // The sweep runs first so the resume reads the trees it closed as lingering. The stop of each task
 // that still has to run a step no role may start, of a role neither the deployment nor the plan in
@@ -140,8 +142,9 @@ type phaseOwners struct {
 // the boot reads its phase workers by a read of its own (admit's phaseWorkers) and sends only the
 // work of an entry a claim stands behind (owedEntryRoles). It writes nothing.
 //
-// The phase's owner is the worker of the issue's open phase (OpenRoleOf: the role that works its
-// phase, at step the role of its running step) on an issue in the workflow whose tree is
+// The phase's owner is the worker of the issue's open phase (OpenRoleOf: the role of the claim
+// that works the task's place, and none where the owner does that step or retro) on an issue in
+// the workflow whose tree is
 // running — this generation of it, by the one rule every reader of that
 // question asks (record.RunningRoots, record.TreeRuns): its lifecycle stands open under the
 // workflow, its root does not linger, and its root is not itself waiting in the line for the
@@ -156,8 +159,10 @@ type phaseOwners struct {
 // A phase its own terminating fact has already met is given no owner either (PhaseFinished): a
 // merged root stands in merging for as long as the rest of its tree runs, and resuming its merger
 // there would hand it the same phase again at every boot, for days.
-// The owner of admitted and of accepting is an architect and no phase worker, so no issue in
-// either is given one. On a root it is the root's own architect, which admission starts with the
+// The owner of admitted, and of a place the owner works (an acceptance it does, a step of the key
+// owner, its retro), is an architect and no phase worker, so no issue there is given one; the
+// fresh agent of a step acceptance with no key is accepting's worker like any other. On a root it
+// is the root's own architect, which admission starts with the
 // tree. On a child it is the architect that owns it: its own while that claim holds its role,
 // else the one above. At admitted that is the one above, since the child's own has not started
 // yet or a leave suspended or retired it, unless a person set the child back to todo while it ran

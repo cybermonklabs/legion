@@ -49,8 +49,8 @@ func TestComposeOrdersSharedRolePartsBeforeTheGoDaemonParts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	// Every operation the legion tool gives an architect besides register_gate
-	// (packages/pi-legion/src/tools.ts), which a prompt that never names it leaves unused.
+	// Operations the legion tool gives an architect (packages/pi-legion/src/tools.ts) that every
+	// architect prompt names: a prompt that never names one leaves it unused.
 	architectOperations := []string{"`release_children`", "`park_child`", "`rerun_child`", "`request_backward_move`", "`retry_or_escalate`", "`sign_off`", "`read_record`"}
 
 	for _, tc := range []struct {
@@ -64,12 +64,12 @@ func TestComposeOrdersSharedRolePartsBeforeTheGoDaemonParts(t *testing.T) {
 		// Every architect is told what a pull-request-missing notice asks of it, whatever its tree,
 		// and which code each of the two pre-checked texts is refused with: its length, and the
 		// decision block it holds (INFRA-1201).
-		{"root architect", claim.RoleArchitect, true, []string{"architect-root.md"}, []string{"architect-root.md", "architect-common.md"}, append([]string{"it chooses and starts the next role", "`register_gate`", "end the tree with `close_root`", "Every notice about an issue you own arrives on your own role topic", "The merge carries no handoff onto the pull request's base", "A `pull-request-missing` notice", "`close_root` answers `CLOSE_REASON_TOO_LONG`", "`CLOSE_REASON_DECISION_BLOCK`"}, architectOperations...)},
-		{"sub-architect", claim.RoleArchitect, false, []string{"architect.md"}, []string{"architect.md", "architect-common.md"}, append([]string{"it chooses and starts the next role", "`register_gate` refuses a child issue", "Every notice about an issue you own arrives on your own role topic", "The merge carries no handoff onto the pull request's base", "A `pull-request-missing` notice", "`close_root` answers `CLOSE_REASON_TOO_LONG`", "`CLOSE_REASON_DECISION_BLOCK`"}, architectOperations...)},
+		{"root architect", claim.RoleArchitect, true, []string{"architect-root.md"}, []string{"architect-root.md", "architect-common.md"}, append([]string{"`register_gate`", "end the tree with `close_root`", "Every notice about an issue you own arrives on your own role topic", "The merge carries no handoff onto the pull request's base", "A `pull-request-missing` notice", "`close_root` answers `CLOSE_REASON_TOO_LONG`", "`CLOSE_REASON_DECISION_BLOCK`"}, architectOperations...)},
+		{"sub-architect", claim.RoleArchitect, false, []string{"architect.md"}, []string{"architect.md", "architect-common.md"}, append([]string{"`register_gate` refuses a child issue", "Every notice about an issue you own arrives on your own role topic", "The merge carries no handoff onto the pull request's base", "A `pull-request-missing` notice", "`close_root` answers `CLOSE_REASON_TOO_LONG`", "`CLOSE_REASON_DECISION_BLOCK`"}, architectOperations...)},
 		{"planner", claim.RolePlanner, false, []string{"core/common.md", "core/planner.md", "mechanics/headless.md", "planner.md"}, []string{"planner.md", "worker-common.md"}, []string{`op: "handoff_complete"`, "jj -R \"$LEGION_WORKSPACE\" git push --bookmark legion/<issue>", "dispatch handoff-write --issue <issue> --phase <word> --body-file", "dispatch handoff-read --issue <issue> --phase <word> --version <n>", "A handoff is never committed or pushed", "`HANDOFF_SESSION_MISMATCH`", "A refusal records nothing"}},
-		// A root with no code of its own pushes one empty commit to open its pull request. The
-		// implementer is also told the completion of implementing the handoff route refuses with no
-		// open pull request, and what to do about it.
+		// The implementer of a root with no code of its own pushes one empty commit to open its
+		// pull request. The implementer is also told the completion of implementing the handoff
+		// route refuses with no open pull request, and what to do about it.
 		{"implementer", claim.RoleImplementer, false, []string{"core/common.md", "core/implementer.md", "mechanics/headless.md", "implementer.md"}, []string{"implementer.md", "worker-common.md"}, []string{`op: "handoff_complete"`,
 			"Retro removes nothing", "the root of its children; no code of its own",
 			"(`HANDOFF_NO_PULL_REQUEST`), recording nothing: open the pull request and complete again at the same commit"}},
@@ -300,11 +300,12 @@ func TestNoComposedPromptSaysLegionRefusesAMergeOverACheck(t *testing.T) {
 // counts the `check` blocks that exist, and a rule that made the empty case a failure would stop
 // every issue in flight on the day these prompts deploy. So the tester records the gap in its
 // handoff without failing the phase for it, the reviewer names it in its review without asking
-// for changes over it, and the architect's acceptance comment names it and decides, which is the
-// only gate on an issue that has no `before_merge` check. Each composed prompt that carries the
-// rule says the empty case and its role's answer to it, and no paragraph of that rule calls the
-// case a failure or a request for changes. Each is also told what a child proves: a child's own
-// check whose `serves` names the root's requirement, never a result against the root's own check.
+// for changes over it, and, where the task has an acceptance step, the architect's acceptance
+// comment names it and decides, which is then the only gate on that gap. Each composed prompt that
+// carries the rule says the empty case and its role's answer to it, and no paragraph of that rule
+// calls the case a failure or a request for changes. Each is also told what a child proves: a
+// child's own check whose `serves` names the root's requirement, never a result against the root's
+// own check.
 func TestTheComposedPromptsNameAnIssueWithNoBeforeMergeCheckAsAGap(t *testing.T) {
 	composer, err := New(t.TempDir())
 	if err != nil {
@@ -688,8 +689,9 @@ func TestTheComposedPushingPromptsPinTheReadOfThePullRequestHead(t *testing.T) {
 	}
 }
 
-// A review the review App submits decides a round only when the head its Legion footer names is
-// the pull request's current head (`intake.PullRequestReview.LegionHead`, `workflow.refusesRound`),
+// On an issue with a pull request, a review the review App submits decides a round of a reviewer
+// step that is not the owner's only when the head its Legion footer names is the pull request's
+// current head (`intake.PullRequestReview.LegionHead`, `workflow.refusesRound`),
 // so a reviewer whose prompt teaches the footer without the head submits a review every round
 // sets aside. The composed reviewer prompt therefore carries the footer's own shape with the
 // head in it, which head that is — the one whose diff and checks the review read, never the head
@@ -749,22 +751,23 @@ func TestTheComposedReviewerPromptWritesTheHeadItReviewedInItsFooter(t *testing.
 	}
 }
 
-// The task of a later review round names the commit the reviewer's own newest deciding review of
-// its step read (` Last reviewed commit: <sha>.`, which workflow's namingTheReviewRound writes from
-// record.PhaseRow.ReviewedHead, the row of the reviewer's step; the first round of a later reviewer
-// step starts from the row of the reviewer step before it), so the reviewer can read the difference
-// from that commit rather than the whole change again. The composed reviewer prompt therefore names
-// the field, the function that writes it into the task, and whose review sets it: the session the
-// daemon recorded on the claim it started the reviewer under, in the first round as in every later
-// one, in a review whose Legion footer names the entry on the reviewer's row (` Review entry: <n>.`,
-// the task's last sentence, record.PhaseRow.Entry, which the task of a wake ends with too) while
-// that row holds the entry's task. The core part names the commit in the daemon part's words, the
-// head the Legion footer of the reviewer's own newest deciding review of its step named, since a
-// deciding review whose footer names no entry or another one moves no commit. It says to read the
-// difference from that commit and each thread, gives the thermonuclear pair that same diff, keeps
-// every defect seen outside it a finding, and names the three cases that read the whole change
-// again. The pair's old sentence, which ran it over the whole change in every round, is gone. This
-// shows the text is loaded, never that a reviewer follows it.
+// The task of a later review round names the commit the round before it read (` Last reviewed
+// commit: <sha>.`, which workflow's namingTheReviewRound writes from record.PhaseRow.ReviewedHead,
+// the row of the reviewer's step; the first round of a later reviewer step starts from the row of
+// the reviewer step before it): on an issue with a pull request, the head the reviewer's own newest
+// deciding review of its step named; on an issue with none, the commit the reviewer's newest
+// verdict named (workflow's recordStepReview); and at a review step the owner does, the commit its
+// report named or the head its acts there read (recordOwnersReview). So the reviewer can read the
+// difference from that commit rather than the whole change again. The composed reviewer prompt
+// therefore names the field, the function that writes it into the task, and whose review sets it:
+// the session the daemon recorded on the claim it started the reviewer under, in the first round
+// as in every later one, in a review whose Legion footer names the entry on the reviewer's row
+// (` Review entry: <n>.`, the task's last sentence, record.PhaseRow.Entry, which the task of a wake
+// ends with too) while that row holds the entry's task. It says to read the difference from that
+// commit and each thread, gives the thermonuclear pair that same diff, keeps every defect seen
+// outside it a finding, and names the three cases that read the whole change again. The pair's old
+// sentence, which ran it over the whole change in every round, is gone. This shows the text is
+// loaded, never that a reviewer follows it.
 func TestTheComposedReviewerPromptReadsALaterRoundFromTheCommitItsTaskNames(t *testing.T) {
 	composer, err := New(t.TempDir())
 	if err != nil {
@@ -779,10 +782,8 @@ func TestTheComposedReviewerPromptReadsALaterRoundFromTheCommitItsTaskNames(t *t
 		"it is recorded when your agent registers, and while that claim records no session, no review of the review App decides the round or sets the commit.",
 		"Your task names the entry of your round as its last sentence, `Review entry: <n>.`: the number of your entry into the round, which the daemon keeps on your phase row (`PhaseRow.Entry` in `packages/daemon/internal/record/record.go`) and raises at each new entry.",
 		"The task a wake gives you once your pod was released and brought back ends with it too, as each task of the round does.",
-		"When the task of a round names `Last reviewed commit: <commit>`, the head the Legion footer of your own newest deciding review of your step named (the daemon part below says which review that is), or in the first round of a later reviewer step the commit the reviewer step before it holds, read the difference from that commit to the head (`git diff <commit> <head>`), and each thread",
 		"an `APPROVE` or a `REQUEST_CHANGES` your session submitted as the review App whose footer names the entry your row holds, and which the daemon took as its round's decision while your row held that entry's task, which a new generation's clear empties until the daemon enters you again.",
 		"A `COMMENT`, a review the daemon set aside, a person's review and a review whose footer names no entry or another than your row's, such as one of a round before a new generation or a carried hand-over's promotion entered you again, leave it where it stands.",
-		"the head read by the newest of your own deciding reviews of your step whose footer named the entry of its round; each reviewer step of a task keeps its own commit, and the first round of a later reviewer step names the one the reviewer step before it holds.",
 		"Each reviewer step of a task has a phase row of its own, and the first round of a later reviewer step starts from the row of the reviewer step before it, so its task names the commit that row holds.",
 		"read the difference from that commit to the head (`git diff <commit> <head>`), and each thread",
 		"over the diff that round reads, when that diff touches runtime code",
@@ -803,8 +804,9 @@ func TestTheComposedReviewerPromptReadsALaterRoundFromTheCommitItsTaskNames(t *t
 
 // The agent that does the retro rates the plan in the completion that ends the retro, and the rule
 // of the rating is stated in prose once, in the step of skill://legion-retro that gives the two
-// fields (pi-legion's skills-guard test pins it). The composed prompt of the role the daemon starts
-// on the retro (phase.RoleFor) sends it there: it names the two fields the completion carries, the
+// fields (pi-legion's skills-guard test pins it). The composed prompt of the implementer, which does
+// the retro of a run with no plan rows (phase.RoleFor) and of a task whose last step of the type
+// implementation is its own, sends it there: it names the two fields the completion carries, the
 // skill, and the three refusals the daemon answers a completion that breaks the rule with (api's
 // planRatingOf and workflow's planRatingRefusal), each code as the daemon writes it. This shows the
 // text is loaded, never that a role follows it.
@@ -842,25 +844,19 @@ func TestEveryComposedPromptCarriesThePodMemoryRule(t *testing.T) {
 	const (
 		sandboxEndsTheContainer = "where that pod's sandbox ends the whole container rather than the one process that filled it"
 		everyRolesTurn          = "a command that fills the limit ends every role's turn and not only yours"
-		ciWork                  = "A whole module's test run (`go test ./...`), a whole Postgres-backed package, a browser suite run whole, and `make -j` or `lake build` are CI's work on the pull request"
 	)
 	worker := []string{
 		"In an issue pod every role of this issue runs in one container and shares its memory limit",
 		sandboxEndsTheContainer,
 		everyRolesTurn,
-		ciWork,
-		"what a role runs in the pod is what `skill://legion-worker/references/tools.md` names",
 		"Every other heavy run goes where your deployment's instructions say",
-		"instructions that name no such route are a gap you report to the architect that owns your issue",
 		"Each subagent you start runs its commands in this pod, so put these facts in its context",
 	}
 	architect := []string{
 		"Your subagents run their commands in your own issue pod",
 		sandboxEndsTheContainer,
 		everyRolesTurn,
-		ciWork,
 		"what may run in the pod is what `skill://legion-worker/references/tools.md` names",
-		"every other heavy run goes where your deployment's instructions say and instructions that name no such route are a gap to report, and you put these facts in the context of each subagent you start",
 	}
 	for _, tc := range []struct {
 		name   string
@@ -926,9 +922,10 @@ func checkRuleFaults(clause string) []string {
 	return faults
 }
 
-// A production check opens at the issue's close, which comes at the merge or, for a merge that
-// waits on the issues beneath it, later (workflow.closeMerged), and its bound is counted from that
-// close (workflow.checkBound). A requirement that only the deploy can show is a fail when a look
+// A production check opens at the close of an issue whose pull request merged, which comes at the
+// merge or, for a merge that waits on the issues beneath it, later (workflow.closeMerged), and its
+// bound is counted from that close (workflow.checkBound); an issue with no pull request closes at
+// the end of its retro and opens none. A requirement that only the deploy can show is a fail when a look
 // observes it as not met. It is also a fail when it is still unobserved at the last look, whether
 // or not production carries the merge, and that look's pending is only for an issue with no such
 // requirement (workflow.checkTask). So the composed prompt of each role a look reaches, the
@@ -1035,6 +1032,43 @@ func TestEveryPromptGivesTheSeparatePodLine(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// A plan step `acceptance` with no key asks Legion for a fresh agent of the role acceptance. Its
+// prompt is the core every phase worker but the merger shares, its own part and the headless
+// mechanics, then the daemon's part for it and the part every phase worker ends with
+// (worker-common.md), in that order: it has no core of its own. A pane reads each shared part
+// from the snapshot by path, so the snapshot holds the embedded part byte for byte.
+func TestTheAcceptancePromptIsTheWorkerCoreItsPartsAndWorkerCommon(t *testing.T) {
+	stateDir := t.TempDir()
+	composer, err := New(stateDir)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	parts, err := composer.Compose(claim.RoleAcceptance, false)
+	if err != nil {
+		t.Fatalf("Compose %s: %v", claim.RoleAcceptance, err)
+	}
+	shared, daemonParts := filepath.Join(stateDir, "prompts", "shared"), filepath.Join(stateDir, "prompts", "go")
+	want := []string{
+		filepath.Join(shared, "core", "common.md"),
+		filepath.Join(shared, "acceptance.md"),
+		filepath.Join(shared, "mechanics", "headless.md"),
+		filepath.Join(daemonParts, "acceptance.md"),
+		filepath.Join(daemonParts, "worker-common.md"),
+	}
+	if !slices.Equal(parts.RolePromptPaths, want) {
+		t.Errorf("RolePromptPaths = %q, want %q", parts.RolePromptPaths, want)
+	}
+	for _, part := range []string{"core/common.md", "acceptance.md", "mechanics/headless.md"} {
+		got, err := os.ReadFile(filepath.Join(shared, part))
+		if err != nil {
+			t.Fatalf("read the snapshot's %s: %v", part, err)
+		}
+		if string(got) != rolePart(t, part) {
+			t.Errorf("the snapshot's %s is not the embedded part", part)
+		}
 	}
 }
 

@@ -127,12 +127,30 @@ func TestAHooksRolesAndDefaultStepsTakeARoleOfTheDeployment(t *testing.T) {
 	if got := cfg.Hooks[0].Roles; len(got) != 1 || got[0] != "checker" {
 		t.Errorf("Hooks[0].Roles = %v, want [checker]", got)
 	}
-	cfg, err = Load(configFileWith(t, steps("  DEMO: {default_steps: [implementer, checker]}\n")+checkerRole, "checker.md"), noEnv)
-	if err != nil {
-		t.Fatalf("Load of default_steps naming the role: %v", err)
+	for _, tc := range []struct{ name, role string }{
+		{"naming the role", checkerRole},
+		// A role of the deployment of the type implementation after the implementer does its task's
+		// retro, so such default steps load too.
+		{"whose role of the deployment does implementation work after the implementer", strings.Replace(checkerRole, "type: testing", "type: implementation", 1)},
+	} {
+		cfg, err = Load(configFileWith(t, steps("  DEMO: {default_steps: [implementer, checker]}\n")+tc.role, "checker.md"), noEnv)
+		if err != nil {
+			t.Fatalf("Load of default_steps %s: %v", tc.name, err)
+		}
+		if got := cfg.Projects["DEMO"].DefaultSteps; len(got) != 2 || got[1].Role != "checker" {
+			t.Errorf("DefaultSteps %s = %v, want [implementer checker]", tc.name, got)
+		}
 	}
-	if got := cfg.Projects["DEMO"].DefaultSteps; len(got) != 2 || got[1].Role != "checker" {
-		t.Errorf("DefaultSteps = %v, want [implementer checker]", got)
+	// A role stands at two steps, a role of the deployment as Legion's own, and a task needs no
+	// step implementer, so such default steps load too.
+	for _, list := range []string{"[implementer, checker, reviewer, checker]", "[tester, tester]", "[tester]"} {
+		cfg, err = Load(configFileWith(t, steps("  DEMO: {default_steps: "+list+"}\n")+checkerRole, "checker.md"), noEnv)
+		if err != nil {
+			t.Fatalf("Load of default_steps %s: %v", list, err)
+		}
+		if got := cfg.Projects["DEMO"].DefaultSteps; len(got) != strings.Count(list, ",")+1 {
+			t.Errorf("DefaultSteps of %s = %v", list, got)
+		}
 	}
 
 	for _, tc := range []struct{ name, path, want string }{
@@ -144,13 +162,7 @@ func TestAHooksRolesAndDefaultStepsTakeARoleOfTheDeployment(t *testing.T) {
 			`hooks[0].roles names "Checker", which is not a Legion role (architect, planner, implementer, tester, reviewer, merger)`},
 		{"default_steps of the role without roles", configFileWith(t, steps("  DEMO: {default_steps: [implementer, checker]}\n")),
 			"projects.DEMO.default_steps: step 2 of task default names the role checker, which neither the deployment nor the plan defines."},
-		{"default_steps this release refuses for another cause", configFileWith(t, steps("  DEMO: {default_steps: [tester]}\n")),
-			"projects.DEMO.default_steps: task default has no step implementer. This release of Legion does not carry it out yet. " +
-				"step 1 of task default names tester, and no step before it names the role implementer, whose pull request tester reads; a role of this deployment that reports pass or fail needs none. This release of Legion does not carry it out yet."},
-		{"default_steps whose role of the deployment does implementation work after the implementer",
-			configFileWith(t, steps("  DEMO: {default_steps: [implementer, checker]}\n")+strings.Replace(checkerRole, "type: testing", "type: implementation", 1), "checker.md"),
-			"projects.DEMO.default_steps: task default names checker at step 2, a step of the type implementation after the step implementer at step 1, and Legion's retro is done by the implementer in this release. This release of Legion does not carry it out yet."},
-		{"a refusal of an earlier key first", configFileWith(t, steps("  DEMO: {default_steps: [tester]}\n")+"admission_cap: 0\n"),
+		{"a refusal of an earlier key first", configFileWith(t, steps("  DEMO: {default_steps: [prober]}\n")+"admission_cap: 0\n"),
 			"admission_cap must be a positive integer"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -161,7 +173,7 @@ func TestAHooksRolesAndDefaultStepsTakeARoleOfTheDeployment(t *testing.T) {
 	}
 
 	t.Run("the project whose key sorts first", func(t *testing.T) {
-		path := configFileWith(t, steps("  DEMO: {}\n  BETA: {default_steps: [tester]}\n  ACME: {default_steps: [tester]}\n"))
+		path := configFileWith(t, steps("  DEMO: {}\n  BETA: {default_steps: [prober]}\n  ACME: {default_steps: [prober]}\n"))
 		for range 20 {
 			if _, err := Load(path, noEnv); err == nil || !strings.HasPrefix(err.Error(), "projects.ACME.default_steps: ") {
 				t.Fatalf("Load = %v, want the refusal of projects.ACME.default_steps", err)

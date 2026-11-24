@@ -160,7 +160,8 @@ func TestASubArchitectsReadyIsToldItsOwnSubtree(t *testing.T) {
 	})
 }
 
-// An issue in accepting waits for the acceptance of the architect that owns it: the one the
+// An issue in accepting whose acceptance is the owner's, here an issue with no plan rows
+// (record.Issue.OwnersPlace), waits for the acceptance of the architect that owns it: the one the
 // phase-finished notice that moved it there reaches, which is its own architect while that claim
 // holds its role, and else the nearest architect above it that does. So a root's catch-up names
 // no accepting child whose own architect holds its role — running, or released by the idle rule

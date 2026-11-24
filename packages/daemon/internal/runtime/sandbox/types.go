@@ -351,8 +351,11 @@ type Options struct {
 	// refuses a nil Tokens.
 	GitHubCredential *appauth.Credential
 	// ActsAs answers the role whose App a claim's slot holds while the claim does work other than
-	// its stored role's (runtime.ActsAs), which runtime.SlotRole reads at each write of a slot's gh
-	// files. Optional: nil gives every slot its claim's stored role.
+	// its stored role's (runtime.ActsAs). runtime.Acting is the one ask of it: runtime.SlotRole
+	// answers from that ask at each write of a slot's gh files, and a launch into a pod it keeps
+	// whose launcher does not wait for its credential asks it too (slotAppChanges). Optional: nil
+	// gives every slot the role SlotRole's caller reads, the role of the step a launch is for, and
+	// at a refresh the role the slot's process was launched as, else the claim's stored role.
 	ActsAs runtime.ActsAs
 	// ControllerCredential is the daemon's function for the controller's own gh bundle
 	// (appauth.ControllerCredential). The refresher asks it for the owner the Secret holds

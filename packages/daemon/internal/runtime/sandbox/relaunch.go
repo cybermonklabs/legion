@@ -490,6 +490,10 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 	// slot holds the very token the start names. The launcher's wait is bounded by what remains of
 	// this launch's own wait on the start before the stop grace, so its refusal arrives while this
 	// launch still waits, and the stop that follows a start this launch gave up on finds no child.
+	// That wait is never shorter than the kubelet may take to project the write
+	// (secretProjectionBound), which the start bound, a boot timeout, does not follow: where the
+	// start bound has less left, this launch waits on its start until the projection bound from
+	// the write, and the launcher's bound is that.
 	if !replace {
 		unmark, err := r.markSlotLaunch(starting, slotKey{sandbox: pod.Name, slot: slot})
 		if err != nil {
@@ -501,6 +505,12 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 			return fail("write its slot's github credential", err)
 		}
 		if credential != nil {
+			if projected := time.Now().Add(secretProjectionBound); projected.After(deadline) {
+				deadline = projected
+				var extended context.CancelFunc
+				starting, extended = context.WithDeadline(bounded, deadline.Add(r.terminationGrace))
+				defer extended()
+			}
 			credential.WaitMs = int(max(time.Until(deadline), time.Millisecond).Milliseconds())
 		}
 		l.gitHubCredential = credential
@@ -640,7 +650,11 @@ const (
 // ensureSandbox's wait for a Sandbox being deleted, awaitPodGone and awaitNewPod, the boot timeout
 // each; provision's waits on its repository's cache (cacheWaits); awaitRoleLauncher's backstop;
 // the termination grace the start frame has past the launcher deadline — and of its relaunchCalls
-// calls, for a pod of roles roles, at apiTimeout each.
+// calls, for a pod of roles roles, at apiTimeout each. A try that keeps its pod and writes its
+// slot's credential may wait on its start up to secretProjectionBound past that write (relaunch),
+// later than awaitRoleLauncher's deadline; such a try takes none of the replacing try's three
+// boot-timeout waits or its cache waits, which are longer: cacheWaits alone counts fourteen calls
+// at apiTimeout, seven minutes.
 func launchBound(bootTimeout, startBound, provisionBound, terminationGrace time.Duration, roles int) time.Duration {
 	waits := 3*bootTimeout + cacheWaits(bootTimeout) + launcherBackstop(startBound, bootTimeout, provisionBound) + terminationGrace
 	return waits + time.Duration(relaunchCalls(roles))*apiTimeout

@@ -678,8 +678,9 @@ func TestTheRecordKeepsWhenAnIssueLastMoved(t *testing.T) {
 	})
 
 	// An owed entry the daemon sends, which is the eighth kind, and the fact that made it owed,
-	// which is its control. A transition raises the entry of the role it starts and writes that
-	// entry's work on the role's phases row in its own transaction (workflow's enter), and the
+	// which is its control. A transition into a step a worker does raises the entry of the role it
+	// starts and writes that entry's work on the role's phases row in its own transaction
+	// (workflow's enter), and the
 	// daemon then closes any difference between that entry and the one the role's claim was
 	// given: every admission pass and a sweep of its own each minute (intake.EntrySweep) send
 	// the work of the entry to a role behind it (workflow's sendOwedEntry, through

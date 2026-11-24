@@ -654,7 +654,7 @@ func (r *Runtime) launch(ctx context.Context, spec runtime.SpawnSpec) (runtime.L
 	if err != nil {
 		return runtime.Locator{}, fmt.Errorf("spawn %s: %w", spec.Claim, err)
 	}
-	ghDefault, err := r.writeGitHubCredential(spec, credential)
+	ghDefault, err := r.writeGitHubCredential(ctx, spec, credential)
 	if err != nil {
 		return runtime.Locator{}, err
 	}
@@ -712,15 +712,20 @@ func (r *Runtime) launch(ctx context.Context, spec runtime.SpawnSpec) (runtime.L
 type launchGitHubCredential struct {
 	// root is the claim's gh directory, "" when the runtime mints no credential
 	// (Options.GitHubCredential nil: a daemon with no GitHub Apps).
-	root   string
+	root string
+	// role is the role whose App bundle holds, as the mint judged it (runtime.SlotRole).
+	role   claim.Role
 	bundle ghconfig.Bundle
 	// noOwner is set for a controller whose project has no GitHub owner to mint for
 	// (runtime.ErrNoGitHubOwner): its gh acts as nobody, and bundle goes unwritten.
 	noOwner bool
 }
 
-// mintGitHubCredential mints spec's role its GitHub credential for the repository spec names,
-// the one its write token reaches. The controller's is asked for by owner instead
+// mintGitHubCredential mints spec's claim the GitHub credential of the role its pane works as
+// (runtime.SlotRole: spec's role, or the role the architect acts as: the implementer while a merge
+// forward asked of it has not ended, whatever step or retro it does then, else the step's while it
+// does a step of its own or the retro of one) for the repository spec names, the one its write
+// token reaches. The controller's is asked for by owner instead
 // (Options.ControllerCredential), the one function a controller's bundle is made from here, by
 // this launch and by the refresh of the pane it opens (refreshGitHubCredentials): it works no
 // repository, and the launch asks for no owner, which takes the first owner the project serves,
@@ -729,15 +734,18 @@ type launchGitHubCredential struct {
 // its default the first owner (runtime.GitHubCredential).
 //
 // It writes nothing: a mint is a network call, made before the launch lock, and the claim's
-// directories are written only after the refusal (writeGitHubCredential). It is one claim's one
-// ask, so it builds no walk's memo (appauth.ClaimBundle).
+// directories are written only after the refusal (writeGitHubCredential), which judges the role
+// again under the lock. It is one claim's one ask, so it builds no walk's memo
+// (appauth.ClaimBundle).
 func (r *Runtime) mintGitHubCredential(ctx context.Context, spec runtime.SpawnSpec) (launchGitHubCredential, error) {
 	if r.gitHubCredential == nil {
 		return launchGitHubCredential{}, nil
 	}
-	// The pane holds the App of the step its claim does now (runtime.SlotRole), which is the
-	// claim's stored role: the spec's role, which the machine builds from it. The controller's
-	// is its own.
+	// The pane holds the App of the role its claim acts as now (runtime.SlotRole): the claim's
+	// stored role, the spec's role, which the machine builds from it, unless the runtime's ActsAs
+	// gives another: the implementer while a merge forward asked of the architect has not ended,
+	// whatever step or retro it does then, else the step's role while it does a step of its own or
+	// the retro of one. The controller's is its own.
 	role := spec.Role
 	var err error
 	if role != claim.RoleController {
@@ -751,14 +759,19 @@ func (r *Runtime) mintGitHubCredential(ctx context.Context, spec runtime.SpawnSp
 	if err != nil && !noOwner {
 		return launchGitHubCredential{}, fmt.Errorf("spawn %s: write the github credential: %w", spec.Claim, err)
 	}
-	return launchGitHubCredential{root: runtime.GHConfigDir(r.stateDir, spec.Claim), bundle: bundle, noOwner: noOwner}, nil
+	return launchGitHubCredential{root: runtime.GHConfigDir(r.stateDir, spec.Claim), role: role, bundle: bundle, noOwner: noOwner}, nil
 }
 
 // writeGitHubCredential writes credential, which mintGitHubCredential minted for spec, into the
 // claim's gh directory, its caller holding the launch lock past the refusal, and answers the
 // bundle's default owner, the directory GH_CONFIG_DIR names: "" when the runtime mints no
-// credential or the controller's gh acts as nobody.
-func (r *Runtime) writeGitHubCredential(spec runtime.SpawnSpec, credential launchGitHubCredential) (string, error) {
+// credential or the controller's gh acts as nobody. The pane's role is judged again here, under
+// the launch lock every write of a pane's gh files is made under (writePaneCredential), and where
+// it is no longer the role the mint judged, an owner's step, retro or merge forward having started
+// or ended in the mint, the bundle is minted again for the role judged now: so the App the pane's
+// files hold is decided with the write, and an act's write of the slot made in the mint is never
+// undone by this one.
+func (r *Runtime) writeGitHubCredential(ctx context.Context, spec runtime.SpawnSpec, credential launchGitHubCredential) (string, error) {
 	switch {
 	case credential.root == "":
 		return "", nil
@@ -774,12 +787,25 @@ func (r *Runtime) writeGitHubCredential(spec runtime.SpawnSpec, credential launc
 		r.log.Info("tmux runtime: no GitHub owner to act for; the controller's gh acts as nobody", "claim", spec.Claim)
 		return "", nil
 	}
-	bundle := credential.bundle
+	bundle, role := credential.bundle, credential.role
+	if role != claim.RoleController {
+		now, err := runtime.SlotRole(ctx, r.actsAs, spec.Claim, spec.Role)
+		if err == nil && now != role {
+			role = now
+			bundle, err = appauth.ClaimBundle(ctx, r.gitHubCredential, r.controllerCredential, spec.Issue, role, spec.Repository, "")
+		}
+		if err != nil {
+			return "", fmt.Errorf("spawn %s: write the github credential: %w", spec.Claim, err)
+		}
+	}
 	if _, err := ghconfig.WriteBundle(credential.root, bundle); err != nil {
 		return "", fmt.Errorf("spawn %s: write the github credential: %w", spec.Claim, err)
 	}
+	// The line names the role whose App the pane holds, the implementer's while a merge forward
+	// asked of the architect has not ended, else the step's while it does a step of its own or the
+	// retro of one, and the claim's own role beside it, so the App it names reads as that role's.
 	written := bundle.Dirs[bundle.Default]
-	r.log.Info("tmux runtime: github credential written", "claim", spec.Claim, "role", spec.Role, "app", written.App,
+	r.log.Info("tmux runtime: github credential written", "claim", spec.Claim, "role", role, "claimRole", spec.Role, "app", written.App,
 		"expiresAt", written.ExpiresAt, "dirs", bundle.DirNames())
 	return bundle.Default, nil
 }

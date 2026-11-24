@@ -2,7 +2,8 @@
 // daemon, its agents or the human makes, written through the API they write through, so the Legion
 // section's screenshots (`shots.config.ts` beside this file) and its narrated walkthrough
 // (`../walkthroughs/legion-issue-journey.ts`) show what a real journey leaves in Dispatch. Every
-// name, key, commit and URL is example data.
+// name, key, commit and URL is example data. Each example runs the default steps, the architect's
+// acceptance among them, and opens a pull request, so the comments below describe that run.
 import { dispatchApi, expect, fakeEnvoy } from "../harness";
 
 export const PROJECT = "SHOP";

@@ -72,7 +72,8 @@ describe("require_proof_human", () => {
     expect(r.calls[0]).toStartWith("GH_REPO=sjawhar/legion-smoke api graphql ");
   });
 
-  // A Legion pane's gh acts as its role's App, whatever GitHub names that App: the logins below are
+  // A Legion pane's gh acts as a role App, whatever GitHub names that App (its own role's, or the
+  // App of a step's role while an architect does a step of its own plan): the logins below are
   // stand-ins for the two, and are refused as any account but the proof human is.
   test("refuses every other account in one line naming it", () => {
     for (const login of [
@@ -116,7 +117,7 @@ describe("require_proof_human", () => {
   });
 
   // Three ways reach a wrong account, and gh can fail outright: a plain shell (the user's login),
-  // a Legion pane (its own App), an agent session with a personal GH_TOKEN (the token's owner). The
+  // a Legion pane (a role App), an agent session with a personal GH_TOKEN (the token's owner). The
   // gh-failure reason is one no requirement word appears in, so the words below are the refusal's.
   test("every refusal states the one requirement, whatever reached the wrong account", () => {
     const causes = [

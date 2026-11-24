@@ -14,8 +14,8 @@ import (
 // the issue it is the architect of, its tree's root for the tree's own - role, and row, the issue
 // whose outbox the message is written to, which differs from issue only for an architect told of
 // an issue below its own. claim is the claim of the agent the sender named by the step it works
-// (implementationAgent, through stepToken), "" for a recipient addressed as the worker of its
-// role's step.
+// (workAgent, through stepToken or the owner's claim, and record.Issue.StepWorker at a place the
+// owner works), "" for a recipient addressed as the worker of its role's step.
 type roleRecipient struct {
 	issue string
 	role  claim.Role
@@ -34,20 +34,22 @@ type addressedRole struct {
 }
 
 // addressRoles is the one collection the daemon's role messages are addressed by (tellChecks,
-// tellGateMoved, mergeForward, mergeForwardLanded): each recipient's claim where the sender named
-// it (roleRecipient.claim), and otherwise the claim of the worker on the recipient's role's step
-// (record.WorkerClaim over the recipient issue's phases rows, read in tx), in the order given and
-// each token once, so a role named twice - the implementer that also holds the phase, two roles
-// one keyed agent works - is told once. A recipient with no role is a phase no worker holds, and
-// is nobody.
+// tellGateMoved, and addressMergeForward for the merge forward's messages): each recipient's claim
+// where the sender named it (roleRecipient.claim), and otherwise the claim of the worker on the
+// recipient's role's step (record.WorkerClaim over the recipient issue's phases rows, read in tx),
+// in the order given and each token once, so a role named twice - the implementer that also holds
+// the phase, two roles one keyed agent works - is told once. A recipient with no role is a phase no
+// worker holds, and is nobody. addressMergeForward addresses each message of a merge forward's
+// event alone, since its two messages to one claim are not one message told once but one that
+// stands in for the other (record.MergeForwardCovers), which it decides itself.
 //
 // unnamable is the policy for a recipient whose claim token cannot be built, and the one thing the
-// four senders choose of how the collection runs: nil ends the collection with that error, and so
-// the fact's transaction, while a function is given the recipient and the error and may answer nil
-// to leave that one untold and address the rest. tellChecks, mergeForward and mergeForwardLanded
-// pass nil, so a holder they cannot name rolls their fact back. tellGateMoved, whose message is
-// secondary to the record the transaction writes, passes a function that logs (logUnnamable),
-// since aborting would roll the gate's move back for a name the daemon could not spell.
+// senders choose of how the collection runs: nil ends the collection with that error, and so the
+// fact's transaction, while a function is given the recipient and the error and may answer nil to
+// leave that one untold and address the rest. tellChecks and addressMergeForward pass nil, so a
+// holder they cannot name rolls their fact back. tellGateMoved, whose message is secondary to the
+// record the transaction writes, passes a function that logs (logUnnamable), since aborting would
+// roll the gate's move back for a name the daemon could not spell.
 func (e *Engine) addressRoles(ctx context.Context, tx pgx.Tx, project string, recipients []roleRecipient, unnamable func(roleRecipient, error) error) ([]addressedRole, error) {
 	projectToken, err := claim.ProjectToken(project)
 	if err != nil {

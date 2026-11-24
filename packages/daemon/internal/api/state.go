@@ -587,27 +587,32 @@ type Admission struct {
 	Cap int `json:"cap"`
 	// Active is every issue holding an admission slot, a child as much as a root: the cap counts
 	// the issues the daemon has started rather than the trees (dispatch://INFRA-980), and an
-	// issue holds one of the cap's slots from the moment the daemon starts it until its work is
-	// past its review — accepting, retro and merging hold none — or until it is done or
-	// Dispatch takes it out of the workflow, except while it waits on another issue before that
-	// point (record.KeepsSlot, blockers.waitsOf). So one tree with three started children holds
-	// three of these, and an issue at work, one held and one waiting on a person are each here,
-	// while one past its review — a merger at work in merging, one in merging whose start a
-	// closed design gate holds (the outbox's mergerWaitsForTheDesignGate) and a merged root
-	// standing in merging while the rest of its tree runs — and one whose phase has left the
-	// workflow, done or a status Dispatch took it out of the workflow with, are in neither list.
-	// An issue the daemon has started that waits on another issue before its review is missing
-	// from here too, other than the three roots that keep their slot through such a wait
-	// (blockers.waitsOf): it holds no slot while it waits (record.Issue.ReleasedForWaitAt,
-	// admit.releaseSlotsForWaits) and stands in `waiting` and in `blocked`, which is how a reader
-	// tells it from an issue a person parked, which stands in none of the three.
+	// issue holds one of the cap's slots while the daemon has started it in a phase that keeps one
+	// — every phase but accepting, retro and merging, which hold none (in the default steps, the
+	// phases after its review) — until it is done or Dispatch takes it out of the workflow, except
+	// while it waits on another issue in a phase that keeps one (record.KeepsSlot,
+	// blockers.waitsOf). So one tree with three started children holds three of these, and an
+	// issue at work, one held and one waiting on a person are each here, while one in accepting,
+	// retro or merging — a merger at work in merging, one in merging whose start a closed design
+	// gate holds (the outbox's mergerWaitsForTheDesignGate), a merged root standing in merging
+	// while the rest of its tree runs, and an issue whose first step is an acceptance, which starts
+	// it on no slot — and one whose phase has left the workflow, done or a status Dispatch took it
+	// out of the workflow with, are in neither list. An issue the daemon has started that waits
+	// on another issue in a phase that keeps a slot is missing from here too, other than the three
+	// roots that keep their slot through such a wait (blockers.waitsOf): it holds no slot while it
+	// waits (record.Issue.ReleasedForWaitAt, admit.releaseSlotsForWaits) and stands in `waiting`
+	// and in `blocked`, which is how a reader tells it from an issue a person parked, which stands
+	// in none of the three.
 	Active []string `json:"active"`
 	// Waiting is the admission line, in the line's own order: the issues whose work came back,
 	// oldest first, then the issues whose first phase can start, by their tree root's Dispatch
 	// rank. It carries children as well as roots, for the same reason `active` does. An owed
 	// start in it holds no row and waits for one, as does an issue released for what it waits
-	// on; an issue in it that holds a row already (the kinds record.LineEntry.Holds names)
-	// stands in both lists until the pass that promotes it, which takes no second row.
+	// on where the phase it goes on in keeps one; an issue whose first step keeps no slot, an
+	// acceptance, is promoted on no row however many of the cap's rows are held
+	// (record.LineEntry.StartsIn); an issue in it that holds a row already (the kinds
+	// record.LineEntry.Holds names) stands in both lists until the pass that promotes it, which
+	// takes no second row.
 	Waiting []string `json:"waiting"`
 	// Trees is the root of every live tree the daemon judges (record.TreeLive), sorted by key: a
 	// tree whose lifecycle stands open under the workflow and does not linger, one whose root
@@ -697,12 +702,21 @@ type Issue struct {
 	Key        string      `json:"key"`
 	Generation uint64      `json:"generation"`
 	Phase      phase.Phase `json:"phase"`
-	// StepRole is the role that works the issue's running step where the issue stands at step or
-	// its hold took it out of step (record.Issue.StepRole): a role of the deployment or of the
-	// issue's plan, which no
-	// phase names, so the phase alone does not say who works the issue. Absent at every other
-	// phase, whose role the phase names (phase.RoleFor).
+	// StepRole is the role of the issue's running step where the issue stands at step or its hold
+	// took it out of step (record.Issue.StepRole): a role the deployment or the plan defines, which
+	// no phase names. Absent at every other phase, where the step's role is the one the phase
+	// names (phase.RoleFor); who works the issue's place, the owner at a step of its own among
+	// them, is PlaceRole's to say.
 	StepRole string `json:"stepRole,omitempty"`
+	// PlaceRole is the role of the claim that works the place where the issue's task stands
+	// (record.Issue.PlaceRole), read from the issue's plan rows: the architect at a step or a
+	// retro the owner does, `acceptance` for the fresh agent of a step `acceptance` with no key,
+	// the role of the retro's agent at the retro, and the step's own role at any other step; held
+	// with the place while a hold stands. It says who works an issue where the phase alone names
+	// the wrong role: at accepting the phase names the architect whoever accepts. Absent on an
+	// issue with no plan rows, whose phase names its role, at the merge, before the first step,
+	// and from every issue of the body served a caller below 227 (shaping.go's withoutPlaceRole).
+	PlaceRole string `json:"placeRole,omitempty"`
 	// StartWaitsForPod are the roles of the starts that wait because the issue's live pod lacks
 	// the slot of the start's claim or the role of its step, the pod having been built before the
 	// deployment defined or the issue's plan named that name, such as the slot `implementer-2` of
@@ -823,15 +837,22 @@ type Issue struct {
 	MemoryGroup    string     `json:"memoryGroup,omitempty"`
 	MemoryDrawMode string     `json:"memoryDrawMode,omitempty"`
 	MemoryDrawnAt  *time.Time `json:"memoryDrawnAt,omitempty"`
-	// PhaseEntry is the number of the phase entry the role of the issue's current phase stands on
-	// (record.PhaseRow.Entry, the role phase.RoleFor names for that phase, and at step the role
-	// of the running step, StepRole), and GivenEntry the entry of the last task the claim of the
-	// worker on that role's step was queued (supervise.Claim.GivenEntry; the worker is the claim
-	// the record gives the step, record.WorkerClaim, which can be a keyed agent's beside the
-	// role's own claim). The daemon sends the entry's own work to a worker whose given number is
-	// below the entry its row names, on every admission pass and on a sweep of its own each minute
-	// (workflow.OwedEntry, admit's resumeSlottedWorkers), so a reader tells a role holding the
-	// work its row names from one the daemon has still to reach.
+	// PhaseEntry is the number of the phase entry the role that works the issue's place stands on
+	// (record.PhaseRow.Entry of the role record.Issue.RoleAt names: phase.RoleFor of the phase for
+	// a run with no plan rows, and otherwise the role of the claim that works the task's place, the
+	// step's own role at a step another agent does, `acceptance` for the fresh agent of acceptance,
+	// and the retro agent's role at a retro another agent does), and GivenEntry the entry of the
+	// last task the claim of the worker on that role's step was queued (supervise.Claim.GivenEntry;
+	// the worker is the claim the record gives the step, record.WorkerClaim, which can be a keyed
+	// agent's beside the role's own claim). The daemon sends the entry's own work to a worker whose
+	// given number is below the entry its row names, on every admission pass and on a sweep of its
+	// own each minute (workflow.OwedEntry, admit's resumeSlottedWorkers), so a reader tells a role
+	// holding the work its row names from one the daemon has still to reach. At a step or a retro
+	// the owner does, where the claim that works the place is the architect's, PhaseEntry is the
+	// entry of the row the owner's run raised, the row of the place's own role
+	// (record.Issue.OwnersRowRole: the step's role at a step of the key owner, the owner's
+	// acceptance among them, and the implementer at the owner's retro), and GivenEntry is absent:
+	// the owner is told that step by its notice owner-step, never queued a task of it.
 	//
 	// A root carries them as a child does: phase.RoleFor answers the architect for admitted, the
 	// phase a root's own architect works, so the two numbers there are the architect's as they
@@ -857,12 +878,13 @@ type Issue struct {
 	// architect's handshake whatever phase it stands in — admitted, awaiting_person, accepting,
 	// and each phase a phase role works, where the two numbers above are that role's and the two
 	// times are still the architect's. Any other issue carries the handshake of the claim of the
-	// role of its current phase, and none in a phase no role works. Both are absent where no entry
-	// was queued to that claim in the issue's current generation: a role the daemon holds no claim
-	// row of, a re-admitted root whose new architect entry is not queued yet, and one of the
-	// release before this one, whose migration gives the claim the two numbers and no handshake.
-	// EntryConfirmedAt alone is absent while no turn of its worker has confirmed a task of the
-	// entry, which is the root whose architect took nothing.
+	// role that works it (record.Issue.RoleAt: the architect at a step or a retro the owner does),
+	// and none in a phase no role works. Both are absent where no entry was queued to that claim in
+	// the issue's current generation: a role the daemon holds no claim row of, a re-admitted root
+	// whose new architect entry is not queued yet, and one of the release before this one, whose
+	// migration gives the claim the two numbers and no handshake. EntryConfirmedAt alone is absent
+	// while no turn of its worker has confirmed a task of the entry, which is the root whose
+	// architect took nothing.
 	EntryQueuedAt    *time.Time `json:"entryQueuedAt,omitempty"`
 	EntryConfirmedAt *time.Time `json:"entryConfirmedAt,omitempty"`
 	// ArchitectStalls is, for a tree's own root, every arm of the daemon's architect-stalled
@@ -1272,11 +1294,12 @@ type PhaseView struct {
 	// "<from>-<to>" as phase.BackwardPairs() writes the pairs: "testing-implementing",
 	// "reviewing-implementing", "merging-implementing" and the rest. It is absent, and never
 	// `{}`, for an issue that has had no move back, so a reader tells an issue that carries no
-	// counts at all from one whose counts the daemon holds. Rounds beside it keeps its meaning
-	// exactly: it rises on every move back, a conflict round included, where no pair counts a
-	// conflict round, since nobody sent the work back. The counts start empty at the migration
-	// that added them and are never filled in from the past, so an issue already in flight reads
-	// counts that add up to less than its `rounds`.
+	// counts at all from one whose counts the daemon holds. Rounds beside it counts the review
+	// rounds alone, which a review step's request for changes opens where the step's agent is not
+	// the owner, so most moves back raise a pair and no round; a conflict round a review opened
+	// raises Rounds and no pair, since nobody sent the work back. The counts start empty at the
+	// migration that added them and are never filled in from the past, so an issue already in
+	// flight reads counts that add up to less than its `rounds`.
 	BackwardMoves map[string]int `json:"backwardMoves,omitempty"`
 	// passHidden is set on the copy the state route serves a caller below the contract that added
 	// Pass (api's withoutStateMachineFields, below shaping.go's stateMachineContract): that reader
@@ -1316,7 +1339,8 @@ type HandoffRecordView struct {
 // the workflow ends the round on when the reviewer completes. It shows from the review that
 // decided it until the next round opens or a new generation clears it, so a request for changes
 // stays through implementing and testing, and an approval through retro and every phase after
-// it; absent until a review in a round decides.
+// it; absent until a review in a round decides. A review step the owner does ends by its own
+// verdict, never by a decision shown here.
 // State is whether the pull request is open, merged, or closed unmerged, always one of the three:
 // a merged root waits in merging for the rest of its tree, so an operator reads the merge
 // here rather than guessing at it.
@@ -1598,9 +1622,10 @@ type CheckWakeView struct {
 // the round waits on GitHub's merge state for the pull request's head, which is one rule the
 // daemon reads everywhere (classify.RoundWaitsOnMergeState, over the issue, its reviewer's row
 // and its open pull request): a reviewer's approval stands on the head the pull request is at,
-// and the merge state the record holds for that head is not one the issue may advance on. The
-// engine reads that same rule to decide whether to read GitHub for the round, so the object is
-// on the view exactly for the rounds the daemon is reading for.
+// and the merge state the record holds for that head is not one the issue may advance on. A
+// review step the owner does has no round that waits on GitHub, since its verdict ends it, so it
+// never carries one. The engine reads that same rule to decide whether to read GitHub for the
+// round, so the object is on the view exactly for the rounds the daemon is reading for.
 //
 // It stands for the round waiting for a first answer and for the stuck round alike — both wait on
 // GitHub's next answer about the same head — and ToldHead with ToldState say what the architect and
@@ -1763,7 +1788,13 @@ func StrandedMoves() []StrandedMove {
 //     task or its phase start waits, otherwise the operator's delivery of its phase's resume task.
 //   - StrandedRetry, a failed architect: the operator's retry (`legion claims retry`), which
 //     relaunches its session with fresh budgets, or a new one once supervise's
-//     Machine.forgetSession has dropped it, and a catch-up follows.
+//     Machine.forgetSession has dropped it, and a catch-up follows. An architect whose own issue
+//     stands at a step or a retro it does as the owner is also told that step again. That is one
+//     more owner-step, where none of the step's open run is still queued. A failed child's own
+//     architect whose child stands at a place only it ends, a step of the key owner but an
+//     acceptance or the owner's retro, is listed here too once no start of it is queued: the daemon
+//     starts it again itself at its failure, at most three times in the step's run
+//     (workflow.OwnerRestarts), and the operator's retry gives the run those restarts again.
 //   - StrandedWorkflowStart, a failed phase worker: the retry of its held phase — its architect's
 //     retry_or_escalate, or the operator's retry (`legion claims retry`, which applies the same
 //     retry) — since a failed claim ignores resume and deliver.

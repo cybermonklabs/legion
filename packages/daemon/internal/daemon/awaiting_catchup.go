@@ -77,8 +77,9 @@ const (
 //
 // gate is the root's own design gate under this boot's step list, the zero value for a root with
 // no step of it registered; slotted is the key of every issue holding an admission slot. A root in
-// a phase of its own tree is read by neither this nor ReconcileAwaiting: the phase's worker holds
-// the work, and the root's architect waits for it.
+// a phase of its own tree is read by neither this nor ReconcileAwaiting: the agent of its place
+// holds the work, a worker the root's architect waits for, or, at a step or a retro of its own,
+// the architect itself, which its owner-step notice tells.
 //
 // The boot must read every root that pass can move, or it would decide one on a mirror of its
 // asks that has not caught up with what Dispatch recorded while the daemon was down — a person's

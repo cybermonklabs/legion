@@ -97,8 +97,9 @@ func (id AgentID) Key() (string, bool) {
 // name is stored: the last part of that agent's claim token, the one rule every reader of a stored
 // step names its agent by (the record's PlanStep.AgentName, and the store's read of a plan's
 // agents for an issue pod's slots). A step of the key owner names none, since its agent is the
-// tree's architect, whose token names the tree and no name on the issue. Every other step holds
-// its name: 20261117213545 named every step a release before the stored names wrote.
+// task's owner: the issue's own architect (record.OwnerClaim), or an architect above it that runs
+// the step while that one cannot (workflow's ownerAgent), and no agent the plan names. Every other
+// step holds its name: 20261117213545 named every step a release before the stored names wrote.
 func StoredAgentName(task string, place int, s Step, stored string) string {
 	if AgentOf(task, place, s).Owner() {
 		return ""
@@ -278,18 +279,31 @@ func (p Plan) role(name string) *PlanRole {
 type Refusal struct{ Task, Reason string }
 
 // BuiltinRoles is Legion's own roles of a step, each with its type: the planner, the implementer,
-// the tester, the reviewer and acceptance, the owner's reading of the finished work. Each runs on
-// Oh My Pi, the harness of a role the settings put on no other (config.Config.Deployment gives
-// each the harness `worker_backends` names), so a deployment a caller builds of them alone, as the
-// API's and the workflow's defaults do, judges a key of a Legion role and a role of a plan as one
-// harness. The architect, the merger and the controller are no roles of a step. The answer is a
-// fresh map, so a caller that changes it leaves the next caller's answer whole.
+// the tester, the reviewer and acceptance, a reading of the task's work by the owner
+// (`acceptance:owner`) or by a fresh agent of the role acceptance (`acceptance` with no key). Each
+// runs on Oh My Pi, the harness of a role the settings put on no other (config.Config.Deployment
+// gives each the harness `worker_backends` names), so a deployment a caller builds of them alone,
+// as the API's and the workflow's defaults do, judges a key of a Legion role and a role of a plan
+// as one harness. The architect, the merger and the controller are no roles of a step. The answer
+// is a fresh map, so a caller that changes it leaves the next caller's answer whole.
 func BuiltinRoles() map[string]RoleDef {
 	roles := make(map[string]RoleDef, len(builtinRoles))
 	for _, role := range builtinRoles {
 		roles[role.Name] = role
 	}
 	return roles
+}
+
+// BuiltinRole is the one of Legion's roles of a step (BuiltinRoles) named name, and whether one is,
+// read off the list without the fresh map BuiltinRoles builds, for a caller that asks of one name
+// at a time.
+func BuiltinRole(name string) (RoleDef, bool) {
+	for _, role := range builtinRoles {
+		if role.Name == name {
+			return role, true
+		}
+	}
+	return RoleDef{}, false
 }
 
 // builtinRoles is BuiltinRoles, listed in the order of today's line. No check reads the order: a
@@ -332,9 +346,10 @@ func LegionNames() []string {
 }
 
 // RunsAs is the phase a step of role runs as: each of Legion's five roles of a step its own phase,
-// and every other role, one the deployment or the plan defines, the phase step, where the role that
-// works the step is the one the plan names for it. It reads the role's name and nothing else, never
-// its type: a role of the deployment or of the plan whose type is review still runs as step.
+// and every other role, one the deployment or the plan defines, the phase step, where the role
+// that works the step is the one the plan names for it. It reads the role's name and nothing
+// else, never its type: a role of the deployment or of the plan whose type is review still runs
+// as step.
 func RunsAs(role string) phase.Phase {
 	switch role {
 	case "planner":
@@ -356,8 +371,8 @@ var nameWord = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
 
 // ParseSteps reads the words of a `steps` attribute: each word is `role` or `role:key`, a
 // role and a key each matching [a-z][a-z0-9-]*, with white space between two words. Text of no
-// word is no step. The key `owner` is reserved for the owner of the task: the grammar takes it,
-// and Supported says which keys this release carries out.
+// word is no step. The key `owner` names the owner of the task, which does that step itself; this
+// release carries out every key (Supported refuses none).
 func ParseSteps(text string) ([]Step, error) {
 	words := strings.Fields(text)
 	steps := make([]Step, 0, len(words))
@@ -385,7 +400,9 @@ func StepsOf(t Task, defaults []Step) []Step {
 }
 
 // Line is the phases a task walks: the phase each step runs as (RunsAs), in the steps' order, then
-// Legion's own retro and merge, which no plan names and no plan leaves out.
+// Legion's own retro and merge, which no plan names and no plan leaves out. An issue with no pull
+// request record is done at its retro's end and never reaches the merge (workflow's table,
+// noPullRequest).
 func Line(steps []Step) []phase.Phase {
 	line := make([]phase.Phase, 0, len(steps)+2)
 	for _, step := range steps {

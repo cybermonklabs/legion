@@ -370,8 +370,9 @@ func phaseRowOf(t *testing.T, h *harness, key string, role claim.Role) *record.P
 // commit, or without a record, is refused before anything is recorded or read. The completion also
 // reads its branch's open pull request on GitHub, as the implement App minted for the repository's
 // owner: one the daemon has not recorded - its opened webhook lost, or still waiting behind the
-// GitHub consumer's backlog - is recorded, and the completion moves the issue to testing, where
-// without the read it would wait in implementing for that webhook.
+// GitHub consumer's backlog - is recorded, and the completion moves the issue on to the task's next
+// step, testing on this issue with no plan rows, where without the read it would wait in
+// implementing for that webhook.
 func TestHandoffCompleteRecordsTheImplementersRecordAndTheOpenPullRequestGitHubShows(t *testing.T) {
 	github := newHandoffGitHub(t)
 	h := newWorkflowHandoffHarness(t, github, io.Discard)
@@ -492,7 +493,8 @@ func TestHandoffCompleteWithReadyNotABooleanIsRefused(t *testing.T) {
 
 // An implementer's completion with no open pull request on its branch is refused before anything
 // is applied: the implementer's phase row and the pull request record stay as they were, so the
-// same completion, once the pull request is open, is applied and moves the issue to testing.
+// same completion, once the pull request is open, is applied and moves the issue on to the task's
+// next step, testing on this issue with no plan rows.
 func TestHandoffCompleteWithNoOpenPullRequestRecordsNothing(t *testing.T) {
 	github := newHandoffGitHub(t)
 	github.set(func(g *handoffGitHub) { g.pullState = "closed" })
@@ -730,7 +732,10 @@ func TestHandoffCompleteHoldsTheCompletionToTheRecordItNames(t *testing.T) {
 // engine records it there for the next phase to read (workflow's leftItsPhase). So the route reads
 // its record back against that phase's word and the claim's session, as it reads a current
 // completion's: a record of another issue or of another phase is refused before the fact and
-// nothing is recorded, and the reviewer's own new review record is recorded on its row.
+// nothing is recorded, and the reviewer's own new review record is recorded on its row. The issue
+// has the pull request the reviewer reviewed, as every issue with no plan rows past its
+// implementer has, so a review on GitHub decides the round: a reviewer of an issue with none
+// reports a verdict, and so does the owner in a review step of its own.
 func TestHandoffCompleteHoldsALateCompletionToTheRecordOfThePhaseItLeft(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -757,6 +762,7 @@ func TestHandoffCompleteHoldsALateCompletionToTheRecordOfThePhaseItLeft(t *testi
 		t.Run(tc.name, func(t *testing.T) {
 			h := newWorkflowHandoffHarness(t, newHandoffGitHub(t), io.Discard)
 			seedIssueAt(t, h, "LEGION-208", phase.Implementing)
+			seedPullRequest(t, h, "LEGION-208", headSHA)
 			reviewer := newLiveClaim(t, h, "LEGION-208", claim.RoleReviewer)
 			named := tc.record(h, reviewer)
 			recorder := h.complete(HandoffCompleteRequest{GrantID: reviewer.grant(t), Summary: "reviewed", HandoffID: named, HandoffVersion: 1})
@@ -778,15 +784,18 @@ func TestHandoffCompleteHoldsALateCompletionToTheRecordOfThePhaseItLeft(t *testi
 	}
 }
 
-// The reviewer's own approval moves the issue on as well: the review event takes reviewing to
-// accepting, the architect's sign-off and a phase that ends with no handoff record, before the
-// reviewer's completion lands. That completion is still of reviewing, the phase the reviewer left,
-// so the route reads its own new review record back against reviewing's word rather than refusing
-// a record for accepting, and the engine records it on the reviewer's row and leaves the issue in
-// accepting for the architect.
+// On an issue with no plan rows, as here, the reviewer's own approval moves the issue on as well:
+// the review event takes reviewing to accepting, the architect's sign-off and a phase that ends
+// with no handoff record, before the reviewer's completion lands. That completion is still of
+// reviewing, the phase the reviewer left, so the route reads its own new review record back
+// against reviewing's word rather than refusing a record for accepting, and the engine records it
+// on the reviewer's row and leaves the issue in accepting for the architect. The issue has the pull
+// request the reviewer approved. (Where a plan's step `acceptance` has no key, accepting is its
+// fresh agent's, which ends it with its own verdict.)
 func TestHandoffCompleteRecordsALateCompletionOfReviewingWhileTheIssueIsAccepting(t *testing.T) {
 	h := newWorkflowHandoffHarness(t, newHandoffGitHub(t), io.Discard)
 	seedIssueAt(t, h, "LEGION-208", phase.Accepting)
+	seedPullRequest(t, h, "LEGION-208", "ccddee")
 	seedApproval(t, h, "LEGION-208", "ccddee")
 	reviewer := newLiveClaim(t, h, "LEGION-208", claim.RoleReviewer)
 	own := reviewer.writeHandoff("review", 1)
@@ -1305,7 +1314,8 @@ func TestACheckReportFromAnotherRoleIsRefusedAndTheChecksOwnRolesIsRecorded(t *t
 // The commit is a phase completion's field, read once the grant is redeemed and the record says
 // the call is one: an expired grant is refused before the missing commit is, a phase completion
 // without a commit is still refused for it, and an implementer's verdict on a phase completion is
-// still a tester's field.
+// refused, since only a step that reports one gives it (the tester, a role the deployment or the
+// plan defines, the role acceptance, and a reviewer of an issue with no pull request record).
 func TestHandoffCompleteReadsTheCommitOnlyForAPhaseCompletionAfterTheGrant(t *testing.T) {
 	now := time.Date(2026, 10, 19, 12, 0, 0, 0, time.UTC)
 	h, facts := newHandoffHarness(t, newHandoffGitHub(t), credential.New(func() time.Time { return now }), nil)

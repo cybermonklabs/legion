@@ -10,9 +10,9 @@ import (
 const pastReviewStartsVersion = 20261110233602
 
 // 20261110233602 takes the admission-slot mark off every queued start of a phase that holds no
-// slot any more. An issue keeps one of the cap's slots until its work is past its review, except
-// while it waits on another issue (blockers.waitsOf), so accepting, retro and merging hold none
-// (record.KeepsSlot), and a start the previous release
+// slot any more. An issue keeps one of the cap's slots but in accepting, retro and merging (past
+// its review, in the default steps) and while it waits on another issue (blockers.waitsOf), so
+// those three phases hold none (record.KeepsSlot), and a start the previous release
 // marked for a slot in one of those phases would wait for a row its issue never takes again:
 // record.Store's outboxInOrder holds a marked start unclaimable while the slots table names no
 // row of its issue, so the row would stand in the outbox for ever and the tree would stop at its

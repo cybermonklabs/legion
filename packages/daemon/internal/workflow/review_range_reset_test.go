@@ -206,8 +206,8 @@ func TestAReviewOfTheRoundBeforeAReadmissionMovesNoCommitWhateverTimeGitHubGives
 
 // A review with no submission time moves the commit when it names the entry that stands: no time
 // is compared, so nothing about it holds the commit back. It still decides the round, as an
-// untimed review always has. The same untimed review naming no entry decides the round and moves
-// nothing, which is the control.
+// untimed review always has at a reviewer step no owner does. The same untimed review naming no
+// entry decides the round and moves nothing, which is the control.
 func TestAReviewWithNoSubmissionTimeMovesTheCommitWhenItNamesItsEntry(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -298,10 +298,11 @@ func TestACarriedReviewersReviewMovesTheCommitOnlyWhenItNamesThePromotionsEntry(
 	}
 }
 
-// Only the reviewer's own deciding review that names the entry that stands moves the commit, in
-// either deciding state, and each review of the reviewer's own that decides the round and moves
-// nothing says why in one log line: the row holds no entry's task, the footer names no entry, or
-// it names another entry than the row's. Round 2 here stands at headTwo, the commit round 1 read
+// Of the reviews on GitHub, only the reviewer's own deciding review that names the entry that
+// stands moves the commit, in either deciding state, and each review of the reviewer's own that
+// decides the round and moves nothing says why in one log line: the row holds no entry's task, the
+// footer names no entry, or it names another entry than the row's. Round 2 here stands at headTwo,
+// the commit round 1 read
 // is headOne, and each review is at headTwo. Round 1's entry is an older entry of the same issue
 // generation. Another review-App session's review of the entry that stands decides nothing and
 // moves nothing, and logs no such line, since it is not the reviewer's. Each review is the review

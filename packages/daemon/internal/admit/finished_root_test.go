@@ -178,9 +178,10 @@ func TestAMergedRootWaitsForItsChildrenAndClosesWhenTheLastLeaves(t *testing.T) 
 
 // Every phase carries across a durable hand-over. The child is a new root generation, but its gate,
 // pull request head, phase rows and phase itself stay intact; promotion starts the architect and the
-// role that owns a worked phase. A child in accepting waits on its architect, now its own tree's,
-// which promotion starts with no phase named, and no phase worker. Every phase resumes as itself
-// (workflow.ResumePhase): the merger merges, so a carried merging child's merger is started again
+// role that owns a worked phase. A child in accepting with no plan rows, as here, waits on its
+// architect, now its own tree's, which promotion starts with no phase named, and no phase worker.
+// Every phase resumes as itself (workflow.ResumePhase): the merger merges, so a carried merging
+// child's merger is started again
 // to merge. A child carried in reviewing keeps the commit its reviewer's newest recorded review
 // read (record.PhaseRow.ReviewedHead) on the reviewer's carried row, since readmit's carry returns
 // before the generation's clear, and the promoted reviewer's task names it.
@@ -331,8 +332,8 @@ func TestAHandedOverChildWithNoGateToCarryIsNotMarkedCarried(t *testing.T) {
 }
 
 // A root a hand-over created is told so in its architect's catch-up, whether or not it carried a
-// gate: `handed_over`, since its workers already run their phases and the architect must not
-// decompose the tree anew (section 2 of its skill). `carried` says the gate came with it, so it
+// gate: `handed_over`, since its work already runs where the hand-over left it and the architect
+// must not decompose the tree anew (section 2 of its skill). `carried` says the gate came with it, so it
 // registers no spec; a root without it registers its own, and still starts nothing on that gate's
 // approval.
 func TestAHandedOverRootsCatchUpSaysHandedOverAndWhetherItCarriedAGate(t *testing.T) {
@@ -635,8 +636,9 @@ func handoverOf(t *testing.T, pool *pgxpool.Pool, issue string) *record.Handover
 // cleanup confirmed with it still in retro, its pull request open. A person handing it to Legion
 // (todo with the label) admits it as an orphan, and that orphan carries its state as a hand-over
 // does: its own tree at a new generation, still in retro with the pull request, its implementer
-// started there and its architect told it is carried. A child that never started a phase (still
-// admitted under the old root's unopened gate) has nothing to carry: it is admitted fresh, with no
+// (the retro's agent on the default steps it runs) started there and its architect told it is
+// carried. A child that never started a phase (still admitted under the old root's unopened gate)
+// has nothing to carry: it is admitted fresh, with no
 // copied gate and no carried mark, so its architect registers its own spec.
 func TestAStrandedMidRunChildHandedToLegionByAPersonCarriesItsState(t *testing.T) {
 	ctx := context.Background()

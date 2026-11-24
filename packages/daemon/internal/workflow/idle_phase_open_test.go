@@ -9,10 +9,12 @@ import (
 )
 
 // A phase reminder is armed in the claim of the worker of the issue's open phase that serves the
-// issue's current generation (idlePhaseOpen), and at step that worker is the role of the running
-// step, which the idle view reads with the issue (pods.IdleView.StepRole) and no phase names. The
-// generation is held for both: a checker serving an earlier run is not the worker of this one. At
-// a phase of Legion's the phase names the worker, as before.
+// issue's current generation (idlePhaseOpen): the role of the claim that works the task's place,
+// which the idle view reads with the issue (pods.IdleView.PlaceRole), none at a place the owner
+// does, and at step the role of the running step (pods.IdleView.StepRole), which no phase names.
+// The generation is held for both: a checker serving an earlier run is not the worker of this one.
+// Where the view reads no place's role, as in these views, a phase of Legion's names the worker,
+// as before.
 func TestAPhaseReminderIsArmedForTheDeploymentRoleThatRuns(t *testing.T) {
 	const checker claim.Role = "checker"
 	const checkerToken, implementerToken, testerToken claim.Token = "legion-legion-legion-209-checker",

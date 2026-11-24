@@ -22,7 +22,6 @@ import (
 const (
 	mergeForwardDelivered = "outbox merge-forward message delivered"
 	mergeForwardLeftLine  = "outbox merge-forward message finished undelivered: the workflow no longer delivers it"
-	mergeForwardEnded     = "outbox merge-forward message finished undelivered: the role's claim has failed or retired"
 )
 
 // mergeForwardRunner is an outbox runner over an isolated database holding LEGION-208 in testing
@@ -50,14 +49,17 @@ func mergeForwardRunnerIn(t *testing.T, publisher notify.Publisher, state record
 	return runner, sup, pool, logs
 }
 
-// The merge forward is a message, not a phase start (dispatch://INFRA-4374 R1), so nothing else
-// brings the implementer to the merge: its row wakes a released implementer, waits while no
-// session holds the role, and publishes once one does, on the role's own topic under the row's
-// key. A message about an ask the record no longer holds at that head (a newer ask replaced it,
-// or the workflow dropped it), an ask or a hold still queued once the merge landed, a message of a
-// pull request that is not open, and a message to a claim that will never hold its role again end
-// with nothing published (workflow.MergeForwardAt); a landed still queued once the merge landed is
-// delivered.
+// The merge forward is a message, not a phase start, so no start brings the agent asked to the
+// merge. Its row wakes a released implementer, waits while no session holds the role, and
+// publishes once one does, on the role's own topic under the row's key. For an implementer the
+// message is the only way to the merge. An owner asked to merge also hears of an open ask from the
+// catch-up of a fresh session's launch, where its claim was not told the ask (workflow's
+// untoldMergeForward). A message about an ask the record no longer holds at that head (a newer ask
+// replaced it, or the workflow dropped it), an ask or a hold still queued once the merge landed,
+// and a message of a pull request that is not open end with nothing published
+// (workflow.MergeForwardAt); an ask to another agent's claim that has retired ends with nothing
+// published to it, and its architect is told (mergeForwardLost); a landed still queued once the
+// merge landed is delivered.
 func TestAMergeForwardMessageWaitsForItsRoleAndEndsWithItsAsk(t *testing.T) {
 	ask := record.MergeForwardMessage{Role: claim.RoleImplementer, Step: record.MergeForwardAsk, Head: "sha-1", Base: "main",
 		Phase: phase.Testing, PullRequest: 86, Why: record.ConflictCheckNotGreen}
@@ -201,7 +203,7 @@ func TestAMergeForwardMessageWaitsForItsRoleAndEndsWithItsAsk(t *testing.T) {
 		})
 	}
 
-	t.Run("a retired implementer is not told", func(t *testing.T) {
+	t.Run("a retired implementer is not told, and the architect is", func(t *testing.T) {
 		publisher := &holderPublisher{}
 		runner, sup, pool, logs := mergeForwardRunner(t, publisher, asked)
 		if _, _, err := sup.Create(context.Background(), supervise.Claim{Token: mustClaimToken(t, "LEGION-208", claim.RoleImplementer),
@@ -210,10 +212,14 @@ func TestAMergeForwardMessageWaitsForItsRoleAndEndsWithItsAsk(t *testing.T) {
 		}
 		enqueueOutbox(t, pool, runner.records, mustOutboxRow(t, "LEGION-208", ask, time.Now().Add(-time.Minute)))
 		drainAt(t, runner, 0, "the row's attempt")
-		if attempts, _ := publisher.snapshot(); attempts != 0 || outboxRows(t, pool) != 0 {
-			t.Fatalf("the row made %d publishes and %d rows are left, want the row finished with nothing published", attempts, outboxRows(t, pool))
+		// The ask's row is finished; the one row left is the merge-forward-lost notice that tells
+		// the architect the ask did not reach the implementer (mergeForwardLost).
+		notices := queuedNoticesOf(t, pool, "LEGION-208")
+		if attempts, _ := publisher.snapshot(); attempts != 0 || outboxRows(t, pool) != 1 || len(notices) != 1 || notices[0].Kind != record.MergeForwardLostNotice {
+			t.Fatalf("the row made %d publishes, left %d rows and queued the notices %+v; want the row finished with nothing published and one %s notice",
+				attempts, outboxRows(t, pool), notices, record.MergeForwardLostNotice)
 		}
-		if lines := loggedLines(t, logs.String(), mergeForwardEnded); len(lines) != 1 || lines[0]["state"] != string(supervise.StateRetired) {
+		if lines := loggedLines(t, logs.String(), mergeForwardEndedLine); len(lines) != 1 || lines[0]["state"] != string(supervise.StateRetired) {
 			t.Fatalf("the row logged %v, want one line naming the retired claim", lines)
 		}
 	})

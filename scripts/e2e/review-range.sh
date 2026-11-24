@@ -2,7 +2,9 @@
 # The live proof that a later review round is told the commit the review before it read: the task
 # the daemon prompts the reviewer with in its second review round holds ` Last reviewed commit:
 # <sha>.`, the head the reviewer's own deciding review of the first round named, a review whose
-# Legion footer names the entry of that round, and the first round's task holds none. The driver
+# Legion footer names the entry of that round, and the first round's task holds none. Its issues
+# hold no plan rows and walk today's line, so the reviewer is a worker whose own review on GitHub
+# decides its round (no review on GitHub decides a review step the owner does). The driver
 # (packages/daemon/internal/daemon/review_range_live_test.go, which this script builds with
 # `-tags e2e`) builds and starts the real Dispatch server from this checkout's packages/envoy on a
 # database of its own, boots the whole daemon with dispatch_url at

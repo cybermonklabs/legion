@@ -118,11 +118,9 @@ func TestTheOwnersPromptListsTheRolesAndTheNewNotices(t *testing.T) {
 }
 
 // An owner's plan can leave out the tester or the reviewer, so the merger verifies the steps its
-// task's `Steps:` line names rather than a tester's and a reviewer's cycles. A task with no review
-// step on a base whose rules require an approving review leaves a merge only a person or the owner
-// can unblock, and Legion posts no approval of its own, so the merger waits and tells the task's
-// owner which review is missing. This shows the text is loaded, never that a merger follows it.
-func TestTheMergerWaitsForAMissingReview(t *testing.T) {
+// task's `Steps:` line names rather than a tester's and a reviewer's cycles. This shows the text is
+// loaded, never that a merger follows it.
+func TestTheMergerVerifiesTheStepsItsTaskNames(t *testing.T) {
 	composer, err := New(t.TempDir())
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -130,7 +128,6 @@ func TestTheMergerWaitsForAMissingReview(t *testing.T) {
 	text := foldWhitespace(composedText(t, composer, claim.RoleMerger, false))
 	for _, phrase := range []string{
 		"Verify that each step your task's Steps line names completed (today's line, on a task with no `Task:` line), and that the retro completed.",
-		"If your task's Steps line names no reviewer step and the base's rules require an approving review that no step of this task gave, do not merge, do not approve the pull request yourself, and do not return the task. Wait, and tell the owner of the task which review is missing: the rule that requires it, and that the task's steps have no review step. Only the owner or a person can give that review or change the plan.",
 	} {
 		if !strings.Contains(text, phrase) {
 			t.Errorf("the composed merger prompt omits %q", phrase)
@@ -161,10 +158,11 @@ func TestTheImplementerPointsToTheBriefOnATaskWithNoReviewer(t *testing.T) {
 // On a task whose `Steps:` line names no reviewer, nobody adjudicates a bot's review thread, so the
 // implementer's prompt gives it the duty, held here by its contract terms rather than its wording:
 // the paragraph of the composed implementer prompt that names that case and bot threads names the
-// retro among the completions it answers them before, `request_backward_move` to `implementing`
-// for a thread whose fix the retro cannot push, and the completion's `summary`, in which it names
-// each thread it declined to its architect. This shows the text is loaded, never that an
-// implementer follows it.
+// retro among the completions it answers them before, where the retro is the implementer's (its
+// step the task's last of the type implementation), `request_backward_move` to `implementing` for
+// a thread whose fix the retro cannot push, and the completion's `summary`, in which it names each
+// thread it declined to its architect. This shows the text is loaded, never that an implementer
+// follows it.
 func TestTheImplementerAnswersTheBotThreadsOnATaskWithNoReviewer(t *testing.T) {
 	composer, err := New(t.TempDir())
 	if err != nil {
@@ -183,26 +181,6 @@ func TestTheImplementerAnswersTheBotThreadsOnATaskWithNoReviewer(t *testing.T) {
 		if !slices.ContainsFunc(held, func(paragraph string) bool { return strings.Contains(paragraph, term) }) {
 			t.Errorf("the composed implementer prompt's duty on bot threads on a task with no reviewer names no %s: %q", term, held)
 		}
-	}
-}
-
-// A catch-up that names an issue waiting in `accepting` leaves the root architect its acceptance.
-// The daemon part states what to do, in two sentences: sign off or send back, and the head a
-// parent's sign-off needs; the role part points to it rather than saying it again, so the composed
-// root prompt holds the parent's head rule once. This shows the text is loaded, never that an
-// architect follows it.
-func TestTheRootsCatchUpStatesItsAcceptanceOnce(t *testing.T) {
-	composer, err := New(t.TempDir())
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	text := foldWhitespace(composedText(t, composer, claim.RoleArchitect, true))
-	stated := "No worker runs there and the notice that moved it there may never have reached you, so read each one's evidence, then `sign_off` it or send it back with `request_backward_move`. Sign off a parent only on a head that the step before your acceptance passed and that carries the merges of every child its criteria need; otherwise run its last round (`skill://legion-architect/references/acceptance.md`, \"The last round\")."
-	if !strings.Contains(text, stated) {
-		t.Errorf("the composed root architect prompt omits %q", stated)
-	}
-	if n := strings.Count(text, "carries the merges of every child its criteria need"); n != 1 {
-		t.Errorf("the composed root architect prompt says the head a parent's sign-off needs %d times, want 1", n)
 	}
 }
 
@@ -273,33 +251,22 @@ func TestAPhaseWorkerIsToldWhatALateReportsAnswerMeans(t *testing.T) {
 
 // The two architect role parts name a step only where the issue's task holds it. An owner's plan
 // can leave out the planner, the tester, the reviewer and the owner's own acceptance, so each
-// sentence that named one of them as if every issue ran it now says where it runs and, where it
-// does not, who holds its duty: the order of the starts is the order of the steps of the issue's
-// plan; `accepting` and the sign-off are the owner's only where the task holds `acceptance:owner`;
-// the move back names an earlier step's phase; a failed step goes back to the implementer or to
-// the earlier step its completion names. A parent with no `acceptance:owner` step gets no reading
-// of its finished whole from its owner, and each part says so in one sentence where it speaks of a
-// parent and its children. Each part gives `register_plan` and `stop_task` with the arguments of
-// the daemon's routes. The words the parts carried before are gone from both, and from the
-// architect's three daemon parts in go/, which Compose joins to them (architect-root.md or
+// sentence that named one of them as if every issue ran it now says where it runs: the order of
+// the starts is the order of the steps of the issue's plan, and the sign-off is the owner's only
+// where the task holds `acceptance:owner`. Each part gives `register_plan` and `stop_task` with the
+// arguments of the daemon's routes. The words the parts carried before are gone from both, and from
+// the architect's three daemon parts in go/, which Compose joins to them (architect-root.md or
 // architect.md, then architect-common.md): a retired phrase there reaches its reader as surely as
 // one in a role part. Each of the three is read by its name, so a part that is missing fails the
 // read rather than passing with nothing read. This shows the text is loaded, never that an owner
 // follows it.
 func TestTheArchitectRolePartsNameOnlyTheStepsAnIssuesTaskRuns(t *testing.T) {
-	// A parent with no acceptance step gets no reading of its whole: Legion holds it before its
-	// retro (`retro-held`), so a parent whose work the owner wants to read is given the step. Held
-	// by the terms of the one clause that says so, in their order.
-	parentHeld := []string{"parent", "no step `acceptance:owner`", "`retro-held`", "the step `acceptance:owner`"}
 	shared := []string{
 		"`register_plan` (`issue`, `artifactId`, `version`)",
 		"`stop_task` (`issue`, `task`)",
 		"in the order of the steps of",
 		"holds your step `acceptance:owner`",
-		"A task with no `acceptance:owner` step has no `accepting`",
-		"the phase of an earlier step of the task: `implementing`, or `testing` where the task has a tester step",
 		"is a gap that a tester step and a reviewer step name and neither refuses",
-		"goes back to the implementer, or to the earlier step its completion names",
 	}
 	retired := []string{
 		"fixed workflow table",
@@ -332,9 +299,6 @@ func TestTheArchitectRolePartsNameOnlyTheStepsAnIssuesTaskRuns(t *testing.T) {
 				if !strings.Contains(text, phrase) {
 					t.Errorf("roles/%s omits %q", tc.part, phrase)
 				}
-			}
-			if !clauseHolds(part, parentHeld...) {
-				t.Errorf("no clause of roles/%s holds %q, in that order", tc.part, parentHeld)
 			}
 			for _, phrase := range retired {
 				if strings.Contains(text, phrase) {

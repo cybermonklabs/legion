@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
+	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/registry"
 	"github.com/sjawhar/legion/daemon/internal/testnkeys"
@@ -687,7 +688,14 @@ func productionCheckTesterLine(key string) string {
 }
 
 func defaultStepsTodayLine(key string) string {
-	return "projects." + key + ".default_steps: [planner, implementer, tester, reviewer, acceptance:owner] — a task whose plan block names neither steps nor a sub-owner, and the one task of an issue whose owner gives no plan, runs these steps, then Legion's retro and merge\n"
+	return "projects." + key + ".default_steps: [planner, implementer, tester, reviewer, acceptance:owner]" + defaultStepsWords() + "\n"
+}
+
+// defaultStepsWords is what defaultStepsLine writes after a project's list of steps, read from it
+// so that no test here holds that sentence's words: the tests hold the key and the list.
+func defaultStepsWords() string {
+	_, words, _ := strings.Cut(defaultStepsLine("ANY", config.Project{}), "]")
+	return words
 }
 
 func projectLines(key string) string {
@@ -861,7 +869,7 @@ func TestConfigCheckPrintsEachProjectsDefaultSteps(t *testing.T) {
 	var out, errb bytes.Buffer
 	code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
 
-	const runs = " — a task whose plan block names neither steps nor a sub-owner, and the one task of an issue whose owner gives no plan, runs these steps, then Legion's retro and merge\n"
+	runs := defaultStepsWords() + "\n"
 	want := "Config OK: project=DEMO design-gate-steps=spec\n" +
 		productionCheckTesterLine("DEMO") + "projects.DEMO.default_steps: [planner, implementer, tester, reviewer, acceptance:owner]" + runs +
 		productionCheckTesterLine("OTHER") + "projects.OTHER.default_steps: [implementer, reviewer]" + runs +
@@ -1438,8 +1446,8 @@ func TestConfigCheckRefusesARequestItCannotRender(t *testing.T) {
 // legion.yaml", or, absent that, this binary's linked pair, "from the binary"; absent both, the
 // gap (TestConfigCheckReportsTheConfigurationsCapabilityGaps's pluginsGap). When
 // worker_backends runs any role on Claude Code, the line gains one sentence naming those roles,
-// whose plugin is the worker image's and never an install: Legion's phase workers in the order
-// the workflow reaches them, then each role of the deployment in the file's order.
+// whose plugin is the worker image's and never an install: Legion's phase workers in the order of
+// the default steps and the merge, then each role of the deployment in the file's order.
 func TestConfigCheckNamesTheResolvedPluginPair(t *testing.T) {
 	legionState(t)
 	const claudeSentence = ". Claude Code runs implementer, tester, whose plugin is the worker image's: " +
@@ -2618,7 +2626,7 @@ func TestPlainStateNamesTheWakesThePacingHolds(t *testing.T) {
 func TestPlainStateNamesEachRepositoryWithoutTheWebhookApp(t *testing.T) {
 	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
 		`"admission":{"cap":2,"active":[],"waiting":[]},"issues":{},"pendingStatusWrites":[]`
-	missing := "Dispatch's GitHub App is not installed on acme/widgets: GitHub sends Legion none of its events, nothing redelivers them, and no periodic pass makes up for them, so its issues stand still until the App is installed"
+	missing := "Dispatch's GitHub App is not installed on acme/widgets: GitHub sends Legion none of its events, nothing redelivers them, and no periodic pass makes up for them, so its issues that wait on a pull request stand still until the App is installed"
 	failed := "the webhook App check failed: GITHUB_UNREADABLE: GitHub answered 500"
 	both := `"apps":{"implement":true,"review":true}`
 	live := `[{"repo":"acme/tools",` + both + `},{"repo":"acme/widgets",` + both + `},{"repo":"zeta/tools",` + both + `}]`

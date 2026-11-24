@@ -71,7 +71,8 @@ const registerPlanRoute = "register_plan"
 //
 // It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
 // that constant, and the contract these keys and values arrived at stays where it is. It moves
-// only with this change's own number, and it is the last number of SupportedContracts.
+// only with this change's own number, and answers.go's SupportedContracts names the constant
+// rather than its number for that reason.
 const OwnerPlanContract = 211
 
 // writeRefusal writes a committed refusal: a refused plan with its reasons beside the code
@@ -146,9 +147,9 @@ func (s *server) registerPlan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Both checks run, so a plan with two causes gets two reasons: what this release does not
-	// carry out yet, then what no release can. Each judges the plan against the deployment the
-	// daemon's settings define (Options.Deployment), so a role of `roles` is a role a step names.
-	refusals := append(plan.Supported(given, s.deployment), plan.Validate(given, s.deployment)...)
+	// carry out yet, then what no release can, judged against the deployment the daemon's settings
+	// define (Options.Deployment), so a role of `roles` is a role a step names.
+	refusals := append(plan.Supported(given), plan.Validate(given, s.deployment)...)
 	if len(refusals) > 0 {
 		s.writeRefusal(w, r, intake.PlanRefused(refusals))
 		return
@@ -160,8 +161,10 @@ func (s *server) registerPlan(w http.ResponseWriter, r *http.Request) {
 
 // planOwner authorizes register_plan for an architect of the issue's tree, and answers the
 // generation the plan is given at. A recorded issue is its tree's architects', the root's or a
-// sub-architect's (architectOfRecord, by record.ArchitectOfTree, the rule every architect
-// operation holds it to), and its plan is given at its generation. One the daemon has not
+// sub-architect's (architectOfRecord, by record.ArchitectOfTree, the rule each architect operation
+// that calls it holds it to), and its plan is given at its generation; complete_step does not call
+// it, and takes an architect's grant (architectGrant), then the issue's own architect alone
+// (record.OwnerClaim, NOT_THE_OWNER). One the daemon has not
 // recorded — a child before release_children records it — is the tree's when Dispatch's parent
 // chain reaches the tree (treeChain) and it has not entered the workflow, triage, backlog, icebox
 // or todo, and its plan is given at generation 0, where it waits for the issue's first step. These

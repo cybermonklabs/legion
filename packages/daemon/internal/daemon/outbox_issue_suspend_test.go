@@ -470,9 +470,10 @@ type fenceChild struct {
 type fenceSetup struct {
 	children []fenceChild
 	// rootImplementer gives the root the implementer of the phase it stands in, holding the
-	// delivery it was given: an issue that holds an admission slot has a worker with the task of
-	// its phase, and admission's pass starts one again for a slot whose worker has none (admit's
-	// resumeSlottedWorkers). A reader that must see no launch of the root's own asks for it.
+	// delivery it was given: an issue that holds an admission slot at a phase a worker works has
+	// a worker with the task of its phase, and admission's pass starts one again for a slot whose
+	// worker has none (admit's resumeSlottedWorkers). A reader that must see no launch of the
+	// root's own asks for it.
 	rootImplementer bool
 }
 
@@ -873,11 +874,12 @@ func TestAnIssueThatComesBackIsNotStrandedByTheStartFence(t *testing.T) {
 				back.Phase, back.Generation, back.Tree, child.Generation+1)
 		}
 		// Nothing of the old run's phase work is wanted back: the re-entry queued two starts, the
-		// plain start of the child's own architect, which every child's first phase start queues
-		// ahead of its planner's (workflow's Engine.StartFirstPhase) and which resumes an architect
-		// claim the park suspended (none is seeded here), and the planner's, of the new generation
-		// and the new run's first phase, carrying that phase's own task at the entry the transition
-		// raised on the planner's phases row, which is no resume of anything (workflow.StartOrOwe).
+		// plain start of the child's own architect, which every child's first phase start queues,
+		// here ahead of its planner's (workflow's Engine.StartFirstPhase), and which resumes an
+		// architect claim the park suspended (none is seeded here), and the planner's, of the new
+		// generation and the new run's first phase,
+		// carrying that phase's own task at the entry the transition raised on the planner's phases
+		// row, which is no resume of anything (workflow.StartOrOwe).
 		queued := startRequestsOf(t, rig.pool, child.Key)
 		if len(queued) != 2 {
 			t.Fatalf("the re-entry queued %d starts, want the child's architect's and the one of the planner's first phase: %+v", len(queued), queued)

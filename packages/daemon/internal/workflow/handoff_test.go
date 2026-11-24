@@ -65,9 +65,10 @@ func TestReworkRoundAdvancesOnlyOnThatRoundsHandoff(t *testing.T) {
 	}
 }
 
-// phase.Handoff's writer of each phase with a handoff is the role the workflow starts on it
-// (phase.RoleFor), so the route reads a record from that role's completion alone, and the task line
-// names each role's word (handoffWord).
+// phase.Handoff's writer of each phase with a handoff is the role phase.RoleFor gives that phase on
+// today's line, so the route reads a record from a completion of that role alone — its worker's,
+// or the owner's report of a step of that role it does itself (api's complete_step, under the
+// owner's session) — and the task line names each role's word (handoffWord).
 func TestTheHandoffWriterOfEachPhaseIsTheRoleTheWorkflowStartsOnIt(t *testing.T) {
 	handoffs := 0
 	for _, p := range phase.All {
@@ -138,7 +139,8 @@ func TestIgnoredCompletionsAreRefused(t *testing.T) {
 // (engine's leftItsPhase). Admitted is the architect's own phase (phase.RoleFor) and comes
 // before every phase a worker works, so no worker's phase there is one the issue left, and
 // leftItsPhase records no completion while the issue stands there. The control is the same
-// completion with the issue in implementing, a phase the planner has left, where it is recorded.
+// completion with the issue in implementing, which an issue with no plan rows, as here, reaches
+// after planning, so a phase the planner has left, where it is recorded.
 func TestArchitectUnchangedByAWorkersCompletionAtAdmitted(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -184,8 +186,9 @@ func TestArchitectUnchangedByAWorkersCompletionAtAdmitted(t *testing.T) {
 }
 
 // A role's completion of a phase is taken whether it names a commit or not: the planner, the
-// tester and the reviewer send one only when their record names a head, so a taken completion
-// can hold a record and no commit. Such a role has reported its phase. Once the issue has left
+// tester and a reviewer of an issue with a pull request send one only when their record names a
+// head (a reviewer of an issue with none sends one with its verdict), so a taken completion can
+// hold a record and no commit. Such a role has reported its phase. Once the issue has left
 // that phase, a further completion of the role - here the reviewer's, naming a newer record after
 // the request for changes moved the issue to implementing - is refused HANDOFF_NOT_CURRENT_PHASE,
 // and the row keeps the completion that was taken (engine's leftItsPhase).

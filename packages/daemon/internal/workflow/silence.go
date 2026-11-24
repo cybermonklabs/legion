@@ -31,7 +31,13 @@ const workerSilentNotice record.NoticeKind = "worker-silent"
 // transaction, and can clear — the reminder comes due and starts no turn — while the last step
 // and the launch the id is keyed on stand still. Spent, that id would be skipped at every later
 // sweep and the worker never repaired. Every other refusal spends it.
+//
+// A silence of an architect's claim is an owner's (ownerSilent): no worker is started for it, and
+// what it can owe is the step of the owner's its issue stands in.
 func (e *Engine) workerSilent(ctx context.Context, tx pgx.Tx, fact intake.WorkerSilent) (intake.Result, error) {
+	if fact.Role == claim.RoleArchitect {
+		return e.ownerSilent(ctx, tx, fact)
+	}
 	read, err := e.phaseWorkerRecord(ctx, tx, fact.Issue, fact.Generation, fact.Role, fact.Claim)
 	if err != nil || read == nil {
 		return intake.Result{}, err

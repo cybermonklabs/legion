@@ -16,7 +16,8 @@ import (
 )
 
 // checker is a role the deployment defines: no phase of Legion's is its, so a step of it runs as
-// the phase step, and the plan rows name it as the issue's running role (record.Issue.StepRole).
+// the phase step, and the plan rows name it as the role of the step the issue's task stands at
+// (record.Issue.StepRole), which is the issue's running role here: no step of it is the owner's.
 const checker claim.Role = "checker"
 
 // runAtCheckerStep writes key's plan `implementer checker` at generation, its task a running at
@@ -73,8 +74,9 @@ func standInFinishingTree(t *testing.T, pool *pgxpool.Pool, key string, held boo
 }
 
 // The admission reads the role that works an issue with the issue (record.Issue.RoleAt,
-// workflow.OpenRoleOf), so at step it is the role of the running step, which no phase of
-// Legion's names (phase.RoleFor answers none for step):
+// workflow.OpenRoleOf), so at a step a worker does it is the role of the running step, which no
+// phase of Legion's names (phase.RoleFor answers none for step), and at a step the owner does it
+// is the architect, whom none of these starts:
 //   - a re-admission's promotion (startMidPhaseMembers) starts the checker of a member at step
 //     with its phase's work; a checker that has run on a held member comes back with every other
 //     stored claim of it (record.Store.IssueClaims), with no task;

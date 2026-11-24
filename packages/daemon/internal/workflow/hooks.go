@@ -8,6 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -84,15 +85,21 @@ func hookCount(hook Hook, counts map[string]int) int {
 // name, a hook's prompt among them, so the firing passes it over on that issue
 // (record.Store.PlanRoleOf). Legion's names are no plan's and read no plan.
 //
-// Each prompt names the claim of the agent that works its role's step in the round the move
-// opened (workerClaim), read once the move's start has written that agent, and the outbox
-// publishes on that claim's topic: a prompt resolved when it runs would reach whichever agent a
-// later entry of the role's step names by then, in a round the words were not written for.
-// Whether a role has a session is not read here. A role that has run no phase holds no topic, and
-// the outbox ends that one row undelivered with a log line, as it does for any role message; a
-// firing that wrote rows only for the roles a phase row names would write a different set of rows
-// on an issue whose reviewer has not started, which is not what the hook names. Such a role's
-// prompt names the role's own claim (record.WorkerClaim).
+// Each prompt names the claim of the agent that does its role's work in the round the move opened,
+// read once the move's start has written that agent, and the outbox publishes on that claim's
+// topic: a prompt resolved when it runs would reach whichever agent a later entry of the role's
+// step names by then, in a round the words were not written for. For one of Legion's roles of a
+// step (the planner, the implementer, the tester and the reviewer) that agent is the agent of the
+// task's step that does the role's work where the move left it (workAgent): a step of the role's
+// type whose role is the role itself or a role the deployment or the plan defines, whatever it is
+// called, so a task whose step of the type testing is a checker's prompts the checker for the
+// tester, the owner where that step's key is owner, and nobody for a role whose work no step of
+// the task does. The claim is the one the start of that step names, whether or not the step has
+// run, and whether a role has a session is not read here: a claim no session holds is ended
+// undelivered by the outbox with a log line, as any role message is. Every other role a hook names,
+// a role of the deployment or the merger, names the claim of the worker on its role's step
+// (roleRowWorker): the claim its phases row names, and the owner's own claim where that row runs a
+// step the owner works, whatever claim the row names there.
 //
 // The counts map is the task's own (recordPass) and is handed to each row as it stands: the outbox
 // row encodes it at once (record.NewOutboxRow), and nothing writes to it after the move that
@@ -105,6 +112,10 @@ func (e *Engine) fireHook(ctx context.Context, tx pgx.Tx, issue record.Issue, ho
 		pull = fmt.Sprintf("%s#%d", pr.Repo, pr.Number)
 	}
 	prompted := make([]string, 0, len(hook.Roles))
+	w, err := e.walk(ctx, tx, issue)
+	if err != nil {
+		return err
+	}
 	for _, role := range hook.Roles {
 		if slices.Contains(prompted, string(role)) {
 			continue
@@ -118,11 +129,25 @@ func (e *Engine) fireHook(ctx context.Context, tx pgx.Tx, issue record.Issue, ho
 				continue
 			}
 		}
-		prompted = append(prompted, string(role))
-		worker, err := e.workerClaim(ctx, tx, issue, role)
-		if err != nil {
+		var worker claim.Token
+		if _, step := plan.BuiltinRole(string(role)); step && claim.IsBuiltin(role) {
+			// A role of Legion's that does a step's work is the agent of the task's step that does
+			// that work where the move left it (workAgent), as a merge forward's ask and a
+			// settlement's message name the implementer. A task with no step of that work has no
+			// such agent, since no worker of it does that work to take back, and so the firing
+			// prompts nobody for that role there, as those senders tell nobody.
+			agent, named, err := e.workAgent(ctx, tx, issue, w, to, role)
+			if err != nil {
+				return err
+			}
+			if !named {
+				continue
+			}
+			worker = agent.claim
+		} else if worker, err = e.roleRowWorker(ctx, tx, issue, w, role); err != nil {
 			return err
 		}
+		prompted = append(prompted, string(role))
 		if err := e.enqueue(ctx, tx, issue.Key, record.HookPrompt{Hook: hook.Name, Role: role, Claim: worker, From: from, To: to,
 			Count: count, Counts: counts, PullRequest: pull, Prompt: hook.Prompt}); err != nil {
 			return err
@@ -138,4 +163,26 @@ func (e *Engine) fireHook(ctx context.Context, tx pgx.Tx, issue record.Issue, ho
 	return e.enqueue(ctx, tx, issue.Key, record.MessagePost{Body: fmt.Sprintf(
 		"Legion hook %s fired at %d moves back: %s to %s. Prompted: %s.",
 		hook.Name, count, from, to, reached)})
+}
+
+// roleRowWorker is the worker of role's recorded step in issue's task, for a hook role with no
+// built-in phase. StepRecipient selects the owner where the plan gives it that step. Otherwise
+// WorkerClaim reads the phases row, including a merger's row at place 0.
+func (e *Engine) roleRowWorker(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, role claim.Role) (claim.Token, error) {
+	rows, err := e.store.Phases(ctx, tx, issue.Key)
+	if err != nil {
+		return "", err
+	}
+	row := record.PhaseRowOf(rows, role)
+	owner := row.StepTask != "" && row.StepTask == w.Task && row.StepPlace > 0 &&
+		w.OwnerAt(record.TaskPlace{Kind: record.PlaceStep, Position: row.StepPlace})
+	_, token, err := record.StepRecipient(issue, role, owner)
+	if err != nil || token != "" {
+		return token, err
+	}
+	project, err := claim.ProjectToken(issue.Project)
+	if err != nil {
+		return "", err
+	}
+	return record.WorkerClaim(project, issue.Key, role, rows)
 }

@@ -298,8 +298,8 @@ func (r *stepRecordsRig) rate(rating *record.PlanRating) {
 	r.work(claim.RoleImplementer, "", r.retroCompletion(rating), phase.Merging)
 }
 
-// retroCompletion is the implementer's completion of its retro with rating and its reason, and with
-// neither for a nil rating.
+// retroCompletion is a completion of the retro, by whichever role does it (record.PlaceWorker),
+// with rating and its reason, and with neither for a nil rating.
 func (r *stepRecordsRig) retroCompletion(rating *record.PlanRating) api.HandoffCompleteRequest {
 	req := api.HandoffCompleteRequest{Summary: "retro written", Commit: stepRecordsHead}
 	if rating != nil {

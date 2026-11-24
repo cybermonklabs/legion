@@ -91,6 +91,33 @@ func TestADeploymentRoleLaunchesWithItsPromptAndModel(t *testing.T) {
 	}
 }
 
+// The fresh agent of acceptance, a role of Legion's step that is no claim role, launches with the
+// parts Legion composes for it (prompts.Composer.Compose) and names no model, as Legion's other
+// roles do; neither the deployment nor the plan defines it, and it is not refused.
+func TestTheFreshAgentOfAcceptanceLaunchesWithLegionsComposedPrompt(t *testing.T) {
+	t.Parallel()
+	composer, err := prompts.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := specs{stateDir: t.TempDir(), project: "s1", prompts: composer}
+	token, err := claim.AgentToken("s1", "S1-2", "acceptance")
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec, err := s.SpawnSpec(context.Background(), supervise.Claim{Token: token, Issue: "S1-2", Tree: "S1-1", Role: "acceptance"})
+	if err != nil {
+		t.Fatalf("the fresh acceptance agent's spawn spec: %v", err)
+	}
+	want, err := composer.Compose("acceptance", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(spec.Prompt.RolePromptPaths, want.RolePromptPaths) || spec.Model != "" {
+		t.Errorf("the fresh acceptance agent's role prompt paths and model = %q, %q; want %q and none", spec.Prompt.RolePromptPaths, spec.Model, want.RolePromptPaths)
+	}
+}
+
 // A role an owner's plan defines launches with the plan's prompt, kept as the daemon's own copy
 // under its state directory and named by the prompt's text, between the headless mechanics and
 // Legion's worker part, so it is told the SEPARATE-POD line every phase worker is told, and with

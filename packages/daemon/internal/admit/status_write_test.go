@@ -37,8 +37,9 @@ const (
 // workflow. A person's move does: a user actor, and the daemon's own write, which decode passes with
 // no session (TestDecodeDispatchIssueNamesASessionActor). A session holding a claim in the tree is an
 // agent, never a human move, since a phase ends only by its completion and an issue only by its
-// merge; here the implementer closes its own issue while it awaits its merge instead of leaving
-// that to the merge. The workflow does not react (no linger, the tree still running, the phase
+// merge, or by the end of its retro where it has no pull request; here the implementer closes its
+// own issue while it awaits its merge instead of leaving that to the merge. The workflow does not
+// react (no linger, the tree still running, the phase
 // unchanged) and the daemon re-asserts its own status through the outbox. Any other session —
 // another tree's agent, or one outside Legion that took the issue for its own — cannot end or park
 // the tree either: the daemon re-asserts its status, and the tree's architect is told who wrote what.

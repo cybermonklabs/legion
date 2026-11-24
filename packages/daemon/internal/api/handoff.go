@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/appauth"
@@ -30,13 +31,17 @@ import (
 // completion is of: for the planner, the implementer's implementing round, the tester and the
 // reviewer the head the handoff record names, the commit their work was done against, which the
 // `legion` tool reads out of the record's body and, for the implementer, holds to be its pushed
-// @- on legion/<issue>@origin; the commit the implementer stands on for retro; and the commit the
+// @- on legion/<issue>@origin; the commit the retro's agent stands on for the retro; the commit
+// each other step that reports a verdict stands on or read, the tester's aside; and the commit the
 // merger's own completion stands on. The entry fence reads it against the head the record holds
 // (intake.BehindEntryClause). The workflow refuses a record the role already named for its previous
 // phase (HANDOFF_NOT_NEW). The implementer's completion of implementing is also held to an open
 // pull request on its branch, or a merged one recorded (implementationPullRequest:
 // HANDOFF_NO_PULL_REQUEST). A check report carries no commit and no record (nothing was pushed or
-// written) and a Verdict of pass, pending or fail; a tester's completion a Verdict of pass or fail.
+// written) and a Verdict of pass, pending or fail; a tester's completion a Verdict of pass or fail,
+// and so does the completion of each other step that reports one (stepReportRefusal: a role the
+// deployment or the plan defines, the role acceptance, and a reviewer of an issue with no pull
+// request record).
 // WakeAt is the check report's alone: on a pending it is when the checking agent asks to be woken
 // for its next look, which no other verdict and no phase completion carries (checkReport). It is a
 // pointer so that a report naming no time is told from one naming a time at all: with the field
@@ -54,9 +59,9 @@ import (
 // the contract's LegionHandoffCompleteRequest, which the plugins' daemon client
 // (packages/pi-shared/src/daemon-client.ts) parses each completion with, refuses null, so no
 // plugin sends one. ReturnTo is the step of the issue's running task that a failed
-// step names as the one its task returns to, by its place in the task, 1 for its first: only a
-// completion with the verdict fail names one, a tester's or a role's of the deployment or of the
-// issue's plan (returnToRefusal), and it is a pointer for
+// step names as the one its task returns to, by its place in the task, 1 for its first: only
+// a completion with the verdict fail names one, of a step that reports a verdict (returnToRefusal,
+// stepReportRefusal), and it is a pointer for
 // the reason PlanRating is, so a completion naming 0 is refused rather than read as naming none.
 // Which step it may name is the workflow's to judge against the task's steps (RETURN_REFUSED).
 type HandoffCompleteRequest struct {
@@ -229,30 +234,31 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 			grant.Issue, whose))
 		return
 	}
-	// A role the deployment or the issue's plan defines reports its step as a tester does: with the
-	// verdict pass or fail and the commit it read, and with no handoff record (the phase step ends
-	// with none). The rules read the role the grant's claim holds, never the settings or the plan: a
-	// role outside Legion's six is a role of the deployment or of the issue's plan, whichever agent's
-	// claim, named for that role or keyed and on a step of it, holds it.
-	deploymentRole := !claim.IsBuiltin(grant.Role)
-	if (grant.Role == claim.RoleImplementer || grant.Role == claim.RoleMerger || deploymentRole) && !s.requireFailureFields(w, r, field{"commit", req.Commit}) {
+	// The phase this completion is of is the issue's where the role works it (record.Issue.RoleAt:
+	// the role of the claim that works the task's place, so a role the deployment or the plan
+	// defines is current only at its own step, and at a step or a retro the owner does no worker's
+	// completion is, since that role is the architect), and otherwise the phase the role left in
+	// the task (record.PhaseLeftBy, the workflow's own reading: the retro, for the agent of the
+	// task's retro once the issue stands past it, whichever role it is, and phase.LeftBy for every
+	// other). A report of the retro, current or of a retro the issue has left, is reported as the
+	// implementer reports its retro, by whichever role's agent does it, so a role of the deployment
+	// whose retro report lands after the issue moved on is not asked for a step's verdict. What a
+	// report of a step carries is one rule, which the owner's complete_step takes too
+	// (stepReportRefusal); a reviewer's verdict turns on whether the issue has a pull request
+	// record, read with the issue. Whether the role works the phase the issue stands in is read
+	// once, here, for the phase this completion is of and for the entry fence's row below.
+	works := issue.RoleAt(issue.Phase) == grant.Role
+	of := record.PhaseLeftBy(grant.Role, issue.Phase, position.task, position.steps)
+	if works {
+		of = issue.Phase
+	}
+	if refusal := stepReportRefusal(grant.Role, of == phase.Retro, position.pullRequest == nil, req.Verdict, req.Commit, grant.Issue); refusal != nil {
+		s.writeFailure(w, r, refusal.Status, refusal.Code, refusal.Message)
 		return
 	}
-	if grant.Role == claim.RoleTester && req.Verdict != "pass" && req.Verdict != "fail" {
-		s.writeFailure(w, r, http.StatusBadRequest, "TESTER_VERDICT_REQUIRED", "tester verdict must be pass or fail")
-		return
-	}
-	if deploymentRole && req.Verdict != "pass" && req.Verdict != "fail" {
-		s.writeFailure(w, r, http.StatusBadRequest, "STEP_VERDICT_REQUIRED", fmt.Sprintf("a step of the role %s reports the verdict pass or fail; nothing was recorded", grant.Role))
-		return
-	}
-	if grant.Role != claim.RoleTester && !deploymentRole && req.Verdict != "" {
-		s.writeFailure(w, r, http.StatusBadRequest, "VERDICT_ROLE_FORBIDDEN", "only a tester, a role of the deployment or a role of the issue's plan reports a verdict")
-		return
-	}
-	// The step a failed step's task returns to is named by a fail alone, the tester's or a role's of
-	// the deployment or of the issue's plan (returnToRefusal), refused here on every other completion before anything is
-	// read or recorded.
+	// The step a failed step's task returns to is named by a fail alone, of a report that carries a
+	// verdict (stepReportRefusal, returnToRefusal), refused here on every other completion before
+	// anything is read or recorded.
 	if refusal := returnToRefusal(req, req.Verdict == "fail", fmt.Sprintf("this completion of phase %s of %s", issue.Phase, grant.Issue)); refusal != nil {
 		s.writeFailure(w, r, refusal.Status, refusal.Code, refusal.Message)
 		return
@@ -330,10 +336,8 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 		s.writeFailure(w, r, http.StatusConflict, "HANDOFF_STALE_GENERATION", staleCompletion(grant.Issue, issue.Generation, serving, c.Pending))
 		return
 	}
-	// Whether the role works the phase the issue stands in is read once (record.Issue.RoleAt: at
-	// step, the role of the running step, so a role the deployment defines works only its own step),
-	// for the entry fence's row and for the phase this completion is of below.
-	works := issue.RoleAt(issue.Phase) == grant.Role
+	// Whether the role works the phase the issue stands in was read once above (works, by
+	// record.Issue.RoleAt: at a step or a retro the owner does, no worker's role works it).
 	// The entry fence holds the completion to the phase entry its claim serves (intake.EntryFence),
 	// on this route's read, before the fact's lock: the refusal here is the early one, and the
 	// workflow judges the same rule again on the row its own transaction reads. The row is the run
@@ -360,19 +364,14 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 		s.writeFailure(w, r, refusal.Status, refusal.Code, refusal.Message)
 		return
 	}
-	// The phase this completion is of is the issue's where the role works it, the phase the role
-	// left otherwise (phase.LeftBy), and the issue's for the architect, which leaves none. The
-	// record a phase with a handoff ends with is read back and
-	// held to the completion before anything is recorded: always when the role works the issue's
+	// The record a phase with a handoff ends with is read back and held to the completion before
+	// anything is recorded, of the phase this completion is of (above), which for the architect,
+	// which leaves no phase, is the issue's: always when the role works the issue's
 	// phase, and for a phase it left only when the completion names one. A completion of a left
 	// phase that names none is the engine's to decide (workflow's leftItsPhase), which answers
 	// HANDOFF_NOT_CURRENT_PHASE when the role's completion of that phase already stands or no role
 	// works the issue's phase. A phase that writes none takes no record, and a completion of such a
 	// phase that names one is refused.
-	of := phase.LeftBy(grant.Role, issue.Phase)
-	if works {
-		of = issue.Phase
-	}
 	if of == "" {
 		of = issue.Phase
 	}
@@ -406,7 +405,8 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 	// file-backed phase names, or the commit every other phase reports, and the verdict. A
 	// retried call for the same phase is the same fact, and so is one naming the same record at
 	// another commit (the record is the phase's handoff); the next phase's completion at the same
-	// commit (the implementer's retro, standing on its implementing pass's last push) is a
+	// commit (the retro, in the default steps the implementer's, standing on its implementing
+	// pass's last push) is a
 	// different one, since the phase and the role are in the key; and so is a second report of the
 	// same phase naming another verdict — the tester's corrected pass or fail, the only field a
 	// role may report differently of one handoff — since a refusal the workflow commits is
@@ -508,6 +508,53 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 	return
 }
 
+// stepReportRefusal is the one rule of what a report of a step carries, which both reports of a
+// step take: a worker's completion (answerCompletion) and the owner's report of a step of its own
+// (completeStep). role is the role of the place the report ends, the step's role or the role of
+// the retro; retro is whether that place is the retro; reviewByVerdict is whether no review on
+// GitHub decides a reviewer's step there: an issue with no pull request record, in any state, and
+// the owner's step; issue names it in a sentence. It
+// is nil where the report carries what its place asks, and each refusal is a 400 its caller writes
+// before anything is read further or recorded:
+//
+//   - MISSING_FIELD commit: the implementer, the merger and a role of the deployment report the
+//     commit they stand on or read, and so does every step that reports a verdict but the tester's:
+//     a step of the type review records the commit it read.
+//   - VERDICT_ROLE_FORBIDDEN on the retro: a retro passes or fails nothing, so its report sends its
+//     commit and the rating of the plan and no verdict.
+//   - TESTER_VERDICT_REQUIRED: the tester reports pass or fail.
+//   - STEP_VERDICT_REQUIRED: a role claim.IsBuiltin refuses (a role of the deployment or of the
+//     plan, and the role acceptance) reports pass or fail, and so does a reviewer where no review
+//     on GitHub decides its step: on an issue with no pull request record, where none can exist,
+//     and in the owner's step, which no review on GitHub ends (workflow's settleRound).
+//   - VERDICT_ROLE_FORBIDDEN: any other report names no verdict.
+func stepReportRefusal(role claim.Role, retro, reviewByVerdict bool, verdict, commit, issue string) *intake.Refusal {
+	deploymentRole := !claim.IsBuiltin(role)
+	verdictStep := !retro && (deploymentRole || role == claim.RoleReviewer && reviewByVerdict)
+	if (role == claim.RoleImplementer || role == claim.RoleMerger || deploymentRole || verdictStep) && strings.TrimSpace(commit) == "" {
+		return &intake.Refusal{Status: http.StatusBadRequest, Code: "MISSING_FIELD", Message: "commit is required"}
+	}
+	if retro {
+		if verdict != "" {
+			return &intake.Refusal{Status: http.StatusBadRequest, Code: "VERDICT_ROLE_FORBIDDEN", Message: fmt.Sprintf(
+				"the retro of %s reports no verdict: send its commit and the rating of the plan without one; nothing was recorded", issue)}
+		}
+		return nil
+	}
+	passOrFail := verdict == "pass" || verdict == "fail"
+	switch {
+	case role == claim.RoleTester && !passOrFail:
+		return &intake.Refusal{Status: http.StatusBadRequest, Code: "TESTER_VERDICT_REQUIRED", Message: "tester verdict must be pass or fail"}
+	case verdictStep && !passOrFail:
+		return &intake.Refusal{Status: http.StatusBadRequest, Code: "STEP_VERDICT_REQUIRED", Message: fmt.Sprintf(
+			"a step of the role %s reports the verdict pass or fail; nothing was recorded", role)}
+	case role != claim.RoleTester && !verdictStep && verdict != "":
+		return &intake.Refusal{Status: http.StatusBadRequest, Code: "VERDICT_ROLE_FORBIDDEN", Message: "only a tester, a role of the deployment or of the plan, " +
+			"the role acceptance, a reviewer of an issue with no pull request, and the owner in a review step report a verdict"}
+	}
+	return nil
+}
+
 // completionWho is who completed, as a completion's key names it (answerCompletion): the grant's
 // role, and `@<agent>` after it where the grant's claim is an agent of another name than the role,
 // a keyed agent on that role's step.
@@ -521,10 +568,9 @@ func completionWho(grant credential.Grant) string {
 
 // returnToRefusal holds a completion's returnTo to its rule, and is nil when the completion
 // names none or names one it may. failsAStep is whether the completion fails a step (the verdict
-// fail of a tester or of a role of the deployment or of the issue's plan, the roles
-// VERDICT_ROLE_FORBIDDEN leaves a verdict to), and what names the completion in a refusal. Every
-// refusal is a 400 its caller
-// writes before anything is recorded, so the same completion sent again, corrected, is taken:
+// fail of a report VERDICT_ROLE_FORBIDDEN leaves a verdict to, stepReportRefusal), and what names
+// the completion in a refusal. Every refusal is a 400 its caller writes before anything is
+// recorded, so the same completion sent again, corrected, is taken:
 //
 //   - INVALID_RETURN_TO: returnTo below 1, which names no step of a task.
 //   - RETURN_TO_NEEDS_FAIL: a completion that fails no step names returnTo: a pass, another role's
@@ -674,8 +720,10 @@ func staleCompletion(issue string, current, serving uint64, pending *supervise.D
 	return fmt.Sprintf("%s: the daemon has queued no task of generation %d for this claim, and may queue none (the new run's phase may be another claim's). End this turn without completing and tell the architect; if that task arrives, call the same handoff_complete in its turn", stale, current)
 }
 
-// implementationPullRequest is the implementer's completion's read of GitHub: in implementing, a
-// completion moves its issue to testing only on a pull request recorded open or merged for it
+// implementationPullRequest is the read of GitHub of an implementer step's completion, the
+// implementer's or the owner's report of an implementer step of its own (completeStep): in
+// implementing, a completion moves its issue on to the task's next step (testing, in the default
+// steps) only on a pull request recorded open or merged for it
 // (workflow's TriggerImplementationReady), and only the opened webhook, or the daemon's per-issue
 // read standing in for one that webhook lost (readIssuePullRequest), records one open. So before
 // the completion is applied, the open pull request on the issue's branch (claim.IssueBranch) is
@@ -686,10 +734,10 @@ func staleCompletion(issue string, current, serving uint64, pending *supervise.D
 //   - one open: when the record does not already hold it open, the intake.PullRequestOpened its
 //     webhook would have carried is applied first, a reopen when the record holds the same pull
 //     request closed, under the read's stable id (intake.OpenedRead). The completion then
-//     moves the issue to testing. A failure to apply it is FACT_APPLY_FAILED, with the completion
+//     moves the issue on. A failure to apply it is FACT_APPLY_FAILED, with the completion
 //     not applied.
 //   - none, with the record holding the pull request merged: the completion is applied and moves
-//     the issue to testing. The work landed, its merge told the architect (pr-merged), and the
+//     the issue on. The work landed, its merge told the architect (pr-merged), and the
 //     workflow runs on.
 //   - none otherwise: HANDOFF_NO_PULL_REQUEST, 409, and nothing is applied, so the completion at
 //     the same commit is applied once the pull request is open. When the record holds the pull

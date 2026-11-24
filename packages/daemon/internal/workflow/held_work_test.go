@@ -15,11 +15,11 @@ import (
 )
 
 // heldWork is one issue a path that resumes work is read against: a task its owner stopped, held
-// from testing (record.HoldTaskStopped), a parent whose plan has no acceptance step, held for the
-// open issue beneath it in place of its retro (record.HoldForChildren), and the twin of each, an
-// issue with no plan rows standing in the phase that hold is from, which each path resumes as
-// today. The twins are the control: a path that gave no issue work would pass the held ones
-// too.
+// from testing (record.HoldTaskStopped), a parent whose task's last step is not an acceptance,
+// held for the open issue beneath it in place of its retro (record.HoldForChildren), and the twin
+// of each, an issue with no plan rows standing in the phase that hold is from, which each path
+// resumes as today. The twins are the control: a path that gave no issue work would pass the held
+// ones too.
 type heldWork struct {
 	name   string
 	from   phase.Phase
@@ -75,11 +75,12 @@ func (h heldWork) stand(t *testing.T, pool *pgxpool.Pool, issue record.Issue) re
 }
 
 // A stopped task and a parent held for its children stand in held, and each path that
-// brings an issue back to work picks the role it gives work to by the role of the issue's phase,
-// which held has none of (phase.RoleFor, OpenRoleOf). So none of these paths gives either one
-// work: the ready of a claim (readyWorkerTask), the boot's resume by rule (booted, through
-// suspendedPhaseOwners), the silence repair (workerSilent, through phaseWorkerRecord), and the CI
-// settlement's wake of a released pod (wakeOnSettlement). The fifth path, a re-admission's
+// brings an issue back to work picks the role it gives work to by the role that works the issue
+// at its phase (OpenRoleOf, record.Issue.RoleAt), and held is a phase no role works. So none of
+// these paths gives either one work: the ready of a claim (readyWorkerTask), the boot's resume by
+// rule (booted, through suspendedPhaseOwners), the silence repair (workerSilent, through
+// phaseWorkerRecord), and the CI settlement's wake of a released pod (wakeOnSettlement). The fifth
+// path, a re-admission's
 // promotion, is admission's (admit's TestAStoppedTaskAndAHeldParentGetNoWorkFromAPromotion). Each
 // path's twins, issues with no plan rows in the same phases, are resumed as today.
 func TestAStoppedTaskAndAHeldParentGetNoWork(t *testing.T) {

@@ -254,7 +254,7 @@ func checkDefaultSteps(cfg *Config) error {
 		cfg.Projects[key] = project
 		cfg.Warnings = append(cfg.Warnings, warnings...)
 		task := plan.Plan{Tasks: []plan.Task{{ID: plan.DefaultTask, Steps: steps}}}
-		refusals := append(plan.Supported(task, deployment), plan.Validate(task, deployment)...)
+		refusals := append(plan.Supported(task), plan.Validate(task, deployment)...)
 		if len(refusals) == 0 {
 			continue
 		}

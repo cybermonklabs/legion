@@ -13,8 +13,8 @@ import (
 // completionPosition is where issue key stands as the completion route reads it, in one repeatable-read
 // snapshot: the issue record, its tree's generation (the root's) and whether the tree lingers, the
 // task the issue runs (record.StoredPlan.Task; "" for an issue with no plan rows at its
-// generation, which walks today's line), its pass — that task's count of returns to an earlier
-// step, which an issue with no plan rows keeps on its implementer's phases row
+// generation, which walks today's line) and that task's plan rows, its pass — that task's count of
+// returns to an earlier step, which an issue with no plan rows keeps on its implementer's phases row
 // (record.ImplementerCounts), which tells each implementing, testing, and reviewing pass from the
 // last — the place the task stands at and its steps, the issue's phases rows, the handoff record
 // the implementer last named for a file-backed phase (record.PhaseRow.LastHandoff), its pull
@@ -64,7 +64,7 @@ func (p completionPosition) run(role claim.Role, entry int64, works bool) comple
 	if record.StandsTwice(role, p.steps) {
 		run.place = row.StepPlace
 		if row.StepTask == "" {
-			run.place = record.RolePlace(role, p.at, p.steps)
+			run.place = record.RolePlace(role, p.task, p.at, p.steps)
 		}
 	}
 	return run

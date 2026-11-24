@@ -36,6 +36,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -132,11 +133,18 @@ type Runtime struct {
 	// pod it keeps writes the slot's credential to the end of its start (markSlotLaunch), and
 	// updating is the refresher's write of the slot on its way to the API server, if one is
 	// (refreshUpdate): no refresh writes a slot a launch is in flight in, so the slot holds the
-	// token the start names until the start ends. All three are guarded by launchedMu.
-	launchedApp          map[slotKey]string
-	launching            map[slotKey]int
-	updating             map[slotKey]chan struct{}
-	launchedMu           sync.Mutex
+	// token the start names until the start ends. launchEnded is, for each slot a launch is in
+	// flight in, the channel the last of those launches closes when its start ends, answered,
+	// failed or cut short (markSlotLaunch), which a step's write of the slot waits on
+	// (WriteSlotCredential). All four are guarded by launchedMu.
+	launchedApp map[slotKey]string
+	launching   map[slotKey]int
+	updating    map[slotKey]chan struct{}
+	launchEnded map[slotKey]chan struct{}
+	launchedMu  sync.Mutex
+	// credentialChecks counts the checks of slots' gh files this runtime sent, each check's id
+	// (SlotHoldsCredential).
+	credentialChecks     atomic.Uint64
 	controllerCredential runtime.ControllerCredential
 	gitHubDirs           func(repo ghrepo.Repository, roles []appauth.AppRole) []string
 	store                Store
@@ -454,6 +462,7 @@ func configureProber(opts Options) (*Runtime, error) {
 		changed: make(chan struct{}), watch: map[claim.Token]runtime.Locator{}, podTurns: map[string]chan struct{}{}, stranded: map[string]string{},
 		sessions:    map[claim.Token]launchedSession{},
 		launchedApp: map[slotKey]string{}, launching: map[slotKey]int{}, updating: map[slotKey]chan struct{}{},
+		launchEnded: map[slotKey]chan struct{}{},
 		cacheConfig: opts.RepositoryCache, cacheRepositories: opts.CacheRepositories,
 		cacheDial: (&net.Dialer{}).DialContext, occupiedCaches: map[string]bool{}, cacheBearers: map[string]string{},
 	}

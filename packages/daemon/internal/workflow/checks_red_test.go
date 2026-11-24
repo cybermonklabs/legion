@@ -21,12 +21,13 @@ import (
 // A CI settlement moves no issue, in any phase (dispatch://INFRA-714/spec R1): a failed check is
 // information the worker holding the phase decides on - re-run, wait, or fix - and not the
 // daemon's to read the semantics of. What the settlement says is told instead, as one message to
-// the claim of each of three roles' workers: the worker holding the issue's phase, the
-// implementer, whose code the checks ran on, and the architect that owns the issue, here the
-// root's, since the issue is the tree's root. Each message names every check the settlement
-// reports and the conclusion it reports for it, in name order. A claim named twice - the
-// implementer holding the phase, the architect holding admitted or accepting, or one keyed agent
-// working two of the roles - is told once (addressRoles), and a phase no worker holds names none.
+// the claim of each of three roles' workers: the worker of the issue's place at its phase
+// (record.Issue.RoleAt), the implementer, whose code the checks ran on, and the architect that
+// owns the issue, here the root's, since the issue is the tree's root. Each message names every
+// check the settlement reports and the conclusion it reports for it, in name order. A claim named
+// twice - the implementer holding the phase, the architect holding the place (admitted, accepting
+// on an issue with no plan rows as here, or a step the owner does), or one keyed agent working two
+// of the roles - is told once (addressRoles), and a phase no worker holds names none.
 // Nothing else happens: no phase moves, no architect hears checks-red, no worker is started, and
 // no return is counted.
 func TestASettlementMovesNothingAndTellsTheThreeRoles(t *testing.T) {
@@ -353,9 +354,10 @@ func TestAReopenStartsTheCheckSettlementAfreshAndTellsItAgain(t *testing.T) {
 
 // The implementer pushes and completes without waiting for CI, so a check can settle on its head
 // while the issue is still in implementing. The completion reads none of it: the issue goes on to
-// testing whatever the settlement said, since a CI result moves nothing and the roles were told
-// what it said when it arrived. The rule this replaced read the settlement here and sent the work
-// straight back to implementing rather than through a tester round.
+// its next step, testing on today's line, which this issue walks, whatever the settlement said,
+// since a CI result moves nothing and the roles were told what it said when it arrived. The rule
+// this replaced read the settlement here and sent the work straight back to implementing rather
+// than through a tester round.
 func TestACompletionHandsOnASettledHeadWithoutReadingIt(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -610,8 +612,8 @@ func implementerPass(t *testing.T, pool *pgxpool.Pool) int {
 	return pass
 }
 
-// implementerRounds is the implementer's count of the review rounds a review ended by requesting
-// changes, which review_round_cap bounds.
+// implementerRounds is the review rounds counted on the implementer's row, the row an issue with
+// no plan rows counts them on (record.Store.ReturnCounts), which review_round_cap bounds.
 func implementerRounds(t *testing.T, pool *pgxpool.Pool) int {
 	t.Helper()
 	var rounds int

@@ -23,18 +23,21 @@ const (
 	ScopeChildren Scope = "children"
 )
 
-// The bars of metric 2: the six roles, each holding the phases that role works, and the seventh
-// for the phases no role works. "A seventh bar, 'no role', holds the phases no role works:
-// `awaiting_person` and `held`", and the spec's "Phase boundaries before observations" holds it
-// to those two alone — a handoff starts the next phase, so no hour falls between two phases for
-// it to hold. Time in the queue is on no bar, and neither is an hour the work time leaves out,
-// so the seven bars of an issue add up to its work time (phaseTime).
+// The bars of metric 2: the six roles, each holding the phases that role works in the default
+// steps, whichever agent works them, and the seventh for the phases no role works. "A seventh bar,
+// 'no role', holds the phases no role works: `awaiting_person` and `held`", and the spec's "Phase
+// boundaries before observations" holds it to those two alone — a handoff starts the next phase,
+// so no hour falls between two phases for it to hold. Time in the queue is on no bar, and neither
+// is an hour the work time leaves out, so the seven bars of an issue add up to its work time
+// (phaseTime).
 const barNoRole = "no_role"
 
 // mergerPhases are the two phases of the merger's bar, "merging and awaiting merge", and the two a
 // table names merging (tablePhase). Retro is not one of them: "the daemon gives retro to the
-// implementer" (RoleFor in packages/daemon/internal/phase), so its hours are on the
-// implementer's bar and a table names it retro (the spec's metric 2 and "Phase words in tables").
+// implementer" (the spec's words; RoleFor in packages/daemon/internal/phase still answers the
+// implementer for retro, while the agent of the task's last step of the type implementation, or
+// the issue's architect, does it), so its hours are on the implementer's bar and a table names it
+// retro (the spec's metric 2 and "Phase words in tables").
 var mergerPhases = []string{legion.PhaseMerging, legion.PhaseAwaitingMerge}
 
 // bars are the seven bars, in the order PhaseTime.Bars lists them.

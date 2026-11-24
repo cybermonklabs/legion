@@ -15,9 +15,11 @@ type Token string
 // role's work is named for the role, so Agent(role) names it; a name can also be none of Roles.
 type Agent string
 
-// Role names a role a claim can be on: the role of the step its agent runs now, one of Legion's
-// six, a role the deployment defines or a role the plan of the claim's issue defines. A claim takes
-// the role of each step its agent runs.
+// Role names a role a claim can be on: one of Legion's six, or another role name, as acceptance
+// (the fresh agent of a step `acceptance` with no key) or a role the deployment or the issue's
+// plan defines. The claim of a step's agent takes the role of each step that agent runs; the
+// architect's claim keeps its role at a step of the key owner, whose App its slot holds then
+// (runtime.ActsAs).
 type Role string
 
 const (
@@ -33,3 +35,8 @@ const (
 // none of Roles, and NewToken never builds a token of it; its one token is ControllerToken. The
 // daemon holds such a claim only when it launches the controller itself (`controller: daemon`).
 const RoleController Role = "controller"
+
+// RoleAcceptance is the role of the step `acceptance` (plan.RunsAs gives it accepting), a role of
+// Legion's that is none of Roles: the claim of the fresh agent of a step `acceptance` with no key
+// takes it, and a step `acceptance:owner` is the owner's, whose claim keeps the architect's role.
+const RoleAcceptance Role = "acceptance"

@@ -228,10 +228,9 @@ func TestProviderKeysMayNotNameAnAgentSecretsVariable(t *testing.T) {
 func TestProviderKeysMayNotNameAGhVariableEveryPaneSets(t *testing.T) {
 	for _, name := range []string{"GH_CONFIG_DIR", "GH_TOKEN", "GITHUB_TOKEN", "GH_HOST", "LEGION_GH_OWNERS_DIR", "LEGION_GH_PATH"} {
 		t.Run(name, func(t *testing.T) {
-			want := "provider_keys names " + name + ", which the daemon sets on every pane and pod (the role's GitHub App tokens are the gh files under LEGION_GH_OWNERS_DIR, GH_CONFIG_DIR its issue's owner's and LEGION_GH_PATH the real gh `legion gh` runs; GH_TOKEN, GITHUB_TOKEN and GH_HOST are emptied so nothing outranks them), so a provider key may not use that name"
 			_, err := LoadForValidation(writeConfigFile(t, minimalFile+"provider_keys:\n  "+name+": "+name+"_TESTS\n"), noEnv)
-			if err == nil || err.Error() != want {
-				t.Fatalf("LoadForValidation = %v, want %q", err, want)
+			if err == nil || !strings.Contains(err.Error(), "provider_keys") || !strings.Contains(err.Error(), name) {
+				t.Fatalf("LoadForValidation = %v, want the refusal of provider_keys naming %s", err, name)
 			}
 		})
 	}

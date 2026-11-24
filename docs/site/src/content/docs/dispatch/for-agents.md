@@ -14,8 +14,8 @@ The `dispatch` skill in this repository, `skills/dispatch/SKILL.md`, teaches the
 [command reference](/legion/dispatch/reference/tools/) lists every command's flags.
 
 Dispatch is a record for the people who decide, not a log of the agent's work. Progress belongs in
-the agent's own transcript and its pull request. Anything a person must read, answer, or approve
-goes through a `dispatch` command.
+the agent's own transcript and in its pull request, where its work has one. Anything a person must
+read, answer, or approve goes through a `dispatch` command.
 
 ## Connecting an agent
 

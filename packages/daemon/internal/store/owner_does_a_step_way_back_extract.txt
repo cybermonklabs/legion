@@ -1,0 +1,24 @@
+# A copy of the statements docs/kubernetes.md gives under "Rolling back below the release whose
+# owner does a step": the content of the fenced block that holds `delete from outbox where kind =
+# 'notice' and payload->>'kind' = 'owner-step' and split_part(issue, '-', 1) = '<PROJECT>';`, in
+# the guide's own bytes and none of the prose around it. No migration header carries that block,
+# since no migration of the earlier release clears those rows, so the guide is where an operator
+# reads it and this file is its copy.
+#
+# The guide answers for the block in two halves. This package's owner_steps_way_back_test.go runs
+# this copy over queued rows of two projects and reads what it leaves;
+# packages/daemon/internal/textcheck's TestTheOwnerDoesAStepWayBackExtractIsTheGuidesBlock holds
+# this copy to the guide's fenced block. Splitting it that way is what lets an edit to the guide
+# alone start the text-check run rather than every Go lane: the store's test reads no text outside
+# its package.
+#
+# So this file is changed only when that block changes, in the same commit as the guide. A line
+# changed here and not in the guide, or there and not here, fails the text-check half.
+#
+# The lines that open with # are this header, the one blank line under them ends it, and every
+# line after that blank line is the block's own bytes, to the end of the file.
+
+delete from outbox where kind = 'notice' and payload->>'kind' = 'owner-step' and split_part(issue, '-', 1) = '<PROJECT>';
+delete from outbox where kind = 'notice' and payload->>'kind' = 'merge-forward-lost' and split_part(issue, '-', 1) = '<PROJECT>';
+update outbox set payload = payload - 'covers' where kind = 'merge_forward' and payload ? 'covers' and split_part(issue, '-', 1) = '<PROJECT>';
+delete from outbox where kind = 'supervise' and payload->>'op' = 'slot_credential' and split_part(issue, '-', 1) = '<PROJECT>';

@@ -2,12 +2,14 @@ package workflow
 
 import (
 	"context"
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -36,8 +38,8 @@ func signOffNow(t *testing.T, pool *pgxpool.Pool, id, key string) intake.Result 
 
 // A6. A parent is accepted after its children: sign_off is refused while any issue beneath the
 // one being accepted is still in the workflow, naming each of them, and is taken once the last
-// of them leaves. A parent's head proves its children's merged work, so accepting it first would
-// send a head to the merge queue that does not carry that work.
+// of them leaves. Where the parent has a pull request, its head proves its children's merged work,
+// so accepting it first would send a head to the merge queue that does not carry that work.
 func TestSignOffIsRefusedWhileAnIssueBeneathIsInTheWorkflow(t *testing.T) {
 	pool := migratedPool(t)
 	seedAccepting(t, pool)
@@ -196,15 +198,18 @@ func TestAPersonsTodoUnderAnAcceptedAncestorIsHeldAtAdmitted(t *testing.T) {
 	}
 }
 
-// The notice of a person's todo beneath an accepted ancestor names the head the daemon accepted
-// as the head the last step of the ancestor's task passed, which is true of each plan: a plan with
-// no reviewer step has no reviewed head, and an issue stands in merging once its task's last step
-// passed whatever that step is (record.Accepted). The ancestor walks today's line in one case and
-// the plan `implementer tester`, which has no reviewer step, in the other; the text is one.
-func TestTheNoticeOfATodoUnderAnAcceptedAncestorNamesTheHeadItsLastStepPassed(t *testing.T) {
-	const want = "LEGION-300 is beneath LEGION-208, whose head the last step of its task passed and the daemon has already accepted, " +
-		"so LEGION-300 is recorded at admitted and nothing starts it until LEGION-208 closes. " +
-		"Take LEGION-208 back with a backward move to run LEGION-300 under it now, or leave LEGION-300 where it is and it starts once LEGION-208 has closed."
+// The notice of a person's todo beneath an accepted ancestor is one notice whatever plan the
+// ancestor walks, since an issue stands in its retro or its merge once its task's last step passed,
+// whatever that step is (record.Accepted): the child's outbox holds one child-status notice to the
+// architect, the value ChildUnderAcceptedParentNotice gives for the child and the ancestor. Every
+// notice row of the child is read, so a notice sent twice fails as one sent for no plan does. The
+// ancestor walks today's line in one case and the plan `implementer tester`, which has no reviewer
+// step, in the other.
+func TestTheNoticeOfATodoUnderAnAcceptedAncestorIsOneForEachPlan(t *testing.T) {
+	want := []record.Notice{ChildUnderAcceptedParentNotice("LEGION-300", "LEGION-208")}
+	if want[0].Kind != "child-status" || want[0].Role != claim.RoleArchitect {
+		t.Fatalf("ChildUnderAcceptedParentNotice = %+v, want a child-status notice to the architect", want[0])
+	}
 	for _, tc := range []struct {
 		name  string
 		steps []string
@@ -228,13 +233,8 @@ func TestTheNoticeOfATodoUnderAnAcceptedAncestorNamesTheHeadItsLastStepPassed(t 
 				intake.DispatchIssue{Key: "LEGION-300", ResolvedRepo: "sjawhar/legion", Seq: 3, Type: "issue.updated",
 					Status: "todo", Title: "child", Parent: "LEGION-208", Rank: "Z"})
 
-			var reason string
-			if err := pool.QueryRow(context.Background(),
-				"select payload->>'reason' from outbox where kind = 'notice' and issue = 'LEGION-300' and payload->>'kind' = 'child-status'").Scan(&reason); err != nil {
-				t.Fatalf("read the child-status notice: %v", err)
-			}
-			if reason != want {
-				t.Fatalf("the child-status notice = %q, want %q", reason, want)
+			if got := noticesOf(t, pool, "LEGION-300", "child-status"); !reflect.DeepEqual(got, want) {
+				t.Fatalf("LEGION-300's outbox holds the child-status notices %+v, want %+v alone", got, want)
 			}
 		})
 	}

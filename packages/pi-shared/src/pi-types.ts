@@ -635,6 +635,9 @@ export interface PiZod {
   readonly boolean: () => ZodProperty;
   readonly array: (item: unknown) => ZodProperty;
   readonly enum: (values: readonly string[]) => ZodProperty;
+  /** A value that one of `members` takes. Oh My Pi's facade exports `union` beside `enum` and
+   * `number` (its `omptype` zod module), and zod states it in JSON Schema as the members' `anyOf`. */
+  readonly union: (members: readonly unknown[]) => ZodProperty;
   readonly unknown: () => ZodProperty;
 }
 

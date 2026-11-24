@@ -3,10 +3,11 @@ import { join } from "node:path";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { changed, fakeDispatchRead } from "./fake-dispatch-command";
 
-// step-records-read.sh (the read of a deployed issue's step records after the merge) against the
-// fake `dispatch` of lib/fake-dispatch-command.ts, first on PATH, which prints a warning on stderr
-// where a case gives one, as the real command prints its `dispatch: <warning>` lines before its
-// answer. The answers below are the lines `dispatch steps` prints
+// step-records-read.sh (the read, after the release's merge, of the step records of a deployed issue
+// that ran the project's default steps to done through its pull request's merge) against the fake
+// `dispatch` of lib/fake-dispatch-command.ts, first on PATH, which prints a warning on stderr where
+// a case gives one, as the real command prints its `dispatch: <warning>` lines before its answer.
+// The answers below are the lines `dispatch steps` prints
 // (packages/envoy-client/src/dispatch-commands/steps.ts): a header, then one run per line.
 const script = join(import.meta.dir, "..", "step-records-read.sh");
 const dir = temporaryDirectory("step-records-read-test");

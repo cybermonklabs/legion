@@ -22,8 +22,11 @@ import (
 )
 
 // newClaimsCommand is the operator's hand on the daemon's claims, one command per operator route
-// (internal/api/operator.go). retry relaunches a failed claim: an architect on its session with
-// fresh budgets, a phase worker through its issue's held phase; with --failed, every failed claim.
+// (internal/api/operator.go). retry relaunches a failed claim. An architect is relaunched on its
+// session with fresh budgets. Where its issue's task stands at a step of the key owner or at the
+// owner's retro, the daemon then tells it that step again. It does so in one more owner-step,
+// where none of the step's open run is still queued. A phase worker is relaunched through its
+// issue's held phase, and --failed retries every failed claim.
 // compact shortens a running claim's session and sends it whatever task it owes again, which is
 // what a claim whose provider keeps refusing its session reaches for before a fresh one. close is
 // the tree's close, through its root claim, for a tree no workflow issue backs: the root, then
@@ -447,13 +450,15 @@ func printCompaction(w io.Writer, answer []byte) error {
 }
 
 // claimsRetry retries --claim, or with --failed every claim the daemon holds failed, in the
-// order the daemon lists them: an architect is relaunched on its session with fresh budgets, a
-// phase worker is relaunched by the start of its issue's phase — the phase it is held from, or the
-// one it stands in, which is where an operator's stop leaves it — and the daemon refuses the rest,
-// naming why (api's retryClaim). Under --failed each retried claim prints its line as --claim
-// prints it, each refusal is reported naming its claim, and the command fails once any was
-// refused, having asked for every one. A claim an operator stopped is retired rather than failed,
-// so --failed passes over it: name it with --claim.
+// order the daemon lists them: an architect is relaunched on its session with fresh budgets, and
+// where it is the owner of its issue's task at a place of its own (a step of the key owner or the
+// owner's retro) the daemon then tells it that step again, with one more owner-step where none
+// is still queued, a phase worker is relaunched by the start of its issue's phase — the phase it
+// is held from, or the one it stands in, which is where an operator's stop leaves it — and the
+// daemon refuses the rest, naming why (api's retryClaim). Under --failed each retried claim prints
+// its line as --claim prints it, each refusal is reported naming its claim, and the command fails
+// once any was refused, having asked for every one. A claim an operator stopped is retired rather
+// than failed, so --failed passes over it: name it with --claim.
 //
 // --fresh-session starts the claim in a new session rather than resuming the recorded one, which
 // is what a claim whose provider refused its session needs: resuming it would be refused again.

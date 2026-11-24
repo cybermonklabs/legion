@@ -1,0 +1,29 @@
+kind: Added
+custom:
+  Issue: pr5162
+body: |-
+  The owner of an issue, its own architect, can do a step of the issue's plan itself. A step
+  keyed `owner` (for example `implementer:owner` or `acceptance:owner`) starts no worker: the
+  owner is told it in an `owner-step` notice, and reports it with `complete_step`. While the owner
+  does a step, its gh acts as the App of the step's role. Legion writes that App into the owner's
+  slot only where it is not the owner's own. For every step, the notice waits until the slot's gh
+  files hold that App. Where the pod's launcher is too old to tell, a step of the owner's own App
+  is told at once. A step of another App then waits until the pod is replaced. The end of each step
+  the owner does writes its own App back, unless its next step has started and needs another App.
+  Each later notice to the owner waits for that write. A notice of a run that has ended is not
+  delivered. An owner's step that started and has not ended is told to the owner again when the
+  owner is idle past the silence bound, and at a launch of the owner in a session that has not had
+  it, such as a fresh session after a lost one. A child's own architect
+  that fails at a step of its own or its retro is started again at once, at most three times in
+  the step's run, and then the stranded list names it; `legion claims retry` of the owner at its
+  own step relaunches it and tells it the step again, unless that notice is still on its way. A step `acceptance` with
+  no key gets a fresh agent of the role `acceptance`, and `sign_off` of an acceptance another agent
+  works is refused `SIGNOFF_NOT_THE_OWNERS`. The default steps end with `acceptance:owner`. A task
+  with no pull request is done when its retro ends, and the retro runs as the role of its agent.
+  Where the owner does the task's implementation step, a merge forward is asked of the owner, and
+  the owner's slot holds the implement App until that ask ends. Where one claim holds both
+  recipients of a merge forward's event, it gets one message, which carries the new field
+  `covers`: the ask covers the hold, and the review covers the landed. Where an ask or a review of
+  a merge forward cannot reach an agent other than the owner, because that agent's claim failed or
+  retired, the architect is told in the new `merge-forward-lost` notice. An issue with no plan rows
+  walks today's steps as before. Daemon API contract 227.

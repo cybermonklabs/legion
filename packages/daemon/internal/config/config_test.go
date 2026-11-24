@@ -2,6 +2,7 @@ package config
 
 import (
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -1533,11 +1534,6 @@ func TestLoadRefuses(t *testing.T) {
 			want: `hooks[0].roles names "reviewr", which is not a Legion role (architect, planner, implementer, tester, reviewer, merger)`,
 		},
 		{
-			name: "a hook naming the architect",
-			body: aHook("{name: stuck, on: work_back, every: 1, roles: [architect], prompt: Words.}"),
-			want: "hooks[0].roles names the architect, which no hook writes to: the daemon's own wake to an architect is a notice",
-		},
-		{
 			name: "a hook whose moves are a word other than any",
 			body: aHook("{name: stuck, on: work_back, every: 1, moves: every, roles: [tester], prompt: Words.}"),
 			want: "hooks[0].moves must be an array of the moves back it selects, or the word any",
@@ -1596,6 +1592,20 @@ func TestLoadRefuses(t *testing.T) {
 				t.Errorf("Load error = %q, want %q", err.Error(), tc.want)
 			}
 		})
+	}
+}
+
+// A hook may not name the architect among its roles, beside a role it may name. The refusal is a
+// hookRoleRefusal: the key that names the role, the first hook's `roles`, and the role it names,
+// the architect, read as values rather than as the words of its sentence.
+func TestLoadRefusesAHookNamingTheArchitect(t *testing.T) {
+	_, err := Load(writeConfigFile(t, aHook("{name: stuck, on: work_back, every: 1, roles: [tester, architect], prompt: Words.}")), noEnv)
+	var refused *hookRoleRefusal
+	if !errors.As(err, &refused) {
+		t.Fatalf("Load error = %v, want a hookRoleRefusal", err)
+	}
+	if refused.field != "hooks[0].roles" || refused.role != claim.RoleArchitect {
+		t.Errorf("Load refused field %q and role %q, want hooks[0].roles and %s", refused.field, refused.role, claim.RoleArchitect)
 	}
 }
 

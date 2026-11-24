@@ -569,8 +569,9 @@ func architectClaimUnreachable(root record.Issue, row record.PhaseEntry, run rec
 // held ahead of the entry's, an architect that took nothing — and the arm tells of it.
 //
 // It reads a root standing at admitted and no other. A root a hand-over carried in stands in a
-// phase of the run that carried it, where its tree's work is already running under a phase
-// worker, and a gate it has not registered holds nothing up yet.
+// phase of the run that carried it, where its tree's work is already running under the agent of
+// its place, a phase worker or, at a step of its own, its architect, and a gate it has not
+// registered holds nothing up yet.
 func architectSlowBeforeGate(root record.Issue, gate record.TreeGate, admittedAt time.Time, row record.PhaseEntry, run record.RoleRun,
 	floor stallFloor, letOut, now time.Time,
 ) string {

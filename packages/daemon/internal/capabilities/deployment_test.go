@@ -156,7 +156,7 @@ func TestLiveRowsAreUncheckedUntilASessionReports(t *testing.T) {
 		MCP:                  "no session has reported yet (dispatch://LEGION-663): reaches the MCP servers the deployment configures",
 		RepositoryExtensions: "no session has reported yet (dispatch://LEGION-629): loads the Oh My Pi extensions the repository it works carries",
 		DispatchEnvoyTools:   "no session has reported yet (dispatch://LEGION-663): reaches Dispatch through the `dispatch` command and Envoy through the pi-envoy tools",
-		GitHub:               "no session has reported yet (dispatch://LEGION-631): reads and writes GitHub through its plain `gh` and `git` on its role's App token file",
+		GitHub:               "no session has reported yet (dispatch://LEGION-631): reads and writes GitHub through its plain `gh` and `git` on the App token file of the role it works as",
 	} {
 		if got := report[name]; got.Status != StatusUnchecked || got.Detail != want {
 			t.Errorf("%s = %s (%s), want unchecked (%s)", name, got.Status, got.Detail, want)

@@ -92,11 +92,11 @@ func blockedNow(t *testing.T, pool *pgxpool.Pool, admission *Admission) []record
 // A5. A root whose gate opens with two Dispatch children in backlog does its own work after
 // theirs: it starts no phase while either is open, it gives back the row it took at its
 // admission for as long as the wait lasts (INFRA-3036), its architect is told once,
-// admission.blocked names it with both children, and it takes a row again and starts planning
-// once both have left the workflow. The children are
-// released in the architect's design-approved turn, after the gate opened, which is exactly
-// the window the tree's own members cannot answer for — neither child is a member of the tree
-// until it is released.
+// admission.blocked names it with both children, and it starts its first step once both have
+// left the workflow, taking a row again where that step keeps one (planning, on the default
+// steps, does). The children are released in the architect's design-approved turn, after the
+// gate opened, which is exactly the window the tree's own members cannot answer for — neither
+// child is a member of the tree until it is released.
 func TestARootWaitsForTheChildrenItFiledBeforeItsGateOpened(t *testing.T) {
 	pool := migratedPool(t)
 	admission := cfTree(t, pool, 3)
@@ -251,8 +251,8 @@ func TestAChildBlockedByItsOwnParentIsNamedAsACycle(t *testing.T) {
 	}
 }
 
-// A5. A root with no Dispatch children at all starts planning at its gate's opening, on the slot
-// it holds, which is the control for every wait above.
+// A5. A root with no Dispatch children at all starts its first step (planning, on the default
+// steps) at its gate's opening, on the slot it holds, which is the control for every wait above.
 func TestARootWithNoChildrenStartsPlanningAtItsGatesOpening(t *testing.T) {
 	pool := migratedPool(t)
 	admission := cfTree(t, pool, 3)

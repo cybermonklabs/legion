@@ -268,7 +268,13 @@ func (e *Engine) settleRuns(ctx context.Context, tx pgx.Tx, runs *factRuns, keys
 // endStep's ends too, so the two writes of the run agree. The log says why it ended. A row with no
 // kept start's record breaks the store invariant: every writer of a row keeps the write in its
 // transaction, so ending it without a record would mark it ended while Dispatch never learned it
-// started.
+// started. The end of a step or a retro whose start named an architect gives the owner's slot its
+// own App back, as endStep's does (ownerSlotCredential), but it cannot ask endStep's rule
+// (record.OwnersPlaceActsAs): that rule reads the plan rows, and the rows that made the place the
+// owner's are gone, so the start's agent is what is left of them. With the rows gone, the end of
+// the owner's retro cannot tell the retro of its own implementation step, whose slot was switched,
+// from a retro it did as itself, whose slot was not, so it queues the write-back for both; where the
+// slot holds the owner's own App already the runtime rewrites nothing (runtime.SlotCredentials).
 func (e *Engine) endOffWalk(ctx context.Context, tx pgx.Tx, row record.IssueStepRun, end StepEnd) error {
 	if row.Kept.ID == "" {
 		return fmt.Errorf("end the off-walk run of %s %s/%s/%d: its open start row holds no kept record", row.Issue, row.Place.Task, row.Place.Kind, row.Place.Place)
@@ -280,7 +286,11 @@ func (e *Engine) endOffWalk(ctx context.Context, tx pgx.Tx, row record.IssueStep
 	e.logOnCommit(ctx, "workflow: a run on no step of the walk of its run is ended", "issue", row.Issue, "generation", row.Generation,
 		"task", row.Place.Task, "kind", row.Place.Kind, "place", row.Place.Place, "result", end.Result,
 		"reason", "no step of the walk of its run holds its place: the plan rows that named its step are gone")
-	return nil
+	issue, err := e.store.Issue(ctx, tx, row.Issue)
+	if err != nil || issue == nil {
+		return err
+	}
+	return e.ownerSlotCredential(ctx, tx, *issue, claim.Token(row.Agent))
 }
 
 // issueReader reads the record of an issue by key, nil for none: the settle's read of the store as

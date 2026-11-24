@@ -19,7 +19,8 @@ type StatusRowKind string
 
 const (
 	// OrdinaryStatusRow is the workflow moving an issue along inside the workflow: the phase
-	// statuses. The done a merge or an architect's close writes is a CloseStatusRow.
+	// statuses. The done the daemon writes — a merge's, the end of the retro of an issue with no
+	// pull request, or an architect's close — is a CloseStatusRow.
 	OrdinaryStatusRow StatusRowKind = "ordinary"
 	// PersonHandoverStatusRow is a person's handover: a person's legion label on an unrecorded
 	// root in triage, or a person's approval of a parked labelled root's primary document. It is
@@ -41,14 +42,15 @@ const (
 	// dispatch.LegionLabel on the issue, in the same Dispatch write, and the runner makes it while
 	// the label is missing even where Dispatch already shows Status.
 	HandOverStatusRow StatusRowKind = "hand-over"
-	// CloseStatusRow is the daemon's own close of an issue: the done a merge or an architect's
-	// close_root writes, queued in the transaction that takes the record out of the workflow. The
-	// ordinary rule cannot judge it, for the reason the re-assert's cannot: one refusal — an
-	// agent's comment, a handoff record, or the done reason this row itself just posted — sends
-	// it to its retry, which would find the record already out of the workflow and drop the write
-	// that puts Dispatch there, leaving the issue open in Dispatch for good while the tree
-	// lingers and frees its slot. Its own rule asks the question that matters instead: the close
-	// still stands in the record at the generation the row names.
+	// CloseStatusRow is the daemon's own close of an issue: the done a merge, the end of the
+	// retro of an issue with no pull request or an architect's close_root writes, queued in the
+	// transaction that takes the record out of the workflow. The ordinary rule cannot judge it,
+	// for the reason the re-assert's cannot: one refusal — an agent's comment, a handoff record,
+	// or the done reason this row itself just posted — sends it to its retry, which would find
+	// the record already out of the workflow and drop the write that puts Dispatch there, leaving
+	// the issue open in Dispatch for good while the tree lingers and frees its slot. Its own rule
+	// asks the question that matters instead: the close still stands in the record at the
+	// generation the row names.
 	CloseStatusRow StatusRowKind = "close"
 )
 

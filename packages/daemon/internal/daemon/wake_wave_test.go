@@ -1961,9 +1961,9 @@ func noticeRowOf(t *testing.T, pool *store.Pool, issue string) (noticeRow, bool)
 // A ready of an architect whose own catch-up waits in a queue of forty leaves that catch-up
 // exactly where the queue holds it — the ready releases the notices that waited for the architect
 // to come back, and this wake is waiting for a turn instead — and the minute that turn falls in
-// still holds no more than the rate plus the burst. A later notice of the same tree, written while
-// the catch-up waits, is published after it and never before it, so the architect is woken once
-// and reads the later notice in the turn that wake starts.
+// still holds no more than the rate plus the burst. A later notice the same architect is to hear,
+// written while the catch-up waits, is published after it and never before it, so the architect
+// is woken once and reads the later notice in the turn that wake starts.
 //
 // The negative control is the pacing reverted for this lane, the engine given no Reserve
 // (TestWithNoPacingTheCatchUpWaveIsWrittenDueAtOnce): the catch-up is then due at once, the ready

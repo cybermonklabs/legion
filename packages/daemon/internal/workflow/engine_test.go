@@ -344,8 +344,9 @@ func TestReviewRoundCapPostsOneMessageAndNoticeForTheThirdRound(t *testing.T) {
 
 // A reviewer started on the tester's pass is told the tester's verdict as the tester's, never as a
 // bare "Handoff verdict" it could take for a field of its own completion, which the daemon refuses
-// from a reviewer (VERDICT_ROLE_FORBIDDEN), and the tester's handoff as the Dispatch record it reads
-// with `dispatch handoff-read`, with no commit, since this completion of the tester's names none.
+// from a reviewer of an issue with a pull request (VERDICT_ROLE_FORBIDDEN), and the tester's handoff
+// as the Dispatch record it reads with `dispatch handoff-read`, with no commit, since this
+// completion of the tester's names none.
 func TestAReviewerIsToldTheTestersVerdictAsTheTesters(t *testing.T) {
 	pool := migratedPool(t)
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Testing, Generation: 1, Status: "testing", Rank: "U"})
@@ -396,7 +397,8 @@ func rolePrompt(t *testing.T, role claim.Role) string {
 }
 
 // The reviewer's prompt names the label its task's verdict carries as the tester's result and says
-// its own completion carries none, so a rename on either side alone fails here.
+// its own completion carries none where the issue has a pull request, so a rename on either side
+// alone fails here.
 func TestTheReviewerPromptNamesTheTestersVerdictLabel(t *testing.T) {
 	prompt := reviewerPrompt(t)
 	for _, want := range []string{"`" + testerVerdictLabel + ":`", "`VERDICT_ROLE_FORBIDDEN`"} {
@@ -608,8 +610,9 @@ func assertOutboxCount(t *testing.T, pool *pgxpool.Pool, kind string, want int) 
 // Every forward row short of the close applies through intake with its status, start and notice,
 // and none suspends the worker whose phase it ends: a claim named for its role, as each here is,
 // stays live from its first assignment until its issue closes (only a step of another role than a
-// keyed agent's claim holds suspends that claim, to re-role it). (The merge's row is the close
-// itself, which suspends the tree: TestTheCloseLingersOnceAndExpiryStopsTreeAndRemovesEveryWorkspace.)
+// keyed agent's claim holds suspends that claim, to re-role it). (The close — the merge's row, or
+// the retro's for an issue with no pull request — suspends the tree:
+// TestTheCloseLingersOnceAndExpiryStopsTreeAndRemovesEveryWorkspace.)
 func TestRemainingForwardRowsApplyThroughIntake(t *testing.T) {
 	// The root's architect, whose sign-off the route names it by; the seeded issue has no run of a
 	// step the record counts, so its route reads none.
@@ -661,6 +664,11 @@ func TestRemainingForwardRowsApplyThroughIntake(t *testing.T) {
 		},
 		{
 			name: "retro completion", current: phase.Retro, role: claim.RoleImplementer,
+			// An issue with no plan rows reaches its retro only with a pull request record, which the
+			// implementer's move needs, so the retro's end moves it to its merge.
+			setup: func(t *testing.T, pool *pgxpool.Pool) {
+				seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208", HeadSHA: headOne, CheckedHead: headOne, Failing: []string{}})
+			},
 			fact: func() intake.Fact {
 				return intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: "claim", Commit: "retro"}
 			},
@@ -704,8 +712,8 @@ func TestRemainingForwardRowsApplyThroughIntake(t *testing.T) {
 }
 
 // assertStartTasksNamePhase requires every worker start a fact enqueued to name the phase it starts:
-// the implementer runs implementing and retro under one role, and the task is all that tells a
-// resumed implementer which one it is in.
+// on the default steps the implementer runs implementing and retro under one role, and the task is
+// all that tells a resumed implementer which one it is in.
 func assertStartTasksNamePhase(t *testing.T, pool *pgxpool.Pool, want phase.Phase) {
 	t.Helper()
 	rows, err := pool.Query(t.Context(), "select payload->>'task' from outbox where kind = 'supervise' and payload->>'op' = 'start' and coalesce(payload->>'task', '') <> ''")
@@ -732,9 +740,9 @@ func assertStartTasksNamePhase(t *testing.T, pool *pgxpool.Pool, want phase.Phas
 // (each claim here is named for its role; a keyed agent's claim is suspended at its turn's end
 // only where the step it moves to is of another role than it holds).
 // Every move a backward row serves applies, and counts the implementer one pass, as every move
-// back to an earlier phase does; the review rounds stand, since no review requested changes. A
-// move onto accepting starts no worker: the architect that owns the issue, whose phase it is, is
-// already live.
+// back to an earlier phase does; the review rounds stand, since no review requested changes. On
+// these issues with no plan rows a move onto accepting starts no worker: the acceptance is the
+// architect's that owns the issue, which is already live.
 func TestEveryBackwardEdgeAppliesThroughIntake(t *testing.T) {
 	for _, from := range []phase.Phase{phase.Implementing, phase.Testing, phase.Reviewing, phase.Accepting, phase.Retro, phase.Merging} {
 		for _, to := range requiredBackwardTargets(phase.Order, from) {
@@ -897,7 +905,7 @@ func seedRecord(t *testing.T, pool *pgxpool.Pool, put func(pgx.Tx) error) {
 }
 
 // testReviewApp is the review App's bot login the test engines configure: a review it submits
-// decides a round.
+// decides a round whose review step a worker does, as on these issues with no plan rows.
 const testReviewApp = "legion-reviewer[bot]"
 
 // testEngine is the engine the workflow tests drive, under the design gate policy given and
@@ -1019,9 +1027,9 @@ func randomSuffix(t *testing.T) string {
 	return hex.EncodeToString(bytes[:])
 }
 
-// A backward move's task names the issue's pull request and the move's reason, which the role the
-// move sends the issue back to keys its new round on — here the merger's own words for a merge it
-// would not make (request_backward_move).
+// A backward move's task names the issue's pull request, where it has one, and the move's reason,
+// which the role the move sends the issue back to keys its new round on — here the merger's own
+// words for a merge it would not make (request_backward_move).
 func TestABackwardMovesTaskNamesThePullRequestAndTheReason(t *testing.T) {
 	pool := migratedPool(t)
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "backward", Phase: phase.Merging, Generation: 1, Status: "in_progress", Rank: "U"})

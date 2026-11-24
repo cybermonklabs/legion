@@ -621,11 +621,12 @@ func TestTheArchitectSweepTellsACarriedRootThePhaseItStandsInNow(t *testing.T) {
 	}
 }
 
-// Every role of the daemon is inside the rule, read from claim.Roles so that a role added to the
-// daemon fails this test until somebody decides where it stands. Five of them are reached as the
-// role of the phase their issue stands in (workflow.RoleFor, record.AtWork); the architect is
-// reached by a reading of its own, which is wider at admitted and narrower everywhere else
-// (workflow.ArchitectAtWork):
+// Each of Legion's six roles is inside the rule, read from claim.Roles so that a role added to
+// them fails this test until somebody decides where it stands. Five of them are reached as the
+// role that works their issue's place (workflow.OpenRoleOf, which on these issues with no plan
+// rows is workflow.RoleFor of the phase, and none at a place the architect does itself;
+// record.AtWork); the architect is reached by a reading of its own, which is wider at admitted
+// and narrower everywhere else (workflow.ArchitectAtWork):
 //
 //   - the architect is reached on a root standing at admitted, whatever its design gate, on a
 //     root a hand-over carried in, in every phase of the run that carried it

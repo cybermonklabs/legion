@@ -40,6 +40,7 @@ func TestArchitectFactRoutesRejectMissingGrantID(t *testing.T) {
 		"/legion/v1/phase/backward",
 		"/legion/v1/phase/retry",
 		"/legion/v1/signoff",
+		"/legion/v1/steps/complete",
 		"/legion/v1/children/park",
 		"/legion/v1/children/rerun",
 	} {
@@ -539,9 +540,9 @@ func TestArchitectRoutesRefuseWrongRoleAndForeignTree(t *testing.T) {
 }
 
 // sign_off and retry_or_escalate are the owning architect's: its own issue or one under it. A
-// sub-architect holds a grant for the whole tree and can name any issue of it, but signing off the
-// root ends the tree, and a sibling is another architect's; both are refused, and nothing applies.
-// The root's architect owns every issue of its tree, and a sub-architect its own.
+// sub-architect holds a grant for the whole tree and can name any issue of it, but the root's
+// acceptance is the root architect's, and a sibling is another architect's; both are refused, and
+// nothing applies. The root's architect owns every issue of its tree, and a sub-architect its own.
 func TestSignOffAndRetryAreTheOwningArchitects(t *testing.T) {
 	h, facts, _ := newArchitectHarness(t, nil, nil)
 	seedTree(t, h, "LEGION-208", "LEGION-209", "LEGION-210")
@@ -636,7 +637,8 @@ func TestTheArchitectsBackwardMoveNamesItsIssue(t *testing.T) {
 // A child whose parent chain leaves the tree before reaching an architect's issue - no parent, or a
 // parent not recorded, as one human re-parent in Dispatch leaves it - is the tree root's, as the
 // notice router decides (record.OwningArchitect): the root architect the reviewer's phase-finished
-// notice reaches may accept it and retry it, and a sub-architect still may not.
+// notice reaches may accept it, a child with no plan rows whose acceptance is the architect's, and
+// retry it, and a sub-architect still may not.
 func TestABrokenParentChainIsTheTreeRootArchitects(t *testing.T) {
 	h, facts, _ := newArchitectHarness(t, nil, nil)
 	seedTree(t, h, "LEGION-208", "LEGION-209")
@@ -1173,8 +1175,8 @@ const rootArchitect208 = claim.Token("legion-legion-legion-208-architect")
 
 // A root architect ends its own tree before its first phase starts: a human decided no change at
 // the design gate, or the issue is moot. The route takes the reason; nothing else ends an admitted
-// root from the architect's side, since sign_off needs the production check and a backward move
-// needs a phase worker.
+// root from the architect's side, since sign_off takes only an issue in accepting
+// (SIGNOFF_OUTSIDE_ACCEPTING) and a backward move takes an issue back from a step it has reached.
 func TestAnArchitectClosesItsAdmittedRoot(t *testing.T) {
 	h, facts, _ := newArchitectHarness(t, nil, nil)
 	seedTree(t, h, "LEGION-208", "LEGION-209")

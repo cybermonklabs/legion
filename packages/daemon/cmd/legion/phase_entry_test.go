@@ -25,15 +25,23 @@ import (
 // uses, so the line reads none of its own: a root whose fields would have read as an arm to a
 // reader of the times, the claim and the gate is named by nothing while the state names no arm.
 //
-// The numbers are the architect's where the root stands in a phase its architect works, and past
-// it they are that phase's worker's, so the architect of such a root is named with its arm and no
-// numbers, and its worker is not named for the numbers at all. An issue that is not its tree's
-// root is named for its numbers where they differ, as every role a phase worker works is.
+// The numbers are the architect's where the root's architect works the place it stands at as
+// itself, on its own row (admitted, and accepting on an issue with no plan rows), and elsewhere
+// they are the numbers of the role whose row the place's run raises, so the architect of such a
+// root is named with its arm and no numbers, and that role is not named for the numbers at all.
+// That includes a step or a retro the owner does itself, where the state serves the entry of the
+// step's own row and no given entry (the owner is told its step by a notice, which gives no claim
+// an entry). An issue that is not its tree's root is named for its numbers where they differ, as
+// every role a phase worker works is.
 //
-// The role is the one the issue's current phase names (phase.RoleFor), and at step the role of
-// the running step, which the state names (api.Issue.StepRole): an issue whose phase names no
-// role carries neither number, so the line never names one, and neither does an issue held from
-// step, which names its step's role and carries no number.
+// The role is the one that works the place the issue's task stands at, which the state names
+// (api.Issue.PlaceRole) where the issue has plan rows: at accepting, the fresh agent of a step
+// `acceptance` with no key, whose numbers the line names as any worker's, or the architect where
+// the owner accepts or does another step or a retro of its own, named for nothing. Where the state
+// names none, it is the role the issue's current phase names (phase.RoleFor), and at step the
+// role of the running step (api.Issue.StepRole): an issue whose phase names no role carries
+// neither number, so the line never names one, and neither does an issue held from step, which
+// names its step's role and carries no number.
 func TestStatePlainNamesTheRolesBehindTheirEntryAndTheRootsTheStateNamesAnArmFor(t *testing.T) {
 	now := time.Now().UTC()
 	at := func(d time.Duration) string { return now.Add(d).Format(time.RFC3339Nano) }
@@ -92,8 +100,26 @@ func TestStatePlainNamesTheRolesBehindTheirEntryAndTheRootsTheStateNamesAnArmFor
 		`"workers":{},"phaseEntry":3,"givenEntry":2},` +
 		`"LEGION-501":{"key":"LEGION-501","generation":1,"phase":"implementing","status":"in_progress","tree":"LEGION-500",` +
 		`"workers":{},"phaseEntry":4,"givenEntry":3}`
+	// Two children at accepting, each behind the entry its row names: LEGION-600's step
+	// `acceptance` has no key, so a fresh agent of acceptance works it and is named; LEGION-601's
+	// is `acceptance:owner`, whose architect, on a child, is named for nothing.
+	accepting := `"LEGION-600":{"key":"LEGION-600","generation":1,"phase":"accepting","placeRole":"acceptance","status":"needs_review",` +
+		`"tree":"LEGION-599","workers":{},"phaseEntry":3,"givenEntry":1},` +
+		`"LEGION-601":{"key":"LEGION-601","generation":1,"phase":"accepting","placeRole":"architect","status":"needs_review",` +
+		`"tree":"LEGION-599","workers":{},"phaseEntry":2,"givenEntry":1}`
+	// Two roots the state names an arm for at a place their owner works: LEGION-700 at its step
+	// `implementer:owner` and LEGION-701 at the owner's retro. The state serves the entry of the
+	// implementer's row the owner's run raised and no given entry, which are not the architect's,
+	// so each architect is named with its arm and no numbers.
+	owners := `"LEGION-700":{"key":"LEGION-700","generation":1,"phase":"implementing","placeRole":"architect","status":"in_progress",` +
+		`"tree":"LEGION-700","workers":{},"phaseEntry":1,"architectStalls":["claim-unreachable"]},` +
+		`"LEGION-701":{"key":"LEGION-701","generation":1,"phase":"retro","placeRole":"architect","status":"in_progress",` +
+		`"tree":"LEGION-701","workers":{},"phaseEntry":3,"architectStalls":["took-nothing"]}`
 	for _, tc := range []struct {
 		name, issues, want string
+		// names and absent hold a case to the issues and roles the line names and does not name,
+		// where want, the whole line, is not this test's to hold.
+		names, absent []string
 	}{
 		{
 			name:   "three roles behind their entry, one the role of a running step, by issue key",
@@ -126,6 +152,17 @@ func TestStatePlainNamesTheRolesBehindTheirEntryAndTheRootsTheStateNamesAnArmFor
 			issues: `{"issues":{` + `"LEGION-209":{"key":"LEGION-209","generation":1,"phase":"testing","status":"testing","workers":{},"phaseEntry":2,"givenEntry":2}` + `}}`,
 			want:   "roles not given their phase entry, and roots a wake names: none\n",
 		},
+		{
+			name:   "an accepting a fresh agent works, beside one the owner works",
+			issues: `{"issues":{` + accepting + `}}`,
+			names:  []string{"LEGION-600 acceptance"},
+			absent: []string{"LEGION-601"},
+		},
+		{
+			name:   "roots at a step and a retro their owner works, each with an arm",
+			issues: `{"issues":{` + owners + `}}`,
+			names:  []string{"LEGION-700 architect", "LEGION-701 architect"},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			served := "{" + daemon + "," + strings.TrimSuffix(strings.TrimPrefix(tc.issues, "{"), "}") + "}"
@@ -142,8 +179,18 @@ func TestStatePlainNamesTheRolesBehindTheirEntryAndTheRootsTheStateNamesAnArmFor
 			if code := run(context.Background(), []string{"legion", "state"}, &out, &errb); code != 0 {
 				t.Fatalf("legion state = %d, stderr %q", code, errb.String())
 			}
-			if !strings.Contains(out.String(), tc.want) {
+			if tc.want != "" && !strings.Contains(out.String(), tc.want) {
 				t.Fatalf("legion state printed %q, want the line %q", out.String(), tc.want)
+			}
+			for _, name := range tc.names {
+				if !strings.Contains(out.String(), name) {
+					t.Fatalf("legion state printed %q, want it to name %q", out.String(), name)
+				}
+			}
+			for _, name := range tc.absent {
+				if strings.Contains(out.String(), name) {
+					t.Fatalf("legion state printed %q, want it to name no %q", out.String(), name)
+				}
 			}
 		})
 	}

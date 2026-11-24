@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
-# The read, after the merge, of the step records of one issue a deployed Legion ran to done: it
-# runs `dispatch steps --issue <ISSUE>` once, prints what the command printed, and judges it. It
-# reads an issue that is done, so every step of it has ended.
+# The read, after the merge, of the step records of one issue a deployed Legion ran on the
+# project's default steps (`planner implementer tester reviewer acceptance:owner`) to its merge: it
+# runs `dispatch steps --issue <ISSUE>` once, prints what the command printed, and judges it
+# against those steps, the retro and the merge. Run on an issue of another plan, or on one with no
+# pull request (done when its retro ends, with no merge), it prints a fault for each of those places
+# the issue has no record of. It reads an issue that is done, so every step of it has ended.
 #
 #   scripts/e2e/step-records-read.sh INFRA-123
 #

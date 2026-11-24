@@ -127,9 +127,9 @@ func TestEveryIssueInTheWorkflowHasAPlace(t *testing.T) {
 	answeredRoot := treeRoot("LEGION-190", "in_progress", phase.AwaitingPerson)
 	answeredRoot.Awaiting = &record.Awaiting{Ask: "ask-q", AnsweredAt: &answeredAt, AnsweredBy: record.AnsweredByAsk,
 		Since: record.EventMark{Seq: 5}}
-	// A root whose plan has no acceptance step, held before its retro for its child at work, which
-	// holds the row its phase keeps, and a root whose task was stopped in its merge. Neither held
-	// root keeps a row, since retro and merging keep none.
+	// A root whose task's last step is not an acceptance, held before its retro for its child at
+	// work, which holds the row its phase keeps, and a root whose task was stopped in its merge.
+	// Neither held root keeps a row, since retro and merging keep none.
 	heldParent := treeRoot("LEGION-195", "needs_review", phase.Held)
 	heldParent.Hold = &record.Hold{From: phase.Retro, Reason: record.HoldForChildren}
 	childAtWork := treeMember("LEGION-196", "LEGION-195", "LEGION-195", "in_progress", phase.Implementing)

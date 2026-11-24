@@ -48,7 +48,8 @@ func TestFailureCausesGolden(t *testing.T) {
 // claim.Roles must be those six, named here one by one: a role added to claim.Roles would pass the
 // band and reach a reader whose enumeration refuses the whole state for it. And the band is held
 // to them: a claim of each of the six is kept in each of the three lists, and a claim of a role
-// of the deployment is dropped from each.
+// of the deployment, and of the role acceptance (the fresh agent of a step `acceptance` with no
+// key, outside the six too), is dropped from each.
 func TestEveryRoleAnOlderReaderIsServedIsOneItsEnumerationNames(t *testing.T) {
 	olderReaders := []claim.Role{claim.RoleArchitect, claim.RolePlanner, claim.RoleImplementer, claim.RoleTester,
 		claim.RoleReviewer, claim.RoleMerger}
@@ -58,7 +59,7 @@ func TestEveryRoleAnOlderReaderIsServedIsOneItsEnumerationNames(t *testing.T) {
 			"that refuses the whole state for it; serve it down below the contract it arrives at", claim.Roles, olderReaders)
 	}
 	state := State{Paused: &PausedView{}}
-	for _, role := range append(slices.Clone(claim.Roles), "checker") {
+	for _, role := range append(slices.Clone(claim.Roles), "checker", claim.RoleAcceptance) {
 		state.StrandedClaims = append(state.StrandedClaims, StrandedClaim{Issue: "LEGION-208", Role: role, State: "failed"})
 		state.WakesWaiting = append(state.WakesWaiting, WakeWaiting{Issue: "LEGION-208", Role: role, Kind: "launch"})
 		state.Paused.WaitsOn = append(state.Paused.WaitsOn, PauseStopView{Issue: "LEGION-208", Role: role})

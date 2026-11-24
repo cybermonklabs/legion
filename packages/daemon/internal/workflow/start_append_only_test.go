@@ -68,7 +68,8 @@ func seedAppendOnlyRoot(t *testing.T, pool *pgxpool.Pool, key string, number int
 	seedPhase(t, pool, record.PhaseRow{Issue: key, Role: claim.RolePlanner, Claim: claim.Token("plan-claim-" + key)})
 }
 
-// plannerDone is the planner's completion of key, which starts the implementer.
+// plannerDone is the planner's completion of key, an issue with no plan rows, which starts the
+// implementer, the next role of today's line.
 func plannerDone(key string) intake.HandoffComplete {
 	return intake.HandoffComplete{Generation: 1, Issue: key, Role: claim.RolePlanner, Claim: claim.Token("plan-claim-" + key),
 		HandoffRecord: "plan-" + key, HandoffVersion: 1}

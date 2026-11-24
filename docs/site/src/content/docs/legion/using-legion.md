@@ -1,12 +1,13 @@
 ---
 title: Using Legion
-description: Hand an issue to Legion, answer its questions and approve its spec, review and merge its pull request, and read what each Dispatch status means.
+description: Hand an issue to Legion, answer its questions and approve its spec, review and merge its pull request where it has one, and read what each Dispatch status means.
 sidebar:
   order: 3
 ---
 
 This page is for the person whose issue Legion works: you write the issue, answer the architect's
-questions, approve the spec, and review the pull request. Everything happens in
+questions, approve the spec, and review the pull request where the issue's steps open one.
+Everything happens in
 [Dispatch](/legion/dispatch/) and on GitHub; you never need the `legion` command.
 
 ## Before you start
@@ -37,8 +38,9 @@ When a slot is free the daemon admits the issue and the status changes to `in_pr
 every slot is taken, the issue waits in `todo` for a free slot, in the order the line gives it ([Admission and the `legion` label](/legion/legion/concepts/#admission-and-the-legion-label)).
 A slot is one issue the daemon has started, a root or a child, so a tree of four issues at work
 holds four of them. An issue keeps its slot through a wait on you or on its review, and its
-agents stay live beside it. A started issue that waits on another issue before its review gives
-its slot back, and nothing of its work stops; past its review an issue holds no slot at all
+agents stay live beside it. A started issue that waits on another issue in a phase that holds a
+slot gives its slot back, and nothing of its work stops; in `accepting`, `retro` and `merging` an
+issue holds no slot at all
 ([Admission and the `legion` label](/legion/legion/concepts/#admission-and-the-legion-label)).
 A label an agent session set on an issue in `triage` goes to the controller instead: the controller
 decides whether to admit it or leave it for you, and parks it only when a person asked for that or
@@ -48,14 +50,15 @@ The controller never takes an issue on its own, whatever slots are free: Legion 
 hands it, and the clear defects its own agents report. You can also ask the controller to hand an
 issue over for you, in a message or in Slack. An agent that finds a defect outside its own issue
 whose fix needs no choice of yours fixes it in its own tree's pull request when that tree touches
-or depends on the code. Otherwise the controller gives it to the tree that owns the code, and files it labelled
+or depends on the code and has one. Otherwise the controller gives it to the tree that owns the code, and files it labelled
 `legion` only when no tree does. When the problem
 needs a decision, the agent asks you in a Dispatch ask whether to file one, rather than filing it.
 Answer with `File it for Legion` and the controller files it labelled `legion`.
 
 Do not label child issues: a child runs under its tree once the root is admitted. The children do
 the work first: an issue starts no phase of its own while Dispatch shows an open child under it,
-so a parent's own pull request is built and merged after its children's.
+so a parent's own work, and its pull request where it has one, is built and merged after its
+children's.
 
 ## Ask Legion in Slack
 
@@ -101,13 +104,14 @@ same way: a question in your Inbox that says what is blocked, the options, and w
 
 The issue's status tells you which phase is running (see [What each status means](#what-each-status-means)).
 The issue's events show each status change, and the architect's messages there say what changed
-and why. The pull request appears under the issue's external links, and its body carries the line
-`Dispatch: <KEY>` pointing back to the issue.
+and why. Where the issue's steps open a pull request, it appears under the issue's external links,
+and its body carries the line `Dispatch: <KEY>` pointing back to the issue.
 
 ## Review the pull request
 
-You can read the pull request at any time. Legion's implementer writes its description from a fixed
-template, and the later phases fill in their own lines:
+You can read the pull request at any time, where the issue has one. Legion writes its description
+from a fixed template at the step that opens it (the implementer's, on the default steps), and the
+later phases fill in their own lines:
 
 - **Outcome** and **Why**: what changes for a user, and the issue it answers.
 - **Proven by** and **Checks**: one line per check of the issue's Verification document, each the
@@ -125,34 +129,42 @@ template, and the later phases fill in their own lines:
   checklist named for each kind of path: after the approval, the retro recomputes it for the whole
   change, the way those instructions say.
 
-Legion's reviewer posts its review as the review App. A review from anyone with write access to the
-repository, submitted on GitHub while the issue is in `needs_review`, counts the same way:
-**Request changes** sends the work back to the implementer with your comments, and an approval of
-the head can end the round. A review from an account without write access decides nothing, since
-any GitHub account can review a public repository's pull request, and a plain comment moves
-nothing. Legion's handoffs are records on the Dispatch issue, never commits, so the pull request's
-file list shows only the change and the merge brings no handoff onto the default branch.
+Legion's reviewer posts its review as the review App. While Legion's reviewer reviews a pull
+request in `needs_review`, a review from anyone with write access to the repository, submitted on
+GitHub, counts the same way: **Request changes** sends the work back with your comments (to the
+implementer, on the default steps), and an approval of the head can end the round. A review step
+the architect does itself, and one on an issue with no pull request, end by the verdict their agent
+reports, and no review on GitHub decides them. A review from an account without write access
+decides nothing, since any GitHub account can review a public repository's pull request, and a
+plain comment moves nothing. Legion's handoffs are records on the Dispatch issue, never commits, so
+the pull request's file list shows only the change and the merge brings no handoff onto the
+default branch.
 
 ## Merge
 
-When the change is tested, reviewed and approved, the merger merges the pull request itself, as
+When the issue's steps have passed (in the default steps, the change is tested, reviewed, approved
+and accepted), the merger merges the pull request itself, as
 the implement App and at the head it read, which it names as the head GitHub must match. It
 writes the squash commit's message itself — the pull request's title and number, and an empty
 body — so GitHub's own default, which joins every commit message of the branch, never puts
 Legion's internal trailers on your default branch. On a base with a merge queue it enqueues the
-pull request instead.
+pull request instead. An issue with no pull request has no merge: it moves to `done`
+when its retro ends.
 
 The repository's branch protection and code-owner rules decide when it lands: a review
 only you can give is waited for. Legion turns auto-merge on nowhere, approves no pull request on
 your behalf and changes nobody's right to merge.
 
-The merge closes the issue: it moves to `done` the moment GitHub reports the pull request merged.
+The merge closes an issue with a pull request: it moves to `done` the moment GitHub reports the
+pull request merged.
 A root with work still running beneath it is the exception: its merge is recorded and the issue
 waits until the last other issue of its tree is done or parked, so no child's finished work is cut
-off, and then it closes. The architect accepted the change before that, when the reviewer approved
-it, with a comment on the issue summarizing the evidence, the issue's goal and each requirement of
-its spec among it; the daemon refuses that acceptance while an issue beneath it is still being
-worked, so a parent is accepted after its children. After the close the role your project's
+off, and then it closes. Where the plan has an acceptance step, the change was accepted before
+that, once the steps before the acceptance passed (on the default steps, the reviewer's approval):
+by the architect, with a comment on the issue summarizing the evidence, the issue's goal and each
+requirement of its spec among it, or by a fresh agent of the role `acceptance` where the step
+names no key; the daemon refuses that acceptance while an issue beneath it is still being
+worked, so a parent is accepted after its children. After a merge's close the role your project's
 `production_check` names — the tester, unless the setting is `off` — checks the change in
 production and records what it saw
 as the result of the issue's `after_merge` check, with that result's line on the pull request; a
@@ -193,9 +205,9 @@ you stop the work.
 | `triage` | whoever files the issue | New. A person's `legion` label is queued by the daemon: the issue moves to `todo` itself. A label a session set goes to the controller, which decides whether to admit it now or leave it to you, and parks it only when a person asked for that or its work is done, folded into another issue or no longer needed. |
 | `icebox` | a person or the controller | Parked for the long term. Legion does not run it. |
 | `backlog` | a person or the controller | Should not run now: a person asked for that, for example while it waits on a decision or a deploy, or its work is done, folded into another issue or no longer needed. Legion does not run it. |
-| `todo` | a person, the controller, or the daemon for a person's handover | Ready. A labelled root is admitted when a slot is free and waits in line until then. A child in `todo` waits in the same line for a slot of its own, and shows `todo` only until its first phase: the move into its first step sets it to `in_progress`. |
-| `in_progress` | the daemon | Admitted: the architect is writing the spec or waiting for your approval, or the planner or implementer is working. Work sent back by a failed test or a review returns here. A head that conflicts with its base keeps the status it has: the implementer merges the base forward while the issue stays in its phase. |
-| `testing` | the daemon | The implementer opened the pull request and finished; the tester is checking the change. |
-| `needs_review` | the daemon | The change is under review, once the step before passed (on the default steps, the tester): Legion's reviewer reviews it where the task has a reviewer step, and then, where the task has the architect's acceptance step, the architect reads the evidence and accepts the change or sends it back. Your GitHub review counts now. |
-| `retro` | the daemon | The task's last step passed: on the default steps, the architect accepted. The issue stays here through retro and the merge — and, for a root whose tree still runs, through the wait between its merge and its close. |
-| `done` | the daemon at the merge, or a person | Finished: the pull request merged. A root whose tree is still running waits in `retro` until the last of it is done or parked, then closes. The production check your project's `production_check` opens — the tester's, unless the setting is `off` — follows on the pull request; the tree lingers, then closes. |
+| `todo` | a person, the controller, or the daemon for a person's handover | Ready. A labelled root is admitted when a slot is free and waits in line until then. A child in `todo` waits in the same line for a slot of its own, unless its first step is an acceptance, which holds no slot: it starts that step on none when its turn in the line comes, whatever the cap. A child shows `todo` only until its first phase: the move into its first step sets the status of that step's phase (`in_progress` on the default steps). |
+| `in_progress` | the daemon | Admitted: the architect is writing the spec or waiting for your approval, or the planner or implementer is working. Work sent back by a failed test or a review returns here. A head that conflicts with its base keeps the status it has: the agent of the task's last step that writes the change before the step the issue stands at (the implementer, on the default steps) merges the base forward while the issue stays in its phase. |
+| `testing` | the daemon | The tester is checking the change: on the default steps, after the implementer opened the pull request and finished. |
+| `needs_review` | the daemon | A review step or an acceptance step runs, in the order the plan gives them (on the default steps, after the tester passed): Legion's reviewer reviews the change, and the architect, or a fresh agent of the role `acceptance` where the step names no key, reads the evidence and accepts the change or sends it back. Your GitHub review counts while Legion's reviewer reviews a pull request; a review step the architect does itself, and one on an issue with no pull request, end by their agent's verdict. |
+| `retro` | the daemon | The task's last step passed: on the default steps, the architect accepted. The issue stays here through retro and, where it has a pull request, the merge — and, for a root whose tree still runs, through the wait between its merge and its close. |
+| `done` | the daemon at the merge, at the end of the retro of an issue with no pull request, or a person | Finished: the pull request merged, or the retro of an issue with no pull request ended. A root whose tree is still running waits in `retro` until the last of it is done or parked, then closes. The production check your project's `production_check` opens — the tester's, unless the setting is `off` — follows a merge on the pull request; the tree lingers, then closes. |

@@ -8,6 +8,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -44,7 +46,9 @@ const sandboxNamespace = "legion"
 // reference and labels the controller gives it; a Suspended Sandbox's pod is deleted; a Sandbox's
 // Service is made when it asks for one and removed with it. Each pod it reports Ready starts the
 // pod's processes through onPodReady — in this rig, a real `legion launcher` per slot, one slot for
-// each role name, the slot of the agent named for that role.
+// each role name, the slot of the agent named for that role. Where a test names a directory for
+// it (volumes), the stand-in is also the kubelet's projection of each live pod's Secret volumes
+// into that directory, kept current as each Secret is written (projectLocked).
 type issueSandboxAPI struct {
 	// url is the server a test served the API on (serve), empty until one did.
 	url     string
@@ -71,6 +75,11 @@ type issueSandboxAPI struct {
 	// pod it deleted. Both are the rig's.
 	onPodReady func(pod, uid string, roles map[string]string)
 	onPodGone  func(pod string)
+	// volumes, where a test sets it, is the directory the stand-in's kubelet writes each live
+	// pod's Secret volumes under (projectLocked), and kubeletFaults is every file of them it could
+	// not write, which requireProjected fails the test on.
+	volumes       string
+	kubeletFaults []string
 }
 
 // kubeEvent is one watch event: its type and the object it carries.
@@ -371,7 +380,9 @@ func controllerService(name, uid string) map[string]any {
 
 // putLocked writes a copy of object as resource's name at a fresh resourceVersion and tells every
 // watcher. The copy is what is stored and what the watchers carry, and nothing writes it again, so
-// a watcher encoding an event never reads a map another request is editing.
+// a watcher encoding an event never reads a map another request is editing. Where the stand-in's
+// kubelet runs (volumes set), a pod's write projects its Secret volumes, and a Secret's write
+// projects it again into every live pod that mounts it, as the kubelet's sync does.
 func (a *issueSandboxAPI) putLocked(resource, name string, object map[string]any) map[string]any {
 	a.rv++
 	stored := kubeClone(object)
@@ -388,6 +399,15 @@ func (a *issueSandboxAPI) putLocked(resource, name string, object map[string]any
 		kind = "MODIFIED"
 	}
 	a.notifyLocked(resource, kubeEvent{Type: kind, Object: stored})
+	switch {
+	case a.volumes == "":
+	case resource == "pods":
+		a.projectLocked(stored, "")
+	case resource == "secrets":
+		for _, pod := range a.objects["pods"] {
+			a.projectLocked(pod, name)
+		}
+	}
 	return stored
 }
 
@@ -407,7 +427,8 @@ func kubeClone(object map[string]any) map[string]any {
 	return copied
 }
 
-// deleteLocked removes resource's name and tells every watcher.
+// deleteLocked removes resource's name and tells every watcher. A pod's delete removes its
+// projected volumes (projectLocked), as the kubelet tears a pod's volumes down.
 func (a *issueSandboxAPI) deleteLocked(resource, name string) {
 	object, ok := a.objects[resource][name]
 	if !ok {
@@ -416,6 +437,14 @@ func (a *issueSandboxAPI) deleteLocked(resource, name string) {
 	a.rv++
 	delete(a.objects[resource], name)
 	a.notifyLocked(resource, kubeEvent{Type: "DELETED", Object: object})
+	if resource == "pods" && a.volumes != "" {
+		meta, _ := object["metadata"].(map[string]any)
+		if uid, _ := meta["uid"].(string); uid != "" {
+			if err := os.RemoveAll(filepath.Join(a.volumes, uid)); err != nil {
+				a.kubeletFaults = append(a.kubeletFaults, fmt.Sprintf("remove the volumes of pod %s: %v", uid, err))
+			}
+		}
+	}
 }
 
 func (a *issueSandboxAPI) notifyLocked(resource string, event kubeEvent) {

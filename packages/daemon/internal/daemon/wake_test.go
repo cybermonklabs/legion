@@ -186,13 +186,15 @@ func TestABackstopThatCameDueWhileTheDaemonWasDownFiresAfterItStarts(t *testing.
 	}
 }
 
-// The release of an issue's pod arms the backstop of the worker of the issue's open phase, and at
-// step that worker is the role of the running step, read with the issue (workflow.OpenRoleOf):
-// the released checker of an issue at step 2 of `implementer checker` gets the backstop, and the
-// released implementer of the step before it gets none. The checker's claim must serve the
-// issue's current run, as a phase worker's must: one serving an earlier run gets none. The issue
-// is read as the release's teardown reads it before it arms (outbox.issue, releaseIssue), so its
-// running role comes from its plan rows.
+// Away from a place the owner does, the release of an issue's pod arms the backstop of the worker
+// of the issue's open phase (workflow.BackstopTarget), and at step that worker is the role of the
+// running step, read with the issue (workflow.OpenRoleOf); at a step or a retro the owner does it
+// arms the owner's, and at the owner's own acceptance none (the next test). Here the released
+// checker of an issue at step 2 of `implementer checker` gets the backstop, and the released
+// implementer of the step before it gets none. The checker's claim must serve the issue's current
+// run, as a phase worker's must: one serving an earlier run gets none. The issue is read as the
+// release's teardown reads it before it arms (outbox.issue, releaseIssue), so its running role
+// comes from its plan rows.
 func TestTheReleaseOfAPodAtStepArmsTheDeploymentRolesBackstop(t *testing.T) {
 	const key, checker = "LEGION-208", claim.Role("checker")
 	for _, c := range []struct {
@@ -204,62 +206,116 @@ func TestTheReleaseOfAPodAtStepArmsTheDeploymentRolesBackstop(t *testing.T) {
 		{"a checker serving an earlier run", 1, nil},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			ctx := context.Background()
-			pool := isolatedOutboxPool(t)
-			records := record.NewStore()
-			putOutboxIssue(t, pool, records, record.Issue{Key: key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
-				Project: "LEGION", Tree: key, Title: "root", Phase: phase.Step, Generation: 2, Status: "in_progress", Rank: "U", LastDispatchSeq: 1})
-			if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
-				v := record.PlanVersion{Issue: key, Generation: 2, Version: 1, ArtifactID: "plan-artifact", Source: record.PlanSourceOwner,
-					GivenBy: mustClaimToken(t, key, claim.RoleArchitect), GivenAt: time.Now().UTC()}
-				task := record.PlanTask{Issue: key, Generation: 2, Task: "a", PlanVersion: 1, BlockText: "Build the widget.", State: record.TaskWaiting}
-				steps := record.NameAgents(nil, nil, []record.PlanStep{
-					{Issue: key, Generation: 2, Task: "a", Position: 1, Role: "implementer", Type: "implementation"},
-					{Issue: key, Generation: 2, Task: "a", Position: 2, Role: string(checker), Type: "testing"},
-				})
-				if err := records.PutPlan(ctx, tx, v, []record.PlanTask{task}, steps); err != nil {
-					return err
-				}
-				return records.MoveTask(ctx, tx, key, 2, "a", record.TaskPlace{Kind: record.PlaceStep, Position: 2}, record.TaskRunning)
-			}); err != nil {
-				t.Fatalf("seed the plan of %s at the checker's step: %v", key, err)
-			}
-			st := outboxTreeStore(t, pool, key)
-			for _, released := range []struct {
-				role    claim.Role
-				serving uint64
-			}{{claim.RoleImplementer, 2}, {checker, c.serving}} {
-				if err := st.PutClaim(ctx, supervise.Claim{Token: mustClaimToken(t, key, released.role), Project: "legion", Tree: key,
-					Issue: key, Role: released.role, TreeEpoch: 1, Generation: 2, ServingGeneration: released.serving,
-					State: supervise.StateSuspended, SuspendedBy: supervise.SuspendedByReleased,
-					Session: "ses-" + string(released.role), SessionFile: "/tmp/" + string(released.role) + ".jsonl",
-					PluginContract: api.DaemonAPIVersion}); err != nil {
-					t.Fatalf("seed the released %s: %v", released.role, err)
-				}
-			}
-			runner := &outbox{pool: pool, records: records, project: "legion", dispatchProject: "LEGION", trees: st,
-				backstop: time.Hour, log: quietLogger(), now: time.Now}
-
-			issue, err := runner.issue(ctx, key)
-			if err != nil {
-				t.Fatalf("read %s as the teardown does: %v", key, err)
-			}
-			if err := runner.armBackstops(ctx, issue); err != nil {
-				t.Fatalf("arm the backstops of %s's release: %v", key, err)
-			}
-			rows, err := pool.Query(ctx, `select role from pod_wake_backstops where issue = $1 and not fired order by role`, key)
-			if err != nil {
-				t.Fatalf("read the backstops of %s: %v", key, err)
-			}
-			armed, err := pgx.CollectRows(rows, pgx.RowTo[string])
-			if err != nil {
-				t.Fatalf("read the backstops of %s: %v", key, err)
-			}
+			armed := armedAtRelease(t, key, phase.Step, 2, []record.PlanStep{{Role: "implementer", Type: "implementation"}, {Role: string(checker), Type: "testing"}},
+				[]releasedPodClaim{{claim.RoleImplementer, 2}, {checker, c.serving}})
 			if !slices.Equal(armed, c.want) {
 				t.Fatalf("the release of %s's pod armed the backstops of %v, want %v", key, armed, c.want)
 			}
 		})
 	}
+}
+
+// The release of an issue's pod at the owner's own step arms the owner's backstop: the owner does
+// that step as a worker of its role would, and may wait on something no CI settlement reports, a
+// deploy say, so the backstop is what brings it back. On `implementer:owner tester` at step 1 the
+// released owner (record.OwnerClaim), matched by its token whatever run its claim served last,
+// gets the backstop, and the released implementer, which works no step there, gets none. At the
+// owner's own acceptance (`implementer acceptance:owner` at step 2), where a parent or a root waits
+// while its children run and their notices wake it, nobody gets one: a backstop there would wake
+// the owner for nothing at every release. The control of the step is the release that armed the
+// worker of the open phase alone, none at the owner's place; the control of the acceptance is the
+// release that armed the owner wherever the place is its own, accepting included.
+func TestTheReleaseOfAPodAtTheOwnersStepArmsTheOwnersBackstop(t *testing.T) {
+	t.Parallel()
+	const key = "LEGION-208"
+	for _, tc := range []struct {
+		name   string
+		second record.PlanStep
+		at     int
+		stands phase.Phase
+		want   []string
+	}{
+		{"the owner's implementer step", record.PlanStep{Role: "tester", Type: "testing"}, 1, phase.Implementing, []string{string(claim.RoleArchitect)}},
+		{"the owner's acceptance", record.PlanStep{Role: "acceptance", AgentKey: "owner", Type: "review"}, 2, phase.Accepting, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			first := record.PlanStep{Role: "implementer", Type: "implementation"}
+			if tc.at == 1 {
+				first.AgentKey = "owner"
+			}
+			armed := armedAtRelease(t, key, tc.stands, tc.at, []record.PlanStep{first, tc.second},
+				[]releasedPodClaim{{claim.RoleImplementer, 2}, {claim.RoleArchitect, 0}})
+			if !slices.Equal(armed, tc.want) {
+				t.Fatalf("the release of %s's pod at %s armed the backstops of %v, want %v", key, tc.name, armed, tc.want)
+			}
+		})
+	}
+}
+
+// releasedPodClaim is a role's claim the release of an issue's pod suspended, serving the run
+// serving.
+type releasedPodClaim struct {
+	role    claim.Role
+	serving uint64
+}
+
+// armedAtRelease is the role of each backstop the release of key's pod arms (outbox.armBackstops),
+// in role order: key stands in stands at generation 2, its one task a running at step at of
+// steps, each written with key, the generation, task a and its position, and each claim of
+// released suspended by the release. The issue is read as the release's teardown reads it before
+// it arms (outbox.issue, releaseIssue).
+func armedAtRelease(t *testing.T, key string, stands phase.Phase, at int, steps []record.PlanStep, released []releasedPodClaim) []string {
+	t.Helper()
+	ctx := context.Background()
+	pool := isolatedOutboxPool(t)
+	records := record.NewStore()
+	putOutboxIssue(t, pool, records, record.Issue{Key: key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
+		Project: "LEGION", Tree: key, Title: "root", Phase: stands, Generation: 2, Status: "in_progress", Rank: "U", LastDispatchSeq: 1})
+	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		v := record.PlanVersion{Issue: key, Generation: 2, Version: 1, ArtifactID: "plan-artifact", Source: record.PlanSourceOwner,
+			GivenBy: mustClaimToken(t, key, claim.RoleArchitect), GivenAt: time.Now().UTC()}
+		task := record.PlanTask{Issue: key, Generation: 2, Task: "a", PlanVersion: 1, BlockText: "Build the widget.", State: record.TaskWaiting}
+		var placed []record.PlanStep
+		for i, step := range steps {
+			step.Issue, step.Generation, step.Task, step.Position = key, 2, "a", i+1
+			placed = append(placed, step)
+		}
+		if err := records.PutPlan(ctx, tx, v, []record.PlanTask{task}, record.NameAgents(nil, nil, placed)); err != nil {
+			return err
+		}
+		return records.MoveTask(ctx, tx, key, 2, "a", record.TaskPlace{Kind: record.PlaceStep, Position: at}, record.TaskRunning)
+	}); err != nil {
+		t.Fatalf("seed the plan of %s at step %d: %v", key, at, err)
+	}
+	st := outboxTreeStore(t, pool, key)
+	for _, c := range released {
+		if err := st.PutClaim(ctx, supervise.Claim{Token: mustClaimToken(t, key, c.role), Project: "legion", Tree: key,
+			Issue: key, Role: c.role, TreeEpoch: 1, Generation: 2, ServingGeneration: c.serving,
+			State: supervise.StateSuspended, SuspendedBy: supervise.SuspendedByReleased,
+			Session: "ses-" + string(c.role), SessionFile: "/tmp/" + string(c.role) + ".jsonl",
+			PluginContract: api.DaemonAPIVersion}); err != nil {
+			t.Fatalf("seed the released %s: %v", c.role, err)
+		}
+	}
+	runner := &outbox{pool: pool, records: records, project: "legion", dispatchProject: "LEGION", trees: st,
+		backstop: time.Hour, log: quietLogger(), now: time.Now}
+
+	issue, err := runner.issue(ctx, key)
+	if err != nil {
+		t.Fatalf("read %s as the teardown does: %v", key, err)
+	}
+	if err := runner.armBackstops(ctx, issue); err != nil {
+		t.Fatalf("arm the backstops of %s's release: %v", key, err)
+	}
+	rows, err := pool.Query(ctx, `select role from pod_wake_backstops where issue = $1 and not fired order by role`, key)
+	if err != nil {
+		t.Fatalf("read the backstops of %s: %v", key, err)
+	}
+	armed, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatalf("read the backstops of %s: %v", key, err)
+	}
+	return armed
 }
 
 // A backstop is the claim's it wakes. The release of a pod at step arms the backstop of the claim

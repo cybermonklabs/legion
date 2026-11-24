@@ -14,9 +14,10 @@ import (
 )
 
 // closeRoot ends a tree its root architect closes before the tree's first phase starts: a human
-// decided no change at the design gate, or the issue is moot. sign_off
-// needs the production check and a backward move a phase worker, so without this only a human's
-// status write could end such a tree. The close writes done to Dispatch with the architect's
+// decided no change at the design gate, or the issue is moot. sign_off takes only an issue in
+// accepting and a backward move only a move out of a phase of the working line, so without this
+// only a human's status write could end such a tree. The close writes done to Dispatch with the
+// architect's
 // reason, which the write posts on the issue first, and lingers the tree as any close does; the
 // admission slot is released in the same fact.
 //

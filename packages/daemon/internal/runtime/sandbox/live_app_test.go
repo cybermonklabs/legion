@@ -47,7 +47,7 @@ func (t implementTokens) Token(ctx context.Context, repo ghrepo.Repository) (str
 // that owner's own installation lease at the App's permissions (INFRA-2543). Every role is
 // rendered as the implementer's, so Stage 4a proves the files reach each role, follow the lease
 // and pick the directory a command names, not which App a role writes as; Stage 4b's daemon
-// hands each role its own.
+// hands each slot the App of the role it works as (runtime.SlotRole).
 func (t implementTokens) Credential(ctx context.Context, issue string, _ claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
 	return appauth.GitHubCredential(implementApp{t.apps}, servesOneOf(t.repositories), ghrepo.Renames{},
 		t.installed, t.left, appauth.RoleApps{}, slog.Default()).Bundle(ctx, issue, claim.RoleImplementer, repo)

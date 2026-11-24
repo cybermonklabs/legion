@@ -612,8 +612,8 @@ RULES = {
     f"{DAEMON}/internal/intake/intake_test.go": reads((f"{FIX}/github-envelopes/*", "internal/intake/intake_test.go:856 globs it and reads each file; :960 reads one")),
     f"{DAEMON}/internal/projection/state_golden_test.go": reads((f"{FIX}/daemon-api/*", "internal/projection/state_golden_test.go:209")),
     f"{DAEMON}/internal/prompts/roles_test.go": reads(
-        ("packages/pi-legion/agents/*.md", "internal/prompts/roles_test.go:261 stats agents/<name>.md for each task agent"),
-        ("skills/legion-worker/references/tools.md", "internal/prompts/roles_test.go:762-763")),
+        ("packages/pi-legion/agents/*.md", "internal/prompts/roles_test.go:257 stats agents/<name>.md for each task agent"),
+        ("skills/legion-worker/references/tools.md", "internal/prompts/roles_test.go:700-701")),
     f"{DAEMON}/internal/runtime/sandbox/operatorpod_test.go": reads(
         ("deploy/kubernetes/operator-route/pod.yml", "internal/runtime/sandbox/operatorpod_test.go:28"),
         (f"{FIX}/dispatch-public-url.json", "internal/runtime/sandbox/operatorpod_test.go:236"),
@@ -708,11 +708,17 @@ RULES = {
                                "for plan_ratings_way_back_doc_test.go:35 (assertIsTheGuidesBlock, way_back_doc_test.go:165, "
                                "through wayBackBlockOfTheGuide, :181) and :49 (entryLinkIn of shippedText)")),
     # This test reads the plan rows' migration through migrations.All, as the one above does, and
-    # internal/store's owner_steps_way_back_test.go, which runs that migration's way back, reads no
-    # text outside its package, so the guide is this one's one row.
+    # internal/store's owner_steps_way_back_test.go, which runs that migration's way back and the
+    # statements of the rollback below the release whose owner does a step, reads no text outside
+    # its package: owner_does_a_step_way_back_extract.txt, its copy of the guide's block of those
+    # statements, stands in its own directory, and this row is what holds that copy to the guide.
     f"{DAEMON}/internal/textcheck/owner_steps_way_back_doc_test.go": reads(
-        ("docs/kubernetes.md", "internal/textcheck/waiting_line_texts_test.go:485 reads it under ../../../.. "
-                               "for owner_steps_way_back_doc_test.go:28 (wayBackBlockOfTheGuide, way_back_doc_test.go:146)")),
+        ("docs/kubernetes.md", "internal/textcheck/waiting_line_texts_test.go:483 reads it under ../../../.. "
+                               "for owner_steps_way_back_doc_test.go:28 and :60 (assertIsTheGuidesBlock, way_back_doc_test.go:166, "
+                               "through wayBackBlockOfTheGuide, :182)"),
+        (f"{DAEMON}/internal/store/owner_does_a_step_way_back_extract.txt",
+         "internal/textcheck/waiting_line_texts_test.go:473 reads it as ../store/owner_does_a_step_way_back_extract.txt for "
+         "owner_steps_way_back_doc_test.go:56, the committed copy it holds the guide's block to (quotedBody)")),
     f"{DAEMON}/internal/textcheck/waiting_line_texts_test.go": reads(
         # The four copies of the shipped texts, each committed beside the package whose own
         # test is held to it and read here through readExtract.
@@ -2788,6 +2794,7 @@ GATES = [
         (f"{DAEMON}/internal/controller/liveness.go", "scripts/e2e/lib/controller-liveness-verdict.test.ts:347"),
         (f"{DAEMON}/internal/supervise/machine.go", "scripts/e2e/lib/controller-liveness-verdict.test.ts:350"),
         (f"{DAEMON}/internal/intake/consume.go", "scripts/e2e/lib/stage4b-consumers.test.ts:23-26"),
+        (f"{DAEMON}/internal/record/outbox.go", "scripts/e2e/lib/worker-notices.test.ts:18-21 reads it as text"),
         (f"{DAEMON}/internal/capabilities/testdata/web-search-open-planner.json", "scripts/e2e/lib/stage4b-capabilities.test.ts:13-22"),
         (f"{DAEMON}/internal/runtime/sandbox/testdata/golden/root.json", "scripts/e2e/lib/stage4b-pods.test.ts:22-35"),
         (f"{DAEMON}/internal/runtime/sandbox/testdata/golden/root-operator-route.json", "scripts/e2e/lib/stage4b-pods.test.ts:180-190"),

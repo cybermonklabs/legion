@@ -58,12 +58,14 @@ func byKey(members []Issue) map[string]Issue {
 }
 
 // OpenBeneath is the sorted keys of the issues Beneath issue that are still in the workflow
-// (InWorkflow), and nothing at all when none is. It is the one set the two acceptance rules read:
-// an architect's sign-off of a reviewed head (signOff) and its close of a tree that never started
-// a phase (closeRoot) are both refused while it is not empty, and a root whose pull request
-// merged waits in merging until it empties (closeMerged). A parent's work is proved by a
-// head that carries its children's merges, so a parent that is accepted or closed first would
-// merge work its own head does not carry.
+// (InWorkflow), and nothing at all when none is. It is the one set the acceptance rules read: a
+// pass of an acceptance step, the owner's sign-off or the verdict of the agent of a step
+// `acceptance` (signOffRefusal), and the architect's close of a tree that never started a phase
+// (closeRoot) are refused while it is not empty, a parent whose task's last step is not an
+// acceptance is held before its retro until it empties (workflow's beneathRetro), and a root
+// whose pull request merged waits in merging until it empties (closeMerged). A parent's work is
+// proved by its children's, by a head that carries their merges where they have pull requests, so
+// a parent that is accepted or closed first would close without work it is meant to carry.
 //
 // One kind of issue beneath is left out: one the daemon is itself holding at phase.Admitted,
 // because an ancestor of it has already been accepted (HeldUnderAccepted). Without that

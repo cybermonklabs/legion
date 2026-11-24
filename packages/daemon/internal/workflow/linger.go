@@ -28,14 +28,14 @@ import (
 // closed (issue_close: retired, its session kept for a later todo). Its pod goes either way, and
 // the disk it ran on with it, so its Sandbox is deleted either way (record.IssueSuspend), while
 // its parent keeps running in a pod of its own. A child closed as done at its merge still owes its
-// production check, where the project opens one (Engine.checkRole): five of its claims are
-// closed, the checking role's is not, no IssueSuspend is written, and the check opens in that
+// production check, where the project opens one (Engine.checkRole): every claim of it but the
+// checking role's is closed, no IssueSuspend is written, and the check opens in that
 // role's live session; the check's close writes the suspension (closeCheck). A project whose
 // `production_check` is off checks nothing in production, so its merged child close is like any
 // other done: every claim is closed and the Sandbox deleted with the pod and the disk it ran on.
 // A done child set back to todo opens a new run, and each of its claims comes back on the session
-// it kept when a start of its role reaches it: the architect's and the planner's at its next first
-// phase start. Every claim above is one of Legion's own; the issue's Dispatch claim is the
+// it kept when a start of its role reaches it: the architect's and its first step's agent's at its
+// next first phase start. Every claim above is one of Legion's own; the issue's Dispatch claim is the
 // board's, and Dispatch releases one at a close alone, so every departure short of a close queues
 // the row that releases it (record.ClaimRelease).
 //
@@ -160,9 +160,9 @@ func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, statu
 	// record is read again rather than taken from the snapshot above, because closing the
 	// nearest one leaves (transition's own leave) and may close the ones above it on the way.
 	// The same departure may be the last one an ancestor held before its retro waited for, a
-	// parent whose plan has no acceptance step (record.HoldForChildren): the fact's settle starts
-	// its retro (releaseHeldParents), as it does for every other change of what stands beneath
-	// it.
+	// parent whose task's last step is not an acceptance (record.HoldForChildren): the fact's
+	// settle starts its retro (releaseHeldParents), as it does for every other change of what
+	// stands beneath it.
 	for _, ancestor := range above {
 		current, err := e.store.Issue(ctx, tx, ancestor.Key)
 		if err != nil {
@@ -308,8 +308,8 @@ func awaitsMerge(issue record.Issue) bool {
 
 // InWorkflow says whether an issue is in the workflow: its status is one the workflow runs in and
 // its phase short of done. One still admitted counts, since it will run — a root reopened inside
-// its linger (admit's readmit) stands in `admitted` with no role's phase until its architect
-// reaches planning, and is running again from the reopen. It is the production check's "runs
+// its linger (admit's readmit) stands in `admitted` with no role's phase until it moves into the
+// first step of its plan, and is running again from the reopen. It is the production check's "runs
 // again" predicate (check.go) and the outbox's (checkLookHolds): a look of an issue that runs
 // again would resume the implementer and relaunch its Sandbox under the run, so none starts.
 //

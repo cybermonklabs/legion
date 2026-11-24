@@ -92,7 +92,8 @@ func TestASendBackOutOfRetroIsCountedOnTheObservedTimeline(t *testing.T) {
 // TestAMoveFromTestingBackToImplementingIsASendBackOnTheObservedTimeline: metric 3's share sent
 // back counts "a move from `testing`, `reviewing`, `accepting` `retro`, `merging` or
 // `awaiting_merge` to `implementing`". A change its tester fails goes from testing straight back
-// to implementing, with no review between.
+// to implementing where an implementer step stands before the tester's, as in the default steps,
+// with no review between.
 func TestAMoveFromTestingBackToImplementingIsASendBackOnTheObservedTimeline(t *testing.T) {
 	issue := newIssue("INFRA-1").worked("implementer", hour(0)).closedAt(hour(5)).
 		observeString(legion.FieldPhase, hour(0), "implementing").

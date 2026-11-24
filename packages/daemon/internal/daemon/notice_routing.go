@@ -129,12 +129,13 @@ func (r *outbox) readNoticeRoute(ctx context.Context, tx pgx.Tx, key string, rou
 	return route.issues[key], route, nil
 }
 
-// earlierNoticeFor is the oldest of tree's earlier notices that goes to architect as the claims
-// run now — its id and the moment it is due — or 0 and the zero moment when there is none. Each
-// earlier notice's architect is resolved again rather than recorded when it was held, since a
-// sub-architect can start or end while it waits, and by the rule its own publish follows
-// (noticeArchitect). An earlier row whose architect cannot be resolved is no architect's, so it
-// holds back no later notice; it finishes on its own attempt (notice).
+// earlierNoticeFor is the oldest of tree's earlier notices that goes to architect now — its id
+// and the moment it is due — or 0 and the zero moment when there is none. Each earlier notice's
+// architect is resolved again rather than recorded when it was held, since a sub-architect can
+// start or end while it waits, and by the rule its own publish follows (noticeArchitect): by the
+// claims as they run now, but for a catch-up and an owner-step, which go to the architect of
+// their own issue whatever runs. An earlier row whose architect cannot be resolved is no
+// architect's, so it holds back no later notice; it finishes on its own attempt (notice).
 //
 // The moment is what the row behind it waits for: an earlier row the wake pacing holds is due
 // minutes out — at the moment the pacing reserved for a catch-up (record.Notice.PacedAt), or, for
@@ -171,15 +172,20 @@ func earlierNoticeFor(tree treeSnapshot, architect claim.Token, runs func(claim.
 // will not hold its role again or, for a child's catch-up, once the child is out of the workflow
 // by its status or its phase (deliverNotice's record.InWorkflow), since a park leaves that claim
 // suspended rather than ended. A root's catch-up gets no such check: besides the endings every
-// notice has, catchUpSuperseded, stoppedWithTree and architectEnded end it. Every other notice
-// goes to the architect that owns its issue (record.OwningArchitect), by runs, from the issue's
-// parent for a notice the architect above it must hear (record.NoticeStartsAtParent). The
-// publish (deliverNotice), the fence (earlierNoticeFor) and a ready's release (releaseWaiting)
-// all ask this, so each finds a notice the same architect. project is the tree's claim project
-// token.
+// notice has, catchUpSuperseded, stoppedWithTree and architectEnded end it. An owner-step goes to
+// the owner of its issue's task by rule (record.OwnerClaim), the issue's own architect, whether
+// its claim runs or not, since the step is that owner's and no architect above it reports it.
+// Every other notice goes to the architect that owns its issue (record.OwningArchitect), by runs,
+// from the issue's parent for a notice the architect above it must hear
+// (record.NoticeStartsAtParent). The publish (deliverNotice), the fence (earlierNoticeFor) and a
+// ready's release (releaseWaiting) all ask this, so each finds a notice the same architect.
+// project is the tree's claim project token.
 func noticeArchitect(project string, tree map[string]record.Issue, issue record.Issue, notice record.Notice, runs func(claim.Token) bool) (claim.Token, error) {
 	if notice.CatchUp != nil {
 		return claim.NewToken(project, issue.Key, claim.RoleArchitect)
+	}
+	if notice.Kind == record.OwnerStepNotice {
+		return record.OwnerClaim(issue)
 	}
 	return record.OwningArchitect(project, tree, issue, record.NoticeStartsAtParent(notice.Kind, notice.Role), runs)
 }
@@ -187,11 +193,11 @@ func noticeArchitect(project string, tree map[string]record.Issue, issue record.
 // holdsRole is whether held's claim keeps its role through the decision in flight: the record's
 // rule holds (record.HoldsRole: it has not ended, and it is not suspended unless the idle release
 // suspended it), and that decision is not stopping its process for good (supervise.ClaimView's
-// Stopping) — a suspension, a failure, a release. The owner walk reads it, so no notice but a
-// catch-up is routed to a sub-architect whose session is being stopped: such a notice goes on up
-// the tree while the stop runs. It goes on up after the stop too, unless the stop is the idle
-// release's, whose released claim holds its role again (record.HoldsRole). A catch-up waits for
-// the architect of its own issue (noticeArchitect).
+// Stopping) — a suspension, a failure, a release. The owner walk reads it, so no notice the walk
+// routes reaches a sub-architect whose session is being stopped: such a notice goes on up the
+// tree while the stop runs. It goes on up after the stop too, unless the stop is the idle
+// release's, whose released claim holds its role again (record.HoldsRole). A catch-up and an
+// owner-step take no walk: each waits for the architect of its own issue (noticeArchitect).
 func holdsRole(held supervise.ClaimView) bool {
 	return record.HoldsRole(held.State, held.SuspendedBy) && !held.Stopping
 }
@@ -199,12 +205,13 @@ func holdsRole(held supervise.ClaimView) bool {
 // claimEnded is whether a claim in state will not hold its role again: this daemon does not
 // supervise it (""), or it failed or retired. A child's own architect that failed does start again,
 // at its child's next phase start (workflow's reviveArchitect), but that launch's ready queues a
-// catch-up of its own, so nothing held for the failed claim waits for it. A suspended claim has
-// not ended: the operator's resume or deliver starts it again (`legion claims resume`), and so
-// does the workflow's next start of its role for a claim the workflow suspended, which for a
-// child's own architect is the child's next first phase start (workflow's StartFirstPhase), or,
-// after its tree's linger, the re-admission's start of a child past admitted (admit's
-// startMidPhaseMembers).
+// catch-up of its own, so a notice whose publish finds the failed claim's role unheld does not
+// wait for it; an owner-step can wait for the claim's slot before its publish (ownerSlotHolds),
+// and either way the claim is told the step again when it runs again. A suspended claim has not
+// ended: the operator's resume or deliver starts it again (`legion claims resume`), and so does
+// the workflow's next start of its role for a claim the workflow suspended, which for a child's
+// own architect is the child's next first phase start (workflow's StartFirstPhase), or, after its
+// tree's linger, the re-admission's start of a child past admitted (admit's startMidPhaseMembers).
 func claimEnded(state supervise.ClaimState) bool {
 	return state == "" || state == supervise.StateFailed || state == supervise.StateRetired
 }

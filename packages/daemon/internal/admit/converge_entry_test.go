@@ -37,8 +37,8 @@ type convergeRow struct {
 	// flip changes the one field this row is about into the shape that is sent the work. It is
 	// required of a row that is not started and is never set on one that is.
 	flip func(*convergeRow)
-	// stands is the phase the member is in, which names the role that works it
-	// (phase.RoleFor).
+	// stands is the phase the member is in, which names the role that works it on these issues
+	// with no plan rows (phase.RoleFor); a plan's place can name another (record.Issue.RoleAt).
 	stands phase.Phase
 	// lingers records the root as a park left it: phase done at a status that is not todo, with
 	// a linger deadline ahead.
@@ -193,8 +193,8 @@ func seedConvergeRows(t *testing.T, pool *pgxpool.Pool, rows []convergeRow) ([]c
 
 // seedConvergeRow records one row: its tree, the member and its slot, the role's phases row at
 // seededEntry naming the work of that entry, and the claim with the entry it was given and the
-// task it holds. The phases row names the role's claim token whether or not a claim row exists,
-// as a transition writes it.
+// task it holds. The phases row names the claim token of the agent of the role's step, here the
+// role's own, whether or not a claim row exists, as a transition writes it.
 func seedConvergeRow(t *testing.T, pool *pgxpool.Pool, row convergeRow) {
 	t.Helper()
 	ctx := context.Background()

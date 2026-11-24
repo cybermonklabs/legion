@@ -391,7 +391,8 @@ func TestTheFailureRecordOverTheRoutes(t *testing.T) {
 
 	// The status route releases a held root too: a todo the daemon writes for the controller's
 	// set_status or an operator's `legion issue status` ends the hold and starts the phase's worker
-	// again, which is the effect of the retry above. No caller of this route names a reason, so
+	// again (at a step the owner does, it tells the owner its step again instead), which is the
+	// effect of the retry above. No caller of this route names a reason, so
 	// the release carries the daemon's own, which names the status write that made it (R7).
 	//
 	// Like the retry's row this one drives the route against the daemon's own workflow: the task

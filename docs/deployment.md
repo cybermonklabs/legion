@@ -91,7 +91,7 @@ Both Apps are public GitHub Apps, so any GitHub account can install them.
 What such an install gives depends on where the daemon gets its tokens.
 A daemon that gets its tokens from the secrets broker through `token_command`, as this runbook configures it, is bounded by the broker: the broker releases a token only for the accounts the secret's `github-owners` tag lists, so an install by any other account gives nothing.
 A daemon that mints with its own App key counts every installation and keeps no list of owners.
-There, an account that installs the implement App gets a directory with that App's write token in the gh bundle of every role that acts as that App (the implementer, the merger, a role of the deployment whose `github_app` names it, and a role of an issue's plan of the type implementation), and an install of the review App gives every role that acts as the review App that App's token the same way and the controller its read-only one.
+There, an account that installs the implement App gets a directory with that App's write token in the gh bundle of every role that works as that App (each implementer and merger, a role a plan or the deployment gives that App, and the architect while it acts as a role of that App), and an install of the review App gives every other role that App's token the same way and the controller its read-only one.
 The daemon reads the installations at every bundle it builds, so a running pane holds the new directory within a minute, and loses it within a minute of an uninstall.
 The one exception is the account that holds the pane's own issue repository: that directory cannot be left out, and its token is that owner's cached lease, which stays in use until its expiry is no more than `refreshWindow` (20 minutes, `internal/appauth`) away.
 Until then every bundle built for the pane succeeds and the refresh keeps writing all of its directories, that one holding a token GitHub would no longer mint.
@@ -130,11 +130,23 @@ empty so nothing outranks the files, and rewrites each directory's `hosts.yml` i
 minute from its cached leases (the log lines `tmux runtime: github credential written` and `github
 credential refreshed`, with the claim, role, App, `expiresAt` and the directories written); a pane
 it adopted after a restart is refreshed for the repository its claim's issue works, read from the
-daemon's own state, never one read from the pane's directory. Each of those tokens reaches every
-repository its own installation holds, which the account chose when it installed the App, and the
-daemon asks GitHub to narrow none of them to a repository. The bundle's root also holds one file
-of its own, `renames.txt`, the configured renames the project's pairs resolve to, which both
-wrappers route a repository a rename moved by and read from there and from nowhere else
+daemon's own state, never one read from the pane's directory. While the architect acts as another
+role, its pane's directories hold that role's App instead: at a step of its own plan (one whose key
+is `owner`), the step's role; at its retro where the task's last implementation step is its own,
+that step's role; and while a merge forward the daemon asked of it has not ended, the implementer.
+The daemon tells the architect such a step, retro or merge-forward ask only once the `hosts.yml` of
+the directory `GH_CONFIG_DIR` names holds that App's token, and waits while it holds another or no
+pane of the architect is watched. Where that App is not the architect's own, it first has the
+runtime write the pane's directories, for the App the runtime judges the pane works as under the
+lock its writes take (the act's, unless the act has ended since), with the log line `tmux runtime:
+github credential written for a step` (the claim, role, App, `expiresAt` and the directories
+written); each refresh writes the App the pane acts as then, judged the same way; and the end of
+each such act writes the architect's own App back, unless its next act of another App has already
+begun, and a notice to the architect queued after that write waits for it. Each of those tokens
+reaches every repository its own installation holds, which the account chose when it installed the
+App, and the daemon asks GitHub to narrow none of them to a repository. The bundle's root also
+holds one file of its own, `renames.txt`, the configured renames the project's pairs resolve to,
+which both wrappers route a repository a rename moved by and read from there and from nowhere else
 (`ghconfig.PairsFile`). `legion gh` runs the real gh with
 `GH_CONFIG_DIR` at the one directory every repository the command targets is routed to: its
 owner's, or for a repository a configured rename moved, the directory of the owner it moved to,

@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
@@ -385,6 +386,36 @@ func TestAHeldRetroAfterADeploymentStepGetsItsReport(t *testing.T) {
 	}
 	if strings.Contains(starts[0].Task, testerVerdictLabel) {
 		t.Fatalf("the retro's task = %q, want no %s: the report is the checker's", starts[0].Task, testerVerdictLabel)
+	}
+}
+
+// A parent held before its retro is told the role of the agent that does its retro, the role of
+// its task's last step of the type implementation (Walk.RoleAt of the retro), which is the role the
+// held retro starts once the issues beneath it leave (startHeldRetro). In `implementer builder`,
+// builder a role the owner's plan defines of the type implementation, the builder's pass holds the
+// parent for its child, and the retro-held notice names builder. The control is the notice as it
+// was, which named the role of the phase retro (phase.RoleFor), the implementer, whose work the
+// hold does not keep.
+func TestARetroHeldNoticeNamesTheRoleOfTheRetrosAgent(t *testing.T) {
+	pool := migratedPool(t)
+	engine := returnEngine()
+	root := stepRoot(t, pool, phase.Admitted)
+	key, gen := root.Key, root.Generation
+	given := ownersPlan(t, key, gen, 1, givenTask(t, "Build the widget, then build its stand.", "implementer", "builder"))
+	given.Plan.Roles = []plan.PlanRole{{Name: "builder", Type: plan.TypeImplementation, Prompt: "# Builder\n\nBuild the stand."}}
+	mustTake(t, "the plan that defines builder", applyFacts(t, pool, engine)(planID(key, gen, 1), given))
+	stepChild(t, pool, heldParentChild, phase.Implementing, nil)
+	move(t, pool, engine, key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
+	move(t, pool, engine, key, TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{})
+	assertWalksAt(t, pool, engine, key, phase.Step, stepPlace(2))
+
+	move(t, pool, engine, key, TriggerStepPassed, record.TaskPlace{}, record.PhaseRow{})
+
+	if held := issueOf(t, pool, engine, key); !record.HeldForChildren(held) {
+		t.Fatalf("%s after the builder's pass stands in %s with hold %+v, want held before its retro for its children", key, held.Phase, held.Hold)
+	}
+	if notices := noticesOf(t, pool, key, "retro-held"); len(notices) != 1 || notices[0].Role != "builder" || notices[0].Phase != phase.Retro {
+		t.Fatalf("the retro-held notices = %+v, want one of the retro naming builder, the role of the retro's agent", notices)
 	}
 }
 

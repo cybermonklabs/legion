@@ -481,6 +481,9 @@ func servedAt(t *testing.T, body []byte, contract int) []byte {
 	if contract < strandedTokenContract {
 		strandedWithoutTokens(served)
 	}
+	if contract < completeStepContract {
+		issuesWithoutPlaceRole(served)
+	}
 	servedShape(served, contract)
 	encoded, err := json.Marshal(served)
 	if err != nil {
@@ -895,6 +898,9 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			// And below strandedTokenContract, so no claim nothing will wake carries its `token`
 			// (withoutStrandedTokens).
 			strandedWithoutTokens(want)
+			// And below completeStepContract, so no issue carries its `placeRole`
+			// (withoutPlaceRole).
+			issuesWithoutPlaceRole(want)
 			// Every row that reaches here is below supervise.PodUpdateContract, which is below
 			// both of the contracts servedShape reads: such a caller is served each check
 			// without `role` and both fix-attempt stand-ins.
@@ -960,6 +966,15 @@ func strandedWithoutTokens(body map[string]any) {
 				delete(view, "token")
 			}
 		}
+	}
+}
+
+// issuesWithoutPlaceRole takes `placeRole` off each issue of a baseline body, the issue a caller
+// below completeStepContract is served (api's withoutPlaceRole).
+func issuesWithoutPlaceRole(body map[string]any) {
+	issues, _ := body["issues"].(map[string]any)
+	for _, issue := range issues {
+		delete(issue.(map[string]any), "placeRole")
 	}
 }
 

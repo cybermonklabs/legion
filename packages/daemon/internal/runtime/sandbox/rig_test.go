@@ -628,6 +628,9 @@ type rig struct {
 	// answers a start it has recorded: a start the launcher is still waiting on, as a real
 	// launcher waits for its slot's gh files to hold the start's credential. Guarded by commandsMu.
 	holdStart chan struct{}
+	// failStart, when set, is the error every fake launcher answers a start with, once holdStart
+	// lets it answer: a start the launcher refuses. Guarded by commandsMu.
+	failStart string
 }
 
 type rigOption func(*rig, *Options)
@@ -1301,6 +1304,13 @@ func (g *rig) connectRunning(token claim.Token, running uint64) {
 					case <-g.ctx.Done():
 						return
 					}
+				}
+				g.commandsMu.Lock()
+				refusal := g.failStart
+				g.commandsMu.Unlock()
+				if refusal != "" {
+					_ = writer.WriteFrame(shimwire.LauncherStartResult{ID: command.ID, Error: refusal})
+					continue
 				}
 				if running != 0 {
 					_ = writer.WriteFrame(shimwire.LauncherStartResult{ID: command.ID, Error: fmt.Sprintf("generation %d is still running", running)})

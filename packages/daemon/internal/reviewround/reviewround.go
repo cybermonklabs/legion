@@ -17,7 +17,9 @@ const CommitLabel = "Last reviewed commit"
 // EntryLabel labels the entry of the round a reviewer's task names (record.PhaseRow.Entry). The
 // reviewer writes that number into the Legion footer of each review it submits for the task
 // (intake.PullRequestReview.LegionEntry), and only a review that names the entry that stands moves
-// the commit the reviewer read (workflow's reviewedCommitStays).
+// the commit the reviewer read (workflow's reviewedCommitStays). A review step that ends by its
+// verdict records the commit its report names instead (workflow's recordStepReview), and the
+// owner's act at a review step of its own the pull request's head (workflow's recordOwnersReview).
 const EntryLabel = "Review entry"
 
 // none is what each sentence names where there is no value for it: no commit, or no entry. A

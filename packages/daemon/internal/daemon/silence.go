@@ -7,6 +7,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
+	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -53,6 +54,13 @@ func workerBackgroundEventID(token claim.Token, generation uint64, reported time
 // A claim of no issue (the controller's) is skipped, since its fact would name no record. The
 // fact's run is the claim's ServingRun, the issue generation its task came from, and not its
 // Generation, which counts launches and goes into the id instead.
+//
+// An architect's claim is the owner of its issue's steps, and its silence is an owner's: it is
+// minted only over a run of its issue that started and has not ended (openRuns), past the bound
+// from both the last step and that run's start, so the owner had the bound to answer the run's
+// own notice. Its id is the run's too (ownerSilentEventID): a run that starts while the owner
+// stays silent is a silence of its own. The handler tells the owner the step again where the run
+// is a step of the owner's (workflow's ownerSilent); a worker's run read here is spent once.
 func (s *supervision) tellSilentPhaseWorkers(ctx context.Context, claims []supervise.Claim) {
 	if s.applySweepFacts == nil {
 		return
@@ -60,8 +68,9 @@ func (s *supervision) tellSilentPhaseWorkers(ctx context.Context, claims []super
 	bound := s.cfg.WorkerSilence
 	now := s.plan.clock.Now()
 	var facts []sweptFact
+	var owners []supervise.Claim
 	for _, c := range claims {
-		if c.Issue == "" || c.Role == "" || c.Role == claim.RoleArchitect {
+		if c.Issue == "" || c.Role == "" {
 			continue
 		}
 		if c.State != supervise.StateReady && c.State != supervise.StateIdle {
@@ -72,6 +81,12 @@ func (s *supervision) tellSilentPhaseWorkers(ctx context.Context, claims []super
 		}
 		last := c.Step.LastStep()
 		if !workflow.PastBound(last, bound, now) {
+			continue
+		}
+		if c.Role == claim.RoleArchitect {
+			if !workflow.ReportExplainsQuiet(c.ActivityBackground, c.ActivityNextReminderAt, now) {
+				owners = append(owners, c)
+			}
 			continue
 		}
 		// The handler refuses a claim whose report explains its quiet, so none is minted for it.
@@ -86,11 +101,61 @@ func (s *supervision) tellSilentPhaseWorkers(ctx context.Context, claims []super
 			facts = append(facts, fact)
 		}
 	}
+	facts = append(facts, s.ownersSilent(ctx, owners, bound, now)...)
 	if len(facts) == 0 {
 		return
 	}
 	// workflowRuntime.applySweepFacts logs every failure, and the next sweep retries it.
 	_ = s.applySweepFacts(ctx, facts)
+}
+
+// ownersSilent is the fact of each architect of owners, every one idle past bound since its last
+// step, whose issue holds a run that started and has not ended and started before bound too: the
+// owner of that run had the bound to answer the run's notice. A failed read mints none and is
+// logged, and the next sweep reads again.
+func (s *supervision) ownersSilent(ctx context.Context, owners []supervise.Claim, bound time.Duration, now time.Time) []sweptFact {
+	if len(owners) == 0 || s.openRuns == nil {
+		return nil
+	}
+	issues := make([]string, 0, len(owners))
+	for _, c := range owners {
+		issues = append(issues, c.Issue)
+	}
+	runs, err := s.openRuns(ctx, issues)
+	if err != nil {
+		s.log.Warn("the silence sweep could not read the open runs of the idle architects' issues; none is told and the next sweep reads again",
+			"issues", len(issues), "error", err)
+		return nil
+	}
+	var facts []sweptFact
+	for _, c := range owners {
+		run, open := runs[c.Issue]
+		if !open {
+			continue
+		}
+		last := c.Step.LastStep()
+		since := last
+		if run.StartedAt.After(since) {
+			since = run.StartedAt
+		}
+		if !workflow.PastBound(since, bound, now) {
+			continue
+		}
+		facts = append(facts, sweptFact{
+			ID: ownerSilentEventID(c.Token, c.Generation, last, run),
+			Fact: intake.WorkerSilent{Issue: c.Issue, Role: c.Role, Generation: c.ServingRun(),
+				LastStep: last, Bound: bound},
+		})
+	}
+	return facts
+}
+
+// ownerSilentEventID is the identity of one silence of an owner over one run: the claim token, the
+// claim's launch, the moment of its last step, as workerSilentEventID, and the run, its place and
+// its count of starts, so a run that starts while the owner stays silent is a silence of its own.
+func ownerSilentEventID(token claim.Token, generation uint64, lastStep time.Time, run record.IssueStepRun) string {
+	return fmt.Sprintf("owner-silent:%s:%d:%s:%s/%s/%d/%d", token, generation, lastStep.UTC().Format(time.RFC3339Nano),
+		run.Place.Task, run.Place.Kind, run.Place.Place, run.Starts)
 }
 
 // backgroundStalledFact is the fact for a claim whose session reports background work of its own

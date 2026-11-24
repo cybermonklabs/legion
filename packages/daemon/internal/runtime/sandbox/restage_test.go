@@ -1072,11 +1072,14 @@ func TestAClaimMidLaunchWithAStaleStreamIsReported(t *testing.T) {
 }
 
 // Recording a generation's addresses costs one API write per start: a claim started in a running
-// issue pod sends the Sandbox one patch, of its slot's annotation alone. The first start
-// of a claim in a slot of that pod also records, once, on the slot's Secret the role its process
-// runs as (launchedRoleAnnotation), which the refresher renders the slot for, and changes nothing
-// else of the Secret: the pod's build recorded no launch in that slot. A later start of the same
-// claim in the same role writes the patch alone.
+// issue pod sends the Sandbox one patch, of its slot's annotation alone. A claim's first start in
+// a slot of that pod also records, once, the role its process runs as on the slot's Secret
+// (launchedRoleAnnotation). The refresher renders the slot for that role, or for the role of a step
+// the architect does as the owner (runtime.SlotRole). The pod's build recorded no launch in that
+// slot, and wrote it for the tester's App already. So this start changes nothing else of the
+// Secret. A start whose slot must hold another App writes that App into the Secret too
+// (writeLaunchCredential), such as the owner's while it does a step of another App's role. A later
+// start of the same claim in the same role writes the patch alone.
 func TestARoleStartedInARunningPodWritesOnlyItsAddressRecord(t *testing.T) {
 	g := newRig(t, nil)
 	g.spawn(rootSpec(t))

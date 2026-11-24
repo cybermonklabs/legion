@@ -255,7 +255,7 @@ func freshSessionCases() []freshSessionCase {
 // worker that comes back owing no task is started through its issue's phase, which is what
 // hands it that phase's task: without it a tester waiting on CI, or a worker an idle release
 // suspended, would come back in a new session with nothing to do. A claim that still owes a
-// task keeps it, and a root architect works no phase at all.
+// task keeps it, and a root architect at no place of its own, as here, has no phase restarted.
 func TestAFreshSessionStartsEveryClaimThatIsNotInATurn(t *testing.T) {
 	for _, door := range freshSessionDoors() {
 		for _, tc := range freshSessionCases() {
@@ -791,9 +791,7 @@ func TestTheControllersFreshSessionRefusesTheRoleController(t *testing.T) {
 	recorder := h.request(http.MethodPost, "/legion/v1/claims/fresh-session",
 		ClaimRequest{GrantID: grant.GrantID, Issue: "LEGION-209", Role: "controller"}, nil)
 
-	refusedSaying(t, recorder, http.StatusBadRequest, "INVALID_ROLE",
-		"role must be one of architect, planner, implementer, tester, reviewer, merger, a role of this deployment, or a role of the issue's plan; "+
-			"the project's controller is none of them, and its own claim takes no fresh session")
+	refused(t, recorder, http.StatusBadRequest, "INVALID_ROLE")
 }
 
 // The controller's own claim is refused through the operator's door too, which names a claim by

@@ -40,9 +40,10 @@ const (
 // footer naming the session that wrote it and the head it read (prompts/roles/reviewer.md).
 // The session it names is the one the shared fixtures record on the reviewer's claim
 // (seedRoundOneRows), so it is the reviewer's own review, and a fixture about another session
-// writes its own body. It names no entry, so it decides its round and moves no commit the reviewer
-// read (record.PhaseRow.ReviewedHead): a fixture whose proof reads that commit writes its review
-// with roundReviewBody.
+// writes its own body. It names no entry, so it decides its round, where a review on GitHub decides
+// one at all (no review decides a review step the owner does: settleRound), and moves no commit
+// the reviewer read (record.PhaseRow.ReviewedHead): a fixture whose proof reads that commit writes
+// its review with roundReviewBody.
 func reviewBody(said, head string) string {
 	return said + "\n\n<!-- legion: {\"session\":\"ses-reviewer\",\"phase\":\"review\",\"head\":\"" + head + "\"} -->"
 }
@@ -75,8 +76,8 @@ func commentBody(said string) string {
 }
 
 // reviewBodyOf is reviewBody for a review the review App submitted and what the author said for
-// anyone else's: a person writes no Legion footer, and their review decides on the commit_id the
-// webhook carried it with (refusesRound).
+// anyone else's: a person writes no Legion footer, and where a review on GitHub decides the round,
+// theirs decides on the commit_id the webhook carried it with (refusesRound).
 func reviewBodyOf(author, said, head string) string {
 	if author == testReviewApp {
 		return reviewBody(said, head)

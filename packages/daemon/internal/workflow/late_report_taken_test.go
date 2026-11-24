@@ -1,8 +1,9 @@
 package workflow
 
-// A role's first completion of its run after an event ended that run, on a run with plan rows. The
-// reviewer's normal order is its handoff, its review, then its completion, so its own review event
-// almost always ends its step first. The completion is taken as a run with no plan rows takes it
+// A role's first completion of its run after an event ended that run, on a run with plan rows.
+// Where the issue has a pull request, the reviewer's normal order is its handoff, its review, then
+// its completion. So its own review event almost always ends its step first. The completion is
+// taken as a run with no plan rows takes it
 // (TestTheReviewEventDecidesAndTheCompletionRecordsItsFindings): it moves nothing, the role's row
 // records it, and its report is written onto the ended step (reportEndedStep). The subtests ask
 // that of the default rows a new issue with no owner's plan is given at its first step (firstStep,

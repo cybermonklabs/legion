@@ -387,10 +387,11 @@ const checkDispatchEnvoyTools: Check = async (host, input, signal) => {
   );
 };
 
-/** The role's own GitHub identity through GraphQL `viewer`, never REST `GET /user`: a role's `gh`
- * runs on its App's installation token, which GitHub answers `GET /user` to with 403 "Resource not
- * accessible by integration", and `{viewer{login}}` is how such a token reads its own identity —
- * the read the repository's proofs make (`internal/api/real_github_test.go`,
+/** The GitHub identity the role's `gh` acts as, through GraphQL `viewer`, never REST `GET /user`:
+ * a role's `gh` runs on an App's installation token (its role's App, or, while the architect does a
+ * step of its own, the App of that step's role), which GitHub answers `GET /user` to with 403
+ * "Resource not accessible by integration", and `{viewer{login}}` is how such a token reads its
+ * own identity — the read the repository's proofs make (`internal/api/real_github_test.go`,
  * `scripts/e2e/stage4b-sandbox-tree.sh`). */
 const checkGitHub: Check = async (host, input, signal) => {
   const result = await host.run(

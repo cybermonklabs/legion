@@ -299,9 +299,10 @@ func TestAWorkflowStartStartsAStoppedWorkerAgain(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		// The retro is the implementer's own phase, as implementing is, so the move back is one
-		// between two phases of one role: the worker the move starts is the worker the operator
-		// stopped (phase.RoleFor, TestASameRoleBackwardMoveNeverStopsTheWorkerInItsNewPhase).
+		// The retro of this issue, which has no plan rows, is the implementer's own phase, as
+		// implementing is, so the move back is one between two phases of one role: the worker the
+		// move starts is the worker the operator stopped (phase.RoleFor,
+		// TestASameRoleBackwardMoveNeverStopsTheWorkerInItsNewPhase).
 		kept := stoppableWorker(cfg, project, implementer, root, root, claim.RoleImplementer, phase.Retro)
 		seedWorkflowTree(t, cfg.PostgresDSN, project, startedAgainIssue(cfg, root, root, phase.Retro), kept)
 		writePrompt(t, cfg, implementer)

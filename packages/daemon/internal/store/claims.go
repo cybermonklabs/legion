@@ -590,10 +590,11 @@ func (s *Store) ClaimIssue(ctx context.Context, token claim.Token) (string, erro
 	return issue, nil
 }
 
-// ClaimRole is the stored role of the claim of token, the role of the step its agent does now,
-// from the daemon's own claims: what a tmux pane adopted after a restart holds the App of (the tmux
-// runtime's Options.ClaimRole), since a token names its agent and not its role. A token no claim
-// holds is refused.
+// ClaimRole is the stored role of the claim of token, the role of the step its agent does now (the
+// architect's own at a step the architect does itself), from the daemon's own claims: what a tmux
+// pane adopted after a restart holds the App of where the runtime's ActsAs gives no other role
+// (the tmux runtime's Options.ClaimRole, read through runtime.SlotRole), since a token names its
+// agent and not its role. A token no claim holds is refused.
 func (s *Store) ClaimRole(ctx context.Context, token claim.Token) (claim.Role, error) {
 	var role string
 	err := s.pool.QueryRow(ctx, `select role from claims where token = $1`, string(token)).Scan(&role)

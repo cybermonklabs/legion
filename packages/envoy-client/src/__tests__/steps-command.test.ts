@@ -317,7 +317,8 @@ describe("dispatch steps", () => {
     // @ts-expect-error - a kind Dispatch never stores is no kind.
     const notStored: StepRecord["kind"] = "pause";
     void notStored;
-    // The implementer runs the retro, at place 0 and of no type, and names no report.
+    // The retro's run, at place 0 and of no type, names the role implementer whoever does it, and
+    // no report; here the implementer runs it.
     const retro: StepRecord = {
       ...implementer,
       id: "6e8a0c2e-4b6d-5f8a-9c1e-3a5c7e9b1d47",

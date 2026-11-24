@@ -176,11 +176,12 @@ const conflictConfirmWait = time.Minute
 //
 // The decision is R0's (dispatch://INFRA-4374 R0, classify.ConflictNeedsMerge), read on the
 // base's rules for its required checks, which the confirming read carries
-// (intake.PullRequestMergeability.Rules). A reason to act asks the agent of the task's
-// implementation step to merge the base forward, and the issue keeps its phase (mergeForward,
-// R1); no reason leaves the conflict recorded and logged with the checks the base requires and
-// those green on the head, and the tester and the reviewer go on at that head. A CONFLICTING read
-// of a head the record already
+// (intake.PullRequestMergeability.Rules). A reason to act asks the agent of the task's last step
+// of the type implementation at or before the issue's place, else the task's last such step (the
+// implementer on the default steps, the owner where that step is its own), to merge the base
+// forward, and the issue keeps its phase (mergeForward, R1); no reason leaves the conflict
+// recorded and logged with the checks the base requires and those green on the head, and the
+// tester and the reviewer go on at that head. A CONFLICTING read of a head the record already
 // holds conflicting decides again in the same way, since the phase the issue has reached since can
 // need what the phase before did not, and mergeForward asks nothing twice for one head.
 //
@@ -188,7 +189,8 @@ const conflictConfirmWait = time.Minute
 // GitHub would merge this head now, which the tri-state mergeability cannot, and it is what an
 // approval standing on the head waits for (reviewRound). So in reviewing the round is asked again
 // once the state is recorded, whatever the read decided - this read is the one that moves an
-// approved issue to accepting, as often as not. The base the read names is recorded with
+// approved issue on to its task's next step (accepting on the default steps), as often as not. The
+// base the read names is recorded with
 // them, since that read is the only one that names the base of a pull request opened before the
 // record kept one: it is what a push onto that branch finds the pull request by (basePush), and a
 // read that answers for a base push already recorded clears the push's mark, the two having been
@@ -523,8 +525,10 @@ func namedStatuses(statuses []record.CommitStatus) string {
 // would reach it as a second wake of one release, described to the worker as something somebody
 // published to its role topic. woken is that claim, "" when the settlement woke nobody, and every
 // other claim — a live one, and one the wake did not reach — is told as before. It is compared by
-// claim, not by role: the agent of the implementation step can work the retro under the role
-// implementer while its own step's role has another name, and so be the claim the wake reached.
+// claim, not by role: the owner a settlement wakes at its own place is the claim the start of the
+// owner's implementation step names, as well as the architect that owns the issue, and the agent
+// of the task's last implementation step works the retro too, as that step's role (the implementer
+// for the owner's), and so can be the claim the wake reached.
 //
 // A holder this daemon cannot name is an error here, and with it the settlement's whole
 // transaction: the settlement moves no issue, so there is nothing kept by telling the rest, and
@@ -543,8 +547,9 @@ func (e *Engine) tellChecks(ctx context.Context, tx pgx.Tx, pr *record.PullReque
 	}
 	// The architect told is the one that owns the issue now (owningArchitect): the issue's own
 	// while its claim holds its role, else the nearest one above it that does, else the tree
-	// root's. A phase the architect itself holds (accepting) is that same architect's acceptance,
-	// so it is told once, as the owner.
+	// root's. A place the architect itself works (record.Issue.RoleAt answers the architect: an
+	// acceptance it does, a step of the key owner, its retro) is that same architect's, so it is
+	// told once, as the owner.
 	owner, err := e.owningArchitect(ctx, tx, *issue)
 	if err != nil {
 		return err
@@ -557,7 +562,7 @@ func (e *Engine) tellChecks(ctx context.Context, tx pgx.Tx, pr *record.PullReque
 	if err != nil {
 		return err
 	}
-	if implementer, named, err := e.implementationAgent(*issue, w, record.StandsAt(*issue)); err != nil {
+	if implementer, named, err := e.implementationAgent(ctx, tx, *issue, w, record.StandsAt(*issue)); err != nil {
 		return err
 	} else if named {
 		recipients = append(recipients, implementer)
@@ -579,7 +584,8 @@ func (e *Engine) tellChecks(ctx context.Context, tx pgx.Tx, pr *record.PullReque
 }
 
 // owningArchitect is the key of the issue whose architect owns issue now: the end of the owner
-// walk from issue itself, as the outbox routes a notice of issue's phase, over the architect
+// walk from issue itself, as the outbox routes every notice of issue's phase but an owner-step
+// (which goes to issue's own architect, record.OwnerClaim), over the architect
 // claims of issue's tree this transaction reads (record.ReadOwnerWalk). That is issue's own
 // architect while its claim holds its role, else the nearest one above it whose claim does, else
 // the tree root's. A tree root is its own without a read.
@@ -645,6 +651,7 @@ func (e *Engine) byReviewer(review intake.PullRequestReview, reviewerSession str
 // standing and a session's claim are not things the record's next head changes, save one: a
 // review-App review that comes while the reviewer's claim records no session waits
 // (RefusedWhileNoSession), since the session the claim records later says whose it is.
+// No review decides a review step the owner does: settleRound settles no round there.
 func (e *Engine) DecidesRound(review intake.PullRequestReview, reviewerSession string) bool {
 	return e.byReviewer(review, reviewerSession) || review.AuthorCanWrite
 }
@@ -696,6 +703,8 @@ const (
 // reviewToApply), which applies only a review this would take - and both ask this one judgement,
 // so neither judges by a narrower rule than the other, and neither asks a second one to learn how
 // long a refusal stands: the answer carries that (RoundRefusal.Lasts).
+// A review step the owner does is decided by no review at all, which settleRound holds whatever
+// this answers.
 func (e *Engine) RefusesRound(review intake.PullRequestReview, pr record.PullRequest, reviewerSession string) RoundRefusal {
 	if !e.DecidesRound(review, reviewerSession) {
 		switch {
@@ -899,8 +908,10 @@ func (e *Engine) review(ctx context.Context, tx pgx.Tx, fact intake.PullRequestR
 	reviewer.Decision = &record.ReviewDecision{State: state, Body: fact.Body, Head: e.reviewHead(fact)}
 	// The commit the reviewer's own review read outlives the round, where the decision does not
 	// (record.PhaseRow.ReviewedHead): the task of the reviewer's next round names it
-	// (namingTheReviewRound). Only the reviewer's own review moves it: a review-App review whose
-	// Legion footer names the session the reviewer's claim records (byReviewer). A person's review
+	// (namingTheReviewRound). Of the reviews on GitHub only the reviewer's own moves it: a review-App
+	// review whose Legion footer names the session the reviewer's claim records (byReviewer); a
+	// review step's verdict (recordStepReview) and the owner's sign_off or backward move at a review
+	// step of its own (recordOwnersReview) write it too. A person's review
 	// decides the round and leaves the commit where it stands, since the reviewer never read the
 	// commit the person did; while the reviewer's claim records no session, no review-App review
 	// gets here, since it waits (RefusedWhileNoSession). And the review must be of the entry that
@@ -1085,8 +1096,10 @@ func stuckMergeStateReason(pr record.PullRequest) string {
 }
 
 // reviewRound is what issue's review round comes to, row being its reviewer's and pr its pull
-// request as a fact left them. The review event decides it, and the reviewer's handoff records its
-// findings (dispatch://INFRA-714/spec R1): a request for changes ends the round whether or not the
+// request as a fact left them. Where a worker does the review step, the review event decides it,
+// and the reviewer's handoff records its findings (dispatch://INFRA-714/spec R1); a review step
+// the owner does ends by its verdict instead, and settleRound acts on no round of it. A request
+// for changes ends the round whether or not the
 // reviewer has completed, and the completion that follows is recorded on the reviewer's own row
 // (engine's leftItsPhase). An approval ends it once it approves the head's code
 // (classify.ApprovalStands) and GitHub reports that head one the issue may advance on
@@ -1095,11 +1108,10 @@ func stuckMergeStateReason(pr record.PullRequest) string {
 // never reads its state again (askMergeStateFor), so nothing it could wait on would ever come.
 // An approval of a head the record holds in a confirmed conflict with its base
 // (classify.ConflictRound) ends the round too, whatever GitHub's merge state for it
-// (dispatch://INFRA-4374 R0): nothing GitHub answers about that head changes until the agent of
-// the task's implementation step merges the base forward, and the merge is what the issue needs
-// next once its review is over, so the move into accepting asks for it (transition,
-// mergeForwardOnEntry, record.ConflictMergeNext). While the first conflicting read of the head
-// waits for its second
+// (dispatch://INFRA-4374 R0): nothing GitHub answers about that head changes until the
+// base is merged forward, and the merge is what the issue needs next once its review is over, so
+// the move on to the task's next step asks for it (transition, mergeForwardOnEntry,
+// record.ConflictMergeNext). While the first conflicting read of the head waits for its second
 // (record.PullRequest.ConflictRead), the approval waits where it stands and is never reported
 // stuck: GitHub's `dirty` is not yet a conflict the daemon holds, and the second read decides it.
 // An approval that stands on the head of a pull request closed without merging keeps the round
@@ -1209,7 +1221,8 @@ func undecidedReason(row record.PhaseRow, pr record.PullRequest) string {
 	return reason
 }
 
-// implementationReady moves issue from implementing to testing on the implementer's completion of
+// implementationReady moves issue from implementing to its task's next step (testing on the
+// default steps) on the completion of the implementer, or of the owner's implementer step, of
 // the round that row records, once the pull request pr is recorded open or merged
 // (TriggerImplementationReady: a record closed without merging, or none, moves nothing). It
 // reads no CI result: a settlement that arrived while the implementer worked moved nothing and
@@ -1234,7 +1247,15 @@ func (e *Engine) implementationReady(ctx context.Context, tx pgx.Tx, issue recor
 // A round GitHub will not merge from (stuckMergeState) is the one cause the reviewer cannot
 // decide, and the whole of its path - its own dedup, its own message to the reviewer, a notice
 // with no topic - is tellStuckMergeState's, which this asks for once.
+//
+// A review step the owner does (the claim that works the issue's place is the architect,
+// record.Issue.RoleAt) has no round to settle: it ends by the owner's own report, its verdict
+// (handoff's reviewing case), so no review on GitHub decides it, the owner's own among them, and
+// nothing is told of it. Its review on GitHub is for the repository's rule of a merge alone.
 func (e *Engine) settleRound(ctx context.Context, tx pgx.Tx, issue record.Issue, row record.PhaseRow, pr *record.PullRequest, before round, by string) (bool, error) {
+	if issue.RoleAt(issue.Phase) == claim.RoleArchitect {
+		return false, nil
+	}
 	r := e.reviewRound(issue, row, pr)
 	switch r.outcome {
 	case roundRejected:

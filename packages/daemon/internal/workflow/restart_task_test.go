@@ -52,8 +52,9 @@ func stoppedAtTesting(t *testing.T, pool *pgxpool.Pool, engine *Engine) record.I
 
 // A person's todo on a root held because its owner stopped its task starts the task again at its
 // first step, in one transaction (restartTask): the hold is cleared, the task runs at step 1 with
-// its stop's reason gone, the issue stands in the phase of step 1, and that step's role is
-// started at a raised entry with a task that names why; the task's pass rises by one, and no
+// its stop's reason gone, the issue stands in the phase of step 1, and that step's agent is
+// started at a raised entry with a task that names why (Engine.start: where step 1 is the
+// owner's, the owner is told it and no claim starts); the task's pass rises by one, and no
 // pair, round or hook is counted. The step the stop ended is not ended again, and the start of
 // step 1 is written. The Dispatch status of step 1's phase is written over the todo Dispatch
 // shows. A todo on a root held for the issues beneath it leaves the hold, writes back over the todo
@@ -151,7 +152,7 @@ func TestATodoOnAStoppedRootStartsItsTaskAtStepOne(t *testing.T) {
 		}
 		// The write carries the hold's retro-held sentence, so the person who set the todo reads why
 		// the board went back.
-		why := retroHeldNotice(root.Key, []string{heldBeneath}).Reason
+		why := retroHeldReason(root.Key, []string{heldBeneath})
 		if got, writes := outboxRowsOf(t, pool, root.Key), statusWrites(t, pool, root.Key); got != outbox+1 || len(writes) != statuses+1 ||
 			writes[len(writes)-1] != record.OrdinaryStatusWrite("in_progress", "todo", why) {
 			t.Fatalf("the todo queued %d outbox rows of %s, its status writes now %+v; want one, the status the record keeps, in_progress, written back over the todo with the hold's reason, and nothing started",

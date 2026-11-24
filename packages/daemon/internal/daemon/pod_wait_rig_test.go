@@ -48,7 +48,8 @@ func (r *idleWakeRig) roleToken(issue idleRigIssue, role claim.Role) claim.Token
 }
 
 // startChecker queues the start of the checker on the issue, as the workflow queues a start of the
-// role whose step the issue's task stands at.
+// role whose step the issue's task stands at where that step is not its owner's (a step of the key
+// owner starts no claim: the owner is told it in an owner-step notice).
 func (r *idleWakeRig) startChecker(issue idleRigIssue) {
 	r.t.Helper()
 	enqueueOutbox(r.t, r.pool, r.records, mustOutboxRow(r.t, issue.key, record.SuperviseRequest{

@@ -404,11 +404,12 @@ func blockedBy(state api.State, key string) []string {
 }
 
 // Step 1. Two trees are live and neither holds a slot: the root's design gate has opened, so its
-// architect's own turns take none, and the second tree's root is in accepting, where no worker
-// runs. Before this change a slot was one row per root and both of these would hold one; now
-// `admission.trees` is the only member of the state that names them, which is why a reader such as
-// the controller reads the running trees there. The root's own first phase does not start, because
-// Dispatch shows two children filed beneath it, and `admission.blocked` names them.
+// architect's own turns take none, and the second tree's root is in accepting with no plan rows,
+// where its own architect accepts and no worker runs. Before this change a slot was one row per
+// root and both of these would hold one; now `admission.trees` is the only member of the state
+// that names them, which is why a reader such as the controller reads the running trees there. The
+// root's own first phase does not start, because Dispatch shows two children filed beneath it, and
+// `admission.blocked` names them.
 func (r *admissionIssuesLive) liveTreesHoldNoSlot() {
 	t := r.t
 	state := r.waitForState("the two live trees with no slot between them", func(state api.State) bool {

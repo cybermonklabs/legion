@@ -593,11 +593,10 @@ type LegionAgentEntry struct {
 	LegionProject string `json:"legion_project"`
 	// Issue is the Dispatch issue key the session works, upper case.
 	Issue string `json:"issue"`
-	// Role is one of the six workflow roles (legionclaim.Roles), a role the deployment defines in
-	// its settings or a role the issue's plan defines: a name of the role grammar
-	// ^[a-z][a-z0-9-]{0,31}$ but controller. It is the
-	// role of the step the session's agent runs as of this entry's write, and changes as its steps
-	// do.
+	// Role is one of the six workflow roles (legionclaim.Roles), `acceptance` (the role of a
+	// fresh agent of acceptance), or a role the deployment or the issue's plan defines: any name
+	// of the role grammar ^[a-z][a-z0-9-]{0,31}$ but controller. It is the role of the step the
+	// session's agent runs as of this entry's write, and changes as its steps do.
 	Role string `json:"role"`
 	// RoleToken is the claim token of the session's agent,
 	// legion-<legion_project>-<issue lower-cased>-<agent>, byte for byte what claim.AgentToken

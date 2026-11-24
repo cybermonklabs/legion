@@ -77,13 +77,14 @@ const (
 // instructions (shimwire.Compact), and a worker resumed on images needs a vision model to read
 // its own past, so these instructions are what make the summary text.
 //
-// They keep word for word the reviewer's entry (reviewround.EntryLabel): the reviewer copies its
-// number into the footer of its review, and a summary that dropped it leaves the reviewer no entry
-// to write, so its review moves no commit (workflow's review). Only the last sentence of a task is
-// the daemon's (reviewround.Sentences, supervise's Delivery.message): a task's own text can quote
-// `Review entry: 2.` above it, and a task can end with `Review entry: none.`, which does not change
-// the entry of the round. So the instruction first takes the last sentence of each task, and then
-// keeps the newest of those that names a number.
+// They keep word for word the reviewer's entry (reviewround.EntryLabel): the reviewer of an issue
+// with a pull request copies its number into the footer of its review on GitHub, and a summary
+// that dropped it leaves the reviewer no entry to write, so its review moves no commit (workflow's
+// review); a review step that no review on GitHub decides ends by its verdict instead. Only the
+// last sentence of a task is the daemon's (reviewround.Sentences, supervise's Delivery.message): a
+// task's own text can quote `Review entry: 2.` above it, and a task can end with `Review entry:
+// none.`, which does not change the entry of the round. So the instruction first takes the last
+// sentence of each task, and then keeps the newest of those that names a number.
 //
 // A model reads it, so it follows ASD-STE100: one instruction per sentence, active voice, and no
 // word with a second reading.

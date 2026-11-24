@@ -130,8 +130,9 @@ const RoleTopicPrefix = "notifications.role."
 
 // ControllerTopic is the topic of project's controller, the one notice topic the daemon publishes
 // to; a workflow notice goes to the role topic of the architect that owns its issue instead (the
-// daemon's notice executor), since every issue's topic is a subject its phase workers subscribe
-// to. It carries the controller notices (record.ControllerNotice), each an outbox row of its own:
+// daemon's notice executor), and an `owner-step` to the issue's own architect, its owner, whether
+// its claim runs or not (the daemon's noticeArchitect), since every issue's topic is a subject its
+// phase workers subscribe to. It carries the controller notices (record.ControllerNotice), each an outbox row of its own:
 // every hold and a tree architect's own failed claim (workflow's noticeWithController), a root in
 // triage handed to Legion (admission), a root that keeps its admission slot while its architect
 // waits on a person (`awaiting-person`, workflow's enterAwaiting), a root admission took out of
@@ -192,8 +193,19 @@ func New(baseURL, token string) *HTTPPublisher {
 // 404 for a role nobody holds is ErrNoHolder. PublishKept is the other choice: it asks the
 // listener to keep the message for the role's next live holder.
 func (p *HTTPPublisher) Publish(ctx context.Context, topic, message string, payload any, dedupeKey string) error {
-	_, err := p.publish(ctx, topic, message, payload, dedupeKey, false)
+	_, _, err := p.publish(ctx, topic, message, payload, dedupeKey, false)
 	return err
+}
+
+// PublishTo is Publish that also answers the session the listener forwarded the message to: the
+// holder its 200 names (listenerwire.PublishResponse.Holder), the session id a claim records as
+// its own (supervise.Claim.HoldsSession). It is "" where the 200 names none, as a listener that
+// predates the field answers, or carries a body this client cannot read; the publish was taken
+// either way. The outbox reads it for an owner-step, whose run records the session that got it
+// (the daemon's ownerStepTold).
+func (p *HTTPPublisher) PublishTo(ctx context.Context, topic, message string, payload any, dedupeKey string) (string, error) {
+	_, holder, err := p.publish(ctx, topic, message, payload, dedupeKey, false)
+	return holder, err
 }
 
 // PublishKept posts the envelope as Publish does, but with keep: true: a role message that no
@@ -217,19 +229,20 @@ func (p *HTTPPublisher) Publish(ctx context.Context, topic, message string, payl
 // holder, a repeat — a caller's retry after a 202 it never read — is forwarded again, so a kept
 // publish reaches its holder at least once, and can reach it twice.
 func (p *HTTPPublisher) PublishKept(ctx context.Context, topic, message string, payload any, dedupeKey string) (bool, error) {
-	return p.publish(ctx, topic, message, payload, dedupeKey, true)
+	kept, _, err := p.publish(ctx, topic, message, payload, dedupeKey, true)
+	return kept, err
 }
 
-// publish is the one body of Publish and PublishKept: it posts the envelope with keep as the
-// request's keep field, and answers whether the listener kept the message rather than
-// delivering it. Only a publish that asked to keep reads a 202 as kept; every other answer that
-// is not a 200 is the refusal it maps to (publishRefusal).
-func (p *HTTPPublisher) publish(ctx context.Context, topic, message string, payload any, dedupeKey string, keep bool) (bool, error) {
+// publish is the one body of Publish, PublishTo and PublishKept: it posts the envelope with keep
+// as the request's keep field, and answers whether the listener kept the message rather than
+// delivering it, and the holder a 200 names. Only a publish that asked to keep reads a 202 as
+// kept; every other answer that is not a 200 is the refusal it maps to (publishRefusal).
+func (p *HTTPPublisher) publish(ctx context.Context, topic, message string, payload any, dedupeKey string, keep bool) (bool, string, error) {
 	// The listener carries a payload as a JSON document in a string
 	// (listenerwire.MessageBody.Payload); an object there is refused as invalid JSON.
 	encoded, err := json.Marshal(payload)
 	if err != nil {
-		return false, fmt.Errorf("encode notice payload for %s: %w", topic, err)
+		return false, "", fmt.Errorf("encode notice payload for %s: %w", topic, err)
 	}
 	payloadText := string(encoded)
 	body, err := json.Marshal(listenerwire.PublishRequest{
@@ -238,11 +251,11 @@ func (p *HTTPPublisher) publish(ctx context.Context, topic, message string, payl
 		Keep:        &keep,
 	})
 	if err != nil {
-		return false, fmt.Errorf("encode notice for %s: %w", topic, err)
+		return false, "", fmt.Errorf("encode notice for %s: %w", topic, err)
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/v1/messages/publish", bytes.NewReader(body))
 	if err != nil {
-		return false, fmt.Errorf("build notice publish request for %s: %w", topic, err)
+		return false, "", fmt.Errorf("build notice publish request for %s: %w", topic, err)
 	}
 	request.Header.Set("Content-Type", "application/json")
 	if p.token != "" {
@@ -250,23 +263,27 @@ func (p *HTTPPublisher) publish(ctx context.Context, topic, message string, payl
 	}
 	response, err := p.client.Do(request)
 	if err != nil {
-		return false, fmt.Errorf("publish notice to %s: %w", topic, err)
+		return false, "", fmt.Errorf("publish notice to %s: %w", topic, err)
 	}
 	defer response.Body.Close()
 	if response.StatusCode == http.StatusOK {
-		return false, nil
+		var answer listenerwire.PublishResponse
+		if body, _, readErr := redact.ReadBounded(response.Body, answerBodyLimit); readErr == nil && json.Unmarshal(body, &answer) == nil {
+			return false, answer.Holder, nil
+		}
+		return false, "", nil
 	}
 	if keep && response.StatusCode == http.StatusAccepted {
-		return true, nil
+		return true, "", nil
 	}
 	answered, cut, readErr := redact.ReadBounded(response.Body, refusalBodyLimit)
 	if readErr != nil {
 		// Part of a refusal is no refusal: which one it was, a role nobody holds among them,
 		// is unknown, so it is the failure a request that never got its answer is.
-		return false, unreadAnswer("publish notice to "+topic, response.Status, readErr)
+		return false, "", unreadAnswer("publish notice to "+topic, response.Status, readErr)
 	}
 	refusal := fmt.Errorf("publish notice to %s: listener returned %s: %s", topic, response.Status, excerpt(answered, cut))
-	return false, publishRefusal(response.StatusCode, answered, refusal)
+	return false, "", publishRefusal(response.StatusCode, answered, refusal)
 }
 
 // publishRefusal is the error a refused publish reads as: refusal, wrapping the error its body

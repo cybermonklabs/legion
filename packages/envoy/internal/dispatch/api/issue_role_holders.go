@@ -88,8 +88,9 @@ type issueRoleHolderRecord struct {
 }
 
 // issueRoleHolders is the stored set both routes answer: the issue and its holders, Legion's six in
-// the order of legionclaim.Roles, which is the order the workflow reaches them, then every other
-// role by name. An issue where no session holds a role answers [].
+// the order of legionclaim.Roles, the order the default steps reach them, then every other role by
+// name, `acceptance` and each role the deployment or a plan defines. An issue where no session
+// holds a role answers [].
 type issueRoleHolders struct {
 	Issue   string                  `json:"issue"`
 	Holders []issueRoleHolderRecord `json:"holders"`
@@ -129,10 +130,10 @@ func heldRole(ctx context.Context, q queryer, issueKey, session string) (string,
 }
 
 // issueRoleHoldersStatement reads an issue and its stored set, $1 the issue's key and $2 Legion's
-// roles in workflow order, which is the order the set is answered in, every other role after them
-// by name, and the sessions of one role by session. The left join answers one row with no holder
-// for an issue where no session holds a role, and no row for a key that no issue carries, so one
-// statement says both.
+// six roles in the order of legionclaim.Roles, which is the order the set is answered in, every
+// other role after them by name, and the sessions of one role by session. The left join answers
+// one row with no holder for an issue where no session holds a role, and no row for a key that no
+// issue carries, so one statement says both.
 const issueRoleHoldersStatement = `
 	select i.key, h.role, h.session, h.claim, h.works_step, h.recorded_at
 	from issues i

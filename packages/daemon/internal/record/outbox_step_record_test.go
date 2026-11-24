@@ -207,7 +207,9 @@ func TestAStepRecordWithoutItsIDOrIdentityIsRefusedWhereItIsQueued(t *testing.T)
 }
 
 // The rating of the plan is written by the retro (workflow's rateRetro), onto the retro's record:
-// its kind retro, its place 0, its role the implementer and its type empty. A rating without its
+// its kind retro, its place 0, its role the role its agent runs as (the implementer here, as on a
+// task whose last implementation step is the implementer's and at an owner's retro) and its type
+// empty. A rating without its
 // reason, or a reason without its rating, is refused where the record is queued and where a stored
 // row is read (TestDecodeOutboxPayloadRefusesInvalidRows); validateOutboxPayload says why the
 // daemon refuses the two apart rather than leaving them to Dispatch. A retro's write with no rating

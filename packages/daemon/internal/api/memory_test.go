@@ -479,6 +479,11 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 			if tc.contract < strandedTokenContract {
 				strandedWithoutTokens(want)
 			}
+			// A pod below completeStepContract is served each issue without its `placeRole`, the
+			// key contract 227 added (api's withoutPlaceRole), which is every pod of this table.
+			if tc.contract < completeStepContract {
+				issuesWithoutPlaceRole(want)
+			}
 			// A pod below treeContract is served neither `admission.trees` nor the issues'
 			// `tree`, the two keys contract 51 added (api's withoutTrees), which is every pod
 			// below memoryContract and every pod of the band above it as well.

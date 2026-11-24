@@ -4,6 +4,9 @@
 # sjawhar/legion-smoke sandbox. Its host-side rig helpers and the workflow's vocabulary are the
 # shared lib/rig.sh and lib/workflow.sh; the small scratch-service rig below is this run's own, so
 # its lifecycle belongs to this run.
+# No owner here gives a plan, so each issue it drives runs the project's default steps (`planner
+# implementer tester reviewer acceptance:owner`): the phases, workers, pull requests, acceptance,
+# retro and merge named below are that plan's.
 #
 # Run it as `bash scripts/e2e/stage3-devbox-workflow.sh` with three required inputs:
 # LEGION_E2E_MODEL_ROUTE (`gateway`, `key-file` or `box-login`), SMOKE_UPSTREAM_NATS (the production
@@ -987,17 +990,19 @@ primary_issue() {
   issue_phase "$root_issue" reviewing >/dev/null || fail "$root_issue left reviewing on a sign_off sent before the reviewer's decision"
   note "a sign_off in reviewing was refused SIGNOFF_OUTSIDE_ACCEPTING and moved nothing (negative control)"
   approve_as_reviewer "$root_issue"
-  # The approval moves the issue to accepting, where no worker starts and the board keeps
-  # needs_review: the tree's architect, told by the reviewer's phase-finished notice, accepts with
+  # The approval moves the issue to accepting, the default steps' acceptance:owner, the architect's
+  # own step, where no worker starts and the board keeps needs_review: the issue's architect, told
+  # its step by an owner-step notice (the reviewer's phase-finished comes beside it), accepts with
   # sign_off (retro-handoff) or sends the issue back. The wait is for accepting itself, read within
   # a poll of the reviewer's completion; the architect acts on no notice under the proof's
   # instructions, so the issue stands there until the proof's prompt.
   until_true 600 "$root_issue to leave reviewing for accepting" issue_phase "$root_issue" accepting
   state_file accepting
-  until_true 180 "the architect to receive the reviewer's phase-finished notice, its acceptance cue" notice_delivered "$root_issue" architect \
+  until_true 180 "the architect to receive the reviewer's phase-finished notice, which comes beside its owner-step" notice_delivered "$root_issue" architect \
     "$(notice_needle phase-finished "$root_issue")"'\n  message:\n    kind: phase-finished\n    role: reviewer\n    phase: reviewing'
-  # No worker starts at accepting: the implementer's claim holds no retro task (a start row's task
-  # is the claim's `pending` until the turn it started ends), and the daemon queued no status write.
+  # No worker starts at this acceptance, the architect's own step: the implementer's claim holds no
+  # retro task (a start row's task is the claim's `pending` until the turn it started ends), and the
+  # daemon queued no status write.
   pending_phase=$(claim_pending_phase "$root_issue" implementer)
   [ "$pending_phase" != retro ] || fail "the implementer of $root_issue holds a retro task at accepting: the approval started a worker"
   jq -e --arg issue "$root_issue" '[.pendingStatusWrites[]? | select(.issue == $issue)] | length == 0' "$evidence/accepting.json" >/dev/null ||
@@ -1416,9 +1421,9 @@ status_actors() {
   pass
 }
 # Every workflow notice is for an architect, on that architect's role topic:
-# the run's pr-blocked, the reviewer's phase-finished at its approval (the architect's acceptance
-# cue) and worker-died reach their architects (checked where each is written), and no phase-worker
-# session of the run receives any notice.
+# the run's pr-blocked, the reviewer's phase-finished at its approval (which comes beside the
+# owner-step of the architect's acceptance) and worker-died reach their architects (checked where
+# each is written), and no phase-worker session of the run receives any notice.
 notices_reach_architects_alone() {
   begin notices-reach-architects-alone
   local sessions="$profile_agent/sessions" negative="$work/worker-notice-negative" worker

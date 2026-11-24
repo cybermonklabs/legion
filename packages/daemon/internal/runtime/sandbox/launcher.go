@@ -100,6 +100,13 @@ type launcherSession struct {
 	// pod's update round (Runtime.SlotWaitsForCredential), and relaunch refuses a start of another
 	// App into it (slotAppChanges).
 	credentialWait bool
+	// credentialCheck is whether this launcher's hello said it answers a check of its slot's gh
+	// files (shimwire.LauncherHello.CredentialCheck). A launcher of an image before that frame
+	// says nothing and is sent no check, so Runtime.SlotHoldsCredential answers
+	// runtime.ErrAwaitsPodUpdate. An owner-step of another role's App then waits for the pod's
+	// update round. One of the owner's own App is told at once, since the slot held that App from
+	// its launch (the daemon's ownerSlotHolds).
+	credentialCheck bool
 
 	mu      sync.Mutex
 	conn    net.Conn
@@ -131,7 +138,7 @@ func (d *launchers) accept(token claim.Token, issue string, podCreated, keptSinc
 	s := &launcherSession{owner: d, token: token, issue: issue, podCreated: podCreated, keptSince: keptSince, id: hello.LauncherID, podUID: hello.PodUID,
 		ready: make(chan struct{}), waiters: map[string]chan shimwire.Frame{},
 		leakCheckTag: hello.LeakCheckTag, leakCheckInstalled: hello.LeakCheckInstalled, resumesBySession: hello.ResumesBySession,
-		credentialWait: hello.CredentialWait}
+		credentialWait: hello.CredentialWait, credentialCheck: hello.CredentialCheck}
 	d.mu.Lock()
 	old := d.sessions[token]
 	d.sessions[token] = s
@@ -185,6 +192,8 @@ func (s *launcherSession) ServeLauncher(conn net.Conn, reader *bufio.Reader, wri
 			s.deliver(bundleWaiter(value.ID, value.Index), value)
 		case shimwire.LauncherLeakCheckResult:
 			s.deliver(bundleWaiter(value.ID, value.Index), value)
+		case shimwire.LauncherCredentialCheckResult:
+			s.deliver(value.ID, value)
 		case shimwire.LauncherRestored:
 			s.owner.restoreReported(s, value)
 		case shimwire.LauncherMemoryKill:
@@ -292,6 +301,24 @@ func (d *launchers) credentialWaits(token claim.Token) (string, bool) {
 		return "", true
 	}
 	return session.podUID, session.credentialWait
+}
+
+// credentialChecker is the launcher of token, a slot's token, connected from the pod podUID, and
+// whether its hello said it answers a check of its slot's gh files (launcherSession.credentialCheck).
+// It answers nil where no launcher of the slot is connected from that pod.
+func (d *launchers) credentialChecker(token claim.Token, podUID string) (*launcherSession, bool) {
+	d.mu.Lock()
+	session := d.sessions[token]
+	d.mu.Unlock()
+	if session == nil {
+		return nil, false
+	}
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	if session.closed || session.podUID != podUID {
+		return nil, false
+	}
+	return session, session.credentialCheck
 }
 
 func (d *launchers) await(ctx context.Context, token claim.Token, podUID string) (*launcherSession, error) {

@@ -411,8 +411,8 @@ func TestAConflictIsActedOnOnlyAfterASecondRead(t *testing.T) {
 // hold while the merge runs, and the
 // architect gets one checks-red notice naming the phase the issue stays in. No worker starts, no
 // status is written and no phase ends. In testing and reviewing the need is a check the base
-// requires that is not green; past the review it is the merge that comes next. The same read again
-// asks nothing a second time.
+// requires that is not green; in accepting, retro and merging (record.PastReview) it is the merge
+// ahead of the issue (record.ConflictMergeNext). The same read again asks nothing a second time.
 func TestAConflictKeepsPhaseAndAsksTheImplementerToMergeForward(t *testing.T) {
 	requiresCI := &record.BaseRules{Required: []string{"ci"}}
 	for _, tc := range []struct {
@@ -610,7 +610,7 @@ func TestAConflictIsActedOnOnlyWhenNeeded(t *testing.T) {
 			want := []record.MergeForwardMessage{{Role: claim.RoleImplementer, Claim: seededClaim(t, claim.RoleImplementer),
 				Step: record.MergeForwardAsk, Head: conflictHead, Base: "main", Phase: phase.Accepting, PullRequest: 42, Why: record.ConflictMergeNext}}
 			if got := mergeForwardMessages(t, pool); !reflect.DeepEqual(got, want) {
-				t.Fatalf("merge-forward messages %+v, want the one ask in accepting, and no hold: accepting is the architect's", got)
+				t.Fatalf("merge-forward messages %+v, want the one ask in accepting, and no hold: accepting on an issue with no plan rows is the architect's", got)
 			}
 			if asked := recordedPR(t, pool, "LEGION-208").MergeForward; asked == nil || asked.Phase != phase.Accepting || asked.Why != record.ConflictMergeNext {
 				t.Fatalf("the record's merge forward = %+v, want the one asked in accepting for merge-next", asked)
@@ -636,7 +636,8 @@ func TestAConflictIsActedOnOnlyWhenNeeded(t *testing.T) {
 // the same head asks nothing more. A strict ruleset needs the merge though every check is green;
 // with every required check green and no strict rule nothing is sent. An ask in implementing
 // covers implementing alone: the implementer's completion at that head without the merge moves
-// the issue to testing, and testing asks again, with its hold and its notice.
+// the issue to testing, the next phase of today's line, which this issue walks, and testing asks
+// again, with its hold and its notice.
 func TestAConflictInImplementingIsToldOnlyWhenNeeded(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -728,7 +729,8 @@ var basePushOntoMain = intake.BasePush{Repo: "sjawhar/legion", Branch: "main", A
 // names no head, which says nothing about which head its work judged. The completion at the new
 // head moves the issue as it would have: the tester's pass to reviewing, the reviewer's as its
 // round decides, retro to merging. The merger's completion moves nothing in merging, as ever, and
-// in accepting nothing moves at all.
+// in accepting on an issue with no plan rows, which no worker's completion ends, nothing moves at
+// all.
 func TestAConflictKeepsPhaseAndRefusesACompletionAtTheReplacedHead(t *testing.T) {
 	requiresCI := &record.BaseRules{Required: []string{"ci"}}
 	for _, tc := range []struct {
@@ -893,11 +895,12 @@ func TestAConflictKeepsPhaseAndAsksTheReviewerToReadTheMerge(t *testing.T) {
 			asked := len(mergeForwardMessages(t, pool))
 			landsMergeForward(t, pool)
 
-			want := []record.MergeForwardMessage{}
+			// The review comes before the landed: mergeForwardLanded addresses the review first, and
+			// addressMergeForward keeps the order it is given.
+			want := []record.MergeForwardMessage{landing(claim.RoleReviewer, record.MergeForwardReview, tc.at)}
 			if tc.worker != "" {
 				want = append(want, landing(tc.worker, record.MergeForwardLanded, tc.at))
 			}
-			want = append(want, landing(claim.RoleReviewer, record.MergeForwardReview, tc.at))
 			if got := mergeForwardMessages(t, pool)[asked:]; !reflect.DeepEqual(got, want) {
 				t.Fatalf("the landing queued %+v, want %+v", got, want)
 			}
@@ -934,9 +937,10 @@ func TestAConflictKeepsPhaseAndAsksTheReviewerToReadTheMerge(t *testing.T) {
 
 // A push onto the base can make a head conflict with it, and GitHub sends no event of the pull
 // request while it computes that (dispatch://INFRA-4374 R0, R4). So a base push reads the merge
-// state of each open pull request on the base whose issue stands in testing through merging, an
-// issue past its review among them, where the merge is next; an issue in implementing is read
-// for at its next head push instead, and a base push reads nothing for it.
+// state of each open pull request on the base whose issue stands in testing, reviewing, accepting,
+// retro or merging (classify.MergeStateReadOwed), the last three of them where the merge is the
+// need (record.PastReview); an issue in implementing is read for at its next head push instead,
+// and a base push reads nothing for it.
 func TestAConflictKeepsPhaseWhenABasePushReadsAnIssuePastReview(t *testing.T) {
 	for _, tc := range []struct {
 		at     phase.Phase
@@ -966,8 +970,8 @@ func TestAConflictKeepsPhaseWhenABasePushReadsAnIssuePastReview(t *testing.T) {
 // is read for a conflict at once (dispatch://INFRA-4374 R0): without the read, a conflicting push
 // stands with no CI and nobody is told. The synchronize that carries the pushed head is the fact
 // that asks: the push of the same commits, delivered before it, moves no head of the record and
-// asks nothing, so one push to the branch asks for one ladder. Before implementing there is no
-// pull request work to merge forward, and a head push reads nothing.
+// asks nothing, so one push to the branch asks for one ladder. In planning, which is none of the
+// phases a merge forward is asked in (record.MergeForwardPhases), a head push reads nothing.
 func TestAConflictKeepsPhaseWhenAHeadPushInImplementingAsksARead(t *testing.T) {
 	for _, tc := range []struct {
 		at     phase.Phase
@@ -1246,9 +1250,10 @@ func TestAConflictKeepsPhaseAndRefusesACompletionAtAReplacedHeadWhileASecondMerg
 // A completion at a head an earlier merge forward replaced is refused (dispatch://INFRA-4374 R1),
 // and the refusal tells the role where to do its work. It tells the role to wait for the landed
 // message of a merge forward asked of the head the pull request stands at only when that ask's
-// hold reached the role, and in retro the role that completes is the implementer, which no hold
-// and no landed message reaches (record.MergeForwardReaches): it is the one asked to make the
-// merge. So when the head the first merge left conflicts in its turn and a second merge forward is
+// hold reached the role, and in retro on an issue with no plan rows, as here, the role that
+// completes is the implementer, which no hold and no landed message reaches
+// (record.MergeForwardReaches): it is the one asked to make the merge. So when the head the first
+// merge left conflicts in its turn and a second merge forward is
 // asked of it in retro, the refusal of the implementer's retro completion at the head the first
 // merge replaced sends it to do the phase's work at the head the pull request stands at, never to
 // wait for a message it is not sent. It records and moves nothing.

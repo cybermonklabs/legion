@@ -32,7 +32,8 @@ const stopsBy = "task a of LEGION-208 was stopped by its owner"
 // the task is stopped with its reason and keeps its place, its issue is held from
 // the phase of that place for the stopped task, keeping the slot of that phase and writing no
 // Dispatch status, the record of the running step ends stopped, and the process of the step's
-// role is stopped with its session kept (step_stop, whose source is the daemon's). The caller
+// agent is stopped with its session kept (step_stop, whose source is the daemon's), where that
+// agent is not the owner, whose own step stops no process. The caller
 // is answered by its own call, and the architect the issue's notices reach is told in a
 // task-stopped notice that names who stopped the task (the daemon's notice executor publishes it
 // only to an architect that is not the one that stopped it). A merge GitHub still lands on a task
@@ -145,8 +146,8 @@ func TestStopTaskHoldsTheIssueAndStopsTheStep(t *testing.T) {
 
 	// A stop before the task's first step, while its issue stands at admitted, which its tree's
 	// architect works: no step runs, so no process is stopped, and the architect's claim is never
-	// suspended; the notice names the architect and admitted, as a stop at accepting names the
-	// owner's own step.
+	// suspended; the notice names the architect and admitted, as the stop above at the step
+	// `acceptance:owner` names the owner's own step.
 	t.Run("at admitted no step runs and no claim is stopped", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine := returnEngine()

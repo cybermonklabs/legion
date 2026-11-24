@@ -3,6 +3,7 @@ import {
   LegionChildRequest,
   LegionClaimRequest,
   LegionCompactResponse,
+  LegionCompleteStepRequest,
   LegionControllerGrantRequest,
   LegionControllerRegisterResponse,
   type LegionControllerRegistration,
@@ -203,6 +204,12 @@ export interface LegionDaemonClient {
   readonly signOff: (
     input: z.input<typeof LegionSignOffRequest>
   ) => Promise<z.output<typeof LegionEmptyResponse>>;
+  /** The owner's `complete_step` (contract 227): its report of a step of its own issue's running
+   * task whose key is owner, or of that task's retro where the retro is the owner's, held to the
+   * rules of that place's completion. */
+  readonly completeStep: (
+    input: z.input<typeof LegionCompleteStepRequest>
+  ) => Promise<z.output<typeof LegionEmptyResponse>>;
   readonly rootClose: (
     input: z.input<typeof LegionRootCloseRequest>
   ) => Promise<z.output<typeof LegionEmptyResponse>>;
@@ -397,9 +404,10 @@ export function daemonUnreachable(error: unknown): "refused" | "dropped" | undef
  * version and Dispatch sequence; a repeat after the sequence moved is a new fact, which the gate
  * takes as a re-registration of the same document and tells no one again), `register_plan` (its
  * fact is keyed by the issue, the generation, the document and the version, so a repeat is the
- * same fact, answered the same), `stop_task` (a repeat finds the task stopped and changes nothing)
- * and `claims/turn-outcome` (one outcome per claim, generation and sequence, so a repeat writes the
- * cell its first attempt wrote). `call` is the whole
+ * same fact, answered the same), `stop_task` (a repeat finds the task stopped and changes nothing),
+ * `complete_step` (a repeat finds its step no longer running, OWNER_STEP_NOT_RUNNING, and changes
+ * nothing) and `claims/turn-outcome` (one outcome per claim, generation and sequence, so a repeat
+ * writes the cell its first attempt wrote). `call` is the whole
  * operation, grant mint included, since grants live in the daemon's memory and do not survive
  * its restart. `onRetrying` is told once. A daemon refusal after a dropped attempt is told that
  * the dropped one may have been applied.
@@ -724,6 +732,8 @@ export function createLegionDaemonClient(
       post("/legion/v1/phase/retry", LegionPhaseRetryRequest, LegionEmptyResponse, input),
     signOff: (input) =>
       post("/legion/v1/signoff", LegionSignOffRequest, LegionEmptyResponse, input),
+    completeStep: (input) =>
+      post("/legion/v1/steps/complete", LegionCompleteStepRequest, LegionEmptyResponse, input),
     rootClose: (input) =>
       post("/legion/v1/roots/close", LegionRootCloseRequest, LegionEmptyResponse, input),
     childPark: (input) =>

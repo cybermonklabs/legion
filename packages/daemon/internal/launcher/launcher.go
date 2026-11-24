@@ -394,6 +394,7 @@ func (m *manager) serve(ctx context.Context, address string) error {
 	writer := shimwire.NewWriter(conn)
 	hello := shimwire.LauncherHello{
 		Token: m.token, Sandbox: m.cfg.Sandbox, Role: m.role, PodUID: m.cfg.PodUID, LauncherID: m.launcherID, CredentialWait: true,
+		CredentialCheck:  true,
 		ResumesBySession: true,
 	}
 	hello.LeakCheckTag, hello.LeakCheckInstalled = m.check.hello()
@@ -470,6 +471,8 @@ func (m *manager) serve(ctx context.Context, address string) error {
 			answer = m.restore.receive(command)
 		case shimwire.LauncherLeakCheck:
 			answer = m.check.receive(ctx, command, m.logf)
+		case shimwire.LauncherCredentialCheck:
+			answer = m.checkGitHubCredential(command)
 		default:
 			return fmt.Errorf("command: got %T", next.frame)
 		}
@@ -1128,24 +1131,16 @@ func (m *manager) ghRoot(env []string) string {
 // finds no child.
 func (m *manager) awaitGitHubCredential(ctx context.Context, env []string, generation uint64, want shimwire.LauncherGitHubCredential,
 	received time.Time, stopped <-chan struct{}) error {
-	if !filepath.IsLocal(want.HostsFile) {
-		return fmt.Errorf("the start names the gh file %q, which is not under the slot's gh directory", want.HostsFile)
+	path, err := m.slotHostsFile(env, want.HostsFile)
+	if err != nil {
+		return err
 	}
-	path := filepath.Join(m.ghRoot(env), filepath.FromSlash(want.HostsFile))
 	bound := time.Duration(want.WaitMs) * time.Millisecond
 	expired := time.NewTimer(time.Until(received.Add(bound)))
 	defer expired.Stop()
 	tick := time.NewTicker(time.Second)
 	defer tick.Stop()
-	for {
-		if data, err := os.ReadFile(path); err == nil {
-			if token, err := ghconfig.TokenFromHosts(data); err == nil {
-				sum := sha256.Sum256([]byte(token))
-				if hex.EncodeToString(sum[:]) == want.TokenDigest {
-					return nil
-				}
-			}
-		}
+	for !holdsGitHubCredential(path, want.TokenDigest) {
 		select {
 		case <-ctx.Done():
 			return errors.New("the slot's gh files do not hold the credential of this start yet")
@@ -1156,6 +1151,49 @@ func (m *manager) awaitGitHubCredential(ctx context.Context, env []string, gener
 		case <-tick.C:
 		}
 	}
+	return nil
+}
+
+// checkGitHubCredential answers a launcher_credential_check at once, from one read of the slot's
+// hosts.yml it names: OK where it holds a token whose SHA-256 is the check's digest, false where it
+// holds another or none yet. It reads the gh directory of an issue pod's role (RoleGHDir); the
+// controller's launcher, whose gh directory only a start names, refuses the check.
+func (m *manager) checkGitHubCredential(command shimwire.LauncherCredentialCheck) shimwire.LauncherCredentialCheckResult {
+	if err := command.Validate(); err != nil {
+		return shimwire.LauncherCredentialCheckResult{ID: command.ID, Error: err.Error()}
+	}
+	if !m.namespaced {
+		return shimwire.LauncherCredentialCheckResult{ID: command.ID, Error: "the controller's launcher reads its gh directory only from a start"}
+	}
+	path, err := m.slotHostsFile(nil, command.HostsFile)
+	if err != nil {
+		return shimwire.LauncherCredentialCheckResult{ID: command.ID, Error: err.Error()}
+	}
+	return shimwire.LauncherCredentialCheckResult{ID: command.ID, OK: holdsGitHubCredential(path, command.TokenDigest)}
+}
+
+// slotHostsFile is the path of hostsFile, a file named relative to the slot's gh directory
+// (ghRoot), refused where it names a file outside that directory.
+func (m *manager) slotHostsFile(env []string, hostsFile string) (string, error) {
+	if !filepath.IsLocal(hostsFile) {
+		return "", fmt.Errorf("the gh file %q is not under the slot's gh directory", hostsFile)
+	}
+	return filepath.Join(m.ghRoot(env), filepath.FromSlash(hostsFile)), nil
+}
+
+// holdsGitHubCredential is whether the hosts.yml at path holds a token whose SHA-256 is digest, the
+// hex the daemon names it by; a file that cannot be read or holds no token holds none.
+func holdsGitHubCredential(path, digest string) bool {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	token, err := ghconfig.TokenFromHosts(data)
+	if err != nil {
+		return false
+	}
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:]) == digest
 }
 
 func (m *manager) remember(id string, body []byte, result shimwire.Frame) {

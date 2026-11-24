@@ -190,8 +190,8 @@ func pluginsLine(cfg config.Config) string {
 			pair.PiLegion, pair.PiEnvoy, pluginsSourceWords(source))
 	}
 	// The roles Claude Code runs here: Legion's phase workers that worker_backends puts on it, in
-	// the order the workflow reaches them, then each role of the deployment it puts there, in the
-	// file's order; the loader refuses any other.
+	// the order of the default steps and the merge (runtime.Backends), then each role of the
+	// deployment it puts there, in the file's order; the loader refuses any other.
 	var claude []string
 	for _, role := range runtime.Backends[runtime.BackendClaude].Roles {
 		if cfg.BackendFor(role) == runtime.BackendClaude {
@@ -383,7 +383,7 @@ func roleLine(role config.Role) string {
 // acceptance for a project that names none), as the file would write the list (plan.Words), and
 // what they decide.
 func defaultStepsLine(key string, project config.Project) string {
-	return fmt.Sprintf("projects.%s.default_steps: [%s] — a task whose plan block names neither steps nor a sub-owner, and the one task of an issue whose owner gives no plan, runs these steps, then Legion's retro and merge",
+	return fmt.Sprintf("projects.%s.default_steps: [%s] — a task whose plan block names neither steps nor a sub-owner, and the one task of an issue whose owner gives no plan, runs these steps, then Legion's retro, and its merge where the issue has a pull request",
 		key, strings.Join(plan.Words(project.RunsByDefault()), ", "))
 }
 
@@ -1316,15 +1316,17 @@ func strandedSummary(stranded []api.StrandedClaim, suspended api.Suspenders) str
 }
 
 // entryBehind is one issue the plain state names for its phase entry: the issue, the role it is
-// named for, the entry the phases row of the role of its current phase stands on and the entry
-// that role was given (phase.RoleFor, the role the state's two numbers are of), and, for a root's
-// architect, the arms the state names for it.
+// named for, the entry the phases row of the role that works the issue stands on and the entry
+// that role was given (the role the state's two numbers are of: the role of the claim that works
+// the task's place where the state names one, api.Issue.PlaceRole, else the role of the step at
+// step and the phase's, phase.RoleFor, elsewhere), and, for a root's architect, the arms the state
+// names for it.
 type entryBehind struct {
 	issue string
 	role  legionclaim.Role
 	// numbered is whether entry and given are role's own, which they are for every row but the
-	// architect of a root past the phases its architect works, where they are that phase's
-	// worker's and the line leaves them off the architect.
+	// architect of a root whose place another role works, where they are that role's and the line
+	// leaves them off the architect.
 	numbered     bool
 	entry, given int64
 	// arms is every arm of the daemon's architect-stalled reading the state names for this root
@@ -1344,12 +1346,21 @@ type entryBehind struct {
 // (dispatch://INFRA-2614, R6): every root reads as behind for the moments between a transition
 // and its delivery, so the difference alone would name a healthy root at every read. A root is an
 // issue whose tree is its own key (api.Issue.Tree, claim.IsTreeRoot), and the numbers it carries
-// past its architect's phases are its phase worker's, which the line names for no root. The
-// numbers are named for the role a phase worker works on any other issue, which is
-// dispatch://INFRA-2800's line; a role of the architect's, a child at admitted among them, which
-// phase.RoleFor names the architect's phase, is named for nothing. At step the role is the one
-// that runs the issue's step, which the state names (api.Issue.StepRole) and no phase does, and
-// so is the role of an issue held from step, which carries no number as every held issue does. An
+// where another role works its place are that role's, which the line names for no root; where
+// its architect works the place as itself, on its own row (admitted, and accepting on an issue with
+// no plan rows, where the state names no place role), the line names them beside the arms. At a
+// step or a retro the owner does, the numbers are the entry of the row the owner's run raises, the
+// place's own role's, with no given entry (projection.Project), so the line names them for no root
+// there either. The numbers are named for the role a phase worker works on
+// any other issue, which is dispatch://INFRA-2800's line; a role of the architect's, a child at
+// admitted among them, which phase.RoleFor names the architect's phase, is named for nothing.
+// Where the state names the role
+// of the claim that works the issue's place (api.Issue.PlaceRole, an issue with plan rows) and the
+// issue is not held, that is the role: at accepting the fresh agent of a step `acceptance` with no
+// key, named as any worker, or the architect where the owner accepts or does any other step of
+// its own, named for nothing. At step the role is the one that runs the issue's step, which the state
+// names (api.Issue.StepRole) and no phase does, and so is the role of an issue held from step,
+// which carries no number as every held issue does. An
 // issue whose current phase names no role at all carries neither number and is never named for
 // them: the projection writes them only where a role works the issue's phase, and that is the role
 // this reads back for the line.
@@ -1358,7 +1369,10 @@ func entriesBehind(issues map[string]api.Issue) []entryBehind {
 	for _, key := range slices.Sorted(maps.Keys(issues)) {
 		issue := issues[key]
 		role := phase.RoleFor(issue.Phase)
-		if issue.Phase == phase.Step || issue.Phase == phase.Held && issue.HeldFrom == string(phase.Step) {
+		switch {
+		case issue.PlaceRole != "" && issue.Phase != phase.Held:
+			role = legionclaim.Role(issue.PlaceRole)
+		case issue.Phase == phase.Step || issue.Phase == phase.Held && issue.HeldFrom == string(phase.Step):
 			role = legionclaim.Role(issue.StepRole)
 		}
 		if legionclaim.IsTreeRoot(key, issue.Tree) {
@@ -1366,7 +1380,7 @@ func entriesBehind(issues map[string]api.Issue) []entryBehind {
 				continue
 			}
 			row := entryBehind{issue: key, role: legionclaim.RoleArchitect, arms: issue.ArchitectStalls}
-			if role == legionclaim.RoleArchitect {
+			if role == legionclaim.RoleArchitect && issue.PlaceRole == "" {
 				row.numbered, row.entry, row.given = true, issue.PhaseEntry, issue.GivenEntry
 			}
 			behind = append(behind, row)

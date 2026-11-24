@@ -426,10 +426,11 @@ test("the reviewer treats a result with no report as a failed run, not a verdict
   );
 });
 
-// A review round's pair is recorded as one row per half rather than prose, so a half that did not
-// run, or whose findings the reviewer set aside, shows in the body. The reviewer answers a
-// `CHANGES` from either half in its review, and approves only when both halves ran at the reviewed
-// head or both rows read `not run` for a diff that touches no runtime code.
+// Where the issue has a pull request, a review round's pair is recorded in its body as one row per
+// half rather than prose, so a half that did not run, or whose findings the reviewer set aside,
+// shows there. The reviewer answers a `CHANGES` from either half in its review, and approves only
+// when both halves ran at the reviewed head or both rows read `not run` for a diff that touches no
+// runtime code.
 test("the pair is recorded as a row per half, and the reviewer approves only past both", () => {
   const prBody = collapsed(path.join(staged, "legion-worker", "references", "pr-body.md"));
   expect(prBody).toContain(
@@ -451,41 +452,26 @@ test("the pair is recorded as a row per half, and the reviewer approves only pas
   );
 });
 
-// The pair's own text bounds what it reads and what it reports: a range its task names limits
-// what it must read, and a defect it sees in code the pull request changed before that range is
-// still a finding, while code the pull request leaves unchanged stays out of its findings, because
-// the author fixes only the pull request's diff. Each agent definition is pinned for both halves,
-// and each sentence that bounded the findings by the diff the pair was given is pinned absent.
-// The daemon's prompts carry the later-round rule; prompts_test.go pins the composed reviewer
-// prompt. Every file's gaps are listed together, so a file that lost its sentence fails as loudly
-// as the first one checked.
-test("the review pair reads the range its task names and reports what the pull request changed", () => {
+// The pair's own text no longer bounds its findings by the diff the pair was given: each sentence
+// that did is pinned absent from both agent definitions. The daemon's prompts carry the
+// later-round rule; prompts_test.go pins the composed reviewer prompt. Every file's gaps are listed
+// together, so a file that still says its sentence fails as loudly as the first one checked.
+test("the review pair's definitions no longer bound their findings by the diff the pair was given", () => {
   const pair = [
     {
       file: "packages/pi-legion/agents/thermonuclear-deep-review.md",
-      says: [
-        "Do not report issues in code the pull request leaves unchanged, other than the unchanged consumers the rubric's check 2 finds.",
-        "A range your task names limits what you must read, not what you report: a defect you see in code the pull request changed before that range is a finding.",
-      ],
       retired: ["Do not report unchanged-code issues."],
     },
     {
       file: "packages/pi-legion/agents/thermonuclear-code-quality.md",
-      says: [
-        "Do not flag code the pull request leaves unchanged.",
-        "A range your task names limits what you must read, not what you flag: a smell you see in code the pull request changed before that range is a finding.",
-      ],
       retired: ["Do not flag unchanged code."],
     },
   ];
-  const scopedToTheRange = pair.flatMap(({ file, says, retired }) => {
+  const scopedToTheDiff = pair.flatMap(({ file, retired }) => {
     const text = collapsed(path.join(REPO_ROOT, file));
-    return [
-      ...says.filter((sentence) => !text.includes(sentence)).map((s) => `${file} lacks: ${s}`),
-      ...retired.filter((sentence) => text.includes(sentence)).map((s) => `${file} says: ${s}`),
-    ];
+    return retired.filter((sentence) => text.includes(sentence)).map((s) => `${file} says: ${s}`);
   });
-  expect(scopedToTheRange).toEqual([]);
+  expect(scopedToTheDiff).toEqual([]);
 });
 
 // The last two sentences of each task a reviewer is sent are always the daemon's: the commit's and
@@ -562,7 +548,6 @@ test("the worker prompt tells a role to read the pull request's head after its o
     "tell your architect the commit you pushed, the head each read gave and the time of each, and end the turn with a WAITING line naming that answer rather than completing: a phase completed here hands the next role a commit the pull request does not name.",
     "The push you make to answer an update message is the exception: that message has you push, let your subagents and background jobs finish or stop them, push what they made, answer the daemon and end the turn, so make this read in your next turn, before your phase completes.",
     "The merger pushes nothing, so this step never falls to it; it reports a mismatch it sees to the architect.",
-    "the empty commit that carries the pull request onto the commit you pushed",
   ];
   for (const rule of step) {
     countedOncePerFile(rule, workerPrompt);
@@ -609,7 +594,7 @@ test("retro gives a ci_check that no run answers to the architect, not to the im
 });
 
 // dispatch://INFRA-924's rule, beside dispatch://INFRA-332's eight above: a retro learning cites
-// a file and a symbol, or text quoted from it, read at the head the pull request commits, never a
+// a file and a symbol, or text quoted from it, read at the head the task's work commits, never a
 // line number the next edit above it moves.
 test("a retro learning cites a symbol or quoted text at the committed head, never a line number", () => {
   const learnings = collapsed(path.join(staged, "legion-retro", "references", "learnings.md"));
@@ -618,9 +603,6 @@ test("a retro learning cites a symbol or quoted text at the committed head, neve
   );
   expect(learnings).toContain(
     "Never a line number: the next edit above it moves it. Where the head no longer shows what your sentence says, quote the text and name the commit you read it at."
-  );
-  expect(learnings).toContain(
-    "Evidence: <file and symbol, or text quoted from it, of this pull request, and what went wrong>."
   );
   countedOncePerFile(
     "Drop a point that cites no file, symbol, quoted text or commit of this pull request",
@@ -678,24 +660,16 @@ function lacks(relative: string, duties: RegExp[]) {
 test("an implementer and owner task is accepted on the evidence its steps give", () => {
   const missing = lacks("legion-architect/references/acceptance.md", [
     /`acceptance:owner` enters `accepting`/,
-    /has a tester step[^.;]*--phase test/,
-    /`dispatch results --issue <issue>`[^.;]*the last step's head/,
-    /has a reviewer step[^.;]*approval/,
-    /no tester step[^.;]*the implementer's evidence/,
   ]);
   expect(missing).toEqual([]);
 });
 
 test("an implementer and reviewer task has the implementer prove the surface and the reviewer read it", () => {
-  expect([
-    ...lacks("legion-worker/SKILL.md", [/no tester step[^.;]*the implementer's evidence serves/]),
-    ...lacks("legion-worker/references/ci-checks.md", [
-      /implementer with no tester step[^.;]*real surface/,
-    ]),
-    ...lacks("legion-worker/references/merge-gate.md", [
+  expect(
+    lacks("legion-worker/references/merge-gate.md", [
       /no tester step[^.;]*the implementer's evidence[^.;]*read/,
-    ]),
-  ]).toEqual([]);
+    ])
+  ).toEqual([]);
 });
 
 test("an implementer and tester task gives the reviewer's body lines and bot threads to the implementer", () => {
@@ -708,21 +682,11 @@ test("an implementer and tester task gives the reviewer's body lines and bot thr
       /no reviewer step[^.;]*instead of the two rows/,
       /no reviewer step[^.;]*retro[^.;]*Not proven \/ risk/,
     ]),
-    ...lacks("legion-worker/references/review-threads.md", [
-      /no reviewer step[^.;]*implementer lists unresolved bot threads[^.;]*retro/,
-    ]),
-    ...lacks("legion-worker/SKILL.md", [
-      /no reviewer step[^.;]*no Legion approval/,
-      /without `acceptance:owner`[^.;]*last step starts retro/,
-    ]),
+    ...lacks("legion-worker/SKILL.md", [/no reviewer step[^.;]*no Legion approval/]),
   ]).toEqual([]);
   const merger = collapsed(
     path.join(REPO_ROOT, "packages", "daemon", "internal", "prompts", "roles", "merger.md")
   );
-  expect(merger).toMatch(
-    /Steps line names no reviewer step[^.]*base's rules require an approving review/
-  );
-  expect(merger).toMatch(/do not merge, do not approve[^.]*do not return the task/);
   expect(merger).toMatch(/Wait, and tell the owner of the task[^.]*which review is missing/);
 });
 
@@ -750,9 +714,6 @@ test("the controller reads every held reason, and a stopped task's phase in its 
   );
   const held = [...admission.matchAll(/^\| `([a-z_]+)` \|/gm)].map(([, reason]) => reason);
   expect(held).toEqual([...LEGION_HELD_REASONS]);
-  expect(admission).toMatch(
-    /\| `children_before_retro` \|[^|]*without `acceptance:owner`[^|]*\|[^|]*last `heldBy`[^|]*starts retro/
-  );
   expect(admission).toMatch(
     /\| `task_stopped` \|[^|]*no step[^|]*\|[^|]*`register_plan`[^|]*root's `todo`[^|]*first step/
   );
@@ -791,32 +752,25 @@ test("retro reads only the handoffs its task has, and answers bot threads with n
 });
 
 // A declined bot thread on a task with no reviewer step is named in one place for each phase of
-// the implementer: the completion summary when it implements, and retro's Dispatch message, since
-// a retro summary holds two sentences. The prompt parts are read where they live in the repository.
-test("each phase of the implementer names a declined bot thread in its own place", () => {
+// the agent that implements: the completion summary when it implements, and retro's Dispatch
+// message where it does the retro, since a retro summary holds two sentences. The prompt parts are
+// read where they live in the repository.
+test("each phase of the implementing agent names a declined bot thread in its own place", () => {
   const prompts = path.join(REPO_ROOT, "packages", "daemon", "internal", "prompts");
   expect(collapsed(path.join(prompts, "roles", "implementer.md"))).toMatch(
     /Name each thread you declined[^.]*in your completion's `summary`; at your retro, name them in the Dispatch message of `skill:\/\/legion-retro` step 5/
   );
-  expect(collapsed(path.join(prompts, "roles", "core", "implementer.md"))).toMatch(
-    /name each one you declined to the owner of your task in your completion's summary, or at your retro in its Dispatch message/
-  );
   expect(lacks("legion-retro/SKILL.md", [/\*\*Declined threads:\*\*/])).toEqual([]);
 });
 
-// Retro is the implementer's phase, so the implementer's daemon part, which forbids waiting for CI,
-// is retro's prompt too, and the retro skill holds a `ci_check` run still going the same way.
+// Where the implementer does the retro, its daemon part, which forbids waiting for CI, is retro's
+// prompt too.
 test("retro never waits for a CI run, as the implementer's prompt says", () => {
   expect(
     collapsed(
       path.join(REPO_ROOT, "packages", "daemon", "internal", "prompts", "go", "implementer.md")
     )
   ).toContain("Never wait for, watch or poll the pull request's remote CI");
-  expect(
-    lacks("legion-retro/SKILL.md", [
-      /run that has not concluded[^.]*never wait for, watch or poll it/,
-    ])
-  ).toEqual([]);
 });
 
 // Nothing ensures a head's runs have ended by retro on a task with no reviewer step, so retro
@@ -840,19 +794,14 @@ test("a run still going at retro is named in its message and as a risk", () => {
   expect(collapsed(path.join(prompts, "roles", "implementer.md"))).toMatch(
     /At your retro, answer the bot threads you find[^.]*each run still going[^.]*may open more/
   );
-  expect(collapsed(path.join(prompts, "roles", "core", "implementer.md"))).toMatch(
-    /at your retro too, the threads you find there, naming in its message each run still going/
-  );
 });
 
 // The plan guide tells an architect which gates remain when it leaves steps out, so it carries
-// retro's exception: a `ci_check` run still going, or one retro cannot read, moves nothing back,
-// and with no reviewer and no owner acceptance such a check is held only by the base's rules.
+// retro's exception: a `ci_check` run still going, or one retro cannot read, moves nothing back.
 test("the plan guide says which checks retro does not send back", () => {
   expect(
     lacks("legion-architect/references/plan.md", [
       /retro's first step sends back[^.]*except a `ci_check` whose run has not concluded or cannot be read/,
-      /no reviewer step and no `acceptance:owner`[^.]*the checks the base branch requires/,
     ])
   ).toEqual([]);
 });
@@ -927,7 +876,6 @@ test("each duty a role skill routes to a reference stands in that reference", ()
       /dependencies as `skill:\/\/legion-architect\/references\/decomposition\.md`/,
     ]),
     ...lacks("legion-architect/references/decomposition.md", [
-      /running system[^.;]*implementer proves them on and a tester step drives/,
       /wait on a sibling or on an issue outside this tree[^.;]*`skill:\/\/dispatch`, "Choosing what to work on"/,
     ]),
     ...lacks("legion-worker/SKILL.md", [

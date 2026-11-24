@@ -673,10 +673,21 @@ and a retry of it is refused with `TASK_STOPPED` or `HELD_FOR_CHILDREN`. A root'
 architect that failed (`architect.state` is `failed` on the root) leaves nobody to act on the
 notices that come to it, and the controller is woken. Unless the root's `phase` is `done`, it
 restarts the tree when it finds no cause or the cause is gone, and asks a person whether to park
-it when the cause stays. A child's own architect that failed holds nothing and wakes no controller:
-the architect above it is told with a `worker-died` and takes the child's notices, and the child's
-next phase start starts it again. What brings a root's architect back depends on where its tree
-stands:
+it when the cause stays. A child's own architect that failed holds nothing. The controller hears
+of it only once the daemon's restarts of it, below, are spent. The architect above it is told with
+a `worker-died` and takes the child's notices, all but an `owner-step`, which goes to the child's
+own architect alone, and the child's next phase start starts it again. Where the child stands at
+a step or the retro its own architect does itself, other than its acceptance, no phase start comes
+until that architect reports it, so the daemon starts the architect again at once, at most three
+times in that step's run, and the `worker-died` says which start it is. Once those three are spent
+it stays failed, the `worker-died` says so, and the controller is told too. `legion state` names
+it under `failed, retry` on its `claims nothing will wake` line. The operator's retry or the
+controller's `fresh_session` relaunches it, tells it its step again and gives it three restarts
+again. At its own acceptance
+a failed child's architect is not started again at once: an architect above it can end that
+acceptance with `sign_off`, and the phase start after it starts the child's architect again. What
+brings a root's architect back
+depends on where its tree stands:
 
 - **Its tree runs and does not linger:** `legion state`'s `claims nothing will wake` line
   names the architect under `failed, retry`. Retry it, as [A tree does not move after a
@@ -694,7 +705,8 @@ stands:
   ```
 
 `legion claims retry --claim <token>` relaunches a failed architect on its session with fresh
-budgets, or on a new one once supervise's `forgetSession` has dropped that, and retries a failed
+budgets, or on a new one once supervise's `forgetSession` has dropped that, and tells it again, in
+an `owner-step`, a step of its own issue that it does itself; it retries a failed
 phase worker whose issue is held for that worker's own role by applying the held phase's retry,
 as its architect's `retry_or_escalate` would. It reaches a retired claim as well as a failed one,
 whatever retired it (`legion claims stop` retires the claim it stops), and how it starts a stopped
@@ -711,7 +723,8 @@ claim, which is retired rather than failed, so name that one with `--claim`.
 
 A held issue has one more release, and it costs nothing. `legion issue status <KEY> todo` on the
 tree's own root releases the hold: the issue returns to the phase `heldFrom` names, that phase's
-worker starts with its task, and the generation, the review rounds, the pod and the issue's place in
+worker starts with its task (at a step the architect does itself, the architect is told the step
+in an `owner-step` instead), and the generation, the review rounds, the pod and the issue's place in
 the admission line stay as they were. A person's move of the root to `todo` in the Dispatch
 dashboard and the controller's own `set_status` do the same, since all three write the one status
 the daemon reads. It reaches a root alone: a held child set to `todo` comes back at a new generation
@@ -890,10 +903,13 @@ idle, and, in the log, either the boot's one line per claim for the degraded dae
 A restart re-adopts every process still running, but a claim with no process runs again only when
 something starts it. A worker is started by the workflow when its phase begins, a tree's architect
 by its admission, and a child's own architect by the child's first phase start, and again after a
-failure by the child's next phase start. A notice starts no architect, except one whose idle pod
+failure by the child's next phase start, or at once where the child stands at a step or the retro
+only it reports. A notice starts no architect, except one whose idle pod
 the daemon released, which it wakes: a notice for a root's architect waits for it, or ends
 undelivered once that claim has failed or retired, and a notice for a child whose own architect
-does not hold its role goes to the architect above. A suspended worker of its issue's current
+does not hold its role goes to the architect above, but an `owner-step` goes to its issue's own
+architect alone, a root's or a child's, which is told that step again when it runs again, unless
+the session it runs in already had it. A suspended worker of its issue's current
 phase that the daemon suspended is resumed by the daemon at boot. One an operator suspended
 (`legion claims suspend`, one claim at a time or a whole fleet before a restart), or whose
 suspension predates the release that records who suspended it (`suspendedBy: unknown`), is not;
@@ -902,8 +918,12 @@ a claim a close or a stop retired while its tree runs, whatever its role. Each o
 child's own architect stops its tree: nothing wakes it, the daemon looks healthy and the state
 shows the tree active, but the tree stops for good at the worker's phase, or at the first decision
 that needs its architect. A child's own architect stops no tree, since its child's notices go to
-the architect above, and the list below never names it: the paragraph under the list says what
-brings one back. Once a boot has re-adopted its claims, the daemon names every such claim in one
+the architect above, except where its child stands at a step or the retro that architect does
+itself, other than its acceptance, which only it reports: the daemon starts a failed one again at
+once, at most three times in that step's run, and then it stops that child there, and the list
+below names it under `retry`.
+The paragraph under the list says what brings one back elsewhere. Once a boot has re-adopted its
+claims, the daemon names every such claim in one
 error line, under the move that brings it back:
 
 ```text
@@ -972,13 +992,21 @@ legion-widgets-widgets-12-implementer)`), so two claims of one role on one issue
       --task "Continue <title>. Issue: WIDGETS-12. Phase: implementing. Resume the existing phase work."
     ```
 
-- **`retry`** (a failed architect): retry it. The daemon relaunches it on the session it kept, or on
+- **`retry`** (a failed architect: a tree's, or a child's own whose child stands at a step or the
+  retro it does itself, other than its acceptance, once the daemon's three restarts of it there are
+  spent): retry it. The daemon relaunches it on the session it kept, or on
   a new one once supervise's `forgetSession` has dropped that, with fresh budgets, and sends it a
   catch-up of its tree once it is ready, so the tree carries on at the generation and phase it
   stands at. The daemon drops every notice it could
-  not deliver to the failed architect, the reviewer's approval that moved an issue into `accepting`
-  among them, so the catch-up's reason names each issue of the tree waiting in `accepting` for the
-  architect's acceptance; no worker runs there, and nothing else would wake the architect for it:
+  not deliver to the failed architect, the notice of the step that moved an issue into `accepting`
+  among them, so the catch-up's reason names each issue of the tree waiting in
+  `accepting` for the architect's own acceptance (a step `acceptance:owner`, or an issue with no
+  plan rows), and the architect's own issue where it stands at another step of its own or at its
+  retro (`at a step of yours, which no worker does`); no worker runs at either. A step
+  `acceptance` with no key is a fresh agent's, which the catch-up leaves out. Where its own issue
+  stands at a step or the retro of its plan that it does itself, started and not ended, it is also
+  told that step again in an `owner-step`: the one still queued for it, or else one after the
+  catch-up. Retry it:
 
   ```sh
   legion claims retry --config legion.yaml --operator-token-file operator-token --claim legion-widgets-widgets-14-architect
@@ -1009,8 +1037,12 @@ slot has that start queued already. A root in
 and the answer's task is delivered on the pass that reads the answer, which takes no slot for it. Never resume or retry by hand a
 claim of a lingering tree or of an issue parked out of the workflow; re-admission or the issue's
 return to `todo` starts it.
-The list never names a child's own architect: while that architect does not hold its role, the
-architect above it takes the child's notices, and a later start of the role brings it back, as the
+The list names a child's own architect in one case alone: it failed while its child stands at a
+step or the retro that only it reports, other than its acceptance, the daemon's three restarts of
+it in that step's run are spent, and no start of it is queued; it is listed under `retry`.
+Otherwise, while that
+architect does not hold its role, the architect above it takes the child's notices, all but an
+`owner-step`, and a later start of the role brings it back, as the
 daemon's supervise table decides for the state the claim stands in. The workflow's own starts of
 it, an operator's retry and the controller's `fresh_session` are among such starts. A child's own
 architect that an operator suspended waits for the operator's resume (`legion claims list` shows
@@ -1437,9 +1469,10 @@ So a role sets no `user.name`, no `user.email`, none of the overlay's three temp
 These arrive as messages on the Dispatch issue:
 
 - **`Issue reached review_round_cap=3: 3 rounds counted, 0 conflict rounds not counted.`** The
-  implementer's counted rounds reached three
-  ([what counts a round](/legion/legion/concepts/#review-signalling)): every move back to an earlier
-  phase raises the count, and a move made while the head conflicts with its base is a conflict
+  task's counted rounds reached three
+  ([what counts a round](/legion/legion/concepts/#review-signalling)): a review step's request for
+  changes raises the count where an agent other than the architect does that step, and a move made
+  while the head conflicts with its base is a conflict
   round, which the cap leaves out and the message's second number names. The daemon posts it and
   tells the architect once for each value the cap holds, so the rounds after it say nothing again
   until you change `review_round_cap` or the issue runs again as a new generation. The work goes
@@ -1449,18 +1482,28 @@ These arrive as messages on the Dispatch issue:
 - **`Legion hook work-back fired at 5 moves back: testing to implementing. Prompted: implementer, tester, reviewer.`**
   A hook of your `legion.yaml` ([hooks](/legion/legion/running-legion/#legionyaml)) counted that
   move back and fired: the daemon wrote the hook's words once for each role the line names, on the
-  topic of the claim of the agent that works that role's step that started last, and posted this
-  record of it. Nothing
-  is held: the phase the move opened started its worker, and each agent answers in its own turn. No
-  hook writes to an architect: the daemon's own wake to an architect is a notice.
+  topic of the claim of the agent of that role's step (the architect's, for a step it does
+  itself). For `planner`, `implementer`, `tester` and `reviewer` that step is the task's last step
+  of the role's type at or before the place the move left the task at, else the task's last such
+  step, whether or not it has run. Its role is the role itself or a role your deployment or the
+  issue's plan defines (a `checker` of the type testing, for `tester`), never the acceptance for
+  `reviewer`, and nobody is prompted for a role where the task has no such step. A role your
+  deployment defines that the hook names is prompted on the claim of the agent working its step. The
+  daemon then posted this record of it. Nothing is held: the move started the agent of the step it
+  opened, or told the architect that step in an `owner-step` where the step is its own, and each
+  agent answers in its own turn. A hook names no architect role: the daemon's own wake to an
+  architect is a notice.
 - **A red check.** Nothing moves for it. The daemon names every check GitHub reported, with the
   conclusion GitHub gave it, in one message to each agent among the architect that owns the issue,
-  the worker of the issue's current phase and the implementer, and judges none of them: an agent
-  that works two of those roles gets one message. Re-run a check that failed on itself, have the
-  implementer fix code that is at fault, or leave it to GitHub, which holds the merge under the base
-  branch's own required checks.
-- **A review round that no review decides.** Legion's reviewer must approve the head or request
-  changes; a plain comment leaves the issue in `needs_review`, and the architect asks the reviewer
+  the worker of the issue's current phase and the agent of the task's implementation step, whose
+  code the checks ran on, and judges none of them: an agent that works two of those roles gets
+  one message. Re-run a check that failed on itself, have the implementer fix code that is at
+  fault, or leave it to GitHub, which holds the merge under the base branch's own required
+  checks.
+- **A review round that no review decides.** On an issue with a pull request, Legion's reviewer
+  must approve the head or request changes (a review step on an issue with no pull request, and the
+  architect's own review step, end by the verdict they report, which no review on GitHub decides);
+  a plain comment leaves the issue in `needs_review`, and the architect asks the reviewer
   for the decision. Only the review App or an account with write access to the repository decides a
   round, so an approval or request for changes from anyone else leaves it undecided too. A review
   from the review App decides a round only when it comes from the reviewer's own session: the
@@ -1522,10 +1565,13 @@ These arrive as messages on the Dispatch issue:
 - **A later review round reads the whole change, or from an older commit.** The reviewer's task of
   a later round names `Last reviewed commit: <sha>`, and the reviewer reads the difference from that
   commit to the head. Each reviewer step of a task keeps its own commit on its phases row, and the
-  first round of a later reviewer step names the commit of the reviewer step before it. A review
-  moves that commit only when it is the reviewer's own (its Legion footer names the session the
-  reviewer's claim records), the phases row of the reviewer step whose round it is holds the task of
-  an entry, and the footer's `entry` is the entry on that row. Each task the reviewer gets in its
+  first round of a later reviewer step names the commit of the reviewer step before it. On an
+  issue with a pull request, a review moves that commit only when it is the reviewer's own (its
+  Legion footer names the session the reviewer's claim records), the phases row of the reviewer
+  step whose round it is holds the task of an entry, and the footer's `entry` is the entry on that
+  row. A review step that ends by its verdict, the reviewer's on an issue with no pull request or
+  one the architect does itself, moves it instead to the commit its report names, where the report
+  is of the entry the reviewer's row stands on. Each task the reviewer gets in its
   round ends with that entry, `Review entry: <n>.`, the task of a wake that brought its pod back
   included, and the reviewer writes the number of the newest such sentence of its session into the
   footer in quotes, `"entry":"<n>"`. The daemon reads a positive whole number written as a JSON
@@ -1540,9 +1586,11 @@ These arrive as messages on the Dispatch issue:
   which case holds.
 - **The merger merges nothing.** It merges nothing while the head conflicts with its base, which
   GitHub can neither merge nor start pull-request CI for: the daemon asks the agent of the task's
-  implementation step (the implementer, in the default steps) to merge the base forward while the
-  issue stays in `merging`, and the merger merges the new head once the reviewer's approval of it
-  is on the pull request. And it enqueues nothing on a merge-queue base whose
+  last step of the type implementation (the implementer, on the default steps, or the architect
+  where that step is its own) to merge the base forward while the issue stays in `merging`, and
+  the merger merges the new head at once where the task has no reviewer step, or once the approval
+  of it by the agent of that step is on the pull request. And it enqueues nothing on a merge-queue
+  base whose
   `squash_merge_commit_message` still joins the branch's commit messages, since the enqueue can
   carry no message of its own: it tells the architect, and only a person can change that
   repository setting to `PR_BODY` or `BLANK`. A merge GitHub refuses is the merger's to decide
@@ -1552,17 +1600,19 @@ These arrive as messages on the Dispatch issue:
   issue — or, for a root whose tree still runs, once the last other issue of that tree is done or
   parked.
 - **An implementer's completion refused `HANDOFF_NO_PULL_REQUEST`.** The implementer's completion
-  of implementing reads GitHub, as the implement App, for the open pull request on the issue's
-  branch, `legion/<KEY>`: the issue moves to testing only on an open pull request, or one the
-  daemon recorded merged. One the daemon has not recorded yet (its opened webhook lost or still
-  waiting) is recorded there and the issue moves on. A pull request merged while the issue was in
-  `implementing` already told the architect (`pr-merged`), and the completion is applied and moves
-  the issue to testing. With none, the completion is refused and nothing is recorded: `no open pull
+  of implementing, and the architect's `complete_step` of an implementer step of its own, read
+  GitHub, as the implement App, for the open pull request on the issue's
+  branch, `legion/<KEY>`: the issue moves on to the task's next step (testing, in the default
+  steps) only on an open pull request, or one the daemon recorded merged. One the daemon has not
+  recorded yet (its opened webhook lost or still waiting) is recorded there and the issue moves on.
+  A pull request merged while the issue was in `implementing` already told the architect
+  (`pr-merged`), and the completion is applied and moves the issue on. With none, the completion is
+  refused and nothing is recorded: `no open pull
   request on <owner>/<repo> legion/<KEY>; nothing was recorded. Open the pull request and complete
   again.` The implementer opens it and completes again at the same commit. When the record holds
   the issue's pull request closed without merging, the refusal adds `pull request #<n> is closed;
   your architect was told and decides this issue's phase.`: the close already told the architect,
-  and a pull request closed without merging never moves an issue to testing. When
+  and a pull request closed without merging never moves an issue on. When
   GitHub cannot be read (the token mint or the read fails), the completion is applied unread and
   the daemon logs a warning, `api: read the open pull request on a completing implementer's
   branch; …`; the issue moves on once a pull request is recorded open, and when the daemon's next read of
@@ -1620,8 +1670,9 @@ These arrive as messages on the Dispatch issue:
 An issue that stays in `testing`, `reviewing`, `accepting`, `retro` or `merging` while its head
 conflicts with its base is waiting on the daemon's merge forward or on nothing at all. The daemon
 reads the pull request's mergeability twice, at least a minute apart, and acts only on a conflict
-both reads report, and only when the next step needs a mergeable head: the issue stands past its
-review, a check the base requires has no green result on the head, the base requires a current
+both reads report, and only when the next step needs a mergeable head: the issue stands in
+`accepting`, `retro` or `merging`, a check the base requires has no green result on the head, the
+base requires a current
 branch, or the daemon could not read the base's rules. Its log says which: `workflow: a conflict
 read waits for a second read` for a first read, `workflow: a second read did not confirm the
 conflict` for a read GitHub took back or a second read whose attempts all answered no state (the
@@ -1630,15 +1681,18 @@ required contexts and the green ones, and `workflow: merge forward asked` with t
 GitHub answered before the newest read the record holds of the same head is dropped whole, with
 `workflow: GitHub's merge state answered before the read the record holds; the read is dropped`,
 so an answer that waited behind a newer one never releases a first read or clears a conflict. A merge
-forward keeps the phase: the implementer merges in the issue workspace and pushes with no handoff
+forward keeps the phase: the agent of the task's last step of the type implementation at or before
+the issue's place, else the task's last such step (the implementer, on the default steps, or the
+architect where that step is its own), merges in the issue workspace and pushes with no handoff
 and no completion, the phase's worker is told to stop writing the workspace and not to complete
 its phase at the old head, and is then told the new head, and `workflow: the merge forward landed`
 names both heads. A completion of the phase the issue stands in that names a head a merge
 forward replaced, the head an earlier merge forward replaced included, or that names no head once
 a merge forward landed, is refused `HANDOFF_HEAD_MERGED_FORWARD`, with nothing recorded, and is
 made again at the new head; a completion of a phase the issue has already left is recorded as
-before. Past review, where the task has a reviewer step, the reviewer is asked to read the merge
-and approve the new head. A red check sends nothing back from anywhere.
+before. In `accepting`, `retro` or `merging`, where the task has a reviewer step, the agent of that
+step is asked to read the merge and approve the new head. A red check sends nothing back from
+anywhere.
 
 The pull request's state as the daemon sees it:
 
@@ -1655,7 +1709,8 @@ GitHub for it.
 
 The issue says `Legion keeps <owner/name> as this issue's repository; the change to <other> in
 Dispatch is not applied`. An issue's repository is fixed when Legion first records it: its branch,
-workspace and pull request live there, so a later change of the issue's own repository, or its
+workspace and pull request, where it has one, live there, so a later change of the issue's own
+repository, or its
 parent's or the project's default it inherited, does not move it. Create a new issue on the other
 repository for the work that belongs there. The daemon says it once for each repository the issue
 is changed to.
@@ -1769,8 +1824,9 @@ when the implementer's completion was applied without GitHub's answer (the read 
 the pull request was closed without merging since. A pull request merged since tells the architect
 `pr-merged` instead, and the implementer's completion moves the issue on it. The issue stays in
 `implementing` until a pull request
-is open on the branch: the implementer opens it, and the daemon records it from its webhook or
-from its next read of the issue, and moves the issue to `testing`. When the work should not
+is open on the branch: the agent of the implementer's step opens it, and the daemon records it from
+its webhook or from its next read of the issue, and moves the issue to the task's next step
+(`testing`, in the default steps). When the work should not
 go on, the architect decides the issue's phase as for a pull request closed without merging. The
 notice comes once per handoff commit, from whichever read finds it first.
 
@@ -1942,8 +1998,9 @@ notice comes once per handoff commit, from whichever read finds it first.
   webhook carries GitHub's events, is not known to be installed on a repository a live record
   names. With `Dispatch's GitHub App is not installed on <repo>: …`, GitHub sends Legion none of
   that repository's events and nothing redelivers them: the repository is worked, and nothing
-  brings its pull requests' changes in, so its issues stand still. An operator installs Dispatch's
-  GitHub App on the repository ([The GitHub Apps](/legion/legion/running-legion/#the-github-apps));
+  brings its pull requests' changes in, so its issues that wait on a pull request stand still. An
+  operator installs Dispatch's GitHub App on the repository
+  ([The GitHub Apps](/legion/legion/running-legion/#the-github-apps));
   the daemon asks Dispatch again on its own, 30 s doubling to 10 min, and the line goes at the
   first answer that the App is installed.
   `the webhook App check failed: GITHUB_APP_UNCONFIGURED: …` is a Dispatch that holds no App key

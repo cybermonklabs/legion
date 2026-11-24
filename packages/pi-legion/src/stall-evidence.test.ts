@@ -493,11 +493,12 @@ test("a session never publishes to the role its own session holds", async () => 
 });
 
 // A session's own token is the one the daemon registered its claim with, which names its agent;
-// the claim's role is the role of the step it runs now. So a session whose claim is its issue's
-// architect still never tells itself while it runs another role's step, and a claim of the agent
-// implementer that runs a tester's step tells its issue's architect. The fault: the own token
-// spelled from the claim's role (`…-infra-2-tester`), a claim the session does not hold, which
-// misses the architect role the session does hold and publishes to it.
+// the claim's role can be another (a keyed agent's claim holds the role of the step it runs now).
+// So a session whose token is its issue's architect's never tells itself, whatever role its claim
+// holds, and a claim of the agent implementer that runs a tester's step tells its issue's
+// architect. The fault: the own token spelled from the claim's role (`…-infra-2-tester`), a claim
+// the session does not hold, which misses the architect role the session does hold and publishes
+// to it.
 test("a session's own token is the one it registered, whatever role its claim holds now", () => {
   expect(
     stallNoticeTopic({

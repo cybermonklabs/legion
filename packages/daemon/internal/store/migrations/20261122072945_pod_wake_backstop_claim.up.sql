@@ -1,9 +1,11 @@
 -- 20261122072945_pod_wake_backstop_claim.up.sql — the claim a backstop wakes, on the backstop.
 --
 -- pod_wake_backstops.claim is the token of the claim the backstop is armed for
--- (store.PodWakeBackstop.Claim): the worker of the issue's open phase when it was armed, the claim
--- the record gives the open role's step (workflow.OpenWorker). Two claims can hold one role of an
--- issue: the agent of a key works a step of another role than its name, beside that role's own
+-- (store.PodWakeBackstop.Claim) when it was armed (workflow.BackstopTarget): the worker of the
+-- issue's open phase, the claim the record gives the open role's step, or the issue's own
+-- architect where it works its place alone, at a step of the key owner or its retro. Two claims
+-- can hold one role of an issue: the agent of a key works a step of another role than its name,
+-- beside that role's own
 -- claim of an earlier version of the plan. A backstop keyed by its role alone was each of those
 -- claims': a wake of the other claim (store.PodRecords.TakePodWake) or a `suspend` row that stopped
 -- it (internal/daemon's takeOverRelease) dropped the worker's backstop, so a worker waiting on a

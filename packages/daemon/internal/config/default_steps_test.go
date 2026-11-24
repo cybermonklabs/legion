@@ -69,15 +69,24 @@ func TestDefaultStepsAreReadAndRefused(t *testing.T) {
 	if got := cfg.Projects["DEMO"].RunsByDefault(); !reflect.DeepEqual(got, todaysSteps(t)) {
 		t.Fatalf("DEMO, which names none, runs %+v, want today's line", got)
 	}
-	// A step's key names the agent that does it, and the steps of one key are one agent, so a
-	// key is taken on a role but acceptance; the key owner on a role but acceptance, and any other
-	// key on acceptance, are refused below.
-	keyed, err := Load(writeConfigFile(t, defaultStepsFile("{default_steps: [implementer, reviewer:r]}")), noEnv)
-	if err != nil {
-		t.Fatalf("Load of a key: %v", err)
-	}
-	if got, want := keyed.Projects["ACME"].DefaultSteps, []plan.Step{{Role: "implementer"}, {Role: "reviewer", Key: "r"}}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("DefaultSteps of a key = %+v, want %+v", got, want)
+	// A step's key names the agent that does it, on any role, and the steps of one key are one
+	// agent; the key owner names the owner of the task. A role stands at two steps.
+	for _, tc := range []struct {
+		value string
+		want  []plan.Step
+	}{
+		{"[implementer, reviewer:r]", []plan.Step{{Role: "implementer"}, {Role: "reviewer", Key: "r"}}},
+		{"[implementer, acceptance:r]", []plan.Step{{Role: "implementer"}, {Role: "acceptance", Key: "r"}}},
+		{"[implementer:owner, reviewer]", []plan.Step{{Role: "implementer", Key: "owner"}, {Role: "reviewer"}}},
+		{"[implementer, reviewer, reviewer]", []plan.Step{{Role: "implementer"}, {Role: "reviewer"}, {Role: "reviewer"}}},
+	} {
+		keyed, err := Load(writeConfigFile(t, defaultStepsFile("{default_steps: "+tc.value+"}")), noEnv)
+		if err != nil {
+			t.Fatalf("Load of %s: %v", tc.value, err)
+		}
+		if got := keyed.Projects["ACME"].DefaultSteps; !reflect.DeepEqual(got, tc.want) {
+			t.Fatalf("DefaultSteps of %s = %+v, want %+v", tc.value, got, tc.want)
+		}
 	}
 
 	// The steps in another order than today's load as the list writes them.
@@ -97,16 +106,6 @@ func TestDefaultStepsAreReadAndRefused(t *testing.T) {
 		{name: "no step", value: "[]", refusal: "projects.ACME.default_steps names no step"},
 		{name: "a role nobody defines", value: "[implementer, checker]",
 			refusal: "projects.ACME.default_steps: step 2 of task default names the role checker, which neither the deployment nor the plan defines."},
-		{name: "a step that reads a pull request before the implementer", value: "[reviewer, implementer]",
-			refusal: "projects.ACME.default_steps: step 1 of task default names reviewer, and no step before it names the role implementer, whose pull request reviewer reads; a role of this deployment that reports pass or fail needs none." + yet},
-		{name: "a cause of each check", value: "[checker, reviewer]",
-			refusal: "projects.ACME.default_steps: task default has no step implementer." + yet +
-				" step 2 of task default names reviewer, and no step before it names the role implementer, whose pull request reviewer reads; a role of this deployment that reports pass or fail needs none." + yet +
-				" step 1 of task default names the role checker, which neither the deployment nor the plan defines."},
-		{name: "the key owner on a role but acceptance", value: "[implementer:owner, reviewer]",
-			refusal: "projects.ACME.default_steps: step 1 of task default names the key owner." + yet},
-		{name: "a key on acceptance but owner", value: "[implementer, acceptance:r]",
-			refusal: "projects.ACME.default_steps: step 2 of task default names the key r." + yet},
 		{name: "a word outside the grammar", value: "[implementer, Reviewer]",
 			refusal: `projects.ACME.default_steps: the step "Reviewer" is neither a role nor a role:key, where each matches [a-z][a-z0-9-]*`},
 		{name: "two steps in one entry", value: `["implementer reviewer"]`,
@@ -123,5 +122,10 @@ func TestDefaultStepsAreReadAndRefused(t *testing.T) {
 				t.Fatalf("refusal %q does not name the key", err)
 			}
 		})
+	}
+	// Each cause gets its own sentence, under the one key.
+	_, err = Load(writeConfigFile(t, defaultStepsFile("{default_steps: [checker, reviewer, prober]}")), noEnv)
+	if err == nil || !strings.HasPrefix(err.Error(), "projects.ACME.default_steps") || !strings.Contains(err.Error(), "checker") || !strings.Contains(err.Error(), "prober") {
+		t.Fatalf("Load error = %v, want the refusal of projects.ACME.default_steps naming the roles checker and prober", err)
 	}
 }

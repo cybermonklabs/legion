@@ -245,8 +245,8 @@ type seededPane struct {
 
 // seededPanes is the four claims that run a real pane, each on an issue and a tree of its own.
 // The root architect's issue is its own tree's root, as every issue here is, so its claim is the
-// root architect claim.phase workers and architects both reach. That one stands in accepting,
-// the phase whose role is the architect and in which no phase worker runs: it is the only issue
+// root architect claim.phase workers and architects both reach. That one stands in accepting with
+// no plan rows, where its own architect accepts and no phase worker runs: it is the only issue
 // here with no phase worker's claim, and in a worker's phase admission's repair of a slotted
 // worker would start the worker it names (seed).
 func (r *claimCompactionLive) seededPanes() []seededPane {
@@ -352,9 +352,9 @@ func (r *claimCompactionLive) overrides() overrides {
 //
 // The root architect's issue stands in accepting rather than in a worker phase, for the same
 // repair: it has an architect's claim and no phase worker's, and the repair would read the
-// planner a planning issue names, find no claim at all and start one. Accepting is the phase
-// whose role is the architect (phase.RoleFor), where no phase worker runs, so the repair
-// passes over it as it passes over every architect.
+// planner a planning issue names, find no claim at all and start one. On an issue with no plan
+// rows accepting is its architect's own acceptance (record.Issue.OwnersPlace), where no phase
+// worker runs, so the repair passes over it as it passes over every architect.
 func (r *claimCompactionLive) seed() {
 	t := r.t
 	t.Helper()
@@ -1009,9 +1009,9 @@ func (r *claimCompactionLive) plannerComesBackThroughTheOperatorsDoor() {
 }
 
 // architectComesBackThroughTheControllersDoor kills the root architect mid-turn with the daemon
-// held blind and starts it again through the controller's own `fresh_session`. An architect
-// works no phase, so the turn the kill ends is one of a task of the operator's own, and what
-// says the new session is at work is its tree's catch-up, as step 7 reads it.
+// held blind and starts it again through the controller's own `fresh_session`. The architect is
+// given no step's task here, so the turn the kill ends is one of a task of the operator's own, and
+// what says the new session is at work is its tree's catch-up, as step 7 reads it.
 func (r *claimCompactionLive) architectComesBackThroughTheControllersDoor() {
 	t := r.t
 	token := r.token(r.root, claim.RoleArchitect)

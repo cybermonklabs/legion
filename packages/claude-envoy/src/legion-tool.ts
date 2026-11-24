@@ -33,7 +33,10 @@ export function legionToolDefinition() {
     description: legionToolDescription({
       envoyPublish: "mcp__legion__envoy_publish",
       before: PHASE_OP_SENTENCES.readRecord + PHASE_OP_SENTENCES.readReleaseRecords,
-      after: PHASE_OP_SENTENCES.requestBackwardMove + PHASE_OP_SENTENCES.readBuild,
+      after:
+        PHASE_OP_SENTENCES.requestBackwardMove +
+        PHASE_OP_SENTENCES.readBuild +
+        "This tool serves phase workers alone: Legion runs no architect on Claude Code. ",
     }),
     inputSchema: z.toJSONSchema(z.object({ op: z.enum(PHASE_OPS), ...phaseOpParameters(z) })),
   }
@@ -43,8 +46,8 @@ export interface LegionToolRuntime {
   readonly daemon: LegionDaemonClient
   /** The pane's registered claim, or undefined while its boot is still registering. */
   readonly claim: () => ClaimCapability | undefined
-  /** What a completion by `role` (one of Legion's six, a role of the deployment or a role of the issue's plan) reports beside
-   * its summary while the issue stands at `phase`
+  /** What a completion by `role` (one of Legion's six, the role acceptance, or a role of the
+   * deployment or of the plan) reports beside its summary while the issue stands at `phase`
    * (`findHandoffReport` with the pane's environment and Dispatch): the newest record of the
    * phase the role works or, once the issue has moved on, of the phase it left, or `@-` alone where
    * that left phase has none or the implementer's left record names no head. Throws naming the remedy when the phase the role works has no

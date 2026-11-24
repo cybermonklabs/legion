@@ -15,12 +15,14 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
-// What the cap can and cannot hold back, now that an issue holds its row from the moment the
-// daemon starts it until its work is past its review (record.KeepsSlot), except while it waits on
-// another issue before then (releaseSlotsForWaits). An issue that holds a row starts its next
-// phase whatever admission_cap says, because its promotion takes no second row (admit's slotFor);
-// an issue that holds none takes one when the daemon starts it, and waits in the line while the
-// project is at its cap.
+// What the cap can and cannot hold back, now that an issue holds a row while the daemon has
+// started it in a phase that keeps one — every phase but accepting, retro and merging, which hold
+// none (in the default steps, the phases after its review; record.KeepsSlot) — except while it
+// waits on another issue in such a phase (releaseSlotsForWaits). An issue that holds a row starts
+// its next phase whatever admission_cap says, because its promotion takes no second row (admit's
+// slotFor); an issue that holds none takes one when the daemon starts it in a phase that keeps
+// one, and waits in the line while the project is at its cap; and an issue whose first step is an
+// acceptance is started on no row, whatever the cap.
 
 // capMember records key under root in stands, with the Dispatch status a member in that phase
 // shows. It writes no row: what each case here is about is whether the issue holds one.
@@ -44,9 +46,9 @@ func acceptingRoot(t *testing.T, pool *pgxpool.Pool, key string) {
 }
 
 // oweMemberStart queues the start of key's worker in the phase it stands in, as the transition
-// into that phase does (workflow.StartOrOwe): the one row that carries the task, which the
-// outbox holds unclaimable until key holds a row. stands is the phase the row names, which is
-// the issue's own except where a case is about a row the issue has moved past.
+// into a step a worker does writes it (workflow.StartOrOwe): the one row that carries the task,
+// which the outbox holds unclaimable until key holds a row. stands is the phase the row names,
+// which is the issue's own except where a case is about a row the issue has moved past.
 func oweMemberStart(t *testing.T, pool *pgxpool.Pool, root, key string, stands phase.Phase) {
 	t.Helper()
 	inTx(t, pool, func(tx pgx.Tx) {

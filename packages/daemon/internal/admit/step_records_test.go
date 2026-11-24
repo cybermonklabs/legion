@@ -331,8 +331,9 @@ func putOwnArchitect(t *testing.T, pool *pgxpool.Pool, state supervise.ClaimStat
 // A tree admitted again starts each member's step again: the linger ended each member's run
 // stopped, and the promotion starts a new run of the same place, another record. A member whose
 // phase worker the promotion starts gets it from that start (workflow.Engine.StartPromotedWorker);
-// a member in accepting, whose role is an architect, and one held from testing, whose hold starts
-// no worker, get it from the promotion's own start (workflow.Engine.StartStepRecord).
+// a member in accepting, whose acceptance is its architect's on a run with no plan rows, as here,
+// and one held from testing, whose hold starts no worker, get it from the promotion's own start
+// (workflow.Engine.StartStepRecord).
 //
 // The member in accepting is the work of the architect that owns it: its own, which held its role
 // when the run began and which the tree's close then suspended. The promotion queues a start of it

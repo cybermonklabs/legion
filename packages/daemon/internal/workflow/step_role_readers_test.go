@@ -20,7 +20,8 @@ import (
 )
 
 // deploymentChecker is a role the deployment defines: no phase of Legion's is its, so a step of
-// it runs as the phase step, and the plan rows name it as the issue's running role (StepRole).
+// it runs as the phase step, and the plan rows name it as the role of the issue's running step
+// (StepRole), the role that works it where the step's key is not owner.
 const deploymentChecker claim.Role = "checker"
 
 // standAtStep writes issue standing at the phase step, or held from it (a failed claim's hold,
@@ -43,8 +44,9 @@ func standAtStep(t *testing.T, pool *pgxpool.Pool, issue record.Issue, held bool
 	return issue
 }
 
-// An issue whose running step is of a role the deployment defines stands at step, which no role
-// of Legion's works, so each path that brings a worker back to its work reads the role with the
+// An issue whose running step is of a role the deployment defines, done by that role's own agent
+// (here the plan `implementer checker`), stands at step, which no role of Legion's works, so each
+// path that brings a worker back to its work reads the role with the
 // issue (OpenRoleOf, Issue.RoleAt): the ready of a claim (readyWorkerTask), the boot's resume by
 // rule (booted, through suspendedPhaseOwners), the silence repair (workerSilent, through
 // phaseWorkerRecord and unpromptedPhaseWorker) and the CI settlement's wake of a released pod
@@ -167,11 +169,12 @@ func TestTheResumePathsGiveTheRunningDeploymentRoleItsWork(t *testing.T) {
 }
 
 // Each other reader of the workflow that names the worker of an issue's phase reads the role
-// with the issue (Issue.RoleAt, OpenRoleOf), so at step it names the role of the running step:
-// the silence rule's unprompted phase worker (unpromptedPhaseWorker), the members a design gate's
-// move tells (tellGateMoved), the roles a CI settlement tells beside the architect and the
-// implementer (tellChecks), and the closing sentence of the architect's task for a root carried
-// at step, whose worker the daemon starts itself (writeCarriedPhase).
+// with the issue (Issue.RoleAt, OpenRoleOf), so at step it names the role of the running step
+// where that step's own agent does it, as here (at a step the owner does, the role there is the
+// architect): the silence rule's unprompted phase worker (unpromptedPhaseWorker), the members a
+// design gate's move tells (tellGateMoved), the roles a CI settlement tells beside the architect
+// and the implementer (tellChecks), and the closing sentence of the architect's task for a root
+// carried at step, whose worker the daemon starts itself (writeCarriedPhase).
 func TestTheWorkflowsOtherReadersNameTheRunningDeploymentRole(t *testing.T) {
 	t.Run("the unprompted phase worker", func(t *testing.T) {
 		s := aSilentImplementer()

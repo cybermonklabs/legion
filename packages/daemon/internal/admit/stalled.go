@@ -490,7 +490,7 @@ func (a *Admission) workingTrees(ctx context.Context, tx pgx.Tx, issues []record
 // parked waits for a re-admission (tree_closed, tree_parked), a root whose label is off waits
 // for a person to hand it over (label_off), a root a live tree has not released waits for its
 // architect (ancestry), an issue under an accepted ancestor waits for that ancestor to close
-// (accepted_ancestor), and an issue past its review is at work on no slot, whose stillness is
+// (accepted_ancestor), and an issue in retro or merging is at work on no slot, whose stillness is
 // the stall itself (at_work). None of them is the daemon holding work it means to start, which
 // is what a wait by design is.
 //
@@ -654,7 +654,7 @@ func (h lineHolds) waitsByDesign(issue record.Issue) bool {
 //     `waiting_on_issue`, in `admission.blocked`, and in the `blocked` list of the controller's
 //     tick notice, which the daily report reads.
 //
-// An issue standing in held — held from a phase up to its review, which gave its slot back
+// An issue standing in held — held from a phase that keeps a slot, which gave its slot back
 // because it waits on work outside its tree as above — waits on that work like the three above,
 // and is answered true. What its tree can do (the architect's retry_or_escalate) ends the hold,
 // but the issue still waits on its blocker and still holds no slot, so a stall notice would name
@@ -829,13 +829,15 @@ func (a *Admission) everyIssueWaitsByDesign(members []record.Issue, holds lineHo
 // stalledTreeReason is what a stalled-tree notice tells the project's controller: the root, how
 // long the tree has been quiet, and, for each member of the tree (record.TreeMember), the phase
 // its record carries — `held` for a held issue — the role whose turn that issue's standing is
-// (record.Issue.RoleAt over record.StandsAt, which is the phase a held issue was held from, and
-// which at step is the role of the running step) or that the phase has no role, and the state of
-// its pull request. It ends by telling the controller to read the tree and decide. An issue
-// standing at admitted is told as a phase no role works, as it was before workflow.RoleFor named
-// the architect there: that answer is for the readers that start, resume or report the architect,
-// and this notice keeps the words it had (dispatch://INFRA-2614 R2). Accepting was the
-// architect's before as well, so an issue standing there names the architect, as it did.
+// (record.Issue.RoleAt over record.StandsAt, which is the phase a held issue was held from: the
+// role that works the place of the issue's task, so the architect at a step or a retro the owner
+// does, acceptance for the fresh agent of a step `acceptance` with no key, and at step the role of
+// the running step otherwise) or that the phase has no role, and the state of its pull request. It
+// ends by telling the controller to read the tree and decide. An issue standing at admitted is
+// told as a phase no role works, as it was before workflow.RoleFor named the architect there: that
+// answer is for the readers that start, resume or report the architect, and this notice keeps the
+// words it had (dispatch://INFRA-2614 R2). An issue standing in accepting names the architect where
+// the acceptance is the owner's, as it did, and acceptance where the fresh agent does it.
 //
 // The membership is the measure's own and is read from the one predicate, so the notice names
 // exactly the issues whose stillness was measured: a root, whatever its own status says, and

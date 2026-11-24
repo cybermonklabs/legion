@@ -52,12 +52,12 @@ func rowRuleRoot(t *testing.T, pool *pgxpool.Pool, row rowRuleCase, rank string)
 	}
 }
 
-// An issue holds one of the cap's rows from the moment the daemon starts it until its work is
-// past its review, save while it waits on another issue before then (releaseSlotsForWaits, which
-// no issue here does): the phases up to the review keep a row, and accepting, retro and merging
-// keep none (record.KeepsSlot). A hold keeps the row of the phase it came from,
-// because that is where the work stands (record.StandsAt), and a hold the record names no phase
-// for keeps one: the daemon knows only that the issue is held.
+// An issue holds one of the cap's rows while the daemon has started it in a phase that keeps one,
+// save while it waits on another issue there (releaseSlotsForWaits, which no issue here does):
+// every phase but accepting, retro and merging (in the default steps, the phases after the
+// review) keeps a row, and those three keep none (record.KeepsSlot). A hold keeps the row of the
+// phase it came from, because that is where the work stands (record.StandsAt), and a hold the
+// record names no phase for keeps one: the daemon knows only that the issue is held.
 //
 // The first reading gives one started issue each phase and runs one admission pass over them.
 // Four of them carry a row the release before this one wrote, which is what this change finds

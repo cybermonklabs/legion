@@ -41,7 +41,7 @@ func AppRoleFor(role claim.Role, deployed DeploymentApps, planned Planned) (AppR
 	switch plan.SourceOf(string(role), planned.Defines, inDeployment) {
 	case plan.SourceLegion:
 		switch role {
-		case claim.RoleArchitect, claim.RolePlanner, claim.RoleTester, claim.RoleReviewer, claim.RoleController, "acceptance":
+		case claim.RoleArchitect, claim.RolePlanner, claim.RoleTester, claim.RoleReviewer, claim.RoleController, claim.RoleAcceptance:
 			return Review, nil
 		case claim.RoleImplementer, claim.RoleMerger:
 			return Implement, nil

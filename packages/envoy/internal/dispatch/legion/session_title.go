@@ -8,10 +8,10 @@ import "strings"
 // the issues its tree walk can climb onto, PhaseWorkOf) and the metrics' own window reads — so it
 // lives here, beside the walk, rather than in either reader.
 
-// roles are Legion's six worker types, in the order the workflow runs them. The daemon's
-// claim.Roles is the same list in the daemon's own module (packages/daemon/internal/claim/
-// token.go), which this module does not import; a deployment changes each role's prompt, model
-// and harness, not the roles.
+// roles are the six roles of the daemon's claim.Roles, in the order the default steps reach them.
+// That list is in the daemon's own module (packages/daemon/internal/claim/token.go), which this
+// module does not import. The fresh agent of acceptance and a role a deployment or a plan defines
+// are not among them. So a title naming one is no Legion session to these readers.
 var roles = []string{"architect", "planner", "implementer", "tester", "reviewer", "merger"}
 
 // The two shapes a Legion session titles itself (packages/pi-legion/src/session-title.ts): a
@@ -36,7 +36,8 @@ type SessionTitle struct {
 
 // ParseSessionTitle reads a session title as Legion writes it: `Legion <role> · <KEY>` for a root
 // architect or a phase worker, and `Legion controller · <PROJECT>` for a controller. A title of
-// any other shape, or one naming a role Legion does not run, is not a Legion session.
+// any other shape, or one naming no role of roles, is not a Legion session. So a title of the
+// fresh agent of acceptance, or of a role a deployment or a plan defines, reads as none.
 func ParseSessionTitle(title string) (SessionTitle, bool) {
 	rest, isLegion := strings.CutPrefix(strings.TrimSpace(title), legionTitlePrefix)
 	if !isLegion {

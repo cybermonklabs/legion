@@ -120,15 +120,16 @@ func standingText(issue record.Issue, dir func(record.Issue) string, w Walk, row
 	return Standing{lines: lines, owners: ownersText(strings.TrimSpace(w.Text))}, nil
 }
 
-// stepsLine is ` Steps: 1 <step>, 2 <step>, … then Legion's retro and merge.`: each step of a
-// task by its place, words, the steps as its plan writes them (plan.Words), in the order they run,
-// each at its place from 1 (Walk.Steps), then the retro and the merge Legion runs after them.
+// stepsLine is ` Steps: 1 <step>, 2 <step>, … then Legion's retro, and its merge where the issue
+// has a pull request.`: each step of a task by its place, words, the steps as its plan writes them
+// (plan.Words), in the order they run, each at its place from 1 (Walk.Steps), then the retro Legion
+// runs after them, and the merge, which a task whose issue has no pull request does not have.
 func stepsLine(words []string) string {
 	named := make([]string, len(words))
 	for i, word := range words {
 		named[i] = fmt.Sprintf("%d %s", i+1, word)
 	}
-	return fmt.Sprintf(" %s: %s then Legion's retro and merge.", stepsLabel, strings.Join(named, ", "))
+	return fmt.Sprintf(" %s: %s then Legion's retro, and its merge where the issue has a pull request.", stepsLabel, strings.Join(named, ", "))
 }
 
 // reportsBefore is one ` Step <j> (<step>) reported: <word> version <v>.` for each step of w's

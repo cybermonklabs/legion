@@ -255,8 +255,9 @@ type IdleDecision struct {
 //     is what makes a host that cannot report degrade safely;
 //
 //   - no live phase worker whose phase is open has a phase reminder due inside the idle period. A
-//     phase worker's phase is open when the issue's current phase is that worker's role and its
-//     claim serves the current generation;
+//     phase worker's phase is open when that worker's role is the role that works the issue's
+//     place (OpenRoleOf over the view's phase and pods.IdleView.PlaceRole: none at a place the
+//     owner works) and its claim serves the current generation;
 //
 //   - the pod has done nothing the daemon recorded for the whole idle period.
 //
@@ -476,17 +477,18 @@ func idleStateReleasable(c pods.IdleClaim) bool {
 	return false
 }
 
-// idlePhaseOpen is whether the claim is the worker of the issue's open phase (OpenRoleOf, which at
-// step is the role of the running step the view reads with the issue, pods.IdleView.StepRole),
-// serving the current generation: the one shape of claim a phase reminder is armed in. Two claims
-// of one issue can hold that role — the agent of a key on its step, beside the role's own claim
-// of an earlier version of the plan — and only the claim the record gives the role's step works
-// the phase (record.WorkerClaim over the role's phases row, pods.IdleView.Phases): the claim the
-// row names while it runs a step, and the role's own token otherwise. A reminder due on the other
-// holds no pod.
+// idlePhaseOpen is whether the claim is the worker of the issue's open phase (OpenRoleOf, which
+// answers the role of the claim that works the task's place, pods.IdleView.PlaceRole, where the
+// view reads one, none at a place the owner does, and at step the role of the running step,
+// pods.IdleView.StepRole), serving the current generation: the one shape of claim a phase reminder
+// is armed in. Two claims of one issue can hold that role — the agent of a key on its step, beside
+// the role's own claim of an earlier version of the plan — and only the claim the record gives the
+// role's step works the phase (record.WorkerClaim over the role's phases row,
+// pods.IdleView.Phases): the claim the row names while it runs a step, and the role's own token
+// otherwise. A reminder due on the other holds no pod.
 func idlePhaseOpen(view pods.IdleView, c pods.IdleClaim) bool {
-	role := OpenRoleOf(record.Issue{Phase: view.Phase, StepRole: view.StepRole})
-	if role != c.Role || c.ServingGeneration != view.Generation {
+	role := OpenRoleOf(record.Issue{Phase: view.Phase, StepRole: view.StepRole, PlaceRole: view.PlaceRole})
+	if role == "" || role != c.Role || c.ServingGeneration != view.Generation {
 		return false
 	}
 	row := view.Phases[role]

@@ -15,13 +15,14 @@ import (
 )
 
 // beneathRetro is the issues beneath issue still in the workflow (openBeneath) where issue moves
-// into the retro (to) and its task's last step is not the owner's sign-off, and nothing for every
-// other move. A parent's head proves its children's merged work. The owner's sign-off is refused
-// while one of them runs (SIGNOFF_CHILD_IN_WORKFLOW), so a task whose last step is the sign-off
-// passes into its retro with none of them in the workflow. A task whose last step is another has
-// no such refusal before its retro: a task with no step acceptance:owner, and a task whose
-// sign-off stands before another step (`implementer acceptance:owner reviewer`), where an issue
-// beneath the parent may enter the workflow after the sign-off. Such a parent is held before its
+// into the retro (to) and its task's last step is not an acceptance, and nothing for every other
+// move. A parent's head proves its children's merged work. An acceptance is refused while one of
+// them runs (SIGNOFF_CHILD_IN_WORKFLOW: the owner's sign-off and the fresh agent of acceptance's
+// pass alike), so a task whose last step is an acceptance passes into its retro with none of them
+// in the workflow. A task whose last step is another has no such refusal before its retro: a task
+// with no acceptance step, and a task whose acceptance stands before another step
+// (`implementer acceptance:owner reviewer`), where an issue beneath the parent may enter the
+// workflow after the acceptance. Such a parent is held before its
 // retro instead (transition), from retro for its children (record.HoldForChildren), until none of
 // them is open beneath it (releaseHeldParents). The hold stands in place of the retro, which keeps
 // no slot (record.KeepsSlot reads record.StandsAt), so the parent holds none of the slots its
@@ -35,16 +36,26 @@ func (e *Engine) beneathRetro(ctx context.Context, tx pgx.Tx, issue record.Issue
 	return e.openBeneath(ctx, tx, issue)
 }
 
-// retroHeldNotice tells the owner of parent that Legion holds it before its retro for beneath, the
-// issues beneath it still in the workflow, and what ends the hold: each of them leaving it, done
-// or parked under the park rule (parkRule, carried word for word as every notice of a park is).
-// It names the retro and the implementer whose work the hold keeps, as the held notice of any
-// hold names the phase it is from (HeldNotice).
-func retroHeldNotice(parent string, beneath []string) record.Notice {
-	return record.Notice{Kind: "retro-held", Role: phase.RoleFor(phase.Retro), Phase: phase.Retro, Reason: fmt.Sprintf(
-		"%s passed its last step, and Legion holds it before its retro while these issues beneath it are still in the workflow: %s. "+
-			"A parent's head proves its children's merged work. Run each one to done, or park one with park_child "+parkRule+
-			"; Legion starts the retro when the last one leaves.", parent, strings.Join(beneath, ", "))}
+// retroHeldNotice tells the architect that owns parent by runs (the daemon's noticeArchitect,
+// record.OwningArchitect) that Legion holds it before its retro for beneath, the issues beneath it
+// still in the workflow, and what ends the hold (retroHeldReason). It names the retro and the role
+// of the retro's agent, whose work the hold keeps (Walk.RoleAt of the retro: the role of the
+// task's last step of the type implementation, the implementer for the owner's), which its caller
+// reads on the walk in hand, as the held notice of any hold names the phase it is from
+// (HeldNotice).
+func retroHeldNotice(parent string, role claim.Role, beneath []string) record.Notice {
+	return record.Notice{Kind: "retro-held", Role: role, Phase: phase.Retro, Reason: retroHeldReason(parent, beneath)}
+}
+
+// retroHeldReason is why parent waits before its retro for beneath, the issues beneath it still in
+// the workflow, and what ends the hold: each of them leaving it, done or parked under the park rule
+// (parkRule, carried word for word as every notice of a park is). It is the retro-held notice's
+// reason (retroHeldNotice) and the reason posted beside the status a todo on the held root is set
+// back to (heldParentWait's reason).
+func retroHeldReason(parent string, beneath []string) string {
+	return fmt.Sprintf("%s passed its last step, and Legion holds it before its retro while these issues beneath it are still in the workflow: %s. "+
+		"A parent's head proves its children's merged work. Run each one to done, or park one with park_child "+parkRule+
+		"; Legion starts the retro when the last one leaves.", parent, strings.Join(beneath, ", "))
 }
 
 // heldParentWait is why parent, held before its retro for the issues beneath it
@@ -82,11 +93,11 @@ func (w heldParentWait) refusal() *intake.Refusal {
 }
 
 // reason is the reason posted beside the status a todo on the held root is set back to: the hold's
-// own retro-held sentence where any issue beneath is open (retroHeldNotice), and otherwise why its
+// own retro-held sentence where any issue beneath is open (retroHeldReason), and otherwise why its
 // tree runs nothing yet (intake.HeldParentWaitsForTree).
 func (w heldParentWait) reason() string {
 	if len(w.beneath) > 0 {
-		return retroHeldNotice(w.parent.Key, w.beneath).Reason
+		return retroHeldReason(w.parent.Key, w.beneath)
 	}
 	return intake.HeldParentWaitsForTree(w.parent.Key, w.parent.Tree, w.lingers)
 }
@@ -140,9 +151,12 @@ func (e *Engine) releaseHeldParents(ctx context.Context, tx pgx.Tx, written []st
 // The hold is cleared and parent stands in its retro, where its task already stands ({retro 0},
 // moveTask at the hold). The retro's Dispatch status is queued through Engine.status, since the
 // hold wrote none and the record still holds the status of the last step (PhaseStatus(held) is
-// empty). The implementer is started with the task the pass into the retro would have started it
-// with (transition): the handoff of the step the task passed last, which the hold kept on that
-// step's phases row, and the pull request. Its start raises its entry and the count of starts of
+// empty). The retro's agent is started (Walk.RoleAt of the retro: the role of the agent that does
+// it), or, where the retro is the owner's, the owner is told with an owner-step notice
+// (startOwnersStep), with the task the pass into the retro would have started it with
+// (transition): the handoff of the step the task passed last, which the hold kept on that
+// step's phases row, and the pull request where it has one. Its start raises its entry and the
+// count of starts of
 // the retro's place (start, which writes the retro's step), not restart, which raises neither,
 // since this retro never ran. The act is children_done, which the log line names: no row of the
 // table moves a held issue.
@@ -203,7 +217,7 @@ func (e *Engine) startHeldRetro(ctx context.Context, tx pgx.Tx, parent record.Is
 	}
 	e.logOnCommit(ctx, "workflow: the last issue beneath a held parent left the workflow, and its retro starts", "issue", parent.Key, "tree", parent.Tree,
 		"task", w.Task, "act", "children_done", "from", phase.Held, "to", phase.Retro, "status", parent.Status)
-	role := phase.RoleFor(phase.Retro)
+	role := w.RoleAt(w.Place)
 	if err := e.clearHandoff(ctx, tx, parent, role); err != nil {
 		return err
 	}

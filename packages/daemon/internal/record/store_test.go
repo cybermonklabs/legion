@@ -858,11 +858,12 @@ func samePullRequest(got, want PullRequest) bool {
 		reflect.DeepEqual(got.ConflictRead, want.ConflictRead) && reflect.DeepEqual(got.MergeForward, want.MergeForward)
 }
 
-// A production check is one record per closed issue, every field read back as written — the role
-// that works it and the wake it named among them — with its null columns (the wake times, the
-// close and the outcome) absent until written; it is keyed by its issue, so a second write of the
-// same issue replaces the first. The open lists leave a closed check out,
-// OpenProductionChecksOfTree those of other trees too, and both order by the open.
+// A production check is one record per issue whose merge opened it (an issue closed with no pull
+// request opens none), every field read back as written — the role that works it and the wake it
+// named among them — with its null columns (the wake times, the close and the outcome) absent until
+// written; it is keyed by its issue, so a second write of the same issue replaces the first. The
+// open lists leave a closed check out, OpenProductionChecksOfTree those of other trees too, and both
+// order by the open.
 func TestStoreRoundTripsProductionChecksAndListsTheOpenOnesByTree(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)

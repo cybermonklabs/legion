@@ -12,15 +12,22 @@ daemon admits it and starts an **architect**, an agent that owns the issue from 
 architect turns your issue into a spec and asks you the questions only you can answer. Once you
 approve the spec, the daemon runs **phase workers** one after another, the steps the architect's
 plan for the issue picks. The default steps are a planner, an implementer that writes the change
-and opens a pull request, a tester and a reviewer, and a merger follows every plan. Each agent is an
-[Oh My Pi](https://github.com/cybermonklabs/oh-my-pi) session in a Kubernetes pod of its own.
+and opens a pull request, a tester and a reviewer, then the architect's acceptance; the architect
+can also do any step of its plan itself. A merger follows each issue whose steps opened a pull
+request. Each agent is an
+[Oh My Pi](https://github.com/cybermonklabs/oh-my-pi) session, and under Kubernetes every agent of
+an issue runs in that issue's one pod.
 
-When the change is tested, reviewed and approved, the merger merges the pull request itself, at
-the head it read, under the repository's own branch protection. The architect
-accepts the reviewed change before that, and the merge closes the issue. The implementer then
-drives the merged change in production, once your deploy carries it, and records what it saw on
-the pull request. Every step leaves a record you can read: the spec, the questions and each
-phase's handoff in Dispatch, and the code and the reviews on GitHub.
+When the issue's steps have passed (in the default steps, the change is tested, reviewed, approved
+and accepted by the architect), the merger merges the pull request itself, at the head it read,
+under the repository's own branch protection, and the merge closes the issue. An issue with no pull
+request closes when its retro ends, with no merge. After a merge the tester drives
+the merged change in production, once your deploy carries it, and records what it saw on the pull
+request, unless your project's `production_check` is `off`. Every step leaves a record you can
+read: the spec, the questions and each phase's handoff in Dispatch, and the code and the reviews on
+GitHub.
+
+The chart follows an issue through the default steps:
 
 ```mermaid
 flowchart LR
@@ -28,7 +35,7 @@ flowchart LR
   admission --> architect["Architect<br/>writes the spec"]
   architect --> gate{"You approve<br/>the spec"}
   gate --> planner
-  subgraph pods["Phase workers, one Kubernetes pod each"]
+  subgraph pods["Phase workers, in the issue's one pod"]
     planner --> implementer
     implementer --> tester
     tester --> reviewer
@@ -48,10 +55,11 @@ flowchart LR
 
 - [Concepts](/legion/legion/concepts/): the controller, the architect, the phase workers,
   admission, the design gate, handoffs, review, the architect's acceptance, the merge that closes
-  the issue and the production check your project's `production_check` setting opens after it,
+  an issue with a pull request and the production check your project's `production_check` setting
+  opens after it,
   and how they fit together.
 - [Using Legion](/legion/legion/using-legion/): hand an issue to Legion, approve its spec, review
-  and merge its pull request, and read what each Dispatch status means.
+  and merge its pull request where it has one, and read what each Dispatch status means.
 - [Running Legion](/legion/legion/running-legion/): what an operator needs to run the Legion daemon
   on Kubernetes, how to configure, start, upgrade and watch it.
 - [Troubleshooting](/legion/legion/troubleshooting/): the failures Legion reports, and the command

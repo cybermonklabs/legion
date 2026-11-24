@@ -1768,9 +1768,9 @@ export const dispatchToolSpecs = [
     },
     description:
       "Record one result of one check of an issue's Verification document, or retract a result " +
-      "recorded before. A record prints the pull-request body line it implies. Write that line " +
-      "into the pull-request body unchanged: it is the one grammar every writer uses, and it " +
-      "carries no link to Dispatch, no private host and no issue key: Dispatch keeps only words " +
+      "recorded before. A record prints the pull-request body line it implies. Where the work has " +
+      "a pull request, write that line into its body unchanged: it is the one grammar every writer " +
+      "uses, and it carries no link to Dispatch, no private host and no issue key: Dispatch keeps only words " +
       "of letters, digits and plain punctuation, and of those leaves out every word that holds " +
       "`://`, a private or Dispatch host, or an issue key of one of its projects; the record keeps " +
       "the whole reading. --dry-run prints the line the record would print, and records nothing. " +

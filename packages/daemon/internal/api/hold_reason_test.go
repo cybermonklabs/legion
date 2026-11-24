@@ -13,10 +13,10 @@ import (
 )
 
 // The three held issues the hold reasons are read on: a task its owner stopped at testing, a
-// parent whose plan has no acceptance step waiting before its retro for the issues beneath it,
-// and an escalated hold, the one reason a caller below OwnerPlanContract knows. stoppedInMerge is
-// a task stopped where it keeps no slot, and beneath an issue beneath childrenIssue, which the
-// held rows of heldWordIssues name.
+// parent whose task's last step is not an acceptance waiting before its retro for the issues
+// beneath it, and an escalated hold, the one reason a caller below OwnerPlanContract knows.
+// stoppedInMerge is a task stopped where it keeps no slot, and beneath an issue beneath
+// childrenIssue, which the held rows of heldWordIssues name.
 const (
 	taskStoppedIssue = "LEGION-230"
 	childrenIssue    = "LEGION-231"

@@ -1,6 +1,6 @@
 # The PR body lines the changed paths require
 
-Read this at step 4 of `skill://legion-retro`.
+Read this at step 4 of `skill://legion-retro`, which runs only where the issue has a pull request.
 A failure here stops retro as its "When retro stops" says.
 A repository can require body lines derived from the changed paths, read by a required check;
 the body written earlier may not cover every path the pull request now changes, and the merger reports a stale body rather than rewriting it.

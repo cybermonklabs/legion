@@ -1,12 +1,12 @@
 # A finding outside your issue
 
-Read it when you find a problem your issue does not cover (a defect in another component, repository or tool, a gap in Legion itself) or a production check look fails. It holds for every Legion role and its subagents, and replaces the filing step of `skill://dispatch-first`. A child's own architect opens no ask itself: it sends the finding to the architect above it, and the root's architect opens the ask.
+Read it when you find a problem your issue does not cover (a defect in another component, repository or tool, a gap in Legion itself) or a production check look fails. It holds for every Legion role and its subagents, and replaces the filing step of `skill://dispatch-first`. The architect that holds a child asks a person about that child's work on the child's own issue.
 
 ## Fix it where you are, else hand it over, and ask only for a decision
 
 A finding outside your issue never becomes a `dispatch issue` you file. Take the first step that fits:
 
-1. **Fix it here.** A defect with a clear fix, in code your tree touches or depends on, goes into your tree's own pull request; say so in your handoff and the PR body.
+1. **Fix it here.** A defect with a clear fix, in code your tree touches or depends on, goes into your tree's own pull request, where it has one. Say so in your handoff and the PR body. In a tree with none, it goes to the architect your `Legion addressing` line names, for a step that opens one.
 2. **Hand it over.** Any other clear defect goes to the controller with its evidence (*Send a finding to the controller*). It gives the work to the tree that owns the code, or files a Legion root when none does.
 3. **Ask.** A finding that needs a person's authority, taste or risk appetite (whether it is wanted, which design, who owns it, a change of scope, cost or risk) is a `dispatch ask` with one recommendation (*What the ask says*).
 
@@ -25,7 +25,7 @@ Search first (`skill://dispatch-first`). An open issue that tracks the problem g
 A publish to a role answers with its live `holder`. When no live session holds the controller role, the answer says Envoy kept the message for one hour (`kept_until`); a keep is not a delivery. An `unresponsive` holder is not a stopped one: release nothing, take nothing from it, and publish no second copy. Treat a kept answer as a controller not taking it, and make the finding an ask on the first of these that holds:
 
 1. **The report issue is open:** ask there, the question opening `Clear defect from <your claim token>` and `--ref` naming your evidence comment, then reply `Asked dispatch://<REPORT KEY>/ask/<id>` under that comment.
-2. **The report issue is missing or closed:** post the evidence on your own issue and ask there, then publish the ask's reference to the architect that owns your issue. It holds your issue's acceptance until a controller takes the ask, since an open ask on a closed issue drops out of the controller's listing.
+2. **The report issue is missing or closed:** post the evidence on your own issue and ask there, then publish the ask's reference to the architect that owns your issue. Where your issue's task has the step `acceptance:owner`, the ask holds that acceptance until a controller takes the ask. It does so because an open ask on a closed issue drops out of the controller's listing.
 3. **Your own issue is closed too** (`409 ISSUE_CLOSED`): put the report issue back in reach, then post and ask there, and say in your summary that you did. This is the one lifecycle status you write, and never through the `legion` tool's `set_status`.
    - It exists and is closed: `dispatch issue-update --issue <REPORT KEY> --status icebox`, the status alone (a closed issue refuses a reopening status beside any other field).
    - None exists: `dispatch issue --project <PROJECT> --title 'Legion daily report' --spec-file -`, with the Summary `skill://legion-controller/references/daily-report.md` gives, then `dispatch issue-update --issue <NEW KEY> --status icebox`. It carries no `legion` label.
@@ -54,4 +54,4 @@ EOF
 
 ## Tell the controller about the ask
 
-The answer reaches only the ask's followers. Once the ask is open, `envoy_publish` `dispatch://<REPORT KEY>/ask/<id>` to the controller topic with `expects_reply: false`; the controller files what the answer asks for, and you file nothing. When the listener only kept that publish, do nothing more for an ask on the report issue: the controller's catch-up finds it. An ask on the report issue blocks nothing of your own issue; one on your own issue holds its acceptance. A production check look names the message or the ask in its result and summary.
+The answer reaches only the ask's followers. Once the ask is open, `envoy_publish` `dispatch://<REPORT KEY>/ask/<id>` to the controller topic with `expects_reply: false`; the controller files what the answer asks for, and you file nothing. When the listener only kept that publish, do nothing more for an ask on the report issue: the controller's catch-up finds it. An ask on the report issue blocks nothing of your own issue. One on your own issue holds its acceptance where its task has the step `acceptance:owner`. A production check look names the message or the ask in its result and summary.

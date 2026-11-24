@@ -24,6 +24,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/launcher"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -192,6 +193,12 @@ func newIdleWakeRig(t *testing.T, plans map[string]idleRigPlan, issues ...string
 	rig.cfg.Runtime.Kubernetes.Kubeconfig = writeKubeconfig(t, rig.kube.url, "test")
 	rig.kube.onPodReady = rig.podReady
 	rig.kube.onPodGone = rig.pods.podGone
+	// The stand-in's kubelet projects each pod's Secret volumes here, so a role's gh files are
+	// where its launcher reads them (idleWakeRig.podReady), and a write of the slot's Secret
+	// reaches them, as a relaunch into a kept pod waits for (internal/launcher's
+	// awaitGitHubCredential).
+	rig.kube.volumes = t.TempDir()
+	t.Cleanup(func() { rig.kube.requireProjected(t) })
 	rig.kube.run(t)
 	t.Setenv(idleRigURLVariable, rig.agents.url)
 
@@ -326,7 +333,9 @@ func (r *idleWakeRig) address() string {
 // podReady starts the pod's launchers, for the roles the rig gave the issue a claim — the
 // implementer, and each role the rig's configuration defines (cfg.Roles), which no other test of
 // the rig defines — and records where each launcher writes its generations so the role process
-// can be handed its boot token.
+// can be handed its boot token. Each role's gh files are the directory the stand-in's kubelet
+// projects the role's gh volume into, the volume the pod's container mounts at
+// <RolesDir>/<role>/gh (runtime/sandbox's rolesDirLayout).
 func (r *idleWakeRig) podReady(pod, uid string, roles map[string]string) {
 	key := pod
 	for _, issue := range r.issues {
@@ -334,13 +343,14 @@ func (r *idleWakeRig) podReady(pod, uid string, roles map[string]string) {
 			key = issue.key
 		}
 	}
-	wanted := map[string]string{}
+	wanted, gh := map[string]string{}, map[string]string{}
 	for role, token := range roles {
 		if role == string(claim.RoleImplementer) || slices.ContainsFunc(r.cfg.Roles, func(defined config.Role) bool { return string(defined.Name) == role }) {
 			wanted[role] = token
+			gh[role] = r.kube.mounted(uid, sandbox.RolesDir+"/"+role+"/"+launcher.RoleGHDir)
 		}
 	}
-	r.pods.podReady(pod, uid, wanted, func(role, dir string) { r.agents.setPrivate(key, role, dir) })
+	r.pods.podReady(pod, uid, wanted, gh, func(role, dir string) { r.agents.setPrivate(key, role, dir) })
 }
 
 // seed records one issue, its tree's lifecycle and its implementer's suspended claim, as

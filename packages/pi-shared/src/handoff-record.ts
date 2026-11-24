@@ -18,8 +18,9 @@ import { staleGitLockNote } from "./git-lock";
  *
  * The phase a completion is of is the issue's (from its record) when the session's role works
  * it, and otherwise the phase the role left (`completedPhase`), where the daemon records a
- * completion that arrives once the issue moved on: the reviewer's, whose review moves the issue
- * on before it completes, is one. A file-backed phase of the role's own (`FILE_BACKED`) ends with
+ * completion that arrives once the issue moved on: the reviewer's, where its review on GitHub
+ * moved the issue on before it completes, is one. A file-backed phase of the role's own
+ * (`FILE_BACKED`) ends with
  * a handoff record on the issue, which the worker writes with `dispatch handoff-write`; its
  * completion reports the newest record of the phase's word, `handoffId` and `handoffVersion`,
  * read from Dispatch here. No record of the phase the role works is refused naming the command
@@ -66,7 +67,9 @@ import { staleGitLockNote } from "./git-lock";
  * daemon would not read, and the daemon never records a sibling's `@-` as the role's handoff
  * commit.
  *
- * Every other completion — retro, the merger's, the architect's, which leaves no phase — reports
+ * Every other completion — retro, the merger's, and the architect's `handoff_complete`, which ends
+ * no phase (the daemon refuses it: the architect reports a step of its own with `complete_step`,
+ * which asks this module for the report of that step's role) — reports
  * the commit the workspace stands on, `@-`, and no record. The implementer's report on its closed
  * issue's production check resolves neither: `legion-phase-ops.ts` never asks this module for
  * one.
@@ -105,7 +108,8 @@ export interface HandoffReport {
 export interface HandoffReportInput {
   /** The issue's phase, from its record (`read_record`'s `phase`). */
   readonly phase: LegionPhase;
-  /** The session's claim role: one of Legion's six, a role of the deployment or a role of the issue's plan. */
+  /** The session's claim role: one of Legion's six, the role acceptance, or a role of the
+   * deployment or of the plan. */
   readonly role: LegionStepRole;
   /** The pane's environment: `LEGION_WORKSPACE` and `LEGION_ISSUE`. */
   readonly env: NodeJS.ProcessEnv;
@@ -265,15 +269,17 @@ export async function findPushedBranchHead(input: {
  * The phase a completion by `role` is of while the issue stands at `at`: `at` when `role` works
  * it, and otherwise the phase `role` left, the one the daemon records a late completion on (one
  * that arrives after the issue moved on) and reads that completion's handoff record against. It
- * mirrors the daemon's `phase.Of`, as the completion route reads it
- * (`packages/daemon/internal/phase/phase.go`,
- * `packages/daemon/internal/api/handoff.go`): the planner, the tester, the reviewer and the
- * merger each work one phase, which is the answer wherever the issue stands; the implementer
- * works implementing and retro, and has left retro once the issue stands past it in the
- * workflow's order (`phase.MovesBack(at, retro)`, which merging alone answers) and implementing
- * anywhere else; the architect leaves no phase, so its answer is the issue's; and a role of the
- * deployment works `step` (`phase.LeftBy`), which ends with no handoff record, so its completion
- * reports the commit the workspace stands on.
+ * reads the role alone, as the daemon's `phase.Of` does, where the completion route reads the
+ * issue's phase for the role that works the issue's place (`Issue.RoleAt`) and `phase.LeftBy`
+ * otherwise (`packages/daemon/internal/phase/phase.go`, `packages/daemon/internal/api/handoff.go`):
+ * the planner, the tester, the reviewer and the merger each work one phase, which is the answer
+ * wherever the issue stands; the implementer works implementing and retro, and has left retro
+ * once the issue stands past it in the workflow's order (`phase.MovesBack(at, retro)`, which
+ * merging alone answers) and implementing anywhere else; the architect's `handoff_complete` ends
+ * no phase, so its answer is the issue's; and every other role, a role of the deployment or of the
+ * plan and the role acceptance, answers `step`, which ends with no handoff record, so its
+ * completion reports the commit the workspace stands on, as it does where the route reads the
+ * step, the acceptance or the retro that role works.
  */
 function completedPhase(role: LegionStepRole, at: LegionPhase): LegionPhase {
   switch (role) {

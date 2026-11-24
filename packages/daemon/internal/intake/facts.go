@@ -636,7 +636,8 @@ type PullRequestReview struct {
 	// review it holds (LegionHead, dispatch://INFRA-1557), where the webhook's envelope carries
 	// the commit_id the event was delivered with, so the workflow lets a person's listed review
 	// decide no round while the same person's webhook review decides as it always has
-	// (workflow's refusesRound).
+	// (workflow's refusesRound). At a review step the owner does, neither decides (workflow's
+	// settleRound).
 	ReadFromList bool
 }
 
@@ -811,9 +812,11 @@ func (PullRequestChecks) namedIssue() (string, bool) { return "", false }
 // once it has. MergeState is
 // GitHub's own merge state for the head from the same answer's `mergeable_state`, and it is what
 // an approval standing on the head waits for: a state the issue may advance on
-// (record.MergeState.Mergeable) ends the round in accepting, and any other state leaves the
+// (record.MergeState.Mergeable) ends the round, and the issue moves on to its task's next step
+// (accepting, in the default steps), and any other state leaves the
 // approval standing where it is and tells the architect and the reviewer so (workflow's
-// reviewRound). It tells a head GitHub holds on a check or a review the repository requires from
+// reviewRound). At a review step the owner does, the engine reads no round (workflow's
+// settleRound). It tells a head GitHub holds on a check or a review the repository requires from
 // one GitHub would merge now, which Mergeable cannot.
 //
 // HeadSHA is the head GitHub answered both of them for, from the same answer's `head.sha`. Every
@@ -1025,6 +1028,12 @@ type HandoffComplete struct {
 	// reviewed commit. 0 where the claim serves no entry, which is judged by neither and moves no
 	// commit.
 	Entry int64
+	// Step is the place of the step the owner reports, 1 for its first and 0 for the retro, on the
+	// owner's report of a step of its own (api's complete_step): the workflow takes such a report
+	// only while the issue's task stands at that place and its agent there is the owner, read in
+	// the fact's own transaction (OWNER_STEP_NOT_RUNNING). It is 0 on a worker's completion, which
+	// names no step and reads none.
+	Step int
 }
 
 func (f HandoffComplete) namedIssue() (string, bool) { return f.Issue, true }
@@ -1121,10 +1130,11 @@ type RestartPhase struct {
 
 func (f RestartPhase) namedIssue() (string, bool) { return f.Issue, true }
 
-// SignOff records the architect's post-production-check approval: the claim of the architect, and
-// the issue's generation and the run of the step it stood in (record.Store.OpenStep, the run of
-// accepting) as the route read them (api's signOff), which the workflow judges again under the
-// fact lock (ArchitectRequest, EnteredRequest).
+// SignOff records the owner's acceptance in accepting, of an issue with no plan rows or at a step
+// `acceptance:owner` (`sign_off`, or the owner's pass of that step by complete_step): the claim of
+// the architect, and the issue's generation and the run of the step it stood in
+// (record.Store.OpenStep, the run of accepting) as the route read them (api's signOff), which the
+// workflow judges again under the fact lock (ArchitectRequest, EnteredRequest).
 type SignOff struct {
 	Issue      string
 	By         claim.Token
@@ -1701,12 +1711,14 @@ const (
 )
 
 // PodBackstopDue is one armed backstop of a released pod coming due (the pod_wake_backstops row
-// at its due_at): the claim it was armed for (Claim), the worker of the open phase at its release,
-// is woken where it stands released (ReleasedClaimByToken), whatever else did or did not happen
-// since the release, and a backstop of an issue the record no longer holds does nothing. Role is
-// the role that claim held then. It is never decoded from an event — the daemon's own pass reads
-// the due rows and applies one fact per row, under the row's id, so a backstop that came due while
-// the daemon was down fires once after it starts.
+// at its due_at): the claim it was armed for (Claim) is woken where it stands released
+// (ReleasedClaimByToken), whatever else did or did not happen since the release, and a backstop
+// of an issue the record no longer holds does nothing. That claim is the worker of the open phase
+// at its release, or the owner for an architect's backstop, which a release arms at a step or a
+// retro of the owner's other than its acceptance. Role is the role that claim held then. It is
+// never decoded from an event — the daemon's own pass reads the due rows and applies one fact per
+// row, under the row's id, so a backstop that came due while the daemon was down fires once after
+// it starts.
 type PodBackstopDue struct {
 	ID    int64
 	Issue string
@@ -2003,8 +2015,8 @@ func stoppedSentence(issue, task, reason string) string {
 }
 
 // RetryOfHeldParent is the 409 HELD_FOR_CHILDREN refusal of a release of issue's hold where issue,
-// a parent whose plan has no acceptance step, waits before its retro for the issues beneath it,
-// beneath (record.HoldForChildren): the last of them to leave starts the retro.
+// a parent whose task's last step is not an acceptance, waits before its retro for the issues
+// beneath it, beneath (record.HoldForChildren): the last of them to leave starts the retro.
 func RetryOfHeldParent(issue string, beneath []string) *Refusal {
 	return &Refusal{Status: 409, Code: "HELD_FOR_CHILDREN", Message: fmt.Sprintf(
 		"%s waits before its retro for these issues beneath it: %s. Legion starts the retro when the last one leaves. This retry changed nothing.", issue, strings.Join(beneath, ", "))}
@@ -2062,8 +2074,8 @@ func NotCurrentPhase(role claim.Role, p phase.Phase, issue string) *Refusal {
 // the entry the claim's worker is on (HandoffComplete.Entry), current the entry the role's phases
 // row names (record.PhaseRow.Entry), movedBack whether the move that raised it was a move back
 // (record.PhaseRow.EntryMovedBack), and otherSteps the highest entry another row of the role
-// holds, the row of another of its steps or the implementer's retro row (record.OtherStepsEntry),
-// 0 where the role has no other row; served is the claim the role's row on
+// holds, the row of another of its steps or its retro row where it does the retro
+// (record.OtherStepsEntry), 0 where the role has no other row; served is the claim the role's row on
 // the served entry names (record.ServedClaim) and holder the claim the row on current names
 // (record.PhaseRow.Claim); issue is the record as the same read holds it, pr the pull request it
 // holds, and pending the claim's queued task, which only the route reads.
@@ -2102,10 +2114,11 @@ func NotCurrentPhase(role claim.Role, p phase.Phase, issue string) *Refusal {
 // stands on.
 //
 // A completion at admitted is answered so too, whichever role sends it. Admitted is the
-// architect's own phase (phase.RoleFor), and the architect completes nothing (workflow's handoff
-// refuses it ACCEPTANCE_IS_SIGN_OFF), so the guard keeps the answer a completion at admitted had
-// while no role was named for that phase (dispatch://INFRA-2614, R2), now that a root's architect
-// holds an entry there.
+// architect's own phase (phase.RoleFor), and the architect's own completion is refused (workflow's
+// handoff refuses it ACCEPTANCE_IS_SIGN_OFF; its report of a step of its own comes by
+// complete_step, as that step's role's completion), so the guard keeps the answer a completion at
+// admitted had while no role was named for that phase (dispatch://INFRA-2614, R2), now that a
+// root's architect holds an entry there.
 //
 // An entry above the row's is refused with the entry below it (unraisedEntry), though the record
 // should never produce it: the transition raises the row's entry in the transaction that composes

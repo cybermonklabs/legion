@@ -51,11 +51,12 @@ func rowAbove(row, than PhaseRow) bool {
 }
 
 // OtherStepsEntry is the highest entry a row of row's role holds other than row: the row of
-// another step of that role, or the implementer's retro row (place 0), which stands once its retro
-// is entered; and 0 where the role has no other row: a role at one step with no retro row, and
-// every role of an issue with no plan rows. A step's start raises its entry above every row of its
-// role (workflow's enter), so an entry at or below this one is of another step's run or the
-// retro's, or of an earlier run of row's own step that the task has since left for one of them.
+// another step of that role, or the role's retro row (place 0), where its agent does the retro as
+// that role, which stands once its retro is entered; and 0 where the role has no other row: a
+// role at one step with no retro row, and every role of an issue with no plan rows. A step's
+// start raises its entry above every row of its role (workflow's enter), so an entry at or below
+// this one is of another step's run or the retro's, or of an earlier run of row's own step that
+// the task has since left for one of them.
 // The entry fence of a completion reads it (intake.EntryFence), so the same head is never taken as
 // the same work across two runs that ask for different work.
 func OtherStepsEntry(rows []PhaseRow, row PhaseRow) int64 {
@@ -98,7 +99,7 @@ func StartLeft(rows []PhaseRow, role claim.Role, entry int64) (int64, bool) {
 // at, whose steps are steps. A role can stand at two steps of a task, one agent doing both, and
 // each run of a step keeps a row of its own (StepTask, StepPlace), so the row read is the row of
 // one of the role's places in the task: its step at at where the step there is the role's; else
-// its latest place before at, the retro, the implementer's (phase.RoleFor), and the merge, the
+// its latest place before at, the retro, the role its agent runs as (PlaceWorker), and the merge, the
 // merger's, standing after every step; else its first place after at, so a read or a write before
 // the role's first step reaches the row of that step, as the one row of a role did; and place 0
 // where the task gives the role no place, so every write of such a role lands on one row. Where
@@ -117,7 +118,7 @@ func PhaseRowAt(rows []PhaseRow, role claim.Role, task string, at TaskPlace, ste
 	if task == "" {
 		return PhaseRowOf(rows, role)
 	}
-	row, _ := StepRowOf(rows, role, task, RolePlace(role, at, steps))
+	row, _ := StepRowOf(rows, role, task, RolePlace(role, task, at, steps))
 	return row
 }
 
@@ -185,20 +186,22 @@ func CompletionRow(rows []PhaseRow, role claim.Role, entry int64, works bool, ta
 	return PhaseRowAt(rows, role, task, at, steps)
 }
 
-// RolePlace is the place (PhaseRow.StepPlace) of the row of role PhaseRowAt reads at at, on a
-// task whose steps are steps: role's place nearest at (NearestPlace) among its steps, the retro,
-// the implementer's (phase.RoleFor), and the merge, the merger's; from 1 for a step, 0 for the
-// retro, the merge and a role the task gives no place. It is also the place a completion's key
-// names where the role stands at two steps and its row is of no step (StandsTwice; api's
-// completion route).
-func RolePlace(role claim.Role, at TaskPlace, steps []PlanStep) int {
+// RolePlace is the place (PhaseRow.StepPlace) of the row of role PhaseRowAt reads at at, on task,
+// whose steps are steps: role's place nearest at (NearestPlace) among its steps, the retro, the
+// role its agent runs as (PlaceWorker: the role of the task's last step of the type implementation,
+// and the implementer where that step is the owner's or the task has none, so the row read there is
+// the row its entry raises), and the merge, the
+// merger's; from 1 for a step, 0 for the retro, the merge and a role the task gives no place. It is
+// also the place a completion's key names where the role stands at two steps and its row is of no
+// step (StandsTwice; api's completion route).
+func RolePlace(role claim.Role, task string, at TaskPlace, steps []PlanStep) int {
 	var places []TaskPlace
 	for _, step := range steps {
 		if claim.Role(step.Role) == role {
 			places = append(places, TaskPlace{Kind: PlaceStep, Position: step.Position})
 		}
 	}
-	if role == phase.RoleFor(phase.Retro) {
+	if retro, _ := PlaceWorker(task, TaskPlace{Kind: PlaceRetro}, steps); role == retro.Role {
 		places = append(places, TaskPlace{Kind: PlaceRetro})
 	}
 	if role == phase.RoleFor(phase.Merging) {
@@ -261,7 +264,7 @@ type PhaseReader interface {
 // ReadWorkerClaim is WorkerClaim over issue's phases rows as tx reads them: the claim of the agent
 // that works role's step of issue now, read in the caller's transaction. It is the one reader of
 // that claim for a caller that holds no rows of its own — the engine (Engine.workerClaim), the
-// open phase's worker (workflow.OpenWorker), the operator's routes (internal/api's workerToken) and
+// claim a backstop is armed for (workflow.BackstopTargetAt), the operator's routes (internal/api's workerToken) and
 // the outbox's executors (internal/daemon's workerToken and lookBoundAfterPause) — so each reads
 // the rows and the rule the same way.
 func ReadWorkerClaim(ctx context.Context, phases PhaseReader, tx pgx.Tx, project, issue string, role claim.Role) (claim.Token, error) {

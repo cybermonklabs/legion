@@ -83,6 +83,11 @@ const (
 	// launcher answering each slice, the last with the outcome of its install.
 	TypeLauncherLeakCheck       = "launcher_leak_check"
 	TypeLauncherLeakCheckResult = "launcher_leak_check_result"
+	// The daemon asking a slot's launcher whether the slot's gh files hold a credential now, before
+	// it tells the slot's agent a step whose App those files must hold, and the launcher's answer,
+	// made at once from one read of the file.
+	TypeLauncherCredentialCheck       = "launcher_credential_check"
+	TypeLauncherCredentialCheckResult = "launcher_credential_check_result"
 )
 
 // SyntheticModel is the model Claude Code names on a message no model wrote, such as its own answer
@@ -204,6 +209,10 @@ type LauncherHello struct {
 	// credential its start names (LauncherStart.GitHubCredential). A launcher of an image before
 	// that wait sends no member.
 	CredentialWait bool `json:"credentialWait,omitempty"`
+	// CredentialCheck says this launcher answers a launcher_credential_check
+	// (LauncherCredentialCheck). A launcher of an image before that frame sends no member, and the
+	// daemon sends it no check: it would end its connection on a command it does not know.
+	CredentialCheck bool `json:"credentialCheck,omitempty"`
 }
 
 // LauncherHelloAck admits a launcher to receive child process commands, and hands it the
@@ -706,6 +715,25 @@ type LauncherStopResult struct {
 	Error string `json:"error,omitempty"`
 }
 
+// LauncherCredentialCheck asks the launcher whether its slot's gh files hold a credential now:
+// HostsFile is the default owner's hosts.yml, relative to the slot's gh directory, and TokenDigest
+// the hex SHA-256 of the token it must hold, as a start names them (LauncherGitHubCredential). The
+// launcher answers at once from one read of the file and never waits for it.
+type LauncherCredentialCheck struct {
+	ID          string `json:"id"`
+	HostsFile   string `json:"hostsFile"`
+	TokenDigest string `json:"tokenDigest"`
+}
+
+// LauncherCredentialCheckResult is the launcher's answer to LauncherCredentialCheck: OK where the
+// file holds a token of that digest, false where it holds another or none yet. Error is a check
+// the launcher could not make at all, such as a file outside the slot's gh directory.
+type LauncherCredentialCheckResult struct {
+	ID    string `json:"id"`
+	OK    bool   `json:"ok"`
+	Error string `json:"error,omitempty"`
+}
+
 // HelloAck accepts the hello. The shim spawns OMP only after it (worker-stream-listener.ts:14).
 type HelloAck struct{}
 
@@ -1026,44 +1054,46 @@ type Raw struct {
 	JSON json.RawMessage
 }
 
-func (Hello) FrameType() string                        { return TypeHello }
-func (HelloAck) FrameType() string                     { return TypeHelloAck }
-func (NegotiateProtocol) FrameType() string            { return TypeNegotiateProtocol }
-func (Prompt) FrameType() string                       { return TypePrompt }
-func (Response) FrameType() string                     { return TypeResponse }
-func (GetState) FrameType() string                     { return TypeGetState }
-func (Compact) FrameType() string                      { return TypeCompact }
-func (AgentStart) FrameType() string                   { return TypeAgentStart }
-func (AgentEnd) FrameType() string                     { return TypeAgentEnd }
-func (ToolExecutionStart) FrameType() string           { return TypeToolExecutionStart }
-func (ToolExecutionEnd) FrameType() string             { return TypeToolExecutionEnd }
-func (PromptResult) FrameType() string                 { return TypePromptResult }
-func (Shutdown) FrameType() string                     { return TypeShutdown }
-func (AdoptWorkingCopy) FrameType() string             { return TypeAdoptWorkingCopy }
-func (AdoptWorkingCopyResult) FrameType() string       { return TypeAdoptWorkingCopyResult }
-func (RPCChunk) FrameType() string                     { return TypeRPCChunk }
-func (r Raw) FrameType() string                        { return r.Type }
-func (Hello2) FrameType() string                       { return TypeHello2 }
-func (AgentSecretsEnrollment) FrameType() string       { return TypeAgentSecretsEnrollment }
-func (AgentSecretsEnrollmentResult) FrameType() string { return TypeAgentSecretsEnrollmentResult }
-func (AgentSecretsToken) FrameType() string            { return TypeAgentSecretsToken }
-func (AgentSecretsTokenResult) FrameType() string      { return TypeAgentSecretsTokenResult }
-func (LauncherHello) FrameType() string                { return TypeLauncherHello }
-func (LauncherHelloAck) FrameType() string             { return TypeLauncherHelloAck }
-func (LauncherState) FrameType() string                { return TypeLauncherState }
-func (LauncherStart) FrameType() string                { return TypeLauncherStart }
-func (LauncherStartResult) FrameType() string          { return TypeLauncherStartResult }
-func (LauncherStop) FrameType() string                 { return TypeLauncherStop }
-func (LauncherStopResult) FrameType() string           { return TypeLauncherStopResult }
-func (BundleWorkspace) FrameType() string              { return TypeBundleWorkspace }
-func (BundleWorkspaceResult) FrameType() string        { return TypeBundleWorkspaceResult }
-func (LauncherBundle) FrameType() string               { return TypeLauncherBundle }
-func (LauncherBundleResult) FrameType() string         { return TypeLauncherBundleResult }
-func (LauncherRestored) FrameType() string             { return TypeLauncherRestored }
-func (LauncherMemoryKill) FrameType() string           { return TypeLauncherMemoryKill }
-func (LauncherVolumeReport) FrameType() string         { return TypeLauncherVolumeReport }
-func (LauncherLeakCheck) FrameType() string            { return TypeLauncherLeakCheck }
-func (LauncherLeakCheckResult) FrameType() string      { return TypeLauncherLeakCheckResult }
+func (Hello) FrameType() string                         { return TypeHello }
+func (HelloAck) FrameType() string                      { return TypeHelloAck }
+func (NegotiateProtocol) FrameType() string             { return TypeNegotiateProtocol }
+func (Prompt) FrameType() string                        { return TypePrompt }
+func (Response) FrameType() string                      { return TypeResponse }
+func (GetState) FrameType() string                      { return TypeGetState }
+func (Compact) FrameType() string                       { return TypeCompact }
+func (AgentStart) FrameType() string                    { return TypeAgentStart }
+func (AgentEnd) FrameType() string                      { return TypeAgentEnd }
+func (ToolExecutionStart) FrameType() string            { return TypeToolExecutionStart }
+func (ToolExecutionEnd) FrameType() string              { return TypeToolExecutionEnd }
+func (PromptResult) FrameType() string                  { return TypePromptResult }
+func (Shutdown) FrameType() string                      { return TypeShutdown }
+func (AdoptWorkingCopy) FrameType() string              { return TypeAdoptWorkingCopy }
+func (AdoptWorkingCopyResult) FrameType() string        { return TypeAdoptWorkingCopyResult }
+func (RPCChunk) FrameType() string                      { return TypeRPCChunk }
+func (r Raw) FrameType() string                         { return r.Type }
+func (Hello2) FrameType() string                        { return TypeHello2 }
+func (AgentSecretsEnrollment) FrameType() string        { return TypeAgentSecretsEnrollment }
+func (AgentSecretsEnrollmentResult) FrameType() string  { return TypeAgentSecretsEnrollmentResult }
+func (AgentSecretsToken) FrameType() string             { return TypeAgentSecretsToken }
+func (AgentSecretsTokenResult) FrameType() string       { return TypeAgentSecretsTokenResult }
+func (LauncherHello) FrameType() string                 { return TypeLauncherHello }
+func (LauncherHelloAck) FrameType() string              { return TypeLauncherHelloAck }
+func (LauncherState) FrameType() string                 { return TypeLauncherState }
+func (LauncherStart) FrameType() string                 { return TypeLauncherStart }
+func (LauncherStartResult) FrameType() string           { return TypeLauncherStartResult }
+func (LauncherStop) FrameType() string                  { return TypeLauncherStop }
+func (LauncherStopResult) FrameType() string            { return TypeLauncherStopResult }
+func (BundleWorkspace) FrameType() string               { return TypeBundleWorkspace }
+func (BundleWorkspaceResult) FrameType() string         { return TypeBundleWorkspaceResult }
+func (LauncherBundle) FrameType() string                { return TypeLauncherBundle }
+func (LauncherBundleResult) FrameType() string          { return TypeLauncherBundleResult }
+func (LauncherRestored) FrameType() string              { return TypeLauncherRestored }
+func (LauncherMemoryKill) FrameType() string            { return TypeLauncherMemoryKill }
+func (LauncherVolumeReport) FrameType() string          { return TypeLauncherVolumeReport }
+func (LauncherLeakCheck) FrameType() string             { return TypeLauncherLeakCheck }
+func (LauncherLeakCheckResult) FrameType() string       { return TypeLauncherLeakCheckResult }
+func (LauncherCredentialCheck) FrameType() string       { return TypeLauncherCredentialCheck }
+func (LauncherCredentialCheckResult) FrameType() string { return TypeLauncherCredentialCheckResult }
 
 func (f Hello) MarshalJSON() ([]byte, error) {
 	type plain Hello
@@ -1248,6 +1278,16 @@ func (f LauncherLeakCheck) MarshalJSON() ([]byte, error) {
 func (f LauncherLeakCheckResult) MarshalJSON() ([]byte, error) {
 	type plain LauncherLeakCheckResult
 	return marshalFrame(TypeLauncherLeakCheckResult, plain(f))
+}
+
+func (f LauncherCredentialCheck) MarshalJSON() ([]byte, error) {
+	type plain LauncherCredentialCheck
+	return marshalFrame(TypeLauncherCredentialCheck, plain(f))
+}
+
+func (f LauncherCredentialCheckResult) MarshalJSON() ([]byte, error) {
+	type plain LauncherCredentialCheckResult
+	return marshalFrame(TypeLauncherCredentialCheckResult, plain(f))
 }
 
 // Validate refuses a hello the listener would refuse (worker-stream-listener.ts:140-148).
@@ -1650,6 +1690,20 @@ func (f LauncherStop) Validate() error {
 	return nil
 }
 
+// Validate refuses a check that names no id, no file or no digest: the launcher could answer it
+// nothing true.
+func (f LauncherCredentialCheck) Validate() error {
+	switch {
+	case f.ID == "":
+		return fmt.Errorf("%w: launcher_credential_check carries no id", ErrMalformedFrame)
+	case f.HostsFile == "":
+		return fmt.Errorf("%w: launcher_credential_check names no hosts file", ErrMalformedFrame)
+	case f.TokenDigest == "":
+		return fmt.Errorf("%w: launcher_credential_check carries no token digest", ErrMalformedFrame)
+	}
+	return nil
+}
+
 // Validate refuses guard settings outside the ranges both sides of the wire hold them to, naming
 // the member and its range. The launcher checks them again rather than trusting the daemon's
 // loader, because a daemon of another release may hold other ranges (MemoryGuardActMin).
@@ -1837,6 +1891,10 @@ func Decode(line []byte) (Frame, error) {
 		return decodeInto[LauncherLeakCheck](trimmed)
 	case TypeLauncherLeakCheckResult:
 		return decodeInto[LauncherLeakCheckResult](trimmed)
+	case TypeLauncherCredentialCheck:
+		return decodeInto[LauncherCredentialCheck](trimmed)
+	case TypeLauncherCredentialCheckResult:
+		return decodeInto[LauncherCredentialCheckResult](trimmed)
 	default:
 		return Raw{Type: head.Type, JSON: bytes.Clone(trimmed)}, nil
 	}

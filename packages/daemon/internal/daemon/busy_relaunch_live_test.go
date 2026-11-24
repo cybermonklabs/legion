@@ -329,9 +329,9 @@ func (r *busyRelaunchLive) overrides() overrides {
 // slotted worker holding no task off it (internal/admit/admit.go's resumeSlottedWorkers) — that
 // repair would give the claim its phase's resume task, and every deliver of this driver would be
 // refused `a delivery is already pending` — and every pane answers it before the first step. The
-// root architect's issue stands in accepting, where no phase worker runs, so the repair passes it
-// over as it passes over every architect; its claim holds nothing, as an architect's start leaves
-// it.
+// root architect's issue stands in accepting with no plan rows, where its own architect accepts
+// and no phase worker runs, so the repair passes it over as it passes over every architect; its
+// claim holds nothing, as an architect's start leaves it.
 func (r *busyRelaunchLive) seed() {
 	t := r.t
 	t.Helper()

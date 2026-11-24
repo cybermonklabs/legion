@@ -43,9 +43,9 @@ const KIND_LABELS: Readonly<Record<Exclude<StepRecord["kind"], "step">, string>>
 };
 
 /** The place a move back sent the task to, in words. Place 0 is the retro's: of the two runs no
- *  plan names, a move back can reach only the retro, since the merge is the task's last run
- *  (Dispatch reads `returned_to` 0 as a return to the retro). It is no step, so it never reads
- *  `step 0`. */
+ *  plan names, a move back can reach only the retro, since the merge, where the task has one, is
+ *  its last run (Dispatch reads `returned_to` 0 as a return to the retro). It is no step, so it
+ *  never reads `step 0`. */
 function returnPlace(place: number | null): string | null {
   if (place === null) return null;
   return place === 0 ? "the retro" : `step ${place}`;

@@ -6,7 +6,6 @@ package daemon
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -121,16 +120,13 @@ func joinRoles(roles []claim.Role) string {
 	return strings.Join(names, ", ")
 }
 
-// A step that reads the implementer's pull request waits for an implementer step before it:
-// register_plan of `tester implementer` is refused (testerFirstRefused). register_plan of
-// `implementer planner` answers 200, and the issue walks it: no planner starts while the
-// implementer works, GitHub lists the pull request from the implementer's completion on, the
-// planner starts after that completion with the pull request recorded open, and the retro and the
-// merge end the walk at done.
-func TestAStepThatReadsAPullRequestWaitsForAnImplementer(t *testing.T) {
+// A step that reads the implementer's pull request runs once that pull request is open:
+// register_plan of `implementer planner` answers 200, and the issue walks it: no planner starts
+// while the implementer works, GitHub lists the pull request from the implementer's completion
+// on, the planner starts after that completion with the pull request recorded open, and the retro
+// and the merge end the walk at done.
+func TestAStepAfterTheImplementerStartsWithItsPullRequestOpen(t *testing.T) {
 	r := newOwnerStepsRig(t, newLiveProofOn(t, workflowNATS(t)), startScratchDispatchOn(t, scratchDispatchOptions{}), 1, config.Project{})
-	r.testerFirstRefused()
-
 	r.givePlan("implementer", "planner")
 	r.openGate(phase.Implementing)
 	implementer := r.worker(claim.RoleImplementer)
@@ -151,33 +147,6 @@ func TestAStepThatReadsAPullRequestWaitsForAnImplementer(t *testing.T) {
 	r.runStep("planner", answerPass, phase.Retro)
 	r.retro()
 	r.merge()
-}
-
-// testerFirstReason is the one reason register_plan gives the plan `tester implementer`: its
-// first step reads the pull request of an implementer no step before it names.
-const testerFirstReason = "step 1 of task a names tester, and no step before it names the role implementer, whose pull request tester reads; a role of this deployment that reports pass or fail needs none. This release of Legion does not carry it out yet."
-
-// testerFirstRefused is the architect of the walk's issue giving the plan `tester implementer`
-// (register_plan): it answers 409 PLAN_REFUSED with the one reason testerFirstReason for task a,
-// and the issue holds no plan rows. It answers the refusal's body.
-func (r *ownerStepsRig) testerFirstRefused() string {
-	t := r.t
-	t.Helper()
-	status, body := r.registerPlan(r.document("tester-first.md", planOf("tester", "implementer")), 1)
-	var refusal api.PlanRefusal
-	if status == http.StatusConflict {
-		if err := json.Unmarshal([]byte(body), &refusal); err != nil {
-			t.Fatalf("decode the refusal of register_plan %q: %v", body, err)
-		}
-	}
-	want := []api.PlanReason{{Task: "a", Reason: testerFirstReason}}
-	if status != http.StatusConflict || refusal.Code != "PLAN_REFUSED" || !slices.Equal(refusal.Reasons, want) {
-		t.Fatalf("register_plan of the plan `tester implementer` = %d %s, want 409 PLAN_REFUSED with the one reason %+v", status, body, want)
-	}
-	if rows := r.planRows(); rows != 0 {
-		t.Fatalf("the refused plan left %d plan rows on %s, want none", rows, r.key)
-	}
-	return body
 }
 
 // pullRequest is the pull request the daemon's store records for the walk's issue, nil for none.

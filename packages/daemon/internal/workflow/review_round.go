@@ -3,6 +3,7 @@ package workflow
 import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/reviewround"
 )
@@ -17,7 +18,8 @@ import (
 // is raised. Outside reviewing they name `none` for both: a wake queued there is no task of the
 // round, and the outbox can deliver it after the issue is back in reviewing, since a wake names no
 // phase (wakeRow). The entry's sentence is the task's last, the shape the reviewer reads it in.
-// For any other role it is task as it is.
+// For any other role it is task as it is, with one sentence more where its step is of the type
+// review and its row holds a commit (the last paragraph).
 //
 // The two sentences are the task's last two whatever the row holds, so no text of the task can
 // stand where one of the daemon's sentences stands: a retry's reason or a title that ends with the
@@ -40,16 +42,20 @@ import (
 // naming the commit it was stored with, or `none`, though the row's commit has moved since, so
 // the record holds exactly what the worker is sent.
 //
-// A role the deployment or the issue's plan defines whose step at step is of the type review gets one sentence, the
-// commit its own step's newest run read, ` Last reviewed commit: <sha>.`, which its row holds
-// (record.PhaseRow.ReviewedHead, written by the workflow's recordStepReview for a review step
-// alone; the first run of a second step of the role starts from the row of its step before,
-// stepRunRow), and none where its row holds no commit, as in the step's first run of a generation.
-// Such a step reports with its verdict and submits no review of GitHub's, so it gets no entry's
-// sentence.
+// Any other role whose step is of the type review gets one sentence, the commit its own step's
+// newest run read, ` Last reviewed commit: <sha>.`, which its row holds (record.PhaseRow.ReviewedHead),
+// in the phase its step runs as (plan.RunsAs): a role the deployment defines, at step, and the role
+// acceptance, at accepting, whether the fresh agent of acceptance or the owner does it. Only a
+// review step's run writes the row's commit (the workflow's recordStepReview, from the step's
+// completion; recordOwnersReview, the head the owner's acceptance read), and the first run of a
+// second step of the role starts from the row of its step before (stepRunRow), so a role with no
+// review step never has one, and none is named where the row holds no commit, as in the step's first
+// run of a generation. Such a step reports with its verdict and submits no review of GitHub's, so it
+// gets no entry's sentence. A review step of the role reviewer the owner does gets the reviewer's
+// two sentences, as the reviewer does: its row is the reviewer's.
 func namingTheReviewRound(task string, role claim.Role, at phase.Phase, row record.PhaseRow) string {
 	if role != claim.RoleReviewer {
-		if at == phase.Step && !claim.IsBuiltin(role) && row.ReviewedHead != "" {
+		if row.ReviewedHead != "" && plan.RunsAs(string(role)) == at {
 			return task + " " + reviewround.CommitLabel + ": " + row.ReviewedHead + "."
 		}
 		return task
@@ -65,9 +71,10 @@ func namingTheReviewRound(task string, role claim.Role, at phase.Phase, row reco
 }
 
 // namesTheRound says whether namingTheReviewRound can add a sentence to a task of role: the
-// reviewer's, and a role the deployment or the issue's plan defines, whose review step names its commit. So a stored
-// task of such a role is marked as named (record.SuperviseRequest.RoundNamed), and the queue names
-// the others (queuedRow).
+// reviewer's, and the task of each role that is none of Legion's six claim roles
+// (claim.IsBuiltin), whose review step names its commit: a role the deployment or the plan
+// defines, and acceptance. So a stored task of such a role is marked as named
+// (record.SuperviseRequest.RoundNamed), and the queue names the others (queuedRow).
 func namesTheRound(role claim.Role) bool {
 	return role == claim.RoleReviewer || !claim.IsBuiltin(role)
 }

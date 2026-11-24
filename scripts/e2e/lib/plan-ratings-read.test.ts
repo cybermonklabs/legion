@@ -7,13 +7,13 @@ import { executeDispatchTool } from "../../../packages/envoy-client/src/dispatch
 import { fakeDispatchFetch } from "../../../packages/envoy-client/test/fake-dispatch";
 import { changed, fakeDispatchRead } from "./fake-dispatch-command";
 
-// plan-ratings-read.sh (the read of a deployed issue's plan and ratings after the merge) against
-// the fake `dispatch` of lib/fake-dispatch-command.ts, first on PATH. The whole answer below is
-// what `dispatch plans` (packages/envoy-client/src/dispatch-commands/plans.ts) prints of typed
-// finished issues, rendered by that command itself, so a line the command prints and the script
-// cannot read fails here: a header, then one finished issue per line, newest close first. Bun
-// drops the answer's types when it runs this file, so the typecheck of scripts/e2e/lib, whose
-// tsconfig.json includes it, holds the answer to the contract's types.
+// plan-ratings-read.sh (the read, after the release's merge, of a deployed issue's plan and
+// ratings) against the fake `dispatch` of lib/fake-dispatch-command.ts, first on PATH. The whole
+// answer below is what `dispatch plans` (packages/envoy-client/src/dispatch-commands/plans.ts)
+// prints of typed finished issues, rendered by that command itself, so a line the command prints
+// and the script cannot read fails here: a header, then one finished issue per line, newest close
+// first. Bun drops the answer's types when it runs this file, so the typecheck of scripts/e2e/lib,
+// whose tsconfig.json includes it, holds the answer to the contract's types.
 const script = join(import.meta.dir, "..", "plan-ratings-read.sh");
 const dir = temporaryDirectory("plan-ratings-read-test");
 

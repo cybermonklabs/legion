@@ -1,6 +1,6 @@
 ---
 title: Concepts
-description: The controller, the architect, the phase workers and the plan that picks which of them an issue runs, admission and the legion label, the design gate, handoffs, review, the architect's acceptance, the merge that closes the issue and the production check your project's production_check setting opens after it.
+description: The controller, the architect, the phase workers and the plan that picks which of them an issue runs, admission and the legion label, the design gate, handoffs, review, the architect's acceptance, the merge that closes an issue with a pull request and the production check your project's production_check setting opens after it.
 sidebar:
   order: 2
 ---
@@ -16,16 +16,18 @@ section can use the words without stopping to explain them.
   restart picks up where it left off. It never writes code; the merge is the merger agent's request
   under the repository's rules.
 - **Agents** are [Oh My Pi](https://github.com/cybermonklabs/oh-my-pi) sessions. Under the Kubernetes
-  runtime the agents of one issue run in that issue's one pod, each in a slot of its own, from one
-  published worker image, and a controller the daemon launches runs in a pod of its own. Each agent
-  talks to the daemon over a connection its slot's launcher dials back. Under either runtime a
-  phase worker's role may run on Claude Code instead (`worker_backends` in `legion.yaml`). It does
-  the same work through the same `legion` tool and keeps its conversation the same way.
+  runtime the agents of one issue all run in that issue's one pod, each in a slot of its own, from
+  one published worker image. Each talks to the daemon over a connection its slot's launcher dials
+  back, and a controller the daemon launches runs in a pod of its own. Under either runtime a phase
+  worker's role may run on Claude Code instead (`worker_backends` in `legion.yaml`); it does the same
+  work through the same `legion` tool and keeps its conversation the same way.
 - **[Dispatch](/legion/dispatch/)** is where people and agents meet: the issue, its spec, the
   questions an agent asks you, the approvals, the messages and the status everyone reads. Legion
   never reads or writes a GitHub issue.
-- **GitHub** holds the code: one branch, `legion/<KEY>`, and one pull request per issue, in the
-  issue's repository. Each issue targets one repository, the one Dispatch resolves for it (its
+- **GitHub** holds the code: one branch, `legion/<KEY>`, per issue, in the issue's repository, and
+  the issue's one pull request where its steps open one; an issue whose steps write no change, such
+  as one whose only step is the tester's, has none. Each issue targets one repository, the one
+  Dispatch resolves for it (its
   own, else its nearest ancestor's, else the project's default repository, which is set in
   Dispatch), which Legion records, with that repository's default branch as GitHub names it, when
   it first records the issue, and keeps. This release's one-time pass is the one exception: it
@@ -51,6 +53,14 @@ Each token is minted on that owner's installation with that App's permissions: t
 App's write set for the implementer, the merger and a role of the issue's plan of the type
 implementation, the set of the App its `github_app` names for a role of the deployment that the
 issue's plan does not define, and the review App's review set for every other role.
+While the architect acts as another role, its bundle is that role's App instead: while a merge
+forward the daemon asked of it has not ended, the implementer, whatever step or retro it does then,
+since that merge is the implementer's act; else at a step of its own plan (one whose key is
+`owner`), the step's role, and at its retro where the task's last implementation step is its own,
+that step's role.
+Everywhere else, and always while the issue is held, it is the architect's own App, and the end of
+each such act writes that App back, but for a linger of its tree or a rename collision that deletes
+its pull request record, after which the architect's next launch writes it.
 The bundle holds one directory per owner the App is installed on, one more per owner a
 configured rename moved a repository away from while the project serves the name it moved to, and
 one for the issue's recorded owner.
@@ -98,7 +108,8 @@ and the clear defects Legion's agents report.
 
 No Legion agent files an issue for a problem it finds outside its own issue. A defect with a clear
 fix in code the agent's own tree touches or depends on is fixed in that tree's pull request, while
-the agent is there. Any other goes to the controller with its evidence, and the controller gives it
+the agent is there, where the tree has one. Any other goes to the controller with its evidence, and
+the controller gives it
 to the running tree whose code it is. Only when no tree owns that code does it file the issue with
 the `legion` label, so Legion works it without asking you. A problem that needs a decision of
 yours goes into a Dispatch ask on
@@ -122,10 +133,13 @@ admission to close. The architect:
 3. decides how many pull requests deliver the work best, files any child issues that takes, and releases them with their dependencies;
 4. asks you to approve the spec (the [design gate](#the-design-gate));
 5. decides what to do when a phase gets stuck, a review round cap is reached, or CI keeps failing;
-6. accepts the issue once the step before its acceptance passes (in the default steps, the reviewer's approval), reading the evidence of the steps that ran, or sends it back; the merge then closes it. An issue whose [plan](#the-plan-of-an-issue) has no acceptance step goes on to retro without one.
+6. accepts the issue where its plan has the step `acceptance:owner`, once the steps before it have passed (in the default steps, up to the reviewer's approval), reading the evidence of the steps that ran, or sends it back; the issue then goes on to its next step, or to its retro where the acceptance is its last. A step `acceptance` with no key is a fresh agent's reading of the work instead, and an issue whose [plan](#the-plan-of-an-issue) has no acceptance step goes on without one;
+7. does each step of the issue's plan whose key is `owner` itself, of any role and at any place, and the retro of a task whose last step of the type implementation is its own or that has none. Legion tells it such a step with an `owner-step` notice, starts no other agent for it, and takes its report with the `legion` tool's `complete_step`. While it does the step, it acts on GitHub as the App of the step's role, and as its own again at the step's end.
 
-The architect writes no code. A child issue runs the steps of its own plan, or the default steps,
-with a pull request of its own, inside the same tree.
+The architect writes code only in a step of its plan that it does itself, such as `implementer:owner`.
+A child issue runs the steps of its own plan inside the same tree, with its own pull request where
+those steps open one. An issue closes at its merge where it has a pull request, and at the end of
+its retro where it has none.
 
 Size pull requests to deliver the work most efficiently and reliably, with no preference on their number.
 Each round tests a large pull request whole again; one failure holds all the work, and the request merges late.
@@ -137,7 +151,8 @@ A child may wait on a sibling's merge in the same repository: release it with `-
 **Each child gets an architect of its own.** When the daemon starts a child's first phase, it also
 starts an architect on that child; no agent starts one. That architect owns the child to its close
 as the root's architect owns the root: it files the child's own children under the child, releases
-them, decides when a phase of the child gets stuck, and accepts the child. It registers no design
+them, decides when a phase of the child gets stuck, accepts the child where the child's plan has
+the step `acceptance:owner`, and does the child's steps whose key is `owner`. It registers no design
 gate and asks you nothing. The architect above it reviews each version of the child's spec, and a
 question only you can answer goes up to the root's architect, which asks it on the root. Until the
 child's first phase starts, the architect above it keeps the child.
@@ -145,20 +160,25 @@ child's first phase starts, the architect above it keeps the child.
 **The children do the work first.** An issue's first phase does not start while Dispatch shows an
 open child under it, a child the architect has filed and not released yet included; the architect
 is told so once, with a notice naming each open child and the Dispatch status that holds it. A
-parent's own first phase can start once the last of them has left the workflow, and its pull
-request then builds on a base that already carries their merges. For the same reason the daemon
+parent's own first phase can start once the last of them has left the workflow, and its own pull
+request, where it has one, then builds on a base that already carries their merges. For the same
+reason the daemon
 refuses a parent's acceptance, and a root's close, while an issue beneath it is still in the
 workflow. A child's own architect starts with the child's first phase, so the children it files
-run beside the child's own work, and the child is accepted only after they have left the
-workflow, at a head that carries their merges.
+run beside the child's own work, and the child's acceptance, or its retro where its plan has no
+acceptance step, comes only after they have left the workflow, at a head that carries the merges
+of those that had a pull request.
 
 ## Phase workers
 
-The daemon starts each phase's worker itself, one phase at a time. It runs only the phases of the
-steps the issue's [plan](#the-plan-of-an-issue) names, in the order of those steps. An agent keeps
-its session between its assignments, across the roles of its steps, while its issue runs and
-after it leaves the workflow, so its next task reaches the same session. Under the Kubernetes
-runtime the pod is shorter-lived than the session: the
+The daemon starts each step's worker itself, one step at a time, in the order of the issue's
+[plan](#the-plan-of-an-issue) (the order below in the default steps), and runs only the phases of
+the steps the plan names. A step whose key is `owner` starts no worker: the issue's architect does
+that step's work itself, acts on GitHub as that worker's App while it does, and reports it with
+the `legion` tool's `complete_step` ([below](#the-plan-of-an-issue)). An agent keeps its session
+between its assignments, across the roles of its steps, while its issue runs and after it leaves
+the workflow, so its next task reaches the same session. Under the Kubernetes runtime the pod is
+shorter-lived than the session: the
 daemon releases an issue's pod once no role of it has a turn in progress or a turn due for ten
 minutes, after saving the workspace's unpushed work, and the next wake for one of its roles — a
 task, a notice, a message to the role or to its session, or a CI settlement on the pull request's
@@ -170,53 +190,69 @@ head — brings the pod back and resumes the same sessions where they stopped.
 | `planning` | planner | Writes the implementation plan into its handoff and the issue's document. | review App |
 | `implementing` | implementer | Writes the change, proves it works, pushes `legion/<KEY>` and opens the pull request. | implement App |
 | `testing` | tester | Runs the changed surface for real, tries to break it, judges whether the tests would catch what breaks, and reads CI for everything static; reports `pass` or `fail`. | review App |
-| `reviewing` | reviewer | Reviews the pull request and submits an approval of the head, or changes requested. | review App |
-| `accepting` | the architect | Where the issue's plan has the step `acceptance:owner`: reads each check of the issue's Verification document with its latest result, the handoff of each tester step and the reviewer's approval of the head where the plan has those steps, and accepts the issue (on to retro) or sends it back to the implementer, or to the tester where the plan has one. Issues still in the workflow beneath it hold the acceptance: the daemon refuses the sign-off (`SIGNOFF_CHILD_IN_WORKFLOW`) until each has left the workflow. No worker runs here; the issue's Dispatch status stays `needs_review`. | review App |
-| `retro` | implementer | Writes down what the work taught, as one comment on the issue, and brings up to date whatever the repository's instructions require the pull request description to say about the paths it changes. It commits nothing. | implement App |
+| `reviewing` | reviewer | Reviews the pull request and submits an approval of the head, or changes requested. On an issue with no pull request it reviews the work its task text names and reports `pass` or `fail`, with the commit it read, instead. | review App |
+| `accepting` | the architect at the step `acceptance:owner`; at any other `acceptance` step its own agent, a fresh agent of the role `acceptance` where the step has no key | The step `acceptance:owner` is the architect's own acceptance, and any other `acceptance` step its agent's, which ends it by reporting `pass` or `fail`. Either reads each check of the issue's Verification document with its latest result, the handoff of each tester step and the reviewer's approval of the head where the plan has those steps before it, and accepts the issue (on to its next step, or to retro where the acceptance is the task's last step) or sends it back to an earlier step: by default the task's first step of the type implementation before it. A pass is refused while an issue beneath it is still in the workflow (`SIGNOFF_CHILD_IN_WORKFLOW`). Another agent's refused pass is taken when it sends it again once they have left. The architect's `sign_off` takes only its own acceptance, and is refused at another agent's step (`SIGNOFF_NOT_THE_OWNERS`). No worker runs for the architect's acceptance; the issue's Dispatch status stays `needs_review`. | review App |
+| `retro` | the agent of the task's last step of the type implementation (in the default steps, the implementer), or the architect where that step was its own or the task has none | Writes down what the work taught, as one comment on the issue where a point qualifies, and, where the issue has a pull request, brings up to date whatever the repository's instructions require the pull request description to say about the paths it changes. It commits nothing. | the App of that step's role (the implement App for the implementer). The architect acts as that role where the step was its own, and keeps its own App where the task has none |
 | `merging` | merger | Reads the pull request and merges it itself, at the head it read and under a message it writes, which GitHub completes under the base branch's own rules. The merge closes the issue; a root whose tree still runs records the merge and stays here until the last other issue of its tree is done or parked. | implement App |
 
-A failed test or a review that requests changes sends the issue back to `implementing` from
-testing or review, at the nearest implementer step before it, and the change goes through the
-issue's steps after that step again: in
-the default steps, the tester before the reviewer sees it. A head that starts conflicting with its
-base moves no phase (below). Red CI sends nothing
+A failed test or a review that requests changes sends the issue back to an earlier step: the one
+its report names, else the task's first step of the type implementation before the step that
+failed (`implementing` in the default steps), and the change goes through the steps after it
+again: in the default steps, the tester before the reviewer sees it. A step that fails with no such
+step before it and names none stops its task, and its architect is told (`task-stopped`). A head
+that starts conflicting with its base moves no phase (below). Red CI sends nothing
 back from anywhere: the review round and CI are two rules, each read on its own, and the
-reviewer's approval of the head ends the round whatever the daemon reads of CI at that commit,
-once GitHub reports that head one the issue may advance on (a head GitHub holds blocked, on a
-check the repository requires, stays in `reviewing`), since the reviewer reads the code commit's
-checks on GitHub before it approves
-([review signalling](#review-signalling)). What a red check does is reach the architect that owns
-the issue, the worker of the issue's current phase and the implementer, as one message naming each
-check and its conclusion; and hold the merge, where GitHub applies the base branch's own required
-checks.
+reviewer's approval of the head ends the round whatever the CI verdict at that commit, once
+GitHub reports that head one the issue may advance on (a head GitHub holds blocked, on a check the
+repository requires, stays in `reviewing`), since the reviewer reads the code commit's checks on
+GitHub before it approves
+([review signalling](#review-signalling)); a review step that no review on GitHub decides, on an
+issue with no pull request or the architect's own, ends by its reported verdict. What a red check
+does is reach the architect that owns the issue, the worker of the issue's current phase and the
+agent of the task's implementation step, as one message naming each check and its conclusion; and
+hold the merge, where GitHub applies the base branch's own required checks.
 
 ### The plan of an issue
 
-The table is the line of the **default steps**. Any architect of a tree, the root's or a
-sub-architect's, can give any issue of that tree a **plan** that picks which steps it runs. In this
-section, the issue's owner is the architect that gives it its plan. The plan holds one task. Its
-steps name roles of this table, roles of the deployment and roles the plan defines itself, in the
-order the owner chooses. The plan defines each of its roles in a `plan_role` block such as
+The table is the line of the **default steps**. Each architect of a tree, the root's or a
+sub-architect's, is an owner of each issue that stands in that tree now, and can give an issue a
+**plan** that picks which steps it runs: one task whose steps are Legion's roles (`planner`,
+`implementer`, `tester`, `reviewer` and `acceptance`), roles the deployment defines and roles the
+plan defines, in any order, any of them left out and a role at two steps. The plan defines each of
+its roles in a `plan_role` block such as
 `:::plan_role{#prober type="testing" model="<a listed model>"}`, whose text is the role's prompt.
-The steps hold `implementer`, and each `tester`, `reviewer` and `acceptance:owner` step, the last
-the architect's own acceptance in `accepting`, stands after an `implementer` step, whose pull
-request it reads. Any other step may carry a key after its role (`implementer:a tester:a`), the
-steps of one key running as one agent in one claim and one session. A role may stand at two steps,
-of one agent or of two: `implementer reviewer implementer` runs step 3 in a second agent of the
-role implementer, `implementer-2`, in a session of its own. A key keeps its name in every version
-of the plan, and while a version leaves the key out no other agent takes that name, so the key's
-agent finds its session again when a later version names the key; the agent that would have taken
-the name takes a numbered one and a slot of its own, so its start can wait for the issue pod's
-update round. A name that only agents with no key held is given again to a later agent with no
-key, which starts in a session of its own. The owner writes the plan as the issue's `plan.md`
-document, with one `plan_task` block such as
+A step's key names its
+agent: two steps of one key are one agent's, and the key `owner` makes the step the architect's
+own, of any role and at any place: `acceptance:owner` is its acceptance in `accepting`, and
+`implementer:owner` its own implementation. A role may stand at two steps, of one agent or of two:
+`implementer reviewer implementer` runs step 3 in a second agent of the role implementer,
+`implementer-2`, in a session of its own. A key keeps its name in every version of the plan, and
+while a version leaves the key out no other agent takes that name, so the key's agent finds its
+session again when a later version names the key; the agent that would have taken the name takes a
+numbered one and a slot of its own, so its start can wait for the issue pod's update round. A name
+that only agents with no key held is given again to a later agent with no key, which starts in a
+session of its own. A step `acceptance` with no key is a fresh agent of
+the role `acceptance`. Legion tells the architect each step of its own with an `owner-step` notice,
+once its slot holds the App of the step's role, and only while the step runs; while it runs and no
+such notice of it is queued, Legion tells it again, with the same task, at a launch of the
+architect in a session that has not had it, such as a fresh session after a lost one, and when
+the architect is idle past the silence bound. It starts no other agent for the
+step, and takes its report
+with the `legion` tool's `complete_step`: the issue, the step's place (1 for the first, 0 for the
+retro), a summary, and the verdict `pass` or `fail` where the step reports one. The tool adds the
+commit and the handoff record itself, as `handoff_complete` does. The retro is done by the agent
+of the task's last step of the type implementation, as that step's role, and by the architect
+where that step is its own or the task has none. It writes
+the plan as the issue's `plan.md` document, with one `plan_task` block such as
 `:::plan_task{#a steps="implementer reviewer"}` whose text says what the task must deliver, and
 gives that version to Legion with the `legion` tool's `register_plan` before the issue's work
 starts: for a child, before `release_children` releases it, since a released child can start its
 first step in the same admission pass. Legion holds a plan given for a child it has not recorded
 yet, and the child's first step takes the newest plan its owner gave. Legion runs only those steps,
-in that order, then the retro and the merge, so an issue with that plan runs no planner and no
-tester. Legion refuses any other plan with `PLAN_REFUSED` and one
+in that order, then the retro, and the merge where the issue has a pull request, so an issue with
+that plan runs no planner and no tester; an issue with no pull request, such as one
+whose only step is `tester`, is done when its retro ends, with no merge and no production check. Legion
+refuses a plan it cannot run, such as one of more than one task, with `PLAN_REFUSED` and one
 reason for each cause. An issue whose owner gives it no plan, or a task with no steps, runs the
 project's default steps, `projects.<KEY>.default_steps` in `legion.yaml`, which are the whole table
 unless the project sets others; so does an issue whose work started before its owner gave it a
@@ -229,13 +265,15 @@ its earlier owner gave: at its first step Legion deletes that plan, logs
 `plan-not-taken` notice, which version it did not take and which plan the step runs instead, the
 new owner's or the default steps.
 
-A step a plan leaves out hands its duty on. With no tester step, the implementer's own results
-against the issue's checks are the evidence, and a reviewer step refuses to approve while any of
-them has no pass at the head. With no reviewer step, nothing approves the head, so on a base that
-requires an approving review the merger waits and tells the architect which review is missing.
-The implementer then writes the pull request body's `Look at first` and `Not proven / risk` lines
-at each round, and before each completion, its retro's included, answers and resolves each bot
-review thread still open, naming each one it declined to the architect. With no acceptance step,
+A step a plan leaves out hands its duty on. With no tester step, the results the step that wrote
+the change recorded against the issue's checks are the evidence, and a reviewer step does not pass
+the work while any of them has no pass at the head. With no reviewer step, nothing approves the
+head, so on a base that requires an approving review the merger waits and tells the architect
+which review is missing. The agent of the implementation step that opened the pull request (the
+implementer, in the default steps) then writes the pull request body's `Look at first` and
+`Not proven / risk` lines at each round, and before each completion, and at its retro where the
+retro is its own, answers and resolves each bot review thread still open, naming each one it
+declined to the architect. With no acceptance step,
 the last step passing starts the retro; a parent that gets there while an issue beneath it is
 still in the workflow is held before its retro until the last one leaves.
 `dispatch steps --issue <KEY>` prints each run of each step of an issue.
@@ -245,21 +283,22 @@ still in the workflow is held before its retro until the last one leaves.
 Legion works only the issues handed to it with the Dispatch label **`legion`** (in any case), so it
 can share a Dispatch project with people and other agents. A root issue is admitted when it carries
 the label, is in `todo`, and a slot is free. A slot is one issue the daemon has started, a root or a
-child, so a tree of four started issues holds four of them. The number of slots is `admission_cap`
+child, in a phase that holds one, so a tree of four started issues holds at most four of them. The number of slots is `admission_cap`
 in the daemon's configuration, four by default; an issue that finds no free slot waits in line, and
 a labelled `todo` root takes its place in that line in the project board's order.
 
 An issue takes a slot when the daemon starts it — a root at its admission, which starts its
-architect, a child at the start of its first phase. An issue holds one of the cap's slots from the
-moment the daemon starts it until its work is past its review — `accepting`, `retro` and
-`merging` hold none — or until it is done or Dispatch takes it out of the workflow, except while
-it waits on another issue before that point.
-So it holds its slot through the other waits up to its review: on a person, and on the review
-itself. Past the review the issue writes no more of the change, so its acceptance, its retro and
-its merge run on no slot at all, and an issue there that waits on another issue has no slot to
-give back.
+architect, a child at the start of its first step, where that step's phase holds one; a child whose
+first step is an acceptance starts it on no slot, and the slot goes to the next issue in line. An issue holds one of the cap's slots from the
+moment the daemon starts it until it is done or Dispatch takes it out of the workflow, in every
+phase but `accepting`, `retro` and `merging`, which hold none, and except while it waits on another
+issue in a phase that holds one.
+So it holds its slot through its other waits there: on a person, and on a review. In `accepting`,
+`retro` and `merging` the issue writes no change, so its acceptance, its retro and its merge run on
+no slot at all, and an issue there that waits on another issue has no slot to give back; a later
+step that writes or checks the change takes a slot again, as work sent back does.
 
-A wait on another issue before the review is the exception: a started issue that Dispatch shows
+A wait on another issue in a phase that holds a slot is the exception: a started issue that Dispatch shows
 blocked by an issue that is not `done`, or whose own first phase waits on an open child under
 it, holds no admission slot.
 The daemon takes its slot back and stands it in the
@@ -280,16 +319,18 @@ Legion tree or by none, or an open child the daemon has released into the tree a
 A wait on an open child the architect filed and has not released is not one, because releasing
 that child is the tree's own work.
 
-An issue holding a slot starts its next phase whatever the cap says, and so does an issue past
-its review, which holds none. An issue that holds none and is owed a start, a child an architect
-has just released among them, waits in line while the project stands at the cap.
+An issue holding a slot starts its next phase whatever the cap says, and so does an issue whose
+next phase is `accepting`, `retro` or `merging`, which hold none. An issue that holds none and is
+owed a start in a phase that holds one, a child an architect
+has just released among them, waits in line while the project stands at the cap; a released child
+whose first step is an acceptance starts it at once, whatever the cap says.
 A slot stops
 nothing either way: every worker of a waiting issue stays live in the issue's pod and answers
 questions until the issue closes, and giving a slot back for a wait stops nothing either — no
 claim is suspended, no session ends, no phase moves, and no Dispatch status is written.
-The worker at work goes on, but every start of a phase worker of the issue up to its review, its
-next phase's or a restart of its current one, waits until the issue holds a slot again; a start of
-a phase past the review (`retro`, `merging`) takes no slot and runs at once.
+The worker at work goes on, but every start of a worker of the issue in a phase that holds a slot,
+its next phase's or a restart of its current one, waits until the issue holds a slot again; a start
+in `accepting`, `retro` or `merging` takes no slot and runs at once.
 `legion state` names such an issue under `admission.waiting` and under `admission.blocked` and
 never under `admission.active`, which is how you tell it from an issue a person parked, which is
 in none of the three.
@@ -396,8 +437,8 @@ approves the new version. Your own answer to a decision block in the approved sp
 exception: when that answer is the whole change since the version you approved, Dispatch records
 your approval at the new version and the gate reopens, so the architect asks you for nothing; when
 the answer means the spec's text changes too, the architect rewrites it and asks you to approve
-again, naming what changed since your approval. Work already in flight carries on, through its
-merge: the gate holds a tree's start, and nothing after it. The daemon only reads approvals;
+again, naming what changed since your approval. Work already in flight carries on to its close:
+the gate holds a tree's start, and nothing after it. The daemon only reads approvals;
 nothing in Legion approves a spec on a person's behalf, and the approval Dispatch records at your
 answer is yours, in your name.
 
@@ -417,14 +458,15 @@ task names the version the daemon accepted, which it reads with
 `dispatch handoff-read --version <n>`. A handoff is the copy that survives: when a worker
 comes back after a restart, or a memory disagrees with a record, the record wins. The issue's
 Conversation in Dispatch lists every version, and opens each to its fields. The merger writes
-none, and nor does the architect.
+none, nor does an acceptance step or the retro; the architect writes one only for a step of its
+own whose phase ends with one, as its `implement` record ends `implementer:owner`.
 
 A worker's completion names its record, and the daemon reads that record back from Dispatch before
 it moves the issue: it refuses a record another session wrote, one of another issue, phase or
 version, and the record the role named for its previous phase. No handoff is a commit, so the
 issue branch carries only work, every push gets its own CI, and the merge brings no handoff onto
 the default branch. Retro commits nothing, so the head that merges is the head the issue's last
-step passed — the head the reviewer approved, where its plan has a review step — and nothing in
+step passed — in the default steps, the head the reviewer approved — and nothing in
 Legion compares the two in any case: a repository that wants a later push reviewed says so in its
 own rulesets, and GitHub holds the merge to them.
 
@@ -432,8 +474,11 @@ own rulesets, and GitHub holds the merge to them.
 
 Legion uses GitHub's own review mechanisms rather than labels:
 
-- The **reviewer** submits a GitHub review: an approval of the head by its commit, or changes
-  requested. A plain comment decides nothing, and the architect is told the round is stuck. The
+- The **reviewer** of an issue with a pull request submits a GitHub review: an approval of the head
+  by its commit, or changes requested. A reviewer of an issue with no pull request, and the
+  architect in a review step of its own, report the verdict `pass` or `fail` with the commit they
+  read instead, and no review on GitHub decides that step, the architect's own included. A plain
+  comment decides nothing, and the architect is told the round is stuck. The
   daemon hears of a review from GitHub's webhook, and it also reads the pull request's reviews
   with the implement App at its own start and after every handoff of the issue, so a review whose
   webhook never arrived still counts at the next of those reads. Either way the newest deciding
@@ -455,15 +500,18 @@ Legion uses GitHub's own review mechanisms rather than labels:
 - **CI** on the pull request's head is information, not a verdict. When GitHub's checks settle, the
   daemon names every check GitHub reported, with the conclusion GitHub gave it, and judges none of
   them: it sends one message each to the architect that owns the issue, the worker of the issue's
-  current phase and the implementer whose code the checks ran on, and moves the issue nowhere. The
+  current phase and the agent of the task's implementation step, whose code the checks ran on,
+  and moves the issue nowhere. The
   message names the head's commit statuses too, each with its state: Dispatch reads them from
   GitHub for each open head where its GitHub App holds Commit statuses, since GitHub's status event
   names no pull request. A red is for those roles to decide on — re-run a check that failed on
   itself, fix code that is at fault, or wait — and for GitHub to hold the merge over, under the base
   branch's own required checks, which Legion reads only to decide whether a conflicting head needs
-  its merge forward now (below), and never re-implements. The reviewer reads the
-  head's checks on GitHub itself before it approves, and the architect before it accepts; those
-  reads are the ones that decide anything. Two settlements of the same head that name the same
+  its merge forward now (below), and never re-implements. The reviewer reads the head's checks on
+  GitHub itself before it approves, and so does the architect before its own acceptance. The fresh
+  agent of `acceptance` reads the result Dispatch derives for each `ci_check` check instead. Those
+  reads are the ones that decide anything. Two settlements of the same head that
+  name the same
   checks tell nobody twice, and a lingering tree is told nothing at all.
 - **A head that conflicts with its base** moves no phase. GitHub computes no merge ref for such a
   head and runs no check on it. The daemon reads the pull request's mergeability twice, at least a
@@ -473,30 +521,33 @@ Legion uses GitHub's own review mechanisms rather than labels:
   the base requires a pull request to be current with it; or the daemon could not read the base's
   rules, which it reads (rulesets and branch protection) only on a conflicting read. Otherwise it
   records the conflict, and the task's steps go on at that head; an approval of the head ends the
-  review round, and the daemon acts once the issue moves past its review, into `accepting`,
-  `retro` or `merging`.
-  When it acts, the issue keeps its phase and takes no admission slot for the merge. The
-  implementer is asked on its role topic to merge the base forward in the issue workspace and
-  push, with no handoff and no completion for it. The tester, the reviewer or the merger holding
+  review round, and the daemon acts once the issue moves into `accepting`, `retro` or `merging`.
+  When it acts, the issue keeps its phase and takes no admission slot for the merge. The agent of
+  the task's last step of the type implementation at or before the issue's place, else the task's
+  last such step (the implementer in the default steps, the architect where that step's key is
+  `owner`), is asked to merge the base forward in the issue workspace and push, with no handoff and
+  no completion for it. The tester,
+  the reviewer or the merger holding
   the phase is told to stop writing the workspace and not to complete its phase at the old head,
   and keeps its turn, its background jobs, its process and its session. The architect is told once
-  with a `checks-red` notice naming the phase the issue stays in. In `implementing` only the
-  implementer is told.
+  with a `checks-red` notice naming the phase the issue stays in. At that agent's own step
+  (`implementing` in the default steps) only that agent is told.
   When the merge lands, the phase's worker is told both heads and goes on at the new one, and a
   completion of the phase the issue stands in that names the replaced head, or that names no head,
   is refused (`HANDOFF_HEAD_MERGED_FORWARD`) and is made again at the new head; a completion of a
-  phase the issue has already left is recorded as before. Past review, where the task has a
-  reviewer step, the daemon asks the reviewer to read the merge and approve the new head by its
-  SHA, or request changes, and a merger that enters `merging` while that approval is owed merges
-  the new head only once the approval is on the pull request. A task with no reviewer step has no
-  review to ask, and its merger goes on at the new head.
+  phase the issue has already left is recorded as before. In `accepting`, `retro` or `merging`,
+  where the task has a reviewer step, the daemon asks the agent of that step (the architect, where
+  the step was its own) to read the merge and approve the new head by its SHA, or request changes,
+  and a merger that enters `merging` while that approval is owed merges the new head only once the
+  approval is on the pull request. A task with no reviewer step has no review to ask, and its
+  merger goes on at the new head.
 - **A completion behind its phase entry.** A move the role's completion did not make — a
   reviewer's own request for changes, which ends the round before the reviewer completes — keeps that role's
   turn, its background jobs, its process and its session. Only the entry of the phase the issue
-  moves to is raised, so a completion the role sends for the phase it lost still names the entry
-  that phase gave it: the first completion of the run the move ended is recorded and moves nothing,
-  and any later one is refused `HANDOFF_NOT_CURRENT_PHASE`;
-  `HANDOFF_STALE_ENTRY` comes once the issue has handed that role the phase again, and only
+  moves to is raised. So the role's first completion of the phase it lost still names the entry
+  that phase gave it. The daemon records that completion on the role's row and moves nothing, and
+  its handoff is the report of the ended step. A second completion of that phase is refused
+  `HANDOFF_NOT_CURRENT_PHASE`. `HANDOFF_STALE_ENTRY` comes once the issue has handed that role the phase again, and only
   while the issue stands in that phase. A completion of an entry that no phases row of the role
   stands on now (a run of its step that a later run raised past), from a role whose phase the
   issue is no longer in, is answered
@@ -506,11 +557,13 @@ Legion uses GitHub's own review mechanisms rather than labels:
   of a phase that ends with the role's own handoff record. The phase was entered again at that
   head, so the work the new entry's task asks for is the work that completion reports; taking it
   moves the issue on, so the same completion sent again, or one naming a newer record, is
-  answered `HANDOFF_NOT_CURRENT_PHASE`. A completion at another commit is refused; so is one that
-  names no commit, and so is any while the record holds no pull request for the issue. A
+  answered `HANDOFF_NOT_CURRENT_PHASE`. That completion is taken only at the head the record holds.
+  One at another commit, or one that names none, is refused. So is every completion behind its
+  entry on an issue the record holds no pull request for, since no head stands there. A
   completion is refused whatever head it names when the entry the phase stands on was raised by a
   move back, which asks for that phase's work to be done again.
-- **An implementer that completes with no pull request** is refused (`HANDOFF_NO_PULL_REQUEST`)
+- **An implementer step that completes with no pull request**, the implementer's completion or the
+  architect's report of its own implementer step, is refused (`HANDOFF_NO_PULL_REQUEST`)
   until one is open on its branch, and the daemon's read of that issue tells its architect
   `pull-request-missing`, once per handoff commit, so an issue never waits in `implementing`
   unnoticed.
@@ -524,39 +577,47 @@ Legion uses GitHub's own review mechanisms rather than labels:
   At the round cap the architect decides, in the turn the notice wakes, whether to narrow the next
   rounds, split work
   off (into a sibling child, or, on a root, an ask whether the rest needs an issue of its own), or
-  let converging rounds run, and posts that decision on the issue. Every move back to an earlier
-  phase counts a round: a tester's fail, a review's request for changes and a worker's move back.
+  let converging rounds run, and posts that decision on the issue. A review step's request for
+  changes counts a round: the reviewer's, the fresh agent of `acceptance`'s fail, or the fail of a
+  step of the type review of a role the deployment or the plan defines, where the step is not the
+  architect's own. A tester's fail, a worker's own move back and the architect's fail of a step of
+  its own count none.
   A move made while the record holds the head conflicting with its base is a conflict round, which
-  `review_round_cap` does not count: the implementer answers such a round with a forward merge,
-  which no reviewer asked for, and the cap's message names both numbers, the rounds counted and
-  the conflict rounds left out.
-- Each move back is counted by its kind as well, as the pair `<from>-<to>` —
-  `testing-implementing`, `reviewing-implementing`, `merging-implementing` and the other eighteen —
+  `review_round_cap` does not count: the agent asked to merge the base forward answers such a
+  round with a forward merge, which no reviewer asked for, and the cap's message names both
+  numbers, the rounds counted and the conflict rounds left out.
+- Each move back is counted by its kind as well, as the pair `<from>-<to>` of the phase it left
+  and the phase it entered — `testing-implementing`, `reviewing-implementing` and
+  `merging-implementing` in the default steps, and any of the 57 pairs the daemon counts in a plan
+  of another order, such as `testing-reviewing` where the tester stands after the reviewer —
   beside the round count, and a conflict round raises no pair.
   `GET /legion/v1/state` serves the counts as `workers.implementer.backwardMoves`, left out for an
-  issue that has had no move back.
+  issue that has had no move back and for a task with no implementer step.
 - **Hooks** put a deployment's own words in front of the workers on a move back. A hook is an
   entry of `hooks:` in [legion.yaml](/legion/legion/running-legion/#legionyaml): the moves it
   selects, how many of them fire it, the roles it writes to, and the words. A move back the hook
   selects fires it when the counts of the moves it selects, added up, are then a whole multiple
-  of that number. The daemon writes the words to each role the hook names, between its own
+  of that number. The daemon writes the words to the agent of each role the hook names (the
+  architect, where that role's step is its own), between its own
   header — the hook and the move — and its own counts of the moves back, and posts
   `Legion hook <name> fired at <N> moves back: <from> to <to>. Prompted: <role>, <role>.` on the
-  issue. It gates nothing: the phase the move opened starts its worker whether a hook fired or
-  not, and a role that reads the words answers in its own turn. A deployment that writes no
+  issue. It gates nothing: the step the move opened starts its agent, or tells the architect with
+  an `owner-step` notice where that step is its own, whether a hook fired or not, and a role that
+  reads the words answers in its own turn. A deployment that writes no
   `hooks:` key runs one shipped hook, which prompts the implementer, the tester and the reviewer
   every fifth move back of any kind to say what is in their way.
 
 ## The merge
 
 When the issue's steps have passed — in the default steps, the reviewer has approved and the
-architect has accepted — and retro is done, the merger reads the
+architect has accepted — and retro is done, the merger of an issue with a pull request reads the
 pull request and merges it itself, as the implement App and at the head it read, which it names as
 the head GitHub must match (`gh pr merge <n> --squash --match-head-commit <head>`). On a base with
 a merge queue it enqueues the pull request instead, with GraphQL `enqueuePullRequest` and the same
 head as `expectedHeadOid`, and watches the pull request until GitHub merges it or takes it out of
 the queue. Merging at a named head is how bors and Prow's Tide merge only what they tested: a push
 that lands under the merger is refused instead of merged unseen.
+An issue with no pull request has no merger and no merge: it is done when its retro ends.
 
 The merge carries a message the merger writes itself,
 `--subject '<pull request title> (#<n>)' --body ''`. GitHub's own default
@@ -577,10 +638,11 @@ When a merge fails, the decision is the merger's, on GitHub's own answer: wait f
 waits for, merge again at the head it re-reads, send the issue back with `request_backward_move`
 when the head itself must change, or tell the architect what no worker can do — a repository
 setting or an App permission only a person can change. A head that starts conflicting with its
-base keeps the issue in `merging`: the merger merges nothing, and the daemon asks the implementer
-to merge the base forward. Where the task has a reviewer step, it also asks the reviewer to approve
-the new head, and the merger merges that head once the approval is on the pull request; on a task
-with no reviewer step, the merger goes on at the new head.
+base keeps the issue in `merging`: the merger merges nothing, and the daemon asks the agent of the
+task's last step of the type implementation to merge the base forward. Where the task has a
+reviewer step, it also asks the
+agent of that step to approve the new head, and the merger merges that head once the approval is
+on the pull request; on a task with no reviewer step, the merger goes on at the new head.
 
 A merge queue that takes the pull request out for a conflict says which conflict it was in the
 pull request's merge state, which GitHub computes once the entry is no longer queued. A head
@@ -590,25 +652,27 @@ merger enqueues that head once more and no further, says so on the issue, and th
 with its merge forward while the issue stays in `merging`; a merge state GitHub answers unknown is
 asked again on the merger's own backoff for up to five minutes and then read the same way.
 
-What closes the issue is the daemon's own reading of the merged pull request, by GitHub's webhook
-or by its own read: it writes `done`, whether the merger's completion arrived before that or after
-it.
+What closes an issue with a pull request is the daemon's own reading of the merged pull request,
+by GitHub's webhook or by its own read: it writes `done`, whether the merger's completion arrived
+before that or after it.
 
 ## The production check
 
 The merge closes the issue: the daemon reads the merged pull request, writes `done`, and nothing is
-left of the issue to develop. A root whose tree still runs, and a child with an issue beneath it
+left of the issue to develop. An issue with no pull request is closed the same way when its retro
+ends, with no merge and no production check. A root whose tree still runs, and a child with an
+issue beneath it
 still in the workflow, are the issues the merge does not close at once: the daemon records the
 merge, and the issue stays in `merging` with its workers while the issues beneath it reach their
 own merges.
-It stands there on no admission slot, as every phase past the review does, so no wait of it
+It stands there on no admission slot, as an issue in `accepting` or `retro` does, so no wait of it
 changes the cap.
 Its architect is told once which issues the close waits for,
 and the close comes when the last of them is done or parked. What is
-left after the close is to see the change work in production, and that is
+left after a merge's close is to see the change work in production, and that is
 work after the close, where your project asks for it: `projects.<KEY>.production_check` in
 `legion.yaml` takes `off` or `tester` and is `tester` by default, so the tester is handed a
-production check as the issue closes, in its own session or, where the issue's plan had no tester
+production check as the merge closes the issue, in its own session or, where the issue's plan had no tester
 step, a fresh one, and a project that sets `off` opens no
 check at all — a child's close retires every claim of the child and releases its pod, and a
 root's close suspends every claim of its tree for the linger, whose end retires them. The loader
@@ -669,9 +733,15 @@ that. When a budget runs out (`launch_failure_limit`, `prompt_failure_limit` and
 the issue. A held phase worker is its architect's to retry or escalate to the controller. A root's
 architect that runs out goes to the controller, which restarts a running tree when it finds no
 cause or the cause is gone, and otherwise asks a person whether to park it. A child's architect
-that runs out holds nothing: the architect above it is told and takes the child's notices, and
-the daemon starts the child's architect again, with fresh budgets, at the child's next phase
-start.
+that runs out holds nothing: the architect above it is told and takes the child's notices, all but
+an `owner-step`, which goes to the child's own architect alone, and which that architect is told
+again when it runs again. The daemon starts the child's architect again, with fresh budgets, at the
+child's next phase start. Where the child stands at a step its architect does itself, other than an
+acceptance, or at a retro its architect does, no phase start follows until that architect reports
+it, so the daemon starts it again at once, at most three times in that step's run; after that
+`legion state` names it under `retry` among the claims nothing will wake, and the controller is
+told. The operator's retry or the controller's `fresh_session` relaunches it and tells it the step
+again.
 [Troubleshooting](/legion/legion/troubleshooting/) shows how to see each of these.
 
 The daemon says why the claim failed rather than leaving that in its log alone. It keeps one word
@@ -689,7 +759,10 @@ that phase and its worker starts again at the same generation, in the same pod a
 in the admission line. Where the pull request's head is red, the issue goes on to implementing
 instead, and a held review whose round is already decided goes where that decision sends it; the
 board then shows the phase the issue ends in. Starting the worker's claim in a fresh session
-does the same at the cost of that session. A restart, the root set to `backlog` and then to
+does the same at the cost of that session. At a step or a retro the architect does itself, none of
+these starts a worker: each tells the architect the step again with an `owner-step` notice, and
+`legion claims retry` of the architect's claim relaunches that claim first. A restart, the root
+set to `backlog` and then to
 `todo`, runs the whole tree over as a new generation, which is the move for a tree that must start
 from its architect.
 

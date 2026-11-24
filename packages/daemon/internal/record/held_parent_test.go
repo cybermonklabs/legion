@@ -12,7 +12,8 @@ import (
 // admitted is not held under it (HeldUnderAccepted) and so gets the slot its first step needs, and
 // OpenBeneath names that child, so the hold waits for it. Read as accepted, as Accepted read every
 // hold from retro, the parent would hold that child at admitted until the parent closed, leave it
-// out of the wait, and start its retro and merge without the child's work. The controls are the
+// out of the wait, and start its retro, and its merge where it has a pull request, without the
+// child's work. The controls are the
 // issues whose head the daemon has accepted: a parent in retro, and one held from retro by a failed
 // claim or a stopped task, each of which holds the child at admitted and leaves it out of the wait.
 func TestAParentHeldForItsChildrenIsNotAccepted(t *testing.T) {

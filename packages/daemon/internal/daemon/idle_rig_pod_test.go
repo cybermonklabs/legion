@@ -1,11 +1,15 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -14,6 +18,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/launcher"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
+	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 	"github.com/sjawhar/legion/daemon/internal/sessionproxy"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/testtmp"
@@ -31,7 +36,9 @@ import (
 // layout (`legion launcher role-init`, internal/launcher/roleinit_linux.go), and this container
 // has neither that layout nor a way to make its mount points. The daemon's side of the protocol is
 // the same either way: one authenticated launcher connection per role, each reporting its own
-// child's state.
+// child's state. The one part of a role's mount namespace a launcher reads, the role's gh files,
+// each launcher gets through its relay to the daemon (relay), which binds them where the rig's
+// kubelet projects them.
 //
 // Each launcher's generations keep their Oh My Pi session in the rig's Postgres, through the
 // launcher's own session proxy: the runtime is configured with the cloudsql-iam store, so a
@@ -63,7 +70,7 @@ type idleRigPods struct {
 }
 
 // idleRigPodProcesses is one pod's launchers: the context that stops them and the wait that their
-// goroutines have ended.
+// goroutines, and those of their relays to the worker stream (relay), have ended.
 type idleRigPodProcesses struct {
 	cancel context.CancelFunc
 	done   sync.WaitGroup
@@ -90,8 +97,11 @@ func newIdleRigPods(t *testing.T, address func() string, session ompsessions.Dat
 	return p
 }
 
-// podReady starts a launcher for each role of the pod, with that role's own launcher token.
-func (p *idleRigPods) podReady(pod, podUID string, roles map[string]string, record func(role, dir string)) {
+// podReady starts a launcher for each role of the pod, with that role's own launcher token. Each
+// launcher dials the daemon's worker stream through a relay of its own (relay), which binds the
+// role's gh directory to gh[role], the directory the rig's kubelet projects that role's gh volume
+// into.
+func (p *idleRigPods) podReady(pod, podUID string, roles, gh map[string]string, record func(role, dir string)) {
 	p.mu.Lock()
 	if _, live := p.running[pod]; live {
 		p.mu.Unlock()
@@ -108,10 +118,15 @@ func (p *idleRigPods) podReady(pod, podUID string, roles map[string]string, reco
 			p.t.Errorf("make the private directory of %s/%s: %v", pod, role, err)
 			continue
 		}
+		connect, err := p.relay(ctx, processes, pod+"/"+role, gh[role])
+		if err != nil {
+			p.t.Errorf("relay the worker stream for %s/%s: %v", pod, role, err)
+			continue
+		}
 		processes.dirs = append(processes.dirs, dir)
 		record(role, dir)
 		cfg := launcher.Config{
-			Connect: p.address(), Token: token, Sandbox: pod, Role: role, PodUID: podUID, PrivateDir: dir,
+			Connect: connect, Token: token, Sandbox: pod, Role: role, PodUID: podUID, PrivateDir: dir,
 			Stdout: p.logs, Stderr: p.logs, StopGrace: 10 * time.Second,
 			SessionDatabase: p.session, SessionDialer: p.dial,
 		}
@@ -123,6 +138,130 @@ func (p *idleRigPods) podReady(pod, podUID string, roles map[string]string, reco
 			}
 		}()
 	}
+}
+
+// relay is the address the launcher named slot dials in place of the daemon's worker stream: a
+// relay to that stream that ends with ctx, the pod's, and that hands the launcher each frame as
+// the daemon sent it, but for where the role's gh files are.
+//
+// In a pod, role-init binds the role's gh volume, which the kubelet projects from the slot's
+// Secret at <RolesDir>/<role>/gh, to sandbox.GHConfigDir in the role's own mount namespace, and
+// every start names the gh files by that fixed path (LEGION_GH_OWNERS_DIR, GH_CONFIG_DIR). The
+// launcher of a start into a pod the daemon kept waits until the files there hold the credential
+// the start names (internal/launcher's awaitGitHubCredential). The rig's launchers share this
+// process's one filesystem, where that path is no role's, so the relay does the bind's part: in
+// each start it moves every value at or under sandbox.GHConfigDir to gh, the directory the rig's
+// kubelet projects the role's gh volume into (issueSandboxAPI.projectLocked). What the launcher
+// sends reaches the daemon unchanged.
+func (p *idleRigPods) relay(ctx context.Context, processes *idleRigPodProcesses, slot, gh string) (string, error) {
+	if gh == "" {
+		return "", fmt.Errorf("no gh directory is projected for %s", slot)
+	}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return "", err
+	}
+	context.AfterFunc(ctx, func() { _ = listener.Close() })
+	processes.done.Add(1)
+	go func() {
+		defer processes.done.Done()
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			processes.done.Add(1)
+			go func() {
+				defer processes.done.Done()
+				p.relayConn(ctx, conn, slot, gh)
+			}()
+		}
+	}()
+	return "tcp://" + listener.Addr().String(), nil
+}
+
+// relayConn is one connection of relay: the launcher's, and the relay's own to the worker stream,
+// both closed when either ends or ctx does.
+func (p *idleRigPods) relayConn(ctx context.Context, conn net.Conn, slot, gh string) {
+	defer conn.Close()
+	address, _ := strings.CutPrefix(p.address(), "tcp://")
+	stream, err := (&net.Dialer{}).DialContext(ctx, "tcp", address)
+	if err != nil {
+		fmt.Fprintf(p.logs, "idle rig relay %s: dial the worker stream %s: %v\n", slot, address, err)
+		return
+	}
+	defer stream.Close()
+	stop := context.AfterFunc(ctx, func() {
+		_ = conn.Close()
+		_ = stream.Close()
+	})
+	defer stop()
+	sent := make(chan struct{})
+	go func() {
+		defer close(sent)
+		_, _ = io.Copy(stream, conn)
+		_ = stream.Close()
+	}()
+	frames := shimwire.NewReader(stream)
+	for {
+		line, err := frames.ReadLine()
+		if err != nil {
+			break
+		}
+		out, credential, err := bindGHDir(line, gh)
+		if err != nil {
+			fmt.Fprintf(p.logs, "idle rig relay %s: bind the gh directory of a start: %v\n", slot, err)
+			break
+		}
+		if credential != nil {
+			fmt.Fprintf(p.logs, "idle rig relay %s: a start names the credential its gh files must hold at %s, bound to %s\n",
+				slot, credential.HostsFile, gh)
+		}
+		if _, err := conn.Write(out); err != nil {
+			break
+		}
+	}
+	_ = conn.Close()
+	<-sent
+}
+
+// bindGHDir is line, one frame of the daemon's, as the launcher it is relayed to reads it, its
+// newline included: a start with each value of its environment at or under sandbox.GHConfigDir
+// moved to gh, and the credential the start names (nil for none); every other frame as it came.
+func bindGHDir(line []byte, gh string) ([]byte, *shimwire.LauncherGitHubCredential, error) {
+	var head struct {
+		Type             string                             `json:"type"`
+		GitHubCredential *shimwire.LauncherGitHubCredential `json:"gitHubCredential"`
+	}
+	if err := json.Unmarshal(line, &head); err != nil || head.Type != shimwire.TypeLauncherStart {
+		return append(slices.Clone(line), '\n'), nil, nil
+	}
+	var frame map[string]json.RawMessage
+	if err := json.Unmarshal(line, &frame); err != nil {
+		return nil, nil, err
+	}
+	var env []string
+	if err := json.Unmarshal(frame["env"], &env); err != nil {
+		return nil, nil, err
+	}
+	for i, entry := range env {
+		name, value, _ := strings.Cut(entry, "=")
+		if rest, under := strings.CutPrefix(value, sandbox.GHConfigDir); under && (rest == "" || strings.HasPrefix(rest, "/")) {
+			env[i] = name + "=" + gh + rest
+		}
+	}
+	bound, err := json.Marshal(env)
+	if err != nil {
+		return nil, nil, err
+	}
+	frame["env"] = bound
+	var out bytes.Buffer
+	encoder := json.NewEncoder(&out)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(frame); err != nil {
+		return nil, nil, err
+	}
+	return out.Bytes(), head.GitHubCredential, nil
 }
 
 // privateDir is one launcher's private directory, where its generations' credentials and the unix

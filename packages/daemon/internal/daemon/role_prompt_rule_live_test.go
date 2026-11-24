@@ -110,13 +110,12 @@ const (
 	ruleSubArchitectProvider = "subarchitectpane"
 )
 
-// The three sentences every reader is given word for word. Each is a literal of this file, so a
+// Two sentences given word for word, to every reader. Each is a literal of this file, so a
 // reworded rule fails this proof rather than passing on a text the driver derived from the same
 // files it is reading.
 const (
 	ruleSandboxEndsTheContainer = "where that pod's sandbox ends the whole container rather than the one process that filled it"
 	ruleEveryRolesTurn          = "a command that fills the limit ends every role's turn and not only yours"
-	ruleCIsWork                 = "A whole module's test run (`go test ./...`), a whole Postgres-backed package, a browser suite run whole, and `make -j` or `lake build` are CI's work on the pull request"
 )
 
 // podRuleForPhaseWorker is the pod memory rule as a phase worker's prompt carries it
@@ -125,10 +124,7 @@ var podRuleForPhaseWorker = []string{
 	"In an issue pod every role of this issue runs in one container and shares its memory limit",
 	ruleSandboxEndsTheContainer,
 	ruleEveryRolesTurn,
-	ruleCIsWork,
-	"what a role runs in the pod is what `skill://legion-worker/references/tools.md` names",
 	"Every other heavy run goes where your deployment's instructions say",
-	"instructions that name no such route are a gap you report to the architect that owns your issue",
 	"Each subagent you start runs its commands in this pod, so put these facts in its context",
 }
 
@@ -140,9 +136,7 @@ var podRuleForArchitect = []string{
 	"Your subagents run their commands in your own issue pod",
 	ruleSandboxEndsTheContainer,
 	ruleEveryRolesTurn,
-	ruleCIsWork,
 	"what may run in the pod is what `skill://legion-worker/references/tools.md` names",
-	"every other heavy run goes where your deployment's instructions say and instructions that name no such route are a gap to report, and you put these facts in the context of each subagent you start",
 }
 
 // What a child's architect is launched with and a root architect is not. The heading opens the
@@ -216,8 +210,8 @@ type launchedPrompt struct {
 
 // TestEveryRoleIsLaunchedWithTheRulesItsOwnPromptCarriesLive boots the daemon over three real
 // panes, reads the command line each of those three processes was launched with, and holds in
-// each the rules that role's own prompt carries: the pod memory rule, the phase worker's eight
-// sentences and every architect's six; in the planner's, the three needles of the rule that its
+// each the rules that role's own prompt carries: the pod memory rule, the phase worker's five
+// sentences and every architect's four; in the planner's, the three needles of the rule that its
 // completion reports work already done at a named head: the `head` field, the clause that carries
 // it to the daemon, and the order sentence that records the `plan` handoff before the completion
 // is reported; and in the child's architect's, the sub-architect's own heading in place of the
@@ -404,13 +398,13 @@ func (r *rolePromptRuleLive) everyPaneIsReady() {
 	}
 }
 
-// phaseWorkerCarriesTheRule holds the eight sentences of the pod memory rule in the planner's own
+// phaseWorkerCarriesTheRule holds the five sentences of the pod memory rule in the planner's own
 // command line.
 func (r *rolePromptRuleLive) phaseWorkerCarriesTheRule() {
 	r.carriesTheRule("phase worker", "pod memory rule", r.token(r.issue, claim.RolePlanner), podRuleForPhaseWorker)
 }
 
-// rootArchitectCarriesTheRule holds the six sentences of the architect's own wording of the rule
+// rootArchitectCarriesTheRule holds the four sentences of the architect's own wording of the rule
 // in the root architect's own command line.
 func (r *rolePromptRuleLive) rootArchitectCarriesTheRule() {
 	r.carriesTheRule("root architect", "pod memory rule", r.token(r.issue, claim.RoleArchitect), podRuleForArchitect)
@@ -420,7 +414,8 @@ func (r *rolePromptRuleLive) rootArchitectCarriesTheRule() {
 // about its completion — the `head` the handoff body names, the clause that carries that head to
 // the daemon, and the sentence that records the `plan` handoff with `dispatch handoff-write` and
 // then reports completion — in the planner's own command line. The root architect is held to no
-// part of it: an architect writes no handoff record, and its prompt carries no such paragraph.
+// part of it: its prompt carries no such paragraph, and an architect writes a handoff record only
+// for a step of its own plan that it does itself (architect-common.md).
 func (r *rolePromptRuleLive) plannerCarriesTheCompletionRule() {
 	r.carriesTheRule("planner", "completion-after-work rule", r.token(r.issue, claim.RolePlanner), completionAfterWorkForPlanner)
 }
@@ -428,7 +423,7 @@ func (r *rolePromptRuleLive) plannerCarriesTheCompletionRule() {
 // subArchitectCarriesItsPrompt holds, in the prompt the child's architect's own Oh My Pi was
 // launched with, what a sub-architect is launched with: the heading of its own part, and not the
 // root's; the addressing clause that names the root's architect, by its role topic, as the
-// architect above it; and every architect's six sentences of the pod memory rule. The root
+// architect above it; and every architect's four sentences of the pod memory rule. The root
 // architect's own prompt carries the root's heading and not the sub-architect's, so the two
 // architects were composed apart.
 func (r *rolePromptRuleLive) subArchitectCarriesItsPrompt() {

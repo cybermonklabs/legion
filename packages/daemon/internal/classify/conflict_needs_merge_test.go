@@ -11,9 +11,10 @@ import (
 
 // A confirmed conflict is acted on only when the issue's next step needs a head that merges, and
 // the first of R0's reasons that holds is the one the act records (dispatch://INFRA-4374 R0): the
-// merge is next past the review, rules the daemon could not read tell it nothing, a base that
-// requires a current head holds this one whatever its checks say, and a check the base requires
-// that has not passed on the head never will while GitHub runs no checks on it. A required context
+// merge is near in accepting, retro and merging, rules the daemon could not read tell it nothing,
+// a base that requires a current head holds this one whatever its checks say, and a check the base
+// requires that has not passed on the head never will while GitHub runs no checks on it. A
+// required context
 // is green by a check run on the head that succeeded, or by a success status the record keeps for
 // the head once a settlement stands for it; a failed run, a run or a status of another head, and a
 // status kept while no settlement stands for the head are not green. Each reason the decision

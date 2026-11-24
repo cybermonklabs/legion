@@ -43,8 +43,9 @@ func assertRetroStarted(t *testing.T, pool *pgxpool.Pool, key, why string) {
 	}
 }
 
-// A parent whose plan has no acceptance step is held before its retro while an issue beneath it
-// is in the workflow (record.HoldForChildren), and its retro starts once nothing beneath it is.
+// A parent whose task's last step is not an acceptance is held before its retro while an issue
+// beneath it is in the workflow (record.HoldForChildren), and its retro starts once nothing
+// beneath it is.
 // A leave of the last issue beneath it is one way the set empties; each row here is another,
 // and none of them is a leave beneath the parent in a tree that runs:
 //   - a re-parent in Dispatch moves the last issue beneath it under another issue of the tree

@@ -524,7 +524,7 @@ func checkWebhookApp(ctx context.Context, client dispatch.Client, repo ghrepo.Re
 		// error text is.
 		return "the webhook App check failed: " + storetext.FarSideError(err.Error())
 	case !installed:
-		return fmt.Sprintf("Dispatch's GitHub App is not installed on %s: GitHub sends Legion none of its events, nothing redelivers them, and no periodic pass makes up for them, so its issues stand still until the App is installed", repo)
+		return fmt.Sprintf("Dispatch's GitHub App is not installed on %s: GitHub sends Legion none of its events, nothing redelivers them, and no periodic pass makes up for them, so its issues that wait on a pull request stand still until the App is installed", repo)
 	}
 	return ""
 }

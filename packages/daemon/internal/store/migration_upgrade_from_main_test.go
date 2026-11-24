@@ -145,10 +145,18 @@ import (
 // The record that a claim took another role (20261123033101) is applied after it and touches no
 // outbox_kind_check: it adds claims.role_change, null on every row it finds, so it needs no row of
 // its own here (migration_20261123033101_test.go).
+// The count of an owner's restarts in a step's run (20261123042513) is applied after the record
+// that a claim took another role and touches no outbox_kind_check: it adds
+// step_starts.owner_restarts, which the count of starts of each step (20261117004117) created, at
+// its default, 0, on every row it finds.
 // The mark of an ask made at the task's implementation step (20261123060645) is applied after all
 // of these and touches no outbox_kind_check: it adds the key own to each merge_forward ask recorded
 // in implementing, on the column 20261119003157 added, which a database main migrated holds null on
 // every row (migration_20261123060645_test.go).
+// The claim an owner-step of a step's run reached (20261123072537) is applied after the mark of an
+// ask made at the implementation step and touches no outbox_kind_check: it adds
+// step_starts.owner_told_launch and step_starts.owner_told_session at their defaults, 0 and the
+// empty string, on every row it finds.
 // The definition a claim's process was launched with (20261123092755) is applied after all of
 // these and touches no outbox_kind_check: it adds claims.launched_definition and
 // claims.launched_generation at their defaults, the empty string and 0, on every row it finds
@@ -164,7 +172,7 @@ var thisBranchsMigrations = []int{
 	20261117004117, 20261117023932, 20261117034837, 20261117064152, 20261117112334, 20261117200337,
 	20261117201743, 20261117213545, 20261117223524, 20261119003157, 20261120042902, 20261120055717,
 	20261121183336, 20261122062637, 20261122072945, 20261122102933, 20261122120917, 20261123033101,
-	20261123060645, 20261123092755,
+	20261123042513, 20261123060645, 20261123072537, 20261123092755,
 }
 
 // mainsNewestMigration is the newest version main carries, the cause a claim records for its
@@ -185,7 +193,8 @@ var thisBranchsMigrations = []int{
 // the claim of each resume's 20261121183336, the key of a phases row by its step's 20261122062637,
 // the claim of each backstop's 20261122072945, the claims a release suspended's 20261122102933, the
 // agent of a claim's session's 20261122120917, the record that a claim took another role's
-// 20261123033101, the mark of an ask made at the implementation step's 20261123060645 and the
+// 20261123033101, the count of an owner's restarts' 20261123042513, the mark of an ask made at the
+// implementation step's 20261123060645, the claim an owner-step reached's 20261123072537 and the
 // definition a claim's process was launched with, 20261123092755. That is why the loop below holds
 // the list rather than counting it, so that a version added above any of them is named here rather
 // than read as main's.

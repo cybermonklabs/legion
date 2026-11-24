@@ -147,12 +147,13 @@ func TestEveryWakeReportCrossesTheBusAsAValidEnvelope(t *testing.T) {
 	}
 }
 
-// R3: a wake report is retried until the bus takes it. Losing one is not "one wake late": the
-// daemon arms a backstop for a phase worker of an open phase alone, so a released architect, and
-// a worker whose phase is closed, have nothing else that brings their pod back, and the daemon's
-// stranded report passes over a released claim no wake ever touched. A report dropped while the
-// stream is out of reach — a reconnect, a stream not yet reconciled — would leave such a tree
-// stalled with nothing saying so.
+// R3: a wake report is retried until the bus takes it. Losing one is not "one wake late". The
+// daemon arms a backstop only for the worker of an open phase, and for an issue's own architect
+// at a step or a retro of its own other than its acceptance. So a released architect anywhere
+// else, and a worker whose phase is closed, have nothing else that brings their pod back. The
+// daemon's stranded report passes over a released claim no wake ever touched. A report dropped
+// while the stream is out of reach — a reconnect, a stream not yet reconciled — would leave such a
+// tree stalled with nothing saying so.
 //
 // The bus here is out of reach exactly that way: a client of an account whose stream does not
 // exist yet cannot publish to it at all, and the stream arrives while the report is retrying.

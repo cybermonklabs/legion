@@ -876,8 +876,8 @@ function changesCollaborators(event: DispatchEvent): boolean {
  * appends no event of its own (packages/envoy/internal/dispatch/api/steps.go), so the Steps tab
  * is refreshed by what the daemon writes beside it as a phase moves: a claim or a release, as a
  * role's run starts or ends; a handoff, the report a role writes as its step ends; a close, which
- * ends the merge; and an issue write that moved the status or the route, or that does not say
- * what it moved.
+ * ends the merge, or the retro of an issue with no pull request; and an issue write that moved the
+ * status or the route, or that does not say what it moved.
  */
 function changesSteps(event: DispatchEvent): boolean {
   switch (event.type) {

@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/pods"
+	"github.com/sjawhar/legion/daemon/internal/store/plansql"
 	"github.com/sjawhar/legion/daemon/internal/store/storetext"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
@@ -69,13 +70,14 @@ func (s *Postgres) Processed(ctx context.Context, tx pgx.Tx, source, eventID str
 // issueColumns reads an empty ancestry as NULL, so a record with none scans as a nil Ancestry, as
 // it was written. The four issues.memory_* columns are no part of it: what a unit was drawn is an
 // assignment row of its own (AssignmentsOf, AssignmentsFor), and nothing this release's daemon
-// runs reads the columns but the back-fill of 20261111045636_experiment_assignments. Its last
-// column is no column of issues: it is the role of the step the issue's task stands at, read from
-// the plan rows of the issue's generation (Issue.StepRole), "" where they hold none or the task
-// stands at no step. A run holds one task in this release, so the read finds one row at most.
-const issueColumns = `key, tree, project, title, parent, phase, generation, status, rank, handed_over, taken_back, linger_until, held_from, last_dispatch_seq, coalesce(hold_reason, ''), dispatch_status, repo, default_branch, github_repo, awaiting_ask, awaiting_gate_version, coalesce(awaiting_artifact, ''), awaiting_answered_at, coalesce(awaiting_answered_by, ''), coalesce(awaiting_answered_detail, ''), awaiting_since_seq, awaiting_since, handout_seq, coalesce(declared_seq, 0), declared_at, nullif(ancestry, '{}'), handed_over_from, coalesce(told_parent, ''), moved_at, tree_stalled_told_at, released_for_wait_at, ` +
-	`coalesce((select s.role from plan_tasks t join plan_steps s on s.issue = t.issue and s.generation = t.generation and s.task = t.task and s.position = t.position ` +
-	`where t.issue = issues.key and t.generation = issues.generation and t.running_kind = 'step'), '')`
+// runs reads the columns but the back-fill of 20261111045636_experiment_assignments. Its last two
+// columns are no columns of issues, each read from the plan rows of the issue's generation by the
+// subqueries the idle view of a pod reads as well (plansql): the role of the step the issue's task
+// stands at (Issue.StepRole) and the role of the claim that works the task's place
+// (Issue.PlaceRole, the rule of PlaceWorker, which workflow's Walk.PlaceRole reads and a test holds
+// this to).
+var issueColumns = `key, tree, project, title, parent, phase, generation, status, rank, handed_over, taken_back, linger_until, held_from, last_dispatch_seq, coalesce(hold_reason, ''), dispatch_status, repo, default_branch, github_repo, awaiting_ask, awaiting_gate_version, coalesce(awaiting_artifact, ''), awaiting_answered_at, coalesce(awaiting_answered_by, ''), coalesce(awaiting_answered_detail, ''), awaiting_since_seq, awaiting_since, handout_seq, coalesce(declared_seq, 0), declared_at, nullif(ancestry, '{}'), handed_over_from, coalesce(told_parent, ''), moved_at, tree_stalled_told_at, released_for_wait_at, ` +
+	plansql.StepRole("issues") + `, ` + plansql.PlaceRole("issues")
 
 func (s *Postgres) Issue(ctx context.Context, tx pgx.Tx, key string) (*Issue, error) {
 	issue, err := scanIssue(tx.QueryRow(ctx, "select "+issueColumns+" from issues where key = $1", key))
@@ -511,7 +513,7 @@ func scanIssue(row scanner) (*Issue, error) {
 		&issue.Rank, &issue.HandedOver, &issue.TakenBack, &issue.LingerUntil, &heldFrom, &issue.LastDispatchSeq, &holdReason, &issue.DispatchStatus,
 		&issue.Repo, &issue.DefaultBranch, &issue.GitHubRepo, &awaitingAsk, &awaitingGate, &awaitingArtifact, &answeredAt, &answeredBy, &answeredDetail,
 		&sinceSeq, &since, &issue.HandoutSeq, &issue.DeclaredSeq, &declaredAt, &issue.Ancestry, &issue.HandedOverFrom,
-		&issue.ToldParent, &issue.MovedAt, &treeStalledToldAt, &releasedForWaitAt, &issue.StepRole); err != nil {
+		&issue.ToldParent, &issue.MovedAt, &treeStalledToldAt, &releasedForWaitAt, &issue.StepRole, &issue.PlaceRole); err != nil {
 		return nil, err
 	}
 	if declaredAt != nil {
@@ -2378,6 +2380,64 @@ func (s *Postgres) ControllerNoticesPending(ctx context.Context, tx pgx.Tx, proj
 	return pending, nil
 }
 
+// OwnerStepPending reads whether issue's outbox still holds an unpublished owner-step of the run
+// step names. A published row is finished and deleted, so any such row is one still to publish. An
+// owner-step of another run of the place, or of another place, is not that telling: the executor
+// finishes it undelivered when it runs (the daemon's ownerStepRuns).
+func (s *Postgres) OwnerStepPending(ctx context.Context, tx pgx.Tx, issue string, step NoticeStep) (bool, error) {
+	var pending bool
+	if err := tx.QueryRow(ctx, `select exists (select 1 from outbox where kind = $1 and issue = $2 and payload->>'kind' = $3
+		and payload->'ownerStep'->>'task' = $4 and payload->'ownerStep'->>'kind' = $5
+		and (payload->'ownerStep'->>'place')::int = $6 and (payload->'ownerStep'->>'starts')::bigint = $7)`,
+		string(OutboxKindNotice), issue, string(OwnerStepNotice), step.Task, step.Kind, step.Place, step.Starts).Scan(&pending); err != nil {
+		return false, fmt.Errorf("read whether %s has an owner-step of %s/%s/%d run %d pending: %w", issue, step.Task, step.Kind, step.Place, step.Starts, err)
+	}
+	return pending, nil
+}
+
+// SlotWritePending reads whether the outbox still holds a supervise slot_credential row of token
+// with an id below before: a finished row is deleted, so any such row is a write still to run.
+func (s *Postgres) SlotWritePending(ctx context.Context, tx pgx.Tx, token claim.Token, before int64) (bool, error) {
+	var pending bool
+	if err := tx.QueryRow(ctx, `select exists (select 1 from outbox where kind = $1 and id < $2
+		and payload->>'op' = 'slot_credential' and payload->>'claim' = $3)`,
+		string(OutboxKindSupervise), before, string(token)).Scan(&pending); err != nil {
+		return false, fmt.Errorf("read whether %s's slot has a write pending before row %d: %w", token, before, err)
+	}
+	return pending, nil
+}
+
+// MergeForwardAskPending reads whether issue's outbox still holds a merge-forward ask of head to
+// token: a delivered or finished row is deleted, so any such row is an ask still to tell, waiting
+// for its claim's session or its slot's App, or retrying.
+func (s *Postgres) MergeForwardAskPending(ctx context.Context, tx pgx.Tx, issue string, token claim.Token, head string) (bool, error) {
+	var pending bool
+	if err := tx.QueryRow(ctx, `select exists (select 1 from outbox where kind = $1 and issue = $2
+		and payload->>'step' = $3 and payload->>'claim' = $4 and payload->>'head' = $5)`,
+		string(OutboxKindMergeForward), issue, string(MergeForwardAsk), string(token), head).Scan(&pending); err != nil {
+		return false, fmt.Errorf("read whether %s has a merge-forward ask of %s to %s pending: %w", issue, head, token, err)
+	}
+	return pending, nil
+}
+
+// MarkMergeForwardTold writes told as whom the record's merge-forward ask of issue reached
+// (MergeForward.Told, OwnerTold), where that ask is of head, reached agent and has not landed: an
+// ask a newer one replaced, or one that landed, is left as it is. It writes the jsonb in place,
+// which changes nothing of whether the ask is open or whose it is, so no write of the pull
+// request's record through the workflow is made for it.
+func (s *Postgres) MarkMergeForwardTold(ctx context.Context, tx pgx.Tx, issue, head string, agent claim.Token, told OwnerTold) error {
+	mark, err := json.Marshal(told)
+	if err != nil {
+		return fmt.Errorf("encode whom the merge-forward ask of %s at %s reached: %w", issue, head, err)
+	}
+	if _, err := tx.Exec(ctx, `update pull_requests set merge_forward = jsonb_set(merge_forward, '{told}', $4::jsonb)
+		where issue = $1 and merge_forward->>'head' = $2 and merge_forward->>'agent' = $3 and coalesce(merge_forward->>'landed', '') = ''`,
+		issue, head, string(agent), string(mark)); err != nil {
+		return fmt.Errorf("record whom the merge-forward ask of %s at %s reached: %w", issue, head, err)
+	}
+	return nil
+}
+
 func (s *Postgres) PersonHandoverPending(ctx context.Context, tx pgx.Tx, issue string) (bool, error) {
 	var pending bool
 	if err := tx.QueryRow(ctx, "select exists (select 1 from outbox where kind = $1 and issue = $2 and payload->>'kind' = $3)",
@@ -2666,11 +2726,11 @@ func (s *Postgres) EnqueueID(ctx context.Context, tx pgx.Tx, row OutboxRow) (int
 // since a start of a phase past its review carries none (PhaseKeepsSlot).
 //
 // The issue's other supervise starts name no phase or carry no task — a root's architect's
-// (admit's promotion), a child's own architect's plain start (workflow's gateOpened and
-// reviveArchitect), the roles brought back beside a member's phase worker (admit's
-// startMidPhaseMembers), a production check's look, a pod wake and the resume of a cancelled idle
-// release — and each of them is a start of its own that must still run. None of them is ever
-// taken out here.
+// (admit's promotion), a child's own architect's plain start (workflow's gateOpened,
+// reviveArchitect and restartFailedOwner), the roles brought back beside a member's phase worker
+// (admit's startMidPhaseMembers), a production check's look, a pod wake and the resume of a
+// cancelled idle release — and each of them is a start of its own that must still run. None of
+// them is ever taken out here.
 const pendingPhaseStart = `issue = $1 and kind = 'supervise'
 				and payload->>'op' = 'start' and payload ? 'task' and payload ? 'phase'`
 
@@ -2881,9 +2941,10 @@ const outboxInOrder = `not (outbox.kind = $2 and exists (select 1 from outbox ol
 
 // outboxLaneFree is the rule that a lifecycle row ($5 is the lifecycle lane's kinds) runs only while
 // no other lifecycle row of its issue is under a live lease. Each lifecycle row reads the issue and
-// its claims and then acts on what it read — a start launches the role the issue's phase names, a
-// suspend stops the roles a start launched, a workspace removal takes the workspace they used — and
-// they were written to run one after another, each in the state its predecessor leaves (OutboxLane).
+// its claims and then acts on what it read — a start launches the claim its row names (else the
+// worker of the step of the row's role), a suspend stops the roles a start launched, a workspace
+// removal takes the workspace they used — and they were written to run one after another, each in
+// the state its predecessor leaves (OutboxLane).
 // A lifecycle lane runs its rows that way on its own, but a lane is one daemon's: with the rule in
 // SQL, two daemons of a rolling restart never run one issue's lifecycle rows side by side, since the
 // second lists and claims nothing of the issue's while the first's lease is live. The state's

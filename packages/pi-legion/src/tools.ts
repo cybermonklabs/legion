@@ -4,6 +4,7 @@ import {
   isStepRole,
   LEGION_ROLES,
   type LegionStepRole,
+  zodSchemaApi,
 } from "@legion/contracts";
 import {
   LEGION_PHASES,
@@ -13,6 +14,7 @@ import {
   type LegionPhase,
   LegionPlanRegisterRequest,
   type LegionState,
+  legionPlanRatingLoneField,
 } from "@legion/contracts/legion-api";
 import {
   type DaemonRestartRetry,
@@ -28,8 +30,10 @@ import {
   mintClaimGrant,
   PHASE_OP_SENTENCES,
   phaseOpParameters,
+  planRatingLoneRefusal,
   pluginBuildOf,
   readBuild,
+  recordFrom,
   unknownFieldsRefusal,
 } from "@legion/pi-shared/legion-phase-ops";
 import type { PiApi, RegisteredTool, SessionContext, ToolResult } from "@legion/pi-shared/pi-types";
@@ -74,6 +78,7 @@ const OPERATIONS: Readonly<Record<LegionToolRole, readonly string[]>> = {
     "request_backward_move",
     "retry_or_escalate",
     "sign_off",
+    "complete_step",
     "close_root",
     "park_child",
     "rerun_child",
@@ -113,6 +118,7 @@ const OPERATION_FIELDS: Readonly<Record<string, readonly string[]>> = {
   release_children: ["issues"],
   retry_or_escalate: ["issue", "decision", "reason"],
   sign_off: ["issue"],
+  complete_step: ["issue", "step", "summary", "verdict", "return_to", "plan_rating", "plan_reason"],
   close_root: ["issue", "reason"],
   park_child: ["issue"],
   rerun_child: ["issue"],
@@ -126,6 +132,20 @@ const OPERATION_FIELDS: Readonly<Record<string, readonly string[]>> = {
 };
 
 const ISSUE_STATUSES = ["todo", "backlog", "icebox"] as const;
+
+/** The role the place of each phase runs as where a step of the owner's can stand, so the owner's
+ * `complete_step` carries the report a completion by that role would carry (`handoffReport`): the
+ * inverse of the daemon's `plan.RunsAs` over Legion's roles and the role acceptance, and at the
+ * retro the implementer, whom the owner's retro runs as (`record.PlaceWorker`). At `step` the
+ * place's role is the issue's `stepRole`; every other phase runs no step of the owner's. */
+const OWNER_PLACE_ROLES: Readonly<Partial<Record<LegionPhase, LegionStepRole>>> = {
+  planning: "planner",
+  implementing: "implementer",
+  testing: "tester",
+  reviewing: "reviewer",
+  accepting: "acceptance",
+  retro: "implementer",
+};
 
 const jsonSuccess = (details: Readonly<Record<string, unknown>>): ToolResult =>
   toolSuccess(JSON.stringify(details), details);
@@ -373,14 +393,15 @@ function toolSchema(pi: PiApi): unknown {
       )
       .optional(),
     version: z.number().optional(),
-    // The steps are `GATED_STEPS`, the one tuple the contracts package holds them in, so this
-    // schema and the daemon's own (`LegionGateRegisterRequest.shape.step`) admit the same words
-    // and a step added to the contract reaches both. The tuple is what crosses, not a zod
-    // schema: this schema is built with the host's own zod instance (`pi.zod`).
+    // register_gate's steps are `GATED_STEPS`, the one tuple the contracts package holds them in,
+    // so this schema and the daemon's own (`LegionGateRegisterRequest.shape.step`) admit the same
+    // words and a step added to the contract reaches both. The tuple is what crosses, not a zod
+    // schema: this schema is built with the host's own zod instance (`pi.zod`). complete_step's
+    // step is the place of a step in the issue's task, a whole number (`LegionCompleteStepRequest`).
     step: z
-      .enum(GATED_STEPS)
+      .union([z.enum(GATED_STEPS), zodSchemaApi(z).number({ int: true, min: 0 })])
       .describe(
-        "register_gate's design-gate step: decisions for the issue's decisions document, criteria for its Verification document, spec for its primary document. A deployment that gates one step takes the registration without it"
+        "register_gate's design-gate step: decisions for the issue's decisions document, criteria for its Verification document, spec for its primary document. A deployment that gates one step takes the registration without it. complete_step's step: the place in your issue's task of the step you report, 1 for its first, or 0 for the task's retro"
       )
       .optional(),
     issues: z.array(z.string()).optional(),
@@ -411,10 +432,9 @@ function toolSchema(pi: PiApi): unknown {
     status: z.enum(ISSUE_STATUSES).optional(),
     phase: z.enum([...LEGION_PHASES]).optional(),
     settings: z.boolean().optional(),
-    // A claim's role, one of Legion's six, a role of the deployment (contract 221) or a role of the
-    // issue's plan: the role
-    // grammar of Dispatch's step record. The operation's own check (`isStepRole`) also refuses the
-    // controller, whose claim holds no issue.
+    // A claim's role, one of Legion's six, the role acceptance, or a role of the deployment or of
+    // the plan: the role grammar of Dispatch's step record. The operation's own check
+    // (`isStepRole`) also refuses the controller, whose claim holds no issue.
     role: z
       .string()
       .regex(/^[a-z][a-z0-9-]{0,31}$/)
@@ -517,9 +537,11 @@ export function createLegionTool(deps: {
     // handoff_complete's contract, since the records it answers are not read from its name;
     // after that contract the shared sentences on request_backward_move (an architect's names
     // the issue it returns from accepting) and read_build, then the architect's
-    // retry_or_escalate, its register_plan and stop_task, its sign_off and the controller's
-    // operations: the text tools.test.ts pins, stop_task's and sign_off's by their terms and the
-    // rest exactly, so a change to the shared template cannot reach an Oh My Pi agent unnoticed.
+    // retry_or_escalate, its register_plan and stop_task, its sign_off and complete_step, and the
+    // controller's operations. tools.test.ts pins only stop_task's and sign_off's terms
+    // (STOP_TASK_TERMS, SIGN_OFF_TERMS: each part's opening, its refusal codes, and stop_task's hold
+    // and first-step words). The other checks on this text are that it names envoy_publish and
+    // lacks two retired phrases. No test pins its sentences.
     description: legionToolDescription({
       envoyPublish: "envoy_publish",
       before: PHASE_OP_SENTENCES.readRecord + PHASE_OP_SENTENCES.readReleaseRecords,
@@ -532,12 +554,13 @@ export function createLegionTool(deps: {
         "daemon's own log line for the release, and an escalation sends it to the controller with the hold. " +
         "register_plan (issue, artifactId, version) gives Legion the plan of an issue you own: a document on that issue, by its id, slug " +
         "or filename as a dispatch command's --artifact takes it, at a version Dispatch has. Its one `plan_task` block names in `steps` the " +
-        "steps its task runs, with `implementer` among them and the tester, the reviewer and `acceptance:owner` after it: Legion's " +
-        "`planner implementer tester reviewer acceptance:owner`, a role of the deployment, or a role a `plan_role` block of the document " +
-        "defines, whose id is the role's name, whose `type` and `model` are its type and its model and whose text is its prompt; " +
-        "a step may carry a key after its role: acceptance carries `owner` and no other, any other role any key but `owner` or none, " +
-        "and the steps of one key run as one agent in one claim and one session (`implementer:a tester:a`); a " +
-        "task that names none runs the project's default steps, and Legion runs the retro and the merge itself. Give it before the issue's " +
+        "steps its task runs, in any order and with no role required. A step names one of Legion's roles planner, implementer, tester, " +
+        "reviewer and acceptance, or a role of the deployment or of the plan. It may carry a key after a colon that names its agent. " +
+        "`implementer:owner` is a step you do yourself, and `acceptance` with no key is a fresh agent of the role acceptance. The steps " +
+        "of one key run as one agent in one claim and one session, as `implementer:a tester:a`. A task that names none runs the " +
+        "project's default steps. A role of the plan is one a `plan_role` block defines: its id, `type`, `model` and text are the " +
+        "role's name, type, model and prompt. Legion adds the retro, and the merge where the issue has a pull request. The agent of the task's last " +
+        "step of the type implementation does the retro, or you where it has none or that step is yours. Give it before the issue's " +
         "work starts: a root's before its design gate opens, a child's before release_children releases it. The answer is the plan Legion " +
         "took, each task with its steps. Legion records nothing when it refuses a plan it does not carry out, with one reason for each cause " +
         "(PLAN_REFUSED, which also refuses a version that changes a running task or a role its steps name: stop it with stop_task first, and a plan of an issue " +
@@ -558,19 +581,35 @@ export function createLegionTool(deps: {
         "task with a later version of the plan, or stop it once the person has answered). It also refuses, changing nothing, a stop of " +
         "an issue outside your tree or one that left it (ISSUE_OUTSIDE_TREE), and a stop of a run of the issue that ended before Legion " +
         "applied it: read the issue again (TASK_STALE_GENERATION). " +
-        "sign_off is the architect's acceptance of an issue in accepting, moving it to retro. The daemon refuses, changing nothing, a " +
-        "sign-off of an issue you no longer own (ISSUE_NOT_OWNED, or ISSUE_OUTSIDE_TREE once it left your tree), one of a run of the " +
-        "issue or of accepting that ended before Legion applied it (SIGNOFF_STALE_GENERATION, SIGNOFF_STALE_ENTRY: read the issue and " +
-        "its evidence again) and one in every other phase (SIGNOFF_OUTSIDE_ACCEPTING); it also refuses it while an issue beneath it " +
-        "is still in the workflow (SIGNOFF_CHILD_IN_WORKFLOW, naming each one), since a parent's head proves its children's merged " +
-        "work: run each one to done, and sign off again. " +
+        "sign_off is the architect's acceptance of an issue in accepting. It moves the issue to the task's next step, or to its retro " +
+        "where the acceptance is the task's last step. It is an architect's operation: this tool refuses it in a phase worker's session, " +
+        "the fresh agent of acceptance's among them. The daemon refuses a sign-off of an issue you no longer own (ISSUE_NOT_OWNED, " +
+        "or ISSUE_OUTSIDE_TREE once it left your tree). It refuses one of a run of the issue or of accepting that ended before Legion " +
+        "applied it (SIGNOFF_STALE_GENERATION, SIGNOFF_STALE_ENTRY). After that refusal, read the issue and its evidence again. It " +
+        "refuses one in every other phase (SIGNOFF_OUTSIDE_ACCEPTING), and one of an acceptance step that is not yours " +
+        "(SIGNOFF_NOT_THE_OWNERS). One such step is a step acceptance with no key, whose agent ends it with its own verdict. None of " +
+        "these refusals changes anything. The daemon also refuses a sign-off while an issue beneath it is still in the workflow " +
+        "(SIGNOFF_CHILD_IN_WORKFLOW, naming each one). That is because a parent's head proves its children's merged work: run each " +
+        "one to done, and sign off again. " +
+        "complete_step (issue, step, summary, and the verdict, return_to, plan_rating and plan_reason that step's completion would carry) " +
+        "is your report of a step. That step is one whose key is owner in your own issue's task, or the task's retro where the retro " +
+        "is yours. You report it once Legion's owner-step notice gave it to you. step is its place in the task, 1 for the first step, " +
+        "0 for the retro. It carries the verdict pass or fail of a step that reports one. A review step of yours is such a step, on an " +
+        "issue with a pull request too. It carries return_to with a fail, and the rating of the plan on the retro. It reads the " +
+        "handoff record of a planning, implementing, testing or reviewing step, and the commit, as handoff_complete reads them. Write " +
+        "that record first with dispatch handoff-write. Your acceptance step's pass is your sign-off, and its fail sends the task " +
+        "back, to return_to or to the first implementation step before it. A fail that names no return_to where no implementation " +
+        "step stands before it stops the task, and Legion tells you (task-stopped). The daemon refuses a report from any architect " +
+        "but the issue's own (NOT_THE_OWNER). It refuses one of a step that does not run now or is not yours " +
+        "(OWNER_STEP_NOT_RUNNING). That refusal names where the task stands and who works that place. It refuses one that breaks " +
+        "the rules of that step's completion, with the codes handoff_complete gets. None of these refusals changes anything. " +
         "Park one with park_child only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and say in a comment which of those it is. " +
         "Ask the person about a child that can reach neither done nor a park under that rule, and hold the acceptance until they answer. " +
         "close_root is refused the same way and with the same code while an issue beneath the root is still in the workflow, " +
         "since closing it would stop that work mid-turn: answer it the same way, park_child under the same rule included. " +
         "release_children and rerun_child are refused for a child whose ancestor is in retro or merging " +
-        "(CHILD_UNDER_ACCEPTED_PARENT, naming the ancestor), since that ancestor's approved head cannot carry work released " +
-        "under it now: wait for the ancestor to close, then release it. " +
+        "(CHILD_UNDER_ACCEPTED_PARENT, naming the ancestor). That is because every step of that ancestor's task has passed, and what " +
+        "they passed cannot carry work released under it now. Wait for the ancestor to close, then release it. " +
         "The controller's read_state with no field returns a summary of the daemon's whole state — the project, the pause " +
         "that stands or the last one ended, admission, how many wakes the daemon's pacing holds and when the next is due, each " +
         "capability, one line per recorded issue, and under each issue Legion still runs its slot, hold, gate and each claim's " +
@@ -641,8 +680,8 @@ export function createLegionTool(deps: {
     parameters: toolSchema(pi),
     execute: async (_id, parameters, signal, onUpdate, context) => {
       // The writes the daemon applies at most once however often they arrive (handoff_complete,
-      // sign_off, register_gate, register_plan, stop_task) wait out its restart until the
-      // agent's abort.
+      // sign_off, register_gate, register_plan, stop_task, and complete_step, whose repeat finds
+      // its step no longer running) wait out its restart until the agent's abort.
       // The retry notice goes out once as a partial result, which Oh My Pi shows in its TUI and
       // RPC event stream; the model sees only the final result.
       const restart: DaemonRestartRetry = {
@@ -860,6 +899,69 @@ export function createLegionTool(deps: {
             await retryWhileDaemonRestarts(
               "sign_off",
               async () => client.signOff({ grantId: await mintClaimGrant(client, active), issue }),
+              restart
+            );
+            return jsonSuccess({});
+          }
+          case "complete_step": {
+            // The owner of an issue's steps is that issue's own architect (the daemon's
+            // NOT_THE_OWNER for any other), which this session is for its own issue alone.
+            const issue = requiredString(parameters, operation, "issue");
+            if (issue !== active.issue) {
+              throw new Error(
+                `complete_step reports a step of ${active.issue}, the issue this session is the architect of. ${issue}'s steps are its own architect's`
+              );
+            }
+            const step = parameters.step;
+            if (typeof step !== "number" || !Number.isSafeInteger(step) || step < 0) {
+              throw new Error(
+                "complete_step's step is a whole number of 0 or more. It is the place of the step you report in your issue's task, 1 for its first, or 0 for the retro"
+              );
+            }
+            const summary = requiredString(parameters, operation, "summary");
+            const { verdict, return_to: returnTo } = parameters;
+            if (verdict !== undefined && verdict !== "pass" && verdict !== "fail") {
+              throw new Error("complete_step's verdict is pass or fail");
+            }
+            // The daemon's own rules, refused in its words before anything is read or minted
+            // (RETURN_TO_NEEDS_FAIL, PLAN_RATING_INPUT).
+            if (returnTo !== undefined && verdict !== "fail") {
+              throw new Error(
+                "complete_step names return_to without the verdict fail. Only the report of a step that failed names the step its task returns to. Send it again without return_to"
+              );
+            }
+            const { plan_rating: planRating, plan_reason: planReason } = parameters;
+            const lone = legionPlanRatingLoneField(
+              planRating as number | undefined,
+              planReason as string | undefined
+            );
+            if (lone !== undefined) throw new Error(planRatingLoneRefusal(operation, lone));
+            // Retried whole while the daemon restarts: the record, the report and a fresh grant are
+            // read again on each attempt, and a repeat after a report that landed finds its step no
+            // longer running (OWNER_STEP_NOT_RUNNING) and changes nothing.
+            await retryWhileDaemonRestarts(
+              "complete_step",
+              async () => {
+                const record = await recordFrom(client, issue);
+                // The report is of the place the issue stands at, as a completion's is; a phase
+                // that runs no step of the owner's asks for none, and the daemon says where the
+                // task stands (OWNER_STEP_NOT_RUNNING).
+                const role =
+                  record.phase === "step" ? record.stepRole : OWNER_PLACE_ROLES[record.phase];
+                const report = role === undefined ? {} : await handoffReport(record.phase, role);
+                return client.completeStep({
+                  grantId: await mintClaimGrant(client, active),
+                  issue,
+                  step,
+                  summary,
+                  ...(verdict === undefined ? {} : { verdict }),
+                  ...report,
+                  ...(returnTo === undefined ? {} : { returnTo: returnTo as number }),
+                  ...(planRating === undefined
+                    ? {}
+                    : { planRating: planRating as number, planReason: planReason as string }),
+                });
+              },
               restart
             );
             return jsonSuccess({});

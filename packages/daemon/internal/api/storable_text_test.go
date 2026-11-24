@@ -191,6 +191,7 @@ func TestNoRouteTakesABodyStringHoldingANul(t *testing.T) {
 		"POST /legion/v1/phase/backward":                         reads("reason"),
 		"POST /legion/v1/phase/retry":                            reads("issue"),
 		"POST /legion/v1/signoff":                                reads("issue"),
+		"POST /legion/v1/steps/complete":                         reads("summary"),
 		"POST /legion/v1/roots/close":                            reads("reason"),
 		"POST /legion/v1/children/park":                          reads("issue"),
 		"POST /legion/v1/children/rerun":                         reads("issue"),

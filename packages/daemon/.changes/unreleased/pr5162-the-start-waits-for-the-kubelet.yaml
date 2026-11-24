@@ -1,0 +1,11 @@
+kind: Fixed
+custom:
+  Issue: pr5162
+body: |-
+  A launch into a pod the daemon keeps gives the pod's launcher at least two minutes from the
+  slot's credential write to see the new credential in the slot's gh files, and waits on its start
+  that long too. The bound was what remained of the boot timeout, which does not follow the
+  kubelet: Kubernetes documents a Secret volume's update as taking up to the kubelet's sync period,
+  one minute by default and up to half a period more at random, plus its Secret cache's
+  propagation. With a shorter boot timeout, a start could be refused and its launch charged as a
+  failure before the kubelet had projected the credential.

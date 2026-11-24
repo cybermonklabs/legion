@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/steprecord"
+	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/plan"
@@ -56,26 +57,34 @@ func stepOfWalk(w Walk, place record.TaskPlace) (role stepRole, typ plan.Type, o
 	return "", "", false
 }
 
-// standing is the step an issue stands in: its place, its role and its type (stepAt), and the
-// phase it is the step of (record.StandsAt).
+// standing is the step an issue stands in: its place, its role and its type (stepAt), the phase
+// it is the step of (record.StandsAt), and whether its agent is the owner of the task (owner).
 type standing struct {
 	place record.StepPlace
 	role  stepRole
 	typ   plan.Type
 	at    phase.Phase
+	// owner is whether the owner of the task does this step or retro (Walk.PlaceRole is the
+	// architect) and the issue works it now, held from it by nothing, which standingStep alone
+	// reads: a start of such a run tells the owner (startStep). A held issue's owner is told when
+	// the hold's retry puts the issue back in the step (restart), as a held worker is started then.
+	owner bool
 }
 
 // standingStep is the step issue stands in on w, the walk of its run: stepAt where it stands
-// (record.StandsAt, so a held issue's is the step of the phase its hold is from). Every writer
-// of a step's record takes the step it found, or, for a phase the issue has left, stepAt's
-// (reportEndedStep). An issue its plan holds stands in no step (planHold): a stopped task's run
-// ended with its stop, and a parent held for its children has not started its retro, so the end
-// rule ends the run each stood in (runOver) and no start is made for either.
+// (record.StandsAt, so a held issue's is the step of the phase its hold is from), with whether the
+// owner of the task does it now (standing.owner). Every writer of a step's record takes the step
+// it found, or, for a phase the issue has left, stepAt's (reportEndedStep). An issue its plan
+// holds stands in no step (planHold): a stopped task's run ended with its stop, and a parent held
+// for its children has not started its retro, so the end rule ends the run each stood in (runOver)
+// and no start is made for either.
 func standingStep(w Walk, issue record.Issue) (standing, bool) {
 	if planHold(issue, w.Stored) {
 		return standing{}, false
 	}
-	return stepAt(w, issue, standingIn(record.StandsAt(issue)))
+	step, ok := stepAt(w, issue, standingIn(record.StandsAt(issue)))
+	step.owner = ok && issue.Phase != phase.Held && w.OwnerAt(w.Place)
+	return step, ok
 }
 
 // stepSite is the place a caller of stepAt asks for, made by standingIn or placeNamed, with the
@@ -200,22 +209,36 @@ var stepStopped = StepEnd{Result: ResultStopped}
 // makes the start wait: the row reaches Dispatch on a lane of its own (record.LaneRecord). A phase
 // that runs no step and a record key that is no issue key are no step its callers find
 // (standingStep).
-func (e *Engine) startStep(ctx context.Context, tx pgx.Tx, issue record.Issue, step standing, agent claim.Token) error {
+//
+// It is the one writer of the start of every run, so it is the one place a run of a step or a
+// retro the owner does is told to the owner: where step.owner, it queues the notice owner-step
+// with task, the text the owner's entry holds (tellOwner), in the same transaction as the record.
+// No path that starts such a run can start it untold: a transition's start, a task started again,
+// a held retro and a re-admission's promotion all come here through enter (startOwnersStep).
+func (e *Engine) startStep(ctx context.Context, tx pgx.Tx, issue record.Issue, step standing, agent claim.Token, task string) error {
 	if err := e.settleStart(ctx, tx, issue.Key, step.place); err != nil {
 		return err
 	}
 	// The moment is the one the count of starts keeps, which PostgreSQL holds to the microsecond
 	// and the end reads back, so the start and the end write one moment (endRun).
 	now := e.now().Truncate(time.Microsecond)
-	write, err := e.store.RaiseStepStarts(ctx, tx, issue.Key, step.place, func(starts int64) record.StepRecord {
-		write := stepWrite(issue, step.place, step.role, step.typ, string(agent), starts)
+	var starts int64
+	write, err := e.store.RaiseStepStarts(ctx, tx, issue.Key, step.place, func(raised int64) record.StepRecord {
+		starts = raised
+		write := stepWrite(issue, step.place, step.role, step.typ, string(agent), raised)
 		write.StartedAt = new(now)
 		return write
 	})
 	if err != nil {
 		return err
 	}
-	return e.enqueue(ctx, tx, issue.Key, write)
+	if err := e.enqueue(ctx, tx, issue.Key, write); err != nil {
+		return err
+	}
+	if !step.owner {
+		return nil
+	}
+	return e.tellOwner(ctx, tx, issue, step, starts, task)
 }
 
 // endStep writes the end of the run of the step at site on w, the walk of that run, before being
@@ -230,15 +253,76 @@ func (e *Engine) startStep(ctx context.Context, tx pgx.Tx, issue record.Issue, s
 // from the daemon's boot (OpenUncountedRuns), which wrote the count and the agent its start would
 // have named, so its end is written the same way. endRun writes it. A phase that runs no step
 // writes nothing, and neither does a record key that is no issue key (recordsSteps).
+//
+// It is the one writer of the end of each step on a walk, so it is the one place an owner's slot is
+// given its own App back at a step's end: where the run it ends is a step of a stored plan whose
+// start named an architect (the owner, or the architect above that ran the step for it,
+// ownerAgent), and the one rule of what the owner's place switches the slot to gives a role for
+// the place (record.OwnersPlaceActsAs, which the daemon's ActsAs reads while the place runs) that
+// acts as another App than the owner's own (actsAsOwnApp), it queues a supervise slot_credential of
+// the owner's claim in the same transaction, which writes the owner's slot back to its own App
+// when it runs, and writes nothing where another act of the owner's of another App runs by then
+// (ownerSlotCredential; internal/daemon's slotCredential). So the owner's retro of a task with no
+// step of the type implementation, done as itself, queues none: its slot held the owner's own App
+// throughout. Nor does the end of the owner's tester, reviewer or acceptance step, each of which
+// acts as the review App, the owner's own. A merge's start names the merger, so its end queues
+// none. A run on no step of its walk is ended, and its write-back queued, by endOffWalk.
 func (e *Engine) endStep(ctx context.Context, tx pgx.Tx, before record.Issue, w Walk, site stepSite, end StepEnd) error {
 	step, ok := stepAt(w, before, site)
 	if !ok {
 		return nil
 	}
-	_, err := e.endRun(ctx, tx, before.Key, step.place, end, func(start record.StepStart) record.StepRecord {
+	var agent claim.Token
+	ended, err := e.endRun(ctx, tx, before.Key, step.place, end, func(start record.StepStart) record.StepRecord {
+		agent = claim.Token(start.Agent)
 		return stepWrite(before, step.place, step.role, step.typ, start.Agent, start.Starts)
 	})
-	return err
+	if err != nil || !ended || !w.Stored {
+		return err
+	}
+	if role, switched := record.OwnersPlaceActsAs(step.at, claim.Role(step.role), w.Steps); !switched || actsAsOwnApp(role) {
+		return nil
+	}
+	return e.ownerSlotCredential(ctx, tx, before, agent)
+}
+
+// actsAsOwnApp is whether role acts as the App of the owner's own role, the architect's, by the one
+// role-to-App rule (appauth.AppRoleFor), asked with no deployment and no plan: it names the App of
+// a name of Legion's whatever the deployment's settings or a plan say, and answers any other name
+// ErrRoleNotDefined, which is false here. Such a role is one a plan or the deployment defines,
+// whose App the daemon reads (appauth.RoleApps), so its end queues the write-back, and the runtime
+// rewrites nothing where the slot holds that App already (runtime.SlotCredentials).
+func actsAsOwnApp(role claim.Role) bool {
+	app, err := appauth.AppRoleFor(role, nil, appauth.Planned{})
+	if err != nil {
+		return false
+	}
+	own, err := appauth.AppRoleFor(claim.RoleArchitect, nil, appauth.Planned{})
+	return err == nil && app == own
+}
+
+// ownerSlotCredential queues, where agent, the agent the start of an ended step or retro named, is
+// an architect, the supervise slot_credential that writes the slot of the owner of issue's task
+// (record.OwnerClaim) back to the App of the owner's own role (internal/daemon's slotCredential).
+// While the owner does a step, or the retro of its own implementation step, its slot holds the App
+// of the role it is done as, unless a merge forward asked of the owner holds it on the implement
+// App (internal/daemon's ownerActsAs). So the end of that step or retro queues the write-back
+// rather than leave the slot to its next refresh. The write is made only where the record then
+// answers the owner's own App, so a step, a retro or a merge forward of another App that runs by
+// then keeps its App, and the next notice to the owner waits for that write (internal/daemon's
+// deliverNotice). The
+// slot written is always the owner's, whichever architect the start named: the owner-step goes to
+// the owner, and only the owner's claim acts as another role. Any other agent's slot never held
+// another App, and an issue whose key makes no claim token has no owner's slot.
+func (e *Engine) ownerSlotCredential(ctx context.Context, tx pgx.Tx, issue record.Issue, agent claim.Token) error {
+	if _, of, ok := agent.Cut(); !ok || of != claim.Agent(claim.RoleArchitect) {
+		return nil
+	}
+	row, ok := record.OwnerSlotWriteBack(issue)
+	if !ok {
+		return nil
+	}
+	return e.enqueue(ctx, tx, issue.Key, row)
 }
 
 // endRun is the one writer of the end of a run, the run at place on issue, for both of its callers:
@@ -313,12 +397,14 @@ func recordsSteps(issue record.Issue) bool { return claim.IsIssueKey(issue.Key) 
 
 // upgradedStart is the agent and the moment of the start of a step at that no start of this
 // release counted, which ran under the release before: the agent its start would have named
-// (startAgent, so accepting's is the architect that owns the issue now, acceptingAgent), and the
-// moment its phase worker's entry was raised. Accepting's architect raises no entry, and so the
-// moment is unknown there. A merge whose merger's entry this visit to merging did not raise is one
-// GitHub had already made when the issue reached merging, which started no merger: an entry never
-// raised, or one raised before the retro's completion that brought the issue there, the one move
-// into merging (the table's retro row), which is an earlier visit's.
+// (startAgent, so a step of the owner's is the architect that runs it now, ownerAgent), and the
+// moment its phase worker's entry was raised. At a place the owner works (RoleAt is the
+// architect) the moment is unknown: the release before raised no entry for the architect's
+// acceptance, the one step of the owner's it ran. A merge whose merger's entry this visit to
+// merging did not raise is one GitHub had already made when the issue reached merging, which
+// started no merger: an entry never raised, or one raised before the retro's completion that
+// brought the issue there, the one move into merging (the table's retro row), which is an
+// earlier visit's.
 func (e *Engine) upgradedStart(ctx context.Context, tx pgx.Tx, issue record.Issue, at phase.Phase) (claim.Token, time.Time, error) {
 	worker := issue.RoleAt(at)
 	if worker == claim.RoleArchitect {
@@ -331,7 +417,11 @@ func (e *Engine) upgradedStart(ctx context.Context, tx pgx.Tx, issue record.Issu
 	}
 	if at == phase.Merging {
 		// The retro's completion is recorded on the row of the role that works the retro.
-		retro, err := e.phaseRow(ctx, tx, issue, phase.RoleFor(phase.Retro))
+		w, err := e.walk(ctx, tx, issue)
+		if err != nil {
+			return "", time.Time{}, err
+		}
+		retro, err := e.phaseRow(ctx, tx, issue, w.RoleAt(record.TaskPlace{Kind: record.PlaceRetro}))
 		if err != nil {
 			return "", time.Time{}, err
 		}
@@ -343,14 +433,17 @@ func (e *Engine) upgradedStart(ctx context.Context, tx pgx.Tx, issue record.Issu
 	return agent, row.EntryRaisedAt.UTC(), err
 }
 
-// startAgent is the agent a start of the step issue stands in at names: for accepting, the
-// architect that owns issue now (acceptingAgent), nobody for a merge GitHub has already made,
-// where no merger starts, and the agent of the step's place otherwise (placeToken).
+// startAgent is the agent a start of the step issue stands in at names: for an acceptance the owner
+// does (an issue with no plan rows, or a step acceptance:owner: RoleAt is the architect, the rule
+// of the owner's place, record.Issue.OwnersPlace), the architect that runs the owner's step now
+// (ownerAgent), nobody for a merge GitHub has already made, where no merger starts, and the agent
+// of the step's place otherwise (placeToken), which is ownerAgent's answer too for a step of the
+// key owner, and the fresh agent of acceptance for a step acceptance with no key.
 func (e *Engine) startAgent(ctx context.Context, tx pgx.Tx, issue record.Issue, at phase.Phase) (claim.Token, error) {
-	switch at {
-	case phase.Accepting:
-		return e.acceptingAgent(ctx, tx, issue)
-	case phase.Merging:
+	switch {
+	case at == phase.Accepting && issue.RoleAt(at) == claim.RoleArchitect:
+		return e.ownerAgent(ctx, tx, issue, at)
+	case at == phase.Merging:
 		standing := issue
 		standing.Phase = at
 		merged, err := PhaseFinished(ctx, e.store, tx, standing)
@@ -372,59 +465,86 @@ func (e *Engine) placeToken(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	if !ok {
 		return stepClaim(issue, issue.Key, role)
 	}
-	return e.stepToken(issue, w, place, role)
+	return e.stepToken(ctx, tx, issue, w, place, at, role)
 }
 
 // stepToken is the claim token of the agent that does the work of place on w, issue's walk, whose
-// role is role, which each entry takes (enter) and writes to the step's phases row
-// (record.PhaseRow.Claim) and to its step record (startStep). Where the walk holds a step for place
-// (stepAt), it is that step's token (record.StepToken, the one rule of it): a step of the key owner
-// is the tree's architect's, as the accepting step's is (startAgent), and every other step's is its
-// agent's (claim.AgentToken), so the steps of one key are one claim. Where it holds none — the
-// merge, and every place of a run with no plan rows — it is the role's own token (R20).
-func (e *Engine) stepToken(issue record.Issue, w Walk, place record.TaskPlace, role claim.Role) (claim.Token, error) {
-	step, ok := w.stepAt(place)
-	if !ok {
+// role is role and which runs as at: the workflow's one function that makes the token of a step's
+// agent, which each entry takes (enter) and writes to the step's phases row (record.PhaseRow.Claim)
+// and to its step record (startStep). A place whose agent is the owner (Walk.OwnerAt: a step of the
+// key owner, or the retro of a task whose retro is the owner's) is run by the architect that owns
+// the issue now (ownerAgent), as an acceptance the owner does is (startAgent). Where AgentAt names
+// an agent, it is that agent's token (claim.AgentToken), so the steps of one key are one claim;
+// where it names none — the merge, and every place of a run with no plan rows — it is the role's
+// own token (R20). A launch's addressing makes a stored step's token apart from this, by
+// record.StepToken (the daemon's stepWorkersOf): the same agent's token where the step's agent is
+// not the owner, and for a step of the key owner the issue's own architect by rule
+// (record.OwnerClaim), where this names the architect that runs the owner's step now, which can be
+// the architect above.
+func (e *Engine) stepToken(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, place record.TaskPlace, at phase.Phase, role claim.Role) (claim.Token, error) {
+	if w.OwnerAt(place) {
+		return e.ownerAgent(ctx, tx, issue, at)
+	}
+	name := w.AgentAt(place)
+	if name == "" {
 		return stepClaim(issue, issue.Key, role)
 	}
 	project, err := claim.ProjectToken(issue.Project)
 	if err != nil {
 		return "", err
 	}
-	return record.StepToken(project, issue.Key, issue.Tree, step)
+	return claim.AgentToken(project, issue.Key, name)
 }
 
 // implementationAgent is the agent that does the implementation work of issue's task where the
-// issue stands in at, on w, issue's walk, as a recipient of a role message: the agent of the step
-// Walk.implementationPlace names from the place of at (placeIn, none where the walk holds no place
-// for at), with that step's role and the claim stepToken makes for it, the claim the start of that
-// step names. So the agent is the same whatever its role is called - the implementer of a run with
-// no plan rows, or a role the deployment or the plan defines of the type implementation - and a
-// role whose step no task holds is never told. ok is false for a task with no step of that type.
-func (e *Engine) implementationAgent(issue record.Issue, w Walk, at phase.Phase) (roleRecipient, bool, error) {
+// issue stands in at, on w, issue's walk, as a recipient of a role message: workAgent of the role
+// implementer, the agent of the step Walk.implementationPlace names. So the agent is the same
+// whatever its role is called - the implementer of a run with no plan rows, or a role the
+// deployment or the plan defines of the type implementation - and a role whose step no task holds
+// is never told. ok is false for a task with no step of that type.
+func (e *Engine) implementationAgent(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, at phase.Phase) (roleRecipient, bool, error) {
+	return e.workAgent(ctx, tx, issue, w, at, claim.RoleImplementer)
+}
+
+// workAgent is the agent that does the work of role, one of Legion's roles of a step, in issue's
+// task where the issue stands in at, on w, issue's walk, as a recipient of a role message: the
+// agent of the step Walk.workPlace names from the place of at (placeIn, none where the walk holds
+// no place for at), with that step's role and the claim stepToken makes for it, the claim the start
+// of that step names. Where that step's agent is the owner (Walk.OwnerAt), the claim is the owner's
+// (record.OwnerClaim), as for every message to the worker of an owner's step
+// (record.Issue.StepWorker): the owner does that step, since its owner-step and its report are the
+// owner's, while the start names the architect above where the issue's own architect holds no role
+// (ownerAgent). ok is false for a task with no step that does that work.
+func (e *Engine) workAgent(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, at phase.Phase, work claim.Role) (roleRecipient, bool, error) {
 	place, _ := w.placeIn(at)
-	step, ok := w.implementationPlace(place)
+	step, ok := w.workPlace(place, work)
 	if !ok {
 		return roleRecipient{}, false, nil
 	}
 	role := claim.Role(w.Steps[step.Position-1].Role)
-	token, err := e.stepToken(issue, w, step, role)
+	_, token, err := record.StepRecipient(issue, role, w.OwnerAt(step))
+	if err == nil && token == "" {
+		token, err = e.stepToken(ctx, tx, issue, w, step, at, role)
+	}
 	if err != nil {
 		return roleRecipient{}, false, err
 	}
 	return roleRecipient{issue: issue.Key, role: role, row: issue.Key, claim: token}, true, nil
 }
 
-// acceptingAgent is the agent of issue's accepting step: the claim of the architect that owns
-// issue now, the one that signs it off or moves it back. That is a child's own architect while its
-// claim holds its role (owningArchitect, the owner walk over the claims this transaction reads), or
-// while a start of it that will run waits in the outbox (ownArchitectStarting), else the nearest
-// architect above it whose claim holds its role, else the tree's. It is the one place both a start
-// of accepting (startAgent) and the boot's open of a run of accepting no start counted (upgradedStart)
-// read, so the record names the architect whose request ends the step, and that request waits for
-// that architect's stream (api's apply, record.RunsAStepOn).
-func (e *Engine) acceptingAgent(ctx context.Context, tx pgx.Tx, issue record.Issue) (claim.Token, error) {
-	starting, err := e.ownArchitectStarting(ctx, tx, issue)
+// ownerAgent is the claim that runs a step of the owner of issue's task at at (a step of the key
+// owner, the owner's retro, or the acceptance of a run with no plan rows), and that the step's
+// record names: the architect that owns issue now, the one that does the step. The owner by rule
+// is the issue's own architect (record.OwnerClaim), and it
+// runs the step while its claim holds its role (owningArchitect, the owner walk over the claims
+// this transaction reads), or while a start of it that will run waits in the outbox
+// (ownArchitectStarting); else the nearest architect above it whose claim holds its role does the
+// step, else the tree's, so a record never names an architect that did not act. It is the one
+// place every start of an owner's step (startAgent, stepToken) and the boot's open of a run of one
+// no start counted (upgradedStart) read, so the record names the architect whose request ends the
+// step, and that request waits for that architect's stream (api's apply, record.RunsAStepOn).
+func (e *Engine) ownerAgent(ctx context.Context, tx pgx.Tx, issue record.Issue, at phase.Phase) (claim.Token, error) {
+	starting, err := e.ownArchitectStarting(ctx, tx, issue, at)
 	if err != nil {
 		return "", err
 	}
@@ -437,23 +557,23 @@ func (e *Engine) acceptingAgent(ctx context.Context, tx pgx.Tx, issue record.Iss
 	return stepClaim(issue, owner, claim.RoleArchitect)
 }
 
-// ownArchitectStarting is whether issue's own architect, a child's, owns its accepting step by a
-// start the outbox will act on, which the owner walk does not see: the walk reads a claim as the
+// ownArchitectStarting is whether issue's own architect, a child's, runs its owner's step at at by
+// a start the outbox will act on, which the owner walk does not see: the walk reads a claim as the
 // store records it, and a claim whose start is only queued does not hold its role yet
-// (record.HoldsRole). Two moves queue such a start in the transaction that starts accepting: the
-// move into accepting, which starts a failed child architect again (reviveArchitect), and a
+// (record.HoldsRole). Two moves queue such a start in the transaction that starts the step: the
+// move into it, which starts a failed child architect again (reviveArchitect), and a
 // re-admission's promotion, which brings back a member's suspended architect (admit's
 // startMidPhaseMembers). Once that start runs, the child's own architect owns the child, and it
-// signs it off. The start is one of no phase or of accepting (architectStartQueued).
+// does the step. The start is one of no phase or of at (architectStartQueued).
 //
 // Two such starts do not count. One queued for a claim the operator suspended: that suspension is
 // woken by no start, queued or not, since each waits for the operator's resume
-// (supervise.Claim.RuleHolds). And one queued once the issue has left accepting, which the store's
+// (supervise.Claim.RuleHolds). And one queued once the issue has left at, which the store's
 // record of the issue says: the start is then the next phase's (reviveArchitect at that phase's
 // start).
-func (e *Engine) ownArchitectStarting(ctx context.Context, tx pgx.Tx, issue record.Issue) (bool, error) {
+func (e *Engine) ownArchitectStarting(ctx context.Context, tx pgx.Tx, issue record.Issue, at phase.Phase) (bool, error) {
 	run, child, err := e.ownArchitectRun(ctx, tx, issue)
-	if err != nil || !child || !architectStartQueued(run, phase.Accepting) {
+	if err != nil || !child || !architectStartQueued(run, at) {
 		return false, err
 	}
 	if run.Claim != nil && (supervise.Claim{State: run.Claim.State, SuspendedBy: run.Claim.SuspendedBy}).RuleHolds() {
@@ -463,20 +583,22 @@ func (e *Engine) ownArchitectStarting(ctx context.Context, tx pgx.Tx, issue reco
 	if err != nil || stands == nil {
 		return false, err
 	}
-	return record.StandsAt(*stands) == phase.Accepting && stands.Generation == issue.Generation, nil
+	return record.StandsAt(*stands) == at && stands.Generation == issue.Generation, nil
 }
 
 // startNamedStep writes the start of step, the step issue stands in (standingStep), under the agent
 // that step names (startAgent), the one place that decides who runs a start no phase worker's entry
-// names: a move into accepting, whose role is the architect, for which start starts no worker, or
-// into a merge GitHub has already made, which nobody runs and whose close ends it (transition), and
-// admission's promotion of a member whose worker it does not start (StartStepRecord).
+// names: a move into accepting of a run with no plan rows, whose role is the architect, which
+// starts no worker (Engine.start), a move into a merge GitHub has already made, which nobody runs
+// and whose close ends it (transition), and admission's promotion of a member whose worker it does
+// not start (StartStepRecord). None of them is a step the owner does, whose start raises the
+// owner's entry and tells the owner its task (startOwnersStep), so it tells no task.
 func (e *Engine) startNamedStep(ctx context.Context, tx pgx.Tx, issue record.Issue, step standing) error {
 	agent, err := e.startAgent(ctx, tx, issue, step.at)
 	if err != nil {
 		return err
 	}
-	return e.startStep(ctx, tx, issue, step, agent)
+	return e.startStep(ctx, tx, issue, step, agent, "")
 }
 
 // stepClaim is the claim token of role on key, in issue's project.
@@ -537,6 +659,11 @@ func endOfTransition(w Walk, trigger TriggerKind, from phase.Phase, to stepSite,
 // (settleStart) ends that old run before it opens the new one. A member its plan holds starts no
 // step (standingStep): its stopped task runs again only when a later version of the plan starts
 // the task at its first step, and a parent held for its children has started no retro.
+//
+// A step or a retro the owner does starts as every start of the owner's does (startOwnersStep):
+// its entry raised under the owner's claim with the phase's resume task, as the promotion's start
+// of a mid-phase worker raises one (StartPromotedWorker), its run's start, and one notice
+// owner-step that carries that task (startStep).
 func (e *Engine) StartStepRecord(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
 	w, err := e.walk(ctx, tx, issue)
 	if err != nil {
@@ -554,6 +681,9 @@ func (e *Engine) StartStepRecord(ctx context.Context, tx pgx.Tx, issue record.Is
 		if run.Place == step.place && run.Run == record.RunOpen && run.Generation == issue.Generation {
 			return nil
 		}
+	}
+	if step.owner {
+		return e.startOwnersStep(ctx, tx, issue, w, func(at Standing) string { return resumeText(issue, at) }, false)
 	}
 	return e.startNamedStep(ctx, tx, issue, step)
 }

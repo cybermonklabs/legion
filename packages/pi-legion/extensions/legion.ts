@@ -893,8 +893,9 @@ export default function legionExtension(pi: PiApi): void {
   pi.on("session_stop", async (event, context) => {
     if (event.signal.aborted) return undefined;
     if (!phaseWorkerSession(context)) {
-      // An architect has no phase of its own to settle, and its pod is released on the same rule
-      // as a worker's, so its turn ends with a report of its own.
+      // An architect settles no phase reminder, even while a step of its own runs (Legion tells it
+      // that step with an owner-step notice), and its pod is released on the same rule as a
+      // worker's, so its turn ends with a report of its own.
       await reportActivity(context, { onlyWhenChanged: false });
       return undefined;
     }

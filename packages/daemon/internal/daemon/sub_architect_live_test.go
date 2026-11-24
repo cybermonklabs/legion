@@ -10,9 +10,12 @@
 // releases them with its own grant, and a grandchild's notices reach it rather than the root's
 // architect. It may park, rerun and release only issues under its own issue, and is answered 403
 // ISSUE_NOT_OWNED for any other. When its claim fails because its launches ran out, the architect
-// above it is told, the child's notices go there too, and the child's next phase start retries the
-// claim in the same session with fresh budgets. A parked child's architect is suspended with the
-// child, and the child's rerun resumes that session.
+// above it is told, and the child's notices go there too, all but an owner-step: that goes to the
+// child's own architect alone, which is told that step again when it runs again. The child's next
+// phase start retries the claim in the same session with fresh budgets; where the child stands at
+// a step or a retro its own architect does, other than an acceptance, the daemon starts the claim
+// again at once, at most three times in that step's run. A parked child's architect is suspended
+// with the child, and the child's rerun resumes that session.
 // scripts/e2e/sub-architect.sh builds this driver with `-tags e2e` and owns the nats-server and
 // the PostgreSQL it runs against, through the run lib/live-daemon-proof.sh makes around every
 // whole-daemon live proof.
@@ -84,13 +87,6 @@ const (
 	subArchitectCap = 6
 	// subArchitectGate is the root's approved design document, which lets its children start.
 	subArchitectGate = "7d2e4f6a-8b1c-4e3d-9a5f-0c2b4d6e8f1a"
-	// subArchitectOwnership is the sentence every child-status notice of a child's start ends
-	// with (workflow.ChildStartedNotice): the child's own architect owns it while that architect
-	// holds its role, so the architect told hears only what goes above that architect.
-	subArchitectOwnership = "Its own architect starts with it and owns it while that architect holds its role: its " +
-		"decomposition, its children and its acceptance. You hear its child-status and child-closed notices, a worker-died or " +
-		"worker-stalled of its architect, and its other notices while its architect does not hold its role, which the daemon's " +
-		"holdsRole decides"
 )
 
 // subArchitectLive is one run of the proof: the booted daemon, the one live tree it runs, the
@@ -237,8 +233,8 @@ func (r *subArchitectLive) releaseStep() {
 	started := r.waitTold(r.tree, "the child-status notice that "+c+" started", func(n record.Notice) bool {
 		return n.Kind == "child-status" && strings.HasPrefix(n.Reason, c+" starts planning under "+r.tree)
 	})
-	if !strings.HasSuffix(started.Reason, ". "+subArchitectOwnership) {
-		t.Fatalf("%s's architect was told that %s started as %q, want it to end %q", r.tree, c, started.Reason, subArchitectOwnership)
+	if started.Role != claim.RoleArchitect {
+		t.Fatalf("%s's architect was told that %s started as %+v, want a notice to the architect", r.tree, c, started)
 	}
 	r.note("read back: a child-status notice on %s's architect topic — %s", r.tree, started.Reason)
 }

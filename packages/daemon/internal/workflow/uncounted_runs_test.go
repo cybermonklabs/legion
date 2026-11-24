@@ -164,9 +164,9 @@ func countStepStarts(t *testing.T, pool *pgxpool.Pool, issue string) int {
 // row, or one an earlier release started after a rollback, whose row the roll forward marked
 // uncounted — gets an open row at the daemon's boot (OpenUncountedRuns): at the count its end
 // would have taken, with the agent and the moment its start would have named, and with no record
-// queued. A second boot opens nothing. A child in accepting, whose step's start no entry records,
-// gets the architect that owns it (acceptingAgent: here the tree's, since the child's own has no
-// claim) and no moment. An issue in a phase that runs no step, and one in a tree
+// queued. A second boot opens nothing. A child in accepting with no plan rows, whose step's start
+// no entry records, gets the architect that owns it (ownerAgent: here the tree's, since the
+// child's own has no claim) and no moment. An issue in a phase that runs no step, and one in a tree
 // the operator holds, get no row. The run's end is then the settle's end of an open run, written
 // once, under that count's id.
 func TestTheBootOpensTheRunOfEachIssueInAStepNoStartCounted(t *testing.T) {

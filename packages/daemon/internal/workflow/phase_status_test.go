@@ -63,8 +63,9 @@ func TestEveryPhaseHasAStatusEntry(t *testing.T) {
 // Recording a child under a tree whose gate is open is no longer one of those transitions. The
 // cap counts the issues at work, so the child's first phase takes a slot of its own: the fact
 // records the child at admitted, in the waiting line, and admission's promotion is what moves it
-// into planning and writes its in_progress (dispatch://INFRA-980, acceptance A3 and A4). Before
-// this release the one fact did both, which is what this test asserted when main wrote it.
+// into its first phase, planning for this child with no plan rows, and writes its in_progress
+// (dispatch://INFRA-980, acceptance A3 and A4). Before this release the one fact did both, which
+// is what this test asserted when main wrote it.
 func TestATransitionWritesTheStatusOfThePhaseItEnters(t *testing.T) {
 	pool := migratedPool(t)
 	parent := "LEGION-208"

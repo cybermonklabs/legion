@@ -163,9 +163,9 @@ func (u undecidingReview) review(t *testing.T, pool *pgxpool.Pool, id int64, hea
 	return review
 }
 
-// Only a review that decides the round in reviewing moves the commit: a comment decides nothing, a
-// review refused for the head its footer names decides nothing, and a review of an issue outside
-// reviewing decides no round.
+// Of the reviews on GitHub, only one that decides the round in reviewing moves the reviewer's
+// commit: a comment decides nothing, a review refused for the head its footer names decides
+// nothing, and a review of an issue outside reviewing decides no round.
 func TestAReviewThatDecidesNothingRecordsNoCommit(t *testing.T) {
 	for _, tc := range reviewsThatDecideNothing(headOne) {
 		t.Run(tc.name, func(t *testing.T) {
@@ -225,9 +225,10 @@ func TestAReviewThatDecidesNothingKeepsTheCommitAnEarlierReviewRecorded(t *testi
 	}
 }
 
-// A person's review decides a round as it always has, on the commit_id its webhook carried, and
-// the round's decision is the person's. The commit the reviewer's next round is told is still the
-// one the reviewer's newest recorded review read: the reviewer never read the person's.
+// A person's review decides the round of a reviewer step no owner does as it always has, on the
+// commit_id its webhook carried, and the round's decision is the person's. The commit the
+// reviewer's next round is told is still the one the reviewer's newest recorded review read: the
+// reviewer never read the person's.
 func TestAPersonsReviewDoesNotMoveTheReviewersCommit(t *testing.T) {
 	pool := migratedPool(t)
 	seedReviewOf(t, pool, headOne, "green")
@@ -267,8 +268,9 @@ func TestAPersonsReviewDoesNotMoveTheReviewersCommit(t *testing.T) {
 // its body says: here a person with write access, whose review body holds the reviewer's own
 // Legion footer in a quote, naming the reviewer's session and the entry that stands
 // (lastLegionFooter reads the last footer wherever it stands in the body). The person's review
-// decides the round, as a person's always does, on the commit_id its webhook carried, and the
-// commit stays the one the reviewer's own review read: the session condition of the write is the
+// decides the round, as a person's always does at a reviewer step no owner does, on the commit_id
+// its webhook carried, and the commit stays the one the reviewer's own review read: the session
+// condition of the write is the
 // one thing that holds it there, since the entry the footer names is the row's. The pull request
 // moves to headTwo before the person's review, so a commit moved by it would differ from the
 // reviewer's headOne. TestAPersonsReviewDoesNotMoveTheReviewersCommit is the person's review with
@@ -413,7 +415,7 @@ func onlyReviewerStart(t *testing.T, pool *pgxpool.Pool) record.SuperviseRequest
 // read on the reviewer's row (record.PhaseRow.ReviewedHead), and the start of round 2 names it in
 // its task (namingTheReviewRound), before the sentence of its entry, which ends the task. The
 // first round of a generation has no earlier review, and its task names no commit; nor does a task
-// of any other of Legion's roles.
+// of a role with no review step, as the implementer's and the tester's here.
 func TestALaterReviewRoundIsToldTheCommitTheReviewBeforeItRead(t *testing.T) {
 	pool, _, apply := reviewRoundOne(t)
 	first := reviewerRow(t, pool)
@@ -441,7 +443,7 @@ func TestALaterReviewRoundIsToldTheCommitTheReviewBeforeItRead(t *testing.T) {
 			t.Fatalf("the %s's row holds the task %q, want the task round 2 started it with", role, row.EntryTask)
 		}
 		if strings.Contains(row.EntryTask, reviewround.CommitLabel) {
-			t.Fatalf("the %s's task = %q, want no reviewed commit: of Legion's roles only the reviewer is told one", role, row.EntryTask)
+			t.Fatalf("the %s's task = %q, want no reviewed commit: a role with no review step is told none", role, row.EntryTask)
 		}
 	}
 	for _, start := range superviseRowsOf(t, pool, "LEGION-208", "start") {

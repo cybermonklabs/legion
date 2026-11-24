@@ -88,7 +88,7 @@ func TestStepsOfOneKeyHaveOneAgent(t *testing.T) {
 
 // A stored step names its agent by one rule, which the record and the store both read: the name
 // stored with the step, and none where it holds none. A step of the key owner names none whatever
-// it holds: its agent is the tree's architect, whose token names the tree, not the issue.
+// it holds: its agent is the task's owner, the issue's own architect, and no agent the plan names.
 func TestAStoredStepNamesItsAgent(t *testing.T) {
 	for _, tc := range []struct {
 		step   Step
@@ -107,8 +107,8 @@ func TestAStoredStepNamesItsAgent(t *testing.T) {
 	}
 }
 
-// The default steps walk today's line: the five steps' phases in order, then Legion's own retro
-// and merge.
+// The line of the default steps is today's line: the five steps' phases in order, then Legion's
+// own retro and merge.
 func TestLineOfTheDefaultStepsIsTodaysOrder(t *testing.T) {
 	if got := Line(defaultSteps(t)); !reflect.DeepEqual(got, phase.Order) {
 		t.Fatalf("Line(default steps) = %v, want %v", got, phase.Order)
@@ -181,7 +181,7 @@ func TestATaskWithNoStepsRunsTheDefaultSteps(t *testing.T) {
 		if len(p.Tasks) != 1 || p.Tasks[0].NamesSteps() || p.Tasks[0].Steps != nil {
 			t.Fatalf("FromBlocks(%v) = %+v, want one task with no steps", attributes, p.Tasks)
 		}
-		if r := Supported(p, Deployment{Roles: BuiltinRoles()}); len(r) != 0 {
+		if r := Supported(p); len(r) != 0 {
 			t.Fatalf("Supported(%v) = %+v, want none", attributes, r)
 		}
 		if r := Validate(p, Deployment{Roles: BuiltinRoles()}); len(r) != 0 {

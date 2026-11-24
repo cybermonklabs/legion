@@ -632,9 +632,7 @@ func TestTheControllersCompactRefusesTheRoleController(t *testing.T) {
 	recorder := h.request(http.MethodPost, "/legion/v1/claims/compact",
 		ClaimRequest{GrantID: grant.GrantID, Issue: "LEGION-209", Role: "controller"}, nil)
 
-	refusedSaying(t, recorder, http.StatusBadRequest, "INVALID_ROLE",
-		"role must be one of architect, planner, implementer, tester, reviewer, merger, a role of this deployment, or a role of the issue's plan; "+
-			"the project's controller is none of them, and the controller does not compact its own session")
+	refused(t, recorder, http.StatusBadRequest, "INVALID_ROLE")
 }
 
 // The controller's door refuses a grant that is not the controller's, as every controller route

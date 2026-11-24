@@ -537,8 +537,9 @@ func TestAReviewsReportIsItsCompletionsWhicheverLandsFirst(t *testing.T) {
 	}
 }
 
-// Two starts of a step raise no phase entry: accepting, whose role is the architect that owns the
-// issue (here the tree's: the root is its own architect's), and merging on a pull request GitHub
+// Two starts of a step raise no phase entry: accepting on an issue with no plan rows, whose
+// acceptance is the architect's that owns the issue (here the tree's: the root is its own
+// architect's), and merging on a pull request GitHub
 // already merged, where no merger starts. Each still writes its start, and the merge's close ends
 // it passed, under the agent its start named, none.
 func TestAcceptingAndAMergeGitHubMadeGetAStart(t *testing.T) {
@@ -583,7 +584,8 @@ func TestAcceptingAndAMergeGitHubMadeGetAStart(t *testing.T) {
 	})
 }
 
-// The acceptance of a child is the work of the architect that owns the child when the step starts
+// The acceptance of a child with no plan rows, as of one at a step `acceptance:owner`, is the work
+// of the architect that owns the child when the step starts
 // (record.OwnerWalk.Architect): the child's own architect while its claim holds its role, or while
 // a start of it the outbox will act on is queued (the move into accepting starts a failed one
 // again, reviveArchitect), and the tree's architect otherwise. The record of step 5 names that
@@ -747,7 +749,8 @@ func TestAnUpgradedMergeNamesOnlyAMergerOfItsOwnVisit(t *testing.T) {
 }
 
 // An issue at admitted runs no step: the architect works that phase (phase.RoleFor), and the
-// task's first step is planning. So an end and a start of the step an issue at admitted stands in
+// task's first step comes after it, planning on today's line, which this root walks. So an end and
+// a start of the step an issue at admitted stands in
 // write nothing, and the opening of its gate (StartFirstPhase) writes the start of planning and no
 // end. It is what the three readers of phase.RoleFor in steps.go answer for admitted
 // (internal/textcheck's roleForReaders): startAgent and upgradedStart are never asked there, and

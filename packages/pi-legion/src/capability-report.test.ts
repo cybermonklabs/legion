@@ -792,7 +792,8 @@ describe("github", () => {
   });
 
   test("passes under a GitHub App installation token, the only credential a Legion role holds", async () => {
-    // A role's gh runs on its App's installation token (appauth: the App's `<slug>[bot]`), and
+    // A role's gh runs on an App's installation token (appauth: the App's `<slug>[bot]`; its
+    // role's App, or the App of the step's role while the architect does a step of its own), and
     // GitHub answers REST `GET /user` to an installation token with 403 "Resource not accessible
     // by integration" — read in a Legion pod on 2026-10-10 through the reviewer App's token.
     // GraphQL `{viewer{login}}` is how such a token reads its own identity, and how the

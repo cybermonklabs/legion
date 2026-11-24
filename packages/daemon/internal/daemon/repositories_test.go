@@ -504,10 +504,21 @@ func webhookGap(w *workflowRuntime, repo string) string {
 	return ""
 }
 
+// webhookAppAnswer is a Dispatch that answers the webhook App check alone, with installed.
+type webhookAppAnswer struct {
+	dispatch.Client
+	installed bool
+}
+
+func (a webhookAppAnswer) WebhookAppInstalled(context.Context, string) (bool, error) {
+	return a.installed, nil
+}
+
 // notInstalledWebhookApp is the state's webhook App gap for repo while Dispatch's GitHub App is not
-// installed on it (checkWebhookApp).
+// installed on it, as checkWebhookApp writes it: read from the code, so no test here holds its
+// words, only which of its answers a gap is.
 func notInstalledWebhookApp(repo string) string {
-	return "Dispatch's GitHub App is not installed on " + repo + ": GitHub sends Legion none of its events, nothing redelivers them, and no periodic pass makes up for them, so its issues stand still until the App is installed"
+	return checkWebhookApp(context.Background(), webhookAppAnswer{}, ghrepo.MustParse(repo))
 }
 
 // A repository a record names that Dispatch's GitHub App is not installed on is one GitHub sends

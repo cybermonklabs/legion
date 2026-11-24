@@ -44,13 +44,14 @@ const (
 // daemon's window is three times this, so one report lost to a reconnect costs nothing.
 const listenerReadyInterval = 5 * time.Minute
 
-// A wake report is retried until the bus acknowledges it. Losing one is not "one wake late": a
-// released architect gets no backstop at all (the daemon arms one for a phase worker only), a
-// phase worker whose phase is closed gets none either, and the daemon's stranded report passes
-// over a released claim no wake ever touched — so a report dropped during a NATS reconnect
-// leaves a tree stalled with nothing saying so. R3 asks for the report to reach the daemon
-// across a daemon restart too, which the stream's own retention gives once the publish is
-// stored, and a publish that never happened defeats in the same way.
+// A wake report is retried until the bus acknowledges it. Losing one is not "one wake late". The
+// daemon arms a backstop only for the worker of an open phase, and for an issue's own architect
+// at a step or a retro of its own other than its acceptance. So a released architect anywhere
+// else gets no backstop at all, and neither does a phase worker whose phase is closed. The
+// daemon's stranded report passes over a released claim no wake ever touched. So a report
+// dropped during a NATS reconnect leaves a tree stalled with nothing saying so. R3 asks for the
+// report to reach the daemon across a daemon restart too, which the stream's own retention gives
+// once the publish is stored, and a publish that never happened defeats in the same way.
 //
 // wakeReportAttempt bounds one publish, wakeReportRetry is the first wait between two of them,
 // doubling to wakeReportRetryCap, and wakeReportBudget bounds the whole report: past it the

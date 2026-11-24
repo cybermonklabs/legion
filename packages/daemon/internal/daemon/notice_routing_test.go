@@ -166,15 +166,16 @@ func mustClaimToken(t *testing.T, issue string, role claim.Role) claim.Token {
 	return token
 }
 
-// Every notice but a catch-up goes to the architect that owns its issue, by the TypeScript daemon's
-// rule (record.OwningArchitect): the nearest issue at or above it whose architect claim holds its
-// role (not failed or retired, and not suspended except by the idle release), else the tree root;
-// a child's close or status change, and a worker-died or worker-stalled about a child's
-// architect, start at its parent. A catch-up goes to the architect of its own issue alone
-// (noticeArchitect). The walk stays inside the issue's tree: admission records a Dispatch
-// re-parent as it comes and leaves the issue's tree as it was, so a parent that is not an issue of
-// that tree — not recorded, or recorded in another tree — ends the walk at the tree's root. The
-// runs are the outbox's own (holdsRole), over the claim's state alone.
+// Every notice but a catch-up and an owner-step goes to the architect that owns its issue, by the
+// TypeScript daemon's rule (record.OwningArchitect): the nearest issue at or above it whose
+// architect claim holds its role (not failed or retired, and not suspended except by the idle
+// release), else the tree root; a child's close or status change, and a worker-died or
+// worker-stalled about a child's architect, start at its parent. A catch-up goes to the architect
+// of its own issue alone, and an owner-step to its issue's own architect, the owner of its task,
+// whether that claim runs or not (noticeArchitect). The walk stays inside the issue's tree:
+// admission records a Dispatch re-parent as it comes and leaves the issue's tree as it was, so a
+// parent that is not an issue of that tree — not recorded, or recorded in another tree — ends the
+// walk at the tree's root. The runs are the outbox's own (holdsRole), over the claim's state alone.
 func TestTheArchitectThatOwnsANotice(t *testing.T) {
 	root, child, unrecorded, elsewhere := "LEGION-1", "LEGION-2", "LEGION-77", "LEGION-50"
 	tree := map[string]record.Issue{
@@ -446,9 +447,9 @@ func TestANoticeHeldForOneArchitectHoldsNoOtherArchitectsNotice(t *testing.T) {
 // A sub-architect the workflow suspended (a person moved its child out of the workflow) is not
 // coming back for a notice: only its child's next first phase start, after a todo (a person's, or
 // the rerun_child of the architect above), or an operator's resume or delivery starts it again. A
-// notice that would reach it goes to the architect above instead, and so does the child's close,
-// which starts at the parent; neither waits on the suspended claim, and neither holds up the
-// tree's later notices.
+// notice the owner walk would give it goes to the architect above instead (an owner-step takes no
+// walk: it is its own issue's architect's alone), and so does the child's close, which starts at
+// the parent; neither waits on the suspended claim, and neither holds up the tree's later notices.
 func TestNoNoticeWaitsOnASuspendedSubArchitect(t *testing.T) {
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -657,9 +658,10 @@ func reparent(t *testing.T, pool *store.Pool, records record.Store, parent strin
 	putOutboxIssue(t, pool, records, record.Issue{Key: "LEGION-2", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: root, Parent: &parent, Title: "Child", Phase: phase.Planning, Generation: 1, Status: "in_progress"})
 }
 
-// A child re-parented under an issue the workflow has not recorded stays in its tree: its notice
-// goes to its own architect while that holds its role, else to the tree's root architect (the
-// child has none here), and neither it nor the tree's other notices wait on the unrecorded parent.
+// A child re-parented under an issue the workflow has not recorded stays in its tree: its notice,
+// routed by the owner walk as every kind but a catch-up and an owner-step is, goes to its own
+// architect while that holds its role, else to the tree's root architect (the child has none
+// here), and neither it nor the tree's other notices wait on the unrecorded parent.
 // The root's own notice and a grandchild's, to the grandchild's running sub-architect, are
 // delivered on the same tick.
 func TestANoticeOfAChildReparentedOutsideTheRecordReachesItsTreesRoot(t *testing.T) {
@@ -684,9 +686,10 @@ func TestANoticeOfAChildReparentedOutsideTheRecordReachesItsTreesRoot(t *testing
 	}
 }
 
-// A child re-parented under another tree's root stays in its own tree: its notices go to its own
-// architect while that holds its role, else, as its close does, to its own tree's root architect;
-// none goes to the other tree's.
+// A child re-parented under another tree's root stays in its own tree: its notices, routed by the
+// owner walk as every kind but a catch-up and an owner-step is, go to its own architect while that
+// holds its role, else, as its close does, to its own tree's root architect; none goes to the
+// other tree's.
 func TestANoticeOfAChildReparentedUnderAnotherTreeStaysWithItsOwnTree(t *testing.T) {
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
