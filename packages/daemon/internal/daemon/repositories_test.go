@@ -516,14 +516,15 @@ func liveView(w *workflowRuntime) api.RepositoriesView {
 }
 
 // liveOf is the live map a read of records naming repos, one record each, hands view
-// (repositoriesOf): each repository once, by its lowercased <owner>/<name>, in the first spelling.
+// (record.GitHubRepositoriesOf): each repository once, by its lowercased <owner>/<name>, in the
+// first spelling.
 func liveOf(t *testing.T, repos ...string) map[string]ghrepo.Repository {
 	t.Helper()
 	issues := make([]record.Issue, 0, len(repos))
 	for index, repo := range repos {
 		issues = append(issues, record.Issue{Key: fmt.Sprintf("LEGION-%d", index+1), GitHubRepo: repo})
 	}
-	live, err := repositoriesOf(issues)
+	live, err := record.GitHubRepositoriesOf(issues)
 	if err != nil {
 		t.Fatal(err)
 	}
