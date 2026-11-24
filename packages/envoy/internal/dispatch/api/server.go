@@ -332,7 +332,7 @@ func NewDeps(input DepsInput) (Deps, error) {
 	newIssue, problem := newIssueSettingsFrom(input.NewIssueLabel, input.NewIssueSession)
 	switch problem {
 	case "label":
-		return Deps{}, fmt.Errorf("invalid DISPATCH_NEW_ISSUE_LABEL %q (at most %d characters)", newIssue.Label, maxIssueLabel16)
+		return Deps{}, fmt.Errorf("invalid DISPATCH_NEW_ISSUE_LABEL %q (at most %d characters)", newIssue.Label, contracts.IssueLabelMax)
 	case "session":
 		return Deps{}, fmt.Errorf("invalid DISPATCH_NEW_ISSUE_SESSION %q (expected a session id)", newIssue.Session)
 	}

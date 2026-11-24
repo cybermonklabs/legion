@@ -1207,6 +1207,50 @@ func TestExternalIssueLinkedInAnotherProjectIsRefused(t *testing.T) {
 	}
 }
 
+// dispatch_issue's external says what POST /api/v1/issues does with the reference it names: a
+// reference already imported into the call's project answers its issue and creates nothing, and
+// one imported into another project is refused 400 EXTERNAL_PROJECT_MISMATCH. The words are the
+// tool's generated copy (contracts.DispatchTools), the text the catalogue serves, and each promise
+// is held to the route here, so a change of either the words or the route fails this test.
+func TestDispatchIssuesExternalWordsAreWhatItsRouteAnswers(t *testing.T) {
+	t.Parallel()
+	var words string
+	for _, tool := range contracts.DispatchTools {
+		for _, argument := range tool.Arguments {
+			if tool.Name == "dispatch_issue" && argument.Name == "external" {
+				words = argument.Description
+			}
+		}
+	}
+	for _, promise := range []string{"owner/repo#n", "answers its issue and creates nothing", "400 EXTERNAL_PROJECT_MISMATCH"} {
+		if !strings.Contains(words, promise) {
+			t.Fatalf("dispatch_issue's external says %q, want it to say %q", words, promise)
+		}
+	}
+	handler := newTestHandler(t)
+	for _, project := range []map[string]string{{"key": "CORE", "name": "Core"}, {"key": "OTHER", "name": "Other"}} {
+		if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", project, "alice"); response.Code != http.StatusCreated {
+			t.Fatalf("create project %s: status=%d body=%s", project["key"], response.Code, response.Body.String())
+		}
+	}
+	importInto := func(project string) *httptest.ResponseRecorder {
+		return dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]string{
+			"external": "owner/repo#7", "project": project,
+		}, "alice")
+	}
+	created := importInto("CORE")
+	if created.Code != http.StatusCreated {
+		t.Fatalf("import owner/repo#7 into CORE: status=%d body=%s", created.Code, created.Body.String())
+	}
+	key := decodeBody[model.Issue](t, created).Key
+	if again := importInto("CORE"); again.Code != http.StatusOK || decodeBody[model.Issue](t, again).Key != key {
+		t.Fatalf("import owner/repo#7 into CORE again: status=%d body=%s, want 200 answering %s", again.Code, again.Body.String(), key)
+	}
+	if refused := importInto("OTHER"); refused.Code != http.StatusBadRequest || responseCode(t, refused) != "EXTERNAL_PROJECT_MISMATCH" {
+		t.Fatalf("import owner/repo#7 into OTHER: status=%d body=%s, want 400 EXTERNAL_PROJECT_MISMATCH", refused.Code, refused.Body.String())
+	}
+}
+
 func TestArtifactVersions(t *testing.T) {
 	t.Parallel()
 	handler := newTestHandler(t)

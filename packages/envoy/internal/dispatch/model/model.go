@@ -867,6 +867,11 @@ type SearchResult struct {
 	// Ask is set on ask hits and nil on every other kind; an ask removed between the search and
 	// the read of its state keeps it nil too.
 	Ask *SearchAsk `json:"ask,omitempty"`
+	// Author is who wrote a comment, a message or an ask hit, read from the item's row once
+	// GET /api/v1/search ran (api.attachAskStates, api.attachItemAuthors), so a reader of the hit
+	// alone can say who said it. It is nil on an issue hit and a document hit, and on an item
+	// removed after the search ran.
+	Author *Actor `json:"author,omitempty"`
 }
 
 // SearchQueryReading is how GET /api/v1/search read the words it was given: Operators names the

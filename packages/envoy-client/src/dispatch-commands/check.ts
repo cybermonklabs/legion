@@ -270,6 +270,8 @@ function readWithoutEvents(args: ToolArguments): string | undefined {
       return "a message's conversation";
     case "children":
       return "the issue's children";
+    case "comments":
+      return "the issue's comments";
     // An artifact beside a log ref is refused by `ownerConflictProblems`, which says to drop the
     // artifact; the log lists events, so the count stays.
     case "log":

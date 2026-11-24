@@ -30,6 +30,7 @@ import {
   IDEMPOTENCY_LEASE_MS,
   IDEMPOTENCY_REPLAYED_HEADER,
   ISSUE_CLAIM_UNRESPONSIVE_GRACE_MS,
+  ISSUE_LABEL_MAX,
   ISSUE_TITLE_MAX,
   LIVE_SOCKET_MAX_AGE_CLOSE,
   LIVE_SOCKET_MAX_AGE_MS,
@@ -38,6 +39,8 @@ import {
   MAX_BROADCAST_RECIPIENTS,
   MAX_ISSUE_ADVANCES,
   MAX_ISSUE_BLOCKERS,
+  MAX_ISSUE_COMPONENTS,
+  MAX_ISSUE_LABELS,
   MAX_ISSUE_PAGE_LIMIT,
   POST_HISTORY_PAGE_LIMIT,
   PROJECT_NAME_MAX,
@@ -503,6 +506,18 @@ const MaxIssueBlockers = ${MAX_ISSUE_BLOCKERS}
 // MAX_ISSUE_ADVANCES in packages/contracts so the server's refusal and every client's bound are
 // one number.
 const MaxIssueAdvances = ${MAX_ISSUE_ADVANCES}
+
+// MaxIssueLabels is the most labels one issue holds, and the most one labels or labels_add input
+// names before deduplication, and IssueLabelMax the longest label, in UTF-16 units. Generated from
+// MAX_ISSUE_LABELS and ISSUE_LABEL_MAX in packages/contracts so the server's refusals and the
+// issue tools' bounds are one number each.
+const MaxIssueLabels = ${MAX_ISSUE_LABELS}
+const IssueLabelMax = ${ISSUE_LABEL_MAX}
+
+// MaxIssueComponents bounds the ids of a components input of mode explicit before deduplication.
+// Generated from MAX_ISSUE_COMPONENTS in packages/contracts so the server's refusal and the issue
+// tools' bound are one number.
+const MaxIssueComponents = ${MAX_ISSUE_COMPONENTS}
 
 // MaxIssuePageLimit is the most issues one page of GET /api/v1/issues holds, and
 // DefaultIssuePageLimit the page size when a caller pages with offset alone. Generated from

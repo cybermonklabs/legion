@@ -4936,6 +4936,82 @@ describe("executeDispatchTool", () => {
     ]);
   });
 
+  // labels replaces every label the issue holds; labels_add adds to them inside Dispatch's write,
+  // so a label the call does not name stays. The command sends labels_add as given and prints the
+  // labels the issue holds after it, and refuses labels and labels_add together before any request.
+  test("dispatch_issue_update adds labels with labels_add and keeps the issue's others", async () => {
+    const requests: Array<{ method: string; pathname: string; body?: unknown }> = [];
+    const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const pathname = new URL(String(url)).pathname;
+      const method = init?.method ?? "GET";
+      requests.push({
+        method,
+        pathname,
+        ...(init?.body === undefined ? {} : { body: JSON.parse(String(init.body)) }),
+      });
+      const labels = method === "GET" ? ["board"] : ["board", "accessibility"];
+      return response({ key: "ACME-10", title: "Board", status: "triage", labels, route: null });
+    };
+    const run = (args: Record<string, unknown>) =>
+      executeDispatchTool({
+        tool: "dispatch_issue_update",
+        args,
+        cwd: "/workspace",
+        host: "omp",
+        sessionId: "session-42",
+        config,
+        env: {},
+        exec: repoExec("owner/repo"),
+        fetchImpl: fetchImpl as typeof fetch,
+      });
+
+    const result = await run({ issue: "ACME-10", labels_add: ["accessibility"] });
+
+    expect(result.text).toBe("ACME-10: labels board, accessibility");
+    expect(requests.at(-1)).toEqual({
+      method: "PATCH",
+      pathname: "/api/v1/issues/ACME-10",
+      body: {
+        labels_add: ["accessibility"],
+        actor: {
+          kind: "session",
+          id: "session-42",
+          origin: expect.objectContaining({ host: "omp", cwd: "/workspace" }),
+        },
+      },
+    });
+    const sent = requests.length;
+    await expect(
+      run({ issue: "ACME-10", labels: ["board"], labels_add: ["accessibility"] })
+    ).rejects.toThrow(/labels_add goes without labels/);
+    expect(requests).toHaveLength(sent);
+  });
+
+  // An issue that holds no label after the write prints "labels none" for a labels_add, which
+  // removed nothing (a Dispatch that predates labels_add ignores it and answers the issue as it
+  // stood), and "labels cleared" only for a labels that emptied the set.
+  test("dispatch_issue_update says labels none after a labels_add that left none, and cleared after an empty labels", async () => {
+    const fetchImpl = async (_url: RequestInfo | URL): Promise<Response> =>
+      response({ key: "ACME-10", title: "Board", status: "triage", labels: [], route: null });
+    const run = (args: Record<string, unknown>) =>
+      executeDispatchTool({
+        tool: "dispatch_issue_update",
+        args,
+        cwd: "/workspace",
+        host: "omp",
+        sessionId: "session-42",
+        config,
+        env: {},
+        exec: repoExec("owner/repo"),
+        fetchImpl: fetchImpl as typeof fetch,
+      });
+
+    expect((await run({ issue: "ACME-10", labels_add: ["accessibility"] })).text).toBe(
+      "ACME-10: labels none"
+    );
+    expect((await run({ issue: "ACME-10", labels: [] })).text).toBe("ACME-10: labels cleared");
+  });
+
   test("dispatch_issue_update clears external links instead of re-sending the existing set", async () => {
     const requests: Array<{ method: string; pathname: string; body?: unknown }> = [];
     const existingLink = { url: "https://ci.example/run/1", kind: "url" };
@@ -6098,6 +6174,9 @@ describe("executeDispatchTool", () => {
       ]);
       expect(await problemsOf("dispatch_doc_read", { ref: "dispatch://DSP-42/children" })).toEqual([
         "ref dispatch://DSP-42/children names the children on DSP-42; dispatch doc-read would act on DSP-42 and drop the children: read it with dispatch read, or name DSP-42 with issue DSP-42",
+      ]);
+      expect(await problemsOf("dispatch_doc_read", { ref: "dispatch://DSP-42/comments" })).toEqual([
+        "ref dispatch://DSP-42/comments names the comments on DSP-42; dispatch doc-read would act on DSP-42 and drop the comments: read it with dispatch read, or name DSP-42 with issue DSP-42",
       ]);
       expect(
         await problemsOf("dispatch_doc_read", {
@@ -17420,6 +17499,133 @@ describe("executeDispatchTool", () => {
       text: ["Key: DSP-42", "Children:", "- DSP-43: A child issue (todo)"].join("\n"),
       details: { issue: "DSP-42" },
     });
+  });
+
+  // dispatch://KEY/comments names the issue's comments: dispatch read asks the route that lists
+  // them, GET /api/v1/issues/{key}/comments, beside the issue's own read, and prints them in the
+  // route's order, each with its id, author and time, its quote, the head of its thread, the
+  // comment it answers where that is another, the ask it replies to, and its body.
+  test("reads an issue's comments from a Dispatch comments reference", async () => {
+    const requested: string[] = [];
+    const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
+      const target = new URL(String(url));
+      requested.push(target.pathname);
+      if (target.pathname === "/api/v1/issues/ACME-10") {
+        return response({
+          key: "ACME-10",
+          title: "Export",
+          status: "todo",
+          route: null,
+          open_asks: [],
+          children: [],
+          last_seq: 0,
+        });
+      }
+      if (target.pathname === "/api/v1/issues/ACME-10/comments") {
+        const comment = (fields: Record<string, unknown>) => ({
+          issue_key: "ACME-10",
+          reply_to: null,
+          answers: null,
+          ask_id: null,
+          ...fields,
+        });
+        return response([
+          comment({
+            id: "c-1",
+            author: { kind: "user", id: "alice" },
+            body: "Split the export in two: CSV first.",
+            anchor: { quote: "CSV and PDF export" },
+            created_at: "2026-11-20T09:00:00Z",
+          }),
+          comment({
+            id: "c-2",
+            author: { kind: "session", id: "session-7" },
+            body: "Agreed.",
+            reply_to: "c-1",
+            answers: "c-1",
+            created_at: "2026-11-20T10:00:00Z",
+          }),
+          comment({
+            id: "c-3",
+            author: { kind: "user", id: "alice" },
+            body: "CSV ships first, then.",
+            reply_to: "c-1",
+            answers: "c-2",
+            created_at: "2026-11-20T11:00:00Z",
+          }),
+          comment({
+            id: "c-4",
+            author: { kind: "user", id: "bob" },
+            body: "Yes, split it.",
+            ask_id: "a-1",
+            created_at: "2026-11-20T12:00:00Z",
+          }),
+        ]);
+      }
+      throw new Error(`unexpected request: ${target.pathname}`);
+    };
+
+    const result = await executeDispatchTool({
+      tool: "dispatch_read",
+      args: { ref: "dispatch://ACME-10/comments" },
+      cwd: "/workspace",
+      host: "omp",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+
+    expect([...requested].sort()).toEqual([
+      "/api/v1/issues/ACME-10",
+      "/api/v1/issues/ACME-10/comments",
+    ]);
+    expect(result).toEqual({
+      text: [
+        "Comments: ACME-10",
+        "c-1 · user alice · 2026-11-20T09:00:00Z",
+        "> CSV and PDF export",
+        "Body: Split the export in two: CSV first.",
+        "c-2 · session session-7 · 2026-11-20T10:00:00Z",
+        "Reply to: c-1",
+        "Body: Agreed.",
+        "c-3 · user alice · 2026-11-20T11:00:00Z",
+        "Reply to: c-1",
+        "Answers: c-2",
+        "Body: CSV ships first, then.",
+        "c-4 · user bob · 2026-11-20T12:00:00Z",
+        "Ask: a-1",
+        "Body: Yes, split it.",
+      ].join("\n"),
+      details: { issue: "ACME-10" },
+    });
+  });
+
+  // The comment route answers a key no issue carries with an empty list, so the read refuses that
+  // key through the issue's own read, 404, as the log and the children do, and never prints an
+  // issue with no comments.
+  test("refuses the comments reference of an issue Dispatch does not hold", async () => {
+    const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
+      const target = new URL(String(url));
+      if (target.pathname === "/api/v1/issues/ACME-404") {
+        return response({ code: "NOT_FOUND", error: "no issue ACME-404" }, 404);
+      }
+      if (target.pathname === "/api/v1/issues/ACME-404/comments") return response([]);
+      throw new Error(`unexpected request: ${target.pathname}`);
+    };
+
+    await expect(
+      executeDispatchTool({
+        tool: "dispatch_read",
+        args: { ref: "dispatch://ACME-404/comments" },
+        cwd: "/workspace",
+        host: "omp",
+        config,
+        env: {},
+        exec: repoExec("owner/repo"),
+        fetchImpl: fetchImpl as typeof fetch,
+      })
+    ).rejects.toThrow("no issue ACME-404");
   });
 });
 
