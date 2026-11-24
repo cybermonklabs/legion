@@ -396,23 +396,7 @@ jobs:
         run: go build -o "$RUNNER_TEMP/envoy-bin/" ./cmd/listener ./internal/testnats/cmd/natsd
         working-directory: packages/envoy
 
-      # What a reader's vet reads of the graph of these two commands. A vet of a package, and the
-      # one go test runs on the package it tests, reads the list of source files of every package
-      # under it from the build cache (the `srcfiles` entry cmd/go writes beside each compile and
-      # only vet reads back, cmd/go/internal/work/exec.go's cacheSrcFiles and loadCachedVet), and
-      # the build above reads no such list for a package it finds compiled. So without this vet the
-      # prune below would delete the lists of every package that did not change, and every reader
-      # that vets (envoy-go-build's and listener-server-change's go test among them) would run cgo
-      # again for each cgo package of the graph (net, os/user, runtime/cgo) to make its list anew.
-      # One analyzer, stdmethods, which exports no facts: cmd/go reads the lists before it starts
-      # the vet tool, whatever the analyzers, while the facts a vet writes are keyed on its flags
-      # and no reader's vet has these, so a full vet's facts would only grow the entry (475 MB
-      # against 202 MB without the vet, on x64, run 45308079023 against run 45283928874).
-      - name: Vet the listener and natsd, so the entry keeps what a reader's vet reads
-        run: go vet -stdmethods ./cmd/listener ./internal/testnats/cmd/natsd
-        working-directory: packages/envoy
-
-      - name: Delete the build cache's entries the go-envoy build and vet did not use
+      - name: Delete the build cache's entries the go-envoy build did not use
         run: .github/scripts/go-cache-working-set.sh end "$RUNNER_TEMP/go-envoy-working-set"
 
       - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
