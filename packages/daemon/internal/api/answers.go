@@ -47,24 +47,9 @@ const ServingFloor = 46
 // TestSupportedContractsAreTheNumberedEntriesFromTheFloorUp (`version_test.go`) reads the entry
 // headers out of version.go and holds this list to them in both directions.
 //
-// shapedAnswersContract (193), repositoriesLiveContract (202), childRouteRemovedContract (205),
-// cachesSourceContract (213), OwnerPlanContract (219), assignmentPlanContract (220),
-// intakeGiveUpsContract (228), podHoldContract (246), gateBasisContract (249) and chainContract
-// (253) are constants rather than numbers, because the entries that took those numbers name them:
-// shapedAnswersContract is the number dispatch://INFRA-2694's entry took, repositoriesLiveContract
-// the number dispatch://INFRA-4401's took, childRouteRemovedContract the number
-// dispatch://INFRA-3178's took, cachesSourceContract the number dispatch://INFRA-4036's took,
-// OwnerPlanContract the number the owner's plan's took, assignmentPlanContract the number the
-// experiment group's took, intakeGiveUpsContract the number dispatch://INFRA-1575's took,
-// podHoldContract the number the pod hold's took, gateBasisContract the number
-// dispatch://INFRA-3320's took, and chainContract the number of the last entry,
-// dispatch://INFRA-4730's. A renumber of any of the ten entries moves its constant and this list
-// with it, and moving one of them alone would describe a shape at a contract no entry declares.
-// The other entries above 193 follow them as numbers: 199 is version.go's entry for INFRA-4605,
-// 217 its entry for dispatch://INFRA-3531 and dispatch://INFRA-4567, and 232 its entry for
-// dispatch://INFRA-4508.
-// 199 moves no shape of an answer a plugin parses, so its records are 193's under its own number.
-var SupportedContracts = []int{46, 48, 49, 51, 52, 53, 54, 55, 56, 57, 58, 59, 62, 64, 68, 73, 75, 85, 86, 87, 94, 98, 104, 111, 123, 132, 133, 137, 141, 144, 146, 151, 152, 160, 168, 178, 188, 189, shapedAnswersContract, 199, repositoriesLiveContract, childRouteRemovedContract, cachesSourceContract, 217, OwnerPlanContract, assignmentPlanContract, intakeGiveUpsContract, 232, podHoldContract, gateBasisContract, chainContract}
+// Entries that name their contract use that constant here. 199 moves no answer shape, so
+// its records are 193's under its own number.
+var SupportedContracts = []int{46, 48, 49, 51, 52, 53, 54, 55, 56, 57, 58, 59, 62, 64, 68, 73, 75, 85, 86, 87, 94, 98, 104, 111, 123, 132, 133, 137, 141, 144, 146, 151, 152, 160, 168, 178, 188, 189, shapedAnswersContract, 199, repositoriesLiveContract, childRouteRemovedContract, cachesSourceContract, 217, OwnerPlanContract, assignmentPlanContract, intakeGiveUpsContract, 232, podHoldContract, gateBasisContract, priorityContract, chainContract}
 
 // AnswerID names one answer a plugin parses. It is stable: every write of this package goes
 // through `shapeAnswer(id, …)`, so the id outlives the route that happens to carry the answer
@@ -197,11 +182,8 @@ var Answers = []Answer{
 		"POST /legion/v1/signoff",
 		"POST /legion/v1/roots/close",
 	}, Since: ServingFloor},
-	// version.go's 253: the answer of a status call that writes one issue's status, the
-	// controller's set_status and an architect's rerun_child (`api.StatusCallResponse`): `queued`,
-	// the status writes the call queued. Below 253 both routes answered the empty object, which a
-	// caller below it is still served (shaping.go's shapeAnswer), so no contract below 253 records
-	// this answer.
+	// The status-call answer (chainContract) lists the writes set_status or rerun_child queued.
+	// Earlier callers still get the empty object.
 	{ID: AnswerStatusCall, Routes: []string{
 		"POST /legion/v1/issues/status",
 		"POST /legion/v1/children/rerun",
@@ -625,7 +607,7 @@ var lineKinds = []EnumeratedValue{
 // `task_stopped`, a task its owner stopped, arrived at OwnerPlanContract (version.go's 219);
 // `awaiting_children`, a parent waiting on its open children, arrived at gateBasisContract
 // (version.go's entry of dispatch://INFRA-3320, record.HeldAwaitingChildren); and two words
-// arrived at chainContract (version.go's 253): `chain_unknown`, an issue on a Dispatch chain the
+// arrived at chainContract: `chain_unknown`, an issue on a Dispatch chain the
 // copy cannot read to its top (record.HeldChainUnknown), and `awaiting_todo`, a run that starts as
 // a root's does and waits for a person's todo (record.HeldAwaitingTodo). So it is written out
 // value by value, sorted by value, as waitAnswers is. It names each constant rather than reading

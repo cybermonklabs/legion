@@ -15,9 +15,42 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
-// An unknown Dispatch status on a recorded root that holds no slot leaves the record where it
-// stands, the status recorded for its own handler, rather than taking the root out of Legion's
-// work, and tells the controller nothing.
+// A waiting root moved to another in-work status keeps its phase, and gets no slot until
+// Dispatch shows it todo again. No promotion or new run is triggered by another status.
+func TestAWaitingRootMovedOutOfTodoWaitsForTodo(t *testing.T) {
+	for _, status := range []string{"in_progress", "testing", "needs_review", "retro"} {
+		t.Run(status, func(t *testing.T) {
+			const key = "LEGION-5"
+			pool := migratedPool(t)
+			admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(io.Discard, nil)))
+			engine := priorityEngine()
+			seedSlotted(t, pool, "LEGION-1", "A")
+			seedWaiting(t, pool, key, "B")
+			assertWaiting(t, pool, []string{key})
+			fact := intake.DispatchIssue{Key: key, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated",
+				Status: status, Title: key, Rank: "B", HandedOver: true}
+			apply(t, pool, admission, "other-status", fact, engine)
+			if got := issue(t, pool, key); got.Phase != phase.Admitted || got.Status != status || got.Generation != 1 {
+				t.Fatalf("waiting root after status change = %+v; want admitted at %s in generation 1", got, status)
+			}
+			assertWaiting(t, pool, nil)
+			apply(t, pool, admission, "slot-freed", intake.DispatchIssue{Key: "LEGION-1", ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated",
+				Status: "done", Title: "LEGION-1", Rank: "A", HandedOver: true}, engine)
+			assertSlots(t, pool, nil)
+			if starts := architectStarts(t, pool, key); starts != 0 {
+				t.Fatalf("architect starts before the todo = %d; want none", starts)
+			}
+			fact.Seq, fact.Status = 3, "todo"
+			apply(t, pool, admission, "todo", fact, engine)
+			assertSlots(t, pool, []record.Slot{{Issue: key, Index: 0, AdmittedAt: fixedNow}})
+			if got := issue(t, pool, key); got.Generation != 1 {
+				t.Fatalf("return to todo opened generation %d; want generation 1", got.Generation)
+			}
+		})
+	}
+}
+
+// An unknown status is recorded without ending the issue's run.
 func TestAnUnknownStatusDoesNotReleaseAnUnslottedRoot(t *testing.T) {
 	pool := migratedPool(t)
 	admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(io.Discard, nil)))

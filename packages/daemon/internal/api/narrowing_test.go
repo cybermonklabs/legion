@@ -312,16 +312,23 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 		}
 	})
 
-	// The plan narrowing is a row of the table like every other, so the caller below it is told
-	// what it lost: a caller one contract below assignmentPlanContract, which states that contract
-	// in its header as every plugin from shapedAnswersContract on does, is served at the recorded
-	// contract at or below it (recordedContractAtOrBelow), OwnerPlanContract, so it stands below
-	// that row and the four rows above it, the intake's give-ups, the pod hold, gateBasisContract's
-	// and chainContract's, alone, and the log holds those five rows' lines and nothing else. A
-	// caller below the give-ups' row alone is
-	// TestAnOlderPluginContractGetsTheStateWithoutIntakeGiveUps's. This subtest does not catch a
-	// strip applied beside the loop, because it reads both its expectation and its answer from
-	// stateNarrowings; the subtests below, which name their lines as literals, are what catch that.
+	t.Run("priority and chain narrowings write their own lines for a 249 caller", func(t *testing.T) {
+		below := gateBasisContract
+		state := populatedState(t)
+		_, narrowings := stateNarrowedStating(t, state, statePodAddr+":41000", podClaims(0), below)
+		wantNarrowings(t, narrowings, below, []string{"the issues' priority and their waitingLine's priority", "daemon.convertedAt"})
+	})
+
+	t.Run("the repositories narrowing writes its own line", func(t *testing.T) {
+		state := populatedState(t)
+		below := repositoriesLiveContract - 1
+		body, narrowings := stateNarrowedStating(t, state, statePodAddr+":41000", podClaims(below), below)
+		if keys, block := repositoriesServed(t, body); slices.Contains(keys, "live") {
+			t.Errorf("the body served below %d carries repositories.live: %s", repositoriesLiveContract, block)
+		}
+		wantNarrowings(t, narrowings, below, narrowingsExpected(state, below))
+	})
+
 	t.Run("the narrowings above a caller just below the plan contract write their own lines", func(t *testing.T) {
 		state := populatedState(t)
 		below := assignmentPlanContract - 1
@@ -334,21 +341,12 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 			}
 		}
 		want := narrowingsExpected(state, below)
-		if len(want) != 5 {
-			t.Fatalf("a caller at %d expects the lines %v, want the plan row's, the give-ups' row's, the pod hold row's, gateBasisContract's and chainContract's alone", below, want)
+		if len(want) != 6 {
+			t.Fatalf("a caller at %d expects the lines %v, want plan, give-ups, pod hold, basis, priority and chain alone", below, want)
 		}
 		wantNarrowings(t, narrowings, below, want)
 	})
 
-	// The pod hold narrowing is a row of the table like every other, so the caller below it is
-	// told what it lost: a caller one contract below podHoldContract, which states that contract
-	// in its header as every plugin from shapedAnswersContract on does, is served at the recorded
-	// contract at or below it (recordedContractAtOrBelow), 232, which stands above
-	// intakeGiveUpsContract with no row of stateNarrowings between, so it stands below that row
-	// and the two rows above it, gateBasisContract's and chainContract's, alone, and the log holds
-	// those three rows' lines and nothing else. This subtest does not catch a strip applied beside
-	// the loop, because it reads both its expectation and its answer from stateNarrowings; the
-	// subtest below, which names its line as a literal, is what catches that.
 	t.Run("the narrowings above a caller just below the pod hold contract write their own lines", func(t *testing.T) {
 		state := populatedState(t)
 		below := podHoldContract - 1
@@ -359,8 +357,8 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 				podHoldContract, body)
 		}
 		want := narrowingsExpected(state, below)
-		if len(want) != 3 {
-			t.Fatalf("a caller at %d expects the lines %v, want the pod hold row's, gateBasisContract's and chainContract's alone", below, want)
+		if len(want) != 4 {
+			t.Fatalf("a caller at %d expects the lines %v, want pod hold, basis, priority and chain alone", below, want)
 		}
 		wantNarrowings(t, narrowings, below, want)
 	})

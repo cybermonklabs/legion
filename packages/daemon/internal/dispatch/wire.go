@@ -14,6 +14,7 @@ type issueSummaryResponse struct {
 	Status       string         `json:"status"`
 	Parent       *string        `json:"parent"`
 	Rank         string         `json:"rank"`
+	Priority     *int           `json:"priority"`
 	Labels       []string       `json:"labels"`
 	LastSeq      int64          `json:"last_seq"`
 	ResolvedRepo *string        `json:"resolved_repo"`
@@ -28,6 +29,7 @@ type issueResponse struct {
 	Status                 string         `json:"status"`
 	Parent                 *string        `json:"parent"`
 	Rank                   string         `json:"rank"`
+	Priority               *int           `json:"priority"`
 	Labels                 []string       `json:"labels"`
 	PrimaryArtifactID      string         `json:"primary_artifact_id"`
 	VerificationArtifactID string         `json:"verification_artifact_id"`
@@ -47,6 +49,7 @@ func (r issueResponse) issue() Issue {
 		Status:                 r.Status,
 		Parent:                 r.Parent,
 		Rank:                   r.Rank,
+		Priority:               r.Priority,
 		Labels:                 r.Labels,
 		HandedOver:             CarriesLegionLabel(r.Labels),
 		PrimaryArtifactID:      r.PrimaryArtifactID,

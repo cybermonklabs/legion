@@ -222,8 +222,7 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 	// their own: one list, set here, so the two readings come from one place.
 	projected := api.State{Issues: make(map[string]api.Issue, len(issues)), WakesWaiting: in.Wakes}
 	for _, issue := range issues {
-		// lingerUntil and ancestry are served no more: no tree lingers and no chain is stored
-		// (R19, R20 of dispatch://INFRA-3320).
+		priority := api.PriorityView(issue.Priority)
 		view := api.Issue{
 			Key:           issue.Key,
 			Generation:    issue.Generation,
@@ -232,6 +231,7 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 			Tree:          chains.StateTree(issue.Key),
 			Repo:          issue.Repo,
 			DefaultBranch: issue.DefaultBranch,
+			Priority:      &priority,
 			Workers:       map[claim.Role]api.PhaseView{},
 		}
 		// Every experiment answer the issue runs under, a done issue's included: it is what its
@@ -447,28 +447,37 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 	// issues of this project among the issues the loop above gave a view to, each of them.
 	//
 	// Beside the place, each member carries the line's own fields for a program to read
-	// (api.WaitingLineView): the part it waits in and why, its place within that part and the
-	// part's length, whether it holds a slot, and what placed it — all of them read from the
-	// entry the line holds beside the issue (record.LineEntry), which the loop below walks, so
-	// that the fields a member carries and the key listed beside them come from one entry. The
-	// two parts are counted once over the whole line before the loop, because this pass holds
-	// every entry of it: a member's `partLength` is the count of the entries carrying its part
-	// and nothing else, and the other part's count is what the sentence below names.
-	parts := make(map[record.LinePart]int, 2)
+	// (api.WaitingLineView): the priority that placed it, the part it waits in within that
+	// priority's band and why, its place within that band and part and the length of that band's
+	// part, whether it holds a slot, and what placed it — all of them read from the entry the
+	// line holds beside the issue (record.LineEntry), which the loop below walks, so that the
+	// fields a member carries and the key listed beside them come from one entry. The parts are
+	// counted once over the whole line before the loop, per band, because this pass holds every
+	// entry of it: a member's `partLength` is the count of the entries carrying its priority and
+	// its part and nothing else, and the count of the other part of its band is what the sentence
+	// below names.
+	type bandPart struct {
+		priority record.Priority
+		part     record.LinePart
+	}
+	parts := make(map[bandPart]int)
 	for _, entry := range line {
-		parts[entry.Part]++
+		parts[bandPart{entry.Priority, entry.Part}]++
 	}
 	for i, entry := range line {
 		key := entry.Issue.Key
 		projected.Admission.Waiting[i] = key
 		holds := entry.Holds
+		placed := api.PriorityView(entry.Priority)
+		standsIn := bandPart{entry.Priority, entry.Part}
 		view := projected.Issues[key]
 		view.WaitingLine = &api.WaitingLineView{
 			Place: i + 1, Length: len(line),
 			Part: entry.Part.String(), Kind: entry.Kind.String(),
-			PartPlace: entry.PartPlace, PartLength: parts[entry.Part],
+			PartPlace: entry.PartPlace, PartLength: parts[standsIn],
 			HoldsSlot: &holds,
 			RootRank:  entry.RootRank,
+			Priority:  &placed,
 		}
 		// The two ranks and the top issue's key are what placed a member of the starting part,
 		// and that part alone carries them: a member of the returned part was placed by the
@@ -487,14 +496,14 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 			view.WaitingLine.Since = &since
 		}
 		// The sentence a person reads (waitingLineReason), rendered from the entry itself, the
-		// length of the part it stands in and the length of the part it does not, which is what
-		// a member of the starting part waits behind. The render reads those and nothing else,
-		// so the words have one source and a test of them needs no database.
-		other := parts[record.PartReturned]
+		// length of the part of its band it stands in and the length of that band's other part,
+		// which is what a member of the starting part waits behind. The render reads those and
+		// nothing else, so the words have one source and a test of them needs no database.
+		other := bandPart{entry.Priority, record.PartReturned}
 		if entry.Part == record.PartReturned {
-			other = parts[record.PartStarting]
+			other.part = record.PartStarting
 		}
-		view.WaitingLine.Reason = waitingLineReason(entry, parts[entry.Part], other)
+		view.WaitingLine.Reason = waitingLineReason(entry, parts[standsIn], parts[other])
 		projected.Issues[key] = view
 	}
 	projected.Admission.Blocked = blockers.Blocked(rows, own, line, facts)

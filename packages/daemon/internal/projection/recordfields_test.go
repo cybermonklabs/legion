@@ -202,7 +202,7 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 	// Its linger deadline and stored ancestry are kept written for a rollback and served nowhere.
 	issue := record.Issue{
 		Key: held, Tree: root, Project: "OTHER", Title: "the held child", Parent: &parent,
-		Phase: phase.AwaitingPerson, Generation: 3, Status: "in_progress", Rank: "00042",
+		Phase: phase.AwaitingPerson, Generation: 3, Status: "in_progress", Rank: "00042", Priority: record.P1,
 		LingerUntil: &lingerUntil, Hold: &record.Hold{From: phase.Implementing, Reason: record.HoldEscalated},
 		LastDispatchSeq: 91,
 		HandedOver:      true, TakenBack: true, DispatchStatus: "needs_review",
@@ -389,6 +389,7 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 			"generation": issue.Generation, "status": issue.Status,
 			"holdReason": issue.Hold.Reason, "heldFrom": issue.Hold.From,
 			"repo": issue.Repo, "defaultBranch": issue.DefaultBranch,
+			"priority": 1,
 			"waitingOn": map[string]any{
 				"kind": "ask", "ask": issue.Awaiting.Ask, "since": issue.Awaiting.Since.At,
 				"answeredAt": issue.Awaiting.AnsweredAt, "answeredBy": issue.Awaiting.AnsweredBy,

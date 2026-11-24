@@ -199,6 +199,24 @@ itself, whose tests import its sources by relative path.
   GitHub Actions on Linux it never skips: a runner there can read the mask, so one that cannot is
   broken, and the rows run and fail rather than pass in silence.
 
+- A Go test of `packages/daemon` that reads a process's `SigIgn` or `SigCgt` mask from
+  `/proc/<pid>/status` calls `testkernel.RequireSignalMasks(t, "SigIgn")` (or with `"SigCgt"`)
+  first (`packages/daemon/internal/testkernel`). The probe reads the status of a shell that ignores
+  SIGUSR1 and catches SIGUSR2, so it finds a line that is there but does not follow the process as
+  well as one that is missing: the build cluster's gVisor has no mask line at all. It prints one
+  `kernel probe:` line either way, as `requireKernel` in `packages/envoy/cmd/cipher` does, then
+  skips the row where the kernel lacks the masks, and fails it under `GITHUB_ACTIONS`. A row whose
+  claim a shell can show by behaviour makes that read in the test itself and the mask read in a
+  subtest, so the test still proves its claim on gVisor: a non-interactive shell can set no trap
+  for a signal it was started ignoring (`startsIgnoring` in
+  `packages/daemon/internal/daemon/foreground_test.go`), and a shell started ignoring SIGHUP
+  survives the hangup it sends itself (`ghHangupProbe` in `packages/daemon/cmd/legion/gh_test.go`).
+  A row that cannot run because the test process itself was started with its signal ignored is a
+  machine the row cannot run on too: it prints one `signal probe:` line either way, skips outside
+  CI and fails under `GITHUB_ACTIONS`, whose runner starts `go test` with every signal at its
+  default (`requireStartedAtDefault` in the same file). A skip there would leave `go test` green
+  with nothing proved, since CI runs it without `-v`.
+
 - Start a container with `docker run --rm` and register its removal the moment `docker run` returns,
   not once the whole start has succeeded: a start that throws half-way has already made the
   container (`startNats` in `scripts/e2e/lib/nats-stream.test.ts`). Remove it with `docker rm -f
@@ -435,9 +453,15 @@ and each command runs there.
   for it (`warmMarkdownRenderer()` from `web/src/features/refs/markdown-engine.ts`, or a `findBy*`
   query), because the earlier row that loaded it may run after it. A lazily loaded part is anything
   that renders from a module that `import()` or `lazy()` loads, not the Markdown engine alone. A
-  test file whose rows mount a lazily loaded part that no row reads, such as the shell's margin,
-  imports that module at its top: a load that a row starts can arrive between two of that row's
-  `act` scopes or in a later row, where React reports a suspended resource outside `act`
+  row whose wait can end before such a load does warms the module before it mounts: a `waitFor` or
+  `findBy*` on a held clock (`jest.useFakeTimers()`) spends its budget in fake time, and a load can
+  outlast a `timeout` a row sets below the suite's budget (`web/src/__tests__/setup.ts`). The
+  web-cold lane holds each lazy load 1 s, and the engine's loads come one after another, 2 to 3 s
+  in all: rows of `reference-titles.test.tsx` and `document-references.test.tsx` that waited 2 s,
+  and rows of `SearchPalette.test.tsx` on a held clock, failed there. A test file whose rows mount
+  a lazily loaded part that no row reads, such as the shell's margin, imports that module at its
+  top: a load that a row starts can arrive between two of that row's `act` scopes or in a later
+  row, where React reports a suspended resource outside `act`
   (`web/src/app-sign-out.test.tsx`, `web/src/app.test.tsx`,
   `web/src/__tests__/responsive-shell.test.tsx` and `web/src/features/agents/AgentsPage.test.tsx`
   do).

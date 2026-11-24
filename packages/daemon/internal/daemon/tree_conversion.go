@@ -446,7 +446,7 @@ func recordedReading(issue record.Issue) intake.DispatchIssue {
 		parent = *issue.Parent
 	}
 	return intake.DispatchIssue{Key: issue.Key, Seq: issue.LastDispatchSeq, Status: status, Title: issue.Title, Parent: parent,
-		Rank: issue.Rank, HandedOver: issue.HandedOver, ResolvedRepo: issue.Repo}
+		Rank: issue.Rank, Priority: issue.Priority, HandedOver: issue.HandedOver, ResolvedRepo: issue.Repo}
 }
 
 // holdForOpenChildren moves key, a member that the conversion has just brought back, into

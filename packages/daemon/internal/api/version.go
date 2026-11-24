@@ -3859,7 +3859,14 @@ package api
 // base's own number and every open head again, by a REST raw read of each head's file, at the next
 // forward merge rather than from this line.)
 //
-// 253: dispatch://INFRA-4730 -- the daemon stores no tree: it reads every parent and child question
+// 250: the admission waiting line is ordered by Dispatch priority first. `GET /legion/v1/state`
+// and `GET /legion/v1/issues/{key}/record` gain two keys: each recorded issue's own `priority`
+// and the effective `waitingLine.priority`. Both are numbers from 0 for P0 to 3 for P3, or null
+// for none. A caller below 250 gets neither key. Waiting line `partPlace` and `partLength`
+// count within the member's priority band and part. `admission.waiting` and `place` follow
+// the new order at every contract.
+//
+// 278: dispatch://INFRA-4730 -- the daemon stores no tree: it reads every parent and child question
 // from its copy of Dispatch's links (dispatch://INFRA-3320, R15 to R26), and three surfaces move.
 // The status calls decide over that copy and queue their writes. `POST /legion/v1/issues/status`
 // (`api.IssueStatusRequest`) takes two optional fields, the arguments Dispatch's parent rule asks
@@ -3886,7 +3893,7 @@ package api
 // `chain_unknown`, an issue not at work on a chain the copy cannot read to its top, and
 // `awaiting_todo`, an issue whose run starts as a root's does and that waits for a person's todo,
 // as a root a person moved to `in_progress` before its first start does, and a root whose merge
-// closed it and that a person reopened straight to `in_progress`. A caller below 253 is served the
+// closed it and that a person reopened straight to `in_progress`. A caller below 278 is served the
 // state without `daemon.convertedAt` (`withoutConvertedAt`, the row of `chainContract` in
 // shaping.go's `stateNarrowings`) and each `chain_unknown` or `awaiting_todo` row as
 // `unclassified` (the value strip `withoutUnadmittedHeldWords`, which reads each word's arrival
@@ -3894,6 +3901,8 @@ package api
 // Each issue's `tree` is its gate root on the chain and `admission.trees` the roots in Legion's
 // work, with their keys as they were; `lingerUntil` and `ancestry`, optional to every reader, are
 // written no more, and `settings.linger_hours` reads 0.
+// The waiting line inherits priority from the same top issue on the Dispatch chain that supplies
+// its board rank, not from the gate holder. The keys contract 250 added do not change.
 // The registration (`POST /legion/v1/claims/register`) answers as `tree` the issue's gate root at
 // the claim's last launch, and `POST /legion/v1/grants` takes any `tree`: a grant acts only as the
 // chain allows. Neither answer's shape moves.
@@ -3929,4 +3938,5 @@ package api
 // this change moved 242 → 253, the lowest number above 249 that no other open head declares.
 // Read the base's own number and every open head again at the next forward merge rather than from
 // this line.)
-const DaemonAPIVersion = 253
+// Contract 278 is allocated to #4596 in dispatch://INFRA-3118.
+const DaemonAPIVersion = 278

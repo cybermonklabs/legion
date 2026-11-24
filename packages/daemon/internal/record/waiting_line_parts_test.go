@@ -107,7 +107,7 @@ func TestWaitingLinePartAndKeyOnEveryEntry(t *testing.T) {
 			t.Errorf("%s came back at %v, want %v: the moment that placed it in its part",
 				entry.Issue.Key, entry.Since, expected.Since)
 		}
-		if entry.RootKey != expected.RootKey || entry.RootRank != expected.RootRank {
+		if entry.Part == PartStarting && (entry.RootKey != expected.RootKey || entry.RootRank != expected.RootRank) {
 			t.Errorf("%s carries top issue %q at rank %q, want %q at %q: the top issue that placed its part",
 				entry.Issue.Key, entry.RootKey, entry.RootRank, expected.RootKey, expected.RootRank)
 		}

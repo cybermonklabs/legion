@@ -333,7 +333,7 @@ func ownWrite(issue record.Issue, status string) intake.DispatchIssue {
 		parent = *issue.Parent
 	}
 	return intake.DispatchIssue{Key: issue.Key, Seq: issue.LastDispatchSeq, Type: "issue.updated", Status: status, Title: issue.Title,
-		Parent: parent, Rank: issue.Rank, HandedOver: issue.HandedOver, ResolvedRepo: issue.Repo, DaemonActor: true, StatusMove: true}
+		Parent: parent, Rank: issue.Rank, Priority: issue.Priority, HandedOver: issue.HandedOver, ResolvedRepo: issue.Repo, DaemonActor: true, StatusMove: true}
 }
 
 // keepDispatchStatus sets the status Dispatch shows of key on its record back to status, where the

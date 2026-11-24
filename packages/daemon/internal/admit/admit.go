@@ -82,7 +82,7 @@ type Admission struct {
 	// catchingUp names each root the daemon's boot catch-up has yet to finish
 	// (HoldForCatchUp): its record may still miss what its Dispatch event log holds, so no pass
 	// decides whether it waits on a person (workflow's ReconcileAwaiting), nor resumes it once
-	// answered — it keeps the place its answer gives it in the waiting line's first part,
+	// answered — it keeps the place its answer gives it in the waiting line, within its priority,
 	// among the issues whose work came back, oldest first (record.Waiting) — until the catch-up
 	// has applied its window and releases it (ReleaseCatchUp). Unlike pending, a release's own
 	// pass does not lift it.
@@ -1038,6 +1038,7 @@ func (a *Admission) putNewRoot(ctx context.Context, tx pgx.Tx, observation intak
 		Generation:      1,
 		Status:          "todo",
 		Rank:            observation.Rank,
+		Priority:        observation.Priority,
 		HandedOver:      observation.HandedOver,
 		LastDispatchSeq: observation.Seq,
 		DispatchStatus:  observation.Status,
@@ -1213,8 +1214,12 @@ func (a *Admission) applyListed(ctx context.Context, tx pgx.Tx, summary intake.D
 		}
 		stored, status = refreshed, summary.Status
 	}
+	priority := summary.Priority
+	if summary.Seq == 0 && stored.LastDispatchSeq > 0 {
+		priority = stored.Priority
+	}
 	o := observed{
-		Title: summary.Title, Parent: summary.Parent, Rank: summary.Rank,
+		Title: summary.Title, Parent: summary.Parent, Rank: summary.Rank, Priority: priority,
 		Status: status, Shown: summary.Status, HandedOver: handed, Seq: seq,
 	}
 	// A todo echo of an issue the record shows running is the boot listing catching a status the
@@ -1258,17 +1263,19 @@ func (a *Admission) unrecordedSummaryStale(ctx context.Context, tx pgx.Tx, summa
 }
 
 // applyObservation records a newer Dispatch observation of a recorded issue: the one place a live
-// event's title, rank, parent, label, and status reach the record, so a re-rank, a rename, or the
-// label taken off or put back at the same status moves the waiting line at once. The engine, which
-// runs first, has already made of a newer status what it makes (a stop, a return to work, a new
-// run) and written the record where it did, which stops this at the sequence fence.
+// event's title, rank, priority, parent, label, and status reach the record if the engine has
+// not already taken them in a stop, return, or new run. The sequence fence keeps that write.
 func (a *Admission) applyObservation(ctx context.Context, tx pgx.Tx, stored record.Issue, observation intake.DispatchIssue) error {
 	if observation.Seq != 0 && observation.Seq <= stored.LastDispatchSeq {
 		return nil
 	}
+	priority := observation.Priority
+	if observation.Seq == 0 && stored.LastDispatchSeq > 0 {
+		priority = stored.Priority
+	}
 	return a.recordObservation(ctx, tx, stored, observed{
-		Title: observation.Title, Parent: observation.Parent, Rank: observation.Rank,
-		Status: observation.Status, Shown: observation.Status, HandedOver: observation.HandedOver, Seq: observation.Seq,
+		Title: observation.Title, Parent: observation.Parent, Rank: observation.Rank, Priority: priority,
+		Status: observation.Status, Shown: observation.Status, HandedOver: observation.HandedOver, Seq: max(observation.Seq, stored.LastDispatchSeq),
 	})
 }
 
@@ -1277,28 +1284,25 @@ func (a *Admission) applyObservation(ctx context.Context, tx pgx.Tx, stored reco
 // Shown except from a boot listing no newer than the record, which keeps the record's own.
 type observed struct {
 	Title, Parent, Rank, Status, Shown string
+	Priority                         record.Priority
 	HandedOver                         bool
 	Seq                                int64
 }
 
 // recordObservation is where admission writes a Dispatch observation to an issue record: a live
-// event's and the boot read's, so a rename, a re-rank, a re-parent, a label or a status change is
-// written the same way whichever brought it. Each caller owns its own guards — the stream's
-// sequence fence, the boot read's — and this writes what they let through. The engine, which runs
-// first, writes the observation itself when it keeps its own status over the event's (its
-// keepStatus: a session's write it sets back, or an edit that changed no status), and a live event
-// it wrote then stops at the sequence fence here. A re-parent writes the issue's own parent and
-// nothing else: every decision reads the issue's place from the Dispatch chain (record.Chains),
-// and the stored tree is written once, when the issue is first recorded (R22 of
-// dispatch://INFRA-3320).
+// event's and the boot read's. It takes a rename, re-rank, priority change, re-parent, label or
+// status change the same way. Each caller owns its sequence fence. The engine, which runs
+// first, can also write the observation while keeping its own status (keepStatus).
+// A re-parent writes only the issue's own parent. Decisions read its place from record.Chains.
 func (a *Admission) recordObservation(ctx context.Context, tx pgx.Tx, stored record.Issue, o observed) error {
-	if stored.Title == o.Title && stored.Rank == o.Rank && stored.Status == o.Status && stored.DispatchStatus == o.Shown &&
+	if stored.Title == o.Title && stored.Rank == o.Rank && stored.Priority == o.Priority && stored.Status == o.Status && stored.DispatchStatus == o.Shown &&
 		stored.HandedOver == o.HandedOver && sameParent(stored.Parent, record.ParentOf(o.Parent)) && stored.LastDispatchSeq == o.Seq {
 		return nil
 	}
 	stored.Title = o.Title
 	stored.Parent = record.ParentOf(o.Parent)
 	stored.Rank = o.Rank
+	stored.Priority = o.Priority
 	stored.Status = o.Status
 	stored.DispatchStatus = o.Shown
 	stored.HandedOver = o.HandedOver
@@ -1687,9 +1691,9 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 		return 0, nil, fmt.Errorf("reconcile the roots waiting on a person: %w", err)
 	}
 	// Reconcile wrote roots of the snapshot (a wait entered or answered, a resume told in place),
-	// so what follows reads them as they now stand: an answer it recorded puts its root in the
-	// first part of this pass's waiting line, among the issues whose work came back, oldest first
-	// (record.Waiting), at the moment its own wait was answered.
+	// so what follows reads them as they now stand: an answer it recorded puts its root in this
+	// pass's waiting line, within its priority, among the issues whose work came back, oldest
+	// first (record.Waiting), at the moment its own wait was answered.
 	if changed {
 		if issues, slots, facts, err = a.reread(ctx, tx); err != nil {
 			return 0, nil, err
@@ -2438,7 +2442,7 @@ func (a *Admission) refreshHeldSummary(observation intake.DispatchIssue) {
 	a.stamps++
 	a.pending[observation.Key] = heldSummary{summary: intake.DispatchIssue{
 		Key: observation.Key, Seq: observation.Seq, Status: observation.Status, Title: observation.Title,
-		Parent: observation.Parent, Rank: observation.Rank, HandedOver: observation.HandedOver,
+		Parent: observation.Parent, Rank: observation.Rank, Priority: observation.Priority, HandedOver: observation.HandedOver,
 		ResolvedRepo: observation.ResolvedRepo,
 	}, stamp: a.stamps}
 }

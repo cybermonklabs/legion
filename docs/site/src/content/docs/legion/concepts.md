@@ -264,7 +264,8 @@ can share a Dispatch project with people and other agents. A root issue is admit
 the label, is in `todo`, and a slot is free. A slot is one issue the daemon has started, a root or a
 child, so a tree of four started issues holds four of them. The number of slots is `admission_cap`
 in the daemon's configuration, four by default; an issue that finds no free slot waits in line, and
-a labelled `todo` root takes its place in that line in the project board's order.
+a labelled `todo` root takes its place in that line by its Dispatch priority and then in the
+project board's order.
 
 An issue takes a slot when the daemon starts it — a root at its admission, which starts its
 architect, a child at the start of its first phase. An issue holds one of the cap's slots while it
@@ -281,9 +282,10 @@ A wait on another issue in a phase that keeps a slot is the exception: a started
 blocked by an issue that is not `done`, or whose own first phase waits on an open child under
 it, holds no admission slot.
 The daemon takes its slot back and stands it in the
-waiting line among the issues whose work came back, oldest first.
-Once the daemon has seen the wait end, the issue takes the next free slot by itself,
-ahead of every issue that has not started; under a full cap it waits for a free slot.
+waiting line within its priority, among the issues whose work came back, oldest first.
+Once the daemon has seen the wait end, the issue takes a free slot by itself, after every issue
+of a higher priority and ahead of every issue of its own priority that has not started; under a
+full cap it waits for a free slot.
 The daemon sees a blocker in the same project close as a live event.
 It sees a blocker in another project close only at its periodic turn's re-read:
 the first turn comes about a minute after the daemon starts,
@@ -316,17 +318,24 @@ a start of `retro` or `merging` takes no slot and runs at once.
 never under `admission.active`, which is how you tell it from an issue a person parked, which is
 in none of the three.
 
-The line has two parts, and `legion state` prints them in the order the daemon promotes them:
-the issues whose work came back, oldest first by the moment it came back, and then the issues
-that have not started, by the Dispatch rank of each issue's top issue (the highest issue above it
-in Legion's work, or the issue itself) and then its own. A
-re-rank on the board therefore moves an issue inside the second part, and never ahead of an
-issue whose work came back. Each waiting issue carries `waitingLine` in `legion state --json`:
-its `place` and the line's `length`, its `part` (`returned` or `starting`) and `kind`, its
-`partPlace` and `partLength` within that part, `holdsSlot` where it already holds its admission
-slot and so resumes whatever the cap says, the key that placed it — `since`, the moment the
-work came back, or `rootRank`, `ownRank` and `rootKey` for an issue that has not started — and
-`reason`, the daemon's own sentence for that place. Every issue that is not working now carries
+The line starts with Dispatch priority: P0, P1, P2, P3, then issues without a priority.
+An issue uses its own priority first. Otherwise it uses the priority of its top issue: the
+highest issue in Legion's work on its Dispatch chain, or the issue itself.
+An unknown chain supplies no inherited priority and holds work that cannot start.
+
+Within each priority, work that came back goes first, oldest first. Work that has not started
+follows, by the board rank of its top issue and then its own rank. A priority change affects
+the next admission pass. It does not take a slot away. The daemon still skips issues waiting
+on other issues. An issue that already holds a slot resumes without taking another.
+
+In `legion state --json`, each recorded issue has its own `priority`: 0 for P0 through 3 for P3,
+or null. Each waiting issue also has `waitingLine.priority`, the priority that placed it.
+`place` and `length` refer to the full line. `partPlace` and `partLength` count only within the
+issue's priority and `part` (`returned` or `starting`). `holdsSlot` says whether it already
+has a slot. `since` gives the time work came back. `rootKey`, `rootRank` and `ownRank` give
+the top issue and ranks for a first start. `reason` explains the placement.
+
+Every issue that is not working now carries
 `why` beside that: a `state`, one of `claim_stopped` (a claim nothing will wake), `waiting`,
 `blocked` and `unlisted` (the record holds it in the workflow and no list places it), with a
 `reason` sentence. An issue holding an admission slot carries no `why` unless it
@@ -362,15 +371,16 @@ resolution, or reply that hands an open ask back to the agent; so does your appr
 request of the root's spec, and so does the spec's design gate standing open. The wait also ends
 when nothing is asked of you any more: Dispatch retracts the question because its decision block
 left the spec, a session closes it, or a session hands it back to the agent's turn. The answered
-root goes into the waiting line's first part, among the issues whose work came back, oldest first,
-and so behind every issue of that part whose work came back before it, a root's own first phase
+root goes into the waiting line within its priority, among the issues whose work came back, oldest
+first, and so behind every issue of a higher priority and every issue of its own priority whose
+work came back before it, a root's own first phase
 included, and its promotion there gives the same architect session a task naming what answered it
 and what is still with you. That promotion takes no further slot, since the root has held one all
 along, so it resumes however full the cap is, whether or not its design gate has opened. Until the
 pass that reads your answer resumes it, the root stands in the admission line as well, where
-`waitingLine` on the issue gives its place and its length, its `kind` `answered`, its
-`holdsSlot` true, and a `reason` that says a person answered it, when its work came back and
-that it holds its slot already. The daemon sends
+`waitingLine` on the issue gives its place and its length, its `priority`, its `kind` `answered`,
+its `holdsSlot` true, and a `reason` that says a person answered it, when its work came back, the
+priority it waits at and that it holds its slot already. The daemon sends
 its architect nothing about that wait and resumes the root by itself on that pass,
 so neither the place nor the wait is anything for you to act on. An
 agent's answer or resolution of another ask answers nothing, and an act of yours from before the

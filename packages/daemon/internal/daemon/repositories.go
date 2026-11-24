@@ -2545,6 +2545,9 @@ func (w *workflowRuntime) prepareIssue(ctx context.Context, issue intake.Dispatc
 		}
 		event := issue
 		issue = intake.ObservedIssue(now)
+		if issue.Seq < delivered {
+			issue.Priority = event.Priority
+		}
 		issue.Seq, issue.Delivered = max(delivered, issue.Seq), &event
 	}
 	return w.prepareUnrecorded(ctx, issue, false)

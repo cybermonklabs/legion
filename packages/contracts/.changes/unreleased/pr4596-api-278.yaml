@@ -1,6 +1,6 @@
 kind: Added
 body: |-
-  The daemon API mirror follows contract 253: `LegionIssueStatusRequest` takes `children` and
+  The daemon API mirror follows contract 278: `LegionIssueStatusRequest` takes `children` and
   `parent`, `LegionChildRequest` takes `parent`, `LegionStatusCallResponse` is the answer of
   `set_status` and `rerun_child`, `LegionWaveReleaseResponse` gains `queued`, the held words gain
   `chain_unknown` and `awaiting_todo`, and `daemonInfo` gains `convertedAt`.

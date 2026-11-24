@@ -23,11 +23,7 @@ import (
 // admission, reaching that same event, stops at its sequence fence: it writes no `status: todo`
 // over the release, which is the pair — status todo beside phase held — this issue measures.
 //
-// A todo on a held child releases its hold the same way, since a todo on any held issue in
-// Legion's work is its release (R20 of dispatch://INFRA-3320: each issue acts on its own status),
-// and a todo on a closed root opens its new run (decision 8 of dispatch://INFRA-4730). A held root
-// whose record already reads todo, which a hand-over leaves, is reached by no status change at
-// all, so its architect's retry_or_escalate is its release, as today.
+// A todo also releases a held child in work, and opens a new run of a closed root.
 func TestATodoOnAHeldRootReleasesTheHold(t *testing.T) {
 	const root, child = "LEGION-208", "LEGION-209"
 	quiet := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -101,24 +97,58 @@ func TestATodoOnAHeldRootReleasesTheHold(t *testing.T) {
 		}
 	})
 
-	t.Run("a held root Dispatch already shows todo is its architect's", func(t *testing.T) {
+	t.Run("a carried held root waits without a worker, then a todo releases its hold after promotion", func(t *testing.T) {
+		const other = "LEGION-9"
 		pool := migratedPool(t)
-		seedSlotted(t, pool, root, "A")
-		handedOver := issue(t, pool, root)
-		handedOver.Phase, handedOver.Hold = phase.Held, &record.Hold{From: phase.Implementing}
-		handedOver.Status, handedOver.DispatchStatus, handedOver.LastDispatchSeq = "todo", "todo", 4
-		putIssue(t, pool, handedOver)
+		seedSlotted(t, pool, other, "Z")
+		admission, engine := newAdmission(t, 1, quiet), newEngine()
+		carriedRoot(t, pool, child, phase.Held, "B")
+		carried := issue(t, pool, child)
+		hold := record.Hold{From: phase.Testing, Reason: record.HoldEscalated}
+		carried.Hold = &hold
+		putIssue(t, pool, carried)
 
-		apply(t, pool, newAdmission(t, 1, quiet), "edit", todo(root, "", "A", 5, handed), newEngine())
-
-		stood := issue(t, pool, root)
-		if stood.Phase != phase.Held || stood.Hold == nil || stood.Hold.From != phase.Implementing || stood.LastDispatchSeq != 5 {
-			t.Fatalf("the root after a todo over its own todo = %#v, want it held from implementing still, with the event recorded", stood)
+		apply(t, pool, admission, "queued-todo", todo(child, "", "B", 2, true), engine)
+		assertWaiting(t, pool, []string{child})
+		if got := issue(t, pool, child); got.Phase != phase.Held || got.Hold == nil || *got.Hold != hold || got.Generation != 2 {
+			t.Fatalf("carried root after todo while queued = %+v; want its held phase and generation", got)
 		}
-		if writes, starts := queuedWrites(t, pool), queuedStarts(t, pool); len(writes) != 0 || len(starts) != 0 {
-			t.Fatalf("the todo queued %+v and %+v, want nothing: the status did not change, so its architect's retry is its release", writes, starts)
+		if got := workerStartsOf(t, pool, child); len(got) != 0 {
+			t.Fatalf("phase workers queued while held: %+v", got)
+		}
+		apply(t, pool, admission, "other-done", intake.DispatchIssue{Key: other, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "done",
+			Title: other, Rank: "Z", HandedOver: true}, engine)
+		assertSlots(t, pool, []record.Slot{{Issue: child, Index: 0, AdmittedAt: fixedNow}})
+		if got := issue(t, pool, child); got.Phase != phase.Held || got.Hold == nil || *got.Hold != hold {
+			t.Fatalf("promoted carried root = %+v; want its hold preserved", got)
+		}
+		if got := workerStartsOf(t, pool, child); len(got) != 0 {
+			t.Fatalf("promotion queued phase workers while held: %+v", got)
+		}
+		shown := todo(child, "", "B", 3, true)
+		shown.Status, shown.DaemonActor = "in_progress", true
+		apply(t, pool, admission, "promoted", shown, engine)
+		apply(t, pool, admission, "release-hold", todo(child, "", "B", 4, true), engine)
+		if got := issue(t, pool, child); got.Phase != phase.Testing || got.Hold != nil || got.Generation != 2 {
+			t.Fatalf("promoted carried root after todo = %+v; want testing in generation 2 with no hold", got)
+		}
+		if got := workerStartsOf(t, pool, child); len(got) != 1 || got[0].Role != claim.RoleTester {
+			t.Fatalf("phase worker starts after todo = %+v; want one tester", got)
 		}
 	})
+}
+
+// workerStartsOf is every phase worker's start queued for issue, oldest first: a start that carries
+// a task, of a role other than the architect.
+func workerStartsOf(t *testing.T, pool *pgxpool.Pool, issue string) []record.SuperviseRequest {
+	t.Helper()
+	var starts []record.SuperviseRequest
+	for _, queued := range effects(t, pool) {
+		if start, ok := queued.payload.(record.SuperviseRequest); ok && queued.issue == issue && string(start.Op) == "start" && start.Role != claim.RoleArchitect {
+			starts = append(starts, start)
+		}
+	}
+	return starts
 }
 
 // queuedWrites is every Dispatch status write queued, oldest first.

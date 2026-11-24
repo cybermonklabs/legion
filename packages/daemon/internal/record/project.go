@@ -420,19 +420,16 @@ func (k LineKind) String() string {
 	return ""
 }
 
-// LinePart is which of the waiting line's two parts an entry stands in (Waiting): the issues
-// whose work came back, oldest first, and then the issues that have not started, by the board's
-// rank. The kind does not give it — a LineFirstPhase entry falls in the returned part when the
-// issue holds its own gate and in the starting part when it waits for a gate above it — so the
-// entry carries the part the line put it in (LineEntry.Part). The zero value is no part.
+// LinePart is the part an entry stands in within its priority band (Waiting): returning work,
+// oldest first, then work that has not started, by board rank. A LineFirstPhase entry falls
+// in the returned part when the issue holds its own gate and in the starting part otherwise.
 type LinePart int
 
 const (
-	// PartReturned is the first part: the issues the daemon has already started whose work has
-	// come back to them, placed by the moment it did (LineEntry.Since).
+	// PartReturned is the first part of each priority's band: the issues the daemon has already
+	// started whose work has come back to them, placed by the moment it did (LineEntry.Since).
 	PartReturned LinePart = iota + 1
-	// PartStarting is the second part: the issues whose first phase has never started, placed by
-	// the Dispatch rank of their top issue and then their own (LineEntry.RootRank, Issue.Rank).
+	// PartStarting is the second part of each band, ordered by top issue rank and then own rank.
 	PartStarting
 )
 
@@ -449,16 +446,22 @@ func (p LinePart) String() string {
 	return ""
 }
 
-// LineEntry is one issue of the waiting line with the reason it waits there, the part of the
-// line it waits in and what placed it there, and whether it already holds one of the cap's slots.
+// LineEntry is one issue of the waiting line with the reason it waits there, the priority and the
+// part of the line it waits in and what placed it there, and whether it already holds one of the
+// cap's slots.
 type LineEntry struct {
 	Issue Issue
 	Kind  LineKind
-	// Part is the part of the line the entry stands in and PartPlace its place within that part
-	// alone, counted from 1. Waiting sets both in its last two loops, once each part is sorted,
-	// rather than where the entry was built: the kind does not say the part (LinePart), and the
-	// place is the order the sort left, which is the order the line publishes and not the order
-	// the loops found.
+	// Priority is the priority that placed the entry, the first key of the whole line:
+	// PriorityOf, the issue's own, else its top issue's, else NoPriority, whose band stands after
+	// P3. The issue's own priority is Issue.Priority, which this does not change: the inherited
+	// priority orders the line and nothing else.
+	Priority Priority
+	// Part is the part of the line the entry stands in within its priority's band, and PartPlace
+	// its place within that band and part alone, counted from 1. Waiting sets both in its last
+	// loops, once the line is sorted, rather than where the entry was built: the kind does not
+	// say the part (LinePart), and the place is the order the sort left, which is the order the
+	// line publishes and not the order the loops found.
 	Part      LinePart
 	PartPlace int
 	// Since is the moment the issue's work came back to it, which is what placed the entry in
@@ -471,12 +474,9 @@ type LineEntry struct {
 	// RootKey and RootRank are the issue's top issue (Chains.TopIssue, R15 of
 	// dispatch://INFRA-3320: the highest issue on its Dispatch chain in Legion's work, itself
 	// where none stands above it) and that issue's Dispatch rank as the daemon records it
-	// (Issue.Rank): with the issue's own rank they are what the starting part is ordered by
-	// (RankLess over the top issue's record and then the issue's), so a reader of one entry can
-	// say what placed it without the records the line was built from. They are set on an entry
-	// of PartStarting alone; the returned part is ordered by Since. The projection serves them as
-	// `rootKey` and `rootRank` beside the issue's own rank (api.WaitingLineView), and the sentence
-	// of a first phase under a parent names the top issue.
+	// (Issue.Rank). The starting part carries both fields because it is ordered by those ranks.
+	// The returned part is ordered by Since and carries RootKey only to explain priority.
+	// The projection serves the rank fields only for the starting part.
 	RootKey  string
 	RootRank string
 	// Holds says the issue held a slot row when the line was built, which the grant reads
@@ -1156,19 +1156,25 @@ func CanWaitOnPerson(root Issue, holdsGate bool, gate TreeGate, slotted bool) bo
 	return slotted && root.Phase == phase.Admitted && InLegionsWork(root) && AtWork(root, holdsGate, gate)
 }
 
-// WaitingLineBand is where the line puts an issue whose work came back: in its first part, oldest
-// first (Waiting). It states a placement, never a position: which place in the line that gives an
-// issue depends on what else waits. The texts that state the line's order carry this fragment
-// word for word — the daemon's own comments, the architect's skills and the operator's guides —
-// and workflow's TestTheShippedWordsNameTheWaitingLineBand reads it from here and holds the
-// files it lists to it. That test reads whether a file carries the words, never whether the
-// sentence around them is true, which is why it also bans, in every one of those files, the
-// wording that claims a position instead.
-const WaitingLineBand = "among the issues whose work came back, oldest first"
+// WaitingLineBand is where the line puts an issue whose work came back: in the band of the
+// priority it takes (PriorityOf), and within that band in its first part, oldest first (Waiting).
+// It states a placement, never a position: which place in the line that gives an issue depends on
+// what else waits. The texts that state the line's order carry this fragment word for word — the
+// daemon's own comments, the architect's skills and the operator's guides — and workflow's
+// TestTheShippedWordsNameTheWaitingLineBand reads it from here and holds the files it lists to
+// it. That test reads whether a file carries the words, never whether the sentence around them
+// is true, which is why it also bans, in every one of those files, the wording that claims a
+// position instead.
+const WaitingLineBand = "within its priority, among the issues whose work came back, oldest first"
 
 // Waiting is the line of issues that wait for an admission slot, in the order admission gives
-// them one. The cap counts the issues the daemon has started, so an issue under a parent waits in
-// this line as a root does, and the line has two parts (R19 of dispatch://INFRA-3320).
+// them one. The cap counts issues, so children wait in this line as roots do (R19 of
+// dispatch://INFRA-3320).
+//
+// Priority is the first sort key: the issue's own, else its top issue's on this pass's
+// Dispatch chain, else after P3 (PriorityOf). Each band keeps the two parts below.
+// A higher priority does not take a slot back. The pass still skips issues whose wait
+// has not ended, and a promotion that already holds a slot does not take a second one.
 //
 // First, by when their work came back, oldest first: the issues the daemon has already started
 // whose work has come back to them. Four kinds of record say that work came back, and each
@@ -1462,17 +1468,19 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) ([]LineEntry, []Held
 		}
 		return left.entry.Issue.Key < right.entry.Issue.Key
 	})
-	// Each starting entry takes its top issue's place in the board's order and then its own
-	// (R19). The top issue's rank is read off its record as the daemon holds it (Issue.Rank),
-	// which every issue in Legion's work has, the top issue being one; an issue with no issue
-	// above it in work is its own top issue.
+	// Resolve rank and inherited priority from the same pass snapshot.
+	topOf := func(issue Issue) Issue {
+		if !chains.Chain(issue.Key).Known() {
+			return issue
+		}
+		if top, recorded := chains.Record(chains.TopIssue(issue.Key)); recorded {
+			return top
+		}
+		return issue
+	}
 	tops := make(map[string]Issue, len(starting))
 	for _, entry := range starting {
-		top, recorded := chains.Record(chains.TopIssue(entry.Issue.Key))
-		if !recorded {
-			top = entry.Issue
-		}
-		tops[entry.Issue.Key] = top
+		tops[entry.Issue.Key] = topOf(entry.Issue)
 	}
 	sort.Slice(starting, func(i, j int) bool {
 		left, right := starting[i].Issue, starting[j].Issue
@@ -1482,26 +1490,30 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) ([]LineEntry, []Held
 		return RankLess(left, right)
 	})
 
-	// Each entry's part is the slice it ended in, set here rather than where the entry was
-	// built, so that a loop added above cannot leave an entry with no part at all: an entry at
-	// LinePart(0) would be served no sentence and no `why` and nothing would say so
-	// (projection's waitingLineReason). Its place within that part is the order the part was
-	// just sorted into and not the order the loops above found it; the moment that placed a
-	// returned entry is the sort key itself, taken from the timed value rather than read a
-	// second time from the records (LineEntry.Since); and the top issue that placed a starting
-	// entry is the one the sort above read.
+	// Join the sorted parts in order and sort stably by band. Each band retains its returning
+	// work by age, then its first starts by top and own rank.
 	line := make([]LineEntry, 0, len(returned)+len(starting))
-	for i, waiting := range returned {
+	for _, waiting := range returned {
 		entry := waiting.entry
-		entry.Part, entry.PartPlace, entry.Since = PartReturned, i+1, waiting.at
+		top := topOf(entry.Issue)
+		entry.Part, entry.Since, entry.RootKey = PartReturned, waiting.at, top.Key
+		entry.Priority = PriorityOf(entry.Issue, top)
 		line = append(line, entry)
 	}
-	for i := range starting {
-		top := tops[starting[i].Issue.Key]
-		starting[i].Part, starting[i].PartPlace, starting[i].RootKey, starting[i].RootRank =
-			PartStarting, i+1, top.Key, top.Rank
+	for _, entry := range starting {
+		top := tops[entry.Issue.Key]
+		entry.Part, entry.RootKey, entry.RootRank = PartStarting, top.Key, top.Rank
+		entry.Priority = PriorityOf(entry.Issue, top)
+		line = append(line, entry)
 	}
-	return append(line, starting...), heldRows
+	sort.SliceStable(line, func(i, j int) bool { return line[i].Priority.band() < line[j].Priority.band() })
+	for i := range line {
+		line[i].PartPlace = 1
+		if i > 0 && line[i-1].Priority == line[i].Priority && line[i-1].Part == line[i].Part {
+			line[i].PartPlace = line[i-1].PartPlace + 1
+		}
+	}
+	return line, heldRows
 }
 
 // WaitingIssues is the issues of a waiting line, in its order, for a reader that wants the

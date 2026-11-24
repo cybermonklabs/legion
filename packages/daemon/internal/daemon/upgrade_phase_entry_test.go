@@ -65,8 +65,7 @@ const (
 // newest; that is harmless here, since it adds pull_requests.state_read_at and the phase entry
 // touches no pull_requests column. Neither column is one any statement of the phase entry reads
 // or writes. Every version above that release's newest (olderReleasesNewestMigration) is withheld
-// with the phase entry, so Store.Migrate, which decides each migration on its own row, applies
-// the phase entry and those.
+// with the phase entry, so Migrate applies them after the fixture is seeded.
 //
 // It is built this way because the old shape is reachable no other way: the three assignment
 // columns are created by the migrations under this one and dropped by this one, so a record as
@@ -109,8 +108,7 @@ func preEntryStore(t *testing.T) *store.Store {
 	return st
 }
 
-// migrationsAbove is how many embedded migrations carry a version above version: beside the
-// phase entry, what preEntryStore withheld, and so what the upgrade under test applies.
+// migrationsAbove counts the migrations the upgrade applies after preEntryStore.
 func migrationsAbove(t *testing.T, version int) int {
 	t.Helper()
 	all, err := migrations.All()

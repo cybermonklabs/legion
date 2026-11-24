@@ -604,6 +604,7 @@ var stateNarrowings = []stateNarrowing{
 	{contract: podHoldContract, issue: withoutPodHold, dropped: "the issues' podHold"},
 	{contract: gateBasisContract, issue: withoutGateBasis,
 		dropped: "the issues' treeRuns and the gatedSteps of every issue a step of which stands on an ancestor's basis"},
+	{contract: priorityContract, issue: withoutPriority, dropped: "the issues' priority and their waitingLine's priority"},
 	{contract: chainContract, state: withoutConvertedAt, dropped: "daemon.convertedAt"},
 }
 
@@ -1171,7 +1172,7 @@ func withoutPodHold(issue Issue) (Issue, bool) {
 const gateBasisContract = 249
 
 // chainContract is the daemon contract at which the daemon stores no tree and reads every parent
-// and child question from its copy of Dispatch's links (version.go's 253, dispatch://INFRA-4730).
+// and child question from its copy of Dispatch's links (version.go's 278, dispatch://INFRA-4730).
 // It added one key a plugin parses to the state, `daemon.convertedAt`, the time the project's first
 // boot on this release finished its conversion, which a plugin below it is served without
 // (withoutConvertedAt, its row of stateNarrowings); two held words, `chain_unknown` and
@@ -1184,7 +1185,7 @@ const gateBasisContract = 249
 //
 // It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
 // that constant, and the contract these keys and values arrived at stays where it is.
-const chainContract = 253
+const chainContract = 278
 
 // withoutConvertedAt is state with no `daemon.convertedAt`, the key chainContract added to the
 // state's daemon block. The key is an `omitempty` pointer, absent until the project's conversion
@@ -1280,6 +1281,21 @@ func heldReasonStandIn(reason record.HeldReason) (record.HeldReason, bool) {
 		return record.HeldChildrenFirst, true
 	}
 	return "", false
+}
+
+// priorityContract added each issue's own Dispatch priority and the effective priority
+// of each waitingLine. Earlier callers get neither key.
+const priorityContract = 250
+
+func withoutPriority(issue Issue) (Issue, bool) {
+	moved := issue.Priority != nil
+	issue.Priority = nil
+	if issue.WaitingLine != nil && issue.WaitingLine.Priority != nil {
+		line := *issue.WaitingLine
+		line.Priority = nil
+		issue.WaitingLine, moved = &line, true
+	}
+	return issue, moved
 }
 
 // withoutGatedSteps is the issue with no `gatedSteps`, the field gatedStepsContract added to the

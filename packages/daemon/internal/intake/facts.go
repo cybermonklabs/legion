@@ -50,6 +50,10 @@ type DispatchIssue struct {
 	Rank   string
 	// HandedOver is whether the event's own labels carried dispatch.LegionLabel.
 	HandedOver bool
+	// Priority is the issue's own Dispatch priority as the observation showed it: an event's
+	// payload, the listing's or the detail's (record.DispatchPriority over Dispatch's 0 to 3 or
+	// null). The record takes it wherever it takes the observation's rank.
+	Priority record.Priority
 	// Labels is the issue's labels as the observation showed them, in Dispatch's order. The copy
 	// of Dispatch's issues writes them with the rest of the observation (blockers.Mirror), and
 	// nothing else reads them: a decision reads HandedOver.
@@ -155,7 +159,7 @@ func (i DispatchIssue) LabelSetByPerson() bool {
 }
 
 // ObservedIssue is issue as Dispatch's detail shows it now, as an Observed fact at the sequence
-// Dispatch has run to: its status, title, parent, rank, labels, hand-over, blockers and
+// Dispatch has run to: its status, title, parent, rank, priority, labels, hand-over, blockers and
 // repository, with no event's type or actor, since no one event wrote that state.
 // release_children's todo child, its read of a child the daemon records already (a reading of the
 // copy alone, settleObserved) and an unrecorded issue's admission event are applied from it.
@@ -165,8 +169,8 @@ func ObservedIssue(issue dispatch.Issue) DispatchIssue {
 		parent = *issue.Parent
 	}
 	return DispatchIssue{Key: issue.Key, Seq: issue.LastSeq, Status: issue.Status, Title: issue.Title, Parent: parent,
-		Rank: issue.Rank, HandedOver: issue.HandedOver, Labels: issue.Labels, ResolvedRepo: issue.ResolvedRepo, Blockers: issue.BlockedBy,
-		ClaimedBy: issue.Claim.Holder(), ClaimKnown: !issue.ClaimUnread, Observed: true}
+		Rank: issue.Rank, Priority: dispatchPriority(issue.Priority), HandedOver: issue.HandedOver, Labels: issue.Labels, ResolvedRepo: issue.ResolvedRepo,
+		Blockers: issue.BlockedBy, ClaimedBy: issue.Claim.Holder(), ClaimKnown: !issue.ClaimUnread, Observed: true}
 }
 
 // OwnStatusWrite is the event the daemon's own status write makes, as the Dispatch consumer
@@ -192,8 +196,14 @@ func ListedIssue(issue dispatch.IssueSummary) DispatchIssue {
 		parent = *issue.Parent
 	}
 	return DispatchIssue{Key: issue.Key, Seq: issue.LastSeq, Status: issue.Status, Title: issue.Title, Parent: parent,
-		Rank: issue.Rank, HandedOver: issue.HandedOver, ResolvedRepo: issue.ResolvedRepo, Blockers: issue.BlockedBy,
+		Rank: issue.Rank, Priority: dispatchPriority(issue.Priority), HandedOver: issue.HandedOver, ResolvedRepo: issue.ResolvedRepo, Blockers: issue.BlockedBy,
 		ClaimedBy: issue.ClaimedBy, ClaimKnown: !issue.ClaimUnread}
+}
+
+// dispatchPriority reads the issue's priority in a Dispatch listing or detail.
+func dispatchPriority(level *int) record.Priority {
+	priority, _ := record.DispatchPriority(level)
+	return priority
 }
 
 func (f DispatchIssue) namedIssue() (string, bool) { return f.Key, true }

@@ -1432,8 +1432,8 @@ Closing the terminal leaves the project without one, and the daemon logs
   legion WIDGETS on http://192.0.2.10:13370 — schema 12, boot 7 started 2026-10-03T09:12:40Z (first boot 2026-09-20T15:02:11Z)
   admission: 3 issues hold a slot, cap 4, 2 waiting; 2 roots in work; 9 issues
   waiting line: 2
-    WIDGETS-14 1 of 2, returned: Its work came back at 2026-10-03T09:58:11Z. It is 1st of 1 issue whose work came back, and it takes the free slots first.
-    WIDGETS-15 2 of 2, starting: It has not started. It is 1st of 1 issue that has not started, by its own Dispatch rank, and 1 issue whose work came back stands ahead of all of them.
+    WIDGETS-14 1 of 2, returned: Its work came back at 2026-10-03T09:58:11Z. It waits at P1, its own priority. It is 1st of 1 issue at P1 whose work came back, and it takes the free slots before the issues at P1 that have not started.
+    WIDGETS-15 2 of 2, starting: It has not started. It waits at P1, its own priority. It is 1st of 1 issue at P1 that has not started, by its own Dispatch rank, and 1 issue at P1 whose work came back stands ahead of all of them.
   blocked on Dispatch links: none
   admission.held: none
   memory: 6 issues — 3 memory (random), 2 none (off), 1 none (random)
@@ -1462,11 +1462,16 @@ Closing the terminal leaves the project without one, and the daemon logs
   whether or not any issue under them holds a slot.
 
   The `waiting line` block under it names the issues of `admission.waiting`, in the order the
-  daemon promotes them: the issues whose work came back first, oldest first by the moment it
-  came back, and then the issues that have not started, by the Dispatch rank of each issue's
-  top issue and then its own. Each line gives the issue's key, its place in the line, the part
+  daemon promotes them. P0 goes first, then P1 through P3, then issues with no priority.
+  An issue takes its own priority, else that of the highest issue in Legion's work on its
+  Dispatch chain. Within one priority, work that came back goes first, oldest first.
+  Work that has not started follows, by top issue rank and then own rank.
+  A priority change takes effect at the next pass and takes no slot back.
+  The daemon passes over any issue still waiting on another issue.
+  Each line gives the issue's key, its place in the line, the part
   it stands in (`returned` or `starting`) and the daemon's own sentence for that place: what put
-  the issue in the line and when, where it stands among the issues of its own part, and whether
+  the issue in the line and when, the priority it waits at and where that priority came from,
+  where it stands among the issues of its own priority and part, and whether
   it waits for a free slot or already holds its admission slot and resumes whatever the cap
   says. The block names ten issues at most and then `and <N> more`, because a busy deployment
   queues hundreds of them; `--json` carries the sentence of every waiting issue. It reads
@@ -1493,7 +1498,7 @@ Closing the terminal leaves the project without one, and the daemon logs
   `tree_closed` and `tree_parked` stay in the daemon's list for older readers, and no issue reads
   either of them any more. A word this build of `legion` does not know is counted after these, in
   sorted order, so the counts add up to the total whatever words a later daemon writes. A reader
-  that states a daemon API contract below 253 is served `chain_unknown` and `awaiting_todo` as
+  that states a daemon API contract below 278 is served `chain_unknown` and `awaiting_todo` as
   `unclassified`.
   `--json` names each held issue under `admission.held` with its word and the issues that hold it.
 
@@ -1544,7 +1549,7 @@ Closing the terminal leaves the project without one, and the daemon logs
 
   The `roots waiting on a person` line counts the roots in phase `awaiting_person`, each holding
   the slot it took when the daemon started it, how many of them a person
-  answered and the published line still names — each standing
+  answered and the published line still names — each standing within its priority,
   among the issues whose work came back, oldest first, until the pass that resumes it — and each by key
   with what it waits on (`none` when no root waits). A daemon older than contract 58 serves no
   `waitingLine`, so that count reads 0 against one, which is the true answer for a caller that
@@ -1656,6 +1661,8 @@ Closing the terminal leaves the project without one, and the daemon logs
   issue itself), on a root
   `treeRuns` (true when the root is in Legion's work and does not wait in the line for a slot it
   does not hold), `repo` and `defaultBranch`, `holdReason`,
+  `priority` (the issue's own Dispatch priority, 0 for P0 through 3 for P3, or null for none).
+  The issue's own priority and its effective priority in the line both require contract 250.
   `architect` and `workers` (each claim's `state`, and on the implementer `backwardMoves`, one
   count for each kind of move back the issue has made, keyed `<from>-<to>`, left out where it has
   made none), `pullRequest` (`repo`, `number`, `head`, `state`, `mergeState`, `reviewDecision`),
@@ -1677,8 +1684,10 @@ Closing the terminal leaves the project without one, and the daemon logs
   `part`, `returned` for an issue whose work came back or `starting` for one that has not
   started; `kind`, `returning`, `answered`, `queued_root`, `first_phase` or `waiting_on_issue` (a started
   issue that gave its slot back to wait on another issue,
-  [Admission and the `legion` label](/legion/legion/concepts/#admission-and-the-legion-label)); `partPlace` and
-  `partLength`, its place among the issues of its own part and how many they are; `holdsSlot`,
+  [Admission and the `legion` label](/legion/legion/concepts/#admission-and-the-legion-label)); `priority`, the
+  priority that placed the issue in the line, its own, else its top issue's (0 for P0 to 3 for P3, or
+  null for an issue that waits after P3); `partPlace` and
+  `partLength`, its place among the issues of its own priority and part and how many they are; `holdsSlot`,
   true for an issue that already holds its admission slot and so takes no free one; `since`,
   the moment a `returned` issue's work came back; `rootRank`, `ownRank` and `rootKey`, the two
   Dispatch ranks that placed a `starting` issue and the key of its top issue; and `reason`, the

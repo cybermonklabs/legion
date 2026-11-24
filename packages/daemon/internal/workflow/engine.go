@@ -878,11 +878,13 @@ func (e *Engine) architectAbovesMove(ctx context.Context, tx pgx.Tx, chains *rec
 }
 
 // observedIssue is issue with everything an observation of fact records on it: its title, rank,
-// parent, label, sequence and the status Dispatch showed, with the recorded status kept. It writes
-// nothing, so a caller that gives the issue a phase of its own puts the two in one row
-// (releaseHeldRoot).
+// priority, parent, label, sequence and the status Dispatch showed, with the recorded status
+// kept. It writes nothing, so a caller can persist the observation and a new phase in one row.
 func observedIssue(issue record.Issue, fact intake.DispatchIssue) record.Issue {
-	issue.Title, issue.Rank, issue.Parent, issue.LastDispatchSeq = fact.Title, fact.Rank, record.ParentOf(fact.Parent), fact.Seq
+	if fact.Seq != 0 || issue.LastDispatchSeq == 0 {
+		issue.Priority = fact.Priority
+	}
+	issue.Title, issue.Rank, issue.Parent, issue.LastDispatchSeq = fact.Title, fact.Rank, record.ParentOf(fact.Parent), max(fact.Seq, issue.LastDispatchSeq)
 	issue.HandedOver, issue.DispatchStatus = fact.HandedOver, fact.Status
 	return issue
 }
@@ -996,7 +998,7 @@ func (e *Engine) HearRepository(ctx context.Context, repo string) {
 func (e *Engine) enterChild(ctx context.Context, tx pgx.Tx, chains *record.Chains, root record.Issue, fact intake.DispatchIssue, at Resolution) error {
 	parentKey := fact.Parent
 	child := record.Issue{Key: fact.Key, Tree: root.Key, Project: root.Project, Title: fact.Title, Parent: &parentKey, Phase: phase.Admitted,
-		Generation: 1, Status: fact.Status, Rank: fact.Rank, HandedOver: fact.HandedOver, LastDispatchSeq: fact.Seq, DispatchStatus: fact.Status,
+		Generation: 1, Status: fact.Status, Rank: fact.Rank, Priority: fact.Priority, HandedOver: fact.HandedOver, LastDispatchSeq: fact.Seq, DispatchStatus: fact.Status,
 		Repo: at.Repo, DefaultBranch: at.DefaultBranch, GitHubRepo: at.GitHubRepo}
 	if err := e.WriteIssue(ctx, tx, child); err != nil {
 		return err
