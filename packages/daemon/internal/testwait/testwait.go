@@ -152,9 +152,9 @@ func marginOf(timeout time.Duration) time.Duration {
 	return min(marginCap, timeout/marginShare)
 }
 
-// clock is the time Receive reads and the timer it waits on. Receive's is the real one; this
-// package's own tests hand receive one they move, so the moment a wait gives up is read as an
-// event rather than measured.
+// clock is the time Receive, poll and asked read and the timer they wait on: waitClock, the real
+// one but in this package's own tests, which hand them one they move, so the moment a wait gives
+// up is read as an event rather than measured.
 type clock interface {
 	Now() time.Time
 	After(d time.Duration) <-chan time.Time
@@ -181,10 +181,10 @@ func (realClock) After(d time.Duration) <-chan time.Time { return time.After(d) 
 // is written as \n.
 func Receive[T any](t *testing.T, what string, ch <-chan T) T {
 	t.Helper()
-	start := time.Now()
-	deadline, bounded := t.Deadline()
+	start := waitClock.Now()
+	deadline, bounded := deadlineOf(t)
 	timeout := timeoutFlag()
-	value, ended, ok := receive(realClock{}, deadline, bounded, timeout, ch)
+	value, ended, ok := receive(waitClock, deadline, bounded, timeout, ch)
 	if ok {
 		return value
 	}
@@ -302,10 +302,11 @@ func poll(t testing.TB, what string, holds func() bool, reading func() string) {
 	}
 }
 
-// waitClock is the time poll and asked read and the timer asked waits its pace on: the real one.
-// Only TestEventuallyHasNoCapOfItsOwn replaces it, with a clock that moves only as asked waits, so
-// that a wait past a minute is read without a minute of real time. No test of this package runs in
-// parallel.
+// waitClock is the time Receive, poll and asked read and the timer they wait on: the real one.
+// Only this package's own tests replace it (TestEventuallyHasNoCapOfItsOwn, and the children of
+// TestAWaitGivesUpWithItsLineOnStderrAndTheSameFailure and TestReceiveFailsNamingWhenItGaveUp),
+// with a clock that moves only as a wait waits, so a wait's span is read without that span of
+// real time. No test of this package runs in parallel.
 var waitClock clock = realClock{}
 
 // asked asks holds at the package's pace until it reports true, and reports whether it did. Once

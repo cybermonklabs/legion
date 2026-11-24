@@ -18,10 +18,10 @@ const giveUpMargin = margin
 // is still a time after now, as a read deadline or a timer built from it needs.
 const unboundedRemaining = time.Duration(1 << 60)
 
-// deadlineOf is where Remaining reads the test binary's deadline: t.Deadline. Only the child of
-// TestRemainingWithinTheMarginFailsTheTestByName replaces it, with a deadline already within the
-// margin, so the child shows Remaining's failure while its own alarm is what is left of its
-// parent's deadline: no starved child reaches that alarm before it reaches Remaining.
+// deadlineOf is where Remaining and Receive read the test binary's deadline: t.Deadline. Only the
+// children of TestRemainingWithinTheMarginFailsTheTestByName and TestReceiveFailsNamingWhenItGaveUp
+// replace it, with a deadline of their own, so each child shows its wait's end while its own alarm
+// is what is left of its parent's deadline: no starved child reaches that alarm first.
 var deadlineOf = (*testing.T).Deadline
 
 // Remaining is how long a wait that begins now in t may last: the test binary's deadline, the one
