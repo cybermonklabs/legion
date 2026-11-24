@@ -1,0 +1,5 @@
+kind: Added
+body: "Plan registration accepts several tasks and their needs. Each task runs on the branch and in the working copy selected by the daemon; its completion reports that task's branch and path."
+time: 2026-11-24T21:40:49.141288Z
+custom:
+    Issue: pr5165

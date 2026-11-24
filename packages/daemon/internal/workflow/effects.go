@@ -787,10 +787,12 @@ func (e *Engine) sendOwedEntry(ctx context.Context, tx pgx.Tx, s TaskScope, role
 	return e.started(ctx, tx, s, role, task, row.Entry, marks)
 }
 
-// StartPromotedWorker starts the phase worker of a mid-phase member a re-admitted tree's
-// promotion brings back (admit's startMidPhaseMembers), on the resume task of the phase it stands
-// in (ResumeTask), on s, the scope of the task of the role's step (PromotedScope), and the entry it
-// raises.
+// StartPromotedWorker starts the phase worker of a mid-phase member a re-admitted tree's first run
+// brings back — its promotion, or the admission pass that finds the tree running when its design
+// gate opened first (admit's startMidPhaseMembers, returnMembersOfRunningTrees) — on the resume
+// task of the phase it stands in (ResumeTask), on s, the scope of the task of the role's step
+// (PromotedScope), and the entry it raises. Both are the promotion's start here: the pass's return
+// is the one the promotion would have made.
 //
 // It raises the entry, where the promotion's other role starts raise none: the promotion is
 // handing that role its work again, and the re-admission cleared the task its entry named with
@@ -1437,7 +1439,8 @@ func HeldNotice(ctx context.Context, s record.Store, tx pgx.Tx, issue record.Iss
 // ChildReenteredNotice is the notice the architect above a re-entered child is told, whichever path
 // re-enters it: reenterChild for a live tree's reopened child, or admission's
 // reenterStrandedChildren for one a reopen declined to re-enter for want of the label until its
-// root's own promotion made the tree live.
+// tree's first run made the tree live: its root's promotion, or the admission pass that finds a
+// re-admitted tree running first.
 func ChildReenteredNotice(child, root string) record.Notice {
 	return record.Notice{Kind: "child-status", Role: claim.RoleArchitect, Reason: fmt.Sprintf("%s is todo; it runs again under %s", child, root)}
 }

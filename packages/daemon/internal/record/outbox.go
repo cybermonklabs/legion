@@ -36,13 +36,9 @@ const (
 	OutboxKindWorkspaceRemove  OutboxKind = "workspace_remove"
 	OutboxKindIssueBranch      OutboxKind = "issue_branch"
 	OutboxKindTaskBranch       OutboxKind = "task_branch"
-	// OutboxKindTaskPullRequestsClose closes open pull requests of tasks of an issue: those of the
-	// other tasks once the pull request of the task that merges has merged, that of a task a later
-	// version of the plan removed, and those of an earlier run at the first step of a run started
-	// again (TaskPullRequestsClose).
+	// OutboxKindTaskPullRequestsClose closes pull requests of tasks that finished or were removed.
 	OutboxKindTaskPullRequestsClose OutboxKind = "task_pull_requests_close"
-	// OutboxKindTaskCopyRemove removes the working copy of a task that a later version of the
-	// plan removed (TaskCopyRemove).
+	// OutboxKindTaskCopyRemove removes the working copy of a removed task.
 	OutboxKindTaskCopyRemove OutboxKind = "task_copy_remove"
 	OutboxKindCheckWake      OutboxKind = "check_wake"
 	OutboxKindCheckLook      OutboxKind = "check_look"
@@ -50,8 +46,10 @@ const (
 	OutboxKindRoleMessage    OutboxKind = "role_message"
 	OutboxKindHookPrompt     OutboxKind = "hook_prompt"
 	OutboxKindUpdateAsk      OutboxKind = "update_ask"
-	OutboxKindIssueBundle    OutboxKind = "issue_bundle"
-	OutboxKindIssueRelease   OutboxKind = "issue_release"
+	// OutboxKindIssueBundle keeps the former workspace save's stored name for the workspace
+	// check (IssueWorkspaceCheck), so queued rows work across an upgrade or rollback.
+	OutboxKindIssueBundle  OutboxKind = "issue_bundle"
+	OutboxKindIssueRelease OutboxKind = "issue_release"
 	// OutboxKindGatedStepsPublish is the one kind whose row belongs to no issue: its issue column
 	// holds the bare project key (GatedStepsPublish).
 	OutboxKindGatedStepsPublish OutboxKind = "gated_steps_publish"
@@ -1323,6 +1321,19 @@ type SuperviseRequest struct {
 	Linger uint64 `json:"linger,omitempty"`
 	// Reason is why a suspend stops the claim, for the line the suspended claim logs.
 	Reason string `json:"reason,omitempty"`
+	// TurnStart fences the `suspend` of a left pod's close on a turn: it is the newest turn start
+	// of the issue's claims in the view the pass queued the close from, as the close's workspace
+	// check carried it (IssueWorkspaceCheck.TurnStart), the zero moment where none had had a turn.
+	// The suspend of a claim whose last turn started after it finishes without acting (the daemon
+	// outbox's suspend), since that turn may have made work the check's read did not see, as a
+	// release's role stop is cancelled by a turn after its mark (issue_releases.turn_start). The
+	// claim stays live, the close's Sandbox suspension carries the same fence and finishes without
+	// acting too (IssueSuspend.TurnStart), and the next idle pass decides the close again. Every
+	// other request carries none: nil is no
+	// fence, and the zero moment is a fence that any turn passes. A release before this field
+	// refuses a row that carries it (DisallowUnknownFields), so a rollback waits for such rows to
+	// run (docs/kubernetes.md, "Rolling back the release that keeps no saved workspace").
+	TurnStart *time.Time `json:"turnStart,omitempty"`
 	// CheckLook is the look of the issue's production check a start starts, 0 for a phase start.
 	// A check start runs after the close, where the issue has no phase and its tree may linger, so
 	// the outbox fences it on the open check and its look (the row acts only while the check is
@@ -1396,51 +1407,67 @@ func (LingerClose) OutboxKind() OutboxKind { return OutboxKindLingerClose }
 // fence a later re-admission or start. The issue keeps nothing: an ephemeral disk is its pod's own
 // and goes with the pod, and a kept volume goes with the Sandbox, so a later todo re-enters the
 // issue fresh on a Sandbox its next launch makes.
+//
+// TurnStart, on the suspension of a left pod's close that stops a role, is the turn start its
+// workspace check read, as each of that close's `suspend` rows carries it
+// (SuperviseRequest.TurnStart): the suspension finishes without acting where a claim of the issue
+// started a turn after it (store.IssueSuspension), as the stop of that claim's role did, so
+// nothing of the close outlives a stop its fence held and the next idle pass decides the close
+// again with a read of its own. Every other suspension carries none: nil is no fence, and the
+// zero moment is a fence that any turn passes. A release before this field refuses a row that
+// carries it (DisallowUnknownFields), so a rollback waits for such rows to run
+// (docs/kubernetes.md, "Rolling back the release that keeps no saved workspace").
 type IssueSuspend struct {
-	Tree           string `json:"tree"`
-	Generation     uint64 `json:"generation"`
-	TreeGeneration uint64 `json:"treeGeneration"`
+	Tree           string     `json:"tree"`
+	Generation     uint64     `json:"generation"`
+	TreeGeneration uint64     `json:"treeGeneration"`
+	TurnStart      *time.Time `json:"turnStart,omitempty"`
 }
 
 func (IssueSuspend) OutboxKind() OutboxKind { return OutboxKindIssueSuspend }
 
-// IssueBundle is the first act of an idle pod's release: it asks the shim of the claim it names
-// (Claim), or, for a row the release before wrote, of the claim of the worker on Role's step — a
-// claim whose process is still running in the pod, because this row runs before the `release`
-// rows that stop them — for the git bundle of the unpushed work of the workspace every role of the
-// issue shares, and saves it in the daemon's own database (runtime.WorkspaceBundler). Only a shim
-// can build it: it runs the `jj` of the workspace it already works in, and it dies with its
-// claim's process, so the save has to happen while that process is there.
+// IssueWorkspaceCheck is the first act of an idle pod's release: it asks the shim of Role — a role
+// whose process is still running in the pod, because this row runs before the `release` rows that
+// stop them — to read whether the workspace every role of the issue shares holds work that no
+// branch or tag on origin holds (runtime.WorkspaceWorkReader). Only a shim can read it: it runs the
+// `jj` of the workspace it already works in, and it dies with its role's process, so the read has
+// to happen while that process is there. A read that finds work, or that fails, declines the
+// release: the pod stays with the work, and Role is told once that the release waits for its push
+// (internal/daemon's checkIssueWorkspace). The daemon pushes nothing for a role.
 //
-// It stops nothing, so a release cancelled here costs only the save, and it sits before the
+// It stops nothing, so a release cancelled here costs only the read, and it sits before the
 // release's boundary (the first `release` row), so a delivery queued while it runs still cancels
-// the whole release and takes the stored bundle with it (outbox.cancelRelease).
-type IssueBundle struct {
+// the whole release (outbox.cancelRelease). The teardown waits for it (store.IssueRelease).
+//
+// CloseRoles makes this the workspace check of a pod whose issue left the workflow. A clean
+// read queues its close; a failed read or unpushed work keeps the pod. TurnStart fences that
+// close against a newer turn, as an idle release's mark fences its own stops.
+type IssueWorkspaceCheck struct {
 	Tree           string     `json:"tree"`
 	Generation     uint64     `json:"generation"`
 	TreeGeneration uint64     `json:"treeGeneration"`
 	Role           claim.Role `json:"role"`
-	// Claim is the claim whose shim is asked, where the release names it. A row that names none
-	// asks the claim of the worker on Role's step (WorkerClaim), as a row the release before
-	// wrote does.
-	Claim claim.Token `json:"claim,omitempty"`
+	// Claim names the shim to ask; an older row asks the worker on Role's step.
+	Claim      claim.Token  `json:"claim,omitempty"`
+	CloseRoles []claim.Role `json:"closeRoles,omitempty"`
+	TurnStart  time.Time    `json:"turnStart,omitzero"`
 }
 
-func (IssueBundle) OutboxKind() OutboxKind { return OutboxKindIssueBundle }
+func (IssueWorkspaceCheck) OutboxKind() OutboxKind { return OutboxKindIssueBundle }
 
-// IssueRelease is the last act of an idle pod's release, queued behind the save (IssueBundle) and
-// the `release` supervise rows, one for each live claim, that stopped the pod's processes: it asks
-// the
-// runtime's release (runtime.IssueReleaser), which suspends the issue's Sandbox and waits its pod
-// out, keeps a Sandbox that owns the issue's kept volume and deletes every other Sandbox with the
-// role Secrets it owns, and records the release with the size of the bundle the save stored.
-// Both workflow generations and this row's ID fence a start or a re-admission that came after, as
-// an IssueSuspend's do.
+// IssueRelease is the last act of an idle pod's release, queued behind the workspace check
+// (IssueWorkspaceCheck) and the per-role `release` supervise rows that stopped the pod's role
+// processes: it asks the runtime's release (runtime.IssueReleaser), which suspends the issue's
+// Sandbox and waits its pod out, keeps a Sandbox that owns the issue's kept volume and deletes
+// every other Sandbox with the role Secrets it owns, and records the release. Both workflow
+// generations and this row's ID fence a start or a re-admission that came after, as an
+// IssueSuspend's do.
 //
 // Unlike a close, the issue stays in the workflow: the claims keep their phase and their pending
-// task, and the next wake for one of the roles brings a new pod that restores the bundle before
-// any role starts. A new pod of a kept Sandbox mounts the volume the work was taken off, so it
-// restores nothing, and the daemon drops the bundle (runtime.HeldWorkspaceBundleDrop).
+// task, and the next wake for one of the roles brings a new pod, whose workspace provisioning makes
+// again from what was pushed to the issue's branch. The check took the pod only because the
+// workspace held nothing that was not pushed. A new pod of a kept Sandbox mounts the volume the
+// last pod used.
 type IssueRelease struct {
 	Tree           string `json:"tree"`
 	Generation     uint64 `json:"generation"`
@@ -2283,7 +2310,7 @@ func decodeOutboxJSON(row OutboxRow) (OutboxPayload, error) {
 		}
 		payload = value
 	case OutboxKindIssueBundle:
-		value := IssueBundle{}
+		value := IssueWorkspaceCheck{}
 		if err := decoder.Decode(&value); err != nil {
 			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
 		}
@@ -2504,9 +2531,9 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		if value.Tree == "" || value.Generation == 0 || value.TreeGeneration == 0 {
 			return fmt.Errorf("issue suspension requires its tree and both workflow generations")
 		}
-	case IssueBundle:
+	case IssueWorkspaceCheck:
 		if value.Tree == "" || value.Generation == 0 || value.TreeGeneration == 0 || value.Role == "" {
-			return fmt.Errorf("a release's workspace save requires its tree, both workflow generations and the role of the claim whose shim is asked")
+			return fmt.Errorf("a release's workspace check requires its tree, both workflow generations and the role whose shim reads the workspace")
 		}
 		if err := namedClaim(value.Claim); err != nil {
 			return err
@@ -2679,6 +2706,9 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 				return fmt.Errorf("a supervise %s on %s names the branch %q; only a start with a task names one, and it is the branch of a task of its issue other than the issue's own",
 					value.Op, issue, value.Branch)
 			}
+		}
+		if value.TurnStart != nil && value.Op != "suspend" {
+			return fmt.Errorf("a supervise %s names a turn start; only a left pod's close's suspend names one", value.Op)
 		}
 	case RoleMessage:
 		if value.Role == "" {

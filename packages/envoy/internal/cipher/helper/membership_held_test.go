@@ -43,6 +43,7 @@ const heldDescription = heldPerson + "'s credentials are held by Dispatch; they 
 // TestMembershipHeldHelperKeepsItsLogin: the helper discards no credential because Dispatch holds
 // its person, in either mode, and is served again after the release with no new login.
 func TestMembershipHeldHelperKeepsItsLogin(t *testing.T) {
+	t.Parallel()
 	t.Run("machine login", func(t *testing.T) {
 		ctx := context.Background()
 		f := newFakeBroker(t)

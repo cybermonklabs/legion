@@ -135,6 +135,37 @@ func TestWorkspaceWorkReadsTheIssuePodLayout(t *testing.T) {
 	}
 }
 
+func TestWorkspaceWorkSnapshotsEveryTasksUnsnapshottedEdit(t *testing.T) {
+	for _, suffix := range []string{"read", "retry.2"} {
+		t.Run(suffix, func(t *testing.T) {
+			f := newWorkFixture(t)
+			f.ws = filepath.Join(f.root, "state", "workspaces", "acme", "widgets", strings.ToLower(workIssue))
+			if err := os.MkdirAll(filepath.Dir(f.ws), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			f.jj(f.clone, "workspace", "add", "-R", f.clone, "--name", strings.ToLower(workIssue), "-r", "main@origin", f.ws)
+			name := strings.ToLower(workIssue) + "." + suffix
+			dir := filepath.Join(filepath.Dir(f.ws), name)
+			f.jj(f.clone, "workspace", "add", "-R", f.clone, "--name", name, "-r", "main@origin", dir)
+
+			// The clean task is the negative control. No command snapshots its later edit:
+			// only the real shim's workspace-work request can make that change visible.
+			if clean := f.read(); !clean.OK || clean.Count != 0 || clean.Changed {
+				t.Fatalf("a clean task working copy = %+v, want no work", clean)
+			}
+			f.writeIn(dir, "task-edit.txt")
+			got := f.read()
+			if !got.OK {
+				t.Fatalf("read the task's unsnapshotted edit: %s", got.Error)
+			}
+			head := f.jj(dir, "log", "-R", dir, "--ignore-working-copy", "-r", "@", "--no-graph", "-T", "commit_id")
+			if got.Count != 1 || !slices.Equal(got.Commits, []string{head}) {
+				t.Fatalf("the real shim read the task's unsnapshotted edit as %+v, want its one commit %s", got, head)
+			}
+		})
+	}
+}
+
 // A workspace-work frame the shim cannot decode is refused, and one with no id to answer is
 // logged and answered nothing: the daemon is the frame's only sender, so Oh My Pi, which would
 // refuse it as an unknown command, never reads either.

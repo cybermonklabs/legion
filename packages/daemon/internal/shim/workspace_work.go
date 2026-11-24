@@ -1,7 +1,11 @@
 package shim
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -11,16 +15,20 @@ import (
 )
 
 // The workspace read: the shim of one role answers whether the workspace every role of its issue
-// shares holds work that no branch or tag on origin holds, so a pod update round that replaces the
-// pod without waiting for every role can name what goes with it. Only a shim can read it: it runs
-// the jj of the workspace it already works in.
+// shares holds work that no branch or tag on origin holds. A pod update round that replaces the
+// pod without waiting for every role reads it to name what goes with the pod, and the idle release
+// reads it to take the pod only when it holds no work. Only a shim can read it: it runs the jj of
+// the workspace it already works in.
 
 // workspaceWorkRevset is the work the read counts: every commit under a workspace's working copy
 // or a local bookmark, less three kinds of commit that are not work.
 //
 // A commit origin holds is not work: one under a remote bookmark or a tag is already pushed, and
-// the replacement pod's fetch gets it back. Tags are subtracted beside remote bookmarks for the
-// reason bundleKeptRevset subtracts them.
+// the replacement pod's fetch gets it back. Tags are subtracted beside remote bookmarks because a
+// clone of this repository holds thousands of them, jj makes each tagged commit a visible head,
+// and the release commits they point at are reachable from no remote bookmark: with remote
+// bookmarks alone subtracted, every such commit under a working copy or a bookmark would count as
+// work that origin already holds.
 //
 // A commit with no change and no description is not work: it carries nothing a replacement can
 // lose, whether it is a working copy or the parent a bare `jj new` leaves. Every issue pod's clone
@@ -34,10 +42,11 @@ import (
 // role's `jj git fetch`, the commits of every branch origin deleted or rewrote stay visible with
 // no bookmark, hundreds of them other issues' work. Counting every visible head would name those
 // as this issue's. The cost is a side head of this issue's own (a role ran `jj new` over a
-// rewritten parent, workspace's bookmark.go), which goes unnamed.
+// rewritten parent, workspace's bookmark.go), which goes uncounted: a round does not name it, and
+// a release does not keep the pod for it.
 //
-// The idle release's save (bundleKeptRevset) is another set and stays as it is: it keeps every
-// visible head, where this read names what it counts on the issue.
+// This read is the one both the pod update round and the idle release make, so the work a round
+// names as going with a pod is the work that keeps a release from taking it.
 const workspaceWorkRevset = `(::(working_copies() | bookmarks()) ~ ::(remote_bookmarks() | tags())) ~ (empty() & description(exact:""))`
 
 // workspaceWork answers `workspace-work`: the read of the work the workspace this shim runs in
@@ -71,8 +80,7 @@ func (s *shim) workspaceWork(request shimwire.WorkspaceWork) {
 // start, which names the command, its exit and jj's first words, and its end, where
 // workspace.RunCommand puts the note it adds to a failure (workspace.StaleGitLockNote, which tells
 // the role what to do about a git lock). The daemon names the reason on its log lines, and for the
-// read in the message on the issue too, which a short reason keeps readable. The bundle's answer
-// goes chunked instead (toDaemonChunked), since its bundle is larger than any line.
+// read in the message on the issue too, which a short reason keeps readable.
 const maxAnswerErrorBytes = 4 << 10
 
 // cutAnswerError is reason as a one-line answer carries it: all of it when it is at most
@@ -96,7 +104,7 @@ func cutAnswerError(reason string) string {
 }
 
 // readWorkspaceWork runs the read's two jj commands in the workspace the shim's environment
-// names in LEGION_WORKSPACE, with the jj of PATH and within the request's budget, as runBundle
+// names in LEGION_WORKSPACE, with the jj of PATH and within the request's budget, as the adoption
 // does (openWorkspace). The first reads the working copy's commit and whether it is empty, and it
 // is the one jj snapshot the read makes; the second is --ignore-working-copy, so both describe one
 // state of the workspace. It answers the working copy's commit, whether that commit holds a
@@ -112,6 +120,9 @@ func (s *shim) readWorkspaceWork(request shimwire.WorkspaceWork) (head string, c
 	}
 	defer done()
 	dir, jj, run := opened.dir, opened.jj, opened.run
+	if err := snapshotTaskWorkingCopies(run, jj, dir, request.Issue); err != nil {
+		return "", false, nil, err
+	}
 
 	at, err := run(nil, jj, "log", "-R", dir, "-r", "@", "--no-graph", "-T", `commit_id ++ " " ++ empty`)
 	if err != nil {
@@ -126,4 +137,36 @@ func (s *shim) readWorkspaceWork(request shimwire.WorkspaceWork) (head string, c
 		return "", false, nil, err
 	}
 	return head, empty == "false", workspace.OutputLines(listed), nil
+}
+
+// snapshotTaskWorkingCopies snapshots the existing task workspaces beside dir before the
+// clone-wide revset reads them. It follows the same names and paths as workspace.ProvisionTask,
+// including the suffix of a branch allocated to a later run. Missing task directories are not
+// live working copies; other errors fail the read instead of answering that the disk is clean.
+func snapshotTaskWorkingCopies(run func(stdin []byte, args ...string) (string, error), jj, dir, issue string) error {
+	listed, err := run(nil, jj, "workspace", "list", "-R", dir, "--ignore-working-copy", "-T", `name ++ "\n"`)
+	if err != nil {
+		return err
+	}
+	prefix := strings.ToLower(issue) + "."
+	for _, name := range workspace.OutputLines(listed) {
+		part, ok := strings.CutPrefix(name, prefix)
+		if !ok {
+			continue
+		}
+		branch := workspace.Bookmark(issue) + "." + part
+		taskDir, err := workspace.TaskDir(dir, branch)
+		if err != nil || filepath.Base(taskDir) != name {
+			continue
+		}
+		if _, err := os.Lstat(taskDir); errors.Is(err, fs.ErrNotExist) {
+			continue
+		} else if err != nil {
+			return fmt.Errorf("worker-shim: the working copy of %s: %w", branch, err)
+		}
+		if _, err := run(nil, jj, "log", "-R", taskDir, "-r", "@", "--no-graph", "-T", "commit_id"); err != nil {
+			return err
+		}
+	}
+	return nil
 }

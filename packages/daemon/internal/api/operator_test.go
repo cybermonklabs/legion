@@ -133,7 +133,7 @@ func TestTheOperatorsSpawnLaunchesWhileTheWakeQueueIsSpent(t *testing.T) {
 	if at := limiter.Reserve(now); !at.After(now) {
 		t.Fatalf("the limiter reserved %s for a spent queue, want a moment after %s", at, now)
 	}
-	h.supervisor.deps.WakePace = supervise.WakePace{Reserve: limiter.Reserve, Rate: 1, Burst: 1}
+	h.supervisor.deps.WakePace = supervise.WakePace{Reserve: limiter.Reserve, Interval: limiter.Interval(), Rate: 1, Burst: 1}
 
 	recorder := h.operator(http.MethodPost, "/legion/v1/operator/claims", spawnBody())
 

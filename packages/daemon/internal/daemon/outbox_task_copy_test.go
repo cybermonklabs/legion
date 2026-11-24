@@ -3,7 +3,6 @@ package daemon
 import (
 	"context"
 	"errors"
-	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -19,11 +18,9 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	stepplan "github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
-	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
-	"github.com/sjawhar/legion/daemon/internal/testpg"
 	"github.com/sjawhar/legion/daemon/internal/wait"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
@@ -287,63 +284,5 @@ func TestTheRemovalOfAnIssuesWorkspaceRemovesEachTasksWorkingCopy(t *testing.T) 
 	}
 	if want := []workspace.Workspace{alone.copyOf(t, done.Key)}; !reflect.DeepEqual(alone.removed, want) {
 		t.Fatalf("the working copies removed with no working copy of a task = %+v, want the issue's own alone, %+v", alone.removed, want)
-	}
-}
-
-// The saved work a released pod's next pod restores puts back the working copy of each task whose
-// branch a task of the issue's plan holds, and of no other: the bundle names the working copies of
-// legion/LEGION-208.b, the branch of a task a later version removed, and of legion/LEGION-208.c,
-// c's; the pod is sent c's alone, with the rest of the work as it was saved. A removed task's working
-// copy lives at most as long as its pod's disk, and no pod after it gets it back.
-//
-// The fault it catches is a removed task's working copy carried from pod to pod for the issue's
-// life (its control: savedWorkspaceBundle answering the take as it is, with b's working copy).
-func TestTheRestoreOfASavedBundlePutsBackTheWorkingCopiesOfThePlansTasksAlone(t *testing.T) {
-	t.Parallel()
-	ctx := context.Background()
-	st := testpg.CloneStore(t, "legion_outbox_test")
-	records := record.NewStore()
-	issue := copyIssue
-	v := record.PlanVersion{Issue: issue.Key, Generation: 1, Version: 1, ArtifactID: "plan-artifact", Source: record.PlanSourceOwner, GivenAt: time.Now()}
-	if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
-		if err := records.PutIssue(ctx, tx, issue); err != nil {
-			return err
-		}
-		var rows []record.PlanTask
-		var steps []record.PlanStep
-		for _, task := range []string{"a", "c"} {
-			rows = append(rows, record.PlanTask{Issue: issue.Key, Generation: 1, Task: task, PlanVersion: 1, BlockText: "Task " + task + ".", State: record.TaskWaiting})
-			steps = append(steps, record.PlanStep{Issue: issue.Key, Generation: 1, Task: task, Position: 1, Role: "implementer", Type: stepplan.BuiltinRoles()["implementer"].Type})
-		}
-		if err := records.PutPlan(ctx, tx, v, rows, steps); err != nil {
-			return err
-		}
-		for _, task := range []string{"a", "c"} {
-			if _, err := records.AssignTaskBranch(ctx, tx, issue.Key, 1, task); err != nil {
-				return err
-			}
-		}
-		return nil
-	}); err != nil {
-		t.Fatalf("store %s and its plan: %v", issue.Key, err)
-	}
-	saved := runtime.WorkspaceBundle{Bundle: []byte("PACK the released work"), Head: "f2f134541b30dfa5160a5d1ce5e17b76c967c661",
-		Tips:          []string{"f2f134541b30dfa5160a5d1ce5e17b76c967c661", "0a8f0aee63b13682fefe975ba0cc51da6f2ba9e9", "1b9e0bff74c24793aa1f2b3c4d5e6f708192a3b4"},
-		WorkingCopies: map[string]string{"legion/LEGION-208.b": "0a8f0aee63b13682fefe975ba0cc51da6f2ba9e9", "legion/LEGION-208.c": "1b9e0bff74c24793aa1f2b3c4d5e6f708192a3b4"},
-		At:            time.Now().UTC().Add(-10 * time.Minute).Truncate(time.Second), PodUID: "released-pod"}
-	if err := st.PutWorkspaceBundle(ctx, issue.Key, 7, saved); err != nil {
-		t.Fatalf("save the released pod's work: %v", err)
-	}
-
-	got, take, err := savedWorkspaceBundle(st, "legion")(ctx, issue.Key, "next-pod", time.Now().UTC())
-	if err != nil || take != runtime.WorkspaceBundleSend {
-		t.Fatalf("the take of the saved work for the next pod = %v, %v; want it sent", take, err)
-	}
-	want := map[string]string{"legion/LEGION-208.c": saved.WorkingCopies["legion/LEGION-208.c"]}
-	if !maps.Equal(got.WorkingCopies, want) {
-		t.Fatalf("the working copies the next pod is sent = %v, want c's alone, %v", got.WorkingCopies, want)
-	}
-	if !slices.Equal(got.Tips, saved.Tips) || got.Head != saved.Head || string(got.Bundle) != string(saved.Bundle) {
-		t.Fatalf("the work the next pod is sent = %+v, want it as it was saved, %+v", got, saved)
 	}
 }

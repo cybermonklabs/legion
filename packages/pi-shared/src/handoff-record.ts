@@ -242,14 +242,14 @@ const FOR_STEP = "the working copy of this session's step cannot be found";
 
 /**
  * The step that this session's agent, `agent`, runs in the issue `record` serves, as a completion
- * and an update signal read it. Of a record that serves the issue's tasks (`tasks`, contract 224)
+ * and an update signal read it. Of a record that serves the issue's tasks (`tasks`, contract 263)
  * it is the task whose `agent` is `agent` and whose step is at work: a running task whose step
  * waits for nothing, or a held one. Its branch is the task's, its working copy the directory the
  * daemon's `workspace.TaskDir` derives from LEGION_WORKSPACE and that branch (`taskDir`), and its
  * phase the task's, `held` for a held task, as the daemon's completion route reads a completion of
  * one (`handoffPosition`). Otherwise the step is the issue's own: LEGION_WORKSPACE as it stands,
  * `legion/<issue>` and the issue's phase. That is the answer for a record that serves no tasks — a
- * daemon below contract 224, or an issue with no plan rows — and for an agent at no step of the
+ * daemon below contract 263, or an issue with no plan rows — and for an agent at no step of the
  * record's tasks, whose completion the daemon then decides: of a plan of one task as before tasks,
  * and of a plan of several as a completion of no phase of it (`HANDOFF_NOT_CURRENT_PHASE`).
  *
@@ -397,7 +397,7 @@ const STANDING = ["log", "-r", "@-", "--no-graph", "-T", "commit_id"] as const;
 
 /** A commit as a handoff record names it: 40 lower-case hexadecimal characters, the shape every
  * role's prompt asks for and the one the daemon compares a completion's head against. */
-const RECORD_HEAD = /^[0-9a-f]{40}$/;
+export const RECORD_HEAD = /^[0-9a-f]{40}$/;
 
 /** The head a handoff record's `body` names, the commit the work that record reports was done
  * against, or `undefined` when the body is no JSON object, carries no `head`, or carries one of

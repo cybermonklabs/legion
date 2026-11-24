@@ -18,8 +18,8 @@ const (
 	// AwaitingPerson is a root admitted tree that waits only on a person: its architect asked a
 	// question and handed it to the person. It keeps the admission slot it took when the daemon
 	// started it, and its architect stays live in its own session, reading and answering the
-	// person's comments; the person's answer puts the root in the waiting line as well, among the
-	// issues whose work came back, oldest first, and the pass that reads it delivers the
+	// person's comments; the person's answer puts the root in the waiting line as well, within its
+	// priority, among the issues whose work came back, oldest first, and the pass that reads it delivers the
 	// architect its task, taking no further slot.
 	AwaitingPerson Phase = "awaiting_person"
 	Planning       Phase = "planning"

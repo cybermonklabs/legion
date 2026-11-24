@@ -1,0 +1,5 @@
+kind: Added
+body: "Task completions report the branch and working-copy path that the daemon selected for that task."
+time: 2026-11-24T21:40:49.141288Z
+custom:
+    Issue: pr5165

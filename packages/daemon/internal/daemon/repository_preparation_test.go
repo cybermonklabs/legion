@@ -151,12 +151,11 @@ func TestTwoIssuesOnOneRecordedRepositoryMakeOneSetOfReads(t *testing.T) {
 // repository again of its own until GitHub answers, then recovers the issue from Dispatch's
 // listing and admits it on it — with nobody moving the issue and no restart.
 func TestAnIssueWaitsWhileGitHubHasNotAnsweredForItsRepositoryAndIsAdmittedWhenItDoes(t *testing.T) {
-	// Not parallel: it writes the package variable installReadRetry (quickInstallReads).
+	t.Parallel()
 	ctx := context.Background()
-	quickInstallReads(t)
 	installs := &installations{}
 	installs.setFailing(errors.New("GitHub answered 502"), "implement "+strangerRepo)
-	w, client, installs, _ := preparationRig(t, installs)
+	w, client, installs, _ := preparationRig(t, installs, quickInstallReads)
 	engine, admission := rigHandlers(w)
 	issue, fact := handedOver("LEGION-921", strangerRepo, 1)
 	client.issue = issue
@@ -251,11 +250,10 @@ func TestAnIssueLeftUnreadIsAdmittedWhenAnotherIssuesPreparationGetsGitHubsAnswe
 // that GitHub had answered for it again and dropped the wait, and the recovery that followed
 // GitHub's answer told nothing.
 func TestARecoveryGitHubFailsAgainTellsNoArchitectAndKeepsItsReleaseWaits(t *testing.T) {
-	// Not parallel: it writes the package variable installReadRetry (quickInstallReads).
-	quickInstallReads(t)
+	t.Parallel()
 	installs := &installations{}
 	installs.setFailing(errors.New("GitHub answered 502"), "implement "+strangerRepo)
-	w, client, installs, _ := preparationRig(t, installs)
+	w, client, installs, _ := preparationRig(t, installs, quickInstallReads)
 	const tree, root, parent, child = "LEGION-963", "LEGION-964", "LEGION-965", "LEGION-966"
 	liveRoot(t, w, client, tree)
 	client.show(issue(parent, strangerRepo, "backlog", false, tree, 1), issue(child, strangerRepo, "todo", false, parent, 1))
@@ -289,7 +287,7 @@ func TestARecoveryGitHubFailsAgainTellsNoArchitectAndKeepsItsReleaseWaits(t *tes
 		t.Fatalf("notices to %s's architect once GitHub answered for %s = %q, want one naming %s and %s: the wait was kept for the recovery that answered",
 			tree, strangerRepo, notices, child, parent)
 	}
-	time.Sleep(10 * installReadRetry.Max)
+	time.Sleep(10 * w.reads().retry.Max)
 	if got := treeNotices(t, w, tree)[before:]; len(got) != 1 {
 		t.Fatalf("notices after the recovery = %d, want the one only", len(got))
 	}
@@ -302,11 +300,10 @@ func TestARecoveryGitHubFailsAgainTellsNoArchitectAndKeepsItsReleaseWaits(t *tes
 // says then. The marker stood for ever before, and the refresher listed the whole project on its
 // backoff for as long as the daemon ran.
 func TestARepositoryLeftUnreadIsLetGoOnceNoTodoIssueIsLeftOnIt(t *testing.T) {
-	// Not parallel: it writes the package variable installReadRetry (quickInstallReads).
-	quickInstallReads(t)
+	t.Parallel()
 	installs := &installations{}
 	installs.setFailing(errors.New("GitHub answered 502"), "implement "+strangerRepo)
-	w, client, installs, _ := preparationRig(t, installs)
+	w, client, installs, _ := preparationRig(t, installs, quickInstallReads)
 	const key = "LEGION-967"
 	deliver(t, w, client, issue(key, strangerRepo, "todo", true, "", 1))
 	if waiting := w.unreadReasons(); len(waiting) != 1 || !strings.HasPrefix(waiting[0], strangerRepo+": ") {
@@ -320,7 +317,7 @@ func TestARepositoryLeftUnreadIsLetGoOnceNoTodoIssueIsLeftOnIt(t *testing.T) {
 		t.Fatalf("the daemon still waits on %q with no todo issue left on %s, want the repository let go", w.unreadReasons(), strangerRepo)
 	}
 	listings, reads := client.listingCount(), installs.reads("implement "+strangerRepo)
-	time.Sleep(10 * installReadRetry.Max)
+	time.Sleep(10 * w.reads().retry.Max)
 	if got := client.listingCount(); got != listings {
 		t.Fatalf("Dispatch listed %d times more once %s was let go, want none", got-listings, strangerRepo)
 	}
@@ -348,11 +345,10 @@ func TestARepositoryLeftUnreadIsLetGoOnceNoTodoIssueIsLeftOnIt(t *testing.T) {
 // architect, whose release_children had answered that the child was released, heard nothing at
 // all.
 func TestLettingARepositoryGoTellsTheArchitectOfTheChildrenNothingWillRecord(t *testing.T) {
-	// Not parallel: it writes the package variable installReadRetry (quickInstallReads).
-	quickInstallReads(t)
+	t.Parallel()
 	installs := &installations{}
 	installs.setFailing(errors.New("GitHub answered 502"), "implement "+strangerRepo)
-	w, client, installs, _ := preparationRig(t, installs)
+	w, client, installs, _ := preparationRig(t, installs, quickInstallReads)
 	const tree, root, parent, stalled, recorded = "LEGION-973", "LEGION-974", "LEGION-975", "LEGION-976", "LEGION-977"
 	liveRoot(t, w, client, tree)
 	// Two children a release_children left while GitHub did not answer, which it does only while
@@ -394,7 +390,7 @@ func TestLettingARepositoryGoTellsTheArchitectOfTheChildrenNothingWillRecord(t *
 	if left != 0 || unread != 0 {
 		t.Fatalf("%d release waits are left on %s and %d repositories are left unread, want both gone with the telling", left, strangerRepo, unread)
 	}
-	time.Sleep(10 * installReadRetry.Max)
+	time.Sleep(10 * w.reads().retry.Max)
 	if got := treeNotices(t, w, tree)[before:]; len(got) != 1 {
 		t.Fatalf("notices after %s was let go = %d, want the one only", strangerRepo, len(got))
 	}
@@ -643,7 +639,7 @@ func TestTheStateListsNoRepositoryOfAnIssueLegionNeverRecords(t *testing.T) {
 // apply never resolves the repository, and a read made for it is a read made for nothing. Nothing
 // is left unread for it either, since no recovery would ever record it. Its preparation read both
 // Apps' installations and the repository's name at every event of the issue before, since no
-// refusal is kept, each read up to installReadAttempt long.
+// refusal is kept, each read up to reads().attempt long.
 func TestAPersonsOwnTodoIssueOnARepositoryNoRecordNamesAsksGitHubNothing(t *testing.T) {
 	t.Parallel()
 	var named atomic.Int64

@@ -34,10 +34,14 @@ block with recognized routing and delivery fields. The renderer includes `to` on
 message to the reader, formats sender identity and reply metadata, renders structured payloads
 once as `message`, and marks unknown sources or fields with `unrecognised`.
 
-A payload the TOON encoder cannot lay out, such as one nested deeper than its recursion reaches,
-is shown as the text its sender sent, under `message` (or `dispatch`), and the result's
-`payloadShownAsText` holds what the encoder threw. Each host logs that once, with the message id,
-and takes the frame: a throw out of the renderer would fail every delivery of it.
+A payload the TOON encoder cannot lay out is shown as the text its sender sent, under `message`
+(or `dispatch`): one nested deeper than the encoder's recursion reaches, and one whose layout
+passes the card's bound, as an array chain 1,400 levels deep does from a 3 KB frame. The bound is
+`INBOUND_CARD_MAX_BYTES` (1 MiB, the hub's largest frame), or twice the text the card lays out
+(its frame and a body read whole) when that is more, so a comment Dispatch's API gives whole
+still lays out whole. The result's `payloadShownAsText` says which. Each host logs that once,
+with the message id, and takes the frame: a throw out of the renderer would fail every delivery
+of it. A payload that is text already is never held to the bound; its frame bounds it.
 
 Malformed input is safe: a non-JSON frame becomes a TOON block naming its topic and an
 `unrecognised` parse failure. The renderer never emits raw frame bytes. Dispatch envelopes
@@ -1278,6 +1282,31 @@ on success, 1 when Dispatch or AskGate refused the call, and 2 on a usage error.
 includes every refusal of the flags or arguments before any request, and a corrupted `state.json`.
 Under Claude Code the whole output stays under 25,000 characters: the result text is cut to fit,
 the full text written to a file the output names, and the picture lines and follow notice kept.
+The one exception is a call whose whole output is one JSON object (`dispatch issues --json`,
+`printsJson`): a cut object is no JSON object, so it is printed whole on every host, and the CLI
+prints its own lines on stderr. A `409 PARENT_STATUS_CONFLICT`, whichever command Dispatch refused,
+prints the refusal, then each issue that holds the rule as `KEY [status] title`, then what to do
+next, and exits 1, as a near copy's refusal does.
+That last part follows what the call changed, so it names no step that the rule refuses.
+A create (`dispatch issue`) is refused only under a done parent and takes no flag that moves it,
+so it prints how to reopen that parent first
+(`dispatch issue-update --issue <PARENT> --status in_progress --include-parent`, because the rule
+also refuses a plain status change of that parent where the issue above it is done or not
+started) or file the issue under an open parent or none.
+A reparent (`dispatch issue-update --parent <PARENT>`) refused for the parent it names, which no
+flag of the command moves, is told to move that parent first
+(`dispatch issue-update --issue <PARENT> --status in_progress --include-parent`), then to run the
+reparent again, with `--issue` and `--status` only where the call had them.
+A status change prints the flags of `dispatch issue-update --status` that move the issues.
+Those flags go with `--status` alone, and with `--reason` for done, so a call that also changed
+another field is told to send that change in a call of its own.
+A reparent refused for a child, against the status it also wrote, is told to run the status change
+first, in a call of its own, and the reparent after it, without `--status`.
+Dispatch refuses a credential scoped to one project each step that writes an issue of another
+project (`403 PROJECT_SCOPE`), and the CLI does not know its credential's scope. So where an issue
+the refusal names, which a flag of the line writes, is in another project than the issue the call
+names (its `--issue`, else `LEGION_ISSUE`), the line also says that such a credential is refused
+that step, and that a person, or a credential that names no project, must make it.
 When Dispatch took the call but the session's state (a picture, the ledger, the memory) could not
 be written, the result still prints, with one line saying so.
 
@@ -1301,8 +1330,10 @@ Dispatch specs behind the `dispatch` command: each one's name, description, fiel
 and example. `dispatch-command.ts` derives the command and its flags from them, and no host
 adds aliases or descriptions of its own.
 `dispatch issue-update` reads the issue first and sends `PATCH /api/v1/issues/{key}` as the
-session actor: `status` (a Legion lifecycle status), `title`, `labels` (replacing the set),
-`priority` (`0` for P0 down to `3` for P3, or `null` to clear it), `route`,
+session actor: `status` (a Legion lifecycle status), `title`, `labels` (`--label`, replacing the
+set), `labels_add` (`--labels-add`, repeated, adding to the labels the issue holds inside
+Dispatch's write and keeping the others; never beside `labels`, which is refused before any
+request), `priority` (`0` for P0 down to `3` for P3, or `null` to clear it), `route`,
 and `external_links`: a non-empty list merges into the issue's existing links by URL rather than
 replacing them, and an explicit empty list (`--clear-external-links`) clears every link instead;
 `before` and `after` (`--before <KEY>` / `--after <KEY>`) move the issue on its project's board —
@@ -1316,6 +1347,27 @@ a PATCH that fails after the post names the posted message. The result is one li
 `priority cleared` on a clear and `reason posted as message <id> (<ref>)` ahead of a close — and a
 server refusal keeps its `code` (`INVALID_STATUS`, `ISSUE_CLOSED`, `EXTERNAL_LINK_TAKEN`) at the
 head of the thrown message.
+With `--include-children`, `--unlink-children` or `--include-parent`, `dispatch issue-update`
+sends `POST /api/v1/issues/{key}/status-change` (`DispatchClient.changeIssueStatus`) in place of
+the PATCH. The three flags go with `--status` alone, and with `--reason` beside `done`, which is
+posted first as for every close. The schema refuses them beside any other field,
+`--include-children` beside `--unlink-children`, and `--include-children` with `--status done`,
+before anything is sent (exit 2). Only a person who is signed in at a browser can close the open
+issues under an issue together with it, and the command presents a token: that person does it on
+the issue's page in Dispatch (Close issue, then Move them with it). The answer names each issue
+the call changed with its status after the call, so the command reads before it writes: the
+issue's own read names its children, with `--include-children` it reads the project's issues too,
+and with `--include-parent` alone it reads each issue above the issue, one parent at a time. It
+prints one line for each changed issue, in the order the steps ran: `KEY: status a -> b`, or
+`KEY: unlinked from P`. The issue the call names always gets a line, which carries the posted
+reason's message where there is one: in the order of the steps where the call changed it, and last
+where the call left its status as it was. A refusal names the issues the steps before it changed.
+A build older than the route answers no route: the
+write asks again as every write does, then the command refuses naming the route and sends no
+PATCH, since a PATCH would write the status without the option. The CLI's `--dry-run` prints the
+arguments and asks Dispatch nothing.
+`dispatch issues --json` prints `{issues, total, offset, limit}`, each issue with its status,
+parent and labels, as one JSON object and nothing else.
 `dispatch request-approval` refuses, before it sends anything, while the version the request would
 name (the document's latest, `approval.latest_version`) holds a decision block open. It reads the
 live document's `ask` blocks (`GET /api/v1/artifacts/{id}/blocks`), then that version's markdown

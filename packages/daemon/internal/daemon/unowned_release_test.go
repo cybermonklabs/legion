@@ -68,7 +68,7 @@ func (r *idleRig) wrote(t *testing.T, token claim.Token, minutes int) {
 
 // releaseMark is the kind of release the pod's mark records and the role it names
 // (issue_releases): `unowned` with no role at all is the release of a pod no role can use, which
-// has no live claim to stop and no role whose shim a bundle could be asked of.
+// has no live claim to stop and no role whose shim could read the workspace.
 func (r *idleRig) releaseMark(t *testing.T) (kind, role string) {
 	t.Helper()
 	if err := r.pool.QueryRow(context.Background(), `select kind, role from issue_releases where issue = $1`,
@@ -205,8 +205,8 @@ func (s *countedSandboxReads) IssueSandbox(issue string) (string, bool) {
 // An issue whose every claim is failed, retired or suspended holds a Kubernetes pod of 3 CPU and
 // 19 GiB that no role can take a turn in, and the second release rule takes it
 // (workflow.UnownedPodRelease). That release is one act and one row, the teardown: it suspends no
-// role, saves no bundle and changes no claim, because there is no live claim to stop, no shim
-// left to build a bundle and no role coming back to a workspace that would need one.
+// role, checks no workspace and changes no claim, because there is no live claim to stop, no shim
+// left to read the workspace through and no role coming back to it.
 //
 // The four pods below are the four answers the rule gives a pod with no live claim in it: the one
 // it takes, the one that is already gone, the one a process still runs in, and the one that holds
@@ -220,7 +220,7 @@ func TestAnIssueWithNoLiveClaimHasItsSandboxReleased(t *testing.T) {
 		rig.stoppedImplementer(t, false)
 
 		if got := rig.queuedBy(t, func() { rig.w.releaseUnownedPods(ctx) }); len(got) != 1 || got[0] != "issue_release" {
-			t.Fatalf("queued rows = %v, want the teardown alone: this release saves no bundle and stops no role", got)
+			t.Fatalf("queued rows = %v, want the teardown alone: this release checks no workspace and stops no role", got)
 		}
 		// The mark says which rule wrote it, and that kind is what the teardown and the cancel
 		// read to tell what the release did rather than guess it from a missing role.
@@ -245,18 +245,18 @@ func TestAnIssueWithNoLiveClaimHasItsSandboxReleased(t *testing.T) {
 		if stored.Pending == nil || stored.Pending.ID != "outbox:7" || stored.Pending.Phase != phase.Implementing {
 			t.Fatalf("the claim's task = %+v, want the task it was holding kept", stored.Pending)
 		}
-		bundled, suspended := rig.rt.reads()
+		read, suspended := rig.rt.reads()
 		if suspended != 1 {
 			t.Fatalf("Sandbox teardowns = %d, want the one this release is made of", suspended)
 		}
 		if asked := rig.rt.teardownsAsked(); !slices.Equal(asked, []string{"ReleaseIssue"}) {
 			t.Fatalf("teardowns asked = %v, want the release's alone: the issue stays in the workflow", asked)
 		}
-		if len(bundled) != 0 {
-			t.Fatalf("the bundle was asked of %v, want no claim: no shim is left to build one", bundled)
+		if len(read) != 0 {
+			t.Fatalf("the workspace was read through %v, want no role: no shim is left to read it", read)
 		}
-		if rig.bundled(t) {
-			t.Fatal("the release saved a bundle, which no role of this pod is coming back for")
+		if rig.declined(t) {
+			t.Fatal("the release recorded a decline, which only an idle release's check writes")
 		}
 		if rig.marked(t) {
 			t.Fatal("the finished release left its mark behind")

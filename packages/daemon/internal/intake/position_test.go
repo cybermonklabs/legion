@@ -330,6 +330,9 @@ func TestEachReadOfTheStreamsInfoBesideALagReadGoesThroughAHandleOfItsOwn(t *tes
 	if err != nil {
 		t.Fatalf("read the waiting Dispatch event back: %v", err)
 	}
+	// The server counts it for the consumer only after the publish's ack (awaitWaiting), and the
+	// Lag loop below wants it waiting from its first read.
+	awaitWaiting(t, stream, dispatch, 1)
 
 	const reads, creations = 50, 10
 	recreated := make(chan struct{})
