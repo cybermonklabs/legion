@@ -1,0 +1,1 @@
+The one file of the c-ci-ok control that only a filter's ! pattern (text-checks' !docs/plans/**) names; never for merge.
