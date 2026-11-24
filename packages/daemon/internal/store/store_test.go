@@ -14,7 +14,6 @@ import (
 	"io"
 	"math/big"
 	"net"
-	"net/url"
 	"os"
 	"slices"
 	"strings"
@@ -59,40 +58,15 @@ func testDSN(t *testing.T) string {
 	return bounded
 }
 
-// emptyStore opens a store on a database of its own, so "an empty database" in a
-// test means one, and tests never see each other's rows.
+// emptyStore opens a store on a database of its own, so "an empty database" in a test means one,
+// and tests never see each other's rows. The database is testdb's, as every other package's is:
+// one admin pool for the binary, and a drop this test does not wait for (internal/testpg/testdb's
+// queue.go, and TestMain below, which waits for those drops).
 func emptyStore(t *testing.T) *Store {
 	t.Helper()
-	ctx := context.Background()
-
-	base, err := url.Parse(testDSN(t))
+	store, err := Open(context.Background(), testdb.Database(t, "legion_store_test"))
 	if err != nil {
-		t.Fatalf("parse LEGION_TEST_PG_DSN: %v", err)
-	}
-	adminURL := *base
-	adminURL.Path = "/postgres"
-	admin, err := pgxpool.New(ctx, adminURL.String())
-	if err != nil {
-		t.Fatalf("connect to the admin database: %v", err)
-	}
-	t.Cleanup(admin.Close)
-
-	name := "legion_store_test_" + randomSuffix(t)
-	// A file copy of template1 (docs/testing.md, "A database a Go test creates").
-	if _, err := admin.Exec(ctx, "create database "+name+" strategy file_copy"); err != nil {
-		t.Fatalf("create %s: %v", name, err)
-	}
-	t.Cleanup(func() {
-		if err := testdb.Drop(context.Background(), admin, name); err != nil {
-			t.Errorf("drop %s: %v", name, err)
-		}
-	})
-
-	testURL := *base
-	testURL.Path = "/" + name
-	store, err := Open(ctx, testURL.String())
-	if err != nil {
-		t.Fatalf("open %s: %v", name, err)
+		t.Fatalf("open the test database: %v", err)
 	}
 	t.Cleanup(store.Close)
 	return store

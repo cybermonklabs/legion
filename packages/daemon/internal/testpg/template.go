@@ -14,7 +14,9 @@
 // A clone is dropped in the background once its test ends, and Main waits for the drops before it
 // drops the template. Dropping a database forces a checkpoint and waits for it, and every package
 // testing against the same server queues on its one checkpointer: a test that waited for its own
-// drop spent that queue's time on its clock.
+// drop spent that queue's time on its clock. internal/testpg/testdb's queue.go holds the same
+// queue for the databases that package creates, which are every other package's; a binary that
+// takes both holds a slot budget of each, and each budget is half an admin pool of four.
 
 package testpg
 

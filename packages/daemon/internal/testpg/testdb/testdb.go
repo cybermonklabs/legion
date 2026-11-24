@@ -37,7 +37,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
@@ -92,16 +91,14 @@ func PlainDatabase(t testing.TB, prefix string) string {
 }
 
 // create makes an empty database named <prefix>_<random> on the server dsn names, and answers its
-// URL and the function that drops it, which also closes the admin connection create opened. Both
-// URLs it connects or points a caller at — the admin database's and the new database's — come
-// from DatabaseURL, and it makes them before it connects, so a DSN whose rewrite names another
-// server ends the call with no connection and no database. Database is its caller: one database
-// per test.
+// URL and the function that drops it. Both URLs it names — the admin database's and the new
+// database's — come from DatabaseURL, and it makes them before it connects, so a DSN whose
+// rewrite names another server ends the call with no connection and no database. Database is its
+// caller: one database per test.
+//
+// The statement runs on the test binary's one admin pool, and the drop goes through the queue
+// that pool holds (queue.go, which says what a create and a drop cost the server).
 func create(dsn, prefix string) (string, func() error, error) {
-	admin, err := DatabaseURL(dsn, "postgres")
-	if err != nil {
-		return "", nil, err
-	}
 	name, err := RandomName(prefix)
 	if err != nil {
 		return "", nil, err
@@ -110,25 +107,16 @@ func create(dsn, prefix string) (string, func() error, error) {
 	if err != nil {
 		return "", nil, err
 	}
-	ctx := context.Background()
-	conn, err := pgx.Connect(ctx, admin)
+	admin, err := adminPool(dsn)
 	if err != nil {
-		return "", nil, fmt.Errorf("connect to the admin database: %w", err)
+		return "", nil, err
 	}
 	// A copy of template1's files. Created the default way, from PostgreSQL 15, every page of
 	// template1 goes into the write-ahead log: 4.4 MB of log for each empty database.
-	if _, err := conn.Exec(ctx, "create database "+name+" strategy file_copy"); err != nil {
-		_ = conn.Close(ctx)
+	if _, err := admin.Exec(context.Background(), "create database "+name+" strategy file_copy"); err != nil {
 		return "", nil, fmt.Errorf("create %s: %w", name, err)
 	}
-	drop := func() error {
-		defer func() { _ = conn.Close(context.Background()) }()
-		if err := Drop(context.Background(), conn, name); err != nil {
-			return fmt.Errorf("drop %s: %w", name, err)
-		}
-		return nil
-	}
-	return database, drop, nil
+	return database, func() error { return dropDatabase(admin, name) }, nil
 }
 
 // insufficientPrivilege is PostgreSQL's 42501, which a forced drop answers when a session of the
