@@ -1,0 +1,1045 @@
+{
+  "about": "Requests that each carry one value under a name, grouped by what each group shows. A row sends method to target with value under name in its query, its form, its JSON body (a string, or a list of one string for json-list) or a header (at); on says whether the value is public there: its name is one the public-name table lists (packages/contracts/src/public-request-names.ts, and Go's public_names_generated.go from it), on a route its contract names or on any route where it names none. Every other value is a credential like any other. Go's public_routes_test.go reads every row through an answer that quotes the value (ReadAnswer, then Words), which prints it where it is public and redacts it elsewhere, and public-request-routes.test.ts through requestCredentials, which leaves it out where it is public and holds it elsewhere. Every value here is made up.",
+  "groups": [
+    {
+      "id": "listener-messages",
+      "about": "A send's target_session, and a send's or a publish's message, payload and expects_reply, and a publish's topic and dedupe_key, print as the listener wrote them back on POST /v1/messages/send and POST /v1/messages/publish, as listenerwire declares them; the same names on the other route, on another method, below the route, under a base path or on another server's route are credentials.",
+      "rows": [
+        {
+          "method": "POST",
+          "target": "http://127.0.0.1:7777/v1/messages/send",
+          "at": "json",
+          "name": "target_session",
+          "value": "session-sent-to",
+          "on": true
+        },
+        {
+          "method": "POST",
+          "target": "http://127.0.0.1:7777/v1/messages/send",
+          "at": "json",
+          "name": "message",
+          "value": "message-text-words",
+          "on": true
+        },
+        {
+          "method": "POST",
+          "target": "http://127.0.0.1:7777/v1/messages/send",
+          "at": "json",
+          "name": "payload",
+          "value": "payload-frame-words",
+          "on": true
+        },
+        {
+          "method": "POST",
+          "target": "http://127.0.0.1:7777/v1/messages/send",
+          "at": "json",
+          "name": "expects_reply",
+          "value": "required",
+          "on": true
+        },
+        {
+          "method": "POST",
+          "target": "http://127.0.0.1:7777/v1/messages/publish",
+          "at": "json",
+          "name": "topic",
+          "value": "topic-published-to",
+          "on": true
+        },
+        {
+          "method": "POST",
+          "target": "http://127.0.0.1:7777/v1/messages/publish",
+          "at": "json",
+          "name": "dedupe_key",
+          "value": "dedupe-key-words",
+          "on": true
+        },
+        {
+          "method": "POST",
+          "target": "http://127.0.0.1:7777/v1/messages/publish",
+          "at": "json",
+          "name": "message",
+          "value": "message-text-words",
+          "on": true
+        },
+        {
+          "method": "POST",
+          "target": "http://127.0.0.1:7777/v1/messages/publish",
+          "at": "json",
+          "name": "expects_reply",
+          "value": "optional",
+          "on": true
+        },
+        {
+          "method": "POST",
+          "target": "http://127.0.0.1:7777/v1/messages/publish",
+          "at": "json",
+          "name": "target_session",
+          "value": "session-sent-to",
+          "on": false
+        },
+        {
+          "method": "POST",
+          "target": "http://127.0.0.1:7777/v1/messages/send",
+          "at": "json",
+          "name": "topic",
+          "value": "topic-published-to",
+          "on": false
+        },
+        {
+          "method": "POST",
+          "target": "http://127.0.0.1:7777/v1/messages/send",
+          "at": "json",
+          "name": "dedupe_key",
+          "value": "dedupe-key-words",
+          "on": false
+        },
+        {
+          "method": "GET",
+          "target": "http://127.0.0.1:7777/v1/messages/send",
+          "at": "query",
+          "name": "message",
+          "value": "message-text-words",
+          "on": false
+        },
+        {
+          "method": "POST",
+          "target": "http://127.0.0.1:7777/v1/messages/send/again",
+          "at": "json",
+          "name": "message",
+          "value": "message-text-words",
+          "on": false
+        },
+        {
+          "method": "POST",
+          "target": "http://127.0.0.1:7777/api/v1/messages/send",
+          "at": "json",
+          "name": "payload",
+          "value": "payload-frame-words",
+          "on": false
+        },
+        {
+          "method": "POST",
+          "target": "http://127.0.0.1:7600/legion/v1/handoff/complete",
+          "at": "json",
+          "name": "message",
+          "value": "message-text-words",
+          "on": false
+        }
+      ]
+    },
+    {
+      "id": "listener-reads",
+      "about": "include prints on GET /v1/sessions, GET /v1/roles/{role} and GET /v1/registry/{id}, and issue on GET /v1/legion/agents, the listener's reads that take them; below a route, with two segments for its one, on another method or on another of the reads, each is a credential, and so is the issue a person types into the Legion daemon's spawn (POST /legion/v1/operator/claims), which nothing checks before it is sent.",
+      "rows": [
+        {
+          "method": "GET",
+          "target": "http://127.0.0.1:7777/v1/sessions",
+          "at": "query",
+          "name": "include",
+          "value": "registry-states",
+          "on": true
+        },
+        {
+          "method": "GET",
+          "target": "http://127.0.0.1:7777/v1/roles/worker-role",
+          "at": "query",
+          "name": "include",
+          "value": "registry-states",
+          "on": true
+        },
+        {
+          "method": "GET",
+          "target": "http://127.0.0.1:7777/v1/registry/entry-name",
+          "at": "query",
+          "name": "include",
+          "value": "registry-states",
+          "on": true
+        },
+        {
+          "method": "GET",
+          "target": "http://127.0.0.1:7777/v1/legion/agents",
+          "at": "query",
+          "name": "issue",
+          "value": "issue-key-read",
+          "on": true
+        },
+        {
+          "method": "GET",
+          "target": "http://127.0.0.1:7777/v1/sessions/session-name",
+          "at": "query",
+          "name": "include",
+          "value": "registry-states",
+          "on": false
+        },
+        {
+          "method": "GET",
+          "target": "http://127.0.0.1:7777/v1/roles/worker/role",
+          "at": "query",
+          "name": "include",
+          "value": "registry-states",
+          "on": false
+        },
+        {
+          "method": "POST",
+          "target": "http://127.0.0.1:7777/v1/sessions",
+          "at": "query",
+          "name": "include",
+          "value": "registry-states",
+          "on": false
+        },
+        {
+          "method": "GET",
+          "target": "http://127.0.0.1:7777/v1/legion/agents",
+          "at": "query",
+          "name": "include",
+          "value": "registry-states",
+          "on": false
+        },
+        {
+          "method": "GET",
+          "target": "http://127.0.0.1:7777/v1/sessions",
+          "at": "query",
+          "name": "issue",
+          "value": "issue-key-read",
+          "on": false
+        },
+        {
+          "method": "POST",
+          "target": "http://127.0.0.1:7600/legion/v1/operator/claims",
+          "at": "json",
+          "name": "issue",
+          "value": "issue-key-read",
+          "on": false
+        }
+      ]
+    },
+    {
+      "id": "daemon-claims",
+      "about": "role prints on POST /legion/v1/operator/claims, the spawn, and on every POST below it, the routes of one claim; a GET of the list, another of the daemon's routes, a segment that only begins as the route's and the listener's send, whose role mark is the role a message's writer typed, make it a credential.",
+      "rows": [
+        {
+          "method": "POST",
+          "target": "http://127.0.0.1:7600/legion/v1/operator/claims",
+          "at": "json",
+          "name": "role",
+          "value": "worker-role-name",
+          "on": true
+        },
+        {
+          "method": "POST",
+          "target": "http://127.0.0.1:7600/legion/v1/operator/claims/claim-token/deliver",
+          "at": "json",
+          "name": "role",
+          "value": "worker-role-name",
+          "on": true
+        },
+        {
+          "method": "GET",
+          "target": "http://127.0.0.1:7600/legion/v1/operator/claims",
+          "at": "query",
+          "name": "role",
+          "value": "worker-role-name",
+          "on": false
+        },
+        {
+          "method": "POST",
+          "target": "http://127.0.0.1:7600/legion/v1/claims/fresh-session",
+          "at": "json",
+          "name": "role",
+          "value": "worker-role-name",
+          "on": false
+        },
+        {
+          "method": "POST",
+          "target": "http://127.0.0.1:7600/legion/v1/operator/claimsets",
+          "at": "json",
+          "name": "role",
+          "value": "worker-role-name",
+          "on": false
+        },
+        {
+          "method": "POST",
+          "target": "http://127.0.0.1:7777/v1/messages/send",
+          "at": "json",
+          "name": "role",
+          "value": "worker-role-name",
+          "on": false
+        }
+      ]
+    },
+    {
+      "id": "enrollments",
+      "about": "The kind, runtime, session, operator, thumbprint and projects an enrollment names print on POST /v1/enrollments; below it, on a GET of it, on the broker's other routes, the pod-session registration among them, they are credentials.",
+      "rows": [
+        {
+          "method": "POST",
+          "target": "https://broker.example/v1/enrollments",
+          "at": "json",
+          "name": "kind",
+          "value": "enrollment-kind",
+          "on": true
+        },
+        {
+          "method": "POST",
+          "target": "https://broker.example/v1/enrollments",
+          "at": "json",
+          "name": "runtime_id",
+          "value": "runtime-named",
+          "on": true
+        },
+        {
+          "method": "POST",
+          "target": "https://broker.example/v1/enrollments",
+          "at": "json",
+          "name": "session_id",
+          "value": "session-enrolled",
+          "on": true
+        },
+        {
+          "method": "POST",
+          "target": "https://broker.example/v1/enrollments",
+          "at": "json",
+          "name": "operator",
+          "value": "operator-sign-in",
+          "on": true
+        },
+        {
+          "method": "POST",
+          "target": "https://broker.example/v1/enrollments",
+          "at": "json",
+          "name": "thumbprint",
+          "value": "thumbprint-of-key",
+          "on": true
+        },
+        {
+          "method": "POST",
+          "target": "https://broker.example/v1/enrollments",
+          "at": "json-list",
+          "name": "projects",
+          "value": "PROJECTKEY",
+          "on": true
+        },
+        {
+          "method": "POST",
+          "target": "https://broker.example/v1/enrollments/enrollment-id",
+          "at": "json",
+          "name": "session_id",
+          "value": "session-enrolled",
+          "on": false
+        },
+        {
+          "method": "GET",
+          "target": "https://broker.example/v1/enrollments",
+          "at": "query",
+          "name": "kind",
+          "value": "enrollment-kind",
+          "on": false
+        },
+        {
+          "method": "POST",
+          "target": "https://broker.example/v1/requests",
+          "at": "json",
+          "name": "operator",
+          "value": "operator-sign-in",
+          "on": false
+        },
+        {
+          "method": "POST",
+          "target": "https://broker.example/v1/oauth/token",
+          "at": "form",
+          "name": "thumbprint",
+          "value": "thumbprint-of-key",
+          "on": false
+        },
+        {
+          "method": "POST",
+          "target": "https://broker.example/v1/enrollments/carried",
+          "at": "json-list",
+          "name": "projects",
+          "value": "PROJECTKEY",
+          "on": false
+        },
+        {
+          "method": "GET",
+          "target": "https://broker.example/v1/enrollments",
+          "at": "query",
+          "name": "projects",
+          "value": "PROJECTKEY",
+          "on": false
+        },
+        {
+          "method": "POST",
+          "target": "https://broker.example/v1/oauth/exchange/pod-sessions",
+          "at": "json",
+          "name": "thumbprint",
+          "value": "thumbprint-of-key",
+          "on": false
+        }
+      ]
+    },
+    {
+      "id": "broker-requests",
+      "about": "wait prints on GET /v1/requests/{id}, owner and repositories on POST /v1/requests and POST /v1/grants/{id}/values, and reason and command on the release alone; on the list path, on another method, on a grant's other route and on the request each of the release's names is a credential, and so is the owner of a GitHub GraphQL query, which is GitHub's own spelling of a repository's owner.",
+      "rows": [
+        {
+          "method": "GET",
+          "target": "https://broker.example/v1/requests/request-id",
+          "at": "query",
+          "name": "wait",
+          "value": "30000000",
+          "on": true
+        },
+        {
+          "method": "POST",
+          "target": "https://broker.example/v1/requests",
+          "at": "json",
+          "name": "owner",
+          "value": "owner-narrowed",
+          "on": true
+        },
+        {
+          "method": "POST",
+          "target": "https://broker.example/v1/requests",
+          "at": "json-list",
+          "name": "repositories",
+          "value": "repository-narrowed",
+          "on": true
+        },
+        {
+          "method": "POST",
+          "target": "https://broker.example/v1/grants/grant-id/values",
+          "at": "json",
+          "name": "owner",
+          "value": "owner-narrowed",
+          "on": true
+        },
+        {
+          "method": "POST",
+          "target": "https://broker.example/v1/grants/grant-id/values",
+          "at": "json-list",
+          "name": "repositories",
+          "value": "repository-narrowed",
+          "on": true
+        },
+        {
+          "method": "POST",
+          "target": "https://broker.example/v1/grants/grant-id/values",
+          "at": "json",
+          "name": "reason",
+          "value": "release-reason-words",
+          "on": true
+        },
+        {
+          "method": "POST",
+          "target": "https://broker.example/v1/grants/grant-id/values",
+          "at": "json",
+          "name": "command",
+          "value": "release-command-words",
+          "on": true
+        },
+        {
+          "method": "GET",
+          "target": "https://broker.example/v1/requests",
+          "at": "query",
+          "name": "wait",
+          "value": "30000000",
+          "on": false
+        },
+        {
+          "method": "POST",
+          "target": "https://broker.example/v1/requests/request-id",
+          "at": "query",
+          "name": "wait",
+          "value": "30000000",
+          "on": false
+        },
+        {
+          "method": "POST",
+          "target": "https://broker.example/v1/requests",
+          "at": "json",
+          "name": "reason",
+          "value": "release-reason-words",
+          "on": false
+        },
+        {
+          "method": "POST",
+          "target": "https://broker.example/v1/requests",
+          "at": "json",
+          "name": "command",
+          "value": "release-command-words",
+          "on": false
+        },
+        {
+          "method": "POST",
+          "target": "https://broker.example/v1/grants/grant-id/revoke",
+          "at": "json",
+          "name": "owner",
+          "value": "owner-narrowed",
+          "on": false
+        },
+        {
+          "method": "GET",
+          "target": "https://broker.example/v1/grants/grant-id/values",
+          "at": "query",
+          "name": "repositories",
+          "value": "repository-narrowed",
+          "on": false
+        },
+        {
+          "method": "POST",
+          "target": "https://api.github.com/graphql",
+          "at": "json",
+          "name": "owner",
+          "value": "owner-narrowed",
+          "on": false
+        }
+      ]
+    },
+    {
+      "id": "token-exchange",
+      "about": "The broker's session, projects and launcher_credential print on POST /v1/oauth/token, the broker's token endpoint, and the token request's own names (grant_type, the token types, audience) on a POST to any path, since each issuer sets its token endpoint's; client_id and scope, whose contract names no route, print on any. The broker's names on another path or on a GET, the pod-session registration's session (a name the pod's agent chose), a token request's names on a GET (a GET of the metadata server's identity token names its audience) and on a PUT, are credentials.",
+      "rows": [
+        {
+          "method": "POST",
+          "target": "https://broker.example/v1/oauth/token",
+          "at": "form",
+          "name": "session",
+          "value": "worker-session",
+          "on": true
+        },
+        {
+          "method": "POST",
+          "target": "https://broker.example/v1/oauth/token",
+          "at": "form",
+          "name": "projects",
+          "value": "project-keys",
+          "on": true
+        },
+        {
+          "method": "POST",
+          "target": "https://broker.example/v1/oauth/token",
+          "at": "form",
+          "name": "launcher_credential",
+          "value": "launcher-false",
+          "on": true
+        },
+        {
+          "method": "POST",
+          "target": "https://broker.example/v1/oauth/token",
+          "at": "form",
+          "name": "grant_type",
+          "value": "token-exchange-grant",
+          "on": true
+        },
+        {
+          "method": "POST",
+          "target": "https://broker.example/v1/oauth/token",
+          "at": "form",
+          "name": "subject_token_type",
+          "value": "subject-type-name",
+          "on": true
+        },
+        {
+          "method": "POST",
+          "target": "https://broker.example/v1/oauth/token",
+          "at": "form",
+          "name": "actor_token_type",
+          "value": "actor-type-name",
+          "on": true
+        },
+        {
+          "method": "POST",
+          "target": "https://sts.googleapis.com/v1/token",
+          "at": "form",
+          "name": "requested_token_type",
+          "value": "requested-type-name",
+          "on": true
+        },
+        {
+          "method": "POST",
+          "target": "https://sts.googleapis.com/v1/token",
+          "at": "form",
+          "name": "audience",
+          "value": "audience-of-token",
+          "on": true
+        },
+        {
+          "method": "GET",
+          "target": "https://idp.example/authorize",
+          "at": "query",
+          "name": "client_id",
+          "value": "client-identifier",
+          "on": true
+        },
+        {
+          "method": "GET",
+          "target": "https://idp.example/authorize",
+          "at": "query",
+          "name": "scope",
+          "value": "openid-profile",
+          "on": true
+        },
+        {
+          "method": "POST",
+          "target": "https://broker.example/token",
+          "at": "form",
+          "name": "session",
+          "value": "worker-session",
+          "on": false
+        },
+        {
+          "method": "GET",
+          "target": "https://broker.example/v1/oauth/token",
+          "at": "query",
+          "name": "session",
+          "value": "worker-session",
+          "on": false
+        },
+        {
+          "method": "POST",
+          "target": "https://broker.example/v1/oauth/exchange/pod-sessions",
+          "at": "json",
+          "name": "session",
+          "value": "worker-session",
+          "on": false
+        },
+        {
+          "method": "POST",
+          "target": "https://broker.example/v1/oauth/revoke",
+          "at": "form",
+          "name": "launcher_credential",
+          "value": "launcher-false",
+          "on": false
+        },
+        {
+          "method": "GET",
+          "target": "http://169.254.169.254/computeMetadata/v1/instance/service-accounts/default/identity",
+          "at": "query",
+          "name": "audience",
+          "value": "audience-of-token",
+          "on": false
+        },
+        {
+          "method": "GET",
+          "target": "https://broker.example/v1/oauth/token",
+          "at": "query",
+          "name": "grant_type",
+          "value": "token-exchange-grant",
+          "on": false
+        },
+        {
+          "method": "PUT",
+          "target": "https://sts.googleapis.com/v1/token",
+          "at": "form",
+          "name": "subject_token_type",
+          "value": "subject-type-name",
+          "on": false
+        }
+      ]
+    },
+    {
+      "id": "iam-generate-access-token",
+      "about": "delegates and lifetime print on POST /v1/projects/{project}/serviceAccounts/{account}:generateAccessToken, the IAM Service Account Credentials method that defines them; on another of its methods, on a GET, on the account's own path and on a segment with no account before the method, they are credentials.",
+      "rows": [
+        {
+          "method": "POST",
+          "target": "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/writer@example-project.iam.gserviceaccount.com:generateAccessToken",
+          "at": "json-list",
+          "name": "delegates",
+          "value": "chain-account-one",
+          "on": true
+        },
+        {
+          "method": "POST",
+          "target": "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/writer@example-project.iam.gserviceaccount.com:generateAccessToken",
+          "at": "json",
+          "name": "lifetime",
+          "value": "3600.000s",
+          "on": true
+        },
+        {
+          "method": "POST",
+          "target": "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/writer@example-project.iam.gserviceaccount.com:generateIdToken",
+          "at": "json-list",
+          "name": "delegates",
+          "value": "chain-account-one",
+          "on": false
+        },
+        {
+          "method": "GET",
+          "target": "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/writer@example-project.iam.gserviceaccount.com:generateAccessToken",
+          "at": "query",
+          "name": "lifetime",
+          "value": "3600.000s",
+          "on": false
+        },
+        {
+          "method": "POST",
+          "target": "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/writer@example-project.iam.gserviceaccount.com",
+          "at": "json",
+          "name": "lifetime",
+          "value": "3600.000s",
+          "on": false
+        },
+        {
+          "method": "POST",
+          "target": "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/:generateAccessToken",
+          "at": "json",
+          "name": "lifetime",
+          "value": "3600.000s",
+          "on": false
+        }
+      ]
+    },
+    {
+      "id": "github-pagination",
+      "about": "page and per_page print on a GET of any path, a list read of GitHub's on whatever base path its deployment serves; in a POST's body they are credentials.",
+      "rows": [
+        {
+          "method": "GET",
+          "target": "https://api.github.com/installation/repositories",
+          "at": "query",
+          "name": "page",
+          "value": "10000001",
+          "on": true
+        },
+        {
+          "method": "GET",
+          "target": "https://github.example/api/v3/repos/acme/widgets/pulls",
+          "at": "query",
+          "name": "per_page",
+          "value": "10000002",
+          "on": true
+        },
+        {
+          "method": "POST",
+          "target": "https://api.github.com/graphql",
+          "at": "json",
+          "name": "page",
+          "value": "10000001",
+          "on": false
+        },
+        {
+          "method": "POST",
+          "target": "https://api.github.com/repos/acme/widgets/issues",
+          "at": "form",
+          "name": "per_page",
+          "value": "10000002",
+          "on": false
+        }
+      ]
+    },
+    {
+      "id": "metadata-flavor",
+      "about": "Metadata-Flavor prints on a GET of /computeMetadata/v1 or any path below it, the metadata server's reads; on another method, on the server's root and on another server's path it is a credential.",
+      "rows": [
+        {
+          "method": "GET",
+          "target": "http://169.254.169.254/computeMetadata/v1/instance/service-accounts/default/token",
+          "at": "header",
+          "name": "Metadata-Flavor",
+          "value": "flavor-of-google",
+          "on": true
+        },
+        {
+          "method": "GET",
+          "target": "http://169.254.169.254/computeMetadata/v1",
+          "at": "header",
+          "name": "Metadata-Flavor",
+          "value": "flavor-of-google",
+          "on": true
+        },
+        {
+          "method": "PUT",
+          "target": "http://169.254.169.254/computeMetadata/v1/instance/guest-attributes/key",
+          "at": "header",
+          "name": "Metadata-Flavor",
+          "value": "flavor-of-google",
+          "on": false
+        },
+        {
+          "method": "GET",
+          "target": "http://169.254.169.254/",
+          "at": "header",
+          "name": "Metadata-Flavor",
+          "value": "flavor-of-google",
+          "on": false
+        },
+        {
+          "method": "GET",
+          "target": "https://broker.example/v1/token",
+          "at": "header",
+          "name": "Metadata-Flavor",
+          "value": "flavor-of-google",
+          "on": false
+        }
+      ]
+    },
+    {
+      "id": "dispatch-writes",
+      "about": "kind prints on the Dispatch writes whose every kind is the writer's own (the claim's release, a message, a document upload, the gated-steps, design-gates, role-holder, step, rating and plan writes: the actor's constant session, a step record's step, retro or merge), and role on the role-holder, step and rating writes, whose roles are the Legion daemon's role table's. kind on the issue's PATCH, whose external links' kinds are sent back as Dispatch answered them, on the claim route's POST, below a route, on a step list with no record id and on a comment, role on a write that names none, and the session a role holder or a step names, which the claim's agent chose, are credentials.",
+      "rows": [
+        {
+          "method": "DELETE",
+          "target": "https://dispatch.example/api/v1/issues/issue-key-path/claim",
+          "at": "json",
+          "name": "kind",
+          "value": "writer-kind-word",
+          "on": true
+        },
+        {
+          "method": "POST",
+          "target": "https://dispatch.example/api/v1/issues/issue-key-path/messages",
+          "at": "json",
+          "name": "kind",
+          "value": "writer-kind-word",
+          "on": true
+        },
+        {
+          "method": "POST",
+          "target": "https://dispatch.example/api/v1/issues/issue-key-path/artifacts",
+          "at": "json",
+          "name": "kind",
+          "value": "writer-kind-word",
+          "on": true
+        },
+        {
+          "method": "PUT",
+          "target": "https://dispatch.example/api/v1/projects/project-key-path/gated-steps",
+          "at": "json",
+          "name": "kind",
+          "value": "writer-kind-word",
+          "on": true
+        },
+        {
+          "method": "PUT",
+          "target": "https://dispatch.example/api/v1/issues/issue-key-path/design-gates",
+          "at": "json",
+          "name": "kind",
+          "value": "writer-kind-word",
+          "on": true
+        },
+        {
+          "method": "PUT",
+          "target": "https://dispatch.example/api/v1/issues/issue-key-path/role-holders",
+          "at": "json",
+          "name": "kind",
+          "value": "writer-kind-word",
+          "on": true
+        },
+        {
+          "method": "PUT",
+          "target": "https://dispatch.example/api/v1/issues/issue-key-path/steps/step-record-id",
+          "at": "json",
+          "name": "kind",
+          "value": "writer-kind-word",
+          "on": true
+        },
+        {
+          "method": "PUT",
+          "target": "https://dispatch.example/api/v1/issues/issue-key-path/steps/step-record-id/rating",
+          "at": "json",
+          "name": "kind",
+          "value": "writer-kind-word",
+          "on": true
+        },
+        {
+          "method": "PUT",
+          "target": "https://dispatch.example/api/v1/issues/issue-key-path/plans/plan-record-id",
+          "at": "json",
+          "name": "kind",
+          "value": "writer-kind-word",
+          "on": true
+        },
+        {
+          "method": "PUT",
+          "target": "https://dispatch.example/api/v1/issues/issue-key-path/role-holders",
+          "at": "json",
+          "name": "role",
+          "value": "worker-role-name",
+          "on": true
+        },
+        {
+          "method": "PUT",
+          "target": "https://dispatch.example/api/v1/issues/issue-key-path/steps/step-record-id",
+          "at": "json",
+          "name": "role",
+          "value": "worker-role-name",
+          "on": true
+        },
+        {
+          "method": "PUT",
+          "target": "https://dispatch.example/api/v1/issues/issue-key-path/steps/step-record-id/rating",
+          "at": "json",
+          "name": "role",
+          "value": "worker-role-name",
+          "on": true
+        },
+        {
+          "method": "PATCH",
+          "target": "https://dispatch.example/api/v1/issues/issue-key-path",
+          "at": "json",
+          "name": "kind",
+          "value": "writer-kind-word",
+          "on": false
+        },
+        {
+          "method": "POST",
+          "target": "https://dispatch.example/api/v1/issues/issue-key-path/claim",
+          "at": "json",
+          "name": "kind",
+          "value": "writer-kind-word",
+          "on": false
+        },
+        {
+          "method": "PUT",
+          "target": "https://dispatch.example/api/v1/issues/issue-key-path/role-holders/extra",
+          "at": "json",
+          "name": "kind",
+          "value": "writer-kind-word",
+          "on": false
+        },
+        {
+          "method": "PUT",
+          "target": "https://dispatch.example/api/v1/issues/issue-key-path/steps",
+          "at": "json",
+          "name": "kind",
+          "value": "writer-kind-word",
+          "on": false
+        },
+        {
+          "method": "POST",
+          "target": "https://dispatch.example/api/v1/issues/issue-key-path/comments",
+          "at": "json",
+          "name": "kind",
+          "value": "writer-kind-word",
+          "on": false
+        },
+        {
+          "method": "DELETE",
+          "target": "https://dispatch.example/api/v1/issues/issue-key-path/claim",
+          "at": "json",
+          "name": "role",
+          "value": "worker-role-name",
+          "on": false
+        },
+        {
+          "method": "PUT",
+          "target": "https://dispatch.example/api/v1/issues/issue-key-path/role-holders",
+          "at": "json",
+          "name": "session",
+          "value": "session-held-name",
+          "on": false
+        },
+        {
+          "method": "PUT",
+          "target": "https://dispatch.example/api/v1/issues/issue-key-path/steps/step-record-id",
+          "at": "json",
+          "name": "session",
+          "value": "session-held-name",
+          "on": false
+        }
+      ]
+    },
+    {
+      "id": "empty-method",
+      "about": "A request whose method is the empty string is a GET, as net/http sends it (http.Request: \"For client requests, an empty string means GET\"): page, Metadata-Flavor and wait print on such a request on their GET routes, and a token request's grant_type, public on a POST alone, is a credential on it. Both halves read the empty method as GET, so neither redacts what the other prints.",
+      "rows": [
+        {
+          "method": "",
+          "target": "https://api.github.com/installation/repositories",
+          "at": "query",
+          "name": "page",
+          "value": "10000001",
+          "on": true
+        },
+        {
+          "method": "",
+          "target": "http://169.254.169.254/computeMetadata/v1/instance/service-accounts/default/token",
+          "at": "header",
+          "name": "Metadata-Flavor",
+          "value": "flavor-of-google",
+          "on": true
+        },
+        {
+          "method": "",
+          "target": "https://broker.example/v1/requests/request-id",
+          "at": "query",
+          "name": "wait",
+          "value": "30000000",
+          "on": true
+        },
+        {
+          "method": "",
+          "target": "https://broker.example/v1/oauth/token",
+          "at": "query",
+          "name": "grant_type",
+          "value": "token-exchange-grant",
+          "on": false
+        }
+      ]
+    },
+    {
+      "id": "unlisted-names",
+      "about": "A value under a name no contract lists, a new one included, is a credential on every route, in a query, a form, a header and a JSON body alike; a name whose contract names no route (User-Agent, scope) is public on every route, and session is on the broker's token route.",
+      "rows": [
+        {
+          "method": "POST",
+          "target": "https://broker.example/v1/oauth/token",
+          "at": "form",
+          "name": "a_new_parameter",
+          "value": "unlisted-value-RDX",
+          "on": false
+        },
+        {
+          "method": "POST",
+          "target": "https://broker.example/v1/oauth/token",
+          "at": "query",
+          "name": "new_query",
+          "value": "unlisted-query-RDX",
+          "on": false
+        },
+        {
+          "method": "POST",
+          "target": "https://broker.example/v1/oauth/token",
+          "at": "header",
+          "name": "X-New-Header",
+          "value": "unlisted-header-RDX",
+          "on": false
+        },
+        {
+          "method": "POST",
+          "target": "https://broker.example/v1/enrollments",
+          "at": "json",
+          "name": "pod_token",
+          "value": "pod-token-RDX",
+          "on": false
+        },
+        {
+          "method": "POST",
+          "target": "https://broker.example/v1/oauth/token",
+          "at": "header",
+          "name": "User-Agent",
+          "value": "public-agent",
+          "on": true
+        },
+        {
+          "method": "POST",
+          "target": "https://broker.example/v1/oauth/token",
+          "at": "query",
+          "name": "scope",
+          "value": "public-scope",
+          "on": true
+        },
+        {
+          "method": "POST",
+          "target": "https://broker.example/v1/oauth/token",
+          "at": "form",
+          "name": "session",
+          "value": "public-session-name",
+          "on": true
+        }
+      ]
+    }
+  ]
+}

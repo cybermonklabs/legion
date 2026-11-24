@@ -10,13 +10,21 @@ import (
 // "field" (a query, form or JSON body field), Source is that contract, and Routes the routes it
 // names the value public on, each "<METHOD> <PATH>" (routeMatches), the value public on no other;
 // with no Routes, as for a name the contract declares public in every request that carries it,
-// the value is public on every request. The table, publicRequestNames, is generated from
+// the value is public on every request. A route on every path of its method ("<METHOD> /*") is
+// one only a protocol of protocolMethods gives, and Source cites it. Both tables,
+// publicRequestNames and protocolMethods, are generated from
 // packages/contracts/src/public-request-names.ts, which the TypeScript half reads, so both halves
-// read one table.
+// read the same tables.
 type publicRequestName struct {
 	Place, Name, Source string
 	Routes              []string
 }
+
+// protocolMethod is a protocol that fixes the method of its requests and leaves their path to each
+// server: Route is that method on every path ("<METHOD> /*"), Source the protocol's section and
+// Words its own words that say so. A name such a protocol defines is public on every request of
+// that method, whatever its path.
+type protocolMethod struct{ Route, Source, Words string }
 
 // publicHeader reports whether a header named name, on r, carries a value public by its contract,
 // the name compared without case, as HTTP compares it.

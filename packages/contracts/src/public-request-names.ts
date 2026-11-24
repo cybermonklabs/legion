@@ -5,10 +5,14 @@
 // that defines it says its value is public, never because a test needs it, and each entry names
 // that contract and, where the contract names them, the routes in its source's words. A name
 // nobody listed counts as a credential, so a new parameter is redacted until a contract declares
-// it public. Go reads this list from packages/envoy/internal/redact/public_names_generated.go,
-// which `bun run gen:go` writes from it and `bun run check:go` holds to it;
-// `public-request-names.test.ts` and Go's public_names_test.go fail on an entry with no source, on
-// a route its source does not name, or on a name a credential travels under.
+// it public. A few names are protocol words: a protocol that fixes the method of its requests and
+// leaves their path to each server defines them, so they are public on every request of that
+// method whatever its path, `"<METHOD> /*"`, and on no request of another method; only a protocol
+// of {@link PROTOCOL_METHODS} gives such a route, and the entry's source cites it. Go reads this
+// list from packages/envoy/internal/redact/public_names_generated.go, which `bun run gen:go`
+// writes from it and `bun run check:go` holds to it; `public-request-names.test.ts` and Go's
+// public_names_test.go fail on an entry with no source, on a route its source does not name or on
+// every path of a method no protocol it cites fixes, or on a name a credential travels under.
 
 /** Where a request carries the value: a header, or a field of its query, form or JSON body. */
 export type PublicNamePlace = "header" | "field";
@@ -26,7 +30,44 @@ export type PublicRequestName = {
   readonly routes?: readonly string[];
 };
 
-/** RFC 6749 §3.2 and RFC 8693 §2.1: a token request is a POST, to a path each issuer sets. */
+/**
+ * A protocol that fixes the method of its requests and leaves their path to each server: `route`
+ * is that method on every path (`"<METHOD> /*"`), `source` the protocol's section and `words` its
+ * own words that say so. An entry public on `route` cites `source`: no contract writes `/*`, so a
+ * source that only repeats the route would name nothing.
+ */
+export type ProtocolMethod = {
+  readonly route: string;
+  readonly source: string;
+  readonly words: string;
+};
+
+export const PROTOCOL_METHODS: readonly ProtocolMethod[] = [
+  {
+    route: "POST /*",
+    source: "RFC 6749 §3.2",
+    words:
+      'the token endpoint: "The client MUST use the HTTP "POST" method when making access token requests", and "The means through which the client obtains the location of the token endpoint are beyond the scope of this specification"',
+  },
+  {
+    route: "POST /*",
+    source: "RFC 8693 §2.1",
+    words:
+      '"The client makes a token exchange request to the token endpoint with an extension grant type using the HTTP "POST" method", to the token endpoint of RFC 6749 §3.2',
+  },
+  {
+    route: "GET /*",
+    source: "GitHub REST API, Using pagination in the REST API",
+    words:
+      'docs.github.com/en/rest/using-the-rest-api/using-pagination-in-the-rest-api: a page is read with a GET ("curl --include --request GET") of a URL the answer\'s link header names ("The `link` header contains URLs that you can use to fetch additional pages of results"), whose path GitHub chooses, under the base path each deployment serves (/api/v3 on GitHub Enterprise Server); "each paginated endpoint will use the `page`, `before`/`after`, or `since` query parameters", and "If an endpoint supports the `per_page` query parameter, then you can control how many results are returned on a page"',
+  },
+];
+
+/** A token request, a POST to the token endpoint each issuer sets, which a client may read from
+ *  the issuer's metadata (packages/cipher-client/src/person-identity.ts's refresh,
+ *  packages/envoy/internal/oidc/codeflow.go's code exchange and
+ *  packages/envoy/internal/cipherclient/device.go's device login post where the issuer's discovery
+ *  document says): every path, by RFC 6749 §3.2 and RFC 8693 §2.1. */
 const TOKEN_REQUEST = ["POST /*"];
 
 /** The broker's token endpoint, packages/envoy/internal/cipherclient/testdata/wire.json's. */
@@ -73,7 +114,9 @@ const GENERATE_ACCESS_TOKEN = [
   "POST /v1/projects/{project}/serviceAccounts/{account}:generateAccessToken",
 ];
 
-/** GitHub's list requests: a GET, on a base path each deployment and test sets. */
+/** A GitHub list read, a GET under the base path each deployment serves, its later pages at the
+ *  URLs GitHub's link header names (packages/daemon/internal/githubrest/githubrest.go's GetPages
+ *  follows them): every path, by GitHub's pagination. */
 const LIST_REQUEST = ["GET /*"];
 
 export const PUBLIC_REQUEST_NAMES: readonly PublicRequestName[] = [
@@ -92,7 +135,7 @@ export const PUBLIC_REQUEST_NAMES: readonly PublicRequestName[] = [
     place: "field",
     name: "grant_type",
     source:
-      "POST /* (the token request, a POST by RFC 6749 §3.2 to the path its issuer sets): RFC 6749 §4.1.3, §6; RFC 8693 §2.1",
+      "RFC 6749 §4.1.3, §6; RFC 8693 §2.1: a token request's grant type, on its POST (RFC 6749 §3.2) to the token endpoint its issuer sets",
     routes: TOKEN_REQUEST,
   },
   {
@@ -105,28 +148,28 @@ export const PUBLIC_REQUEST_NAMES: readonly PublicRequestName[] = [
     place: "field",
     name: "subject_token_type",
     source:
-      "POST /* (the token exchange request, a POST by RFC 8693 §2.1 to the path its issuer sets): RFC 8693 §2.1",
+      "RFC 8693 §2.1: the token exchange request's subject token type, on its POST to the token endpoint its issuer sets",
     routes: TOKEN_REQUEST,
   },
   {
     place: "field",
     name: "actor_token_type",
     source:
-      "POST /* (the token exchange request, a POST by RFC 8693 §2.1 to the path its issuer sets): RFC 8693 §2.1",
+      "RFC 8693 §2.1: the token exchange request's actor token type, on its POST to the token endpoint its issuer sets",
     routes: TOKEN_REQUEST,
   },
   {
     place: "field",
     name: "requested_token_type",
     source:
-      "POST /* (the token exchange request, a POST by RFC 8693 §2.1 to the path its issuer sets): RFC 8693 §2.1",
+      "RFC 8693 §2.1: the token exchange request's type of the token it asks for, on its POST to the token endpoint its issuer sets",
     routes: TOKEN_REQUEST,
   },
   {
     place: "field",
     name: "audience",
     source:
-      "POST /* (the token exchange request, a POST by RFC 8693 §2.1 to the path its issuer sets): RFC 8693 §2.1",
+      "RFC 8693 §2.1: the token exchange request's audience, on its POST to the token endpoint its issuer sets; the same word names the audience of the IAM Service Account Credentials API's generateIdToken, a POST too",
     routes: TOKEN_REQUEST,
   },
   { place: "field", name: "resource", source: "RFC 8693 §2.1; RFC 8707 §2" },
@@ -298,14 +341,14 @@ export const PUBLIC_REQUEST_NAMES: readonly PublicRequestName[] = [
     place: "field",
     name: "page",
     source:
-      "GET /* (GitHub REST API, Using pagination in the REST API (docs.github.com/en/rest/using-the-rest-api/using-pagination-in-the-rest-api): a list request's query, a GET on the base path its deployment sets): the number of the page a list request reads",
+      "GitHub REST API, Using pagination in the REST API: the number of the page a list read reads, in its query",
     routes: LIST_REQUEST,
   },
   {
     place: "field",
     name: "per_page",
     source:
-      "GET /* (GitHub REST API, Using pagination in the REST API (docs.github.com/en/rest/using-the-rest-api/using-pagination-in-the-rest-api): a list request's query, a GET on the base path its deployment sets): the number of results a page holds",
+      "GitHub REST API, Using pagination in the REST API: the number of results a page of a list read holds, in its query",
     routes: LIST_REQUEST,
   },
 ];
@@ -315,10 +358,11 @@ export const PUBLIC_REQUEST_NAMES: readonly PublicRequestName[] = [
  *  which is on no route. */
 export type RequestRoute = { readonly method: string; readonly path: string } | undefined;
 
-/** The {@link RequestRoute} of a request to `url` sent with `method`, GET where it names none. */
+/** The {@link RequestRoute} of a request to `url` sent with `method`, GET where it names none or
+ *  names the empty string, as net/http sends it and Go's `publicOn` reads it. */
 export function requestRoute(url: string, method: string | undefined): RequestRoute {
   if (!URL.canParse(url)) return undefined;
-  return { method: (method ?? "GET").toUpperCase(), path: new URL(url).pathname };
+  return { method: (method || "GET").toUpperCase(), path: new URL(url).pathname };
 }
 
 /** Whether the value under `name`, carried at `place` by a request on `route`, is public by its
