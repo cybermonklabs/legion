@@ -1160,7 +1160,9 @@ internal/daemon test binary daemon-go's race step does — and pi-legion; the te
 it while it ran the daemon's Go suite and does not now), go-docs (docs, and the build job
 of docs-pages.yaml, which saves it), go-envoy (envoy-e2e-local and envoy-session-stall, which
 build the same listener and natsd, listener-server-change and envoy-go-build, which build the
-listener, envoy-go-checks, whose script tests run under the setup they had in envoy-go-build's
+listener, and on x86_64 the tests envoy-go-build's go test steps compile and vet
+(.github/ci-notes/ci-caches.md#why-go-envoys-x86_64-fill-runs-envoy-go-builds-go-tests),
+envoy-go-checks, whose script tests run under the setup they had in envoy-go-build's
 job, and envoy-go-race-docs and envoy-go-docs-finalizers), go-envoy-test (envoy-go, which
 builds the test binary of every package of the envoy module, envoy-go-claim-model, which builds
 the API's of that set, and the binaries, multiprocess

@@ -381,10 +381,19 @@ jobs:
         run: go build -o "$RUNNER_TEMP/envoy-bin/" ./cmd/listener ./internal/testnats/cmd/natsd
         working-directory: packages/envoy
 
-      # This fill runs no go vet, on purpose (PR #5289): with one, full or -stdmethods alike, the
-      # saved x64 entry was 475 MB against 202 MB without, so a go-envoy reader that vets reruns cgo
-      # for net, os/user and runtime/cgo, and that is the chosen cost.
-      - name: Delete the build cache's entries the go-envoy build did not use
+      # What envoy-go-build's go test steps compile and vet, on the x86_64 leg, where that job
+      # runs: a go test's vet reads entries no build and no go vet leaves after the prune below.
+      # why: .github/ci-notes/ci-caches.md#why-go-envoys-x86_64-fill-runs-envoy-go-builds-go-tests
+      - name: Build and vet the tests envoy-go-build's go test steps run
+        if: runner.arch == 'X64'
+        run: |
+          go test -count=1 -run '^$' ./internal/dispatch/architecture/notes/ ./internal/runnerlog/ \
+            ./internal/dispatch/specgraph/ ./cmd/architecture-check/ ./cmd/spec-check/ \
+            ./listenerwire/ ./internal/wirecheck/ ./internal/dispatch/pmdoc/
+          go test -count=1 -run '^$' -gcflags=all=-l ./internal/dispatch/pmdoc/
+        working-directory: packages/envoy
+
+      - name: Delete the build cache's entries the go-envoy builds did not use
         run: .github/scripts/go-cache-working-set.sh end "$RUNNER_TEMP/go-envoy-working-set"
 
       - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -400,11 +409,7 @@ jobs:
           KEY: ${{ steps.go-envoy.outputs.cache-primary-key }}-${{ github.sha }}
         run: echo "go-envoy-${RUNNER_ARCH,,}=$KEY" >>"$GITHUB_OUTPUT"
 
-      # Go leaves each module directory of its module cache read-only, and tar can replace no file
-      # in a read-only directory: the go-envoy-test restore below unpacks into the module cache the
-      # go-envoy restore filled, and fails with "Cannot open: File exists" at every module the two
-      # entries share (GNU tar 1.35, a read-only directory unpacked over twice). Made writable, each
-      # such file is replaced, and the restore gives the directories their read-only mode back.
+      # why: .github/ci-notes/ci-caches.md#why-the-envoy-job-makes-its-module-cache-writable
       - name: Let the go-envoy-test restore replace the module files the go-envoy restore left
         run: chmod -R u+w ~/go/pkg/mod
 
