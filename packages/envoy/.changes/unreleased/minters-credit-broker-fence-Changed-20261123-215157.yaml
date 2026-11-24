@@ -5,13 +5,14 @@ body: |-
   and the operator's cluster each hold its five `broker-*` ValidatingAdmissionPolicies and bindings
   with the reviewed specs `infra/scripts/operator-token-minters/broker-fence.json` holds (each
   canonical spec, or the sha256 of the two workload policies'), no pod in `dispatch` named otherwise
-  than `envoy-broker-*` runs as `envoy-broker` or takes a Secret of the broker's, and no webhook that
-  can match a guarded namespace or a cluster-scoped object calls a Service there, a grant of exec,
-  attach or port forward in `dispatch` is a `CREDIT` line naming its use on the broker's pods
-  instead of a finding, declared or live, and in who can become `envoy-broker`. Its use on
-  Dispatch's own pods, whose database login can write the writer hold's tables, is an `ALLOWANCE`
-  line naming the residual INFRA-4604 tracks, and so is each chain to its holder (who can become
-  such a ServiceAccount, or mint such a Google service account's token). `--report` gains
+  than `envoy-broker-*` runs as `envoy-broker` or takes a Secret of the broker's, and no webhook,
+  whatever its selectors and rules, calls a Service there, a grant of exec, attach or port forward
+  in `dispatch` is a `CREDIT` line naming its use on the broker's pods instead of a finding,
+  declared or live, and in who can become `envoy-broker`. Its use on Dispatch's own pods, whose
+  database login can write the writer hold's tables, is an `ALLOWANCE` line naming the residual
+  INFRA-4604 tracks, and so is each chain to its holder (who can become such a ServiceAccount, or
+  mint such a Google service account's token), read until a pass names no new account; a chain that
+  also reaches an account with a finding also prints a FINDING. `--report` gains
   `credited` (the principal, the right, the grant, the policy, and the declared and live versions)
   and `residuals` (each `ALLOWANCE`). A pod patch or update and an ephemeral container in
   `dispatch` stay findings, as does every other right and whoever can write or delete the fence; a

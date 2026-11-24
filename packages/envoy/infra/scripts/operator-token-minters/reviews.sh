@@ -75,32 +75,36 @@ keep_least() {
   local LC_ALL=C
   [ -n "${least_of[$2]+set}" ] && [[ ! "$3" < "${least_of[$2]}" ]] || least_of[$2]="$3"
 }
-# keep_sa NAME PRINCIPAL LABEL: when PRINCIPAL is a ServiceAccount (system:serviceaccount:<ns>:<name>,
-# or a seed, seed: before it), records LABEL as one of its rights in the associative array NAME,
-# which keeps the one whose label sorts first (keep_least), and sets KEPT_SA to its
-# <namespace>:<name>; any other principal is no ServiceAccount, and is left (KEPT_SA "", returns 1).
-keep_sa() {
-  KEPT_SA=""
-  [[ "${2#seed:}" =~ ^system:serviceaccount:([^:]+):([^:]+)$ ]] || return 1
-  KEPT_SA="${BASH_REMATCH[1]}:${BASH_REMATCH[2]}"
-  keep_least "$1" "$KEPT_SA" "$3"
+# sa_key PRINCIPAL: sets SA_KEY to PRINCIPAL's <namespace>:<name> when it is a ServiceAccount
+# (system:serviceaccount:<ns>:<name>, or a seed, seed: before it); any other principal is no
+# ServiceAccount (SA_KEY "", returns 1).
+sa_key() {
+  SA_KEY=""
+  [[ "${1#seed:}" =~ ^system:serviceaccount:([^:]+):([^:]+)$ ]] || return 1
+  SA_KEY="${BASH_REMATCH[1]}:${BASH_REMATCH[2]}"
 }
-# found_sa PRINCIPAL LABEL: keep_sa for FOUND_SAS. A found account is no longer one that reaches the
-# residual alone, so it leaves RESIDUAL_SAS: the two sets never share an account, and a found one
-# wins here, in one place.
-found_sa() { keep_sa FOUND_SAS "$1" "$2" && unset "RESIDUAL_SAS[$KEPT_SA]" || :; }
 # RESIDUAL_SAS: each ServiceAccount (<namespace>:<name>, a seed's too) on the cluster read last whose
 # grant reaches the broker's pod fence's residual and no more: a credited grant that carries it
 # (judge_grant), or a chain to such an account (judge_chain); and the right follow_becomes names it
 # by. Who can become it reaches the residual too, so follow_becomes follows it and names each such
 # chain by an ALLOWANCE (broker-fence.sh's residual_allowance), never silence.
 declare -A RESIDUAL_SAS=()
-# residual_sa PRINCIPAL LABEL: keep_sa for RESIDUAL_SAS, unless the account is in FOUND_SAS.
-residual_sa() {
-  [[ "${1#seed:}" =~ ^system:serviceaccount:([^:]+):([^:]+)$ ]] || return 0
-  [ -z "${FOUND_SAS[${BASH_REMATCH[1]}:${BASH_REMATCH[2]}]:-}" ] || return 0
-  keep_sa RESIDUAL_SAS "$1" "$2" || :
+# keep_sa KIND PRINCIPAL LABEL: when PRINCIPAL is a ServiceAccount (sa_key), records LABEL as one of
+# its rights in FOUND_SAS (KIND found) or RESIDUAL_SAS (KIND residual), keeping the one whose label
+# sorts first (keep_least). The two sets never share an account, and a found one wins, here alone:
+# a found account leaves RESIDUAL_SAS, and one in FOUND_SAS is never kept for the residual. Any
+# other principal is left.
+keep_sa() {
+  sa_key "$2" || return 0
+  if [ "$1" = found ]; then
+    unset "RESIDUAL_SAS[$SA_KEY]"
+    keep_least FOUND_SAS "$SA_KEY" "$3"
+  elif [ -z "${FOUND_SAS[$SA_KEY]:-}" ]; then
+    keep_least RESIDUAL_SAS "$SA_KEY" "$3"
+  fi
 }
+found_sa() { keep_sa found "$1" "$2"; }
+residual_sa() { keep_sa residual "$1" "$2"; }
 # The certificate signing chain's parts, by principal, which csr_part gathers from a cluster's
 # reviews, its named rights and a render, and csr_chains judges once they are all read. Each list of
 # parts is a line a part, which csr_chains sorts, and CSR_WHY_OF keeps the reason that sorts first
@@ -166,26 +170,25 @@ judge_grant() {
   found_sa "$1" "$2"
   [[ "$1" == seed:* ]] || finding "$1" "$2$3" "$2" "$4" "$2" "$5"
 }
-# chain_residual POLICY TARGETS LISTED: whether a grant follow_becomes asks, by which its holder
+# chain_residual POLICY TARGETS FOLLOWED: whether a grant follow_becomes asks, by which its holder
 # becomes TARGETS (namespace:name, space-separated), reaches the fence's residual and no more: the
-# fence refuses no use of it (POLICY is "") and each target, of one at least, was listed this round
-# for the residual alone (LISTED, the associative array of the round's accounts by their kind). The
-# verdict reads the round's list, as the right's label does (become-rights.jq writes each target's
-# right from that list), so a target found partway through the round is judged by the label the
-# line prints, and judged again as found the next round.
+# fence refuses no use of it (POLICY is "") and each target, of one at least, is followed for the
+# residual alone (FOLLOWED, follow_becomes's associative array of each account by its kind). A
+# target's right comes from the round's list, which sets its kind in FOLLOWED, so the verdict and
+# the label the line prints read one state.
 chain_residual() {
   local target
-  local -n listed_as="$3"
+  local -n followed_as="$3"
   [ -z "$1" ] && [ -n "$2" ] || return 1
   for target in $2; do
-    [ "${listed_as[$target]:-}" = residual ] || return 1
+    [ "${followed_as[$target]:-}" = residual ] || return 1
   done
 }
-# judge_chain PRINCIPAL LABEL SUFFIX RESOURCE REASON POLICY RESIDUAL TARGETS LISTED: the verdict on a
-# grant follow_becomes asks. One that reaches the residual alone (chain_residual) is an ALLOWANCE
-# naming the chain and the residual (residual_allowance, broker-fence.sh), and keeps its holder, a
-# ServiceAccount, in RESIDUAL_SAS, to be followed in turn; a seed only seeds it. Any other is
-# judged as judge_grant judges a grant.
+# judge_chain PRINCIPAL LABEL SUFFIX RESOURCE REASON POLICY RESIDUAL TARGETS FOLLOWED: the verdict
+# on a grant follow_becomes asks. One that reaches the residual alone (chain_residual) is an
+# ALLOWANCE naming the chain and the residual (residual_allowance, broker-fence.sh), and keeps its
+# holder, a ServiceAccount, in RESIDUAL_SAS, to be followed in turn; a seed only seeds it. Any other
+# is judged as judge_grant judges a grant.
 judge_chain() {
   if chain_residual "$6" "$8" "$9"; then
     residual_sa "$1" "$2"
@@ -265,24 +268,22 @@ named_principal() {
 # is the cluster's credited fence, as review takes it. Each ServiceAccount so found is followed in
 # turn, up to 5 steps, and one followed for the residual alone is followed again once it has a
 # finding; one found in the fifth and not followed is UNKNOWN. A ServiceAccount that becomes only
-# itself is no finding. Each round judges its chains by the round's list (listed, each account by its
-# kind, found or residual), the one its rights' labels are written from (chain_residual).
+# itself is no finding. A chain's verdict reads `followed` (chain_residual).
 follow_becomes() {
   local kube="$1" step="$2" suffix="$3" resource="$4" fence="${5:-}" round sa rights label targets principal verdict error reason who why
   local what id detail kind ns name policy residual
-  local -A followed=() targets_of=() targets_why=() listed=()
+  local -A followed=() targets_of=() targets_why=()
   for ((round = 0; round < 5; round++)); do
     : >"$WORK/become.tsv"
-    listed=()
     while IFS= read -r sa; do
       [ "${followed[$sa]:-}" != found ] || continue
-      followed[$sa]=found listed[$sa]=found
+      followed[$sa]=found
       printf '%s\t%s\t%s\n' "${sa%%:*}" "${sa#*:}" "${FOUND_SAS[$sa]}" >>"$WORK/become.tsv"
     done < <(printf '%s\n' ${FOUND_SAS[@]+"${!FOUND_SAS[@]}"} | sed '/^$/d' | sort)
-    # found_sa takes a found account out of RESIDUAL_SAS, so each account here reaches the residual alone.
+    # keep_sa keeps a found account out of RESIDUAL_SAS, so each account here reaches the residual alone.
     while IFS= read -r sa; do
       [ -z "${followed[$sa]:-}" ] || continue
-      followed[$sa]=residual listed[$sa]=residual
+      followed[$sa]=residual
       printf '%s\t%s\t%s\n' "${sa%%:*}" "${sa#*:}" "${RESIDUAL_SAS[$sa]}" >>"$WORK/become.tsv"
     done < <(printf '%s\n' ${RESIDUAL_SAS[@]+"${!RESIDUAL_SAS[@]}"} | sed '/^$/d' | sort)
     [ -s "$WORK/become.tsv" ] || return 0
@@ -301,7 +302,7 @@ follow_becomes() {
           who="${principal#seed:}"
           who="${who#system:serviceaccount:}"
           [ "${targets_of[$label]:-}" != "$who" ] || continue
-          judge_chain "$principal" "$label" "$suffix" "$resource" "$reason" "$policy" "$residual" "${targets_of[$label]:-}" listed
+          judge_chain "$principal" "$label" "$suffix" "$resource" "$reason" "$policy" "$residual" "${targets_of[$label]:-}" followed
           ;;
         error) unknown "$step" "the review of $principal for $label ended in an evaluation error, so its refusal proves nothing: $error" ;;
       esac
@@ -322,7 +323,7 @@ follow_becomes() {
       done
       who="${NAMED_PRINCIPAL#seed:}"
       [ "$targets" != "${who#system:serviceaccount:}" ] || continue
-      judge_chain "$NAMED_PRINCIPAL" "$detail" "$suffix" "$resource" "RBAC: $id limits it by name" "$policy" "$residual" "$targets" listed
+      judge_chain "$NAMED_PRINCIPAL" "$detail" "$suffix" "$resource" "RBAC: $id limits it by name" "$policy" "$residual" "$targets" followed
     done 6<"$WORK/become-named.rec"
   done
   for sa in ${FOUND_SAS[@]+"${!FOUND_SAS[@]}"}; do
@@ -336,8 +337,9 @@ follow_becomes() {
 }
 # remember_cluster KUBECONFIG STEP SUFFIX RESOURCE [FENCE]: keeps what follow_becomes needs of the
 # cluster just read (its principals, its discovery's custom resources, its bindings and roles with
-# whether live_named read them, and its credited fence), for follow_members, which runs after the
-# IAM steps find the Workload Identity members of an RBAC finding's Google account.
+# whether live_named read them, and its credited fence), for follow_members, which the IAM steps run
+# on each pass of their fixed point (step-live-iam.sh), for the Workload Identity members of each
+# Google account a finding names and of each whose credited grant reaches the residual.
 REMEMBERED=()
 remember_cluster() {
   local n="${#REMEMBERED[@]}" file
@@ -360,10 +362,8 @@ follow_members() {
     cp "$WORK/remembered-$n.principals" "$WORK/principals.rec"
     for file in api-resources bindings.json roles.json; do cp "$WORK/remembered-$n.$file" "$WORK/$file"; done
     FOUND_SAS=() RESIDUAL_SAS=()
-    while IFS=$'\t' read -r member label; do FOUND_SAS[$member]="$label"; done < <(jq -r 'to_entries[] | [.key, .value] | @tsv' <<<"$1")
-    while IFS=$'\t' read -r member label; do
-      [ -n "${FOUND_SAS[$member]:-}" ] || RESIDUAL_SAS[$member]="$label"
-    done < <(jq -r 'to_entries[] | [.key, .value] | @tsv' <<<"$2")
+    while IFS=$'\t' read -r member label; do found_sa "system:serviceaccount:$member" "$label"; done < <(jq -r 'to_entries[] | [.key, .value] | @tsv' <<<"$1")
+    while IFS=$'\t' read -r member label; do residual_sa "system:serviceaccount:$member" "$label"; done < <(jq -r 'to_entries[] | [.key, .value] | @tsv' <<<"$2")
     follow_becomes "$kube" "$step" "$suffix" "$resource" "$fence"
   done
 }

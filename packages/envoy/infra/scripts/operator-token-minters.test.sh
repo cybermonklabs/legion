@@ -210,13 +210,21 @@ fence_objects() {
                validations: [{expression: $workload, message: "only broker CI names the broker'"'"'s account in a workload"}]}}
          else {spec} end]' "$fence_contract"
 }
+# script_copy NAME: a copy of the script and its parts under the test's temporary directory, for a
+# row that breaks or removes one part; prints the copy's script path, for run_script.
+script_copy() {
+  local copy="$temporary_dir/copy-$1"
+  rm -rf "$copy"
+  mkdir -p "$copy"
+  cp "$check" "$copy/operator-token-minters.sh"
+  cp -r "$(dirname "$check")/operator-token-minters" "$copy/"
+  printf '%s' "$copy/operator-token-minters.sh"
+}
 # fence_check: the copy of the check under test whose broker-fence.json holds fence_objects' example
 # policies by their digests, as the check's own broker-fence.jq and broker-fence.sh compute them;
 # fence_example_digests: those digests by policy name.
-readonly fence_check="$temporary_dir/fence-check/operator-token-minters.sh"
-mkdir -p "$temporary_dir/fence-check"
-cp "$check" "$fence_check"
-cp -r "$(dirname "$check")/operator-token-minters" "$temporary_dir/fence-check/"
+fence_check="$(script_copy fence-check)"
+readonly fence_check
 fence_objects | jq -c -L "$(dirname "$check")/operator-token-minters" --slurpfile contract "$fence_contract" \
   'include "rec"; include "broker-fence"; [objs] | fence_read($contract[0]) | if .state == "read" then . else error("the example fence is \(.state)") end' \
   >"$temporary_dir/fence-example-read.json"
@@ -226,7 +234,7 @@ fence_example_digests="$(jq -c '.objects[] | select(.digest != "") | {name, spec
   done | jq -s -c add)"
 readonly fence_example_digests
 jq --argjson digests "$fence_example_digests" '.objects |= map(if .digest then .digest = $digests[.name] else . end)' "$fence_contract" \
-  >"$temporary_dir/fence-check/operator-token-minters/broker-fence.json"
+  >"$(dirname "$fence_check")/operator-token-minters/broker-fence.json"
 
 # fence_world: the base world with the broker in dispatch: its ServiceAccount, bound to the broker's
 # Google account through Workload Identity; its pod, which takes the broker's database login, and
@@ -483,16 +491,6 @@ args_without() {
 run_only() {
   status=0
   output="$(env PATH="$fake_bin:$PATH" OPERATOR_MINTERS_WORLD="$world" TMPDIR="$temporary_dir" bash "${run_script:-$check}" "$@" 2>&1)" || status=$?
-}
-# script_copy NAME: a copy of the script and its parts under the test's temporary directory, for a
-# row that breaks or removes one part; prints the copy's script path, for run_script.
-script_copy() {
-  local copy="$temporary_dir/copy-$1"
-  rm -rf "$copy"
-  mkdir -p "$copy"
-  cp "$check" "$copy/operator-token-minters.sh"
-  cp -r "$(dirname "$check")/operator-token-minters" "$copy/"
-  printf '%s' "$copy/operator-token-minters.sh"
 }
 # plant FILE OLD NEW: FILE with its one OLD made NEW; fails the row when FILE does not hold OLD once,
 # so a plant that missed its line cannot pass as a control.

@@ -25,8 +25,10 @@
 #        fence's names running as envoy-broker or taking --db-secret, a pod outside them taking
 #        another Secret a broker pod takes (its NATS issuer seed), a list with no broker pod, a
 #        webhook backed by a Service in dispatch, one whose selector misses the guarded namespaces
-#        but whose rule matches a cluster-scoped object, a list of webhooks that cannot be read or
-#        is answered empty or as `{}`, and another guarded pair in dispatch;
+#        but whose rule matches a cluster-scoped object, one whose selector names an unguarded
+#        namespace alone and whose rules are namespaced, a list of webhooks that cannot be read or
+#        is answered empty or as `{}`, one whose webhook's Service webhook-backends.jq cannot read
+#        (its jq error printed above the NO CREDIT), and another guarded pair in dispatch;
 #   (fc) a principal that can write the fence stays a finding: patch of the binding, delete of a
 #        policy, and delete of broker-pod-connect by name;
 #   (fd) legion/worker, which can become legion/dispatch-measure, whose exec in dispatch is credited
@@ -245,6 +247,23 @@ fence_fail_row() {
       want_text "UNKNOWN live: RBAC on operator-cluster: the API server's list of webhook configurations could not be read, so no webhook's backend is reviewed: the answer " "the fence $1"
       return
       ;;
+    webhook-malformed)
+      # A webhook webhook-backends.jq does not judge (an unguarded namespace, namespaced rules), whose
+      # Service is a string where an object belongs: the walk that lists every webhook's Service
+      # cannot read it, and jq's error must be the UNKNOWN the NO CREDIT points above to.
+      jq -n '[{apiVersion: "admissionregistration.k8s.io/v1", kind: "MutatingWebhookConfiguration", metadata: {name: "hooks"},
+        webhooks: [{name: "pods.example.com", clientConfig: {service: "dispatch/hook"},
+          namespaceSelector: {matchExpressions: [{key: "kubernetes.io/metadata.name", operator: "In", values: ["unguarded"]}]},
+          rules: [{apiGroups: [""], apiVersions: ["v1"], operations: ["CREATE"], resources: ["pods"], scope: "Namespaced"}]}]}]' \
+        >"$world/clusters/operator-cluster/webhooks.json"
+      fence_run
+      want_status 1 "the fence $1"
+      want_fence_findings "the fence $1"
+      want_text "the webhook configurations were not read (above), so whether a webhook's backend is in dispatch, where the fence does not refuse entry into it, is unknown" "the fence $1"
+      want_text "UNKNOWN live: RBAC on operator-cluster: the API server's list of webhook configurations could not be read, so no webhook's backend is reviewed: jq: error" "the fence $1"
+      want_text 'Cannot index string with' "the fence $1"
+      return
+      ;;
     policies-empty | pods-empty)
       # The fence's list, or the pods', answered with exit 0 and an empty body: UNKNOWN naming it.
       : >"$world/clusters/operator-cluster/empty-${1%-empty}"
@@ -268,8 +287,8 @@ fence_fail_row() {
 }
 if row fb; then
   each fence_fail_row removed warn ignore selector policy-selector exception drift unread pods-unread rogue-pod other-secret no-pod \
-    webhook webhook-cluster webhook-unguarded webhooks-unread webhooks-empty webhooks-object policies-empty pods-empty shared
-  passed "(fb) the fence removed, bound Warn, failing open, missing dispatch in a binding's or a policy's selector, with an exception, differing live from declared, unread or answered empty, beside a pod outside its names that runs as the broker or takes its database login or another of its Secrets, with no broker pod, beside any webhook backed in dispatch (one matching a guarded namespace, a cluster-scoped object or neither) or webhooks unread, answered empty or as {}, or beside another guarded pair in dispatch, credits nothing"
+    webhook webhook-cluster webhook-unguarded webhooks-unread webhooks-empty webhooks-object webhook-malformed policies-empty pods-empty shared
+  passed "(fb) the fence removed, bound Warn, failing open, missing dispatch in a binding's or a policy's selector, with an exception, differing live from declared, unread or answered empty, beside a pod outside its names that runs as the broker or takes its database login or another of its Secrets, with no broker pod, beside any webhook backed in dispatch (one matching a guarded namespace, a cluster-scoped object or neither) or webhooks unread, answered empty or as {}, or a webhook's Service the walk cannot read (its jq error printed), or beside another guarded pair in dispatch, credits nothing"
 fi
 
 # --- (fc) Whoever can write the fence stays a finding while it is credited. ---

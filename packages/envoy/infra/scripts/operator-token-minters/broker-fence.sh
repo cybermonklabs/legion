@@ -153,8 +153,8 @@ fence_declared_json() { if [ -n "$FENCE_DECLARED" ]; then fence_json; else echo 
 # admission_power its webhooks (WEBHOOK_SERVICES) and the token Secrets of the guarded namespaces
 # were listed: sets FENCE_CREDITED, the fence fence_json writes with the declared and live digests,
 # each policy's and binding's versions and the contract's residual, when the cluster's fence is the
-# reviewed one the renders declare, its pods keep the account's shape and no webhook this check
-# reads is backed in its namespace.
+# reviewed one the renders declare, its pods keep the account's shape and no webhook's Service is in
+# its namespace.
 fence_live() {
   local kube="$1" step="$2" resource missing="" held outside witness backends
   FENCE_CREDITED=""
