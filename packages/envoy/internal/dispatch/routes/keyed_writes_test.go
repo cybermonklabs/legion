@@ -84,7 +84,7 @@ func newKeyedCensusContext(t *testing.T) *AppContext {
 // writesBesideTheTable is every pattern mux serves (servedPatterns, read from the mux itself, so
 // a pattern mounted on it by any means is read) that serves a write and is no row of the API's
 // table, which GET /api/v1 lists, sorted. The index is read as a signed-in caller, as the POST
-// below is made: every route answers 401 to a request that names no one, the index included.
+// below is made.
 func writesBesideTheTable(t *testing.T, mux *http.ServeMux) []string {
 	t.Helper()
 	response := httptest.NewRecorder()

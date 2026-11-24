@@ -138,11 +138,6 @@ const StoreUnconfirmedCause = "The listener sent the message but could not confi
 // cannot drift apart.
 const MaxBroadcastRecipients = 100
 
-// MaxTokenProjects is the most projects one personal agent token lists. Generated from
-// MAX_TOKEN_PROJECTS in packages/contracts so the server's limit and the dashboard's
-// cannot drift apart.
-const MaxTokenProjects = 16
-
 // ReferenceTargetsMax is the most references one GET /api/v1/reference-targets may name. Generated
 // from REFERENCE_TARGETS_MAX in packages/contracts so the server's refusal and the dashboard's
 // batches are one number.
@@ -309,7 +304,6 @@ const DispatchEventBodyMax = 32000
 // TypeScript compiler holds to that union, so a Go reader that sorts every type, as the keyword
 // fill's inventory test (internal/dispatch/textversions) does, learns of a new type from it.
 var DispatchEventTypes = []string{
-	"access_group.changed",
 	"architecture.sync_failed",
 	"architecture.synced",
 	"artifact.approved",

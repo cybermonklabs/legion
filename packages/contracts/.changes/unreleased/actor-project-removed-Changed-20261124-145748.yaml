@@ -1,0 +1,8 @@
+kind: Changed
+body: |-
+  `dispatch-openapi.json`'s `Actor` and the generated `Actor` no longer carry `project`: the server
+  writes no actor with it. `ActorSchema` keeps `project` optional, so a reader still takes an event
+  an older server stored with it.
+time: 2026-11-24T14:57:48Z
+custom:
+    Issue: actor-project-removed
