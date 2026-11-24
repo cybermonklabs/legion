@@ -365,6 +365,8 @@ So the daemon's reads that compare a session with the sessions of the claims ans
 The start state writes the claim of each turn under way at the window's start.
 It also writes the claim of the architect of each root that waits on a person at the start, between that architect's turns, where the record shows the architect's session.
 The daemon keeps that claim through the wait, and at each pass it keeps the root only while the session that holds the root's Dispatch claim has a claim in the root's tree.
+For a seeded claim, a death in the reach carries the runtime's recorded cause and the time of its log line.
+These live claims hold no start failure because their workers reached readiness.
 The start state's copy of Dispatch holds each issue's Dispatch claim as the newest event before the window's start that shows a claim shows it, as the record's daemon held it then.
 The start state opens the lifecycle of the tree of each root in the workflow whose current run took a slot, or had a member start, or opened its design gate, or launched its architect afresh.
 The last two show a run that the daemon ran where the log holds no slot line of it.
@@ -2297,6 +2299,8 @@ A fault that a rule would bring on more or less often is not drawn, which favour
 The replay leaves out the facts of a claim's readiness, of its task's confirmation, of a lost session and of a fault of the session store.
 It also leaves out a silent worker, a stalled background job, an entry sweep, a memory kill in an issue's pod or in the controller's, a full volume, a listener's wake and a pod's backstop.
 It enters each recorded `supervise: claim failed` line at its offset in the segment of its issue.
+The trace also keeps the logged cause and time of each process death or refused start it can read.
+These observations do not apply a fact, spend a launch budget, or change the schedule.
 
 **If it is wrong.**
 If faults come more often when more issues run at once, the replay moves the measures so for a rule that runs more issues at once.

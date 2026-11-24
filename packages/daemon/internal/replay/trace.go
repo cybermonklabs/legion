@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store/storetext"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -167,6 +168,12 @@ const (
 	processDiedLine      = "supervise: process died"
 	processDisplacedLine = "supervise: the process was displaced through no fault of its own, its pod replaced by the daemon or it another runtime's process this daemon takes over; relaunching it uncharged"
 	workEndedLine        = "supervise: the relaunch ended work the agent had running"
+)
+
+const (
+	launchFailedLine     = "supervise: launch failed"
+	launchStoreFaultLine = "supervise: the session store could not answer this start; trying it again every minute, charging nothing"
+	launchPromptLine     = "supervise: the role's system prompt is too large to launch; failing the claim, charging no launch failure"
 )
 
 // checkClosedLine is the msg of the line the close of an issue's production check writes
@@ -508,6 +515,16 @@ type ProcessEnded struct {
 	LineHead
 	Claim ClaimRef
 	By    TurnEnd
+	// DeathCause is present only on a death observation that names the runtime's verdict.
+	DeathCause string
+}
+
+// StartFailure is a runtime refusal logged by launchTries. It describes an attempt, not
+// necessarily a failed claim or a turn that ended. Its error is the text available in the log.
+type StartFailure struct {
+	LineHead
+	Claim ClaimRef
+	Error string
 }
 
 // CheckClosed is a `workflow: production check closed` line (workflow's markCheckClosed): the
@@ -867,7 +884,11 @@ var lineReaders = map[string]func(LineHead, *lineAttrs) LogLine{
 		return failed
 	},
 	processDiedLine: func(h LineHead, a *lineAttrs) LogLine {
-		return ProcessEnded{LineHead: h, Claim: a.claim("claim"), By: TurnEndDied}
+		cause := a.optionalStr("observed")
+		if detail := a.optionalStr("detail"); cause != "" && detail != "" {
+			cause = storetext.FarSideText(cause + ": " + detail)
+		}
+		return ProcessEnded{LineHead: h, Claim: a.claim("claim"), By: TurnEndDied, DeathCause: cause}
 	},
 	processDisplacedLine: func(h LineHead, a *lineAttrs) LogLine {
 		return ProcessEnded{LineHead: h, Claim: a.claim("claim"), By: TurnEndDisplaced}
@@ -875,6 +896,9 @@ var lineReaders = map[string]func(LineHead, *lineAttrs) LogLine{
 	workEndedLine: func(h LineHead, a *lineAttrs) LogLine {
 		return ProcessEnded{LineHead: h, Claim: a.claim("claim"), By: TurnEndLetGo}
 	},
+	launchFailedLine:     readStartFailure,
+	launchStoreFaultLine: readStartFailure,
+	launchPromptLine:     readStartFailure,
 	checkClosedLine: func(h LineHead, a *lineAttrs) LogLine {
 		return CheckClosed{LineHead: h, Issue: a.str("issue")}
 	},
@@ -930,6 +954,10 @@ var lineReaders = map[string]func(LineHead, *lineAttrs) LogLine{
 // readProcessStart reads one of the lines a daemon process starts with (ProcessStart), which
 // carries nothing the trace reads but its head.
 func readProcessStart(h LineHead, _ *lineAttrs) LogLine { return ProcessStart{LineHead: h} }
+
+func readStartFailure(h LineHead, a *lineAttrs) LogLine {
+	return StartFailure{LineHead: h, Claim: a.claim("claim"), Error: a.str("error")}
+}
 
 // lineReaderOf is the reader of the lines of msg (lineReaders, the process's start lines and the
 // leak check's two lines by their common start), nil for a msg the trace does not read.

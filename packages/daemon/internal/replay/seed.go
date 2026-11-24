@@ -47,6 +47,7 @@ const seedSession = "replay-seed"
 // the turns under way of the issues in the workflow, as the outbox's start writes a claim (its
 // given entry and a confirmed delivery), and of the architect of each root that waits on a person
 // between its turns (waitingArchitects), each running the session the record shows running it;
+// seeded live claims retain a death the reach records and hold no start failure after readiness;
 // the owed start of each issue whose work came back while it held no slot, marked to wait for one
 // and created at the moment its work came back, carrying the resume task engine composes for it
 // (workflow.Engine.ResumeTask); and a synthetic open pull request for each issue the trace has seen
@@ -896,6 +897,7 @@ func (s *seeder) turns() error {
 				Generation: max(turn.Generation, 1), TreeEpoch: epoch, Session: session, State: supervise.StateWorking,
 				Handshake: supervise.EntryHandshake{Generation: issue.Generation, QueuedAt: turn.Start, ConfirmedAt: turn.Start},
 				LastReady: turn.Start, LastTurnStart: turn.Start}
+			s.t.seedDeath(&c, s.at)
 			d := supervise.Delivery{ID: "seed:" + string(turn.Claim.Token), Task: "the work the record shows under way at the window's start",
 				Phase: worked, Generation: issue.Generation, QueuedAt: turn.Start, DeliveredAt: turn.Start, ConfirmedAt: turn.Start,
 				Prompted: true}
@@ -957,6 +959,7 @@ func (s *seeder) waitingArchitects() error {
 			c.Generation = max(last.Generation, 1)
 			c.LastReady, c.LastTurnStart, c.LastTurnEnd = last.Start, last.Start, last.End
 		}
+		s.t.seedDeath(&c, s.at)
 		if err := s.claims.PutClaimTx(s.ctx, s.tx, c); err != nil {
 			return fmt.Errorf("replay: seed the claim of %s: %w", token, err)
 		}

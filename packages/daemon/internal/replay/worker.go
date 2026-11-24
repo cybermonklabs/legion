@@ -79,7 +79,7 @@ var OutboxHandling = map[RowKind]RowHandling{
 	{Kind: record.OutboxKindDesignChanges}: {Way: OutboxExecuted,
 		Does: "reconciles the tree's news of its approved design as the executor does, reading from the replay's copy of Dispatch the version each review history names: records each change set the news names, read with nothing listed from version 0 and unavailable from any other, since the copy holds no document's text, raises a told row past a pair that changed no work, and queues the news-only start of each other row's holder"},
 	{Kind: record.OutboxKindSupervise, Op: "start"}: {Way: OutboxExecuted,
-		Does: "behind the executor's fences writes the role's claim as the outbox's start writes it, admitted on its first start, with its given entry and a confirmed delivery, logs the launch, and resumes the issue's paused segment or opens its next recorded one; a start queued for news alone, behind the same fences, is finished under assumption 26 where it reaches its claim with news to tell"},
+		Does: "behind the executor's fences writes the role's claim as the outbox's start writes it, admitted on its first start, with its given entry and a confirmed delivery; a launch implies readiness, clearing a start failure and its time but not the last death; resumes the issue's paused segment or opens its next recorded one; a start queued for news alone, behind the same fences, is finished under assumption 26 where it reaches its claim with news to tell"},
 	{Kind: record.OutboxKindSupervise, Op: "suspend"}: {Way: OutboxExecuted,
 		Does: "suspends the role's claim, its task taken back, and pauses the issue's segment it works, or cancels it where the issue has left the workflow"},
 	{Kind: record.OutboxKindSupervise, Op: "step_stop"}: {Way: OutboxExecuted,
@@ -827,6 +827,7 @@ func (d *driver) launch(c *supervise.Claim, resumed bool) {
 	c.State, c.SuspendedBy, c.Session = supervise.StateIdle, "", d.sessionOf(*c)
 	c.Failure, c.FailureCause, c.FailedAt = "", "", time.Time{}
 	c.LastReady = d.now()
+	c.LastStartFailure, c.LastStartFailureAt = "", time.Time{}
 	resumedBy := "none"
 	if resumed {
 		resumedBy = "id"

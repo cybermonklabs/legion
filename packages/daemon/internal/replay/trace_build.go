@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -70,10 +71,30 @@ type Trace struct {
 	Ticks []time.Time
 	// Pauses is each pause of the project the log shows, in order.
 	Pauses []PauseSpan
+	// claimCauses holds the log evidence of runtime deaths and refused starts, in recorded order
+	// per claim. These observations are not intake facts and do not move work.
+	claimCauses map[claim.Token][]claimCause
 	// Unplaced is each issue or line the trace could not place, with what part of the record it is
 	// about and the reason: a line that disagrees with what the trace already holds, a move whose
 	// trigger has no source, a turn end with no start. The trace still places what it can of it.
 	Unplaced []UnplacedFact
+}
+
+type claimCause struct {
+	at           time.Time
+	text         string
+	startFailure bool
+}
+
+// seedDeath dates the last death of a seeded live claim from the reach, not from the seed time.
+// A start failure does not survive the readiness implied by a seeded live claim.
+func (t Trace) seedDeath(c *supervise.Claim, before time.Time) {
+	for _, cause := range slices.Backward(t.claimCauses[c.Token]) {
+		if !cause.startFailure && cause.at.Before(before) {
+			c.LastDeathCause, c.LastDeathAt = cause.text, cause.at
+			return
+		}
+	}
 }
 
 // UnplacedFact is a line or an issue the trace could not place: the issue it is about ("" for
@@ -689,7 +710,7 @@ func readTrace(w Window, ran *record.SlotRule) (Trace, []LogLine, []readEvent, e
 	b := traceBuilder{
 		t: &Trace{Project: w.Project, From: w.From, To: w.To, End: w.End(), Start: w.From.Add(-time.Duration(w.Before)), Parts: w.Parts, rules: rules,
 			GateSteps: w.GateSteps, TickInterval: time.Duration(w.TickInterval), Branches: map[string]string{},
-			Issues: map[string]*IssueTrace{}},
+			Issues: map[string]*IssueTrace{}, claimCauses: map[claim.Token][]claimCause{}},
 		ran:         ran,
 		held:        make(map[string]bool, len(w.Lines)),
 		turns:       map[claim.Token]turnAt{},
@@ -1183,6 +1204,13 @@ const firstBootStage = "prompts"
 // stage), read with nothing but start lines between them, begin one boot together.
 func (b *traceBuilder) onLine(line LogLine) {
 	at := line.Head().Time
+	// A refused launch is evidence for the trace alone. It must not end a turn or change the
+	// process boundaries used by the replay's driver.
+	if failure, ok := line.(StartFailure); ok {
+		token := failure.Claim.Token
+		b.t.claimCauses[token] = append(b.t.claimCauses[token], claimCause{at: at, text: failure.Error, startFailure: true})
+		return
+	}
 	starts := false
 	switch l := line.(type) {
 	case ProcessStart:
@@ -1301,6 +1329,10 @@ func (b *traceBuilder) onLine(line LogLine) {
 	case Suspended:
 		b.turnEnds(l.Claim, at, TurnEndSuspended, false)
 	case ProcessEnded:
+		if l.DeathCause != "" {
+			token := l.Claim.Token
+			b.t.claimCauses[token] = append(b.t.claimCauses[token], claimCause{at: at, text: l.DeathCause})
+		}
 		b.turnEnds(l.Claim, at, l.By, false)
 	case CheckClosed:
 		b.checkClosed(b.issue(l.Issue), at)

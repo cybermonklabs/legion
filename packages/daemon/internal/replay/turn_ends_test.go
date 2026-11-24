@@ -8,6 +8,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -112,5 +113,35 @@ func TestATurnEndsWhereItsProcessEnds(t *testing.T) {
 		if TraceReads(msg) {
 			t.Errorf("the trace reads %q, which ends no turn of its own", msg)
 		}
+	}
+}
+
+func TestClaimCauseTraceDatesTheSeededDeathFromItsOwnLine(t *testing.T) {
+	from := clock(10, 0)
+	b := newWindowBuilder(t, from, clock(12, 0))
+	b.reaches(2 * time.Hour)
+	token := b.token("ACME-1", claim.RoleImplementer)
+	other := b.token("ACME-2", claim.RoleImplementer)
+	for _, at := range []time.Time{clock(9, 0), clock(9, 15), from} {
+		b.line(at, slog.LevelWarn, processDiedLine, "claim", string(token), "observed", "gone", "detail", "the process exited")
+	}
+	b.line(clock(9, 20), slog.LevelWarn, launchFailedLine, "claim", string(token), "error", "the launch was refused")
+	b.line(clock(9, 25), slog.LevelWarn, processDiedLine, "claim", string(other), "observed", "gone")
+
+	trace, err := BuildTrace(b.build())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := trace.claimCauses[token]
+	if len(got) != 4 || got[2] != (claimCause{at: clock(9, 20), text: "the launch was refused", startFailure: true}) {
+		t.Fatalf("claim causes = %+v, want three deaths and a dated start failure in order", got)
+	}
+	live := supervise.Claim{Token: token, State: supervise.StateWorking, LastReady: clock(9, 45)}
+	trace.seedDeath(&live, from)
+	if live.LastDeathCause != "gone: the process exited" || !live.LastDeathAt.Equal(clock(9, 15)) {
+		t.Fatalf("seeded death = %q at %s, want the most recent death strictly before the start", live.LastDeathCause, live.LastDeathAt)
+	}
+	if live.LastStartFailure != "" || !live.LastStartFailureAt.IsZero() {
+		t.Fatalf("a ready claim kept the start failure %q at %s", live.LastStartFailure, live.LastStartFailureAt)
 	}
 }

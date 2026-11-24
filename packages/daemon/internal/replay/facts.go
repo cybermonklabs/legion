@@ -221,13 +221,15 @@ var FactSources = map[string]FactSource{
 
 	// The API's facts, rebuilt from the record's lines at the end of their segment or their
 	// recorded offset in it.
-	"SignOff":           {Way: FactInjected, From: "a recorded move by sign_off, at the end of its accepting segment, and again at each leave of a member beneath while it is refused"},
-	"BackwardMove":      {Way: FactInjected, From: "a recorded move by backward, at the end of its segment"},
-	"CloseRoot":         {Way: FactInjected, From: "a recorded leave of a root at done with no person's close and no move to done, at its offset in the architect's segment"},
-	"RetryOrEscalate":   {Way: FactInjected, From: "each recorded `workflow: a held phase is released` of an architect's retry, each end of a hold the record shows going on with no release line (a relaunch of the held role's claim, or the issue's next move), and each `workflow: a phase is held` of an escalation, at its offset from the hold"},
-	"RestartPhase":      {Way: FactInjected, From: "each recorded `workflow: a held phase is released` of the operator's retry, at its offset from the hold"},
-	"ChildAdoption":     {Way: FactInjected, From: "each recorded `workflow: a queued root joined a live tree`, the release of a queued root into a tree, at its offset in the releasing architect's segment"},
-	"GateRegistered":    {Way: FactInjected, From: "each recorded `workflow: design gate registered`, with what register_gate reads of the document rebuilt from the shadow, at its offset in the architect's segment"},
+	"SignOff":         {Way: FactInjected, From: "a recorded move by sign_off, at the end of its accepting segment, and again at each leave of a member beneath while it is refused"},
+	"BackwardMove":    {Way: FactInjected, From: "a recorded move by backward, at the end of its segment"},
+	"CloseRoot":       {Way: FactInjected, From: "a recorded leave of a root at done with no person's close and no move to done, at its offset in the architect's segment"},
+	"RetryOrEscalate": {Way: FactInjected, From: "each recorded `workflow: a held phase is released` of an architect's retry, each end of a hold the record shows going on with no release line (a relaunch of the held role's claim, or the issue's next move), and each `workflow: a phase is held` of an escalation, at its offset from the hold"},
+	"RestartPhase":    {Way: FactInjected, From: "each recorded `workflow: a held phase is released` of the operator's retry, at its offset from the hold"},
+	"ChildAdoption":   {Way: FactInjected, From: "each recorded `workflow: a queued root joined a live tree`, the release of a queued root into a tree, at its offset in the releasing architect's segment"},
+	"GateRegistered":  {Way: FactInjected, From: "each recorded `workflow: design gate registered`, with what register_gate reads of the document rebuilt from the shadow, at its offset in the architect's segment"},
+	// Death and start failure observations date claim evidence in the trace. They are not
+	// ClaimFailed facts: a process can die or fail to start without exhausting the claim's budget.
 	"ClaimFailed":       {Way: FactInjected, From: "each recorded `supervise: claim failed`, at its offset in the segment of the failed claim's issue"},
 	"ProjectResumed":    {Way: FactInjected, From: "each recorded `pause: the project is resumed`, after the replay's own resume of its pause"},
 	"PullRequestMerged": {Way: FactInjected, From: "a recorded move by pull_request_merged, at the end of its merging segment, or, where the close waited for the issues beneath it, the visit's first recorded `workflow: a merged issue's close waits for the issues beneath it`, at the end of its merging segment, which ends there; on the replay's own pull request record of the issue"},

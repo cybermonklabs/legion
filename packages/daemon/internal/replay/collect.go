@@ -540,6 +540,8 @@ func keysOfLine(line LogLine) []string {
 		return []string{l.Claim.Issue}
 	case ProcessEnded:
 		return []string{l.Claim.Issue}
+	case StartFailure:
+		return []string{l.Claim.Issue}
 	case QueueLeftNothingRead:
 		return []string{l.Issue}
 	case QueueLeftReadOnce:
