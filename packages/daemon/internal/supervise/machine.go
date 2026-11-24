@@ -895,7 +895,14 @@ type Specs interface {
 // Clock is time as a machine sees it.
 type Clock interface {
 	Now() time.Time
+	// AfterFunc calls f once d has passed from the clock's time at the call.
 	AfterFunc(d time.Duration, f func()) Cancel
+	// At calls f once the clock reaches at, at once when it already has. A timer for a moment the
+	// machine was given (a wake's turn, a held suspension's deadline) is armed here rather than
+	// for the wait from a read of Now, so a clock that moves between that read and the arm (a
+	// test's, which moves forward without waiting) fires the timer at the moment all the same
+	// (armAt). envoy's hubClock and jobClock have the same shape.
+	At(at time.Time, f func()) Cancel
 	// Sleep waits d, or returns ctx's error once ctx ends first.
 	Sleep(ctx context.Context, d time.Duration) error
 }
@@ -909,6 +916,8 @@ type RealClock struct{}
 func (RealClock) Now() time.Time { return time.Now() }
 
 func (RealClock) AfterFunc(d time.Duration, f func()) Cancel { return time.AfterFunc(d, f) }
+
+func (RealClock) At(at time.Time, f func()) Cancel { return time.AfterFunc(time.Until(at), f) }
 
 func (RealClock) Sleep(ctx context.Context, d time.Duration) error { return backoff.Sleep(ctx, d) }
 
@@ -4420,15 +4429,33 @@ func (m *Machine) armRegistration() {
 	m.arm(TimerRegistration, runtime.RegistrationDeadline(m.deps.Timeouts.Boot, m.deps.Timeouts.RegistrationIntervals, grace), "")
 }
 
-// arm schedules one timer of a kind, replacing any of that kind already armed. Its event carries
-// the arming's sequence number and generation, so a timer that fires after it was replaced, or
-// after a relaunch, is fenced out even if stopping it came too late.
+// arm schedules one timer of a kind for a wait, replacing any of that kind already armed. Its
+// event carries the arming's sequence number and generation, so a timer that fires after it was
+// replaced, or after a relaunch, is fenced out even if stopping it came too late.
 func (m *Machine) arm(kind TimerKind, after time.Duration, deliveryID string) {
+	ev := m.nextTimer(kind, deliveryID)
+	cancel := m.deps.Clock.AfterFunc(after, func() { m.fire(ev) })
+	m.timers[kind] = armed{seq: ev.Seq, deliveryID: deliveryID, cancel: cancel, due: m.deps.Clock.Now().Add(after)}
+}
+
+// armAt is arm for a timer due at a moment the machine was given rather than after a wait: a
+// wake's turn (parkWake) and a held suspension's deadline (holdSuspension). The clock arms it at
+// that moment (Clock.At). A wait computed from the decision's earlier read of the clock would put
+// the timer past the moment by whatever time passed before the arm: on a test's clock, which
+// another goroutine moves forward meanwhile, past the turn the state names and the test moves the
+// clock to, so the wake never ran.
+func (m *Machine) armAt(kind TimerKind, at time.Time, deliveryID string) {
+	ev := m.nextTimer(kind, deliveryID)
+	cancel := m.deps.Clock.At(at, func() { m.fire(ev) })
+	m.timers[kind] = armed{seq: ev.Seq, deliveryID: deliveryID, cancel: cancel, due: at}
+}
+
+// nextTimer disarms any timer of kind and answers the event the next one fires, under the next
+// sequence number (arm, armAt).
+func (m *Machine) nextTimer(kind TimerKind, deliveryID string) Timer {
 	m.disarm(kind)
 	m.seq++
-	ev := Timer{Claim: m.claim.Token, Kind: kind, Generation: m.claim.Generation, Seq: m.seq, DeliveryID: deliveryID}
-	cancel := m.deps.Clock.AfterFunc(after, func() { m.fire(ev) })
-	m.timers[kind] = armed{seq: m.seq, deliveryID: deliveryID, cancel: cancel, due: m.deps.Clock.Now().Add(after)}
+	return Timer{Claim: m.claim.Token, Kind: kind, Generation: m.claim.Generation, Seq: m.seq, DeliveryID: deliveryID}
 }
 
 // fire hands the machine ev, a timer of its own firing, on the goroutine it fires on: the

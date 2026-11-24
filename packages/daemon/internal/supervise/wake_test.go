@@ -259,6 +259,51 @@ func TestASpawnWhoseCarriedTurnPassedLongAgoIsPacedAgain(t *testing.T) {
 	}
 }
 
+// A wake runs at the turn the pacing gave it, the moment its claim's view names, however far the
+// clock moved between the decision's read of it and the arm of the wake's timer: a timer armed for
+// the wait from that read comes due that much past the turn. A test's clock moves forward from the
+// test's goroutine while a boot, a sweep or a relaunch parks a wake on another, and the wake then
+// never ran at the turn the test moved the clock to (internal/daemon's
+// TestNoMinuteOfAFleetsRefreshWaveHoldsMoreThanTheRateAndTheBurst, a minute's wait at its line 898).
+// Here the clock moves a second inside the reservation of the parked wake, as that test's goroutine
+// moved it inside another goroutine's decision.
+func TestAWakeRunsAtItsTurnWhenTheClockMovesBeforeItsTimerIsArmed(t *testing.T) {
+	const moved = time.Second
+	var h *harness
+	h = pacedHarness(t, wakeRate, func(d *Deps) {
+		reserve := d.WakePace.Reserve
+		d.WakePace.Reserve = func(now time.Time) time.Time {
+			at := reserve(now)
+			if at.After(now) {
+				h.clock.Advance(moved)
+			}
+			return at
+		}
+	})
+	second := h.machineFor(wakeClaim(secondToken, StateQueued))
+	start := h.clock.Now()
+
+	h.must(RequestSpawn{Claim: h.token})
+	h.mustPostTo(second, RequestSpawn{Claim: secondToken})
+
+	held := second.View().WakeWaiting
+	if want := start.Add(wakeInterval + wakePart); held == nil || !held.At.Equal(want) {
+		t.Fatalf("the waiting claim names wake %+v, want its turn at %s, one interval and a part after the first", held, want)
+	}
+	if now := h.clock.Now(); !now.Equal(start.Add(moved)) {
+		t.Fatalf("the clock reads %s after the park, want %s: the reservation moved it %s", now, start.Add(moved), moved)
+	}
+	h.clock.Advance(held.At.Sub(h.clock.Now()) - time.Nanosecond)
+	second.Wait()
+	h.wantStarts(secondToken, 0)
+
+	h.clock.Advance(time.Nanosecond)
+	second.Wait()
+
+	h.wantStarts(secondToken, 1)
+	h.wantWakeLine(secondToken, "waited=true", "waitedFor="+(wakeInterval+wakePart).String())
+}
+
 // A start request repeated against a claim whose wake is still waiting starts no second launch and
 // takes no second token: the claim behind it keeps the turn it already holds.
 func TestASecondStartOfAWaitingClaimTakesNoSecondToken(t *testing.T) {

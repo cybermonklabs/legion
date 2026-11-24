@@ -87,6 +87,17 @@ func (c *waveClock) AfterFunc(d time.Duration, f func()) supervise.Cancel {
 	return timer
 }
 
+// At arms f for the moment at itself, whatever the clock reads at the arm: a wake's turn is armed
+// here (supervise's armAt), and the test, which moves the clock from its own goroutine while a
+// boot, a sweep or a relaunch parks a wake on another, advances to that turn and fires it.
+func (c *waveClock) At(at time.Time, f func()) supervise.Cancel {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	timer := &waveTimer{clock: c, due: at, f: f}
+	c.timers = append(c.timers, timer)
+	return timer
+}
+
 func (t *waveTimer) Stop() bool {
 	t.clock.mu.Lock()
 	defer t.clock.mu.Unlock()

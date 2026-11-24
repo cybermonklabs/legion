@@ -81,6 +81,15 @@ func (c *fakeClock) AfterFunc(d time.Duration, f func()) Cancel {
 	return timer
 }
 
+func (c *fakeClock) At(at time.Time, f func()) Cancel {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.armed++
+	timer := &fakeTimer{clock: c, at: at, order: c.armed, f: f}
+	c.timers = append(c.timers, timer)
+	return timer
+}
+
 func (t *fakeTimer) Stop() bool {
 	t.clock.mu.Lock()
 	defer t.clock.mu.Unlock()
