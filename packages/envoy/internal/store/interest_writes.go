@@ -63,8 +63,9 @@ func rowOf(sessionID string) func(value []byte) bool {
 // deleteInterestAt deletes sessionID's interest record only while its latest revision is
 // revision, and reports whether the bucket took the delete: a bucket that refused it holds a row
 // stored since, which is no error here (JetStream's wrong last sequence, bus.IsCASConflict), and
-// that row stands. layout is the layout of the record read at revision, a row of this session
-// (decodeEntry gives no other record a layout), whose chunks a delete the bucket took deletes after
+// that row stands. layout is the layout of the record read at revision, a row of this session (the
+// cache's rows and a bucket read's both decode through decodeRecord, which gives a layout only to a
+// record boundInterest binds to its key), whose chunks a delete the bucket took deletes after
 // it (deleteChunks). Each bucket call waits no longer than ctx (bus.Bounded). A delete ctx abandoned
 // may still land after this answer, and that is safe: it deletes the one revision it names, so a
 // write that landed since is kept, and the chunks of the record it deleted are left to the

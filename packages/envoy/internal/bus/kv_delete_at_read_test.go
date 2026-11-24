@@ -27,6 +27,72 @@ func (kv *writingOnDelete) Delete(key string, opts ...nats.DeleteOpt) error {
 	return kv.KeyValue.Delete(key, opts...)
 }
 
+// copyingOnDelete has the server store a copy of source's record under the key as the first delete
+// of it reaches the bucket (testnats.ServerCopiesKey), and then sends that delete: a message the
+// server writes landing between DeleteAtRead's read of a writer's record and its delete. It copies
+// once, keeps the sequence the copy is stored at, and counts the deletes it was handed.
+type copyingOnDelete struct {
+	nats.KeyValue
+	t       *testing.T
+	conn    *nats.Conn
+	bucket  string
+	source  string
+	copied  uint64
+	deletes int
+}
+
+func (kv *copyingOnDelete) Delete(key string, opts ...nats.DeleteOpt) error {
+	kv.deletes++
+	if kv.deletes == 1 {
+		kv.copied = testnats.ServerCopiesKey(kv.t, kv.conn, kv.bucket, key, kv.bucket, kv.source)
+	}
+	return kv.KeyValue.Delete(key, opts...)
+}
+
+// A delete fenced on a writer's record that a message the server wrote replaced between the read
+// and the delete is refused at that revision, and DeleteAt's fallback deletes the server's message
+// at the sequence the leader reports it stored at. DeleteAtRead answers that as LeaderServerWritten
+// at that sequence with no value: the writer's record it read is gone, and what it deleted names
+// nothing a caller removes. The control is the same delete with nothing landing in between, which
+// answers the writer's put it read, at its revision and with its value.
+func TestADeleteAtReadWhoseRecordTheServerReplacedAnswersTheServersMessage(t *testing.T) {
+	t.Parallel()
+	const bucket = "kv_delete_at_read_fallback"
+	_, kv := leaderReadBucket(t, bucket)
+	conn := kv.Streams().Conn()
+	if _, err := kv.Put("ses_source", []byte("the source's record")); err != nil {
+		t.Fatalf("put ses_source: %v", err)
+	}
+	read, err := kv.Put("ses_replaced", []byte("registered"))
+	if err != nil {
+		t.Fatalf("put ses_replaced: %v", err)
+	}
+	copying := &copyingOnDelete{KeyValue: kv.Legacy(), t: t, conn: conn, bucket: bucket, source: "ses_source"}
+	deleted, err := NewKeyValue(copying, kv.WatchHandle(), kv.Streams()).DeleteAtRead(t.Context(), "ses_replaced")
+	if err != nil {
+		t.Fatalf("DeleteAtRead(ses_replaced) under a server copy: %v", err)
+	}
+	if copying.deletes != 2 || copying.copied <= read {
+		t.Fatalf("the handle saw %d deletes and a copy at %d over the record at %d; want 2 (the one fenced on the read, refused, and the fallback's) and a copy after the record",
+			copying.deletes, copying.copied, read)
+	}
+	if deleted.Kind != LeaderServerWritten || deleted.Revision != copying.copied || deleted.Value != nil {
+		t.Fatalf("DeleteAtRead(ses_replaced) answered %+v, want the server's message deleted at %d with no value", deleted, copying.copied)
+	}
+	if _, err := kv.Get("ses_replaced"); !errors.Is(err, nats.ErrKeyNotFound) {
+		t.Fatalf("Get(ses_replaced) after the delete = %v, want %v", err, nats.ErrKeyNotFound)
+	}
+
+	kept, err := kv.Put("ses_read", []byte("registered"))
+	if err != nil {
+		t.Fatalf("put ses_read: %v", err)
+	}
+	deleted, err = kv.DeleteAtRead(t.Context(), "ses_read")
+	if err != nil || deleted.Kind != LeaderPut || deleted.Revision != kept || string(deleted.Value) != "registered" {
+		t.Fatalf("DeleteAtRead(ses_read) = %+v, %v; want the writer's put at %d with its value", deleted, err, kept)
+	}
+}
+
 // A delete whose read found the key absent sends no delete, so the row a write stores between that
 // read and the delete is kept. A delete at no revision would take it: nats.go sends no
 // expected-last-subject-sequence header for revision 0, so that delete carries no fence at all

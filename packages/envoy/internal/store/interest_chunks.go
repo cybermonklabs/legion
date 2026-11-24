@@ -124,7 +124,8 @@ func (r *Registry) malformedRecordAs(msg, sessionID string, revision uint64, err
 //
 // A record past one message is written as its chunks and then its manifest, the manifest with that
 // same compare-and-swap, and the chunks replaced named are deleted once it lands: replaced is the
-// layout of a row of this session, since a record that is no such row carries none (decodeEntry),
+// layout of a row of this session, since both the cache's rows and a bucket read's decode through
+// decodeRecord, which gives a layout only to a record boundInterest binds to its key,
 // and a chunk is written once, under a generation no other write uses, so no other row names them
 // (kvchunk.Write says what else a write deletes and what it leaves to the reaper's collection).
 // The manifest carries row's view for an earlier build (ChunkedRecordView), so a listener of that
