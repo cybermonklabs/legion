@@ -123,7 +123,9 @@ func Run(ctx context.Context, req Request) (Result, error) {
 	return result, nil
 }
 
-// providerFailure is err, the run's stream error, as a fault's Detail says it. The SDK's error
+// providerFailure is err, the run's stream error, as a fault's Detail says it. A call whose token
+// could not be read never went out, so no status or word of the provider's is under it, and it is
+// said in the caller's words for that failure alone (tokenFailure). Otherwise the SDK's error
 // quotes the provider's own words. For an answer it refused, anthropic-sdk-go's *Error prints the
 // whole error body (internal/apierror/apierror.go:72-74 of v1.84.0), and the ai-sdk's
 // *provider.APICallError prints its Message (provider/api_call_error.go:50 of v0.1.0-alpha.5),
@@ -132,8 +134,12 @@ func Run(ctx context.Context, req Request) (Result, error) {
 // named by its status alone, its code and Go's standard phrase (redact.StatusLine), and any other
 // failure through redact.Cause.
 func providerFailure(err error, endpoint Endpoint) string {
+	var unread *tokenFailure
 	var refused *provider.APICallError
-	if errors.As(err, &refused) && refused.StatusCode != 0 {
+	switch {
+	case errors.As(err, &unread):
+		return unread.Error()
+	case errors.As(err, &refused) && refused.StatusCode != 0:
 		return fmt.Sprintf("the %s endpoint answered %s", endpoint.Kind, redact.StatusLine(refused.StatusCode))
 	}
 	return redact.Cause(err, endpoint.BaseURL).Error()
@@ -212,7 +218,7 @@ func languageModel(req Request, client *http.Client) (provider.LanguageModel, pr
 		config := foundry.Config{BaseURL: endpoint.BaseURL, Credential: func(ctx context.Context) (foundry.Credential, error) {
 			token, err := endpoint.Token(ctx)
 			if err != nil {
-				return foundry.Credential{}, err
+				return foundry.Credential{}, &tokenFailure{endpoint.Kind, err}
 			}
 			return foundry.Credential{AuthToken: token}, nil
 		}}

@@ -54,6 +54,19 @@ func (t *modelTransport) client() *http.Client {
 // never follows.
 var errRedirect = errors.New("agentloop: the endpoint answered a redirect, which is never followed")
 
+// tokenFailure is a model call that never went out, since the endpoint's Token failed for its
+// attempt. It prints as "reading the <kind> token: " and the Token's error as the caller wrote it
+// (Endpoint.Token): no server has answered the call, so none of those words is the endpoint's,
+// and a Detail says them alone, never net/http's or the SDK's words around them (Run's
+// providerFailure, Decide).
+type tokenFailure struct {
+	kind Kind
+	err  error
+}
+
+func (f *tokenFailure) Error() string { return fmt.Sprintf("reading the %s token: %v", f.kind, f.err) }
+func (f *tokenFailure) Unwrap() error { return f.err }
+
 // defaultRetryWait is how long the retry waits when the response names no wait (retryable).
 const defaultRetryWait = time.Second
 
@@ -75,7 +88,7 @@ func (t *modelTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		if t.kind != AzureAnthropic {
 			var err error
 			if key, err = t.token(ctx); err != nil {
-				return nil, fmt.Errorf("reading the %s token: %w", t.kind, err)
+				return nil, &tokenFailure{t.kind, err}
 			}
 		}
 		r := req.Clone(ctx)

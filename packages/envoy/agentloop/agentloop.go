@@ -54,7 +54,10 @@ type Endpoint struct {
 	// may read a key that has been rotated or mint a token scoped to the call. On
 	// azure-anthropic it is called once per model call: the Azure provider's credential
 	// middleware sets the header above this package's HTTP client, and the retry below it
-	// resends the first attempt's token.
+	// resends the first attempt's token. An error fails the call before it goes out, and
+	// the fault's Detail prints it as the caller wrote it, after "reading the <kind> token: ".
+	// So a Token that asks a server for the credential puts that server's words in its error
+	// only as internal/redact prints them, as internal/ciphertoken's readers do.
 	Token func(context.Context) (string, error)
 }
 
