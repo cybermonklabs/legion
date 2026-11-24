@@ -2098,12 +2098,14 @@ logger's and `airlock proxy: net/http`), in the `error` of `airlock proxy: upstr
 `502` the proxy answers with it, and in the reason, line and answer of an Azure exchange the
 endpoint's answer failed. The whole rest of the line goes, not only the quoted run, since a stray
 quotation mark before a run would otherwise pair with the run's opening one and leave the run in
-clear. A service's text a library writes without quotes is written as it came, but for the names
-a certificate holds: crypto/x509's error for a certificate that names other hosts than the one
-asked for lists every name in it, so the `error` of `airlock proxy: upstream`, the `502`, and the
-reason, line and answer of an Azure exchange whose token endpoint's certificate names other hosts
-write `tls: the service's certificate is not valid for this host; the names it holds are not shown`
-in its place. The API port's refusal line takes its `correlation_id` from the caller's
+clear. A service's text a library writes without quotes is written as it came, but for a TLS
+record or certificate failure: crypto/x509's error for a certificate that names other hosts than
+the one asked for lists every name in it, and on macOS the system verifier's words name the
+certificate between curly quotation marks, so the `error` of `airlock proxy: upstream`, the
+`502`, and the reason, line and answer of an Azure exchange write the broker's fixed words for
+the failure's type in its place, such as `tls: failed to verify certificate: x509: certificate is
+not valid for the host asked (the names it is valid for are not printed: the answering party
+chose them)`. The API port's refusal line takes its `correlation_id` from the caller's
 `X-Correlation-Id` too; its line holds no message text, and names the code. Each
 answer, a refusal or not, also counts in `broker_answers_total` ([Metrics](#metrics)), which is
 the one record of the API port's and the edge's `429` and of a device grant's poll answers.
