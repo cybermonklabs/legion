@@ -1156,9 +1156,6 @@ jobs:
       # why: .github/ci-notes/ci.md#why-a-failing-verdict-of-a-group-behind-the-front-waits-for-the-front
       - name: Hold a failing verdict until this group is the front of the queue
         if: ${{ !cancelled() && steps.verdict.outcome == 'failure' && github.event_name == 'merge_group' && github.run_attempt == '1' }}
-        # The age's 170 minutes, which a run created moments before this step could hold for
-        # nearly whole, and the last pause and read's ladder (30 s, then three attempts and their
-        # pauses, two minutes).
         timeout-minutes: 175
         env:
           STEP_TIMEOUT_MINUTES: 175 # this step's timeout-minutes, for gh-read.sh's wait

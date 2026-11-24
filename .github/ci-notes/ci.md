@@ -2664,7 +2664,8 @@ on, so the step skips any attempt above the first. The reconcile step after it i
 exactly the case it runs, so it is the job's last step there and the job's check run concludes
 the moment it ends; that reconcile would only set a posted ci-ok of this head to failure, which
 every ci-ok a report step posts already is. Its own timeout-minutes, 175, lets a run created
-moments before it hold for the whole age and its last read; the verdict and reconcile steps
+moments before it hold for nearly the whole age, 170 minutes, and for its last pause and read, whose
+ladder is 30 s, then three attempts and their pauses, two minutes; the verdict and reconcile steps
 carry 10 each, the whole job's limit before this step, so their wait for a spent API budget is
 as long as it was.
 
