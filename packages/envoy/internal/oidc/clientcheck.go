@@ -72,15 +72,15 @@ func CheckClient(ctx context.Context, issuer, clientID, clientSecret string) (Cl
 		// plainly accepted the client, which is the one question this asks.
 		return ClientCheckReady, nil
 	case !errors.As(err, &retrieve) || retrieve.Response == nil:
-		return ClientCheckIssuerUnreachable, fmt.Errorf("oidc: check the client at %s: %w", issuer, err)
+		return ClientCheckIssuerUnreachable, fmt.Errorf("oidc: check the client at %s: %w", redact.URL(issuer), err)
 	case oauthrefusal.Refusal(err) == redact.InvalidGrant:
 		return ClientCheckReady, nil
 	case oauthrefusal.Refuses(retrieve.Response.StatusCode):
 		return ClientCheckRejected, fmt.Errorf("oidc: issuer %s refused the client %s: HTTP %d with the OAuth error %q",
-			issuer, clientID, retrieve.Response.StatusCode, redact.NewRemoteText(retrieve.ErrorCode))
+			redact.URL(issuer), clientID, retrieve.Response.StatusCode, redact.NewRemoteText(retrieve.ErrorCode))
 	case oauthrefusal.Outage(retrieve.Response.StatusCode):
-		return ClientCheckIssuerUnreachable, fmt.Errorf("oidc: issuer %s could not answer the client check: HTTP %d: %w", issuer, retrieve.Response.StatusCode, err)
+		return ClientCheckIssuerUnreachable, fmt.Errorf("oidc: issuer %s could not answer the client check: HTTP %d: %w", redact.URL(issuer), retrieve.Response.StatusCode, err)
 	}
 	return ClientCheckIssuerUnreachable, fmt.Errorf("oidc: issuer %s answered the client check HTTP %d with the OAuth error %q and no refusal, which says nothing about the client: %w",
-		issuer, retrieve.Response.StatusCode, redact.NewRemoteText(retrieve.ErrorCode), err)
+		redact.URL(issuer), retrieve.Response.StatusCode, redact.NewRemoteText(retrieve.ErrorCode), err)
 }

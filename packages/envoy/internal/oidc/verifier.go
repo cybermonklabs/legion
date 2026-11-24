@@ -288,7 +288,8 @@ func (v *Verifier) classify(ctx context.Context, raw string, err, keySetErr erro
 	case decodeErr != nil:
 		return fmt.Errorf("%w: %v", ErrMalformed, decodeErr)
 	case !v.namesIssuer(claims.Issuer):
-		return fmt.Errorf("%w: %q, want %q", ErrIssuer, claims.Issuer, v.issuer)
+		// The issuer the verifier was configured with prints only as redact.URL prints it.
+		return fmt.Errorf("%w: %q, want %q", ErrIssuer, claims.Issuer, redact.URL(v.issuer))
 	case !slices.Contains(claims.Audience, v.audience):
 		return fmt.Errorf("%w: %q, want %q", ErrAudience, []string(claims.Audience), v.audience)
 	case !v.skipExpiry && claims.Expiry != 0 && time.Unix(int64(claims.Expiry), 0).Before(time.Now()):

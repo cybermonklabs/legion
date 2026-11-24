@@ -125,17 +125,17 @@ func NewKeys(ctx context.Context, issuer string) (*Keys, error) {
 	s := redact.Scope[*gooidc.Provider](ctx)
 	provider, err := redact.OAuth2(s.Read(gooidc.NewProvider(s.Context(), issuer)))
 	if err != nil {
-		return nil, fmt.Errorf("oidc: discovering issuer %s: %w", issuer, err)
+		return nil, fmt.Errorf("oidc: discovering issuer %s: %w", redact.URL(issuer), err)
 	}
 	var discovery struct {
 		JWKSURI string `json:"jwks_uri"`
 	}
 	claims := redact.Scope[struct{}](ctx)
 	if _, err := redact.OAuth2(claims.Read(struct{}{}, provider.Claims(&discovery))); err != nil {
-		return nil, fmt.Errorf("oidc: reading issuer %s discovery document: %w", issuer, err)
+		return nil, fmt.Errorf("oidc: reading issuer %s discovery document: %w", redact.URL(issuer), err)
 	}
 	if discovery.JWKSURI == "" {
-		return nil, fmt.Errorf("oidc: issuer %s names no jwks_uri in its discovery document", issuer)
+		return nil, fmt.Errorf("oidc: issuer %s names no jwks_uri in its discovery document", redact.URL(issuer))
 	}
 	return NewKeysAt(discovery.JWKSURI), nil
 }
