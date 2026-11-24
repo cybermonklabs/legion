@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/redact"
+	"github.com/sjawhar/envoy/internal/urljoin"
 )
 
 // StatePath is the daemon route the sampler reads a project's state from. It authenticates
@@ -72,10 +73,11 @@ func WithTimeout(timeout time.Duration) Option {
 	return func(c *Client) { c.http.Timeout = timeout }
 }
 
-// New returns a client for the daemon at baseURL.
+// New returns a client for the daemon at baseURL, which each call's route is joined onto
+// (urljoin.Join).
 func New(baseURL string, options ...Option) *Client {
 	client := &Client{
-		baseURL: strings.TrimSuffix(strings.TrimSpace(baseURL), "/"),
+		baseURL: strings.TrimSpace(baseURL),
 		http: &http.Client{
 			Timeout: RequestTimeout,
 			// A daemon answers its own routes; it redirects nowhere. Following one would read a
@@ -112,15 +114,24 @@ func callFailure(err error) error {
 // State reads the daemon's own state: the state it answered and the bytes it sent, which the
 // sampler records whether the read succeeded or not. Every failure wraps ErrUnavailable.
 //
+// The read goes to StatePath joined onto the path of the daemon's URL, that URL's query kept
+// (urljoin.Join). A daemon URL that does not parse, or a URL joined from it that does not, is a
+// failed read named by its class, since url.Parse's error quotes the URL whole and the board's
+// header shows what the read says.
+//
 // The decode is loose — encoding/json ignores a field State does not name — so a daemon that
 // grows the route's shape is still read (state.go). The members State keeps as the bytes the
 // daemon sent, each issue's wait and the settings, are read from the answer as data (keptState),
 // and every other member through its Decode (answeredState). The call carries no credential: the
 // route authenticates nobody.
 func (c *Client) State(ctx context.Context) (State, int, error) {
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+StatePath, nil)
+	var request *http.Request
+	endpoint, err := urljoin.Join(c.baseURL, StatePath)
+	if err == nil {
+		request, err = http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
+	}
 	if err != nil {
-		return State{}, 0, fmt.Errorf("%w: build GET %s: %v", ErrUnavailable, StatePath, err)
+		return State{}, 0, fmt.Errorf("%w: build GET %s: %v", ErrUnavailable, StatePath, redact.Masked(err, redact.ClassNotAURL))
 	}
 	response, err := c.http.Do(request)
 	if err != nil {
