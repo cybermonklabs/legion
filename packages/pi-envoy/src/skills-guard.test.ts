@@ -287,7 +287,7 @@ test("every relative link resolves to a file inside the staged partition", () =>
 // dispatch must come with this plugin (`agents/`, which ships none today) or with Oh My Pi itself
 // (what `omp agents unpack` writes, read off the pinned binary rather than listed here). A
 // `skill://legion-*` mention in these skills is held to no such partition, on purpose: each is a
-// sentence conditioned on a Legion role (skills/dispatch/SKILL.md:14,
+// sentence conditioned on a Legion role (skills/dispatch/SKILL.md:16,
 // skills/dispatch-writing-specs/SKILL.md:10, skills/dispatch-first/SKILL.md:58), inert
 // for a person and right for a pane with both plugins, and `brokenSkillLinks` above resolves a
 // `skill://<name>/<path>` link against the repository's skills/ for the same reason.
