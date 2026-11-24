@@ -10,10 +10,13 @@ import (
 )
 
 // A design-changes-requested notice is of the request its document's gate records as told where
-// it names the told version and the told reason as the notice carries it: cut to texts.OneAct
-// (ChangesRequestedNotice), or whole, as a row an older daemon queued carries it. Any other
-// reason or version is of a request the person has since replaced, and a gate that records no
-// request, or no gate of the notice's document, says nothing against the notice.
+// it names the told version and the told reason as the notice carries it: cut to texts.OneAct,
+// with the count of the units the cut left off in its words object (ChangesRequestedNotice), or
+// whole, as a row an older daemon queued carries it with no words object. A whole reason is only
+// ever the whole told reason, never its head, and a cut is the told reason's own only where it
+// left off what the bound leaves off the told reason. Any other reason or version is of a request
+// the person has since replaced, and a gate that records no request, or no gate of the notice's
+// document, says nothing against the notice.
 func TestChangesSupersededReadsTheNoticesReasonAsItsCutOfTheToldReason(t *testing.T) {
 	const issue = "LEGION-208"
 	reason := strings.Repeat("r", texts.OneAct+1)
@@ -30,6 +33,13 @@ func TestChangesSupersededReadsTheNoticesReasonAsItsCutOfTheToldReason(t *testin
 	changes := func(version int, reason string) record.Notice {
 		return record.Notice{Kind: texts.DesignChangesRequested, Issue: issue, Version: version, Reason: reason, Ref: stepRef(issue, record.DesignStepSpec)}
 	}
+	longer, err := record.NoticeOf(ChangesRequestedNotice(issue, record.DesignStepSpec, 3, reason+"s", "user:alice", time.Date(2026, 11, 24, 9, 30, 0, 0, time.UTC)))
+	if err != nil {
+		t.Fatalf("build the changes-requested notice of the longer reason: %v", err)
+	}
+	if longer.Reason != cut.Reason || longer.Words["reason"].Rest != 2 {
+		t.Fatalf("premise: the longer reason's notice carries %d units with rest %d, want the told reason's cut head and rest 2", len(longer.Reason), longer.Words["reason"].Rest)
+	}
 	for _, tc := range []struct {
 		name     string
 		gates    map[record.DesignStep]record.DesignGate
@@ -42,6 +52,8 @@ func TestChangesSupersededReadsTheNoticesReasonAsItsCutOfTheToldReason(t *testin
 		{"another reason at the told version", told(3, "name the rollback path"), changes(3, "cut the migration"), true},
 		{"a cut of another reason over the bound", told(3, reason), changes(3, strings.Repeat("s", texts.OneAct)), true},
 		{"a shorter head of the told reason", told(3, reason), changes(3, reason[:texts.OneAct-1]), true},
+		{"the told reason's head, whole, as an older daemon queued an earlier request whose whole reason it was", told(3, reason), changes(3, reason[:texts.OneAct]), true},
+		{"a cut of a longer reason that shares the told reason's head", told(3, reason), longer, true},
 		{"an older version with the told reason cut", told(3, reason), changes(2, reason[:texts.OneAct]), true},
 		{"a gate that records no request", map[record.DesignStep]record.DesignGate{record.DesignStepSpec: {Issue: issue, Step: record.DesignStepSpec}},
 			changes(2, "cut the migration"), false},

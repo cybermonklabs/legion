@@ -286,12 +286,12 @@ func (r CheckLookRecord) Lead() string {
 }
 
 // oneLine is text with each character that breaks a line written as a space: the line feed, the
-// carriage return, the vertical tab, the form feed, the next line (U+0085), and the line and
-// paragraph separators (U+2028, U+2029). Text with none is returned as it is.
+// carriage return, the vertical tab, the form feed, and the three that TOON has no escape for
+// (unescapedBreak). Text with none is returned as it is.
 func oneLine(text string) string {
 	return strings.Map(func(r rune) rune {
-		switch r {
-		case '\n', '\v', '\f', '\r', '\u0085', '\u2028', '\u2029':
+		switch {
+		case r == '\n', r == '\v', r == '\f', r == '\r', unescapedBreak(r):
 			return ' '
 		}
 		return r

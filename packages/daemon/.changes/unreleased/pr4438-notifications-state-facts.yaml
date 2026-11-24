@@ -182,6 +182,7 @@ body: |-
   pod`. The merger's merge-forward landed message names the head whose approval it waits for,
   where its task has a reviewer step (`approval_owed`). No field of a daemon text holds NEXT LINE,
   LINE SEPARATOR or PARAGRAPH SEPARATOR: the writer writes each as a space, so an issue's title that
-  holds one stays on its field's line. A
-  rollback past this release is a roll forward (docs/kubernetes.md, "Rolling back the release that
+  holds one stays on its field's line. A queued changes request from an earlier release matches
+  the current request only if its whole reason matches. A shared prefix does not match.
+  A rollback past this release is a roll forward (docs/kubernetes.md, "Rolling back the release that
   carries a person's words in the daemon's texts").

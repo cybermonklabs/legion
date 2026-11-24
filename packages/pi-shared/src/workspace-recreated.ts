@@ -23,10 +23,9 @@ export const WORKSPACE_RECREATED_VARIABLE = "LEGION_WORKSPACE_RECREATED";
  * notice states nothing of the work the session had not pushed. What that is, and what the agent
  * does on the notice, is its role prompt's passage on `notice: workspace recreated`
  * (packages/daemon/internal/prompts/go/worker-common.md and architect-common.md): what the idle
- * release keeps, in the words of the daemon's data file
- * `packages/daemon/internal/workflow/workspace-after-release.txt` (`WorkspaceAfterRelease` in
- * packages/daemon/internal/workflow/wake.go), which `workspace-recreated.test.ts` holds each such
- * passage to, and what any other end of the pod costs.
+ * release keeps, in the words of the same prompt's passage on the daemon's wake task after an idle
+ * release, which `workspace-recreated.test.ts` holds each such passage to, and what any other end
+ * of the pod costs.
  */
 export const WORKSPACE_RECREATED_NOTICE = noticeKind("legion", "workspace recreated", [
   "issue",

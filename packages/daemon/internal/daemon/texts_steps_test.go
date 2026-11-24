@@ -11,7 +11,6 @@ import (
 	"unicode/utf16"
 
 	"github.com/sjawhar/legion/daemon/internal/texts"
-	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
 // goldenStep is one step this change took out of a daemon text, for one set of its readers: the
@@ -39,6 +38,12 @@ const (
 // notices R2 builds from a record: no kind of the daemon's list, but a text whose step went into
 // its reader's prompt all the same.
 const goldenTurnEnded texts.Kind = "turn ended"
+
+// goldenWorkspaceAfterRelease is main's account of a workspace after an idle release at 5d64e1b7,
+// the one line of its data file workflow/workspace-after-release.txt without the line's newline,
+// which its wake task said (workflow/wake.go:WakeTask) and its plugin's workspace recreated notice
+// said too (packages/pi-shared/src/workspace-recreated.ts).
+const goldenWorkspaceAfterRelease = "The idle release does not take a pod whose workspace holds a commit on a working copy or a bookmark that no remote branch or tag holds, or a working-copy change: such work stays in the pod. When the pod's disk goes with it, the next pod's workspace is made again from what was pushed to this issue's branch (the repository's default branch if nothing was). A commit that no working copy and no bookmark reaches, such as one left on a side head with jj new, is not kept."
 
 // goldenSteps is the table of every step taken out of a daemon text, for each of its readers.
 var goldenSteps = []goldenStep{
@@ -207,16 +212,16 @@ var goldenSteps = []goldenStep{
 	{texts.ArchitectStart, " Its pull request has merged, so the daemon starts no worker for that phase, and the root stands there until the rest of its tree has left the workflow, when the daemon closes it.", "architect (root)",
 		goPrompts + "architect-root.md", "which stands in its phase until the rest of its tree has left the workflow and the daemon closes it."},
 	// Main's wake after a release at 5d64e1b7 (workflow/wake.go:WakeTask, "..." +
-	// WorkspaceAfterRelease + " Your session is as you left it. "), whose middle is the data file
-	// workflow.WorkspaceAfterRelease reads, word for word in the passage of each reader's prompt.
+	// WorkspaceAfterRelease + " Your session is as you left it. "), whose middle is main's data
+	// file (goldenWorkspaceAfterRelease), word for word in the passage of each reader's prompt.
 	{texts.PodWake, "Your issue's pod had been released while it was idle, and this wake brought it back. %s Your session is as you left it. ", "planner, implementer, tester, reviewer, merger",
 		goPrompts + "worker-common.md", "Your session is as you left it."},
 	{texts.PodWake, "Your issue's pod had been released while it was idle, and this wake brought it back. %s Your session is as you left it. ", "architect",
 		goPrompts + "architect-common.md", "Your session is as you left it."},
-	{texts.PodWake, workflow.WorkspaceAfterRelease, "planner, implementer, tester, reviewer, merger",
-		goPrompts + "worker-common.md", "With `stopped_by: release`, the daemon tells you this of your workspace. " + workflow.WorkspaceAfterRelease},
-	{texts.PodWake, workflow.WorkspaceAfterRelease, "architect",
-		goPrompts + "architect-common.md", "With `stopped_by: release`, the daemon tells you this of your workspace. " + workflow.WorkspaceAfterRelease},
+	{texts.PodWake, goldenWorkspaceAfterRelease, "planner, implementer, tester, reviewer, merger",
+		goPrompts + "worker-common.md", "With `stopped_by: release`, the daemon tells you this of your workspace. " + goldenWorkspaceAfterRelease},
+	{texts.PodWake, goldenWorkspaceAfterRelease, "architect",
+		goPrompts + "architect-common.md", "With `stopped_by: release`, the daemon tells you this of your workspace. " + goldenWorkspaceAfterRelease},
 	{texts.PodWake, ". Read the checks before you decide anything.", "planner, implementer, tester, reviewer, merger",
 		goPrompts + "worker-common.md", "read the checks before you decide anything."},
 	{texts.PodWake, ". Read the checks before you decide anything.", "architect",

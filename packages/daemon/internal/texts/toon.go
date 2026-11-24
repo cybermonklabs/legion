@@ -220,22 +220,28 @@ func encodeStringLiteral(value string) string {
 }
 
 // foldUnescapedBreaks is value with each character that breaks a line and that escapeString has
-// no escape for written as one space: the next line (U+0085) and the line and paragraph
-// separators (U+2028, U+2029). 4.1.1 writes them as they are, quoted or not, and a reader takes
-// each for a line break, so a value that held one, such as a title, would end its field's line
-// there and the words after it would read as a line of the record, such as a field of its own.
-// TOON has no escape for them, so the value is folded as the check-look lead folds a title
-// (CheckLookRecord.Lead). The line feed, the carriage return and every other control character
-// keep their escapes. A Words block is no value and keeps its words as they are. A value with
-// none of the three is returned as it is.
+// no escape for (unescapedBreak) written as one space. 4.1.1 writes them as they are, quoted or
+// not, and a reader takes each for a line break, so a value that held one, such as a title, would
+// end its field's line there and the words after it would read as a line of the record, such as a
+// field of its own. TOON has no escape for them, so the value is folded as the check-look lead
+// folds a title (CheckLookRecord.Lead). The line feed, the carriage return and every other control
+// character keep their escapes. A Words block is no value and keeps its words as they are. A value
+// with none of the three is returned as it is.
 func foldUnescapedBreaks(value string) string {
 	return strings.Map(func(r rune) rune {
-		switch r {
-		case '\u0085', '\u2028', '\u2029':
+		if unescapedBreak(r) {
 			return ' '
 		}
 		return r
 	}, value)
+}
+
+// unescapedBreak says whether r breaks a line for a reader and is a character escapeString has no
+// escape for: the next line (U+0085) and the line and paragraph separators (U+2028, U+2029). It is
+// the one list of them, which the writer (foldUnescapedBreaks) and the check-look lead (oneLine)
+// both fold.
+func unescapedBreak(r rune) bool {
+	return r == '\u0085' || r == '\u2028' || r == '\u2029'
 }
 
 // encodeKey is encodeKey of 4.1.1.

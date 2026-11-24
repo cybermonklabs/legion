@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"context"
-	"os"
 	"reflect"
 	"slices"
 	"strings"
@@ -524,10 +523,12 @@ func TestADeclineInAReplacedPodEndsWithThePod(t *testing.T) {
 // prompt reads that. The release's check reads no work, its role stop and its teardown take the
 // pod, and a message published to the role's topic wakes it. The wake's start row carries the
 // task, a pod-wake record that names stopped_by: release and none of the words that unpushed work
-// was kept. The passage of each reader's prompt on that task with stopped_by: release, and its
-// passage on the plugin's workspace recreated notice, both say workflow.WorkspaceAfterRelease word
-// for word: the data file workflow/workspace-after-release.txt, which the plugin's test reads too.
-// Neither says the workspace's unpushed work was kept.
+// was kept. What each reader's prompt then says is held by the passages' own checks: its passage
+// on that task with stopped_by: release says main's words of the workspace after a release, word
+// for word (TestEveryStepTakenOutOfATextIsInItsReadersPrompt), and says nothing of kept work
+// (workflow's TestTheReleasesWakeTaskNeverSaysUnpushedWorkWasKept), and its passage on the
+// plugin's workspace recreated notice says the same words and nothing of kept work either
+// (packages/pi-shared/src/workspace-recreated.test.ts).
 func TestAReleasedCleanPodsWakeTaskSaysWhatThePluginNoticeSays(t *testing.T) {
 	t.Parallel()
 	rig := newIdleRig(t)
@@ -568,36 +569,6 @@ func TestAReleasedCleanPodsWakeTaskSaysWhatThePluginNoticeSays(t *testing.T) {
 	for _, kept := range []string{"any work you had not pushed", "saved", "restored", "put back"} {
 		if strings.Contains(task, kept) {
 			t.Fatalf("the wake's task = %q, which says %q: the daemon keeps none of the workspace", task, kept)
-		}
-	}
-
-	data, err := os.ReadFile("../workflow/workspace-after-release.txt")
-	if err != nil {
-		t.Fatalf("read the shared text: %v", err)
-	}
-	if string(data) != workflow.WorkspaceAfterRelease+"\n" {
-		t.Fatalf("workspace-after-release.txt = %q, want the text %q and one newline", data, workflow.WorkspaceAfterRelease)
-	}
-	for _, path := range []string{"../prompts/go/worker-common.md", "../prompts/go/architect-common.md"} {
-		body, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatalf("read %s: %v", path, err)
-		}
-		for _, opening := range []string{"A task of the kind `pod-wake`", "`notice: workspace recreated`"} {
-			var passages []string
-			for _, line := range strings.Split(string(body), "\n") {
-				if strings.Contains(line, opening) {
-					passages = append(passages, line)
-				}
-			}
-			if len(passages) != 1 || !strings.Contains(passages[0], workflow.WorkspaceAfterRelease) {
-				t.Fatalf("%s's passages that hold %q = %q, want one that says %q", path, opening, passages, workflow.WorkspaceAfterRelease)
-			}
-			for _, kept := range []string{"saved", "restored", "put back"} {
-				if strings.Contains(passages[0], kept) {
-					t.Fatalf("%s's passage that holds %q says %q: the daemon keeps none of the workspace", path, opening, kept)
-				}
-			}
 		}
 	}
 }

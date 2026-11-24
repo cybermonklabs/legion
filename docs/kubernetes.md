@@ -8305,7 +8305,7 @@ it is on GitHub, and the next pod's workspace fetch brings it back.
 So the heads of branches the remote deleted after their merge, which Legion's clones keep visible (`git.abandon-unreachable-commits = false`), and `main`'s commits newer than the issue's branch read as nothing unpushed.
 The one work the read does not count is a commit that no working copy and no local bookmark reaches, such as a side head a role left with `jj new <base>` over its own change, so a release can take such a commit;
 counting every visible head would count the deleted branches above.
-The wake task of a release names `stopped_by: release`, and the passages of the role's prompt on that task and on the plugin's recreated-workspace notice say so in the same words (`internal/workflow/workspace-after-release.txt`).
+The wake task of a release names `stopped_by: release`, and the passages of the role's prompt on that task and on the plugin's recreated-workspace notice say so in the same words (`internal/prompts/go/worker-common.md` and `architect-common.md`).
 The read's answer names the working-copy commit and the commits it found, and the daemon takes an answer only where each is 40 lowercase hexadecimal digits:
 the ids come from the pod's jj, and the daemon writes them into the hold record and the role's message.
 A read that finds work declines the release:

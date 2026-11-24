@@ -16,13 +16,13 @@ test("a launcher that recreated the workspace earns a notice naming the issue's 
   expect(notice?.id).toMatch(/^[0-9a-f-]{36}$/);
 });
 
-/** The daemon's account of a workspace after an idle release: the data file its wake embeds
- * (`WorkspaceAfterRelease`, packages/daemon/internal/workflow/wake.go), whose one line ends in a
- * newline the text does not carry. */
-function daemonWorkspaceAfterRelease(): string {
-  const file = path.join(repoRoot, "packages/daemon/internal/workflow/workspace-after-release.txt");
-  return readFileSync(file, "utf8").replace(/\n$/u, "");
-}
+/** The daemon's account of a workspace after an idle release, as main's wake task and this notice
+ * said it at 5d64e1b7 (the one line of that commit's
+ * packages/daemon/internal/workflow/workspace-after-release.txt, without its newline). The daemon's
+ * step table (TestEveryStepTakenOutOfATextIsInItsReadersPrompt) holds each reader's passage on the
+ * daemon's wake task to the same words. */
+const WORKSPACE_AFTER_RELEASE =
+  "The idle release does not take a pod whose workspace holds a commit on a working copy or a bookmark that no remote branch or tag holds, or a working-copy change: such work stays in the pod. When the pod's disk goes with it, the next pod's workspace is made again from what was pushed to this issue's branch (the repository's default branch if nothing was). A commit that no working copy and no bookmark reaches, such as one left on a side head with jj new, is not kept.";
 
 /** Each line of the role prompt `file` (packages/daemon/internal/prompts/go) that holds the
  * passage on this notice. */
@@ -43,6 +43,7 @@ const READERS_PROMPTS = ["worker-common.md", "architect-common.md"] as const;
 const KEPT = [
   "put back",
   "saved",
+  "restored",
   "as you left them",
   "holds nothing that was not pushed",
 ] as const;
@@ -52,14 +53,13 @@ const KEPT = [
 // same words: what the release keeps (a commit on a working copy or a bookmark that no remote
 // branch or tag holds, or a working-copy change, keeps the pod), what a workspace made again holds,
 // and the one work the release can take. The notice states its fields alone, so the words are the
-// passage's: this test holds the passage of each reader's prompt to the daemon's data file, so
-// neither text moves alone.
-test("the prompts' passages on the notice say of the workspace what the daemon's data file says, in the same words", () => {
-  const daemon = daemonWorkspaceAfterRelease();
+// passage's: this test holds the passage of each reader's prompt to main's words, which the
+// daemon's step table holds the passage on its wake task to, so neither passage moves alone.
+test("the prompts' passages on the notice say of the workspace what main's wake task said, in the same words", () => {
   for (const file of READERS_PROMPTS) {
     const passages = noticePassages(file);
     expect(passages, file).toHaveLength(1);
-    expect(passages[0], file).toContain(daemon);
+    expect(passages[0], file).toContain(WORKSPACE_AFTER_RELEASE);
   }
 });
 

@@ -749,12 +749,36 @@ func TestASessionsTodoOnAHeldRootKeepsTheHold(t *testing.T) {
 				if len(added) != 1 {
 					t.Fatalf("the todo wrote notices %+v, want one %s for the architect", added, tc.told)
 				}
-				if notice, ok := added[0].(record.Notice); !ok || notice.Kind != tc.told || notice.Role != claim.RoleArchitect {
-					t.Fatalf("the todo's notice = %+v, want a %s for the architect", added[0], tc.told)
+				notice, ok := added[0].(record.Notice)
+				if !ok || notice.Kind != tc.told {
+					t.Fatalf("the todo's notice = %+v, want a %s", added[0], tc.told)
 				}
-				// The notice reaches the architect that owns the issue its row names: the root's.
+				// The notice names no reader (StatusReassertedNotice): the list gives its kind the
+				// architect as its one reader, and the outbox sends it to the architect the owner walk
+				// from the issue its row names ends at (the daemon's noticeArchitect), the root's.
+				if entry, listed := texts.Lookup(notice.Kind); !listed || !slices.Equal(entry.Readers, []claim.Role{claim.RoleArchitect}) {
+					t.Fatalf("the readers of %s = %v, want the architect alone", notice.Kind, entry.Readers)
+				}
 				if onRoot := noticesOf(t, pool, root, tc.told); len(onRoot) != 1 {
 					t.Fatalf("the %s notices on %s's rows = %+v, want the one the todo wrote", tc.told, root, onRoot)
+				}
+				project, err := claim.ProjectToken(kept.Project)
+				if err != nil {
+					t.Fatalf("project token of %s: %v", kept.Project, err)
+				}
+				var owner claim.Token
+				if err := pgx.BeginFunc(t.Context(), pool, func(tx pgx.Tx) error {
+					walk, err := record.ReadOwnerWalk(t.Context(), record.NewStore(), tx, project, kept.Tree)
+					if err != nil {
+						return err
+					}
+					owner, err = walk.Architect(kept, record.NoticeStartsAtParent(notice.Kind, notice.Role))
+					return err
+				}); err != nil {
+					t.Fatalf("walk to the architect that owns %s: %v", root, err)
+				}
+				if want, err := claim.NewToken(project, root, claim.RoleArchitect); err != nil || owner != want {
+					t.Fatalf("the %s notice goes to %s, want the root's architect %s (%v)", tc.told, owner, want, err)
 				}
 			}
 			if got := taskCounts(t, pool, engine, root, 3); !reflect.DeepEqual(got, counted) {

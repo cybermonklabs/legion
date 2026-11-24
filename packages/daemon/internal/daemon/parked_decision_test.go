@@ -269,6 +269,70 @@ func TestALateChangesRequestLeavesTheNewerParkedDecision(t *testing.T) {
 	}
 }
 
+// A changes request an older daemon queued carries its reason whole, with no time and no words
+// object, so its reason is read against the whole told reason and never against that reason's
+// head at texts.OneAct, which is what a notice this release cut carries (workflow.ChangesSuperseded).
+// Here alice asked for changes at version 3 with a reason of exactly texts.OneAct units, and then
+// again at version 3 with that reason and more after it, which the gate records as told. The newer
+// request's notice, its reason cut to its first texts.OneAct units with the count of the rest, is
+// relayed and kept, and a start claims it. Then the older request's row, which an older daemon
+// queued with its whole reason, drains on the stopped tree. Its reason is the newer reason's head,
+// but it is not the newer reason: it relays nothing, and the newer decision stays kept as it stood,
+// at its own time, with its words and its claim.
+func TestAnOlderChangesRequestQueuedWholeThatIsTheNewerReasonsHeadLeavesTheNewerParkedDecision(t *testing.T) {
+	ctx := context.Background()
+	pool := isolatedOutboxPool(t)
+	records := record.NewStore()
+	noticeTree(t, pool, records, true)
+	at := time.Date(2026, 11, 24, 9, 45, 0, 0, time.UTC)
+	earlier := strings.Repeat("r", texts.OneAct)
+	const more = " and name the rollback path"
+	told := 3
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
+		return records.PutGate(ctx, tx, record.DesignGate{Issue: "LEGION-1", Step: record.DesignStepSpec, ArtifactID: "artifact-1",
+			LatestVersion: 3, ToldChangesVersion: &told, ToldChangesReason: earlier + more, ToldChangesBy: "user:alice",
+			ToldChangesMark: record.EventMark{Seq: 12, At: at}})
+	}); err != nil {
+		t.Fatalf("seed the gate the newer request was told on: %v", err)
+	}
+	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
+	architectClaim(t, sup, "LEGION-1", supervise.StateSuspended)
+	runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, notices: &holderPublisher{},
+		supervisor: sup, project: "legion", now: time.Now}
+	relay := func(notice record.Notice) {
+		t.Helper()
+		row := leasedOutboxRow(t, pool, records, mustOutboxRow(t, "LEGION-1", notice, time.Now()))
+		if err := runner.notice(ctx, row, notice); err != nil {
+			t.Fatalf("relay the changes request whose reason has %d units: %v", len(notice.Reason), err)
+		}
+	}
+	newer, err := record.NoticeOf(workflow.ChangesRequestedNotice("LEGION-1", record.DesignStepSpec, 3, earlier+more, "user:alice", at))
+	if err != nil {
+		t.Fatalf("build the newer notice: %v", err)
+	}
+	if newer.Reason != earlier {
+		t.Fatalf("premise: the newer notice carries %d units of its reason, want its first %d, the older reason whole", len(newer.Reason), texts.OneAct)
+	}
+	relay(newer)
+	if _, err := pool.Exec(ctx, `update parked_decisions set claimed_by = (select max(id) from outbox) where issue = 'LEGION-1'`); err != nil {
+		t.Fatalf("claim the kept decision: %v", err)
+	}
+	kept := keptDecisions(t, pool, records, "LEGION-1")
+	if len(kept) != 1 || kept[0].ClaimedBy == 0 || kept[0].Words == nil || kept[0].Words.Text != earlier || kept[0].Words.Rest != len(more) {
+		t.Fatalf("kept before the older request = %+v, want the newer request kept and claimed, its reason's head kept with the rest %d", kept, len(more))
+	}
+
+	relay(record.Notice{Kind: "design-changes-requested", Version: 3, Reason: earlier, Actor: "user:alice", Ref: "dispatch://LEGION-1/spec"})
+
+	if after := keptDecisions(t, pool, records, "LEGION-1"); len(after) != 1 || !after[0].At.Equal(kept[0].At) || after[0].ClaimedBy != kept[0].ClaimedBy ||
+		!reflect.DeepEqual(after[0].Words, kept[0].Words) {
+		t.Fatalf("kept after the older request = %+v, want the newer %+v as it stood, claimed", after, kept[0])
+	}
+	if told := parkedDecisions(t, pool); len(told) != 1 || told[0].Reason != earlier || told[0].Words["reason"].Rest != len(more) {
+		t.Fatalf("parked-decision notices = %+v, want the one of the newer request, with the rest %d of its reason", told, len(more))
+	}
+}
+
 // A person's changes request whose reason is longer than texts.OneAct is no request the person
 // replaced: the design-changes-requested notice carries the reason cut to its first 4,000 UTF-16
 // units (workflow.ChangesRequestedNotice), while the gate records the whole reason as the request

@@ -344,11 +344,15 @@ func stepRef(key string, step record.DesignStep) string {
 // gate the told review's place (ToldChangesMark), so where both carry a time a notice of another
 // time, read at the microseconds the store keeps a time at, is of another review: two changes
 // requests on one version whose reasons share their first texts.OneAct units carry the same cut
-// reason, and only their times tell them apart. The gate records the whole reason, and the notice
-// carries it cut to texts.OneAct (ChangesRequestedNotice), so the notice is of the told request
-// where it names the told version and its reason is the told reason's head at that bound, or the
-// whole told reason, which a row an older daemon queued carries. A notice or a gate with no time,
-// such as a row an older daemon queued, is read by its version and its reason alone.
+// reason, and only their times tell them apart. The gate records the whole reason. A notice this
+// release cut carries the reason's head at texts.OneAct and counts the units the cut left off in
+// its words object (ChangesRequestedNotice, the reason's Rest), so it is of the told request where
+// its reason is the told reason's head at that bound and its count is what that bound leaves off
+// the told reason. Any other notice carries its reason whole: one this release did not cut, and a
+// row an older daemon queued, which carries no words object and no time. It is of the told request
+// only where its reason is the whole told reason, so an older request whose whole reason is the
+// head of a newer, longer one is not read as that newer one. A notice or a gate with no time, such
+// as a row an older daemon queued, is read by its version and its reason alone.
 func ChangesSuperseded(gates map[record.DesignStep]record.DesignGate, issue string, notice record.Notice) bool {
 	for step, gate := range gates {
 		if stepRef(issue, step) != notice.Ref {
@@ -362,11 +366,13 @@ func ChangesSuperseded(gates map[record.DesignStep]record.DesignGate, issue stri
 		case !notice.At.IsZero() && !gate.ToldChangesMark.At.IsZero() &&
 			!notice.At.Truncate(time.Microsecond).Equal(gate.ToldChangesMark.At.Truncate(time.Microsecond)):
 			return true
-		case notice.Reason == gate.ToldChangesReason:
-			return false
 		}
-		head, _ := texts.Bound(gate.ToldChangesReason, texts.OneAct)
-		return notice.Reason != head
+		cut := notice.Words["reason"].Rest
+		if cut == 0 {
+			return notice.Reason != gate.ToldChangesReason
+		}
+		head, rest := texts.Bound(gate.ToldChangesReason, texts.OneAct)
+		return notice.Reason != head || cut != rest
 	}
 	return false
 }
