@@ -29,6 +29,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/urljoin"
+	"github.com/sjawhar/envoy/redirects"
 )
 
 // StatePath is the daemon route the sampler reads a project's state from. It authenticates
@@ -78,14 +79,10 @@ func WithTimeout(timeout time.Duration) Option {
 func New(baseURL string, options ...Option) *Client {
 	client := &Client{
 		baseURL: strings.TrimSpace(baseURL),
-		http: &http.Client{
-			Timeout: RequestTimeout,
-			// A daemon answers its own routes; it redirects nowhere. Following one would read a
-			// state at a host the project's setting does not name, so a redirect is the answer the
-			// daemon gave and a failed call (ErrUnavailable, naming the status) rather than a
-			// second call.
-			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
-		},
+		// A daemon answers its own routes; it redirects nowhere. Following one would read a state
+		// at a host the project's setting does not name, so a redirect is the answer the daemon
+		// gave and a failed call (ErrUnavailable, naming the status) rather than a second call.
+		http: redirects.Refused(&http.Client{Timeout: RequestTimeout}),
 	}
 	for _, option := range options {
 		option(client)
