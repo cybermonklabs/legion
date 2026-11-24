@@ -319,7 +319,7 @@ fi
 echo "fake broker: issuer=${BROKER_K8S_OIDC_ISSUER:-} callers=${BROKER_API_ACCOUNTS:-} exchange=${BROKER_EXCHANGE_ACCOUNTS:-} read-exchange=${BROKER_EXCHANGE_READ_ACCOUNTS:-} service-logins=${BROKER_SERVICE_LOGINS:-} services=${BROKER_SERVICES:-} pod-registrars=${BROKER_POD_REGISTRARS:-} github=${BROKER_AIRLOCK_TEST_GITHUB_API_BASE:-}" >&2
 echo "fake broker jobs: job-accounts=${BROKER_EXCHANGE_JOB_ACCOUNTS:-} job-workflows=${BROKER_EXCHANGE_JOB_WORKFLOWS:-} github-issuer=${BROKER_EXCHANGE_GITHUB_ISSUER:-} github-audience=${BROKER_EXCHANGE_GITHUB_AUDIENCE:-}" >&2
 echo "fake broker: sign-in issuer=${BROKER_SIGNIN_ISSUER:-} client=${BROKER_SIGNIN_CLIENT_ID:-} secret-file=${BROKER_SIGNIN_CLIENT_SECRET_FILE:-} domain=${BROKER_SIGNIN_DOMAIN:-}" >&2
-echo "fake broker: metrics-listen=${BROKER_METRICS_LISTEN_ADDR:-}" >&2
+echo "fake broker: metrics-listen=${BROKER_METRICS_LISTEN_ADDR:-} public-url=${BROKER_PUBLIC_URL:-}" >&2
 echo "fake broker: store=${BROKER_SECRETS_STORE:-} prefix=${BROKER_SECRETS_PREFIX:-} key-arn=${BROKER_SECRETS_KMS_KEY_ARN:-} key-name=${BROKER_SECRETS_KMS_KEY_NAME:-} memory-secrets=${BROKER_MEMORY_SECRETS_FILE:-}" >&2
 echo "fake broker airlock: profiles=${BROKER_PROFILES_FILE:-} listen=${BROKER_AIRLOCK_LISTEN_ADDR:-} proxy_url=${BROKER_AIRLOCK_PROXY_URL:-} ca_cert=${BROKER_AIRLOCK_CA_CERT_FILE:-} ca_key=${BROKER_AIRLOCK_CA_KEY_FILE:-} upstream_ca=${BROKER_AIRLOCK_TEST_UPSTREAM_CA_FILE:-} resolve=[${BROKER_AIRLOCK_TEST_RESOLVE:-}] dial_allow=[${BROKER_AIRLOCK_TEST_DIAL_ALLOW:-}] kubernetes_service_host=[${KUBERNETES_SERVICE_HOST-unset}]" >&2
 printf '{"time":"2026-01-01T00:00:00Z","severity":"INFO","message":"broker listening","addr":"127.0.0.1:%s"}\n' "$$" >&2
@@ -1102,6 +1102,9 @@ gcp_workdir="$(grep -o 'dev-broker: workdir [^ ]*' "$log1" | head -n1 | cut -d' 
 if ! grep -qF "fake broker: store=gcp-secret-manager prefix=${gcp_prefix} key-arn= key-name=${gcp_key} memory-secrets=" "$log1" \
   || [[ -e "${gcp_workdir}/memory-secrets.json" ]] \
   || [[ "$(jq -c . "${gcp_workdir}/profiles.json" 2>/dev/null || true)" != '{"profiles":[]}' ]] \
+  || grep -qE 'fake broker: metrics-listen=[^ ]* public-url=[^ ]*:0$' "$log1" \
+  || ! grep -qE 'fake broker airlock: .* upstream_ca= resolve=\[\] dial_allow=\[\]' "$log1" \
+  || ! grep -qE 'fake broker: .* github= *$' "$log1" \
   || ! grep -qF "  secret store:        gcp-secret-manager under ${gcp_prefix}, key ${gcp_key}" "$log1"; then
   cat "$log1" >&2
   echo "FAIL: a DEV_BROKER_GCP_* run does not start its broker on Secret Manager under that prefix and key, with no memory secrets file and a profiles file naming none, and say so" >&2

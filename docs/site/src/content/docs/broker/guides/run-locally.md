@@ -244,9 +244,9 @@ kind: session
 operator: ada@example.com
 projects: -
 lease_expires_at: 2026-10-03T03:36:40Z
-source: the broker AGENT_SECRETS_URL names (AWS Secrets Manager)
+source: the broker AGENT_SECRETS_URL names (memory)
 $ agent-secrets DEMO_READ_TOKEN -- printenv DEMO_READ_TOKEN
-agent-secrets: DEMO_READ_TOKEN from the broker AGENT_SECRETS_URL names (AWS Secrets Manager)
+agent-secrets: DEMO_READ_TOKEN from the broker AGENT_SECRETS_URL names (memory)
 demo-read-token-value
 $ agent-secrets DEMO_API_KEY --reason "Deploy the example service" -- sh -c 'echo "deploying with a ${#DEMO_API_KEY}-character key"'
 ```
@@ -280,7 +280,7 @@ passed, while the session lives on:
 
 ```console
 $ agent-secrets DEMO_READ_TOKEN --ttl 2m -- printenv DEMO_READ_TOKEN
-agent-secrets: DEMO_READ_TOKEN from the broker AGENT_SECRETS_URL names (AWS Secrets Manager)
+agent-secrets: DEMO_READ_TOKEN from the broker AGENT_SECRETS_URL names (memory)
 demo-read-token-value
 $ agent-secrets self
 enrollment_id: 7cf72ec3-d10f-46fd-984f-ddd856b229c2
@@ -288,7 +288,7 @@ kind: session
 operator: ada@example.com
 projects: -
 lease_expires_at: 2026-10-11T01:51:13Z
-source: the broker AGENT_SECRETS_URL names (AWS Secrets Manager)
+source: the broker AGENT_SECRETS_URL names (memory)
 grant: f81251ab-6552-450c-9eca-12a793a29f4c (request 86237327-1f78-4c79-82a5-4f71174e71c5, expires 2026-10-11T01:38:14Z)
 ```
 
@@ -312,7 +312,7 @@ Every row is a login to the broker AGENT_SECRETS_URL names.
 $ agent-secrets grant list
 GRANT_ID                              SECRETS          GRANTED    APPROVER  DECIDED_BY  SESSION                                       OPERATOR         EXPIRES
 8fe92a26-b355-4c28-8679-60e8ce98b1d9  DEMO_READ_TOKEN  automatic  -         -           session/example-host-devbox:2856922:35395441  ada@example.com  session-end
-Every row is a grant from the broker AGENT_SECRETS_URL names (AWS Secrets Manager).
+Every row is a grant from the broker AGENT_SECRETS_URL names (memory).
 ```
 
 Each list says on standard error which broker and store its rows are from, so the table on
@@ -649,7 +649,7 @@ $ curl -s -X POST -d '{"mode": "fail-once"}' "$DEV_BROKER_GITHUB_ANSWER_URL"
 {"mode":"fail-once","repository":""}
 $ AGENT_SECRETS_KEY_DIR=$KEYS agent-secrets DEMO_GITHUB_APP -- sh -c 'printf %s "$DEMO_GITHUB_APP" | jq -c ".installations | map_values(.installation_id)"'
 agent-secrets: the profile DEMO_GITHUB_APP left out issues, statuses:write, workflows for acme-org, since the installation there does not hold them
-agent-secrets: DEMO_GITHUB_APP from the broker AGENT_SECRETS_URL names (AWS Secrets Manager)
+agent-secrets: DEMO_GITHUB_APP from the broker AGENT_SECRETS_URL names (memory)
 {"acme-org":7}
 $ curl -s "$DEV_BROKER_METRICS_URL" | grep -v '^#'
 broker_policy_store_reads_total{read="describe"} 2
@@ -797,7 +797,7 @@ command's call to S goes through the broker:
 
 ```console
 $ agent-secrets AIRLOCK_DEMO_TOKEN --reason 'read the example service behind the airlock' -- sh -c 'printf "AIRLOCK_DEMO_TOKEN: %s characters, starting %s\n" "${#AIRLOCK_DEMO_TOKEN}" "${AIRLOCK_DEMO_TOKEN%%-*}"; printf "Authorization: Bearer %s" "$AIRLOCK_DEMO_TOKEN" | curl -sS https://s.airlock.test/read -H @-'
-agent-secrets: AIRLOCK_DEMO_TOKEN from the broker AGENT_SECRETS_URL names (AWS Secrets Manager)
+agent-secrets: AIRLOCK_DEMO_TOKEN from the broker AGENT_SECRETS_URL names (memory)
 AIRLOCK_DEMO_TOKEN: 58 characters, starting agent
 the s stand-in answered
 ```
@@ -823,7 +823,7 @@ id:
 
 ```console
 $ agent-secrets AIRLOCK_SCOPED_TOKEN --reason 'a path its rule does not allow' -- sh -c 'printf "Authorization: Bearer %s" "$AIRLOCK_SCOPED_TOKEN" | curl -sS -o /dev/stdout -w " (%{http_code})\n" -X POST https://s.airlock.test/write -H @-'
-agent-secrets: AIRLOCK_SCOPED_TOKEN from the broker AGENT_SECRETS_URL names (AWS Secrets Manager)
+agent-secrets: AIRLOCK_SCOPED_TOKEN from the broker AGENT_SECRETS_URL names (memory)
 airlock: not allowed by rule (answer c7f4a80240ca972a4baa9eb47b6648f2)
  (403)
 ```

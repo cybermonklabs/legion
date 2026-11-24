@@ -262,6 +262,12 @@ OPERATOR_FILE="$WORK_DIR/operator"
 PROFILES_FILE="$WORK_DIR/profiles.json"
 PROXY_FRONT_JSON="$WORK_DIR/proxy-front.json"
 PROXY_FRONT_LOG="$WORK_DIR/proxy-front.log"
+# The front the broker's own API sits behind under DEV_BROKER_GCP_*, bound before the broker and
+# pointed at its port once it logs it: with a real store the broker refuses a BROKER_PUBLIC_URL
+# of port 0, which is what the memory stack uses.
+API_FRONT_JSON="$WORK_DIR/api-front.json"
+API_FRONT_LOG="$WORK_DIR/api-front.log"
+API_BACKENDS="$WORK_DIR/api-backends"
 PROXY_BACKENDS="$WORK_DIR/proxy-backends"
 # The stand-in GitHub, its files and the accounts it answers as installations of the App. The
 # three are one account for a check that narrows a token to a repository of it, and the pair
@@ -371,14 +377,15 @@ BROKER_PID=""
 ISSUER_PID=""
 STANDS_PID=""
 PROXY_FRONT_PID=""
+API_FRONT_PID=""
 # Set once this run's own create database succeeded: a run whose create failed (the name taken by
 # another run) must never drop that other run's database.
 CREATED_DB=false
 cleanup() {
-  # The broker first, then the front before its proxy, the issuer whose keys it reads and the
-  # stand-in GitHub it mints at.
+  # The broker first, then the fronts before its API and its proxy, the issuer whose keys it
+  # reads and the stand-in GitHub it mints at.
   local pid
-  for pid in "$BROKER_PID" "$PROXY_FRONT_PID" "$ISSUER_PID" "$STANDS_PID"; do
+  for pid in "$BROKER_PID" "$API_FRONT_PID" "$PROXY_FRONT_PID" "$ISSUER_PID" "$STANDS_PID"; do
     if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
       kill "$pid" 2>/dev/null || true
       wait "$pid" 2>/dev/null || true
@@ -676,6 +683,21 @@ echo "dev-broker: starting the proxy's front..." >&2
 PROXY_FRONT_PID=$!
 await "the proxy's front" 30 "$PROXY_FRONT_LOG" 'front listening addr=' "$PROXY_FRONT_PID"
 PROXY_URL="$(jq -r .url "$PROXY_FRONT_JSON")"
+# Under DEV_BROKER_GCP_* the broker's store is a real one, so its start is a production start:
+# a BROKER_PUBLIC_URL of port 0 and the airlock's test settings are refused with any store but
+# the memory one. A second front, bound here as the proxy's is and pointed at the broker's own
+# port once the broker logs it, gives that start a public URL with a real port.
+API_FRONT_URL=""
+if [ "$SECRETS_STORE" != "memory" ]; then
+  : >"$API_FRONT_LOG"
+  : >"$API_BACKENDS"
+  "$STANDS_BIN" front --listen 127.0.0.1:0 --backends-file "$API_BACKENDS" \
+    >"$API_FRONT_JSON" 2> >(trap '' TERM INT; exec tee -a "$API_FRONT_LOG" >&2) &
+  API_FRONT_PID=$!
+  await "the broker's front" 30 "$API_FRONT_LOG" 'front listening addr=' "$API_FRONT_PID"
+  API_FRONT_URL="$(jq -r .url "$API_FRONT_JSON")"
+  PUBLIC_URL="$API_FRONT_URL"
+fi
 # Where the proxy finds the github-tls stand, and that it may dial it there although it is a
 # loopback address, when the stands bound it on port 443 (the header); empty is neither.
 GITHUB_RESOLVE=""
@@ -683,6 +705,16 @@ GITHUB_DIAL_ALLOW=""
 if [ -n "${DEV_BROKER_PROXIED_GITHUB_IP:-}" ]; then
   GITHUB_RESOLVE="$GITHUB_PROXIED_HOST=$DEV_BROKER_PROXIED_GITHUB_IP"
   GITHUB_DIAL_ALLOW="$GITHUB_PROXIED_HOST:443"
+fi
+# The airlock's test settings are a local run's, which a start on a real store may not set; with
+# one, the stands' GitHub and CA are left out, and no profile of such a run names a proxy block.
+TEST_GITHUB_URL="$GITHUB_URL"
+TEST_CA_FILE="$CA_CERT_FILE"
+if [ "$SECRETS_STORE" != "memory" ]; then
+  TEST_GITHUB_URL=""
+  TEST_CA_FILE=""
+  GITHUB_RESOLVE=""
+  GITHUB_DIAL_ALLOW=""
 fi
 
 # --- Start the broker: BROKER_LISTEN_ADDR/BROKER_PUBLIC_URL of port 0 (above); its own log names
@@ -727,13 +759,13 @@ BROKER_EXCHANGE_GITHUB_AUDIENCE="$WORKFLOW_AUDIENCE" \
 BROKER_SERVICE_LOGINS="$SERVICE=$REGISTRAR_ACCOUNT" \
 BROKER_POD_REGISTRARS="$REGISTRAR_ACCOUNT=$EXCHANGE_ACCOUNT" \
 BROKER_SERVICES="$SERVICE=$EXCHANGE_ACCOUNT" \
-BROKER_AIRLOCK_TEST_GITHUB_API_BASE="$GITHUB_URL" \
+BROKER_AIRLOCK_TEST_GITHUB_API_BASE="$TEST_GITHUB_URL" \
 BROKER_PROFILES_FILE="$PROFILES_FILE" \
 BROKER_AIRLOCK_LISTEN_ADDR="127.0.0.1:0" \
 BROKER_AIRLOCK_PROXY_URL="$PROXY_URL" \
 BROKER_AIRLOCK_CA_CERT_FILE="$CA_CERT_FILE" \
 BROKER_AIRLOCK_CA_KEY_FILE="$CA_KEY_FILE" \
-BROKER_AIRLOCK_TEST_UPSTREAM_CA_FILE="$CA_CERT_FILE" \
+BROKER_AIRLOCK_TEST_UPSTREAM_CA_FILE="$TEST_CA_FILE" \
 BROKER_AIRLOCK_TEST_RESOLVE="$GITHUB_RESOLVE" \
 BROKER_AIRLOCK_TEST_DIAL_ALLOW="$GITHUB_DIAL_ALLOW" \
 KUBERNETES_SERVICE_HOST='' \
@@ -779,6 +811,13 @@ fi
 BOUND_ADDR="$LOGGED_ADDR"
 PUBLIC_URL="http://${BOUND_ADDR}"
 LISTEN_ADDR="$BOUND_ADDR"
+# With a real store the broker sits behind the front bound above, whose address it was started
+# with: the front now learns the port the broker bound, and the clients are given the front's
+# URL, which is the broker's own public URL.
+if [ -n "$API_FRONT_URL" ]; then
+  printf '%s\n' "$BOUND_ADDR" >"$API_BACKENDS"
+  PUBLIC_URL="$API_FRONT_URL"
+fi
 # The metrics port, bound by the same boot after the API's and logged just after it.
 if ! await_logged_addr 'broker metrics listening'; then
   echo "dev-broker: broker never logged its metrics address within 15s" >&2
