@@ -1,13 +1,11 @@
-// Package principal holds the two forms in which Dispatch, the secrets broker and the infra
-// component name a caller: a person's login and a Kubernetes service account's subject. Each of
-// them checks its settings and its input against these rules, so the three agree on what they
-// accept. It imports nothing but the standard library, so a tool that checks one of these forms
+// Package principal holds the form in which Dispatch and the infra component name a person: a
+// person's login. Each of them checks its settings and its input against this rule, so they agree
+// on what they accept. It imports nothing but the standard library, so a tool that checks this form
 // compiles nothing of Dispatch's model with it.
 package principal
 
 import (
 	"fmt"
-	"regexp"
 	"strings"
 	"unicode"
 )
@@ -41,9 +39,3 @@ func CheckPersonLogin(login string) error {
 	}
 	return nil
 }
-
-// ServiceAccountSubject is a Kubernetes service account's subject as its projected token carries
-// it, system:serviceaccount:<namespace>:<name>, the namespace a DNS label and the name a DNS
-// subdomain, so it holds no comma. Later slices hold to it Dispatch's service-account settings, the
-// infra component's, and the secrets broker's own service-account settings and exchange entries.
-var ServiceAccountSubject = regexp.MustCompile(`^system:serviceaccount:[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?:[a-z0-9]([-.a-z0-9]{0,251}[a-z0-9])?$`)

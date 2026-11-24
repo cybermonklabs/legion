@@ -5,9 +5,11 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -374,10 +376,16 @@ func TestIssueComponentsInputValidation(t *testing.T) {
 		"external component": {map[string]any{"mode": "explicit", "ids": []string{"github"}}, "external components cannot be attached: github"},
 		"mixed unknown":      {map[string]any{"mode": "explicit", "ids": []string{"daemon", "nope", "web"}}, "CORE has no component nope, web"},
 		"empty ids":          {map[string]any{"mode": "explicit", "ids": []string{}}, "at least one component"},
+		"explicit, no ids":   {map[string]any{"mode": "explicit"}, "at least one component"},
+		"too many ids":       {map[string]any{"mode": "explicit", "ids": slices.Repeat([]string{"daemon"}, contracts.MaxIssueComponents+1)}, "components.ids is 1 over the"},
 		"bad slug":           {map[string]any{"mode": "explicit", "ids": []string{"Daemon"}}, "not a component id"},
 		"none without why":   {map[string]any{"mode": "none", "reason": "  "}, "components.reason"},
-		"unknown mode":       {map[string]any{"mode": "maybe"}, "mode must be inherit, explicit, or none"},
-		"not an object":      {"legion", "components must be null or an object"},
+		"none, no reason":    {map[string]any{"mode": "none"}, "components.reason"},
+		// Go's strings.TrimSpace reads U+0085 as space, which JavaScript's trim does not: the
+		// issue tools hold the reason to Go's rule (goBlankPattern), and this row holds the route.
+		"none, NEL reason": {map[string]any{"mode": "none", "reason": "\u0085"}, "components.reason"},
+		"unknown mode":     {map[string]any{"mode": "maybe"}, "mode must be inherit, explicit, or none"},
+		"not an object":    {"legion", "components must be null or an object"},
 	} {
 		response := patchComponents(t, handler, issue.Key, tc.components)
 		body := response.Body.String()
@@ -408,6 +416,11 @@ func TestIssueComponentsInputValidation(t *testing.T) {
 	}
 	if accepted := patchComponents(t, handler, issue.Key, map[string]any{"mode": "none", "reason": "process"}); accepted.Code != http.StatusOK {
 		t.Fatalf("none on a closed issue: status=%d body=%s", accepted.Code, accepted.Body.String())
+	}
+	// U+FEFF is content to Go's strings.TrimSpace, though JavaScript's trim drops it, so the route
+	// takes it as a reason, as the issue tools do.
+	if accepted := patchComponents(t, handler, issue.Key, map[string]any{"mode": "none", "reason": "\uFEFF"}); accepted.Code != http.StatusOK {
+		t.Fatalf("none with a U+FEFF reason: status=%d body=%s", accepted.Code, accepted.Body.String())
 	}
 }
 

@@ -5,10 +5,11 @@
 //
 // A priority belongs to no project, so each of the three writes is classed scopeDeployment
 // (writeClasses, routes_table.go): a credential scoped to one project is refused
-// PROJECT_SCOPE_DEPLOYMENT, and a broker token naming a service and no person is refused by
-// writeNeedsASignedInPerson, as it is refused every write. No guard of this file's own stands
-// between an agent and a priority: a person signed in, a personal token, the shared token every
-// pod carries and a broker token naming a person each write one.
+// PROJECT_SCOPE_DEPLOYMENT, and a machine's broker token naming a service and no person is
+// refused by writeNeedsASignedInPerson, as it is refused every write. No guard of this file's own
+// stands between an agent and a priority: a person signed in, a personal token, the shared token
+// every pod carries, a broker token naming a person and an account entry's broker token naming
+// no person, recorded under its account, each write one.
 package api
 
 import (

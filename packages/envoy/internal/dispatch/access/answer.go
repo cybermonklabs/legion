@@ -12,8 +12,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// Answer is the membership answer for one project and one person (K3), which the secrets broker
-// reads with a token of its own, outside any transaction: the project's owner and visibility, the
+// Answer is the membership answer for one project and one person (K3), which the secrets broker is
+// to read with a token of its own, outside any transaction, through a route a later slice adds: the
 // person's member kind as the answer spells it, whether the rule lets that person see the project,
 // and the project's Slack channels with when that list last changed. It names no repositories. A
 // person no people row holds reads as the broker reads them, a full member, since the broker signs
@@ -47,9 +47,9 @@ func Answer(ctx context.Context, q Querier, key, person string) (model.AccessAns
 }
 
 // PersonAnswer is one person's member kind as the membership answer spells it, and AsOf, the
-// database's now() read in the same statement: the time an answer whose hold the caller could not
-// read (Standing nil or failing) rests on. Held is left for the caller to fill in. Its error names
-// the read that failed and never the person, as MemberKind's does.
+// database's now() read in the same statement: the time the answer rests on. Held and NotHeldUntil
+// are left for the later slice that holds a person's credentials. Its error names the read that
+// failed and never the person, as MemberKind's does.
 func PersonAnswer(ctx context.Context, q Querier, person string) (model.PersonAnswer, error) {
 	login := model.CanonicalLogin(person)
 	var kind string

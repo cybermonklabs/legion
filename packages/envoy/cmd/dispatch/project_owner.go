@@ -35,11 +35,12 @@ const projectOwnerUsage = "project-owner: give a project to another owner with `
 
 // giveProject runs `envoy-dispatch project-owner <KEY> <email>`: it gives project KEY to the full
 // member email names, at any time and whoever owned it before, in one transaction that appends
-// project.access_changed as projectOwnerActor (access.SetOwner), as the owner's own change from the
-// project's Access tab does. It is how an operator gives an owner to a project the boot names as
-// having none (store.EnsureProjectOwners), beside DISPATCH_PROJECT_OWNER_FALLBACK. It exits 0 once
-// the change commits, 2 for wrong arguments, a key no project holds, or an email that is not a
-// full member's, writing nothing, and 1 when the database cannot be opened or written.
+// project.access_changed as projectOwnerActor when the owner changes (access.SetOwner); giving the
+// project to its current owner writes nothing. It is how an operator gives an owner to a project
+// the boot names as having none (store.EnsureProjectOwners), beside
+// DISPATCH_PROJECT_OWNER_FALLBACK. It exits 0 once the change commits or when there is nothing to
+// change, 2 for wrong arguments, a key no project holds, or an email that is not a full member's,
+// writing nothing, and 1 when the database cannot be opened or written.
 func giveProject(ctx context.Context, args []string, databaseURL string, stdout, stderr io.Writer) int {
 	if len(args) != 2 {
 		fmt.Fprintln(stderr, projectOwnerUsage)

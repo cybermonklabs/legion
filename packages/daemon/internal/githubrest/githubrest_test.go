@@ -352,3 +352,34 @@ func TestLimitSaysWhichLimitAnAnswerIs(t *testing.T) {
 		})
 	}
 }
+
+// GitHub's answer that a query ran out of its time is read from the answer's body, however the
+// caller wrapped the answer (NamesTimeout); an error that only quotes the words, and GitHub's
+// other answers, are not it. Answered says which outcomes are GitHub's answers: its data, an
+// answer other than 2xx and GraphQL errors, wrapped or not; a deadline, or any error that carries
+// no answer of GitHub's, is none.
+func TestATimeoutAndAnAnswerAreReadFromGitHubsAnswer(t *testing.T) {
+	timedOut := &Answer{Method: http.MethodPost, Path: "/graphql", Status: http.StatusBadGateway,
+		Body: `{"message":"We couldn't respond to your request in time. Sorry about that. Please try resubmitting your request and contact us if the problem persists."}`}
+	for _, tc := range []struct {
+		name     string
+		err      error
+		timeout  bool
+		answered bool
+	}{
+		{"no error", nil, false, true},
+		{"GitHub's timeout", timedOut, true, true},
+		{"GitHub's timeout, wrapped", fmt.Errorf("read pull requests [86 87] of acme/widgets: %w", timedOut), true, true},
+		{"a 502 of another body", &Answer{Method: http.MethodPost, Path: "/graphql", Status: http.StatusBadGateway, Body: `{"message":"Server Error"}`}, false, true},
+		{"GraphQL errors, wrapped", fmt.Errorf("query: %w", GraphQLErrors{{Type: "NOT_FOUND", Message: "Could not resolve to a PullRequest with the number of 87."}}), false, true},
+		{"the words outside an answer", errors.New("we couldn't respond to your request in time"), false, false},
+		{"a deadline", fmt.Errorf("post: %w", context.DeadlineExceeded), false, false},
+	} {
+		if got := NamesTimeout(tc.err); got != tc.timeout {
+			t.Errorf("%s: NamesTimeout = %t, want %t", tc.name, got, tc.timeout)
+		}
+		if got := Answered(tc.err); got != tc.answered {
+			t.Errorf("%s: Answered = %t, want %t", tc.name, got, tc.answered)
+		}
+	}
+}

@@ -6,7 +6,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
 	"os"
 	"path/filepath"
 	"slices"
@@ -608,19 +607,18 @@ func TestNoTrimmerRunsWithoutSettingsOrInTheControllersPod(t *testing.T) {
 		f.setSettings(trimSettings())
 		trims := useLauncherTrimmer(t, f)
 
-		listener, err := net.Listen("tcp", "127.0.0.1:0")
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() { _ = listener.Close() })
+		token := ownToken("launcher-token")
+		listener := listenForLauncher(t, token)
 		ctx, cancel := context.WithCancel(context.Background())
 		result := make(chan error, 1)
 		stderr := &lockedBuffer{}
 		go func() {
-			result <- Run(ctx, Config{
-				Connect: "tcp://" + listener.Addr().String(), Token: "launcher-token", Sandbox: "legion-legion-legion-208",
+			err := Run(ctx, Config{
+				Connect: "tcp://" + listener.Addr().String(), Token: token, Sandbox: "legion-legion-legion-208",
 				Role: podRoles[0], PodUID: "pod-1", PrivateDir: t.TempDir(), Stderr: stderr, StopGrace: 2 * time.Second,
 			})
+			listener.codeReturned(err)
+			result <- err
 		}()
 		t.Cleanup(func() {
 			cancel()

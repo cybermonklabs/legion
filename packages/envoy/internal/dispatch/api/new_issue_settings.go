@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
@@ -29,7 +30,7 @@ type newIssueSettings struct {
 // states its own refusal, because a startup error and a 400 are read by different people.
 func newIssueSettingsFrom(label, session string) (newIssueSettings, string) {
 	set := newIssueSettings{Label: strings.TrimSpace(label), Session: strings.TrimSpace(session)}
-	if itemblocks.Units16(set.Label) > maxIssueLabel16 {
+	if itemblocks.Units16(set.Label) > contracts.IssueLabelMax {
 		return set, "label"
 	}
 	if set.Session != "" {

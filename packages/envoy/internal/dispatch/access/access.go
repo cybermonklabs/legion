@@ -274,9 +274,9 @@ func SessionClause(sessionExpr, viewerParam string) string {
 //     who sees that project too, and one with neither a list nor a tie by nobody.
 //
 // A listener list counts only from a stored listener answer (route_roster) that has not passed its
-// expires_at; a session of an expired answer is judged as one whose listener sent no list. A reader
-// that asks this rule again over time refreshes the stored answer first (api:
-// refreshRosterForContent), and a refresh that fails leaves it expired, which fails closed.
+// expires_at; a session of an expired answer is judged as one whose listener sent no list. The
+// reader a later slice adds, which asks this rule again over time, is to refresh the stored answer
+// first, and a refresh that fails leaves it expired, which fails closed.
 //
 // The server's viewer, the viewer's own session and an open viewer of a deployment that holds no
 // private project are answered in the statement's own SQL, so those rows call nothing and read
@@ -477,12 +477,12 @@ func PartyClause(partiesExpr, viewerParam string) string {
 // projects its list and its person both see; for every other credential, only which private
 // projects it sees, so with no private project it reads as a credential that lists none, exactly as
 // it read before (R9), and once one is private it sees each public project and the private ones it
-// lists. Viewer.Lists is the credential's list as the caller is told it (whoami) and as a resume
-// reads it: every credential's but a broker token's, whose list is answered only while some project
-// is private or its person is a restricted member, as it was before (R9). Open is every viewer that
-// is not a restricted member's.
-// What a broker token scoped to one project writes is api's too (namedProjectOf): the write scope
-// such a token had before projects could be private, which no list here decides.
+// lists. Viewer.Lists is the credential's list as a later slice's whoami tells the caller it and
+// its resume reads it: every credential's but a broker token's, whose list is answered only while
+// some project is private or its person is a restricted member, as it was before (R9). Open is
+// every viewer that is not a restricted member's.
+// What a broker token scoped to one project writes is decided outside this package, by the write
+// scope such a token had before projects could be private, which no list here decides.
 func Resolve(ctx context.Context, q Querier, actor model.Actor) (model.Viewer, error) {
 	if actor.Credential == nil {
 		return model.Viewer{}, ErrUnresolvedActor

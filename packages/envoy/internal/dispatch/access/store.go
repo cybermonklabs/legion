@@ -461,9 +461,8 @@ func AnyProjectPrivate(ctx context.Context, q Querier) (bool, error) {
 }
 
 // PrivateProjects answers every private project's Slack channels and when they last changed, by
-// key, read live: the list GET /api/v1/access/private-projects answers the secrets broker. It is
-// [] when no project is private, never nil, since a reader takes anything but an array for the
-// answer being down.
+// key, read live: the list a later slice serves to the secrets broker. It is [] when no project is
+// private, never nil, since a reader takes anything but an array for the answer being down.
 func PrivateProjects(ctx context.Context, q Querier) ([]model.PrivateProjectChannels, error) {
 	rows, err := q.Query(ctx, `
 		select key, slack_channels, slack_channels_changed_at from projects where visibility = 'private' order by key
