@@ -2275,91 +2275,136 @@
       {
         "row": "listener-edge-redirect-unparsed",
         "base": "df9ce51fa06750ecad27613e12fc216103f0f2f7",
-        "files": ["packages/envoy/cmd/listener/edge_redirect_location_test.go"],
+        "files": [
+          "packages/envoy/cmd/listener/edge_redirect_location_test.go",
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
+        ],
         "capture": "listener.edge-redirect/unparsed"
       },
       {
         "row": "listener-edge-redirect-elsewhere",
         "base": "df9ce51fa06750ecad27613e12fc216103f0f2f7",
-        "files": ["packages/envoy/cmd/listener/edge_redirect_location_test.go"],
+        "files": [
+          "packages/envoy/cmd/listener/edge_redirect_location_test.go",
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
+        ],
         "capture": "listener.edge-redirect/elsewhere"
       },
       {
         "row": "dispatch-agentsecrets-redirect-unparsed",
         "base": "df9ce51fa06750ecad27613e12fc216103f0f2f7",
-        "files": ["packages/envoy/internal/dispatch/cipher/redirect_location_test.go"],
+        "files": [
+          "packages/envoy/internal/dispatch/cipher/redirect_location_test.go",
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
+        ],
         "capture": "dispatch-agentsecrets.redirect/unparsed"
       },
       {
         "row": "dispatch-agentsecrets-redirect-elsewhere",
         "base": "df9ce51fa06750ecad27613e12fc216103f0f2f7",
-        "files": ["packages/envoy/internal/dispatch/cipher/redirect_location_test.go"],
+        "files": [
+          "packages/envoy/internal/dispatch/cipher/redirect_location_test.go",
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
+        ],
         "capture": "dispatch-agentsecrets.redirect/elsewhere"
       },
       {
         "row": "wake-redirect-unparsed",
         "base": "df9ce51fa06750ecad27613e12fc216103f0f2f7",
-        "files": ["packages/envoy/internal/cipher/wake/redirect_location_test.go"],
+        "files": [
+          "packages/envoy/internal/cipher/wake/redirect_location_test.go",
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
+        ],
         "capture": "wake.redirect/unparsed"
       },
       {
         "row": "wake-redirect-elsewhere",
         "base": "df9ce51fa06750ecad27613e12fc216103f0f2f7",
-        "files": ["packages/envoy/internal/cipher/wake/redirect_location_test.go"],
+        "files": [
+          "packages/envoy/internal/cipher/wake/redirect_location_test.go",
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
+        ],
         "capture": "wake.redirect/elsewhere"
       },
       {
         "row": "judge-redirect-unparsed",
         "base": "df9ce51fa06750ecad27613e12fc216103f0f2f7",
-        "files": ["packages/envoy/internal/cipher/judge/redirect_location_test.go"],
+        "files": [
+          "packages/envoy/internal/cipher/judge/redirect_location_test.go",
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
+        ],
         "capture": "judge.redirect/unparsed"
       },
       {
         "row": "judge-redirect-elsewhere",
         "base": "df9ce51fa06750ecad27613e12fc216103f0f2f7",
-        "files": ["packages/envoy/internal/cipher/judge/redirect_location_test.go"],
+        "files": [
+          "packages/envoy/internal/cipher/judge/redirect_location_test.go",
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
+        ],
         "capture": "judge.redirect/elsewhere"
       },
       {
         "row": "dispatchread-redirect-unparsed",
         "base": "df9ce51fa06750ecad27613e12fc216103f0f2f7",
-        "files": ["packages/envoy/internal/cipher/dispatchread/redirect_location_test.go"],
+        "files": [
+          "packages/envoy/internal/cipher/dispatchread/redirect_location_test.go",
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
+        ],
         "capture": "dispatchread.redirect/unparsed"
       },
       {
         "row": "dispatchread-redirect-elsewhere",
         "base": "df9ce51fa06750ecad27613e12fc216103f0f2f7",
-        "files": ["packages/envoy/internal/cipher/dispatchread/redirect_location_test.go"],
+        "files": [
+          "packages/envoy/internal/cipher/dispatchread/redirect_location_test.go",
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
+        ],
         "capture": "dispatchread.redirect/elsewhere"
       },
       {
         "row": "brokertoken-mint-redirect",
         "base": "df9ce51fa06750ecad27613e12fc216103f0f2f7",
-        "files": ["packages/envoy/internal/ciphertoken/redirect_location_test.go"],
+        "files": [
+          "packages/envoy/internal/ciphertoken/redirect_location_test.go",
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
+        ],
         "capture": "brokertoken.mint-redirect"
       },
       {
         "row": "brokertoken-introspect-redirect",
         "base": "df9ce51fa06750ecad27613e12fc216103f0f2f7",
-        "files": ["packages/envoy/internal/ciphertoken/redirect_location_test.go"],
+        "files": [
+          "packages/envoy/internal/ciphertoken/redirect_location_test.go",
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
+        ],
         "capture": "brokertoken.introspect-redirect"
       },
       {
         "row": "embed-redirect-azure",
         "base": "df9ce51fa06750ecad27613e12fc216103f0f2f7",
-        "files": ["packages/envoy/internal/dispatch/embed/redirect_location_test.go"],
+        "files": [
+          "packages/envoy/internal/dispatch/embed/redirect_location_test.go",
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
+        ],
         "capture": "embed.redirect/azure"
       },
       {
         "row": "embed-redirect-entra",
         "base": "df9ce51fa06750ecad27613e12fc216103f0f2f7",
-        "files": ["packages/envoy/internal/dispatch/embed/redirect_location_test.go"],
+        "files": [
+          "packages/envoy/internal/dispatch/embed/redirect_location_test.go",
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
+        ],
         "capture": "embed.redirect/entra"
       },
       {
         "row": "oidc-revoke-redirect",
         "base": "df9ce51fa06750ecad27613e12fc216103f0f2f7",
-        "files": ["packages/envoy/internal/oidc/redirect_location_test.go"],
+        "files": [
+          "packages/envoy/internal/oidc/redirect_location_test.go",
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
+        ],
         "capture": "oidc.revoke-redirect"
       },
       {
@@ -3500,6 +3545,111 @@
         "base": "472691e2057f31b65a93752540da80abf6ed6f46",
         "files": ["packages/daemon/internal/appauth/installation_id_words_test.go"],
         "capture": "appauth.answer-words/installation-id-limited"
+      },
+      {
+        "row": "agent-secrets-userinfo-redirect-followed-other-port",
+        "base": "472691e2057f31b65a93752540da80abf6ed6f46",
+        "files": ["packages/envoy/cmd/cipher/userinfo_hop_test.go"],
+        "capture": "agent-secrets.redirect-followed/other-port"
+      },
+      {
+        "row": "agent-secrets-userinfo-redirect-followed-other-host",
+        "base": "472691e2057f31b65a93752540da80abf6ed6f46",
+        "files": ["packages/envoy/cmd/cipher/userinfo_hop_test.go"],
+        "capture": "agent-secrets.redirect-followed/other-host"
+      },
+      {
+        "row": "mcpbridge-relative-endpoint-refused",
+        "base": "472691e2057f31b65a93752540da80abf6ed6f46",
+        "files": ["packages/envoy/internal/mcpbridge/relative_endpoint_test.go"],
+        "capture": "mcpbridge.relative-endpoint/refused"
+      },
+      {
+        "row": "mcpbridge-relative-endpoint-dropped",
+        "base": "472691e2057f31b65a93752540da80abf6ed6f46",
+        "files": ["packages/envoy/internal/mcpbridge/relative_endpoint_test.go"],
+        "capture": "mcpbridge.relative-endpoint/dropped"
+      },
+      {
+        "row": "mcpbridge-sse-url-unparsed",
+        "base": "472691e2057f31b65a93752540da80abf6ed6f46",
+        "files": [
+          "packages/envoy/internal/mcpbridge/sse_url_test.go",
+          "packages/envoy/internal/mcpbridge/relative_endpoint_test.go"
+        ],
+        "capture": "mcpbridge.sse-url/unparsed"
+      },
+      {
+        "row": "claudebridge-unanswered-name-fragment",
+        "base": "472691e2057f31b65a93752540da80abf6ed6f46",
+        "files": ["packages/daemon/internal/claudebridge/turnoutcome_name_test.go"],
+        "capture": "claudebridge.unanswered-name/fragment"
+      },
+      {
+        "row": "workspace-git-words-fsck-userinfo",
+        "base": "472691e2057f31b65a93752540da80abf6ed6f46",
+        "files": ["packages/daemon/internal/workspace/git_words_test.go"],
+        "capture": "workspace.git-words/fsck-userinfo"
+      },
+      {
+        "row": "workspace-git-words-fsck-userinfo-encoded",
+        "base": "472691e2057f31b65a93752540da80abf6ed6f46",
+        "files": ["packages/daemon/internal/workspace/git_words_test.go"],
+        "capture": "workspace.git-words/fsck-userinfo-encoded"
+      },
+      {
+        "row": "workspace-git-words-log-userinfo",
+        "base": "472691e2057f31b65a93752540da80abf6ed6f46",
+        "files": ["packages/daemon/internal/workspace/git_words_test.go"],
+        "capture": "workspace.git-words/log-userinfo"
+      },
+      {
+        "row": "workspace-git-words-delta-refspec",
+        "base": "472691e2057f31b65a93752540da80abf6ed6f46",
+        "files": ["packages/daemon/internal/workspace/git_words_test.go"],
+        "capture": "workspace.git-words/delta-refspec"
+      },
+      {
+        "row": "workspace-git-words-head-not-branch",
+        "base": "472691e2057f31b65a93752540da80abf6ed6f46",
+        "files": ["packages/daemon/internal/workspace/git_words_test.go"],
+        "capture": "workspace.git-words/head-not-branch"
+      },
+      {
+        "row": "workspace-git-words-prune-ref",
+        "base": "472691e2057f31b65a93752540da80abf6ed6f46",
+        "files": ["packages/daemon/internal/workspace/git_words_test.go"],
+        "capture": "workspace.git-words/prune-ref"
+      },
+      {
+        "row": "workspace-git-words-follow-ref",
+        "base": "472691e2057f31b65a93752540da80abf6ed6f46",
+        "files": ["packages/daemon/internal/workspace/git_words_test.go"],
+        "capture": "workspace.git-words/follow-ref"
+      },
+      {
+        "row": "appauth-answer-words-listed-owner-left-out",
+        "base": "472691e2057f31b65a93752540da80abf6ed6f46",
+        "files": ["packages/daemon/internal/appauth/listed_owner_words_test.go"],
+        "capture": "appauth.answer-words/listed-owner-left-out"
+      },
+      {
+        "row": "appauth-answer-words-listed-owner-no-owner",
+        "base": "472691e2057f31b65a93752540da80abf6ed6f46",
+        "files": ["packages/daemon/internal/appauth/listed_owner_words_test.go"],
+        "capture": "appauth.answer-words/listed-owner-no-owner"
+      },
+      {
+        "row": "proxy-certificate-words-macos-untrusted",
+        "base": "472691e2057f31b65a93752540da80abf6ed6f46",
+        "files": ["packages/envoy/internal/cipher/proxy/certificate_words_test.go"],
+        "capture": "proxy.certificate-words/macos-untrusted"
+      },
+      {
+        "row": "proxy-certificate-words-macos-expired",
+        "base": "472691e2057f31b65a93752540da80abf6ed6f46",
+        "files": ["packages/envoy/internal/cipher/proxy/certificate_words_test.go"],
+        "capture": "proxy.certificate-words/macos-expired"
       }
     ],
     "boundary_fields": {
@@ -5649,7 +5799,7 @@
       "requirement": "r3-each-site",
       "package": "./internal/redact",
       "test": "TestThePublicNameTableHoldsOnlyContractNamesNoCredentialTravelsUnder",
-      "production": "redact publicRequestNames"
+      "production": "redact publicRequestNames and protocolMethods: every entry names its contract and each route in its source's words, or for a method's every path a protocol of protocolMethods its source cites; every protocol is a method's every path an entry cites"
     },
     {
       "id": "public-name-filter-go",
@@ -5683,70 +5833,70 @@
       "id": "redact-routes-listener-messages",
       "requirement": "r3-each-site",
       "package": "./internal/redact",
-      "test": "TestAListenerMessagesNamesArePublicOnlyOnTheSendAndPublishRoutes",
+      "test": "TestPublicRoutesReadAsTheSharedTableSays/listener-messages",
       "production": "redact.requestTokens with the public-name table's routes: a listener message's target_session, message, payload, expects_reply, topic and dedupe_key print on POST /v1/messages/send or POST /v1/messages/publish as their contract names them, and are redacted on the other route, another method, a path below or under a base path, and another server's route"
     },
     {
       "id": "redact-routes-listener-reads",
       "requirement": "r3-each-site",
       "package": "./internal/redact",
-      "test": "TestAListenerReadsNamesArePublicOnlyOnItsRegistryReads",
+      "test": "TestPublicRoutesReadAsTheSharedTableSays/listener-reads",
       "production": "redact.requestTokens with the public-name table's routes: include prints on GET /v1/sessions, GET /v1/roles/{role} and GET /v1/registry/{id}, and issue on GET /v1/legion/agents, and each is redacted below those routes, on a POST and on the listener's other reads"
     },
     {
       "id": "redact-routes-daemon-claims",
       "requirement": "r3-each-site",
       "package": "./internal/redact",
-      "test": "TestARoleIsPublicOnlyOnTheDaemonsOperatorClaimRoutes",
+      "test": "TestPublicRoutesReadAsTheSharedTableSays/daemon-claims",
       "production": "redact.requestTokens with the public-name table's routes: role prints on POST /legion/v1/operator/claims and the POST routes below it, and is redacted on the list's GET and on the daemon's other routes"
     },
     {
       "id": "redact-routes-enrollments",
       "requirement": "r3-each-site",
       "package": "./internal/redact",
-      "test": "TestAnEnrollmentsNamesArePublicOnlyOnPostEnrollments",
+      "test": "TestPublicRoutesReadAsTheSharedTableSays/enrollments",
       "production": "redact.requestTokens with the public-name table's routes: an enrollment's kind, runtime_id, session_id, operator, thumbprint and projects print on POST /v1/enrollments and are redacted below it, on a GET and on the broker's other routes"
     },
     {
       "id": "redact-routes-broker-requests",
       "requirement": "r3-each-site",
       "package": "./internal/redact",
-      "test": "TestTheBrokersRequestAndReleaseNamesArePublicOnlyOnTheirRoutes",
+      "test": "TestPublicRoutesReadAsTheSharedTableSays/broker-requests",
       "production": "redact.requestTokens with the public-name table's routes: wait prints on GET /v1/requests/{id}, owner and repositories on POST /v1/requests and POST /v1/grants/{id}/values, reason and command on the release alone, and each is redacted on any other of the broker's paths or methods"
     },
     {
       "id": "redact-routes-token-exchange",
       "requirement": "r3-each-site",
       "package": "./internal/redact",
-      "test": "TestATokenExchangesNamesArePublicOnlyOnItsRoutes",
+      "test": "TestPublicRoutesReadAsTheSharedTableSays/token-exchange",
       "production": "redact.requestTokens with the public-name table's routes: the broker's session, projects and launcher_credential print on POST /v1/oauth/token and the token request's grant_type, token types and audience on any POST, while client_id and scope print on any request; the broker's names on another path or a GET, and a token request's on a GET or a PUT, are redacted"
     },
     {
       "id": "redact-routes-iam-generate-access-token",
       "requirement": "r3-each-site",
       "package": "./internal/redact",
-      "test": "TestAnImpersonationsNamesArePublicOnlyOnGenerateAccessToken",
+      "test": "TestPublicRoutesReadAsTheSharedTableSays/iam-generate-access-token",
       "production": "redact.requestTokens with the public-name table's routes: delegates and lifetime print on POST /v1/projects/{project}/serviceAccounts/{account}:generateAccessToken and are redacted on generateIdToken, a GET, the account's own path and a segment with no account"
     },
     {
       "id": "redact-routes-github-pagination",
       "requirement": "r3-each-site",
       "package": "./internal/redact",
-      "test": "TestAPageNumberIsPublicOnlyOnAGet",
+      "test": "TestPublicRoutesReadAsTheSharedTableSays/github-pagination",
       "production": "redact.requestTokens with the public-name table's routes: GitHub's page and per_page print on a GET of any path and are redacted in a POST's body"
     },
     {
       "id": "redact-routes-metadata-flavor",
       "requirement": "r3-each-site",
       "package": "./internal/redact",
-      "test": "TestAMetadataFlavorIsPublicOnlyOnAMetadataRead",
+      "test": "TestPublicRoutesReadAsTheSharedTableSays/metadata-flavor",
       "production": "redact.requestTokens with the public-name table's routes: Metadata-Flavor prints on a GET of /computeMetadata/v1 or below it and is redacted on a PUT, the metadata server's root and another server's path"
     },
     {
       "id": "redact-routes-dispatch-writes",
       "requirement": "r3-each-site",
       "package": "./internal/redact",
-      "test": "TestADaemonsDispatchWriteNamesArePublicOnlyOnItsWriteRoutes",
+      "test": "TestPublicRoutesReadAsTheSharedTableSays/dispatch-writes",
       "production": "redact.requestTokens with the public-name table's routes: kind prints on Dispatch's claim release, message, document upload, gated-steps, design-gates, role-holder, step, rating and plan writes and role on the role-holder, step and rating writes; kind on the issue's PATCH, the claim route's POST, below a route, on a step list with no record id and on a comment, role on the claim's release, and a role holder's or a step's session are redacted"
     },
     {
@@ -7553,7 +7703,7 @@
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/workspace",
       "test": "TestARunFromGitHubPrintsNoRedirectTargetsCredentials",
-      "production": "workspace fetchCredential.scrub and remote.scrub: a run under the one-shot credential gives its stderr through the URL rule (redact.URLCredentials) after the token scrub, so git's refusal of a redirect names its Location with no query value or user information in Fetch's error and log lines, the shared clone's fetch's and its clone's"
+      "production": "workspace withoutCredentials, through fetchCredential.scrub and remote.shown: a run under the one-shot credential gives its stderr through the URL rule (redact.URLCredentials) after the token scrub, so git's refusal of a redirect names its Location with no query value or user information in Fetch's error and log lines, the shared clone's fetch's and its clone's"
     },
     {
       "id": "workspace-git-scrub-runs",
@@ -7602,13 +7752,13 @@
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/workspace",
       "test": "TestARunFromGitHubPrintsNoRedirectTargetsCredentials",
-      "production": "(github.com/sjawhar/legion/daemon/internal/workspace.remote).shown: the shared clone's steps (cloneSteps.runIn) and its fetch (ensureFetchConfiguration)",
-      "function": "(github.com/sjawhar/legion/daemon/internal/workspace.remote).shown",
+      "production": "github.com/sjawhar/legion/daemon/internal/workspace.shownWithoutCredentials: the one print of a stderr an error is made of, the fail-closed rule after the one scrub (withoutCredentials), which the shared clone's steps (cloneSteps.runIn) and its fetch (ensureFetchConfiguration) take through remote.shown, and Fetch's commands on what GitHub or the cache wrote through fetchCredential.shown",
+      "function": "github.com/sjawhar/legion/daemon/internal/workspace.shownWithoutCredentials",
       "capture": "workspace.git-redirect/clone-userinfo-encoded",
       "mutation": {
         "file": "packages/daemon/internal/workspace/credential_scrub.go",
-        "preimage": "oauth2call.Field(strings.TrimSpace(r.scrub(text)))",
-        "replacement": "r.scrub(text)"
+        "preimage": "oauth2call.Field(strings.TrimSpace(withoutCredentials(text, tokens...)))",
+        "replacement": "withoutCredentials(text, tokens...)"
       }
     },
     {
@@ -7735,13 +7885,13 @@
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/workspace",
       "test": "TestACacheThatEchoesItsTokenIntoWhatItStreamsPrintsNoneOfIt/fsck",
-      "production": "github.com/sjawhar/legion/daemon/internal/workspace.verifyCache: fsck's stderr, which names the refs the cache streamed, goes through the filter of every token the fetch holds (fetchCredential.withoutTokens)",
+      "production": "github.com/sjawhar/legion/daemon/internal/workspace.verifyCache: fsck's stderr, which names the refs the cache streamed, goes through the fetch's one filter of every token the fetch holds and the fail-closed rule (feedGitWithin under the fetch's credential, fetchCredential.shown)",
       "function": "github.com/sjawhar/legion/daemon/internal/workspace.verifyCache",
       "capture": "workspace.cache-echo/fsck",
       "mutation": {
         "file": "packages/daemon/internal/workspace/fetch.go",
-        "preimage": "held.withoutTokens(result.Stderr)",
-        "replacement": "result.Stderr"
+        "preimage": "staging, left, held, \"fsck\"",
+        "replacement": "staging, left, nil, \"fsck\""
       }
     },
     {
@@ -7749,12 +7899,12 @@
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/workspace",
       "test": "TestACacheThatEchoesItsTokenIntoWhatItStreamsPrintsNoneOfIt/log",
-      "production": "github.com/sjawhar/legion/daemon/internal/workspace.Fetch: every line it logs goes through the filter of every token the fetch holds, a ref the feed drops among them (pruneToGitHub)",
+      "production": "github.com/sjawhar/legion/daemon/internal/workspace.Fetch: every line it logs goes through the fetch's one filter of every token the fetch holds (fetchCredential.scrub), a ref the feed drops among them (pruneToGitHub)",
       "function": "github.com/sjawhar/legion/daemon/internal/workspace.Fetch",
       "capture": "workspace.cache-echo/log",
       "mutation": {
         "file": "packages/daemon/internal/workspace/fetch.go",
-        "preimage": "log(held.withoutTokens(line))",
+        "preimage": "log(held.scrub(line))",
         "replacement": "log(line)"
       }
     },
@@ -9520,7 +9670,7 @@
       "requirement": "r1-fail-closed",
       "package": "./oauth2call",
       "test": "TestUnansweredNamesTheCallAndTheFailuresClassAndNoneOfNetHTTPsWords",
-      "production": "oauth2call.Unanswered, the daemon's printer of a request that got no answer (envoy's redact.Unanswered, forwarded; the daemon's own copy is gone): a request that got no answer prints net/http's operation, the call's name or its URL as redact.URL prints it, and the failure's class: a Location or a status line net/http quotes, and the target of a redirect followed to another host, print as their class; a transport failure on the request's own host prints its own text; errors.Is and errors.As find what they found"
+      "production": "oauth2call.Unanswered, the daemon's printer of a request that got no answer (envoy's redact.Unanswered, forwarded; the daemon's own copy is gone): a request that got no answer prints net/http's operation, the call's name or the URL it asked as Unanswered names the URL a request asked (askedURL: its scheme, host and path, never its user information, query or fragment), and the failure's class: a Location or a status line net/http quotes, and the target of a redirect followed to another host, print as their class; a transport failure on the request's own host prints its own text; errors.Is and errors.As find what they found"
     },
     {
       "id": "redirects-refused",
@@ -9562,7 +9712,7 @@
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/githubrest",
       "test": "TestARedirectIsGitHubsAnswerAndNoLocationReachesTheError/unparsed-unnamed",
-      "production": "githubrest Client.call: a read given no name, whose Location does not parse, names the URL it asked as redact.URL prints it and the failure by its class (oauth2call.Unanswered)"
+      "production": "githubrest Client.call: a read given no name, whose Location does not parse, names the URL it asked as Unanswered names the URL a request asked (askedURL: its scheme, host and path, never its user information, query or fragment) and the failure by its class (oauth2call.Unanswered)"
     },
     {
       "id": "githubrest-redirect-unanswered",
@@ -9604,7 +9754,7 @@
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/dispatch",
       "test": "TestARedirectIsDispatchsRefusalAndNoLocationReachesTheError/unparsed",
-      "production": "daemon dispatch HTTPClient.answer: a redirect whose Location does not parse names the call's URL as redact.URL prints it and the failure by its class (oauth2call.Unanswered), never net/http's text, which quotes the Location",
+      "production": "daemon dispatch HTTPClient.answer: a redirect whose Location does not parse names the call's URL as Unanswered names the URL a request asked (askedURL: its scheme, host and path, never its user information, query or fragment) and the failure by its class (oauth2call.Unanswered), never net/http's text, which quotes the Location",
       "function": "(*github.com/sjawhar/legion/daemon/internal/dispatch.HTTPClient).answer",
       "capture": "dispatch.redirect/unparsed",
       "mutation": {
@@ -9646,7 +9796,7 @@
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/notify",
       "test": "TestARedirectIsTheListenersAnswerAndNoLocationReachesTheError/publish-unparsed",
-      "production": "notify HTTPPublisher.publish: a redirect whose Location does not parse names the call's URL as redact.URL prints it and the failure by its class (oauth2call.Unanswered)",
+      "production": "notify HTTPPublisher.publish: a redirect whose Location does not parse names the call's URL as Unanswered names the URL a request asked (askedURL: its scheme, host and path, never its user information, query or fragment) and the failure by its class (oauth2call.Unanswered)",
       "function": "(*github.com/sjawhar/legion/daemon/internal/notify.HTTPPublisher).publish",
       "capture": "notify.redirect/publish-unparsed",
       "mutation": {
@@ -9660,7 +9810,7 @@
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/notify",
       "test": "TestARedirectIsTheListenersAnswerAndNoLocationReachesTheError/registration-unparsed",
-      "production": "notify HTTPPublisher.ReadSessionRegistration: a redirect whose Location does not parse names the call's URL as redact.URL prints it and the failure by its class (oauth2call.Unanswered)",
+      "production": "notify HTTPPublisher.ReadSessionRegistration: a redirect whose Location does not parse names the call's URL as Unanswered names the URL a request asked (askedURL: its scheme, host and path, never its user information, query or fragment) and the failure by its class (oauth2call.Unanswered)",
       "function": "(*github.com/sjawhar/legion/daemon/internal/notify.HTTPPublisher).ReadSessionRegistration",
       "capture": "notify.redirect/registration-unparsed",
       "mutation": {
@@ -9674,7 +9824,7 @@
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/notify",
       "test": "TestARedirectIsTheListenersAnswerAndNoLocationReachesTheError/role-unparsed",
-      "production": "notify HTTPPublisher.RoleHolder: a redirect whose Location does not parse names the call's URL as redact.URL prints it and the failure by its class (oauth2call.Unanswered)",
+      "production": "notify HTTPPublisher.RoleHolder: a redirect whose Location does not parse names the call's URL as Unanswered names the URL a request asked (askedURL: its scheme, host and path, never its user information, query or fragment) and the failure by its class (oauth2call.Unanswered)",
       "function": "(*github.com/sjawhar/legion/daemon/internal/notify.HTTPPublisher).RoleHolder",
       "capture": "notify.redirect/role-unparsed",
       "mutation": {
@@ -9688,7 +9838,7 @@
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/notify",
       "test": "TestARedirectIsTheListenersAnswerAndNoLocationReachesTheError/delete-unparsed",
-      "production": "notify HTTPPublisher.DeleteSession: a redirect whose Location does not parse names the call's URL as redact.URL prints it and the failure by its class (oauth2call.Unanswered)",
+      "production": "notify HTTPPublisher.DeleteSession: a redirect whose Location does not parse names the call's URL as Unanswered names the URL a request asked (askedURL: its scheme, host and path, never its user information, query or fragment) and the failure by its class (oauth2call.Unanswered)",
       "function": "(*github.com/sjawhar/legion/daemon/internal/notify.HTTPPublisher).DeleteSession",
       "capture": "notify.redirect/delete-unparsed",
       "mutation": {
@@ -9744,7 +9894,7 @@
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/cmd/legion",
       "test": "TestACLIReadOfTheDaemonFollowsNoRedirectAndNamesNoLocation/operator-unparsed",
-      "production": "legion operator.do: an operator request whose redirect's Location does not parse names the request's URL as redact.URL prints it and the failure by its class (oauth2call.Unanswered), never net/http's text, which quotes the Location",
+      "production": "legion operator.do: an operator request whose redirect's Location does not parse names the request's URL as Unanswered names the URL a request asked (askedURL: its scheme, host and path, never its user information, query or fragment) and the failure by its class (oauth2call.Unanswered), never net/http's text, which quotes the Location",
       "function": "(github.com/sjawhar/legion/daemon/cmd/legion.operator).do",
       "capture": "legion.redirect/operator-unparsed",
       "mutation": {
@@ -9765,7 +9915,7 @@
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/cmd/legion",
       "test": "TestACLIReadOfTheDaemonFollowsNoRedirectAndNamesNoLocation/state-unparsed",
-      "production": "legion get: a read whose redirect's Location does not parse names the URL as redact.URL prints it and the failure by its class (oauth2call.Unanswered)",
+      "production": "legion get: a read whose redirect's Location does not parse names the URL as Unanswered names the URL a request asked (askedURL: its scheme, host and path, never its user information, query or fragment) and the failure by its class (oauth2call.Unanswered)",
       "function": "github.com/sjawhar/legion/daemon/cmd/legion.get",
       "capture": "legion.redirect/state-unparsed",
       "mutation": {
@@ -9800,12 +9950,12 @@
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/workspace",
       "test": "TestACacheLocationThatDoesNotParseNamesNoRunOfTheCacheToken/tar-unparsed",
-      "production": "workspace askCache: the tar's ask, which carries the cache token, answered with a redirect whose Location does not parse names the ask's URL through the URL rule (the name it passes oauth2call.Unanswered) and the failure by its class (oauth2call.Unanswered) in unpackCache's error, never net/http's text, which quotes the Location",
+      "production": "workspace askCache: the tar's ask, which carries the cache token, answered with a redirect whose Location does not parse names the ask's URL as Unanswered names the URL a request asked (askedURL: its scheme, host and path, never its user information, query or fragment) and the failure by its class (oauth2call.Unanswered, shown \"\") in unpackCache's error, never net/http's text, which quotes the Location",
       "function": "github.com/sjawhar/legion/daemon/internal/workspace.askCache",
       "capture": "workspace.redirect/tar-unparsed",
       "mutation": {
         "file": "packages/daemon/internal/workspace/fetch.go",
-        "preimage": "oauth2call.Unanswered(err, ask, redact.URLCredentials(ask.URL.String()))",
+        "preimage": "oauth2call.Unanswered(err, ask, \"\")",
         "replacement": "err"
       }
     },
@@ -9828,7 +9978,7 @@
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/appauth",
       "test": "TestATokenExchangeRedirectNamesNoRunOfTheAppsJWT/unparsed",
-      "production": "appauth Manager.exchange: a redirect whose Location does not parse names the exchange's URL as redact.URL prints it and the failure by its class (oauth2call.Unanswered), never net/http's text, which quotes the Location",
+      "production": "appauth Manager.exchange: a redirect whose Location does not parse names the exchange's URL as Unanswered names the URL a request asked (askedURL: its scheme, host and path, never its user information, query or fragment) and the failure by its class (oauth2call.Unanswered), never net/http's text, which quotes the Location",
       "function": "(*github.com/sjawhar/legion/daemon/internal/appauth.Manager).exchange",
       "capture": "appauth.redirect/unparsed",
       "mutation": {
@@ -9870,7 +10020,7 @@
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/cipher",
       "test": "TestABrokerRedirectNamesNoRunOfTheDaemonsBearer/unparsed",
-      "production": "daemon cipher Client.do: a redirect whose Location does not parse names the call's URL as redact.URL prints it and the failure by its class (oauth2call.Unanswered), never net/http's text, which quotes the Location",
+      "production": "daemon cipher Client.do: a redirect whose Location does not parse names the call's URL as Unanswered names the URL a request asked (askedURL: its scheme, host and path, never its user information, query or fragment) and the failure by its class (oauth2call.Unanswered), never net/http's text, which quotes the Location",
       "function": "(*github.com/sjawhar/legion/daemon/internal/cipher.Client).do",
       "capture": "cipher.redirect/unparsed",
       "mutation": {
@@ -10332,13 +10482,13 @@
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/claudebridge",
       "test": "TestATurnReportRedirectSendsTheBootTokenNowhereAndLogsNoLocation/unparsed",
-      "production": "claudebridge turnReports.post: a turn report whose redirect's Location does not parse logs the report's URL through the URL rule (the name it passes oauth2call.Unanswered) and the failure by its class (oauth2call.Unanswered), never net/http's text, which quotes the Location and the boot token a stand-in echoed",
+      "production": "claudebridge turnReports.post: a turn report whose redirect's Location does not parse logs the report's URL as Unanswered names the URL a request asked (askedURL: its scheme, host and path, never its user information, query or fragment) and the failure by its class (oauth2call.Unanswered, shown \"\"), never net/http's text, which quotes the Location and the boot token a stand-in echoed",
       "function": "(*github.com/sjawhar/legion/daemon/internal/claudebridge.turnReports).post",
       "capture": "claudebridge.redirect/unparsed",
       "mutation": {
         "file": "packages/daemon/internal/claudebridge/turnoutcome.go",
-        "preimage": "oauth2call.Unanswered(err, post, redact.URLCredentials(post.URL.String()))",
-        "replacement": "func() error { _ = redact.URLCredentials; return err }()"
+        "preimage": "oauth2call.Unanswered(err, post, \"\")",
+        "replacement": "err"
       }
     },
     {
@@ -10612,7 +10762,7 @@
       "requirement": "r1-fail-closed",
       "package": "./internal/redact",
       "test": "TestUnansweredNamesTheCallAndKeepsOnlyATransportFailuresOwnWords",
-      "production": "redact.Unanswered: a request that got no answer prints net/http's operation, the call's name or its URL as redact.URL prints it, and the failure: a Location, a status line, a header line or a trailer line net/http quotes, and a redirect followed to another host, print as their class; a transport failure, a deadline and a cancellation print their own words; errors.Is and errors.As find what they found"
+      "production": "redact.Unanswered: a request that got no answer prints net/http's operation, the call's name or the URL it asked as Unanswered names the URL a request asked (askedURL: its scheme, host and path, never its user information, query or fragment), and the failure: a Location, a status line, a header line or a trailer line net/http quotes, and a redirect followed to another host, print as their class; a transport failure, a deadline and a cancellation print their own words; errors.Is and errors.As find what they found"
     },
     {
       "id": "githubapp-no-answer-twin-unparsed",
@@ -10675,12 +10825,12 @@
       "requirement": "r3-each-site",
       "package": "./internal/dispatch/githubapp",
       "test": "TestAGitHubCallThatGetsNoAnswerPrintsNoCredentialItCarried/branch-unparsed",
-      "production": "githubapp Client.send: a read whose Location does not parse names its target as ShownBody shows it and the failure's class (redact.Unanswered), never net/http's text, which quotes the installation token",
+      "production": "githubapp Client.send: a read whose Location does not parse names its target as ShownBody shows it, then the URL it asked as Unanswered names the URL a request asked (askedURL: its scheme, host and path, never its user information, query or fragment) and the failure's class (redact.Unanswered, shown \"\"), never net/http's text, which quotes the installation token",
       "function": "(*github.com/sjawhar/envoy/internal/dispatch/githubapp.Client).send",
       "capture": "githubapp.no-answer/branch-unparsed",
       "mutation": {
         "file": "packages/envoy/internal/dispatch/githubapp/client.go",
-        "preimage": "redact.Unanswered(err, request, ShownBody(target))",
+        "preimage": "redact.Unanswered(err, request, \"\")",
         "replacement": "err"
       }
     },
@@ -10717,7 +10867,7 @@
       "requirement": "r4-unchanged",
       "package": "./internal/dispatch/githubapp",
       "test": "TestATransportErrorAfterALongURLStillNamesItsCause",
-      "production": "githubapp Client.send: a transport failure (context deadline exceeded) still names its own words after the target as ShownBody shows it, through redact.Unanswered"
+      "production": "githubapp Client.send: a transport failure (context deadline exceeded) still names its own words after the target as ShownBody shows it and the URL it asked as redact.Unanswered names it (NotPrinted for the long escaped branch)"
     },
     {
       "id": "redact-body-read-twin",
@@ -11368,13 +11518,13 @@
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/workspace",
       "test": "TestACacheThatEchoesItsTokenIntoWhatItStreamsPrintsNoneOfIt/fsck-encoded",
-      "production": "github.com/sjawhar/legion/daemon/internal/workspace.verifyCache: fsck's stderr, which names the refs the cache streamed, goes through the filter of every token the fetch holds, the provisioning token and the cache's bearer, as written and percent-decoded (fetchCredential.withoutTokens)",
+      "production": "github.com/sjawhar/legion/daemon/internal/workspace.verifyCache: fsck's stderr, which names the refs the cache streamed, goes through the fetch's one filter of every token the fetch holds, the provisioning token and the cache's bearer, as written and percent-decoded (feedGitWithin under the fetch's credential, fetchCredential.shown)",
       "function": "github.com/sjawhar/legion/daemon/internal/workspace.verifyCache",
       "capture": "workspace.cache-echo/fsck-encoded",
       "mutation": {
         "file": "packages/daemon/internal/workspace/fetch.go",
-        "preimage": "held.withoutTokens(result.Stderr)",
-        "replacement": "oauth2call.Tokens(result.Stderr, -1, request.CacheToken)"
+        "preimage": "staging, left, held, \"fsck\"",
+        "replacement": "staging, left, nil, \"fsck\""
       }
     },
     {
@@ -11382,12 +11532,12 @@
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/workspace",
       "test": "TestACacheThatEchoesItsTokenIntoWhatItStreamsPrintsNoneOfIt/log-encoded",
-      "production": "github.com/sjawhar/legion/daemon/internal/workspace.Fetch: every line it logs, a ref the feed drops (pruneToGitHub) and the branch HEAD follows (followHead) among them, goes through the filter of every token the fetch holds, as written and percent-decoded (fetchCredential.withoutTokens)",
+      "production": "github.com/sjawhar/legion/daemon/internal/workspace.Fetch: every line it logs, a ref the feed drops (pruneToGitHub) and the branch HEAD follows (followHead) among them, goes through the fetch's one filter of every token the fetch holds, as written and percent-decoded (fetchCredential.scrub)",
       "function": "github.com/sjawhar/legion/daemon/internal/workspace.Fetch",
       "capture": "workspace.cache-echo/log-encoded",
       "mutation": {
         "file": "packages/daemon/internal/workspace/fetch.go",
-        "preimage": "log(held.withoutTokens(line))",
+        "preimage": "log(held.scrub(line))",
         "replacement": "log(oauth2call.Tokens(line, -1, request.CacheToken))"
       }
     },
@@ -11410,12 +11560,12 @@
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/workspace",
       "test": "TestACacheThatEchoesItsTokenIntoWhatItStreamsPrintsNoneOfIt/log-encoded",
-      "production": "(github.com/sjawhar/legion/daemon/internal/workspace.fetchCredential).withoutTokens: the one filter of every token the fetch holds (scrubTokens)",
-      "function": "(*github.com/sjawhar/legion/daemon/internal/workspace.fetchCredential).withoutTokens",
+      "production": "(github.com/sjawhar/legion/daemon/internal/workspace.fetchCredential).scrub: the fetch's one filter of every token the fetch holds, then the URL rule (withoutCredentials)",
+      "function": "(*github.com/sjawhar/legion/daemon/internal/workspace.fetchCredential).scrub",
       "capture": "workspace.cache-echo/log-encoded",
       "mutation": {
         "file": "packages/daemon/internal/workspace/fetch.go",
-        "preimage": "return scrubTokens(text, c.held...)",
+        "preimage": "return withoutCredentials(text, c.held...)",
         "replacement": "return text"
       }
     },
@@ -12122,6 +12272,577 @@
       "test": "TestEachCertificateFailurePrintsItsOwnPhrase/unknown-reason",
       "production": "redact.Cause and redact.Unanswered (transportWords, tlsErrorWords, x509InvalidWords): an x509.CertificateInvalidError whose reason go1.27.3's x509 does not name, built with a certificate and a Detail that name the certificate's name, prints by fixed words of its own (x509UnknownReasonWords) after crypto/tls's, never x509's text, beside a clean address and in Unanswered's line; errors.Is finds the failure and errors.As its x509 type and reason under both",
       "capture": "redact.certificate-words/unknown-reason"
+    },
+    {
+      "id": "agent-secrets-userinfo-redirect-followed-twin",
+      "requirement": "r3-each-site",
+      "package": "./cmd/cipher",
+      "test": "TestTheUserinfoReadFollowsNoRedirect/twin",
+      "production": "the stand-in of the userinfo read's followed-redirect rows: a client oauth2.NewClient builds over http.DefaultClient follows the userinfo stand-in's 302 and sends the host the Location names (redirectstest.Sent) the sign-in's bearer, which oauth2.Transport sets on every request it carries, so the rows can see a bearer sent on"
+    },
+    {
+      "id": "agent-secrets-userinfo-redirect-followed-other-port",
+      "requirement": "r3-each-site",
+      "package": "./cmd/cipher",
+      "test": "TestTheUserinfoReadFollowsNoRedirect/other-port",
+      "production": "agent-secrets userinfoEmail (gcpUserinfo): the userinfo read follows no redirect (redirects.Refused over the client oauth2.NewClient builds), so a 302 to Google's host name at another port is the read's refusal by its status (redact.Answered) and that host is sent nothing, the bearer oauth2.Transport sets on each request among it",
+      "function": "github.com/sjawhar/envoy/cmd/cipher.userinfoEmail",
+      "capture": "agent-secrets.redirect-followed/other-port",
+      "mutation": {
+        "file": "packages/envoy/cmd/cipher/secret_gcp.go",
+        "preimage": "redirects.Refused(oauth2.NewClient(s.Context(), redact.TokenSource(creds.TokenSource)))",
+        "replacement": "func() *http.Client { _ = redirects.Refused; return oauth2.NewClient(s.Context(), redact.TokenSource(creds.TokenSource)) }()"
+      }
+    },
+    {
+      "id": "agent-secrets-userinfo-redirect-followed-other-host",
+      "requirement": "r3-each-site",
+      "package": "./cmd/cipher",
+      "test": "TestTheUserinfoReadFollowsNoRedirect/other-host",
+      "production": "agent-secrets userinfoEmail (gcpUserinfo): the userinfo read follows no redirect (redirects.Refused over the client oauth2.NewClient builds), so a 302 to another host is the read's refusal by its status (redact.Answered) and that host is sent nothing, though oauth2.Transport sets the bearer on a request to any host",
+      "function": "github.com/sjawhar/envoy/cmd/cipher.userinfoEmail",
+      "capture": "agent-secrets.redirect-followed/other-host",
+      "mutation": {
+        "file": "packages/envoy/cmd/cipher/secret_gcp.go",
+        "preimage": "redirects.Refused(oauth2.NewClient(s.Context(), redact.TokenSource(creds.TokenSource)))",
+        "replacement": "func() *http.Client { _ = redirects.Refused; return oauth2.NewClient(s.Context(), redact.TokenSource(creds.TokenSource)) }()"
+      }
+    },
+    {
+      "id": "mcpbridge-relative-endpoint-relative",
+      "requirement": "r3-each-site",
+      "package": "./internal/mcpbridge",
+      "test": "TestAnEndpointResolvesAgainstTheSSEURL/relative",
+      "production": "mcpbridge readEndpointEvent: an SSE endpoint event naming a relative endpoint (/message?session_id=...) resolves against the SSE URL the bridge connected to (url.URL.ResolveReference), so the POST reaches the server's own origin with the session and the configured credential, and the handshake completes, where it failed on net/http's unsupported-scheme error"
+    },
+    {
+      "id": "mcpbridge-relative-endpoint-relative-path",
+      "requirement": "r3-each-site",
+      "package": "./internal/mcpbridge",
+      "test": "TestAnEndpointResolvesAgainstTheSSEURL/relative-path",
+      "production": "mcpbridge readEndpointEvent: a relative-path endpoint (message?session_id=...) merges with the SSE URL's path as RFC 3986 section 5.2 reads it (/sse to /message), so the POST reaches the server's own origin and the handshake completes"
+    },
+    {
+      "id": "mcpbridge-relative-endpoint-absolute",
+      "requirement": "r3-each-site",
+      "package": "./internal/mcpbridge",
+      "test": "TestAnEndpointResolvesAgainstTheSSEURL/absolute",
+      "production": "mcpbridge readEndpointEvent: an absolute endpoint on the server's own origin is posted to as it is, as before the resolution, and the handshake completes"
+    },
+    {
+      "id": "mcpbridge-relative-endpoint-elsewhere",
+      "requirement": "r3-each-site",
+      "package": "./internal/mcpbridge",
+      "test": "TestAnEndpointResolvesAgainstTheSSEURL/elsewhere",
+      "production": "mcpbridge readEndpointEvent: a network-path endpoint on another origin (//host:port/...) takes the SSE URL's scheme and none of its user information, so the POST reaches that origin with no run of the configured credential",
+      "function": "github.com/sjawhar/envoy/internal/mcpbridge.readEndpointEvent",
+      "capture": "mcpbridge.relative-endpoint/elsewhere",
+      "mutation": {
+        "file": "packages/envoy/internal/mcpbridge/http_server.go",
+        "preimage": "return base.ResolveReference(ref).String(), nil",
+        "replacement": "resolved := base.ResolveReference(ref); resolved.User = base.User; return resolved.String(), nil"
+      }
+    },
+    {
+      "id": "mcpbridge-relative-endpoint-elsewhere-absolute",
+      "requirement": "r3-each-site",
+      "package": "./internal/mcpbridge",
+      "test": "TestAnEndpointResolvesAgainstTheSSEURL/elsewhere-absolute",
+      "production": "mcpbridge readEndpointEvent: an absolute endpoint on another origin keeps its own user information, none, so the POST reaches that origin with no run of the configured credential, as before the resolution",
+      "function": "github.com/sjawhar/envoy/internal/mcpbridge.readEndpointEvent",
+      "capture": "mcpbridge.relative-endpoint/elsewhere-absolute",
+      "mutation": {
+        "file": "packages/envoy/internal/mcpbridge/http_server.go",
+        "preimage": "return base.ResolveReference(ref).String(), nil",
+        "replacement": "resolved := base.ResolveReference(ref); resolved.User = base.User; return resolved.String(), nil"
+      }
+    },
+    {
+      "id": "mcpbridge-relative-endpoint-refused",
+      "requirement": "r3-each-site",
+      "package": "./internal/mcpbridge",
+      "test": "TestAnEndpointResolvesAgainstTheSSEURL/refused",
+      "production": "mcpbridge HTTPServer.Start: a refused POST to a relative endpoint names the endpoint resolved against the SSE URL as the rule reads it (redact.Field), with none of the configured user information it took on and no query value, where the rule read the relative reference as words and printed it whole, its access token included",
+      "function": "(*github.com/sjawhar/envoy/internal/mcpbridge.HTTPServer).Start",
+      "capture": "mcpbridge.relative-endpoint/refused",
+      "mutation": {
+        "file": "packages/envoy/internal/mcpbridge/http_server.go",
+        "preimage": "\"POST to %s: status %d: %s\", redact.Field(s.messageURL)",
+        "replacement": "\"POST to %s: status %d: %s\", s.messageURL"
+      }
+    },
+    {
+      "id": "mcpbridge-relative-endpoint-dropped",
+      "requirement": "r3-each-site",
+      "package": "./internal/mcpbridge",
+      "test": "TestAnEndpointResolvesAgainstTheSSEURL/dropped",
+      "production": "mcpbridge HTTPServer.Start: a POST to a relative endpoint whose connection the server drops names the resolved endpoint as the rule reads it (redact.Field) and the failure through redact.Cause, never net/http's text, which quotes the configured user; the rule read the relative reference as words and printed it whole, its access token included",
+      "function": "(*github.com/sjawhar/envoy/internal/mcpbridge.HTTPServer).Start",
+      "capture": "mcpbridge.relative-endpoint/dropped",
+      "mutation": {
+        "file": "packages/envoy/internal/mcpbridge/http_server.go",
+        "preimage": "\"POST to %s: %w\", redact.Field(s.messageURL), redact.Cause(postErr, s.messageURL)",
+        "replacement": "\"POST to %s: %w\", s.messageURL, postErr"
+      }
+    },
+    {
+      "id": "mcpbridge-relative-endpoint-unparsed",
+      "requirement": "r3-each-site",
+      "package": "./internal/mcpbridge",
+      "test": "TestAnEndpointResolvesAgainstTheSSEURL/unparsed",
+      "production": "mcpbridge readEndpointEvent: an endpoint url.Parse refuses fails Start in the bridge's own words, never url.Parse's error, which quotes the endpoint whole, its user information and query included",
+      "function": "github.com/sjawhar/envoy/internal/mcpbridge.readEndpointEvent",
+      "capture": "mcpbridge.relative-endpoint/unparsed",
+      "mutation": {
+        "file": "packages/envoy/internal/mcpbridge/http_server.go",
+        "preimage": "fmt.Errorf(\"endpoint URL in SSE event does not parse\")",
+        "replacement": "fmt.Errorf(\"endpoint URL in SSE event does not parse: %w\", err)"
+      }
+    },
+    {
+      "id": "mcpbridge-relative-endpoint-twin",
+      "requirement": "r3-each-site",
+      "package": "./internal/mcpbridge",
+      "test": "TestAnEndpointResolvesAgainstTheSSEURL/twin",
+      "production": "the stand-ins of the relative-endpoint rows: the endpoint the bridge resolves carries the configured password and the endpoint's token, net/http's own error for a dropped POST quotes the configured user, the other origin's stand-in keeps the password of a Basic Authorization it is sent, and url.Parse's error quotes the unparsed endpoint's credentials, so each row can see one printed or sent"
+    },
+    {
+      "id": "mcpbridge-sse-url-query",
+      "requirement": "r3-each-site",
+      "package": "./internal/mcpbridge",
+      "test": "TestTheSSEURLKeepsTheConfiguredQuery/query",
+      "production": "mcpbridge HTTPServer.Start: a configured URL with a query (http://host/mcp?key=...) connects to its path joined with sse, the query kept (url.URL.JoinPath: /mcp/sse?key=...), where /sse appended to the URL's text sat inside the query (/mcp?key=.../sse) and the server answered 404"
+    },
+    {
+      "id": "mcpbridge-sse-url-query-trailing-slash",
+      "requirement": "r3-each-site",
+      "package": "./internal/mcpbridge",
+      "test": "TestTheSSEURLKeepsTheConfiguredQuery/query-trailing-slash",
+      "production": "mcpbridge HTTPServer.Start: a configured URL whose path ends in a slash and that has a query (http://host/mcp/?key=...) connects to /mcp/sse?key=..., where /sse appended to the URL's text sat inside the query"
+    },
+    {
+      "id": "mcpbridge-sse-url-no-query",
+      "requirement": "r3-each-site",
+      "package": "./internal/mcpbridge",
+      "test": "TestTheSSEURLKeepsTheConfiguredQuery/no-query",
+      "production": "mcpbridge HTTPServer.Start: a configured URL with no query (http://host/mcp) connects to /mcp/sse, as before the join"
+    },
+    {
+      "id": "mcpbridge-sse-url-unparsed",
+      "requirement": "r3-each-site",
+      "package": "./internal/mcpbridge",
+      "test": "TestAConfiguredURLThatDoesNotParsePrintsNoneOfIt/unparsed",
+      "production": "mcpbridge HTTPServer.Start: a configured URL that url.Parse refuses fails Start in the bridge's own words, never url.Parse's error, which http.NewRequest's error carried and which quotes the URL whole, its user information and query included (LoadConfig refuses such a URL first; a ServerConfig built directly does not)",
+      "function": "(*github.com/sjawhar/envoy/internal/mcpbridge.HTTPServer).Start",
+      "capture": "mcpbridge.sse-url/unparsed",
+      "mutation": {
+        "file": "packages/envoy/internal/mcpbridge/http_server.go",
+        "preimage": "fmt.Errorf(\"create SSE request: the configured URL does not parse\")",
+        "replacement": "fmt.Errorf(\"create SSE request: the configured URL does not parse: %w\", err)"
+      }
+    },
+    {
+      "id": "mcpbridge-sse-url-unparsed-twin",
+      "requirement": "r3-each-site",
+      "package": "./internal/mcpbridge",
+      "test": "TestAConfiguredURLThatDoesNotParsePrintsNoneOfIt/twin",
+      "production": "the probe of the unparsed configured-URL row: url.Parse's error for that URL quotes its user information and its access token, so the row can see one printed"
+    },
+    {
+      "id": "redact-unanswered-name-clean",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestUnansweredNamesTheURLItAskedByItsSchemeHostAndPath/clean",
+      "production": "redact.Unanswered (askedURL): a request that got no answer, given no name of its caller's, is named by the URL it asked, its scheme, host and path, with its user information, whole query and fragment removed and NotPrinted where the URL rule refuses what remains: a clean URL prints as it is, beside net/http's own text of a refused connection",
+      "capture": "redact.unanswered-name/clean"
+    },
+    {
+      "id": "redact-unanswered-name-clean-query",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestUnansweredNamesTheURLItAskedByItsSchemeHostAndPath/clean-query",
+      "production": "redact.Unanswered (askedURL): a request that got no answer, given no name of its caller's, is named by the URL it asked, its scheme, host and path, with its user information, whole query and fragment removed and NotPrinted where the URL rule refuses what remains: a clean URL with a query prints its scheme, host and path",
+      "capture": "redact.unanswered-name/clean-query"
+    },
+    {
+      "id": "redact-unanswered-name-user",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestUnansweredNamesTheURLItAskedByItsSchemeHostAndPath/user",
+      "production": "redact.Unanswered (askedURL): a request that got no answer, given no name of its caller's, is named by the URL it asked, its scheme, host and path, with its user information, whole query and fragment removed and NotPrinted where the URL rule refuses what remains: a user name in the URL, which net/http's own error keeps, prints nowhere",
+      "capture": "redact.unanswered-name/user"
+    },
+    {
+      "id": "redact-unanswered-name-password",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestUnansweredNamesTheURLItAskedByItsSchemeHostAndPath/password",
+      "production": "redact.Unanswered (askedURL): a request that got no answer, given no name of its caller's, is named by the URL it asked, its scheme, host and path, with its user information, whole query and fragment removed and NotPrinted where the URL rule refuses what remains: a password in the URL, which net/http masks and the URL asked holds, prints nowhere",
+      "capture": "redact.unanswered-name/password"
+    },
+    {
+      "id": "redact-unanswered-name-query-value",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestUnansweredNamesTheURLItAskedByItsSchemeHostAndPath/query-value",
+      "production": "redact.Unanswered (askedURL): a request that got no answer, given no name of its caller's, is named by the URL it asked, its scheme, host and path, with its user information, whole query and fragment removed and NotPrinted where the URL rule refuses what remains: a credential as a query value, which net/http's own error quotes, prints nowhere",
+      "capture": "redact.unanswered-name/query-value",
+      "function": "github.com/sjawhar/envoy/internal/redact.Unanswered",
+      "mutation": {
+        "file": "packages/envoy/internal/redact/unanswered.go",
+        "preimage": "name = askedURL(request.URL)",
+        "replacement": "name = request.URL.String()"
+      }
+    },
+    {
+      "id": "redact-unanswered-name-query-key",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestUnansweredNamesTheURLItAskedByItsSchemeHostAndPath/query-key",
+      "production": "redact.Unanswered (askedURL): a request that got no answer, given no name of its caller's, is named by the URL it asked, its scheme, host and path, with its user information, whole query and fragment removed and NotPrinted where the URL rule refuses what remains: a credential as a query key alone (?<token>), which net/http's own error quotes, prints nowhere: the query goes whole, keys with values",
+      "capture": "redact.unanswered-name/query-key",
+      "function": "github.com/sjawhar/envoy/internal/redact.askedURL",
+      "mutation": {
+        "file": "packages/envoy/internal/redact/unanswered.go",
+        "preimage": "return URL(u.Scheme + \"://\" + u.Host + u.EscapedPath())",
+        "replacement": "return URL(u.Scheme+\"://\"+u.Host+u.EscapedPath()) + \"?\" + u.RawQuery"
+      }
+    },
+    {
+      "id": "redact-unanswered-name-fragment",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestUnansweredNamesTheURLItAskedByItsSchemeHostAndPath/fragment",
+      "production": "redact.Unanswered (askedURL): a request that got no answer, given no name of its caller's, is named by the URL it asked, its scheme, host and path, with its user information, whole query and fragment removed and NotPrinted where the URL rule refuses what remains: a credential as the fragment, which net/http's own error quotes, prints nowhere",
+      "capture": "redact.unanswered-name/fragment"
+    },
+    {
+      "id": "redact-unanswered-name-escaped-path",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestUnansweredNamesTheURLItAskedByItsSchemeHostAndPath/escaped-path",
+      "production": "redact.Unanswered (askedURL): a request that got no answer, given no name of its caller's, is named by the URL it asked, its scheme, host and path, with its user information, whole query and fragment removed and NotPrinted where the URL rule refuses what remains: a path with an escape, which net/http's own error quotes with the credential after it, prints as NotPrinted",
+      "capture": "redact.unanswered-name/escaped-path",
+      "function": "github.com/sjawhar/envoy/internal/redact.askedURL",
+      "mutation": {
+        "file": "packages/envoy/internal/redact/unanswered.go",
+        "preimage": "return URL(u.Scheme + \"://\" + u.Host + u.EscapedPath())",
+        "replacement": "return u.Scheme + \"://\" + u.Host + u.EscapedPath()"
+      }
+    },
+    {
+      "id": "redact-unanswered-name-path-outside-allow-list",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestUnansweredNamesTheURLItAskedByItsSchemeHostAndPath/path-outside-allow-list",
+      "production": "redact.Unanswered (askedURL): a request that got no answer, given no name of its caller's, is named by the URL it asked, its scheme, host and path, with its user information, whole query and fragment removed and NotPrinted where the URL rule refuses what remains: a path with a character the URL rule does not allow (':'), which net/http's own error quotes with the credential after it, prints as NotPrinted",
+      "capture": "redact.unanswered-name/path-outside-allow-list"
+    },
+    {
+      "id": "redact-unanswered-name-no-request",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestUnansweredNamesTheURLItAskedByItsSchemeHostAndPath/no-request",
+      "production": "redact.Unanswered (askedURL): a request that got no answer, given no name of its caller's, is named by the URL it asked, its scheme, host and path, with its user information, whole query and fragment removed and NotPrinted where the URL rule refuses what remains: read off net/http's *url.Error with no request, a URL with a user name, a query value and a fragment prints its scheme, host and path alone",
+      "capture": "redact.unanswered-name/no-request",
+      "function": "github.com/sjawhar/envoy/internal/redact.Unanswered",
+      "mutation": {
+        "file": "packages/envoy/internal/redact/unanswered.go",
+        "preimage": "\t\tname = NotPrinted\n\t\tif asked, err := url.Parse(failed.URL); err == nil {\n\t\t\tname = askedURL(asked)\n\t\t}",
+        "replacement": "\t\tname = failed.URL"
+      }
+    },
+    {
+      "id": "claudebridge-unanswered-name-clean",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/claudebridge",
+      "test": "TestATurnReportThatGotNoAnswerNamesTheDaemonsURLByItsSchemeHostAndPath/clean",
+      "production": "claudebridge turnReports.post: a turn report the daemon never answered logs the failure through oauth2call.Unanswered with shown \"\", which names the URL the report asked by its scheme, host and path: a LEGION_DAEMON_URL with nothing to remove prints with the route",
+      "capture": "claudebridge.unanswered-name/clean"
+    },
+    {
+      "id": "claudebridge-unanswered-name-user",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/claudebridge",
+      "test": "TestATurnReportThatGotNoAnswerNamesTheDaemonsURLByItsSchemeHostAndPath/user",
+      "production": "claudebridge turnReports.post: a turn report the daemon never answered logs the failure through oauth2call.Unanswered with shown \"\", which names the URL the report asked by its scheme, host and path: a user name in LEGION_DAEMON_URL, which net/http's own error keeps, prints nowhere",
+      "capture": "claudebridge.unanswered-name/user"
+    },
+    {
+      "id": "claudebridge-unanswered-name-query",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/claudebridge",
+      "test": "TestATurnReportThatGotNoAnswerNamesTheDaemonsURLByItsSchemeHostAndPath/query",
+      "production": "claudebridge turnReports.post: a turn report the daemon never answered logs the failure through oauth2call.Unanswered with shown \"\", which names the URL the report asked by its scheme, host and path: a query in LEGION_DAEMON_URL, which takes the route into it and which net/http's own error quotes, prints nowhere",
+      "capture": "claudebridge.unanswered-name/query"
+    },
+    {
+      "id": "claudebridge-unanswered-name-fragment",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/claudebridge",
+      "test": "TestATurnReportThatGotNoAnswerNamesTheDaemonsURLByItsSchemeHostAndPath/fragment",
+      "production": "claudebridge turnReports.post: a turn report the daemon never answered logs the failure through oauth2call.Unanswered with shown \"\", which names the URL the report asked by its scheme, host and path: a fragment in LEGION_DAEMON_URL, which takes the route into it, which net/http's own error quotes and which the daemon's URL rule (redact.URLCredentials) kept, prints nowhere",
+      "capture": "claudebridge.unanswered-name/fragment",
+      "function": "(*github.com/sjawhar/legion/daemon/internal/claudebridge.turnReports).post",
+      "mutation": {
+        "file": "packages/daemon/internal/claudebridge/turnoutcome.go",
+        "preimage": "oauth2call.Unanswered(err, post, \"\")",
+        "replacement": "oauth2call.Unanswered(err, post, post.URL.String())"
+      }
+    },
+    {
+      "id": "githubapp-unanswered-name-deliveries",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/githubapp",
+      "test": "TestACallThatGotNoAnswerNamesTheURLItAskedAsUnansweredNamesIt",
+      "production": "githubapp Client.send: the deliveries listing's first page, which got no answer, names its target as ShownBody shows it in send's words, then the URL it asked as redact.Unanswered names it (shown \"\"): its scheme, host and path without the ?per_page=100 query, and net/http's own text of the refused connection, which errors.Is still finds"
+    },
+    {
+      "id": "redact-routes-empty-method",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestPublicRoutesReadAsTheSharedTableSays/empty-method",
+      "production": "redact.requestTokens with the public-name table's routes: a request whose method is the empty string is read as a GET, as net/http sends it (publicOn), so page, Metadata-Flavor and wait print on their GET routes and grant_type, public on a POST alone, is redacted"
+    },
+    {
+      "id": "redact-routes-unlisted-names",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestPublicRoutesReadAsTheSharedTableSays/unlisted-names",
+      "production": "redact.requestTokens: a value under a name no contract lists, a new one included, is redacted on every route, in a query, a form, a header and a JSON body, while User-Agent and scope, whose contract names no route, and session on the broker's token route print"
+    },
+    {
+      "id": "public-names-route-source-go",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestARouteOnEveryPathIsOneAProtocolItsSourceCitesFixes",
+      "production": "redact publicRequestNames' guard (routeProblem with protocolMethods): a route on a method's every path passes only from a source that cites a protocol fixing that method, never from one that repeats the route, and any other route only from a source that names it"
+    },
+    {
+      "id": "workspace-git-words-fsck-userinfo",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/workspace",
+      "test": "TestWhatGitSaysOfGitHubsOrTheCachesWordsPrintsThroughTheFetchsFilter/fsck-userinfo",
+      "production": "github.com/sjawhar/legion/daemon/internal/workspace.verifyCache: fsck runs through FeedGitWithin's body (feedGitWithin) under the fetch's credential, so its stderr, which names a ref the cache streamed in packed-refs as fsck refuses the name, prints through the fetch's one filter and the fail-closed rule (fetchCredential.shown): a URL in it keeps no user information",
+      "function": "github.com/sjawhar/legion/daemon/internal/workspace.verifyCache",
+      "capture": "workspace.git-words/fsck-userinfo",
+      "mutation": {
+        "file": "packages/daemon/internal/workspace/fetch.go",
+        "preimage": "staging, left, held, \"fsck\"",
+        "replacement": "staging, left, nil, \"fsck\""
+      }
+    },
+    {
+      "id": "workspace-git-words-fsck-userinfo-encoded",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/workspace",
+      "test": "TestWhatGitSaysOfGitHubsOrTheCachesWordsPrintsThroughTheFetchsFilter/fsck-userinfo-encoded",
+      "production": "github.com/sjawhar/legion/daemon/internal/workspace.verifyCache: fsck's stderr naming a ref whose URL holds percent-encoded user information, which the URL rule cannot read, prints as the fail-closed rule prints it, its words not printed (feedGitWithin under the fetch's credential, fetchCredential.shown)",
+      "function": "github.com/sjawhar/legion/daemon/internal/workspace.verifyCache",
+      "capture": "workspace.git-words/fsck-userinfo-encoded",
+      "mutation": {
+        "file": "packages/daemon/internal/workspace/fetch.go",
+        "preimage": "staging, left, held, \"fsck\"",
+        "replacement": "staging, left, nil, \"fsck\""
+      }
+    },
+    {
+      "id": "workspace-git-words-log-userinfo",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/workspace",
+      "test": "TestWhatGitSaysOfGitHubsOrTheCachesWordsPrintsThroughTheFetchsFilter/log-userinfo",
+      "production": "github.com/sjawhar/legion/daemon/internal/workspace.Fetch: every line it logs goes through the fetch's one filter (fetchCredential.scrub), the URL rule after the token filter, so the branch a protocol-v2 server names as GitHub's HEAD, which ls-remote prints unchecked and followHead logs, keeps no user information",
+      "function": "github.com/sjawhar/legion/daemon/internal/workspace.Fetch",
+      "capture": "workspace.git-words/log-userinfo",
+      "mutation": {
+        "file": "packages/daemon/internal/workspace/fetch.go",
+        "preimage": "log(held.scrub(line))",
+        "replacement": "log(scrubTokens(line, held.held...))"
+      }
+    },
+    {
+      "id": "workspace-git-words-delta-refspec",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/workspace",
+      "test": "TestWhatGitSaysOfGitHubsOrTheCachesWordsPrintsThroughTheFetchsFilter/delta-refspec",
+      "production": "github.com/sjawhar/legion/daemon/internal/workspace.transferWithRetries: a failed transfer's error names its argv word by word through the fetch's one filter (fetchCredential.words), since the delta's refspecs name the branch GitHub's HEAD names (fetchInto), GitHub's words",
+      "function": "github.com/sjawhar/legion/daemon/internal/workspace.transferWithRetries",
+      "capture": "workspace.git-words/delta-refspec",
+      "mutation": {
+        "file": "packages/daemon/internal/workspace/fetch.go",
+        "preimage": "checkedResult(held.words(transfer.argv), shown, runErr)",
+        "replacement": "checkedResult(transfer.argv, shown, runErr)"
+      }
+    },
+    {
+      "id": "workspace-git-words-head-not-branch",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/workspace",
+      "test": "TestWhatGitSaysOfGitHubsOrTheCachesWordsPrintsThroughTheFetchsFilter/head-not-branch",
+      "production": "github.com/sjawhar/legion/daemon/internal/workspace.remoteRefs: the refusal of a GitHub HEAD that names no branch names its target, GitHub's words, through the fetch's one filter (fetchCredential.scrub)",
+      "function": "github.com/sjawhar/legion/daemon/internal/workspace.remoteRefs",
+      "capture": "workspace.git-words/head-not-branch",
+      "mutation": {
+        "file": "packages/daemon/internal/workspace/fetch.go",
+        "preimage": "request.Repo, held.scrub(target))",
+        "replacement": "request.Repo, target)"
+      }
+    },
+    {
+      "id": "workspace-git-words-prune-ref",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/workspace",
+      "test": "TestWhatGitSaysOfGitHubsOrTheCachesWordsPrintsThroughTheFetchsFilter/prune-ref",
+      "production": "github.com/sjawhar/legion/daemon/internal/workspace.pruneToGitHub: the removal of a ref the cache streamed runs through feedGitWithin under the fetch's credential, so a removal that fails names the ref in its argv (fetchCredential.words) and its stderr (fetchCredential.shown) through the fetch's one filter",
+      "function": "github.com/sjawhar/legion/daemon/internal/workspace.pruneToGitHub",
+      "capture": "workspace.git-words/prune-ref",
+      "mutation": {
+        "file": "packages/daemon/internal/workspace/fetch.go",
+        "preimage": "run.Timeout(), held, \"update-ref\"",
+        "replacement": "run.Timeout(), nil, \"update-ref\""
+      }
+    },
+    {
+      "id": "workspace-git-words-follow-ref",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/workspace",
+      "test": "TestWhatGitSaysOfGitHubsOrTheCachesWordsPrintsThroughTheFetchsFilter/follow-ref",
+      "production": "github.com/sjawhar/legion/daemon/internal/workspace.followHead: HEAD's move to the branch GitHub's HEAD names runs through feedGitWithin under the fetch's credential, so a move that fails names the branch in its argv (fetchCredential.words) through the fetch's one filter",
+      "function": "github.com/sjawhar/legion/daemon/internal/workspace.followHead",
+      "capture": "workspace.git-words/follow-ref",
+      "mutation": {
+        "file": "packages/daemon/internal/workspace/fetch.go",
+        "preimage": "run.Timeout(), held, \"symbolic-ref\"",
+        "replacement": "run.Timeout(), nil, \"symbolic-ref\""
+      }
+    },
+    {
+      "id": "agentloop-token-failure-twin",
+      "requirement": "r3-each-site",
+      "package": "./agentloop",
+      "test": "TestATokenTheCallerCouldNotReadIsNamedInItsOwnWords/twin",
+      "production": "the stand-in of the token-failure rows: net/http's error for a call whose Endpoint.Token failed, as the SDK hands it on in a run and as the client returns it in a decision, names the user information of the endpoint's address beside the caller's words, so the rows can see a leak"
+    },
+    {
+      "id": "agentloop-token-failure-anthropic-messages",
+      "requirement": "r3-each-site",
+      "package": "./agentloop",
+      "test": "TestATokenTheCallerCouldNotReadIsNamedInItsOwnWords/anthropic-messages",
+      "production": "agentloop providerFailure: a run whose Endpoint.Token failed on anthropic-messages is said in the caller's words alone, after 'reading the anthropic-messages token' (tokenFailure), never by net/http's *url.Error around them, which names the endpoint address's user information",
+      "function": "github.com/sjawhar/envoy/agentloop.providerFailure",
+      "capture": "agentloop.token-failure/anthropic-messages",
+      "mutation": {
+        "file": "packages/envoy/agentloop/run.go",
+        "preimage": "return unread.Error()",
+        "replacement": "return err.Error()"
+      }
+    },
+    {
+      "id": "agentloop-token-failure-openai-responses",
+      "requirement": "r3-each-site",
+      "package": "./agentloop",
+      "test": "TestATokenTheCallerCouldNotReadIsNamedInItsOwnWords/openai-responses",
+      "production": "agentloop providerFailure: a run whose Endpoint.Token failed on openai-responses is said in the caller's words alone (tokenFailure), never by the ai-sdk's APICallError over net/http's *url.Error, which names the endpoint address's user information",
+      "function": "github.com/sjawhar/envoy/agentloop.providerFailure",
+      "capture": "agentloop.token-failure/openai-responses",
+      "mutation": {
+        "file": "packages/envoy/agentloop/run.go",
+        "preimage": "return unread.Error()",
+        "replacement": "return err.Error()"
+      }
+    },
+    {
+      "id": "agentloop-token-failure-openai-chat",
+      "requirement": "r3-each-site",
+      "package": "./agentloop",
+      "test": "TestATokenTheCallerCouldNotReadIsNamedInItsOwnWords/openai-chat",
+      "production": "agentloop providerFailure: a run whose Endpoint.Token failed on openai-chat is said in the caller's words alone (tokenFailure), never by openai-compatible's 'HTTP request failed' error over net/http's *url.Error, which names the endpoint address's user information",
+      "function": "github.com/sjawhar/envoy/agentloop.providerFailure",
+      "capture": "agentloop.token-failure/openai-chat",
+      "mutation": {
+        "file": "packages/envoy/agentloop/run.go",
+        "preimage": "return unread.Error()",
+        "replacement": "return err.Error()"
+      }
+    },
+    {
+      "id": "agentloop-token-failure-azure-anthropic",
+      "requirement": "r3-each-site",
+      "package": "./agentloop",
+      "test": "TestATokenTheCallerCouldNotReadIsNamedInItsOwnWords/azure-anthropic",
+      "production": "agentloop languageModel and providerFailure: on azure-anthropic the provider's credential callback fails with tokenFailure, so a run whose Endpoint.Token failed is said in the caller's words alone, never by the foundry provider's wrapper (the Azure provider refuses an address with user information, so this case asserts the words and the call never sent)"
+    },
+    {
+      "id": "agentloop-token-failure-systemone",
+      "requirement": "r3-each-site",
+      "package": "./agentloop",
+      "test": "TestATokenTheCallerCouldNotReadIsNamedInItsOwnWords/systemone",
+      "production": "agentloop Decide: a decision whose Endpoint.Token failed is said in the caller's words alone, after 'reading the systemone token' (tokenFailure), never by net/http's *url.Error around them, which names the endpoint address's user information",
+      "function": "github.com/sjawhar/envoy/agentloop.Decide",
+      "capture": "agentloop.token-failure/systemone",
+      "mutation": {
+        "file": "packages/envoy/agentloop/decide.go",
+        "preimage": "err = unread",
+        "replacement": "_ = unread"
+      }
+    },
+    {
+      "id": "judge-mint-refusal-twin",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/judge",
+      "test": "TestTheJudgesMintRefusalPrintsNoCredentialItEchoes/twin",
+      "production": "the stand-in of the judge's mint-refusal row: the IAM Service Account Credentials stand answers the refusal with the pod's access token and a URL's user and password in its words, so the row can see a leak"
+    },
+    {
+      "id": "judge-mint-refusal",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/judge",
+      "test": "TestTheJudgesMintRefusalPrintsNoCredentialItEchoes/ask",
+      "production": "judge Model.Ask: a refused mint of the judge's identity token is the error the audit row and the log hold, naming the account, the audience and the refusal's status and words as ciphertoken's rule reads them (agentloop's tokenFailure carries the account's error alone), with no run of the access token or the URL's user information the refusal echoed"
+    },
+    {
+      "id": "appauth-answer-words-listed-owner-left-out",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/appauth",
+      "test": "TestAListedOwnerThatEchoesTheAppJWTIsSaidOnlyInItsShape/left-out",
+      "production": "appauth mintBundle and sayLeftOut: an owner key-mode discovery listed whose name is no directory's, an account login that echoes the App's JWT, is said in the left-out warning, its owner field and its status (noDirectoryName), only as a login GitHub allows (githubrest.ShownLogin), its fixed phrase here, never as it came; the warning is still said once per name (saidLeftOut keyed by the name as it came). No mutation row: githubrest.ShownLogin is no rule call the census lists, and every print of such a name is lowercased (readInstalledOwners, bundleDirs), so a mutant's capture holds the JWT case-folded (eyjhbgci...) and never the gate's case-sensitive marker eyJhbGci (cmd/redact-gate main.go:75); the mutant is shown by hand.",
+      "capture": "appauth.answer-words/listed-owner-left-out"
+    },
+    {
+      "id": "appauth-answer-words-listed-owner-no-owner",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/appauth",
+      "test": "TestAListedOwnerThatEchoesTheAppJWTIsSaidOnlyInItsShape/no-owner",
+      "production": "appauth bundleDefault: a controller's bundle asked for no owner, where the App's one listed owner is an account login that echoes the App's JWT, is refused naming each owner and why each was left out (noDirectoryName) only as a login GitHub allows (githubrest.ShownLogin), never as discovery listed it. No mutation row: githubrest.ShownLogin is no rule call the census lists, and every print of such a name is lowercased (readInstalledOwners, bundleDirs), so a mutant's capture holds the JWT case-folded (eyjhbgci...) and never the gate's case-sensitive marker eyJhbGci (cmd/redact-gate main.go:75); the mutant is shown by hand.",
+      "capture": "appauth.answer-words/listed-owner-no-owner"
+    },
+    {
+      "id": "proxy-certificate-words-macos-untrusted",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/proxy",
+      "test": "TestACertificateFailureInMacOSWordsWritesNoNameTheCertificateHolds/macos-untrusted",
+      "production": "airlock proxy upstreamReason (badGateway's upstream line and 502, exchangeAt's error): a certificate the macOS verifier refused for another reason than expiry (*tls.CertificateVerificationError over x509's \"x509: %s\" of the system's words, root_darwin.go, which name the certificate's subject between curly quotation marks logmask.HidePeerBytes does not cut), built, prints redact's fixed words for it (redact.TLSWords), never its text",
+      "capture": "proxy.certificate-words/macos-untrusted",
+      "function": "github.com/sjawhar/envoy/internal/cipher/proxy.upstreamReason",
+      "mutation": {
+        "file": "packages/envoy/internal/cipher/proxy/upstream.go",
+        "preimage": "\tif words, ok := redact.TLSWords(err); ok {\n\t\treturn words\n\t}\n",
+        "replacement": "\t_ = redact.TLSWords\n"
+      }
+    },
+    {
+      "id": "proxy-certificate-words-macos-expired",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/proxy",
+      "test": "TestACertificateFailureInMacOSWordsWritesNoNameTheCertificateHolds/macos-expired",
+      "production": "airlock proxy upstreamReason (badGateway's upstream line and 502, exchangeAt's error): a certificate the macOS verifier refused as expired (x509.CertificateInvalidError, reason Expired, whose Detail is the system's words, root_darwin.go, which name the certificate's subject between curly quotation marks logmask.HidePeerBytes does not cut), built, prints redact's fixed words for that reason (redact.TLSWords), never x509's text",
+      "capture": "proxy.certificate-words/macos-expired",
+      "function": "github.com/sjawhar/envoy/internal/cipher/proxy.upstreamReason",
+      "mutation": {
+        "file": "packages/envoy/internal/cipher/proxy/upstream.go",
+        "preimage": "\tif words, ok := redact.TLSWords(err); ok {\n\t\treturn words\n\t}\n",
+        "replacement": "\t_ = redact.TLSWords\n"
+      }
     }
   ],
   "bun": [
@@ -12802,83 +13523,83 @@
       "requirement": "r3-each-site",
       "file": "packages/contracts/src/public-request-names.test.ts",
       "test": "the public-name table holds only contract names no credential travels under",
-      "production": "PUBLIC_REQUEST_NAMES"
+      "production": "PUBLIC_REQUEST_NAMES and PROTOCOL_METHODS: every entry names its contract and each route in its source's words, or for a method's every path a protocol of PROTOCOL_METHODS its source cites; every protocol is a method's every path an entry cites"
     },
     {
       "id": "public-name-filter-ts",
       "requirement": "r3-each-site",
-      "file": "packages/contracts/src/public-request-names.test.ts",
-      "test": "a request's value is a credential unless its name is public",
-      "production": "requestCredentials"
+      "file": "packages/contracts/src/public-request-routes.test.ts",
+      "test": "public routes table group unlisted-names reads as the table says",
+      "production": "requestCredentials: a value under a name no contract lists, a new one included, is a credential on every route, in a query, a form, a header and a JSON body, and User-Agent and scope, whose contract names no route, and session on the broker's token route are not"
     },
     {
       "id": "public-routes-ts-listener-messages",
       "requirement": "r3-each-site",
       "file": "packages/contracts/src/public-request-routes.test.ts",
-      "test": "a listener message's names are public only on the send and publish routes",
+      "test": "public routes table group listener-messages reads as the table says",
       "production": "requestCredentials with the public-name table's routes: a listener message's names are no credential on POST /v1/messages/send or POST /v1/messages/publish as their contract names them, and are one on the other route, another method, a path below or under a base path, and another server's route"
     },
     {
       "id": "public-routes-ts-listener-reads",
       "requirement": "r3-each-site",
       "file": "packages/contracts/src/public-request-routes.test.ts",
-      "test": "a listener read's names are public only on its registry reads",
+      "test": "public routes table group listener-reads reads as the table says",
       "production": "requestCredentials with the public-name table's routes: include on GET /v1/sessions, GET /v1/roles/{role} and GET /v1/registry/{id}, and issue on GET /v1/legion/agents, are no credential, and each is one below those routes, on a POST and on the listener's other reads"
     },
     {
       "id": "public-routes-ts-daemon-claims",
       "requirement": "r3-each-site",
       "file": "packages/contracts/src/public-request-routes.test.ts",
-      "test": "a role is public only on the daemon's operator claim routes",
+      "test": "public routes table group daemon-claims reads as the table says",
       "production": "requestCredentials with the public-name table's routes: role is no credential on POST /legion/v1/operator/claims and the POST routes below it, and is one on the list's GET and on the daemon's other routes"
     },
     {
       "id": "public-routes-ts-enrollments",
       "requirement": "r3-each-site",
       "file": "packages/contracts/src/public-request-routes.test.ts",
-      "test": "an enrollment's names are public only on POST /v1/enrollments",
+      "test": "public routes table group enrollments reads as the table says",
       "production": "requestCredentials with the public-name table's routes: an enrollment's names, its projects among them, are no credential on POST /v1/enrollments and are one below it, on a GET and on the broker's other routes"
     },
     {
       "id": "public-routes-ts-broker-requests",
       "requirement": "r3-each-site",
       "file": "packages/contracts/src/public-request-routes.test.ts",
-      "test": "the broker's request and release names are public only on their routes",
+      "test": "public routes table group broker-requests reads as the table says",
       "production": "requestCredentials with the public-name table's routes: wait on GET /v1/requests/{id}, owner and repositories on POST /v1/requests and POST /v1/grants/{id}/values, and reason and command on the release alone are no credential, and each is one on any other of the broker's paths or methods"
     },
     {
       "id": "public-routes-ts-token-exchange",
       "requirement": "r3-each-site",
       "file": "packages/contracts/src/public-request-routes.test.ts",
-      "test": "a token exchange's names are public only on its routes",
+      "test": "public routes table group token-exchange reads as the table says",
       "production": "requestCredentials with the public-name table's routes: the broker's session, projects and launcher_credential on POST /v1/oauth/token, the token request's names on any POST, and client_id and scope on any request are no credential; the broker's names on another path or a GET, and a token request's on a GET or a PUT, are"
     },
     {
       "id": "public-routes-ts-iam-generate-access-token",
       "requirement": "r3-each-site",
       "file": "packages/contracts/src/public-request-routes.test.ts",
-      "test": "an impersonation's names are public only on generateAccessToken",
+      "test": "public routes table group iam-generate-access-token reads as the table says",
       "production": "requestCredentials with the public-name table's routes: delegates and lifetime are no credential on POST /v1/projects/{project}/serviceAccounts/{account}:generateAccessToken and are one on generateIdToken, a GET, the account's own path and a segment with no account"
     },
     {
       "id": "public-routes-ts-github-pagination",
       "requirement": "r3-each-site",
       "file": "packages/contracts/src/public-request-routes.test.ts",
-      "test": "a page number is public only on a GET",
+      "test": "public routes table group github-pagination reads as the table says",
       "production": "requestCredentials with the public-name table's routes: GitHub's page and per_page are no credential on a GET of any path and are one in a POST's body"
     },
     {
       "id": "public-routes-ts-metadata-flavor",
       "requirement": "r3-each-site",
       "file": "packages/contracts/src/public-request-routes.test.ts",
-      "test": "a Metadata-Flavor is public only on a metadata read",
+      "test": "public routes table group metadata-flavor reads as the table says",
       "production": "requestCredentials with the public-name table's routes: Metadata-Flavor is no credential on a GET of /computeMetadata/v1 or below it and is one on a PUT, the metadata server's root and another server's path"
     },
     {
       "id": "public-routes-ts-dispatch-writes",
       "requirement": "r3-each-site",
       "file": "packages/contracts/src/public-request-routes.test.ts",
-      "test": "a daemon's Dispatch write names are public only on its write routes",
+      "test": "public routes table group dispatch-writes reads as the table says",
       "production": "requestCredentials with the public-name table's routes: kind on Dispatch's claim release, message, document upload, gated-steps, design-gates, role-holder, step, rating and plan writes and role on the role-holder, step and rating writes are no credential; kind on the issue's PATCH, the claim route's POST, below a route, on a step list with no record id and on a comment, role on the claim's release, and a role holder's or a step's session are"
     },
     {
@@ -12929,6 +13650,20 @@
       "file": "packages/contracts/src/remote-text-print.test.ts",
       "test": "box print test: LibraryError prints no secret by any printer at any placement",
       "production": "packages/contracts/src/remote-text.ts#LibraryError: every printer at every placement"
+    },
+    {
+      "id": "public-routes-ts-empty-method",
+      "requirement": "r3-each-site",
+      "file": "packages/contracts/src/public-request-routes.test.ts",
+      "test": "public routes table group empty-method reads as the table says",
+      "production": "requestCredentials with the public-name table's routes: requestRoute reads an empty-string method as GET (method || \"GET\"), as Go's publicOn does, so page, Metadata-Flavor and wait are no credential on their GET routes and grant_type, public on a POST alone, is one"
+    },
+    {
+      "id": "public-names-route-source-ts",
+      "requirement": "r3-each-site",
+      "file": "packages/contracts/src/public-request-names.test.ts",
+      "test": "a route on every path is one a protocol its source cites fixes",
+      "production": "PUBLIC_REQUEST_NAMES' guard (routeProblem with PROTOCOL_METHODS): a route on a method's every path passes only from a source that cites a protocol fixing that method, never from one that repeats the route, and any other route only from a source that names it"
     }
   ],
   "recall": [
@@ -14555,6 +15290,136 @@
       "site": "envoy's tlsErrorWords (url.go), the one rule by which redact.Cause, redact.Error and redact.Unanswered print a TLS certificate failure, printed x509.CertificateInvalidError by one fixed phrase whatever its reason, so an expired certificate, a name an authority does not permit and a chain with no valid path all read alike; the owner decided one fixed phrase for each reason (go1.27.3's crypto/x509 names eleven) and for a reason it does not name, each fixed text and never x509's own, which for five reasons holds a Detail that can quote the certificate the answering party sent",
       "source": "the round-9 decisions of #4368",
       "guard": "redact-certificate-words-name-not-permitted"
+    },
+    {
+      "site": "agent-secrets gcpUserinfo: the --owner me userinfo read went out on oauth2.NewClient over the scope's client, which follows redirects (http.DefaultClient's rule, which NewClient copies), and oauth2.Transport sets the sign-in's bearer on every request it carries, so a followed 302 sent the bearer to whatever host and port the Location named",
+      "source": "the round-9 decisions of #4368",
+      "guard": "agent-secrets-userinfo-redirect-followed-other-port"
+    },
+    {
+      "site": "mcpbridge HTTPServer.Start: an SSE endpoint event naming a relative endpoint, which the SSE transport allows, was posted to as it came, so every POST failed with net/http's unsupported-scheme error and the handshake never completed",
+      "source": "the round-9 decisions of #4368",
+      "guard": "mcpbridge-relative-endpoint-relative"
+    },
+    {
+      "site": "mcpbridge HTTPServer.Start: a refused POST's error printed a relative endpoint whole, its query values (a session id, an access token) included, since the rule reads a reference with no scheme as words",
+      "source": "the round-9 decisions of #4368",
+      "guard": "mcpbridge-relative-endpoint-refused"
+    },
+    {
+      "site": "mcpbridge HTTPServer.Start: a failed POST's error printed a relative endpoint whole, its query values (a session id, an access token) included, since the rule reads a reference with no scheme as words",
+      "source": "the round-9 decisions of #4368",
+      "guard": "mcpbridge-relative-endpoint-dropped"
+    },
+    {
+      "site": "mcpbridge readEndpointEvent: an endpoint on another origin than the SSE URL must not receive the configured credential (the SSE URL's user information), which a resolution that copied the user information to every endpoint would send",
+      "source": "the round-9 decisions of #4368",
+      "guard": "mcpbridge-relative-endpoint-elsewhere"
+    },
+    {
+      "site": "mcpbridge readEndpointEvent: url.Parse's error for an endpoint that does not parse quotes the endpoint whole, user information and query included",
+      "source": "the round-9 decisions of #4368",
+      "guard": "mcpbridge-relative-endpoint-unparsed"
+    },
+    {
+      "site": "mcpbridge HTTPServer.Start: the SSE URL was the configured URL's text with /sse appended, so a configured query took /sse into its last value and the connect asked the configured path, not its /sse",
+      "source": "the round-9 decisions of #4368",
+      "guard": "mcpbridge-sse-url-query"
+    },
+    {
+      "site": "mcpbridge HTTPServer.Start: a configured URL that does not parse printed http.NewRequest's error, which quotes the URL whole, user information and query included",
+      "source": "the round-9 decisions of #4368",
+      "guard": "mcpbridge-sse-url-unparsed"
+    },
+    {
+      "site": "envoy redact.Unanswered: a request given no name of its caller's was named by redact.URL of its whole URL, so every URL with a query, user information or a fragment printed as NotPrinted, where the daemon's copy of the printer had printed its host and path; callers then passed a name another rule made of the URL",
+      "source": "the round-9 decisions of #4368",
+      "guard": "redact-unanswered-name-clean-query"
+    },
+    {
+      "site": "envoy redact.Unanswered (askedURL): the one naming drops a query whole, a key alone (?<token>) with it, since neither the allow-list nor the credentials the request carried can tell such a key from a name",
+      "source": "the round-9 decisions of #4368",
+      "guard": "redact-unanswered-name-query-key"
+    },
+    {
+      "site": "claudebridge turnReports.post: passed redact.URLCredentials of the report's URL as Unanswered's shown, which keeps a fragment, so a credential in LEGION_DAEMON_URL's fragment printed in the pane's line",
+      "source": "the round-9 decisions of #4368",
+      "guard": "claudebridge-unanswered-name-fragment"
+    },
+    {
+      "site": "githubapp Client.send: passed ShownBody(target) as Unanswered's shown, a second naming of the URL it asked, its query included",
+      "source": "the round-9 decisions of #4368",
+      "guard": "githubapp-unanswered-name-deliveries"
+    },
+    {
+      "site": "the public-route rows copied by hand into public_routes_test.go and public-request-routes.test.ts, which a rename had reached in the TypeScript copy only",
+      "source": "the round-8 quality review",
+      "guard": "redact-routes-token-exchange"
+    },
+    {
+      "site": "the routes POST /* and GET /* of the token request's and GitHub pagination's names, which the public-name guard passed only because each entry's source repeated its route",
+      "source": "the round-8 quality review",
+      "guard": "public-names-route-source-go"
+    },
+    {
+      "site": "TypeScript's requestRoute read an empty-string method as \"\" where Go's publicOn reads GET, so the TypeScript half took a GET route's public values for credentials",
+      "source": "the round-9 decisions of #4368",
+      "guard": "public-routes-ts-empty-method"
+    },
+    {
+      "site": "public-request-names.test.ts held by hand one request of Go's TestARequestsValueIsACredentialUnlessItsNameIsPublic",
+      "source": "the round-8 quality review",
+      "guard": "public-name-filter-ts"
+    },
+    {
+      "site": "workspace verifyCache: fsck's stderr, which names a ref the repository cache streamed, went through the token filter alone (fetchCredential.withoutTokens), with no URL rule and no fail-closed rule, and fsck ran through a copy of FeedGitWithin's body, so a stand-in at the cache's address that streamed a packed-refs naming a URL with user information, plain or percent-encoded, had it printed in Fetch's error",
+      "source": "the round-8 quality review",
+      "guard": "workspace-git-words-fsck-userinfo"
+    },
+    {
+      "site": "workspace Fetch's log filter: every line Fetch logs went through the token filter alone (fetchCredential.withoutTokens), with no URL rule, so a stand-in at GitHub's address speaking protocol v2 that named HEAD as a branch whose name holds a URL with user information had it logged by followHead",
+      "source": "the round-8 quality review",
+      "guard": "workspace-git-words-log-userinfo"
+    },
+    {
+      "site": "workspace transferWithRetries: a failed transfer's error named its argv as it ran, and the delta's refspecs name the branch GitHub's HEAD names, so a stand-in at GitHub's address that named HEAD after the provisioning token, as written or percent-encoded, and then failed the delta had the token printed in Fetch's error",
+      "source": "the round-8 quality review",
+      "guard": "workspace-git-words-delta-refspec"
+    },
+    {
+      "site": "workspace remoteRefs: the refusal of a GitHub HEAD that names no branch quoted its target as GitHub wrote it, so a stand-in at GitHub's address that named HEAD as a tag holding the provisioning token had it printed in Fetch's error",
+      "source": "the round-8 quality review",
+      "guard": "workspace-git-words-head-not-branch"
+    },
+    {
+      "site": "workspace pruneToGitHub: the removal of a ref the repository cache streamed ran through FeedGit, whose error names the ref in its argv and git's stderr as they came, so a stand-in at the cache's address that streamed a ref holding a token had it printed in Fetch's error when the removal failed (a volume that refuses the lock)",
+      "source": "the round-8 quality review",
+      "guard": "workspace-git-words-prune-ref"
+    },
+    {
+      "site": "workspace followHead: HEAD's move to the branch GitHub's HEAD names ran through FeedGit, whose error names the branch in its argv as it came, so a stand-in at GitHub's address that named HEAD after the provisioning token had it printed in Fetch's error when the move failed (a volume that refuses the lock)",
+      "source": "the round-8 quality review",
+      "guard": "workspace-git-words-follow-ref"
+    },
+    {
+      "site": "agentloop's run and decision Detail said a call whose Endpoint.Token failed by its class alone ('the request failed') once 8ad94448c4e printed every failed call through redact.Cause, so the judge's audit row lost the account, the audience and Google's refusal of its mint; it is now said in the caller's words alone (tokenFailure), never in net/http's or the SDK's words around them",
+      "source": "the round-9 decisions of #4368",
+      "guard": "agentloop-token-failure-anthropic-messages"
+    },
+    {
+      "site": "appauth sayLeftOut and noDirectoryName: an owner key-mode discovery listed whose name is no directory's was named as it came in the left-out warning (owner and status), the App's JWT case-folded where whatever answered in GitHub's place listed an account under it",
+      "source": "the round-9 decisions of #4368",
+      "guard": "appauth-answer-words-listed-owner-left-out"
+    },
+    {
+      "site": "appauth bundleDefault: the refusal of a bundle with no owner the App is installed on listed every owner, and why each was left out, as discovery listed them, the App's JWT case-folded among them",
+      "source": "the round-9 decisions of #4368",
+      "guard": "appauth-answer-words-listed-owner-no-owner"
+    },
+    {
+      "site": "envoy's airlock proxy (internal/cipher/proxy upstreamReason, the one rule for the error of a call the proxy made to a service: the upstream line, the 502 and a failed Azure exchange's reason, line and answer) printed a certificate failure as x509's text up to its first ASCII quotation mark (logmask.HidePeerBytes), a second rule beside redact's for certificate text; on macOS x509 hands on the system verifier's words, which name the certificate's subject between curly quotation marks that cut does not see, so the line and the answer printed the name the service chose for its certificate, the real value the swap sent it among the names it could choose",
+      "source": "the round-9 decisions of #4368",
+      "guard": "proxy-certificate-words-macos-untrusted"
     }
   ]
 }
