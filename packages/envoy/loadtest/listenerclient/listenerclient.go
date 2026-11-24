@@ -12,9 +12,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 
 	"github.com/sjawhar/envoy/internal/redact"
+	"github.com/sjawhar/envoy/internal/urljoin"
 	"github.com/sjawhar/envoy/listenerwire"
 )
 
@@ -87,12 +89,11 @@ const SessionsRoute = "/v1/sessions"
 // Sessions reads GET /v1/sessions and answers its status and up to 1 MiB of its answer, decoding
 // nothing: the stack check asks only whether the listener answers its token and refuses another.
 func (c *Client) Sessions(ctx context.Context) (int, redact.Answer, error) {
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, c.URL+SessionsRoute, nil)
+	request, err := c.newRequest(ctx, http.MethodGet, SessionsRoute, nil)
 	if err != nil {
 		return 0, redact.Answer{}, err
 	}
 	request.Header.Set("Accept", "application/json")
-	c.authorize(request)
 	response, err := c.HTTP.Do(request)
 	if err != nil {
 		return 0, redact.Answer{}, redact.Cause(err, c.URL)
@@ -112,12 +113,11 @@ func (c *Client) post(ctx context.Context, path string, body any) (redact.Answer
 	if err != nil {
 		return redact.Answer{}, err
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, c.URL+path, bytes.NewReader(data))
+	request, err := c.newRequest(ctx, http.MethodPost, path, bytes.NewReader(data))
 	if err != nil {
 		return redact.Answer{}, err
 	}
 	request.Header.Set("Content-Type", "application/json")
-	c.authorize(request)
 	response, err := c.HTTP.Do(request)
 	if err != nil {
 		return redact.Answer{}, redact.Cause(err, c.URL)
@@ -125,13 +125,34 @@ func (c *Client) post(ctx context.Context, path string, body any) (redact.Answer
 	defer response.Body.Close()
 	answer, _ := redact.ReadAnswer(response, answerLimit)
 	if response.StatusCode/100 != 2 {
-		return answer, &Refusal{URL: c.URL + path, Status: response.StatusCode, Said: answer.Words().String()}
+		return answer, &Refusal{URL: request.URL.String(), Status: response.StatusCode, Said: answer.Words().String()}
 	}
 	return answer, nil
 }
 
+// newRequest is a request of method with body for route, joined onto the listener's URL
+// (urljoin.Join): onto its path, after its query, its fragment dropped, where route appended to the
+// URL's text would sit inside a query or a fragment and the listener would be asked another path.
+// It carries the client's bearer (authorize). A URL that does not join, or whose joined URL does
+// not parse again (url.URL.String can write text url.Parse refuses, such as an IPv6 zone escape),
+// is refused in fixed words: url.Parse's error, which http.NewRequest's carries, quotes the URL
+// whole, user information and query included.
+func (c *Client) newRequest(ctx context.Context, method, route string, body io.Reader) (*http.Request, error) {
+	joined, err := urljoin.Join(c.URL, route)
+	if err != nil {
+		return nil, errors.New("the listener URL is not an absolute URL with a host (it is not printed)")
+	}
+	request, err := http.NewRequestWithContext(ctx, method, joined.String(), body)
+	if err != nil {
+		return nil, errors.New("the listener URL joined with the route does not parse (it is not printed)")
+	}
+	c.authorize(request)
+	return request, nil
+}
+
 // authorize sets the request's bearer when the client holds one, and no Authorization header when
-// it holds none: every call of the client goes through it, so each route sends the same.
+// it holds none: every call of the client goes through it (newRequest), so each route sends the
+// same.
 func (c *Client) authorize(request *http.Request) {
 	if c.Token != "" {
 		request.Header.Set("Authorization", "Bearer "+c.Token)
