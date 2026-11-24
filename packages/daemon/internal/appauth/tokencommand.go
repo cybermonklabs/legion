@@ -674,10 +674,9 @@ func (m *Manager) checkAppID(ctx context.Context, role AppRole, slug, appID, tok
 }
 
 // shownAppID is id, an App's id GitHub answered, as a message may print it: id where it is a
-// decimal number, as GitHub numbers every App, and a fixed phrase otherwise, since
-// installationID reads any text GitHub writes as a string id.
+// decimal number (numbered), and a fixed phrase otherwise.
 func shownAppID(id string) string {
-	if _, err := strconv.ParseUint(id, 10, 64); err != nil {
+	if !numbered(id) {
 		return "(an id that is not a number)"
 	}
 	return id

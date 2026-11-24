@@ -914,6 +914,13 @@ func (m *Manager) discoverInstallations(ctx context.Context, app config.GitHubAp
 			if err != nil || installation.Account.Login == "" {
 				return nil, fmt.Errorf("GitHub App installation discovery returned an invalid installation account")
 			}
+			// GitHub numbers every installation. The id is its words, or those of whatever answers
+			// in its place, which can echo the JWT the read carried, and every later call of the
+			// mint asks for it in its path and names it in its refusals (grantedPermissions,
+			// exchange, mint), so one that is not a number is refused here and printed nowhere.
+			if !numbered(id) {
+				return nil, fmt.Errorf("GitHub App installation discovery returned an installation id that is not a number")
+			}
 			installations[installation.Account.Login] = id
 		}
 		if len(payload) < 100 {
@@ -932,6 +939,13 @@ func installationID(raw json.RawMessage) (string, error) {
 		return strconv.FormatInt(numberID, 10), nil
 	}
 	return "", fmt.Errorf("invalid installation id")
+}
+
+// numbered says whether id, an id GitHub answered, is a decimal number, as GitHub numbers every
+// App, installation and user: installationID reads any text GitHub writes as a string id.
+func numbered(id string) bool {
+	_, err := strconv.ParseUint(id, 10, 64)
+	return err == nil
 }
 
 // identity is the bot identity of the App appID, read once by fetch and cached; concurrent callers
