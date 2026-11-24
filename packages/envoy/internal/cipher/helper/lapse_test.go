@@ -538,7 +538,7 @@ func TestAPriorEnrollmentOfAnotherOperatorDoesNotStrandTheSession(t *testing.T) 
 
 // TestAPriorEnrollmentOfAReplacedCredentialDoesNotStrandTheSession: a machine that proves an
 // identity of its own holds one launcher credential, keyed by the key its trade presented
-// (exchange.MachineSubject), and a helper that comes back on another key holds another. Every
+// (google.MachineSubject), and a helper that comes back on another key holds another. Every
 // revoke of the re-pinned session's prior enrollment is then refused 403
 // NOT_ENROLLING_CREDENTIAL (enroll.Service.Revoke: the enrollment is not this credential's),
 // which no retry can change, so the helper must stop retrying it and enroll the session afresh.

@@ -14,6 +14,8 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/sjawhar/envoy/internal/cipher/exchange"
+	"github.com/sjawhar/envoy/internal/cipher/identity/google"
+	"github.com/sjawhar/envoy/internal/cipher/identity/kubernetes"
 )
 
 // plannerClaim and implementerClaim are two role claims of one issue, as the Legion daemon's
@@ -88,7 +90,7 @@ func TestAnEnrollmentRecordsTheOwnerItsCallerProved(t *testing.T) {
 	ctx := context.Background()
 	r := newPodRig(t)
 	launcher := r.login(t, launcherAccount, "pod-uid-daemon")
-	machineSubject := exchange.MachineSubject(exchange.GoogleIdentity{Account: machineAccountEmail}, "tp-machine")
+	machineSubject := google.MachineSubject(google.Identity{Account: machineAccountEmail}, "tp-machine")
 	machine := machineCredentialFor(t, r.svc, machineSubject, "tp-machine")
 	person := mintCredential(t, r.svc, str("ada@example.com"), nil, "devbox")
 
@@ -101,7 +103,7 @@ func TestAnEnrollmentRecordsTheOwnerItsCallerProved(t *testing.T) {
 	unclaimedSlot.SessionID, unclaimedSlot.Slot, unclaimedSlot.Thumbprint = str("unclaimed-slot-session"), "planner-g1", unclaimed.Thumbprint+"-planner-g1"
 	// A pod's grants follow the pair of its account and the account its launcher's login proved
 	// (carryPrincipal), whatever owner it records.
-	podCarry := exchange.PodLaunchPrincipal(workerPodAccount, exchange.AccountPrincipal(launcherAccount))
+	podCarry := exchange.LaunchedBy(kubernetes.Principal(workerPodAccount), kubernetes.Principal(launcherAccount))
 
 	for _, c := range []struct {
 		name      string
@@ -639,7 +641,7 @@ func TestAnotherDaemonOfTheServiceStatingTheClaimTakesNothing(t *testing.T) {
 func TestAMachinesGrantStaysWithItsSession(t *testing.T) {
 	ctx := context.Background()
 	r := newPodRig(t)
-	subject := exchange.MachineSubject(exchange.GoogleIdentity{Account: machineAccountEmail}, "tp-machine")
+	subject := google.MachineSubject(google.Identity{Account: machineAccountEmail}, "tp-machine")
 	machine := machineCredentialFor(t, r.svc, subject, "tp-machine")
 	session := func(name, runtime string) Enrollment {
 		t.Helper()
@@ -745,7 +747,7 @@ func TestAPairedTakeGoesThroughTheSessionRuleAndTheClaimRuleIsUnchanged(t *testi
 	if err != nil {
 		t.Fatalf("the paired account's pod of the claim under %s = %v, want it enrolled: it takes the name its pair holds", name, err)
 	}
-	if got, want := sessionNameHolder(t, r.svc, name), exchange.AccountPrincipal(pairedWorkerPodAccount); got != want {
+	if got, want := sessionNameHolder(t, r.svc, name), kubernetes.Principal(pairedWorkerPodAccount); got != want {
 		t.Fatalf("the name %s is held by %q, want the paired account %q", name, got, want)
 	}
 	for what, grant := range map[string]uuid.UUID{"the same name's": sameNameGrant, "the other name's": otherNamedGrant} {

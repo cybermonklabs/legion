@@ -136,7 +136,7 @@ type LauncherCredentialResp struct {
 	Service *string `json:"service"`
 	// What a token login proved: its ServiceAccount
 	// (system:serviceaccount:<namespace>:<name>), or a machine as the token exchange names it
-	// (exchange.MachineSubject); null for every login a person approved.
+	// (the google identity provider's MachineSubject); null for every login a person approved.
 	Subject *string `json:"subject"`
 	// For a person's pod login, the person it acts for. A person's pod login is the token login
 	// of a Kubernetes ServiceAccount that BROKER_POD_OPERATORS maps to a person, and this is that

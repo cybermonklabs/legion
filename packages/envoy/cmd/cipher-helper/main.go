@@ -348,7 +348,7 @@ func migrateRecords(cfg config, log *slog.Logger) {
 // identityClient is the token client for the identity this machine proves, or nil where it
 // proves none. The key is this machine's own and only its public half ever reaches the broker:
 // it is the key every launcher proof the helper signs is signed with, and it is the key the
-// broker names this machine's one launcher credential by (exchange.MachineSubject).
+// broker names this machine's one launcher credential by (the google identity provider's MachineSubject).
 //
 // It is read back from IdentityKeyFile, and made and kept there at this machine's first trade
 // (helper.LoadOrMakeIdentityKey), so a restart trades the same subject and moves the one

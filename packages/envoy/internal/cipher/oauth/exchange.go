@@ -236,6 +236,11 @@ type PersonSignIn struct {
 	// these two, which is what the broker ends that account's sign-ins by.
 	Issuer  string
 	Subject string
+	// CredentialSubject is the subject the launcher credential this sign-in holds is keyed by, as
+	// the identity provider of the trade's subject token spells it (Provider.LauncherSubject). The
+	// wiring ends that credential by it where a trade ends a sign-in that recorded no account, so
+	// the broker's own store spells no provider's subject itself.
+	CredentialSubject string
 }
 
 // PersonSignIns records the sign-in in, in the transaction ctx carries, and answers
@@ -488,12 +493,12 @@ func (p *Provider) exchangeGrant(w http.ResponseWriter, r *http.Request, trade f
 		}
 		// The sign-in first, so a box key the person has revoked is refused before anything is
 		// minted for it, and then the credential that sign-in holds, in this same transaction.
-		if err := p.personSignIn(txCtx, session); err != nil {
+		if err := p.personSignIn(txCtx, subjectTokenType, session); err != nil {
 			p.writeError(ctx, w, request, err)
 			return
 		}
 		if read {
-			err = p.signInCredential(txCtx, session)
+			err = p.signInCredential(txCtx, subjectTokenType, session)
 		} else {
 			credentialID, credential, err = p.personCredential(txCtx, r, subjectTokenType, session)
 		}
@@ -1310,7 +1315,7 @@ func personDeclinesNothing() error {
 // gives the machine both, and both end together, because the credential is written in the
 // transaction the token is written in and expires when the subject token does.
 //
-// The credential is keyed by the machine (exchange.MachineSubject) and bound to the key the
+// The credential is keyed by the machine (the provider's LauncherSubject) and bound to the key the
 // request's DPoP proof presented, so a machine's next exchange moves the one credential it holds
 // and no machine can move another's. It names its fleet's service and no person, whatever the
 // fleet's entry says: secret authority follows the access token, so a machine's sessions reach
@@ -1396,13 +1401,13 @@ const keyBindsReadTokenHint = "A live read token is bound to the key this proof 
 // the broker's own record that refuses. Three of them the person fixes by signing in again, with a
 // key of its own, and they name the sign-in command. The machine's is a refusal and not an update
 // because the credential this sign-in holds is keyed by the person, the machine and the key
-// (exchange.PersonSubject): a row that followed its key to another machine would ask for a subject
-// no live credential has, and every trade of it from then on would collide on
+// (the provider's PersonSubject): a row that followed its key to another machine would ask for a
+// subject no live credential has, and every trade of it from then on would collide on
 // launcher_credentials_live_key and be refused invalid_grant with nothing naming the cure. The
 // account's is a refusal because the account is what a revoke of a replaced account ends the
 // sign-in by. The fourth, an account that no longer holds the address, nothing on this box fixes:
 // Google gave the address to another account, and it says so.
-func (p *Provider) personSignIn(ctx context.Context, session *oauthstore.ExchangeSession) error {
+func (p *Provider) personSignIn(ctx context.Context, subjectTokenType string, session *oauthstore.ExchangeSession) error {
 	person, _ := session.Extra[ClaimPerson].(string)
 	machine, _ := session.Extra[ClaimMachine].(string)
 	thumbprint := session.GetDPoPJWKThumbprint()
@@ -1412,9 +1417,10 @@ func (p *Provider) personSignIn(ctx context.Context, session *oauthstore.Exchang
 		return oauth2.ErrServerError.WithDebugf("the exchange reached a person's sign-in with person (%t), machine (%t), bound key (%t), issuer (%t) and subject (%t)",
 			person != "", machine != "", thumbprint != "", issuer != "", subject != "")
 	}
+	credentialSubject, _ := p.launcherSubject(subjectTokenType, session, thumbprint)
 	err := p.exchange.PersonSignIns(ctx, PersonSignIn{
 		Person: person, Thumbprint: thumbprint, Machine: machine,
-		Issuer: oidc.CanonicalIssuer(issuer), Subject: subject,
+		Issuer: oidc.CanonicalIssuer(issuer), Subject: subject, CredentialSubject: credentialSubject,
 	})
 	switch {
 	case errors.Is(err, ErrSignInSubjectReplaced):
@@ -1444,7 +1450,7 @@ func (p *Provider) personSignIn(ctx context.Context, session *oauthstore.Exchang
 }
 
 // signInCredential names, on a person's read trade's session, the launcher credential that
-// person's sign-in on this machine already holds (exchange.PersonSubject: the person, the
+// person's sign-in on this machine already holds (the provider's LauncherSubject: the person, the
 // machine's account and the box key), read and held with oauthstore.LockHeldCredential in the
 // exchange's own transaction. It mints, moves and extends nothing, which personCredential would.
 //
@@ -1458,10 +1464,10 @@ func (p *Provider) personSignIn(ctx context.Context, session *oauthstore.Exchang
 // for the first, and for the second one ordinary trade of the sign-in, which `agent-secrets`
 // makes and which renews the credential. The read tokens a lapsed credential named have ended
 // with it.
-func (p *Provider) signInCredential(ctx context.Context, session *oauthstore.ExchangeSession) error {
+func (p *Provider) signInCredential(ctx context.Context, subjectTokenType string, session *oauthstore.ExchangeSession) error {
 	person, _ := session.Extra[ClaimPerson].(string)
-	machine, _ := session.Extra[ClaimMachine].(string)
-	id, err := oauthstore.LockHeldCredential(ctx, exchange.PersonSubject(person, machine, session.GetDPoPJWKThumbprint()))
+	subject, _ := p.launcherSubject(subjectTokenType, session, session.GetDPoPJWKThumbprint())
+	id, err := oauthstore.LockHeldCredential(ctx, subject)
 	switch {
 	case errors.Is(err, oauthstore.ErrNoCredentialHeld):
 		return oauth2.ErrInvalidGrant.WithHintf("%s's sign-in on this machine holds no launcher credential yet, and a read trade makes none. Sign in with `agent-secrets login` first.", person).WithWrap(err).WithDebugError(err)
@@ -1497,7 +1503,7 @@ func (p *Provider) signInCredential(ctx context.Context, session *oauthstore.Exc
 // own recorded subject, which a credential carrying an operator never writes
 // (enroll.Service.Create).
 //
-// The credential is keyed by the sign-in (exchange.PersonSubject: the person, the machine's
+// The credential is keyed by the sign-in (the google identity provider's PersonSubject: the person, the machine's
 // account and the box key) and bound to that box key, so two people signed in on one box hold a
 // credential each, one person signed in on two boxes holds one per box, and no sign-in's trade
 // moves another's.

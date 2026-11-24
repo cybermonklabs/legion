@@ -1,10 +1,49 @@
 package enroll
 
 import (
+	"maps"
+	"slices"
+
 	"github.com/sjawhar/envoy/internal/cipher/exchange"
 	"github.com/sjawhar/envoy/internal/cipher/identity"
+	"github.com/sjawhar/envoy/internal/cipher/identity/github"
+	"github.com/sjawhar/envoy/internal/cipher/identity/google"
 	"github.com/sjawhar/envoy/internal/cipher/identity/kubernetes"
 )
+
+// registryOf is the identity registry of the three providers, each trusting no issuer, the
+// Google one listing machines: the Subjects and, through its Policy, the listed identities an
+// enroll.Service reads, as cmd/cipherd composes them.
+func registryOf(machines []exchange.GoogleEntry) *identity.Registry {
+	pods, err := kubernetes.New(kubernetes.Config{})
+	if err != nil {
+		panic(err)
+	}
+	fleets, err := google.New(google.Config{Machines: machines})
+	if err != nil {
+		panic(err)
+	}
+	runs, err := github.New(github.Config{})
+	if err != nil {
+		panic(err)
+	}
+	registry, err := identity.NewRegistry([]identity.Provider{pods, fleets, runs}, nil)
+	if err != nil {
+		panic(err)
+	}
+	return registry
+}
+
+// fleets is the listed identities of a Google provider listing each account of services for its
+// service, as BROKER_VM_SERVICES lists it: the Policy a machine's or a sign-in's credential is
+// held to (AuthenticateLauncher).
+func fleets(services map[string]string) *exchange.Set {
+	var machines []exchange.GoogleEntry
+	for _, account := range slices.Sorted(maps.Keys(services)) {
+		machines = append(machines, exchange.GoogleEntry{Account: account, Service: services[account]})
+	}
+	return registryOf(machines).Policy()
+}
 
 // kubernetesPolicy is the listed identities the identity registry composes from a Kubernetes
 // provider listing accounts, as cmd/cipherd composes them.

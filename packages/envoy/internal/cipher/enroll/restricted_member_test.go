@@ -94,7 +94,7 @@ func TestARestrictedMembersLauncherEnrollsNothing(t *testing.T) {
 				stand := projectaccesstest.NewServer(t, nil, map[string]string{adaPerson: row.kind})
 				r.svc.Projects = projectaccess.New(stand.URL, stand.Account, nil)
 				cred := personLogin(t, r, adaPodAccount, "pod-uid-ada", adaPerson)
-				if !PersonPodLogin(cred) {
+				if !r.svc.PersonPodLogin(cred) {
 					t.Fatalf("%s's pod login = %+v, want a person's pod login", adaPerson, cred)
 				}
 				_, err := r.enrollNaming(t, cred, adaPodAccount, "pod-uid-ada", row.projects...)

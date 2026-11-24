@@ -15,6 +15,9 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/cipher/enroll"
+	"github.com/sjawhar/envoy/internal/cipher/identity"
+	"github.com/sjawhar/envoy/internal/cipher/identity/google"
+	"github.com/sjawhar/envoy/internal/cipher/identity/kubernetes"
 	"github.com/sjawhar/envoy/internal/cipher/oauth"
 	"github.com/sjawhar/envoy/internal/cipher/oauthstore"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
@@ -46,7 +49,7 @@ func newFixture(t *testing.T) *Service {
 	t.Helper()
 	st := storetest.Open(t)
 
-	enr := &enroll.Service{Store: st, Lease: time.Hour}
+	enr := &enroll.Service{Store: st, Lease: time.Hour, Subjects: identities(t)}
 	enr.Chain = enroll.NewChainVerifier(st, testAudience, time.Minute)
 
 	return &Service{
@@ -54,6 +57,26 @@ func newFixture(t *testing.T) *Service {
 		Audience: testAudience, Skew: time.Minute, PendingTTL: 10 * time.Minute, CredentialLifetime: 24 * time.Hour,
 		Replay: enr.Replay,
 	}
+}
+
+// identities is the identity registry of the three providers, each trusting no issuer and
+// listing nothing, as cmd/cipherd composes them: the reader of a launcher credential's subject an
+// enroll.Service holds (Subjects).
+func identities(t testing.TB) *identity.Registry {
+	t.Helper()
+	pods, err := kubernetes.New(kubernetes.Config{})
+	if err != nil {
+		t.Fatalf("kubernetes.New: %v", err)
+	}
+	fleets, err := google.New(google.Config{})
+	if err != nil {
+		t.Fatalf("google.New: %v", err)
+	}
+	registry, err := identity.NewRegistry([]identity.Provider{pods, fleets}, nil)
+	if err != nil {
+		t.Fatalf("identity.NewRegistry: %v", err)
+	}
+	return registry
 }
 
 // signMachineLogin builds a machine's own credential-request object for a launcher_credential
@@ -319,19 +342,19 @@ func TestAMachineLoginNamingAnyoneIsDecidedByNoOne(t *testing.T) {
 	}
 }
 
-// fakeTokens is an enroll.PodVerifier whose VerifyAccount answers one account's claims, or one
+// fakeTokens is an identity.PodVerifier whose VerifyAccount answers one account's claims, or one
 // refusal; a pod's own token never reaches it.
 type fakeTokens struct {
-	claims enroll.AccountClaims
+	claims identity.AccountClaims
 	err    error
 }
 
-func (f fakeTokens) VerifyAccount(context.Context, string) (enroll.AccountClaims, error) {
+func (f fakeTokens) VerifyAccount(context.Context, string) (identity.AccountClaims, error) {
 	return f.claims, f.err
 }
 
-func (f fakeTokens) Verify(context.Context, string) (enroll.PodClaims, error) {
-	return enroll.PodClaims{}, errors.New("fakeTokens verifies no pod's token")
+func (f fakeTokens) Verify(context.Context, string) (identity.PodClaims, error) {
+	return identity.PodClaims{}, errors.New("fakeTokens verifies no pod's token")
 }
 
 // daemonTokenAccount is the ServiceAccount the token-login tests list for legion-daemon.
@@ -340,7 +363,7 @@ const daemonTokenAccount = "system:serviceaccount:legion-system:legion-daemon-te
 // withTokenAccount lists daemonTokenAccount for legion-daemon and has svc's verifier answer a
 // token for it issued at issued and expiring at expires.
 func withTokenAccount(svc *Service, issued, expires time.Time) {
-	svc.Enroll.Pod = fakeTokens{claims: enroll.AccountClaims{Subject: daemonTokenAccount, IssuedAt: issued, Expiry: expires}}
+	svc.Enroll.Pod = fakeTokens{claims: identity.AccountClaims{Subject: daemonTokenAccount, IssuedAt: issued, Expiry: expires}}
 	svc.Enroll.ServiceLogins = map[string]string{daemonTokenAccount: "legion-daemon"}
 }
 

@@ -44,7 +44,7 @@ import (
 const defaultPodTokenFile = "/var/run/legion/agent-secrets-token/token"
 
 // podIdentity is what a pod's projected token says about the pod, as the broker reads it too
-// (enroll.AccountClaims).
+// (identity.AccountClaims).
 type podIdentity struct {
 	// Subject is the ServiceAccount the token was minted for,
 	// system:serviceaccount:<namespace>:<name>; the broker names the launcher credential after it.

@@ -88,7 +88,7 @@ const (
 	//
 	// A caller that wants a Dispatch access token and nothing else sends "false": each trade
 	// that asks writes a launcher_credentials row keyed by the machine and the key it proved
-	// (exchange.MachineSubject) and a token_login audit row, and a key is one process's, so a
+	// (the google identity provider's MachineSubject) and a token_login audit row, and a key is one process's, so a
 	// fleet of short-lived callers that never read a secret would fill an operator's
 	// machine-logins list with rows nothing ever removes. Every TypeScript client's machine trade
 	// declines (packages/cipher-client/src/environment.ts, brokerTokenClient): none of them reads

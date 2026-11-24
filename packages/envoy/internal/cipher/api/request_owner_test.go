@@ -19,7 +19,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/api"
 	"github.com/sjawhar/envoy/internal/cipher/enroll"
-	"github.com/sjawhar/envoy/internal/cipher/exchange"
+	"github.com/sjawhar/envoy/internal/cipher/identity/google"
 )
 
 // plannerClaim and implementerClaim are two role claims of one issue, as the Legion daemon spells
@@ -231,7 +231,7 @@ const (
 func TestAnotherVMOfTheSameServiceCannotReadTheRequest(t *testing.T) {
 	var enrollments *enroll.Service
 	ts := newTestServerWith(t, func(d *api.Deps) {
-		d.Enroll.VMServicesByAccount = map[string]string{vmAccount: vmFleet}
+		d.Enroll.Policy = fleetPolicy(t, map[string]string{vmAccount: vmFleet})
 		enrollments = d.Enroll
 	})
 	machine := func(instance string) launcherLogin {
@@ -240,9 +240,10 @@ func TestAnotherVMOfTheSameServiceCannotReadTheRequest(t *testing.T) {
 		thumbprint := thumbprintOf(t, key)
 		expires := time.Now().Add(time.Hour)
 		id, err := enrollments.IssueTokenLogin(context.Background(), enroll.TokenLogin{
-			Subject: exchange.MachineSubject(exchange.GoogleIdentity{Account: vmAccount, Compute: exchange.ComputeEngine{
+			Subject: google.MachineSubject(google.Identity{Account: vmAccount, Compute: google.ComputeEngine{
 				Project: "example-project", Zone: "example-zone-a", Instance: instance, InstanceID: instance,
 			}}, thumbprint),
+
 			Service: vmFleet, Host: "example-project/example-zone-a/" + instance,
 			TokenExpires: expires, Thumbprint: thumbprint, JWK: json.RawMessage(`{"kty":"EC"}`), Expires: expires,
 		})

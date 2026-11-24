@@ -39,7 +39,7 @@ var ErrSignInRevoked = errors.New("store: the person has revoked this machine's 
 
 // ErrSignInMachineChanged is a trade presenting a sign-in's box key from a machine other than
 // the one the sign-in was made on. The sign-in is the person, the key and the machine together,
-// and the launcher credential it holds is keyed by all three (exchange.PersonSubject), so a row
+// and the launcher credential it holds is keyed by all three (the google provider's PersonSubject), so a row
 // that followed the key to a new machine would ask for a subject no live credential has and
 // every trade from then on would collide on launcher_credentials_live_key. The box signs in
 // again, which makes a key of its own.

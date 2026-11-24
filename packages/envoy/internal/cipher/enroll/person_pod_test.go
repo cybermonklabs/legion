@@ -18,6 +18,8 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/sjawhar/envoy/internal/cipher/exchange"
+	"github.com/sjawhar/envoy/internal/cipher/identity"
+	"github.com/sjawhar/envoy/internal/cipher/identity/google"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess/projectaccesstest"
 	"github.com/sjawhar/envoy/internal/cipher/record"
@@ -91,7 +93,7 @@ func personLogin(t *testing.T, r podRig, account, podUID, person string) Credent
 }
 
 // personsSignIn issues the launcher credential of a person's sign-in on a machine, as the token
-// exchange issues it: a subject that exchange.PersonSubject writes, the fleet's service, and the
+// exchange issues it: a subject that google.PersonSubject writes, the fleet's service, and the
 // person as its operator. It reads the credential back as Create sees it.
 func personsSignIn(t *testing.T, svc *Service, person string) Credential {
 	t.Helper()
@@ -99,7 +101,7 @@ func personsSignIn(t *testing.T, svc *Service, person string) Credential {
 	key := newLoginKey(t)
 	expires := time.Now().Add(time.Hour)
 	id, err := svc.IssueTokenLogin(ctx, TokenLogin{
-		Subject: exchange.PersonSubject(person, machineAccountEmail, key.thumbprint), Service: machineFleet,
+		Subject: google.PersonSubject(person, machineAccountEmail, key.thumbprint), Service: machineFleet,
 		Operator: person, Host: "example-project/example-zone-a/example-machine-1",
 		TokenExpires: expires, Thumbprint: key.thumbprint, JWK: key.jwk, Expires: expires,
 	})
@@ -183,7 +185,7 @@ func TestAPersonPodLoginEnrolsItsOwnPodAsItsPerson(t *testing.T) {
 		t.Run(schema.name, func(t *testing.T) {
 			r := newPersonPodRig(t, schema)
 			cred := personLogin(t, r, adaPodAccount, "pod-uid-ada", adaPerson)
-			if !PersonPodLogin(cred) || !r.svc.livePersonPodLogin(cred) || textOf(cred.Operator) != adaPerson || cred.PodUID != "pod-uid-ada" {
+			if !r.svc.PersonPodLogin(cred) || !r.svc.livePersonPodLogin(cred) || textOf(cred.Operator) != adaPerson || cred.PodUID != "pod-uid-ada" {
 				t.Fatalf("ada's pod login = %+v with operator %s; want a live person's pod login of %s bound to pod-uid-ada", cred, textOf(cred.Operator), adaPerson)
 			}
 
@@ -321,14 +323,14 @@ func TestAPersonPodRuleLeavesAMachineLoginAndASignInRefusedAPod(t *testing.T) {
 				t.Fatalf("ada's machine login = subject %s, operator %s; want no subject and operator %s", textOf(box.Subject), textOf(box.Operator), adaPerson)
 			}
 			signIn := personsSignIn(t, r.svc, adaPerson)
-			if signIn.Subject == nil || exchange.ReadSubject(*signIn.Subject).Kind != exchange.SubjectSignIn || textOf(signIn.Operator) != adaPerson {
+			if signIn.Subject == nil || r.svc.Subjects.ReadSubject(*signIn.Subject).Kind != identity.SubjectSignIn || textOf(signIn.Operator) != adaPerson {
 				t.Fatalf("ada's sign-in = subject %s, operator %s; want a sign-in's subject and operator %s", textOf(signIn.Subject), textOf(signIn.Operator), adaPerson)
 			}
 			for _, tc := range []struct {
 				name string
 				cred Credential
 			}{{"ada's machine login", box}, {"ada's sign-in on a machine", signIn}} {
-				if PersonPodLogin(tc.cred) {
+				if r.svc.PersonPodLogin(tc.cred) {
 					t.Errorf("PersonPodLogin(%s) = true, want false", tc.name)
 				}
 				if enr, err := r.enroll(t, tc.cred, adaPodAccount, "pod-uid-ada"); !errors.Is(err, ErrOperatorMismatch) {
@@ -455,9 +457,9 @@ func TestAStalePersonPodLoginActsOnNothing(t *testing.T) {
 				if err := r.svc.Store.Pool.QueryRow(ctx, `select operator from launcher_credentials where id=$1`, cred.ID).Scan(&stored); err != nil {
 					t.Fatalf("read credential %s: %v", cred.ID, err)
 				}
-				if textOf(stored) != adaPerson || !PersonPodLogin(cred) || r.svc.livePersonPodLogin(cred) {
+				if textOf(stored) != adaPerson || !r.svc.PersonPodLogin(cred) || r.svc.livePersonPodLogin(cred) {
 					t.Fatalf("after %s, the login's row names %s, PersonPodLogin %v, live %v; want ada's stale pod login, which the setting no longer admits",
-						change.name, textOf(stored), PersonPodLogin(cred), r.svc.livePersonPodLogin(cred))
+						change.name, textOf(stored), r.svc.PersonPodLogin(cred), r.svc.livePersonPodLogin(cred))
 				}
 
 				if enr, err := r.enroll(t, cred, adaPodAccount, "pod-uid-ada"); !errors.Is(err, ErrOperatorMismatch) {

@@ -31,11 +31,14 @@ func newService(t *testing.T, params ...string) *Service {
 }
 
 // serviceOn returns a Service on st with no pod verifier configured, wired to the real
-// session-name binder as cmd/cipherd/main.go wires it, so every enrollment these tests make is
-// held to the rule that a session name belongs to one principal. Tests that need a pod verifier
+// session-name binder and the identity registry as cmd/cipherd/main.go wires them, so every
+// enrollment these tests make is held to the rule that a session name belongs to one principal,
+// and every subject and principal is read and spelled by its identity provider. The registry lists
+// no machine; a test that needs one listed sets Policy (fleets). Tests that need a pod verifier
 // call withPodVerifier.
 func serviceOn(st *store.Store) *Service {
-	return &Service{Store: st, Lease: time.Hour, Sessions: oauthstore.New(st.Pool)}
+	registry := registryOf(nil)
+	return &Service{Store: st, Lease: time.Hour, Sessions: oauthstore.New(st.Pool), Subjects: registry, Policy: registry.Policy()}
 }
 
 // withPodVerifier wires svc to a real K8sPodVerifier backed by a fresh local OIDC issuer, and

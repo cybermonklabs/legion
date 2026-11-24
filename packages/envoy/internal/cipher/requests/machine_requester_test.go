@@ -9,12 +9,14 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/cipher/exchange"
+	"github.com/sjawhar/envoy/internal/cipher/identity"
+	"github.com/sjawhar/envoy/internal/cipher/identity/google"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 )
 
 // fixtureMachineAccount is the Google service account the machine below runs as, and
-// fixtureMachineSubject the subject its credential is keyed by (exchange.MachineSubject for a
+// fixtureMachineSubject the subject its credential is keyed by (the google provider's MachineSubject for a
 // token minted on a Compute Engine instance, which names the instance and the machine's own
 // key). Both are placeholders.
 const (
@@ -41,7 +43,7 @@ func newMachineEnrollment(t *testing.T, m *Machine, service, subject, runtimeID 
 func TestAMachinesSessionIsItsFleetsAndNoPersons(t *testing.T) {
 	ctx := context.Background()
 	m, _, _, operator := newFixture(t)
-	m.VMServicesByAccount = map[string]string{fixtureMachineAccount: fixtureService}
+	m.Exchange = fleetPolicy(t, exchange.GoogleEntry{Account: fixtureMachineAccount, Service: fixtureService})
 	retag(t, m, policytest.Secret("SHARED_TOKEN", policy.OwnerShared, policy.TierAgent, "shared-token-v1"))
 	machine, machineKey := newMachineEnrollment(t, m, fixtureService, fixtureMachineSubject, "machine-"+t.Name())
 
@@ -70,7 +72,7 @@ func TestAMachinesSessionIsItsFleetsAndNoPersons(t *testing.T) {
 	})
 
 	t.Run("an account the setting no longer binds is nobody's", func(t *testing.T) {
-		m.VMServicesByAccount = map[string]string{}
+		m.Exchange = fleetPolicy(t)
 		denied, err := m.Create(ctx, machine, signRequest(t, m, machineKey, "need it again", "SERVICE_KEY"), "")
 		if err != nil || denied.State != "denied" {
 			t.Fatalf("Create(a machine whose account is no longer bound, SERVICE_KEY) = %+v, %v; want it denied", denied, err)
@@ -81,8 +83,8 @@ func TestAMachinesSessionIsItsFleetsAndNoPersons(t *testing.T) {
 // TestAMachineSubjectReadsBackAsItsAccount guards the one reading the authority above turns on:
 // the credential subject the exchange writes is what names the fleet's account.
 func TestAMachineSubjectReadsBackAsItsAccount(t *testing.T) {
-	want := exchange.Subject{Kind: exchange.SubjectMachine, Account: fixtureMachineAccount}
-	if got := exchange.ReadSubject(fixtureMachineSubject); got != want {
+	want := identity.Subject{Kind: identity.SubjectMachine, Account: identity.Account{Kind: google.Kind, Address: fixtureMachineAccount}, Principal: google.Principal(fixtureMachineAccount)}
+	if got := identities(t).ReadSubject(fixtureMachineSubject); got != want {
 		t.Fatalf("ReadSubject(%q) = %+v, want %+v", fixtureMachineSubject, got, want)
 	}
 }

@@ -17,7 +17,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/ciphertest"
-	"github.com/sjawhar/envoy/internal/cipher/exchange"
+	"github.com/sjawhar/envoy/internal/cipher/identity/kubernetes"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/logtest"
 )
@@ -187,7 +187,7 @@ func TestAPodAnotherDaemonRegisteredCannotTradeUnderAHeldName(t *testing.T) {
 		t.Errorf("%s's refused trade under %s reads %q, which names %s, the daemon %s is bound to: no exchange refusal names another daemon", podB, session, answer.description, daemonAccount, session)
 	}
 	wantWarned := []map[string]any{{
-		"level": slog.LevelWarn, "msg": notThisRegistrarsMessage, "principal": exchange.AccountPrincipal(ciphertest.ExchangeRolesAccount),
+		"level": slog.LevelWarn, "msg": notThisRegistrarsMessage, "principal": kubernetes.Principal(ciphertest.ExchangeRolesAccount),
 		"pod": podB, "session": session, "registrar": otherDaemonAccount, "holder": daemonAccount,
 	}}
 	if logged := loggedAs(capture, notThisRegistrarsMessage); !reflect.DeepEqual(logged, wantWarned) {
@@ -236,7 +236,7 @@ func TestATradeUnderANameBoundToNoDaemonIsRefused(t *testing.T) {
 		t.Errorf("%s's refused trade under %s reads %q, which names %s, the registrar of its registration; want a description that names no daemon", pod, session, answer.description, daemonAccount)
 	}
 	wantWarned := []map[string]any{{
-		"level": slog.LevelWarn, "msg": boundToNoDaemonMessage, "principal": exchange.AccountPrincipal(ciphertest.ExchangeRolesAccount),
+		"level": slog.LevelWarn, "msg": boundToNoDaemonMessage, "principal": kubernetes.Principal(ciphertest.ExchangeRolesAccount),
 		"pod": pod, "session": session, "registrar": daemonAccount,
 	}}
 	if logged := loggedAs(capture, boundToNoDaemonMessage); !reflect.DeepEqual(logged, wantWarned) {

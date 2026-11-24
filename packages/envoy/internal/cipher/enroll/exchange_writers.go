@@ -69,7 +69,7 @@ func PersonSignIns(endUnrecorded bool) oauth.PersonSignIns {
 			Person: in.Person, Thumbprint: in.Thumbprint, MachineAccount: in.Machine,
 			Account:       store.IssuerSubject{Issuer: in.Issuer, Subject: in.Subject},
 			EndUnrecorded: endUnrecorded,
-		})
+		}, in.CredentialSubject)
 		switch {
 		case errors.Is(err, store.ErrSubjectReplaced):
 			return fmt.Errorf("%w: %v", oauth.ErrSignInSubjectReplaced, err)

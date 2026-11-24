@@ -158,196 +158,6 @@ const (
 	ProjectScopePublic
 )
 
-// ComputeEngine is the instance a Google identity token was minted on, the `google` →
-// `compute_engine` claims of a token asked for with format=full. Every field is empty for a token
-// minted anywhere else: one a workload identity pool minted, and the one a pod's metadata server
-// on Google Kubernetes Engine answers, neither of which runs on an instance of the caller's.
-type ComputeEngine struct {
-	// Project is the Google Cloud project the instance runs in (project_id).
-	Project string
-	// Zone is the zone it runs in.
-	Zone string
-	// Instance is the instance's name (instance_name), the one an entry's pattern matches.
-	Instance string
-	// InstanceID is the instance's numeric id, unique within a project and a zone.
-	InstanceID string
-}
-
-// Whole reports whether the token carried a complete Compute Engine identity. A token carries all
-// four of these claims or none, so anything between the two is a token this package will not read
-// an identity out of.
-func (c ComputeEngine) Whole() bool {
-	return c.Project != "" && c.Zone != "" && c.Instance != "" && c.InstanceID != ""
-}
-
-// Empty reports whether the token carried no Compute Engine claim at all, which is what a token
-// minted through a workload identity pool and a pod's own metadata token carry.
-func (c ComputeEngine) Empty() bool {
-	return c == ComputeEngine{}
-}
-
-// GoogleIdentity is what a Google identity token says about the machine presenting it: the
-// account it was minted for, whether the provider holds that address verified, and the Compute
-// Engine instance it was minted on, when it was minted on one.
-type GoogleIdentity struct {
-	// Account is the `email` claim, the service account the token was minted for.
-	Account string
-	// EmailVerified is the `email_verified` claim. Google writes it as a JSON boolean and some
-	// of its endpoints as the string "true", so both are read.
-	EmailVerified bool
-	// Compute is the instance the token was minted on, every field empty for a token minted off
-	// one.
-	Compute ComputeEngine
-}
-
-// ReadGoogleIdentity reads a Google identity token's own claims out of the claim map of a token
-// something else has already verified, as the google identity provider's ReadIdentity does: the
-// launcher-credential readers of this package (MachineSubject) read it until they move into that
-// provider. It refuses nothing: a claim that is absent or of another JSON type reads as empty,
-// and which of those is a refusal is the reader's own rule.
-func ReadGoogleIdentity(token map[string]any) GoogleIdentity {
-	identity := GoogleIdentity{EmailVerified: isVerified(token["email_verified"])}
-	identity.Account, _ = token["email"].(string)
-	google, _ := token["google"].(map[string]any)
-	compute, _ := google["compute_engine"].(map[string]any)
-	identity.Compute.Project, _ = compute["project_id"].(string)
-	identity.Compute.Zone, _ = compute["zone"].(string)
-	identity.Compute.Instance, _ = compute["instance_name"].(string)
-	identity.Compute.InstanceID, _ = compute["instance_id"].(string)
-	return identity
-}
-
-// isVerified reads an `email_verified` claim, which is a JSON boolean on a token from Google's
-// metadata server and the string "true" from some of its other endpoints.
-func isVerified(claim any) bool {
-	switch value := claim.(type) {
-	case bool:
-		return value
-	case string:
-		return value == "true"
-	}
-	return false
-}
-
-// MachineSubject names one machine as the broker keys the launcher credential its exchange
-// mints: the row's `subject`, under the live-unique index that makes each machine's credential
-// its own and lets its next exchange move that one credential rather than add another.
-//
-// It is <machine>#<thumbprint>: the machine, and the RFC 7638 thumbprint of the key the
-// request's DPoP proof presented. The key is part of the name because the credential is bound
-// to that key and the subject token is a bearer: a copy of a machine's Google identity token
-// presented with a key of the copier's own would otherwise move the machine's one credential
-// onto that key, and whoever holds a machine's credential ends that machine's sessions
-// (enroll.Service.Revoke). Keyed by the key, such a copy mints a credential of its own and
-// moves nothing of the machine's.
-//
-// The machine is <account>@<project>/<zone>/<instance id> for a token minted on a Compute
-// Engine instance, and the account alone for a token carrying no Compute Engine claim at all —
-// one minted through a workload identity pool, and the one a pod's metadata server on Google
-// Kubernetes Engine answers. An instance id is unique only within a project and a zone, so
-// neither the id nor the account alone names one machine; the whole of it does. Naming the
-// instance still earns its place now that the key tells two machines apart: two instances of
-// one account presenting one key — a key baked into an image — ask for two subjects with one
-// key, which launcher_credentials_live_key refuses by name, where under one subject they would
-// quietly share a credential and each could end the other's sessions.
-//
-// What the key in the name costs is that a machine making a new key leaves its old credential
-// behind until that credential's own expiry, which is the subject token's, and the sessions
-// enrolled under it stop renewing when it lapses (enroll.Service.Renew). So a machine keeps its
-// key rather than making one per process: `agent-secrets-helper` reads it back from
-// ~/.config/agent-secrets/identity-key.pem, mode 0600, and makes one only at the machine's
-// first trade (helper.LoadOrMakeIdentityKey). A helper that lost that file, or a machine that
-// is rebuilt, trades a new subject and leaves the old credential to lapse, and the sessions it
-// enrolled are gone with the processes that held them.
-func MachineSubject(identity GoogleIdentity, thumbprint string) string {
-	name := identity.Account
-	if identity.Compute.Whole() {
-		name += "@" + identity.Compute.Project + "/" + identity.Compute.Zone + "/" + identity.Compute.InstanceID
-	}
-	return name + "#" + thumbprint
-}
-
-// signInSubjectPrefix opens the subject of a person's sign-in on a machine, so that no subject
-// of any other kind can spell one: a Google account never begins with it, and a Kubernetes
-// ServiceAccount's subject begins with "system:serviceaccount:".
-const signInSubjectPrefix = "signin:"
-
-// PersonSubject names one person's sign-in on one box as the broker keys the launcher credential
-// the exchange mints for it: the row's `subject`, under the live-unique index that makes each
-// sign-in's credential its own and lets the sign-in's next trade move that one credential rather
-// than add another.
-//
-// It is signin:<person>|<machine account>#<box key thumbprint>, and all three parts are needed.
-// The person is there because two people signed in on one box each reach their own secrets and
-// must therefore hold a credential each, which one subject could not. The box key's thumbprint
-// is there for the reason a machine's is, and because one person signed in on two boxes holds a
-// sign-in on each, told apart by the key `agent-secrets login` made there and by nothing else —
-// the machine account is a fleet's and is the same on every box of it. The machine account is
-// there so that the credential can still be held to a listed fleet on every call
-// (enroll.Service.AuthenticateLauncher): a person signs in from a box the deployment lists, and
-// an account dropped from BROKER_VM_SERVICES ends its boxes' sign-in credentials as it ends
-// their machines'.
-func PersonSubject(person, account, thumbprint string) string {
-	return signInSubjectPrefix + person + "|" + account + "#" + thumbprint
-}
-
-// SubjectKind says which of the identities this package keys a launcher credential by a subject
-// names. The zero value is a subject this package did not write — a Kubernetes ServiceAccount's,
-// system:serviceaccount:<namespace>:<name>, which the broker holds to a setting of its own — so
-// a reader that tests for one kind never reads another's subject as that kind by forgetting the
-// order to test them in.
-type SubjectKind string
-
-const (
-	// SubjectOther is every subject neither MachineSubject nor PersonSubject wrote.
-	SubjectOther SubjectKind = ""
-	// SubjectMachine is a machine's own credential, which acts for no person.
-	SubjectMachine SubjectKind = "machine"
-	// SubjectSignIn is a person's sign-in on a machine, whose credential acts for that person.
-	SubjectSignIn SubjectKind = "signin"
-)
-
-// Subject is a launcher credential's subject read back into the parts a reader acts on. The
-// thumbprint the subject is keyed by, and the person a sign-in acts for, are checked here and
-// kept by nothing: every reader of a subject acts on its kind and its account, and the broker
-// keeps the person and the thumbprint in columns of their own.
-type Subject struct {
-	Kind SubjectKind
-	// Account is the machine's Google account, which is what says the credential's fleet is
-	// still listed (enroll.Service.AuthenticateLauncher). A sign-in carries the account of the
-	// box it was made on, so one test holds both to the same listed fleet.
-	Account string
-}
-
-// ReadSubject reads a launcher credential's subject back into its parts. It is the one reading
-// of the grammar MachineSubject and PersonSubject write, so no caller spells that grammar a
-// second time and none has to remember which kind to test for first: a subject it does not
-// recognise, a malformed one included, comes back SubjectOther with nothing filled in.
-func ReadSubject(subject string) Subject {
-	if rest, signIn := strings.CutPrefix(subject, signInSubjectPrefix); signIn {
-		person, box, split := strings.Cut(rest, "|")
-		if !split {
-			return Subject{}
-		}
-		account, _, keyed := strings.Cut(box, "#")
-		if !keyed || person == "" || account == "" {
-			return Subject{}
-		}
-		return Subject{Kind: SubjectSignIn, Account: account}
-	}
-	machine, _, keyed := strings.Cut(subject, "#")
-	if !keyed {
-		return Subject{}
-	}
-	if at := strings.LastIndex(machine, "@"); at > 0 && strings.Contains(machine[at+1:], "/") {
-		return Subject{Kind: SubjectMachine, Account: machine[:at]}
-	}
-	if machine == "" {
-		return Subject{}
-	}
-	return Subject{Kind: SubjectMachine, Account: machine}
-}
-
 // String names the scope as a refusal or a log line spells it, the zero value included, so a
 // Claims that decided nothing does not read as a number.
 func (s ProjectScope) String() string {
@@ -670,8 +480,12 @@ func (s *Set) Reservations() []Reservation {
 // read entry, answer neither, and true. A job entry answers no person and its whole list: a named
 // list's one project, or a public list's private projects, beside which its token reaches every
 // public project. It is how a reader holding no token — a release for a pod or a machine — reads
-// the list that pod's or that machine's token would carry. The slice is the caller's own.
+// the list that pod's or that machine's token would carry. The slice is the caller's own. A nil
+// set maps nothing.
 func (s *Set) MappedProjects(principal string) (person string, projects []string, ok bool) {
+	if s == nil {
+		return "", nil, false
+	}
 	entry, listed := s.mapped[principal]
 	if !listed {
 		return "", nil, false
@@ -681,25 +495,14 @@ func (s *Set) MappedProjects(principal string) (person string, projects []string
 
 // Listed is the listing of principal, and false for a principal no listing names, a person's own
 // among them. It is how a reader holding no token reads what an operator's entry says of an
-// identity: the service a machine's account is listed for, and the person its entry names.
+// identity: the service a machine's account is listed for, and the person its entry names. A nil
+// set, a reader wired with no listed identities, lists nothing.
 func (s *Set) Listed(principal string) (Listing, bool) {
+	if s == nil {
+		return Listing{}, false
+	}
 	listing, ok := s.listed[principal]
 	return listing, ok
-}
-
-// ProjectsForAccount is the projects this configuration gives a token minted for one account,
-// and false for an account no listing names. An account that opens with "system:serviceaccount:"
-// is read as a Kubernetes subject, any other as a Google account address, so a caller passes the
-// string its own configuration holds and spells no principal. It reads the listings the
-// kubernetes and google providers decide from, so a grant made from this answer and the token of
-// that account cannot disagree. A workflow is no account and is answered false.
-func (s *Set) ProjectsForAccount(account string) ([]string, bool) {
-	principal := GooglePrincipal(account)
-	if strings.HasPrefix(account, oauthwire.AccountSubjectPrefix) {
-		principal = AccountPrincipal(account)
-	}
-	_, projects, ok := s.MappedProjects(principal)
-	return projects, ok
 }
 
 // EntryProjects is the list a token an operator's entry maps carries: that entry's one project,
@@ -874,41 +677,27 @@ func (s *Set) Machine(credential, approver, session string, projects []string, k
 // principal takes what the last one held. The name a session writes its Dispatch tokens under and
 // the name its grant follows are one name, so one holder has to spell the same either way, which
 // it does only while there is one definition of each spelling. A pod's enrollment is the one
-// exception, whose grant follows a pair rather than its account alone (PodLaunchPrincipal), while
-// its name is held under the account. A pod of an account the broker pairs with that account
+// exception, whose grant follows a pair rather than its account alone (LaunchedBy), while its
+// name is held under the account. A pod of an account the broker pairs with that account
 // (enroll.SessionBinder.PairedWith) takes what the other account's pods of the name hold only
 // under the same login account, the pair LaunchedBy spells from the paired account's principal.
-
-// AccountPrincipal is a Kubernetes ServiceAccount's spelling: the account a pod's own projected
-// token proves.
-func AccountPrincipal(account string) string { return "account:" + account }
-
-// GooglePrincipal is a Google account's spelling: the fleet a machine's own identity belongs to.
-func GooglePrincipal(account string) string { return "google:" + account }
 
 // PersonPrincipal is a person's spelling, by the login that names them.
 func PersonPrincipal(person string) string { return "person:" + person }
 
-// PodLaunchPrincipal is the principal a pod's enrollment carries its grants under: the account
-// the pod's own projected token proved, paired with launcher, the principal of the token login
-// that enrolled the pod (AccountPrincipal of the account that login proved). Every pod of one
-// account is one principal, and the pods of several daemons can run as one account (every public
-// Legion project's pods run as legion-worker), so a session name's grant must follow the daemon
-// that enrolled it too: a pod of another daemon, enrolled under the same name, takes nothing
-// (plan E's t-e-54). It is never a name's holder: a pod's session name is
-// held under its account alone, the principal its own token exchange claims the name under, so
-// the pod's enrollment and its trade never refuse each other. No account or principal kind holds
-// a space, so no two pairs spell one string. The broker's migration 0037_pod_carry_launcher
-// writes the same spelling in SQL.
-func PodLaunchPrincipal(account, launcher string) string {
-	return LaunchedBy(AccountPrincipal(account), launcher)
-}
-
-// LaunchedBy is PodLaunchPrincipal spelled from an account's principal rather than the account:
-// the pair a pod of the account accountPrincipal names carries its grants under when the login
-// launcher names enrolled it. It is how enroll's adopt spells a paired account's pair, which the
-// broker holds as a principal (enroll.SessionBinder.PairedWith), so the pair is spelled in one
-// place.
+// LaunchedBy is the principal a pod's enrollment carries its grants under: accountPrincipal, the
+// principal of the account the pod's own projected token proved, paired with launcher, the
+// principal of the token login that enrolled the pod, each spelled by the pod provider
+// (identity.Subjects.PodPrincipal). Every pod of one account is one principal, and the pods of
+// several daemons can run as one account (every public Legion project's pods run as
+// legion-worker), so a session name's grant must follow the daemon that enrolled it too: a pod of
+// another daemon, enrolled under the same name, takes nothing (plan E's t-e-54). It is never a
+// name's holder: a pod's session name is held under its account alone, the principal its own
+// token exchange claims the name under, so the pod's enrollment and its trade never refuse each
+// other. No account or principal kind holds a space, so no two pairs spell one string. The
+// broker's migration 0037_pod_carry_launcher writes the same spelling in SQL. enroll's adopt
+// spells a paired account's pair with it too, which the broker holds as a principal
+// (enroll.SessionBinder.PairedWith), so the pair is spelled in one place.
 func LaunchedBy(accountPrincipal, launcher string) string {
 	return accountPrincipal + " launched-by " + launcher
 }

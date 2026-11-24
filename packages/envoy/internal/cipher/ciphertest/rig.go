@@ -474,9 +474,15 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 	// Projects is set below only when the rig holds a Dispatch client: config.projectAccess is a
 	// *projectaccess.Client, and a nil one put in the interface field is a non-nil Access that
 	// panics at its first read, so a rig with no client would ask Dispatch on every enrollment.
+	//
+	// The rig's identity registry is built once here: it reads every launcher credential's subject
+	// and spells every pod principal enrollment and requests act on, and the OAuth provider's
+	// exchange trades through the same one, as cmd/cipherd gives all three the one registry.
+	identities := newIdentities(t, issuer)
 	enr := &enroll.Service{
 		Store: st, Lease: config.lease, Pod: enroll.K8sPodVerifier{Verifier: podVerifier},
 		ServiceLogins: serviceLogins, ServicesByAccount: servicesByAccount, PodOperators: podOperators,
+		Subjects: identities, Policy: identities.Policy(),
 	}
 	enr.Chain = enroll.NewChainVerifier(st, srv.URL, time.Minute)
 	enr.Chain.EdgeAudience = edgeURL
@@ -495,12 +501,9 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 	reqMachine := &requests.Machine{
 		Store: st, Policy: cur, Secrets: secretStore, PendingTTL: 12 * time.Hour,
 		Audience: srv.URL, EdgeAudience: edgeURL, Skew: time.Minute, Replay: enr.Replay, Minters: config.minters,
-		PodOperators: podOperators,
+		PodOperators: podOperators, Subjects: identities,
 	}
 	reqMachine.Chain = requests.NewChainVerifier(st, srv.URL, time.Minute, reqMachine.Policy)
-	// The broker's identity registry, built once: the OAuth provider's exchange trades through it,
-	// and the request machine reads its listed identities, as main gives both the one registry.
-	identities := newIdentities(t, issuer)
 	// The request machine reads a credential's project from the same entries the exchange mints
 	// from, and asks Dispatch about projects on the one client, as main gives it both
 	// (requests.Machine.Exchange and Projects).
@@ -611,6 +614,21 @@ func newIdentities(t *testing.T, issuer *oidctest.Issuer) *identity.Registry {
 		},
 		ExchangeWorkflows: []exchange.WorkflowEntry{{Repository: ExchangeRepository, Workflow: ExchangeWorkflow, Ref: ExchangeRef, Project: ExchangeProject, Person: ExchangePerson}},
 	}, func(ctx context.Context, url string) (*oidc.Keys, error) { return oidc.NewKeys(ctx, url) })
+	if err != nil {
+		t.Fatalf("identityboot.Open: %v", err)
+	}
+	return identities.Registry
+}
+
+// Identities is a broker's identity registry with no issuer and no entry, built through
+// identity/boot as cmd/cipherd builds it: the reader of every launcher credential's subject and
+// the speller of every pod principal, which an enroll.Service (Subjects) and a requests.Machine
+// (Subjects) of another package's rig need, so such a rig names no provider package itself.
+func Identities(t testing.TB) *identity.Registry {
+	t.Helper()
+	identities, err := identityboot.Open(context.Background(), config.Config{}, func(ctx context.Context, url string) (*oidc.Keys, error) {
+		return oidc.NewKeys(ctx, url)
+	})
 	if err != nil {
 		t.Fatalf("identityboot.Open: %v", err)
 	}

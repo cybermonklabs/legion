@@ -22,6 +22,8 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/config"
 	"github.com/sjawhar/envoy/internal/cipher/enroll"
 	"github.com/sjawhar/envoy/internal/cipher/exchange"
+	"github.com/sjawhar/envoy/internal/cipher/identity"
+	identityboot "github.com/sjawhar/envoy/internal/cipher/identity/boot"
 	"github.com/sjawhar/envoy/internal/cipher/judge"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
@@ -173,30 +175,41 @@ func TestAStandInIssuerIsDiscoveredInGooglesPlace(t *testing.T) {
 	}
 }
 
-// TestTheEnrollmentServiceCarriesTheMachineServices pins the two places the broker hands
-// BROKER_VM_SERVICES on: AuthenticateLauncher, without which a machine's own launcher credential
-// stops authenticating at its next call, and the request decisions, without which a machine's
-// session is never its fleet's.
-func TestTheEnrollmentServiceCarriesTheMachineServices(t *testing.T) {
+// TestTheEnrollmentServiceReadsTheMachineServicesFromThePolicy pins where the broker's
+// enrollment and request decisions read BROKER_VM_SERVICES from: the identity registry's policy,
+// which lists each machine's account for its service. AuthenticateLauncher reads it, without which
+// a machine's own launcher credential stops authenticating at its next call, and so do the request
+// decisions, without which a machine's session is never its fleet's.
+func TestTheEnrollmentServiceReadsTheMachineServicesFromThePolicy(t *testing.T) {
 	cfg := vmConfig(t, "example-vm-audience")
-	enr := &enroll.Service{VMServicesByAccount: cfg.VMServicesByAccount}
-	if want := map[string]string{exampleVMAccount: "example-fleet"}; !maps.Equal(enr.VMServicesByAccount, want) {
-		t.Fatalf("the enrollment service's VMServicesByAccount = %v, want %v", enr.VMServicesByAccount, want)
+	if listing, listed := openIdentities(t, cfg).Policy().Listed("google:" + exampleVMAccount); !listed || listing.Service != "example-fleet" {
+		t.Fatalf("the policy's listing of %s = %+v, %t; want it listed for example-fleet", exampleVMAccount, listing, listed)
 	}
 	m := newRequestMachine(cfg, nil, nil, nil, nil, nil, nil, nil, nil)
 	if want := map[string]string{"system:serviceaccount:example:example-sa": "example-service"}; !maps.Equal(m.ServicesByAccount, want) {
 		t.Fatalf("request Machine's ServicesByAccount = %v, want %v", m.ServicesByAccount, want)
 	}
-	if want := map[string]string{exampleVMAccount: "example-fleet"}; !maps.Equal(m.VMServicesByAccount, want) {
-		t.Fatalf("request Machine's VMServicesByAccount = %v, want %v: without it no machine's session is ever its fleet's", m.VMServicesByAccount, want)
+}
+
+// openIdentities is the identity registry cmd/cipherd opens for cfg, its issuers' key sets
+// named and never read.
+func openIdentities(t *testing.T, cfg config.Config) *identity.Registry {
+	t.Helper()
+	identities, err := identityboot.Open(context.Background(), cfg, func(_ context.Context, issuer string) (*oidc.Keys, error) {
+		return oidc.NewKeysAt(issuer + "/keys"), nil
+	})
+	if err != nil {
+		t.Fatalf("identityboot.Open: %v", err)
 	}
+	return identities.Registry
 }
 
 // TestTheRequestMachineCarriesWhoIsResponsible pins the two things the broker hands the request
 // decisions to find the person a shared secret's request is listed for: each fleet's person by
-// account (BROKER_VM_EXCHANGE_ACCOUNTS), an entry that names none left out, and the broker's one
-// read of Dispatch (judgeDispatch), which answers a Legion pod's issue's assignee, only where
-// BROKER_JUDGE_DISPATCH_URL is set, and is the very read main gives the model judge.
+// account (BROKER_VM_EXCHANGE_ACCOUNTS, read through the identity registry's policy), an entry
+// that names none naming nobody, and the broker's one read of Dispatch (judgeDispatch), which
+// answers a Legion pod's issue's assignee, only where BROKER_JUDGE_DISPATCH_URL is set, and is
+// the very read main gives the model judge.
 func TestTheRequestMachineCarriesWhoIsResponsible(t *testing.T) {
 	const otherAccount = "example-other@example-project.iam.gserviceaccount.com"
 	cfg := vmConfig(t, "example-vm-audience")
@@ -207,10 +220,13 @@ func TestTheRequestMachineCarriesWhoIsResponsible(t *testing.T) {
 	if dispatch := judgeDispatch(cfg); dispatch != nil {
 		t.Fatalf("judgeDispatch = %#v with no BROKER_JUDGE_DISPATCH_URL; want none", dispatch)
 	}
-	m := newRequestMachine(cfg, nil, nil, nil, nil, nil, nil, judgeDispatch(cfg), nil)
-	if want := map[string]string{exampleVMAccount: "ada@example.com"}; !maps.Equal(m.VMPersonsByAccount, want) {
-		t.Fatalf("request Machine's VMPersonsByAccount = %v, want %v", m.VMPersonsByAccount, want)
+	policy := openIdentities(t, cfg).Policy()
+	for account, want := range map[string]string{exampleVMAccount: "ada@example.com", otherAccount: ""} {
+		if person, _, _ := policy.MappedProjects("google:" + account); person != want {
+			t.Fatalf("the policy's person of %s = %q, want %q", account, person, want)
+		}
 	}
+	m := newRequestMachine(cfg, nil, nil, nil, nil, nil, nil, judgeDispatch(cfg), nil)
 	if m.Assignees != nil {
 		t.Fatalf("request Machine's Assignees = %#v with no BROKER_JUDGE_DISPATCH_URL; want none", m.Assignees)
 	}

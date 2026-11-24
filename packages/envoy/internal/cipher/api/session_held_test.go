@@ -14,7 +14,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/sjawhar/envoy/internal/cipher/exchange"
+	"github.com/sjawhar/envoy/internal/cipher/identity/kubernetes"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 )
 
@@ -95,7 +95,7 @@ func TestAPairedAccountsEnrollmentTakesTheNameAndWhatItCarries(t *testing.T) {
 		t.Helper()
 		ts := newTestServer(t)
 		if paired {
-			ts.sessions.SetSessionPairs([][2]string{{exchange.AccountPrincipal(workerAccount), exchange.AccountPrincipal(otherAccount)}})
+			ts.sessions.SetSessionPairs([][2]string{{kubernetes.Principal(workerAccount), kubernetes.Principal(otherAccount)}})
 		}
 		daemon := ts.serviceLogin(t)
 		old := ts.enrolPodWith(t, daemon, podEnrolment{account: workerAccount, podUID: uuid.NewString(), session: session})

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/enroll"
+	"github.com/sjawhar/envoy/internal/cipher/identity"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 )
@@ -60,7 +61,7 @@ func personPodTokenLogin(t *testing.T, svc *Service, account, podUID, service st
 	t.Helper()
 	ctx := context.Background()
 	now := time.Now()
-	svc.Enroll.Pod = fakeTokens{claims: enroll.AccountClaims{Subject: account, PodUID: podUID, IssuedAt: now, Expiry: now.Add(time.Hour)}}
+	svc.Enroll.Pod = fakeTokens{claims: identity.AccountClaims{Subject: account, PodUID: podUID, IssuedAt: now, Expiry: now.Add(time.Hour)}}
 	key, err := proof.NewKey()
 	if err != nil {
 		t.Fatal(err)
@@ -104,7 +105,7 @@ func wantOperator(t *testing.T, what string, cred enroll.Credential, want string
 	if cred.Operator == nil || *cred.Operator != want {
 		t.Fatalf("%s: credential %s carries operator %q (\"\" is none); want %q", what, cred.ID, deref(cred.Operator), want)
 	}
-	if !enroll.PersonPodLogin(cred) {
+	if !(&enroll.Service{Subjects: identities(t)}).PersonPodLogin(cred) {
 		t.Fatalf("%s: credential %s (operator %q, subject %q) is not a person's pod login (enroll.PersonPodLogin)", what, cred.ID, want, deref(cred.Subject))
 	}
 }

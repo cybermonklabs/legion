@@ -1,6 +1,8 @@
 package api_test
 
 import (
+	"maps"
+	"slices"
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/cipher/exchange"
@@ -28,6 +30,38 @@ func kubernetesPolicy(accounts []exchange.AccountEntry) (*exchange.Set, error) {
 		return nil, err
 	}
 	return registry.Policy(), nil
+}
+
+// identities is the identity registry of the three providers, each trusting no issuer and
+// listing nothing, as cmd/cipherd composes them: the Subjects an enroll.Service and a
+// requests.Machine read.
+func identities(t testing.TB, machines ...exchange.GoogleEntry) *identity.Registry {
+	t.Helper()
+	pods, err := kubernetes.New(kubernetes.Config{})
+	if err != nil {
+		t.Fatalf("kubernetes.New: %v", err)
+	}
+	fleets, err := google.New(google.Config{Machines: machines})
+	if err != nil {
+		t.Fatalf("google.New: %v", err)
+	}
+	registry, err := identity.NewRegistry([]identity.Provider{pods, fleets}, nil)
+	if err != nil {
+		t.Fatalf("identity.NewRegistry: %v", err)
+	}
+	return registry
+}
+
+// fleetPolicy is the listed identities of a Google provider listing each account of services for
+// its service, as BROKER_VM_SERVICES lists it: the Policy a machine's or a sign-in's credential is
+// held to.
+func fleetPolicy(t testing.TB, services map[string]string) *exchange.Set {
+	t.Helper()
+	var machines []exchange.GoogleEntry
+	for _, account := range slices.Sorted(maps.Keys(services)) {
+		machines = append(machines, exchange.GoogleEntry{Account: account, Service: services[account]})
+	}
+	return identities(t, machines...).Policy()
 }
 
 // kubernetesCaller is the kubernetes provider's API verifier of issuer's projected tokens at

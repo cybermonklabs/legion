@@ -155,7 +155,7 @@ func TestARevokedSignInIsRefusedForeverAndLeavesTheOthersWorking(t *testing.T) {
 
 // TestASignInsBoxKeyPresentedFromAnotherMachineIsRefused: a sign-in is the person, the key and
 // the machine together, and the launcher credential it holds is keyed by all three
-// (exchange.PersonSubject). A row that followed its key to a new machine would ask for a
+// (google.PersonSubject). A row that followed its key to a new machine would ask for a
 // subject no live credential has, and every trade of it from then on would collide on
 // launcher_credentials_live_key and be refused invalid_grant with nothing naming the cure. So
 // the machine is held, the row keeps the account it was made with, and the box signs in again.

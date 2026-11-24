@@ -1,7 +1,7 @@
 // daemon_carry_test.go is a pod's carry under the daemon that enrolled it (plan E's t-e-54):
 // every public Legion project's pods run as one account, legion-worker, and each
 // project's daemon logs in as an account of its own, so a pod's grants follow the pair of the two
-// (carryPrincipal, exchange.PodLaunchPrincipal) while its session name is held under its account
+// (carryPrincipal, exchange.LaunchedBy) while its session name is held under its account
 // alone (namePrincipal).
 package enroll
 
@@ -16,6 +16,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/sjawhar/envoy/internal/cipher/exchange"
+	"github.com/sjawhar/envoy/internal/cipher/identity/kubernetes"
 	"github.com/sjawhar/envoy/internal/cipher/oauthstore"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
@@ -84,7 +85,7 @@ func spellAccountAlone(t *testing.T, svc *Service, id uuid.UUID) {
 // and the other daemon does not.
 //
 // The control: the account alone as a pod's carry principal (carryPrincipal's pod branch
-// answering exchange.AccountPrincipal(*in.Subject)); GLOBEX's enrolment adopts the grant, and the test
+// answering kubernetes.Principal(*in.Subject)); GLOBEX's enrolment adopts the grant, and the test
 // fails naming it (the pull request records the run).
 func TestAPodOfAnotherDaemonCannotAdoptASessionsGrants(t *testing.T) {
 	for _, spelling := range []struct {
@@ -176,7 +177,7 @@ func TestAPodAndItsTradeStillShareOneSessionName(t *testing.T) {
 		cred      Credential
 		wantCarry string
 	}{
-		{"under its daemon's token login", daemonLogin(t, svc), exchange.PodLaunchPrincipal(carryPodAccount, exchange.AccountPrincipal(carryDaemonAccount))},
+		{"under its daemon's token login", daemonLogin(t, svc), exchange.LaunchedBy(kubernetes.Principal(carryPodAccount), kubernetes.Principal(carryDaemonAccount))},
 		{"under a login that proved no account", mintCredential(t, svc, nil, str("legion-daemon"), "cluster"), ""},
 	} {
 		t.Run(row.name, func(t *testing.T) {
@@ -209,7 +210,7 @@ func TestAPodAndItsTradeStillShareOneSessionName(t *testing.T) {
 // TestARunningSessionKeepsItsGrantsAcrossTheCarryMigration: a session's pod rows written before
 // migration 0037, carrying the account alone, one dormant and one live and each holding a grant,
 // are rewritten by the migration to the pair its own daemon's enrolment spells, in SQL spelled as
-// exchange.PodLaunchPrincipal spells it. An older broker replica's adopt, which matches a pod's
+// exchange.LaunchedBy spells it. An older broker replica's adopt, which matches a pod's
 // predecessors on the account alone (carry_principal = 'account:' || subject), then finds none of
 // the session's rows: that is what the rewrite is for, since while the broker rolls it keeps an
 // older replica from handing those rows to another daemon's pod enrolled under the session's name.
@@ -244,7 +245,7 @@ func TestARunningSessionKeepsItsGrantsAcrossTheCarryMigration(t *testing.T) {
 	if _, err := svc.Store.Pool.Exec(ctx, string(rewrite)); err != nil {
 		t.Fatalf("run the migration's rewrite: %v", err)
 	}
-	want := exchange.PodLaunchPrincipal(carryPodAccount, exchange.AccountPrincipal(carryDaemonAccount))
+	want := exchange.LaunchedBy(kubernetes.Principal(carryPodAccount), kubernetes.Principal(carryDaemonAccount))
 	for _, id := range []uuid.UUID{dormant.ID, live.ID} {
 		if got := carryPrincipalOf(t, svc, id); got != want {
 			t.Errorf("row %s carries %q after the migration, want %q, the spelling its daemon's next enrolment writes", id, got, want)
@@ -337,7 +338,7 @@ func TestTheCarryMigrationTakesItsRowsInAdoptsOrder(t *testing.T) {
 	case <-time.After(30 * time.Second):
 		t.Fatal("the rewrite did not complete within 30s once the adoption committed")
 	}
-	want := exchange.PodLaunchPrincipal(carryPodAccount, exchange.AccountPrincipal(carryDaemonAccount))
+	want := exchange.LaunchedBy(kubernetes.Principal(carryPodAccount), kubernetes.Principal(carryDaemonAccount))
 	for _, id := range ids {
 		if got := carryPrincipalOf(t, svc, id); got != want {
 			t.Errorf("row %s carries %q after the rewrite, want %q", id, got, want)

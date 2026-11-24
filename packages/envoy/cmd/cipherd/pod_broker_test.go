@@ -75,7 +75,7 @@ func (b podBroker) logIn(service, account string) launcher {
 // enrolPod has by's credential enrol the pod runtimeID, proving with its projected token that it
 // runs as account, under the session name sessionID, "" for none: the request's session_id is a
 // pointer, so an empty name and no name differ, and "" sends no name at all. A name the pod states
-// is held under its account's principal (exchange.AccountPrincipal), as the Legion daemon enrols a
+// is held under its account's principal (kubernetes.Principal), as the Legion daemon enrols a
 // role's pod, and it is the name a grant follows. It answers the pod, holding the enrollment the
 // broker named on a 201, beside the broker's status and body, so a caller drives the refusal as
 // well as the enrollment.

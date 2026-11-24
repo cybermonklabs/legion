@@ -50,6 +50,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/answer"
 	"github.com/sjawhar/envoy/internal/cipher/exchange"
+	"github.com/sjawhar/envoy/internal/cipher/identity"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/internal/cipher/record"
@@ -337,16 +338,13 @@ type Machine struct {
 	// of that account acts as its account's own at its next call. From then on, its requests are
 	// its own enrollment's alone.
 	PodOperators map[string]string
-	// VMServicesByAccount is BROKER_VM_SERVICES, keyed by a Google service account's email: the
-	// service a machine whose Google identity token the exchange took proves, when its launcher
-	// credential's service is that one (requester). It is read on every call, so an account
-	// dropped from the setting stops its machines' service secrets at their next one.
-	VMServicesByAccount map[string]string
-	// VMPersonsByAccount is each fleet's person, keyed by its Google service account's email
-	// (BROKER_VM_EXCHANGE_ACCOUNTS' person, an entry that names none left out): whose Dispatch
-	// Inbox lists a request one of its machines' own sessions makes for a shared human-tier
-	// secret (responsiblePerson). It grants nothing: a machine's session acts for no person.
-	VMPersonsByAccount map[string]string
+	// Subjects reads a launcher credential's subject and spells a pod's principal, each as its
+	// identity provider writes it (the identity registry): a machine's own session proves the
+	// service Exchange lists its account for (requester), names the projects and the person its
+	// entry maps that account to (credentialProjects, responsiblePerson), and a pod the projects
+	// its account's entry maps. Every read is on every call, so an account dropped from the
+	// setting stops its machines' service secrets at their next one.
+	Subjects identity.Subjects
 	// Assignees names a Dispatch issue's assignee, whose Inbox lists a request a Legion pod makes
 	// for a shared human-tier secret when its claim names that issue (claimAssignee); nil reads
 	// nothing, and such a request is listed for everyone. cmd/cipherd wires the judge's read of
@@ -553,10 +551,10 @@ type enrollmentRow struct {
 // for a machine's own session), its service, and the names that person withheld from it
 // (RevokeByApprover's withhold). Its service is its launcher credential's only
 // when the account the enrollment recorded still proves it: `BROKER_SERVICES` for a pod's
-// verified service account, `BROKER_VM_SERVICES` for the Google account a machine's credential
-// subject names (exchange.ReadSubject). A machine login's service name is the machine's own
-// claim, which anyone signed in to Dispatch may approve, so the account is what proves the
-// service. Any other session has none.
+// verified service account, `BROKER_VM_SERVICES` for the account a machine's credential subject
+// names (Subjects' ReadSubject, and the service Exchange lists that account for). A machine
+// login's service name is the machine's own claim, which anyone signed in to Dispatch may
+// approve, so the account is what proves the service. Any other session has none.
 // A pod acts for its enrollment's operator only while `BROKER_POD_OPERATORS` (PodOperators)
 // still maps the account the enrollment recorded to that same person (unmappedPersonPod).
 // Otherwise the pod acts for no person: it is its account's own, and its service is read as
@@ -599,8 +597,8 @@ func (m *Machine) requester(ctx context.Context, q querier, e enrollmentRow, fac
 				service = *e.Service
 			}
 		case "session":
-			if read := exchange.ReadSubject(*e.Subject); read.Kind == exchange.SubjectMachine {
-				if bound, ok := m.VMServicesByAccount[read.Account]; ok && bound == *e.Service {
+			if read := m.Subjects.ReadSubject(*e.Subject); read.Kind == identity.SubjectMachine {
+				if listing, listed := m.Exchange.Listed(read.Principal); listed && listing.Service == *e.Service {
 					service = *e.Service
 				}
 			}

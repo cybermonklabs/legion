@@ -11,7 +11,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/sjawhar/envoy/internal/cipher/api"
-	"github.com/sjawhar/envoy/internal/cipher/exchange"
+	"github.com/sjawhar/envoy/internal/cipher/identity/google"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess/projectaccesstest"
 )
@@ -43,7 +43,7 @@ func TestSelfAnswersTheProjects(t *testing.T) {
 		d.Enroll.Projects = projectaccess.New(dispatch.URL, dispatch.Account, nil)
 		// The machine account of the sign-in below is listed for its fleet, as BROKER_VM_SERVICES
 		// lists it, so its credential is a live sign-in's (enroll.Service.tokenLoginListed).
-		d.Enroll.VMServicesByAccount = map[string]string{signInMachineAccount: signInCredentialFleet}
+		d.Enroll.Policy = fleetPolicy(t, map[string]string{signInMachineAccount: signInCredentialFleet})
 	})
 	credentialID, machineKey := ts.mintLauncherCredential(t, testApprover, "example-host-devbox")
 	enrol := func(runtimeID string, projects any) (int, []byte, string) {
@@ -95,11 +95,11 @@ func TestSelfAnswersTheProjects(t *testing.T) {
 	}
 	// signInSession enrols a session under a person's sign-in held by restrictedMember: a machine
 	// login minted for them, rewritten as the token exchange writes a sign-in's credential
-	// (exchange.PersonSubject): the fleet's service, a sign-in's subject and no machine-login
+	// (google.PersonSubject): the fleet's service, a sign-in's subject and no machine-login
 	// record, so the broker reads it as a sign-in.
 	signInID, signInKey := ts.mintLauncherCredential(t, restrictedMember, "example-host-restricted-signin")
 	if _, err := ts.Store.Pool.Exec(t.Context(), `update launcher_credentials set service=$2, subject=$3, record_id=null where id=$1`,
-		signInID, signInCredentialFleet, exchange.PersonSubject(restrictedMember, signInMachineAccount, thumbprintOf(t, signInKey))); err != nil {
+		signInID, signInCredentialFleet, google.PersonSubject(restrictedMember, signInMachineAccount, thumbprintOf(t, signInKey))); err != nil {
 		t.Fatalf("make %s's credential a sign-in's: %v", restrictedMember, err)
 	}
 	signInSession := func(projects []string) (int, []byte) {

@@ -30,7 +30,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/cipher/ciphertest"
-	"github.com/sjawhar/envoy/internal/cipher/exchange"
+	"github.com/sjawhar/envoy/internal/cipher/identity/kubernetes"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess/projectaccesstest"
@@ -534,7 +534,7 @@ func TestAPairedAccountsPodExchangesUnderTheNameItsPairHolds(t *testing.T) {
 	db := connectToBroker(t, databaseURL)
 	binary := buildBroker(t)
 	key := proofKey(t)
-	oldPrincipal, movedPrincipal := exchange.AccountPrincipal(podAccount), exchange.AccountPrincipal(pairedPodAccount)
+	oldPrincipal, movedPrincipal := kubernetes.Principal(podAccount), kubernetes.Principal(pairedPodAccount)
 	// Each account's one pod, which its deployment's daemon registers for the name before it
 	// trades under it.
 	podUIDs := map[string]string{podAccount: "pod-uid-old", pairedPodAccount: "pod-uid-moved", listedAccount: "pod-uid-unpaired"}
@@ -636,7 +636,7 @@ func TestAPairedAccountsPodThatExchangedFirstEnrolsAndReadsItsPairsGrant(t *test
 	if status != http.StatusOK || body["access_token"] == nil {
 		t.Fatalf("the moved account's pod trading under %s = %d %v, want 200 with an access token: a paired account takes the name its pair holds", pairedSession, status, body)
 	}
-	movedPrincipal := exchange.AccountPrincipal(pairedPodAccount)
+	movedPrincipal := kubernetes.Principal(pairedPodAccount)
 	if holder, _ := sessionHolder(t, rig.db, pairedSession); holder != movedPrincipal {
 		t.Fatalf("after the trade the name %s is held by %q, want the moved account %q", pairedSession, holder, movedPrincipal)
 	}
@@ -670,7 +670,7 @@ func TestAPairIsRefusedANameAnExchangeEntryFixesThatItsPairHolds(t *testing.T) {
 
 	t.Log("--- before any exchange, the old account's pod enrols under the name the read entry fixes")
 	paired.pods.enroll(paired.launcher, "pod-uid-old", podAccount, readerSession)
-	held := exchange.AccountPrincipal(podAccount)
+	held := kubernetes.Principal(podAccount)
 	if holder, fixed := sessionHolder(t, paired.db, readerSession); holder != held || fixed {
 		t.Fatalf("after the old account's enrolment the name %s is held by %q (the configuration's hold: %t), want %q, an ordinary claim", readerSession, holder, fixed, held)
 	}

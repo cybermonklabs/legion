@@ -22,8 +22,8 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus/signedrecord"
 	"github.com/sjawhar/envoy/internal/cipher/api"
+	"github.com/sjawhar/envoy/internal/cipher/config"
 	"github.com/sjawhar/envoy/internal/cipher/identity"
-	"github.com/sjawhar/envoy/internal/cipher/identity/kubernetes"
 	"github.com/sjawhar/envoy/internal/cipher/natscallout"
 	"github.com/sjawhar/envoy/internal/cipher/natshold"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
@@ -176,9 +176,14 @@ func verifyOperatorToken(_ context.Context, raw string) (identity.Caller, error)
 	return identity.Caller{Account: operatorAccount(), IssuedAt: now, Expiry: now.Add(10 * time.Minute)}, nil
 }
 
-// operatorAccount is OperatorAccount as the routes hold it: a Kubernetes service account.
+// operatorAccount is OperatorAccount as the routes hold it, parsed as a deployment's
+// BROKER_NATS_SERVICES entry is (config.ParseAccount), so this helper names no provider package.
 func operatorAccount() identity.Account {
-	return identity.Account{Kind: kubernetes.Kind, Address: OperatorAccount}
+	account, err := config.ParseAccount(config.NATSServicesVariable, OperatorAccount, OperatorAccount)
+	if err != nil {
+		panic("holdrecordtest: the operator account " + OperatorAccount + ": " + err.Error())
+	}
+	return account
 }
 
 // Config is the operator's client configuration for b: its URL, OperatorToken and both halves of

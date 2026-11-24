@@ -26,7 +26,7 @@ const IdentityKeyNamed = "the helper's identity key (~/.config/agent-secrets/ide
 // LoadOrMakeIdentityKey is the key a machine that proves an identity of its own trades with: the
 // one its launcher credential is bound to, and the one the broker names that credential by, since
 // a machine's subject carries the RFC 7638 thumbprint of the key its proof presented
-// (exchange.MachineSubject). It answers the key kept at path, or makes one and keeps it there,
+// (the google identity provider's MachineSubject). It answers the key kept at path, or makes one and keeps it there,
 // and made says which.
 //
 // The key is kept because the subject is what makes a restart move the machine's one credential

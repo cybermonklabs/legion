@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/cipher/exchange"
+	"github.com/sjawhar/envoy/internal/cipher/identity/google"
 )
 
 const (
@@ -60,19 +60,20 @@ func machineCredentialFor(t *testing.T, svc *Service, subject, thumbprint string
 }
 
 // TestAMachinesCredentialAuthenticatesWhileItsAccountIsListed: the credential the exchange mints
-// is keyed by the machine and the key it holds (exchange.MachineSubject) and authenticates on
+// is keyed by the machine and the key it holds (google.MachineSubject) and authenticates on
 // the account alone — where the machine runs was the exchange entry's decision, taken before
 // the credential existed. Dropping the account from BROKER_VM_SERVICES, and listing it for
 // another service, each end the credential at its next call.
 func TestAMachinesCredentialAuthenticatesWhileItsAccountIsListed(t *testing.T) {
 	ctx := context.Background()
 	svc := newService(t)
-	svc.VMServicesByAccount = map[string]string{machineAccountEmail: machineFleet}
-	onInstance := exchange.MachineSubject(exchange.GoogleIdentity{
+	svc.Policy = fleets(map[string]string{machineAccountEmail: machineFleet})
+	onInstance := google.MachineSubject(google.Identity{
 		Account: machineAccountEmail,
-		Compute: exchange.ComputeEngine{Project: "example-project", Zone: "example-zone-a", Instance: "example-machine-1", InstanceID: "1"},
+		Compute: google.ComputeEngine{Project: "example-project", Zone: "example-zone-a", Instance: "example-machine-1", InstanceID: "1"},
 	}, "tp-on-instance")
-	keyed := exchange.MachineSubject(exchange.GoogleIdentity{Account: machineAccountEmail}, "tp-pool-machine")
+
+	keyed := google.MachineSubject(google.Identity{Account: machineAccountEmail}, "tp-pool-machine")
 
 	for _, subject := range []string{onInstance, keyed} {
 		id := issueMachineCredential(t, svc, subject, "tp-"+subject)
@@ -80,15 +81,15 @@ func TestAMachinesCredentialAuthenticatesWhileItsAccountIsListed(t *testing.T) {
 		if err != nil || !live || thumbprint != "tp-"+subject {
 			t.Fatalf("AuthenticateLauncher(%s) = %q, %t, %v; want its key and live", subject, thumbprint, live, err)
 		}
-		svc.VMServicesByAccount = map[string]string{machineAccountEmail: "another-service"}
+		svc.Policy = fleets(map[string]string{machineAccountEmail: "another-service"})
 		if _, live, err := svc.AuthenticateLauncher(ctx, id); err != nil || live {
 			t.Errorf("AuthenticateLauncher(%s) with the account listed for another service = %t, %v; want it no longer live", subject, live, err)
 		}
-		svc.VMServicesByAccount = map[string]string{}
+		svc.Policy = fleets(map[string]string{})
 		if _, live, err := svc.AuthenticateLauncher(ctx, id); err != nil || live {
 			t.Errorf("AuthenticateLauncher(%s) with the account dropped = %t, %v; want it no longer live", subject, live, err)
 		}
-		svc.VMServicesByAccount = map[string]string{machineAccountEmail: machineFleet}
+		svc.Policy = fleets(map[string]string{machineAccountEmail: machineFleet})
 	}
 }
 
@@ -99,8 +100,8 @@ func TestAMachinesCredentialAuthenticatesWhileItsAccountIsListed(t *testing.T) {
 func TestAMachinesSecondExchangeMovesItsOneCredential(t *testing.T) {
 	ctx := context.Background()
 	svc := newService(t)
-	svc.VMServicesByAccount = map[string]string{machineAccountEmail: machineFleet}
-	subject := exchange.MachineSubject(exchange.GoogleIdentity{Account: machineAccountEmail}, "tp-one")
+	svc.Policy = fleets(map[string]string{machineAccountEmail: machineFleet})
+	subject := google.MachineSubject(google.Identity{Account: machineAccountEmail}, "tp-one")
 
 	first := issueMachineCredential(t, svc, subject, "tp-one")
 	again := issueMachineCredential(t, svc, subject, "tp-one-rotated")
@@ -111,7 +112,7 @@ func TestAMachinesSecondExchangeMovesItsOneCredential(t *testing.T) {
 	if err != nil || !live || thumbprint != "tp-one-rotated" {
 		t.Fatalf("AuthenticateLauncher after the second exchange = %q, %t, %v; want the key it last proved", thumbprint, live, err)
 	}
-	other := exchange.MachineSubject(exchange.GoogleIdentity{Account: machineAccountEmail}, "tp-two")
+	other := google.MachineSubject(google.Identity{Account: machineAccountEmail}, "tp-two")
 	if second := issueMachineCredential(t, svc, other, "tp-two"); second == first {
 		t.Fatalf("a second machine of %s took the first's credential %s; each key holds its own", machineAccountEmail, first)
 	}
@@ -126,8 +127,8 @@ func TestAMachinesSecondExchangeMovesItsOneCredential(t *testing.T) {
 func TestACredentialReadByItsKeyIsGoneOnceThatKeyMoves(t *testing.T) {
 	ctx := context.Background()
 	svc := newService(t)
-	svc.VMServicesByAccount = map[string]string{machineAccountEmail: machineFleet}
-	subject := exchange.MachineSubject(exchange.GoogleIdentity{Account: machineAccountEmail}, "tp-one")
+	svc.Policy = fleets(map[string]string{machineAccountEmail: machineFleet})
+	subject := google.MachineSubject(google.Identity{Account: machineAccountEmail}, "tp-one")
 	id := issueMachineCredential(t, svc, subject, "tp-proved")
 
 	cred, err := svc.CredentialForKey(ctx, id, "tp-proved")
@@ -155,8 +156,8 @@ func TestACredentialReadByItsKeyIsGoneOnceThatKeyMoves(t *testing.T) {
 func TestAMachineEnrolsASessionThatActsForItsFleetAndNoPerson(t *testing.T) {
 	ctx := context.Background()
 	svc := newService(t)
-	svc.VMServicesByAccount = map[string]string{machineAccountEmail: machineFleet}
-	subject := exchange.MachineSubject(exchange.GoogleIdentity{Account: machineAccountEmail}, "tp-machine")
+	svc.Policy = fleets(map[string]string{machineAccountEmail: machineFleet})
+	subject := google.MachineSubject(google.Identity{Account: machineAccountEmail}, "tp-machine")
 
 	cred := machineCredentialFor(t, svc, subject, "tp-machine")
 	if cred.Operator != nil || cred.Service == nil || *cred.Service != machineFleet {
@@ -180,7 +181,7 @@ func TestAMachineEnrolsASessionThatActsForItsFleetAndNoPerson(t *testing.T) {
 func TestOnlyAMachinesOwnCredentialEnrolsItsSession(t *testing.T) {
 	ctx := context.Background()
 	svc := newService(t)
-	svc.VMServicesByAccount = map[string]string{machineAccountEmail: machineFleet}
+	svc.Policy = fleets(map[string]string{machineAccountEmail: machineFleet})
 	svc.ServiceLogins = map[string]string{"system:serviceaccount:example:example-daemon": "legion-daemon"}
 
 	daemon, err := svc.CredentialForKey(ctx, func() string {
@@ -209,8 +210,8 @@ func TestOnlyAMachinesOwnCredentialEnrolsItsSession(t *testing.T) {
 		t.Fatalf("a Kubernetes service login's session enrollment = %v, want ErrOperatorMismatch: it enrols the pods its tokens prove", err)
 	}
 
-	one := exchange.MachineSubject(exchange.GoogleIdentity{Account: machineAccountEmail}, "tp-one")
-	two := exchange.MachineSubject(exchange.GoogleIdentity{Account: machineAccountEmail}, "tp-two")
+	one := google.MachineSubject(google.Identity{Account: machineAccountEmail}, "tp-one")
+	two := google.MachineSubject(google.Identity{Account: machineAccountEmail}, "tp-two")
 	credOne := machineCredentialFor(t, svc, one, "tp-one")
 	credTwo := machineCredentialFor(t, svc, two, "tp-two")
 	enrolled, err := svc.Create(ctx, credOne, Enrollment{Kind: "session", RuntimeID: "machine-one", Thumbprint: "tp-session-one"})
@@ -236,8 +237,8 @@ func TestOnlyAMachinesOwnCredentialEnrolsItsSession(t *testing.T) {
 func TestAMachineSessionRenewsOnlyWhileItsMachineLoginIsLive(t *testing.T) {
 	ctx := context.Background()
 	svc := newService(t)
-	svc.VMServicesByAccount = map[string]string{machineAccountEmail: machineFleet}
-	subject := exchange.MachineSubject(exchange.GoogleIdentity{Account: machineAccountEmail}, "tp-machine")
+	svc.Policy = fleets(map[string]string{machineAccountEmail: machineFleet})
+	subject := google.MachineSubject(google.Identity{Account: machineAccountEmail}, "tp-machine")
 	cred := machineCredentialFor(t, svc, subject, "tp-machine")
 	enrolled, err := svc.Create(ctx, cred, Enrollment{Kind: "session", RuntimeID: "machine-1", Thumbprint: "tp-session"})
 	if err != nil {
@@ -248,11 +249,11 @@ func TestAMachineSessionRenewsOnlyWhileItsMachineLoginIsLive(t *testing.T) {
 		t.Fatalf("the first renewal of a live machine's session: %v; want it renewed", err)
 	}
 
-	svc.VMServicesByAccount = map[string]string{}
+	svc.Policy = fleets(map[string]string{})
 	if _, err := svc.Renew(ctx, id, ""); !errors.Is(err, ErrMachineLoginEnded) {
 		t.Fatalf("the renewal of a delisted machine's session = %v, want ErrMachineLoginEnded", err)
 	}
-	svc.VMServicesByAccount = map[string]string{machineAccountEmail: machineFleet}
+	svc.Policy = fleets(map[string]string{machineAccountEmail: machineFleet})
 	if _, err := svc.Renew(ctx, id, ""); err != nil {
 		t.Fatalf("the renewal after the account was listed again: %v; want it renewed", err)
 	}
@@ -278,7 +279,7 @@ func TestAPersonsSessionOnAMachineRenewsPastItsCredentialsExpiry(t *testing.T) {
 	ctx := context.Background()
 	const person = "ada@example.com"
 	svc := newService(t)
-	svc.VMServicesByAccount = map[string]string{machineAccountEmail: machineFleet}
+	svc.Policy = fleets(map[string]string{machineAccountEmail: machineFleet})
 
 	tx, err := svc.Store.Pool.Begin(ctx)
 	if err != nil {
@@ -286,7 +287,7 @@ func TestAPersonsSessionOnAMachineRenewsPastItsCredentialsExpiry(t *testing.T) {
 	}
 	defer tx.Rollback(ctx)
 	credID, err := svc.IssueTokenLoginTx(ctx, tx, TokenLogin{
-		Subject: exchange.PersonSubject(person, machineAccountEmail, "tp-box"), Service: machineFleet,
+		Subject: google.PersonSubject(person, machineAccountEmail, "tp-box"), Service: machineFleet,
 		Operator: person, Host: "example-project/example-zone-a/example-machine-1",
 		TokenExpires: time.Now().Add(time.Hour), Thumbprint: "tp-box",
 		JWK: json.RawMessage(`{"kty":"EC"}`), Expires: time.Now().Add(time.Hour),

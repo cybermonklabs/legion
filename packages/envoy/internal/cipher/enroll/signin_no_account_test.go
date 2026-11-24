@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/sjawhar/envoy/internal/cipher/exchange"
+	"github.com/sjawhar/envoy/internal/cipher/identity/google"
 	"github.com/sjawhar/envoy/internal/cipher/store"
 )
 
@@ -40,7 +40,7 @@ func TestATradeUnderASignInRecordingNoAccountEndsItsCredentialAndSessions(t *tes
 	}
 	// The subject a sign-in's own trades mint its credential under (oauth.Provider.personCredential).
 	if _, err := svc.Store.Pool.Exec(ctx, `update launcher_credentials set subject = $1 where id = $2`,
-		exchange.PersonSubject(person, "fleet@example.iam.gserviceaccount.com", thumbprint), cred.ID); err != nil {
+		google.PersonSubject(person, "fleet@example.iam.gserviceaccount.com", thumbprint), cred.ID); err != nil {
 		t.Fatalf("key the credential by the sign-in's subject: %v", err)
 	}
 	account := store.IssuerSubject{Issuer: raceIssuer, Subject: "109" + person}
@@ -52,7 +52,7 @@ func TestATradeUnderASignInRecordingNoAccountEndsItsCredentialAndSessions(t *tes
 	if err := RecordPersonSignIn(ctx, tx, store.SignInTrade{
 		Person: person, Thumbprint: thumbprint, MachineAccount: "fleet@example.iam.gserviceaccount.com", Account: account,
 		EndUnrecorded: true,
-	}); err != nil {
+	}, google.PersonSubject(person, "fleet@example.iam.gserviceaccount.com", thumbprint)); err != nil {
 		t.Fatalf("the trade under the sign-in: %v", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -107,7 +107,7 @@ func TestATradeUnderASignInRecordingNoAccountKeepsItWithoutDispatch(t *testing.T
 		t.Fatalf("read the credential's key: %v", err)
 	}
 	if _, err := svc.Store.Pool.Exec(ctx, `update launcher_credentials set subject = $1 where id = $2`,
-		exchange.PersonSubject(person, "fleet@example.iam.gserviceaccount.com", thumbprint), cred.ID); err != nil {
+		google.PersonSubject(person, "fleet@example.iam.gserviceaccount.com", thumbprint), cred.ID); err != nil {
 		t.Fatalf("key the credential by the sign-in's subject: %v", err)
 	}
 	tx, err := svc.Store.Pool.Begin(ctx)
@@ -118,7 +118,7 @@ func TestATradeUnderASignInRecordingNoAccountKeepsItWithoutDispatch(t *testing.T
 	if err := RecordPersonSignIn(ctx, tx, store.SignInTrade{
 		Person: person, Thumbprint: thumbprint, MachineAccount: "fleet@example.iam.gserviceaccount.com",
 		Account: store.IssuerSubject{Issuer: raceIssuer, Subject: "109" + person},
-	}); err != nil {
+	}, google.PersonSubject(person, "fleet@example.iam.gserviceaccount.com", thumbprint)); err != nil {
 		t.Fatalf("the trade under the sign-in: %v", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -149,7 +149,7 @@ func TestATradeUnderASignInRecordingNoAccountKeepsItWithoutDispatch(t *testing.T
 
 // TestATradeUnderASignInRecordingNoAccountLeavesAnotherCredentialOfItsKey: the credential a trade
 // ends with a sign-in recording no account is that sign-in's own, the one its trades minted under
-// the subject exchange.PersonSubject names, found by key and subject. A live credential holding
+// the subject google.PersonSubject names, found by key and subject. A live credential holding
 // the same key under another subject (a machine login that came to hold the key once the
 // sign-in's own credential ended, since the database lets one live credential hold a key) is not
 // the sign-in's, and the trade leaves it and its sessions alone.
@@ -181,7 +181,7 @@ func TestATradeUnderASignInRecordingNoAccountLeavesAnotherCredentialOfItsKey(t *
 	if err := RecordPersonSignIn(ctx, tx, store.SignInTrade{
 		Person: person, Thumbprint: thumbprint, MachineAccount: "fleet@example.iam.gserviceaccount.com",
 		Account: store.IssuerSubject{Issuer: raceIssuer, Subject: "109" + person}, EndUnrecorded: true,
-	}); err != nil {
+	}, google.PersonSubject(person, "fleet@example.iam.gserviceaccount.com", thumbprint)); err != nil {
 		t.Fatalf("the trade under the sign-in: %v", err)
 	}
 	if err := tx.Commit(ctx); err != nil {

@@ -27,7 +27,7 @@ import (
 // operatorOf answers the person a launcher credential acts for, canonicalized. Two kinds of
 // credential get no answer:
 //
-//   - A person's pod login (enroll.PersonPodLogin) is 403 PERSON_POD_LOGIN. Such a login acts
+//   - A person's pod login (enroll.Service.PersonPodLogin) is 403 PERSON_POD_LOGIN. Such a login acts
 //     for its person on secrets alone. It lists and revokes none of the person's machine logins
 //     and grants, which the person does from a box or from Dispatch. The test reads the
 //     credential's row and not BROKER_POD_OPERATORS. So the answer is the same for a live login
@@ -35,8 +35,8 @@ import (
 //     route here reads a stale pod login as its person's machine login.
 //   - A service's login (the Legion daemon's) has no operator, and is 403 SERVICE_CREDENTIAL:
 //     machine and grant self-service is a person's.
-func operatorOf(w http.ResponseWriter, cred enroll.Credential) (string, bool) {
-	if enroll.PersonPodLogin(cred) {
+func (s *server) operatorOf(w http.ResponseWriter, cred enroll.Credential) (string, bool) {
+	if s.deps.Enroll.PersonPodLogin(cred) {
 		writeError(w, http.StatusForbidden, "PERSON_POD_LOGIN", "a person's pod login acts for its person on secrets alone; list and revoke machine logins and grants from the person's box or Dispatch")
 		return "", false
 	}
@@ -53,7 +53,7 @@ func operatorOf(w http.ResponseWriter, cred enroll.Credential) (string, bool) {
 // (enroll.Service.OwnLiveCredentials), each not revoked, and unexpired or expired with a session
 // still running.
 func (s *server) listOperatorMachines(w http.ResponseWriter, r *http.Request, cred enroll.Credential) {
-	operator, ok := operatorOf(w, cred)
+	operator, ok := s.operatorOf(w, cred)
 	if !ok {
 		return
 	}
@@ -65,7 +65,7 @@ func (s *server) listOperatorMachines(w http.ResponseWriter, r *http.Request, cr
 // calling machine login as the actor. A service's login is not found here (404 NOT_FOUND), as an
 // unknown id is. Revoking the calling credential itself ends this machine's own access.
 func (s *server) revokeOperatorMachine(w http.ResponseWriter, r *http.Request, cred enroll.Credential) {
-	operator, ok := operatorOf(w, cred)
+	operator, ok := s.operatorOf(w, cred)
 	if !ok {
 		return
 	}
@@ -100,7 +100,7 @@ func (s *server) retireOperatorMachine(w http.ResponseWriter, r *http.Request, c
 // listOperatorGrants lists the live grants of the calling credential's operator's sessions and
 // those the operator approved, as GET /v1/grants lists them for that person.
 func (s *server) listOperatorGrants(w http.ResponseWriter, r *http.Request, cred enroll.Credential) {
-	operator, ok := operatorOf(w, cred)
+	operator, ok := s.operatorOf(w, cred)
 	if !ok {
 		return
 	}
@@ -112,7 +112,7 @@ func (s *server) listOperatorGrants(w http.ResponseWriter, r *http.Request, cred
 // withholds the secrets the grant's request got automatically from its session — recording the
 // calling machine login as the actor.
 func (s *server) revokeOperatorGrant(w http.ResponseWriter, r *http.Request, cred enroll.Credential) {
-	operator, ok := operatorOf(w, cred)
+	operator, ok := s.operatorOf(w, cred)
 	if !ok {
 		return
 	}

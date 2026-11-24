@@ -20,13 +20,13 @@
 //
 //   - The same machine credential with a new runtime id: a machine's own session restarting on the
 //     same box. The identity key is a file on that box's disk, so the exchange moves the one
-//     credential the machine already holds rather than minting another (exchange.MachineSubject),
+//     credential the machine already holds rather than minting another (google.MachineSubject),
 //     and only the runtime id is new.
 //   - A new machine credential of the same Google account: the box is replaced. A second identity
 //     token of the same fleet account, presented under a key of its own, mints a second launcher
 //     credential, because the key is part of the subject a credential is keyed by.
 //   - A person's second sign-in: the person signs in on a second box, under a second box key, and
-//     holds a credential per box (exchange.PersonSubject) with one login behind both.
+//     holds a credential per box (google.PersonSubject) with one login behind both.
 //
 // What every carry arm asserts is the same: the session, proving the enrollment the new box made,
 // reads the same value from the same grant id, and the broker holds exactly one requests row and
@@ -50,7 +50,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/cipher/ciphertest"
-	"github.com/sjawhar/envoy/internal/cipher/exchange"
+	"github.com/sjawhar/envoy/internal/cipher/identity/kubernetes"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
@@ -146,7 +146,7 @@ func TestASessionsGrantFollowsItToANewBox(t *testing.T) {
 			boxes: func(rig carryRig) (box, box) {
 				// The box is replaced: the same fleet account, a key of the new box's own, and so
 				// a launcher credential of its own, since the key is part of the subject a
-				// credential is keyed by (exchange.MachineSubject).
+				// credential is keyed by (google.MachineSubject).
 				firstKey, secondKey := proofKey(rig.t), proofKey(rig.t)
 				first := rig.machineCredential(firstKey, carryRebuildSession)
 				second := rig.machineCredential(secondKey, carryRebuildSession)
@@ -334,7 +334,7 @@ func TestAPairedAccountsPodEnrolsUnderItsPairsNameAndReadsItsGrant(t *testing.T)
 	stored := writeTempFile(t, "memory-secrets.json",
 		[]byte(`{"secrets": [`+fakeSecret("example/agent-secrets/person-secret", fleetPerson, personSecretValue)+`]}`))
 	binary := buildBroker(t)
-	oldPrincipal, movedPrincipal := exchange.AccountPrincipal(podAccount), exchange.AccountPrincipal(pairedPodAccount)
+	oldPrincipal, movedPrincipal := kubernetes.Principal(podAccount), kubernetes.Principal(pairedPodAccount)
 
 	// moving is one arm's broker and the state its move starts from: the service's launcher
 	// credential, the old account's pod enrolled under pairedSession, and the grant it holds.

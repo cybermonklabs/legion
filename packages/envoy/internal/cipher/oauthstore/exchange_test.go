@@ -204,7 +204,7 @@ func TestTheNamesTheConfigurationFixesAreHeldForTheirEntries(t *testing.T) {
 	}
 }
 
-// The accounts the pair tests claim names for, spelled as exchange.AccountPrincipal spells them:
+// The accounts the pair tests claim names for, spelled as kubernetes.Principal spells them:
 // the shared account a deployment's pods run as before an operator moves them, the project's own
 // account they move to, a third account each test pairs with one of those two and not the other,
 // and an account paired with nobody (BROKER_SESSION_ACCOUNT_PAIRS).

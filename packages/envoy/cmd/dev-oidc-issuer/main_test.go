@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/enroll"
+	cipheridentity "github.com/sjawhar/envoy/internal/cipher/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/oidc"
@@ -90,7 +91,7 @@ func TestTheTokenFileVerifiesAgainstTheIssuerAndIsRewrittenBeforeItLapses(t *tes
 		}
 		return strings.TrimSpace(string(raw))
 	}
-	verify := func(token string) enroll.AccountClaims {
+	verify := func(token string) cipheridentity.AccountClaims {
 		t.Helper()
 		claims, err := enroll.K8sPodVerifier{Verifier: verifier}.VerifyAccount(context.Background(), token)
 		if err != nil {

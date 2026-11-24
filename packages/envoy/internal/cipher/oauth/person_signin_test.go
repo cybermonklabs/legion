@@ -20,6 +20,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/enroll"
 	"github.com/sjawhar/envoy/internal/cipher/exchange"
+	"github.com/sjawhar/envoy/internal/cipher/identity/google"
 	"github.com/sjawhar/envoy/internal/cipher/oauth"
 	"github.com/sjawhar/envoy/internal/cipher/oauthstore"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
@@ -252,7 +253,8 @@ func TestAPersonSignedInOnAMachineExchangesForATokenNamingBoth(t *testing.T) {
 		}
 	}
 
-	want := []oauth.PersonSignIn{{Person: person, Thumbprint: thumbprint(t, key), Machine: signInMachine, Issuer: f.google.URL(), Subject: "109" + person}}
+	want := []oauth.PersonSignIn{{Person: person, Thumbprint: thumbprint(t, key), Machine: signInMachine, Issuer: f.google.URL(), Subject: "109" + person,
+		CredentialSubject: google.PersonSubject(person, signInMachine, thumbprint(t, key))}}
 	if got := f.signIns(); len(got) != 1 || got[0] != want[0] {
 		t.Fatalf("the exchange recorded %+v, want %+v: the first trade of a person and a box key is the sign-in, made by the account the person's token names", got, want)
 	}
@@ -271,7 +273,8 @@ func TestASignInUnderGooglesSchemelessIssuerIsRecordedUnderTheCanonicalOne(t *te
 		f.personToken(t, person, deviceAudience, true, signInDomain),
 		f.machineToken(t, signInMachine, machineAudience, true),
 		"ada-box-1"), key)
-	want := oauth.PersonSignIn{Person: person, Thumbprint: thumbprint(t, key), Machine: signInMachine, Issuer: oidc.GoogleIssuer, Subject: "109" + person}
+	want := oauth.PersonSignIn{Person: person, Thumbprint: thumbprint(t, key), Machine: signInMachine, Issuer: oidc.GoogleIssuer, Subject: "109" + person,
+		CredentialSubject: google.PersonSubject(person, signInMachine, thumbprint(t, key))}
 	if got := f.signIns(); len(got) != 1 || got[0] != want {
 		t.Fatalf("a trade of a token issued by accounts.google.com recorded %+v, want %+v: the issuer as oidc.CanonicalIssuer spells it", got, want)
 	}
@@ -294,9 +297,12 @@ func TestEachTradeOfOneSignInRecordsTheSameKeyAndASecondBoxIsItsOwn(t *testing.T
 	}
 	got := f.signIns()
 	want := []oauth.PersonSignIn{
-		{Person: person, Thumbprint: thumbprint(t, first), Machine: signInMachine, Issuer: f.google.URL(), Subject: "109" + person},
-		{Person: person, Thumbprint: thumbprint(t, first), Machine: signInMachine, Issuer: f.google.URL(), Subject: "109" + person},
-		{Person: person, Thumbprint: thumbprint(t, second), Machine: signInMachine, Issuer: f.google.URL(), Subject: "109" + person},
+		{Person: person, Thumbprint: thumbprint(t, first), Machine: signInMachine, Issuer: f.google.URL(), Subject: "109" + person,
+			CredentialSubject: google.PersonSubject(person, signInMachine, thumbprint(t, first))},
+		{Person: person, Thumbprint: thumbprint(t, first), Machine: signInMachine, Issuer: f.google.URL(), Subject: "109" + person,
+			CredentialSubject: google.PersonSubject(person, signInMachine, thumbprint(t, first))},
+		{Person: person, Thumbprint: thumbprint(t, second), Machine: signInMachine, Issuer: f.google.URL(), Subject: "109" + person,
+			CredentialSubject: google.PersonSubject(person, signInMachine, thumbprint(t, second))},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("the exchange recorded %d sign-ins, want %d: every trade names the key it proved", len(got), len(want))

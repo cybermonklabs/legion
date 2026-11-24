@@ -134,6 +134,24 @@ func (r *Registry) ReadSubject(subject string) Subject {
 	return Subject{Kind: SubjectOther}
 }
 
+// ProjectsForAccount is the projects this configuration gives a token minted for one account, and
+// false for an account no provider's listing names. The account is written as a deployment writes
+// one (config.ParseAccount): "system:serviceaccount:<namespace>:<name>" is the Kubernetes
+// provider's, any other spelling its own provider's, and each provider spells the principal its
+// listings are keyed by (Provider.Principal). It reads the one policy the providers' listings
+// build, so a grant made from this answer and the token of that account cannot disagree. A
+// workflow is no account and is answered false.
+func (r *Registry) ProjectsForAccount(account string) ([]string, bool) {
+	for _, p := range r.providers {
+		if principal := p.Principal(account); principal != "" {
+			if _, projects, ok := r.policy.MappedProjects(principal); ok {
+				return projects, true
+			}
+		}
+	}
+	return nil, false
+}
+
 // PodPrincipal is the pod provider's principal of account, "" with no pod provider.
 func (r *Registry) PodPrincipal(account string) string {
 	if r.pods == nil {

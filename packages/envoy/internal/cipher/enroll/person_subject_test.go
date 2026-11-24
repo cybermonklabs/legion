@@ -11,7 +11,7 @@ import (
 
 	"github.com/go-jose/go-jose/v4"
 
-	"github.com/sjawhar/envoy/internal/cipher/exchange"
+	"github.com/sjawhar/envoy/internal/cipher/identity/google"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipher/store"
 )
@@ -47,11 +47,11 @@ func tradeSignIn(ctx context.Context, svc *Service, person string, account store
 	defer tx.Rollback(ctx)
 	if err := RecordPersonSignIn(ctx, tx, store.SignInTrade{
 		Person: person, Thumbprint: thumbprint, MachineAccount: raceMachine, Account: account, EndUnrecorded: true,
-	}); err != nil {
+	}, google.PersonSubject(person, raceMachine, thumbprint)); err != nil {
 		return thumbprint, err
 	}
 	if _, err := svc.IssueTokenLoginTx(ctx, tx, TokenLogin{
-		Subject: exchange.PersonSubject(person, raceMachine, thumbprint), Service: "example-fleet",
+		Subject: google.PersonSubject(person, raceMachine, thumbprint), Service: "example-fleet",
 		Host: "example-project/example-zone-a/example-vm-7", Operator: person,
 		TokenExpires: time.Now().Add(time.Hour), Thumbprint: thumbprint, JWK: jwk, Expires: time.Now().Add(time.Hour),
 	}); err != nil {

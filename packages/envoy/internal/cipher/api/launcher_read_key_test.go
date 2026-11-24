@@ -18,6 +18,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/api"
 	"github.com/sjawhar/envoy/internal/cipher/ciphertest"
+	"github.com/sjawhar/envoy/internal/cipher/exchange"
 	"github.com/sjawhar/envoy/internal/cipher/oauth"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
@@ -87,7 +88,10 @@ func (ts *testServer) launcherState(t *testing.T) string {
 // was the key.
 func TestALaunchersProofSignedWithAReadTokensKeyIsRefused(t *testing.T) {
 	ts := newTestServerWith(t, func(d *api.Deps) {
-		d.Enroll.VMServicesByAccount = map[string]string{readKeyMachine: signInCredentialFleet}
+		// readKeyMachine's fleet, as BROKER_VM_SERVICES lists it: the google provider's listing,
+		// which the enrollment reads through the registry.
+		registry := identities(t, exchange.GoogleEntry{Account: readKeyMachine, Service: signInCredentialFleet})
+		d.Enroll.Subjects, d.Enroll.Policy = registry, registry.Policy()
 	})
 	ctx := context.Background()
 	tokenURL := ts.URL + "/v1/oauth/token"

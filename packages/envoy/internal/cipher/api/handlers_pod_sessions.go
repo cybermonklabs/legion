@@ -12,8 +12,8 @@ import (
 	"slices"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/cipher/enroll"
 	"github.com/sjawhar/envoy/internal/cipher/exchange"
+	"github.com/sjawhar/envoy/internal/cipher/identity"
 	"github.com/sjawhar/envoy/internal/cipher/machine"
 	"github.com/sjawhar/envoy/internal/cipher/oauthstore"
 	"github.com/sjawhar/envoy/internal/oidc"
@@ -228,7 +228,7 @@ func (s *server) registerPodSession(w http.ResponseWriter, r *http.Request, regi
 // so an expired token of either audience answers oidc.ErrExpired, and the daemon retries it; a
 // token of neither audience answers the second verifier's oidc.ErrAudience. registerPodSession is
 // the one caller, so no other route accepts a token of the registration audience.
-func (s *server) podSessionToken(ctx context.Context, raw string) (enroll.AccountClaims, error) {
+func (s *server) podSessionToken(ctx context.Context, raw string) (identity.AccountClaims, error) {
 	claims, err := s.deps.Enroll.Pod.VerifyAccount(ctx, raw)
 	if err == nil || s.deps.PodRegistrationTokens == nil {
 		return claims, err
@@ -238,9 +238,9 @@ func (s *server) podSessionToken(ctx context.Context, raw string) (enroll.Accoun
 	case registrationErr == nil:
 		return registration, nil
 	case errors.Is(err, oidc.ErrAudience):
-		return enroll.AccountClaims{}, registrationErr
+		return identity.AccountClaims{}, registrationErr
 	default:
-		return enroll.AccountClaims{}, err
+		return identity.AccountClaims{}, err
 	}
 }
 

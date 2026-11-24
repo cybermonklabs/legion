@@ -360,7 +360,7 @@ func (s *Store) bindSession(ctx context.Context, session, principal string, fixe
 }
 
 // SetSessionPairs pairs the two principals of each of pairs for session names, each principal
-// spelled as exchange.AccountPrincipal spells an account ("account:" and the ServiceAccount
+// spelled as the kubernetes identity provider spells an account ("account:" and the ServiceAccount
 // subject), and replaces whatever pairs were set before; nil or empty pairs nothing. Either
 // principal of a pair takes a session name the other holds (BindSession), so it writes each pair
 // both ways and the set is symmetric by construction. It is what lets an operator move a

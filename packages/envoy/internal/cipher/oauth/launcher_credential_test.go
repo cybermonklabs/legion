@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/enroll"
+	"github.com/sjawhar/envoy/internal/cipher/identity/google"
 	"github.com/sjawhar/envoy/internal/cipher/oauth"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipher/store"
@@ -190,7 +191,7 @@ func recordSignIn(t *testing.T, f *signInFixture, person, thumbprint, machine st
 	if err := enroll.RecordPersonSignIn(ctx, tx, store.SignInTrade{
 		Person: person, Thumbprint: thumbprint, MachineAccount: machine,
 		Account: store.IssuerSubject{Issuer: f.google.URL(), Subject: "109" + person}, EndUnrecorded: true,
-	}); err != nil {
+	}, google.PersonSubject(person, machine, thumbprint)); err != nil {
 		t.Fatalf("RecordPersonSignIn: %v", err)
 	}
 	var id string

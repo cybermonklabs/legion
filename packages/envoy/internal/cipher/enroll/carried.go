@@ -85,7 +85,7 @@ type CarriedEnrollment struct {
 //   - The carry principal, in the two spellings adopt takes a pod's predecessor under, both read
 //     from the row and the caller and from nothing the caller states. The pair is the row's own
 //     account launched by the caller's account, which is what carryPrincipal writes for a pod
-//     the caller's login enrolled (exchange.PodLaunchPrincipal: 'account:' <pod account>
+//     the caller's login enrolled (exchange.LaunchedBy of the pod provider's principals: 'account:' <pod account>
 //     ' launched-by ' 'account:' <login account>, spelled here in SQL as migration 0037 spells
 //     it, and compared with the spelling Create writes by this package's carried tests, whose
 //     live row is written through exchange). The legacy spelling is the row's account alone,

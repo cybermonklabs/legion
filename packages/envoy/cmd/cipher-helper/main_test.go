@@ -646,7 +646,7 @@ func identityHelperConfig(t *testing.T, home string) config {
 
 // TestAnIdentityHelperKeepsItsKeyAcrossARestart: the broker names a machine's one launcher
 // credential by the thumbprint of the key the trade's proof presented
-// (exchange.MachineSubject), so a helper that made a new key at every start would ask for a new
+// (google.MachineSubject), so a helper that made a new key at every start would ask for a new
 // subject at every restart and leave behind the credential its sessions are enrolled under:
 // those sessions could not revoke their old enrollments under the new credential, and a box
 // enrolled through `enroll-session-key` would be refused ENROLLMENT_NOT_LIVE once the old

@@ -26,6 +26,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/cipher/exchange"
+	"github.com/sjawhar/envoy/internal/cipher/identity"
 	"github.com/sjawhar/envoy/internal/cipher/oauthstore"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
@@ -158,13 +159,13 @@ type Credential struct {
 	Service  *string
 	Host     string
 	// Subject is the identity a token login proved (TokenLogin.Subject): a Kubernetes
-	// ServiceAccount, or a machine as the token exchange names it (exchange.MachineSubject); nil
+	// ServiceAccount, or a machine as the token exchange names it; nil
 	// for every login a person approved.
 	Subject *string
 	// PodUID is the pod whose token a Kubernetes ServiceAccount's login presented
-	// (AccountClaims.PodUID, launcher_credentials.pod_uid): the one pod that credential belongs
-	// to. "" for a token bound to no pod, such as one `kubectl create token` mints, for a VM's
-	// login, and for every login a person approved.
+	// (identity.AccountClaims.PodUID, launcher_credentials.pod_uid): the one pod that credential
+	// belongs to. "" for a token bound to no pod, such as one `kubectl create token` mints, for a
+	// VM's login, and for every login a person approved.
 	PodUID string
 }
 
@@ -180,8 +181,8 @@ type LiveCredential struct {
 	// of a person's pod login. It is nil for a person's own machine.
 	Service *string
 	// Subject is what a token login proved: its ServiceAccount
-	// (system:serviceaccount:<namespace>:<name>), or a machine as the token exchange names it
-	// (exchange.MachineSubject); nil for every login a person approved.
+	// (system:serviceaccount:<namespace>:<name>), or a machine as the token exchange names it;
+	// nil for every login a person approved.
 	Subject *string
 	// Person is the person a person's pod login acts for: the person BROKER_POD_OPERATORS maps
 	// the login's subject to now, which is the person whose list holds it. It is nil for every
@@ -249,26 +250,13 @@ type Enrollment struct {
 	owner *string
 }
 
-type PodClaims struct {
-	Subject string
-	PodUID  string
-}
-
-// PodVerifier verifies the cluster's projected ServiceAccount tokens (K8sPodVerifier): Verify a
-// pod's own token, bound to its pod, for enrollment and renewal; VerifyAccount a service's token,
-// bound to a pod or to none, for its token login (machine.Service.TokenLogin).
-type PodVerifier interface {
-	Verify(ctx context.Context, raw string) (PodClaims, error)
-	VerifyAccount(ctx context.Context, raw string) (AccountClaims, error)
-}
-
 // SessionBinder binds a session name to the principal that holds it and refuses it to every other
 // principal but an account paired with the holder, which takes it (PairedWith):
 // oauthstore.Store, whose BindSession the token exchange binds the name of every token it mints
 // with. BindSession answers the principal it took the name from, "" when it took it from nobody.
-// It is an interface here for the same reason PodVerifier is one — so a test wires a binder of
-// its own — and it joins the transaction the context carries (oauthstore.WithTx), which is how an
-// enrollment's bind and its own rows commit or roll back together.
+// It is an interface here so a test wires a binder of its own, and it joins the transaction the
+// context carries (oauthstore.WithTx), which is how an enrollment's bind and its own rows commit
+// or roll back together.
 type SessionBinder interface {
 	BindSession(ctx context.Context, session, principal string, fixed bool, expires time.Time) (string, error)
 	// PairedWith is every principal paired with principal (oauthstore.Store.SetSessionPairs,
@@ -292,7 +280,7 @@ type Service struct {
 	// Pod verifies the cluster's projected ServiceAccount tokens against BROKER_K8S_OIDC_ISSUER and
 	// BROKER_K8S_OIDC_AUDIENCE; nil on a broker that trusts no Kubernetes token issuer, which enrolls
 	// no pod and serves no Kubernetes token login.
-	Pod PodVerifier
+	Pod identity.PodVerifier
 
 	// Projects asks Dispatch whether a person may see a project and what kind of member they are
 	// (projectaccess.Client, BROKER_PROJECT_ACCESS_URL). Create asks it, before its transaction
@@ -347,11 +335,17 @@ type Service struct {
 	// requests.Machine reads the same setting to decide whether an enrolled pod is that service's.
 	// Unset, a token login enrols its own pod alone.
 	ServicesByAccount map[string]string
-	// VMServicesByAccount is BROKER_VM_SERVICES, keyed by a Google service account's email: the
-	// service the machines of that account are listed as. AuthenticateLauncher reads it for
-	// every credential the token exchange minted for a machine, which keeps that credential
-	// authenticating only while its account is still listed.
-	VMServicesByAccount map[string]string
+	// Subjects reads a launcher credential's subject (a machine's, a sign-in's or any other) and
+	// spells a pod's principal, each as its identity provider writes it: the identity registry.
+	// Every rule that tells a machine's credential, a sign-in's and a person's pod login apart, and
+	// every principal an enrollment's name or grants are held under, reads it.
+	Subjects identity.Subjects
+	// Policy is the listed identities of every identity provider (the registry's Policy): a
+	// machine's or a sign-in's credential authenticates while Policy.Listed of the principal its
+	// subject reads as names the credential's service, the service BROKER_VM_SERVICES lists that
+	// account for (AuthenticateLauncher), so dropping the account ends its credentials at their
+	// next call.
+	Policy *exchange.Set
 
 	// testConflictHook, when set, runs once a 23505 insert conflict is detected in createAttempt,
 	// before the recovery lookup. It exists only so a test can deterministically reproduce the
@@ -434,9 +428,9 @@ func (s *Service) MintLauncherCredentialTx(ctx context.Context, tx pgx.Tx, opera
 }
 
 // TokenLogin is one verified token login, as IssueTokenLogin records it: the identity the token
-// proved (a ServiceAccount subject, a machine as the token exchange names it,
-// exchange.MachineSubject, or a person's sign-in on a machine, exchange.PersonSubject), the
-// service BROKER_SERVICE_LOGINS or BROKER_VM_SERVICES maps it to,
+// proved (a ServiceAccount subject, a machine as the token exchange names it, or a person's
+// sign-in on a machine, each spelled by its identity provider), the service
+// BROKER_SERVICE_LOGINS or BROKER_VM_SERVICES maps it to,
 // the person its enrollments act for (Operator), the host the credential names (a ServiceAccount's
 // <namespace>/<name>, a machine's <project>/<zone>/<instance name>), the pod its token is bound
 // to ("" for none) and when the token expires, the key the request object or the DPoP proof
@@ -505,9 +499,9 @@ func (s *Service) IssueTokenLogin(ctx context.Context, login TokenLogin) (uuid.U
 // Either way the credential is created at its first login and each later login of the same pod,
 // or of the same subject, moves it to that login's key, person and expiry under the same id, so
 // a login proving the key the credential already holds changes only its expiry and every session
-// enrolled under it stays there. A machine's subject names that one machine
-// (exchange.MachineSubject) and a sign-in's names one person on one box
-// (exchange.PersonSubject), so each machine of a fleet, and each person signed in on each of its
+// enrolled under it stays there. A machine's subject names that one machine and a sign-in's names
+// one person on one box (the google provider's MachineSubject and PersonSubject), so each machine
+// of a fleet, and each person signed in on each of its
 // boxes, holds a credential of its own and no login moves another's. Its host and its pod are
 // login's. Each login writes a launcher_credential.token_login audit row naming the subject, the
 // pod the token is bound to, the key, and both expiries. A key another live credential holds is
@@ -675,28 +669,28 @@ func (s *Service) AuthenticateLauncher(ctx context.Context, lid string) (string,
 }
 
 // tokenLoginListed reports whether a token login's subject still logs in as service: a machine
-// and a person's sign-in on one while BROKER_VM_SERVICES still lists that box's Google account
-// for that service, and a Kubernetes ServiceAccount while BROKER_SERVICE_LOGINS names it.
-// Which of the three a subject is, and the account a machine's and a sign-in's carry, are one
-// reading (exchange.ReadSubject).
+// and a person's sign-in on one while an operator's entry still lists that box's account for that
+// service (Policy, BROKER_VM_SERVICES), and a Kubernetes ServiceAccount while
+// BROKER_SERVICE_LOGINS names it. Which of the three a subject is, and the account a machine's
+// and a sign-in's carry, are one reading (Subjects' ReadSubject).
 //
 // A machine's own test is the account alone, because the account is what a listed identity is:
 // where the machine runs, and which of two machines of one account this is, were decided by the
-// entry when the exchange minted the credential (exchange.Set.Google), and the subject keeps
-// only enough to tell the machines apart (exchange.MachineSubject). So dropping an account from
-// BROKER_VM_SERVICES ends every one of its machines' credentials at their next call, and
-// narrowing an entry's pins takes effect at the next exchange, where the pins are read.
+// entry when the exchange minted the credential, and the subject keeps only enough to tell the
+// machines apart. So dropping an account from BROKER_VM_SERVICES ends every one of its machines'
+// credentials at their next call, and narrowing an entry's pins takes effect at the next
+// exchange, where the pins are read.
 //
-// A sign-in's subject carries the same account (exchange.PersonSubject), so the same test holds
-// it to the same listed fleet: a person signs in from a box the deployment lists, and dropping
-// the account ends their sign-in's credential with the box's own. What ends a sign-in the
-// person has revoked is not this but the revoke itself, which ends that credential in the
-// transaction it revokes the sign-in in (RevokePersonSignIn): "listed" is a question about the
-// configuration, and a revoke is a fact about the row.
+// A sign-in's subject carries the same account, so the same test holds it to the same listed
+// fleet: a person signs in from a box the deployment lists, and dropping the account ends their
+// sign-in's credential with the box's own. What ends a sign-in the person has revoked is not this
+// but the revoke itself, which ends that credential in the transaction it revokes the sign-in in
+// (RevokePersonSignIn): "listed" is a question about the configuration, and a revoke is a fact
+// about the row.
 func (s *Service) tokenLoginListed(subject, service string) bool {
-	if read := exchange.ReadSubject(subject); read.Kind != exchange.SubjectOther {
-		listed, isListed := s.VMServicesByAccount[read.Account]
-		return isListed && listed == service
+	if read := s.Subjects.ReadSubject(subject); read.Kind != identity.SubjectOther {
+		listing, listed := s.Policy.Listed(read.Principal)
+		return listed && listing.Service == service
 	}
 	listed, found := s.ServiceLogins[subject]
 	return found && listed == service
@@ -819,7 +813,7 @@ func (s *Service) Create(ctx context.Context, cred Credential, in Enrollment) (E
 		return Enrollment{}, ErrOperatorMismatch
 	}
 	in.Subject = nil
-	if in.Kind == "session" && machineCredential(cred) {
+	if in.Kind == "session" && s.machineCredential(cred) {
 		// A machine's session is its fleet's, and the credential's subject is what says which
 		// fleet: the enrollment records it as a pod's records the account its token proved.
 		in.Subject = cred.Subject
@@ -859,11 +853,11 @@ func (s *Service) Create(ctx context.Context, cred Credential, in Enrollment) (E
 	// written beside the session's name in the insert below (carryPrincipal), the principal the
 	// name itself is held under (namePrincipal), and whose the enrollment's requests are
 	// (ownerKey).
-	in.carry, in.name = carryPrincipal(cred, in), namePrincipal(cred, in)
+	in.carry, in.name = s.carryPrincipal(cred, in), s.namePrincipal(cred, in)
 	if in.Kind == "pod" {
 		in.launcher = cred.Subject
 	}
-	in.owner = ownerKey(cred, in)
+	in.owner = s.ownerKey(cred, in)
 	in.ID = uuid.New()
 	// To the microsecond, as Postgres stores it (pgx truncates a time it encodes), so the lease end
 	// this answers is the row's own and not a moment after it.
@@ -902,7 +896,7 @@ func (s *Service) Create(ctx context.Context, cred Credential, in Enrollment) (E
 // held to checkProjects' list rule alone), and on a broker with no client of Dispatch (Projects
 // nil).
 func (s *Service) checkMember(ctx context.Context, cred Credential, in Enrollment) error {
-	if s.Projects == nil || in.Operator == nil || signInCredential(cred.Subject) {
+	if s.Projects == nil || in.Operator == nil || s.signInCredential(cred.Subject) {
 		return nil
 	}
 	restricted, err := projectaccess.Restricted(ctx, s.Projects, *in.Operator)
@@ -1042,7 +1036,7 @@ func (s *Service) createAttempt(ctx context.Context, cred Credential, in Enrollm
 	if s.Sessions != nil && in.name != nil {
 		paired = s.Sessions.PairedWith(*in.name)
 	}
-	if err := adopt(ctx, tx, in, paired, record.LauncherActor(cred.ID.String())); err != nil {
+	if err := s.adopt(ctx, tx, in, paired, record.LauncherActor(cred.ID.String())); err != nil {
 		return Enrollment{}, false, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -1069,8 +1063,8 @@ func (s *Service) createAttempt(ctx context.Context, cred Credential, in Enrollm
 // It is the same claim the token exchange makes for every token it mints
 // (oauthstore.Store.BindSession) on the same table, which is the point: a Legion role's pod
 // trades a token under its session name before or after it enrolls under that name, and the two
-// claims are the same principal's (exchange.AccountPrincipal of the ServiceAccount subject its
-// projected token proved, which namePrincipal spells the same way), so neither refuses the
+// claims are the same principal's (the pod provider's principal of the ServiceAccount subject its
+// projected token proved, which namePrincipal spells through Subjects), so neither refuses the
 // other. That is why a pod's name is bound under its account and not under the pair its grants
 // follow (carryPrincipal): the exchange knows no launcher, and a name bound to the pair would
 // refuse the pod its own trade. A name an account paired with this principal holds
@@ -1113,12 +1107,12 @@ func (s *Service) bindSessionName(ctx context.Context, tx pgx.Tx, in Enrollment)
 // from reaching another principal's grant (adopt), an account paired with this one under the same
 // login account (SessionBinder.PairedWith, exchange.LaunchedBy) excepted. It is read from what the
 // caller has already proved and never from anything the launcher states, and every spelling is
-// exchange's own, the broker's one definition of each.
+// its identity provider's own (Subjects), the broker's one definition of each.
 //
-//   - A pod's grants follow the service account its own projected token proved
-//     (exchange.AccountPrincipal, the same account requests.Machine.requester reads a pod's
-//     service authority from) paired with the account of the token login that enrolled it
-//     (exchange.PodLaunchPrincipal). The pods of several daemons run as one account — every
+//   - A pod's grants follow the service account its own projected token proved (Subjects'
+//     PodPrincipal, the same account requests.Machine.requester reads a pod's service authority
+//     from) paired with the account of the token login that enrolled it (exchange.LaunchedBy).
+//     The pods of several daemons run as one account — every
 //     public Legion project's pods run as legion-worker — and each daemon logs in as an account
 //     of its own, so a role of one daemon's pod that names a session of another daemon's pod
 //     takes none of its grants (plan E's t-e-54). A pod enrolled under a
@@ -1129,14 +1123,13 @@ func (s *Service) bindSessionName(ctx context.Context, tx pgx.Tx, in Enrollment)
 //   - A session under a credential that carries an operator — a person's own box, and that
 //     person's sign-in on a machine — belongs to that person (exchange.PersonPrincipal), so it
 //     follows them from one box to the next.
-//   - A machine's own session belongs to its fleet's Google account
-//     (exchange.GooglePrincipal), which is what its credential's subject names
-//     (machineCredential, exchange.ReadSubject).
+//   - A machine's own session belongs to its fleet's account, the principal its credential's
+//     subject reads as (machineCredential, Subjects' ReadSubject).
 //
 // Anything else belongs to no principal at all: a null carries nothing, is adopted by nobody and
 // adopts nothing. So does an enrollment that states no session, whatever its credential proved,
 // because a principal with no name beside it is no pair.
-func carryPrincipal(cred Credential, in Enrollment) *string {
+func (s *Service) carryPrincipal(cred Credential, in Enrollment) *string {
 	if in.SessionID == nil || *in.SessionID == "" {
 		return nil
 	}
@@ -1144,9 +1137,9 @@ func carryPrincipal(cred Credential, in Enrollment) *string {
 		if cred.Subject == nil {
 			return nil
 		}
-		return nullable(exchange.PodLaunchPrincipal(*in.Subject, exchange.AccountPrincipal(*cred.Subject)))
+		return nullable(exchange.LaunchedBy(s.Subjects.PodPrincipal(*in.Subject), s.Subjects.PodPrincipal(*cred.Subject)))
 	}
-	return namePrincipal(cred, in)
+	return s.namePrincipal(cred, in)
 }
 
 // namePrincipal is the principal an enrollment's session name is held under (bindSessionName):
@@ -1155,17 +1148,17 @@ func carryPrincipal(cred Credential, in Enrollment) *string {
 // pod's enrollment and its trade under one name never refuse each other. A pod enrolled under a
 // login that proved no account still holds its name under its account, as it did before its
 // grants followed a pair.
-func namePrincipal(cred Credential, in Enrollment) *string {
+func (s *Service) namePrincipal(cred Credential, in Enrollment) *string {
 	if in.SessionID == nil || *in.SessionID == "" {
 		return nil
 	}
 	switch {
 	case in.Kind == "pod" && in.Subject != nil:
-		return nullable(exchange.AccountPrincipal(*in.Subject))
+		return nullable(s.Subjects.PodPrincipal(*in.Subject))
 	case cred.Operator != nil:
 		return nullable(exchange.PersonPrincipal(*cred.Operator))
-	case machineCredential(cred):
-		return nullable(exchange.GooglePrincipal(exchange.ReadSubject(*cred.Subject).Account))
+	case s.machineCredential(cred):
+		return nullable(s.Subjects.ReadSubject(*cred.Subject).Principal)
 	}
 	return nil
 }
@@ -1203,20 +1196,20 @@ const claimOwnerPrefix = "claim:"
 //     proved its subject (ErrInvalidClaim), and a claim holds no slash, so no two pairs of a
 //     login and a claim spell one owner;
 //   - a machine's own session is that machine's, machine:<service>/<subject>, the subject its
-//     credential proved naming one machine and its key (exchange.MachineSubject), so two machines
-//     of one fleet are two owners;
+//     credential proved naming one machine and its key (the google provider's MachineSubject),
+//     so two machines of one fleet are two owners;
 //   - a pod that states no claim is its own pod's, machine:<service>/<pod uid>, and a slot of it
 //     is that slot's, machine:<service>/<pod uid>/<slot>. Every role process of an issue pod
 //     enrols under the pod's one uid in a slot of its own (<role>-g<generation>), so without the
 //     slot one role would read and cancel another's requests, which each slot holds alone. A slot
 //     holds no slash (record.ValidSlot), and a machine's subject holds a '#' before its key's
-//     thumbprint (exchange.MachineSubject), which neither a pod uid nor a slot holds, so no two of
-//     these spell one owner.
+//     thumbprint (the google provider's MachineSubject), which neither a pod uid nor a slot
+//     holds, so no two of these spell one owner.
 //
 // Anything else, and every row from before migration 0035, records none, and a request of an
 // enrollment with no owner is that enrollment's alone. Unlike carryPrincipal, an owner needs no
 // session name: a person's request is the person's whether or not their session named itself.
-func ownerKey(cred Credential, in Enrollment) *string {
+func (s *Service) ownerKey(cred Credential, in Enrollment) *string {
 	switch {
 	case cred.Operator != nil:
 		return nullable(exchange.PersonPrincipal(*cred.Operator))
@@ -1228,7 +1221,7 @@ func ownerKey(cred Credential, in Enrollment) *string {
 		return new("machine:" + *cred.Service + "/" + in.RuntimeID + "/" + in.Slot)
 	case in.Kind == "pod":
 		return new("machine:" + *cred.Service + "/" + in.RuntimeID)
-	case machineCredential(cred):
+	case s.machineCredential(cred):
 		return new("machine:" + *cred.Service + "/" + *cred.Subject)
 	}
 	return nil
@@ -1277,7 +1270,7 @@ const carriesForItsSession = `(e.revoked_at is null or e.dormant_since is not nu
 // A pod's predecessor also includes a row of the same session an older broker wrote, whose carry
 // principal is the pod's account alone, when the token login that enrolled it proved the same
 // account as this enrollment's login: the same daemon's own row, written by a broker replica that
-// had not yet taken the pair (exchange.PodLaunchPrincipal). The broker rolls one replica at a
+// had not yet taken the pair (exchange.LaunchedBy). The broker rolls one replica at a
 // time, so the old one writes such rows after migration 0037 has rewritten the rest, and without
 // this they would be adopted by nothing and their grants swept. Another daemon's legacy row is
 // still no predecessor, so no pod takes another daemon's grants under either spelling.
@@ -1392,7 +1385,7 @@ const carriesForItsSession = `(e.revoked_at is null or e.dormant_since is not nu
 // the session's lock and then its live and dormant enrollments in id order; and this package's
 // enrollment-then-request writers take the enrollment first too (ApplyDecision says so itself) —
 // so none of them can deadlock with this one.
-func adopt(ctx context.Context, tx pgx.Tx, in Enrollment, paired []string, actor string) error {
+func (s *Service) adopt(ctx context.Context, tx pgx.Tx, in Enrollment, paired []string, actor string) error {
 	claim := in.owner
 	if claim != nil && !strings.HasPrefix(*claim, claimOwnerPrefix) {
 		claim = nil
@@ -1419,7 +1412,7 @@ func adopt(ctx context.Context, tx pgx.Tx, in Enrollment, paired []string, actor
 		if in.Kind == "pod" && in.launcher != nil {
 			legacy, launcher = slices.Concat([]string{*in.name}, paired), in.launcher
 			for _, account := range paired {
-				carries = append(carries, exchange.LaunchedBy(account, exchange.AccountPrincipal(*in.launcher)))
+				carries = append(carries, exchange.LaunchedBy(account, s.Subjects.PodPrincipal(*in.launcher)))
 			}
 		}
 	}
@@ -1972,16 +1965,16 @@ type Renewal struct {
 // opens, so the issuer's key-set fetch on an unknown key id never holds a row lock or a pooled
 // connection. A token past its expiry is ErrPodTokenExpired, naming that expiry; every other
 // failure, and a broker with no BROKER_K8S_OIDC_ISSUER, is ErrPodIdentity.
-func (s *Service) verifyPodToken(ctx context.Context, raw string) (PodClaims, error) {
+func (s *Service) verifyPodToken(ctx context.Context, raw string) (identity.PodClaims, error) {
 	if s.Pod == nil {
-		return PodClaims{}, fmt.Errorf("%w: a pod's token needs BROKER_K8S_OIDC_ISSUER", ErrPodIdentity)
+		return identity.PodClaims{}, fmt.Errorf("%w: a pod's token needs BROKER_K8S_OIDC_ISSUER", ErrPodIdentity)
 	}
 	claims, err := s.Pod.Verify(ctx, raw)
 	if errors.Is(err, oidc.ErrExpired) {
-		return PodClaims{}, fmt.Errorf("%w (%v)", ErrPodTokenExpired, err)
+		return identity.PodClaims{}, fmt.Errorf("%w (%v)", ErrPodTokenExpired, err)
 	}
 	if err != nil || claims.PodUID == "" {
-		return PodClaims{}, ErrPodIdentity
+		return identity.PodClaims{}, ErrPodIdentity
 	}
 	return claims, nil
 }
@@ -2043,7 +2036,7 @@ func (s *Service) verifyPodToken(ctx context.Context, raw string) (PodClaims, er
 // podTokenRatcheted and its partial index, which only the ratchet needs.
 func (s *Service) Renew(ctx context.Context, id, podToken string) (Renewal, error) {
 	withToken := podToken != ""
-	var claims PodClaims
+	var claims identity.PodClaims
 	if withToken {
 		var err error
 		if claims, err = s.verifyPodToken(ctx, podToken); err != nil {
@@ -2075,7 +2068,7 @@ func (s *Service) Renew(ctx context.Context, id, podToken string) (Renewal, erro
 	// The row's own half of "live" is credLive, read above; what is left is the configuration's
 	// half, the account still listed for the credential's service, which no column holds. cred
 	// is one machineCredential has answered for, so its subject and its service are both set.
-	if kind == "session" && machineCredential(cred) &&
+	if kind == "session" && s.machineCredential(cred) &&
 		!(credLive && s.tokenLoginListed(*cred.Subject, *cred.Service)) {
 		return Renewal{}, ErrMachineLoginEnded
 	}
@@ -2131,14 +2124,14 @@ func podTokenRatcheted(ctx context.Context, tx pgx.Tx, podUID string) (bool, err
 // pod-bound token of an account that BROKER_POD_OPERATORS maps to a person. The answer reads the
 // credential's row alone, so it holds whatever the setting says now. No other credential is one.
 // A person's machine login has no subject. The subject of a person's sign-in reads
-// exchange.SubjectSignIn. A machine's own credential has no operator.
+// identity.SubjectSignIn. A machine's own credential has no operator.
 //
 // Each rule of this package that sets a person's pod login apart keys on this test. So no rule
 // reads a stale one as a person's machine login. A stale one is a person's pod login whose entry
 // the setting dropped, or moved to another person. Only livePersonPodLogin admits a person's pod
 // login to anything.
-func PersonPodLogin(cred Credential) bool {
-	return cred.Operator != nil && cred.Subject != nil && exchange.ReadSubject(*cred.Subject).Kind == exchange.SubjectOther
+func (s *Service) PersonPodLogin(cred Credential) bool {
+	return cred.Operator != nil && cred.Subject != nil && s.Subjects.ReadSubject(*cred.Subject).Kind == identity.SubjectOther
 }
 
 // livePersonPodLogin reports whether cred is a person's pod login (PersonPodLogin) that the
@@ -2146,7 +2139,7 @@ func PersonPodLogin(cred Credential) bool {
 // now. After the setting drops the entry or moves it to another person, the row keeps the first
 // person until the pod logs in again. Until then, this answers false.
 func (s *Service) livePersonPodLogin(cred Credential) bool {
-	if !PersonPodLogin(cred) || cred.PodUID == "" {
+	if !s.PersonPodLogin(cred) || cred.PodUID == "" {
 		return false
 	}
 	owner := s.PodOperator(cred.Subject)
@@ -2186,10 +2179,10 @@ func (s *Service) PodOperator(subject *string) string {
 // may enrol beside a pod, and only a machine's credential may: a Kubernetes service's login
 // enrols the pods its tokens prove and nothing else.
 func (s *Service) authorized(cred Credential, kind string, operator *string) bool {
-	if PersonPodLogin(cred) {
+	if s.PersonPodLogin(cred) {
 		return kind == "pod" && operator != nil && *operator == *cred.Operator && s.livePersonPodLogin(cred)
 	}
-	serviceKind := kind == "pod" || (kind == "session" && machineCredential(cred))
+	serviceKind := kind == "pod" || (kind == "session" && s.machineCredential(cred))
 	switch {
 	case cred.Operator != nil && (operator == nil || *operator != *cred.Operator):
 		return false
@@ -2238,16 +2231,16 @@ func (s *Service) authorized(cred Credential, kind string, operator *string) boo
 // claim of its service, and the next pod of that claim would take what a dormant pod of it left
 // (adopt). The Legion daemon logs in with its own token, so its login carries a subject. A
 // person's sign-in on a machine carries an operator and a subject of its own kind
-// (exchange.SubjectSignIn). Neither rule holds it, and authorized has already refused it a pod.
+// (identity.SubjectSignIn). Neither rule holds it, and authorized has already refused it a pod.
 //
 // It reads three fields of the enrollment, its runtime id, its session name and its claim, and
 // takes the enrollment itself rather than the values, so no caller can pair one request's pod UID
 // with another's session name.
-func (s *Service) podUnderTokenLogin(cred Credential, claims PodClaims, in Enrollment) error {
+func (s *Service) podUnderTokenLogin(cred Credential, claims identity.PodClaims, in Enrollment) error {
 	if in.Claim != "" && cred.Subject == nil {
 		return fmt.Errorf("%w: only a launcher whose own token proved its login states a claim", ErrInvalidClaim)
 	}
-	person := PersonPodLogin(cred)
+	person := s.PersonPodLogin(cred)
 	if cred.Subject == nil || (cred.Operator != nil && !person) {
 		return nil
 	}
@@ -2329,14 +2322,14 @@ func (s *Service) sameLauncher(cred Credential, enrolledLoginSubject, enrolledLo
 
 // machineCredential reports whether cred is one the token exchange minted for a machine: a
 // credential with a service, no person and a subject that reads as a machine's
-// (exchange.SubjectMachine). A Kubernetes token login holds a subject of its own shape, and a
+// (identity.SubjectMachine). A Kubernetes token login holds a subject of its own shape, and a
 // person's pod login (PersonPodLogin) holds an operator as well. A person's sign-in on a machine
 // holds a subject of its own kind, and a person's machine login holds an operator.
-func machineCredential(cred Credential) bool {
+func (s *Service) machineCredential(cred Credential) bool {
 	if cred.Operator != nil || cred.Service == nil || cred.Subject == nil {
 		return false
 	}
-	return exchange.ReadSubject(*cred.Subject).Kind == exchange.SubjectMachine
+	return s.Subjects.ReadSubject(*cred.Subject).Kind == identity.SubjectMachine
 }
 
 // Revoke ends the enrollment — revoking every live grant and cancelling every pending request
@@ -2430,7 +2423,7 @@ func (s *Service) Revoke(ctx context.Context, cred Credential, id, by string) er
 	// The two branches the doc above describes. They hold a credential with no operator and a
 	// person's pod login. Any other credential with an operator, a person's own machine login or
 	// sign-in, is held to neither: the operator test above is its whole ownership rule.
-	if cred.Operator == nil || PersonPodLogin(cred) {
+	if cred.Operator == nil || s.PersonPodLogin(cred) {
 		if kind == "pod" && enrolledSubject != nil && ownPod(cred, *enrolledSubject) {
 			if cred.PodUID != enrolledRuntimeID || enrolledBy != cred.ID {
 				return ErrNotEnrollingCredential
@@ -2480,7 +2473,7 @@ func (s *Service) Revoke(ctx context.Context, cred Credential, id, by string) er
 // here: it is one person's, it is already listed as that person's sign-in
 // (store.Store.PersonSignIns), and ending it alone would end nothing, since the sign-in row
 // behind it mints it again at the box's next trade. Its subject says so
-// (exchange.PersonSubject), which is what signInCredential reads.
+// (the google identity provider's PersonSubject), which is what signInCredential reads.
 func (s *Service) LiveCredentials(ctx context.Context, person string) ([]LiveCredential, error) {
 	return s.liveCredentials(ctx, person, true)
 }
@@ -2495,14 +2488,14 @@ func (s *Service) OwnLiveCredentials(ctx context.Context, person string) ([]Live
 
 // signInCredential reports whether a launcher credential's subject is a person's sign-in on a
 // machine rather than a machine's own identity or a Kubernetes account: the one fact that tells
-// the sign-ins list's credentials from the machine-logins list's, written by
-// exchange.PersonSubject and read back by exchange.ReadSubject. nil is a credential a person
-// approved, which has no subject at all.
-func signInCredential(subject *string) bool {
+// the sign-ins list's credentials from the machine-logins list's, written by the identity provider
+// that mints sign-ins and read back through Subjects. nil is a credential a person approved, which
+// has no subject at all.
+func (s *Service) signInCredential(subject *string) bool {
 	if subject == nil {
 		return false
 	}
-	return exchange.ReadSubject(*subject).Kind == exchange.SubjectSignIn
+	return s.Subjects.ReadSubject(*subject).Kind == identity.SubjectSignIn
 }
 
 // podAccounts answers the subjects BROKER_POD_OPERATORS maps to person, a login as
@@ -2551,9 +2544,9 @@ func (s *Service) liveCredentials(ctx context.Context, person string, services b
 	}
 	// A sign-in's credential names its fleet's service, so the query above would take it for a
 	// service's login. Which list a credential belongs on is its subject's to say, and the
-	// subject is read here rather than matched in SQL so that exchange.PersonSubject's shape is
-	// written down once.
-	live = slices.DeleteFunc(live, func(c LiveCredential) bool { return signInCredential(c.Subject) })
+	// subject is read here rather than matched in SQL so that the sign-in subject's shape is
+	// written down once, by the identity provider that mints it.
+	live = slices.DeleteFunc(live, func(c LiveCredential) bool { return s.signInCredential(c.Subject) })
 	// A login whose subject the setting maps is in this list only as person's own ($3), so its
 	// Person is person. It is read from the setting, as the statement's arrays are, and not from
 	// the row's operator, which can name no one or a person the setting no longer names.
@@ -2638,7 +2631,7 @@ func (s *Service) revokeCredential(ctx context.Context, id, person, actor string
 	// listed as that person's sign-in and not here (liveCredentials), and the revoke that means
 	// anything is RevokePersonSignIn's, which ends the sign-in row with it; so this route does
 	// not find it, exactly as it does not find a login of another kind than it lists.
-	if signInCredential(subject) {
+	if s.signInCredential(subject) {
 		return ErrNoCredential
 	}
 	var svc string
@@ -2800,16 +2793,16 @@ const NoAccountSignInActor = "broker:sign-in-recording-no-account"
 // revoke of that account, which ends the sign-ins recording it or none and so no longer finds a
 // row recording this trade's. The trade then mints the sign-in's credential afresh
 // (oauth.Provider.personCredential), so the box enrols its sessions again once. The credential is
-// found by the box key's thumbprint and by the subject that names this person's sign-in on this
-// machine with this key (exchange.PersonSubject), which is the credential the sign-in's own trades
-// minted and no other credential that came to hold the key. Every refusal is store's, unchanged.
-func RecordPersonSignIn(ctx context.Context, tx pgx.Tx, in store.SignInTrade) error {
+// found by the box key's thumbprint and by credentialSubject, the subject that names this person's
+// sign-in on this machine with this key, which the identity provider of the trade's subject token
+// spells (oauth.PersonSignIn.CredentialSubject): the credential the sign-in's own trades minted
+// and no other credential that came to hold the key. Every refusal is store's, unchanged.
+func RecordPersonSignIn(ctx context.Context, tx pgx.Tx, in store.SignInTrade, credentialSubject string) error {
 	ended, err := store.RecordPersonSignIn(ctx, tx, in)
 	if err != nil || !ended {
 		return err
 	}
-	subject := exchange.PersonSubject(in.Person, in.MachineAccount, in.Thumbprint)
-	_, err = endKeyCredential(ctx, tx, in.Thumbprint, &subject, NoAccountSignInActor,
+	_, err = endKeyCredential(ctx, tx, in.Thumbprint, &credentialSubject, NoAccountSignInActor,
 		"a trade ended the sign-in that held it, which recorded no account")
 	return err
 }

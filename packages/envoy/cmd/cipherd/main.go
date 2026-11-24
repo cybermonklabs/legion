@@ -45,7 +45,6 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/awssdk"
 	"github.com/sjawhar/envoy/internal/cipher/config"
 	"github.com/sjawhar/envoy/internal/cipher/enroll"
-	"github.com/sjawhar/envoy/internal/cipher/exchange"
 	"github.com/sjawhar/envoy/internal/cipher/groups"
 	"github.com/sjawhar/envoy/internal/cipher/hold"
 	"github.com/sjawhar/envoy/internal/cipher/identity"
@@ -516,30 +515,31 @@ func main() {
 	slog.Info("broker metrics listening", "addr", started.MetricsListener.Addr().String())
 
 	lease, sweep := time.Duration(cfg.LeaseSeconds)*time.Second, time.Duration(cfg.SweepSeconds)*time.Second
-	enr := &enroll.Service{
-		Store: st, Lease: lease, Carry: time.Duration(cfg.SessionCarrySeconds) * time.Second, Pod: pod,
-		ServiceLogins: cfg.ServiceLogins, ServicesByAccount: cfg.ServicesByAccount,
-		VMServicesByAccount: cfg.VMServicesByAccount, PodOperators: cfg.PodOperators, Projects: projectAccess,
-	}
-	enr.Chain = enroll.NewChainVerifier(st, cfg.PublicURL, time.Duration(cfg.ProofSkewSeconds)*time.Second)
-	// A machine login the edge opened is signed for BROKER_EDGE_URL, and the launcher credential
-	// its approval mints authenticates through this chain as any other does.
-	enr.Chain.EdgeAudience = cfg.EdgeURL
 	// The broker's identity providers, built from the same key sources discoverVerifiers read: the
-	// RFC 8693 exchange's token types and decisions, and the listed identities the request machine
-	// reads the project an operator's entry maps a pod's or a machine's account to from, the same
-	// entries the exchange mints from (exchange.Set.MappedProjects), so a token and a release
-	// cannot disagree on a credential's project. It is opened after the bind, as the exchange's own
+	// RFC 8693 exchange's token types and decisions, the readers of the subjects and principals
+	// enrollment and requests act on, and the listed identities the request machine reads the
+	// project an operator's entry maps a pod's or a machine's account to from, the same entries
+	// the exchange mints from (exchange.Set.MappedProjects), so a token and a release cannot
+	// disagree on a credential's project. It is opened after the bind, as the exchange's own
 	// issuers were read before: an exchange issuer that fails its discovery exits a broker that
 	// was listening and never served.
 	identities, err := identityboot.Open(ctx, cfg, identityboot.KeysFunc(keys))
 	fatal(err)
 	exchangePolicy := identities.Registry.Policy()
+	enr := &enroll.Service{
+		Store: st, Lease: lease, Carry: time.Duration(cfg.SessionCarrySeconds) * time.Second, Pod: pod,
+		ServiceLogins: cfg.ServiceLogins, ServicesByAccount: cfg.ServicesByAccount,
+		Subjects: identities.Registry, Policy: exchangePolicy, PodOperators: cfg.PodOperators, Projects: projectAccess,
+	}
+	enr.Chain = enroll.NewChainVerifier(st, cfg.PublicURL, time.Duration(cfg.ProofSkewSeconds)*time.Second)
+	// A machine login the edge opened is signed for BROKER_EDGE_URL, and the launcher credential
+	// its approval mints authenticates through this chain as any other does.
+	enr.Chain.EdgeAudience = cfg.EdgeURL
 	// The broker's one read of Dispatch, where BROKER_JUDGE_DISPATCH_URL names one: the request
 	// machine and the model judge share it, its token cache and its client.
 	dispatch := judgeDispatch(cfg)
 	reqMachine := newRequestMachine(cfg, st, current, secretStore, enr.Replay, airlockCA, secrets.NewRetry(registry), dispatch, groupReader)
-	reqMachine.Projects, reqMachine.Exchange = projectAccess, exchangePolicy
+	reqMachine.Projects, reqMachine.Exchange, reqMachine.Subjects = projectAccess, exchangePolicy, identities.Registry
 	// The model judge, on ctx rather than on serving: a run writes a grant, so an in-flight one
 	// has to end at the first SIGTERM, before the drain, leaving its request pending for the
 	// person who decides it today rather than approving it while the pod is going away.
@@ -1447,10 +1447,8 @@ func newRequestMachine(cfg config.Config, st *store.Store, current *policy.Curre
 	m := &requests.Machine{
 		Store: st, Policy: current, Secrets: secretStore, PendingTTL: agentSecretPendingTTL,
 		Audience: cfg.PublicURL, EdgeAudience: cfg.EdgeURL, Skew: time.Duration(cfg.ProofSkewSeconds) * time.Second, Replay: replay,
-		ServicesByAccount:   cfg.ServicesByAccount,
-		VMServicesByAccount: cfg.VMServicesByAccount,
-		PodOperators:        cfg.PodOperators,
-		VMPersonsByAccount:  vmPersonsByAccount(cfg.ExchangeGoogleAccounts),
+		ServicesByAccount: cfg.ServicesByAccount,
+		PodOperators:      cfg.PodOperators,
 		// The three types whose minter calls an endpoint of its own carry the local stack's
 		// stand-in endpoints when it named them, and the real ones otherwise: a minter left
 		// zero mints against GitHub, Google and Anthropic themselves.
@@ -1601,31 +1599,6 @@ func loadFirstPolicy(serving context.Context, loader policy.Loader, groupReader 
 	return current, nil
 }
 
-// vmPersonsByAccount is the person each BROKER_VM_EXCHANGE_ACCOUNTS entry names, keyed by its
-// account, an entry that names none left out: whose Inbox lists a request one of that fleet's
-// machines makes for a shared human-tier secret. The entry's person reaches no secret.
-func vmPersonsByAccount(entries []exchange.GoogleEntry) map[string]string {
-	persons := make(map[string]string, len(entries))
-	for _, e := range entries {
-		if e.Person != "" {
-			persons[e.Account] = e.Person
-		}
-	}
-	return persons
-}
-
-// jobMachines counts the BROKER_VM_EXCHANGE_JOB_ACCOUNTS entries among a set's machine entries:
-// the fleets whose machines write as a job, naming no person.
-func jobMachines(entries []exchange.GoogleEntry) int {
-	n := 0
-	for _, e := range entries {
-		if e.Job.Listed() {
-			n++
-		}
-	}
-	return n
-}
-
 // judgeDispatch is the broker's one read of Dispatch, at BROKER_JUDGE_DISPATCH_URL under the token
 // BROKER_JUDGE_DISPATCH_TOKEN_FILE holds, and nil where that URL is unset: the model judge reads a
 // request's issue with it, and the request machine a Legion pod's issue's assignee. main builds it
@@ -1770,13 +1743,13 @@ func memoizedKeys(keysFor keysFunc) keysFunc {
 type verifiers struct {
 	// Pod verifies a pod's enrollment token and a service's login token, nil on a broker told
 	// about no cluster.
-	Pod enroll.PodVerifier
+	Pod identity.PodVerifier
 	// K8sKeys is the cluster issuer's published keys, nil where Pod is.
 	K8sKeys *oidc.Keys
 	// PodRegistration verifies a registration's pod token at BROKER_POD_REGISTRATION_AUDIENCE, on
 	// the cluster's key set Pod verifies with, nil on a broker with no such audience. Only the
 	// registration route reads it (api.Deps.PodRegistrationTokens).
-	PodRegistration enroll.PodVerifier
+	PodRegistration identity.PodVerifier
 	// GoogleKeys is the Google issuer's published keys, nil on a broker with no Google audience,
 	// which registers no Google subject token type.
 	GoogleKeys *oidc.Keys

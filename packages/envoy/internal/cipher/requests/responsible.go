@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/cipher/exchange"
+	"github.com/sjawhar/envoy/internal/cipher/identity"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 )
@@ -59,8 +59,9 @@ func issueKeyOfClaim(claim string) string {
 // req.Operator (a person's sign-in, the person who approved its machine login, or, for a person's
 // pod, the person its login carried while BROKER_POD_OPERATORS still maps the pod's account to
 // that person, which requester reads at each request); for a fleet machine's own session, the
-// person its account's BROKER_VM_EXCHANGE_ACCOUNTS entry names; for a pod, assignee, the person
-// its claim's issue is assigned to. "" when none names a person, and then the request is listed
+// person its account's entry names (BROKER_VM_EXCHANGE_ACCOUNTS, Exchange.MappedProjects); for a
+// pod, assignee, the person its claim's issue is assigned to. "" when none names a person, and
+// then the request is listed
 // for everyone signed in, as it was before, so no request waits where nobody sees it. A person's
 // pod has no claim. So after the setting drops its account, or maps it to another person, a
 // request it makes is everyone's. Create calls this once, as it makes the request, and stores the
@@ -72,8 +73,8 @@ func (m *Machine) responsiblePerson(e enrollmentRow, req policy.Requester, assig
 		switch e.Kind {
 		case "session":
 			if e.Subject != nil {
-				if read := exchange.ReadSubject(*e.Subject); read.Kind == exchange.SubjectMachine {
-					person = m.VMPersonsByAccount[read.Account]
+				if read := m.Subjects.ReadSubject(*e.Subject); read.Kind == identity.SubjectMachine {
+					person, _, _ = m.Exchange.MappedProjects(read.Principal)
 				}
 			}
 		case "pod":

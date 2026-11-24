@@ -14,7 +14,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sjawhar/envoy/internal/cipher/exchange"
+	"github.com/sjawhar/envoy/internal/cipher/identity/kubernetes"
 	"github.com/sjawhar/envoy/internal/cipher/oauth"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 )
@@ -96,7 +96,7 @@ func TestASiblingRolesRefusedTradeLogsALineOfItsOwn(t *testing.T) {
 	}
 	delete(got, "time")
 	want := map[string]any{
-		"level": "WARN", "msg": message, "principal": exchange.AccountPrincipal(account), "pod": issuePod, "session": roleB,
+		"level": "WARN", "msg": message, "principal": kubernetes.Principal(account), "pod": issuePod, "session": roleB,
 		"bound_thumbprint": thumbprint(t, kB), "presented_thumbprint": thumbprint(t, kA),
 	}
 	if !reflect.DeepEqual(got, want) {

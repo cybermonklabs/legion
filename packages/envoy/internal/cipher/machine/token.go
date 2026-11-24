@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/enroll"
+	"github.com/sjawhar/envoy/internal/cipher/identity"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/oidc"
 )
@@ -45,7 +46,7 @@ var (
 // token's claims, the service it logs in as, the host its credential names, and the person it
 // acts for.
 type ServiceAccount struct {
-	enroll.AccountClaims
+	identity.AccountClaims
 	Service string
 	// Host is the account's <namespace>/<name>.
 	Host string
@@ -106,7 +107,7 @@ func tokenRefusal(err error) error {
 
 // lifetimeProblem says why a verified token is ErrTokenTooLongLived: it names no issue time, or
 // lives longer than MaxTokenLoginLifetime from it. "" is a token that is not.
-func (s *Service) lifetimeProblem(claims enroll.AccountClaims) string {
+func (s *Service) lifetimeProblem(claims identity.AccountClaims) string {
 	if claims.IssuedAt.IsZero() {
 		return "names no issue time (iat)"
 	}
@@ -120,7 +121,7 @@ func (s *Service) lifetimeProblem(claims enroll.AccountClaims) string {
 // service it logs in as, and through BROKER_POD_OPERATORS to the person it acts for
 // (ServiceAccount.Person, "" for an account that the setting does not map). It reads both settings
 // at each login, so a removed or moved entry takes effect at the pod's next login.
-func (s *Service) verifyKubernetes(claims enroll.AccountClaims) (ServiceAccount, error) {
+func (s *Service) verifyKubernetes(claims identity.AccountClaims) (ServiceAccount, error) {
 	if problem := s.lifetimeProblem(claims); problem != "" {
 		return ServiceAccount{}, fmt.Errorf("%w: it %s", ErrTokenTooLongLived, problem)
 	}

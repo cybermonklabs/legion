@@ -11,8 +11,7 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
-
-	"github.com/sjawhar/envoy/internal/cipher/exchange"
+	"github.com/sjawhar/envoy/internal/cipher/identity/google"
 )
 
 // signInCredentialFleet is the fleet the box of these rows belongs to, and signInCredentialHost
@@ -23,7 +22,7 @@ const (
 )
 
 // signInCredential writes the launcher credential a person's sign-in holds, exactly as the token
-// exchange mints one: keyed by exchange.PersonSubject (the person, the machine's Google account
+// exchange mints one: keyed by google.PersonSubject (the person, the machine's Google account
 // and the box key), naming the fleet's service, bound to the box key and operated by the person.
 // It answers the credential's id.
 func (ts *testServer) signInCredential(t *testing.T, person, thumbprint, machine string) string {
@@ -32,7 +31,7 @@ func (ts *testServer) signInCredential(t *testing.T, person, thumbprint, machine
 	if _, err := ts.Store.Pool.Exec(context.Background(), `insert into launcher_credentials
 		(id, operator, service, subject, host, key_thumbprint, public_jwk, expires_at)
 		values ($1,$2,$3,$4,$5,$6,'{}'::jsonb, now() + interval '1 hour')`,
-		id, person, signInCredentialFleet, exchange.PersonSubject(person, machine, thumbprint),
+		id, person, signInCredentialFleet, google.PersonSubject(person, machine, thumbprint),
 		signInCredentialHost, thumbprint); err != nil {
 		t.Fatalf("insert the sign-in's launcher credential: %v", err)
 	}

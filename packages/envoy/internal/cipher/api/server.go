@@ -74,7 +74,7 @@ type Deps struct {
 	// /v1/oauth/exchange/pod-sessions reads it, beside Enroll.Pod, so no other route accepts a
 	// token of that audience. Nil is a broker with no such audience, whose registration route
 	// accepts the broker's own audience alone.
-	PodRegistrationTokens enroll.PodVerifier
+	PodRegistrationTokens identity.PodVerifier
 	// Policy is the live agent-secret policy, which POST /v1/secrets/{name}/reread rereads one
 	// name of (policy.Current.RefreshOne).
 	Policy *policy.Current

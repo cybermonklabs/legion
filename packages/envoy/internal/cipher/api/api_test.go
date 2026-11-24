@@ -170,7 +170,9 @@ func newProfiledTestServer(t *testing.T, file string, adjust func(*api.Deps)) *t
 	// daemon accounts log in as, which is what lets their logins enrol those pods. An account
 	// outside it is a pod no login here launches (POD_NOT_LAUNCHED).
 	servicesByAccount := map[string]string{workerAccount: "legion-daemon", otherAccount: "legion-daemon"}
-	enr := &enroll.Service{Store: st, Lease: time.Hour, Pod: enroll.K8sPodVerifier{Verifier: podVerifier}, ServiceLogins: serviceLogins, ServicesByAccount: servicesByAccount}
+	subjects := identities(t)
+	enr := &enroll.Service{Store: st, Lease: time.Hour, Pod: enroll.K8sPodVerifier{Verifier: podVerifier}, ServiceLogins: serviceLogins, ServicesByAccount: servicesByAccount,
+		Subjects: subjects, Policy: subjects.Policy()}
 	enr.Chain = enroll.NewChainVerifier(st, srv.URL, time.Minute)
 	// Wired as cmd/cipherd/main.go wires the enrollment route, so the route refuses a name another
 	// principal holds, unless a test pairs that principal's account with the enrolling pod's
@@ -197,7 +199,7 @@ func newProfiledTestServer(t *testing.T, file string, adjust func(*api.Deps)) *t
 	reqMachine := &requests.Machine{
 		Store: st, Policy: cur, Secrets: local,
 		PendingTTL: 12 * time.Hour,
-		Audience:   srv.URL, Skew: time.Minute, Replay: enr.Replay,
+		Audience:   srv.URL, Skew: time.Minute, Replay: enr.Replay, Subjects: enr.Subjects,
 	}
 	reqMachine.Chain = requests.NewChainVerifier(st, srv.URL, time.Minute, reqMachine.Policy)
 	provider := ciphertest.NewOAuthProvider(t, st, issuer)

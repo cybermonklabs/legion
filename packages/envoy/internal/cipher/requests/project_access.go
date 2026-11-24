@@ -19,7 +19,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/internal/cipher/exchange"
+	"github.com/sjawhar/envoy/internal/cipher/identity"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/internal/cipher/record"
@@ -151,11 +151,11 @@ func (m *Machine) credentialProjects(e enrollmentRow) (person string, projects [
 	case m.Exchange == nil || e.Subject == nil:
 		return "", nil
 	case e.Kind == "pod":
-		person, projects, _ := m.Exchange.MappedProjects(exchange.AccountPrincipal(*e.Subject))
+		person, projects, _ := m.Exchange.MappedProjects(m.Subjects.PodPrincipal(*e.Subject))
 		return person, projects
 	case e.Kind == "session":
-		if read := exchange.ReadSubject(*e.Subject); read.Kind == exchange.SubjectMachine {
-			person, projects, _ := m.Exchange.MappedProjects(exchange.GooglePrincipal(read.Account))
+		if read := m.Subjects.ReadSubject(*e.Subject); read.Kind == identity.SubjectMachine {
+			person, projects, _ := m.Exchange.MappedProjects(read.Principal)
 			return person, projects
 		}
 	}

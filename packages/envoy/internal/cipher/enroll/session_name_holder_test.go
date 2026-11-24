@@ -19,6 +19,8 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/cipher/exchange"
+	"github.com/sjawhar/envoy/internal/cipher/identity/google"
+	"github.com/sjawhar/envoy/internal/cipher/identity/kubernetes"
 	"github.com/sjawhar/envoy/internal/cipher/oauthstore"
 	"github.com/sjawhar/envoy/internal/cipher/store"
 	"github.com/sjawhar/envoy/internal/logtest"
@@ -60,7 +62,7 @@ func pairAccounts(t *testing.T, svc *Service, a, b string) {
 	if !ok {
 		t.Fatalf("the service binds session names through %T, want the *oauthstore.Store cmd/cipherd wires", svc.Sessions)
 	}
-	binder.SetSessionPairs([][2]string{{exchange.AccountPrincipal(a), exchange.AccountPrincipal(b)}})
+	binder.SetSessionPairs([][2]string{{kubernetes.Principal(a), kubernetes.Principal(b)}})
 }
 
 // enrollmentTookName is the line Create logs once an enrollment that took its session name from
@@ -135,7 +137,7 @@ const replacedSession = "implementer-g1"
 // verifier, whose log capture holds; the launcher credential cluster, which enrolled the replaced
 // pod and enrols the role's next one; the replaced pod's enrollment old, its grant and its pending
 // request; and the principals of the account the replaced pod ran as and of the one the next pod
-// runs as (exchange.AccountPrincipal).
+// runs as (kubernetes.Principal).
 type pairedMove struct {
 	svc                          *Service
 	issuer                       *oidctest.Issuer
@@ -169,7 +171,7 @@ func replacedPod(t *testing.T) pairedMove {
 	svc.ServicesByAccount[workerPodAccount] = "legion-daemon"
 	svc.ServicesByAccount[pairedWorkerPodAccount] = "legion-daemon"
 	m := pairedMove{svc: svc, issuer: issuer, key: key, capture: capture, cluster: cluster,
-		oldPrincipal: exchange.AccountPrincipal(workerPodAccount), movedPrincipal: exchange.AccountPrincipal(pairedWorkerPodAccount)}
+		oldPrincipal: kubernetes.Principal(workerPodAccount), movedPrincipal: kubernetes.Principal(pairedWorkerPodAccount)}
 	old, err := svc.Create(ctx, m.cluster, m.pod(t, workerPodAccount, "pod-uid-old"))
 	if err != nil {
 		t.Fatalf("the old account's pod enrolment: %v", err)
@@ -302,9 +304,9 @@ func TestASessionNameAnotherPrincipalHoldsIsRefusedAndTakesNothing(t *testing.T)
 				t.Helper()
 				other := "other-fleet@example-project.iam.gserviceaccount.com"
 				first := machineCredentialFor(t, svc,
-					exchange.MachineSubject(exchange.GoogleIdentity{Account: machineAccountEmail}, "tp-first"), "tp-first")
+					google.MachineSubject(google.Identity{Account: machineAccountEmail}, "tp-first"), "tp-first")
 				second := machineCredentialFor(t, svc,
-					exchange.MachineSubject(exchange.GoogleIdentity{Account: other}, "tp-second"), "tp-second")
+					google.MachineSubject(google.Identity{Account: other}, "tp-second"), "tp-second")
 				return first, second
 			},
 		},
@@ -422,10 +424,10 @@ func TestAnEnrollmentNamingNoSessionBindsNothing(t *testing.T) {
 
 // TestAPodsEnrollmentAndTheExchangeHoldItsNameUnderTheSameAccount is the one thing this refusal
 // may not break. A Legion role's pod trades a token under its session name before or after it
-// enrols under that same name: the exchange binds the name to exchange.AccountPrincipal of the
+// enrols under that same name: the exchange binds the name to kubernetes.Principal of the
 // ServiceAccount subject the pod's projected token proved (the kubernetes provider's decision),
-// and the enrolment binds it to exchange.AccountPrincipal of the subject the same kind of token proved
-// (namePrincipal), even though the enrolment's grants follow the pair of that account and the
+// and the enrolment binds it to kubernetes.Principal of the subject the same kind of token
+// proved (namePrincipal), even though the enrolment's grants follow the pair of that account and the
 // daemon's login (carryPrincipal). Those are one string, and this measures it both ways — by
 // comparing the principal the exchange decides with the one the enrolment bound the name to, and
 // by letting each of the two claim a name the other has already claimed, which the table itself
@@ -459,7 +461,7 @@ func TestAPodsEnrollmentAndTheExchangeHoldItsNameUnderTheSameAccount(t *testing.
 		if err != nil {
 			t.Fatalf("the exchange's reading of the same pod's token: %v", err)
 		}
-		if recorded, want := carryPrincipalOf(t, svc, enr.ID), exchange.PodLaunchPrincipal(subject, exchange.AccountPrincipal(carryDaemonAccount)); recorded != want {
+		if recorded, want := carryPrincipalOf(t, svc, enr.ID), exchange.LaunchedBy(kubernetes.Principal(subject), kubernetes.Principal(carryDaemonAccount)); recorded != want {
 			t.Fatalf("the enrolment's grants follow %q, want the pair of the pod's account and its daemon's login, %q", recorded, want)
 		}
 		if got := sessionNameHolder(t, svc, session); got != claims.Principal {
@@ -518,7 +520,7 @@ func TestARevokedSignInTradesNothingSoItsBoxReachesNoEnrollment(t *testing.T) {
 	if err := RecordPersonSignIn(ctx, tx, store.SignInTrade{
 		Person: "ada@example.com", Thumbprint: thumbprint, MachineAccount: "fleet@example.iam.gserviceaccount.com",
 		Account: store.IssuerSubject{Issuer: "https://accounts.google.com", Subject: "109ada@example.com"}, EndUnrecorded: true,
-	}); !errors.Is(err, store.ErrSignInRevoked) {
+	}, google.PersonSubject("ada@example.com", "fleet@example.iam.gserviceaccount.com", thumbprint)); !errors.Is(err, store.ErrSignInRevoked) {
 		t.Fatalf("the revoked box key's next trade = %v, want %v: the box trades nothing, so it is minted no credential to enrol with", err, store.ErrSignInRevoked)
 	}
 	if _, err := svc.Create(ctx, cred, Enrollment{Kind: "session", RuntimeID: "revoked-box", Thumbprint: "tp-revoked-box", SessionID: str("revoked-box-session")}); !errors.Is(err, ErrUnauthenticated) {

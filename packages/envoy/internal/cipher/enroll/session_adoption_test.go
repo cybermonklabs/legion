@@ -10,7 +10,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/sjawhar/envoy/internal/cipher/exchange"
+	"github.com/sjawhar/envoy/internal/cipher/identity/google"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 )
 
@@ -142,7 +142,7 @@ func TestAnEnrollmentRecordsThePrincipalItsCallerProved(t *testing.T) {
 	ctx := context.Background()
 	svc := newService(t)
 	issuer, key := withPodVerifier(t, svc)
-	machineSubject := exchange.MachineSubject(exchange.GoogleIdentity{Account: machineAccountEmail}, "tp-machine")
+	machineSubject := google.MachineSubject(google.Identity{Account: machineAccountEmail}, "tp-machine")
 	machine := machineCredentialFor(t, svc, machineSubject, "tp-machine")
 
 	for _, c := range []struct {
