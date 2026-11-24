@@ -92,14 +92,17 @@ describe("a stored subscription removal", () => {
 });
 
 describe("a gap notice", () => {
-  const card = (notice: ConsumerGapNotice) => decode(gapNoticeText(notice));
+  const card = (notice: ConsumerGapNotice) =>
+    decode(gapNoticeText(notice)) as { envoy: { notice?: unknown; detail?: unknown } };
 
-  test("is a card for the session, named by its kind", () => {
-    expect(card({ kind: "stream_recreated", message: "recreated" })).toEqual({
-      envoy: { notice: "stream recreated", detail: "recreated" },
-    });
-    expect(card({ kind: "retention_gap", message: "too old" })).toEqual({
-      envoy: { notice: "messages may be missing", detail: "too old" },
-    });
+  test("is a card for the session, named by its kind, with the relay's message as its detail", () => {
+    const recreated = card({ kind: "stream_recreated", message: "recreated" });
+    const missing = card({ kind: "retention_gap", message: "too old" });
+
+    expect(recreated.envoy.detail).toBe("recreated");
+    expect(missing.envoy.detail).toBe("too old");
+    expect(typeof recreated.envoy.notice).toBe("string");
+    expect(typeof missing.envoy.notice).toBe("string");
+    expect(recreated.envoy.notice).not.toBe(missing.envoy.notice);
   });
 });

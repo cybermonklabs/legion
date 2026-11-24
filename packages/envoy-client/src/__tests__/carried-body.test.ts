@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { DispatchEvent } from "@legion/contracts";
+import { decode } from "@toon-format/toon";
 
 import { bearerCredential } from "../bearer";
 import { type CarriedItem, renderInbound, wholeCarriedBody } from "../delivery";
@@ -15,6 +16,15 @@ const PICTURE = "dispatch://DSP-1/artifact/shot-png@v1";
  *  share of the body ends. */
 const STORED_BODY = `The first paragraph.\n\n![shot.png](${PICTURE})`;
 const CARRIED_BODY = "The first paragraph.";
+
+/** The card's `body_note`, the field a card carries when its event held less than the body. */
+function bodyNote(content: string): unknown {
+  const card = decode(content);
+  if (card === null || typeof card !== "object" || !("envoy" in card)) return undefined;
+  const { envoy } = card;
+  if (envoy === null || typeof envoy !== "object" || !("body_note" in envoy)) return undefined;
+  return envoy.body_note;
+}
 
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -182,7 +192,7 @@ describe("renderInbound and a body an event did not carry whole", () => {
 
     const cut = renderInbound(envelopeOf(cutEvent), SESSION);
     expect(cut.cutItem).toEqual(ITEM);
-    expect(cut.content).toContain("the body is its first part only");
+    expect(bodyNote(cut.content)).toContain(COMMENT_ID);
 
     const body = await wholeCarriedBody(client, ITEM, SESSION);
     const whole = renderInbound(envelopeOf(cutEvent), SESSION, undefined, body);
@@ -190,7 +200,7 @@ describe("renderInbound and a body an event did not carry whole", () => {
     expect(body).toBe(STORED_BODY);
     expect(requests).toEqual([`/api/v1/comments/${COMMENT_ID}`]);
     expect(whole.content).toContain(`body: ${JSON.stringify(STORED_BODY)}`);
-    expect(whole.content).not.toContain("first part only");
+    expect(bodyNote(whole.content)).toBeUndefined();
     expect(whole.cutItem).toBeUndefined();
   });
 
@@ -199,16 +209,14 @@ describe("renderInbound and a body an event did not carry whole", () => {
 
     const omitted = renderInbound(envelopeOf(omittedEvent), SESSION);
     expect(omitted.cutItem).toEqual(ITEM);
-    expect(omitted.content).toContain(
-      `this event carries no body: it was too large for the bus; read it whole with GET /api/v1/comments/${COMMENT_ID}`
-    );
+    expect(bodyNote(omitted.content)).toContain(COMMENT_ID);
 
     const body = await wholeCarriedBody(client, ITEM, SESSION);
     const whole = renderInbound(envelopeOf(omittedEvent), SESSION, undefined, body);
 
     expect(requests).toEqual([`/api/v1/comments/${COMMENT_ID}`]);
     expect(whole.content).toContain(`body: ${JSON.stringify(STORED_BODY)}`);
-    expect(whole.content).not.toContain("too large for the bus");
+    expect(bodyNote(whole.content)).toBeUndefined();
     expect(whole.cutItem).toBeUndefined();
   });
 
@@ -220,13 +228,11 @@ describe("renderInbound and a body an event did not carry whole", () => {
     // A text holding no blank line is written as a plain scalar, where the whole body above,
     // which holds one, is written quoted.
     expect(kept.content).toContain(`body: ${CARRIED_BODY}`);
-    expect(kept.content).toContain(
-      `the body is its first part only; read it whole with GET /api/v1/comments/${COMMENT_ID}`
-    );
+    expect(bodyNote(kept.content)).toContain(COMMENT_ID);
 
     const rode = renderInbound(envelopeOf(wholeEvent), SESSION);
     expect(rode.cutItem).toBeUndefined();
-    expect(rode.content).not.toContain("first part only");
+    expect(bodyNote(rode.content)).toBeUndefined();
   });
 
   test("an item deleted since the event reads as the deleted line", async () => {

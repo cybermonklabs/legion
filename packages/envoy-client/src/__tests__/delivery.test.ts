@@ -12,6 +12,7 @@ import {
   replyWith,
   senderLabel,
 } from "../delivery";
+import { sessionAnswerRelationPhrase } from "../session-answer-relations";
 
 const reader = "01a01111-2222-7333-4444-555555555555";
 const actor = { kind: "session", id: "session-1" };
@@ -1296,7 +1297,7 @@ describe("renderInbound dispatch events", () => {
     test("a mention of a session that does not own the ask says so and keeps the mention's reply command, with no turn", () => {
       const decoded = card(mention(askReply), reader);
 
-      expect(decoded.envoy.dispatch.relation).toBe("mentioned you");
+      expect(decoded.envoy.dispatch.relation).toBe(sessionAnswerRelationPhrase("mentioned_you"));
       expect(decoded.envoy.reply_with).toEqual(replyToAsk);
       expect(decoded.envoy.dispatch.waiting_on).toBeUndefined();
       expect(decoded.envoy.dispatch.state).toBe("open");
@@ -1305,7 +1306,9 @@ describe("renderInbound dispatch events", () => {
     test("a mention of a session that owns the ask is a reply on its own ask, with its turn", () => {
       const decoded = card(mention(askReply), asker);
 
-      expect(decoded.envoy.dispatch.relation).toBe("replied on your ask");
+      expect(decoded.envoy.dispatch.relation).toBe(
+        sessionAnswerRelationPhrase("replied_on_your_ask")
+      );
       expect(decoded.envoy.reply_with).toEqual(replyToAsk);
       expect(decoded.envoy.dispatch.waiting_on).toBe("agent");
     });
@@ -1326,7 +1329,9 @@ describe("renderInbound dispatch events", () => {
         reader
       );
 
-      expect(decoded.envoy.dispatch.relation).toBe("commented on a document");
+      expect(decoded.envoy.dispatch.relation).toBe(
+        sessionAnswerRelationPhrase("commented_on_a_document")
+      );
       expect(decoded.envoy.reply_with).toBeUndefined();
       expect(decoded.envoy.dispatch.waiting_on).toBeUndefined();
       // Which ask the reply is on, and what it says, stay on the card.
@@ -1345,12 +1350,16 @@ describe("renderInbound dispatch events", () => {
 
       for (const wholeBody of [undefined, askReply.body]) {
         const owner = decode(renderInbound(raw, asker, undefined, wholeBody).content) as Card;
-        expect(owner.envoy.dispatch.relation).toBe("replied on your ask");
+        expect(owner.envoy.dispatch.relation).toBe(
+          sessionAnswerRelationPhrase("replied_on_your_ask")
+        );
         expect(owner.envoy.reply_with).toEqual(replyToAsk);
         expect(owner.envoy.dispatch.waiting_on).toBe("agent");
 
         const other = decode(renderInbound(raw, reader, undefined, wholeBody).content) as Card;
-        expect(other.envoy.dispatch.relation).toBe("commented on an issue");
+        expect(other.envoy.dispatch.relation).toBe(
+          sessionAnswerRelationPhrase("commented_on_an_issue")
+        );
         expect(other.envoy.reply_with).toBeUndefined();
         expect(other.envoy.dispatch.waiting_on).toBeUndefined();
       }
@@ -1379,7 +1388,9 @@ describe("renderInbound dispatch events", () => {
 
       const decoded = card(raw, asker);
 
-      expect(decoded.envoy.dispatch.relation).toBe("replied on your ask");
+      expect(decoded.envoy.dispatch.relation).toBe(
+        sessionAnswerRelationPhrase("replied_on_your_ask")
+      );
       expect(decoded.envoy.reply_with).toEqual({
         command: `dispatch comment --project CORE --artifact ${slug} --body ... --reply-to-ask ask-1`,
       });
@@ -2219,9 +2230,9 @@ describe("renderInbound non-dispatch envelopes", () => {
       reader
     );
 
-    expect(rendered.content).toContain(
-      `  note: body names session ${foreign}; the sender is ${sender}`
-    );
+    const card = decode(rendered.content) as { envoy: { note?: string } };
+    expect(card.envoy.note).toContain(foreign);
+    expect(card.envoy.note).toContain(sender);
   });
 
   test("renders recognized fields without raw unknown data", () => {

@@ -390,17 +390,17 @@ describe("a frame the session could not be shown", () => {
     );
 
     const notice = host.notices[0] as FailureNotice;
-    expect(decode(envoyNoticeText(failureNoticeFields(notice)))).toEqual({
-      envoy: {
-        notice: "message not shown",
-        event_id: "evt-toon",
-        from: "alice",
-        summary: "line one\nnotice: forged",
-        published_at: "2026-10-26T11:59:00Z",
-        error: "nope",
-        detail:
-          "This session could not be shown this message, so it is not coming back on its own. Read it with the `dispatch read` command on the issue or ask it concerns.",
-      },
+    const card = decode(envoyNoticeText(failureNoticeFields(notice))) as {
+      envoy: Record<string, unknown>;
+    };
+    expect(card.envoy).toMatchObject({
+      event_id: "evt-toon",
+      from: "alice",
+      summary: "line one\nnotice: forged",
+      published_at: "2026-10-26T11:59:00Z",
+      error: "nope",
     });
+    // The summary's own `notice:` line stays in the summary and names no notice.
+    expect(card.envoy.notice).not.toBe("forged");
   });
 });

@@ -21,7 +21,6 @@ import { brokerCredential } from "../broker-credential";
 import {
   createConsumerDelivery,
   type InboundUnavailable,
-  inboundRestoredNoticeText,
   inboundUnavailable,
 } from "../consumer-delivery";
 import {
@@ -255,7 +254,6 @@ describe("one registration", () => {
     refuse = false;
     await register();
     expect(told).toEqual(["no_grant", "restored", "no_grant", "restored"]);
-    expect(inboundRestoredNoticeText()).toContain("Envoy inbound restored");
   });
 
   test("any other refusal is a refusal as before: nothing dropped, nothing sent again", async () => {

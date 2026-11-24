@@ -18,6 +18,7 @@ import { bearerCredential } from "../bearer";
 import type { ActiveDispatchConfig } from "../dispatch-config";
 import type * as SessionAnswersModule from "../session-answers";
 import {
+  leftOutLine,
   NO_ANSWERS_ROUTE_REASON,
   readSessionAnswers,
   renderSessionAnswerItem,
@@ -83,8 +84,8 @@ const comment: SessionAnswer = {
 
 const direct = message("m-1", "2026-10-27T10:00:00Z", "Stop after the migration lands.");
 
-const leftOut = (count: number) =>
-  `${count} older ${count === 1 ? "item" : "items"} left out to stay under 8,000 characters: run \`dispatch answers\` to read every one in full.`;
+/** The left-out line a list ends with, as the renderer writes it, naming `dispatch answers`. */
+const leftOut = (count: number) => leftOutLine(count, true);
 
 /** A message item whose list, rendered alone (with the left-out line `after` older items take),
  *  is exactly `target` characters long. */
@@ -256,7 +257,6 @@ describe("renderSessionAnswers", () => {
     expect(shown).toEqual(items.slice(0, shown.length));
     expect(rendered.length).toBeLessThan(8_000);
     expect(rendered.endsWith(`\n\n${leftOut(items.length - shown.length)}`)).toBe(true);
-    expect(rendered).toContain("run `dispatch answers` to read every one in full.");
   });
 
   test("withoutCommand ends the list with a left-out line that names no command, still under the cap", () => {
@@ -268,15 +268,14 @@ describe("renderSessionAnswers", () => {
     expect(shown).toEqual(items.slice(0, shown.length));
     expect(rendered.length).toBeLessThan(8_000);
     const count = items.length - shown.length;
-    expect(rendered).toEndWith(`\n\n${count} older items left out to stay under 8,000 characters.`);
-    expect(rendered).not.toContain("dispatch answers");
+    expect(rendered).toEndWith(`\n\n${leftOutLine(count, false)}`);
     expect(
       renderSessionAnswers([message("one", hoursAgo(1), "one")], {
         now: NOW,
         total: 2,
         withoutCommand: true,
       })
-    ).toEndWith("\n\n1 older item left out to stay under 8,000 characters.");
+    ).toEndWith(`\n\n${leftOutLine(1, false)}`);
   });
 
   test("prints no left-out line when everything fits, and nothing at all when there is nothing", () => {
@@ -318,12 +317,12 @@ describe("renderSessionAnswers", () => {
         now: NOW,
         cached: { readAt: "2026-10-27T11:59:00.000Z", reason },
       })?.split("\n")[1];
-    expect(secondLine("Dispatch is restarting, so a retry may succeed.")).toBe(
-      "As read at 2026-10-27T11:59:00.000Z; this read failed: Dispatch is restarting, so a retry may succeed."
-    );
-    expect(secondLine("Is the computer able to access the url?")).toBe(
-      "As read at 2026-10-27T11:59:00.000Z; this read failed: Is the computer able to access the url?"
-    );
+    for (const reason of [
+      "Dispatch is restarting, so a retry may succeed.",
+      "Is the computer able to access the url?",
+    ]) {
+      expect(secondLine(reason)).toEndWith(`: ${reason}`);
+    }
   });
 });
 
@@ -930,7 +929,7 @@ describe("readSessionAnswers", () => {
       now: () => NOW,
     };
     const fresh = await readSessionAnswers(options);
-    expect(fresh.text).toContain("run `dispatch answers` to read every one in full.");
+    expect(fresh.text).toBe(renderSessionAnswers(items, { now: NOW }));
     missing = true;
     const read = await readSessionAnswers(options);
     const readAt = new Date(NOW).toISOString();

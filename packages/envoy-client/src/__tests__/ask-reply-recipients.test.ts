@@ -88,7 +88,7 @@ function expectOwnersCard(card: Card, askID = fixture.ask_id): void {
     reply_with: card.envoy.reply_with,
     waiting_on: card.envoy.dispatch.waiting_on,
   }).toEqual({
-    relation: "replied on your ask",
+    relation: sessionAnswerRelationPhrase("replied_on_your_ask"),
     reply_with: {
       command: `dispatch comment --issue ${fixture.issue_key} --body ... --reply-to-ask ${askID}`,
     },
@@ -103,7 +103,11 @@ function expectOthersCard(card: Card): void {
     relation: card.envoy.dispatch.relation,
     reply_with: card.envoy.reply_with,
     waiting_on: card.envoy.dispatch.waiting_on,
-  }).toEqual({ relation: "commented on an issue", reply_with: undefined, waiting_on: undefined });
+  }).toEqual({
+    relation: sessionAnswerRelationPhrase("commented_on_an_issue"),
+    reply_with: undefined,
+    waiting_on: undefined,
+  });
 }
 
 describe("a person's reply on A's ask, as each session's card reads the copy it was handed", () => {
