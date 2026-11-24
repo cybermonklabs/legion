@@ -232,6 +232,28 @@ type StalePlugin struct {
 	Credit *RefreshCredit
 }
 
+// RecordedDeath is a restored claim whose stored record says the process it records died: the
+// daemon before this one judged that process gone and charged its death (Claim.DeathCharged),
+// and the relaunch that death raised lived in that daemon's memory alone, a wake the pacing
+// parked, so a restart lost it. The boot raises it once for every such claim, beside the
+// unfinished launches it relaunches (internal/daemon's launchUnfinished), so that relaunch enters
+// the restart's own wave rather than waiting for the runtime to report the death again
+// (dispatch://INFRA-5472). That report needs the pod's launcher to reconnect when the pod lives
+// on — a roles container that restarted — which is a probe interval after boot, by which time the
+// boot's wave holds the pacing and a relaunch raised then goes in behind all of it. Generation is
+// the claim's generation as the boot read it, so a claim a launch has moved on since is decided
+// nothing (relaunchRecordedDeath).
+//
+// Turn is the moment the boot reserved for that relaunch in the wake pacing, as RequestSpawn.Turn
+// is for an unfinished launch: the boot reserves the turns of both in one pass, in the order their
+// claims' work was owed, so a recorded death waits behind a launch whose work has waited longer.
+// The zero time is a replay the gate reserves a turn for itself.
+type RecordedDeath struct {
+	Claim      claim.Token
+	Generation uint64
+	Turn       time.Time
+}
+
 // StallBackstop is the daemon's stall backstop reaching this claim: the orphan sweep found it in
 // a turn whose recorded last step (StepRecord) is older than its role's backstop bound, and the
 // daemon ends that turn itself (internal/daemon's backstopStalledTurns, INFRA-1274's R5). The
@@ -723,6 +745,7 @@ func (PromptAcked) isEvent()          {}
 func (PromptRefused) isEvent()        {}
 func (Timer) isEvent()                {}
 func (StalePlugin) isEvent()          {}
+func (RecordedDeath) isEvent()        {}
 func (StallBackstop) isEvent()        {}
 func (PodUpdateOpen) isEvent()        {}
 func (PodUpdateEnded) isEvent()       {}
@@ -799,6 +822,7 @@ const (
 	onCompactEnded eventKind = "compact_ended"
 
 	onStalePlugin   eventKind = "stale_plugin"
+	onRecordedDeath eventKind = "recorded_death"
 	onStallBackstop eventKind = "stall_backstop"
 
 	onPodUpdateOpen      eventKind = "pod_update_open"
@@ -840,6 +864,8 @@ func kindOf(ev Event) eventKind {
 		return timerPrefix + eventKind(ev.Kind)
 	case StalePlugin:
 		return onStalePlugin
+	case RecordedDeath:
+		return onRecordedDeath
 	case StallBackstop:
 		return onStallBackstop
 	case PodUpdateOpen:
@@ -1159,6 +1185,12 @@ func fillTable(t *builder) {
 		[]ClaimState{StateLaunching, StateFailed}, StateRegistered, StateReady, StateWorking, StateIdle)
 	t.ignore(onStalePlugin, "a claim still launching is left to its registration, which decides it the moment it arrives",
 		StateQueued, StateLaunchUncertain, StateLaunching, StateShimConnected, StateSuspended, StateFailed, StateRetired)
+
+	// A restored claim whose stored record says its process died, at boot (RecordedDeath): the
+	// relaunch that death raised is raised again now, through the pacing.
+	t.row(onRecordedDeath, "the record says the process died: raise again the relaunch the death raised", relaunchRecordedDeath,
+		[]ClaimState{StateLaunching, StateFailed}, live...)
+	t.ignore(onRecordedDeath, "no process is recorded, so no death of one is", processless...)
 
 	// The daemon's stall backstop over a claim whose agent stopped stepping mid-turn. It is a
 	// row of the one state a turn runs in; the machine re-reads the claim's record before it
@@ -2545,7 +2577,7 @@ func registrationDeadline(m *Machine, ctx context.Context, _ Event) error {
 		// log as that, attempt by attempt.
 		m.log.Warn("supervise: the agent "+never+"; retired its process", "incarnation", incarnation,
 			"launchFailure", m.claim.Budgets.LaunchFailures+1, "limit", m.deps.Limits.LaunchFailures)
-		return m.relaunchAfterFailure(ctx, CauseNeverRegistered, noEnd)
+		return m.relaunchAfterFailure(ctx, CauseNeverRegistered, noEnd, time.Time{})
 	}, TimerRegistration, m.deps.Timeouts.Probe)
 }
 

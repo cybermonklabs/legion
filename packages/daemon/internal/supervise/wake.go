@@ -351,6 +351,35 @@ func (m *Machine) parkWake(ctx context.Context, waiting *wake, after time.Durati
 	return m.waitOnMachine(ctx, waiting)
 }
 
+// takeEarlierTurn is whether the wake the pacing holds over this claim moves to turn, a moment
+// reserved earlier in the pacing's order for the same launch (RecordedDeath.Turn), and it moves the
+// wake there when it does. The boot's replay of a recorded death and the runtime's first report
+// of that death raise one relaunch, and a report that reaches the machine after the boot's pass
+// reserved that relaunch's turn, and before the replay, parks it behind every turn the pass
+// reserved; moved, the relaunch runs at the turn the boot handed it in the order the claims' work
+// was owed, and the report's later moment is left spent, as a dropped wake leaves its token. The
+// wake moves only to a turn earlier than its own that has not passed by an interval or more,
+// which reserveWake would reserve afresh for the same reason: run now, a turn that late would let
+// out at once every launch the pass reserved before it. A turn that has come runs the wake at
+// once, through its timer. Only a wake of the pacing's own moves: a launch the pause's gate holds
+// or one waiting for its pod's start has no moment of the pacing's to move.
+//
+// The role's resume clock keeps the report's later moment (Deps.WakeLetOut, whose store write
+// never moves a clock back), so nothing is told here: that clock only bounds when a launch is
+// warned stuck, and a launch that runs earlier than it is warned later, never wrongly.
+func (m *Machine) takeEarlierTurn(turn time.Time) bool {
+	w := m.wake
+	now := m.deps.Clock.Now()
+	if w == nil || w.pause != 0 || w.park != nil || turn.IsZero() || !turn.Before(w.at) || now.Sub(turn) >= m.deps.WakePace.interval() {
+		return false
+	}
+	m.log.Info("supervise: the relaunch a report of the recorded death parked takes the turn the boot reserved for it",
+		"due", w.at, "turn", turn)
+	w.at = turn
+	m.arm(TimerWake, max(turn.Sub(now), 0), "")
+	return true
+}
+
 // waitOnMachine is the tail a parked wake and a launch the pause's gate holds share (parkWake,
 // pauseGate), each having armed its own timer first: waiting waits on the machine (Machine.wake),
 // and a claim that records no process is written launching and persisted. A claim that still

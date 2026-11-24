@@ -389,6 +389,74 @@ func TestALaunchTheGateMeetsWhilePausedRunsNothingAndStopsTheClaimWithALaunchOwe
 	})
 }
 
+// A pause's stop of a restored claim whose record says its process died owes the role the
+// relaunch that death raised. The boot's stop can run before the boot replays the death, so the
+// stop reads the durable charge with the locator rather than only the wake the restart forgot.
+// No RecordedDeath is posted here: the stop must preserve that launch on its own. A pause's stop
+// carries no deadline (internal/daemon's pause stop rows), so over a working claim it is held for
+// the turn, and the death's own report ends that hold (died, endHeld, letProcessGoFor). The other
+// rows reach the stop at once: the ready row is never held; the working row's deadline of now ends
+// the hold (suspendAtTimeout); and the row whose recovery read found the process gone is decided
+// where it arrives (holdSuspension, suspendOverADeadProcess, letProcessGoFor).
+func TestAPausesStopOfAClaimWhoseRecordSaysItsProcessDiedOwesItsLaunch(t *testing.T) {
+	for _, row := range []struct {
+		name     string
+		working  bool
+		read     bool
+		byReport bool
+	}{
+		{name: "ready"},
+		{name: "working", working: true},
+		{name: "working whose process a recovery read found gone", working: true, read: true},
+		{name: "working, held until the death's report ends the hold", working: true, byReport: true},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			h, flag, stops := pauseHarness(t, queuedClaim(), pacedDeps(wakeRate))
+			h.reach(StateReady)
+			if row.working {
+				h.must(StreamTurnStart{Claim: h.token})
+			}
+			queueAhead(h, 1)
+			h.observe(runtime.Gone)
+			h.wantWaitingWake(WakeLaunch)
+			flag.set(7)
+			pacedDeps(wakeRate)(&h.deps)
+			taken := countedReserve(h)
+			h.restart()
+			if c := h.claim(); c.Locator == nil || !c.DeathCharged || c.Pending != nil {
+				t.Fatalf("the restored claim records %+v, want a charged death with a locator and no task that could owe its own launch", c)
+			}
+			if row.read {
+				h.rt.ScriptProbe(fake.ProbeResult{Kind: runtime.Gone})
+				if got := h.m.ReadProcess(h.ctx); got != ProcessGone {
+					t.Fatalf("the recovery read found %s, want gone", got)
+				}
+			}
+			request := pauseStop(h.token, 7)
+			if !row.byReport {
+				request.Deadline = h.clock.Now()
+			}
+			if err := h.handle(request); err != nil && !errors.Is(err, ErrSuspendHeld) {
+				t.Fatal(err)
+			}
+			if row.byReport {
+				if !h.claim().SuspensionHeld {
+					t.Fatalf("the pause's stop of the restored working claim is not held, state %s", h.state())
+				}
+				h.observe(runtime.Gone)
+			}
+			h.advance(0)
+
+			h.wantState(StateSuspended)
+			h.wantStarts(h.token, 1)
+			if n := taken(); n != 0 {
+				t.Fatalf("the pause's stop took %d paced tokens, want none", n)
+			}
+			stops.wantStops(t, stopCall{stop: PauseStop{Pause: 7, LaunchOwed: true}, landed: true})
+		})
+	}
+}
+
 // A launch that passed the wake gate's pause check before the pause began meets the pause after
 // its first write, before it asks the runtime for a process (launchTries): it starts nothing, the
 // pause's gate holds it and stops the claim for the pause, a launch owed. The pause's catch-up
