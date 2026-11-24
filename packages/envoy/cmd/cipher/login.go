@@ -203,29 +203,49 @@ func enrollUnderCredential(ctx context.Context, base cipheraddr.Address, key *ec
 }
 
 // registerSignInSession registers this person's session on this machine for a record that holds
-// no enrollment yet: it trades the kept sign-in for an access token, as every later renewal
-// does, enrolls the box key under the launcher credential that trade mints, and keeps the
-// enrollment in the record. A machine or a sign-in client the deployment no longer configures is
-// refused by name, and so is a record made with another client than this machine now has, since
-// nothing here could renew that person's identity token (signInRenewal).
+// no enrollment yet: it trades the kept sign-in for an access token (tradeSignIn), enrolls the box
+// key under the launcher credential that trade mints, and keeps the enrollment in the record. A
+// machine or a sign-in client the deployment no longer configures is refused by name, and so is a
+// record made with another client than this machine now has, since nothing here could renew that
+// person's identity token (signInRenewal).
 func registerSignInSession(ctx context.Context, record cipherclient.SignInRecord, boxKey *ecdsa.PrivateKey) (cipherclient.SignInRecord, error) {
 	base := brokerBaseURL()
 	if base.Empty() {
 		return record, fmt.Errorf("%s is required: it names the secrets broker %s's session registers at", brokerURLVar, record.Person)
 	}
-	flow, err := signInRenewal(record)
-	if errors.Is(err, errSignInUnrenewable) {
-		return record, cipherclient.WithHint(err, cipherclient.FailureSignInRefused)
-	}
+	token, err := tradeSignIn(ctx, base, record, boxKey)
 	if err != nil {
 		return record, err
+	}
+	if record.EnrollmentID, err = enrollUnderCredential(ctx, base, boxKey, record.Thumbprint, token.CredentialID, record.Person); err != nil {
+		return record, err
+	}
+	return record, cipherclient.SignIns(homeGetenv).Write(record)
+}
+
+// tradeSignIn trades record's sign-in on this machine at the broker base names: a fresh identity
+// token minted from the person's kept refresh token, presented beside this machine's own identity
+// under the person's own session name (cipherclient.SessionFor). The broker answers the launcher
+// credential the sign-in holds on this box, with its expiry moved to the new identity token's
+// (token.CredentialExpiresAt): the same credential row at every trade of the same box key, so a
+// session enrolled under it renews on. registerSignInSession enrolls under it, and a sign-in's
+// renewer trades again before it expires (signin_renewer.go), since the broker renews no
+// sign-in's session past it (enroll.Service.Renew, ErrSignInLapsed). A sign-in this machine
+// cannot renew is errSignInUnrenewable (signInRenewal).
+func tradeSignIn(ctx context.Context, base cipheraddr.Address, record cipherclient.SignInRecord, boxKey *ecdsa.PrivateKey) (*cipherclient.Token, error) {
+	flow, err := signInRenewal(record)
+	if errors.Is(err, errSignInUnrenewable) {
+		return nil, cipherclient.WithHint(err, cipherclient.FailureSignInRefused)
+	}
+	if err != nil {
+		return nil, err
 	}
 	machine, skipped, err := machineSource(ctx, true)
 	if err != nil {
-		return record, err
+		return nil, err
 	}
 	if machine == nil {
-		return record, fmt.Errorf("a person's session acts on a machine, and this machine proves no identity of its own (%s); set %s to name one", joinSkipped(skipped), cipherclient.IdentityVar)
+		return nil, fmt.Errorf("a person's session acts on a machine, and this machine proves no identity of its own (%s); set %s to name one", joinSkipped(skipped), cipherclient.IdentityVar)
 	}
 	client, err := cipherclient.New(cipherclient.Config{
 		BrokerURL: base,
@@ -236,21 +256,18 @@ func registerSignInSession(ctx context.Context, record cipherclient.SignInRecord
 		HTTP:      cipherclient.HTTPClient(),
 	})
 	if err != nil {
-		return record, err
+		return nil, err
 	}
 	token, err := client.Token(ctx)
 	if err != nil {
 		// The broker's own words name the cure where one exists, and an ended sign-in carries
 		// its own hint, so a failed trade adds none (cipherclient.Hint).
-		return record, err
+		return nil, err
 	}
 	if token.CredentialID == "" {
-		return record, fmt.Errorf("the broker took %s's sign-in but named no launcher credential, so no session can be registered under it", record.Person)
+		return nil, fmt.Errorf("the broker took %s's sign-in but named no launcher credential, so no session can be registered under it", record.Person)
 	}
-	if record.EnrollmentID, err = enrollUnderCredential(ctx, base, boxKey, record.Thumbprint, token.CredentialID, record.Person); err != nil {
-		return record, err
-	}
-	return record, cipherclient.SignIns(homeGetenv).Write(record)
+	return token, nil
 }
 
 // errSignInUnrenewable is what signInRenewal answers, through unrenewableSignIn, for a sign-in

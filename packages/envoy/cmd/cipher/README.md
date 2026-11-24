@@ -217,6 +217,28 @@ their next command on, and the cache stays for every process no person signed in
 session an older client kept in the key dir (beside a `machine-session` file) is moved into the
 cache by the first command that finds it.
 
+A command that signs as a sign-in keeps the sign-in's enrollment renewed while the machine needs
+it, so a grant a person approved lasts to its own end and a request waits for its person however
+long the session waits between commands. It records its use, and a request it leaves waiting for a
+person, in the sign-in's renewal directory beside its record (a 0700 `<hash>.renewal` in the
+sign-in store), and starts `agent-secrets renew --sign-in` where no renewer holds that directory's
+`lock`: one renewer for each sign-in, in a session of its own, writing to `renewer.log` there. It
+renews at a third of the lease while a command used the sign-in less than one lease ago, a recorded
+request is still pending, or a grant of the enrollment that has an end is still live, and stops
+once none holds, once the record names no enrollment or is gone, once the broker refuses the
+enrollment for good (exit 76; the refused enrollment is recorded in `lock` and no later renewer
+sends it), or once for 30 minutes, or two leases where that is longer, no renewal got through
+or no broker answer said whether anything needs it (exit 1); the lease then lapses within one
+lease. The renewer registers no enrollment: a command that finds it ended registers the next,
+and keeps that one. While it renews, the renewer also trades the person's identity again, after
+its first renewal and each time a third of the sign-in credential's remaining life has passed,
+since the broker renews a sign-in's session only while that credential (an hour from each trade)
+is live; where the person can no longer be traded, as for a suspended Google account, the
+credential lapses, the broker refuses the next renewal, and the enrollment ends one lease later.
+`agent-secrets-helper` keeps the same credential live for the sessions it holds under a sign-in.
+A command that cannot keep the sign-in renewed says so on stderr, for each enrollment it keeps,
+and goes on. The docs site's concepts page, "A sign-in's renewal", has the whole rule.
+
 A process started with no environment of its own, such as a systemd unit or a cron job, reads its
 settings from `~/.config/agent-secrets/config`: `KEY=value` lines, `#` comments and blank lines,
 no quotes, no `export`, no expansion. It takes `AGENT_SECRETS_URL`, `AGENT_SECRETS_SIGNIN_ISSUER`,

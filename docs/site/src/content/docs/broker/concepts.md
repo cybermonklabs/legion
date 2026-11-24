@@ -69,8 +69,10 @@ source: each source, each component, and every issue of the project, closed and 
 included. No setting holds a read entry to some projects.
 
 An enrollment is leased for `BROKER_LEASE_SECONDS` and renewed while its session runs: the helper
-renews the sessions it registered, `agent-secrets renew` renews a box, and Legion's pod shim renews
-a pod. A pod's renewal carries the pod's current projected token, and the broker refuses it
+renews the sessions it registered, `agent-secrets renew` renews a box, Legion's pod shim renews
+a pod, and the commands of a person signed in on a machine keep that sign-in's enrollment renewed
+while the machine needs it ([A sign-in's renewal](#a-sign-ins-renewal)). A pod's renewal carries
+the pod's current projected token, and the broker refuses it
 (`POD_IDENTITY_MISMATCH`) unless the token names the pod UID and service account the enrollment was
 made for. The token is not yet required. The broker ratchets each pod UID instead: once any
 enrollment naming a pod UID, live or ended, has renewed with that pod's token, the broker refuses a
@@ -144,6 +146,64 @@ records no operator when a service's login enrolled it, since the Legion daemon 
 service with its own Kubernetes token rather than as a person. A pod whose account
 `BROKER_POD_OPERATORS` maps to a person records that person as its operator as well
 ([a person's pod](#a-persons-pod)).
+
+### A sign-in's renewal
+
+A person's sign-in on a machine registers one enrollment, which every session of that person on
+the machine signs as, and which names no session. Nothing launches it, so nothing else renews it:
+each `agent-secrets` command that signs as the sign-in keeps it renewed. The command records that
+it used the sign-in, and a request it leaves waiting for a person, in the sign-in's renewal
+directory beside its record (`<hash>.renewal` in the sign-in store), and starts the sign-in's one
+renewer, `agent-secrets renew --sign-in`, where none runs. The renewer runs in a session of its own
+and holds the flock of that directory's `lock` for its whole life, so two commands at once start
+one renewer between them. It renews the enrollment the sign-in's record names when a third of the
+lease has passed, as `agent-secrets renew` renews a box, while the machine needs it:
+
+- a command used the sign-in less than one lease ago;
+- a request one of those commands left waiting for a person is still pending, which the renewer
+  asks the broker once the first no longer holds; or
+- a grant of the enrollment that has an end is still live, which the renewer reads in
+  `GET /v1/enrollments/self`. A grant with no end, one that lasts until its session ends, keeps the
+  enrollment no longer than use does.
+
+So a grant a person approved lasts to its own end, and a request waits for its person until they
+decide it, it is cancelled or it expires, however long the session waits between commands. The
+renewer stops, and the lease then lapses within one more lease, once none of the three holds;
+once the record names no enrollment or is gone from the machine; once the broker refuses the
+enrollment for good, as after the person revokes the sign-in or its credential lapses (below),
+exiting 76; and once for 30 minutes, or two leases where the lease is longer, no renewal got
+through or no answer of the broker said whether anything needs the enrollment, exiting 1, so a
+renewer whose broker went away does not retry forever. A refused enrollment is recorded in the
+`lock` file, and no later renewer sends it again. A new `agent-secrets login` writes a record
+that names a new enrollment, which the running renewer renews from its next renewal on.
+
+The broker renews a sign-in's session only while the launcher credential its sign-in holds on
+that machine is live, and that credential expires with the person's last traded Google identity
+token, about an hour after the trade. So the renewer also trades the person's identity again, as
+the registration does, after its first renewal and each time a third of the credential's
+remaining life has passed; each trade moves the expiry of the same credential, so the same
+enrollment renews on. A trade that fails is tried again once the smaller of a third of the lease
+and a third of the credential's remaining life has passed, and not more often than every ten
+seconds. Where the person can no longer be traded, as when their Google account is suspended or
+deleted, the credential lapses within its hour, the broker refuses the next renewal
+(`ENROLLMENT_NOT_LIVE`, "the sign-in that enrolled this session has lapsed"), and the enrollment
+ends one lease later, or later by the length of any broker outage in that time, which the broker
+gives back to every lease: the machine loses the person's access with nobody revoking anything.
+A machine told of no sign-in client cannot trade at all, and its sign-in enrollment ends an hour
+after the trade that registered it. Revoking the sign-in still ends its sessions at once.
+Sessions `agent-secrets-helper` holds under a sign-in are held to the same credential, which the
+helper keeps live by asking for the sign-in every five minutes and trading it again once the
+token it holds has five minutes or less left; where the person can no longer be traded, those
+sessions end too.
+
+A renewer that is killed, with its machine or its process tree, renews nothing until a command
+starts one: the next command of the sign-in, or within a second a use command still waiting for
+a person, which looks each second. A grant is lost, and a request cancelled, if neither runs
+before the lease lapses. A grant with no end lasts while the sign-in is in use. The renewer
+itself registers no enrollment: a command that finds the enrollment ended registers the next
+one, as before, and keeps that one renewed. Each renewer writes to `renewer.log` in the renewal
+directory why it stopped, each renewal that failed and each trade that failed; one stopped by
+SIGTERM or SIGINT writes no line.
 
 ### When no broker is serving
 

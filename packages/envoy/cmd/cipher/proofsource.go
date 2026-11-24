@@ -56,10 +56,14 @@ type Signer interface {
 // its own each time (machineReregister) — and nil for every other, a box or pod its launcher
 // enrolled above all: that enrollment is the launcher's to make again, and registering one here
 // would leave the launcher's own key dir naming a session the launcher never made.
+//
+// person is the person whose sign-in this signer is, and "" for every other: a sign-in's signer
+// is the one whose enrollment the command keeps renewed while it is in use (keepSignIn).
 type fileSigner struct {
 	key          *ecdsa.PrivateKey
 	enrollmentID string
 	register     func(ctx context.Context, stale string) (*ecdsa.PrivateKey, string, error)
+	person       string
 }
 
 func (f *fileSigner) Sign(method, url string) (string, error) {

@@ -420,15 +420,18 @@ func wantDelim(d *json.Decoder, delim json.Delim) error {
 // removed (Renew says when).
 //
 // A machine's own session whose launcher credential has ended (enroll.ErrMachineLoginEnded: the
-// machine login was revoked, lapsed, or its account was dropped from BROKER_VM_SERVICES) is
-// answered ENROLLMENT_NOT_LIVE, which is what the enrollment now is, rather than a code of its
-// own, which would read as a retryable failure to a renewer that has not heard of it. Every
-// renewer treats it as terminal, and what each does then is its own: a session the helper holds
-// is enrolled again by the helper's own loop, under whatever credential it holds then
-// (helper.Server.enrollLoop); `agent-secrets renew` stops, exit 76 naming the enrollment, and
-// leaves the enrolling again to whatever enrolled the box or pod in the first place, which for
-// a box enrolled through `enroll-session-key` is a person running that command again. The WARN
-// beside it is the only record naming which of the two refusals an operator is looking at.
+// machine login was revoked, lapsed, or its account was dropped from BROKER_VM_SERVICES), and a
+// person's sign-in session whose sign-in credential has lapsed (enroll.ErrSignInLapsed: no trade
+// of the person's identity renewed it before its expiry), are answered ENROLLMENT_NOT_LIVE, which
+// is what the enrollment now is, rather than a code of their own, which would read as a retryable
+// failure to a renewer that has not heard of it. Every renewer treats it as terminal, and what
+// each does then is its own: a session the helper holds is enrolled again by the helper's own
+// loop, under whatever credential it holds then (helper.Server.enrollLoop); `agent-secrets renew`
+// stops, exit 76 naming the enrollment, and leaves the enrolling again to whatever enrolled the
+// box or pod in the first place, which for a sign-in is the next command that signs as it
+// (registerSignInSession) and for a box enrolled through `enroll-session-key` is a person running
+// that command again. The WARN beside each is the only record naming which refusal an operator
+// is looking at.
 func (s *server) renewEnrollment(w http.ResponseWriter, r *http.Request, id string) {
 	urlID, ok := pathUUID(w, r, "id", "ENROLLMENT_ID_INPUT", "enrollment")
 	if !ok {
@@ -449,6 +452,10 @@ func (s *server) renewEnrollment(w http.ResponseWriter, r *http.Request, id stri
 		return
 	case errors.Is(err, enroll.ErrMachineLoginEnded):
 		slog.Warn("broker: machine session renewal refused: its machine login has ended", "enrollment", id)
+		writeError(w, http.StatusUnauthorized, "ENROLLMENT_NOT_LIVE", err.Error())
+		return
+	case errors.Is(err, enroll.ErrSignInLapsed):
+		slog.Warn("broker: sign-in session renewal refused: its sign-in credential has lapsed", "enrollment", id)
 		writeError(w, http.StatusUnauthorized, "ENROLLMENT_NOT_LIVE", err.Error())
 		return
 	case errors.Is(err, enroll.ErrPodTokenExpired):

@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/sjawhar/envoy/internal/cipher/exchange"
 )
 
@@ -268,36 +270,42 @@ func TestAMachineSessionRenewsOnlyWhileItsMachineLoginIsLive(t *testing.T) {
 	}
 }
 
-// TestAPersonsSessionOnAMachineRenewsPastItsCredentialsExpiry holds the asymmetry the rule
-// above is written around. A person's sign-in on a box mints a credential of the same shape and
-// of the same hour's life, and their sessions must outlive it: a person signs in once per box
-// and their sessions are theirs until they revoke that sign-in, which ends them at once
-// (RevokePersonSignIn). Only a machine's own session, which no person ever enrolled, is held to
-// its credential.
-func TestAPersonsSessionOnAMachineRenewsPastItsCredentialsExpiry(t *testing.T) {
+// TestAPersonsSignInSessionRenewsOnlyWhileItsSignInIsTraded: a person's sign-in on a box mints
+// a credential of the same shape and of the same hour's life as a machine's, and its session is
+// held to it too. It renews while the credential is live, is refused ErrSignInLapsed once the
+// expiry the person's last identity token gave it has passed, and renews again once the box
+// trades the person's identity again: the trade moves the expiry of the same credential row, so
+// the same enrollment renews on and keeps what it holds. A session under a machine login a
+// person approved, which carries an operator and no subject, still renews past its expiry.
+func TestAPersonsSignInSessionRenewsOnlyWhileItsSignInIsTraded(t *testing.T) {
 	ctx := context.Background()
 	const person = "ada@example.com"
 	svc := newService(t)
 	svc.VMServicesByAccount = map[string]string{machineAccountEmail: machineFleet}
 
-	tx, err := svc.Store.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatal(err)
+	trade := func(expires time.Time) string {
+		t.Helper()
+		tx, err := svc.Store.Pool.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tx.Rollback(ctx)
+		credID, err := svc.IssueTokenLoginTx(ctx, tx, TokenLogin{
+			Subject: exchange.PersonSubject(person, machineAccountEmail, "tp-box"), Service: machineFleet,
+			Operator: person, Host: "example-project/example-zone-a/example-machine-1",
+			TokenExpires: expires, Thumbprint: "tp-box",
+			JWK: json.RawMessage(`{"kty":"EC"}`), Expires: expires,
+		})
+		if err != nil {
+			t.Fatalf("IssueTokenLoginTx(a person's sign-in): %v", err)
+		}
+		if err := tx.Commit(ctx); err != nil {
+			t.Fatal(err)
+		}
+		return credID.String()
 	}
-	defer tx.Rollback(ctx)
-	credID, err := svc.IssueTokenLoginTx(ctx, tx, TokenLogin{
-		Subject: exchange.PersonSubject(person, machineAccountEmail, "tp-box"), Service: machineFleet,
-		Operator: person, Host: "example-project/example-zone-a/example-machine-1",
-		TokenExpires: time.Now().Add(time.Hour), Thumbprint: "tp-box",
-		JWK: json.RawMessage(`{"kty":"EC"}`), Expires: time.Now().Add(time.Hour),
-	})
-	if err != nil {
-		t.Fatalf("IssueTokenLoginTx(a person's sign-in): %v", err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		t.Fatal(err)
-	}
-	cred, err := svc.CredentialForKey(ctx, credID.String(), "tp-box")
+	credID := trade(time.Now().Add(time.Hour))
+	cred, err := svc.CredentialForKey(ctx, credID, "tp-box")
 	if err != nil {
 		t.Fatalf("CredentialForKey: %v", err)
 	}
@@ -306,10 +314,45 @@ func TestAPersonsSessionOnAMachineRenewsPastItsCredentialsExpiry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a person's session enrollment on a machine: %v", err)
 	}
-	if err := svc.RetireCredential(ctx, credID.String(), "broker"); err != nil {
+	id := enrolled.ID.String()
+	if _, err := svc.Renew(ctx, id, ""); err != nil {
+		t.Fatalf("the renewal of a person's sign-in session while its credential is live: %v; want it renewed", err)
+	}
+
+	// The expiry passes with no trade, as on a box whose person Google no longer answers for.
+	if _, err := svc.Store.Pool.Exec(ctx, `update launcher_credentials set expires_at = now() - interval '1 second' where id = $1`, credID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Renew(ctx, id, ""); !errors.Is(err, ErrSignInLapsed) {
+		t.Fatalf("the renewal of a person's sign-in session past its credential's expiry = %v, want ErrSignInLapsed", err)
+	}
+
+	if again := trade(time.Now().Add(time.Hour)); again != credID {
+		t.Fatalf("the person's next trade on the box minted credential %s; want the same row %s moved, so the session renews on", again, credID)
+	}
+	if _, err := svc.Renew(ctx, id, ""); err != nil {
+		t.Fatalf("the renewal after the person's identity was traded again: %v; want it renewed", err)
+	}
+
+	// A machine login a person approved names the person and no subject, and lasts as long as
+	// it refreshes: its sessions are not held to its expiry.
+	approved := uuid.New()
+	if _, err := svc.Store.Pool.Exec(ctx, `insert into launcher_credentials (id, operator, host, key_thumbprint, public_jwk, expires_at)
+		values ($1, $2, 'example-host-devbox', 'tp-approved', '{}'::jsonb, now() + interval '1 hour')`, approved, person); err != nil {
+		t.Fatal(err)
+	}
+	approvedCred, err := svc.CredentialForKey(ctx, approved.String(), "tp-approved")
+	if err != nil {
+		t.Fatalf("CredentialForKey(a machine login a person approved): %v", err)
+	}
+	session, err := svc.Create(ctx, approvedCred, Enrollment{Kind: "session", RuntimeID: "devbox-1", Operator: &operator, Thumbprint: "tp-approved-session"})
+	if err != nil {
+		t.Fatalf("a session under a machine login a person approved: %v", err)
+	}
+	if err := svc.RetireCredential(ctx, approved.String(), "broker"); err != nil {
 		t.Fatalf("RetireCredential: %v", err)
 	}
-	if _, err := svc.Renew(ctx, enrolled.ID.String(), ""); err != nil {
-		t.Fatalf("the renewal of a person's session past its sign-in credential's expiry: %v; want it renewed", err)
+	if _, err := svc.Renew(ctx, session.ID.String(), ""); err != nil {
+		t.Fatalf("the renewal of a session under an approved machine login past its expiry: %v; want it renewed", err)
 	}
 }

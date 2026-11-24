@@ -28,7 +28,7 @@
 //	agent-secrets login
 //	agent-secrets register [--wait SECONDS] [--session-id ID] [--projects KEYS] [--exec -- COMMAND [ARGS...]]
 //	agent-secrets identity [--source]
-//	agent-secrets renew [--pod-token-file FILE]
+//	agent-secrets renew [--pod-token-file FILE | --sign-in]
 //	agent-secrets request NAME... [--reason TEXT] [--ttl DURATION] [--json]
 //	agent-secrets status <request_id> [--json]
 //	agent-secrets cancel <request_id>
@@ -162,8 +162,8 @@ var commands = []command{
 		"Exit 0 when this process has a launcher's key dir or a helper session and 1 when it does not,\nasking the broker nothing. With --source, print the source of the broker identity a use\ncommand would take (key-dir, sign-in, helper or machine) and what it is, asking the broker\nand the metadata server where it must and registering nothing; exit 1 with every source's\nreason when none has one."},
 	{"--version", "agent-secrets --version",
 		"Print the release this binary was built as."},
-	{"renew", "agent-secrets renew [--pod-token-file FILE]",
-		"Keep an agent box's or pod's enrollment lease alive, renewing it until interrupted. A pod\nnames its projected service-account token's file, read again before each renewal, so each\nrenewal sends the token of that moment, which the broker checks names the pod the enrollment\nwas made for. POD_TOKEN_REQUIRED, ENROLLMENT_NOT_LIVE, or an older broker's PROOF_INVALID\nsaying \"not live\" exits 76, naming the enrollment, HTTP status and broker code; every other\nrefusal retries."},
+	{"renew", "agent-secrets renew [--pod-token-file FILE | --sign-in]",
+		"Keep an agent box's or pod's enrollment lease alive, renewing it until interrupted. A pod\nnames its projected service-account token's file, read again before each renewal, so each\nrenewal sends the token of that moment, which the broker checks names the pod the enrollment\nwas made for. POD_TOKEN_REQUIRED, ENROLLMENT_NOT_LIVE, or an older broker's PROOF_INVALID\nsaying \"not live\" exits 76, naming the enrollment, HTTP status and broker code; every other\nrefusal retries. With --sign-in, renew the enrollment of the person signed in on this machine\nwhile it is in use, and stop once nothing needs it, trading the person's identity again before\nthe sign-in's credential expires: the commands that sign as the sign-in start this renewer\nthemselves, one for each sign-in, writing to renewer.log in its renewal directory beside the\nsign-in's record. It exits 76 on a refusal for good as above, and 1 once for 30 minutes, or two\nleases where that is longer, no renewal got through or no answer of the broker said whether\nanything needs the enrollment."},
 	{"request", "agent-secrets request NAME... [--reason TEXT] [--ttl DURATION] [--json]",
 		"Request secrets and print the request's id, state and source, the broker's own detail when\nit denied them, and who approves it and where while it waits; exit 75 while it waits for\napproval and 77 when it is denied. A name a person must approve needs\n--reason; with none the whole request is denied. The\ngrant lasts --ttl, or 15 minutes when any secret is human tier and 12 hours\notherwise (until this session ends when every secret is tagged\ndefault-grant=session)."},
 	{"status", "agent-secrets status <request_id> [--json]",
@@ -649,6 +649,10 @@ func buildSigner(stderr io.Writer) (enrollmentID string, signer Signer, err erro
 }
 
 // buildChainSigner is buildSigner with the chain's passOver (signerChain): false for renew alone.
+// A session form's signer that is a person's sign-in keeps that sign-in's enrollment renewed while
+// the machine uses it (signInSource, keepSignIn); one this command cannot keep renewed costs the
+// command nothing, and stderr says why the sign-in's grants and pending requests will end with its
+// lease.
 func buildChainSigner(stderr io.Writer, passOver bool) (enrollmentID string, signer Signer, err error) {
 	wait, err := enrollWait()
 	if err != nil {
@@ -690,11 +694,14 @@ func sessionFailed(stderr io.Writer, prefix string, err error) int {
 // registered now, under a fresh trade of that person's identity, and the record is rewritten
 // with it, so a record that outlived its enrollment heals itself.
 //
-// So does one whose enrollment the broker no longer holds: nothing renews a sign-in's lease, so
-// every enrollment it makes ends after BROKER_LEASE_SECONDS, and without this the box would
-// answer nothing but a dead id until somebody ran `agent-secrets login` again — which would
-// make a second box key and a second sign-in on that person's list (client.reenroller).
-func signInSigner(record cipherclient.SignInRecord, key *ecdsa.PrivateKey) (*fileSigner, error) {
+// So does one whose enrollment the broker no longer holds: an enrollment the renewer did not keep
+// (signin_renewer.go) ends after BROKER_LEASE_SECONDS, and without this the box would answer
+// nothing but a dead id until somebody ran `agent-secrets login` again — which would make a
+// second box key and a second sign-in on that person's list (client.reenroller). keep, nil for
+// renew's chain, keeps the enrollment renewed (signInSource): once for the signer, and again for an
+// enrollment registered on the way, since the renewer that held the one before it may have ended
+// when the broker refused it.
+func signInSigner(record cipherclient.SignInRecord, key *ecdsa.PrivateKey, keep func(person string)) (*fileSigner, error) {
 	// The box key is the sign-in's own, recorded at the broker with it, so it is the key a
 	// registration made again signs with too.
 	register := func(ctx context.Context, _ string) (*ecdsa.PrivateKey, string, error) {
@@ -704,14 +711,19 @@ func signInSigner(record cipherclient.SignInRecord, key *ecdsa.PrivateKey) (*fil
 			return nil, "", err
 		}
 		record = fresh
+		if keep != nil {
+			keep(record.Person)
+		}
 		return key, fresh.EnrollmentID, nil
 	}
 	if record.EnrollmentID == "" {
 		if _, _, err := register(context.Background(), ""); err != nil {
 			return nil, err
 		}
+	} else if keep != nil {
+		keep(record.Person)
 	}
-	return &fileSigner{key: key, enrollmentID: record.EnrollmentID, register: register}, nil
+	return &fileSigner{key: key, enrollmentID: record.EnrollmentID, register: register, person: record.Person}, nil
 }
 
 // sessionContext resolves the broker URL and this process's Signer every session-authenticated
@@ -835,17 +847,27 @@ func cmdKeygen(args []string, stdout, stderr io.Writer) int {
 // (POD_TOKEN_REQUIRED, ENROLLMENT_NOT_LIVE, or an older broker's PROOF_INVALID saying "not
 // live") exits exitRenewRefused (76), so the worker shim stops rather than restarting a renewer
 // that cannot succeed; every other refusal, POD_IDENTITY_MISMATCH and POD_TOKEN_EXPIRED among
-// them, retries.
+// them, retries. With --sign-in it is the renewer of this machine's sign-in instead, which the
+// commands of the person who signed in start themselves and which stops once nothing needs the
+// enrollment (cmdRenewSignIn, signin_renewer.go).
 func cmdRenew(args []string, stdout, stderr io.Writer) int {
 	flagArgs, positional := splitArgs(args, map[string]bool{"pod-token-file": true})
 	flags := newFlagSet("renew", stderr)
 	podTokenFile := flags.String("pod-token-file", "", "a pod's projected service-account token file, read again before every renewal")
+	signIn := flags.Bool("sign-in", false, signInRenewFlag)
 	if err := flags.Parse(flagArgs); err != nil {
 		return exitUsage(err)
 	}
 	if len(positional) > 0 {
 		fmt.Fprintln(stderr, "agent-secrets renew: no arguments are accepted")
 		return exitUsageError
+	}
+	if *signIn {
+		if *podTokenFile != "" {
+			fmt.Fprintln(stderr, "agent-secrets renew: --sign-in renews a person's sign-in, which has no pod token: give one of --sign-in and --pod-token-file")
+			return exitUsageError
+		}
+		return cmdRenewSignIn(stderr)
 	}
 	base, enrollmentID, signer, err := renewContext(stderr)
 	if err != nil {
@@ -898,11 +920,7 @@ func renewLoop(ctx context.Context, c *client, signer Signer, enrollmentID, podT
 			}
 			var refused *apiError
 			if errors.As(err, &refused) && refused.Permanent() {
-				code := refused.Code
-				if code == "" {
-					code = "UNKNOWN"
-				}
-				fmt.Fprintf(stderr, "agent-secrets renew: enrollment %s permanently refused by %s: HTTP %d %s: %s\n", enrollmentID, brokerSource(c.baseURL), refused.Status, code, refused.Message)
+				fmt.Fprintf(stderr, "agent-secrets renew: enrollment %s permanently refused by %s: %s\n", enrollmentID, brokerSource(c.baseURL), refusalWords(refused))
 				return exitRenewRefused
 			}
 			if tokenErr != nil {
@@ -986,6 +1004,7 @@ func cmdRequest(args []string, stdout, stderr io.Writer) int {
 	}
 	switch result.State {
 	case "pending":
+		keepPending(signer, result.RequestID, stderr)
 		return exitPending
 	case "denied":
 		projectHint(stderr, result.Detail)
@@ -1252,6 +1271,10 @@ func cmdExec(args []string, stdout, stderr io.Writer) int {
 	var pollErr error
 	if state == "pending" {
 		reportPending(stderr, c.baseURL, shownID, result.Approver, result.ApproveURL, result.JudgeDeciding, *wait, src())
+		keepPending(signer, requestID, stderr)
+		// A renewer killed while the command waits is started again within a second: the
+		// request waits on the enrollment, which nothing else renews while no other command runs.
+		stopWatch := watchRenewer(signer)
 		judging := result.JudgeDeciding
 		deadline := time.Now().Add(*wait)
 		// backoff is the sleep before the next read after one that came back undecided before
@@ -1297,6 +1320,7 @@ func cmdExec(args []string, stdout, stderr io.Writer) int {
 				backoff = nextBackoff(backoff)
 			}
 		}
+		stopWatch()
 	}
 	switch state {
 	case "granted":

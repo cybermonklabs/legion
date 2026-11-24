@@ -210,6 +210,9 @@ type Broker struct {
 	// startRefreshBound is how long Start waits on its refresh of the kept login; zero means
 	// defaultStartRefreshBound. Only tests shorten it.
 	startRefreshBound time.Duration
+	// signInKeepEvery is how often keepSignIns asks SignIns for the sign-in's credential; zero
+	// means defaultSignInKeepEvery. Only tests shorten it.
+	signInKeepEvery time.Duration
 	// testSave, when set, replaces MachineFile.Save for every save of the machine file, so a test
 	// fails a save the way a full disk does (the unlink still works). No production caller sets it.
 	testSave func(f *MachineFile, path string) error
@@ -775,6 +778,9 @@ const identityShutdownLine = "the helper stopped trading this machine's identity
 // the identity itself stops the loop, logged at ERROR: no retry cures it, and the operator's
 // deployment is what has to change.
 func (b *Broker) startIdentity(ctx context.Context) error {
+	if b.SignIns != nil {
+		go b.keepSignIns(ctx)
+	}
 	first := make(chan struct{})
 	var once sync.Once
 	go func() {
@@ -811,6 +817,43 @@ func (b *Broker) startIdentity(ctx context.Context) error {
 	case <-ctx.Done():
 	}
 	return nil
+}
+
+// defaultSignInKeepEvery is how often keepSignIns asks for the sign-in's credential: a third of
+// the broker's access token's 15 minutes, so each ask finds the token with more than the 5
+// minutes before its end at which the client trades again (cipherclient.Client.Token), or trades.
+const defaultSignInKeepEvery = 5 * time.Minute
+
+// keepSignIns keeps the launcher credential of the person signed in on this box live while the
+// helper runs, until ctx ends. The broker renews a session enrolled under a sign-in only while
+// that credential is live (enroll.Service.Renew, ErrSignInLapsed), and it expires with the
+// person's last traded identity token, an hour after the trade; Current trades again whenever
+// the access token it holds has five minutes or less left, so asking it every
+// defaultSignInKeepEvery trades about every ten minutes, and each trade moves the same
+// credential's expiry. Without it, the credential would be traded only at an enrolment, and a
+// helper that enrolled nothing for an hour would have every session under the sign-in refused
+// its renewal. Nobody signed in is nil at once, and a sign-in refused for good — the person
+// revoked it, or the issuer no longer honours their refresh token — is remembered by Current and
+// trades no more, so its credential lapses and its sessions end: that is how a person who can no
+// longer be traded loses this box. A failure a later ask may cure is logged and asked again at
+// the next tick.
+func (b *Broker) keepSignIns(ctx context.Context) {
+	every := b.signInKeepEvery
+	if every <= 0 {
+		every = defaultSignInKeepEvery
+	}
+	tick := time.NewTicker(every)
+	defer tick.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
+		}
+		if _, err := b.SignIns.Current(ctx); err != nil && ctx.Err() == nil {
+			b.logger().Warn("the helper could not trade the sign-in on this box to keep its launcher credential live; it asks again at the next tick", "error", b.URL.Error(err))
+		}
+	}
 }
 
 func (b *Broker) startRefreshBoundOrDefault() time.Duration {

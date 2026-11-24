@@ -95,6 +95,12 @@ var (
 	// credential its exchange minted is no longer live: revoked, past the expiry its Google
 	// identity token gave it, or its account no longer listed for its service (Renew).
 	ErrMachineLoginEnded = errors.New("the machine login that enrolled this session has ended")
+	// ErrSignInLapsed refuses a person's sign-in session a renewal because the launcher
+	// credential its sign-in holds on that machine is no longer live: past the expiry the
+	// person's last traded identity token gave it, or revoked (Renew). The machine's renewer
+	// trades the person's identity again before then, so it is reached when no trade could be
+	// made: the issuer or the broker refused the person, or the machine stopped trying.
+	ErrSignInLapsed = errors.New("the sign-in that enrolled this session has lapsed: no trade of the person's identity renewed its credential")
 	// ErrSessionHeld refuses an enrollment whose session name another principal holds and the
 	// enrollment's own principal may not take, read from the one table that says who holds a name
 	// — the same one the token exchange binds every token's name in (oauthstore.Store.BindSession,
@@ -1957,10 +1963,19 @@ func (s *Service) verifyPodToken(ctx context.Context, raw string) (PodClaims, er
 // (RevokeCredential), so what this adds is the two endings a revoke is not: the expiry, and the
 // delisting. The session ends one lease later at most, swept as any lapsed one is (EndLapsed).
 //
-// A person's session and a pod's are deliberately not held this way. A pod's renewal already
-// proves the pod's own projected token, and a person's sessions must outlive the hour their
-// box's credential lives: a person signs in once per box and their sessions are theirs until
-// they revoke the sign-in, which ends them at once (RevokePersonSignIn).
+// A person's sign-in session is held the same way, to its sign-in's credential, with
+// ErrSignInLapsed: that credential's expiry is the person's last traded Google identity token's,
+// so a machine whose person can no longer be traded (an account suspended or deleted, a grant
+// revoked at Google) stops renewing within that token's life, and the session ends one lease
+// later at most (more by the length of a broker outage meanwhile, which ServingClock gives back
+// to every lease). The machine keeps the credential live while it renews by trading the person's
+// identity again before it expires (`agent-secrets renew --sign-in`, and agent-secrets-helper's
+// helper.Broker.keepSignIns); each trade moves the expiry of the same credential row
+// (IssueTokenLoginTx), so the session it enrolled renews on. A revoke of the sign-in still ends
+// its sessions at once (RevokePersonSignIn). A person's other sessions, under a machine login a
+// person approved, and a pod's are not held this way: a pod's renewal already proves the pod's
+// own projected token, and a person's machine login lasts as long as it keeps refreshing
+// (BROKER_LAUNCHER_CREDENTIAL_SECONDS).
 //
 // The ratchet is keyed on the pod UID. Every pod enrollment starts with pod_token_renewed_at null,
 // whether migration 0014 found it or Create made it, and the first renewal carrying an accepted
@@ -2027,6 +2042,9 @@ func (s *Service) Renew(ctx context.Context, id, podToken string) (Renewal, erro
 	if kind == "session" && machineCredential(cred) &&
 		!(credLive && s.tokenLoginListed(*cred.Subject, *cred.Service)) {
 		return Renewal{}, ErrMachineLoginEnded
+	}
+	if kind == "session" && signInCredential(cred.Subject) && !credLive {
+		return Renewal{}, ErrSignInLapsed
 	}
 	switch {
 	case kind != "pod" && withToken:

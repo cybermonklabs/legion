@@ -14,6 +14,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -26,6 +27,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/envoy/cipheraddr"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
@@ -292,9 +294,9 @@ func TestLoginTradesUnderThePersonsOwnSessionName(t *testing.T) {
 	}
 }
 
-// TestASignInWhoseLeaseLapsedRegistersItselfAgain: nothing renews a sign-in's enrollment, so
-// every one of them ends after BROKER_LEASE_SECONDS. Before this, the record kept the dead id
-// and every `agent-secrets NAME -- cmd`, `request` and `status` on the box failed until
+// TestASignInWhoseLeaseLapsedRegistersItselfAgain: a sign-in's enrollment that its renewer did not
+// keep (signin_renewer.go) ends after BROKER_LEASE_SECONDS. Before this, the record kept the dead
+// id and every `agent-secrets NAME -- cmd`, `request` and `status` on the box failed until
 // somebody ran `agent-secrets login` again — which made a second box key and a second sign-in
 // on that person's own list. The box registers the session again under the same box key
 // instead, once, and writes the fresh id into the record it already has.
@@ -342,6 +344,89 @@ func TestASignInWhoseLeaseLapsedRegistersItselfAgain(t *testing.T) {
 	}
 	if records, err := store.List(); err != nil || len(records) != 1 {
 		t.Fatalf("the box holds %+v, %v; want the one sign-in it started with", records, err)
+	}
+}
+
+// TestASignInRegisteredAgainOnTheWaySaysItCannotBeKeptRenewed: a command that registers the
+// sign-in's next enrollment on the way keeps that one renewed too, and where it cannot, says so on
+// stderr as it did for the first: two lines here, one for each enrollment, since the renewal
+// directory's place is taken by a file.
+func TestASignInRegisteredAgainOnTheWaySaysItCannotBeKeptRenewed(t *testing.T) {
+	const person = "ada@example.com"
+	broker := newLoginBroker(t)
+	issuer := loginIssuer(t, person)
+	keyDir := t.TempDir()
+	t.Setenv("AGENT_SECRETS_KEY_DIR", keyDir)
+	t.Setenv(cipherclient.SignInDirVar, filepath.Join(t.TempDir(), "signins"))
+	t.Setenv(cipherclient.BrokerURLVar, broker.server.URL)
+	t.Setenv(cipherclient.SessionVar, "")
+	forceMetadataMachine(t)
+	t.Setenv("AGENT_SECRETS_HELPER_SOCK", filepath.Join(t.TempDir(), "absent.sock"))
+	if err := login(context.Background(), io.Discard, &approvingWriter{t: t, issuer: issuer}); err != nil {
+		t.Fatalf("login: %v", err)
+	}
+	store := cipherclient.SignIns(os.Getenv)
+	if err := os.WriteFile(store.RenewalDir(person), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	broker.lapse()
+
+	var stderr strings.Builder
+	_, signer, err := selectSigner(keyDir, &stderr, true)
+	if err != nil {
+		t.Fatalf("selectSigner after the lease lapsed: %v", err)
+	}
+	if _, _, err := newClient(cipheraddr.New(broker.server.URL)).Self(context.Background(), signer); err != nil {
+		t.Fatalf("a call on a lapsed sign-in = %v; want the session registered again and the call answered", err)
+	}
+	want := "agent-secrets: " + person + "'s sign-in enrollment is not kept renewed ("
+	if got := strings.Count(stderr.String(), want); got != 2 {
+		t.Fatalf("stderr %q holds %d lines %q…; want 2, one for each enrollment the command kept", stderr.String(), got, want)
+	}
+}
+
+// TestARenewersTradeIsTheRegistrationsTrade: the trade a sign-in's renewer makes to keep its
+// credential live (tradeForRenewal) is the one the registration makes (tradeSignIn): a fresh
+// identity token from the kept refresh token, beside this machine's own identity, under the
+// person's own session name, answered the credential's expiry. A machine told of no sign-in
+// client trades nothing and answers errSignInUnrenewable, which the renewer stops trading on.
+func TestARenewersTradeIsTheRegistrationsTrade(t *testing.T) {
+	const person = "ada@example.com"
+	broker := newLoginBroker(t)
+	issuer := loginIssuer(t, person)
+	t.Setenv("AGENT_SECRETS_KEY_DIR", t.TempDir())
+	t.Setenv(cipherclient.SignInDirVar, filepath.Join(t.TempDir(), "signins"))
+	t.Setenv(cipherclient.BrokerURLVar, broker.server.URL)
+	t.Setenv(cipherclient.SessionVar, "")
+	forceMetadataMachine(t)
+	if err := login(context.Background(), io.Discard, &approvingWriter{t: t, issuer: issuer}); err != nil {
+		t.Fatalf("login: %v", err)
+	}
+	record, err := cipherclient.SignIns(os.Getenv).Choose("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := record.Key()
+	if err != nil {
+		t.Fatal(err)
+	}
+	trade := tradeForRenewal(cipheraddr.New(broker.server.URL))
+	expires, err := trade(context.Background(), record, key)
+	if want := time.Date(2099, 1, 1, 0, 0, 0, 0, time.UTC); err != nil || !expires.Equal(want) {
+		t.Fatalf("the renewer's trade = %s, %v; want the credential's expiry the broker answered, %s", expires, err, want)
+	}
+	want := cipherclient.SessionFor(record)
+	if traded := broker.tradedSessions(); len(traded) != 2 || traded[1] != want {
+		t.Fatalf("the broker was traded under %q; want login's trade and the renewer's, both under %q", traded, want)
+	}
+
+	t.Setenv(cipherclient.SignInClientIDVar, "")
+	t.Setenv(cipherclient.SignInClientSecretFileVar, "")
+	if _, err := trade(context.Background(), record, key); !errors.Is(err, errSignInUnrenewable) {
+		t.Fatalf("the renewer's trade on a machine told of no sign-in client = %v, want errSignInUnrenewable", err)
+	}
+	if traded := broker.tradedSessions(); len(traded) != 2 {
+		t.Fatalf("the broker was traded %d times; want no trade where nothing could renew the sign-in", len(traded))
 	}
 }
 
