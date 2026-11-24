@@ -31,10 +31,11 @@ func TestDisplayJSONIsTheDisplayReadsTreeAndIsKept(t *testing.T) {
 	}
 }
 
-// The cache the display trees are kept in holds at most what it is given room for, counted as
-// the bytes of the JSON it holds, and the least recently read entry is the one that leaves. The
-// cache itself is shared (bytelru), which has its own tests; this one holds the trees to the
-// bound DisplayCacheBytes promises, under the key this package builds.
+// The cache the display trees are kept in holds at most what it is given room for, and the least
+// recently read entry is the one that leaves. The cache itself is shared (bytelru), which has its
+// own tests; this one holds the trees to the bound DisplayCacheBytes promises, under the key this
+// package builds. What each tree is charged against that bound, its array, its key and its entry
+// (displayCacheEntrySize), is TestTheDisplayCacheHoldsNoMoreLiveHeapThanItsBound's.
 func TestTheDisplayCacheHoldsItsBound(t *testing.T) {
 	const limit int64 = 64
 	cache := bytelru.New[displayCacheKey, json.RawMessage](limit)

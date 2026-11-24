@@ -25,6 +25,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/reearth/ygo/persistence"
 
+	brokerstoretest "github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
@@ -63,11 +64,14 @@ import (
 // go test parses its flags inside m.Run, so a -parallel on the command line still wins.
 const apiTestParallelism = 8
 
+// TestMain runs the package's tests through the Dispatch harness's Main, which waits for their
+// databases to drop and drops their templates, inside the broker harness's Run, which then drops
+// the database brokerstoretest.URL made the contract rows' broker schemas in.
 func TestMain(m *testing.M) {
 	if err := flag.Set("test.parallel", strconv.Itoa(apiTestParallelism)); err != nil {
 		panic("set this package's default -parallel: " + err.Error())
 	}
-	os.Exit(storetest.Main(m))
+	os.Exit(brokerstoretest.Run(func() int { return storetest.Main(m) }))
 }
 
 // sharedAgentTokens is a DISPATCH_AGENT_TOKEN setting parsed as the server parses it at boot.

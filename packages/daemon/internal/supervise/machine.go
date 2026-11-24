@@ -526,10 +526,13 @@ type Claim struct {
 	// clears it (clearUpdate).
 	UpdateLeftRound string
 	// ProviderErrorRun is how many turns of this claim ended in a provider error in a row, and 0
-	// for a claim whose last turn ended with none (promptResulted). At providerErrorRunTold the
-	// project's controller is told once, and not again until a turn with no error puts it back to
-	// zero. It bounds nothing: R2 of dispatch://INFRA-956 forbids an attempt limit here, since a
-	// limit would fail every claim of a project at once in a provider outage.
+	// for a claim whose last turn ended with none. A refused turn a prompt ran is counted from that
+	// prompt's result (promptResulted), and a refused turn that ran no prompt of the daemon's from
+	// its report (unpromptedTurnEnded), in the one run; a clean prompt result and a clean report,
+	// prompted or not, each end it (turnOutcome). At providerErrorRunTold the project's controller
+	// is told once, and not again until a turn with no error puts it back to zero. It bounds
+	// nothing: R2 of dispatch://INFRA-956 forbids an attempt limit here, since a limit would fail
+	// every claim of a project at once in a provider outage.
 	ProviderErrorRun int
 	// Step is what the daemon last saw this claim's agent do, as the tool frames of its stream
 	// report it. It is written by the store's PutClaimStep alone and read back with the claim;
@@ -1480,6 +1483,16 @@ type Machine struct {
 	// the behaviour it had before the set: a turn that starts is taken for the task by askFirst,
 	// and credits the delivery's own copy (Delivery.Carried).
 	outstanding awaitedPrompts
+	// turnOutcomeFailed is whether the turn-outcome report this decision handles failed the
+	// claim: turnOutcome clears it, unpromptedTurnEnded sets it when it fails the claim, and
+	// HandleTurnOutcome reads it before the decision's lock is let go. It is memory only and
+	// means nothing outside that one decision.
+	turnOutcomeFailed bool
+	// turnOutcomeDecided, when it is set, runs once HandleTurnOutcome's decision has let its lock
+	// go and before it returns: the moment another event's decision can run between a report's
+	// decision and a read of the claim made after it. Only a test sets it, to run such a decision
+	// there (TestTheTurnOutcomeAnswerSaysWhetherThisReportFailedTheClaim); it is nil otherwise.
+	turnOutcomeDecided func()
 	// askFirst is a restored claim whose agent an earlier daemon was talking to: a pending
 	// delivery it may already have sent, or a turn it saw start and may not have seen end. The
 	// machine asks the agent (get_state) before it acts on either. On a working claim it is one of
@@ -1856,10 +1869,11 @@ func NewMachine(ctx context.Context, deps Deps, c Claim) (*Machine, error) {
 // answers ErrSuspendHeld (holdSuspension). A request the wake pacing never makes wait, reaching a
 // claim a paced wake parked with no process, drops that wake before the lookup and is then
 // decided against the state the gate found (dropWakeFor); an operator's retry no row of that state
-// decides — queued, suspended, or launching for a try the pause held after its write — runs the
-// dropped launch itself (runDroppedLaunchForRetry); an operator's task the claim
-// can take, over a launch parked above a process the claim still records, runs that launch first,
-// so the row that queues the task is the row of the claim that launch leaves (runParkedLaunchNow).
+// decides — queued, suspended, or launching for a try the pause held after its write or a start
+// whose pod grant the pause met — runs the dropped launch itself (runDroppedLaunchForRetry); an
+// operator's task the claim can take, over a launch parked above a process the claim still records,
+// runs that launch first, so the row that queues the task is the row of the claim that launch
+// leaves (runParkedLaunchNow).
 //
 // Handle returns when the decision is made, which includes the runtime call it makes: a stop
 // waits out its grace, a resume waits out the previous incarnation. A caller feeding many claims
@@ -1883,8 +1897,38 @@ func NewMachine(ctx context.Context, deps Deps, c Claim) (*Machine, error) {
 // takes the start out of the gate and names that row's end: a suspension's or a retirement's
 // (endPodPark, dispatch://INFRA-5297).
 //
-// Handle gives ev through the store's rule first; the comment that opens its body says why.
+// Handle gives ev through the store's rule first; the comment that opens handle's body says why.
 func (m *Machine) Handle(ctx context.Context, ev Event) error {
+	return m.handle(ctx, ev, nil)
+}
+
+// TurnOutcomeAnswer is what one turn-outcome report's decision left, read under that decision's
+// own lock (HandleTurnOutcome): the claim's run of refused turns (Claim.RefusedRun), and whether
+// this report failed the claim, which only the report of a turn that ran no prompt of the
+// daemon's, refused with a status that cannot clear, does (unpromptedTurnEnded).
+type TurnOutcomeAnswer struct {
+	RefusedRun int
+	Failed     bool
+}
+
+// HandleTurnOutcome is Handle for one turn-outcome report, answering what that decision left. The
+// answer is read before the lock is let go, so a decision of another event that runs next — a
+// prompt result's 400, or a death that spends the launch budget — cannot make a clean or prompted
+// report answer that it failed the claim, as a read of the claim after Handle returned could.
+func (m *Machine) HandleTurnOutcome(ctx context.Context, r RequestTurnOutcome) (TurnOutcomeAnswer, error) {
+	var answer TurnOutcomeAnswer
+	err := m.handle(ctx, r, func() {
+		answer = TurnOutcomeAnswer{RefusedRun: m.claim.RefusedRun(), Failed: m.turnOutcomeFailed}
+	})
+	if m.turnOutcomeDecided != nil {
+		m.turnOutcomeDecided()
+	}
+	return answer, err
+}
+
+// handle is Handle, and calls read, when it is given, at the end of the decision with the lock
+// still held, whatever the decision returned.
+func (m *Machine) handle(ctx context.Context, ev Event, read func()) error {
 	// An event is a far side's or an agent's words — a session id, a task, an update round's id
 	// and reasons, a worker's head — and the claim keeps each text as the store keeps it, so the
 	// claim in memory, the store and a restart agree. So the event is given through the store's
@@ -1896,6 +1940,9 @@ func (m *Machine) Handle(ctx context.Context, ev Event) error {
 	}
 	m.mu.Lock()
 	defer m.unlock()
+	if read != nil {
+		defer read()
+	}
 	// A refresh post carries a credit of the gate, and this decision is the last place that credit
 	// can come back if the machine does not take it: a state whose row ignores the post, a settle
 	// or fence that returns first, or a post for another claim (RefreshGate, the rule of return).
@@ -2921,10 +2968,10 @@ func (m *Machine) launch(ctx context.Context, cause string) error {
 // could read it. A retry raised anew from the top — the lifecycle check's (again) and every one
 // relaunchLater arms — is a request's no longer, and passes false.
 //
-// turn is the moment the request already reserved for this launch in the wake pacing
-// (RequestSpawn.Turn), which the gate takes in place of a reservation of its own, and the zero
-// time for every launch that reserved none. Only the gate reads it, and no field of the machine
-// holds it; a retry raised anew from the top reserves afresh, passing the zero time.
+// turn is the moment the request already reserved for this launch in the wake pacing, the zero
+// time for every launch that reserved none, which the gate decides by the rule RequestSpawn.Turn
+// states. Only the gate reads it, and no field of the machine holds it; a retry raised anew from
+// the top reserves afresh, passing the zero time.
 func (m *Machine) launchAfter(ctx context.Context, charged, exempt, requested bool, turn time.Time, cause string) error {
 	again := func(ctx context.Context) error { return m.launchAfter(ctx, charged, exempt, false, time.Time{}, cause) }
 	if err := m.checkLaunch(ctx); err != nil {
@@ -3866,10 +3913,10 @@ func deathCause(observation runtime.Observation) string {
 
 // AbandonedSession is a session a claim stopped resuming: the id and transcript path it recorded
 // for it, why it was left behind, and when. Why is the sentence whoever abandoned it wrote — the
-// failure of a claim the provider refused out of its budget, the reason an operator's retry gave,
-// the runtime's account of a session no store holds — and it is what the agent that replaces the
-// session is told, so it reads the provider's own words for the refusal, the context size in them
-// included, rather than a sentence the daemon invented.
+// failure of a retried claim whose provider refused the session's last turns, the reason an
+// operator's retry gave, the runtime's account of a session no store holds — and it is what the
+// agent that replaces the session is told, so it reads the daemon's own record of what happened
+// rather than a sentence invented for the prompt.
 type AbandonedSession struct {
 	Session     string    `json:"session"`
 	SessionFile string    `json:"sessionFile,omitempty"`

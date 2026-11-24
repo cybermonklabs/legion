@@ -284,17 +284,15 @@ func aGrantedStartCutBeforeItRan(t *testing.T) {
 		{name: "a close of the issue", state: StateRetired, ended: "retirement", cut: func(h *harness, r *podRole) error {
 			return h.postPromptly(r, RequestIssueClose{Claim: r.token})
 		}},
-		// The provider's refusals of the turns of the process the launch let go, which every live
-		// state takes, reach the launch failure limit: the claim fails, which lets its process go
-		// (fail, letGo), and the start it was to make is that process's end.
+		// A turn-outcome report, which every live state takes, of a turn that ran no prompt of
+		// the daemon's and that the provider refused with a status that cannot clear, at the
+		// generation the claim stands at: the claim fails at once (unpromptedTurnEnded, fail),
+		// which lets its process go (letGo), and the start it was to make is that process's end.
+		// A run of refused reports fails no claim (dispatch://INFRA-4508), so one such report is
+		// the turn-outcome path to a failure.
 		{name: "a failure of its claim", state: StateFailed, ended: "process end", cut: func(h *harness, r *podRole) error {
-			for sequence := range uint64(h.deps.Limits.LaunchFailures) {
-				if err := h.postPromptly(r, RequestTurnOutcome{Claim: r.token, Generation: 1, Sequence: sequence + 1, Refused: true,
-					Message: "the provider refused the turn"}); err != nil {
-					return err
-				}
-			}
-			return nil
+			return h.postPromptly(r, RequestTurnOutcome{Claim: r.token, Generation: r.m.View().Claim.Generation, Sequence: 1,
+				Refused: true, Message: "400 the provider refused the turn", HTTPStatus: 400, Unprompted: true})
 		}},
 		// The wake pacing's park replaces the gate's (parkWake, waitOnMachine). No event of the
 		// table raises a second launch over a claim whose launch waits at the gate, so the case

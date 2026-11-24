@@ -449,11 +449,11 @@ func printCompaction(w io.Writer, answer []byte) error {
 // refused, having asked for every one. A claim an operator stopped is retired rather than failed,
 // so --failed passes over it: name it with --claim.
 //
-// --fresh-session starts the claim in a new session rather than resuming the recorded one, which
-// is what a claim whose provider refused its session needs: resuming it would be refused again.
-// The daemon starts one of its own accord for a claim the provider refused out of its budget,
-// whoever retried it, so the flag is for every other reason an operator has to leave a session
-// behind — an agent wedged in a way no budget counts among them.
+// --fresh-session starts the claim in a new session rather than resuming the recorded one. Every
+// other retry resumes the recorded session with fresh budgets, whatever its run of refused turns
+// (supervise's freshSession): a new session is the operator's or the controller's choice, for an
+// agent wedged in a way no budget counts, or a session its provider keeps refusing when a new one
+// would not be.
 func claimsRetry(c *claimsCall) action {
 	token := c.flags.String("claim", "", "the claim's token (this, or --failed)")
 	failed := c.flags.Bool("failed", false, "retry every claim the daemon holds failed")

@@ -436,10 +436,15 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 	// would let their wakes out on the same instants, and the organization they share would see
 	// both bursts in one minute. A rate of zero is the pacing off, and each lane is handed no
 	// Reserve at all rather than one that paces nothing, which is how both read the pacing off
-	// (workflow.Config.Reserve, supervise.WakePace.Reserve).
-	var reserveWake func(time.Time) time.Time
+	// (workflow.Config.Reserve, supervise.WakePace.Reserve). wakeInterval is what one wake of it
+	// costs, which the gate reads a launch's lateness by (supervise.WakePace.Interval).
+	var (
+		reserveWake  func(time.Time) time.Time
+		wakeInterval time.Duration
+	)
 	if cfg.WorkerWakesPerMinute > 0 {
-		reserveWake = wakepace.New(cfg.WorkerWakesPerMinute, cfg.WorkerWakeBurst, rand.N[time.Duration]).Reserve
+		limiter := wakepace.New(cfg.WorkerWakesPerMinute, cfg.WorkerWakeBurst, rand.N[time.Duration])
+		reserveWake, wakeInterval = limiter.Reserve, limiter.Interval()
 	}
 	// The one gate of the stale-plugin refresh lane, built here because K is that same rate: the
 	// lane may hold one minute of the pacing at a time, and the sweep a minute later admits the
@@ -566,7 +571,7 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 	if workflow != nil {
 		apps, pauses = workflow.apps, workflow.pauses
 	}
-	s, err := openSupervision(boot, cfg, log, plan, st, apps, reserveWake, refreshGate, pauses)
+	s, err := openSupervision(boot, cfg, log, plan, st, apps, reserveWake, wakeInterval, refreshGate, pauses)
 	if err != nil {
 		listener.Close()
 		workflow.stop()
@@ -1742,8 +1747,9 @@ func pacedCatchUps(ctx context.Context, tx pgx.Tx, records record.Store, project
 // reserve is the daemon's one wake limiter as the machines reach it (run builds it, before the
 // workflow, which reserves from the same one): the moment each launch may run, and nil while the
 // operator paces nothing, which is the gate's reading of the pacing off (supervise's
-// reserveWake). The rate and the burst go with it for the line every wake writes, never for that
-// decision (supervise.WakePace).
+// reserveWake). interval is that limiter's Interval, and it must come from the same limiter: the
+// gate reads how late a launch whose turn the boot reserved may run by it (supervise.WakePace). The
+// rate and the burst go with them for the line every wake writes, never for that decision.
 //
 // refreshGate is the daemon's one stale-plugin refresh gate, threaded exactly as reserve is and
 // from the same place (run builds both, from the one rate): it goes on the machines' Deps, so
@@ -1755,7 +1761,8 @@ func pacedCatchUps(ctx context.Context, tx pgx.Tx, records record.Store, project
 // (Deps.Paused, the service's one atomic load), write a pause's stop through its stop transaction
 // (Deps.PauseStopped) and stamp each paced launch's let-out moment through it (Deps.WakeLetOut);
 // it reads the machines this supervisor holds for its catch-up and its resume.
-func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, p plan, st *store.Store, apps appauth.Source, reserve func(time.Time) time.Time, refreshGate supervise.RefreshAdmitter, pauses *projectPause) (*supervision, error) {
+func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, p plan, st *store.Store, apps appauth.Source,
+	reserve func(time.Time) time.Time, interval time.Duration, refreshGate supervise.RefreshAdmitter, pauses *projectPause) (*supervision, error) {
 	claims, err := st.Claims(boot)
 	if err != nil {
 		return nil, err
@@ -1848,9 +1855,10 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 			LaunchBackoff:         launchBackoffFirst,
 		},
 		WakePace: supervise.WakePace{
-			Reserve: reserve,
-			Rate:    cfg.WorkerWakesPerMinute,
-			Burst:   cfg.WorkerWakeBurst,
+			Reserve:  reserve,
+			Interval: interval,
+			Rate:     cfg.WorkerWakesPerMinute,
+			Burst:    cfg.WorkerWakeBurst,
 		},
 		RefreshGate:        refreshGate,
 		PodStarts:          podStarts(cfg, p.clock),
