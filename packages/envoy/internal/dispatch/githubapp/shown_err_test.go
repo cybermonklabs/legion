@@ -102,7 +102,7 @@ func TestATransportErrorAfterALongURLStillNamesItsCause(t *testing.T) {
 		w.WriteHeader(http.StatusInternalServerError)
 	})
 	branch := strings.Repeat("枝", 60)
-	whole := client.base + "/repos/acme/web/git/ref/heads/" + url.PathEscape(branch)
+	whole := client.base.String() + "/repos/acme/web/git/ref/heads/" + url.PathEscape(branch)
 	shownURL := ShownBody(whole)
 	if shownURL == whole {
 		t.Fatalf("the URL is %d bytes, which ShownBody shows whole; the test needs one it cuts", len(whole))
@@ -143,7 +143,7 @@ func TestATransportErrorAfterALongURLStillNamesItsCause(t *testing.T) {
 // (a *time.ParseError here), whose text quotes the value. Each row is an expires_at in the 201
 // GitHub answers an installation token mint with: 100,000 bytes that are no time, and a valid
 // time with 100,000 bytes after it.
-func TestADecodeErrorOfALongValueIsCutToTheBound(t *testing.T) {
+func TestADecodeErrorOfALongValueHoldsNoneOfIt(t *testing.T) {
 	const prefix = "decode installation token: "
 	long := strings.Repeat("v", 100_000)
 	extra := strings.Repeat("x", 100_000)
@@ -246,7 +246,7 @@ func TestShownErrIsNeverLongerThanShownErrMost(t *testing.T) {
 // reaches no *json.UnmarshalTypeError, whose Value copies it. The number here is an id of 1,000
 // digits in the 200 GitHub answers an installation lookup with (installationPayload's ID is an
 // int64).
-func TestATypeErrorOfALongNumberIsCutToTheBound(t *testing.T) {
+func TestATypeErrorOfALongNumberHoldsNoneOfIt(t *testing.T) {
 	literal := strings.Repeat("9", 1000)
 	client := branchServer(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet || r.URL.Path != "/repos/acme/web/installation" {
@@ -320,7 +320,7 @@ func TestABlobErrorShowsTheTreesShaAndPathToABound(t *testing.T) {
 				fmt.Fprint(w, row.answer)
 			})
 			listing := Dir{SHA: "t1", Files: []DirFile{{Name: "a.md", Path: row.path, SHA: row.sha, Size: row.size}}}
-			target := client.base + "/repos/acme/web/git/blobs/" + url.PathEscape(row.sha)
+			target := client.base.String() + "/repos/acme/web/git/blobs/" + url.PathEscape(row.sha)
 			want := strings.ReplaceAll(row.want, "{target}", ShownBody(target))
 
 			_, err := client.DirFiles(context.Background(), "ghs_test", "acme", "web", listing)
@@ -390,7 +390,7 @@ func TestAStatusErrorShowsItsTargetToABound(t *testing.T) {
 					githubtest.Unexpected(t, w, r)
 				}
 			})
-			whole := client.base + row.target
+			whole := client.base.String() + row.target
 			shown := ShownBody(whole)
 			if shown == whole || len(whole) > nextLinkMaxBytes {
 				t.Fatalf("the target is %d bytes; the test needs one that ShownBody cuts, of at most nextLinkMaxBytes (%d)", len(whole), nextLinkMaxBytes)

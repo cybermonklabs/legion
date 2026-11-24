@@ -45,7 +45,10 @@ func (c *Client) Deliveries(ctx context.Context, since time.Time, before func() 
 		return nil, ErrNoAppKey
 	}
 	var listed []Delivery
-	target := c.base + "/app/hook/deliveries?per_page=100"
+	target, err := c.target("/app/hook/deliveries?per_page=100")
+	if err != nil {
+		return nil, err
+	}
 	for target != "" {
 		if before != nil {
 			if err := before(); err != nil {
@@ -66,13 +69,13 @@ func (c *Client) Deliveries(ctx context.Context, since time.Time, before func() 
 		if status != http.StatusOK {
 			return nil, fmt.Errorf("GET %s: %s", ShownBody(target), StatusText(status, body.Words().String()))
 		}
-		next, err := nextLink(header.Get("Link"), c.base)
+		next, err := nextLink(header.Get("Link"), c.base.String())
 		if err != nil {
 			return nil, err
 		}
 		var page []Delivery
 		if err := body.Decode(&page); err != nil {
-			return nil, fmt.Errorf("decode webhook deliveries: %w", ShownErr(err))
+			return nil, fmt.Errorf("decode webhook deliveries: %w", err)
 		}
 		for _, delivery := range page {
 			if delivery.DeliveredAt.Before(since) {
@@ -101,7 +104,10 @@ func (c *Client) Redeliver(ctx context.Context, deliveryID int64) error {
 	if err != nil {
 		return err
 	}
-	target := c.base + "/app/hook/deliveries/" + strconv.FormatInt(deliveryID, 10) + "/attempts"
+	target, err := c.target("/app/hook/deliveries/" + strconv.FormatInt(deliveryID, 10) + "/attempts")
+	if err != nil {
+		return err
+	}
 	body, status, header, err := c.request(ctx, AppScope, http.MethodPost, target, "Bearer "+jwt, mediaTypeJSON, "", nil, responseLimit)
 	if err != nil {
 		return err

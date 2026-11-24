@@ -10,10 +10,19 @@ package githubapp
 // carry GitHub's text out of the answer whole, so the answer is decoded typed - each object's
 // members that its readers read, and no other - and each object is then built into that map,
 // every member as encoding/json's own map of the object held it (scalar, objectMember).
+//
+// A listing's own type is its one member table: each member is named once, in its json tag, which
+// is where encoding/json reads it from and where objectOf reads it to build the map. A member
+// added to a listing is therefore in the map its readers take, and one left out of the map is
+// impossible; the hand-written map of each listing dropped latest_check_runs_count from the check
+// suites while every test of this package stayed green.
 
 import (
 	"bytes"
 	"encoding/json"
+	"reflect"
+	"strings"
+	"sync"
 )
 
 // held is what one member of a listed object held: nothing (GitHub left it out, or sent a kind no
@@ -28,6 +37,13 @@ const (
 	heldBool
 	heldObject
 )
+
+// member is one member of a listed object: a value that writes what it decoded into the map of
+// the object, under the name its own json tag gives. Every member of every listing below is one
+// of the two (scalar, objectMember), which objectOf reads each listing's members as.
+type member interface {
+	put(object map[string]any, name string)
+}
 
 // scalar is one member of a listed object that its readers read as a JSON scalar, held as
 // encoding/json holds that member in a map of the object: a string, a float64, a bool or null,
@@ -102,14 +118,14 @@ func (m *objectMember[T]) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// put writes m into object under name, its value as the map mapped builds of it, and nothing
-// where m holds nothing.
-func (m *objectMember[T]) put(object map[string]any, name string, mapped func(*T) map[string]any) {
+// put writes m into object under name, its value as the map of its own members (objectOf), and
+// nothing where m holds nothing.
+func (m *objectMember[T]) put(object map[string]any, name string) {
 	switch m.held {
 	case heldNull:
 		object[name] = nil
 	case heldObject:
-		object[name] = mapped(&m.value)
+		object[name] = objectOf(&m.value)
 	}
 }
 
@@ -123,19 +139,67 @@ func leadingByte(data []byte) byte {
 	return data[0]
 }
 
-// objectsOf is each listed object as the map mapped builds of it, nil for an item GitHub listed as
-// null and nil for no list, as encoding/json's own decode of the list into maps answered both.
-func objectsOf[T any](listed []*T, mapped func(*T) map[string]any) []map[string]any {
+// objectsOf is each listed object as the map of its members, nil for an item GitHub listed as null
+// and nil for no list, as encoding/json's own decode of the list into maps answered both.
+func objectsOf[T any](listed []*T) []map[string]any {
 	if listed == nil {
 		return nil
 	}
 	objects := make([]map[string]any, len(listed))
 	for i, item := range listed {
 		if item != nil {
-			objects[i] = mapped(item)
+			objects[i] = objectOf(item)
 		}
 	}
 	return objects
+}
+
+// objectOf is one listed object as the map its readers take: each member the listing declares,
+// under the name that member's json tag gives, written as the member writes itself (scalar.put,
+// objectMember.put), and nothing for a member that holds nothing.
+func objectOf[T any](listed *T) map[string]any {
+	members := membersOf(reflect.TypeFor[T]())
+	object := make(map[string]any, len(members))
+	held := reflect.ValueOf(listed).Elem()
+	for _, m := range members {
+		held.Field(m.at).Addr().Interface().(member).put(object, m.name)
+	}
+	return object
+}
+
+// listedMember is one member of a listing's table: where the member sits in the listing's type and
+// the name its json tag gives.
+type listedMember struct {
+	at   int
+	name string
+}
+
+// memberTables holds each listing's member table, read from its type once (reflect.Type to
+// []listedMember).
+var memberTables sync.Map
+
+// memberType is the interface every member of a listing implements, through a pointer to it.
+var memberType = reflect.TypeFor[member]()
+
+// membersOf is the member table of listed, read from the type's own fields. A field that is not an
+// exported member under a json name is this package's own mistake, not an answer's, and panics:
+// such a field would reach the map under no name, or not at all, and each listing's own test reads
+// every listing through here.
+func membersOf(listed reflect.Type) []listedMember {
+	if table, ok := memberTables.Load(listed); ok {
+		return table.([]listedMember)
+	}
+	table := make([]listedMember, 0, listed.NumField())
+	for at := range listed.NumField() {
+		field := listed.Field(at)
+		name, _, _ := strings.Cut(field.Tag.Get("json"), ",")
+		if !field.IsExported() || name == "" || !reflect.PointerTo(field.Type).Implements(memberType) {
+			panic("githubapp: " + listed.String() + "'s " + field.Name + " is no exported member of a listed object under a json name")
+		}
+		table = append(table, listedMember{at: at, name: name})
+	}
+	memberTables.Store(listed, table)
+	return table
 }
 
 // listedRun is one check run of GET /repos/{owner}/{repo}/commits/{sha}/check-runs, the members
@@ -156,21 +220,6 @@ type listedRun struct {
 	Output      objectMember[listedOutput] `json:"output"`
 }
 
-func (r *listedRun) object() map[string]any {
-	object := make(map[string]any, 10)
-	r.ID.put(object, "id")
-	r.Name.put(object, "name")
-	r.HeadSHA.put(object, "head_sha")
-	r.Status.put(object, "status")
-	r.Conclusion.put(object, "conclusion")
-	r.HTMLURL.put(object, "html_url")
-	r.StartedAt.put(object, "started_at")
-	r.CompletedAt.put(object, "completed_at")
-	r.App.put(object, "app", (*listedApp).object)
-	r.Output.put(object, "output", (*listedOutput).object)
-	return object
-}
-
 // listedSuite is one check suite of GET /repos/{owner}/{repo}/commits/{sha}/check-suites, the
 // members its readers read: contracts.GithubCIObservation reads its id, head_sha, status,
 // conclusion, updated_at and app.id, and the CI reconcile's verify read (cireconcile's
@@ -186,18 +235,6 @@ type listedSuite struct {
 	App                  objectMember[listedApp] `json:"app"`
 }
 
-func (s *listedSuite) object() map[string]any {
-	object := make(map[string]any, 7)
-	s.ID.put(object, "id")
-	s.HeadSHA.put(object, "head_sha")
-	s.Status.put(object, "status")
-	s.Conclusion.put(object, "conclusion")
-	s.UpdatedAt.put(object, "updated_at")
-	s.LatestCheckRunsCount.put(object, "latest_check_runs_count")
-	s.App.put(object, "app", (*listedApp).object)
-	return object
-}
-
 // listedStatus is one commit status of GET /repos/{owner}/{repo}/commits/{sha}/status, the
 // members contracts.GithubStatusObservation reads: its context, state, created_at, target_url and
 // description.
@@ -209,16 +246,6 @@ type listedStatus struct {
 	Description scalar `json:"description"`
 }
 
-func (s *listedStatus) object() map[string]any {
-	object := make(map[string]any, 5)
-	s.Context.put(object, "context")
-	s.State.put(object, "state")
-	s.CreatedAt.put(object, "created_at")
-	s.TargetURL.put(object, "target_url")
-	s.Description.put(object, "description")
-	return object
-}
-
 // listedApp is the App a check run or a check suite names: its id, which the review App's rule
 // and the record read, and its slug, which a CI result names its actor by.
 type listedApp struct {
@@ -226,22 +253,8 @@ type listedApp struct {
 	Slug scalar `json:"slug"`
 }
 
-func (a *listedApp) object() map[string]any {
-	object := make(map[string]any, 2)
-	a.ID.put(object, "id")
-	a.Slug.put(object, "slug")
-	return object
-}
-
 // listedOutput is a check run's output: its title and summary, which a CI result reports.
 type listedOutput struct {
 	Title   scalar `json:"title"`
 	Summary scalar `json:"summary"`
-}
-
-func (o *listedOutput) object() map[string]any {
-	object := make(map[string]any, 2)
-	o.Title.put(object, "title")
-	o.Summary.put(object, "summary")
-	return object
 }
