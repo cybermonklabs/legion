@@ -24,6 +24,14 @@ import (
 // package spells, never the server; a failure already put in words (a classified) keeps those
 // words alone, with no code added to them again. It unwraps to err, so errors.Is and errors.As
 // still classify it.
+//
+// It is how the error of a request the program sent (http.Client.Do's) to such a server prints,
+// so a call site that prints one through Class needs no words of its own on why: net/http's text
+// of that error can quote the answering party's words - a Location that does not parse, which
+// net/http reads before any redirect policy is asked; the URL of a redirect the client followed,
+// or the Location as it came of one the policy refused; a status line or a header line that does
+// not parse; x509's text of what the certificate that party sent holds - and that party can write
+// a credential the request carried there. Class prints none of that text.
 func Class(err error) error {
 	if err == nil {
 		return nil

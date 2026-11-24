@@ -285,6 +285,19 @@ func (c *called) Unwrap() error { return c.err }
 // Cause is Error without the *url.Error's own wrapper, for a message that names the call itself:
 // the error the *url.Error wraps when that error's text is the text printable checked, and
 // otherwise that text, or the class alone where printable does not pass err, unwrapping to err.
+//
+// Cause, Error and Class are how the error of a request the program sent (http.Client.Do's)
+// prints, so a call site that prints one through them needs no words of its own on why: net/http's
+// text of that error can quote the answering party's words, and that party can write a credential
+// the request carried there. It quotes a Location that does not parse, which net/http reads before
+// any redirect policy is asked; it names the URL of a redirect the client followed, and for one
+// the policy refused the Location as it came; it quotes a status line or a header line that does
+// not parse; and x509's text of a certificate failure names what the certificate the answering
+// party sent holds. Cause prints none of that text: only the text printable checked (a transport
+// failure's own text, a TLS record or certificate failure by fixed words, transportWords) beside
+// the configured URL the request was built from and a request URL Call prints, and the failure's
+// class beside any other; Class prints the class alone; and a request whose URL Call does not
+// print, such as a GitHub API path, prints through Unanswered.
 func Cause(err error, raw string) error {
 	if err == nil {
 		return nil
