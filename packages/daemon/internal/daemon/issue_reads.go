@@ -83,8 +83,10 @@ func (w *workflowRuntime) readIssuePullRequest(ctx context.Context, issue string
 	// which the GitHub consumer's backlog can hold for a while.
 	prCtx, cancelReads := context.WithTimeout(ctx, issueRead)
 	defer cancelReads()
-	// A failed apply is logged there, and the next read of the issue applies it again.
-	_ = w.applyMergeability(ctx, github, pr, pull, answeredAt, w.mergeabilityEventID(pr, answeredAt))
+	if err := w.applyMergeability(ctx, github, pr, pull, answeredAt, w.mergeabilityEventID(pr, answeredAt)); err != nil && ctx.Err() == nil {
+		w.log.Warn("apply whether a pull request's head can be merged into its base; the issue's next read applies it again",
+			"issue", pr.Issue, "repo", pr.Repo, "pullRequest", pr.Number, "head", pull.Head.SHA, "error", err)
+	}
 	if w.readReviews(ctx, prCtx, github, pr) {
 		return false, nil
 	}

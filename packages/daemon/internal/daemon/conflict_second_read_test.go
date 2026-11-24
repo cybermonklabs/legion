@@ -273,13 +273,17 @@ func secondReadRow(t *testing.T, pool *store.Pool) (due time.Time, attempts int,
 // of its second read (secondReadRunner). The second read's tests and the merge-state reads' share
 // it, so a read of either kind meets the same GitHub. A batch's GraphQL query that asks for pull
 // request 86 by number (readBase) is a read of it too: it takes the next answer and counts as a
-// read, answered as GraphQL answers the same pull request (graphQLAnswerOf).
+// read, answered as GraphQL answers the same pull request (graphQLAnswerOf). refuseREST, once set,
+// has the next GET /pulls/86 answered refusedPull, whatever its count, and counted as a read, while
+// a batch's query takes its answer as before: a test sets it to refuse a climb's read and no
+// other, whichever reaches GitHub first.
 type readRig struct {
-	pool   *store.Pool
-	w      *workflowRuntime
-	runner *outbox
-	logs   *syncBuffer
-	reads  atomic.Int32
+	pool       *store.Pool
+	w          *workflowRuntime
+	runner     *outbox
+	logs       *syncBuffer
+	reads      atomic.Int32
+	refuseREST atomic.Bool
 }
 
 // pullAnswer is GitHub's answer to one read of pull request 86: a status, the headers GitHub sends
@@ -297,7 +301,11 @@ func newReadRig(t *testing.T, seed func(*testing.T, *store.Pool), answer func(re
 	api := githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/repos/acme/widgets/pulls/86":
-			got := answer(rig.reads.Add(1))
+			read := rig.reads.Add(1)
+			got := refusedPull
+			if !rig.refuseREST.CompareAndSwap(true, false) {
+				got = answer(read)
+			}
 			for name, values := range got.header {
 				w.Header()[name] = values
 			}

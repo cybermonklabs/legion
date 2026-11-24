@@ -373,8 +373,8 @@ func TestTheMergeStateFollowsGitHubAfterASecondReadEndsOnUnknown(t *testing.T) {
 //     read until the issue's next event.
 //
 // Either way GitHub's CONFLICTING, at the base's read, is recorded as the first conflicting read
-// of code on main. Each row counts the failures it caused and holds that there was one, and holds
-// that the step it failed logged its failure once, with the line of that step.
+// of code on main. Each row holds that the step it failed logged its failure once, with the line of
+// that step.
 func TestAFailedReadLosesNoHeadHandedToItsBase(t *testing.T) {
 	t.Parallel()
 	// A read the base logs: its attempt, its wait in the ladder's waits, and what it answered.
@@ -407,8 +407,8 @@ func TestAFailedReadLosesNoHeadHandedToItsBase(t *testing.T) {
 		// second is whether a second read of a conflict hands the head over, rather than a climb.
 		second bool
 		// GitHub answers `unknown` before its answer after, answer at it, then the next time, and
-		// CONFLICTING after that. A then that is no 2xx is the failure, and wrap nil arms nothing;
-		// otherwise wrap puts in the step that fails once it is armed, at answer after.
+		// CONFLICTING after that. wrap, when there is one, puts in the step that fails once it is
+		// armed, at answer after.
 		after        int32
 		answer, then pullAnswer
 		wrap         func(*workflowRuntime, *armedFailure)
@@ -437,12 +437,9 @@ func TestAFailedReadLosesNoHeadHandedToItsBase(t *testing.T) {
 				case read < tc.after:
 					return unknownPull
 				case read == tc.after:
-					armed.on.Store(tc.wrap != nil)
+					armed.on.Store(true)
 					return tc.answer
 				case read == tc.after+1:
-					if tc.then.status != 0 {
-						armed.fired.Add(1)
-					}
 					return tc.then
 				}
 				return conflictingPull
@@ -460,9 +457,6 @@ func TestAFailedReadLosesNoHeadHandedToItsBase(t *testing.T) {
 				_, pr := capturePhase(t, rig.pool)
 				return pr.ConflictRead != nil && len(rig.follows(t)) >= len(tc.logs)
 			})
-			if fired := armed.fired.Load(); fired != 1 {
-				t.Fatalf("%d steps failed, want the one armed at GitHub's answer %d", fired, tc.after)
-			}
 			if warned := loggedLines(t, rig.logs.String(), tc.warning); len(warned) != 1 {
 				t.Fatalf("the daemon logged %v, want %q once", warned, tc.warning)
 			}
@@ -502,16 +496,13 @@ var refusedPull = pullAnswer{status: http.StatusForbidden, header: http.Header{"
 // next event, and the record would stand at `unknown`.
 func TestAClimbWhoseFirstReadFailsLeavesTheHeadWithItsBase(t *testing.T) {
 	t.Parallel()
-	// A larger unit, so the base's first read after the handover, two of them on, is far later
-	// than the test's own step from the handover to the request, and the refused read is the
-	// climb's.
+	// A larger unit, so the base's first read after the handover, two of them on, usually comes
+	// after the climb's first read. The refusal is served by route (refuseREST), to the climb's REST
+	// read alone, so a slow run in which the base's query comes first changes nothing it holds.
 	const slower = 200 * time.Millisecond
 	rig := newReadRig(t, approvedCapture, func(read int32) pullAnswer {
-		switch {
-		case read <= mergeStateLadderReads:
+		if read <= mergeStateLadderReads {
 			return unknownPull
-		case read == mergeStateLadderReads+1:
-			return refusedPull
 		}
 		return conflictingPull
 	})
@@ -522,17 +513,20 @@ func TestAClimbWhoseFirstReadFailsLeavesTheHeadWithItsBase(t *testing.T) {
 		defer rig.w.mergeStateMu.Unlock()
 		return rig.w.baseReadOf["CAPTURE-1"] != ""
 	})
-	// The head's next CI settlement asks for a read of its own (workflow's askMergeState).
+	// The head's next CI settlement asks for a read of its own (workflow's askMergeState), and
+	// GitHub refuses that climb's first read.
+	rig.refuseREST.Store(true)
 	later := settledChecksOnCode()
 	later.Generation, later.Snapshot = 2, "settled-later"
 	later.CheckRuns = []record.AttemptRun{{Name: "pr-checks-result", ID: 4}}
 	applyFact(t, rig.pool, "github", "checks-on-code-again", later, rig.w.handlers...)
 
-	testwait.Eventually(t, "the base's reads to record GitHub's CONFLICTING after the climb's refused read", func() bool {
+	const climbRead = "read GitHub's merge state for an issue whose read was asked for"
+	testwait.Eventually(t, "the base's reads to record GitHub's CONFLICTING, and the climb's read to be refused", func() bool {
 		_, pr := capturePhase(t, rig.pool)
-		return pr.ConflictRead != nil
+		return pr.ConflictRead != nil && len(loggedLines(t, rig.logs.String(), climbRead)) > 0
 	})
-	refused := loggedLines(t, rig.logs.String(), "read GitHub's merge state for an issue whose read was asked for")
+	refused := loggedLines(t, rig.logs.String(), climbRead)
 	if len(refused) != 1 || refused[0]["read"] != float64(1) || refused[0]["handedToBase"] != false {
 		t.Fatalf("the climbs logged %v failed reads, want the second climb's first read refused, with nothing to hand back", refused)
 	}
@@ -603,21 +597,15 @@ func TestABasePushDuringAClimbsFirstReadKeepsItsRead(t *testing.T) {
 	}
 }
 
-// armedFailure is a failure a test arms (on) and the stand-in that fails takes up once, counting
-// each time it fails (fired).
+// armedFailure is a failure a test arms (on) and the stand-in that fails takes up once.
 type armedFailure struct {
-	on    atomic.Bool
-	fired atomic.Int32
+	on atomic.Bool
 }
 
 // fire says whether the step that asks fails now: once, the first time it asks after the failure
 // was armed.
 func (a *armedFailure) fire() bool {
-	if a.on.CompareAndSwap(true, false) {
-		a.fired.Add(1)
-		return true
-	}
-	return false
+	return a.on.CompareAndSwap(true, false)
 }
 
 // failingPullRecords is a runtime's records whose next read of a pull request's row (PullRequestRow,

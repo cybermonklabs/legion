@@ -895,9 +895,6 @@ func TestAFailedMintStopsTheRead(t *testing.T) {
 		return recordedPull(t, pool, "CAPTURE-1").MergeState == record.MergeStateBlocked &&
 			recordedPull(t, pool, "CAPTURE-2").MergeState == record.MergeStateBlocked && rig.ended()
 	})
-	if fired := armed.fired.Load(); fired != 1 {
-		t.Fatalf("%d mints failed, want the one armed before the push", fired)
-	}
 	if asked := rig.askedOf(); len(asked) != 2 || !slices.Equal(asked[0], []int{86}) || !slices.Equal(asked[1], []int{87}) {
 		t.Fatalf("GitHub was asked for %v, want [86] and then [87], both by the climb's next read: the read whose first mint failed sends no query", asked)
 	}

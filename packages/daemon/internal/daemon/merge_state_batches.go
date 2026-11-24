@@ -169,10 +169,9 @@ func (w *workflowRuntime) batchLocked(repo ghrepo.Repository, base string) (*bas
 }
 
 // leaveBaseLocked takes issue out of the batch it is owed a read in, if any, under mergeStateMu:
-// another batch takes it (putLocked), or the request that put it there was answered or is no
-// longer owed (leaveBase, which a climb of its own calls once its first read has read GitHub:
-// climbMergeState). A batch left with no issue is woken, so its follow ends rather than wait to
-// read nothing.
+// another batch takes it (putLocked), or the request that put it there is no longer owed a read
+// (leaveBase). A batch left with no issue is woken, so its follow ends rather than wait to read
+// nothing.
 func (w *workflowRuntime) leaveBaseLocked(issue string) {
 	key, owed := w.baseReadOf[issue]
 	if !owed {
@@ -204,8 +203,8 @@ func (w *workflowRuntime) owns(key, issue string) bool {
 
 // leaveBase takes issue out of key's batch when the request that put it there was asked, the one a
 // read took it up under: GitHub answered it a state, the record or GitHub no longer holds it open
-// at the head its reads follow, or a climb of its own has read it since that request
-// (climbMergeState). A later request stands.
+// at the head its reads follow, or a climb of its own reads it now (climbMergeState). A later
+// request stands.
 func (w *workflowRuntime) leaveBase(key, issue string, asked uint64) {
 	w.mergeStateMu.Lock()
 	defer w.mergeStateMu.Unlock()
@@ -650,8 +649,8 @@ func (w *workflowRuntime) nextPlace(place baseOwed, head string, at time.Time, a
 }
 
 // missed has issue's place in key's batch go on along its climb or its ladder after a read that
-// answered nothing for it, asked for alone from then on when alone says so, and logs that read when
-// it was on its ladder.
+// answered nothing for it, or whose answer the record did not take, asked for alone from then on
+// when alone says so, and logs that read when it was on its ladder.
 func (w *workflowRuntime) missed(key, issue string, place baseOwed, after time.Duration, alone bool) {
 	next := w.nextPlace(place, "", time.Now().UTC(), after)
 	next.alone = alone

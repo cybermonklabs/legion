@@ -158,8 +158,9 @@ func (w *workflowRuntime) openRecord(ctx context.Context, pr record.PullRequest)
 // records the verdict against only while the record still stands at it: every read that applies
 // this runs outside the record's transaction, so a push can land between GitHub's answer and the
 // apply.
-// An apply that fails is logged and returned: the per-issue read and the ladder go on, and the
-// next read of the pull request applies it again; an outbox row fails its attempt and is retried.
+// An apply that fails is returned, not logged: each caller logs it once, in its own words, with
+// what it does next. The per-issue read and the merge-state reads go on, and their next read of
+// the pull request applies it again; an outbox row fails its attempt and is retried.
 func (w *workflowRuntime) applyMergeability(ctx context.Context, github githubrest.Client, pr record.PullRequest, pull githubPullRequest, readAt time.Time, eventID string) error {
 	base, mergeable, state := pull.Base.Ref, pull.mergeability(), pull.mergeState()
 	fact := intake.PullRequestMergeability{Repo: pr.Repo, Number: pr.Number, Base: base, HeadSHA: pull.Head.SHA,
@@ -171,11 +172,8 @@ func (w *workflowRuntime) applyMergeability(ctx context.Context, github githubre
 		rules := w.readBaseRules(ctx, github, pr, base)
 		fact.Rules = &rules
 	}
-	if _, err := intake.ApplyFact(ctx, w.pool, "github", eventID, fact, w.handlers...); err != nil {
-		w.log.Warn("apply whether a pull request's head can be merged into its base", "repo", pr.Repo, "pullRequest", pr.Number, "error", err)
-		return err
-	}
-	return nil
+	_, err := intake.ApplyFact(ctx, w.pool, "github", eventID, fact, w.handlers...)
+	return err
 }
 
 // mergeabilityEventID is the event id the per-issue read and the merge-state ladder apply a

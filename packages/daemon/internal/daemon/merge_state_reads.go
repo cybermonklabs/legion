@@ -94,21 +94,15 @@ func (w *workflowRuntime) queueMergeState(issue string) {
 // as every read's is, so it records a first conflicting read of the head and the second read
 // starts again (R2).
 //
-// A climb takes the issue out of its base's reads once its first read has read GitHub, under the
-// request the base held it under when the climb began (climbMergeState, leaveBase), and hands it
-// back to its base if GitHub still answers `unknown` at its last read. It does not take it out
-// when it is asked: a climb whose first read fails - the record's read, or GitHub's, as GitHub
-// answers 403 once the REST budget is spent - has nothing to hand back, and an issue its base
-// followed would then be read by nobody until its next event (dispatch://INFRA-4374 R4). Nor does
-// it take out a request put in while that first read ran, as a push to the base puts one in. The
-// base's reads do not wait for a climb that runs: until that first read, and after it when a push
-// to the base puts the issue back in them, they read it as they would, and a read of the base that
-// took the issue up before the climb took it can still apply its answer, since readChunk checks
-// that its batch holds the issue just before it applies one. So a pull request can be read by its
-// own climb and by its base's reads at once. That costs a read and nothing more: the workflow
-// records an answer only for the head the record holds, and drops one read before the answer the
-// record holds (workflow's mergeability). An issue whose ladder already runs takes the request as
-// a request for a read, and its ladder climbs again.
+// Asking for a climb leaves the issue in its base's reads; the climb takes it out of them, and
+// when, by climbMergeState's rule. The base's reads do not wait for a climb that runs: they read
+// the issue while it is theirs, and a read of the base that took the issue up before the climb
+// took it can still apply its answer, since readChunk checks that its batch holds the issue just
+// before it applies one. So a pull request can be read by its own climb and by its base's reads at
+// once. That costs a read and nothing more: the workflow records an answer only for the head the
+// record holds, and drops one read before the answer the record holds (workflow's mergeability).
+// An issue whose ladder already runs takes the request as a request for a read, and its ladder
+// climbs again.
 //
 // A climb asked for before the reader takes the issue outranks a follow asked for beside it, in
 // either order: the climb reads at once and follows in turn while GitHub answers `unknown`, and
@@ -235,17 +229,21 @@ func (w *workflowRuntime) mergeStateEnds(ctx context.Context, issue string) bool
 // base's reads as after the last read, and they read it until GitHub answers it a state, as they
 // keep a pull request whose read fails owed (readBase): a failed read says nothing of the head, and
 // GitHub has already answered that it is still computing it (dispatch://INFRA-4374 R4). A read
-// that fails before any `unknown` answers nil, as the climb has read nothing: an issue its base's
-// reads followed is still in them, since the climb takes it out of them only once its first read
-// has read GitHub and the record took the answer, and an issue no base followed is read again at
-// its next event, its next handoff and the daemon's next start. Even then it takes the issue out
-// only under the request that put it there before the climb began (leaveBase): a request made
-// while the first read ran - a push to the base, whose own read reads the head after that push,
-// where the first read may have read it before - stands. A read GitHub answered whose answer the
-// record did not take (errUnapplied: the database failed the write) ends the climb and answers that
-// read's pull request, whatever GitHub answered, so its base's reads read it again on its ladder:
-// the record still holds what it held before, and nothing else would read the head again until its
-// next event (dispatch://INFRA-4374 R4).
+// that fails before any `unknown` answers nil, as the climb has read nothing: an issue no base
+// followed is read again at its next event, its next handoff and the daemon's next start. A read
+// GitHub answered whose answer the record did not take (errUnapplied: the database failed the
+// write) ends the climb and answers that read's pull request, whatever GitHub answered, so its
+// base's reads read it again on its ladder: the record still holds what it held before, and
+// nothing else would read the head again until its next event (dispatch://INFRA-4374 R4).
+//
+// The climb takes the issue out of its base's reads once: after its first read, when GitHub
+// answered and the record took the answer, or the record held no open pull request to read, and
+// only under the request the base held the issue under when the climb began (leaveBase). It does
+// not take it out when it is asked, or before that read: a first read that fails has nothing to
+// hand back, and an issue its base followed would then be read by nobody until its next event
+// (dispatch://INFRA-4374 R4). A request put in while the first read ran - a push to the base,
+// whose own read reads the head after that push, where the first read may have read it before -
+// stands.
 func (w *workflowRuntime) climbMergeState(ctx context.Context, issue string) *record.PullRequest {
 	// The batch that holds issue as the climb begins, and the request it holds it under.
 	w.mergeStateMu.Lock()
@@ -272,9 +270,9 @@ func (w *workflowRuntime) climbMergeState(ctx context.Context, issue string) *re
 			return unknown
 		}
 		if read == 1 && key != "" {
-			// GitHub answered and the record took it: the climb reads the issue from here, and
-			// hands it back to its base at its end while GitHub answers `unknown`
-			// (queueMergeStateFollow). A request put in since the climb began stands.
+			// GitHub answered and the record took the answer, or the record held no open pull
+			// request: the climb reads the issue from here, and hands it back to its base at its
+			// end while GitHub answers `unknown` (followOnBase).
 			w.leaveBase(key, issue, asked)
 		}
 		if state != record.MergeStateUnknown {
