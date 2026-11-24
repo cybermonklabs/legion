@@ -578,6 +578,7 @@ var stateNarrowings = []stateNarrowing{
 	{contract: assignmentPlanContract, issue: withoutAssignmentPlans, dropped: "the issues' assignments' plan"},
 	{contract: intakeGiveUpsContract, state: withoutIntakeGiveUps, dropped: "intakeGiveUps"},
 	{contract: podHoldContract, issue: withoutPodHold, dropped: "the issues' podHold"},
+	{contract: priorityContract, issue: withoutPriority, dropped: "the issues' priority and their waitingLine's priority"},
 	{contract: slotsReadingContract, state: withoutSlotsReading, issue: withoutRanksAndSlotStates,
 		dropped: "admission.slots, the issues' rank and rootRank, and the slots' state and since"},
 }
@@ -1078,6 +1079,27 @@ func withoutPodHold(issue Issue) (Issue, bool) {
 	return issue, moved
 }
 
+// priorityContract is the daemon contract that added each issue's own Dispatch `priority` and
+// its waitingLine's `priority`, the priority that placed it in the line (version.go's 250). A
+// plugin before it is served every issue without either key (withoutPriority). It is a literal
+// of its own and never DaemonAPIVersion, for the reason assignmentPlanContract is, and answers.go's
+// SupportedContracts names the constant.
+const priorityContract = 250
+
+// withoutPriority is the issue with no `priority` and a waitingLine with no `priority`, the two
+// keys priorityContract added to the state; every other key stays. The waiting line's view is
+// copied before it is changed, so the state the source answered is left as it was.
+func withoutPriority(issue Issue) (Issue, bool) {
+	moved := issue.Priority != nil
+	issue.Priority = nil
+	if issue.WaitingLine != nil && issue.WaitingLine.Priority != nil {
+		line := *issue.WaitingLine
+		line.Priority = nil
+		issue.WaitingLine, moved = &line, true
+	}
+	return issue, moved
+}
+
 // slotsReadingContract is the daemon contract that added the slots reading to the state
 // (version.go's entry of #4771): `admission.slots`, what the slots in use are spent on with the
 // sentence `legion state` prints for it, each issue's `rank` and `rootRank`, and each slot's
@@ -1090,7 +1112,7 @@ func withoutPodHold(issue Issue) (Issue, bool) {
 //
 // It is a literal of its own and never DaemonAPIVersion: a later contract moves that constant,
 // and the contract the keys arrived at stays where it is.
-const slotsReadingContract = 249
+const slotsReadingContract = 277
 
 // withoutSlotsReading is state with no `admission.slots`, the one key of the state's own that
 // slotsReadingContract added. The admission block is the state's own value, so clearing the

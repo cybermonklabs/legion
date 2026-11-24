@@ -525,7 +525,8 @@ func (iss *shadowIssue) claimedBy() (string, bool) {
 }
 
 // summary is the issue as a boot's listing shows it (dispatch.IssueSummary), at the rank the
-// replay shows it at.
+// replay shows it at and with the priority its payload shows (level), which the daemon's listing
+// writes to the record as each event does (intake's ListedIssue).
 func (s *shadow) summary(iss *shadowIssue) dispatch.IssueSummary {
 	var parent *string
 	if p := iss.parent(); p != "" {
@@ -534,8 +535,18 @@ func (s *shadow) summary(iss *shadowIssue) dispatch.IssueSummary {
 	claimed, known := iss.claimedBy()
 	labels := iss.labels()
 	return dispatch.IssueSummary{Key: iss.key, Title: iss.str("title"), Status: iss.status(), Parent: parent, Rank: s.rank(iss),
-		HandedOver: dispatch.CarriesLegionLabel(labels), Labels: labels, LastSeq: iss.seq, ResolvedRepo: iss.str("resolved_repo"),
-		BlockedBy: iss.blockers(), ClaimedBy: claimed, ClaimUnread: !known}
+		Priority: iss.level(), HandedOver: dispatch.CarriesLegionLabel(labels), Labels: labels, LastSeq: iss.seq,
+		ResolvedRepo: iss.str("resolved_repo"), BlockedBy: iss.blockers(), ClaimedBy: claimed, ClaimUnread: !known}
+}
+
+// level is the priority the payload shows as Dispatch serves it, 0 for P0 to 3 for P3, and nil for
+// none or for a value that is no integer (dispatch.IssueSummary.Priority).
+func (iss *shadowIssue) level() *int {
+	var value *int
+	if raw, ok := iss.payload["priority"]; ok {
+		_ = json.Unmarshal(raw, &value)
+	}
+	return value
 }
 
 // listing is every issue of the project the shadow holds a payload of, as a boot's listing shows

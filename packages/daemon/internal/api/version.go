@@ -3586,7 +3586,33 @@ package api
 // 251 by #5307), so this entry kept 246. Read the base's own number and every open pull request
 // again at every forward merge rather than from this line.)
 //
-// 249: #4771 -- the slots reading. `GET /legion/v1/state` gains `admission.slots`, what the slots
+// 250: the admission waiting line is ordered by Dispatch priority first. `GET /legion/v1/state`
+// and `GET /legion/v1/issues/{key}/record` gain two keys: each issue the workflow records carries
+// `priority`, its own Dispatch priority as Dispatch sends it, a number from 0 for P0 to 3 for P3
+// or null for none; and each member's `waitingLine` carries `priority`, the priority that placed
+// it in the line (its own, else its tree root's), null for a member neither it nor its root has a
+// priority for, whose band stands after P3. The records of 250 hold `issues.*.priority` and
+// `issues.*.waitingLine.priority`, and no record below 250 does: a caller whose contract (the one
+// it states, else its pod's) is below 250 is served every issue without either key (the band of
+// shaping.go's stateNarrowings, `withoutPriority`). Two values change meaning at every contract
+// and move no shape: `waitingLine.partPlace` and `partLength` count within the member's priority
+// band and part rather than within the part across the whole line, and `admission.waiting` and
+// each member's `place` follow the new order, which no reader enumerates. (This entry took 221
+// when main declared 220, with no reading of the other open pull requests. A reading of `const
+// DaemonAPIVersion` at the head commit of each open pull request that changes this file or whose
+// file list GitHub cut short (138 of 500), made between 2026-11-24T09:14:34Z and 09:17:00Z, found
+// every number from 221 to 243 declared and nothing above, so this entry moved to 244. The
+// forward merge of 2026-11-24 that brought in e14345bfc8 brought main's 228 (#4590's entry
+// above). A second reading (137 of 498), made between 09:35:23Z and 09:40:15Z, found 221 to 227,
+// 229 to 231 and 233 to 243 declared and nothing above 243, so this entry kept 244. Then #3831
+// took 244, the numbers from 245 to 249 were given to other changes, and this entry moved to 250.
+// The forward merge of 2026-11-24 that brought in 3dbaa2b23a brought main's 232 (#5271's entry
+// above), below 250, so this entry kept 250. The forward merge of 2026-11-24 that brought in
+// 7e75126fae brought main's 246 (#4960's entry above), below 250, so this entry kept 250. Read
+// main's own number and every open pull request again at the next merge rather than from this
+// line.)
+//
+// 277: #4771 -- the slots reading. `GET /legion/v1/state` gains `admission.slots`, what the slots
 // in use are spent on (record.SlotsReading): `inUse` and `cap`; the holders counted by what each is
 // doing, `working`, `stopped`, `person`, `issue` and `idle`, each a `count` with the `oldest` time
 // a holder of it entered that state where the record holds one (record.HolderStateOf); the two
@@ -3630,7 +3656,9 @@ package api
 // DaemonAPIVersion` at the head of each of the 477 open pull requests of cybermonklabs/legion,
 // ended at 2026-11-24T16:31:05Z, found above main's 246: 247 (#5384), 248 (#3993, #4049, #4065 and
 // #4392), 250 (#5365), 251 (#5307), 252 (#4540), 254 (#4432), 255 (#5164), 256 (#5349), 257
-// (#4580) and 261 (#5332), and none declaring 249. A number two open pull requests share is
-// renumbered by whichever of them merges second, at its own forward merge. Read the base's own
-// number and every open pull request again at every forward merge rather than from this line.)
-const DaemonAPIVersion = 249
+// (#4580) and 261 (#5332), and none declaring 249. It moves to 277 at the merge that brings main
+// in at 5df00e2f133c, main at 250, #5365's entry right above: allocated by the architect who
+// allocates daemon API numbers, on the controller's ruling of 2026-11-24T18:27Z, until #5399's
+// rule replaces hand allocation. Read the base's own number again at every forward merge rather
+// than from this line.)
+const DaemonAPIVersion = 277

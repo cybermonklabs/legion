@@ -125,7 +125,7 @@ func TestTheStateRouteServesACallerItsPluginContractsSlotsReading(t *testing.T) 
 // slotsReadingContract is the contract whose entry in version.go added the five keys, and this
 // daemon's own contract is never below it: a caller at this contract is served them.
 func TestTheSlotsReadingContractIsTheContractThatAddedTheKeys(t *testing.T) {
-	const addedSlotsReading = 249
+	const addedSlotsReading = 277
 	if slotsReadingContract != addedSlotsReading {
 		t.Fatalf("slotsReadingContract = %d, want %d, the contract whose entry in version.go added `admission.slots`, `rank`, `rootRank` and the slot's `state` and `since`",
 			slotsReadingContract, addedSlotsReading)

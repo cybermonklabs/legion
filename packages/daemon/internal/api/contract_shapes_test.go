@@ -264,7 +264,7 @@ func stateCarryingTheRestOfTheShape(t *testing.T) State {
 	// it (PauseStateTx, pauseViewOf): every key of an ended pause, a session at `by` and at
 	// `endedBy`, and `endedAt` (controllerPause).
 	last := pauseViewOf(controllerPause(true))
-	// The slots reading of this project (contract 249): SHAPES-1 holds the one slot and waits on
+	// The slots reading of this project (contract 277): SHAPES-1 holds the one slot and waits on
 	// a person, and SHAPES-2, whose wait a person declined to answer, is a root whose work came
 	// back holding no slot, so it is the first issue that waits for a slot, with the holder
 	// ranked below it. The first body names no such issue, so `belowFirstWaiting.first` is

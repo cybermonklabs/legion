@@ -259,6 +259,24 @@ func statusIn(stands phase.Phase) string {
 //     lifecycle and gate (record.MembersReturnOwed), a slot row, the mark of a release for a wait
 //     and whether the root stands past admitted, which every phase past admitted answers alike
 //     under every rule; the earlier release it names ran the daemon's own. No row.
+//
+// The line by priority first (cybermonklabs/legion#5365) adds one choice of the rule and readers
+// beside it:
+//
+//   - record.Waiting's band by priority reads the rule's choice (record.SlotRule.PriorityFirst),
+//     on in the daemon's own rule and off in the rules the recorded windows ran, and sets each
+//     entry's priority (record.LineEntry.Priority) under a rule that bands the line and
+//     NoPriority under one that does not. A row.
+//   - projection's waiting line (Project's band counts, the wire's `priority` and
+//     waitingLineReasonUnder) reads the same choice through the rule the state is read under:
+//     the counts of a band and the priority of each member come off the entries, and the
+//     sentence names the priority that placed a member only under a rule that bands the line.
+//     A row.
+//   - admit's capLets in the promotion and in lineCanMove read the issue's own priority under a
+//     rule that starts a P0 above the cap (record.SlotRule.P0AboveCap), which the daemon's store
+//     now keeps; the rows of a P0 above the cap above are theirs. The intake's decode, admit's
+//     record of each observation and the engine's write of a fact carry the priority to the
+//     record and read no rule. No row.
 func slotRuleReaders() []slotRuleReader {
 	var rows []slotRuleReader
 	for _, stands := range phase.All {
@@ -886,11 +904,11 @@ func slotRuleReaders() []slotRuleReader {
 				"one whose phase keeps a slot it does not hold is unlisted",
 		},
 		slotRuleReader{
-			// The records carry priorities through a store that sets them (prioritized), since
-			// the daemon's own store keeps none yet.
-			reader:  "record.Waiting's order of the line: priority first",
-			changes: []string{"Order"},
-			rule:    ruleWith("main with the line by priority first", func(rule *record.SlotRule) { rule.Order = record.LinePriorityFirst }),
+			// The records carry priorities through a store that sets them (prioritized), which the
+			// fixtures write none of.
+			reader:  "record.Waiting's band of the line by priority",
+			changes: []string{"PriorityFirst"},
+			rule:    ruleWith("main with the line by no priority", func(rule *record.SlotRule) { rule.PriorityFirst = false }),
 			outcome: func(t *testing.T, rule record.SlotRule) string {
 				t.Helper()
 				pool := migratedPool(t)
@@ -908,13 +926,52 @@ func slotRuleReaders() []slotRuleReader {
 				acmeQueuedRoot(t, pool, none, "a")
 				priorities := prioritized{Store: record.NewStore(), of: map[string]record.Priority{cameBack: record.P1, ranked: record.P2, root: record.P0}}
 				line, _, _ := lineUnderStore(t, pool, priorities, rule, nil)
-				return lineWord(line)
+				// Each entry's priority, none where no priority placed it, and its place within
+				// its band and part (record.LineEntry.Priority, PartPlace).
+				placed := make([]string, 0, len(line))
+				for _, entry := range line {
+					priority := entry.Priority.String()
+					if entry.Priority == record.NoPriority {
+						priority = "none"
+					}
+					placed = append(placed, fmt.Sprintf("%s %s %d", entry.Issue.Key, priority, entry.PartPlace))
+				}
+				return lineWord(line) + ", placed [" + strings.Join(placed, ", ") + "]"
 			},
-			main:    "the line is [ACME-210 ACME-214 ACME-211 ACME-213]",
-			changed: "the line is [ACME-213 ACME-210 ACME-211 ACME-214]",
-			why: "the issues whose work came back stand first and then the issues that have not started by their tree root's rank, " +
-				"or, under a rule that orders by priority first, each stands in the band of its own priority, else its tree root's, " +
-				"P0 first and an issue with neither last, and in the daemon's own order within one band",
+			main: "the line is [ACME-213 ACME-210 ACME-211 ACME-214], " +
+				"placed [ACME-213 P0 1, ACME-210 P1 1, ACME-211 P2 1, ACME-214 none 1]",
+			changed: "the line is [ACME-210 ACME-214 ACME-211 ACME-213], " +
+				"placed [ACME-210 none 1, ACME-214 none 1, ACME-211 none 2, ACME-213 none 3]",
+			why: "each issue stands in the band of its own priority, else its tree root's, P0 first and an issue with neither last, " +
+				"and in the daemon's own order within one band, its place counted within its band and part; under a rule that " +
+				"bands no priority, no priority places an issue, the issues whose work came back stand first and then the issues " +
+				"that have not started by their tree root's rank, each place counted within its part",
+		},
+		slotRuleReader{
+			reader:  "projection's waiting line: the band by priority",
+			changes: []string{"PriorityFirst"},
+			rule:    ruleWith("main with the line by no priority", func(rule *record.SlotRule) { rule.PriorityFirst = false }),
+			outcome: func(t *testing.T, rule record.SlotRule) string {
+				t.Helper()
+				pool := migratedPool(t)
+				// Two roots that never ran, the one at P2 ranked ahead of the one at P1, each with
+				// its priority in the store's own column, which the state reads.
+				const ranked, urgent = "ACME-215", "ACME-216"
+				acmeQueuedRoot(t, pool, ranked, "a")
+				acmeQueuedRoot(t, pool, urgent, "b")
+				inTx(t, pool, func(tx pgx.Tx) {
+					for key, level := range map[string]int{ranked: 2, urgent: 1} {
+						if _, err := tx.Exec(context.Background(), `update issues set priority = $2 where key = $1`, key, level); err != nil {
+							t.Fatalf("set the priority of %s: %v", key, err)
+						}
+					}
+				})
+				return waitingLineWord(t, pool, rule, urgent)
+			},
+			main:    "ACME-216 stands at place 1 of 1, placed at P1, and its sentence names P1",
+			changed: "ACME-216 stands at place 2 of 2, placed at no priority, and its sentence names no priority",
+			why: "the state counts a member's place within the band of the priority that placed it and says so, under a rule that " +
+				"bands the line; under one that does not, it counts within the member's part and names no priority",
 		},
 		slotRuleReader{
 			reader:  "admit's capLets in the promotion: a P0 above the cap",
@@ -1353,9 +1410,10 @@ func idleClaim(t *testing.T, pool *pgxpool.Pool, key, tree string, role claim.Ro
 
 // prioritized is the daemon's own store with each issue's own Dispatch priority set as of names it
 // on every record the store reads of a project's live issues (record.Store.LiveIssues, the read the
-// admission pass and the line take their records from), and none where of names none. The daemon's
-// store keeps no priority yet (record.Issue.Priority), so a row whose rule reads one hands its pass
-// the records as they read once the store keeps it.
+// admission pass and the line take their records from), and none where of names none. The
+// fixtures of this file write no priority, so a row whose rule reads one hands its pass the
+// records with the priorities it names here, as the daemon's store reads them back from Dispatch's
+// level (record.Issue.Priority).
 type prioritized struct {
 	record.Store
 	of map[string]record.Priority
@@ -1647,4 +1705,40 @@ func whyWord(t *testing.T, pool *pgxpool.Pool, rule record.SlotRule, key string)
 		return key + " is served no why"
 	}
 	return key + " is served why " + state
+}
+
+// waitingLineWord is where the state, read under rule, places key in the waiting line
+// (projection.Project, api.WaitingLineView): its place and the length of the part it stands in,
+// the priority that placed it, and the priority its sentence names (Reason), if any.
+func waitingLineWord(t *testing.T, pool *pgxpool.Pool, rule record.SlotRule, key string) string {
+	t.Helper()
+	word := key + " stands in no line"
+	inTx(t, pool, func(tx pgx.Tx) {
+		projected, err := projection.Project(context.Background(), projection.Inputs{Tx: tx, Store: record.NewStore(),
+			Project: acmeProject, Steps: config.DesignGate("").Steps(), Now: fixedNow, SlotRule: rule})
+		if err != nil {
+			t.Fatalf("project the state: %v", err)
+		}
+		waiting := projected.Issues[key].WaitingLine
+		if waiting == nil {
+			return
+		}
+		placed := "no priority"
+		if waiting.Priority != nil && record.Priority(*waiting.Priority) != record.NoPriority {
+			placed = record.Priority(*waiting.Priority).String()
+		}
+		names := "no priority"
+		for _, priority := range []record.Priority{record.P0, record.P1, record.P2, record.P3} {
+			if strings.Contains(waiting.Reason, priority.String()) {
+				names = priority.String()
+				break
+			}
+		}
+		if names == "no priority" && strings.Contains(waiting.Reason, "priority") {
+			names = "a priority of no level: " + waiting.Reason
+		}
+		word = fmt.Sprintf("%s stands at place %d of %d, placed at %s, and its sentence names %s",
+			key, waiting.PartPlace, waiting.PartLength, placed, names)
+	})
+	return word
 }

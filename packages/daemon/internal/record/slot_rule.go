@@ -57,8 +57,16 @@ type SlotRule struct {
 	// (ChildWaitsOf), and the worker of the phase is stopped for the wait. Under a rule where it
 	// does not, the phase goes on while the issue waits and only its next start waits.
 	WaitStopsPhase bool
-	// Order is the order of the waiting line (Waiting).
+	// Order is the order of the waiting line (Waiting), within each priority's band where the rule
+	// bands the line (PriorityFirst).
 	Order LineOrder
+	// PriorityFirst says whether the waiting line is banded by priority before its order: each
+	// entry stands in the band of the priority that places it (PriorityOf: the issue's own Dispatch
+	// priority, else its tree root's), P0 first and an entry with neither after P3, and within one
+	// band the line keeps Order (Waiting, cybermonklabs/legion#5365). The daemon's own rule bands
+	// the line, and so does every rule built as the daemon's own with one other choice changed; the
+	// rules the recorded windows ran do not, since their releases came before the band.
+	PriorityFirst bool
 	// Take is what a start may take from the cap (admit's capLets).
 	Take StartTake
 	// Conflict is what a head that conflicts with its base does once a second read confirms the
@@ -119,11 +127,6 @@ const (
 	// issue of the line, started or not, by the moment it arrived in the line in its current
 	// generation (LineFacts.Arrivals), first in, first out.
 	LineArrival LineOrder = "arrival"
-	// LinePriorityFirst orders the whole line by the priority that places each entry
-	// (PriorityOf: the issue's own Dispatch priority, else its tree root's), P0 first and an entry
-	// with neither after P3, and within one priority by the daemon's own order: the issues whose
-	// work came back, oldest first, and then the issues that have not started, by rank.
-	LinePriorityFirst LineOrder = "priority_first"
 )
 
 // StartTake is what a start may take from the cap, a SlotRule's choice.
@@ -166,8 +169,9 @@ const (
 
 // MainRule is the daemon's own rule, the one it is built with: a slot is kept from the start
 // through the review and in held, and none past the review; a link wait and a children wait give
-// the slot back at the pass that finds them, with no grace, and stop nothing; work that came back
-// goes first, oldest first, then the line by rank; a start takes a slot of its own, whatever its
+// the slot back at the pass that finds them, with no grace, and stop nothing; the line stands by
+// priority first (cybermonklabs/legion#5365) and, within one priority, work that came back goes
+// first, oldest first, then the line by rank; a start takes a slot of its own, whatever its
 // priority; a conflicting head keeps its phase while the base is merged forward, and past the
 // review waits for merging, where the merger merges it (cybermonklabs/legion#4979); and no slot
 // goes back because its holder is idle. Its commit is the commit the rule was first written as a
@@ -182,6 +186,7 @@ var MainRule = SlotRule{
 	WaitGrace:             0,
 	WaitStopsPhase:        false,
 	Order:                 LineReturnedOldestFirst,
+	PriorityFirst:         true,
 	Take:                  TakeOwnSlot,
 	Conflict:              ConflictMergeForward,
 	ReleaseAtReady:        false,
@@ -346,19 +351,21 @@ func (r SlotRule) ChildrenFirstCandidates(issues []Issue, gates map[string]TreeG
 
 // SlotRules is every named rule the repository keeps, the daemon's own first, and then the rules
 // the replay's comparison runs beside it: the rules three recorded windows ran under
-// (legion-v20.42.5, legion-v19.57.3, legion-v22.14.1) and the fourteen candidates of the
+// (legion-v20.42.5, legion-v19.57.3, legion-v22.14.1) and the thirteen candidates of the
 // comparison (keep-past-review, blockers-first, returned-by-rank, cover, wait-grace and
 // wait-grace-1h, one rule at two graces, returned-by-first-slot, rework-first and
 // rework-first-keep, one order with and without the slot kept past the review, arrival-order,
-// priority-first, and p0-at-once, idle-return-1h and p0-idle, two answers apart and together).
+// and p0-at-once, idle-return-1h and p0-idle, two answers apart and together). The daemon's own
+// rule orders the line by priority first since cybermonklabs/legion#5365, which the comparison ran
+// as the candidate priority-first before that change merged; each candidate, built from the
+// daemon's own, keeps that band, and the recorded rules, whose releases came before it, do not.
 // `legion replay rules` prints them. Each answer is built afresh, so a caller that changes a rule
 // it was handed changes no other caller's.
 func SlotRules() []SlotRule {
 	return []SlotRule{mainRuleWith(MainRule.Name, func(*SlotRule) {}), windowOneRule(), windowTwoRule(), windowThreeRule(),
 		keepPastReviewRule(), blockersFirstRule(), returnedByRankRule(), coverRule(),
 		waitGraceRule("wait-grace", waitGrace), waitGraceRule("wait-grace-1h", longWaitGrace), returnedByFirstSlotRule(),
-		reworkFirstRule(), reworkFirstKeepRule(), arrivalOrderRule(), priorityFirstRule(), p0AtOnceRule(), idleReturnRule(),
-		p0IdleRule()}
+		reworkFirstRule(), reworkFirstKeepRule(), arrivalOrderRule(), p0AtOnceRule(), idleReturnRule(), p0IdleRule()}
 }
 
 // The commits the recorded rules come from: release 20.42.5, the last a deployment ran over its
@@ -395,20 +402,22 @@ func everyWorkflowPhase() []phase.Phase {
 // daemon's own slot choices — no slot past the review (#3573) and none during a wait on another
 // issue (#3715) — and a head that conflicts with its base moving back to implementing by workflow's
 // TriggerConflict, the rows of that release's transition table the daemon's own table no longer
-// carries (workflow.TableFor), where main keeps the phase and merges the base forward (#4464).
+// carries (workflow.TableFor), where main keeps the phase and merges the base forward (#4464). Its
+// line stands by no priority (PriorityFirst), as every release before #5365's.
 func windowOneRule() SlotRule {
 	return mainRuleWith("legion-v20.42.5", func(rule *SlotRule) {
 		rule.Commit = conflictMovesBackCommit
 		rule.Conflict = ConflictMovesBack
+		rule.PriorityFirst = false
 	})
 }
 
 // windowTwoRule is the rule named legion-v19.57.3, which release 19.57.3 ran (#2751 and #3206): a
 // started issue keeps its slot in every phase of the workflow until the merger's ready mark inside
 // merging, which that release's awaiting_merge was and a replay reads as a mark (ReleaseAtReady,
-// LineFacts.Ready); no wait on another issue gives the slot back; and red checks, that release's
-// one path of a conflicting head, move the issue back to implementing by workflow's
-// TriggerChecksRed.
+// LineFacts.Ready); no wait on another issue gives the slot back; red checks, that release's one
+// path of a conflicting head, move the issue back to implementing by workflow's TriggerChecksRed;
+// and the line stands by no priority (PriorityFirst).
 func windowTwoRule() SlotRule {
 	return mainRuleWith("legion-v19.57.3", func(rule *SlotRule) {
 		rule.Commit = awaitingMergeCommit
@@ -416,6 +425,7 @@ func windowTwoRule() SlotRule {
 		rule.LinkWaitGivesBack, rule.ChildrenWaitGivesBack = false, false
 		rule.Conflict = ConflictChecksRed
 		rule.ReleaseAtReady = true
+		rule.PriorityFirst = false
 	})
 }
 
@@ -424,10 +434,12 @@ func windowTwoRule() SlotRule {
 // (ConflictImplementerMergesForward): a conflicting head keeps its phase in every phase, accepting,
 // retro and merging included, and the implementer is asked at once to merge the base forward,
 // where main leaves a conflict in accepting or retro to wait for merging and asks the merger there.
+// Its line stands by no priority (PriorityFirst).
 func windowThreeRule() SlotRule {
 	return mainRuleWith("legion-v22.14.1", func(rule *SlotRule) {
 		rule.Commit = implementerMergesForwardCommit
 		rule.Conflict = ConflictImplementerMergesForward
+		rule.PriorityFirst = false
 	})
 }
 
@@ -562,22 +574,10 @@ func arrivalOrderRule() SlotRule {
 	})
 }
 
-// priorityFirstRule is the daemon's own rule with the line ordered by priority first
-// (LinePriorityFirst): the order the change that gives the daemon each issue's Dispatch priority
-// builds into the daemon's own rule, kept here for a comparison run before that change reaches
-// main. Once main carries that order this rule is removed, because main is then that rule. Until
-// the daemon's store keeps a priority, every record it builds reads NoPriority, so the rule orders
-// nothing a test or a replay does not set.
-func priorityFirstRule() SlotRule {
-	return mainRuleWith("priority-first", func(rule *SlotRule) {
-		rule.Order = LinePriorityFirst
-	})
-}
-
 // p0AtOnceRule is the daemon's own rule with an issue whose own priority is P0 started above the
 // cap (P0AboveCap): an owner's direction that a P0 issue starts at once, with the daemon's own
-// rule below P0. It reads the issue's own priority, which no record the daemon builds holds until
-// its store keeps one.
+// rule below P0. It reads the issue's own priority (Issue.Priority), which the daemon's store keeps
+// from each Dispatch observation (cybermonklabs/legion#5365).
 func p0AtOnceRule() SlotRule {
 	return mainRuleWith("p0-at-once", func(rule *SlotRule) {
 		rule.P0AboveCap = true

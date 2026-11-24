@@ -13,16 +13,18 @@ body: |-
     `validate` checks a replay against the record (`--main-only` runs the main branch alone, with
     its seeds), `forecast` checks it against a recorded change of the rule, and `compare` compares
     the rules on two windows, gives the reason for each rule, and writes each issue's first slot
-    and done time under each rule beside the record. `rules` prints the eighteen rules that a
+    and done time under each rule beside the record. `rules` prints the seventeen rules that a
     replay can run, each with its commit: the daemon's own, the rules of three recorded windows
-    (`legion-v20.42.5`, `legion-v19.57.3` and `legion-v22.14.1`), and fourteen candidates. Among
-    the candidates, `wait-grace` and `wait-grace-1h` keep a holder's slot through a wait on another
-    issue for its first five minutes or its first hour, `returned-by-first-slot`, `rework-first`
-    and `rework-first-keep` place returned work first, `arrival-order` places every issue by its
-    arrival, `priority-first` places the line by Dispatch priority, `p0-at-once` starts a P0 issue
-    above the cap, `idle-return-1h` gives back the slot of a holder that waits on its children or
-    on a person once none of its roles has had a turn for an hour, and `p0-idle` joins the last
-    two. The daemon keeps no first slot or arrival after a slot
+    (`legion-v20.42.5`, `legion-v19.57.3` and `legion-v22.14.1`), and thirteen candidates. The
+    daemon's own rule and every candidate place the line by Dispatch priority first, as the daemon
+    does, and the rules of the recorded windows, whose releases came before that order, do not; the
+    replay gives each issue the priority its recorded Dispatch events show. Among the candidates,
+    `wait-grace` and `wait-grace-1h` keep a holder's slot through a wait on another issue for its
+    first five minutes or its first hour, `returned-by-first-slot`, `rework-first` and
+    `rework-first-keep` place returned work first, `arrival-order` places every issue by its
+    arrival, `p0-at-once` starts a P0 issue above the cap, `idle-return-1h` gives back the slot of
+    a holder that waits on its children or on a person once none of its roles has had a turn for an
+    hour, and `p0-idle` joins the last two. The daemon keeps no first slot or arrival after a slot
     goes back, so a replay keeps them in tables of its own. For each rule with a grace, `compare`
     names how many of the waits that gave a slot back in each window's record the grace keeps the
     slot through, and the slot-hours that it keeps. The tool writes nothing to a running daemon, to
@@ -32,7 +34,7 @@ body: |-
     `legion state` prints a `slots:` line under its admission line. It says what each holder of a
     slot does now (`working`, `stopped`, `person`, `issue` or `idle`, each with the oldest time in
     it), how many started issues wait for a slot, in two readings, and how many holders rank below
-    the first issue that waits for one. From daemon API contract 249, `legion state --json` carries
+    the first issue that waits for one. From daemon API contract 277, `legion state --json` carries
     the same reading as `admission.slots`, each slot carries its holder's `state` and `since`, and
     each issue carries its `rank` and `rootRank`. A caller of an older contract gets the state
     without them. The controller's tick notice carries the reading as `slots`.

@@ -787,10 +787,10 @@ The daemon runs `main`, and a replay runs the rule that you name through the sam
 
 | Rule | What it is | Commit |
 | --- | --- | --- |
-| `main` | The daemon's own rule, with no slot past the review, the slot given back on a link wait and a children wait, returned issues first, and a conflicting head that keeps its phase. | `0d3786da` |
-| `legion-v20.42.5` | The rule of releases 20.25.1 and 20.42.5, with the slot choices of `main` and a conflicting head that moves back to implementing. | `958173da` |
-| `legion-v19.57.3` | The rule of release 19.57.3, with a slot kept in every phase until the merger's ready mark in merging, no slot given back on a wait, and red checks that move back to implementing. | `9542c6fb` |
-| `legion-v22.14.1` | The rule of release 22.14.1, with the slot choices of `main` and a conflicting head that keeps its phase in every phase, accepting, retro and merging too, while the implementer merges the base forward at once (cybermonklabs/legion#4464 without #4979). | `bafd3618` |
+| `main` | The daemon's own rule, with no slot past the review, the slot given back on a link wait and a children wait, the line by priority first and returned issues first within one priority, and a conflicting head that keeps its phase. | `0d3786da` |
+| `legion-v20.42.5` | The rule of releases 20.25.1 and 20.42.5, with the slot choices of `main`, the line by no priority, and a conflicting head that moves back to implementing. | `958173da` |
+| `legion-v19.57.3` | The rule of release 19.57.3, with a slot kept in every phase until the merger's ready mark in merging, no slot given back on a wait, the line by no priority, and red checks that move back to implementing. | `9542c6fb` |
+| `legion-v22.14.1` | The rule of release 22.14.1, with the slot choices of `main`, the line by no priority, and a conflicting head that keeps its phase in every phase, accepting, retro and merging too, while the implementer merges the base forward at once (cybermonklabs/legion#4464 without #4979). | `bafd3618` |
 | `keep-past-review` | `main` with the slot kept in accepting, retro and merging, so that a send-back past the review finds its issue with its slot. | `0d3786da` |
 | `blockers-first` | `main` with each issue that a started issue waits on placed first among the issues that have not started. | `0d3786da` |
 | `returned-by-rank` | `main` with a returned issue placed in the line by its board rank, not by the time at which it gave its slot back. | `0d3786da` |
@@ -801,7 +801,6 @@ The daemon runs `main`, and a replay runs the rule that you name through the sam
 | `rework-first` | `main` with the line in first in, first out order for started work, for the reason that an owner doubted that the board's rank is kept up to date: the returned issues first, by their first slot in their current generation, then the issues of trees that have started, each tree by its root's first slot and each issue by its arrival in the line, and the trees that have not opened last, by rank. | `0d3786da` |
 | `rework-first-keep` | `rework-first` with the slot kept in accepting, retro and merging, as `keep-past-review` keeps it, so that the comparison reads the cost of returning work under the owner's order with and without that slot. | `0d3786da` |
 | `arrival-order` | `main` with the line as one queue in the order in which its issues arrived, with no part ahead of another and no rank, which shows what the board's order changes. | `0d3786da` |
-| `priority-first` | `main` with the line ordered by priority first, the issue's own or its tree root's, and in the order of `main` within one priority: the order of the change that gives the daemon each issue's priority, compared until that change reaches `main` ([the priority](#priority-first-p0-at-once-idle-return-1h-p0-idle-and-the-priority)). | `0d3786da` |
 | `p0-at-once` | `main` with an issue whose own priority is P0 started above the cap, for the reason that an owner asked why a P0 issue cannot start at once. | `0d3786da` |
 | `idle-return-1h` | `main` with the slot of a holder that waits on its children or on a person given back once none of its roles had a turn for an hour, the holder keeping its place in the line, for the same owner's question. | `0d3786da` |
 | `p0-idle` | `p0-at-once` and `idle-return-1h` together, so that the comparison reads whether the two answers add up or overlap. | `0d3786da` |
@@ -818,6 +817,7 @@ main (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   a wait gives the slot back after: 0s
   a wait stops the phase under way: false
   the line's order: returned_oldest_first
+  the line stands by priority first: true
   a start takes: own_slot
   a conflicting head: merge_forward
   the slot goes back at the ready mark: false
@@ -831,6 +831,7 @@ legion-v20.42.5 (commit 958173da0ea4cd03290a1964edf9eb92e6685200)
   a wait gives the slot back after: 0s
   a wait stops the phase under way: false
   the line's order: returned_oldest_first
+  the line stands by priority first: false
   a start takes: own_slot
   a conflicting head: moves_back_conflict
   the slot goes back at the ready mark: false
@@ -844,6 +845,7 @@ legion-v19.57.3 (commit 9542c6fbbecd184ccee73523ab3defa39d6cf23a)
   a wait gives the slot back after: 0s
   a wait stops the phase under way: false
   the line's order: returned_oldest_first
+  the line stands by priority first: false
   a start takes: own_slot
   a conflicting head: moves_back_checks_red
   the slot goes back at the ready mark: true
@@ -857,6 +859,7 @@ legion-v22.14.1 (commit bafd3618eb58722419c77f34174c1b77525c891b)
   a wait gives the slot back after: 0s
   a wait stops the phase under way: false
   the line's order: returned_oldest_first
+  the line stands by priority first: false
   a start takes: own_slot
   a conflicting head: implementer_merges_forward
   the slot goes back at the ready mark: false
@@ -870,6 +873,7 @@ keep-past-review (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   a wait gives the slot back after: 0s
   a wait stops the phase under way: false
   the line's order: returned_oldest_first
+  the line stands by priority first: true
   a start takes: own_slot
   a conflicting head: merge_forward
   the slot goes back at the ready mark: false
@@ -883,6 +887,7 @@ blockers-first (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   a wait gives the slot back after: 0s
   a wait stops the phase under way: false
   the line's order: blockers_first
+  the line stands by priority first: true
   a start takes: own_slot
   a conflicting head: merge_forward
   the slot goes back at the ready mark: false
@@ -896,6 +901,7 @@ returned-by-rank (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   a wait gives the slot back after: 0s
   a wait stops the phase under way: false
   the line's order: returned_by_rank
+  the line stands by priority first: true
   a start takes: own_slot
   a conflicting head: merge_forward
   the slot goes back at the ready mark: false
@@ -909,6 +915,7 @@ cover (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   a wait gives the slot back after: 0s
   a wait stops the phase under way: false
   the line's order: returned_oldest_first
+  the line stands by priority first: true
   a start takes: cover
   a conflicting head: merge_forward
   the slot goes back at the ready mark: false
@@ -922,6 +929,7 @@ wait-grace (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   a wait gives the slot back after: 5m0s
   a wait stops the phase under way: false
   the line's order: returned_oldest_first
+  the line stands by priority first: true
   a start takes: own_slot
   a conflicting head: merge_forward
   the slot goes back at the ready mark: false
@@ -935,6 +943,7 @@ wait-grace-1h (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   a wait gives the slot back after: 1h0m0s
   a wait stops the phase under way: false
   the line's order: returned_oldest_first
+  the line stands by priority first: true
   a start takes: own_slot
   a conflicting head: merge_forward
   the slot goes back at the ready mark: false
@@ -948,6 +957,7 @@ returned-by-first-slot (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   a wait gives the slot back after: 0s
   a wait stops the phase under way: false
   the line's order: returned_by_first_slot
+  the line stands by priority first: true
   a start takes: own_slot
   a conflicting head: merge_forward
   the slot goes back at the ready mark: false
@@ -961,6 +971,7 @@ rework-first (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   a wait gives the slot back after: 0s
   a wait stops the phase under way: false
   the line's order: rework_first
+  the line stands by priority first: true
   a start takes: own_slot
   a conflicting head: merge_forward
   the slot goes back at the ready mark: false
@@ -974,6 +985,7 @@ rework-first-keep (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   a wait gives the slot back after: 0s
   a wait stops the phase under way: false
   the line's order: rework_first
+  the line stands by priority first: true
   a start takes: own_slot
   a conflicting head: merge_forward
   the slot goes back at the ready mark: false
@@ -987,19 +999,7 @@ arrival-order (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   a wait gives the slot back after: 0s
   a wait stops the phase under way: false
   the line's order: arrival
-  a start takes: own_slot
-  a conflicting head: merge_forward
-  the slot goes back at the ready mark: false
-  a P0 starts above the cap: false
-  an idle wait on children or a person gives the slot back after: 0s
-
-priority-first (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
-  keeps a slot in: admitted, awaiting_person, planning, implementing, testing, reviewing, held
-  a link wait gives the slot back: true
-  a children wait gives the slot back: true
-  a wait gives the slot back after: 0s
-  a wait stops the phase under way: false
-  the line's order: priority_first
+  the line stands by priority first: true
   a start takes: own_slot
   a conflicting head: merge_forward
   the slot goes back at the ready mark: false
@@ -1013,6 +1013,7 @@ p0-at-once (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   a wait gives the slot back after: 0s
   a wait stops the phase under way: false
   the line's order: returned_oldest_first
+  the line stands by priority first: true
   a start takes: own_slot
   a conflicting head: merge_forward
   the slot goes back at the ready mark: false
@@ -1026,6 +1027,7 @@ idle-return-1h (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   a wait gives the slot back after: 0s
   a wait stops the phase under way: false
   the line's order: returned_oldest_first
+  the line stands by priority first: true
   a start takes: own_slot
   a conflicting head: merge_forward
   the slot goes back at the ready mark: false
@@ -1039,6 +1041,7 @@ p0-idle (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   a wait gives the slot back after: 0s
   a wait stops the phase under way: false
   the line's order: returned_oldest_first
+  the line stands by priority first: true
   a start takes: own_slot
   a conflicting head: merge_forward
   the slot goes back at the ready mark: false
@@ -1066,7 +1069,9 @@ Each line of a rule gives one choice:
   `blockers_first` places first, among the issues that have not started, each issue that a started issue waits on.
   `rework_first` places the returned issues by their first slot, then the issues of trees that have started, and then the trees that have not opened, by rank.
   `arrival` places every issue of the line by the time at which it arrived in the line, with no part ahead of another and no rank.
-  `priority_first` places every issue of the line by its priority first, its own or its tree root's, and then in the order of `returned_oldest_first`.
+
+- `the line stands by priority first`: whether the line is banded by priority before its order: each issue stands in the band of its own Dispatch priority, or of its tree root's where it has none, P0 first and an issue with neither after P3, and within one band the line keeps its order.
+  `main` bands the line, as the daemon does since cybermonklabs/legion#5365, and so does each candidate built on it; the rules of the recorded windows do not, because their releases came before that change.
 
 - `a start takes`: `own_slot`, a slot of its own while the cap has one free.
   `cover` lets an issue that a waiter waits on start on that waiter's slot, whatever the cap says, one cover for each holder.
@@ -1174,23 +1179,21 @@ Under each rule that keeps one of these tables, `returned-by-first-slot` among t
 That read keeps no first slot and no arrival, and reads the ones that the start state kept.
 The passes keep the rest.
 
-### `priority-first`, `p0-at-once`, `idle-return-1h`, `p0-idle` and the priority
+### `p0-at-once`, `idle-return-1h`, `p0-idle` and the priority
 
 An owner asked why a P0 issue cannot start at once.
-These four candidates give the comparison what each answer does to P0 and P1 work and to the rest of the line.
+These three candidates give the comparison what each answer does to P0 and P1 work and to the rest of the line.
 Each is `main` with one choice changed, or two for `p0-idle`, so each carries the commit of `main`.
 
-The record keeps each issue's own Dispatch priority, P0 to P3 or none (`record.Issue.Priority`).
-The daemon's store and its intake keep no priority yet, so every record that the daemon builds, and every record of a replay, has none.
-Until they keep one, these four candidates move no issue that has no priority, and they run as `main` in a replay.
-The tests of the admission pass hand the pass records with priorities set.
+The record keeps each issue's own Dispatch priority, P0 to P3 or none (`record.Issue.Priority`), as the newest Dispatch event, listing or detail read shows it.
+A replay gives each issue the priority that its recorded Dispatch events show: the start state writes each record with the priority of its newest event before the window's start, each event that the replay applies carries its own, and each boot's listing carries the priority of the replay's copy of Dispatch.
+So `main` and every candidate order the line by priority in a replay, as the daemon does, and the rules of the recorded windows do not.
 
-`priority-first` orders the whole line by priority first.
+`main` orders the whole line by priority first.
 An entry stands in the band of the priority that places it: the issue's own priority, or its tree root's priority where it has none.
 P0 comes first, and an entry that has neither priority comes after P3.
-Within one band, the line keeps the order of `main`: the returned issues first, oldest first, and then the issues that have not started, by rank.
-This is the order of the change that gives the daemon each issue's priority, kept here for a comparison that runs before that change reaches `main`.
-When `main` carries that order, the repository removes this candidate, because `main` is then that rule.
+Within one band, the line keeps the rule's order, under `main` the returned issues first, oldest first, and then the issues that have not started, by rank.
+The comparison ran this order as the candidate `priority-first` before that change reached `main`, and `main` is that rule now.
 
 `p0-at-once` starts an issue whose own priority is P0 above the cap.
 Where the admission pass would start such an issue but for the cap, it starts it, whatever the number of slots in use.
