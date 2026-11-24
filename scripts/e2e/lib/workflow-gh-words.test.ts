@@ -286,6 +286,37 @@ const rows: Row[] = [
     call: "api graphql -F owner=sjawhar",
   },
   {
+    name: "merge_when_clean: a merge state gh answered",
+    script: 'merge_when_clean "$repo" 7 --squash',
+    rules: [{ match: graphql, out: record({ merge: marker }) }, noChecks],
+    kept: "merge-record.answer",
+    call: "api graphql -F owner=sjawhar",
+  },
+  {
+    name: "merge_when_clean: an auto-merge method gh answered",
+    script: 'merge_when_clean "$repo" 7 --squash',
+    rules: [
+      { match: graphql, out: record({ at: "2026-10-09T12:00:00Z", method: marker }) },
+      noChecks,
+    ],
+    kept: "merge-record.answer",
+    call: "api graphql -F owner=sjawhar",
+  },
+  {
+    name: "merge_when_clean: a merge queue position gh answered",
+    script: 'merge_when_clean "$repo" 7 --squash',
+    rules: [{ match: graphql, out: record({ position: marker, queue: "QUEUED" }) }, noChecks],
+    kept: "merge-record.answer",
+    call: "api graphql -F owner=sjawhar",
+  },
+  {
+    name: "merge_when_clean: a merge queue state gh answered",
+    script: 'merge_when_clean "$repo" 7 --squash',
+    rules: [{ match: graphql, out: record({ position: "2", queue: marker }) }, noChecks],
+    kept: "merge-record.answer",
+    call: "api graphql -F owner=sjawhar",
+  },
+  {
     name: "merge_when_clean: the head branch gh answered, deleted after the merger's merge",
     script: 'merge_when_clean "$repo" 7 --squash --delete-branch',
     rules: [
