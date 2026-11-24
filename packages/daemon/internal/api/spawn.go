@@ -25,6 +25,7 @@ type SpawnRequest struct {
 	Prompt string     `json:"prompt,omitempty"`
 	Task   string     `json:"task,omitempty"`
 }
+
 // refuseMovedSpawn answers a spawn whose launch of token, the claim it read as the worker on
 // role's step of issue, found the step another claim's under the machine's lock
 // (supervise.ErrStepLeft): nothing was launched or sent, and the answer names the claim the record

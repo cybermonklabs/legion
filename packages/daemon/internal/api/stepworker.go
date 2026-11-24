@@ -40,4 +40,3 @@ func (s *server) worksStep(issue string, role claim.Role, token claim.Token) fun
 		return now == token, err
 	}
 }
-
