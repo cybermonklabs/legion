@@ -32,8 +32,9 @@ const olderBuildSigningKey = "older-build-signing-key"
 // version and declaring newer, built with a Go overlay - serves beside it on the same database,
 // installs the whole store and writes newer.
 func TestAnOlderBuildServesOverANewerStoreSchema(t *testing.T) {
-	// Not parallel: it runs two Dispatch processes at once, which takeProcessSlot allows only outside
-	// the parallel tests.
+	t.Parallel()
+	// Two Dispatch processes at once: the older build keeps serving while the newer one starts.
+	reserveProcessSlots(t, 2)
 	ctx := context.Background()
 	database := storetest.Open(t)
 	databaseURL := database.Pool.Config().ConnString()

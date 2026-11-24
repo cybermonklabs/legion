@@ -101,8 +101,9 @@ func TestTheBootProbeOutlastsTheWarmProbesBoundAndLeavesTheFirstHealthzWarm(t *t
 // process with a key set of its own, so its row keeps heartbeating and the wait does not end on
 // its own before the signal.
 func TestAProcessStoppedWhileWaitingForAdmissionExitsCleanly(t *testing.T) {
-	// Not parallel: it runs two Dispatch processes at once, which takeProcessSlot allows only outside
-	// the parallel tests.
+	t.Parallel()
+	// Two Dispatch processes at once: the live peer, and the one waiting for admission beside it.
+	reserveProcessSlots(t, 2)
 	database := storetest.Open(t)
 	peer := startDispatchProcessWith(t, database.Pool.Config().ConnString(), dispatchOptions{SigningKey: "the-live-peers-key"})
 	peer.waitHealthy(t)

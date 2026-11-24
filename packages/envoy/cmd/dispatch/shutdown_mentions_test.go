@@ -291,10 +291,11 @@ func waitForSent(
 // process's registry row is still live when the next starts, and a key the next minted in its own
 // data dir would hold its start up to a live window, until that row lapsed (processes.Register).
 //
-// The claim is the real minute. The test marks itself parallel once the second process runs, so
-// that minute passes beside the tests that run after it rather than after them; the bound is read
-// off when the listener took the last resend, which a pause does not move.
+// The claim is the real minute, which passes beside the package's other parallel tests; the bound
+// is read off when the listener took the last resend, which a pause does not move. The test runs
+// one process at a time (the killed one exits before the next starts), so it reserves no slot.
 func TestSIGKILLWithMentionSendsInFlightHandsEachRecipientTheCommentOnceTheClaimLapses(t *testing.T) {
+	t.Parallel()
 	listener := newHandoverListener(t)
 	database := storetest.Open(t)
 	options := dispatchOptions{SigningKey: "sigkill-mention-sends-key", Env: map[string]string{"ENVOY_URL": listener.url}}
@@ -313,7 +314,6 @@ func TestSIGKILLWithMentionSendsInFlightHandsEachRecipientTheCommentOnceTheClaim
 	listener.letAnswer()
 	next := startDispatchProcessWith(t, database.Pool.Config().ConnString(), options)
 	next.waitHealthy(t)
-	t.Parallel()
 
 	waitForSent(t, database, next, []string{inFlight, queued}, 4,
 		killedAt.Add(model.DeliveryClaimLapse+deliverySweepInterval+sweepMargin))
@@ -348,10 +348,12 @@ func TestSIGKILLWithMentionSendsInFlightHandsEachRecipientTheCommentOnceTheClaim
 // take one DISPATCH_SIGNING_KEY, as every process of a deployment does: a live server process
 // refuses a successor whose signing keys it does not hold (processes.Register).
 //
-// The test marks itself parallel once the old process has exited, so the sweep interval passes
-// beside the tests that run after it rather than after them; the bound is read off when the
-// listener took the last send, which a pause does not move.
+// The sweep interval passes beside the package's other parallel tests; the bound is read off when
+// the listener took the last send, which a pause does not move. The old process and its successor
+// run at once, so the test reserves both slots before its first start.
 func TestARollingUpdatesSuccessorHandsEachMentionTheOldProcessLeftOnce(t *testing.T) {
+	t.Parallel()
+	reserveProcessSlots(t, 2)
 	listener := newHandoverListener(t)
 	database := storetest.Open(t)
 	options := dispatchOptions{SigningKey: "rolling-update-mentions-key", Env: map[string]string{"ENVOY_URL": listener.url}}
@@ -399,7 +401,6 @@ func TestARollingUpdatesSuccessorHandsEachMentionTheOldProcessLeftOnce(t *testin
 	listener.letAnswer()
 	old.WaitExit(t, "SIGTERM")
 	exited := time.Now()
-	t.Parallel()
 
 	waitForSent(t, database, successor, []string{inFlight, queued, drained}, 3,
 		exited.Add(model.DeliveryClaimLapse+deliverySweepInterval+sweepMargin))

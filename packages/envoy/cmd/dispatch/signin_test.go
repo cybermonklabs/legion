@@ -20,7 +20,7 @@ import (
 // logged without a token.
 func TestRetirePlainRefreshTokensAtBootStopsAtItsBound(t *testing.T) {
 	// Not parallel: it replaces the process's default logger (logtest.SetDefault); and it holds a step
-	// to a wall-clock bound load could break (signin_test.go:39).
+	// to a wall-clock bound load could break (the 5 s bound on the retirement).
 	ctx := context.Background()
 	pool := signInPool(t, "dispatch-client", "client-secret")
 	pool.DelayRevocation(time.Minute)

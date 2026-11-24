@@ -1180,7 +1180,8 @@ func TestHealthzAnswersWhileEveryPooledConnectionIsHeld(t *testing.T) {
 // makes this the cold case; the warm one, which production actually runs, is the unbounded
 // one and is measured against the real binary rather than here.
 func TestHealthzAnswersWhilePostgresStopsAnswering(t *testing.T) {
-	// Not parallel: it holds a step to a wall-clock bound load could break (main_test.go:1179).
+	// Not parallel: it holds a step to a wall-clock bound load could break (the client's 5 s timeout
+	// around a 2 s unanswered probe).
 	migrated := storetest.Open(t)
 	dsn, err := url.Parse(migrated.Pool.Config().ConnString())
 	if err != nil {
@@ -1242,7 +1243,8 @@ func (unansweringBucket) Healthy(ctx context.Context) error {
 // run one after the other they took four, and the compose healthcheck and the deploy script
 // read that silence as a dead process; run side by side they take two.
 func TestHealthzAnswersWhilePostgresAndTheBucketBothStopAnswering(t *testing.T) {
-	// Not parallel: it holds a step to a wall-clock bound load could break (main_test.go:1233).
+	// Not parallel: it holds a step to a wall-clock bound load could break (the client's 3 s timeout
+	// around a 2 s probe and a 2 s bucket).
 	migrated := storetest.Open(t)
 	dsn, err := url.Parse(migrated.Pool.Config().ConnString())
 	if err != nil {
@@ -2174,7 +2176,8 @@ const (
 // none. So for the whole wait, and after the exit, the fill has no hold, no row and no cursor,
 // although 200 events wait for their rows.
 func TestAProcessTheRegistryRefusesWritesNoKeywordVersion(t *testing.T) {
-	// Not parallel: it holds a step to a wall-clock bound load could break (main_test.go:2131).
+	// Not parallel: it holds a step to a wall-clock bound load could break (the boot's wait of
+	// LiveWindow + HeartbeatInterval + 30 s past the refusing row).
 	database := storetest.Open(t)
 	textversionstest.SeedIssue(t, database)
 	writeKeywordFillComments(t, database, 200)
@@ -2414,7 +2417,8 @@ func TestATableTheKeywordFillDeferralCannotReadDoesNotStopTheBoot(t *testing.T) 
 // then serves: it answers its health check and the registry of live server processes admits it,
 // and still no backend waits for the lock.
 func TestALockedKeywordFillTableEndsItsReadAtTheServerAndTheBootGoesOn(t *testing.T) {
-	// Not parallel: it holds a step to a wall-clock bound load could break (main_test.go:2363).
+	// Not parallel: it holds a step to a wall-clock bound load could break
+	// (requireTheServerEndsTheRead's 10 s over a 5 s lock timeout).
 	database := storetest.Open(t)
 	ctx := context.Background()
 	holder, err := database.Pool.Begin(ctx)
@@ -2451,7 +2455,8 @@ func TestALockedKeywordFillTableEndsItsReadAtTheServerAndTheBootGoesOn(t *testin
 // process booted with DISPATCH_SEARCH_FILL=off on that database logs the same fields once, then
 // serves: it answers its health check and the registry of live server processes admits it.
 func TestASlowKeywordFillTableReadEndsAtTheServerAndTheBootGoesOn(t *testing.T) {
-	// Not parallel: it holds a step to a wall-clock bound load could break (main_test.go:2398).
+	// Not parallel: it holds a step to a wall-clock bound load could break
+	// (requireTheServerEndsTheRead's 10 s over a 6 s statement timeout).
 	database := storetest.Open(t)
 	ctx := context.Background()
 	for _, statement := range []string{

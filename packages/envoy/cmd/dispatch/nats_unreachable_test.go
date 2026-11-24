@@ -109,8 +109,8 @@ func TestAProcessStartedWhileNATSIsDownServesAndConnectsLater(t *testing.T) {
 // 200 throughout, and true again once the traffic moves. The deploy's measuring job counts its
 // limits from the cut; with nats.go's default pings the probe read true for minutes into it.
 func TestAProcessReportsASilentNATSCutWithinSeconds(t *testing.T) {
-	// Not parallel: it holds a step to a wall-clock bound load could break
-	// (nats_unreachable_test.go:131).
+	// Not parallel: it holds a step to a wall-clock bound load could break (the 5 s within which
+	// /healthz must report the cut).
 	database := storetest.Open(t)
 	srv, natsURL := testnats.Start(t)
 	process := startDispatchProcessWith(t, database.Pool.Config().ConnString(), dispatchOptions{NATSURL: natsURL})
