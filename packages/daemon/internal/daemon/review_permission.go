@@ -256,7 +256,7 @@ func (w *workflowRuntime) readPermission(ctx context.Context, repository ghrepo.
 			"repo", repository.String(), "login", shown, "answered_login", githubrest.ShownLogin(answer.User.Login), "permission", shownPermission(answer.Permission))
 		return false, nil
 	}
-	if answer.Permission != "admin" && answer.Permission != "write" {
+	if answer.Permission != permissionAdmin && answer.Permission != permissionWrite {
 		w.log.Info("workflow: GitHub gives the review's author no write access to the repository",
 			"repo", repository.String(), "login", shown, "permission", shownPermission(answer.Permission))
 		return false, nil
@@ -264,10 +264,24 @@ func (w *workflowRuntime) readPermission(ctx context.Context, repository ghrepo.
 	return true, nil
 }
 
+// The permissions GitHub documents for a collaborator's permission answer (GET
+// /repos/{owner}/{repo}/collaborators/{username}/permission's `permission`), as GitHub writes
+// them: readPermission decides on admin and write, and a line prints any of the four.
+const (
+	permissionAdmin = "admin"
+	permissionWrite = "write"
+	permissionRead  = "read"
+	permissionNone  = "none"
+)
+
+// collaboratorPermissions are those permissions, the closed set a line names one of.
+var collaboratorPermissions = []string{permissionAdmin, permissionWrite, permissionRead, permissionNone}
+
 // shownPermission is a permission GitHub's collaborator permission answer names, as a line prints
-// it: one of the words GitHub documents for it, or githubrest.NotDocumented.
+// it: one of the words GitHub documents for it (collaboratorPermissions), or
+// githubrest.NotDocumented.
 func shownPermission(permission string) string {
-	return githubrest.ShownWord(permission, "admin", "write", "read", "none")
+	return githubrest.ShownWord(permission, collaboratorPermissions...)
 }
 
 // noWriteAccess says whether key is an account this repository gave no write access within the
