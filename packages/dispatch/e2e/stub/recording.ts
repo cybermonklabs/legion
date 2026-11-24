@@ -150,6 +150,12 @@ function withoutFields<T extends Record<string, unknown>>(
   return kept;
 }
 
+/** Whether `entry` was answered with a body Playwright never read: `content.size` -1 and no
+ *  text, because the page that asked went before the body arrived. `routeFromHAR` replays such an
+ *  answer as an empty body, which the page cannot parse. */
+export function bodyUnread({ response }: HarEntry): boolean {
+  return response.status > 0 && response.content.size === -1 && response.content.text === undefined;
+}
 /** The recording to commit: the volatile transport and every credential gone, the entries in an
  *  order two recordings of one row agree on, and every URL on the placeholder origin.
  *
@@ -220,12 +226,7 @@ export function normalise(har: Har, from: string): Har {
       request.headers.map(({ name, value }) => `${name.toLowerCase()}: ${value}`).sort(),
     ]);
   // 2: answered with its body; 1: answered, its body never read; 0: cancelled.
-  const rank = ({ response }: HarEntry) =>
-    response.status <= 0
-      ? 0
-      : response.content.size === -1 && response.content.text === undefined
-        ? 1
-        : 2;
+  const rank = (entry: HarEntry) => (entry.response.status <= 0 ? 0 : bodyUnread(entry) ? 1 : 2);
   const kept = new Map<string, HarEntry>();
   for (const entry of normalised.log.entries) {
     const key = keyOf(entry);

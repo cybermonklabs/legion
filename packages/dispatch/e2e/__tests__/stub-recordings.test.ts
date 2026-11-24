@@ -44,8 +44,13 @@ import { issueClaimEventPayloadFields } from "@legion/contracts";
 import { Ajv2020, type ValidateFunction } from "ajv/dist/2020";
 
 import { recordedOrigin } from "../stub/origin";
-import type { Har } from "../stub/recording";
-import { recordingsDirectory, recordingsUnder } from "../stub/recordings";
+import { bodyUnread, type Har } from "../stub/recording";
+import {
+  familyOf,
+  recordingFamily,
+  recordingsDirectory,
+  recordingsUnder,
+} from "../stub/recordings";
 
 interface OpenApiDocument {
   components?: { schemas?: Record<string, unknown> };
@@ -565,26 +570,28 @@ describe("every committed recording answers what the generated contract declares
     expect(isClaimReason({ ...claimed, type: "comment.created" }, "payload.reason")).toBe(false);
   });
 
+  // A layout row reads what the page draws, and an answer whose body the recording never read
+  // (`bodyUnread`) replays as an empty body the page cannot parse: the shell then draws "Could not
+  // load navigation." in place of its sidebar, and the reading measures that page
+  // (dispatch://INFRA-5200: a re-record left 42 such answers in the layout recordings before
+  // `normalise` preferred an answer with its body). The family is read the one way the stubbed
+  // layer reads it, so a changed path scheme matches no file and fails here rather than passing.
+  test("no layout recording replays an answer whose body it never read", () => {
+    const layout = files.filter(
+      (file) => recordingFamily(file) === familyOf("layout-rule.stub.e2e.ts")
+    );
+    expect(layout.length, "the layout rows' recordings this guard reads").toBeGreaterThan(0);
+    const unread = layout.flatMap((file) =>
+      (JSON.parse(readFileSync(join(recordings, file), "utf8")) as Har).log.entries
+        .filter(bodyUnread)
+        .map(({ request }) => `${file}: ${request.method} ${new URL(request.url).pathname}`)
+    );
+    expect(unread, "answers whose body the recording never read").toEqual([]);
+  });
+
   for (const file of files) {
     test(file, () => {
       const har = JSON.parse(readFileSync(join(recordings, file), "utf8")) as Har;
-      // A layout row reads what the page draws, and a read answered with a body Playwright never
-      // read (`content.size` -1, no text) is replayed as an empty body the page cannot parse: the
-      // shell then draws "Could not load navigation." in place of its sidebar, and the reading
-      // measures that page (dispatch://INFRA-5200: 12 layout recordings held such answers for
-      // rounds, and 42 did once re-recorded, before `normalise` preferred an answer with a body).
-      if (file.startsWith("stub/layout-rule/")) {
-        const bodiless = har.log.entries.filter(
-          ({ response }) =>
-            response.status > 0 &&
-            response.content.size === -1 &&
-            response.content.text === undefined
-        );
-        expect(
-          bodiless.map(({ request }) => `${request.method} ${new URL(request.url).pathname}`),
-          `${file}: answers whose body the recording never read, which replay as an empty body`
-        ).toEqual([]);
-      }
       for (const entry of har.log.entries) {
         const url = new URL(entry.request.url);
         const where = `${entry.request.method} ${url.pathname} in ${file}`;

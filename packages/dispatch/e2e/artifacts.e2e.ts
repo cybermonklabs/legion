@@ -15,10 +15,9 @@ import {
   documentBase,
   editArtifact,
   getArtifactText,
-  TINY_PNG,
 } from "./api";
 import { countDocumentSockets, documentEditor, documentTransport, typeAtEnd } from "./editor";
-import { navigateInApp } from "./sends";
+import { navigateInApp, ONE_PIXEL_PNG } from "./sends";
 import { expandedState } from "./settled";
 import { expect, type Locator, type Page, type Request, type TestInfo, test } from "./test";
 
@@ -27,7 +26,7 @@ import { expect, type Locator, type Page, type Request, type TestInfo, test } fr
 // otherwise write one path in the checkout, and a run must leave no file changed under e2e/.
 async function diagramFile(testInfo: TestInfo): Promise<string> {
   const path = testInfo.outputPath("diagram.png");
-  await writeFile(path, Buffer.from(TINY_PNG, "base64"));
+  await writeFile(path, Buffer.from(ONE_PIXEL_PNG, "base64"));
   return path;
 }
 

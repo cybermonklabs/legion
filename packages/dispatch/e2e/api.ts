@@ -20,6 +20,7 @@ import {
 import type { Actor, GatedStep } from "../web/src/api/types";
 import { harnessPorts } from "./harness-ports";
 import { type DispatchProcess, pinnedTo } from "./harness-processes";
+import { ONE_PIXEL_PNG } from "./sends";
 
 /** The Dispatch server a process of `env`'s stack addresses: the deployed server `env` names,
  *  else the harness server of that stack, whose port e2e/global-setup.ts writes into the
@@ -683,10 +684,6 @@ export function createIssueArtifact(
   return post("/api/v1/issues/{key}/artifacts", { body: input, params: { key: issue } }, options);
 }
 
-/** A one-pixel PNG, base64: the picture a row uploads or draws where it needs an image. */
-export const TINY_PNG =
-  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL0eAAAAABJRU5ErkJggg==";
-
 /** A file as the dashboard's file picker and paste send it. */
 interface FileUpload {
   bytes: Uint8Array<ArrayBuffer>;
@@ -694,15 +691,16 @@ interface FileUpload {
   name: string;
 }
 
-/** Posts `input` to `address` as `login`, as the multipart form the dashboard sends a file in.
- *  `request` sends JSON alone, so the form goes out as its own fetch; `where` names the target in
- *  the error. */
-async function postFile(
-  address: string,
+/** Posts `input` to the route `pattern` names, as `login`, as the multipart form the dashboard
+ *  sends a file in. The route's path parameters and its answer are the generated document's, as
+ *  `post`'s are; `request` sends JSON alone, so the form goes out as its own fetch. */
+async function postFile<P extends PathsOf<"post">>(
+  pattern: P,
+  params: PathParams<Op<P, "post">> & object,
   input: FileUpload,
-  login: string,
-  where: string
-): Promise<unknown> {
+  login: string
+): Promise<Result<P, "post">> {
+  const address = routeUrl(pattern, params);
   const form = new FormData();
   form.append("name", input.name);
   form.append("file", new Blob([input.bytes], { type: input.contentType }), input.name);
@@ -713,44 +711,28 @@ async function postFile(
   });
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(`upload ${input.name} to ${where} failed: ${response.status} ${text}`);
+    throw new Error(`upload ${input.name} to ${address} failed: ${response.status} ${text}`);
   }
-  return await response.json();
+  return (await response.json()) as Result<P, "post">;
 }
 
 /** Uploads bytes as an issue artifact through the multipart form the file picker posts. The JSON
  *  body `createIssueArtifact` sends carries text only, so an image can only be seeded this way. */
-export async function uploadIssueFile(
-  issue: string,
-  input: FileUpload,
-  login = "alice"
-): Promise<Result<"/api/v1/issues/{key}/artifacts", "post">> {
-  const address = routeUrl("/api/v1/issues/{key}/artifacts", { key: issue });
-  return (await postFile(address, input, login, issue)) as Result<
-    "/api/v1/issues/{key}/artifacts",
-    "post"
-  >;
+export function uploadIssueFile(issue: string, input: FileUpload, login = "alice") {
+  return postFile("/api/v1/issues/{key}/artifacts", { key: issue }, input, login);
 }
 
 /** Uploads bytes to an agent session's conversation through the multipart form a paste on the
  *  Agents page posts; answers the server's upload answer. */
-export async function uploadAgentFile(
-  sessionID: string,
-  input: FileUpload,
-  login = "alice"
-): Promise<Result<"/api/v1/agents/{session_id}/artifacts", "post">> {
-  const address = routeUrl("/api/v1/agents/{session_id}/artifacts", { session_id: sessionID });
-  return (await postFile(address, input, login, `agent ${sessionID}`)) as Result<
-    "/api/v1/agents/{session_id}/artifacts",
-    "post"
-  >;
+export function uploadAgentFile(sessionID: string, input: FileUpload, login = "alice") {
+  return postFile("/api/v1/agents/{session_id}/artifacts", { session_id: sessionID }, input, login);
 }
 
-/** Uploads `TINY_PNG` to an agent session's conversation as alice, named `name`, as a paste on
- *  the Agents page does; answers its slug. */
+/** Uploads `ONE_PIXEL_PNG` to an agent session's conversation as alice, named `name`, as a paste
+ *  on the Agents page does; answers its slug. */
 export async function uploadAgentPicture(sessionID: string, name: string): Promise<string> {
   const uploaded = await uploadAgentFile(sessionID, {
-    bytes: new Uint8Array(Buffer.from(TINY_PNG, "base64")),
+    bytes: new Uint8Array(Buffer.from(ONE_PIXEL_PNG, "base64")),
     contentType: "image/png",
     name,
   });

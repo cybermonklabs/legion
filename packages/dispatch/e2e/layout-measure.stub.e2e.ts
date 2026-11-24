@@ -13,7 +13,6 @@ import { fileURLToPath } from "node:url";
 
 import { expect, type Page, type Route } from "@playwright/test";
 
-import { TINY_PNG } from "./api";
 import type { KnownLayoutBreach } from "./layout-breaches";
 import {
   judgeReading,
@@ -25,6 +24,7 @@ import {
 import { type LayoutBreach, type LayoutReading, measureLayout } from "./layout-measure";
 import { openCappedGroups } from "./layout-routes";
 import { trackDocumentRequests, waitForRouteSettled } from "./review-routes";
+import { ONE_PIXEL_PNG } from "./sends";
 import { stubbed } from "./stub/stub-test";
 
 // No row takes a `scene`, so no seed ever runs and no recording is read or written.
@@ -41,7 +41,7 @@ const PATH = "packages/dispatch/e2e/acceptance/converted-verification-check-with
 const BARE_PATH = "packages/dispatch/e2e/acceptance/convertedverificationcheckwithalongpath.sh";
 
 /** A one-pixel picture, drawn as wide as an `img` is told to be. */
-const PIXEL = `data:image/png;base64,${TINY_PNG}`;
+const PIXEL = `data:image/png;base64,${ONE_PIXEL_PNG}`;
 
 /** `count` spans, each one entry of a group. */
 function entries(count: number): string {
@@ -626,16 +626,7 @@ test("a window scrolled sideways reads as it does unscrolled @pr", async ({ page
 // download, which a loaded box provokes (`net::ERR_NETWORK_CHANGED`, seen in a trace of the
 // agents row). The layout sheet reaches the new document without another call, so the reading
 // taken there is still in the pinned faces and with no transitions.
-//
-// The settle wait then counts the Inbox number's reads of the document the page shows, and of no
-// document the page replaced: a replaced document's reads stay in `page.requests()` answered by
-// nothing and failed by nothing, and a wait that counted them never settled (dispatch://INFRA-5200:
-// 10 of 80 repeats of the issue-spec-outline row under address changes). The replaced document
-// here leaves two such reads: one sent before its successor's navigation request, and one sent
-// after it and before the successor commits. The shown document's own read is held a moment, and
-// the wait settles only once that read has its answer.
-// SLOW(>=2s): three loads of a page, then a page held mid-reload and a read held 600 ms.
-test("a pinned face that does not load fails a reading, and a document the page replaces keeps the layout sheet and is the one the settle wait waits on @pr", async ({
+test("a pinned face that does not load fails a reading, and the layout sheet reaches a document the page replaces @pr", async ({
   page,
 }) => {
   const origin = "http://layout-fonts.test";
@@ -668,26 +659,59 @@ test("a pinned face that does not load fails a reading, and a document the page 
   );
   await page.goto(`${origin}/`);
   await expect(pinFontFaces(page)).rejects.toThrow("Liberation Sans 700");
+});
 
-  const settle = "http://layout-settle.test";
+/** How long the settle row holds the shown document's own Inbox read before it answers it. */
+const SHOWN_READ_HOLD_MS = 1500;
+
+// The settle wait counts the Inbox number's reads of the document the page shows, and of no
+// document the page replaced: a replaced document's reads stay in `page.requests()` answered by
+// nothing and failed by nothing, and a wait that counted them never settled (dispatch://INFRA-5200:
+// 10 of 80 repeats of the issue-spec-outline row under address changes). The replaced document
+// here leaves two such reads: one sent before its successor's navigation request, and one sent
+// after it and before the successor commits. The shown document's own read is held, and the wait
+// settles only once that read has its answer.
+//
+// The bound. The wait polls every 100 ms, and one poll - reading `inFlight` and the Inbox number
+// - costs d, measured on this box at a load average of about 500 over 934 polls of these rows:
+// a median of 9-14 ms, a 90th percentile of 24-28, a 99th of 57-73 and a maximum of 93. The wait
+// restarts its 500 ms window at the end of the last poll that saw the shown read in flight. That
+// poll began before the read's answer reached the tracker, and the next one, at most 100 + d
+// later, saw no read; so the window starts after answeredAt - 100 - d, and a wait that counts the
+// read settles no earlier than answeredAt + 400 - d. A wait that did not count it would settle
+// 500 ms and at most one poll after it starts, about 600 + d ms into the 1,500 ms hold, so about
+// 900 ms before the answer. The bound of 250 stands between the two: it holds for every d up to
+// 150 ms, well past the slowest poll measured, and a wait that ignored the read would miss it by
+// about 1,150 ms. (A hold of 600 ms with a bound of 500 put the bound at the top of the first
+// range, 400 + 4d to 500 + 5d as the poll's phase falls: CI read 492, dispatch-browser-pr shard 2
+// of run 45450047809.)
+//
+// Tagged `@pr`, as every stubbed row is (`e2e/__tests__/pull-request-lane.test.ts`: a stubbed row
+// the pull-request lane does not schedule is a row whose cost was paid and whose feedback was
+// given away). That lane is at 329 of the 350 rows dispatch://INFRA-1407's R1 allows.
+// SLOW(>=2s): a page held mid-reload, then its read held 1,500 ms and the 500 ms quiet after it.
+test("the settle wait waits on the shown document's Inbox reads and on no replaced one's @pr", async ({
+  page,
+}) => {
+  const origin = "http://layout-settle.test";
   const html = (read: string) =>
     `<!doctype html><main>A page</main><script>fetch("/api/v1/inbox?${read}")</script>`;
   // The first load is answered; the reload's document request is held, so the replaced document
   // is still there to send a read after its successor's navigation request.
   const successor = Promise.withResolvers<Route>();
   let documents = 0;
-  await page.route(`${settle}/`, async (route) => {
+  await page.route(`${origin}/`, async (route) => {
     documents += 1;
     if (documents === 1) await route.fulfill({ body: html("before"), contentType: "text/html" });
     else successor.resolve(route);
   });
   const reads: Route[] = [];
-  await page.route(`${settle}/api/v1/inbox?*`, (route) => {
+  await page.route(`${origin}/api/v1/inbox?*`, (route) => {
     reads.push(route);
   });
 
-  await trackDocumentRequests(page);
-  await page.goto(`${settle}/`);
+  const inFlight = await trackDocumentRequests(page);
+  await page.goto(`${origin}/`);
   await expect.poll(() => reads.length).toBe(1);
   // The replaced document reloads, and sends its second read 50 ms later from a timer of its own,
   // after its successor's navigation request: Playwright evaluates nothing in a page whose
@@ -700,28 +724,30 @@ test("a pinned face that does not load fails a reading, and a document the page 
   await expect.poll(() => reads.length).toBe(2);
   await held.fulfill({ body: html("shown"), contentType: "text/html" });
   await expect.poll(() => reads.length).toBe(3);
+  const [before, after, shown] = reads;
+  if (before === undefined || after === undefined || shown === undefined) {
+    throw new Error(`the page sent ${reads.length} Inbox reads, where the row reads three`);
+  }
   // The control's premise: both reads of the replaced document are still listed, answered by
   // nothing and failed by nothing, and the second was sent after the successor's own request.
   const listed = await page.requests();
-  for (const read of reads.slice(0, 2)) {
-    const request = read.request();
-    expect(listed.includes(request)).toBe(true);
-    expect([request.existingResponse(), request.failure()]).toEqual([null, null]);
+  for (const read of [before, after]) {
+    expect(listed.includes(read.request())).toBe(true);
+    expect([read.request().existingResponse(), read.request().failure()]).toEqual([null, null]);
   }
-  expect(listed.indexOf(held.request())).toBeLessThan(listed.indexOf(reads[1]?.request() as never));
+  expect(listed.indexOf(held.request())).toBeLessThan(listed.indexOf(after.request()));
 
   let answeredAt = 0;
   const answer = (async () => {
-    // Held for 600 ms so the wait is seen waiting on the shown document's read: a wait that
-    // ignored it would settle 500 ms after the load.
-    await page.waitForTimeout(600);
+    // Held long enough that a wait which ignored the read would settle well before it is answered.
+    await page.waitForTimeout(SHOWN_READ_HOLD_MS);
     answeredAt = Date.now();
-    await reads[2]?.fulfill({ json: [] });
+    await shown.fulfill({ json: [] });
   })();
-  await waitForRouteSettled(page, { ready: (current) => [current.getByRole("main")] });
+  await waitForRouteSettled(page, { ready: (current) => [current.getByRole("main")] }, inFlight);
   const settledAt = Date.now();
   await answer;
-  expect(settledAt - answeredAt).toBeGreaterThanOrEqual(500);
+  expect(settledAt - answeredAt).toBeGreaterThanOrEqual(250);
 });
 
 test("a layout reading fails on a blank page and on an entry its reading did not match @pr", async ({

@@ -5,7 +5,7 @@ import { expect, type Page } from "@playwright/test";
 import { type KnownLayoutBreach, type LayoutBreachKind, layoutBreaches } from "./layout-breaches";
 import { LAYOUT_WIDTHS, type LayoutReading, measureLayout } from "./layout-measure";
 import type { LayoutRoute, LayoutSeed, LayoutState } from "./layout-routes";
-import { trackDocumentRequests, waitForRouteSettled } from "./review-routes";
+import { type InFlightRequests, trackDocumentRequests, waitForRouteSettled } from "./review-routes";
 
 /** The fewest elements a page's own region (`[data-testid="main-content"]`) holds once it has
  *  drawn, unless the route names a floor of its own (`minElements`) with why. */
@@ -348,10 +348,16 @@ export async function loadRetryingNetworkChange(
   }
 }
 
-/** Loads `address` fresh and waits until `route` has settled. The layout sheet is already in
- *  every document the page loads (`installLayoutSheet`), so a document the page replaces on its
- *  own after the load has it too, and the settle wait follows the page to that document. */
-async function loadSettled(page: Page, route: LayoutRoute, address: string): Promise<void> {
+/** Loads `address` fresh and waits until `route` has settled, reading requests in flight from
+ *  `inFlight`. The layout sheet is already in every document the page loads
+ *  (`installLayoutSheet`), so a document the page replaces on its own after the load has it too,
+ *  and the settle wait follows the page to that document. */
+async function loadSettled(
+  page: Page,
+  route: LayoutRoute,
+  address: string,
+  inFlight: InFlightRequests
+): Promise<void> {
   await loadRetryingNetworkChange(
     () => page.goto(address),
     async () =>
@@ -360,7 +366,7 @@ async function loadSettled(page: Page, route: LayoutRoute, address: string): Pro
         .at(-1)
         ?.failure()?.errorText
   );
-  await waitForRouteSettled(page, route);
+  await waitForRouteSettled(page, route, inFlight);
 }
 
 /** Reads the settled page: the pinned faces loaded in the document that is current now, then
@@ -398,7 +404,7 @@ export async function checkLayout(page: Page, route: LayoutRoute, seed: LayoutSe
   await installLayoutSheet(page);
   // The page answers from routes, so its settle wait reads requests by the document that sent
   // them (`trackDocumentRequests` says why), from before the first load.
-  await trackDocumentRequests(page);
+  const inFlight = await trackDocumentRequests(page);
   // A minute after the seed, held there: a relative time ("just now", "2 minutes ago", "3 weeks
   // ago") widens its column with the gap between the seed and the read, which moves with the
   // run's pace on the stack and with the recording's age in a replay. `setFixedTime` keeps the
@@ -409,7 +415,7 @@ export async function checkLayout(page: Page, route: LayoutRoute, seed: LayoutSe
   const failures: LayoutFailure[] = [];
   for (const width of LAYOUT_WIDTHS) {
     await page.setViewportSize({ height: HEIGHT, width });
-    await loadSettled(page, route, address);
+    await loadSettled(page, route, address, inFlight);
     const plain = { route: route.name, width };
     failures.push(
       ...judgeReading(plain, await measureSettledPage(page), {
@@ -418,9 +424,9 @@ export async function checkLayout(page: Page, route: LayoutRoute, seed: LayoutSe
       })
     );
     for (const state of route.states ?? []) {
-      await loadSettled(page, route, address);
+      await loadSettled(page, route, address, inFlight);
       await state.act(page);
-      await waitForRouteSettled(page, route);
+      await waitForRouteSettled(page, route, inFlight);
       const acted = { route: route.name, state: state.name, width };
       failures.push(
         ...judgeReading(acted, await measureSettledPage(page), {
