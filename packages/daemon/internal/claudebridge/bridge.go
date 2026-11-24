@@ -155,9 +155,8 @@ func Run(ctx context.Context, cfg Config) (int, error) {
 	if logOut == nil {
 		logOut = io.Discard
 	}
-	// The bridge's own lines pass the URL rule: a turn report's failure quotes the daemon's URL,
-	// its user name among it. Claude Code's stderr is logOut itself, below, so a file stays the
-	// file Claude Code writes to and exec's Wait copies nothing.
+	// The bridge's own lines pass the URL rule. Claude Code's stderr is logOut itself, below, so a
+	// file stays the file Claude Code writes to and exec's Wait copies nothing.
 	b := &bridge{cfg: cfg, log: log.New(redact.Writer(logOut), "[claude-bridge] ", 0)}
 	b.frames = shimwire.NewWriter(&b.encoded)
 	b.reports = startTurnReports(cfg, b.log)

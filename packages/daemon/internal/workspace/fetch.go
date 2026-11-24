@@ -27,7 +27,6 @@ import (
 	"github.com/sjawhar/envoy/oauth2call"
 	"github.com/sjawhar/envoy/redirects"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
-	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/rolefile"
 )
 
@@ -714,9 +713,8 @@ func askCache(ctx context.Context, request FetchRequest, path string, withToken 
 	}
 	response, err := cacheClient.Do(ask)
 	if err != nil {
-		// The ask is named by the URL rule, as every line of workspace-init names --cache-url: its
-		// host and path, none of the user information or query it can carry.
-		return nil, oauth2call.Unanswered(err, ask, redact.URLCredentials(ask.URL.String()))
+		// --cache-url can carry user information, a query or a fragment; Unanswered drops them.
+		return nil, oauth2call.Unanswered(err, ask, "")
 	}
 	if withToken && response.StatusCode == http.StatusUnauthorized {
 		return response, fmt.Errorf("ask the repository cache %s: GET %s%s answered %s: it is not the cache whose token this pod holds", request.CacheURL, cache, path, oauth2call.StatusLine(response.StatusCode))

@@ -186,9 +186,9 @@ var daemonClient = redirects.Refused(http.DefaultClient)
 // Authorization when op carries one. It answers the daemon's answer, read through
 // oauth2call.ReadAnswer with the record of the request, so a refusal prints with the bearer and any
 // credential the request carried redacted (Answer.Words, refusal), and a caller decodes what it
-// decides on as it came (Answer.Decode). Only a request that got no answer is an error, naming its
-// failure through oauth2call.Unanswered and the URL it asked as envoy's redact.URL prints it: the
-// URL where it is a plain one, and the words saying it is not printed otherwise.
+// decides on as it came (Answer.Decode). Only a request that got no answer, or whose answer could
+// not be read, is an error: the former names its failure and the URL it asked through
+// oauth2call.Unanswered, the latter the URL through the URL rule.
 func (op operator) do(ctx context.Context, method, path string, body any) (oauth2call.Answer, error) {
 	var reader io.Reader
 	if body != nil {

@@ -505,8 +505,8 @@ const shownBodyRunes = 512
 //     it, quotes none of the value, whole or cut, and reaches none of the decoder's own errors,
 //     whose text quotes it.
 //   - A transport error of send names its target as ShownBody shows it, with the target's size,
-//     and its failure by redact.Unanswered: a transport failure's own words or a fixed class, so it
-//     quotes no line of an answer at all.
+//     and then the URL it asked and its failure by redact.Unanswered: a transport failure's own
+//     words or a fixed class, so it quotes no line of an answer at all.
 //   - Any other error that quotes GitHub's text, such as a bucket error that quotes a key
 //     (redeliver's bucketErr), is cut whole, with the size of its text (ShownErr).
 //   - A request's target, which a status error names, is cut alone, with the target's size. So is
