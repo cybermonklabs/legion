@@ -14,6 +14,7 @@ import (
 	"io/fs"
 	"math"
 	"net/http"
+	"net/url"
 	"os"
 	"path"
 	"path/filepath"
@@ -697,33 +698,44 @@ func cacheNotReady(ctx context.Context, request FetchRequest, timeout time.Durat
 	return "", nil
 }
 
-// askCache is GET <cache><path>, with the cache's bearer token when withToken is set. It answers
-// (nil, the transport's failure) when the cache could not be reached, which is worth another ask.
-// An answer that refuses the token (401) to a request that carried it, a redirect (3xx), or one
-// whose CacheRepositoryHeader is not the request's repository, comes back with the refusal as its
-// error: the caller closes the body and takes nothing it carries.
+// askCache is GET <cache><path>: the cache's URL with path joined onto its path
+// (url.URL.JoinPath), its query kept and its fragment, which no request sends, dropped, where path
+// appended to the URL's text would sit inside a query or a fragment and the cache would be asked
+// another path. It carries the cache's bearer token when withToken is set. It answers (nil, the
+// transport's failure) when the cache could not be reached, which is worth another ask, and (nil, a
+// refusal in its own words) for a cache URL that does not parse, or whose joined URL does not parse
+// again (url.URL.String can write text url.Parse refuses, such as an IPv6 zone escape): url.Parse's
+// error, which http.NewRequest's carries, quotes the URL whole, user information and query
+// included. An answer that refuses the token (401) to a request that carried it, a redirect (3xx),
+// or one whose CacheRepositoryHeader is not the request's repository, comes back with the refusal
+// as its error: the caller closes the body and takes nothing it carries.
 func askCache(ctx context.Context, request FetchRequest, path string, withToken bool) (*http.Response, error) {
-	cache := strings.TrimSuffix(request.CacheURL, "/")
-	ask, err := http.NewRequestWithContext(ctx, http.MethodGet, cache+path, nil)
+	cache, err := url.Parse(request.CacheURL)
 	if err != nil {
-		return nil, err
+		return nil, errors.New("ask the repository cache: its URL does not parse (the URL is not printed)")
+	}
+	asked := cache.JoinPath(path)
+	asked.Fragment, asked.RawFragment = "", ""
+	ask, err := http.NewRequestWithContext(ctx, http.MethodGet, asked.String(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("ask the repository cache: the URL of its %s does not parse (the URL is not printed)", path)
 	}
 	if withToken {
 		ask.Header.Set("Authorization", "Bearer "+request.CacheToken)
 	}
 	response, err := cacheClient.Do(ask)
 	if err != nil {
-		// --cache-url can carry user information, a query or a fragment; Unanswered drops them.
+		// --cache-url can carry user information or a query; Unanswered drops them.
 		return nil, oauth2call.Unanswered(err, ask, "")
 	}
 	if withToken && response.StatusCode == http.StatusUnauthorized {
-		return response, fmt.Errorf("ask the repository cache %s: GET %s%s answered %s: it is not the cache whose token this pod holds", request.CacheURL, cache, path, oauth2call.StatusLine(response.StatusCode))
+		return response, fmt.Errorf("ask the repository cache %s: GET %s answered %s: it is not the cache whose token this pod holds", request.CacheURL, asked, oauth2call.StatusLine(response.StatusCode))
 	}
 	// cacheClient follows no redirect, so a 3xx is the answer itself: refused by its status, and
 	// its Location, the answering party's own words, is neither asked nor printed. The cache
 	// answers no redirect, whatever repository the answer names.
 	if redirects.Status(response.StatusCode) {
-		return response, fmt.Errorf("ask the repository cache %s: GET %s%s answered %s, a redirect, which this pod never follows", request.CacheURL, cache, path, oauth2call.StatusLine(response.StatusCode))
+		return response, fmt.Errorf("ask the repository cache %s: GET %s answered %s, a redirect, which this pod never follows", request.CacheURL, asked, oauth2call.StatusLine(response.StatusCode))
 	}
 	// The repository the answer names is its own words, so it is compared as it came and printed
 	// as the rule reads it (oauth2call.Header).
