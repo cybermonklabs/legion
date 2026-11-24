@@ -3840,6 +3840,12 @@
         "base": "ec7bd4500aa4a318f0382f6456ece138f32f27f5",
         "files": ["packages/envoy/internal/cipher/groups/reader_url_join_test.go"],
         "capture": "groups.directory-url/unparsed"
+      },
+      {
+        "row": "githubapp-api-base-unparsed",
+        "base": "ec7bd4500aa4a318f0382f6456ece138f32f27f5",
+        "files": ["packages/envoy/internal/dispatch/githubapp/api_base_join_test.go"],
+        "capture": "githubapp.api-base/unparsed"
       }
     ],
     "boundary_fields": {
@@ -14350,6 +14356,203 @@
       "test": "TestADirectoryURLWithACredentialPrintsNoneOfIt/reparsed",
       "production": "groups Reader.list: a Directory URL url.Parse takes whose joined URL, as url.URL.String writes it, url.Parse refuses (an IPv6 zone escape) fails the read in the reader's own fixed words, never http.NewRequest's error, which quotes that URL whole",
       "capture": "groups.directory-url/reparsed"
+    },
+    {
+      "id": "githubapp-api-base-query",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/githubapp",
+      "test": "TestAGitHubCallGoesToThePathJoinedOntoTheAPIBase/query",
+      "production": "githubapp Client: an API base with a path and a query (http://host/api?sig=...) asks that path joined with each call's own, the configured query kept ahead of the call's (urljoin.JoinURL: /api/repos/acme/web/installation?sig=..., /api/repos/acme/web/pulls/7?sig=...&per_page=1), where the call's path appended to the base's text sat inside the query (/api?sig=.../repos/...) and GitHub was asked /api"
+    },
+    {
+      "id": "githubapp-api-base-query-trailing-slash",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/githubapp",
+      "test": "TestAGitHubCallGoesToThePathJoinedOntoTheAPIBase/query-trailing-slash",
+      "production": "githubapp Client: an API base whose path ends in a slash and that has a query (http://host/api/?sig=...) asks /api/repos/acme/web/installation?sig=..., where the call's path appended to the base's text sat inside the query"
+    },
+    {
+      "id": "githubapp-api-base-fragment",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/githubapp",
+      "test": "TestAGitHubCallGoesToThePathJoinedOntoTheAPIBase/fragment",
+      "production": "githubapp Client: an API base with a fragment (http://host/api#pane) asks /api/repos/acme/web/installation and sends no fragment, where the call's path appended to the base's text sat inside the fragment and GitHub was asked /api"
+    },
+    {
+      "id": "githubapp-api-base-no-query",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/githubapp",
+      "test": "TestAGitHubCallGoesToThePathJoinedOntoTheAPIBase/no-query",
+      "production": "githubapp Client: an API base with a path and no query (http://host/api) asks /api/repos/acme/web/installation, as before the join"
+    },
+    {
+      "id": "githubapp-api-base-unparsed-twin",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/githubapp",
+      "test": "TestAnAPIBaseThatDoesNotParsePrintsNoneOfIt/twin",
+      "production": "the probe of the unparsed API-base row: http.NewRequest's error for that base with a call's path after it quotes the base whole, its user information and its access token, so the row can see them printed"
+    },
+    {
+      "id": "githubapp-api-base-unparsed",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/githubapp",
+      "test": "TestAnAPIBaseThatDoesNotParsePrintsNoneOfIt/unparsed",
+      "production": "githubapp New: an API base that url.Parse refuses builds no client and is refused in urljoin.ErrBase's fixed words, never url.Parse's error, which the first call's request carried before the base was parsed at New and which quotes the base whole, its user information and query included",
+      "capture": "githubapp.api-base/unparsed"
+    },
+    {
+      "id": "githubapp-api-path-refused-host",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/githubapp",
+      "test": "TestAReadOfAPathThatIsNoRelativeReferenceIsRefused/host",
+      "production": "githubapp Client.Read: a path that names a host (//host/x) is no relative reference, so the read is refused (urljoin.ErrRef), nothing is sent, and the refusal quotes neither the path nor the API origin"
+    },
+    {
+      "id": "githubapp-api-path-refused-fragment",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/githubapp",
+      "test": "TestAReadOfAPathThatIsNoRelativeReferenceIsRefused/fragment",
+      "production": "githubapp Client.Read: a path that carries a fragment is refused the same way, and neither its query nor its fragment prints"
+    },
+    {
+      "id": "githubapp-print-twin",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/githubapp",
+      "test": "TestEachAnswerThisClientPrintsHoldsNoCredentialItsReadCarried/twin",
+      "production": "the probe of this package's print-site rows: the stand-in's refusal echoes the Authorization of the read, so the same body read as it came holds the credential and the rows can see a leak"
+    },
+    {
+      "id": "githubapp-print-check-source",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/githubapp",
+      "test": "TestEachAnswerThisClientPrintsHoldsNoCredentialItsReadCarried/check-source",
+      "production": "githubapp Client.CheckSource: the repository read's status error prints GitHub's body as the rule reads it (redact.Answer.Words), so an answer in GitHub's place that echoes the installation token the read carried prints none of it",
+      "function": "(*github.com/sjawhar/envoy/internal/dispatch/githubapp.Client).CheckSource",
+      "capture": "githubapp.answer-words/check-source",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/githubapp/client.go",
+        "preimage": "\tif status != http.StatusOK {\n\t\treturn Source{}, fmt.Errorf(\"GET %s: %s\", ShownBody(target), StatusText(status, body.Words().String()))\n\t}",
+        "replacement": "\tif status != http.StatusOK {\n\t\tvar said string\n\t\tredact.Holds(body, func(b []byte) bool { said = string(b); return true })\n\t\treturn Source{}, fmt.Errorf(\"GET %s: %s\", ShownBody(target), StatusText(status, said))\n\t}"
+      }
+    },
+    {
+      "id": "githubapp-print-ref-status",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/githubapp",
+      "test": "TestEachAnswerThisClientPrintsHoldsNoCredentialItsReadCarried/ref-status",
+      "production": "githubapp Client.Ref: the commit read's status error prints GitHub's body as the rule reads it, so an answer that echoes the token the read carried prints none of it",
+      "function": "(*github.com/sjawhar/envoy/internal/dispatch/githubapp.Client).Ref",
+      "capture": "githubapp.answer-words/ref-status",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/githubapp/client.go",
+        "preimage": "\tif status == http.StatusNotFound || status == http.StatusUnprocessableEntity {\n\t\treturn \"\", fmt.Errorf(\"%w: %s on %s/%s\", ErrNoBranch, branch, owner, repo)\n\t}\n\tif status != http.StatusOK {\n\t\treturn \"\", fmt.Errorf(\"GET %s: %s\", ShownBody(target), StatusText(status, body.Words().String()))\n\t}",
+        "replacement": "\tif status == http.StatusNotFound || status == http.StatusUnprocessableEntity {\n\t\treturn \"\", fmt.Errorf(\"%w: %s on %s/%s\", ErrNoBranch, branch, owner, repo)\n\t}\n\tif status != http.StatusOK {\n\t\tvar said string\n\t\tredact.Holds(body, func(b []byte) bool { said = string(b); return true })\n\t\treturn \"\", fmt.Errorf(\"GET %s: %s\", ShownBody(target), StatusText(status, said))\n\t}"
+      }
+    },
+    {
+      "id": "githubapp-print-ref-no-sha",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/githubapp",
+      "test": "TestEachAnswerThisClientPrintsHoldsNoCredentialItsReadCarried/ref-no-sha",
+      "production": "githubapp Client.Ref: a 200 that is no 40-hex SHA leaves Ref through neither its answer nor its error — the one line GitHub sent is read as the rule prints it (RemoteText.SendBack, empty for a text the rule changes) and the error names no part of it",
+      "function": "(*github.com/sjawhar/envoy/internal/dispatch/githubapp.Client).Ref",
+      "capture": "githubapp.answer-words/ref-no-sha",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/githubapp/client.go",
+        "preimage": "\tsha, _ := body.Words().SendBack()\n\tif !commitSHA.MatchString(sha) {\n\t\treturn \"\", fmt.Errorf(\"commit for %s/%s@%s: GitHub answered no commit SHA\", owner, repo, branch)\n\t}\n\treturn sha, nil",
+        "replacement": "\tvar sha string\n\tredact.Holds(body, func(b []byte) bool { sha = string(b); return true })\n\tif sha == \"\" {\n\t\treturn \"\", fmt.Errorf(\"commit for %s/%s@%s: GitHub answered no commit SHA\", owner, repo, branch)\n\t}\n\treturn sha, nil"
+      }
+    },
+    {
+      "id": "githubapp-print-branch-status",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/githubapp",
+      "test": "TestEachAnswerThisClientPrintsHoldsNoCredentialItsReadCarried/branch-status",
+      "production": "githubapp Client.Branch: the exact ref read's status error prints GitHub's body as the rule reads it, so an answer that echoes the token the read carried prints none of it",
+      "function": "(*github.com/sjawhar/envoy/internal/dispatch/githubapp.Client).Branch",
+      "capture": "githubapp.answer-words/branch-status",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/githubapp/client.go",
+        "preimage": "\tdefault:\n\t\treturn \"\", fmt.Errorf(\"GET %s: %s\", ShownBody(target), StatusText(status, body.Words().String()))\n\t}",
+        "replacement": "\tdefault:\n\t\tvar said string\n\t\tredact.Holds(body, func(b []byte) bool { said = string(b); return true })\n\t\treturn \"\", fmt.Errorf(\"GET %s: %s\", ShownBody(target), StatusText(status, said))\n\t}"
+      }
+    },
+    {
+      "id": "githubapp-print-dir-status",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/githubapp",
+      "test": "TestEachAnswerThisClientPrintsHoldsNoCredentialItsReadCarried/dir-status",
+      "production": "githubapp Client.Dir: the subtree read's status error prints GitHub's body as the rule reads it, so an answer that echoes the token the read carried prints none of it",
+      "function": "(*github.com/sjawhar/envoy/internal/dispatch/githubapp.Client).Dir",
+      "capture": "githubapp.answer-words/dir-status",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/githubapp/client.go",
+        "preimage": "\t\treturn Dir{}, fmt.Errorf(\"GET %s: %s\", ShownBody(target), StatusText(status, body.Words().String()))",
+        "replacement": "\t\tvar said string\n\t\tredact.Holds(body, func(b []byte) bool { said = string(b); return true })\n\t\treturn Dir{}, fmt.Errorf(\"GET %s: %s\", ShownBody(target), StatusText(status, said))"
+      }
+    },
+    {
+      "id": "githubapp-print-deliveries-status",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/githubapp",
+      "test": "TestEachAnswerThisClientPrintsHoldsNoCredentialItsReadCarried/deliveries-status",
+      "production": "githubapp Client.Deliveries: the listing's status error prints GitHub's body as the rule reads it, so an answer that echoes the App's JWT, which the listing carries, prints no run of it",
+      "function": "(*github.com/sjawhar/envoy/internal/dispatch/githubapp.Client).Deliveries",
+      "capture": "githubapp.answer-words/deliveries-status",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/githubapp/deliveries.go",
+        "preimage": "\t\t\treturn nil, fmt.Errorf(\"GET %s: %s\", ShownBody(target), StatusText(status, body.Words().String()))",
+        "replacement": "\t\t\tvar said string\n\t\t\tredact.Holds(body, func(b []byte) bool { said = string(b); return true })\n\t\t\treturn nil, fmt.Errorf(\"GET %s: %s\", ShownBody(target), StatusText(status, said))"
+      }
+    },
+    {
+      "id": "githubapp-print-redeliver-status",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/githubapp",
+      "test": "TestEachAnswerThisClientPrintsHoldsNoCredentialItsReadCarried/redeliver-status",
+      "production": "githubapp Client.Redeliver: the redelivery's status error prints GitHub's body as the rule reads it, so an answer that echoes the App's JWT prints no run of it",
+      "function": "(*github.com/sjawhar/envoy/internal/dispatch/githubapp.Client).Redeliver",
+      "capture": "githubapp.answer-words/redeliver-status",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/githubapp/deliveries.go",
+        "preimage": "\t\treturn fmt.Errorf(\"POST %s: %s\", ShownBody(target), StatusText(status, body.Words().String()))",
+        "replacement": "\t\tvar said string\n\t\tredact.Holds(body, func(b []byte) bool { said = string(b); return true })\n\t\treturn fmt.Errorf(\"POST %s: %s\", ShownBody(target), StatusText(status, said))"
+      }
+    },
+    {
+      "id": "githubapp-print-answered-limit",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/githubapp",
+      "test": "TestEachAnswerThisClientPrintsHoldsNoCredentialItsReadCarried/answered-limit",
+      "production": "githubapp answeredLimit: the Body of a limit GitHub answered is the refusal as the rule reads it, so a refusal that echoes the credential the request carried prints no run of it in the RateLimitError's text",
+      "function": "github.com/sjawhar/envoy/internal/dispatch/githubapp.answeredLimit",
+      "capture": "githubapp.answer-words/answered-limit",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/githubapp/deliveries.go",
+        "preimage": "\t\tlimited.Body = body.Words().String()",
+        "replacement": "\t\tredact.Holds(body, func(b []byte) bool { limited.Body = string(b); return true })"
+      }
+    },
+    {
+      "id": "githubapi-print-relayed-refusal-twin",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/githubapi",
+      "test": "TestTheProxysRelayOfARefusalHoldsNoTokenItsReadCarried/twin",
+      "production": "the probe of the proxy's relay row: GitHub's place refuses the read with a body that echoes the installation token the proxy sent, so the row can see a leak"
+    },
+    {
+      "id": "githubapi-print-relayed-refusal",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/githubapi",
+      "test": "TestTheProxysRelayOfARefusalHoldsNoTokenItsReadCarried/relayed-refusal",
+      "production": "githubapi ProxyREST: a GitHub answer the proxy does not decode is relayed to the browser as the rule reads it (redact.Answer.Words), so a refusal in GitHub's place that echoes the installation token the read carried reaches the page with none of it",
+      "function": "github.com/sjawhar/envoy/internal/dispatch/githubapi.ProxyREST",
+      "capture": "githubapi.answer-words/relayed-refusal",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/githubapi/proxy.go",
+        "preimage": "\t_, _ = io.WriteString(w, body.Words().String())",
+        "replacement": "\tredact.Holds(body, func(b []byte) bool { _, _ = io.WriteString(w, string(b)); return true })"
+      }
     }
   ],
   "bun": [
@@ -17123,6 +17326,61 @@
       "site": "groups Reader.list: each page's URL was BROKER_DIRECTORY_URL's text with the members route appended and the page's parameters after a second '?', so a configured query took both into its last value and the Directory was asked the configured path, and a URL that does not parse logged http.NewRequest's error, which quotes it whole",
       "source": "the round-9 decisions of #4368",
       "guard": "groups-directory-url-query"
+    },
+    {
+      "site": "githubapp Client: every call's URL was the configured API base's text with the call's path appended (c.base + \"/repos/…\", sixteen sites), so a base with a query took the path into the query's last value and GitHub was asked the base's own path",
+      "source": "the round-9 decisions of #4368",
+      "guard": "githubapp-api-base-query"
+    },
+    {
+      "site": "githubapp New: a configured API base that does not parse built a client, and the first call's request printed url.Parse's error, which quotes the base whole, its user information and query included",
+      "source": "the round-9 decisions of #4368",
+      "guard": "githubapp-api-base-unparsed"
+    },
+    {
+      "site": "githubapp Client.CheckSource: the repository read's status error prints GitHub's body, and no row named the function",
+      "source": "the round-9 decisions of #4368",
+      "guard": "githubapp-print-check-source"
+    },
+    {
+      "site": "githubapp Client.Ref: the commit read's status error prints GitHub's body, and no row named the function",
+      "source": "the round-9 decisions of #4368",
+      "guard": "githubapp-print-ref-status"
+    },
+    {
+      "site": "githubapp Client.Ref: the one line GitHub answers is read with RemoteText.SendBack, and no row named the function",
+      "source": "the round-9 decisions of #4368",
+      "guard": "githubapp-print-ref-no-sha"
+    },
+    {
+      "site": "githubapp Client.Branch: the exact ref read's status error prints GitHub's body, and no row named the function",
+      "source": "the round-9 decisions of #4368",
+      "guard": "githubapp-print-branch-status"
+    },
+    {
+      "site": "githubapp Client.Dir: the subtree read's status error prints GitHub's body, and no row named the function",
+      "source": "the round-9 decisions of #4368",
+      "guard": "githubapp-print-dir-status"
+    },
+    {
+      "site": "githubapp Client.Deliveries: the listing's status error prints GitHub's body, and no row named the function",
+      "source": "the round-9 decisions of #4368",
+      "guard": "githubapp-print-deliveries-status"
+    },
+    {
+      "site": "githubapp Client.Redeliver: the redelivery's status error prints GitHub's body, and no row named the function",
+      "source": "the round-9 decisions of #4368",
+      "guard": "githubapp-print-redeliver-status"
+    },
+    {
+      "site": "githubapp answeredLimit: the Body of a limit GitHub answered holds the refusal, and no row named the function",
+      "source": "the round-9 decisions of #4368",
+      "guard": "githubapp-print-answered-limit"
+    },
+    {
+      "site": "githubapi ProxyREST: a GitHub answer the proxy does not decode is written to the browser, and no row named the function",
+      "source": "the round-9 decisions of #4368",
+      "guard": "githubapi-print-relayed-refusal"
     }
   ]
 }
