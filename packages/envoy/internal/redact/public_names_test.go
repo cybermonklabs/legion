@@ -1,6 +1,7 @@
 package redact
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/url"
@@ -102,26 +103,41 @@ func routeProblem(entry publicRequestName, route string) string {
 	return ""
 }
 
-// TestARouteOnEveryPathIsOneAProtocolItsSourceCitesFixes: routeProblem passes a route on every path
-// of its method only from a source that cites a protocol fixing that method, never from one that
-// only repeats the route, and any other route only from a source that names it.
+// TestARouteOnEveryPathIsOneAProtocolItsSourceCitesFixes: routeProblem refuses each planted route
+// of testdata/public-name-sources.json as the row says, each row a subtest named by its id: a route
+// on every path of its method passes only from a source that cites a protocol fixing that method,
+// never from one that only repeats the route, and any other route only from a source that names
+// it. The TypeScript guard reads the same rows.
 func TestARouteOnEveryPathIsOneAProtocolItsSourceCitesFixes(t *testing.T) {
-	for _, row := range []struct {
-		name, source, route string
-		refused             bool
-	}{
-		{"repeats-every-path", "POST /* (the token request, a POST to the path its issuer sets)", "POST /*", true},
-		{"cites-another-method", "RFC 6749 §3.2: the token request", "GET /*", true},
-		{"cites-nothing", "the token request", "POST /*", true},
-		{"cites-the-protocol", "RFC 6749 §4.1.3; the token request is a POST by RFC 6749 §3.2", "POST /*", false},
-		{"names-the-route", "POST /v1/oauth/token (the broker's token exchange)", "POST /v1/oauth/token", false},
-		{"names-another-route", "POST /v1/oauth/revoke (the broker's revocation)", "POST /v1/oauth/token", true},
-		{"no-route-shape", "GET v1/sessions", "GET v1/sessions", true},
-	} {
-		t.Run(row.name, func(t *testing.T) {
-			problem := routeProblem(publicRequestName{Place: "field", Name: "planted", Source: row.source, Routes: []string{row.route}}, row.route)
-			if refused := problem != ""; refused != row.refused {
-				t.Errorf("routeProblem(%q, %q) = %q; want it refused: %v", row.source, row.route, problem, row.refused)
+	data, err := os.ReadFile("testdata/public-name-sources.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var table struct {
+		About string `json:"about"`
+		Rows  []struct {
+			ID      string `json:"id"`
+			Source  string `json:"source"`
+			Route   string `json:"route"`
+			Refused bool   `json:"refused"`
+		} `json:"rows"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&table); err != nil {
+		t.Fatal(err)
+	}
+	if len(table.Rows) == 0 {
+		t.Fatal("the table holds no row, so nothing was checked")
+	}
+	for _, row := range table.Rows {
+		if row.ID == "" || row.Route == "" {
+			t.Fatalf("the row %+v names no id or route, so it checks nothing", row)
+		}
+		t.Run(row.ID, func(t *testing.T) {
+			problem := routeProblem(publicRequestName{Place: "field", Name: "planted", Source: row.Source, Routes: []string{row.Route}}, row.Route)
+			if refused := problem != ""; refused != row.Refused {
+				t.Errorf("routeProblem(%q, %q) = %q; want it refused: %v", row.Source, row.Route, problem, row.Refused)
 			}
 		})
 	}

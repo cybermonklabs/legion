@@ -1,11 +1,11 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
+import { z } from "zod";
 import {
   PROTOCOL_METHODS,
   PUBLIC_REQUEST_NAMES,
   type PublicRequestName,
 } from "./public-request-names";
-import { requestCredentials } from "./remote-text";
 
 // The names a credential travels under, which Go's public_names_test.go reads too.
 const FORBIDDEN_PATH = new URL(
@@ -15,6 +15,28 @@ const FORBIDDEN_PATH = new URL(
 const forbidden: { names: string[]; headerPatterns: string[] } = JSON.parse(
   readFileSync(FORBIDDEN_PATH, "utf8")
 );
+
+// The planted entries the source check refuses or passes, which Go's public_names_test.go reads
+// too.
+const SOURCES_PATH = new URL(
+  "../../envoy/internal/redact/testdata/public-name-sources.json",
+  import.meta.url
+);
+const sources = z
+  .strictObject({
+    about: z.string(),
+    rows: z
+      .array(
+        z.strictObject({
+          id: z.string().min(1),
+          source: z.string(),
+          route: z.string().min(1),
+          refused: z.boolean(),
+        })
+      )
+      .min(1),
+  })
+  .parse(JSON.parse(readFileSync(SOURCES_PATH, "utf8")));
 
 /** An entry's route: an upper-case method, one space and a path from its root. */
 const ROUTE_SHAPE = /^[A-Z]+ \/[^ ]*$/;
@@ -80,48 +102,13 @@ test("the public-name table holds only contract names no credential travels unde
   }
 });
 
-// A route on every path of its method passes only from a source that cites a protocol fixing that
+// Each planted route of testdata/public-name-sources.json is refused or passed as the row says: a
+// route on every path of its method passes only from a source that cites a protocol fixing that
 // method, never from one that only repeats the route; any other route only from a source that
 // names it. Go's TestARouteOnEveryPathIsOneAProtocolItsSourceCitesFixes.
 test("a route on every path is one a protocol its source cites fixes", () => {
-  const rows: readonly [source: string, route: string, refused: boolean][] = [
-    ["POST /* (the token request, a POST to the path its issuer sets)", "POST /*", true],
-    ["RFC 6749 §3.2: the token request", "GET /*", true],
-    ["the token request", "POST /*", true],
-    ["RFC 6749 §4.1.3; the token request is a POST by RFC 6749 §3.2", "POST /*", false],
-    ["POST /v1/oauth/token (the broker's token exchange)", "POST /v1/oauth/token", false],
-    ["POST /v1/oauth/revoke (the broker's revocation)", "POST /v1/oauth/token", true],
-    ["GET v1/sessions", "GET v1/sessions", true],
-  ];
-  for (const [source, route, refused] of rows) {
+  for (const { id, source, route, refused } of sources.rows) {
     const entry: PublicRequestName = { place: "field", name: "planted", source, routes: [route] };
-    expect(routeProblem(entry, route) !== "", `${route} from ${source}`).toBe(refused);
-  }
-});
-
-// A value under a name no contract declares public, a new one included, is a credential; a value
-// under a listed name, on a route its contract names, is not. Go's
-// TestARequestsValueIsACredentialUnlessItsNameIsPublic.
-test("a request's value is a credential unless its name is public", () => {
-  const got = requestCredentials(
-    "https://broker.example/v1/oauth/token?scope=public-scope&new_query=unlisted-query-RDX",
-    {
-      method: "POST",
-      headers: {
-        "content-type": "application/x-www-form-urlencoded",
-        "user-agent": "public-agent",
-        "x-new-header": "unlisted-header-RDX",
-      },
-      body: new URLSearchParams({
-        session: "public-session-name",
-        a_new_parameter: "unlisted-value-RDX",
-      }),
-    }
-  );
-  for (const want of ["unlisted-value-RDX", "unlisted-query-RDX", "unlisted-header-RDX"]) {
-    expect(got).toContain(want);
-  }
-  for (const value of ["public-session-name", "public-scope", "public-agent"]) {
-    expect(got).not.toContain(value);
+    expect(routeProblem(entry, route) !== "", id).toBe(refused);
   }
 });

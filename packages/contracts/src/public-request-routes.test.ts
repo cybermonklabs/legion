@@ -7,15 +7,15 @@ import { requestCredentials } from "./remote-text";
 // packages/envoy/internal/redact/testdata/public-routes.json, that file itself read by relative
 // path and never a copy, through requestCredentials, as Go's public_routes_test.go replays it
 // through an answer's words: a value under a name the public-name table lists is public on a route
-// its contract names, and a credential like any other on every other route.
+// its contract names, and every other value is a credential like any other.
 const TABLE_PATH = new URL(
   "../../envoy/internal/redact/testdata/public-routes.json",
   import.meta.url
 );
 
-/** One value a request carries under a listed name, sent with `method` to `target`, in its query,
- *  its form, its JSON body (a string, or a list of one string for `json-list`) or a header; `on`
- *  says whether the route is one the name's contract names. */
+/** One value a request carries under a name, sent with `method` to `target`, in its query, its
+ *  form, its JSON body (a string, or a list of one string for `json-list`) or a header; `on` says
+ *  whether the value is public there, its name listed on a route its contract names. */
 const RoutedValue = z.strictObject({
   method: z.string(),
   target: z.string().min(1),
@@ -40,7 +40,8 @@ const Table = z.strictObject({
 
 const { groups } = Table.parse(JSON.parse(readFileSync(TABLE_PATH, "utf8")));
 
-/** Requires each of `values` to be among its request's credentials off its route and not on it. */
+/** Requires each of `values` to be left out of its request's credentials where it is public and
+ *  to be among them anywhere else. */
 function requireRoutes(values: readonly z.infer<typeof RoutedValue>[]): void {
   for (const { method, target, at, name, value, on } of values) {
     let url = target;
@@ -60,7 +61,7 @@ function requireRoutes(values: readonly z.infer<typeof RoutedValue>[]): void {
     const credentials = requestCredentials(url, { method, headers, body });
     expect(
       credentials.includes(value),
-      `${method} ${target} ${name}: ${on ? "public on" : "a credential off"} its route`
+      `${method} ${target} ${name}: ${on ? "public" : "a credential"} there`
     ).toBe(!on);
   }
 }

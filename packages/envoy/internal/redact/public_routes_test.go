@@ -13,11 +13,11 @@ import (
 	"github.com/sjawhar/envoy/internal/redact"
 )
 
-// routedValue is one row of testdata/public-routes.json: a value a request carries under a name
-// the public-name table lists, the request sent with Method to Target and the value in its query,
-// its form, its JSON body (a string, or a list of one string for "json-list") or a header (At).
-// On says whether the route is one the name's contract names: there the answer's words print the
-// value, and on any other route the value is a credential like any other.
+// routedValue is one row of testdata/public-routes.json: a value a request carries under a name,
+// the request sent with Method to Target and the value in its query, its form, its JSON body (a
+// string, or a list of one string for "json-list") or a header (At). On says whether the value is
+// public there, its name one the public-name table lists on a route its contract names: there the
+// answer's words print the value, and anywhere else the value is a credential like any other.
 type routedValue struct {
 	Method string `json:"method"`
 	Target string `json:"target"`
@@ -63,8 +63,8 @@ func TestPublicRoutesReadAsTheSharedTableSays(t *testing.T) {
 }
 
 // requireRoutes reads, for each of values, an answer to its request that quotes the value
-// (ReadAnswer, then Words), and requires the words to hold the value on its route and to hold it
-// redacted off it.
+// (ReadAnswer, then Words), and requires the words to hold the value where it is public and to hold
+// it redacted anywhere else.
 func requireRoutes(t *testing.T, values []routedValue) {
 	t.Helper()
 	for _, v := range values {
@@ -78,10 +78,10 @@ func requireRoutes(t *testing.T, values []routedValue) {
 		t.Run(route+" "+v.Method+" "+v.Target+" "+v.Name, func(t *testing.T) {
 			words := routedWords(t, v)
 			if v.On && !strings.Contains(words, v.Value) {
-				t.Errorf("the words are %q; want %s's value %q as the answer wrote it, on a route its contract names", words, v.Name, v.Value)
+				t.Errorf("the words are %q; want %s's value %q as the answer wrote it, where it is public", words, v.Name, v.Value)
 			}
 			if !v.On && (strings.Contains(words, v.Value) || !strings.Contains(words, redact.Redacted)) {
-				t.Errorf("the words are %q; want %s's value %q redacted, on a route its contract does not name", words, v.Name, v.Value)
+				t.Errorf("the words are %q; want %s's value %q redacted, where it is no public value", words, v.Name, v.Value)
 			}
 		})
 	}

@@ -1,5 +1,5 @@
 {
-  "about": "Requests that each carry one value under a name the public-name table lists (packages/contracts/src/public-request-names.ts, and Go's public_names_generated.go from it), grouped by what each group shows. A row sends method to target with value under name in its query, its form, its JSON body (a string, or a list of one string for json-list) or a header (at); on says whether the route is one the name's contract names: there the value is public, and on any other route it is a credential like any other. Go's public_routes_test.go reads every row through an answer that quotes the value (ReadAnswer, then Words), which prints it on its route and redacts it off it, and public-request-routes.test.ts through requestCredentials, which leaves it out on its route and holds it off it. Every value here is made up.",
+  "about": "Requests that each carry one value under a name, grouped by what each group shows. A row sends method to target with value under name in its query, its form, its JSON body (a string, or a list of one string for json-list) or a header (at); on says whether the value is public there: its name is one the public-name table lists (packages/contracts/src/public-request-names.ts, and Go's public_names_generated.go from it), on a route its contract names or on any route where it names none. Every other value is a credential like any other. Go's public_routes_test.go reads every row through an answer that quotes the value (ReadAnswer, then Words), which prints it where it is public and redacts it elsewhere, and public-request-routes.test.ts through requestCredentials, which leaves it out where it is public and holds it elsewhere. Every value here is made up.",
   "groups": [
     {
       "id": "listener-messages",
@@ -976,6 +976,68 @@
           "name": "grant_type",
           "value": "token-exchange-grant",
           "on": false
+        }
+      ]
+    },
+    {
+      "id": "unlisted-names",
+      "about": "A value under a name no contract lists, a new one included, is a credential on every route, in a query, a form, a header and a JSON body alike; a name whose contract names no route (User-Agent, scope) is public on every route, and session is on the broker's token route.",
+      "rows": [
+        {
+          "method": "POST",
+          "target": "https://broker.example/v1/oauth/token",
+          "at": "form",
+          "name": "a_new_parameter",
+          "value": "unlisted-value-RDX",
+          "on": false
+        },
+        {
+          "method": "POST",
+          "target": "https://broker.example/v1/oauth/token",
+          "at": "query",
+          "name": "new_query",
+          "value": "unlisted-query-RDX",
+          "on": false
+        },
+        {
+          "method": "POST",
+          "target": "https://broker.example/v1/oauth/token",
+          "at": "header",
+          "name": "X-New-Header",
+          "value": "unlisted-header-RDX",
+          "on": false
+        },
+        {
+          "method": "POST",
+          "target": "https://broker.example/v1/enrollments",
+          "at": "json",
+          "name": "pod_token",
+          "value": "pod-token-RDX",
+          "on": false
+        },
+        {
+          "method": "POST",
+          "target": "https://broker.example/v1/oauth/token",
+          "at": "header",
+          "name": "User-Agent",
+          "value": "public-agent",
+          "on": true
+        },
+        {
+          "method": "POST",
+          "target": "https://broker.example/v1/oauth/token",
+          "at": "query",
+          "name": "scope",
+          "value": "public-scope",
+          "on": true
+        },
+        {
+          "method": "POST",
+          "target": "https://broker.example/v1/oauth/token",
+          "at": "form",
+          "name": "session",
+          "value": "public-session-name",
+          "on": true
         }
       ]
     }

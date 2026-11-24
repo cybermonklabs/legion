@@ -1,0 +1,47 @@
+{
+  "about": "Planted entries of the public-name table, each with one route, and whether the guard's source check refuses that route: a route on every path of its method (\"<METHOD> /*\") passes only from a source that cites a protocol fixing that method (PROTOCOL_METHODS in packages/contracts/src/public-request-names.ts, Go's protocolMethods), never from one that only repeats the route; any other route only from a source that names it. Go's public_names_test.go and public-request-names.test.ts each read every row through their routeProblem.",
+  "rows": [
+    {
+      "id": "repeats-every-path",
+      "source": "POST /* (the token request, a POST to the path its issuer sets)",
+      "route": "POST /*",
+      "refused": true
+    },
+    {
+      "id": "cites-another-method",
+      "source": "RFC 6749 §3.2: the token request",
+      "route": "GET /*",
+      "refused": true
+    },
+    {
+      "id": "cites-nothing",
+      "source": "the token request",
+      "route": "POST /*",
+      "refused": true
+    },
+    {
+      "id": "cites-the-protocol",
+      "source": "RFC 6749 §4.1.3; the token request is a POST by RFC 6749 §3.2",
+      "route": "POST /*",
+      "refused": false
+    },
+    {
+      "id": "names-the-route",
+      "source": "POST /v1/oauth/token (the broker's token exchange)",
+      "route": "POST /v1/oauth/token",
+      "refused": false
+    },
+    {
+      "id": "names-another-route",
+      "source": "POST /v1/oauth/revoke (the broker's revocation)",
+      "route": "POST /v1/oauth/token",
+      "refused": true
+    },
+    {
+      "id": "no-route-shape",
+      "source": "GET v1/sessions",
+      "route": "GET v1/sessions",
+      "refused": true
+    }
+  ]
+}
