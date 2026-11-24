@@ -2348,6 +2348,366 @@
         "base": "df9ce51fa06750ecad27613e12fc216103f0f2f7",
         "files": ["packages/envoy/internal/oidc/redirect_location_test.go"],
         "capture": "oidc.revoke-redirect"
+      },
+      {
+        "row": "wake-redirect-followed-given",
+        "base": "cbebaf9543f50106a726ad67ed8f915c16c8321e",
+        "files": [
+          "packages/envoy/internal/cipher/wake/follows_no_redirect_test.go",
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "wake.redirect-followed/given"
+      },
+      {
+        "row": "judge-redirect-followed-default",
+        "base": "cbebaf9543f50106a726ad67ed8f915c16c8321e",
+        "files": [
+          "packages/envoy/internal/cipher/judge/follows_no_redirect_test.go",
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "judge.redirect-followed/default"
+      },
+      {
+        "row": "judge-redirect-followed-given",
+        "base": "cbebaf9543f50106a726ad67ed8f915c16c8321e",
+        "files": [
+          "packages/envoy/internal/cipher/judge/follows_no_redirect_test.go",
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "judge.redirect-followed/given"
+      },
+      {
+        "row": "dispatchread-redirect-followed-default",
+        "base": "cbebaf9543f50106a726ad67ed8f915c16c8321e",
+        "files": [
+          "packages/envoy/internal/cipher/dispatchread/follows_no_redirect_test.go",
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "dispatchread.redirect-followed/default"
+      },
+      {
+        "row": "dispatchread-redirect-followed-given",
+        "base": "cbebaf9543f50106a726ad67ed8f915c16c8321e",
+        "files": [
+          "packages/envoy/internal/cipher/dispatchread/follows_no_redirect_test.go",
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "dispatchread.redirect-followed/given"
+      },
+      {
+        "row": "brokertoken-introspect-followed-default",
+        "base": "cbebaf9543f50106a726ad67ed8f915c16c8321e",
+        "files": [
+          "packages/envoy/internal/ciphertoken/follows_no_redirect_test.go",
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "brokertoken.introspect-followed/default"
+      },
+      {
+        "row": "brokertoken-introspect-followed-given",
+        "base": "cbebaf9543f50106a726ad67ed8f915c16c8321e",
+        "files": [
+          "packages/envoy/internal/ciphertoken/follows_no_redirect_test.go",
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "brokertoken.introspect-followed/given"
+      },
+      {
+        "row": "going-chat-redirect-unparsed",
+        "base": "cbebaf9543f50106a726ad67ed8f915c16c8321e",
+        "files": [
+          "packages/envoy/going/redirect_location_test.go",
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "going.chat-redirect/unparsed"
+      },
+      {
+        "row": "agentloop-decide-redirect-unparsed",
+        "base": "cbebaf9543f50106a726ad67ed8f915c16c8321e",
+        "files": [
+          "packages/envoy/agentloop/redirect_location_test.go",
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "agentloop.decide-redirect/unparsed"
+      },
+      {
+        "row": "agentloop-decide-redirect-elsewhere",
+        "base": "cbebaf9543f50106a726ad67ed8f915c16c8321e",
+        "files": [
+          "packages/envoy/agentloop/redirect_location_test.go",
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "agentloop.decide-redirect/elsewhere"
+      },
+      {
+        "row": "agentloop-decide-redirect-host",
+        "base": "cbebaf9543f50106a726ad67ed8f915c16c8321e",
+        "files": [
+          "packages/envoy/agentloop/redirect_location_test.go",
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "agentloop.decide-redirect/host"
+      },
+      {
+        "row": "agentloop-run-failure-anthropic-messages-unparsed",
+        "base": "cbebaf9543f50106a726ad67ed8f915c16c8321e",
+        "files": [
+          "packages/envoy/agentloop/redirect_location_test.go",
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "agentloop.run-failure/anthropic-messages-unparsed"
+      },
+      {
+        "row": "agentloop-run-failure-anthropic-messages-elsewhere",
+        "base": "cbebaf9543f50106a726ad67ed8f915c16c8321e",
+        "files": [
+          "packages/envoy/agentloop/redirect_location_test.go",
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "agentloop.run-failure/anthropic-messages-elsewhere"
+      },
+      {
+        "row": "agentloop-run-failure-anthropic-messages-refused",
+        "base": "cbebaf9543f50106a726ad67ed8f915c16c8321e",
+        "files": [
+          "packages/envoy/agentloop/redirect_location_test.go",
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "agentloop.run-failure/anthropic-messages-refused"
+      },
+      {
+        "row": "agentloop-run-failure-openai-responses-unparsed",
+        "base": "cbebaf9543f50106a726ad67ed8f915c16c8321e",
+        "files": [
+          "packages/envoy/agentloop/redirect_location_test.go",
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "agentloop.run-failure/openai-responses-unparsed"
+      },
+      {
+        "row": "agentloop-run-failure-openai-responses-elsewhere",
+        "base": "cbebaf9543f50106a726ad67ed8f915c16c8321e",
+        "files": [
+          "packages/envoy/agentloop/redirect_location_test.go",
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "agentloop.run-failure/openai-responses-elsewhere"
+      },
+      {
+        "row": "agentloop-run-failure-openai-responses-refused",
+        "base": "cbebaf9543f50106a726ad67ed8f915c16c8321e",
+        "files": [
+          "packages/envoy/agentloop/redirect_location_test.go",
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "agentloop.run-failure/openai-responses-refused"
+      },
+      {
+        "row": "agentloop-run-failure-openai-chat-unparsed",
+        "base": "cbebaf9543f50106a726ad67ed8f915c16c8321e",
+        "files": [
+          "packages/envoy/agentloop/redirect_location_test.go",
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "agentloop.run-failure/openai-chat-unparsed"
+      },
+      {
+        "row": "agentloop-run-failure-openai-chat-elsewhere",
+        "base": "cbebaf9543f50106a726ad67ed8f915c16c8321e",
+        "files": [
+          "packages/envoy/agentloop/redirect_location_test.go",
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "agentloop.run-failure/openai-chat-elsewhere"
+      },
+      {
+        "row": "agentloop-run-failure-openai-chat-refused",
+        "base": "cbebaf9543f50106a726ad67ed8f915c16c8321e",
+        "files": [
+          "packages/envoy/agentloop/redirect_location_test.go",
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "agentloop.run-failure/openai-chat-refused"
+      },
+      {
+        "row": "claudebridge-redirect-unparsed",
+        "base": "cbebaf9543f50106a726ad67ed8f915c16c8321e",
+        "files": [
+          "packages/daemon/internal/claudebridge/redirect_location_test.go",
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "claudebridge.redirect/unparsed"
+      },
+      {
+        "row": "claudebridge-redirect-elsewhere",
+        "base": "cbebaf9543f50106a726ad67ed8f915c16c8321e",
+        "files": [
+          "packages/daemon/internal/claudebridge/redirect_location_test.go",
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "claudebridge.redirect/elsewhere"
+      },
+      {
+        "row": "mcpbridge-sse-redirect-unparsed",
+        "base": "cbebaf9543f50106a726ad67ed8f915c16c8321e",
+        "files": [
+          "packages/envoy/internal/mcpbridge/redirect_location_test.go",
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "mcpbridge.sse-redirect/unparsed"
+      },
+      {
+        "row": "mcpbridge-sse-redirect-elsewhere",
+        "base": "cbebaf9543f50106a726ad67ed8f915c16c8321e",
+        "files": [
+          "packages/envoy/internal/mcpbridge/redirect_location_test.go",
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "mcpbridge.sse-redirect/elsewhere"
+      },
+      {
+        "row": "dev-proxy-stands-enroll-redirect-login",
+        "base": "cbebaf9543f50106a726ad67ed8f915c16c8321e",
+        "files": [
+          "packages/envoy/cmd/dev-proxy-stands/redirect_location_test.go",
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "dev-proxy-stands.enroll-redirect/login"
+      },
+      {
+        "row": "dev-proxy-stands-enroll-redirect-enrolment",
+        "base": "cbebaf9543f50106a726ad67ed8f915c16c8321e",
+        "files": [
+          "packages/envoy/cmd/dev-proxy-stands/redirect_location_test.go",
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "dev-proxy-stands.enroll-redirect/enrolment"
+      },
+      {
+        "row": "dev-proxy-stands-probe-redirect-unparsed",
+        "base": "cbebaf9543f50106a726ad67ed8f915c16c8321e",
+        "files": [
+          "packages/envoy/cmd/dev-proxy-stands/redirect_location_test.go",
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "dev-proxy-stands.probe-redirect/unparsed"
+      },
+      {
+        "row": "dev-proxy-stands-probe-redirect-elsewhere",
+        "base": "cbebaf9543f50106a726ad67ed8f915c16c8321e",
+        "files": [
+          "packages/envoy/cmd/dev-proxy-stands/redirect_location_test.go",
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "dev-proxy-stands.probe-redirect/elsewhere"
+      },
+      {
+        "row": "dev-proxy-stands-load-status-line-connect",
+        "base": "cbebaf9543f50106a726ad67ed8f915c16c8321e",
+        "files": [
+          "packages/envoy/cmd/dev-proxy-stands/redirect_location_test.go",
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "dev-proxy-stands.load-status-line/connect"
+      },
+      {
+        "row": "dev-proxy-stands-load-status-line-ask",
+        "base": "cbebaf9543f50106a726ad67ed8f915c16c8321e",
+        "files": [
+          "packages/envoy/cmd/dev-proxy-stands/redirect_location_test.go",
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "dev-proxy-stands.load-status-line/ask"
+      },
+      {
+        "row": "listenerclient-redirect-sessions-unparsed",
+        "base": "cbebaf9543f50106a726ad67ed8f915c16c8321e",
+        "files": [
+          "packages/envoy/loadtest/listenerclient/redirect_location_test.go",
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "listenerclient.redirect/sessions-unparsed"
+      },
+      {
+        "row": "listenerclient-redirect-sessions-elsewhere",
+        "base": "cbebaf9543f50106a726ad67ed8f915c16c8321e",
+        "files": [
+          "packages/envoy/loadtest/listenerclient/redirect_location_test.go",
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "listenerclient.redirect/sessions-elsewhere"
+      },
+      {
+        "row": "listenerclient-redirect-publish-unparsed",
+        "base": "cbebaf9543f50106a726ad67ed8f915c16c8321e",
+        "files": [
+          "packages/envoy/loadtest/listenerclient/redirect_location_test.go",
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "listenerclient.redirect/publish-unparsed"
+      },
+      {
+        "row": "listenerclient-redirect-publish-elsewhere",
+        "base": "cbebaf9543f50106a726ad67ed8f915c16c8321e",
+        "files": [
+          "packages/envoy/loadtest/listenerclient/redirect_location_test.go",
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "listenerclient.redirect/publish-elsewhere"
+      },
+      {
+        "row": "loadtest-api-redirect-unparsed",
+        "base": "cbebaf9543f50106a726ad67ed8f915c16c8321e",
+        "files": [
+          "packages/envoy/loadtest/redirect_location_test.go",
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "loadtest.api-redirect/unparsed"
+      },
+      {
+        "row": "loadtest-api-redirect-elsewhere",
+        "base": "cbebaf9543f50106a726ad67ed8f915c16c8321e",
+        "files": [
+          "packages/envoy/loadtest/redirect_location_test.go",
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "loadtest.api-redirect/elsewhere"
+      },
+      {
+        "row": "loadtest-guard-redirect-unparsed",
+        "base": "cbebaf9543f50106a726ad67ed8f915c16c8321e",
+        "files": [
+          "packages/envoy/loadtest/redirect_location_test.go",
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "loadtest.guard-redirect/unparsed"
+      },
+      {
+        "row": "loadtest-guard-redirect-elsewhere",
+        "base": "cbebaf9543f50106a726ad67ed8f915c16c8321e",
+        "files": [
+          "packages/envoy/loadtest/redirect_location_test.go",
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "loadtest.guard-redirect/elsewhere"
+      },
+      {
+        "row": "loadtest-cloudsql-redirect-unparsed",
+        "base": "cbebaf9543f50106a726ad67ed8f915c16c8321e",
+        "files": [
+          "packages/envoy/loadtest/redirect_location_test.go",
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "loadtest.cloudsql-redirect/unparsed"
+      },
+      {
+        "row": "loadtest-cloudsql-redirect-elsewhere",
+        "base": "cbebaf9543f50106a726ad67ed8f915c16c8321e",
+        "files": [
+          "packages/envoy/loadtest/redirect_location_test.go",
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "loadtest.cloudsql-redirect/elsewhere"
       }
     ],
     "boundary_fields": {
@@ -8419,7 +8779,7 @@
       "requirement": "r3-each-site",
       "package": "./internal/cipher/wake",
       "test": "TestANoticeRedirectLogsNoLocationOfIt/elsewhere",
-      "production": "wake Envoy.Notify: a redirect a following client takes to another host that does not answer is logged by its class (redact.Cause), never by the Location"
+      "production": "wake Envoy.Notify: its client follows no redirect (redirects.Refused), so a 302 to another host that does not answer is logged by its status, never by the Location"
     },
     {
       "id": "judge-redirect-unparsed",
@@ -8440,7 +8800,7 @@
       "requirement": "r3-each-site",
       "package": "./internal/cipher/judge",
       "test": "TestAJudgeReadRedirectPrintsNoLocationOfIt/elsewhere",
-      "production": "judge Dispatch.get: a redirect followed to another host that does not answer is named by its class (redact.Class)"
+      "production": "judge Dispatch.get: its client follows no redirect (redirects.Refused), so a 302 to another host that does not answer is the read's failure by its status, never net/http's error naming the Location"
     },
     {
       "id": "dispatchread-redirect-unparsed",
@@ -8461,7 +8821,7 @@
       "requirement": "r3-each-site",
       "package": "./internal/cipher/dispatchread",
       "test": "TestADispatchReadRedirectPrintsNoLocationOfIt/elsewhere",
-      "production": "dispatchread Reader.Get: a redirect followed to another host that does not answer is ErrNoAnswer named by its class (redact.Class)"
+      "production": "dispatchread Reader.Get: its client follows no redirect (redirects.Refused), so a 302 to another host that does not answer is handed back by its status with no error, never ErrNoAnswer naming the Location"
     },
     {
       "id": "brokertoken-mint-redirect",
@@ -8532,6 +8892,524 @@
         "preimage": "\"oidc: revoke: %w\", redact.Class(err)",
         "replacement": "\"oidc: revoke: %w\", err"
       }
+    },
+    {
+      "id": "wake-redirect-followed-twin",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/wake",
+      "test": "TestANoticeFollowsNoRedirect/twin",
+      "production": "the stand-in of the notice's followed-redirect row: a client that follows its 302 sends the broker's account token to the host the Location names (redirectstest.Sent), so the row can see a token sent on"
+    },
+    {
+      "id": "wake-redirect-followed-given",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/wake",
+      "test": "TestANoticeFollowsNoRedirect/given",
+      "production": "wake Envoy.Notify: the notice goes out on a copy of its client that follows no redirect (redirects.Refused), so a 302 to another host is logged by its status and that host is sent nothing, neither the Location's query nor the Authorization",
+      "function": "(github.com/sjawhar/envoy/internal/cipher/wake.Envoy).Notify",
+      "capture": "wake.redirect-followed/given",
+      "mutation": {
+        "file": "packages/envoy/internal/cipher/wake/envoy.go",
+        "preimage": "redirects.Refused(e.HTTP)",
+        "replacement": "func() *http.Client { _ = redirects.Refused; return e.HTTP }()"
+      }
+    },
+    {
+      "id": "judge-redirect-followed-twin",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/judge",
+      "test": "TestAJudgeReadFollowsNoRedirect/twin",
+      "production": "the stand-in of the judge's followed-redirect rows: a client that follows its 302 sends the broker's account token to the host the Location names (redirectstest.Sent), so the rows can see a token sent on"
+    },
+    {
+      "id": "judge-redirect-followed-default",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/judge",
+      "test": "TestAJudgeReadFollowsNoRedirect/default",
+      "production": "judge Dispatch.get: with a nil HTTP, the read goes out on a copy of http.DefaultClient that follows no redirect (redirects.Refused), so a 302 to another host is the read's failure by its status and that host is sent nothing",
+      "function": "(github.com/sjawhar/envoy/internal/cipher/judge.Dispatch).get",
+      "capture": "judge.redirect-followed/default",
+      "mutation": {
+        "file": "packages/envoy/internal/cipher/judge/dispatch.go",
+        "preimage": "redirects.Refused(cmp.Or(d.HTTP, http.DefaultClient))",
+        "replacement": "func() *http.Client { _ = redirects.Refused; return cmp.Or(d.HTTP, http.DefaultClient) }()"
+      }
+    },
+    {
+      "id": "judge-redirect-followed-given",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/judge",
+      "test": "TestAJudgeReadFollowsNoRedirect/given",
+      "production": "judge Dispatch.get: the read goes out on a copy of the client cmd/cipherd gives that follows no redirect (redirects.Refused), so a 302 to another host is the read's failure by its status and that host is sent nothing",
+      "function": "(github.com/sjawhar/envoy/internal/cipher/judge.Dispatch).get",
+      "capture": "judge.redirect-followed/given",
+      "mutation": {
+        "file": "packages/envoy/internal/cipher/judge/dispatch.go",
+        "preimage": "redirects.Refused(cmp.Or(d.HTTP, http.DefaultClient))",
+        "replacement": "func() *http.Client { _ = redirects.Refused; return cmp.Or(d.HTTP, http.DefaultClient) }()"
+      }
+    },
+    {
+      "id": "dispatchread-redirect-followed-twin",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/dispatchread",
+      "test": "TestADispatchReadFollowsNoRedirect/twin",
+      "production": "the stand-in of the project-access read's followed-redirect rows: a client that follows its 302 sends the broker's project-access token to the host the Location names (redirectstest.Sent), so the rows can see a token sent on"
+    },
+    {
+      "id": "dispatchread-redirect-followed-default",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/dispatchread",
+      "test": "TestADispatchReadFollowsNoRedirect/default",
+      "production": "dispatchread New: with a nil client (cmd/cipherd's repository read), the reader keeps a copy of http.DefaultClient that follows no redirect (redirects.Refused), so a 302 to another host is handed back by its status, which projectrepos and projectaccess refuse, and that host is sent nothing",
+      "function": "github.com/sjawhar/envoy/internal/cipher/dispatchread.New",
+      "capture": "dispatchread.redirect-followed/default",
+      "mutation": {
+        "file": "packages/envoy/internal/cipher/dispatchread/dispatchread.go",
+        "preimage": "redirects.Refused(httpClient)",
+        "replacement": "func() *http.Client { _ = redirects.Refused; return httpClient }()"
+      }
+    },
+    {
+      "id": "dispatchread-redirect-followed-given",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/dispatchread",
+      "test": "TestADispatchReadFollowsNoRedirect/given",
+      "production": "dispatchread New: with a given client (cmd/cipherd's project access read), the reader keeps a copy that follows no redirect (redirects.Refused), so a 302 to another host is handed back by its status, which projectrepos and projectaccess refuse, and that host is sent nothing",
+      "function": "github.com/sjawhar/envoy/internal/cipher/dispatchread.New",
+      "capture": "dispatchread.redirect-followed/given",
+      "mutation": {
+        "file": "packages/envoy/internal/cipher/dispatchread/dispatchread.go",
+        "preimage": "redirects.Refused(httpClient)",
+        "replacement": "func() *http.Client { _ = redirects.Refused; return httpClient }()"
+      }
+    },
+    {
+      "id": "brokertoken-introspect-followed-twin",
+      "requirement": "r3-each-site",
+      "package": "./internal/ciphertoken",
+      "test": "TestAnIntrospectionFollowsNoRedirect/twin",
+      "production": "the stand-in of the introspection's followed-redirect rows: a client that follows its 302 sends the caller's account token to the host the Location names (redirectstest.Sent), so the rows can see a token sent on"
+    },
+    {
+      "id": "brokertoken-introspect-followed-default",
+      "requirement": "r3-each-site",
+      "package": "./internal/ciphertoken",
+      "test": "TestAnIntrospectionFollowsNoRedirect/default",
+      "production": "ciphertoken New: with a nil Options.HTTP, the Verifier keeps a copy of its own bounded client that follows no redirect (redirects.Refused), so an introspection's 302 to another host is ErrBrokerUnreachable by its status and that host is sent nothing",
+      "function": "github.com/sjawhar/envoy/internal/ciphertoken.New",
+      "capture": "brokertoken.introspect-followed/default",
+      "mutation": {
+        "file": "packages/envoy/internal/ciphertoken/brokertoken.go",
+        "preimage": "redirects.Refused(client)",
+        "replacement": "func() *http.Client { _ = redirects.Refused; return client }()"
+      }
+    },
+    {
+      "id": "brokertoken-introspect-followed-given",
+      "requirement": "r3-each-site",
+      "package": "./internal/ciphertoken",
+      "test": "TestAnIntrospectionFollowsNoRedirect/given",
+      "production": "ciphertoken New: with a given Options.HTTP, the Verifier keeps a copy that follows no redirect (redirects.Refused), so an introspection's 302 to another host is ErrBrokerUnreachable by its status and that host is sent nothing",
+      "function": "github.com/sjawhar/envoy/internal/ciphertoken.New",
+      "capture": "brokertoken.introspect-followed/given",
+      "mutation": {
+        "file": "packages/envoy/internal/ciphertoken/brokertoken.go",
+        "preimage": "redirects.Refused(client)",
+        "replacement": "func() *http.Client { _ = redirects.Refused; return client }()"
+      }
+    },
+    {
+      "id": "going-chat-redirect-unparsed",
+      "requirement": "r3-each-site",
+      "package": "./going",
+      "test": "TestAChatRedirectLogsNoLocationOfIt/unparsed",
+      "production": "going HTTPClient.Chat: a chat call whose Location does not parse, which the answerer's warning carries, is named as its request URL allows (redact.Cause), never by net/http's text, which quotes the bearer a stand-in echoed",
+      "function": "(*github.com/sjawhar/envoy/going.HTTPClient).Chat",
+      "capture": "going.chat-redirect/unparsed",
+      "mutation": {
+        "file": "packages/envoy/going/chat.go",
+        "preimage": "redact.Cause(err, c.url)",
+        "replacement": "err"
+      }
+    },
+    {
+      "id": "agentloop-decide-redirect-unparsed",
+      "requirement": "r3-each-site",
+      "package": "./agentloop",
+      "test": "TestADecisionsFailedCallNamesNoLocationOfIt/unparsed",
+      "production": "agentloop Decide: a decision call whose Location does not parse is said in the Detail as the endpoint's address allows (redact.Cause), never by net/http's text",
+      "function": "github.com/sjawhar/envoy/agentloop.Decide",
+      "capture": "agentloop.decide-redirect/unparsed",
+      "mutation": {
+        "file": "packages/envoy/agentloop/decide.go",
+        "preimage": "redact.Cause(err, req.Model.Endpoint.BaseURL)",
+        "replacement": "err"
+      }
+    },
+    {
+      "id": "agentloop-decide-redirect-elsewhere",
+      "requirement": "r3-each-site",
+      "package": "./agentloop",
+      "test": "TestADecisionsFailedCallNamesNoLocationOfIt/elsewhere",
+      "production": "agentloop Decide: a redirect to another host, which the client refuses and Go's *url.Error names in full, is said by its status (redact.Masked under redact.Cause), never by the Location"
+    },
+    {
+      "id": "agentloop-decide-redirect-host",
+      "requirement": "r3-each-site",
+      "package": "./agentloop",
+      "test": "TestADecisionsFailedCallNamesNoLocationOfIt/host",
+      "production": "agentloop modelTransport.client: the redirect check's refusal names the status alone, never the Location's host, which an answering party can write the bearer into"
+    },
+    {
+      "id": "agentloop-run-failure-anthropic-messages-unparsed",
+      "requirement": "r3-each-site",
+      "package": "./agentloop",
+      "test": "TestARunsProviderFailureNamesNoLocationOrAnswerOfIt/anthropic-messages-unparsed",
+      "production": "agentloop providerFailure: a run's stream error for a Location that does not parse is said as the endpoint's address allows (redact.Cause), never by net/http's text that the SDK hands on",
+      "function": "github.com/sjawhar/envoy/agentloop.providerFailure",
+      "capture": "agentloop.run-failure/anthropic-messages-unparsed",
+      "mutation": {
+        "file": "packages/envoy/agentloop/run.go",
+        "preimage": "redact.Cause(err, endpoint.BaseURL)",
+        "replacement": "err"
+      }
+    },
+    {
+      "id": "agentloop-run-failure-anthropic-messages-elsewhere",
+      "requirement": "r3-each-site",
+      "package": "./agentloop",
+      "test": "TestARunsProviderFailureNamesNoLocationOrAnswerOfIt/anthropic-messages-elsewhere",
+      "production": "agentloop providerFailure: a refused redirect to another host on anthropic-messages is said by its status, never by the *url.Error's Location"
+    },
+    {
+      "id": "agentloop-run-failure-anthropic-messages-refused",
+      "requirement": "r3-each-site",
+      "package": "./agentloop",
+      "test": "TestARunsProviderFailureNamesNoLocationOrAnswerOfIt/anthropic-messages-refused",
+      "production": "agentloop providerFailure: a 401 on anthropic-messages is named by its status (redact.StatusLine), never by anthropic-sdk-go's error, which prints the whole error body echoing the key"
+    },
+    {
+      "id": "agentloop-run-failure-openai-responses-unparsed",
+      "requirement": "r3-each-site",
+      "package": "./agentloop",
+      "test": "TestARunsProviderFailureNamesNoLocationOrAnswerOfIt/openai-responses-unparsed",
+      "production": "agentloop providerFailure: on openai-responses, a Location that does not parse, inside the ai-sdk's APICallError, is said by its class (redact.Cause)"
+    },
+    {
+      "id": "agentloop-run-failure-openai-responses-elsewhere",
+      "requirement": "r3-each-site",
+      "package": "./agentloop",
+      "test": "TestARunsProviderFailureNamesNoLocationOrAnswerOfIt/openai-responses-elsewhere",
+      "production": "agentloop providerFailure: on openai-responses, a refused redirect to another host is said by its status, never by the Location"
+    },
+    {
+      "id": "agentloop-run-failure-openai-responses-refused",
+      "requirement": "r3-each-site",
+      "package": "./agentloop",
+      "test": "TestARunsProviderFailureNamesNoLocationOrAnswerOfIt/openai-responses-refused",
+      "production": "agentloop providerFailure: a 401 on openai-responses is named by its status, never by the APICallError's Message, which the openai provider fills with the answer's message"
+    },
+    {
+      "id": "agentloop-run-failure-openai-chat-unparsed",
+      "requirement": "r3-each-site",
+      "package": "./agentloop",
+      "test": "TestARunsProviderFailureNamesNoLocationOrAnswerOfIt/openai-chat-unparsed",
+      "production": "agentloop providerFailure: on openai-chat, a Location that does not parse, in openai-compatible's 'HTTP request failed' error, is said by its class (redact.Cause)"
+    },
+    {
+      "id": "agentloop-run-failure-openai-chat-elsewhere",
+      "requirement": "r3-each-site",
+      "package": "./agentloop",
+      "test": "TestARunsProviderFailureNamesNoLocationOrAnswerOfIt/openai-chat-elsewhere",
+      "production": "agentloop providerFailure: on openai-chat, a refused redirect to another host is said by its status, never by the Location"
+    },
+    {
+      "id": "agentloop-run-failure-openai-chat-refused",
+      "requirement": "r3-each-site",
+      "package": "./agentloop",
+      "test": "TestARunsProviderFailureNamesNoLocationOrAnswerOfIt/openai-chat-refused",
+      "production": "agentloop providerFailure: a 401 on openai-chat is named by its status, never by openai-compatible's message, which quotes the answer's error message"
+    },
+    {
+      "id": "claudebridge-redirect-unparsed",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/claudebridge",
+      "test": "TestATurnReportRedirectSendsTheBootTokenNowhereAndLogsNoLocation/unparsed",
+      "production": "claudebridge turnReports.post: a turn report whose redirect's Location does not parse logs the report's URL through the URL rule and the failure by its class (redact.Unanswered), never net/http's text, which quotes the Location and the boot token a stand-in echoed",
+      "function": "(*github.com/sjawhar/legion/daemon/internal/claudebridge.turnReports).post",
+      "capture": "claudebridge.redirect/unparsed",
+      "mutation": {
+        "file": "packages/daemon/internal/claudebridge/turnoutcome.go",
+        "preimage": "redact.Unanswered(err, post, \"\")",
+        "replacement": "err"
+      }
+    },
+    {
+      "id": "claudebridge-redirect-elsewhere",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/claudebridge",
+      "test": "TestATurnReportRedirectSendsTheBootTokenNowhereAndLogsNoLocation/elsewhere",
+      "production": "claudebridge startTurnReports: the report's client follows no redirect (redirects.Refused), so a Location on another host is the daemon's refusal by its status, never a followed request whose error names the Location"
+    },
+    {
+      "id": "claudebridge-redirect-followed",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/claudebridge",
+      "test": "TestATurnReportRedirectSendsTheBootTokenNowhereAndLogsNoLocation/followed",
+      "production": "claudebridge startTurnReports: follows no redirect (redirects.Refused), so a report's 307 is the daemon's refusal by its status and the stand-in a Location names is sent nothing, the boot token in the body among it"
+    },
+    {
+      "id": "mcpbridge-sse-redirect-unparsed",
+      "requirement": "r3-each-site",
+      "package": "./internal/mcpbridge",
+      "test": "TestAnSSEConnectRedirectPrintsNoLocationOfIt/unparsed",
+      "production": "mcpbridge HTTPServer.Start: an SSE connect whose Location does not parse prints its failure as the configured URL allows (redact.Cause), never net/http's text, which quotes the URL's password a stand-in echoed",
+      "function": "(*github.com/sjawhar/envoy/internal/mcpbridge.HTTPServer).Start",
+      "capture": "mcpbridge.sse-redirect/unparsed",
+      "mutation": {
+        "file": "packages/envoy/internal/mcpbridge/http_server.go",
+        "preimage": "redact.Cause(err, sseURL)",
+        "replacement": "err"
+      }
+    },
+    {
+      "id": "mcpbridge-sse-redirect-elsewhere",
+      "requirement": "r3-each-site",
+      "package": "./internal/mcpbridge",
+      "test": "TestAnSSEConnectRedirectPrintsNoLocationOfIt/elsewhere",
+      "production": "mcpbridge HTTPServer.Start: a redirect to another host is not followed (redirects.SameOrigin) and the refusal names the configured URL as redact.URL prints it, never with its user information",
+      "function": "(*github.com/sjawhar/envoy/internal/mcpbridge.HTTPServer).Start",
+      "capture": "mcpbridge.sse-redirect/elsewhere",
+      "mutation": {
+        "file": "packages/envoy/internal/mcpbridge/http_server.go",
+        "preimage": "shown := redact.URL(sseURL)",
+        "replacement": "shown := sseURL"
+      }
+    },
+    {
+      "id": "mcpbridge-sse-redirect-followed",
+      "requirement": "r3-each-site",
+      "package": "./internal/mcpbridge",
+      "test": "TestAnSSEConnectRedirectPrintsNoLocationOfIt/followed",
+      "production": "mcpbridge SSE connect: follows a redirect only on the server's own origin (redirects.SameOrigin), so the stand-in a Location names on another host is asked nothing"
+    },
+    {
+      "id": "dev-proxy-stands-enroll-redirect-login",
+      "requirement": "r3-each-site",
+      "package": "./cmd/dev-proxy-stands",
+      "test": "TestAnEnrolmentRedirectPrintsNoLocationOfIt/login",
+      "production": "dev-airlock-stands enroll-pod call: a service login whose Location does not parse prints its failure as the broker's address allows (redact.Cause), never net/http's text, which quotes the registrar's token a stand-in echoed",
+      "function": "github.com/sjawhar/envoy/cmd/dev-proxy-stands.call",
+      "capture": "dev-proxy-stands.enroll-redirect/login",
+      "mutation": {
+        "file": "packages/envoy/cmd/dev-proxy-stands/enroll.go",
+        "preimage": "redact.Cause(err, url)",
+        "replacement": "err"
+      }
+    },
+    {
+      "id": "dev-proxy-stands-enroll-redirect-enrolment",
+      "requirement": "r3-each-site",
+      "package": "./cmd/dev-proxy-stands",
+      "test": "TestAnEnrolmentRedirectPrintsNoLocationOfIt/enrolment",
+      "production": "dev-airlock-stands enroll-pod call: an enrolment whose Location does not parse prints no run of the launcher proof or the pod's token a stand-in echoed (redact.Cause)"
+    },
+    {
+      "id": "dev-proxy-stands-probe-redirect-unparsed",
+      "requirement": "r3-each-site",
+      "package": "./cmd/dev-proxy-stands",
+      "test": "TestABoundProbeRedirectPrintsNoLocationOfIt/unparsed",
+      "production": "dev-airlock-stands probe-bound: a GET whose Location does not parse prints its failure as the bound host's address allows (redact.Cause), never net/http's text, which quotes the bearer a stand-in echoed",
+      "function": "github.com/sjawhar/envoy/cmd/dev-proxy-stands.runProbeBound",
+      "capture": "dev-proxy-stands.probe-redirect/unparsed",
+      "mutation": {
+        "file": "packages/envoy/cmd/dev-proxy-stands/probe.go",
+        "preimage": "redact.Cause(err, address)",
+        "replacement": "func() error { _ = redact.Cause; return err }()"
+      }
+    },
+    {
+      "id": "dev-proxy-stands-probe-redirect-elsewhere",
+      "requirement": "r3-each-site",
+      "package": "./cmd/dev-proxy-stands",
+      "test": "TestABoundProbeRedirectPrintsNoLocationOfIt/elsewhere",
+      "production": "dev-airlock-stands probe-bound: follows no redirect (redirects.Refused), so a Location on another host is the answer's status, never net/http's error naming it"
+    },
+    {
+      "id": "dev-proxy-stands-probe-redirect-followed",
+      "requirement": "r3-each-site",
+      "package": "./cmd/dev-proxy-stands",
+      "test": "TestABoundProbeRedirectPrintsNoLocationOfIt/followed",
+      "production": "dev-airlock-stands probe-bound: follows no redirect (redirects.Refused), so it prints the 302 and the stand-in a Location names is asked nothing"
+    },
+    {
+      "id": "dev-proxy-stands-load-status-line-connect",
+      "requirement": "r3-each-site",
+      "package": "./cmd/dev-proxy-stands",
+      "test": "TestALoadAnswerPrintsNoLineItCouldNotRead/connect",
+      "production": "dev-airlock-stands load connect: a CONNECT answer whose status line http.ReadResponse cannot read prints as the bound host's address allows (redact.Cause), never the line, which quotes the proxy password a stand-in echoed",
+      "function": "(*github.com/sjawhar/envoy/cmd/dev-proxy-stands.loadOptions).connect",
+      "capture": "dev-proxy-stands.load-status-line/connect",
+      "mutation": {
+        "file": "packages/envoy/cmd/dev-proxy-stands/load.go",
+        "preimage": "redact.Cause(err, bound)",
+        "replacement": "err"
+      }
+    },
+    {
+      "id": "dev-proxy-stands-load-status-line-ask",
+      "requirement": "r3-each-site",
+      "package": "./cmd/dev-proxy-stands",
+      "test": "TestALoadAnswerPrintsNoLineItCouldNotRead/ask",
+      "production": "dev-airlock-stands load ask: an answer in the tunnel whose status line http.ReadResponse cannot read prints as the request's address allows (redact.Cause), never the line, which quotes the bearer a stand-in echoed",
+      "function": "(*github.com/sjawhar/envoy/cmd/dev-proxy-stands.loadOptions).ask",
+      "capture": "dev-proxy-stands.load-status-line/ask",
+      "mutation": {
+        "file": "packages/envoy/cmd/dev-proxy-stands/load.go",
+        "preimage": "redact.Cause(err, address)",
+        "replacement": "err"
+      }
+    },
+    {
+      "id": "listenerclient-redirect-sessions-unparsed",
+      "requirement": "r3-each-site",
+      "package": "./loadtest/listenerclient",
+      "test": "TestAListenerRedirectPrintsNoLocationOfIt/sessions-unparsed",
+      "production": "listenerclient Client.Sessions: a read whose Location does not parse fails as the listener's address allows (redact.Cause), never net/http's text, which quotes the bearer a stand-in echoed",
+      "function": "(*github.com/sjawhar/envoy/loadtest/listenerclient.Client).Sessions",
+      "capture": "listenerclient.redirect/sessions-unparsed",
+      "mutation": {
+        "file": "packages/envoy/loadtest/listenerclient/listenerclient.go",
+        "preimage": "0, redact.Answer{}, redact.Cause(err, c.URL)",
+        "replacement": "0, redact.Answer{}, err"
+      }
+    },
+    {
+      "id": "listenerclient-redirect-sessions-elsewhere",
+      "requirement": "r3-each-site",
+      "package": "./loadtest/listenerclient",
+      "test": "TestAListenerRedirectPrintsNoLocationOfIt/sessions-elsewhere",
+      "production": "listenerclient Client.Sessions: a redirect a following client takes to another host that does not answer fails by its class (redact.Cause), never by the Location"
+    },
+    {
+      "id": "listenerclient-redirect-publish-unparsed",
+      "requirement": "r3-each-site",
+      "package": "./loadtest/listenerclient",
+      "test": "TestAListenerRedirectPrintsNoLocationOfIt/publish-unparsed",
+      "production": "listenerclient Client.post: a publish whose Location does not parse fails as the listener's address allows (redact.Cause)",
+      "function": "(*github.com/sjawhar/envoy/loadtest/listenerclient.Client).post",
+      "capture": "listenerclient.redirect/publish-unparsed",
+      "mutation": {
+        "file": "packages/envoy/loadtest/listenerclient/listenerclient.go",
+        "preimage": "return redact.Answer{}, redact.Cause(err, c.URL)",
+        "replacement": "return redact.Answer{}, err"
+      }
+    },
+    {
+      "id": "listenerclient-redirect-publish-elsewhere",
+      "requirement": "r3-each-site",
+      "package": "./loadtest/listenerclient",
+      "test": "TestAListenerRedirectPrintsNoLocationOfIt/publish-elsewhere",
+      "production": "listenerclient Client.post: a redirect a following client takes to another host that does not answer fails by its class (redact.Cause), never by the Location"
+    },
+    {
+      "id": "loadtest-api-redirect-unparsed",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestADispatchCallRedirectPrintsNoLocationOfIt/unparsed",
+      "production": "loadtest api.callRawKeyed: a Dispatch call whose Location does not parse fails as the request's address allows (redact.Error), its line and the failure's class, never net/http's text, which quotes the bearer a stand-in echoed; errClass counts it as net/http's own error",
+      "function": "(*github.com/sjawhar/envoy/loadtest.api).callRawKeyed",
+      "capture": "loadtest.api-redirect/unparsed",
+      "mutation": {
+        "file": "packages/envoy/loadtest/api.go",
+        "preimage": "redact.Error(err, a.base+path)",
+        "replacement": "err"
+      }
+    },
+    {
+      "id": "loadtest-api-redirect-elsewhere",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestADispatchCallRedirectPrintsNoLocationOfIt/elsewhere",
+      "production": "loadtest api: follows no redirect (redirects.Refused), so a Location on another host is Dispatch's answer by its status, never net/http's error naming it"
+    },
+    {
+      "id": "loadtest-api-redirect-followed",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestADispatchCallRedirectPrintsNoLocationOfIt/followed",
+      "production": "loadtest newAPI's client: follows no redirect (redirects.Refused), so a call's 3xx is its answer and the stand-in a Location names is asked nothing"
+    },
+    {
+      "id": "loadtest-replay-redirect-followed",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestADispatchCallRedirectPrintsNoLocationOfIt/replay-followed",
+      "production": "loadtest replayRun.do's per-action client: follows no redirect (redirects.Refused), so the action's 3xx is recorded as its answer and the stand-in a Location names is asked nothing"
+    },
+    {
+      "id": "loadtest-guard-redirect-unparsed",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestAGuardCheckRedirectPrintsNoLocationOfIt/unparsed",
+      "production": "loadtest guardGet: a guard read whose Location does not parse fails as the URL allows (redact.Cause), never net/http's text, which quotes the agent token a stand-in echoed",
+      "function": "github.com/sjawhar/envoy/loadtest.guardGet",
+      "capture": "loadtest.guard-redirect/unparsed",
+      "mutation": {
+        "file": "packages/envoy/loadtest/guard.go",
+        "preimage": "redact.Cause(err, url)",
+        "replacement": "err"
+      }
+    },
+    {
+      "id": "loadtest-guard-redirect-elsewhere",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestAGuardCheckRedirectPrintsNoLocationOfIt/elsewhere",
+      "production": "loadtest checkStack: its client follows no redirect (redirects.Refused), so a Location on another host is the check's refusal by status, never net/http's error naming it"
+    },
+    {
+      "id": "loadtest-guard-redirect-followed",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestAGuardCheckRedirectPrintsNoLocationOfIt/followed",
+      "production": "loadtest checkStack: its client follows no redirect (redirects.Refused), so the dispatch check is refused by the 302 and the stand-in a Location names is asked nothing"
+    },
+    {
+      "id": "loadtest-cloudsql-redirect-unparsed",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestACloudSQLReadRedirectPrintsNoLocationOfIt/unparsed",
+      "production": "loadtest readCloudSQLSeries: a Cloud Monitoring read whose Location does not parse is named by its class (redact.Class), never net/http's text, which quotes the access token a stand-in echoed",
+      "function": "github.com/sjawhar/envoy/loadtest.readCloudSQLSeries",
+      "capture": "loadtest.cloudsql-redirect/unparsed",
+      "mutation": {
+        "file": "packages/envoy/loadtest/cloudsqlcpu.go",
+        "preimage": "metric, databaseID, redact.Class(err))",
+        "replacement": "metric, databaseID, err)"
+      }
+    },
+    {
+      "id": "loadtest-cloudsql-redirect-elsewhere",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestACloudSQLReadRedirectPrintsNoLocationOfIt/elsewhere",
+      "production": "loadtest runCloudSQLCPU: the reads' client follows no redirect (redirects.Refused), so a Location on another host is Cloud Monitoring's answer by its status"
+    },
+    {
+      "id": "loadtest-cloudsql-redirect-followed",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestACloudSQLReadRedirectPrintsNoLocationOfIt/followed",
+      "production": "loadtest runCloudSQLCPU: the reads' client follows no redirect (redirects.Refused), so the read is refused by the 302 and the stand-in a Location names is asked nothing"
+    },
+    {
+      "id": "loadtest-loop-listener-redirect-followed",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestALoopListenerFollowsNoRedirect/followed",
+      "production": "loadtest newLoopListener: its client follows no redirect (redirects.Refused), so a publish's 3xx is the listener's refusal by its status and the stand-in a Location names is asked nothing"
     }
   ],
   "bun": [
@@ -10718,6 +11596,46 @@
       "site": "envoy's credential-carrying clients handed on net/http's error as it came, so a Location that did not parse (net/http quotes it before CheckRedirect is asked), or one a following client asked, put the request's credential into a log line or an error: the listener's broker read, Dispatch's agent-secrets client, the broker's wake notice, judge read and Dispatch read, the generateIdToken mint, Dispatch's introspection, the Azure embeddings call and Entra exchange, and the OIDC revocation",
       "source": "the class search of round 7's third must-fix over the envoy module",
       "guard": "listener-edge-redirect-unparsed"
+    },
+    {
+      "site": "wake Envoy.Notify: the notice to Envoy went out on the client cmd/cipherd gives it, which follows redirects, so a 302 to another host sent the broker's account token on, in the Location's query and in the Authorization net/http copies to the same host name",
+      "source": "the class search of round 8 over the envoy module",
+      "guard": "wake-redirect-followed-given"
+    },
+    {
+      "site": "judge Dispatch.get: the judge's read of Dispatch went out on d.HTTP or http.DefaultClient, both following redirects, so a 302 to another host sent the broker's account token on, in the Location's query and in the Authorization net/http copies to the same host name",
+      "source": "the class search of round 8 over the envoy module",
+      "guard": "judge-redirect-followed-default"
+    },
+    {
+      "site": "dispatchread New: the project-access reader kept http.DefaultClient (the repository read) or the client it was given (the project access read), both following redirects, so a 302 to another host sent the broker's project-access token on, and a followed Location that did not answer was ErrNoAnswer, which projectaccess.Unanswered reads as Dispatch's outage",
+      "source": "the class search of round 8 over the envoy module",
+      "guard": "dispatchread-redirect-followed-default"
+    },
+    {
+      "site": "ciphertoken Verifier.introspect: the introspection went out on Options.HTTP or the Verifier's own client, both following redirects, so a 302 to another host sent the caller's account token on (and a 307 or 308 would have sent the presented token in the form)",
+      "source": "the class search of round 8 over the envoy module",
+      "guard": "brokertoken-introspect-followed-default"
+    },
+    {
+      "site": "envoy's model clients handed net/http's and the SDK's errors on as they came: going's chat completion into the answerer's warning, and agentloop's decision call and run stream error into the Detail the judge logs. In them were a Location that did not parse (net/http quotes it before CheckRedirect is asked), a refused redirect's Location (named in full by Go's *url.Error, and by its host in agentloop's refusal), and a refused answer's body or message (anthropic-sdk-go's error, the ai-sdk's APICallError), each of which could echo the endpoint's credential",
+      "source": "the class search of round 8 over the envoy module",
+      "guard": "agentloop-run-failure-anthropic-messages-unparsed"
+    },
+    {
+      "site": "claudebridge turnReports: the turn report's client followed a redirect with the boot token in its body (a 307 or 308 re-sends it to the host the Location names), and post logged net/http's error as it came, so a Location that did not parse, or a followed one on a host that did not answer, put the boot token into the pane",
+      "source": "the class search of round 8 over the envoy module",
+      "guard": "claudebridge-redirect-unparsed"
+    },
+    {
+      "site": "envoy's dev and load-test clients that carry a credential handed net/http's or http.ReadResponse's error on as it came, and several followed any redirect: the MCP bridge's SSE connect (the configured URL's user information), dev-airlock-stands enroll-pod, probe-bound and load's CONNECT and tunnel reads, the load test's listener client, Dispatch client, guard check and Cloud Monitoring reads",
+      "source": "the class search of round 8 over the envoy module",
+      "guard": "loadtest-api-redirect-unparsed"
+    },
+    {
+      "site": "the redirect policy was kept twice: envoy's internal/redirects held a second Refused, with no test, beside the daemon's internal/redirects (Refused, SameOrigin, Status, their tests and the redirectstest stand-ins), each internal to its module, so an envoy client had no SameOrigin and no stand-in for its rows; the policy, its tests and the stand-ins now live once, in the public package github.com/sjawhar/envoy/redirects, which both modules import",
+      "source": "the class search of round 8 over the envoy module",
+      "guard": "redirects-refused"
     }
   ]
 }
