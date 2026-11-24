@@ -89,23 +89,9 @@ func TestDaemonPermissionsOnRealServers(t *testing.T) {
 				// makes every request it can under the grant: each consumer's info and its oldest
 				// waiting message's stored-message get. A publish's ack says the stream stored the
 				// event, and nats-server counts it for each consumer only after that ack, so the read
-				// waits for the server to count each consumer's event first, bounded by the row's
-				// hang guard alone (testwait.Remaining), never by a span of its own.
+				// waits for the server to count each consumer's event first (awaitWaiting).
 				for _, name := range []string{dispatchGrantConsumer, githubGrantConsumer, wakeGrantConsumer} {
-					var waiting uint64
-					if !testwait.Holds(testwait.Remaining(t), testwait.Poll, func() bool {
-						read, cancel := context.WithTimeout(t.Context(), testwait.Remaining(t))
-						defer cancel()
-						consumer, err := stream.Consumer(read, name)
-						if err != nil {
-							t.Fatalf("read the %s consumer's info: %v", name, err)
-						}
-						info := consumer.CachedInfo()
-						waiting = info.NumPending + uint64(info.NumAckPending)
-						return waiting == 1
-					}) {
-						t.Fatalf("the server counts %d events waiting for %s at the row's hang guard, want 1", waiting, name)
-					}
+					awaitWaiting(t, stream, name, 1)
 				}
 				for _, lag := range restarted.consumers.Lag(t.Context()) {
 					if lag.Waiting != 1 || lag.OldestAt.IsZero() || lag.Unavailable != "" {
@@ -317,6 +303,38 @@ func createDaemonNotificationStream(t *testing.T, js jetstream.JetStream) jetstr
 		t.Fatalf("create the notification stream: %v", err)
 	}
 	return stream
+}
+
+// awaitWaiting waits until the server counts n messages waiting for the consumer named name of
+// stream, as the daemon's lag read counts them (JetStream's NumPending plus NumAckPending). A
+// publish's ack says the stream stored the message, and nats-server counts it for each consumer
+// only afterwards, so a lag read the moment the publish returns can find nothing waiting yet. The
+// wait, and each read in it, is bounded by the row's hang guard alone (testwait.Remaining), never
+// by a span of its own. A count past n is a message from outside the row, and fails at once, and so
+// does a read that fails. It is a copy of internal/intake's awaitWaiting and ConsumerWaiting
+// (consumer_lag_test.go), which this package's tests cannot import: keep the two in step.
+func awaitWaiting(t *testing.T, stream jetstream.Stream, name string, n uint64) {
+	t.Helper()
+	requests, cancel := context.WithTimeout(context.Background(), testwait.Remaining(t))
+	defer cancel()
+	consumer, err := stream.Consumer(requests, name)
+	if err != nil {
+		t.Fatalf("read the %s consumer: %v", name, err)
+	}
+	var waiting uint64
+	if testwait.Holds(testwait.Remaining(t), testwait.Poll, func() bool {
+		info, err := consumer.Info(requests)
+		if err != nil {
+			t.Fatalf("read the %s consumer's info: %v", name, err)
+		}
+		if waiting = info.NumPending + uint64(info.NumAckPending); waiting > n {
+			t.Fatalf("the server counts %d messages waiting for %s, more than the %d the row published", waiting, name, n)
+		}
+		return waiting == n
+	}) {
+		return
+	}
+	t.Fatalf("the server counts %d message(s) waiting for %s at the row's hang guard, want %d", waiting, name, n)
 }
 
 func startDaemonGrantServer(t *testing.T, image string, grant natsgrant.Permissions) (string, *nats.Conn, jetstream.JetStream, *tcnats.NATSContainer, string) {
