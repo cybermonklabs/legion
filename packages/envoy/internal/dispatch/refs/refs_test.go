@@ -507,7 +507,7 @@ func TestClosureFollowsArtifactLinksToDepthEightAndReportsTruncation(t *testing.
 	if err != nil {
 		t.Fatalf("read closure: %v", err)
 	}
-	want := []Member{documentMember(t, database.Pool, artifactRefs["d1"], 1, model.ReferenceVia{Kind: "comment", ID: commentID})}
+	want := []Member{documentMember(t, database.Pool, artifactRefs["d1"], model.ReferenceVia{Kind: "comment", ID: commentID})}
 	if got := references.Members; !reflect.DeepEqual(got, want) {
 		t.Fatalf("closure = %#v; want %#v", got, want)
 	}

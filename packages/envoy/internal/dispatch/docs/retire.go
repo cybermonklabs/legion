@@ -26,9 +26,49 @@ type Retirement struct {
 	SupersededApproval *model.SupersededApproval
 }
 
-// ErrDocumentRetired refuses the retirement of a document already retired: it is retired once,
-// with one document.retired event.
+// ErrDocumentRetired refuses what a retired document no longer takes: a second retirement of it
+// (it is retired once, with one document.retired event), and a live write into it, a version of it
+// or a rebuild of it, which its owner's lock reads it retired under (retiredWriteRefusal,
+// RetiredDocumentError).
 var ErrDocumentRetired = errors.New("docs: the document is retired already")
+
+// RetiredDocumentError is a write refused because its document is retired: a live write
+// (joinLiveWrite), a version (NamedVersion, SnapshotVersion) or a rebuild (RebuildDocument), each
+// refused by retiredWriteRefusal. It holds the document's id, name and slug, and the issue it
+// belongs to (nil for a project document), read off the owner the write locked, and the number of
+// its latest saved version (savedVersionNumber). api answers it as it answers a write it refuses
+// itself: 409 DOCUMENT_RETIRED naming the document and the address of that version, or 409
+// DECISIONS_ARE_NODES for an issue's decisions document (retiredDocumentRefusal). It is
+// ErrDocumentRetired.
+type RetiredDocumentError struct {
+	ID, Name, Slug string
+	IssueKey       *string
+	LatestVersion  int
+}
+
+func (e *RetiredDocumentError) Error() string {
+	return fmt.Sprintf("docs: document %s (%s) is retired and takes no new text", e.ID, e.Slug)
+}
+
+func (e *RetiredDocumentError) Unwrap() error { return ErrDocumentRetired }
+
+// retiredWriteRefusal refuses a write into artifactID, whose owner lockArtifactOwner read in tx,
+// the write's transaction: a RetiredDocumentError, logged at Info naming the document, where the
+// read found it retired (artifactOwner.Retired), and nil where it stands. The refusal is an input a
+// route answers with a documented 409 in ordinary use - an agent that still holds a retired
+// decisions document's address writes to it - and no fault, so it logs no warning. The retirement
+// takes the same lock, so it committed before that read or waits for the write's transaction.
+func retiredWriteRefusal(ctx context.Context, tx pgx.Tx, artifactID string, owner artifactOwner) error {
+	if !owner.Retired {
+		return nil
+	}
+	latest, err := savedVersionNumber(ctx, tx, artifactID)
+	if err != nil {
+		return err
+	}
+	slog.Info("dispatch: refuse a write into a retired document", "document", artifactID)
+	return &RetiredDocumentError{ID: artifactID, Name: owner.Name, Slug: owner.Slug, IssueKey: owner.IssueKey, LatestVersion: latest}
+}
 
 // errRetirementReason refuses a retirement that says not why: the reason is the event's record of
 // it, and the only one.
@@ -54,7 +94,9 @@ var retirementEvents = events.NewBroker()
 // document out (roomLayoutSQL): the room reloads without its fragment, so nothing typed into that
 // fragment is reconciled, versioned or indexed, and the room's block index keeps the blocks it
 // recorded of the document as they stood (refs.PlanBlocks). A socket that comes back is refused
-// (ServeHTTP), and api refuses an upload, a create and an edit of it 409 DOCUMENT_RETIRED.
+// (ServeHTTP), api refuses an upload, a create and an edit of it 409 DOCUMENT_RETIRED, and this
+// package refuses a live write, a version and a rebuild of it (retiredWriteRefusal, and
+// refuseRetiredFragment for a document of an issue room).
 //
 // No version is written, so the approval is not left behind a later version as a write leaves
 // one: the approval read answers a retired document's approval stale (api's applyApprovals), and
@@ -73,7 +115,7 @@ var retirementEvents = events.NewBroker()
 // It takes the document's owner lock (store.LockOwner, through lockArtifactOwner) first, then
 // writes the store's lock order as a create writes it: the node, its projection row, the event,
 // and the node's facts under that event, the retractions among them (graphstore.PlanUncaused and
-// QueueNodes, then graphstore.Caused). A document already retired is refused with
+// QueueNodes, then graphstore.QueueCaused). A document already retired is refused with
 // ErrDocumentRetired, and a reason that is blank with errRetirementReason.
 func RetireDocument(ctx context.Context, tx pgx.Tx, artifactID string, actor model.Actor, reason string) (Retirement, error) {
 	reason = strings.TrimSpace(reason)
@@ -128,7 +170,11 @@ func RetireDocument(ctx context.Context, tx pgx.Tx, artifactID string, actor mod
 	if err != nil {
 		return Retirement{}, fmt.Errorf("append %s: %w", model.DocumentRetiredEventType, err)
 	}
-	if err := graphstore.Caused(ctx, tx, node, event.ID); err != nil {
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		graphstore.QueueCaused(b, node, event.ID)
+		graphstore.QueueHeads(b, graphstore.HeldHeads(node))
+		return nil
+	}); err != nil {
 		return Retirement{}, fmt.Errorf("state the retired document's node gone: %w", err)
 	}
 	if err := AnnounceDocumentRemoved(ctx, tx, artifactID); err != nil {
@@ -159,7 +205,7 @@ func RetireDocument(ctx context.Context, tx pgx.Tx, artifactID string, actor mod
 // with it then. A constrained_by out of a requirement of the document stays: what the requirement
 // was held to is the record of the document, which stays readable. Each retraction is dated at and
 // signed by actor, the retirement's own time and writer, and rides with the facts the retirement
-// states under its document.retired event (writeRetiredNode, graphstore.Caused), in the
+// states under its document.retired event (writeRetiredNode, graphstore.QueueCaused), in the
 // retirement's transaction.
 //
 // It logs how many it retracts, with the document's address, and answers the number to no reader:
@@ -167,7 +213,7 @@ func RetireDocument(ctx context.Context, tx pgx.Tx, artifactID string, actor mod
 // document would tell another reader it is there.
 func retiredPreventions(ctx context.Context, tx pgx.Tx, artifactID, refKey string, at time.Time, actor model.Actor) ([]graphstore.Tuple, error) {
 	retracted, err := refs.PreventionRetractions(ctx, tx, `array(select held.node_id from document_blocks held where `+refs.DocumentRoomBlocksSQL("held", "$1::uuid")+`)`,
-		[]any{artifactID}, at, actor, graphstore.NoEvent)
+		[]any{artifactID}, at, actor)
 	if err != nil {
 		return nil, fmt.Errorf("read the prevented_by tuples at the checks of %s: %w", refKey, err)
 	}
@@ -199,13 +245,50 @@ func refusedDocument(ctx context.Context, q Queryer, asked string) (retired, que
 	return retired, query, nil
 }
 
+// retiredUnderOwnerLock is whether the document artifactID is retired, read in the statement after
+// its owner's lock (lockArtifactOwner, artifactOwner.Retired), the lock RetireDocument takes: a
+// retirement that committed before the read is read, and one that has not waits for tx to end.
+// Every writer that walks an issue's documents reads it before it writes into one, and skips a
+// document it reads retired: it writes nothing into it, refuses nothing, and goes on with the
+// issue's other documents (WriteIssueAskStates, FollowClosedIssueVersions, KeepAskBlockInStep). A
+// comment thread's margin record skips a retired document as they do (ProjectMark), and so does
+// the reject of a deleted comment's pending suggestion (RejectDeletedCommentSuggestion). A list
+// that leaves retired documents out is read before this lock is, or under a lock its caller
+// took, so it is never the read that decides.
+func retiredUnderOwnerLock(ctx context.Context, tx pgx.Tx, artifactID string) (bool, error) {
+	owner, _, err := lockArtifactOwner(ctx, tx, artifactID)
+	if err != nil {
+		return false, err
+	}
+	return owner.Retired, nil
+}
+
+// retiredOutsideLiveWrite is whether the document artifactID is retired, for a write that holds no
+// live write to it yet: read under its owner's lock (retiredUnderOwnerLock), and false without a
+// read where the transaction holds its write to the document's own room already, which read the
+// document standing under that lock (joinLiveWrite) and so no retirement passes before the
+// transaction ends. A write to an issue room proves nothing of a document of it the transaction
+// only resolved into that room (targetOf): the write serves every document of the room, and its
+// owner read is the room's own artifact's, so such a document's retirement is read here, under the
+// owner lock the write holds already. ProjectMark and RejectDeletedCommentSuggestion write nothing
+// into a retired document by it.
+func retiredOutsideLiveWrite(ctx context.Context, artifactID string) (bool, error) {
+	tx, joined := txFromContext(ctx)
+	if !joined {
+		return false, errUnjoined
+	}
+	if write := joinedLiveWrite(ctx, artifactID); write != nil && write.artifactID == artifactID {
+		return false, nil
+	}
+	return retiredUnderOwnerLock(ctx, tx, artifactID)
+}
+
 // writeRetiredNode writes the retired document's artifact node gone, held for the event that
-// causes it, with stated, the caller's own facts of the same write (graphstore.PlanUncaused, its
-// node write run at once through graphstore.QueueNodes). The
-// node keeps every other fact the store holds of it - its supertag, its visibility, its project
-// and who made it - and a document whose node no writer wrote yet takes the node its upload would
-// have written, made by creator when it was created. A ref_key past the store's address bound is
-// no node, as every writer of the store leaves such an address out.
+// causes it, with stated, the caller's own facts of the same write (graphstore.PlanUncaused,
+// QueueNodes). The node keeps every other fact the store holds of it - its supertag, its
+// visibility, its project and who made it - and a document whose node no writer wrote yet takes
+// the node its upload would have written, made by creator when it was created. A ref_key past the
+// store's address bound is no node, as every writer of the store leaves such an address out.
 func writeRetiredNode(ctx context.Context, tx pgx.Tx, refKey, project string, session *string, creator model.Actor, createdAt time.Time, stated []graphstore.Tuple) (graphstore.Uncaused, error) {
 	if !graphstore.AddressFits(refKey) {
 		return graphstore.Uncaused{}, nil

@@ -182,6 +182,7 @@ func unpublishedEvents(t *testing.T, database *store.Store, issueKey string) int
 // before the comment is written, and s1 takes them in that order. It is what shows the rig reads
 // s1's copies in the order they landed: a rig that read them in any other order would fail it too.
 func TestAMentionCopyKeepsTheIssueOrder(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// backsOff is whether the stream refuses the topic family while event 1 is first sent.

@@ -306,6 +306,24 @@ env_length() {
   done
   printf '0\n'
 }
+# environ_laid_out PID succeeds once PID's environment holds a variable, and fails until then. Linux
+# names the program an exec starts (/proc/PID/exe) before it has laid out that program's arguments
+# and environment: in Linux 7.0, begin_new_exec sets the exe and installs the new memory
+# (fs/exec.c), load_elf_binary then maps the program, and create_elf_tables lays out the arguments,
+# sets the environment's bounds to an empty range, lays out the environment and only then sets its
+# end (fs/binfmt_elf.c). /proc/PID/cmdline reads nothing until those bounds are first set, and
+# /proc/PID/environ reads nothing until that end is (fs/proc/base.c). On a devbox at load 1065, a
+# poll saw an exe naming the program and an empty environment in 91 of 200 starts of a copy of
+# sleep, for up to 62 ms. So a caller that found PID by the program it runs (launched, a wait on
+# /proc/PID/exe) waits on this before it reads PID's environment: in that window env_of, env_has
+# and env_length answer 2, an environment that could not be read, for a process that will run with
+# a full one. Read the exe first: before that exec, PID runs another program (env, a shell) with an
+# environment of its own. It fails, too, for a process that has gone, and for one started with an
+# empty environment, which no wait makes readable.
+environ_laid_out() {
+  local -a entries=()
+  process_environ "$1" entries
+}
 
 # incarnation_pid INCARNATION prints the pid of the tmux runtime's incarnation `<pid>:<start ticks>`
 # (a claim's .locator.incarnation, packages/daemon/internal/runtime/tmux/tmux.go) while that pid is

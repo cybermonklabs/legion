@@ -4,6 +4,7 @@
 // half an object, or count a card the host has not finished writing (dispatch://INFRA-2188).
 import { readFile } from "node:fs/promises";
 import { endsWhole, type Writer, writtenLines } from "@legion/test-fixtures/transcript-lines";
+import { until } from "@legion/test-fixtures/wait";
 
 /**
  * The `envoy-message` custom messages of a session file's `text`, as raw JSON lines, in the order
@@ -25,20 +26,14 @@ export function cardLines(text: string, writer: Writer): string[] {
  * rather than throw on half an object, which is the same window with a different red
  * (dispatch://INFRA-2188). The wait lives in the reader rather than at each case, so a case
  * cannot forget it, and the lines come from the very text that was found whole, so there is no
- * gap between the two. It is a hang guard: one line is one write, so a wait that reaches
- * `withinMs` is a file nothing is finishing, and it throws naming the file. A writer that is
- * gone is never waited for, since nothing will finish its last line.
+ * gap between the two. One line is one write, so a wait that reaches its row's deadline is a file
+ * nothing is finishing, and its failure names the file. A writer that is gone is never waited for,
+ * since nothing will finish its last line.
  */
-export async function readCardLines(
-  file: string,
-  writer: Writer,
-  withinMs: number
-): Promise<string[]> {
-  const deadline = Date.now() + withinMs;
-  for (;;) {
-    const text = await readFile(file, "utf8");
-    if (writer === "gone" || endsWhole(text)) return cardLines(text, writer);
-    if (Date.now() > deadline) throw new Error(`the session file ${file} still ends mid-line`);
-    await Bun.sleep(25);
-  }
+export async function readCardLines(file: string, writer: Writer): Promise<string[]> {
+  const text = await until(`the session file ${file} to end on a finished line`, async () => {
+    const read = await readFile(file, "utf8");
+    return writer === "gone" || endsWhole(read) ? { read } : undefined;
+  });
+  return cardLines(text.read, writer);
 }

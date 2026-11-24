@@ -107,13 +107,20 @@ func (s *server) listInbox(w http.ResponseWriter, r *http.Request) {
 	// i, its own document as ar and their project as p - so this read joins none of them itself
 	// and reads the document's columns off the shared join. `unassigned` is left standing for
 	// the caller that sends it: every question reaches a person now, so it answers nothing.
+	//
+	// An ask is open here while its row and its node both say so (askOpenOf): the row's state
+	// lets the partial index asks_open (0001) pick the candidates out of every ask of the
+	// instance, and the node, the state every row here shows (scanAskRead), decides (R3). An
+	// owner's lists by state read one owner's asks through that owner's own index and pick by the
+	// node alone (listIssueAsksQueryOpen); the Inbox reads every owner's, which without the row's
+	// test would probe the node of every ask stored.
 	rows, err := s.deps.Store.Pool.Query(r.Context(), `
 		select `+askReadColumns+`,
 		       i.key, i.title, i.assignee, i.priority, ar.project_key, ar.slug, ar.name,
 		       sn.snoozed_until
 		`+askReadFrom+`
 		left join user_ask_snooze sn on sn.ask_id = a.id and sn.login = $4
-		where a.state = 'open'
+		where `+askOpenOf("a")+`
 		  and (i.key is null or i.closed_at is null)
 		  and ($1 = '' or coalesce(i.project_key, ar.project_key) = $1)
 		  and ($2 = ''

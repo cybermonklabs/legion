@@ -885,6 +885,8 @@ test("a decisions.md section finds its Change by its words", () => {
     author: { id: "alice", kind: "user" },
     body: `Change ${id}.`,
     created_at: "2026-11-06T00:00:00Z",
+    deleted_at: null,
+    deleted_by: null,
     deliveries: [],
     edited_at: null,
     id,

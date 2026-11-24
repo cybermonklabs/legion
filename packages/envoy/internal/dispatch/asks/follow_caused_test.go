@@ -7,7 +7,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
-	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphstorecopy"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphstoretest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -83,7 +83,7 @@ func requireOneCause(t *testing.T, database *store.Store, session string, cause 
 	if node != cause {
 		t.Errorf("the node row of session %s names event %d, want the cause its follow was given, %d", session, node, cause)
 	}
-	for _, attribute := range graphstorecopy.BaseAttributes() {
+	for _, attribute := range graphstoretest.BaseAttributes() {
 		rows, err := database.Pool.Query(ctx, `
 			select source_event from graph_tuples
 			where from_kind = $1 and from_id = $2 and kind = $3 and to_kind = $4

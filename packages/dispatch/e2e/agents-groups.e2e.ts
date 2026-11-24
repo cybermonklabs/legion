@@ -17,8 +17,11 @@ import {
   createIssue,
   createProject,
   getIssueEvents,
+  patchIssue,
   replyToMessageDelivery,
 } from "./api";
+import { pendingWrites } from "./keyed-writes";
+import { boxesApart } from "./layout";
 import { expectRailAgents } from "./rail";
 import { setEventCreatedAt } from "./seed";
 import { expect, type Locator, type Page, test } from "./test";
@@ -572,6 +575,84 @@ test("an agent row stands at the height recorded for its width @phone", async ({
       );
     } else {
       expect(directory.top, "the directory is on the name's line").toBeLessThan(name.bottom);
+    }
+  } finally {
+    await context.close();
+  }
+});
+
+// The broadcast composer and Pending changes, two layers of the foot of the screen
+// (`web/src/hooks/useFootInset.ts`), "so no float lies over a foot element". Scrolled to its
+// end, the page leaves the composer resting above the section of ended sessions, in the upper
+// half of a short window, with room under it. At each of four such windows the panel's box and
+// the composer's must not meet: the panel's corner then lay over the composer's message box, its
+// mode and Send, or its recipients.
+test("scrolled to its end in a short window, the Agents page's broadcast composer and Pending changes do not meet @foot", async ({
+  browser,
+}) => {
+  const titles = Array.from(
+    { length: 14 },
+    (_, index) => `Agent ${String(index + 1).padStart(2, "0")}`
+  );
+  await setLiveSessions([
+    ...titles.map((title, index) =>
+      session(`01a0e812-0c07-7000-8000-0000000001${String(index).padStart(2, "0")}`, title)
+    ),
+    session(ENDED, "Ended"),
+  ]);
+  await seedUnreadReply(ENDED);
+  await setSessionLive(ENDED, false);
+  await createProject({ key: "CORE", name: "Core" });
+  const epic = await createIssue({ project: "CORE", title: "Parser rollout" });
+  await patchIssue(epic.key, { labels: ["epic"] });
+  const refused = await createIssue({ project: "CORE", parent: epic.key, title: "Refused move" });
+  const context = await asUser(browser, "alice");
+  try {
+    const page = await context.newPage();
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.route(`**/api/v1/issues/${refused.key}`, async (route) => {
+      if (route.request().method() === "PATCH")
+        await route.fulfill({ status: 403, json: { error: "Move refused" } });
+      else await route.continue();
+    });
+    await page.goto("/projects/CORE/issues");
+    await page.getByRole("checkbox", { name: `Select ${refused.key}`, exact: true }).check();
+    await page.getByRole("toolbar").getByRole("button", { name: "Take out of epic" }).click();
+    const pending = pendingWrites(page);
+    await expect(pending).toContainText(refused.key);
+    await page.goto("/agents");
+    await expect(pending).toContainText(refused.key);
+    for (const title of titles.slice(0, 3)) {
+      await page.getByRole("checkbox", { name: `Select ${title} for broadcast` }).check();
+    }
+    const broadcast = page.getByRole("region", { name: "Broadcast" });
+    const ended = page.getByRole("region", { name: "Replied, no longer connected" });
+    for (const size of [
+      { width: 800, height: 600 },
+      { width: 1024, height: 500 },
+      { width: 640, height: 480 },
+      { width: 360, height: 640 },
+    ]) {
+      await page.setViewportSize(size);
+      // The list sets its height from the rows it measures, a frame or more after a resize, and
+      // the page's end can grow once a float's band counts: a scroll made before that stops
+      // short. So the scroll is made again until the ended sessions show.
+      await expect(async () => {
+        await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+        await expect(ended).toBeInViewport({ timeout: 1_000 });
+      }).toPass({ timeout: 15_000 });
+      await expect
+        .poll(
+          async () => {
+            const composer = await broadcast.boundingBox();
+            const panel = await pending.boundingBox();
+            return composer !== null && panel !== null && boxesApart(composer, panel);
+          },
+          {
+            message: `Pending changes meets the broadcast composer at ${size.width}x${size.height}`,
+          }
+        )
+        .toBe(true);
     }
   } finally {
     await context.close();

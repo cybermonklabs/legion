@@ -28,6 +28,6 @@
 
 # The document reads (24): the requirement file of one part document, and the part document
 # itself by its file name (GET /api/v1/issues/{key}/artifacts/{slug}/text takes a slug or an
-# unambiguous filename, internal/dispatch/api/routes_table.go:335).
+# unambiguous filename, internal/dispatch/api/routes_table.go:671).
 21 loop agent GET /api/v1/issues/{key}/comments?artifact={part_artifact_id}
 3 loop agent GET /api/v1/issues/{key}/artifacts/{part_slug}/text

@@ -36,6 +36,7 @@ func refuseEdit(t *testing.T, handler http.Handler, artifactID string, ops []map
 // twice and is refused by the repeated-id guard, and blockReplacement refuses the lift-out of a
 // typed block.
 func TestAnEditDroppingABlockAnOpenAskPointsAtIsRefused(t *testing.T) {
+	t.Parallel()
 	handler, _ := blockAskHandler(t)
 	issue, askID := seedBlockAsk(t, handler, "Dropped ask block", "decision", transportAsk, "Which transport?")
 	before := documentMarkdown(t, handler, issue.PrimaryArtifactID)
@@ -63,6 +64,7 @@ func TestAnEditDroppingABlockAnOpenAskPointsAtIsRefused(t *testing.T) {
 // id writes the id twice, which the repeated-id guard refuses before any ask check, and the ask
 // stays open.
 func TestAReplaceRewritingTheBlockOfAnOpenAskUnderItsOwnIDIsRefused(t *testing.T) {
+	t.Parallel()
 	handler, _ := blockAskHandler(t)
 	issue, askID := seedBlockAsk(t, handler, "Rewritten ask block", "decision", transportAsk, "Which transport?")
 	before := documentMarkdown(t, handler, issue.PrimaryArtifactID)
@@ -87,6 +89,7 @@ func TestAReplaceRewritingTheBlockOfAnOpenAskUnderItsOwnIDIsRefused(t *testing.T
 // an `insert` does. Settlement opens the ask after the edit commits, so each half waits for the
 // block to be indexed and then reads the issue's asks.
 func TestAReplaceWritingAnAskBlockOpensItsAskAsAnInsertDoes(t *testing.T) {
+	t.Parallel()
 	const question = "Which store?"
 	const block = ":::ask{#written urgency=\"med\" multiple=\"false\"}\n" + question + "\n\n" +
 		"- Postgres: The one we run\n- SQLite: One file\n:::"
@@ -132,6 +135,7 @@ func TestAReplaceWritingAnAskBlockOpensItsAskAsAnInsertDoes(t *testing.T) {
 // whose result drops one reads the table. The same counter sees the statement the refused batch
 // below sends, so a count of zero is the absence of the read and not of the counter.
 func TestOnlyABatchDroppingAnAskBlockReadsTheOpenAsks(t *testing.T) {
+	t.Parallel()
 	counter := &statementCounter{}
 	counted := storetest.TracedStore(t, storetest.Open(t), counter)
 	handler, _, _ := newTestServer(t, testServerOptions{store: counted})
@@ -170,6 +174,7 @@ func TestOnlyABatchDroppingAnAskBlockReadsTheOpenAsks(t *testing.T) {
 // (docs.TestApplyOperationReplaceWritesBlocksInsideTheBlockThatHoldsThem runs it alone), so the
 // batch drives both halves here.
 func TestAReplaceIntoAnAsksQuestionIsHeldToTheAsksContentRule(t *testing.T) {
+	t.Parallel()
 	t.Run("a code block is refused as a broken ask block", func(t *testing.T) {
 		handler, _ := blockAskHandler(t)
 		issue, askID := seedBlockAsk(t, handler, "Code in a decision", "decision", transportAsk, "Which transport?")

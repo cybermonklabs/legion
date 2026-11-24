@@ -30,9 +30,9 @@ func heldLine(t *testing.T, pool *pgxpool.Pool) {
 	assertWaiting(t, pool, []string{"LEGION-9", "LEGION-2"})
 }
 
-// heldSummary is the listing snapshot Reconcile defers for LEGION-9 when the Dispatch consumer
+// heldListing is the listing snapshot Reconcile defers for LEGION-9 when the Dispatch consumer
 // is behind: what release applies for it before anything else reads the line.
-func heldSummary() intake.DispatchIssue {
+func heldListing() intake.DispatchIssue {
 	return intake.DispatchIssue{Key: "LEGION-9", ResolvedRepo: "acme/widgets", Title: "LEGION-9", Status: "todo", Rank: "0", HandedOver: true, Seq: 20}
 }
 
@@ -82,8 +82,7 @@ func TestAHeldCandidateStopsTheLineForAChildOfAnotherTree(t *testing.T) {
 		{
 			name: "the Dispatch consumer's hold",
 			hold: func(_ *testing.T, admission *Admission) {
-				admission.pending = map[string]intake.DispatchIssue{"LEGION-9": heldSummary()}
-				admission.target = 100
+				admission.holdDeferred(map[string]intake.DispatchIssue{"LEGION-9": heldListing()}, 100)
 			},
 			release: func(t *testing.T, pool *pgxpool.Pool, admission *Admission) {
 				reachConsumer(t, pool, admission, "position-1")
@@ -102,8 +101,7 @@ func TestAHeldCandidateStopsTheLineForAChildOfAnotherTree(t *testing.T) {
 		{
 			name: "both holds",
 			hold: func(_ *testing.T, admission *Admission) {
-				admission.pending = map[string]intake.DispatchIssue{"LEGION-9": heldSummary()}
-				admission.target = 100
+				admission.holdDeferred(map[string]intake.DispatchIssue{"LEGION-9": heldListing()}, 100)
 				admission.HoldForCatchUp("LEGION-9")
 			},
 			release: func(t *testing.T, pool *pgxpool.Pool, admission *Admission) {

@@ -3,6 +3,7 @@ package graphcensus
 import (
 	"context"
 	"io"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/pgmigrate"
 )
 
 // agreeingStore is a database whose store and projections agree on every kind the census reads
@@ -284,4 +286,85 @@ func TestTheStoreCensusReadsOneSnapshot(t *testing.T) {
 			after.NodeDifferences, after.ReportedNodes, wantAt)
 	}
 	t.Logf("the census taken after the write reads it: kind block, %s: %s", after.ReportedNodes[0].At, after.ReportedNodes[0].Cause)
+}
+
+// The census records the read sequence its snapshot saw (R29 of the parent change's
+// specification): ReadSeq is the highest graph_tuples.seq the census's own snapshot holds, and
+// not the highest one when the census ends.
+//
+// The write is placed as TestTheStoreCensusReadsOneSnapshot places it: once the census has read
+// its first kind, which is after the statement its snapshot is taken at, the test commits on a
+// connection of its own a block node with its part_of tuple to the document, which appends to
+// graph_tuples. The census must record the highest seq the log held before that write, which is
+// below the seq the write appended, read after it. A census that read the sequence on any
+// snapshot but its own, after its kinds or after its transaction, would record the write's.
+func TestTheStoreCensusRecordsTheReadSequenceOfItsSnapshot(t *testing.T) {
+	ctx := context.Background()
+	database := storetest.Open(t)
+	seeded := seedAgreeingStore(t, database)
+	before := highestTuple(t, database)
+	if before == 0 {
+		t.Fatalf("the agreeing store holds no tuple, so a read sequence of 0 would prove nothing")
+	}
+	ghost := seeded.document.refKey + "#ghost"
+	committedAfter := ""
+	report, err := storeCensus(ctx, database.Pool.Config().ConnString(), false, nil, func(ctx context.Context, kind string) error {
+		if committedAfter != "" {
+			return nil
+		}
+		committedAfter = kind
+		tx, err := database.Pool.Begin(ctx)
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback(ctx)
+		now := time.Now().UTC()
+		if err := graphstore.Write(ctx, tx, []graphstore.Node{{
+			Kind: refs.BlockNodeKind, ID: ghost, Supertag: refs.BlockSupertag,
+			Visibility: graphstore.VisibilityProject, State: graphstore.StateLive,
+			MadeAt: now, MadeBy: censusWriter, SourceEvent: graphstore.NoEvent,
+		}}, []graphstore.Tuple{{
+			FromKind: refs.BlockNodeKind, FromID: ghost, Kind: graphstore.TuplePartOf,
+			ToKind: "artifact", ToID: seeded.document.refKey, At: now, Who: censusWriter,
+			SourceEvent: graphstore.NoEvent, Asserted: true,
+		}}); err != nil {
+			return err
+		}
+		return tx.Commit(ctx)
+	})
+	if err != nil {
+		t.Fatalf("take the store census with a tuple appended between its reads: %v", err)
+	}
+	if committedAfter != "comment" {
+		t.Fatalf("the census's hook first ran after kind %q, want after comment, its first read", committedAfter)
+	}
+	after := highestTuple(t, database)
+	if after <= before {
+		t.Fatalf("the tuple log ends at %d after the write and ended at %d before it: the write appended no tuple, so it proves nothing", after, before)
+	}
+	t.Logf("the log ended at seq %d when the census began, and a write committed after the census read kind %s appended up to seq %d",
+		before, committedAfter, after)
+	if report.ReadSeq != before {
+		t.Fatalf("the census records read sequence %d, want %d, the end of the log its snapshot held, below the %d the write committed during it appended",
+			report.ReadSeq, before, after)
+	}
+	var printed strings.Builder
+	report.Write(&printed)
+	summary := "census: store rows_checked=" + pgmigrate.Thousands(report.Rows()) + " differences=" +
+		pgmigrate.Thousands(report.Differences()) + " read_seq=" + strconv.FormatInt(before, 10) + "\n"
+	if !strings.Contains(printed.String(), summary) {
+		t.Fatalf("the census printed no line %q:\n%s", summary, printed.String())
+	}
+	t.Logf("the census records read sequence %d and prints %q", report.ReadSeq, strings.TrimSuffix(summary, "\n"))
+}
+
+// highestTuple is the last sequence the tuple log holds, read on the pool outside any census.
+func highestTuple(t *testing.T, database *store.Store) int64 {
+	t.Helper()
+	var highest int64
+	if err := database.Pool.QueryRow(context.Background(),
+		`select coalesce(max(seq), 0) from graph_tuples`).Scan(&highest); err != nil {
+		t.Fatalf("read the end of the tuple log: %v", err)
+	}
+	return highest
 }

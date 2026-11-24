@@ -52,10 +52,17 @@
 #     pg_total_relation_size table=<table> bytes=<n> at=<UTC>
 # A reading at or above the limit fails the run.
 #
-# Then the pull request body, from the file PR_BODY_FILE names or, without it,
-# `gh pr view 4173 --repo cybermonklabs/legion --json body --jq .body`, this branch's pull request.
-# An empty body fails. It must hold exactly one line of each of these forms, a carriage return
-# before the line's end aside, and leading and trailing spaces allowed:
+# Then the pull request body. Without PR_BODY_FILE it is the body of pull request #4173, this
+# branch's: read with `gh pr view 4173 --repo cybermonklabs/legion --json body --jq .body` where gh
+# is installed and signed in, and otherwise from GitHub's public REST API, which answers it to an
+# unsigned request, the repository being public (`curl -fsS
+# https://api.github.com/repos/cybermonklabs/legion/pulls/4173`, its `.body` read with `jq -r`).
+# With PR_BODY_FILE it is the file that names, which the check's negative control uses: such a
+# body is checked as below, and the run then prints a `SKIP: body …` line saying it read no body of
+# pull request #4173, so a run with PR_BODY_FILE set, exported or not, never passes
+# c-attribute-removal-count, whose run text refuses a SKIP line. An empty body fails. It must hold
+# exactly one line of each of these forms, a carriage return before the line's end aside, and
+# leading and trailing spaces allowed:
 #     - measurement documents_holding_an_ask=<n> at=<YYYY-MM-DDTHH:MM:SSZ>
 #     - measurement standing_approvals_over_those_documents=<n> at=<YYYY-MM-DDTHH:MM:SSZ>
 #     - measurement colliding_block_ids=<n> at=<YYYY-MM-DDTHH:MM:SSZ>
@@ -72,7 +79,8 @@
 #
 # Each passing check prints `PASS: <section> <what>`; the first failing one prints
 # `FAIL: <section> <what>: <observed>` on stderr and the run exits 1, and a missing or bad input
-# exits 2. It prints a SKIP line under MEASURE_ONLY=1 alone.
+# exits 2. It prints a SKIP line under MEASURE_ONLY=1, and after a body read from PR_BODY_FILE,
+# alone.
 #
 # Every check is `cmd || fail …`, never part of an `&&` list: under `set -e` a failing command
 # anywhere but last in such a list does not stop the script.
@@ -89,8 +97,10 @@ Usage: DATABASE_URL=${LEGION_TEST_PG_DSN%/*}/infra_1150_answer_attribute_removal
          [MEASURE_ONLY=1] bash e2e/acceptance/answer-attribute-removal.sh
        (run from packages/dispatch; DATABASE_URL names a database on this machine whose name
        begins infra_1150_, which this run drops and creates again; without PR_BODY_FILE the
-       body is read with gh; MEASURE_ONLY=1 prints the body's lines and a SKIP line and reads no
-       body, so the check does not pass on it.
+       body is read with gh, or with curl from GitHub's REST API where gh is absent or not
+       signed in; with it the body is read from that file and checked, and a SKIP line follows,
+       so the check does not pass on it; MEASURE_ONLY=1 prints the body's lines and a SKIP line
+       and reads no body, so the check does not pass on it either.
        BASELINE_SHA is required and has no default; BASELINE_BINARY must be the server built
        from it and stamped with it)
 USAGE
@@ -408,16 +418,24 @@ if [[ "$measure_only" == 1 ]]; then
   exit 0
 fi
 
-# The pull request body.
+# The pull request body: the file PR_BODY_FILE names, or pull request #4173's, through gh where it
+# is installed and signed in, and otherwise through GitHub's public REST API, which answers an
+# unsigned request for a public repository's pull request.
 if [[ -n "${PR_BODY_FILE:-}" ]]; then
   [[ -f "$PR_BODY_FILE" && -r "$PR_BODY_FILE" ]] ||
     fail body "read the pull request body" "PR_BODY_FILE names $PR_BODY_FILE, which cannot be read"
   tr -d '\r' <"$PR_BODY_FILE" >"$work/body.md"
   body_source="the file $PR_BODY_FILE"
 else
-  require_commands gh
-  gh pr view 4173 --repo cybermonklabs/legion --json body --jq .body \
-    >"$work/body.raw" 2>"$work/gh" || fail body "read the pull request body" "gh: $(<"$work/gh")"
+  if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
+    gh pr view 4173 --repo cybermonklabs/legion --json body --jq .body \
+      >"$work/body.raw" 2>"$work/gh" || fail body "read the pull request body" "gh: $(<"$work/gh")"
+  else
+    curl -fsS https://api.github.com/repos/cybermonklabs/legion/pulls/4173 \
+      >"$work/pull.json" 2>"$work/curl" || fail body "read the pull request body" "curl: $(<"$work/curl")"
+    jq -r .body "$work/pull.json" >"$work/body.raw" 2>"$work/jq" ||
+      fail body "read the pull request body" "jq read no body from GitHub's answer: $(<"$work/jq")"
+  fi
   tr -d '\r' <"$work/body.raw" >"$work/body.md"
   body_source="pull request #4173"
 fi
@@ -469,3 +487,8 @@ if [[ "${#tables[@]}" -eq 0 ]]; then
   pass body "no migration of this child touches a table yet, so the body owes no pg_total_relation_size line"
 fi
 pass body "the body holds every reading this run took"
+# A body read from PR_BODY_FILE is no reading of pull request #4173's body: the lines above are
+# checked, and the check's run refuses this SKIP line.
+if [[ -n "${PR_BODY_FILE:-}" ]]; then
+  skip body "the body came from PR_BODY_FILE, not from pull request #4173, so this run does not pass c-attribute-removal-count"
+fi

@@ -46,6 +46,7 @@ func routeIndexLines(routes []apiRoute) string {
 // table happens to hold: two methods of one path whose auth classes sort the other way round are
 // ordered by their methods, not by their auth.
 func TestRouteIndexLinesOrderTwoMethodsOfOnePathByMethod(t *testing.T) {
+	t.Parallel()
 	got := routeIndexLines([]apiRoute{
 		{routeRow: routeRow{Method: http.MethodGet, Pattern: "/api/v1/things/{id}", Auth: authAny}},
 		{routeRow: routeRow{Method: http.MethodDelete, Pattern: "/api/v1/things/{id}", Auth: authPublic}},
@@ -57,6 +58,7 @@ func TestRouteIndexLinesOrderTwoMethodsOfOnePathByMethod(t *testing.T) {
 }
 
 func TestRouteIndexListsEveryRouteSortedByPathThenMethod(t *testing.T) {
+	t.Parallel()
 	mux := http.NewServeMux()
 	Register(mux, t.Context(), Deps{AgentTokens: sharedAgentTokens(t, "agent-token")})
 
@@ -131,6 +133,7 @@ func TestRouteIndexListsEveryRouteSortedByPathThenMethod(t *testing.T) {
 // WriteRouteIndex is what `envoy-dispatch routes` prints and the docs site's API reference is
 // generated from: every row of the table, as GET /api/v1 serves it, and no test hook.
 func TestWriteRouteIndexCarriesEveryRouteTheTableHas(t *testing.T) {
+	t.Parallel()
 	var output bytes.Buffer
 	if err := WriteRouteIndex(&output); err != nil {
 		t.Fatal(err)
@@ -185,6 +188,7 @@ func TestWriteRouteIndexCarriesEveryRouteTheTableHas(t *testing.T) {
 // (testdata/routes.txt), which two branches that each add a route merge into the union of their
 // two lines.
 func TestRoutesTablePinsEveryRegisteredRoute(t *testing.T) {
+	t.Parallel()
 	routes := (&server{}).routes()
 	seen := make(map[string]struct{}, len(routes))
 	for _, route := range routes {
@@ -205,20 +209,17 @@ func TestRoutesTablePinsEveryRegisteredRoute(t *testing.T) {
 			t.Fatalf("route %q has auth %q", key, route.Auth)
 		}
 	}
-	if got := len((&server{deps: Deps{TestHooksEnabled: true}}).routes()); got != len(routes)+len(testHookRoutes) {
-		t.Fatalf("test hooks add %d routes: got %d, want %d", len(testHookRoutes), got, len(routes)+len(testHookRoutes))
+	// The table with the test hooks is this one and the hooks, each by name, so a table that
+	// loses one row and gains another fails naming both, where a count of its rows would pass.
+	hooked := map[string]bool{}
+	for _, route := range (&server{deps: Deps{TestHooksEnabled: true}}).routes() {
+		hooked[route.Method+" "+route.Pattern] = true
 	}
-	if hooks, named := slices.Sorted(maps.Keys(openAPIHookRoutes())), slices.Sorted(slices.Values(testHookRoutes)); !slices.Equal(hooks, named) {
-		t.Fatalf("the table mounts the test hooks\n\t%s\nwant the ones testHookRoutes names\n\t%s",
-			strings.Join(hooks, "\n\t"), strings.Join(named, "\n\t"))
-	}
+	want := slices.Concat(slices.Collect(maps.Keys(seen)), testHookRoutes)
+	requireRouteNames(t, "the table mounted with Deps.TestHooksEnabled", hooked, want)
 }
 
-// testHookRoutes is every row the table mounts only with Deps.TestHooksEnabled, each named, in the
-// table's order: the fifteen main mounts and the ask-attributes hook this branch adds, which reads
-// the attributes of a live tree's ask blocks. A count alone is one number two branches that each
-// add a hook are both wrong about; a hook added or dropped on either side is a line here, which
-// such a merge holds the union of.
+// testHookRoutes is every row the table mounts only with Deps.TestHooksEnabled, by name.
 var testHookRoutes = []string{
 	"POST /api/v1/live/_test/disconnect",
 	"POST /api/v1/live/_test/rotate",
@@ -238,6 +239,25 @@ var testHookRoutes = []string{
 	"GET /api/v1/messages/_test/queued",
 }
 
+// requireRouteNames fails t naming each route of want that got, the routes what names, does not
+// hold, and each route got holds that want does not, so a set that loses one route and gains
+// another fails naming both.
+func requireRouteNames(t *testing.T, what string, got map[string]bool, want []string) {
+	t.Helper()
+	wanted := make(map[string]bool, len(want))
+	for _, name := range want {
+		wanted[name] = true
+		if !got[name] {
+			t.Errorf("%s: no %s", what, name)
+		}
+	}
+	for _, name := range slices.Sorted(maps.Keys(got)) {
+		if !wanted[name] {
+			t.Errorf("%s: %s, which the list does not name", what, name)
+		}
+	}
+}
+
 // The Inbox route's description states the rule the person a question reaches is resolved by —
 // the person it was handed to, then the issue's assignee, then the project's default assignee —
 // and the four descriptions that rule narrowed no longer carry what it replaced. This is a test
@@ -245,6 +265,7 @@ var testHookRoutes = []string{
 // one: the index leaves descriptions out (routeIndexLines) and the pin only holds each row to
 // having one, so nothing else fails when a description outlives the code it describes.
 func TestTheInboxRouteDescriptionStatesTheRule(t *testing.T) {
+	t.Parallel()
 	descriptions := map[string]string{}
 	for _, route := range (&server{}).routes() {
 		descriptions[route.Method+" "+route.Pattern] = route.Description
@@ -298,6 +319,8 @@ func TestTheInboxRouteDescriptionStatesTheRule(t *testing.T) {
 // nothing and says why not at once, and one that resolves an id without naming that 404, fails
 // on each.
 func TestEveryIDRouteIsNamed(t *testing.T) {
+	// Not parallel: it adds a row to idRoutes (withIDRoute), the table every server of the package
+	// reads.
 	routes := (&server{deps: Deps{TestHooksEnabled: true}}).routes()
 	if undecided := undecidedIDRoutes(routes); len(undecided) > 0 {
 		t.Fatalf("%d route(s) whose id the prefix layer cannot decide:\n%s", len(undecided), strings.Join(undecided, "\n"))
@@ -504,6 +527,7 @@ func personalTokenOwnedBy(t *testing.T, database *store.Store, owner string, sco
 // That last probe is what holds the gate to the table: without it a row the table declares
 // `approve` whose gate asked only for `person` would pass every test here.
 func TestRoutesTableAuthCellsMatchHandlers(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	personal := personalTokenHolding(t, database, model.ScopePerson, model.ScopeApprove)
 	personOnly := personalTokenHolding(t, database, model.ScopePerson)
@@ -576,11 +600,19 @@ func TestRoutesTableAuthCellsMatchHandlers(t *testing.T) {
 
 // Every route Dispatch refused a bearer token on before INFRA-1017 names the `person` scope now,
 // and the scope map names no route the table does not mount: the two halves register's panic
-// protects (scopedRoutesNotMounted), proved from the table alone with nothing mounted.
+// protects (scopedRoutesNotMounted), proved from the table alone with nothing mounted. The one
+// exception is `PATCH /api/v1/comments/{id}`, which names no scope since INFRA-1523: an agent's
+// comment has an author of kind session, so a person scope would shut every author of one out
+// of its own edit, and the route holds the caller to that author instead (editComment).
 func TestEveryRouteThatWasABrowsersAloneNamesThePersonScope(t *testing.T) {
+	t.Parallel()
 	browserOnly := []string{
 		"GET /api/v1/settings/project-default-assignees",
 		"PUT /api/v1/projects/{key}/default-assignee",
+		// Turning a project's proven-sessions setting off is INFRA-4764's own row, and the
+		// person's as the default assignee above is: it weakens a check, which no credential the
+		// deployment configured may do.
+		"DELETE /api/v1/projects/{key}/proven-sessions",
 		"GET /api/v1/me/agent-tokens",
 		"POST /api/v1/me/agent-tokens",
 		"DELETE /api/v1/me/agent-tokens/{id}",
@@ -614,7 +646,6 @@ func TestEveryRouteThatWasABrowsersAloneNamesThePersonScope(t *testing.T) {
 		"PUT /api/v1/asks/{id}/asked-of",
 		"POST /api/v1/comments/{id}/reopen",
 		"POST /api/v1/comments/{id}/accept",
-		"PATCH /api/v1/comments/{id}",
 		"POST /api/v1/comments/{id}/reject",
 		"GET /api/v1/artifacts/{id}/subscribers",
 		"DELETE /api/v1/artifacts/{id}/subscribers/{session_id}",

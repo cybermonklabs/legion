@@ -857,6 +857,105 @@ describe("the return to the session's own model", () => {
   });
 });
 
+// A launch that names its model (`--model @default`) puts the session on that model and writes
+// no `model_change` entry, so the arming's own entry is still the newest one the branch holds. A
+// deployment that raised a role's model while the arming waited must keep the newer model: the
+// return undoes the fallback's own move, and only while the session still runs the model that
+// move put it on (dispatch://INFRA-3747 R1).
+describe("a return that falls due after a launch moved the session to another model", () => {
+  const ROLE = "anthropic/claude-opus-5";
+  const FALLBACK = "anthropic/claude-opus-4-8";
+  const LAUNCHED = "anthropic/claude-opus-5-5";
+
+  /** A session the host walked from the role's model to the fallback for a refusal, armed from
+   * the host's own event: its return falls due an hour later. */
+  const armed = () => {
+    const pane = fixture(ROLE);
+    pane.modelChange(ROLE);
+    pane.hostFallback(FALLBACK);
+    pane.runner.armFromEvent(applied(ROLE, FALLBACK, "default", REFUSAL_REASON), pane.ctx);
+    return pane;
+  };
+
+  test("goes back at its due time while the session still runs the fallback model", async () => {
+    const pane = armed();
+
+    pane.live.now += HOUR;
+    await pane.runner.maybeRestore(pane.ctx);
+
+    expect(pane.setModelCalls).toEqual([ROLE]);
+    expect(pane.last()?.arming).toBeUndefined();
+  });
+
+  test("sets no model and steps superseded when the session runs a third model no model_change names", async () => {
+    const pane = armed();
+    // The launch's own `--model`: the session's model moves and the branch records nothing.
+    pane.live.current = LAUNCHED;
+
+    pane.live.now += HOUR;
+    await pane.runner.maybeRestore(pane.ctx);
+
+    expect(pane.setModelCalls).toEqual([]);
+    expect(pane.live.current).toBe(LAUNCHED);
+    expect(pane.last()?.arming).toBeUndefined();
+    expect(pane.last()?.levels).toEqual({ [ROLE]: 2 });
+  });
+
+  test("read back from the transcript by a worker relaunched on a newer model sets no model", async () => {
+    const before = armed();
+    // The relaunch: a new process on the model its launch named, with the branch the old one
+    // wrote and the arming that branch records.
+    const after = fixture(LAUNCHED);
+    after.branch.push(...before.branch);
+    after.runner.restore(before.last(), after.ctx);
+
+    after.live.now += HOUR;
+    await after.runner.maybeRestore(after.ctx);
+
+    expect(after.setModelCalls).toEqual([]);
+    expect(after.last()?.arming).toBeUndefined();
+    expect(after.last()?.levels).toEqual({ [ROLE]: 2 });
+  });
+
+  test("armed from the branch of a worker relaunched on a newer model sets no model", async () => {
+    // The relaunch finds no arming of this plugin's, and the newest model change on its branch is
+    // the host's walk to the fallback, so the session is armed from that entry's own time.
+    const pane = fixture(LAUNCHED);
+    pane.branch.push(
+      { type: "model_change", id: "entry-role", model: ROLE, role: "default" },
+      {
+        type: "model_change",
+        id: "entry-walk",
+        timestamp: new Date(pane.live.now - 2 * HOUR).toISOString(),
+        model: FALLBACK,
+        role: "fallback",
+        resolvedModelIsFallback: true,
+      }
+    );
+    pane.runner.restore(undefined, pane.ctx);
+    expect(pane.last()?.arming?.entryId).toBe("entry-walk");
+
+    await pane.runner.maybeRestore(pane.ctx);
+
+    expect(pane.setModelCalls).toEqual([]);
+    expect(pane.last()?.arming).toBeUndefined();
+  });
+
+  test("sets no model when the host names no model the session runs", async () => {
+    const pane = armed();
+    const unnamed: ModelFallbackContext = {
+      ...pane.ctx,
+      models: { list: () => [], current: () => undefined, resolve: (spec) => model(spec) },
+    };
+
+    pane.live.now += HOUR;
+    await pane.runner.maybeRestore(unnamed);
+
+    expect(pane.setModelCalls).toEqual([]);
+    expect(pane.last()?.arming).toBeUndefined();
+  });
+});
+
 // Plan answer 5 (dispatch://INFRA-956 R1): a session already sitting on a fallback when this
 // build starts — one applied before the plugin shipped, or a host walk `ownFallback` did not
 // claim — has no record of its own to restore, and nothing else would ever bring it back.

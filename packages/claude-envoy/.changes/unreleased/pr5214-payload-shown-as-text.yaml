@@ -1,0 +1,7 @@
+kind: Fixed
+custom:
+  Issue: pr5214
+body: |-
+  A message whose JSON payload is nested too deep for its card to lay out, such as 9,999 levels,
+  is now shown as the text its sender sent, and stderr names the message once. Before, it came
+  back on every delivery and was never shown.

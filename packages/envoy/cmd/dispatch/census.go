@@ -110,8 +110,9 @@ func storeCensus(ctx context.Context, databaseURL string, sizing, verbose bool, 
 		return 2
 	}
 	if !report.Absent {
-		var decisions graphcensus.DecisionsCensus
+		var decisions graphcensus.DecisionsCensus // kept for one release: decisions-documents-fn
 		var renders graphcensus.VersionRenderCensus
+		// kept for one release: decisions-documents-fn
 		if err := inCensusSnapshot(ctx, databaseURL, "the decisions census", func(tx pgx.Tx) (err error) {
 			decisions, err = docs.ReadDecisionsCensus(ctx, tx)
 			return err
@@ -126,7 +127,8 @@ func storeCensus(ctx context.Context, databaseURL string, sizing, verbose bool, 
 			writeCensusFailure(errOut, err)
 			return 2
 		}
-		report.Decisions, report.VersionRenders = &decisions, &renders
+		report.Decisions = &decisions // kept for one release: decisions-documents-fn
+		report.VersionRenders = &renders
 	}
 	if verbose {
 		report.WriteVerbose(out)

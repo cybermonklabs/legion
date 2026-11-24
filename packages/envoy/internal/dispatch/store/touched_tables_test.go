@@ -14,7 +14,6 @@ import (
 // pg_total_relation_size of every table this test prints from the pull request body, so a
 // migration left off the list leaves its tables unmeasured.
 var thisChildsMigrations = []string{
-	"20261116082319_graph_supertags_decision_reading.up.sql",
 	"20261116094058_asks_node.up.sql",
 	"20261116094059_asks_node_index.up.sql",
 	"20261116094100_ask_followers_node_index.up.sql",
@@ -23,6 +22,7 @@ var thisChildsMigrations = []string{
 	"20261117002045_artifacts_retired_at.up.sql",
 	"20261117093337_decisions_documents.up.sql",
 	"20261121034242_graph_edges_asks_and_tuple_arm_filter.up.sql",
+	"20261123174700_graph_supertags_decision_reading.up.sql",
 }
 
 // TestTheTablesThisChildsMigrationsTouch prints, once each, the tables this child's migrations

@@ -33,6 +33,7 @@ var embeddingProjectKinds = []string{"comment_block", "document_block", "message
 // key would be as invisible to the project that owns it as a null one, and no count of nulls
 // would say so.
 func TestEveryWrittenEmbeddingRowCarriesItsProject(t *testing.T) {
+	t.Parallel()
 	const project = "LABL"
 	embedder := &fakeEmbedder{vectors: map[string][]float32{}}
 	handler, database, deps := newTestServer(t, testServerOptions{embedder: embedder})
@@ -104,6 +105,7 @@ func TestEveryWrittenEmbeddingRowCarriesItsProject(t *testing.T) {
 // one progress row and writes nothing. A pass that stopped at its first batch, or one whose
 // cursor did not move, fails on the rows it left null.
 func TestTheFillLabelsEveryEmbeddingRowStoredBeforeTheColumn(t *testing.T) {
+	t.Parallel()
 	const project = "FILL"
 	embedder := &fakeEmbedder{vectors: map[string][]float32{}}
 	handler, database, deps := newTestServer(t, testServerOptions{embedder: embedder})

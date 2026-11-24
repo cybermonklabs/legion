@@ -61,6 +61,7 @@ func terminalClaims(t *testing.T, project string, n int) []supervise.Claim {
 // the lock for the whole replay; the replay of facts already applied finishes anyway and applies
 // nothing again, and a claim's fact no daemon applied is still applied, once the lock is free.
 func TestTheBootsReplayOfAppliedTerminalFactsWaitsBehindNoLiveFact(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	handler := &outboxFactHandler{}
 	w := &workflowRuntime{pool: pool, handlers: []intake.Handler{handler}, log: quietLogger()}
@@ -72,7 +73,7 @@ func TestTheBootsReplayOfAppliedTerminalFactsWaitsBehindNoLiveFact(t *testing.T)
 		t.Fatalf("the first replay applied %d facts, want %d", got, len(claims))
 	}
 
-	live, err := pool.Begin(context.Background())
+	live, err := pool.BeginTx(context.Background(), pgx.TxOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -149,16 +150,24 @@ func (h *slowFactHandler) applied(fact intake.Fact) int {
 
 // A boot must not die on the number of terminal facts no daemon applied. Those it replays one at a
 // time, each taking the fact lock, and each may wait there behind live facts: here 100 restored
-// claims fail while the replay runs, and their failures (terminal) apply beside it. The 300
-// replayed facts and the 100 live ones take several times the replay's budget between them; the
-// replay still finishes, since the budget is each fact's own, and every fact, replayed or live, is
-// applied exactly once.
+// claims fail while the replay runs, and their failures (terminal) apply beside it. The 800
+// replayed facts and the 100 live ones take more than the replay's budget between them (900 ×
+// 20 ms at the least); the replay still finishes, since the budget is each fact's own, and every
+// fact, replayed or live, is applied exactly once.
+//
+// One budget has to cover the longest single wait, which is the live burst: the 100 live facts
+// start first, and the first replayed fact takes its pool's turn behind all of them
+// (store.Pool.FactTurn), so its budget covers the whole burst, 100 facts one after another. The
+// read of which facts are applied waits for none of them: they wait for the turn outside the pool,
+// and the read takes a free connection. At 15 s a fact of the burst may cost 150 ms, more than
+// seven times its 20 ms, and the 900 facts still outlast the budget.
 func TestAReplayOfHundredsOfUnappliedFactsBesideLiveFailuresOutlastsItsBudget(t *testing.T) {
-	const budget = 5 * time.Second
+	t.Parallel()
+	const budget = 15 * time.Second
 	pool := isolatedOutboxPool(t)
 	handler := &slowFactHandler{delay: 20 * time.Millisecond, seen: map[intake.Fact]int{}}
 	w := &workflowRuntime{pool: pool, handlers: []intake.Handler{handler}, log: quietLogger(), failed: make(chan error, 1), limits: replayLimits}
-	replayed := terminalClaims(t, "legion", 300)
+	replayed := terminalClaims(t, "legion", 800)
 	failing := make([]supervise.Claim, 100)
 	for i := range failing {
 		issue := fmt.Sprintf("LEGION-%d", 1001+i)
@@ -237,6 +246,7 @@ func (r *bootReconcileHeld) ReconcileOrphans(ctx context.Context, known []runtim
 // fact. Here every one of 200 ready claims' shims has sent its hello before the boot's orphan
 // reconciliation returns, and each, as its hello_ack arrives, finds all 200 facts applied.
 func TestABootReplaysEveryTerminalFactBeforeItAdmitsAnyHello(t *testing.T) {
+	t.Parallel()
 	const n = 200
 	cfg := workflowConfig(t, workflowNATS(t))
 	project, err := claim.ProjectToken(cfg.Project)

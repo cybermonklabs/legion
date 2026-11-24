@@ -151,7 +151,10 @@ type roomState struct {
 	// layout is the room's layout (roomLayout) as the newest read of its document recorded it
 	// (recordIssueLocked): the fragments a cold socket's admission rendered the room over, which
 	// the load that admission holds takes rather than reading them again (admittedIssueRead).
-	layout roomLayout
+	// layoutRead is when the read that recorded it began, which closedRead is not once a close or
+	// reopen has been recorded after that read.
+	layout     roomLayout
+	layoutRead time.Time
 	// admitting counts the document sockets whose admission holds this record (holdForAdmission):
 	// from the moment it records its read of the issue here until the socket ends. A cold room's
 	// load takes that read instead of reading the issue again (admittedIssueRead), and a close of
@@ -734,7 +737,7 @@ func (state *roomState) recordIssueLocked(read issueRead) {
 	// A close or a reopen the record takes reads no room, and leaves the layout a read of the
 	// document recorded.
 	if read.room != "" {
-		state.layout = read.layout
+		state.layout, state.layoutRead = read.layout, read.at
 	}
 }
 
@@ -743,16 +746,55 @@ func (state *roomState) recordIssueLocked(read issueRead) {
 // close or reopen recorded since. A cold socket's admission triggers the room's load, which takes
 // this rather than reading the issue a second time (onLoadDocument); a load no admission holds -
 // a settlement's warm-up, a live write's publish - reads the issue itself.
+//
+// It answers no read when the layout the state records was read before a join of a document to
+// an issue room committed (layoutMovedSince): that read may lack the joined document, and the load
+// that took it would publish the room over the layout from before the join, which the join's
+// commit neither waits for nor closes when the load begins after it looked (awaitRoomLoad). That
+// load reads the issue itself instead, and its read records the issue's state as any newer read
+// does (recordIssueLocked).
 func (s *Service) admittedIssueRead(room string) (issueRead, bool) {
 	state := s.lockExistingState(room)
 	if state == nil {
 		return issueRead{}, false
 	}
 	defer s.unlockState(room, state)
-	if state.admitting == 0 || state.closedRead.IsZero() {
+	if state.admitting == 0 || state.closedRead.IsZero() || s.layoutMovedSince(state.layoutRead) {
 		return issueRead{}, false
 	}
 	return issueRead{open: !state.closed, at: state.closedRead, room: room, layout: state.layout}, true
+}
+
+// noteLayoutMoved records that a transaction joining a document to an issue room has committed by
+// now (Ledger.closeJoinedRooms, which calls it before it looks for a load of the room under way):
+// a read of a room's layout that began before now may lack the joined document, and a read that
+// begins after it cannot. It keeps the latest such instant, whichever order two joins record theirs
+// in.
+//
+// The instant is the process's, not the room's. An admission that read the layout before the
+// join may record that read only after the commit - ServeHTTP reads the issue, then checks the
+// document, waits out a failed room's recovery and takes its places before it holds the room's
+// record (holdForAdmission) - and the room's record can be forgotten in between (unlockState), so a
+// mark on the record would go with it. The cost of the process's instant is one more read of the
+// issue by a load whose admission read began before a join into any room committed.
+func (s *Service) noteLayoutMoved() {
+	now := time.Now()
+	for {
+		last := s.layoutMoved.Load()
+		if last != nil && !last.Before(now) {
+			return
+		}
+		if s.layoutMoved.CompareAndSwap(last, &now) {
+			return
+		}
+	}
+}
+
+// layoutMovedSince is whether read, when a read of a room's layout began, came before a join
+// noteLayoutMoved recorded. A zero read, no layout read at all, comes before any join.
+func (s *Service) layoutMovedSince(read time.Time) bool {
+	moved := s.layoutMoved.Load()
+	return moved != nil && read.Before(*moved)
 }
 
 // holdForAdmission holds room's state for a document socket's admission, from its read of the

@@ -8,14 +8,13 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
-	"github.com/sjawhar/envoy/internal/dispatch/grapherase"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
-// externalDrives are the drives of the sites of api, docs and grapherase the register of the
-// store's writers lists and no drive before them runs, each the real site reached as its own
+// externalDrives are the drives of the sites of api and docs the register of the store's writers
+// lists and no drive before them runs, each the real site reached as its own
 // lock-step driver reaches it, over the rig the drives before them wrote (importedDrives). They
 // run in this order: alice's run of the command bar and its one frame; her writes made for that
 // run - a PATCH of the issue's labels, an edit of an ask's words and one of a comment's; a PATCH
@@ -23,8 +22,8 @@ import (
 // the spec with a finding, a second lens's triggered_by of it, and the first lens stated
 // overtaken; a result of a check of the issue's Verification document and its retraction; an
 // accept that finds a suggestion's mark gone; an upload that takes a suggestion's quote out of
-// its document; the anchor block backfill of a comment written with no block; a settlement of an
-// issue's room; and the erase of a block a version held.
+// its document; the anchor block backfill of a comment written with no block; and a settlement of
+// an issue's room.
 func externalDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 	t.Helper()
 	ctx := context.Background()
@@ -32,10 +31,10 @@ func externalDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 	// What a drive or its Ready writes for itself and the drives after it: alice's run, the ask and
 	// the comment her run edits, the issue the PATCH waits on and the comment it is filed from, the
 	// first lens and the second, the result, the suggestion the accept finds orphaned and the one
-	// the refresh orphans, the comment the backfill pins, the issue whose room a settlement settles
-	// with its spec, and the document of the block the erase takes, with that block.
+	// the refresh orphans, the comment the backfill pins, and the issue whose room a settlement
+	// settles with its spec.
 	var run, ask, edited, target, filedFrom, lens, chained, result, orphaned, refreshed, pinned string
-	var roomIssue, roomSpec, erasedDocument, erased string
+	var roomIssue, roomSpec string
 	// The token of the version refreshed.md's second upload replaces, read before its drive.
 	var refreshedBase map[string]string
 	return []graphcensus.StoreDrive{{
@@ -61,15 +60,16 @@ func externalDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 			{graphstore.KindInteraction, graphstore.AttributeProject}:    {graphstore.KindInteraction},
 			{graphstore.KindInteraction, graphstore.AttributeWords}:      {graphstore.KindInteraction},
 			{graphstore.KindInteraction, graphstore.AttributeEndsAt}:     {graphstore.KindInteraction},
+			{graphstore.KindInteraction, graphstore.AttributeSource}:     {graphstore.KindInteraction},
 			{graphstore.KindInteraction, graphstore.TupleAuthoredBy}:     {graphstore.KindInteraction},
 			{graphstore.KindInteraction, graphstore.AttributeFrame}:      {"frame"},
 		},
 	}, {
-		// A PATCH of the issue's labels made for alice's run (patchIssue), which restates the
-		// issue's node marked changed by the run: its changed_by_run, which the term interaction
-		// counts into the run.
-		Name: "api/issue_patch.go#patchIssue, under a run", Database: r.database,
-		Sites: []string{"api/issue_patch.go#patchIssue"},
+		// A PATCH of the issue's labels made for alice's run (writeIssue, which patchIssue runs),
+		// which restates the issue's node marked changed by the run: its changed_by_run, which the
+		// term interaction counts into the run.
+		Name: "api/issue_patch.go#writeIssue, under a run", Database: r.database,
+		Sites: []string{"api/issue_patch.go#writeIssue"},
 		Ready: func(t *testing.T) { r.runWindowAhead(t, run) },
 		Drive: func(t *testing.T) {
 			r.requestForRun(t, run, http.MethodPatch, "/api/v1/issues/"+r.issue, map[string]any{"labels": []string{"sized"}}, "alice", http.StatusOK)
@@ -114,7 +114,7 @@ func externalDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 		// which the term issue_relation counts, and the filed_from, which issue_origin counts.
 		Name: "api/issue_relations.go#queueIssueRelations, a PATCH of its needs and its filed_from", Database: r.database,
 		Sites: []string{"api/issue_relations.go#queueIssueRelations", "api/issue_relations.go#stateFiledFromNode",
-			"api/issue_patch.go#patchIssue"},
+			"api/issue_patch.go#writeIssue"},
 		Ready: func(t *testing.T) {
 			target = decoded[model.Issue](t, r.request(t, http.MethodPost, "/api/v1/issues", map[string]any{
 				"project": "SIZE", "title": "What the sized issue waits on", "force": true,
@@ -200,9 +200,12 @@ func externalDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 		// A failed result alice records of a check of the issue's Verification document
 		// (writeRecordedResult): the result's node with its base attributes, its values, its
 		// part_of, its result_of its check and her authored_by, which the term result counts. A
-		// person's result names no run_session, and her node stands from the issue's spec.
+		// person's result names no run_session, and her node stands from the issue's spec. The
+		// issue is born converted, so the result moves the Verification query's record and the
+		// route appends a version of that document under result.recorded (reviseQueriesUnder):
+		// the version's node, a query version with its definition_version.
 		Name: "api/results.go#writeRecordedResult", Database: r.database,
-		Sites: []string{"api/results.go#writeRecordedResult"},
+		Sites: []string{"api/results.go#writeRecordedResult", "api/results.go#reviseQueriesUnder", "docs/mutation.go#WriteVersionNode"},
 		Ready: func(t *testing.T) {
 			r.request(t, http.MethodPost, "/api/v1/issues/"+r.issue+"/artifacts", map[string]any{
 				"name": "verification.md", "content": ":::check{#" + sizedCheck + " surface=\"cli\"}\nThe sizing counts every writer.\n:::\n",
@@ -216,17 +219,19 @@ func externalDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 				"negative_control": "Broke what the check proves and the run failed.", "failed": 1,
 			}, "alice", http.StatusCreated)).Result.ID
 		},
-		Counts: resultCounted(),
+		Counts: merged(resultCounted(), versionCounted, queryVersionCounted),
 	}, {
 		// alice's retraction of that result (writeCheckResultRetraction): its retracted value,
-		// which the term result_retraction counts.
+		// which the term result_retraction counts, and the version of the Verification document
+		// the retraction moves the record of, under result.retracted (reviseQueriesUnder).
 		Name: "api/results_retract.go#writeCheckResultRetraction", Database: r.database,
-		Sites: []string{"api/results_retract.go#writeCheckResultRetraction"},
+		Sites: []string{"api/results_retract.go#writeCheckResultRetraction", "api/results.go#reviseQueriesUnder", "docs/mutation.go#WriteVersionNode"},
 		Drive: func(t *testing.T) {
 			r.request(t, http.MethodPost, "/api/v1/results/"+result+"/retract",
 				map[string]any{"reason": "The run measured the wrong build."}, "alice", http.StatusCreated)
 		},
-		Counts: map[graphcensus.StoredKind][]string{{graphstore.KindResult, graphstore.AttributeRetracted}: {"result_retraction"}},
+		Counts: merged(map[graphcensus.StoredKind][]string{{graphstore.KindResult, graphstore.AttributeRetracted}: {"result_retraction"}},
+			versionCounted, queryVersionCounted),
 	}, {
 		// An accept of a suggestion whose mark is gone from a row the refresh did not reach
 		// (orphanCommentAnchor): the suggestion is anchored on a paragraph of a document of its
@@ -316,9 +321,11 @@ func externalDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 		// the spec's new version, its facts caused by that version's event (causeRoomFacts) - the
 		// new paragraph's block with its values and alice's authored_by, as a block of an issue's
 		// room records its authors, and the version's node, a query version with its
-		// definition_version.
+		// definition_version. Once its write phase has run it revises the issue's queries
+		// (reviseQueries), which the paragraph moved no record of, so that appends nothing.
 		Name: "docs/block_index.go#causeRoomFacts, a settlement of an issue's room", Database: r.database,
-		Sites: []string{"docs/block_index.go#causeRoomFacts", "refs/blocks.go#Queue", "docs/mutation.go#WriteVersionNode"},
+		Sites: []string{"docs/block_index.go#causeRoomFacts", "refs/blocks.go#Queue", "docs/mutation.go#WriteVersionNode",
+			"docs/settlement.go#reviseQueries"},
 		Ready: func(t *testing.T) {
 			created := decoded[struct {
 				Key     string `json:"key"`
@@ -352,36 +359,6 @@ func externalDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 			`, roomSpec)
 		},
 		Counts: merged(newBlockCounted, blockValuesCounted, roomBlockCounted, versionCounted, queryVersionCounted),
-	}, {
-		// The erase of a paragraph inside a callout of a document of its own (grapherase.Erase):
-		// the one version that held it goes, its node stated gone (endErasedVersions), which the
-		// term erased_version counts, and the callout's text value, which quotes it, is rewritten in
-		// place (redactBlocks), which appends nothing.
-		Name: "grapherase/erase.go#endErasedVersions, the erase of a block a version held", Database: r.database,
-		Sites: []string{"grapherase/erase.go#endErasedVersions", "grapherase/redaction.go#redactBlocks", "grapherase/erase.go#apply"},
-		Ready: func(t *testing.T) {
-			erasedDocument = r.uploaded(t, "erased.md", ":::callout{#holder}\nWords the erase takes.\n:::\n")
-			if err := r.database.Pool.QueryRow(ctx, `
-				select node_id from document_blocks where artifact_id = $1::uuid and type = 'paragraph'
-			`, erasedDocument).Scan(&erased); err != nil {
-				t.Fatalf("read the node of the paragraph of erased.md: %v", err)
-			}
-		},
-		Drive: func(t *testing.T) {
-			url := r.database.Pool.Config().ConnString()
-			listing, err := grapherase.Erase(ctx, url, "block", erased, "", 10*time.Millisecond)
-			if err != nil {
-				t.Fatalf("list the erase of block %s: %v", erased, err)
-			}
-			if len(listing.Blockers) > 0 {
-				t.Fatalf("the erase of block %s is blocked by %v", erased, listing.Blockers)
-			}
-			erasure, err := grapherase.Erase(ctx, url, "block", erased, listing.Digest, 10*time.Millisecond)
-			if err != nil || !erasure.Applied || len(erasure.Versions) != 1 {
-				t.Fatalf("erase block %s (applied %v, versions %+v): %v", erased, erasure != nil && erasure.Applied, erasure, err)
-			}
-		},
-		Counts: map[graphcensus.StoredKind][]string{{graphstore.KindVersion, graphstore.AttributeState}: {"erased_version"}},
 	}}
 }
 

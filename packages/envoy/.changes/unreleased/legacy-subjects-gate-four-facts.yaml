@@ -1,0 +1,32 @@
+kind: Changed
+body: |-
+  `scripts/legacy-subjects-gate.sh` no longer waits out the stream's 72-hour retention between its
+  two readings: the second may come 180 s after the first, once each listener's counter line is
+  newer than the one the first read. In place of the wait, the second reading reads five facts and
+  opens only when each is true, printing `UNKNOWN` for one it cannot read and for a census that
+  enumerated nothing: (a1) every pinned build is at or after `--new-form-commit`, from
+  `daemon-release-gate.sh --deployment <owner/repo> --clients`; (a2) every connection of every hub
+  server (`--hub-statefulset`, `--hub-server`), read by `$SYS.REQ.SERVER.PING.CONNZ` from a Job of
+  its own as the `legacy-cutover` user, each page from the last connection of the one before, names
+  its build at or after that commit; (a3) every user of the hub that may publish a notification
+  subject, read from its auth.conf, each line whole and each user's object as Render writes it, and,
+  behind an auth callout, from the entries of the auth service's `BROKER_NATS_SERVICES`
+  (`--broker <namespace>/<deployment>`, read only once that Deployment has settled on its spec)
+  whose kind `lib/legacy-subjects-gate-callout-publishers.json` marks as publishing (`dispatch`,
+  `edge-listener` and `listener`; a kind it does not classify is unknown), is mapped by
+  `--publisher <identity>=<pin key>` to a pin `daemon-release-gate.sh --listeners` passes;
+  (b) every consumer of the stream has acknowledged the last old-form message it takes, unknown
+  wherever a read it rests on is (a consumer the server could not read, a list shorter than the
+  server's count among them); (c) the stream holds no old-form message. New
+  `scripts/legacy-subjects-purge.sh --context <ctx> --reading <record>` makes (c) true once (a1),
+  (a2), (a3) and (b) read true: it refuses any other reading, purges each old-form subject by
+  itself, up to the newest old-form message the reading found, as the `legacy-cutover` user, and
+  reads back that none is left. `daemon-release-gate.sh --listeners` judges the Dispatch server's
+  `envoyImage` too, under the key `dispatch-server`. Every Envoy NATS connection now names its
+  build after its name (`legion@<commit>` for an image build and for the release archive's
+  listener, each stamped with its commit), before a trailing ` privacy-required`, which stays last;
+  (a2) reads it there. The scripts README names the clients the facts do not see and what each
+  meets after the switch.
+time: 2026-11-22T02:59:25Z
+custom:
+    Issue: legacy-subjects-gate

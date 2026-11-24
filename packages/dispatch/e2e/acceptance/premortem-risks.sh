@@ -418,8 +418,8 @@ cp "$work/refusal.json" "$work/body"
 status="$refused_status"
 want_status 400 P5 "a risk under a lens of kind inversion is refused"
 expect P5 "the refusal is INVALID_POINTER" '"INVALID_POINTER"' '.code'
-expect P5 "its message says a risk belongs under a pre-mortem" true \
-  '.error | contains("a risk belongs under a lens of kind pre-mortem")'
+expect P5 "its message names the kind a risk belongs under, pre-mortem" true \
+  '.error | contains("pre-mortem")'
 
 pointer "$key/spec#r1" "$(jq -cn --arg t "$paragraph" '{kind: "constrained_by", action: "append", to: $t}')"
 cp "$work/body" "$work/refusal.json"

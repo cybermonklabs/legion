@@ -42,7 +42,20 @@ type Reader struct {
 	// writer is the author of the source's text, whom its short ids resolve for (Items).
 	writer model.Actor
 
-	// issues is every key this reader was asked about, to whether it names an issue, so the
+	// source is what the reader reads of its source and not of its writer, which every reader of
+	// one write of that source shares (writtenBy), so the write asks the database once per kind
+	// for it whichever writer's text asks.
+	source *sourceReads
+	// items is the whole id each (kind, scope, prefix) this reader resolved names, "" for one
+	// that names nothing or two items or more, so a body writing the same short id twice is one
+	// query.
+	items map[prefixKey]string
+}
+
+// sourceReads is what the readers of one write of a source read of that source and not of its
+// writer: the issues its bare keys name and the question map of its document.
+type sourceReads struct {
+	// issues is every key a reader was asked about, to whether it names an issue, so the
 	// parts of one ask ask about a repeated key once.
 	issues map[string]bool
 	// questions is the question map of the source's document, loaded at most once (asked), and
@@ -51,18 +64,10 @@ type Reader struct {
 	asked     bool
 	// pending is the document the source's text belongs to for a source whose row this
 	// transaction has queued, which the caller hands over because no read of that row answers
-	// it (NewReaderInScope); nil for a source whose row is stored, whose document this reader
+	// it (NewReaderInScope); nil for a source whose row is stored, whose document the reader
 	// reads with ScopeOf. Either way the read is made at most once, by Questions, and not at
 	// all for a text that names no question block.
 	pending *PendingDocument
-	// items is the whole id each (kind, scope, prefix) this reader resolved names, "" for one
-	// that names nothing or two items or more, so a body writing the same short id twice is one
-	// query.
-	items map[prefixKey]string
-	// shared is the reader this one was made from for another writer of the same source
-	// (writtenBy), which answers it the bare keys and the question map, since neither depends on
-	// the writer; nil for a reader a constructor built.
-	shared *Reader
 }
 
 // prefixKey is one short id as ResolvePrefix is asked it: the kind of item it names, the owner it
@@ -86,7 +91,7 @@ type prefixKey struct {
 // proves nobody and so sees no item reserved for its author. An ask's answer part is the one text
 // of a source that another person wrote, and it resolves for its answerer (writtenBy).
 func NewReader(ctx context.Context, q Queryer, writer model.Actor, fromKind, fromID, serverURL string) *Reader {
-	return &Reader{ctx: ctx, q: q, writer: writer, kind: fromKind, id: fromID, serverURL: serverURL}
+	return &Reader{ctx: ctx, q: q, writer: writer, kind: fromKind, id: fromID, serverURL: serverURL, source: &sourceReads{}}
 }
 
 // NewReaderInScope is NewReader for a source whose row the write's own transaction may have
@@ -102,17 +107,17 @@ func NewReader(ctx context.Context, q Queryer, writer model.Actor, fromKind, fro
 // sends neither query (PendingDocument).
 func NewReaderInScope(ctx context.Context, q Queryer, writer model.Actor, fromKind, fromID, serverURL string, document *PendingDocument) *Reader {
 	reader := NewReader(ctx, q, writer, fromKind, fromID, serverURL)
-	reader.pending = document
+	reader.source.pending = document
 	return reader
 }
 
 // writtenBy is the Reader of the same write for a text of r's source that writer wrote rather
 // than r's own writer - an ask's answer, which its answerer wrote beside the asker's question
 // (askPartPairs). Its short ids resolve for writer, and what does not depend on the writer - the
-// issues a bare key names and the source's question map - it reads through r, so the write still
-// asks the database once per kind for those.
+// issues a bare key names and the source's question map - it shares with r (sourceReads), so the
+// write still asks the database once per kind for those.
 func (r *Reader) writtenBy(writer model.Actor) *Reader {
-	return &Reader{ctx: r.ctx, q: r.q, writer: writer, kind: r.kind, id: r.id, serverURL: r.serverURL, shared: r}
+	return &Reader{ctx: r.ctx, q: r.q, writer: writer, kind: r.kind, id: r.id, serverURL: r.serverURL, source: r.source}
 }
 
 // writerOf decodes the author a source's row records, a single-actor column, as the writer a
@@ -159,15 +164,14 @@ func (r *Reader) Mentions(body string) []text.Located {
 
 // Issues reports which of keys names an issue that exists, so a bare key is stored as a
 // reference only when it has a target. Mentions asks with the distinct keys of one body, and
-// this reads the ones this reader has not been asked about yet, which is all of them for the
-// first text it reads and the new ones alone for every text after it.
+// this reads the ones no reader of the write's source has been asked about yet (sourceReads),
+// which is all of them for the first text the write reads and the new ones alone for every text
+// after it.
 func (r *Reader) Issues(keys []string) (map[string]bool, error) {
-	if r.shared != nil {
-		return r.shared.Issues(keys)
-	}
+	source := r.source
 	unknown := make([]string, 0, len(keys))
 	for _, key := range keys {
-		if _, known := r.issues[key]; !known {
+		if _, known := source.issues[key]; !known {
 			unknown = append(unknown, key)
 		}
 	}
@@ -177,40 +181,39 @@ func (r *Reader) Issues(keys []string) (map[string]bool, error) {
 			r.failed("read the issues a text writes bare", err)
 			return nil, nil
 		}
-		if r.issues == nil {
-			r.issues = make(map[string]bool, len(unknown))
+		if source.issues == nil {
+			source.issues = make(map[string]bool, len(unknown))
 		}
 		for _, key := range unknown {
 			_, exists := found[key]
-			r.issues[key] = exists
+			source.issues[key] = exists
 		}
 	}
 	answer := make(map[string]bool, len(keys))
 	for _, key := range keys {
-		answer[key] = r.issues[key]
+		answer[key] = source.issues[key]
 	}
 	return answer, nil
 }
 
 // Questions is the question map of the document the source's text belongs to (the scope, then
-// QuestionMap), loaded at most once per reader and not at all unless a body holds a `#`
-// candidate, which is when text.Mentions asks. A source that belongs to no document - a direct
-// message, a reply whose thread names none - has no question, and a text on an issue but on no
-// document resolves against the issue's spec, which the scope answers with. Both are read for no
-// person (scopeOf, questionMap): the index answers no reader, and the edge a `#id` makes is one
-// of its own source, which every read of the graph holds to the predicates of both its ends.
+// QuestionMap), loaded at most once for the readers of the write's source (sourceReads) and not
+// at all unless a body holds a `#` candidate, which is when text.Mentions asks. A source that
+// belongs to no document - a direct message, a reply whose thread names none - has no question,
+// and a text on an issue but on no document resolves against the issue's spec, which the scope
+// answers with. Both are read for no person (scopeOf, questionMap): the index answers no reader,
+// and the edge a `#id` makes is one of its own source, which every read of the graph holds to
+// the predicates of both its ends.
 //
 // Both reads the scope costs are paid here and nowhere earlier: a body with no `#` candidate
 // never asks, so a create whose text names no question block sends neither the query a queued
 // row's scope takes nor the one a stored row's does.
 func (r *Reader) Questions() (map[string]text.Ref, error) {
-	if r.shared != nil {
-		return r.shared.Questions()
+	source := r.source
+	if source.asked {
+		return source.questions, nil
 	}
-	if r.asked {
-		return r.questions, nil
-	}
-	r.asked = true
+	source.asked = true
 	document, err := r.scope()
 	if err != nil {
 		r.failed("read the document a text belongs to", err)
@@ -224,16 +227,16 @@ func (r *Reader) Questions() (map[string]text.Ref, error) {
 		r.failed("read the question blocks a text's `#id` names", err)
 		return nil, nil
 	}
-	r.questions = questions
-	return r.questions, nil
+	source.questions = questions
+	return source.questions, nil
 }
 
 // scope is the document the source's text belongs to: the one the writer handed over for a row
 // this transaction has only queued (NewReaderInScope), which no read of that row can answer
 // yet, else the one the source's stored row answers for no person (scopeOf).
 func (r *Reader) scope() (string, error) {
-	if r.pending != nil {
-		return r.pending.Scope(r.ctx, r.q)
+	if pending := r.source.pending; pending != nil {
+		return pending.Scope(r.ctx, r.q)
 	}
 	return scopeOf(r.ctx, r.q, nil, r.kind, r.id)
 }

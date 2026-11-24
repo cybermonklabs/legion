@@ -20,20 +20,43 @@
 # failure, takes the pull request out and rebuilds the groups above it without waiting for the
 # rest of the run.
 #
+# The queue takes a failed entry out only once every group in front of it has ended (measured on
+# 2026-11-22: #4812 left the queue at 07:17:29Z, one second after #4878 in front of it merged,
+# though its early post went up at about 06:39Z). So for a group behind the front, an early post
+# buys one thing: the entry leaves the moment the groups in front of it end, where without it the
+# entry leaves once its own run has ended as well, or when a later job of that run fails once the
+# group is the front, whichever comes first. That wait is the cost of posting nothing here.
+# Measured over the 8 groups that failed from #4983 to 2026-11-23T02:23Z, it was nothing for the
+# 6 whose runs ended before they became the front, and 1.9 and 5.6 minutes for #4999 and #4900,
+# which became the front before their runs ended; this job holding its runner until the group is
+# the front would have cost 17 to 41 minutes of that runner per failing job to buy those minutes.
+# The early post costs the queue far more: the queue counts a group whose ci-ok failed as no
+# longer building, so it builds the next entry at once, on top of the failed one. With one entry
+# that broke every group built on it, that built 41 groups in 28 minutes (06:37Z to 07:05Z) under
+# a limit of five building, every run kept its runners to its end, and the installation's API
+# budget for the hour ran out at 07:21Z. So a group whose base, the merge group's parent commit,
+# is not the tip of the queue's branch posts nothing here: its run's ci-ok job reaches the verdict
+# at the end of the run and holds a failing one until the group is the front (ci-ok-hold.sh, whose
+# header measures the groups a failing verdict concluded behind the front still built), so the
+# group counts as building until the verdict can take it out. That tip is read once, and only on
+# a run this job's result would decide; a read GitHub refuses three times leaves the group
+# treated as the front and the post made, as every other refusal here prefers the failing
+# verdict.
+#
 # The post carries the external_id ci-ok-post:<this run's id>, which is the marker
 # ci-ok-reconcile.sh looks for: that step rewrites a ci-ok check run whose external_id carries
 # that prefix or is empty, the post of the release before the marker, and leaves alone one that
 # carries a UUID, a job's own check run. post-check-run.sh's header says what that field holds in
 # each case.
 #
-# So it posts on a merge_group run and nowhere else, and there only in one of four cases: this
-# job's own result is a failure or a cancellation (`cancelled` is what a job its own
-# `timeout-minutes` cut off carries, and it decides the group just as a failure does), or
-# `changes` failed or was cancelled (its own time limit cuts it off as `cancelled`), which leaves
-# the jobs it selects unrun and the group untested. On every other run, and on a merge-group run
-# nothing has decided yet, this script prints what it saw and exits 0: the ci-ok job posts that
-# run's verdict. A pull request needs no early post, since no queue holds it and its run is
-# cancelled by the next push.
+# So it posts on a merge_group run of the queue's front group and nowhere else, and there only in
+# one of four cases: this job's own result is a failure or a cancellation (`cancelled` is what a
+# job its own `timeout-minutes` cut off carries, and it decides the group just as a failure does),
+# or `changes` failed or was cancelled (its own time limit cuts it off as `cancelled`), which
+# leaves the jobs it selects unrun and the group untested. On every other run, on a merge-group
+# run nothing has decided yet, and on one whose group stands behind the front, this script prints
+# what it saw and exits 0: the ci-ok job posts that run's verdict. A pull request needs no early
+# post, since no queue holds it and its run is cancelled by the next push.
 #
 # One failure of those four is no decision at all: a job whose runner was shut down under it
 # (GitHub reports it `failure`, and its check run carries the runner's "has received a shutdown
@@ -52,23 +75,24 @@
 # but a success is a success there, so ci-ok.sh's verdict is failure, which is right: a selected
 # job that did not succeed fails ci-ok, and the group this run tests cannot merge.
 #
-# A jobs read GitHub refuses three times records every job as `unread`, which is no success
+# A jobs read GitHub refuses at every attempt records every job as `unread`, which is no success
 # either, and the verdict goes up all the same: it is failing whatever those jobs go on to do, and
 # waiting for a read this job cannot make would leave the group with no ci-ok at all until
 # GitHub's 180-minute check timeout took its pull request out of the queue. Every read here, and
 # the post, is retried on gh-read.sh's one ladder, whose GH_RETRY_SECONDS is the tests' knob for
-# the delay; three refusals of the post fail the step with nothing posted, and the run's other
-# jobs run on — the ci-ok job then posts the verdict at the end of the run, unless
-# .github/workflows/dequeued.yaml force-cancels the run first, which leaves every `if: always()`
-# step skipped.
+# the delay (that file says when it stops sooner); a post refused at every attempt fails the step
+# with nothing posted, and the run's other jobs run on — the ci-ok job then posts the verdict at
+# the end of the run, unless .github/workflows/dequeued.yaml force-cancels the run first, which
+# leaves every `if: always()` step skipped.
 #
 # The verdict is ci-ok.sh's, over the NEEDS this script builds: `changes`' result and outputs as
 # `toJSON(needs.changes)` gave them to the reporting job, and every other job's result as above.
 #
 # Its inputs, from the ci-ok-report action's env:
-#   GH_TOKEN           the job's github.token, with `actions: read` (the run's jobs) and
-#                      `checks: write` (the post, and the check-run annotations
-#                      runner-shutdown.sh reads, which `checks: read` would carry too).
+#   GH_TOKEN           the job's github.token, with `actions: read` (the run's jobs),
+#                      `contents: read` (the tip of the queue's branch) and `checks: write` (the
+#                      post, and the check-run annotations runner-shutdown.sh reads, which
+#                      `checks: read` would carry too).
 #   JOB                the reporting job's id in ci.yaml; a called workflow's job passes the id of
 #                      the ci.yaml job that calls it.
 #   JOB_STATUS         that job's `job.status`: success, failure or cancelled.
@@ -76,6 +100,9 @@
 #   EVENT              `github.event_name`.
 #   HEAD_SHA           the commit ci-ok is for (post-check-run.sh), and the commit whose check
 #                      runs runner-shutdown.sh reads.
+#   BASE_SHA, BASE_REF the merge group's parent commit and the queue's branch
+#                      (`github.event.merge_group.base_sha` and `.base_ref`); a merge_group run
+#                      needs both, and every other run reads neither.
 #   GITHUB_REPOSITORY, GITHUB_RUN_ID, GITHUB_SERVER_URL, as Actions sets them.
 #   CI_OK_WORKFLOW     optional: the router's file, .github/workflows/ci.yaml beside this script
 #                      by default (the copy of the commit the run checked out). CI_OK_SELECTED_BY,
@@ -83,7 +110,7 @@
 #                      to ci-ok.sh, which judges a job by the class its name is in.
 #
 # Run from anywhere: JOB=... JOB_STATUS=... CHANGES=... EVENT=... HEAD_SHA=... \
-#   .github/scripts/ci-ok-report.sh
+#   BASE_SHA=... BASE_REF=... .github/scripts/ci-ok-report.sh
 # Its tests are in ci-ok-report.test.sh, which ci.yaml's test job runs.
 set -euo pipefail
 shopt -s inherit_errexit
@@ -100,9 +127,40 @@ for input in GH_TOKEN JOB JOB_STATUS CHANGES EVENT HEAD_SHA GITHUB_REPOSITORY GI
     exit 1
   fi
 done
+if [ "$EVENT" = merge_group ]; then
+  for input in BASE_SHA BASE_REF; do
+    if [ -z "${!input:-}" ]; then
+      echo "::error::ci-ok-report.sh needs $input in its environment on a merge_group run"
+      exit 1
+    fi
+  done
+fi
 if ! jq -e 'type == "object" and (.result | type == "string")' <<<"$CHANGES" >/dev/null 2>&1; then
   echo "::error::CHANGES is not toJSON(needs.changes): $CHANGES"
   exit 1
+fi
+
+# Whether this run's group is the front of the queue: true when the queue's branch is at the
+# group's base, so no group stands in front of it, and when GitHub refuses that read three times,
+# which leaves the post as it was before this read existed. It sets tip for the line that says why
+# nothing went up.
+tip=
+front_of_queue() {
+  if ! tip=$(gh_read gh api "repos/$GITHUB_REPOSITORY/git/ref/${BASE_REF#refs/}" --jq .object.sha); then
+    echo "::warning::GitHub refused the tip of $BASE_REF three times, so this group may stand behind the front of the queue; the failing ci-ok goes up all the same, as every other refusal here prefers the failing verdict"
+    return 0
+  fi
+  [ "$tip" = "$BASE_SHA" ]
+}
+if [ "$EVENT" = merge_group ]; then
+  case "$JOB_STATUS/$(jq -r .result <<<"$CHANGES")" in
+    failure/* | cancelled/* | */failure | */cancelled)
+      if ! front_of_queue; then
+        echo "$JOB ended $JOB_STATUS (changes ended $(jq -r .result <<<"$CHANGES")) on a merge-group run whose group stands behind the front of the queue: its base $BASE_SHA is not $tip, the tip of $BASE_REF. The queue takes its pull request out only once the groups in front of it have ended, and an early post would let the queue build another group on this one, so nothing is posted from here; the ci-ok job reaches this run's verdict at the end of the run and holds a failing one until the group is the front"
+        exit 0
+      fi
+      ;;
+  esac
 fi
 
 # Which of the four cases decided this merge-group run, if any: the two lines below name the job
@@ -194,7 +252,7 @@ if jobs=$(gh_read gh api --paginate \
   needs=$(jq -n --argjson jobs "$(jq -s . <<<"$jobs")" --argjson changes "$CHANGES" \
     --argjson map "$selected_by" --argjson always "$always_run" "$program")
 else
-  echo "::warning::GitHub refused this run's job list three times, and this merge-group run is already decided: every other job is read as unread, because this run's verdict is failing whatever those jobs go on to do and a group with no ci-ok at all holds the queue for 180 minutes"
+  echo "::warning::GitHub refused this run's job list at every attempt gh-read.sh made, and this merge-group run is already decided: every other job is read as unread, because this run's verdict is failing whatever those jobs go on to do and a group with no ci-ok at all holds the queue for 180 minutes"
   needs=$(jq -n --argjson changes "$CHANGES" --argjson map "$selected_by" --argjson always "$always_run" \
     '{changes: $changes}
      + ([$always[] | select(. != "changes") | {key: ., value: {result: "unread"}}] | from_entries)

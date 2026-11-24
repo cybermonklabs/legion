@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"maps"
 	"net/http"
@@ -121,6 +122,24 @@ type movedInPlace struct {
 // rollbackRelationTables are the tables graph_edges reads an issue's and a component's relations
 // out of: each old arm reads its own, and the tuple arm probes the one whose row projects an edge.
 var rollbackRelationTables = []string{"issues", "issue_links", "components", "component_depends", "issue_component_members"}
+
+// explainRollbackRead is statement's plan made for its arguments, run under EXPLAIN (ANALYZE,
+// BUFFERS, FORMAT JSON), which the checks read, inside a transaction it rolls back; its text, which
+// a failure prints, is explainDismissedScaleText's.
+func explainRollbackRead(t *testing.T, connection *pgx.Conn, name, statement string, args []any) json.RawMessage {
+	t.Helper()
+	ctx := context.Background()
+	tx, err := connection.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the explain of %s: %v", name, err)
+	}
+	defer tx.Rollback(ctx)
+	var planJSON []byte
+	if err := tx.QueryRow(ctx, "explain (analyze, buffers, format json) "+statement, args...).Scan(&planJSON); err != nil {
+		t.Fatalf("explain %s: %v", name, err)
+	}
+	return explaintest.OnePlan(t, planJSON)
+}
 
 // seedRollbackScale writes into project ROLL, by SQL, 500 issues, ROLL-1001 to ROLL-1500, each but
 // the first a child of the issue at half its number and each waiting on the 100 issues after it,
@@ -281,7 +300,8 @@ func requireAnIssueReadReadsNoRelationTableWhole(t *testing.T, database *store.S
 			t.Fatalf("the %s read of %s sends %d statements over graph_edges, want one", direction, issue, len(reads))
 		}
 		name := "the " + direction + " read of " + issue
-		plan, text := explainDismissedScale(t, connection.Conn(), name, reads[0].sql, reads[0].args)
+		plan := explainRollbackRead(t, connection.Conn(), name, reads[0].sql, reads[0].args)
+		text := explainDismissedScaleText(t, connection.Conn(), name, reads[0].sql, reads[0].args)
 		for _, table := range rollbackRelationTables {
 			if explaintest.SeqScansRelation(t, plan, table) {
 				t.Errorf("%s reads %s by a Seq Scan, want each of its rows the read reaches reached through an index:\n%s", name, table, text)

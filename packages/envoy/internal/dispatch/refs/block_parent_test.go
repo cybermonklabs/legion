@@ -82,7 +82,7 @@ func newParentDocument(t *testing.T, database *store.Store, name, slug string) p
 
 // writeVersion records one version of the document as a version write records it - its
 // markdown, its writer and its time - with the event that recorded it, and answers all three as
-// the rows hold them.
+// the rows hold them. The event is the issue's, or for a document no issue holds, the document's.
 func (d parentDocument) writeVersion(t *testing.T, number int, markdown string, writer model.Actor) versionRecord {
 	t.Helper()
 	ctx := context.Background()
@@ -114,13 +114,16 @@ func (d parentDocument) writeVersion(t *testing.T, number int, markdown string, 
 	if err != nil {
 		t.Fatalf("encode the version event's payload: %v", err)
 	}
-	// The event's sequence is the issue's next, so several documents of one issue each record
-	// their versions without two events taking one sequence.
+	// The event's sequence is its owner's next, the issue's or the document's, so several documents
+	// of one issue each record their versions without two events taking one sequence.
 	if err := d.database.Pool.QueryRow(ctx, `
-		insert into events (issue_key, seq, type, actor, payload, notify)
-		values ($1, (select coalesce(max(seq), 0) + 1 from events where issue_key = $1), 'artifact.version', $2, $3, false)
+		insert into events (issue_key, artifact_id, seq, type, actor, payload, notify)
+		values (nullif($1::text, ''), case when $1::text = '' then $4::uuid end,
+			(select coalesce(max(seq), 0) + 1 from events
+			 where issue_key = nullif($1::text, '') or $1::text = '' and artifact_id = $4::uuid),
+			'artifact.version', $2, $3, false)
 		returning id
-	`, d.issue, actor, payload).Scan(&record.event); err != nil {
+	`, d.issue, actor, payload, d.artifact).Scan(&record.event); err != nil {
 		t.Fatalf("record the event of version %d: %v", number, err)
 	}
 	return record

@@ -79,7 +79,7 @@ func indexTypedAlone(ctx context.Context, tx pgx.Tx, artifact string, facts Type
 	if err != nil {
 		return graphstore.Uncaused{}, err
 	}
-	plan, err := PlanDecisionNodes(ctx, tx, index, artifact, facts, graphstore.Uncaused{})
+	plan, err := PlanDecisionNodes(ctx, tx, index, artifact, facts, graphstore.Uncaused{}, "")
 	if err != nil {
 		return graphstore.Uncaused{}, err
 	}

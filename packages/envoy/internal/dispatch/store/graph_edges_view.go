@@ -44,9 +44,12 @@ const (
 	// renders before its `distinct on` sorts the tuples, the test spelled over the tuple's own
 	// columns as the `when` arms of the `projects` case (tupleArmFilter), and the outer
 	// `edge.projects is not null` test gone, as the sibling branch's
-	// 20261120122700_graph_edges_tuple_arm_filter has it for its own arms. It is stated last, after
+	// 20261120122700_graph_edges_tuple_arm_filter has it for its own arms. It is stated after
 	// 20261121034242_graph_edges_asks_and_tuple_arm_filter, which restates the view from the arms of
-	// 20261116094101 alone, so a database that ran either holds every arm of this branch again.
+	// 20261116094101 alone, and stated again, last, by
+	// 20261123180000_issue_tree_graph_edges_after_store_class_last, after the sibling branch's
+	// 20261121104002_graph_edges_store_class_last restates it from its own arms, so a database that
+	// ran any of them holds every arm of this branch again.
 	GraphEdgesTupleArmFilter
 )
 

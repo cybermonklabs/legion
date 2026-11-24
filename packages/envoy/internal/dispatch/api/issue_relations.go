@@ -380,15 +380,18 @@ func stateFiledFromNode(ctx context.Context, tx pgx.Tx, item *filedFromItem) err
 	if item == nil || item.node == nil {
 		return nil
 	}
-	if err := graphstore.Write(ctx, tx, item.node.nodes, item.node.tuples); err != nil {
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		graphstore.QueueWrite(b, item.node.nodes, item.node.tuples)
+		if item.kind == graphstore.KindComment {
+			b.Queue("", `update comments set node_kind = $2, node_address = $1 where id = $1::uuid and node_kind is null`,
+				item.id, graphstore.KindComment)
+		}
+		graphstore.QueueHeads(b, graphstore.HeadsOf(item.node.nodes, item.node.tuples))
+		return nil
+	}); err != nil {
 		return fmt.Errorf("state the node of the %s filed_from names: %w", item.kind, err)
 	}
-	if item.kind != graphstore.KindComment {
-		return nil
-	}
-	_, err := tx.Exec(ctx, `update comments set node_kind = $2, node_address = $1 where id = $1::uuid and node_kind is null`,
-		item.id, graphstore.KindComment)
-	return err
+	return nil
 }
 
 // issueRelationFacts is what one create or PATCH states of an issue's relations, held until the
@@ -414,7 +417,8 @@ func (f *issueRelationFacts) claim(issue, kind, toKind, toID string, at time.Tim
 // claims as single-valued relations, which append only what moved (graphstore.Claim), and the
 // tuples as they are, in one statement of the store's arms (graphstore.WriteArms). The projection
 // rows - issues.parent_key, the issue_links rows and the issue_component_members rows - were
-// written before the event, in the same transaction, so the two commit together.
+// written before the event, in the same transaction, so the two commit together. Its callers queue
+// the head write of the nodes it states the relations of (heads) right after it, beside their own.
 func queueIssueRelations(b *store.WriteBatch, facts issueRelationFacts, who model.Actor) error {
 	if len(facts.claims) == 0 && len(facts.tuples) == 0 {
 		return nil
@@ -439,6 +443,15 @@ func (f issueRelationFacts) issue() string {
 		return f.claims[0].FromID
 	}
 	return f.tuples[0].FromID
+}
+
+// heads is the nodes the facts state relations out of, whose head rows they move.
+func (f issueRelationFacts) heads() []graphstore.NodeKey {
+	keys := make([]graphstore.NodeKey, 0, len(f.claims)+len(f.tuples))
+	for _, claim := range f.claims {
+		keys = append(keys, graphstore.NodeKey{Kind: claim.FromKind, ID: claim.FromID})
+	}
+	return append(keys, graphstore.HeadsOf(nil, f.tuples)...)
 }
 
 // strandedWords answers the retraction, dated at, of each part_of out of issue child's node to a

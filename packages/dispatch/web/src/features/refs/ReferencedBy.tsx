@@ -13,13 +13,15 @@ import {
 } from "../../theme/classes";
 import { compiledBlockSchema } from "../doc/schema";
 import { type BlockItemKind, blockFragment, isBlockItemKind } from "./block-reference";
+import { DeletedBody, EditedMark } from "./PostBody";
+import { postDeletion } from "./post-marks";
 import { referenceTriggerProps } from "./RefPreview";
 import { referencesQuery, standsFailed, useNewIssuePageFreshness } from "./reference-target";
 import type { DispatchReferenceRoute } from "./routes";
 import { buildReferencePath, parseNodeReference } from "./routes";
 import { Timestamp } from "./Timestamp";
 
-/** Every node kind the server's read registry holds, which `GraphNode.kind` names, each with the
+/** Every node kind a read of the graph answers, which `GraphNode.kind` names, each with the
  *  word the panel reads it under. A kind a newer build adds is skipped where it is met, since no
  *  read answers a node of a kind its own build does not resolve. */
 const NODE_LABELS: Record<GraphEdge["node"]["kind"], string> = {
@@ -28,9 +30,6 @@ const NODE_LABELS: Record<GraphEdge["node"]["kind"], string> = {
   // A part of an ask, and a block of a comment or a message, read as the item that holds it, as
   // the `block` below does (`blockItem`); the server answers each as a node of kind `block`.
   ask_block: "Ask",
-  // A type's attribute and a type itself: nodes of the block schema, which no read of the graph
-  // answers today.
-  attribute: "Attribute",
   // A block of a document that cites a node shows as the document holding it, linked to the
   // block; a part of an ask, or a block of a comment or message, shows as its item
   // (`blockItem`).
@@ -53,13 +52,10 @@ const NODE_LABELS: Record<GraphEdge["node"]["kind"], string> = {
   // because a reader opens the agent and not the page.
   page: "Agent page",
   person: "Person",
-  // A recorded result of a check, which no read of the graph answers yet.
-  result: "Result",
   risk: "risk",
   // A role is the agent Dispatch keeps across a restart, and a session is one run of one.
   role: "Agent",
   session: "Session",
-  supertag: "Type",
 };
 
 const STRUCTURAL_LABELS: Partial<Record<GraphEdge["kind"], string>> = {
@@ -408,6 +404,9 @@ export function ReferencedBy({
                   // On a document's read, the block of the document the edge meets: one source
                   // citing two of its blocks is two rows, each naming and keyed by its block.
                   const cited = referencePath(edge.block?.ref);
+                  // A citing comment or message, or a block of one, carries its post's marks: a
+                  // deleted one has no excerpt left, and the deleted line takes its place.
+                  const deleted = postDeletion(edge.node);
                   return (
                     <li
                       key={`${edge.node.kind}:${edge.node.id}:${edge.kind}:${edge.direction}:${edge.block?.id ?? ""}`}
@@ -432,6 +431,7 @@ export function ReferencedBy({
                             <Timestamp at={edge.created_at} />
                           </Link>
                         )}
+                        <EditedMark at={edge.node.edited_at} deleted={deleted} />
                         {cited === undefined ? null : (
                           <>
                             <span aria-hidden="true">·</span>
@@ -445,7 +445,11 @@ export function ReferencedBy({
                           </>
                         )}
                       </div>
-                      {edge.excerpt === undefined ? null : <Excerpt text={edge.excerpt.text} />}
+                      {deleted !== null ? (
+                        <DeletedBody className="mt-1 block text-sm" deleted={deleted} />
+                      ) : edge.excerpt === undefined ? null : (
+                        <Excerpt text={edge.excerpt.text} />
+                      )}
                     </li>
                   );
                 })}

@@ -30,11 +30,12 @@ const criteriaDoc = "artifact-criteria"
 // because the record knows no document of that step to hand to a person. The same root with that
 // step registered and still closed enters awaiting_person and its notice does reach the
 // controller, which is what tells the two apart; it keeps its row through either, since a started
-// issue holds one of the cap's slots until its work is past its review (record.KeepsSlot), and
-// this root stands in admitted with a gate that has never opened, or in awaiting_person,
-// throughout: those are two of the three roots that keep their row even while they wait on
-// another issue (blockers.waitsOf), and the third, a queued root carrying the row it held in
-// another tree, is not driven here. It starts once the step is registered and approved.
+// issue holds one of the cap's slots while it stands in a phase that keeps one (record.KeepsSlot),
+// as admitted and awaiting_person do, and this root stands in admitted with a gate that has never
+// opened, or in awaiting_person, throughout: those are two of the three roots that keep their row
+// even while they wait on another issue (blockers.waitsOf), and the third, a queued root carrying
+// the row it held in another tree, is not driven here. It starts once the step is registered and
+// approved.
 func TestUnregisteredStepHoldsTheWorkAndRaisesNoWait(t *testing.T) {
 	steps := []record.DesignStep{record.DesignStepCriteria, record.DesignStepSpec}
 	t.Run("the step nobody registered", func(t *testing.T) {
@@ -219,12 +220,16 @@ func TestGatedStepsKeepTheStaleApprovalOfItsOwnDocument(t *testing.T) {
 
 // The deployment's step list is read at the boot, before the catch-up applies what Dispatch
 // recorded while the daemon was down, so the pass that advances the trees a dropped step
-// released decides no tree whose root a hold holds. Such a root's spec stands at the version the
-// record still shows, which the architect has revised since: started there, the tree would run
-// on a version nobody approved, and nothing moves a running phase back. Held, it waits for the
-// pass after its catch-up's release, which reads what the catch-up applied and leaves it where
-// it stands. With nothing held — the same boot, the same record — that pass is what starts the
-// root, which is what it is for.
+// released decides no tree whose root a hold holds. Such a root's gated document stands at the
+// version the record still shows, which the architect has revised since: started there, the tree
+// would run on a version nobody approved, and nothing moves a running phase back. Held, it waits
+// for the pass after its catch-up's release, which reads what the catch-up applied and leaves it
+// where it stands. With nothing held — the same boot, the same record — that pass is what starts
+// the root, which is what it is for.
+//
+// The step a shorter list drops here is spec, the one step a list can drop and read no row of: a
+// list that names spec and not criteria still gates a tree on the criteria row its root
+// registered (record.TreeSteps), and no step joins a list that names criteria.
 func TestABootOnAShorterListHoldsARootItsCatchUpHasNotReached(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -238,16 +243,16 @@ func TestABootOnAShorterListHoldsARootItsCatchUpHasNotReached(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
-			// This boot gates the spec alone. The tree was admitted under the criteria step as
-			// well, whose row it still holds closed and which this deployment no longer reads,
-			// so the spec row the record shows open is all that holds its work now.
-			admission := newAdmissionWithSteps(t, 1, []record.DesignStep{record.DesignStepSpec},
+			// This boot gates the criteria step alone. The tree was admitted under the spec step
+			// as well, whose row it still holds closed and which this deployment no longer reads,
+			// so the criteria row the record shows open is all that holds its work now.
+			admission := newAdmissionWithSteps(t, 1, []record.DesignStep{record.DesignStepCriteria},
 				slog.New(slog.NewTextHandler(io.Discard, nil)))
 			seedSlotted(t, pool, "LEGION-100", "A")
-			seedGate(t, pool, record.DesignGate{Issue: "LEGION-100", Step: record.DesignStepCriteria,
-				ArtifactID: criteriaDoc, LatestVersion: 1})
 			seedGate(t, pool, record.DesignGate{Issue: "LEGION-100", Step: record.DesignStepSpec,
-				ArtifactID: "artifact-root", LatestVersion: 4, ApprovedVersion: new(4)})
+				ArtifactID: "artifact-root", LatestVersion: 1})
+			seedGate(t, pool, record.DesignGate{Issue: "LEGION-100", Step: record.DesignStepCriteria,
+				ArtifactID: criteriaDoc, LatestVersion: 4, ApprovedVersion: new(4)})
 			if tc.catchUp {
 				admission.HoldForCatchUp("LEGION-100")
 			}
@@ -265,10 +270,11 @@ func TestABootOnAShorterListHoldsARootItsCatchUpHasNotReached(t *testing.T) {
 				return
 			}
 
-			// The catch-up applies the window: version 5 of the spec, written while the daemon
-			// was down, closes the gate the boot's pass read as open. Then the hold goes and the
-			// pass intake.CatchUpApplied drives decides the tree on the record as it now stands.
-			applyFact(t, pool, admission, "spec-v5", intake.DispatchArtifact{Key: "LEGION-100", ArtifactID: "artifact-root",
+			// The catch-up applies the window: version 5 of the Verification document, written
+			// while the daemon was down, closes the gate the boot's pass read as open. Then the
+			// hold goes and the pass intake.CatchUpApplied drives decides the tree on the record as
+			// it now stands.
+			applyFact(t, pool, admission, "criteria-v5", intake.DispatchArtifact{Key: "LEGION-100", ArtifactID: criteriaDoc,
 				Kind: intake.DispatchArtifactVersion, Version: 5, Mark: seqMark(7)})
 			admission.ReleaseCatchUp("LEGION-100")
 			applyFact(t, pool, admission, "catch-up-applied", intake.CatchUpApplied{Issue: "LEGION-100", Through: 7})
@@ -276,8 +282,16 @@ func TestABootOnAShorterListHoldsARootItsCatchUpHasNotReached(t *testing.T) {
 			if got := issue(t, pool, "LEGION-100").Phase; got != phase.Admitted {
 				t.Fatalf("the root once its catch-up applied version 5 = %s, want it still admitted: no person has approved that version", got)
 			}
-			if gate := storedGate(t, pool, "LEGION-100"); gate.LatestVersion != 5 || classify.DesignGateOpen(*gate) {
-				t.Fatalf("the spec gate after the catch-up = %#v, want it at version 5 and closed", gate)
+			var gate record.DesignGate
+			inTx(t, pool, func(tx pgx.Tx) {
+				gates, err := record.NewStore().GatesOf(context.Background(), tx, "LEGION-100")
+				if err != nil {
+					t.Fatalf("read the gates of LEGION-100: %v", err)
+				}
+				gate = gates[record.DesignStepCriteria]
+			})
+			if gate.LatestVersion != 5 || classify.DesignGateOpen(gate) {
+				t.Fatalf("the criteria gate after the catch-up = %#v, want it at version 5 and closed", gate)
 			}
 		})
 	}

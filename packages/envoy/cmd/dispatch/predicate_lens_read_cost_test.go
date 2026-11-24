@@ -8,7 +8,8 @@ package main
 // shapes, read at this head and at the base build in one run.
 //
 // The test is TestThePredicateAndTheLensReadsGetNoSlower at the end of this file; everything above
-// it is the four shapes it writes and the nine reads it measures over each of them.
+// it is the sizes it runs at and the nine reads it measures over each of the four shapes, which
+// predicate_lens_read_cost_seed_test.go writes.
 // graph_cost_test.go holds the two arms, the clock and the order statistic every cost measurement
 // shares, and read_cost_test.go and write_cost_test.go the corpus writers these shapes are built
 // from.
@@ -98,6 +99,20 @@ const (
 // of the store's set that serves a read into a node.
 var predicateCostInboundIndexes = []string{"graph_tuples_as_of_in"}
 
+// predicateCostJITOff is the setting both builds' databases carry from before either server starts
+// (startCostArmsWith), so every reading is taken with JIT off, as production runs. Production's
+// database is Cloud SQL, which does not support PostgreSQL's LLVM JIT, and under Postgres's
+// default jit = on a reading times compilation production never pays: over the history shape, JIT
+// took about 1.3 s of each of the references read's two 1.3 s statements. benchtime.Open turns JIT
+// off for the same reason.
+var predicateCostJITOff = map[string]string{"jit": "off"}
+
+// predicateCostSessionJIT is what the session that runs it reads of JIT: the jit it runs under, and
+// the settings its database holds for every role (pg_db_role_setting's row with setrole 0), empty
+// where it holds none.
+const predicateCostSessionJIT = `select current_setting('jit'), coalesce((select s.setconfig from pg_db_role_setting s
+	join pg_database d on d.oid = s.setdatabase where d.datname = current_database() and s.setrole = 0), '{}')`
+
 // predicateCostInboundLookup is the lookup the tuples-into-a-node read makes of one block, $1 its
 // node id, read as a value before the read as readEdgeRows reads it: the edges of graph_edges into
 // it, newest first, as refs' readEdgeRows selects them, less the predicate of each far end, which
@@ -177,306 +192,6 @@ func (s predicateCostSizes) historyName() string {
 func (predicateCostSizes) lensName() string {
 	return "a spec with a chain of " + strconv.Itoa(predicateCostChain) +
 		" triggered lenses, half of them reserved for their author"
-}
-
-// predicateCostShape is one shape on one build and what the nine reads address on it.
-type predicateCostShape struct {
-	// name is the shape as the check states it, at the size this run wrote it.
-	name string
-	// headOnly marks the fourth shape, which only this head writes: a lens is this child's kind.
-	headOnly bool
-	// issue is the issue the shape hangs under, document its main document (by artifact id) and
-	// documentRef that document's dispatch:// address.
-	issue, document, documentRef string
-	// linksTo is the document the main document's pointers reach, the far end of the list of
-	// its links, and the main document itself where it points at no other.
-	linksTo string
-	// into is the node the tuples-into read reads, and outOf the node the tuples-out read reads.
-	into, outOf string
-	// phrase is the word only this shape's main document carries, which its search asks for.
-	phrase string
-	// lenses are the fourth shape's lenses, in the order they were invoked.
-	lenses []string
-	// holds asserts the shape is the one its name states, on one build, and answers what the
-	// shape holds of its own beyond the rows every shape prints.
-	holds func(t *testing.T, arm *costArm, shape *predicateCostShape) []string
-	// rows is what the shape holds, printed before any reading is taken.
-	rows []string
-}
-
-// ───── the four shapes ────────────────────────────────────────────────────
-
-// seedPredicateCost writes the three shapes both builds hold through the arm's own API, the same
-// requests on each build, and answers them in the order they are measured. No row here is written
-// by SQL: each build holds what its own code writes for these requests.
-func seedPredicateCost(t *testing.T, arm *costArm, sizes predicateCostSizes) []*predicateCostShape {
-	t.Helper()
-	started := time.Now()
-	arm.server.call(t, http.MethodPost, "/api/v1/projects",
-		`{"key":"`+predicateCostProject+`","name":"The predicate and lens read-cost shapes"}`, http.StatusCreated)
-	shapes := []*predicateCostShape{
-		seedPredicateCostHeavy(t, arm, sizes),
-		seedPredicateCostInbound(t, arm, sizes),
-		seedPredicateCostHistory(t, arm, sizes),
-	}
-	t.Logf("%s: the three shapes both builds hold were written in %s", arm.name, time.Since(started).Round(time.Second))
-	return shapes
-}
-
-// predicateCostIssue creates the issue one shape hangs under and answers its key and its spec's
-// artifact id. Its spec marks predicateCostRequirements requirements and carries phrase where the
-// shape's search reads the spec, a Verification document and a plan hold one check and one plan
-// task serving each requirement, and predicateCostChildren child issues stand under it, which the
-// issue tree lists. The spec and each child are forced past the near-copy gate, as
-// createCostIssue's spec is: the four specs differ only in their titles, and so do the children.
-func predicateCostIssue(t *testing.T, arm *costArm, title, phrase string) (string, string) {
-	t.Helper()
-	var spec strings.Builder
-	fmt.Fprintf(&spec, "# %s\n\nThe corpus of one cost measurement hangs under this issue.\n\n", title)
-	if phrase != "" {
-		fmt.Fprintf(&spec, "%s is in this document and in no other of the corpus.\n\n", phrase)
-	}
-	for index := range predicateCostRequirements {
-		fmt.Fprintf(&spec, ":::requirement{#r%d}\nRequirement %d of the issue this shape hangs under.\n:::\n\n",
-			index+1, index+1)
-	}
-	body, err := json.Marshal(map[string]any{
-		"project": predicateCostProject, "title": title, "force": true, "spec": spec.String(),
-	})
-	if err != nil {
-		t.Fatalf("encode the issue %q: %v", title, err)
-	}
-	created := arm.server.call(t, http.MethodPost, "/api/v1/issues", string(body), http.StatusCreated)
-	var issue struct {
-		Key               string `json:"key"`
-		PrimaryArtifactID string `json:"primary_artifact_id"`
-	}
-	if err := json.Unmarshal(created, &issue); err != nil || issue.Key == "" || issue.PrimaryArtifactID == "" {
-		t.Fatalf("%s: create the issue %q: %v: %s", arm.name, title, err, created)
-	}
-	var checks, tasks strings.Builder
-	for index := range predicateCostRequirements {
-		serves := fmt.Sprintf("dispatch://%s/spec#b-r%d", issue.Key, index+1)
-		fmt.Fprintf(&checks, ":::check{#c%d serves=\"%s\" surface=\"api\" run=\"go test ./...\"}\n"+
-			"The check that proves requirement %d.\n:::\n\n", index+1, serves, index+1)
-		fmt.Fprintf(&tasks, ":::plan_task{#t%d serves=\"%s\"}\nThe work requirement %d asks for.\n:::\n\n",
-			index+1, serves, index+1)
-	}
-	costUploadDocument(t, arm, issue.Key, "verification.md", checks.String())
-	costUploadDocument(t, arm, issue.Key, "plan.md", tasks.String())
-	for index := range predicateCostChildren {
-		child, err := json.Marshal(map[string]any{
-			"project": predicateCostProject, "title": fmt.Sprintf("Child %d of %s", index+1, title),
-			"parent": issue.Key, "force": true,
-		})
-		if err != nil {
-			t.Fatalf("encode child %d of the issue %q: %v", index+1, title, err)
-		}
-		arm.server.call(t, http.MethodPost, "/api/v1/issues", string(child), http.StatusCreated)
-	}
-	return issue.Key, issue.PrimaryArtifactID
-}
-
-// seedPredicateCostHeavy is the first shape: an issue whose main document holds 8,001 blocks
-// nesting eight deep, with 40 pointers at blocks of another document of the issue for each 1,000
-// blocks of it.
-func seedPredicateCostHeavy(t *testing.T, arm *costArm, sizes predicateCostSizes) *predicateCostShape {
-	t.Helper()
-	phrase := predicateCostShapePhrase("heavy")
-	issue, _ := predicateCostIssue(t, arm, "The issue of "+predicateCostCount(sizes.heavyBlocks)+" blocks", "")
-	pointers := costPointerCount(sizes.heavyBlocks)
-	targets := costPointerTargets(t, arm, issue, "heavy-targets.md", pointers)
-	// costDocumentText writes one block fewer than the shape, and the paragraph carrying the
-	// shape's phrase is the last block of it.
-	document := costUploadDocument(t, arm, issue, "heavy.md",
-		costDocumentText(sizes.heavyBlocks-1, writeCostNesting, pointers, targets, 0, -1)+
-			"\n"+phrase+" is in this document and in no other of the corpus.\n")
-	return &predicateCostShape{
-		name:        sizes.heavyName(),
-		issue:       issue,
-		document:    document,
-		documentRef: costDocumentAddress(t, arm, document),
-		linksTo:     predicateCostDocumentOf(targets[0]),
-		into:        targets[0],
-		phrase:      phrase,
-		holds: func(t *testing.T, arm *costArm, shape *predicateCostShape) []string {
-			t.Helper()
-			blocks := costBlockCount(t, arm, shape.document)
-			deep := costNestingDepth(t, arm, shape.document)
-			if blocks != sizes.heavyBlocks || deep != writeCostNesting {
-				t.Fatalf("%s: the main document of %q holds %d block(s) nested %d deep, and the shape states %d nested %d deep",
-					arm.name, shape.name, blocks, deep, sizes.heavyBlocks, writeCostNesting)
-			}
-			return []string{fmt.Sprintf("a main document of %d blocks nested %d deep with %d pointers", blocks, deep, pointers)}
-		},
-	}
-}
-
-// seedPredicateCostInbound is the second shape: one block with 5,000 tuples into it, which are the
-// pointers of a document of 5,000 items written at it.
-func seedPredicateCostInbound(t *testing.T, arm *costArm, sizes predicateCostSizes) *predicateCostShape {
-	t.Helper()
-	phrase := predicateCostShapePhrase("inbound")
-	issue, _ := predicateCostIssue(t, arm, "The node of "+predicateCostCount(sizes.inbound)+" inbound tuples", "")
-	target := costPointerTargets(t, arm, issue, "inbound-target.md", 1)[0]
-	var text strings.Builder
-	text.WriteString("# The document that points at one block\n\n")
-	text.WriteString(phrase + " is in this document and in no other of the corpus.\n\n")
-	for index := range sizes.inbound {
-		fmt.Fprintf(&text, "- item %d points at %s\n", index, target)
-	}
-	document := costUploadDocument(t, arm, issue, "inbound.md", text.String())
-	return &predicateCostShape{
-		name:        sizes.inboundName(),
-		issue:       issue,
-		document:    document,
-		documentRef: costDocumentAddress(t, arm, document),
-		linksTo:     predicateCostDocumentOf(target),
-		into:        target,
-		phrase:      phrase,
-		holds: func(t *testing.T, arm *costArm, shape *predicateCostShape) []string {
-			t.Helper()
-			block := predicateCostBlockID(shape.into)
-			references := arm.count(t, `
-				select count(*) from block_refs r
-				join document_blocks b on b.node_id = r.to_id
-				join artifacts a on a.id = b.artifact_id
-				where r.to_kind = 'block' and a.issue_key = $1 and b.block_id = $2`, shape.issue, block)
-			if references != int64(sizes.inbound) {
-				t.Fatalf("%s: %d block reference(s) point at the node of %q, and the shape states %d",
-					arm.name, references, shape.name, sizes.inbound)
-			}
-			rows := []string{fmt.Sprintf("%d block reference(s) into the node the tuples-into read reads", references)}
-			if !arm.head {
-				return rows
-			}
-			tuples := arm.count(t, `
-				select count(*) from graph_tuples g
-				join document_blocks b on g.to_kind = 'block' and g.to_id = b.node_id
-				join artifacts a on a.id = b.artifact_id
-				where g.asserted and a.issue_key = $1 and b.block_id = $2`, shape.issue, block)
-			if tuples < int64(sizes.inbound) {
-				t.Fatalf("%s: the store holds %d tuple(s) into the node of %q, and the shape states %d",
-					arm.name, tuples, shape.name, sizes.inbound)
-			}
-			return append(rows, fmt.Sprintf("%d asserted tuple(s) into that node", tuples))
-		},
-	}
-}
-
-// seedPredicateCostHistory is the third shape: a person read while the store holds 50,000 rows of
-// history that are not theirs, seven documents of another person's, beside the person's own
-// document and 200 comments of their own, so that the reads of the shape answer rows out of that
-// pile rather than nothing.
-func seedPredicateCostHistory(t *testing.T, arm *costArm, sizes predicateCostSizes) *predicateCostShape {
-	t.Helper()
-	phrase := predicateCostShapePhrase("person")
-	issue, _ := predicateCostIssue(t, arm,
-		"The person read against "+predicateCostCount(sizes.historyRows)+" rows of other history", "")
-	pointers := costPointerCount(sizes.historyBlocks)
-	targets := costPointerTargets(t, arm, issue, "history-targets.md", pointers)
-	for index := range predicateCostHistoryDocuments {
-		costUploadDocumentAs(t, arm, readCostOther, issue, fmt.Sprintf("history%d.md", index),
-			costDocumentText(sizes.historyBlocks, writeCostNesting, pointers, targets, index, -1))
-	}
-	document := costUploadDocument(t, arm, issue, "person.md",
-		"# The document of the person's own shape\n\n"+
-			phrase+" is in this document and in no other of the corpus.\n\n"+
-			"A paragraph the person's own page hangs beside.\n")
-	for index := range sizes.personComments {
-		body, err := json.Marshal(map[string]any{
-			"body": fmt.Sprintf("Comment %d of the person whose rows this shape reads.", index),
-		})
-		if err != nil {
-			t.Fatalf("encode the person's comment: %v", err)
-		}
-		arm.server.call(t, http.MethodPost, "/api/v1/issues/"+issue+"/comments", string(body), http.StatusCreated)
-	}
-	documentRef := costDocumentAddress(t, arm, document)
-	return &predicateCostShape{
-		name:        sizes.historyName(),
-		issue:       issue,
-		document:    document,
-		documentRef: documentRef,
-		linksTo:     documentRef,
-		into:        targets[0],
-		phrase:      phrase,
-		holds: func(t *testing.T, arm *costArm, shape *predicateCostShape) []string {
-			t.Helper()
-			history := arm.count(t, `
-				select count(*) from document_blocks b join artifacts a on a.id = b.artifact_id
-				where a.issue_key = $1 and a.created_by->>'id' = $2`, shape.issue, readCostOther)
-			if history < int64(sizes.historyRows) {
-				t.Fatalf("%s: %q holds %d document block(s) of %s's, and the shape states %d rows of unrelated history",
-					arm.name, shape.name, history, readCostOther, sizes.historyRows)
-			}
-			return []string{fmt.Sprintf("%d document block(s) of %s's history in %d documents, and the person's own document and %d comments",
-				history, readCostOther, predicateCostHistoryDocuments, sizes.personComments)}
-		},
-	}
-}
-
-// seedPredicateCostLenses is the fourth shape, which only this head writes: a spec with a chain
-// of 50 lenses invoked on it, each after the first triggered by the one before it, and every
-// other one, from the second, reserved for its author, so half of them are and every step of the
-// chain crosses from one visibility to the other. Each lens carries a verdict and one finding, as
-// an analysis does. The spec is the shape's main document and carries its phrase.
-func seedPredicateCostLenses(t *testing.T, arm *costArm, sizes predicateCostSizes) *predicateCostShape {
-	t.Helper()
-	started := time.Now()
-	phrase := predicateCostShapePhrase("lens")
-	issue, spec := predicateCostIssue(t, arm, "The spec with a chain of triggered lenses", phrase)
-	specRef := "dispatch://" + issue + "/spec"
-	lenses := make([]string, 0, predicateCostChain)
-	for index := range predicateCostChain {
-		input := map[string]any{
-			"on":         specRef,
-			"kind":       predicateCostKinds[index%len(predicateCostKinds)],
-			"verdict":    fmt.Sprintf("Lens %d of the chain holds.", index+1),
-			"findings":   []string{fmt.Sprintf("The finding of lens %d of the chain.", index+1)},
-			"visibility": predicateCostVisibility(index),
-		}
-		if index > 0 {
-			input["triggered_by"] = lenses[index-1]
-		}
-		body, err := json.Marshal(input)
-		if err != nil {
-			t.Fatalf("encode lens %d of the chain: %v", index+1, err)
-		}
-		created := arm.server.call(t, http.MethodPost, "/api/v1/issues/"+issue+"/lenses", string(body), http.StatusCreated)
-		var lens struct {
-			Address string `json:"address"`
-		}
-		if err := json.Unmarshal(created, &lens); err != nil || lens.Address == "" {
-			t.Fatalf("%s: invoke lens %d of the chain: %v: %s", arm.name, index+1, err, created)
-		}
-		lenses = append(lenses, lens.Address)
-	}
-	t.Logf("%s: the fourth shape was written in %s", arm.name, time.Since(started).Round(time.Second))
-	return &predicateCostShape{
-		name:        sizes.lensName(),
-		headOnly:    true,
-		issue:       issue,
-		document:    spec,
-		documentRef: specRef,
-		linksTo:     specRef,
-		into:        specRef,
-		// The lens in the middle of the chain, which is one of those reserved for its author:
-		// its tuples out are its part_of, its has_kind, its triggered_by and its authored_by.
-		outOf:  lenses[predicateCostChain/2],
-		phrase: phrase,
-		lenses: lenses,
-		holds:  predicateCostLensesHold,
-	}
-}
-
-// predicateCostVisibility is the visibility of the chain's lens at index: every other one, from
-// the second, is reserved for its author.
-func predicateCostVisibility(index int) string {
-	if index%2 == 1 {
-		return "author"
-	}
-	return "project"
 }
 
 // predicateCostLensRead is what the fourth shape's guard reads of GET /api/v1/lenses: each lens's
@@ -706,18 +421,20 @@ type predicateCostRead struct {
 	// headOnly marks the read the base build does not serve at all, which this child adds: it
 	// has no reading at the base build, so it is printed and bound nothing.
 	headOnly bool
-	// cutAtBase is the code of the one refusal the base build may answer this read with, a read
-	// it cut at a bound of its own: such a reading counts as predicateCostClosureBound, the least
-	// the read took there, so it can only lower the base build's p50 and tighten the bound on
-	// this head. Any other refusal at the base build, and any refusal at this head, fails.
-	cutAtBase string
-	path      func(shape *predicateCostShape) string
+	// cutAt is the code of the one refusal either build may answer this read with, a read cut at
+	// the closure bound main's #4554 puts on it (predicateCostClosureBound). Such a reading counts
+	// as predicateCostClosureBound at either build, so a read that costs the same at both builds
+	// reads the same at both, and the run prints how many readings each build cut. Any other
+	// refusal at either build fails.
+	cutAt string
+	path  func(shape *predicateCostShape) string
 }
 
 // predicateCostClosureBound is the bound main's #4554 puts on an issue's reference closure walk
 // (api's referencesClosureBound): a GET of an issue's references whose walk runs past it answers
-// 503 REFERENCES_TIMEOUT. The base build's walk read 1.8 to 2.3 s over these shapes before that
-// bound, so it is cut there; this head reads the same references in milliseconds.
+// 503 REFERENCES_TIMEOUT. Over the shape of a person with 50,000 rows of unrelated history the
+// read's p50 was 0.9 to 1.4 s over seven runs on the build farm, the two builds within 4% of each
+// other in each run: close enough to the bound that either build may cut a reading of it there.
 const predicateCostClosureBound = 2 * time.Second
 
 func predicateCostReads() []predicateCostRead {
@@ -744,26 +461,9 @@ func predicateCostReads() []predicateCostRead {
 		{name: "the coverage read (GET /api/v1/issues/{key}/coverage)", path: func(shape *predicateCostShape) string {
 			return "/api/v1/issues/" + shape.issue + "/coverage"
 		}},
-		{name: "the references panel read (GET /api/v1/issues/{key}/references)", cutAtBase: "REFERENCES_TIMEOUT", path: func(shape *predicateCostShape) string {
+		{name: "the references panel read (GET /api/v1/issues/{key}/references)", cutAt: "REFERENCES_TIMEOUT", path: func(shape *predicateCostShape) string {
 			return "/api/v1/issues/" + shape.issue + "/references"
 		}},
-	}
-}
-
-// predicateCostTable prints every reading of the run: the nearest-rank p50, p95 and p99 of each
-// read over each shape on each build, then every reading it took, in the order it was taken, so
-// a reader sees the spread each percentile came out of.
-func predicateCostTable(t *testing.T, readings []costReading) {
-	t.Helper()
-	t.Log("read\tshape\tbuild\tp50 ms\tp95 ms\tp99 ms\treadings")
-	for _, reading := range readings {
-		t.Logf("%s\t%s\t%s\t%.1f\t%.1f\t%.1f\t%d",
-			reading.operation, reading.shape, reading.arm, costMilliseconds(reading.p50()),
-			costMilliseconds(reading.percentile(0.95)), costMilliseconds(reading.p99()), len(reading.runs))
-	}
-	t.Log("every reading, in the order it was taken, in milliseconds:")
-	for _, reading := range readings {
-		t.Logf("%s\t%s\t%s\t%s", reading.operation, reading.shape, reading.arm, reading.printed())
 	}
 }
 
@@ -823,9 +523,11 @@ func predicateCostShapePhrase(shape string) string { return predicateCostPhrase 
 // whose tree holds no migration 20261109013400 (graph_store) is refused before anything is
 // built, naming the base (predicateCostBaseHoldsTheStore), since a base with no store measures
 // nothing this child changed.
-// The base serves a database of its own (startCostArms). Both builds are read in one loop, one reading on
-// each in each turn, the build that goes first alternating, after one warm-up reading on each that
-// is not counted (costInterleaved). The corpus is vacuumed and analysed after the seed and the
+// Each build serves a database of its own (startCostArmsWith), which holds jit = off from before
+// that build's server starts, as production's Cloud SQL runs with JIT off (predicateCostJITOff);
+// the run reads the setting on each before it seeds. Both builds are read in one loop, one reading
+// on each in each turn, the build that goes first alternating, after one warm-up reading on each
+// that is not counted (costInterleaved). The corpus is vacuumed and analysed after the seed and the
 // backfill (costArm.vacuumAnalyze), and the block-index lease of each build is held while the
 // readings are taken (costHoldBlockIndex).
 // It takes 200 readings of each read over each shape on each build and prints the nearest-rank
@@ -869,8 +571,23 @@ func TestThePredicateAndTheLensReadsGetNoSlower(t *testing.T) {
 
 	listener := costEnvoy(t)
 	listener.Accept(true)
-	head, base := startCostArms(t, listener.URL)
+	head, base := startCostArmsWith(t, listener.URL, predicateCostJITOff)
 	builds := []*costArm{head, base}
+	for _, arm := range builds {
+		var jit string
+		var held []string
+		if err := arm.pool.QueryRow(context.Background(), predicateCostSessionJIT).Scan(&jit, &held); err != nil {
+			t.Fatalf("%s: read jit and its database's settings: %v", arm.name, err)
+		}
+		if jit != "off" || !slices.Contains(held, "jit=off") {
+			t.Fatalf("%s: jit reads %q on this test's own session and the build's database holds %q, want off and a setting jit=off",
+				arm.name, jit, held)
+		}
+	}
+	t.Log("JIT is off on both builds, as production runs: each build's database holds jit = off, set before its server " +
+		"started, so every session either server opens starts with JIT off, and the test's own session on each reads it. " +
+		"Production's Cloud SQL does not support PostgreSQL's LLVM JIT, so a reading under jit = on would time compilation " +
+		"production never pays")
 	shapes := map[*costArm][]*predicateCostShape{}
 	for _, arm := range builds {
 		shapes[arm] = seedPredicateCost(t, arm, sizes)
@@ -914,38 +631,38 @@ func TestThePredicateAndTheLensReadsGetNoSlower(t *testing.T) {
 			if read.headOnly || shape.headOnly {
 				measured = []*costArm{head}
 			}
-			cut := 0
+			cut := map[*costArm]int{}
 			taken := costInterleaved(t, read.name, shape.name, sizes.readings, measured, func(subject *costArm, run int) time.Duration {
 				subject.ready(t)
 				path := read.path(shapes[subject][index])
-				if subject != base || read.cutAtBase == "" {
+				if read.cutAt == "" {
 					reading, _ := subject.timed(t, http.MethodGet, path, "", http.StatusOK)
 					return reading
 				}
 				reading, answer := subject.timedAnswer(t, http.MethodGet, path, "")
-				if answer.status == http.StatusServiceUnavailable && answer.code() == read.cutAtBase {
+				if answer.status == http.StatusServiceUnavailable && answer.code() == read.cutAt {
 					if run >= 0 {
-						cut++
+						cut[subject]++
 					}
 					return predicateCostClosureBound
 				}
 				if answer.status != http.StatusOK {
-					t.Fatalf("%s: GET %s: status %d, want 200 or 503 %s: %s", subject.name, path, answer.status, read.cutAtBase, answer.body)
+					t.Fatalf("%s: GET %s: status %d, want 200 or 503 %s: %s", subject.name, path, answer.status, read.cutAt, answer.body)
 				}
 				return reading
 			})
-			if read.cutAtBase != "" && slices.Contains(measured, base) {
-				t.Logf("%s over %q: the base build cut %d of its %d readings at its %s bound (%s), each counted as %s; its p50 with them %.1f ms",
-					read.name, shape.name, cut, sizes.readings, predicateCostClosureBound, read.cutAtBase, predicateCostClosureBound,
-					costMilliseconds(taken[base].p50()))
-			}
 			for _, subject := range measured {
+				if read.cutAt != "" {
+					t.Logf("%s over %q: %s cut %d of its %d readings at its %s bound (%s), each counted as %s; its p50 with them %.1f ms",
+						read.name, shape.name, subject.name, cut[subject], sizes.readings, predicateCostClosureBound, read.cutAt,
+						predicateCostClosureBound, costMilliseconds(taken[subject].p50()))
+				}
 				readings = append(readings, taken[subject])
 				held[cell(read.name, index, subject)] = taken[subject]
 			}
 		}
 	}
-	predicateCostTable(t, readings)
+	costTableOf(t, readings)
 
 	t.Logf("the bound: a read whose p50 at %s is more than %.2f times its p50 at %s fails; the p95 and the p99 are printed and bind nothing",
 		head.name, predicateCostRatio, base.name)

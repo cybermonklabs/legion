@@ -168,7 +168,8 @@ func TestAConversationNodeIsWhatRTwoSaysItIs(t *testing.T) {
 		}
 		var items []string
 		blocks := map[string]string{}
-		for index, node := range nodes {
+		for index, excerpted := range nodes {
+			node := excerpted.Node
 			if node.Kind != "block" {
 				items = append(items, node.Kind+":"+node.ID)
 				continue

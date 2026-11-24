@@ -283,6 +283,7 @@ func TestAWriteRefusesABlockPointerOutsideItsIssueOrDocument(t *testing.T) {
 // chain, which the walk above the parent must not reach. The shipped types carry this test, a
 // plan task's `serves` pointing at requirements, so it swaps no schema.
 func TestASeededSpecPointsIntoItsParentsSpec(t *testing.T) {
+	t.Parallel()
 	handler, database := blockIndexHandler(t)
 	createReferenceAPIProject(t, handler, "CORE")
 	requirement := ":::requirement{#r1}\nA requirement.\n:::\n"

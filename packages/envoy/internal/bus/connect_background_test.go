@@ -28,6 +28,7 @@ func stoppedNATS(t *testing.T) (*testnats.Server, string) {
 // reconciles the stream on its first connection: before WithConnectInBackground the constructor
 // failed, which ended envoy-dispatch's boot.
 func TestAnOwningClientMadeWhileTheServerIsDownCreatesTheStreamOnItsFirstConnection(t *testing.T) {
+	t.Parallel()
 	srv, uri := stoppedNATS(t)
 	client, err := bus.ConnectOwningStream([]string{uri}, bus.WithConnectInBackground())
 	if err != nil {
@@ -57,6 +58,7 @@ func TestAnOwningClientMadeWhileTheServerIsDownCreatesTheStreamOnItsFirstConnect
 // for this client's own work. The stream alone proves less: another writer can leave it holding
 // what the test asks of it.
 func TestHookedConnectionEventsCountsTheFirstReconcileOfABackgroundClient(t *testing.T) {
+	t.Parallel()
 	srv, uri := stoppedNATS(t)
 	client, err := bus.ConnectOwningStream([]string{uri}, bus.WithConnectInBackground())
 	if err != nil {
@@ -84,6 +86,7 @@ func TestHookedConnectionEventsCountsTheFirstReconcileOfABackgroundClient(t *tes
 // registration stays for the first connection to bind; the core subscription is sent by nats.go
 // as it connects, and SubscribeCore returns at once rather than waiting out the outage.
 func TestSubscriptionsMadeBeforeTheFirstConnectionDeliverAfterIt(t *testing.T) {
+	t.Parallel()
 	srv, uri := testnats.Start(t)
 	owner, err := bus.ConnectOwningStream([]string{uri})
 	if err != nil {
@@ -187,6 +190,7 @@ func TestAPublishBeforeTheFirstConnectionFailsWithinItsOwnDeadline(t *testing.T)
 // subscription made on it before it connects relays once it has: envoy-dispatch's agent
 // conversation relay takes its viewers' subscriptions on it while the bus is down.
 func TestDialInTheBackgroundRelaysACoreSubscriptionMadeBeforeItConnects(t *testing.T) {
+	t.Parallel()
 	srv, uri := stoppedNATS(t)
 	conn, err := bus.Dial("background-dial-test", []string{uri}, lookupOf(nil), bus.WithConnectInBackground())
 	if err != nil {

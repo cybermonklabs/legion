@@ -5,10 +5,9 @@
 -- nothing to read it by. Measured on this pod against 32,001 rows, deleting 16,809 nodes took
 -- 2 minutes 51 seconds that way; with this index the same delete is seconds.
 --
--- A node is deleted on two paths this tree owns: the erase (envoy-dispatch erase), which
--- removes a node and the rows that project it, and a projection's own retirement. Both run
--- against the production tables, where document_blocks is the largest of the three, so the
--- scan is not a test-only cost.
+-- No statement of this tree deletes a graph_nodes row, so that delete is no path of this build.
+-- The index also serves the graph_edges view's tuple arm, which probes a projection row by its
+-- node (20261109215947), and document_blocks is the largest of the three tables it probes.
 --
 -- It is a performance index: no constraint and no later migration depends on it. A failed
 -- concurrent build leaves an INVALID index of this name on document_blocks, which the runner

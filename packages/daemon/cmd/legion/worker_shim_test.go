@@ -156,13 +156,9 @@ func TestWorkerShimBridgesTheChildAndExitsWithItsStatus(t *testing.T) {
 	if code != 7 {
 		t.Fatalf("exit %d, want the child's 7; stderr: %s; stdout: %s", code, stderr.String(), stdout.String())
 	}
-	select {
-	case err := <-daemon:
-		if err != nil {
-			t.Fatalf("the daemon side: %v", err)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("the shim never completed the handshake")
+	// The daemon side's report is waited for with no span of its own (testwait.Receive).
+	if err := testwait.Receive(t, "the daemon side of the shim's handshake", daemon); err != nil {
+		t.Fatalf("the daemon side: %v", err)
 	}
 	if got, err := os.ReadFile(seen); err != nil || string(got) != "provided" {
 		t.Fatalf("the child saw LEGION_SHIM_TEST_PROVIDED=%q (%v), want the providers file's trimmed contents", got, err)
@@ -269,18 +265,22 @@ esac
 
 	var stdout, stderr bytes.Buffer
 	started := time.Now()
-	code := run(context.Background(), []string{"legion", "worker-shim",
-		"--connect", "unix://" + socket, "--boot-token-file", token, "--warm-codegraph",
-		"--", "sh", "-c", `echo '{"type":"fake_ready"}'; while [ ! -e "$0" ]; do sleep 0.01; done; exit 7`, lease}, &stdout, &stderr)
+	// The shim's return is waited for with no span of its own: the wait for the warm-up must be
+	// bounded, so a shim that waited on it for ever fails here by name before the test binary's
+	// deadline (testwait.Receive), and a shim a loaded machine makes slow passes.
+	returned := make(chan int, 1)
+	go func() {
+		returned <- run(context.Background(), []string{"legion", "worker-shim",
+			"--connect", "unix://" + socket, "--boot-token-file", token, "--warm-codegraph",
+			"--", "sh", "-c", `echo '{"type":"fake_ready"}'; while [ ! -e "$0" ]; do sleep 0.01; done; exit 7`, lease}, &stdout, &stderr)
+	}()
+	code := testwait.Receive(t, "the shim's return once the agent exited", returned)
 	elapsed := time.Since(started)
 	if code != 7 {
 		t.Fatalf("exit %d, want the child's 7; stderr: %s; stdout: %s", code, stderr.String(), stdout.String())
 	}
 	if _, err := os.Stat(lease); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("the shim returned %s after the agent exited with the warm-up's lease still at %s (stat: %v): a relaunch within the minute will skip its warm-up; stderr: %s", elapsed, lease, err, stderr.String())
-	}
-	if elapsed > 10*time.Second {
-		t.Fatalf("the shim took %s to return after the agent exited; the wait for the warm-up must be bounded", elapsed)
 	}
 	if err := <-daemon; err != nil {
 		t.Fatalf("the daemon side: %v", err)
@@ -489,10 +489,11 @@ exit 9
 			var printed bytes.Buffer
 			command.Stdout, command.Stderr = &printed, &printed
 			// A shim that ran no stop leaves the agent holding these pipes until it gives up on
-			// its own, and Wait would sit there for the whole of that minute before the failure
-			// below could be read: the delay closes them a few seconds after the shim's exit
-			// instead. It changes nothing where the stop ran, the agent being gone by then.
-			command.WaitDelay = 5 * time.Second
+			// its own, a minute on, and Wait reads them to their end. The delay that cuts that
+			// read short has no span of its own, only what is left of the test binary's deadline
+			// less 30 s (testwait.Bounded): a span would cut short a read of the shim's last lines
+			// that a loaded machine made slow, and fail the row where the stop ran.
+			command.WaitDelay = testwait.Bounded(t, 1<<60, 30*time.Second)
 			if err := command.Start(); err != nil {
 				t.Fatalf("start the shim: %v", err)
 			}

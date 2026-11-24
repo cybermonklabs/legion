@@ -286,7 +286,9 @@ func manifestAsOf(t *testing.T, version int) []byte {
 // (ErrUnknownElement), which the document service answers 409 DOC_NEWER_CONTENT for rather than
 // repairing or rebuilding the document. The name says "this version" from when version 3 was the
 // manifest's; the Verification document's check names the row, so it keeps its name, and the
-// element version 4 adds has a row of its own (TestTheAttributeVersionFourAddsIsUnknownToABuildAtVersionThree).
+// elements versions 4 and 5 add each have a row of their own
+// (TestTheAttributeVersionFourAddsIsUnknownToABuildAtVersionThree,
+// TestTheAttributeVersionFiveAddsIsUnknownToABuildAtVersionFour).
 func TestTheTypedBlocksThisVersionAddsAreUnknownToABuildAtTheVersionBefore(t *testing.T) {
 	const adds = 3
 	added := []string{"requirement", "plan_task", "check"}
@@ -370,6 +372,55 @@ func TestTheAttributeVersionFourAddsIsUnknownToABuildAtVersionThree(t *testing.T
 	}
 	if err := stored.Validate(); !errors.Is(err, ErrUnknownElement) {
 		t.Errorf("a build at version %d reading a stored check carrying ci_check = %v, want ErrUnknownElement", before, err)
+	}
+}
+
+// The plan_task block's steps attribute, which manifest version 5 adds (the steps an owner's plan
+// task runs, in order), is staged by its own numbers in the same way: this build reads and writes
+// it, and a build at version 4 - the release before it - declares the plan_task block but not the
+// attribute, so it reads and writes a plan task without one, creates none carrying it and reads a
+// stored plan task carrying one as an element it does not know (ErrUnknownElement, answered 409
+// DOC_NEWER_CONTENT).
+func TestTheAttributeVersionFiveAddsIsUnknownToABuildAtVersionFour(t *testing.T) {
+	const adds = 5
+	attribute := Element{Kind: AttributeElement, Block: "plan_task", Name: "steps"}
+	versions, declared := attribute.Versions()
+	if !declared || versions.Since != adds || versions.CreatableSince != adds {
+		t.Fatalf("attribute steps of plan_task = %+v, %t; want since and creatable_since %d", versions, declared, adds)
+	}
+	if SchemaVersion() < adds {
+		t.Fatalf("SchemaVersion() = %d, below the version %d that adds steps", SchemaVersion(), adds)
+	}
+	const markdown = ":::plan_task{#b-t1 steps=\"implementer reviewer\"}\nBody.\n:::\n"
+	const withoutSteps = ":::plan_task{#b-t1}\nBody.\n:::\n"
+	stored, err := Parse(markdown)
+	if err != nil {
+		t.Fatalf("this build reads a plan task carrying steps: %v", err)
+	}
+	if _, err := ParseForWrite(markdown, nil); err != nil {
+		t.Fatalf("this build writes a plan task carrying steps: %v", err)
+	}
+
+	before := adds - 1
+	restore, err := UseManifestForTest(manifestAsOf(t, before))
+	if err != nil {
+		t.Fatalf("install the manifest as of version %d: %v", before, err)
+	}
+	t.Cleanup(restore)
+	if !IsTypedBlock("plan_task") {
+		t.Fatalf("a build at version %d does not declare the plan_task block, which version 3 adds", before)
+	}
+	if _, err := Parse(withoutSteps); err != nil {
+		t.Errorf("a build at version %d reading a plan task without steps = %v, want no error", before, err)
+	}
+	if _, err := ParseForWrite(withoutSteps, nil); err != nil {
+		t.Errorf("a build at version %d writing a plan task without steps = %v, want no error", before, err)
+	}
+	if _, err := ParseForWrite(markdown, nil); !errors.Is(err, ErrUnknownElement) || !strings.Contains(err.Error(), "steps") {
+		t.Errorf("a build at version %d writing a plan task carrying steps = %v, want ErrUnknownElement naming it", before, err)
+	}
+	if err := stored.Validate(); !errors.Is(err, ErrUnknownElement) {
+		t.Errorf("a build at version %d reading a stored plan task carrying steps = %v, want ErrUnknownElement", before, err)
 	}
 }
 

@@ -24,14 +24,17 @@ import (
 // the rest of the test - a server_processes row with no capabilities, as a build before the column
 // registers none - so every issue the test creates is created as before the issue room, one room
 // per document (decision 7 of dispatch://INFRA-1253's plan). The process registers this build's
-// schema, so it moves no other rule the fleet decides: the ask roll window, which a process of an
-// older schema opens (docs' anotherBuildServes), stays shut as with this server alone.
+// schema and this build's owner lock protocol, so it moves no other rule the fleet decides: the ask
+// roll window, which a process of an older schema opens (docs' anotherBuildServes), stays shut as
+// with this server alone, and the owner locks stay in this build's mode, where a row of protocol 0
+// would stamp the legacy mark and hold every owner lock in the advisory-and-row mode for an hour
+// (store.OwnerLockProtocol, owner_lock_legacy_mark).
 func holdIssuesUnconverted(t *testing.T, database *store.Store) {
 	t.Helper()
 	if _, err := database.Pool.Exec(context.Background(), `
-		insert into server_processes (instance, signing_keys, schema_version, schema_creatable, heartbeat_at)
-		values (gen_random_uuid(), '{fingerprint}', $1, $2, now() + interval '1 day')`,
-		pmdoc.SchemaVersion(), pmdoc.SchemaCreatable()); err != nil {
+		insert into server_processes (instance, signing_keys, schema_version, schema_creatable, heartbeat_at, owner_lock_protocol)
+		values (gen_random_uuid(), '{fingerprint}', $1, $2, now() + interval '1 day', $3)`,
+		pmdoc.SchemaVersion(), pmdoc.SchemaCreatable(), store.OwnerLockProtocol); err != nil {
 		t.Fatalf("add a live server process that lists no issue room: %v", err)
 	}
 }
@@ -446,67 +449,6 @@ func TestARemovalOfADocumentCitedWhileTheIssueRoomHoldsAnUnsettledEditIsRefusedF
 	}
 	assertRemovalRefused(t, handler, "a document an upload cites while the issue's room holds an unsettled edit", cited,
 		http.StatusConflict, "ARTIFACT_NOT_UNTOUCHED", notUntouchedSentence(cited, "something in Dispatch links to it"))
-}
-
-// A role document of a converted issue holds a fragment of the issue's room, and the removal
-// refuses it for that alone, not only for the role it plays: an operator's erase of its query node
-// (`envoy-dispatch erase --node artifact:<ref_key>`, which deletes the node's row as
-// graphstore.EraseNode does) leaves its row with no role to read, and the removal of the plan,
-// still untouched, answers 409 ARTIFACT_NOT_UNTOUCHED and leaves the room as it stood: the
-// documents it holds and the updates it stores.
-func TestARemovalOfAnIssueRoomsDocumentIsRefusedOnceItsQueryNodeIsErased(t *testing.T) {
-	ctx := context.Background()
-	handler, database, _ := newTestServer(t, testServerOptions{})
-	createRoomProject(t, handler, "FRAG")
-	issue, tree := createRoomIssue(t, handler, database, "FRAG", "A converted issue", "The spec's words.\n", "")
-	if tree == "" {
-		t.Fatalf("issue %s holds no tree", issue.Key)
-	}
-	// A multipart upload always carries its bytes, so plan.md of a blank line is no blank create,
-	// which a role's name refuses, and the store makes its one version empty: an untouched plan.
-	uploaded := multipartRequest(t, handler, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]string{"name": "plan.md"},
-		"plan.md", "text/markdown", []byte("\n"), "alice")
-	if uploaded.Code != http.StatusCreated {
-		t.Fatalf("upload an empty plan.md: status=%d body=%s", uploaded.Code, uploaded.Body.String())
-	}
-	plan := decodeBody[artifactUploadResponse](t, uploaded).Artifact
-	if plan.Room != tree || plan.Fragment != plan.ID || plan.Role != model.ArtifactRolePlan || len(plan.Versions) != 1 {
-		t.Fatalf("the plan reads room %q fragment %q role %q and %d versions, want room %s, fragment %s, role plan and one version",
-			plan.Room, plan.Fragment, plan.Role, len(plan.Versions), tree, plan.ID)
-	}
-	erased, err := database.Pool.Exec(ctx, `delete from graph_nodes where kind = $1 and id = $2`, graphstore.KindArtifact, plan.RefKey)
-	if err != nil || erased.RowsAffected() != 1 {
-		t.Fatalf("erase the plan's query node %s: %d rows, %v; want its one row", plan.RefKey, erased.RowsAffected(), err)
-	}
-	plan = readDocument(t, handler, plan.ID)
-	if plan.Role != "" || plan.Room != tree {
-		t.Fatalf("the plan reads role %q room %q once its query node is gone, want no role and room %s", plan.Role, plan.Room, tree)
-	}
-	roomDocuments := func() []string {
-		t.Helper()
-		var held []string
-		if err := database.Pool.QueryRow(ctx, `
-			select coalesce(array_agg(artifact_id::text order by artifact_id), '{}') from document_rooms where room = $1::uuid`, tree).Scan(&held); err != nil {
-			t.Fatalf("read the room's documents: %v", err)
-		}
-		return held
-	}
-	documents, updates := roomDocuments(), documentAppendCount(t, database, tree)
-	if want := slices.Sorted(slices.Values([]string{issue.PrimaryArtifactID, plan.ID})); !slices.Equal(documents, want) {
-		t.Fatalf("the room holds %v, want the spec and the plan, %v", documents, want)
-	}
-
-	assertRemovalRefused(t, handler, "a document of the issue's room that reads no role", plan,
-		http.StatusConflict, "ARTIFACT_NOT_UNTOUCHED", notUntouchedSentence(plan, "it shares its issue's room with the spec"))
-	if after := roomDocuments(); !slices.Equal(after, documents) {
-		t.Errorf("the room holds %v after the refused removal, want %v", after, documents)
-	}
-	if after := documentAppendCount(t, database, tree); after != updates {
-		t.Errorf("the room stores %d updates after the refused removal, %d before it", after, updates)
-	}
-	if text := artifactTextOf(t, handler, issue.PrimaryArtifactID); !strings.Contains(text, "The spec's words.") {
-		t.Errorf("the spec reads %q after the refused removal, want its words", text)
-	}
 }
 
 // An ask block of a converted document is that document's own ask (the T12b fixes of

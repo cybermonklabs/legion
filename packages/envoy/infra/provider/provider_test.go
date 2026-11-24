@@ -201,8 +201,13 @@ func TestSchemaServesTheClusteredNatsHubComponent(t *testing.T) {
 	require.ElementsMatch(t, []string{
 		"image", "machineId", "nkey", "seedSecretName", "seedSecretKey", "clientNamespaces", "allowedHosts",
 		"oidcIssuer", "oidcAudience", "oidcAccounts", "senderMessagesPerMinute", "senderMessageBurst", "cpu", "memory",
+		"consumerNames", "replaceUnderHold",
 	}, slices.Collect(maps.Keys(listener.Properties)))
 	require.ElementsMatch(t, []string{"image", "nkey", "seedSecretName", "seedSecretKey"}, listener.Required)
+	// The consumer-name mode and the writer hold's update rule: a plain string and a plain boolean,
+	// optional, which a consumer's stack values give.
+	require.Equal(t, "string", listener.Properties["consumerNames"].Type)
+	require.Equal(t, "boolean", listener.Properties["replaceUnderHold"].Type)
 	// The route credential is a Secret's name and key, never a value, so no property of it is a
 	// secret and the schema holds no password field.
 	require.Equal(t, "#/types/envoy-infra:gcp:ClusteredHubRouteAuthorization", hub.InputProperties["routeAuthorization"].Ref)
@@ -241,6 +246,11 @@ func TestSchemaServesTheDispatchComponentWithItsSecrets(t *testing.T) {
 	for _, input := range []string{"appClientId", "appId", "appPrivateKeySecretName", "appPrivateKeySecretKey"} {
 		require.False(t, dispatch.InputProperties[input].Secret, input)
 	}
+	// The verdict App's id, DISPATCH_VERDICT_APP_ID, is an optional plain string, named as the
+	// listener's own input (aws:WebhookListener's verdictAppId).
+	require.Equal(t, "string", dispatch.InputProperties["verdictAppId"].Type)
+	require.False(t, dispatch.InputProperties["verdictAppId"].Secret)
+	require.NotContains(t, dispatch.RequiredInputs, "verdictAppId")
 	// The Azure embedder's inputs are references and identifiers, never the key: the key form
 	// takes a Secret Manager path, the keyless form a tenant and a client id.
 	for _, input := range []string{
@@ -248,6 +258,14 @@ func TestSchemaServesTheDispatchComponentWithItsSecrets(t *testing.T) {
 		"azureTenantId", "azureClientId", "azureFederationAudience",
 	} {
 		require.Contains(t, dispatch.InputProperties, input)
+		require.False(t, dispatch.InputProperties[input].Secret, input)
+		require.NotContains(t, dispatch.RequiredInputs, input)
+	}
+	// The consumer-name mode and the writer hold's update rule, as gcp:ClusteredHubListener takes
+	// them: optional plain values, neither a secret.
+	require.Equal(t, "string", dispatch.InputProperties["consumerNames"].Type)
+	require.Equal(t, "boolean", dispatch.InputProperties["replaceUnderHold"].Type)
+	for _, input := range []string{"consumerNames", "replaceUnderHold"} {
 		require.False(t, dispatch.InputProperties[input].Secret, input)
 		require.NotContains(t, dispatch.RequiredInputs, input)
 	}
@@ -380,9 +398,10 @@ func TestSchemaServesTheWebhookListenerComponentWithNoSecretInput(t *testing.T) 
 	for name, input := range listener.InputProperties {
 		require.False(t, input.Secret, "%s is not a secret input", name)
 	}
-	// Every input is required but the seed, each webhook's inputs, adopt and the sender limit.
+	// Every input is required but the seed, each webhook's inputs, the verdict App's id, adopt and
+	// the sender limit.
 	require.ElementsMatch(t, []string{
-		"seedSecretArn", "githubWebhookSecretArn", "slackSigningSecretArn", "reviewerAppId", "mentionTrigger", "adopt",
+		"seedSecretArn", "githubWebhookSecretArn", "slackSigningSecretArn", "reviewerAppId", "verdictAppId", "mentionTrigger", "adopt",
 		"senderMessagesPerMinute", "senderMessageBurst",
 	}, optionalInputs(listener.InputProperties, listener.RequiredInputs))
 }

@@ -1,0 +1,13 @@
+kind: Added
+body: |-
+  `envoy-listener` serves `GET /readyz`, which takes no credential and answers whether `/v1` can
+  serve: `503 {"status":"starting"}` until `/v1` serves, `503
+  {"status":"unavailable","error":"nats unavailable"}` while the bus does not answer after that,
+  the check that turns `/healthz` `503`, and `200 {"status":"serving"}` otherwise. It is the path a
+  load balancer's health check reads, the edge listener's among them: GKE's standalone NEGs keep a
+  replica whose readiness fails, so the balancer's own check is what drops a replica whose bus is
+  cut. `/healthz` answers `200 {"status":"starting"}` from the listener's first answer, while
+  `/v1` still answers `503`, and stays as it is for the probes that read it.
+time: 2026-11-21T07:40:40Z
+custom:
+    Issue: edge-listener-behind-load-balancer

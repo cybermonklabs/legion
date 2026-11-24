@@ -29,10 +29,29 @@ func RepositoryAPI(endpoint string, repository ghrepo.Repository) string {
 
 // Client calls GitHub with an installation token. Its API is a repository's REST base
 // (RepositoryAPI), which Get, Post, GetPages and GetListPages take paths under; an empty endpoint
-// is api.github.com.
+// is api.github.com. A client whose API is GitHub's GraphQL endpoint (GraphQLEndpoint) sends
+// queries (GraphQL) instead.
+//
+// ETags, when set, makes every GET the client sends conditional: it carries the ETag GitHub last
+// answered for the same URL under the same Scope (If-None-Match), and GitHub's 304, which says the
+// answer has not changed and costs none of the token's rate limit, is read as that earlier answer
+// (ETags.keep). Nil sends every GET whole. WithETags sets it for one read. Scope names, with no
+// secret, what the token may read - its App, its installation's owner and its permissions - so
+// that clients of two scopes sharing one ETags never answer each other's reads: a token minted
+// again in the same scope keeps the answers kept before it. A client with no Scope sends every GET
+// whole, ETags or not, since nothing would keep its answers apart from another client's.
 type Client struct {
 	Token string
 	API   string
+	Scope string
+	ETags *ETags
+}
+
+// WithETags is the client with every GET conditional on what etags kept for its Scope
+// (Client.ETags), which a client with no Scope ignores.
+func (c Client) WithETags(etags *ETags) Client {
+	c.ETags = etags
+	return c
 }
 
 // Get reads path under the client's REST base into into. An answer other than 2xx is an *Answer.
@@ -153,11 +172,21 @@ func getPages[T any](ctx context.Context, c Client, path, field string) ([]T, er
 	return all, nil
 }
 
+// restAccept is the media type every REST call asks for.
+const restAccept = "application/vnd.github+json"
+
 // call sends method to target, with body as JSON when it is not nil, reads a 2xx answer into into
 // when into is not nil, and returns the next page's URL its Link header names ("" for none) and
 // GitHub's response headers. An answer other than 2xx is an *Answer; when it is a rate limit, it
-// names the budget spent, the REST API's core budget when GitHub names no other.
+// names the budget spent, the REST API's core budget when GitHub names no other. A GET of a client
+// with ETags is conditional (Client.ETags): GitHub's 304 is read as the answer kept for target, its
+// body and its next page.
 func (c Client) call(ctx context.Context, method, target string, body []byte, into any) (string, http.Header, error) {
+	return c.exchange(ctx, method, target, body, into, restAccept)
+}
+
+// exchange is call with accept as the request's Accept header.
+func (c Client) exchange(ctx context.Context, method, target string, body []byte, into any, accept string) (string, http.Header, error) {
 	var payload io.Reader
 	if body != nil {
 		payload = bytes.NewReader(body)
@@ -167,9 +196,18 @@ func (c Client) call(ctx context.Context, method, target string, body []byte, in
 		return "", nil, err
 	}
 	request.Header.Set("Authorization", "Bearer "+c.Token)
-	request.Header.Set("Accept", "application/vnd.github+json")
+	request.Header.Set("Accept", accept)
 	if body != nil {
 		request.Header.Set("Content-Type", "application/json")
+	}
+	var kept etagEntry
+	conditional := method == http.MethodGet && c.ETags != nil && c.Scope != ""
+	cacheKey := c.Scope + " " + target
+	if conditional {
+		var found bool
+		if kept, found = c.ETags.lookup(cacheKey); found {
+			request.Header.Set("If-None-Match", kept.etag)
+		}
 	}
 	response, err := http.DefaultClient.Do(request)
 	if err != nil {
@@ -180,13 +218,24 @@ func (c Client) call(ctx context.Context, method, target string, body []byte, in
 	if err != nil {
 		return "", response.Header, err
 	}
+	if response.StatusCode == http.StatusNotModified && kept.etag != "" {
+		// Unchanged since the answer kept for target: that answer is GitHub's answer now.
+		if into == nil {
+			return kept.next, response.Header, nil
+		}
+		return kept.next, response.Header, json.Unmarshal(kept.body, into)
+	}
 	if response.StatusCode < 200 || response.StatusCode > 299 {
 		return "", response.Header, c.refusal(method, request.URL, response, answer)
 	}
-	if into == nil {
-		return nextPage(response.Header.Get("Link")), response.Header, nil
+	next := nextPage(response.Header.Get("Link"))
+	if conditional {
+		c.ETags.keep(cacheKey, response.Header.Get("ETag"), answer, next)
 	}
-	return nextPage(response.Header.Get("Link")), response.Header, json.Unmarshal(answer, into)
+	if into == nil {
+		return next, response.Header, nil
+	}
+	return next, response.Header, json.Unmarshal(answer, into)
 }
 
 // refusal is response, GitHub's answer other than 2xx to method at target, as the *Answer its
@@ -255,9 +304,14 @@ func RateLimited(response *http.Response, body []byte) bool {
 // when it carries one of these, so a caller reading such a status as a verdict of its own
 // (appauth's 422 for a permission set) asks this first.
 func RateLimitSignals(response *http.Response, body []byte) bool {
-	return response.Header.Get("X-RateLimit-Remaining") == "0" ||
-		response.Header.Get("Retry-After") != "" ||
-		NamesSecondaryLimit(string(body))
+	return limitSignals(response.Header, string(body))
+}
+
+// limitSignals says whether headers or text, an answer's body or its errors' messages, carry
+// GitHub's rate limit (RateLimitSignals); GraphQL's 200 answers are read through it too
+// (GraphQLErrors.rateLimited).
+func limitSignals(headers http.Header, text string) bool {
+	return headers.Get("X-RateLimit-Remaining") == "0" || headers.Get("Retry-After") != "" || NamesSecondaryLimit(text)
 }
 
 // Limit is whether response, whose body is body, is GitHub's rate limit (RateLimited), and the
@@ -282,6 +336,28 @@ func NamesSecondaryLimit(text string) bool {
 	return false
 }
 
+// timeoutMessage is what GitHub says in the body of its answer, a 502, to a GraphQL query that ran
+// out of the time it gives one query: "We couldn't respond to your request in time. Sorry about
+// that. Please try resubmitting your request and contact us if the problem persists."
+const timeoutMessage = "couldn't respond to your request in time"
+
+// NamesTimeout says whether err carries GitHub's answer that a request ran out of the time it
+// gives one: an *Answer, however the caller wrapped it, whose body says so (timeoutMessage).
+func NamesTimeout(err error) bool {
+	var answer *Answer
+	return errors.As(err, &answer) && strings.Contains(strings.ToLower(answer.Body), timeoutMessage)
+}
+
+// Answered says whether err, the outcome of a call, is an answer GitHub gave: nil, the data it
+// answered; an answer other than 2xx (*Answer); or a 200 whose errors name what GitHub could not
+// answer (GraphQLErrors). Anything else - a connection that failed, a deadline that ended the
+// call, a token that could not be minted for it - reached no answer of GitHub's.
+func Answered(err error) bool {
+	var answer *Answer
+	var graphQLErrors GraphQLErrors
+	return err == nil || errors.As(err, &answer) || errors.As(err, &graphQLErrors)
+}
+
 // retryAfter is how long GitHub asks a caller its rate limit answered to wait before calling again,
 // as its REST documentation's "Exceeding the rate limit" says: the retry-after header's seconds,
 // else, when x-ratelimit-remaining is 0, until the x-ratelimit-reset epoch second, capped at an
@@ -293,7 +369,14 @@ func retryAfter(response *http.Response, body []byte, now time.Time) time.Durati
 	if !RateLimited(response, body) {
 		return 0
 	}
-	headers := response.Header
+	return limitWait(response.Header, now)
+}
+
+// limitWait is how long a rate limit's headers ask a caller to wait, read as retryAfter reads
+// them: the retry-after header's seconds, else the x-ratelimit-reset epoch second when
+// x-ratelimit-remaining is 0, capped at an hour, else a minute. GraphQL's own rate limit, which
+// GitHub answers 200 with, is read through it too (Client.GraphQL).
+func limitWait(headers http.Header, now time.Time) time.Duration {
 	if seconds, err := strconv.Atoi(headers.Get("Retry-After")); err == nil && seconds > 0 {
 		return time.Duration(seconds) * time.Second
 	}

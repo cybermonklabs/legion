@@ -133,6 +133,12 @@ var markVersionedDocuments = `
 	)
 	select count(*) from marked`
 
+// MarkVersionedDocumentsStatement is the tick's mark (markVersionedDocuments) for a caller outside
+// this package that runs it as readEventsAfterCursor runs it, binding the documents as $1 and the
+// marking rule as $2: api's TestAnOwedDocumentIsNamedByTheReads, which reads the documents it
+// marks named owed by the coverage and tree reads. It is the one text, not a copy of it.
+var MarkVersionedDocumentsStatement = markVersionedDocuments
+
 // readEventsAfterCursor is the first step of every block-index tick: it reads the events after its
 // build's cursor, marks owed a block index, with this build's own mark, every document they name
 // that no pass of this build's rule has stated at its version (markVersionedDocuments), gives every
@@ -177,7 +183,7 @@ var markVersionedDocuments = `
 // log's safe horizon (events.Horizon.Safe): event ids are not commit order, so an uncapped
 // `id > cursor` read could pass an event still committing, and the cursor never moves past safe.
 // A Horizon proves an observation only by a later one, so an event is read by the second tick
-// after it commits, or later while a transaction on the instance stays open across those ticks.
+// after it commits, or later while an event write of this database stays open across those ticks.
 //
 // The tick reads everything first and writes after, in one batch back to back before its commit
 // (queueWrites), so its transaction holds a transaction id for those statements alone: the safe
@@ -452,12 +458,7 @@ func (s *Service) writeObjectNodesAnotherBuildWrote(ctx context.Context, tick *B
 			tick.OrphansGone++
 		}
 	}
-	var staleLensesGone int
-	if err := pgx.BeginFunc(ctx, s.store.Pool, func(tx pgx.Tx) error {
-		var err error
-		staleLensesGone, err = graphcensus.StateStaleLensesGone(ctx, tx, "", time.Time{}, graphcensus.SweepActor)
-		return err
-	}); err != nil {
+	if staleLensesGone, err := graphcensus.StateStaleLensesGone(ctx, s.store); err != nil {
 		failed = append(failed, fmt.Errorf("state the stale lenses gone: %w", err))
 	} else {
 		tick.StaleLensesGone = staleLensesGone

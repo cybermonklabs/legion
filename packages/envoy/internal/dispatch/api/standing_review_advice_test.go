@@ -81,6 +81,7 @@ func approveThenEditLive(t *testing.T, project string) (http.Handler, string, st
 // asked for changes: the reviewer, the time the review was recorded, the state, the version and
 // the reason.
 func TestAskAdviceNamesThePersonsReviewOfTheCurrentVersion(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name  string
 		key   string
@@ -119,6 +120,7 @@ func TestAskAdviceNamesThePersonsReviewOfTheCurrentVersion(t *testing.T) {
 // An approval carries no reason of its own when the person gave none, and the advice carries the
 // review all the same: the reader says so rather than quoting nothing.
 func TestAskAdviceNamesAReviewThatCarriesNoReason(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	createAdviceProject(t, handler, "STANDBARE")
 	spec := "# Transport\n\nThe design, as read.\n"
@@ -137,6 +139,7 @@ func TestAskAdviceNamesAReviewThatCarriesNoReason(t *testing.T) {
 // The reason the advice carries is cut at standingReviewReasonLimit characters, so a reviewer who
 // wrote pages does not put them in every question's result.
 func TestAskAdviceCutsTheReviewsReasonAt500Characters(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	createAdviceProject(t, handler, "STANDLONG")
 	spec := "# Transport\n\nThe design, as read.\n"
@@ -158,6 +161,7 @@ func TestAskAdviceCutsTheReviewsReasonAt500Characters(t *testing.T) {
 // version 1, the version alice approved, and then version 3, whose text version 5 holds
 // (docs' restoreCarriedReason), and the version it names first is what the advice must carry.
 func TestAskAdviceNamesACarriedReviewAndTheVersionItsReasonGives(t *testing.T) {
+	t.Parallel()
 	handler := approvalCarryHandler(t)
 	issue := createInteractionIssue(t, handler, "STANDCARRY", "Carried twice", restoreSpec)
 	approval := reviewDocument(t, handler, issue.PrimaryArtifactID, "alice", "approved", standingReviewReason)
@@ -194,13 +198,14 @@ func TestAskAdviceNamesACarriedReviewAndTheVersionItsReasonGives(t *testing.T) {
 
 // A question anchored on the specification pins its anchor to a stored version, and where the
 // live text has changed since the newest one, the anchor's snapshot writes the next version in
-// the question's own transaction (resolveAnchor), queued until Commit runs it. Alice approved
-// version 1 and the spec was then edited live, so the question's own write leaves the document at
-// version 2, which nobody has reviewed: the advice names nothing. The table still holds version 1
-// as the newest when the advice is read, so the rule takes the version off the question's ledger
-// (docs.Ledger.PendingVersionNumber); read off the table, it would name alice's approval of the
-// text this very write moved past.
+// the question's own transaction (resolveAnchor). Alice approved version 1 and the spec was then
+// edited live, so the question's own write leaves the document at version 2, which nobody has
+// reviewed: the advice names nothing. The table still holds version 1 as the newest when the
+// advice is read, in the question's read phase, so the rule takes the version off the question's
+// ledger (docs.Ledger.PendingVersionNumber); read off the table, it would name alice's approval of
+// the text this very write moved past.
 func TestAskAdviceNamesNoReviewOfTheVersionAnAnchorsSnapshotSupersedes(t *testing.T) {
+	t.Parallel()
 	handler, issueKey, _, _ := approveThenEditLive(t, "STANDSNAP")
 
 	version, review := askAnchoredStandingReview(t, handler, issueKey)
@@ -215,11 +220,22 @@ func TestAskAdviceNamesNoReviewOfTheVersionAnAnchorsSnapshotSupersedes(t *testin
 // The live text put back to the text alice approved, the next anchored question's snapshot
 // writes version 3, which holds version 1's text byte for byte, so the restore carries her
 // approval to it in the same transaction (docs.carryApproval). The advice names that carry:
-// alice's approval, pinned to version 3 and naming version 1. The version and the carry are both
-// queued when the advice is read, and the table holds version 2 as the newest, which a read of it
-// would set against the carry's version 3 and so name nothing. The carry's time is its row's: the
-// advice is read before the write phase stores that row, and names the time the row then holds.
+// alice's approval, pinned to version 3 and naming version 1. The advice reads the stored reviews
+// in the read phase and takes the carry the write phase kept once Commit has returned
+// (docs.Ledger.WrittenReview), and the carry's time is its row's.
+//
+// The same restore over a record that moved since the approval is no restore of what alice
+// approved, whatever its text. A requirement uploaded beside the spec, in the issue's
+// Verification document, is a node of the spec's record - the spec query takes requirements
+// wherever the issue's tree holds them - and writes no version of the spec, so the record the
+// carry to version 3 pinned is no longer the spec's. The live text changed and put back again,
+// the next anchored question's snapshot writes version 5, version 3's text byte for byte: the
+// write phase pins its carry to that digest behind a savepoint, finds the version's record
+// another digest, and drops the carry. The advice names no review: the newest one is the carry to
+// version 3, and the spec is at version 5. Read in the read phase, it would name the carry to
+// version 5 that the write phase dropped.
 func TestAskAdviceNamesTheApprovalAnAnchorsSnapshotCarries(t *testing.T) {
+	t.Parallel()
 	handler, issueKey, artifactID, editLive := approveThenEditLive(t, "STANDBACK")
 	if version, _ := askAnchoredStandingReview(t, handler, issueKey); version != 2 {
 		t.Fatalf("the first anchor is pinned to version %d, want 2, the version its snapshot of the live edit writes", version)
@@ -253,11 +269,33 @@ func TestAskAdviceNamesTheApprovalAnAnchorsSnapshotCarries(t *testing.T) {
 	if review.At.IsZero() || !review.At.Equal(stored[0].CreatedAt) {
 		t.Fatalf("standing review at = %s, want the stored carry's own time %s", review.At, stored[0].CreatedAt)
 	}
+
+	uploadDocument(t, handler, "/api/v1/issues/"+issueKey, "verification.md", requirementMarkdown("r1", "Each handshake is logged."))
+	editLive(strings.Replace(restoreSpec, "behind a flag.", "behind a flag and a canary.", 1))
+	if version, _ := askAnchoredStandingReview(t, handler, issueKey); version != 4 {
+		t.Fatalf("the third anchor is pinned to version %d, want 4, the version its snapshot of the live edit writes", version)
+	}
+	editLive(restoreSpec)
+	version, review = askAnchoredStandingReview(t, handler, issueKey)
+	if version != 5 {
+		t.Fatalf("the fourth anchor is pinned to version %d, want 5, the version its snapshot of the restored text writes", version)
+	}
+	if review != nil {
+		t.Fatalf("standing review = %#v, want none: version 5 restores the text of version 3 over another record, so no carry reaches it", review)
+	}
+	listed = dispatchRequest(t, handler, http.MethodGet, "/api/v1/artifacts/"+artifactID+"/reviews", nil, "alice")
+	if listed.Code != http.StatusOK {
+		t.Fatalf("list reviews: status=%d body=%s", listed.Code, listed.Body.String())
+	}
+	if stored = decodeBody[[]model.ArtifactReview](t, listed); len(stored) != 2 || stored[0].Version != 3 {
+		t.Fatalf("reviews = %#v, want alice's approval and its carry to version 3 alone", stored)
+	}
 }
 
 // The cases that name no review. Each writes a question on an issue and reads the advice back,
 // and each must carry none.
 func TestAskAdviceNamesNoStandingReview(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name  string
 		key   string
@@ -308,6 +346,7 @@ func TestAskAdviceNamesNoStandingReview(t *testing.T) {
 // An issue created with no specification has no primary document to read, and the question is
 // written as it always was.
 func TestAskAdviceNamesNoReviewWhenTheIssueHasNoSpecification(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	createAdviceProject(t, handler, "STANDBLANK")
 	issue := createAdviceIssue(t, handler, "STANDBLANK", "No spec at all", nil)
@@ -320,6 +359,7 @@ func TestAskAdviceNamesNoReviewWhenTheIssueHasNoSpecification(t *testing.T) {
 // A review an agent wrote under its person's scope is not a person's review: the actor is of kind
 // user with the agent named beside it (Actor.Act), and the question names nothing.
 func TestAskAdviceNamesNoReviewWrittenByAnAgentUnderAPersonsScope(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	createAdviceProject(t, handler, "STANDACT")
 	spec := "# Transport\n\nThe design, as read.\n"
@@ -344,6 +384,7 @@ func TestAskAdviceNamesNoReviewWrittenByAnAgentUnderAPersonsScope(t *testing.T) 
 // A question on a project document is not on an issue, so there is no specification to read and
 // the advice carries no review at all.
 func TestAskAdviceOnAProjectDocumentNamesNoReview(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	createAdviceProject(t, handler, "STANDPROJ")
 	upload := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects/STANDPROJ/artifacts", map[string]string{
@@ -372,6 +413,7 @@ func TestAskAdviceOnAProjectDocumentNamesNoReview(t *testing.T) {
 // the rule refuses it all the same, because what the line claims is that a person read the
 // document, and a plan review is not a person.
 func TestStandingSpecReviewRefusesAPlanReviewOfTheSpecification(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	createAdviceProject(t, handler, "STANDKIND")
 	spec := "# Transport\n\nThe design, as read.\n"
@@ -383,7 +425,7 @@ func TestStandingSpecReviewRefusesAPlanReviewOfTheSpecification(t *testing.T) {
 		t.Fatalf("insert a plan review of the specification: %v", err)
 	}
 
-	review, err := standingSpecReview(context.Background(), database.Pool, nil, issue.Key)
+	review, err := standingSpecReview(context.Background(), database.Pool, issue.Key)
 	if err != nil {
 		t.Fatalf("read the standing review: %v", err)
 	}

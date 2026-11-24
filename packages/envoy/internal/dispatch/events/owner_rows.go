@@ -23,15 +23,13 @@ const (
 
 // OwnerRows are owner rows a writer takes before it writes under them, each by its owner key as
 // eventOwnerKey keys the owner of an event - "issue:<key>", or "artifact:<id>" for a document no
-// issue owns - with the first thing read standing under it, which an error or a refusal names.
-// The erase takes the owner rows it writes under through them (grapherase's lockInStoreOrder), and
-// a backfill batch the owners of its documents (graphcensus's lockBlockDocuments and
-// lockObjectOwners).
-type OwnerRows map[string]string
+// issue owns. A backfill batch takes the owners of its documents through them (graphcensus's
+// lockBlockDocuments and lockObjectOwners).
+type OwnerRows map[string]struct{}
 
-// Add records the owner of what: issue when an issue owns it, and otherwise the document artifact
-// is. A thing with neither stands under no owner row and is not recorded.
-func (o OwnerRows) Add(issue, artifact, what string) {
+// Add records the owner of a thing: issue when an issue owns it, and otherwise the document
+// artifact is. A thing with neither stands under no owner row and is not recorded.
+func (o OwnerRows) Add(issue, artifact string) {
 	key := issueOwnerPrefix + issue
 	if issue == "" {
 		if artifact == "" {
@@ -39,9 +37,7 @@ func (o OwnerRows) Add(issue, artifact, what string) {
 		}
 		key = artifactOwnerPrefix + artifact
 	}
-	if _, read := o[key]; !read {
-		o[key] = what
-	}
+	o[key] = struct{}{}
 }
 
 // LockOwnerRows takes the owner lock of each of owners (store.LockOwners) in one statement, each
@@ -55,7 +51,7 @@ func (o OwnerRows) Add(issue, artifact, what string) {
 //
 // A row gone since its key was read, or a document an issue has taken since, is no error: the
 // caller read its owners before it locked them, and it reads again under its locks what it stands
-// under now (the erase's read, the backfill batches' heldBlockRows and writeObjectBatch).
+// under now (the backfill batches' heldBlockRows and writeObjectBatch).
 func LockOwnerRows(ctx context.Context, tx pgx.Tx, owners OwnerRows) error {
 	locks := make([]store.Owner, 0, len(owners))
 	for _, key := range slices.Sorted(maps.Keys(owners)) {

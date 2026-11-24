@@ -112,6 +112,7 @@ func storedBlockNodes(t *testing.T, database *store.Store, refKey string) map[st
 // changed_by_run to the run, in the store or in what alice reads out of it, while the issue node
 // holds the one the close's own write appends, and nothing else does.
 func TestACloseMadeForARunSettlesTheIssuesDocumentsForNoRun(t *testing.T) {
+	t.Parallel()
 	// An hour, so the only settlement of the browser's update is the one the close runs.
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour, browserPeers: true})
 	documentService := deps.Docs.(*docs.Service)

@@ -171,12 +171,11 @@ const projectCopiesLock = `select pg_advisory_xact_lock($1, hashtext($2))`
 // with a namespace of its own by each family of locks that uses it: the copy locks, the owner
 // locks (store.LockOwner, "OWNR"), the owner lock gate (store.OwnerLockGateNamespace, "OWNG"),
 // duty's leases (duty.leaseNamespace, "LOOP"), a conditional edit's admission
-// (conditionalEditQueueLockNamespace) and the test hooks (the api package's
-// testHookLockNamespace, "HOOK", taken only under DISPATCH_TEST_HOOKS), and with the hashtext of
-// a name by the issue-dependency locks (api's lockProjectIssueDependencies and the deployment's
-// own, lockDeploymentIssueDependencies) and the repository-mapping locks (one mapping's write,
-// api's lockRepoProjectWrite, and the rename graph's own, api's refuseRepoRenameChain); no two of
-// those first keys are equal.
+// (conditionalEditQueueLockNamespace), the test hooks (the api package's testHookLockNamespace,
+// "HOOK", taken only under DISPATCH_TEST_HOOKS) and the boot's repository rename pass
+// (store.repoRenameLockNamespace, "RNAM"), and with the hashtext of a name by the
+// issue-dependency locks (api's lockProjectIssueDependencies and the deployment's own,
+// lockDeploymentIssueDependencies); no two of those first keys are equal.
 const copiedAsksLockNamespace int32 = 0x434F5059
 
 // lockProjectCopies serialises, for a project document, its project's copy bookkeeping: a
@@ -207,11 +206,10 @@ const copiedAsksLockNamespace int32 = 0x434F5059
 // (conditionalEditQueueLockNamespace), the issue dependencies' (api's
 // lockProjectIssueDependencies, hashtext('dispatch-issue-dependencies')), the one dependency lock
 // that is no project's, which every dependency write takes last (api's
-// lockDeploymentIssueDependencies, hashtext('dispatch-issue-dependencies-deployment')), one
-// repository mapping's write (api's lockRepoProjectWrite, hashtext('dispatch-repo-project')) and
-// the rename graph's own (api's refuseRepoRenameChain, hashtext('dispatch-repo-rename')), so a
-// copy lock cannot collide with any of those. hashtext is 32 bits wide, so two projects can still
-// share the second key. They then take turns on their copy bookkeeping and on nothing else, and
+// lockDeploymentIssueDependencies, hashtext('dispatch-issue-dependencies-deployment')), and the
+// boot's repository rename pass's (store.repoRenameLockNamespace), so a copy lock cannot collide
+// with any of those. hashtext is 32 bits wide, so two projects can still share the second key.
+// They then take turns on their copy bookkeeping and on nothing else, and
 // cannot deadlock: a holder takes the copy lock before any doc_settlements_pending row and before
 // any event append (TestCopyLockComesBeforeEveryPendingRowAndEvent), and an append takes only its
 // event owner's lock and row, which for the holder's appends are the owner lock it took before the
@@ -469,24 +467,50 @@ func documentOwner(ctx context.Context, tx pgx.Tx, artifactID string) (artifactO
 // the source's block or appends an event: the copy lock and the copies' pending rows come before
 // the source's room lock, its own pending row and its events.
 func (s *Service) SettleCopiesOf(ctx context.Context, ask model.Ask) error {
-	tx, joined := txFromContext(ctx)
-	if !joined {
-		return errUnjoined
-	}
-	if ask.BlockID == nil || ask.BlockArtifactID == nil {
-		return fmt.Errorf("ask %q is not a block ask", ask.ID)
-	}
-	owner, err := documentOwner(ctx, tx, *ask.BlockArtifactID)
+	tx, document, err := blockAskDocument(ctx, ask)
 	if err != nil {
 		return err
 	}
-	copies, err := owedCopiesOf(ctx, tx, documentAsks{artifactID: *ask.BlockArtifactID, owner: owner, asks: []model.Ask{ask}})
+	copies, err := owedCopiesOf(ctx, tx, document)
 	if err != nil {
 		return err
 	}
 	ledger := ledgerFrom(ctx)
 	ledger.copies = append(ledger.copies, copies...)
 	return nil
+}
+
+// CopiesOf answers, sorted and once each, every other document of ask's owner showing a copy of it
+// (lockedCopiesOf), read in the transaction ctx joined, and marks nothing: a route that settles the
+// copies later in the same transaction (SettleCopiesOf) reads them first, to check who may write
+// each copy before its first document call. It takes the copy lock as lockedCopiesOf does, before
+// any pending row or event, and SettleCopiesOf takes it again in the same session, where an advisory
+// lock is re-entrant. ask is a block ask, its BlockID and BlockArtifactID set, and the caller holds
+// its owner lock, under which it read the ask.
+func (s *Service) CopiesOf(ctx context.Context, ask model.Ask) ([]string, error) {
+	tx, document, err := blockAskDocument(ctx, ask)
+	if err != nil {
+		return nil, err
+	}
+	return lockedCopiesOf(ctx, tx, document)
+}
+
+// blockAskDocument is the transaction ctx joined and the document of ask, a block ask, with the
+// owner read in that transaction without locking it (documentOwner): what CopiesOf and
+// SettleCopiesOf read the copies of ask over.
+func blockAskDocument(ctx context.Context, ask model.Ask) (pgx.Tx, documentAsks, error) {
+	tx, joined := txFromContext(ctx)
+	if !joined {
+		return nil, documentAsks{}, errUnjoined
+	}
+	if ask.BlockID == nil || ask.BlockArtifactID == nil {
+		return nil, documentAsks{}, fmt.Errorf("ask %q is not a block ask", ask.ID)
+	}
+	owner, err := documentOwner(ctx, tx, *ask.BlockArtifactID)
+	if err != nil {
+		return nil, documentAsks{}, err
+	}
+	return tx, documentAsks{artifactID: *ask.BlockArtifactID, owner: owner, asks: []model.Ask{ask}}, nil
 }
 
 // likeLiteral escapes text for a LIKE pattern, under its default escape character.

@@ -10,7 +10,7 @@ tags:
   - release
   - verification
 date: 2026-09-14
-status: active
+status: superseded in part — The production check after the merge is the tester's session unless production_check is off, not the implementer's.
 module: skills/legion-worker
 related_issues:
   - "LEGION-109"

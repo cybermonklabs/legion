@@ -177,6 +177,7 @@ func replacedOverPassedOverClaims(t *testing.T, script func(*podUpdateRig)) (*po
 // The negative control is main at fd1f52f1, BET-1182's pod on 2026-11-16: the round waited for
 // every claim with a session, asked only a ready one, and held the pod to its bound.
 func TestAnUpdateRoundDoesNotWaitForAClaimTheDaemonSuspended(t *testing.T) {
+	t.Parallel()
 	rig, line := replacedOverPassedOverClaims(t, func(rig *podUpdateRig) {
 		rig.rt.ScriptWorkspaceWork(podUpdateIssue, runtime.WorkspaceWork{Head: passedOverHead})
 	})
@@ -204,6 +205,7 @@ func TestAnUpdateRoundDoesNotWaitForAClaimTheDaemonSuspended(t *testing.T) {
 // the work is lost, whatever the read found. A message that calls lost work safe tells a role not
 // to do that work again.
 func TestAnUpdateRoundNamesTheWorkItsSuspendedClaimsLeft(t *testing.T) {
+	t.Parallel()
 	// commitRead scripts a read that finds one unpushed commit, and foundCommit holds the
 	// replacement's line to that read, whatever the disk.
 	commitRead := func(rig *podUpdateRig) {
@@ -309,6 +311,7 @@ func TestAnUpdateRoundNamesTheWorkItsSuspendedClaimsLeft(t *testing.T) {
 // Once the operator resumes the claim and it answers, the pod is replaced, and nobody is told
 // again.
 func TestAnUpdateRoundStillWaitsPastItsBoundForAnOperatorSuspension(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), suspendedRole(claim.RoleTester, supervise.SuspendedByOperator))
 	rig.drifts(podUpdateDrift)
 
@@ -346,6 +349,7 @@ func TestAnUpdateRoundStillWaitsPastItsBoundForAnOperatorSuspension(t *testing.T
 // the round passed over a claim that has not answered, through the role whose process the pod is
 // replaced through, and once every claim the round asks has answered and no turn runs.
 func TestAnUpdateRoundReadsTheWorkspaceOncePerRound(t *testing.T) {
+	t.Parallel()
 	// No claim is passed over: two workers that answer, and a failed claim the round does not
 	// wait for either. The line names the failed claim, and nothing is read: no role the round
 	// passed over left work that no role was asked to push.

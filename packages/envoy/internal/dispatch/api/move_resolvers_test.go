@@ -110,6 +110,7 @@ func closureRefKeys(t *testing.T, handler http.Handler, key string) []string {
 // moves first and then the room (T17 of this branch's plan), so each resolver reaches the room's
 // node, and the closure the spec, whose fragment of the room holds it.
 func TestEachResolverFollowsAMove(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
 	documents, _ := deps.Docs.(*docs.Service)
 	ctx := context.Background()

@@ -66,9 +66,6 @@ var subcommands = []subcommand{
 	{"backfill-files", func(ctx context.Context, args []string, env settingValues, stdout, _ io.Writer) int {
 		return backfillFiles(ctx, args, env.get("DATABASE_URL"), strings.TrimSpace(env.get("DISPATCH_FILE_STORE_BUCKET")), stdout)
 	}},
-	{"erase", func(ctx context.Context, args []string, env settingValues, stdout, stderr io.Writer) int {
-		return erase(ctx, args, env.get("DATABASE_URL"), stdout, stderr)
-	}},
 	{"lens-kind-add", func(ctx context.Context, args []string, env settingValues, stdout, stderr io.Writer) int {
 		return lensKindAdd(ctx, args, env.get("DATABASE_URL"), stdout, stderr)
 	}},
@@ -211,13 +208,15 @@ func committedOpenAPIPath() (string, error) {
 // build (schemanodes.InstallFromStore), as the server's boot does beside its own migration run,
 // so a subcommand that parses, renders or writes a document holds it to the store's types rather
 // than to the file this binary embeds. It reports each failure on out under the subcommand's
-// label. The caller closes the returned store's pool.
+// label. The caller closes the returned store's pool. The install opens one of the pool's
+// transactions, so its context is marked for the pool's nested-acquire guard
+// (store.WithTransactionTracking), as every entry point of the pool's transactions marks its own.
 func openMigrated(ctx context.Context, label, databaseURL string, out io.Writer) (*store.Store, bool) {
 	database, ok := openMigratedWithoutBlockSchema(ctx, label, databaseURL, out)
 	if !ok {
 		return nil, false
 	}
-	if err := schemanodes.InstallFromStore(ctx, database.Pool); err != nil {
+	if err := schemanodes.InstallFromStore(store.WithTransactionTracking(ctx), database.Pool); err != nil {
 		fmt.Fprintf(out, "%s: install the block schema from the store: %v\n", label, err)
 		database.Pool.Close()
 		return nil, false
@@ -281,7 +280,7 @@ func openUnmigrated(ctx context.Context, label, databaseURL string, out io.Write
 		fmt.Fprintf(out, "%s: open database: %v\n", label, err)
 		return nil, false
 	}
-	if err := schemanodes.InstallFromStore(ctx, database.Pool); err != nil {
+	if err := schemanodes.InstallFromStore(store.WithTransactionTracking(ctx), database.Pool); err != nil {
 		fmt.Fprintf(out, "%s: install the block schema from the store: %v\n", label, err)
 		database.Pool.Close()
 		return nil, false
@@ -339,7 +338,9 @@ func backfillGraphStore(ctx context.Context, databaseURL string, out io.Writer) 
 		return 1
 	}
 	defer database.Pool.Close()
-	report, err := graphcensus.Backfill(ctx, database, out)
+	// Each batch is one of the pool's transactions, marked for its nested-acquire guard as the
+	// decisions step marks the same batches under its boot and its tick.
+	report, err := graphcensus.Backfill(store.WithTransactionTracking(ctx), database, out)
 	if err != nil {
 		fmt.Fprintf(out, "backfill-graph-store: %v\n", err)
 		return 1
@@ -432,11 +433,11 @@ func runDecisionsStep(ctx context.Context, name string, convert bool, args []str
 
 // writeDecisionIssue prints the one line of what the decisions step did to issue: how many
 // answered asks it restored, how many of them it moved out of the decisions document and how many
-// took a new block id; how many it declined to restore because a person removed their block from
-// the spec, each as ask@person@v<version>; what became of the document's sections; whether it
-// retired the document; the versions it wrote; what became of the spec's approval; and each
-// approval it superseded, with the asks, as their nodes and their blocks, whose restore superseded
-// it.
+// took a new block id; how many it declined because a person removed their block, from the spec
+// or, for an ask it would move, from the decisions document while the step ran, each as
+// ask@person@v<version>; what became of the document's sections; whether it retired the
+// document; the versions it wrote; what became of the spec's approval; and each approval it
+// superseded, with the asks, as their nodes and their blocks, whose restore superseded it.
 func writeDecisionIssue(w io.Writer, name string, issue docs.DecisionIssue, dryRun bool) {
 	moved, renamed := 0, 0
 	for _, ask := range issue.Restored {

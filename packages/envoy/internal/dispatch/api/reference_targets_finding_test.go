@@ -13,6 +13,7 @@ import (
 // document block's. A document block of the same read answers its tree, which shows the read asked
 // for trees.
 func TestAFindingNamedAsAReferenceTargetAnswersItsTextTree(t *testing.T) {
+	t.Parallel()
 	rig := newReasoningRig(t)
 	const words = "The cache doubles the write path."
 	lens := rig.invoke(rig.spec, "trade-off", "alice", map[string]any{"findings": []string{words}})

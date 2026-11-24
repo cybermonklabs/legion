@@ -1,0 +1,65 @@
+kind: Added
+body: |-
+  The broker serves named credential profiles. `BROKER_PROFILES_FILE` names one JSON file,
+  `{"profiles": [...]}`; each profile names a stored secret (`source`, else its own name), may
+  narrow its `tier`, `requesters` and `maxGrant`, and carries a `github` block (accounts,
+  repositories, permissions, and `value` `installations` or `token`), a `google` block (scopes),
+  and a `proxy` block (the fields of an airlock rules entry; `hosts` required). At every policy
+  load each profile is checked against its source and served by its name; one that does not fit
+  its source, or is looser than it, is refused alone (`profile:NAME` in the refused line, with
+  `detail=`), and the first load writes one `broker: profiles applied` line with the counts. A
+  source that profiles of other names use is served only through them, and a github-app secret
+  no profile names is refused. A profile is served with its source's `dispatch-project` and
+  `project-channels` tags, which no profile field changes: a profile of a private project's
+  secret goes only to a credential that names the project, its requests and grants are hidden
+  from people outside the project and left to a person by the model judge, and a profile of a
+  `project-channels` secret goes to a credential naming a private project only behind the
+  airlock, which a profile with a `proxy` block is (`project-channels-need-airlock` otherwise).
+  A session's operator who withholds a name withholds every name
+  of the same source, profiles of it and the source itself (withholding a read profile withholds
+  its write sibling), on every live or dormant box of the session: the grants the session got
+  without asking end, and an approval a person
+  gives after the withhold stands, through the airlock's proxy too, even when a later revoke of
+  another name of that source comes. A GitHub profile's token asks
+  GitHub for the profile's permissions cut to what each installation holds, and each account's
+  token names that account's repositories alone; the values answer names what the cut left out
+  (`github_left_out`), and a cut that leaves no permission, or only `metadata` for a profile that
+  asks for more, sends nothing to GitHub and is refused `PROFILE_MINT_REFUSED`. A
+  token GitHub answers with a permission or a level past the request is refused and revoked,
+  `metadata: read` included: GitHub grants that with every installation token, so a GitHub
+  profile must name `metadata: read` and the profiles file refuses one that does not. A profile
+  that lists `repositories` must name a repository of every account it lists. The profiles file
+  is read once, and each refusal names the byte, line and column at fault. The values
+  answer of `POST /v1/grants/{id}/values` carries the grant's target in `locations`, as the
+  request signed it and sorted, and leaves the key out for a grant with no target. A
+  `value: token` profile whose account resolves to more than one installation is refused before
+  any token is minted. A Google, Azure or Anthropic federation profile of another name mints under
+  its source's binding. A profile's `requesters` may name a Google group, which a full load reads
+  as it reads a tag's; against its source's list a group entry is matched by that same group
+  alone, never by a person in it. A profile of a group's secret is the group's, and a profile of
+  an `anthropic-federation` secret is held to that type's tag rules. A restricted member's session
+  is denied every profile name `restricted-member` before the profiles file answers it, and its
+  request for a GitHub profile makes no check mint. A request may narrow a
+  profile to one account or to repositories of it with RFC 9396
+  `locations` in its signed request, matched to the profile's repositories without regard to
+  case, which the approval page prints with the profile's scope (Google scopes included); a
+  grant is reused only for the same profile, target and profile entry (a live grant of an edited
+  profile ends at the next request for it), the target is checked after the requesters, an
+  approval is refused when the target is no longer inside the profile, and the approval page's form
+  carries the digest of each profile it printed, so an approval after the profile changed is
+  refused `403 PROFILE_CHANGED`. The profile's digest is compared at every release. A GitHub
+  profile with a `proxy` block is minted by the proxy for the grant's target, and a
+  `value: token` profile is released as one placeholder, which the proxy swaps for the token in
+  a header the block names or inside a git Basic credential (`x-access-token:<placeholder>`). A
+  reread that finds a new value of a minted source, or a reread of a stored value, makes the
+  proxy read every profile of that source again. The airlock's settings
+  (`BROKER_AIRLOCK_PROXY_URL`, `BROKER_AIRLOCK_CA_CERT_FILE`, `BROKER_AIRLOCK_CA_KEY_FILE`) are
+  required only when a profile has a `proxy` block. New refusals: `TARGET_REFUSED` (400 on
+  `POST /v1/requests` and `POST /v1/grants/{id}/values`, 403 at the proxy),
+  `SERVED_ONLY_AS_PROFILES`, `PROFILE_REFUSED`,
+  `PROFILE_MINT_REFUSED` (403 at the proxy), `GITHUB_APP_FIELD_REMOVED`, and `INVALID_RELEASE`
+  (400), which a values body the route cannot read now answers. `envoy-broker profiles check
+  <file> [--against <old file>]` validates a file and prints every field a change adds and
+  removes.
+  **Deploy the profiles file with this release**: the broker refuses `BROKER_AIRLOCK_RULES_FILE`
+  at boot, and serves no github-app secret that no profile names.

@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -112,9 +111,10 @@ func appendIssueEventDirectly(ctx context.Context, tx pgx.Tx, issue, eventType s
 // pass (docs' writeObjectNodesAnotherBuildWrote): it reads the document nodes the census reads as
 // orphaned (graphcensus.OrphanedDocumentNodes), states the node at each address that read answers
 // gone (graphcensus.StateOrphanedGone), and then states every stale lens gone
-// (stateStaleLensesGoneAsTheTick). Its caller has stated the document's node gone already, and the
-// read answers no gone node, so there it answers nothing and the sweep states no node gone.
-func sweepAsTheTick(t *testing.T, database *store.Store) {
+// (stateStaleLensesGoneAsTheTick). It answers the addresses that read answered, so its caller holds
+// what the read found: no address, where the caller has stated the document's node gone already,
+// since the read answers no gone node.
+func sweepAsTheTick(t *testing.T, database *store.Store) []string {
 	t.Helper()
 	ctx := context.Background()
 	owed, err := graphcensus.OrphanedDocumentNodes(ctx, database.Pool, 1)
@@ -127,18 +127,15 @@ func sweepAsTheTick(t *testing.T, database *store.Store) {
 		}
 	}
 	stateStaleLensesGoneAsTheTick(t, database)
+	return owed
 }
 
 // stateStaleLensesGoneAsTheTick runs graphcensus.StateStaleLensesGone as the block-index tick runs
-// it: over every address, in a transaction of its own, by the tick (graphcensus.SweepActor) at the
-// database's clock.
+// it: over every stale lens of the store, in a transaction of its own, by the tick
+// (graphcensus.SweepActor) at the database's clock.
 func stateStaleLensesGoneAsTheTick(t *testing.T, database *store.Store) {
 	t.Helper()
-	ctx := context.Background()
-	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
-		_, err := graphcensus.StateStaleLensesGone(ctx, tx, "", time.Time{}, graphcensus.SweepActor)
-		return err
-	}); err != nil {
+	if _, err := graphcensus.StateStaleLensesGone(context.Background(), database); err != nil {
 		t.Fatalf("state the stale lenses gone: %v", err)
 	}
 }
@@ -171,18 +168,20 @@ func (d lensedDocument) requireRemovedBehindNoRow(t *testing.T, state string) {
 // paragraph; through one graphstore.Write the test retracts the part_of of X's first block, X#b,
 // to X's node and asserts one to the document's node (movePartOf), so X#b stands under the
 // document while its address still names X, and alice invokes a trade-off analysis LK on X#b's
-// address, which records X's row. The test removes the document as the release before this one
-// removes it (removeAsTheReleaseBefore), which states no node gone, so the document's node stands
-// live behind no row. Before the sweep, alice's GET /api/v1/lenses?on= LO and GET
-// /api/v1/references?to= LO, and the second agent's same two reads of LP, already answer what the
-// read of a lens nobody wrote answers, 404 NOT_FOUND, byte for byte once the id is substituted,
-// because LO, FO and LP are stale. The test then runs the sweep as the block-index tick runs it:
+// address, which records X's row: the store's artifact_id value of LK reads X's id
+// (recordedArtifactID). The test removes the document as the release before this one removes it
+// (removeAsTheReleaseBefore), which states no node gone, so the document's node stands live behind
+// no row. Before the sweep, alice's GET /api/v1/lenses?on= LO and GET /api/v1/references?to= LO,
+// and the second agent's same two reads of LP, already answer what the read of a lens nobody wrote
+// answers, 404 NOT_FOUND, byte for byte once the id is substituted, because LO, FO and LP are
+// stale. The test then runs the sweep as the block-index tick runs it:
 // graphcensus.StateOrphanedGone on the document's address, after which the document's node reads
 // gone and LO, FO and LP still read live, since it states nothing beneath the node gone; then
 // graphcensus.StateStaleLensesGone. The rows of the document's node, LO, FO and LP then each read
 // gone, the four reads still answer 404 NOT_FOUND, and X#b and LK still read live: each belongs to
 // X, whose row stands, and neither statement takes a node that is not a stale lens or under one.
 func TestTheOrphanSweepTakesEveryLensOnItsDocumentGone(t *testing.T) {
+	t.Parallel()
 	removed := newLensedDocument(t, "Notes a release before removes.md")
 	settle := removed.settle
 	x := uploadDocument(t, settle.handler, "/api/v1/issues/"+settle.issue.Key, "x-notes.md", "# X\n\nThe one paragraph of X.\n").Artifact
@@ -191,6 +190,10 @@ func TestTheOrphanSweepTakesEveryLensOnItsDocumentGone(t *testing.T) {
 	blockNode, xb := x.RefKey+"#"+block, refs.BlockRef(xAddress, block)
 	movePartOf(t, settle.database, settle.issue.Key, refs.BlockNodeKind, blockNode, graphstore.KindArtifact, removed.document.RefKey, false)
 	lk := settle.invoke(t, "alice's trade-off analysis LK on X#b", settle.asAlice, map[string]any{"on": xb, "kind": "trade-off"})
+	if got := recordedArtifactID(t, settle.database, lk); got != x.ID {
+		t.Errorf("the lens %s on %s records the row %s, want %s, the row of %s, which the block's address names: a lens that records no row is never stale, so its staying live below would hold nothing",
+			lk.Address, xb, got, x.ID, xAddress)
+	}
 
 	removeAsTheReleaseBefore(t, settle.database, removed.document)
 	removed.requireRemovedBehindNoRow(t, graphstore.StateLive)
@@ -240,14 +243,20 @@ func TestTheOrphanSweepTakesEveryLensOnItsDocumentGone(t *testing.T) {
 // alice's two reads of LO and the second agent's two reads of LP already answer what a lens nobody
 // wrote answers, because each is stale. The test then runs the orphan sweep as the block-index
 // tick runs it (sweepAsTheTick: graphcensus.OrphanedDocumentNodes, graphcensus.StateOrphanedGone
-// on each address that read answers, then graphcensus.StateStaleLensesGone), after which LO, FO
-// and LP each read gone in the store, and the four reads still answer 404 NOT_FOUND.
+// on each address that read answers, then graphcensus.StateStaleLensesGone). The read answers no
+// address, since the document's node reads gone and it answers no gone node, so the sweep states
+// no node gone; then LO, FO and LP each read gone in the store, and the four reads still answer
+// 404 NOT_FOUND.
 func TestTheSweepTakesTheLensesOnADocumentAnotherBuildStatedGone(t *testing.T) {
+	t.Parallel()
 	removed := newLensedDocument(t, "Notes another build states gone.md")
 	removeAsABuildStatingTheNodeGone(t, removed.settle.database, removed.document)
 	removed.requireRemovedBehindNoRow(t, graphstore.StateGone)
 	removed.requireStaleBeforeTheSweep(t)
-	sweepAsTheTick(t, removed.settle.database)
+	if owed := sweepAsTheTick(t, removed.settle.database); len(owed) != 0 {
+		t.Errorf("the orphan sweep read %q as orphaned document nodes, want none: the node of %s reads gone, and the read answers no gone node",
+			owed, removed.address)
+	}
 	for _, node := range removed.stood() {
 		if state := storedNodeOf(t, removed.settle.database, node).State; state != graphstore.StateGone {
 			t.Errorf("after the orphan sweep, %s reads %s, want gone: its document %s was stated gone with no row and no cascade", node, state, removed.address)

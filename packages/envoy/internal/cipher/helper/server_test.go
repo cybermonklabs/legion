@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -159,13 +160,40 @@ func (r *rig) login(t *testing.T) {
 	waitFor(t, func() bool { return r.srv.Broker.LoginStatus().State == "issued" })
 }
 
+// call sends req on the rig's socket and returns the helper's answer, failing t on a transport
+// error. The call runs on a goroutine of its own (sendCall) and the test waits for its answer
+// through testwait.Receive, so an op the helper never answers fails its row naming the op, at
+// testwait's margin before the test binary's deadline, and the package's later tests still run;
+// a wait_seconds the helper honours, never a span of the test's own, bounds an answer it gives.
 func (r *rig) call(t *testing.T, req Request) Response {
 	t.Helper()
-	resp, err := Call(r.sock, req, 10*time.Second)
-	if err != nil {
-		t.Fatal(err)
+	got := testwait.Receive(t, "the helper's answer to "+strconv.Quote(req.Op), sendCall(t, r.sock, req))
+	if got.err != nil {
+		t.Fatal(got.err)
 	}
-	return resp
+	return got.resp
+}
+
+// callAnswer is a helper call's reply, or the error that ended the call.
+type callAnswer struct {
+	resp Response
+	err  error
+}
+
+// sendCall sends req to the helper at sock on a goroutine of its own and returns the channel its
+// one answer comes on. The call's own deadline is the test binary's (testwait.Remaining, read here
+// on the test's goroutine), so no span of the test's ends it; its caller waits for the answer with
+// testwait.Receive, which gives up first, at testwait's margin, naming what it waited for. A call
+// the helper never answers outlives its test on that goroutine and ends with the binary.
+func sendCall(t *testing.T, sock string, req Request) <-chan callAnswer {
+	t.Helper()
+	deadline := testwait.Remaining(t, 0)
+	answers := make(chan callAnswer, 1)
+	go func() {
+		resp, err := Call(sock, req, deadline)
+		answers <- callAnswer{resp, err}
+	}()
+	return answers
 }
 
 // TestDrainRefusesARegisterThatArrivesAfterIt: a drain that finds no sessions leaves a helper
@@ -209,27 +237,68 @@ func TestUndrainTakesSessionsAgain(t *testing.T) {
 // died, or its restart reached another process — ends by itself once its bound passes, and the
 // helper logs that it did and takes registrations again. Before, such a helper refused every
 // registration on the machine until something restarted it (36 minutes on 2026-11-16,
-// dispatch://INFRA-3950).
+// dispatch://INFRA-3950). No clock decides the row. First, with the product's own timer
+// (time.AfterFunc), a drain of a 1 s bound must end by itself and log so, and no sooner than its
+// bound: the row waits for that end, bounded only by the test binary's deadline, so a drain whose
+// timer is never armed fails it by name, and then requires that at least the bound has passed
+// since just before the drain was asked for. A timer never fires early and a stall only lengthens
+// the wait, so a correct helper passes this on any host, and a timer armed with less than the bound
+// fails it. A drain that ended early would let a session register in the gap before the install
+// restarts the helper, and that session would lose its grants. Then the test holds the drain's
+// timer itself (setDrainTimer), so both limits are the product's own: the drain arms one timer, of
+// exactly its bound, and holds until that timer fires (the lower limit), and ends the moment it
+// fires (the upper limit).
 func TestADrainNoRestartFollowsEndsAtItsBound(t *testing.T) {
 	logs := &logtest.Buffer{}
 	r := newLoggedRig(t, "", slog.New(slog.NewTextHandler(logs, nil)))
 	r.login(t)
+	ended := func() int { return strings.Count(logs.Lines(DrainEndedMessage), "\n") }
 	const bound = time.Second
+
 	r.srv.SetDrainBound(bound)
-	drained := time.Now()
+	begun := time.Now()
+	if d := r.call(t, Request{Op: "drain"}); !d.OK || len(d.Sessions) != 0 || !strings.Contains(logs.Lines("draining: refusing new sessions until restart"), "bound=1s") {
+		t.Fatalf("drain with the product's own timer: %+v; want it answered with no sessions, and the drain begun with its bound 1s in:\n%s", d, logs.String())
+	}
+	testwait.Until(t, "the drain to end by its own timer and log that it did", func() (string, bool) {
+		return logs.Lines(DrainEndedMessage), !r.srv.Registry.Draining() && ended() == 1
+	})
+	if took := time.Since(begun); took < bound {
+		t.Fatalf("the drain ended by its own timer %s after it was asked for, before its bound %s", took, bound)
+	}
+	if line := logs.Lines(DrainEndedMessage); !strings.Contains(line, "level=WARN") || !strings.Contains(line, "bound=1s") {
+		t.Fatalf("log line %q; want one WARN line %q naming the bound 1s", line, DrainEndedMessage)
+	}
+
+	type armed struct {
+		bound time.Duration
+		end   func()
+	}
+	timers := make(chan armed, 2)
+	r.srv.setDrainTimer(func(d time.Duration, end func()) { timers <- armed{d, end} })
 	if d := r.call(t, Request{Op: "drain"}); !d.OK || len(d.Sessions) != 0 || !r.srv.Registry.Draining() {
 		t.Fatalf("drain: %+v", d)
 	}
-	waitFor(t, func() bool { return !r.srv.Registry.Draining() })
-	if took := time.Since(drained); took < bound {
-		t.Fatalf("the drain ended %s after it began, before its bound of %s", took, bound)
+	timer := testwait.Receive(t, "the drain to arm the timer that ends it", timers)
+	if timer.bound != bound || len(timers) != 0 {
+		t.Fatalf("the drain armed a timer of %s (and %d more); want one, of its bound %s", timer.bound, len(timers), bound)
+	}
+	if resp := r.call(t, Request{Op: "register"}); resp.Code != CodeDraining || !r.srv.Registry.Draining() {
+		t.Fatalf("register before the drain's timer fired: %+v; want DRAINING, the drain still holding", resp)
+	}
+	if n := ended(); n != 1 {
+		t.Fatalf("the drain logged that it ended before its timer fired (%d lines %q in all)", n, DrainEndedMessage)
+	}
+	timer.end()
+	if r.srv.Registry.Draining() {
+		t.Fatal("the drain still holds after its bound's timer fired")
 	}
 	if resp := r.call(t, Request{Op: "register"}); resp.Code == CodeDraining {
 		t.Fatalf("register after the drain's bound: %+v", resp)
 	}
-	line := logs.Lines(DrainEndedMessage)
-	if !strings.Contains(line, "level=WARN") || !strings.Contains(line, "bound=1s") {
-		t.Fatalf("log line %q; want one WARN line %q naming the bound 1s in:\n%s", line, DrainEndedMessage, logs.String())
+	lines := strings.Split(strings.TrimSuffix(logs.Lines(DrainEndedMessage), "\n"), "\n")
+	if last := lines[len(lines)-1]; len(lines) != 2 || !strings.Contains(last, "level=WARN") || !strings.Contains(last, "bound=1s") {
+		t.Fatalf("log lines %q; want a second WARN line %q naming the bound 1s in:\n%s", lines, DrainEndedMessage, logs.String())
 	}
 }
 
@@ -728,45 +797,39 @@ func TestRecoverRevokesThePriorEnrollmentBeforeReenrolling(t *testing.T) {
 // bounded, independent s.revoke used elsewhere whenever it gives up because the session ended
 // rather than because ctx was canceled. fakeBroker's revokeFailFirst answers every revoke with a
 // 503 (an unreachable broker, not merely a slow one) until the session has ended and its own
-// retry loop has stopped, so revokeLapsed is genuinely retrying when the session ends, however
-// long the test takes to get there: no assertion here has to land inside a real backoff window.
-// Only then is the fault cleared, so only the handed-off revoke can land the prior id.
+// retry loop has handed the id on, so revokeLapsed is genuinely retrying when the session ends,
+// however long the test takes to get there: no assertion here has to land inside a real backoff
+// window, and every wait ends on its fact. Only then is the fault cleared, so only the handed-off
+// revoke can land the prior id (endSessionThenReleaseRevokes).
 func TestRecoverFallsBackToIndependentRevokeIfTheRepinnedSessionEndsMidBackoff(t *testing.T) {
 	state := filepath.Join(t.TempDir(), "sessions.json")
 	r := startRig(t, state)
 	child := sleeper(t)
 	r.callerPID.Store(int64(child.Process.Pid))
-	first := r.call(t, Request{Op: "register", WaitSeconds: 5})
+	first := registerEnrolled(t, r)
 	// Wait for the enrolled record to actually reach disk before quiescing the old session —
 	// see TestRecoverRepinsLiveSessionsWithFreshKeys's identical wait for why this is needed.
-	saveDeadline := time.Now().Add(5 * time.Second)
-	for {
+	testwait.Until(t, "the enrolled record to reach disk before the old session is quiesced", func() ([]Record, bool) {
 		recs, err := LoadRecords(state)
 		if err != nil {
 			t.Fatal(err)
 		}
-		saved := false
-		for _, rec := range recs {
-			if rec.PID == child.Process.Pid && rec.EnrollmentID == first.EnrollmentID {
-				saved = true
-				break
-			}
-		}
-		if saved {
-			break
-		}
-		if time.Now().After(saveDeadline) {
-			t.Fatal("the enrolled record must be saved to disk before the old session is quiesced")
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+		return recs, slices.ContainsFunc(recs, func(rec Record) bool {
+			return rec.PID == child.Process.Pid && rec.EnrollmentID == first.EnrollmentID
+		})
+	})
+	// The old helper writes the state file no more from here (Registry.Close lets a save in flight
+	// finish first), so the record Recover reads below is the one just read, whatever the old
+	// helper's goroutines do as they stop; then its session ends and it stops serving.
+	r.srv.Registry.Close()
 	oldSess := r.srv.Registry.Get(child.Process.Pid)
 	r.srv.Registry.Remove(oldSess)
 	if oldSess.peer != nil {
 		oldSess.peer.Close()
 	}
 	r.cancel() // the helper dies; keys are gone with it
-	time.Sleep(100 * time.Millisecond)
+	testwait.Receive(t, "the old helper's Serve to return", r.served)
+	r.srv.waitRevokes(t)
 	// Fail every revoke of the old enrollment until the test clears it, after the session ends.
 	r.fake.mu.Lock()
 	r.fake.revokeFailFirst = failAlways
@@ -787,59 +850,19 @@ func TestRecoverFallsBackToIndependentRevokeIfTheRepinnedSessionEndsMidBackoff(t
 	}
 	// Wait for the first (failing) revoke attempt to land, then end the re-pinned session —
 	// Registry.Remove, exactly what retire/unregister would do — while revokeLapsed is still
-	// retrying: every attempt fails until the fault is cleared below, so it cannot have
-	// succeeded meanwhile.
-	attemptDeadline := time.Now().Add(5 * time.Second)
-	for {
+	// retrying: every attempt fails until the fault is cleared, so it cannot have succeeded
+	// meanwhile.
+	testwait.Until(t, "the re-pinned session's first revoke attempt of the old enrollment", func() (int, bool) {
 		r.fake.mu.Lock()
-		attempts := r.fake.revokeAttempts
-		r.fake.mu.Unlock()
-		if attempts >= 1 {
-			break
-		}
-		if time.Now().After(attemptDeadline) {
-			t.Fatal("the first revoke attempt never landed")
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+		defer r.fake.mu.Unlock()
+		return r.fake.revokeAttempts, r.fake.revokeAttempts >= 1
+	})
 	if id := sess.identity().EnrollmentID; id != "" {
 		t.Fatalf("the re-pinned session must not have reached its own first enroll yet: %q", id)
 	}
-	r.fake.mu.Lock()
-	alreadyRevoked := false
-	for _, id := range r.fake.deletes {
-		if id == first.EnrollmentID {
-			alreadyRevoked = true
-			break
-		}
-	}
-	r.fake.mu.Unlock()
-	if alreadyRevoked {
-		t.Fatal("the old enrollment was revoked while every revoke was failing")
-	}
-	endSessionThenReleaseRevokes(t, r, srv2.Registry, sess)
 	// The independent fallback must still revoke the old enrollment even though the session that
 	// was supposed to revoke it is gone.
-	revokeDeadline := time.Now().Add(10 * time.Second)
-	for {
-		r.fake.mu.Lock()
-		revoked := false
-		for _, id := range r.fake.deletes {
-			if id == first.EnrollmentID {
-				revoked = true
-				break
-			}
-		}
-		deletes := append([]string(nil), r.fake.deletes...)
-		r.fake.mu.Unlock()
-		if revoked {
-			break
-		}
-		if time.Now().After(revokeDeadline) {
-			t.Fatalf("the old enrollment must be revoked by the fallback, not abandoned: %v", deletes)
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	endSessionThenReleaseRevokes(t, r, srv2, sess, first.EnrollmentID)
 	srv2.Registry.Close()
 	srv2.Broker.Close()
 }

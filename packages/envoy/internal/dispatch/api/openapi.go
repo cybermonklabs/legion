@@ -103,98 +103,6 @@ func newOpenAPIEmitter() (*openAPIEmitter, []reflect.Type) {
 	return emitter, bothDirections
 }
 
-// openAPIDocument builds the document. It walks the table with its test hooks in, since a hook's
-// row is a row of the table wherever a deployment leaves it out (scopedRoutesNotMounted), and
-// marks each hook row x-test-hook so a reader of the document can tell the twelve apart.
-func openAPIDocument() (*openapi31.Spec, error) {
-	emitter, bothDirections := newOpenAPIEmitter()
-	for _, body := range bothDirections {
-		emitter.fail("%s is reflected both as a request body and as a response, and one schema "+
-			"cannot answer for both: a request body requires the fields tagged required:\"true\" "+
-			"and a response the fields Go's marshaller always writes, so either reading is wrong "+
-			"for one of its two directions. Give each direction a Go type of its own.",
-			openAPIGoTypeName(body))
-	}
-
-	spec := emitter.reflector.SpecEns()
-	spec.Openapi = "3.1.0"
-	spec.Info.WithTitle("Dispatch HTTP API")
-	spec.Info.WithVersion("1")
-	spec.Info.WithDescription(
-		"Generated from the Go route table (internal/dispatch/api/routes_table.go) and the Go " +
-			"types beside it (routes_shapes.go) by `envoy-dispatch openapi`. Edit those, never " +
-			"this document: it is committed so a client's types can be rendered from it, and " +
-			"`envoy-dispatch openapi --check` refuses a tree where it is stale.")
-
-	if err := emitter.resolveRawFields(); err != nil {
-		return nil, err
-	}
-
-	hooks := openAPIHookRoutes()
-	paths := map[string]*openapi31.PathItem{}
-	operationIDs := map[string]string{}
-	for _, route := range (&server{deps: Deps{TestHooksEnabled: true}}).routes() {
-		name := route.Method + " " + route.Pattern
-		operation, err := emitter.operation(route, hooks[name])
-		if err != nil {
-			return nil, err
-		}
-		id := *operation.ID
-		if taken, clash := operationIDs[id]; clash {
-			emitter.fail("operationId %s is taken by both %s and %s", id, taken, name)
-		}
-		operationIDs[id] = name
-		item := paths[route.Pattern]
-		if item == nil {
-			item = &openapi31.PathItem{}
-			paths[route.Pattern] = item
-		}
-		if err := item.SetOperation(strings.ToLower(route.Method), operation); err != nil {
-			return nil, fmt.Errorf("%s: %w", name, err)
-		}
-	}
-	for pattern, item := range paths {
-		spec.PathsEns().WithMapOfPathItemValuesItem(pattern, *item)
-	}
-
-	for key := range rawFieldSchemas {
-		if !emitter.rawFieldsSeen[key] {
-			emitter.fail("rawFieldSchemas names %s, which is no field of any type the document "+
-				"describes: drop the row or name the field it meant", key)
-		}
-	}
-	for goType, name := range schemaNames {
-		if emitter.schemaOwners[name] != goType {
-			emitter.fail("schemaNames gives %s the name %s, and the document declares no schema "+
-				"of that type: drop the row or name the type it meant", openAPIGoTypeName(goType), name)
-		}
-	}
-	if len(emitter.failures) > 0 {
-		sort.Strings(emitter.failures)
-		return nil, fmt.Errorf("emit the OpenAPI document:\n\t%s",
-			strings.Join(slices.Compact(emitter.failures), "\n\t"))
-	}
-	return spec, nil
-}
-
-// openAPIHookRoutes names every row the table mounts only with Deps.TestHooksEnabled, read as the
-// difference between the two tables rather than listed, so a hook added to routes() is marked
-// without this file being touched.
-func openAPIHookRoutes() map[string]bool {
-	served := map[string]bool{}
-	for _, route := range (&server{}).routes() {
-		served[route.Method+" "+route.Pattern] = true
-	}
-	hooks := map[string]bool{}
-	for _, route := range (&server{deps: Deps{TestHooksEnabled: true}}).routes() {
-		name := route.Method + " " + route.Pattern
-		if !served[name] {
-			hooks[name] = true
-		}
-	}
-	return hooks
-}
-
 // fail records a refusal the whole emit carries.
 func (e *openAPIEmitter) fail(format string, args ...any) {
 	e.failures = append(e.failures, fmt.Sprintf(format, args...))
@@ -842,11 +750,13 @@ func (e *openAPIEmitter) requestBody(shape routeShape, name string) (*openapi31.
 }
 
 // openAPIAnswer is one status of one operation while it is being built: every schema the route
-// answers at that status, and the content types its bytes are served as.
+// answers at that status, and the content types its bytes are served as. refusal marks a status a
+// richer refusal body answers (routeShape.Refusals), which writeError's plain body answers too.
 type openAPIAnswer struct {
 	schemas     []map[string]any
 	description string
 	opaque      []string
+	refusal     bool
 }
 
 // responses are every answer the row gives: its success with the shapes that ride it, each of the
@@ -907,8 +817,22 @@ func (e *openAPIEmitter) responses(route apiRoute, shape routeShape) (*openapi31
 			return nil, err
 		}
 	}
+	// A status that answers a richer refusal answers writeError's plain body as well: the default
+	// answer below covers only the statuses the document does not name, and a route's handler
+	// writes plain refusals at the same status as its rich one (an issue PATCH's 409
+	// ISSUE_CHANGED beside its 409 FOREIGN_CHILD_OPEN, a create's 409 PARENT_INPUT beside its 409
+	// POSSIBLE_DUPLICATE). So each such status holds errorBody beside its rich bodies.
+	plain, err := e.schema(errorBody{})
+	if err != nil {
+		return nil, err
+	}
 	for _, refusal := range shape.Refusals {
 		if err := add(refusal.Status, refusal.Body); err != nil {
+			return nil, err
+		}
+		at := answer(refusal.Status)
+		at.refusal = true
+		if err := at.hold(plain); err != nil {
 			return nil, err
 		}
 	}
@@ -923,12 +847,8 @@ func (e *openAPIEmitter) responses(route apiRoute, shape routeShape) (*openapi31
 		responses.WithMapOfResponseOrReferenceValuesItem(
 			fmt.Sprintf("%d", status), openapi31.ResponseOrReference{Response: response})
 	}
-	refusal, err := e.schema(errorBody{})
-	if err != nil {
-		return nil, err
-	}
 	responses.WithDefault(openapi31.ResponseOrReference{Response: (&openapi31.Response{
-		Content: map[string]openapi31.MediaType{"application/json": {Schema: refusal}},
+		Content: map[string]openapi31.MediaType{"application/json": {Schema: plain}},
 	}).WithDescription("A refusal: its code and its message, which every refusal this route does " +
 		"not give a richer body writes (writeError).")})
 	return responses, nil
@@ -970,7 +890,14 @@ func (a *openAPIAnswer) response(status int) (*openapi31.Response, error) {
 		for _, schema := range a.schemas {
 			shapes = append(shapes, schema)
 		}
-		content["application/json"] = openapi31.MediaType{Schema: map[string]any{"oneOf": shapes}}
+		// A refusal status's rich body carries code and error too, so it also reads as
+		// errorBody: the shapes overlap, and the body matches at least one of them, not exactly
+		// one.
+		combinator := "oneOf"
+		if a.refusal {
+			combinator = "anyOf"
+		}
+		content["application/json"] = openapi31.MediaType{Schema: map[string]any{combinator: shapes}}
 	}
 	for _, contentType := range a.opaque {
 		if _, modelled := content[contentType]; modelled {

@@ -389,13 +389,12 @@ func createPreviousGraphEdges(t *testing.T, database *store.Store) {
 	if _, err := database.Pool.Exec(context.Background(), "create view "+previousGraphEdges+" "+view); err != nil {
 		t.Fatalf("create the previous release's view: %v", err)
 	}
-	literals := func(values []string) string { return "'" + strings.Join(values, "', '") + "'" }
 	if _, err := database.Pool.Exec(context.Background(), `create view `+previousCountedEdges+` as
 		select from_kind, from_id, kind, to_kind, to_id from `+previousGraphEdges+`
 		union all
 		select from_kind, from_id, kind, to_kind, to_id from graph_edges
-		where kind in (`+literals(storeClassKinds)+`)
-		   or (kind in (`+literals(storeClassOwnKinds)+`) and from_kind in (`+literals(storeClassSources)+`))`); err != nil {
+		where kind in (`+store.QuoteLiterals(storeClassKinds)+`)
+		   or (kind in (`+store.QuoteLiterals(storeClassOwnKinds)+`) and from_kind in (`+store.QuoteLiterals(storeClassSources)+`))`); err != nil {
 		t.Fatalf("create the previous release's view with the class store beside it: %v", err)
 	}
 }
@@ -1426,7 +1425,7 @@ func writeTheStoreClass(t *testing.T, database *store.Store) []graphEdgeRow {
 
 // seededStoreClass is the rows of the class `store` every migrated store holds before any write:
 // the one constrained_by tuple from each kind of the lens catalogue to its source (migrations
-// 20261116123354 and 20261116123355), read from the store as the seed wrote them, so a kind the
+// 20261123174710 and 20261123174720), read from the store as the seed wrote them, so a kind the
 // seed adds or drops moves every expectation built on them with it.
 func seededStoreClass(t *testing.T, database *store.Store) []graphEdgeRow {
 	t.Helper()

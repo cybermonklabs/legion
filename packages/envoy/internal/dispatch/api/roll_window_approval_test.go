@@ -83,6 +83,7 @@ func requireCarriedTo(t *testing.T, handler http.Handler, artifactID string, fro
 // the case that compares the two without them, which subsumes the answer carry of the release
 // before: answering keeps the approval current.
 func TestWhileTwoBuildsServeAnAnswerKeepsTheApprovalCurrent(t *testing.T) {
+	t.Parallel()
 	handler, database, documentService := settlingCarryDocuments(t, time.Hour)
 	registerTwoBuilds(t, database)
 	ctx := context.Background()
@@ -117,6 +118,7 @@ func TestWhileTwoBuildsServeAnAnswerKeepsTheApprovalCurrent(t *testing.T) {
 // release before: an approval given on the closed issue's version stays current through the
 // reopen that restores its ask.
 func TestWhileTwoBuildsServeAReopenThatRestoresAnAskKeepsTheApprovalCurrent(t *testing.T) {
+	t.Parallel()
 	handler, database, documentService := settlingCarryDocuments(t, time.Hour)
 	registerTwoBuilds(t, database)
 	ctx := context.Background()

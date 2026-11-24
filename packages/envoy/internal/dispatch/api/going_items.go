@@ -17,7 +17,8 @@ import (
 // The five arms mirror the kind arms of search.go's own txt lateral (issue/document/comment/ask/
 // message -> table and text column); the two must stay in sync, since this is the text the model
 // is given to read for a hit search showed it, and a hit whose body says something other than
-// what search ranked is a hit the answer cites for words no reader finds there.
+// what search ranked is a hit the answer cites for words no reader finds there. The ask's arm is
+// the same expression as search's (askSearchTextOf), its answer read from the ask's node.
 //
 // The one arm written differently is the issue's, and deliberately: search's txt lateral reuses
 // r.issue_title, the title alone, because a snippet is drawn around the query's own words in it,
@@ -46,7 +47,7 @@ select w.kind, w.id, left(txt.text, $3::int)
       when 'issue' then (select issue_embedding_text(i.title, issue_embedding_spec(i.key)) from issues i where i.key = w.id)
       when 'document' then (select v.markdown from artifact_versions v where v.artifact_id = w.uuid order by v.number desc limit 1)
       when 'comment' then (select c.body from comments c where c.id = w.uuid)
-      when 'ask' then (select k.question || ' ' || ask_search_suffix(k.options, k.answer) from asks k where k.id = w.uuid)
+      when 'ask' then (select ` + askSearchTextOf("k") + ` from asks k where k.id = w.uuid)
       when 'message' then (select m.body from messages m where m.id = w.uuid)
     end as text
   ) txt on true

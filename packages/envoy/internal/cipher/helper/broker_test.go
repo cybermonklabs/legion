@@ -73,7 +73,9 @@ const failAlways = 1 << 30
 // POST /v1/oauth/token requires a DPoP proof of that key on every call and answers the device code
 // grant with loginOutcome ("issued" by default, or "denied"/"expired" when a test sets it before
 // Login, or "pending" to hold the login undecided until the test sets "issued"), minting a fresh
-// credential id on "issued", and the refresh grant with refreshOutcome ("" rotates the refresh
+// credential id on "issued". It answers each code at the status the real broker's OAuth library,
+// authelia.com/provider/oauth2, gives it: access_denied 403, the others 400. It answers the
+// refresh grant with refreshOutcome ("" rotates the refresh
 // token and moves the expiry, "invalid_grant" refuses it, "unavailable" answers 503,
 // "rate_limited" answers the broker's 429 invalid_request with Retry-After 1).
 type fakeBroker struct {
@@ -182,6 +184,12 @@ type fakeBroker struct {
 	// authorization, answering 200 with no device_code or user_code.
 	enrollEmpty2xx     bool
 	deviceAuthEmpty2xx bool
+	// oauthErrorStatus, when set, is the status of every OAuth error the token endpoint answers, in
+	// place of its own: a broker, or a proxy before it, answering 5xx, 408 or 429 with a body that
+	// still names access_denied, expired_token or invalid_grant, or another refusal status.
+	// devicePolls counts every device code grant the token endpoint receives, whatever it answers.
+	oauthErrorStatus int
+	devicePolls      int
 }
 
 func newFakeBroker(t *testing.T) *fakeBroker {
@@ -444,13 +452,19 @@ func newFakeBroker(t *testing.T) *fakeBroker {
 		}
 		f.mu.Lock()
 		defer f.mu.Unlock()
-		oauthError := func(status int, code string) { writeJSON(w, status, map[string]string{"error": code}) }
+		oauthError := func(status int, code string) {
+			if f.oauthErrorStatus != 0 {
+				status = f.oauthErrorStatus
+			}
+			writeJSON(w, status, map[string]string{"error": code})
+		}
 		if r.PostForm.Get("client_id") != oauthwire.ClientID {
 			oauthError(401, "invalid_client")
 			return
 		}
 		switch r.PostForm.Get("grant_type") {
 		case "urn:ietf:params:oauth:grant-type:device_code":
+			f.devicePolls++
 			if r.PostForm.Get("device_code") != f.deviceCode {
 				oauthError(400, "invalid_grant")
 				return
@@ -464,7 +478,7 @@ func newFakeBroker(t *testing.T) *fakeBroker {
 				oauthError(400, "authorization_pending")
 				return
 			case "denied":
-				oauthError(400, "access_denied")
+				oauthError(http.StatusForbidden, "access_denied")
 				return
 			case "expired":
 				oauthError(400, "expired_token")
@@ -647,14 +661,18 @@ func loggedInBroker(t *testing.T, f *fakeBroker, operator string) *Broker {
 	return b
 }
 
-// waitFor polls cond until it is true or 5s pass, whichever comes first, failing the test on
-// timeout. A login's first token poll comes a second after its device authorization (the
-// interval the fake names).
+// waitFor polls cond every 5 ms until it is true, failing the test when it never is. Its one bound
+// is testwait's margin before the test binary's deadline (testwait.UntilPolling), so a host too
+// loaded to reach cond within a fixed span is not a failure: with a span of 5 s, a test process
+// frozen 12 s at a time failed TestASecondLapseWaitsAgainAndRevokesBothLapsedIDs here, though the
+// helper did what the test waited for. A login's first token poll comes a second after its device
+// authorization (the interval the fake names).
 func waitFor(t *testing.T, cond func() bool) {
 	t.Helper()
-	if !testwait.Holds(5*time.Second, 5*time.Millisecond, cond) {
-		t.Fatal("condition never became true")
-	}
+	testwait.UntilPolling(t, 5*time.Millisecond, "the condition waitFor asks for", func() (bool, bool) {
+		held := cond()
+		return held, held
+	})
 }
 
 func TestLoginHoldsTheKeyAndEnrollSignsLauncherProofs(t *testing.T) {

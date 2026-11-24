@@ -198,7 +198,8 @@ mock.module("@oh-my-pi/pi-coding-agent", () => ({
 // Every name a test in this file sets or deletes. They are captured here, above the lines that
 // set ENVOY_CONFIG_FILE and delete OMP_PROFILE and PI_CODING_AGENT_DIR, so what the caller's own
 // process holds — a worker pane's live LEGION_* and DISPATCH_* among them — goes back after each
-// test and once more when this file ends: `bun test` runs every file of a package in one process,
+// test and once more when this file ends: a plain `bun test` runs every file of a package in one
+// process (the package's `test` script passes `--parallel`, which gives each file a fresh one),
 // and the next file reads the environment this one leaves.
 const environmentKeys = [
   "ENVOY_NATS_URL",
@@ -234,6 +235,13 @@ const environmentKeys = [
   "ENVOY_CONFIG_FILE",
   "OMP_PROFILE",
   "PI_CODING_AGENT_DIR",
+  // The secrets broker and the identity this machine trades there (`brokerRouteConfigured`,
+  // `@legion/envoy-client/broker-credential`). A dev box sets both, and then a listener call the
+  // fixture gives no token of its own trades for one first: the trade fails here and waits to
+  // try again, and "closes its controller-topic subscription once a later controller takes the
+  // role" saw no unregister reach the stand-in. Unset, nothing trades.
+  "AGENT_SECRETS_URL",
+  "AGENT_SECRETS_MACHINE_IDENTITY",
 ] as const;
 
 /** The names the Envoy entry writes for a pane this file starts, rather than a test: `PATH`,
@@ -251,9 +259,9 @@ restoreEnvironment([...environmentKeys, ...entryEnvironmentKeys]);
 // them. It is read rather than `process.env` because the two are the same thing only until the
 // first test runs, and a list of names that forgot one would compare that name with itself.
 //
-// `bun test` runs a package's files in one process and `afterAll` hooks run in the order they
-// were registered, so the hook below is registered under this file's cleanup hook: it still runs
-// after the restore above and sees what the next file would read, and Bun stops at the first
+// A plain `bun test` runs a package's files in one process and `afterAll` hooks run in the order
+// they were registered, so the hook below is registered under this file's cleanup hook: it still
+// runs after the restore above and sees what the next file would read, and Bun stops at the first
 // `afterAll` that throws, so a hook registered above the cleanup would leak this file's
 // temporary directories on the one run the probe exists to report. The probe is in this file,
 // and not in a file of its own, because Bun runs a directory's test files in the order the
@@ -752,7 +760,7 @@ function hostTitleReader(
 }
 
 /** Lays out a `{ parentFile, childFile }` transcript pair matching OMP's own subagent
- * convention (oh-my-pi packages/coding-agent/src/session/session-manager.ts:484-504 at the
+ * convention (oh-my-pi packages/coding-agent/src/session/session-manager.ts:495-515 at the
  * pinned tag): the child's transcript sits inside a directory named after the parent's
  * transcript file, minus its `.jsonl` extension, so
  * `fs.existsSync(path.dirname(childFile) + ".jsonl")` finds `parentFile`. */
@@ -1966,6 +1974,10 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       refuses: (message: string) => hook(handlers, "session_stop")(refusedBy(message), context),
       /** The run's end, which is what reports the turn's outcome to the daemon. */
       ends: (event: unknown) => hook(handlers, "agent_end")(event, context),
+      /** The daemon's prompt arriving over RPC, as Oh My Pi hands it to `input`. */
+      prompted: (text: string) => hook(handlers, "input")({ text, source: "rpc" }, context),
+      /** A run starting, whatever started it. */
+      starts: () => hook(handlers, "agent_start")({}, context),
     });
     /** jj's root commit: `@-` of a workspace fresh from `jj git init`, which is what a phase that
      * writes no handoff (retro, here) reports as the commit it stands on. */
@@ -2218,12 +2230,13 @@ describe.skipIf(skip)("Legion OMP extension", () => {
     // dispatch://INFRA-264: every turn of that implementer was refused by its provider, and every
     // reminder it earned bought another refused turn. The worker read nothing and said nothing, so
     // the turn earns no continuation and the record stands as the last real turn left it. One
-    // timer is armed all the same: the task the refused turn carried ended with it, and below
-    // `launch_failure_limit` the daemon counts the turn rather than failing the claim, so without
-    // it a single transient refusal would leave the issue idle with nothing to wake it. By the
-    // time the timer fires the daemon has had every refusal of the run reported, and at the limit
-    // the claim it reads is failed and the reminder is dropped — which is what ends the reminding
-    // of a session the provider refuses for ever.
+    // timer is armed all the same: the task the refused turn carried ended with it, and nothing
+    // else would wake this worker, so without it a single transient refusal would leave the issue
+    // idle. What ends the reminders is the daemon failing the claim, which the timer's record
+    // check reads: it does at once for a refusal whose status cannot clear, of the task's prompt or
+    // of a reminder's own turn, which no prompt ran and which the daemon judges from its
+    // turn-outcome report (dispatch://INFRA-4508). A refusal that can clear fails nothing, so the
+    // reminders keep their pace, and the controller is told once at six such turns in a row.
     test("a turn the provider refused earns no continuation and no record, and is woken by one timer", async () => {
       const worker = await bootStalling({});
       await worker.arrives(assignment);
@@ -2245,8 +2258,10 @@ describe.skipIf(skip)("Legion OMP extension", () => {
     });
 
     // The daemon's own counter: every turn's end is reported, under a sequence this plugin counts
-    // itself within the claim's launch generation, so the daemon can fail a claim whose provider
-    // refuses turn after turn.
+    // itself within the claim's launch generation, from which the daemon derives the claim's run of
+    // refused turns. A turn the daemon's prompt ran is judged by that prompt's result; a turn no
+    // prompt ran, a reminder's, is marked unprompted and carries the status the provider refused it
+    // with, which is what the daemon judges it by.
     test("every turn's end reports its outcome to the daemon, in sequence", async () => {
       const worker = await bootStalling({});
       const outcomes = () =>
@@ -2254,10 +2269,18 @@ describe.skipIf(skip)("Legion OMP extension", () => {
           .filter((request) => request.path === "/legion/v1/claims/turn-outcome")
           .map((request) => request.body);
 
+      await worker.prompted("Continue the task.");
+      await worker.starts();
       await worker.ends({ messages: [{ role: "assistant", stopReason: "stop" }] });
+      await worker.starts();
       await worker.ends({
         messages: [
-          { role: "assistant", stopReason: "error", errorMessage: "Overloaded: the model is busy" },
+          {
+            role: "assistant",
+            stopReason: "error",
+            errorMessage: "Overloaded: the model is busy",
+            errorStatus: 529,
+          },
         ],
       });
 
@@ -2278,8 +2301,50 @@ describe.skipIf(skip)("Legion OMP extension", () => {
           sequence: 2,
           outcome: "refused",
           message: "Overloaded: the model is busy",
+          httpStatus: 529,
+          unprompted: true,
         },
       ]);
+    });
+
+    // A prompt's run that settles with a message waiting — an Envoy steer the host runs next —
+    // is still the run the prompt's result reports: the pinned host gives a prompt the outcome of
+    // its first settled end whatever is queued (`rpc-prompt-results.ts:164-169`). So the run the
+    // waiting message starts is no prompt's, and its report says so, for the daemon to judge: a
+    // 400 there fails the claim. The entry reads nothing of `ctx.hasPendingMessages()` for this.
+    test("a run a waiting message starts after a prompt's settled end is reported unprompted", async () => {
+      const worker = await bootStalling({});
+      const outcomes = () =>
+        daemonRequests(worker.requests)
+          .filter((request) => request.path === "/legion/v1/claims/turn-outcome")
+          .map((request) => request.body);
+
+      await worker.prompted("Continue the task.");
+      await worker.starts();
+      await hook(worker.handlers, "agent_end")(
+        { messages: [{ role: "assistant", stopReason: "stop" }] },
+        { ...worker.context, hasPendingMessages: () => true }
+      );
+      await worker.starts();
+      await worker.ends({
+        messages: [
+          {
+            role: "assistant",
+            stopReason: "error",
+            errorMessage: "400 invalid_request_error",
+            errorStatus: 400,
+          },
+        ],
+      });
+
+      expect(outcomes()[0]).toMatchObject({ sequence: 1, outcome: "clean" });
+      expect(outcomes()[0]).not.toHaveProperty("unprompted");
+      expect(outcomes()[1]).toMatchObject({
+        sequence: 2,
+        outcome: "refused",
+        httpStatus: 400,
+        unprompted: true,
+      });
     });
 
     test("a turn that ends on a tool call written as text is told the call did not run", async () => {

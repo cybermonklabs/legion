@@ -30,10 +30,12 @@ func gateStepDocuments() map[string]dispatch.Approval {
 	}
 }
 
-// register_gate records one step of the deployment's design gate, and each step records one
-// document of the issue: the spec step its primary document, the criteria step its Verification
-// document. A call naming the `decisions` step, as a plugin of an earlier release may, is refused
-// as a step the deployment does not gate, since no deployment gates it (config's readDesignSteps).
+// register_gate records one step of the tree's design gate, and each step records one document of
+// the issue: the spec step its primary document, the criteria step its Verification document. A
+// deployment takes the steps it gates, and one that gates the spec and not criteria takes criteria
+// too, which holds the tree of the root that registers it. A call naming the `decisions` step, as a
+// plugin of an earlier release may, is refused as a step the deployment does not gate, since no
+// deployment gates it (config's readDesignSteps).
 //
 // The registrations a deployment takes and the ones it refuses are driven together, so a build
 // that refuses every registration fails on the accepted arms and one that takes any document for
@@ -66,14 +68,37 @@ func TestRegisterGateStepRefusals(t *testing.T) {
 			steps: []record.DesignStep{}, step: "criteria", document: notesDoc, want: record.DesignStepSpec,
 		},
 		{
+			// The Verification document is no exception there: no step joins a list that gates
+			// none, so it is recorded as the spec step and gates nothing.
+			name:  "a deployment gating no step records the Verification document as the spec step",
+			steps: []record.DesignStep{}, step: "criteria", document: verificationDoc, want: record.DesignStepSpec,
+		},
+		{
 			name:  "a deployment gating several steps needs the call to name one",
 			steps: all, document: specDoc,
 			code: "GATE_STEP_REQUIRED", status: http.StatusBadRequest, says: []string{"criteria, spec"},
 		},
 		{
+			// root-issues gates the spec alone, and its root may register the Verification
+			// document as criteria too: that row then holds the tree as the spec's does.
+			name:  "a deployment gating the spec alone takes the criteria step on the Verification document",
+			steps: []record.DesignStep{record.DesignStepSpec}, step: "criteria", document: verificationDoc, want: record.DesignStepCriteria,
+		},
+		{
+			name:  "a deployment gating the spec alone still records a call that names no step as the spec",
+			steps: []record.DesignStep{record.DesignStepSpec}, document: specDoc, want: record.DesignStepSpec,
+		},
+		{
+			name:  "a deployment gating the spec alone refuses the criteria step on the primary document",
+			steps: []record.DesignStep{record.DesignStepSpec}, step: "criteria", document: specDoc,
+			code: "GATE_STEP_DOCUMENT_MISMATCH", status: http.StatusConflict, says: []string{"criteria", "the issue's Verification document"},
+		},
+		{
+			// spec joins no list: a deployment gating the criteria alone takes no step it does
+			// not name.
 			name:  "a step the deployment does not gate",
-			steps: []record.DesignStep{record.DesignStepSpec}, step: "criteria", document: verificationDoc,
-			code: "GATE_STEP_NOT_CONFIGURED", status: http.StatusConflict, says: []string{"criteria", "spec"},
+			steps: []record.DesignStep{record.DesignStepCriteria}, step: "spec", document: specDoc,
+			code: "GATE_STEP_NOT_CONFIGURED", status: http.StatusConflict, says: []string{"spec", "criteria"},
 		},
 		{
 			name:  "the spec step on the Verification document",

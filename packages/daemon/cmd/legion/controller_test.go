@@ -53,12 +53,22 @@ type memoryController struct {
 	minted [][]byte
 }
 
-func (m *memoryController) MintController(_ context.Context, _ string, hash []byte) (uint64, error) {
+func (m *memoryController) mint(hash []byte) uint64 {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.record = controller.Record{Generation: m.record.Generation + 1, CapabilityHash: hash}
 	m.minted = append(m.minted, hash)
-	return m.record.Generation, nil
+	return m.record.Generation
+}
+
+// MintControllerThen is the in-memory mint's committed continuation.
+func (m *memoryController) MintControllerThen(_ context.Context, _ string, hash []byte, onCommit func(generation uint64)) (uint64, error) {
+	if onCommit == nil {
+		return 0, errors.New("a controller mint needs its commit hook")
+	}
+	generation := m.mint(hash)
+	onCommit(generation)
+	return generation, nil
 }
 
 func (m *memoryController) Controller(context.Context, string) (controller.Record, bool, error) {
@@ -296,7 +306,8 @@ type controllerOptions struct {
 	// waitForFile, when set, has the recording Oh My Pi wait until that file exists before it
 	// records argv, env, and cwd and exits with exitCode, so a test of the refresh loop keeps
 	// Oh My Pi running exactly until it has observed what it needs, whatever the machine's load,
-	// and then releases it by creating the file.
+	// and then releases it by creating the file, which lies in a t.TempDir of the test's own
+	// (releaseWait).
 	waitForFile string
 }
 
@@ -359,7 +370,8 @@ func newControllerStart(t *testing.T, d *controllerDaemon, opts controllerOption
 	// file `legacy-loaded-from` names, when there is one. As the controller it records its argv,
 	// a copy of the file its --append-system-prompt names and that file's mode (the command removes
 	// the file once Oh My Pi exits), environment, and working directory, and exits with the code
-	// the test asked for.
+	// the test asked for. Under LEGION_TEST_HOLD it waits for that release (releaseWait) and copies
+	// its prompt file only then.
 	omp := filepath.Join(record, "omp")
 	script := fmt.Sprintf(`#!/bin/sh
 if [ "$1" = models ]; then
@@ -384,9 +396,8 @@ fi
 %[3]s
 if [ -n "$LEGION_TEST_HOLD" ]; then
   : >%[1]s/held
-  i=0
-  while [ "$i" -lt 1200 ] && [ ! -e "$LEGION_TEST_HOLD" ]; do i=$((i + 1)); sleep 0.1; done
-  [ "$1" = --append-system-prompt ] && cp "$2" %[1]s/held-prompt
+  hold_dir=$(dirname "$LEGION_TEST_HOLD")
+%[4]s  [ "$1" = --append-system-prompt ] && cp "$2" %[1]s/held-prompt
   exit 0
 fi
 if [ "$1" = --append-system-prompt ]; then cp "$2" %[1]s/system-prompt; stat -c %%a "$2" >%[1]s/system-prompt-mode; fi
@@ -395,7 +406,7 @@ readlink /proc/self/fd/0 >%[1]s/stdin
 env -0 >%[1]s/env
 pwd >%[1]s/cwd
 exit %[2]d
-`, record, opts.exitCode, waitForFileScript(opts.waitForFile))
+`, record, opts.exitCode, waitForFileScript(opts.waitForFile), releaseWait(`"$LEGION_TEST_HOLD"`, `"$hold_dir"`))
 	if err := os.WriteFile(omp, []byte(script), 0o700); err != nil {
 		t.Fatalf("write the recording omp: %v", err)
 	}
@@ -426,19 +437,22 @@ exit %[2]d
 	return c
 }
 
-// waitForFileScript is the recording Oh My Pi's wait for file: a poll every tenth of a second,
-// bounded at two minutes so a test that never releases it still ends. Empty when file is empty,
-// so a test with no loop to wait for records and exits at once.
+// waitForFileScript is the recording Oh My Pi's wait for file (releaseWait). Empty when file is
+// empty, so a test with no loop to wait for records and exits at once.
 func waitForFileScript(file string) string {
 	if file == "" {
 		return ""
 	}
-	return fmt.Sprintf(`i=0
-while [ "$i" -lt 1200 ] && [ ! -e %q ]; do
-  i=$((i + 1))
-  sleep 0.1
-done
-`, file)
+	return releaseWait(shellprefix.Word(file), shellprefix.Word(filepath.Dir(file)))
+}
+
+// releaseWait is the recording Oh My Pi's wait for the release the test creates at file, a shell
+// word, in dir, the test's own t.TempDir: a poll every tenth of a second that ends once file
+// exists, or once the test has ended (its cleanup removed dir) or this test binary has. No span
+// of its own ends it, so Oh My Pi outlives every wait the test makes, however slow the machine,
+// and a test that never releases it still ends it.
+func releaseWait(file, dir string) string {
+	return fmt.Sprintf("while [ ! -e %s ] && [ -d %s ] && kill -0 %d 2>/dev/null; do sleep 0.1; done\n", file, dir, os.Getpid())
 }
 
 // installPlugin installs, in the operator's default Oh My Pi profile, a pi-legion manifest
@@ -744,7 +758,8 @@ func TestControllerStartLaunchesOhMyPiWithTheSharedControllerEnvironment(t *test
 		t.Fatalf("the prompt file is %s, want legion-demo-controller-<run>-system-prompt.md under %s", promptFile, filepath.Join(c.defaultDir, "secrets"))
 	}
 	// Each file's trailing newlines are dropped where the parts join.
-	wantPrompt := strings.TrimRight(string(controllerPrompt), "\n") + "\n\nDesign gate steps: `spec`. Your role's GitHub App is installed on no owner, so you have no GitHub owner and its token reaches no repository.\n\n" +
+	wantPrompt := strings.TrimRight(string(controllerPrompt), "\n") + "\n\nDesign gate steps: `spec`. A root that registers its Verification document as `criteria` " +
+		"is held on that step too. Your role's GitHub App is installed on no owner, so you have no GitHub owner and its token reaches no repository.\n\n" +
 		strings.TrimRight(string(instructions), "\n")
 	if got := c.systemPrompt(); got != wantPrompt {
 		t.Fatalf("the controller's prompt file held %q\nwant %q", got, wantPrompt)
@@ -900,7 +915,7 @@ func TestOverlappingControllerStartsEachKeepTheirOwnPromptFile(t *testing.T) {
 		code, _, _ := c.run()
 		held <- code
 	}()
-	testwait.Eventually(t, "the held run's Oh My Pi to start and wait", func() bool {
+	testwait.WithinPolling(t, testwait.Bounded(t, 1<<60, 30*time.Second), testwait.Poll, "the held run's Oh My Pi to start and wait", func() bool {
 		_, err := os.Stat(filepath.Join(c.record, "held"))
 		return err == nil
 	})
@@ -911,13 +926,8 @@ func TestOverlappingControllerStartsEachKeepTheirOwnPromptFile(t *testing.T) {
 	if err := os.WriteFile(release, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	select {
-	case code := <-held:
-		if code != 0 {
-			t.Fatalf("the held run of legion controller start = %d", code)
-		}
-	case <-time.After(2 * time.Minute):
-		t.Fatal("the held run of legion controller start never ended")
+	if code := testwait.Receive(t, "the held run of legion controller start to end", held); code != 0 {
+		t.Fatalf("the held run of legion controller start = %d", code)
 	}
 	got, err := os.ReadFile(filepath.Join(c.record, "held-prompt"))
 	if err != nil || !strings.Contains(string(got), "Design gate steps: `spec`.") {
@@ -941,7 +951,8 @@ func TestControllerStartTellsTheControllerTheDaemonsGatedSteps(t *testing.T) {
 		line  string
 	}{
 		{"two steps", []record.DesignStep{record.DesignStepCriteria, record.DesignStepSpec}, "Design gate steps: `criteria`, `spec`."},
-		{"root-issues", config.DesignGateRootIssues.Steps(), "Design gate steps: `spec`."},
+		{"root-issues", config.DesignGateRootIssues.Steps(),
+			"Design gate steps: `spec`. A root that registers its Verification document as `criteria` is held on that step too."},
 		{"off", config.DesignGateOff.Steps(), "Design gate steps: none."},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1955,7 +1966,7 @@ func TestControllerStartRefreshesTheGitHubCredentialWhileOhMyPiRuns(t *testing.T
 	acme, sjawhar := filepath.Join(ghDir, "acme", "hosts.yml"), filepath.Join(ghDir, "sjawhar", "hosts.yml")
 	// The first write holds the first token; only then does sjawhar's lease turn, so the loop,
 	// not the first fetch, is what carries the second token into the file.
-	testwait.Eventually(t, sjawhar+" to hold ghs_first", func() bool {
+	testwait.WithinPolling(t, testwait.Bounded(t, 1<<60, 30*time.Second), testwait.Poll, sjawhar+" to hold ghs_first", func() bool {
 		body, err := os.ReadFile(sjawhar)
 		return err == nil && strings.Contains(string(body), "ghs_first")
 	})
@@ -1964,7 +1975,7 @@ func TestControllerStartRefreshesTheGitHubCredentialWhileOhMyPiRuns(t *testing.T
 		t.Fatal(err)
 	}
 	tokens.setOwner("sjawhar", "ghs_second")
-	testwait.Eventually(t, sjawhar+" to hold ghs_second", func() bool {
+	testwait.WithinPolling(t, testwait.Bounded(t, 1<<60, 30*time.Second), testwait.Poll, sjawhar+" to hold ghs_second", func() bool {
 		body, err := os.ReadFile(sjawhar)
 		return err == nil && strings.Contains(string(body), "ghs_second")
 	})
@@ -1972,12 +1983,7 @@ func TestControllerStartRefreshesTheGitHubCredentialWhileOhMyPiRuns(t *testing.T
 		t.Fatal(err)
 	}
 
-	var r result
-	select {
-	case r = <-done:
-	case <-time.After(60 * time.Second):
-		t.Fatal("legion controller start did not return")
-	}
+	r := testwait.Receive(t, "legion controller start to return once Oh My Pi exited", done)
 	if r.code != 7 {
 		t.Fatalf("legion controller start = %d, want 7 (Oh My Pi's exit code); stderr %q", r.code, r.errb)
 	}
@@ -2022,7 +2028,7 @@ func TestControllerStartStopsTheRefreshLoopWhenTheCapabilityIsSuperseded(t *test
 		close(done)
 	}()
 	hostsFile := filepath.Join(c.defaultDir, "gh", "acme", "hosts.yml")
-	testwait.Eventually(t, hostsFile+" to exist", func() bool {
+	testwait.WithinPolling(t, testwait.Bounded(t, 1<<60, 30*time.Second), testwait.Poll, hostsFile+" to exist", func() bool {
 		_, err := os.Stat(hostsFile)
 		return err == nil
 	})
@@ -2033,7 +2039,7 @@ func TestControllerStartStopsTheRefreshLoopWhenTheCapabilityIsSuperseded(t *test
 		t.Fatalf("mint a second capability: status %d, err %v", status, err)
 	}
 	logFile := filepath.Join(c.defaultDir, "github-credential.log")
-	testwait.Eventually(t, logFile+" to hold \"github credential refresh stopped\"", func() bool {
+	testwait.WithinPolling(t, testwait.Bounded(t, 1<<60, 30*time.Second), testwait.Poll, logFile+" to hold \"github credential refresh stopped\"", func() bool {
 		body, err := os.ReadFile(logFile)
 		return err == nil && strings.Contains(string(body), "github credential refresh stopped")
 	})
@@ -2045,11 +2051,7 @@ func TestControllerStartStopsTheRefreshLoopWhenTheCapabilityIsSuperseded(t *test
 	if err := os.WriteFile(release, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	select {
-	case <-done:
-	case <-time.After(60 * time.Second):
-		t.Fatal("legion controller start did not return")
-	}
+	testwait.Receive(t, "legion controller start to return once Oh My Pi exited", done)
 	hosts, err := os.ReadFile(hostsFile)
 	if err != nil || string(hosts) != ghconfig.Hosts("ghs_first-read") {
 		t.Fatalf("hosts.yml = %q, %v; want it to keep the first token", hosts, err)

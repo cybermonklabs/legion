@@ -183,8 +183,9 @@ export function BodySlot({ acts: given, issue, route }: BodySlotProps): ReactNod
 /**
  * Starts the controller the reader's first act since the address was followed aborts
  * (`READER_ACTS`), and puts it in `into`: one for each following, as the body keys this on the
- * following (`useFollowing`) where it is handed no controller's ref, and the stage keys its own
- * so (`StageSlot`), started as the following is drawn. It draws nothing. It is
+ * following (`useFollowing`) where it is handed no controller's ref - drawn by the stage in a
+ * view's place where the focus was the view's (`StageSlot`), or bare in the outline's own tests -
+ * and the stage keys its own so. It draws nothing. It is
  * started in a layout effect, which runs before every passive effect of that commit, and every
  * reader of the controller reads it in a passive effect (`IssueTree.tsx`'s effect that reads
  * `addressActs`, `useFocusOnDraw`'s that calls `takesFocus`): a line drawn in the commit of the
@@ -331,7 +332,9 @@ function MatchList({
 type ReaderActs = RefObject<AbortController | undefined>;
 
 /** The body's props: the slot's own, and the reader's acts since the address was followed, which
- *  the stage watches and hands the body it draws (`acts`); left out, the body watches its own. */
+ *  the stage watches and hands the body it draws (`acts`). Left out, the body watches its own from
+ *  its first draw: the stage leaves it out where it draws the body in a view's place while the
+ *  focus was the view's (`StageSlot`), and the outline's own tests draw the body bare. */
 type BodySlotProps = SlotProps & { readonly acts?: ReaderActs };
 
 /** Whether the focus is on the body's box, or was as the element holding it there left the

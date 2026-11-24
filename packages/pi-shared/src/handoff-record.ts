@@ -228,7 +228,7 @@ const STANDING = ["log", "-r", "@-", "--no-graph", "-T", "commit_id"] as const;
 
 /** A commit as a handoff record names it: 40 lower-case hexadecimal characters, the shape every
  * role's prompt asks for and the one the daemon compares a completion's head against. */
-const RECORD_HEAD = /^[0-9a-f]{40}$/;
+export const RECORD_HEAD = /^[0-9a-f]{40}$/;
 
 /** The head a handoff record's `body` names, the commit the work that record reports was done
  * against, or `undefined` when the body is no JSON object, carries no `head`, or carries one of
@@ -248,7 +248,7 @@ function recordHead(body: string): string | undefined {
 
 /** The head of `legion/<issue>@origin`, as `ready_for_update` reports it: the commit the pane's
  * jj reads for the issue branch at the remote, and `""` when the branch is not on the remote at
- * all — a planner before its first push has none, which is no error. */
+ * all — a planner step that runs before the branch's first push has none, which is no error. */
 export async function findPushedBranchHead(input: {
   readonly env: NodeJS.ProcessEnv;
   readonly jj?: JjRunner;

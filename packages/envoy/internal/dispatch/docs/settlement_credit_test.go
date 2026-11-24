@@ -24,6 +24,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // An ask block a session writes just before its issue closes - inside the settle delay, so no
@@ -516,20 +517,13 @@ func editAsBrowser(t *testing.T, service *Service, artifactID string, browser *d
 // roomWait bounds a wait on a document room's own work - sending a browser the document,
 // recording an edit, landing an append, finishing an eviction - which takes as long as the loaded
 // machine takes. It is the smaller of roomWaitCap and what the test binary's deadline leaves after
-// roomWaitMargin, so a room that never finishes fails the test by name, and leaves the binary's
-// timeout to the package's later tests. A deadline that leaves no more than roomWaitMargin to
-// begin with fails once, by name: that reads like a misconfigured run, not a room that stopped.
+// roomWaitMargin (testwait.Remaining), so a room that never finishes fails the test by name, and
+// leaves the binary's timeout to the package's later tests. A deadline that leaves no more than
+// roomWaitMargin to begin with fails once, by name, saying whether the -timeout was too short or
+// the tests before used it up.
 func roomWait(t *testing.T) time.Duration {
 	t.Helper()
-	deadline, bounded := t.Deadline()
-	if !bounded {
-		return roomWaitCap
-	}
-	left := time.Until(deadline)
-	if left <= roomWaitMargin {
-		t.Fatalf("the test binary's deadline leaves %s, not more than roomWaitMargin (%s): this looks like a misconfigured run; raise -timeout", left.Round(time.Millisecond), roomWaitMargin)
-	}
-	return min(left-roomWaitMargin, roomWaitCap)
+	return min(testwait.Remaining(t, roomWaitMargin), roomWaitCap)
 }
 
 const (

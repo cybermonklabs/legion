@@ -292,7 +292,8 @@ func catchUpRetryBackoff(attempt int) time.Duration {
 }
 
 // catchUpLoadingWait is how often, and catchUpLoadingTimeout for how long, a catch-up scheduled for
-// a room still loading (keepInstance) looks again for ygo to publish it.
+// a room still loading (keepInstance) looks again for ygo to publish it. A join's commit waits for
+// a load of its room under way by the same two (awaitRoomLoad).
 const (
 	catchUpLoadingWait    = 10 * time.Millisecond
 	catchUpLoadingTimeout = 5 * time.Second

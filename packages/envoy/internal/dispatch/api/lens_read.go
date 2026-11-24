@@ -195,7 +195,7 @@ func lensRowsStatement(source, narrow, order, gone, viewer string) string {
 		` + refs.LensKindSQL("held", `kind_node.id, coalesce(kind_node.attributes->>'`+graphstore.AttributeWords+`', '') as words`, viewer) + `
 	) chosen_kind on true
 	left join lateral (
-		` + refs.CurrentFarEndSQL(`newest.to_kind, newest.to_id`, lens, `held.id`, graphstore.TupleAuthoredBy) + `
+		` + refs.CurrentFarEndSQL(lens, `held.id`, graphstore.TupleAuthoredBy) + `
 	) author on true
 	left join lateral (
 		select array_agg(linked.to_id order by linked.seq) as ids
@@ -237,7 +237,7 @@ var lensesOnNodeQuery = lensRowsStatement(`(
 // being $2 (lensRowsStatement): the lenses a chain reaches that the read holds no row of yet.
 var lensesByIDQuery = lensRowsStatement(`graph_nodes held
 	left join lateral (
-		`+refs.CurrentFarEndSQL(`newest.to_kind, newest.to_id`, `'`+graphstore.KindLens+`'`, `held.id`, graphstore.TuplePartOf)+`
+		`+refs.CurrentFarEndSQL(`'`+graphstore.KindLens+`'`, `held.id`, graphstore.TuplePartOf)+`
 	) placed on true`,
 	`held.kind = '`+graphstore.KindLens+`' and held.id = any($1)`, ``, "$2", "$3")
 
@@ -562,13 +562,12 @@ func lensChildren(ctx context.Context, q refs.Queryer, viewer any, ids []string)
 // each lens on it, so a lens answers one on in every read, and a read of the address a lens answers
 // as its on lists that lens.
 //
-// Its statements, beside the node's own: the address a lens names it by, where it can be pinned -
-// a retired document, a block of a document, and a block of a comment or a part of an ask no
-// current revision holds (lensReadNode's pinnable); the lenses on the node; the lenses a chain
-// reaches that stand elsewhere, one statement for each depth of a walk that meets any; the findings
-// and the risks of every lens answered, one statement each; and one call of the registry
-// (refs.Nodes) for the place of every lens answered that stands elsewhere than on the node or on a
-// lens the read holds, and every check a risk names.
+// Its statements, beside the node's own: the address a lens names it by, where it is a document, a
+// block of one, a block of a comment or a part of an ask (pinnedKinds); the lenses on the node; the
+// lenses a chain reaches that stand elsewhere, one statement for each depth of a walk that meets
+// any; the findings and the risks of every lens answered, one statement each; and one call of the
+// registry (refs.Nodes) for the place of every lens answered that stands elsewhere than on the node
+// or on a lens the read holds, and every check a risk names.
 func readLenses(ctx context.Context, q refs.Queryer, who model.Actor, address string) (nodeLenses, error) {
 	notFound := errorf(http.StatusNotFound, "NOT_FOUND", "no node %q", address)
 	// Only a document block's address is resolved (resolvedNodeAddress), and a block is a kind a
@@ -580,7 +579,7 @@ func readLenses(ctx context.Context, q refs.Queryer, who model.Actor, address st
 	if !ok || !slices.Contains(lensStandsOnKinds, kind) {
 		return nodeLenses{}, notFound
 	}
-	node, found, pinnable, err := lensReadNode(ctx, q, who, kind, id, address)
+	node, found, err := lensReadNode(ctx, q, who, kind, id, address)
 	if err != nil {
 		return nodeLenses{}, err
 	}
@@ -589,7 +588,7 @@ func readLenses(ctx context.Context, q refs.Queryer, who model.Actor, address st
 	}
 	on := farEndOf(node, address)
 	named := node.Ref
-	if pinnable {
+	if slices.Contains(pinnedKinds, on.kind) {
 		pinned, err := refs.PinnedParent(ctx, q, on.kind, on.id)
 		if err != nil {
 			return nodeLenses{}, err
@@ -658,7 +657,7 @@ func readLenses(ctx context.Context, q refs.Queryer, who model.Actor, address st
 	}
 	var resolved map[refs.Target]model.GraphNode
 	if len(targets) > 0 {
-		if resolved, err = refs.Nodes(ctx, q, who, true, targets); err != nil {
+		if resolved, err = refs.Nodes(ctx, q, who, targets); err != nil {
 			return nodeLenses{}, err
 		}
 	}
@@ -727,48 +726,42 @@ var pinnedKinds = refs.PinnedKinds()
 // read at the node its address names (refs.NamedBlock), the room's node for a block of a document
 // of an issue room, which is the node a lens on it stands on. Unpinned, or pinned to a version or
 // a revision that did not hold it, it is no node, which found false says.
-//
-// pinnable is whether a lens on the node can name it at a version or a revision
-// (refs.PinnedParent): a retired document, a block of a document, current or not, since a current
-// block of a retired document is named at its last version, and a block of a comment or a part of
-// an ask no current revision holds. A document that is not retired and a current block of an item
-// are named where they stand, and so is a node of any other kind.
-func lensReadNode(ctx context.Context, q refs.Queryer, who model.Actor, kind, id, address string) (node model.GraphNode, found, pinnable bool, err error) {
+func lensReadNode(ctx context.Context, q refs.Queryer, who model.Actor, kind, id, address string) (model.GraphNode, bool, error) {
 	if kind == graphstore.KindArtifact {
 		return documentAtAddress(ctx, q, who, id)
 	}
-	node, found, err = refs.Node(ctx, q, who, kind, id, true)
+	node, found, err := refs.Node(ctx, q, who, kind, id, true)
 	if err != nil || found || !slices.Contains(pinnedKinds, kind) {
-		return node, found, found && kind == refs.BlockNodeKind, err
+		return node, found, err
 	}
 	ref, parsed := text.ParseRef(address, "")
 	if !parsed || ref.Pin == 0 {
-		return model.GraphNode{}, false, false, nil
+		return model.GraphNode{}, false, nil
 	}
 	var removed model.GraphNode
 	if kind == refs.BlockNodeKind {
 		documentKey, _, _ := strings.Cut(id, "#")
-		document, held, _, readErr := documentAtAddress(ctx, q, who, documentKey)
+		document, held, readErr := documentAtAddress(ctx, q, who, documentKey)
 		if readErr != nil || !held {
-			return model.GraphNode{}, false, false, readErr
+			return model.GraphNode{}, false, readErr
 		}
 		named, namedErr := refs.NamedBlock(ctx, q, id)
 		if namedErr != nil {
-			return model.GraphNode{}, false, false, namedErr
+			return model.GraphNode{}, false, namedErr
 		}
 		removed, err = pinnedBlockNode(ctx, q, who, document, node, false, named, ref)
 	} else {
 		item, held, readErr := refs.Node(ctx, q, who, ref.Item, ref.ID, true)
 		if readErr != nil || !held {
-			return model.GraphNode{}, false, false, readErr
+			return model.GraphNode{}, false, readErr
 		}
 		removed, err = pinnedItemBlockNode(ctx, q, who, item, node, false, id, ref)
 	}
 	var refusal *apiError
 	if errors.As(err, &refusal) && refusal.status == http.StatusNotFound {
-		return model.GraphNode{}, false, false, nil
+		return model.GraphNode{}, false, nil
 	}
-	return removed, err == nil, err == nil, err
+	return removed, err == nil, err
 }
 
 // parentAddress is the address of parent, null where there is none or it has none.

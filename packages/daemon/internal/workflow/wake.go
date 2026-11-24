@@ -228,6 +228,15 @@ func (e *Engine) listenerWake(ctx context.Context, tx pgx.Tx, fact intake.Listen
 // Only the worker of the pod's open phase is woken: the settlement is that worker's business and
 // no one else's, and an architect reads it from its own notices. A head that settles again as each
 // of its checks finishes wakes the pod no second time, because the role's resume is still open.
+//
+// Asking the apply step also keeps a settlement delivered late, or replayed from a message the
+// intake gave up on, however late, from waking anyone where the record will not take it for the
+// pull request's head now (dispatch://INFRA-1575 R1): one of a head the pull request has left, or
+// one of its head older than what the record already took. The apply step weighs it against the
+// fence the record would apply it to (classify.SettlementFor), which is the one the record
+// remembers for the head when its fence was reset, so it is stale exactly where it is with the
+// fence standing, and the woken worker's task would otherwise name a verdict that is no longer
+// the head's.
 func (e *Engine) wakeOnSettlement(ctx context.Context, tx pgx.Tx, fact intake.PullRequestChecks) (claim.Role, error) {
 	if e.cfg.Pods == nil || fact.HeadSHA == "" {
 		return "", nil
@@ -433,7 +442,7 @@ func (e *Engine) wakeReleased(ctx context.Context, tx pgx.Tx, released supervise
 		return false, err
 	}
 	if newest > 0 {
-		e.log.Warn("wake: a pod went away under an open resume of a released role; this wake closes that resume and takes its own",
+		e.warnOnCommit(ctx, "wake: a pod went away under an open resume of a released role; this wake closes that resume and takes its own",
 			"issue", issue.Key, "role", released.Role, "newest_release", newest, "kind", kind, "detail", detail)
 	}
 	taken, err := e.cfg.Pods.TakePodWake(ctx, tx, issue.Key, released.Role, kind, at, pause)
@@ -444,7 +453,7 @@ func (e *Engine) wakeReleased(ctx context.Context, tx pgx.Tx, released supervise
 	if stopping != 0 {
 		stop = StoppedByPause
 	}
-	e.log.Info("wake: a released pod is coming back", "issue", issue.Key, "role", released.Role, "kind", kind, "detail", detail,
+	e.logOnCommit(ctx, "wake: a released pod is coming back", "issue", issue.Key, "role", released.Role, "kind", kind, "detail", detail,
 		"pause", pause, "stopped_by_pause", stopping)
 	return true, e.enqueue(ctx, tx, issue.Key, wakeRow(*issue, released.Role, kind, pause, WakeTask(kind, detail, stop)))
 }

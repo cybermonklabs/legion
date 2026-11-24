@@ -107,7 +107,7 @@ function endHold(context: MutationFunctionContext, refused = false): void {
  *  key its attempts go out under, minted when the press was made. TanStack runs the write over
  *  these, so each key travels with its own press however many presses are out at once, and a
  *  surface that reads a keyed write in TanStack's mutation cache reads its presses' `variables`
- *  (`useDefaultAssigneeWrite`). A press the reader stopped is handed back by `stopped` as this very
+ *  (`useProjectSettingWrite`). A press the reader stopped is handed back by `stopped` as this very
  *  object, which is its handle: the hook finds what it holds for a press by that object alone,
  *  never by the variables it carries. */
 export interface KeyedPress<TVariables> {

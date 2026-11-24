@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -54,15 +56,34 @@ type tupleCheck struct {
 // view and the issues under it hold; and it names each requirement node of the view's own tree,
 // unless it is closed, in the one line `<block id> is a requirement on a view` of the gaps, with
 // no entry among the requirements. A block the block index has not reached has no node, so the
-// read answers it once that index runs.
+// read answers it once that index runs. While a document of the issue owes its block index, the
+// read names it among OwedDocuments and raises no missing check or plan task, and its gaps hold
+// that document's line in their place (owedGap), as issueCoverage's do. Its first statement turns
+// JIT off for the rest of the transaction q reads in (refs.TurnJITOff), as every read that walks a
+// tree does.
 func (s *server) issueCoverageOverTuples(ctx context.Context, q queryer, who model.Actor, issueKey string, trees *displayTreeReader) (model.IssueCoverage, error) {
 	coverage := model.IssueCoverage{Issue: issueKey, Requirements: []model.RequirementCoverage{}, Gaps: []string{}}
-	if err := q.QueryRow(ctx, `
+	if err := refs.TurnJITOff(ctx, q); err != nil {
+		return model.IssueCoverage{}, err
+	}
+	// The issue's spec, whether it has a plan and the documents that owe their block index, with
+	// their gap lines (queueOwedDocumentGaps), in one batch, as issueCoverage reads them.
+	var owedGaps []string
+	batch := &pgx.Batch{}
+	batch.Queue(`
 		select coalesce((select a.id::text from artifacts a where a.issue_key = $1 and a.is_primary), ''),
 		       exists (select 1 from artifacts a where a.issue_key = $1 and `+aliasedPlanRole+`)
-	`, issueKey).Scan(&coverage.SpecArtifactID, &coverage.HasPlan); err != nil {
-		return model.IssueCoverage{}, fmt.Errorf("read the documents of %s: %w", issueKey, err)
+	`, issueKey).QueryRow(func(row pgx.Row) error {
+		if err := row.Scan(&coverage.SpecArtifactID, &coverage.HasPlan); err != nil {
+			return fmt.Errorf("read the documents of %s: %w", issueKey, err)
+		}
+		return nil
+	})
+	queueOwedDocumentGaps(batch, issueKey, &coverage.OwedDocuments, &owedGaps)
+	if err := q.SendBatch(ctx, batch).Close(); err != nil {
+		return model.IssueCoverage{}, err
 	}
+	owed := len(owedGaps) > 0
 	tree, err := docs.WalkIssueTree(ctx, q, issueKey, refs.TreeCut{})
 	if err != nil {
 		return model.IssueCoverage{}, err
@@ -80,11 +101,11 @@ func (s *server) issueCoverageOverTuples(ctx context.Context, q queryer, who mod
 		return model.IssueCoverage{}, err
 	}
 	if tree.ViewOf == "" {
-		requirements, wholes, err := coverTreeRequirements(ctx, q, who, issueKey, own, issues, coverage.HasPlan, false)
+		requirements, wholes, err := coverTreeRequirements(ctx, q, who, issueKey, own, issues, coverage.HasPlan, false, owed)
 		if err != nil {
 			return model.IssueCoverage{}, err
 		}
-		coverage.Requirements, coverage.Gaps = requirements, requirementGaps(requirements)
+		coverage.Requirements, coverage.Gaps = requirements, append(requirementGaps(requirements), owedGaps...)
 		registerTreeTexts(trees, coverage.Requirements, wholes)
 		return coverage, nil
 	}
@@ -96,12 +117,12 @@ func (s *server) issueCoverageOverTuples(ctx context.Context, q queryer, who mod
 	if err != nil {
 		return model.IssueCoverage{}, err
 	}
-	requirements, wholes, err := coverTreeRequirements(ctx, q, who, tree.ViewOf, ancestor, issues, coverage.HasPlan, true)
+	requirements, wholes, err := coverTreeRequirements(ctx, q, who, tree.ViewOf, ancestor, issues, coverage.HasPlan, true, owed)
 	if err != nil {
 		return model.IssueCoverage{}, err
 	}
 	coverage.Requirements = append(coverage.Requirements, requirements...)
-	coverage.Gaps = requirementGaps(coverage.Requirements)
+	coverage.Gaps = append(requirementGaps(coverage.Requirements), owedGaps...)
 	for _, target := range own.visible {
 		if !own.closed(target) {
 			_, blockID, _ := strings.Cut(target.ID, "#")
@@ -142,7 +163,7 @@ func readTreeRequirements(ctx context.Context, q queryer, who model.Actor, tree 
 			}
 		}
 	}
-	nodes, err := refs.Nodes(ctx, q, who, true, chain)
+	nodes, err := refs.Nodes(ctx, q, who, chain)
 	if err != nil {
 		return treeRequirements{}, err
 	}
@@ -171,8 +192,10 @@ func (read treeRequirements) closed(target refs.Target) bool {
 // requirements of the issue issueKey's tree, for who: what of the nodes of issues serves it, its
 // proof, its state and its gaps, as issueCoverageOverTuples answers it, with the whole text each
 // one's text_tree is read from. With servedOnly, a requirement no check of issues serves is left
-// out, as a view lists only the requirements of its ancestor that its checks serve.
-func coverTreeRequirements(ctx context.Context, q queryer, who model.Actor, issueKey string, read treeRequirements, issues []string, hasPlan, servedOnly bool) ([]model.RequirementCoverage, []string, error) {
+// out, as a view lists only the requirements of its ancestor that its checks serve. While owed, while
+// a document of the issue owes its block index, no requirement lacks a check or a plan task, as
+// coverRequirements answers then.
+func coverTreeRequirements(ctx context.Context, q queryer, who model.Actor, issueKey string, read treeRequirements, issues []string, hasPlan, servedOnly, owed bool) ([]model.RequirementCoverage, []string, error) {
 	if len(read.visible) == 0 {
 		return nil, nil, nil
 	}
@@ -243,7 +266,7 @@ func coverTreeRequirements(ctx context.Context, q queryer, who model.Actor, issu
 			default:
 				requirement.Coverage = "unproven"
 			}
-			if requirement.State != graphstore.StateProposed {
+			if requirement.State != graphstore.StateProposed && !owed {
 				if requirement.Checks == 0 {
 					requirement.Gaps = append(requirement.Gaps, noCheckReason)
 				}
@@ -290,7 +313,7 @@ func readServingChecks(ctx context.Context, q queryer, who model.Actor, serving 
 	if len(targets) == 0 {
 		return checks, proof, nil
 	}
-	nodes, err := refs.Nodes(ctx, q, who, true, targets)
+	nodes, err := refs.Nodes(ctx, q, who, targets)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -400,8 +423,13 @@ func blockDocuments(ctx context.Context, q queryer, ids []string) (map[string]st
 // query takes, in the tree's order (docs' IssueTree.Takes), each read off its node - its words and
 // attributes from its text value, its version and text sum from its document_blocks row, its
 // document from the block's own (refs.BlockDocumentSQL) - with no document's markdown walked.
-// trees is the request's reader, nil for a caller that asked for none.
+// trees is the request's reader, nil for a caller that asked for none. Its first statement turns
+// JIT off for the rest of the transaction q reads in (refs.TurnJITOff), as every read that walks a
+// tree does.
 func verificationChecksOverTuples(ctx context.Context, q queryer, issueKey string, trees *displayTreeReader) ([]model.CheckBlock, error) {
+	if err := refs.TurnJITOff(ctx, q); err != nil {
+		return nil, err
+	}
 	tree, err := docs.WalkIssueTree(ctx, q, issueKey, refs.TreeCut{})
 	if err != nil {
 		return nil, err
