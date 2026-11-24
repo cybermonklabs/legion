@@ -633,9 +633,10 @@ func TestAnUploadOnOneProcessClearsTheAuthorItReadFromTheStore(t *testing.T) {
 // made on the room it holds. A row another process's append wrote afterwards, at a version this
 // room never took, stays pending through it.
 func TestARoomsHeldUpdatesStayBoundedAcrossManyAppendsAndAnUpload(t *testing.T) {
-	// Not parallel: it is one of the tests at the race binary's highest samples when the
-	// package runs six at once (build-cluster runs legion-race-docsiso6c-1 and -2, 7.3 and 9.5 GB
-	// against the step's 8 GB), as it grows a document's history or room far past the others'.
+	// Not parallel: alone under the race detector it holds 547 MB of live heap after a collection
+	// (build-cluster run legion-race-docssoak-1); with the detector's shadow of it that is about
+	// three times as much, so beside the package's other tests it would take the binary toward
+	// the step's 8 GB RACE_MEM_LIMIT_KB.
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "# First")
 	taskA, _ := newTestServiceInstance(t, database)
