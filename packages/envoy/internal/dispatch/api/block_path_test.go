@@ -13,7 +13,6 @@ import (
 
 	"github.com/reearth/ygo/crdt"
 	"github.com/reearth/ygo/persistence"
-
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -350,7 +349,7 @@ type failingBlockPath struct {
 	during func()
 }
 
-func (f failingBlockPath) BlockPath(context.Context, string, string) (model.BlockPath, error) {
+func (f failingBlockPath) BlockPath(context.Context, model.Actor, string, string) (model.BlockPath, error) {
 	if f.during != nil {
 		f.during()
 	}

@@ -656,7 +656,7 @@ func TestRelatedCheckBoundsDecisionBlocksPastTheAllowanceAreRecordedTimeout(t *t
 	}
 	artifact := model.Artifact{ID: issue.PrimaryArtifactID, IssueKey: &issue.Key, Project: "DBTO"}
 	checks := srv.decisionBlockChecks(context.Background(), artifact, blocks,
-		model.Actor{Kind: "user", ID: "alice"}, false)
+		model.Actor{Kind: "user", ID: "alice"}, everyReader, false)
 	if err := lockTx.Rollback(context.Background()); err != nil {
 		t.Fatalf("release the lock: %v", err)
 	}

@@ -104,8 +104,8 @@ func TestSearchLinksAnAskBlockOnlyWhileTheBlockIsANode(t *testing.T) {
 			if result.Href != wantHref {
 				t.Fatalf("ask %s href = %.120q, want %.120q", askID, result.Href, wantHref)
 			}
-			fromHref, hrefOK := text.ParseRef(server+result.Href, server)
-			fromRef, refOK := text.ParseRef(wantRef, server)
+			fromHref, hrefOK := text.ParseRef(server+result.Href, text.NewOrigins(server))
+			fromRef, refOK := text.ParseRef(wantRef, text.NewOrigins(server))
 			if !hrefOK || !refOK || fromHref != fromRef {
 				t.Fatalf("href %.120q reads as %#v (%v), want %s's %#v (%v)", result.Href, fromHref, hrefOK, wantRef, fromRef, refOK)
 			}

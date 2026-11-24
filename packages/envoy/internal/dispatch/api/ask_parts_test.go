@@ -338,7 +338,7 @@ func TestARestoredDecidedWordingMovesTheAsksPartRevision(t *testing.T) {
 	t.Parallel()
 	var documentService *docs.Service
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
-		documentService = docs.New(docs.Deps{Store: database, ServerURL: "https://dispatch.example", Settle: time.Hour})
+		documentService = docs.New(docs.Deps{Store: database, Origins: text.NewOrigins("https://dispatch.example"), Settle: time.Hour})
 		t.Cleanup(func() { _ = documentService.Shutdown(context.Background()) })
 		return documentService
 	})

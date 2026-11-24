@@ -14,13 +14,13 @@ import (
 
 	gws "github.com/gorilla/websocket"
 	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/horizontest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -40,7 +40,7 @@ func secondProcess(t *testing.T, database *store.Store) (http.Handler, *eventStr
 	t.Helper()
 	second := storetest.SecondProcess(t, database)
 	broker := events.NewBroker()
-	documentService := docs.New(docs.Deps{Store: second, Events: broker, ServerURL: "https://dispatch.example", Settle: 20 * time.Millisecond})
+	documentService := docs.New(docs.Deps{Store: second, Events: broker, Origins: text.NewOrigins("https://dispatch.example"), Settle: 20 * time.Millisecond})
 	t.Cleanup(func() {
 		if err := documentService.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown the second process's document service: %v", err)

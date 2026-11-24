@@ -641,7 +641,7 @@ func (r *router) staticHandler(w http.ResponseWriter, req *http.Request) {
 			api.WriteJSON(w, http.StatusNotFound, map[string]string{
 				"code":  "NOT_FOUND",
 				"error": "no route for " + req.Method + " " + req.URL.Path,
-				"hint":  "GET /api/v1 lists every route",
+				"hint":  "GET /api/v1, with a credential, lists every route",
 			})
 		})(w, req)
 		return

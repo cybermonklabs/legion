@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -57,9 +58,9 @@ type heldCheckReads struct {
 	readingOnce sync.Once
 }
 
-func (d *heldCheckReads) Text(ctx context.Context, artifactID string) (string, error) {
+func (d *heldCheckReads) Text(ctx context.Context, who model.Actor, artifactID string) (string, error) {
 	if artifactID != d.artifactID || ctx.Value(heldCheckReadKey{}) == nil {
-		return d.API.Text(ctx, artifactID)
+		return d.API.Text(ctx, who, artifactID)
 	}
 	resolve := false
 	d.resolveOnce.Do(func() { resolve = true })
@@ -68,7 +69,7 @@ func (d *heldCheckReads) Text(ctx context.Context, artifactID string) (string, e
 		if err := awaitCheckGate(d.release, d.stop); err != nil {
 			return "", err
 		}
-		return d.API.Text(ctx, artifactID)
+		return d.API.Text(ctx, who, artifactID)
 	}
 	reading := false
 	d.readingOnce.Do(func() { reading = true })
@@ -78,7 +79,7 @@ func (d *heldCheckReads) Text(ctx context.Context, artifactID string) (string, e
 			return "", err
 		}
 	}
-	return d.API.Text(ctx, artifactID)
+	return d.API.Text(ctx, who, artifactID)
 }
 
 // A results write whose check was reworded between its resolve and its locks reads the check's
@@ -192,9 +193,9 @@ type contendedCheckReads struct {
 	reads int
 }
 
-func (d *contendedCheckReads) Text(ctx context.Context, artifactID string) (string, error) {
+func (d *contendedCheckReads) Text(ctx context.Context, who model.Actor, artifactID string) (string, error) {
 	if artifactID != d.artifactID || ctx.Value(heldCheckReadKey{}) == nil {
-		return d.API.Text(ctx, artifactID)
+		return d.API.Text(ctx, who, artifactID)
 	}
 	d.reads++
 	if d.reads <= resolutionAttempts {
@@ -205,7 +206,7 @@ func (d *contendedCheckReads) Text(ctx context.Context, artifactID string) (stri
 			return "", err
 		}
 	}
-	return d.API.Text(ctx, artifactID)
+	return d.API.Text(ctx, who, artifactID)
 }
 
 // A results write whose check a document version rewords at each of its two attempts records
@@ -287,20 +288,20 @@ type restoredCheckReads struct {
 	resolveOnce sync.Once
 }
 
-func (d *restoredCheckReads) Text(ctx context.Context, artifactID string) (string, error) {
+func (d *restoredCheckReads) Text(ctx context.Context, who model.Actor, artifactID string) (string, error) {
 	if artifactID != d.artifactID || ctx.Value(heldCheckReadKey{}) == nil {
-		return d.API.Text(ctx, artifactID)
+		return d.API.Text(ctx, who, artifactID)
 	}
 	resolve := false
 	d.resolveOnce.Do(func() { resolve = true })
 	if !resolve {
-		return d.API.Text(ctx, artifactID)
+		return d.API.Text(ctx, who, artifactID)
 	}
 	close(d.resolving)
 	if err := awaitCheckGate(d.moved, d.stop); err != nil {
 		return "", err
 	}
-	markdown, err := d.API.Text(ctx, artifactID)
+	markdown, err := d.API.Text(ctx, who, artifactID)
 	close(d.read)
 	if gate := awaitCheckGate(d.restored, d.stop); gate != nil {
 		return "", gate

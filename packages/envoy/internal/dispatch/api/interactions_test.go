@@ -72,7 +72,7 @@ func newInteractionServer(t *testing.T, makeDocs func(*store.Store) docs.API) (h
 // which ReplaceText asks of every replacement, and none at all for a document whose live tree is
 // outside the Proof schema, which has no token and which only a replacement can repair.
 func replacementPrecondition(ctx context.Context, documentService docs.API, artifactID string) (*model.EditPrecondition, error) {
-	_, token, err := documentService.TextWithToken(ctx, artifactID)
+	_, token, err := documentService.TextWithToken(ctx, model.ServerReader, artifactID)
 	if errors.Is(err, docs.ErrDocOutsideSchema) || errors.Is(err, docs.ErrDocSchema) {
 		return nil, nil
 	}
@@ -947,7 +947,7 @@ func TestCommentsSuggestionsAndArtifactFilter(t *testing.T) {
 	}](t, rejectedStored).Comment; stored.Anchor == nil || stored.Anchor.Orphaned {
 		t.Fatalf("rejected suggestion anchor = %#v, want retained non-orphaned anchor", stored.Anchor)
 	}
-	if markdown, err := documentService.Text(context.Background(), issue.PrimaryArtifactID); err != nil || markdown != "The quick brown fox\n" {
+	if markdown, err := documentService.Text(context.Background(), everyReader, issue.PrimaryArtifactID); err != nil || markdown != "The quick brown fox\n" {
 		t.Fatalf("rejected suggestion text = %q (%v), want unchanged document", markdown, err)
 	}
 	if projection := loadMarkProjection(t, database, issue.PrimaryArtifactID, suggested.ID); projection["status"] != "rejected" {
@@ -1004,7 +1004,7 @@ func TestSuggestionAcceptAppliesLiveDocument(t *testing.T) {
 	}](t, acceptedStored).Comment; stored.Anchor == nil || stored.Anchor.Orphaned {
 		t.Fatalf("accepted suggestion anchor = %#v, want retained non-orphaned anchor", stored.Anchor)
 	}
-	markdown, err := documentService.Text(context.Background(), issue.PrimaryArtifactID)
+	markdown, err := documentService.Text(context.Background(), everyReader, issue.PrimaryArtifactID)
 	if err != nil {
 		t.Fatalf("read accepted document: %v", err)
 	}
@@ -1625,7 +1625,7 @@ func TestConcurrentSuggestionAcceptAppliesReplacementExactlyOnce(t *testing.T) {
 	if success != 1 || conflict != 1 {
 		t.Fatalf("acceptance statuses = success:%d conflict:%d, want one each", success, conflict)
 	}
-	markdown, err := documentService.Text(context.Background(), issue.PrimaryArtifactID)
+	markdown, err := documentService.Text(context.Background(), everyReader, issue.PrimaryArtifactID)
 	if err != nil {
 		t.Fatalf("read document after concurrent acceptance: %v", err)
 	}
@@ -1675,7 +1675,7 @@ func TestSuggestionAcceptChecksClosureBeforeApplyingReplacement(t *testing.T) {
 	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), `"code":"ISSUE_CLOSED"`) {
 		t.Fatalf("accept suggestion after close: status=%d body=%s", response.Code, response.Body.String())
 	}
-	markdown, err := documentService.Text(context.Background(), issue.PrimaryArtifactID)
+	markdown, err := documentService.Text(context.Background(), everyReader, issue.PrimaryArtifactID)
 	if err != nil {
 		t.Fatalf("read closed document: %v", err)
 	}

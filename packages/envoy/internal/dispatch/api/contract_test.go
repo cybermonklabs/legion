@@ -29,7 +29,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-
 	brokerapi "github.com/sjawhar/envoy/internal/cipher/api"
 	"github.com/sjawhar/envoy/internal/cipher/ciphertest"
 	"github.com/sjawhar/envoy/internal/cipher/enroll"
@@ -46,6 +45,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 )
@@ -144,7 +144,7 @@ func newContractRig(t *testing.T) *contractRig {
 
 	dispatchDB := storetest.Open(t)
 	documentService := docs.New(docs.Deps{
-		Store: dispatchDB, Events: events.NewBroker(), ServerURL: "https://dispatch.example", Settle: 20 * time.Millisecond,
+		Store: dispatchDB, Events: events.NewBroker(), Origins: text.NewOrigins("https://dispatch.example"), Settle: 20 * time.Millisecond,
 	})
 	t.Cleanup(func() { _ = documentService.Shutdown(context.Background()) })
 	seedPeople(t, dispatchDB, contractApprover, contractOther)

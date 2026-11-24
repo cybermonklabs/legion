@@ -24,7 +24,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -544,9 +543,6 @@ func threeBadRequests(t *testing.T) {
 	rows := routesBeforeThisChild(t, false)
 
 	for _, route := range rows {
-		if route.Auth == authPublic {
-			continue
-		}
 		response := personPageRequest(t, handler, routeProbePath(route.Pattern), "")
 		if route.Method != http.MethodGet {
 			response = probeWithoutCredential(t, handler, route)

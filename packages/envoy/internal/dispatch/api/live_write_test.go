@@ -418,7 +418,7 @@ func waitForLiveText(t *testing.T, documentService *docs.Service, artifactID, wa
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		text, err := documentService.Text(context.Background(), artifactID)
+		text, err := documentService.Text(context.Background(), everyReader, artifactID)
 		if err != nil {
 			t.Fatalf("read live document: %v", err)
 		}
