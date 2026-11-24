@@ -4,9 +4,12 @@ import type { ReactNode } from "react";
 import type { Actor, DisplayTree, ReplyBlockWithTrees } from "../../api/types";
 import { secondaryButtonBorder, textSecondaryOnSurface } from "../../theme/classes";
 import { AgentName, type AgentPart } from "../refs/AgentName";
+import { EditedMark } from "../refs/PostBody";
+import type { PostDeletion } from "../refs/post-marks";
 import { Timestamp } from "../refs/Timestamp";
 import type { DwellRef } from "../shell/useDwell";
 import { Avatar } from "./Avatar";
+import { resendable } from "./delivery";
 import { ReplyButton } from "./ReplyButton";
 import { ReplyQuote } from "./ReplyQuote";
 import {
@@ -56,14 +59,18 @@ interface ReplyDelivery {
 
 /** One reply in a thread: author, time, the quoted parent, the body, and - when the reply was
  *  itself delivered to a session - what became of that delivery. `actions` sit beside the Reply
- *  button (the Conversation adds copy-reference). */
+ *  button (the Conversation adds copy-reference). `edited` marks the byline where the reply's
+ *  author replaced its body, and `deleted` keeps that mark off a reply whose author then deleted
+ *  it; the deleted line itself is in `body`, which its host draws through `PostBody`. */
 export function ReplyTurn({
   actions,
   at,
   author,
   body,
   current = false,
+  deleted,
   delivery,
+  edited,
   markRef,
   onReply,
   quote,
@@ -75,16 +82,26 @@ export function ReplyTurn({
   author: Actor;
   body: ReactNode;
   current?: boolean;
+  /** The reply's deletion, where its author deleted it: it keeps ` · edited` off the byline,
+   *  since the deleted line in `body` already says what became of the text, the retry row off a
+   *  delivered reply, which is sent again in no mode (`resendable`), and its Reply: a post its
+   *  author deleted takes no reply (`409 POST_DELETED`), as the margin's card offers no reply
+   *  composer under a deleted root. */
+  deleted?: PostDeletion | null;
   delivery?: ReplyDelivery;
+  /** When the reply's author last replaced its body; null or absent on one nobody edited. */
+  edited?: string | null;
   /** The shared thread read mark (`useMarkThreadRead`), on the newest reply of a thread: the
    *  element it watches. */
   markRef?: DwellRef;
   onReply?: () => void;
   /** The parent the reply quotes: its author, its body, the block of it the reply answers (its
-   *  `reply_block`), and its turn's path. */
+   *  `reply_block`), its deletion and its edit, and its turn's path. */
   quote?: {
     readonly author: Actor | undefined;
     readonly block?: ReplyBlockWithTrees | null;
+    readonly deleted?: PostDeletion | null;
+    readonly edited?: string | null;
     readonly excerpt: string;
     readonly excerptTree?: DisplayTree;
     readonly to?: string;
@@ -93,11 +110,13 @@ export function ReplyTurn({
   replyDisabled?: boolean;
   turnID: string;
 }): ReactNode {
-  // The retry row a delivered reply keeps until the session answers it or took it as its turn.
+  // The retry row a delivered reply keeps until the session answers it or took it as its turn,
+  // and while its author has not deleted it.
   const retry =
     delivery !== undefined &&
     delivery.answeredBy === undefined &&
-    !takenAsUserTurn(delivery.attempts)
+    !takenAsUserTurn(delivery.attempts) &&
+    resendable(deleted)
       ? delivery.retry
       : undefined;
   return (
@@ -112,13 +131,18 @@ export function ReplyTurn({
       <div className="min-w-0 flex-1">
         <p className={`flex items-baseline gap-2 text-sm ${textSecondaryOnSurface}`}>
           <AgentName actor={author} className="font-semibold" inline />
-          <Timestamp at={at} />
+          <span>
+            <Timestamp at={at} />
+            <EditedMark at={edited} deleted={deleted} />
+          </span>
         </p>
         {quote === undefined ? null : (
           <ReplyQuote
             author={quote.author}
             block={quote.block}
             className="mb-1"
+            deleted={quote.deleted}
+            edited={quote.edited}
             excerpt={quote.excerpt}
             excerptTree={quote.excerptTree}
             to={quote.to}
@@ -149,7 +173,9 @@ export function ReplyTurn({
       </div>
       <TurnActions>
         {actions}
-        {onReply === undefined ? null : <ReplyButton disabled={replyDisabled} onClick={onReply} />}
+        {onReply === undefined || (deleted ?? null) !== null ? null : (
+          <ReplyButton disabled={replyDisabled} onClick={onReply} />
+        )}
       </TurnActions>
     </li>
   );

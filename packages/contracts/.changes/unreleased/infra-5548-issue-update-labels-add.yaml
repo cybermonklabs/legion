@@ -1,0 +1,7 @@
+kind: Added
+body: |-
+  `dispatch_issue_update` takes `labels_add`, the labels to add to those the issue holds, which
+  Dispatch adds inside its own write, so every label the call does not name stays. `labels` still
+  replaces the whole set, and its description now says so and points at `labels_add`. The tool's
+  rule refuses a call naming both, "labels_add goes without labels", as the route refuses it 400,
+  and counts `labels_add` as a field an update names.

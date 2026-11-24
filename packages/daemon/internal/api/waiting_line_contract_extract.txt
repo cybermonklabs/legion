@@ -50,7 +50,7 @@ step's row, which a reader that asks one
  
 
 # docs/site/src/content/docs/legion/running-legion.md
-ished line still names — each standing
+s — each standing within its priority,
   among the issues whose work came back, oldest first, until the pass that resumes it — and each by key
   with what it waits on (`none` when no root waits). A daemon older than contract 58 serves no
   `waitingLine`, so that count reads 0 against one, which is the true answer for a caller that

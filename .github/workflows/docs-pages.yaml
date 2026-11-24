@@ -235,6 +235,7 @@ on:
       - 'packages/envoy/internal/githubappjwt/**'
       - 'packages/envoy/internal/googleidentity/**'
       - 'packages/envoy/internal/id/**'
+      - 'packages/envoy/internal/kvchunk/*'
       - 'packages/envoy/internal/kvwatch/*'
       - 'packages/envoy/internal/legionagents/**'
       - 'packages/envoy/internal/logging/**'

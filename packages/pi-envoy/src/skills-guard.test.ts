@@ -222,8 +222,9 @@ test("no skill or daemon prompt names a list of open items", () => {
 // is the record" (3). The duplicate bullet lost "read it", which the bullet on reading each hit
 // says (1). The research bullets lost "Ask only the part no search answered.", which their first
 // two bullets say together (7). The result bullet lost "is the same" (3). The spec-writing row
-// lost "or write an" (3). The three skills stood at 2,257 words on main at 7ccabcba; INFRA-4849's
-// rewrite of dispatch and dispatch-first takes them to 2,283, under the bound.
+// lost "or write an" (3). The three skills stand at 2,310 words on main at c227d046, after #5391's
+// exit-code bullets; INFRA-4849's rewrite of dispatch and dispatch-first takes them to 2,338, under
+// the bound.
 test("the three Dispatch skills total fewer than 2,340 words", () => {
   const words = ["dispatch", "dispatch-first", "dispatch-writing-specs"]
     .flatMap((skill) => files(path.join(staged, skill)))

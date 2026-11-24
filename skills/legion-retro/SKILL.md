@@ -38,9 +38,9 @@ Run every step, even on a mechanical change.
 
 ## Steps
 
-1. **Read the evidence**: the issue, `dispatch results --issue "$LEGION_ISSUE"`, the pull request, and the implementer's handoff.
+1. **Read the evidence**: the issue, `dispatch results --issue "$LEGION_ISSUE"`, the pull request, and the thread of each plan task in `plan.md`.
    Also read the tester's handoff (`dispatch handoff-read --issue "$LEGION_ISSUE" --phase test`) where it has a tester step.
-   Read the review (`--phase review`) where it has a reviewer step, at the version your `Handoff:` line names when that line names one.
+   Read the GitHub review of the last worker step's head where it has a reviewer step.
    - **A pass must stand at the last worker step's head for every `before_merge` check.** The body's `Checks` block carries each.
    - **A check carrying `ci_check` is CI's:** its derived result is the pass it needs (`skill://legion-worker/references/ci-checks.md`).
    - **A `ci_check` check has no pass standing at that head** when its derived result is a fail, or its run concluded `skipped`, `neutral` or `cancelled`.

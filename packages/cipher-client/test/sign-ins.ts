@@ -1,17 +1,39 @@
 // packages/cipher-client/test/sign-ins.ts
 //
 // A person's sign-in on a machine as `agent-secrets login` leaves it
-// (`packages/envoy/internal/cipherclient/signinstore.go`, `SignInStore.Write`), and the OpenID
-// provider it is renewed at, for every suite that drives a person's trade: this package's own,
-// and envoy-client's broker credential. Every key is made at run time, so the repository holds no
-// private key.
+// (`packages/envoy/internal/cipherclient/signinstore.go`, `SignInStore.Write`), the environment of
+// a box that holds such sign-ins, and the OpenID provider a sign-in is renewed at, for every suite
+// that drives a person's trade: this package's own, and envoy-client's broker credential. Every
+// key is made at run time, so the repository holds no private key.
 
 import { createHash, generateKeyPairSync } from "node:crypto";
 import { chmod, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import type { TemporaryDirectoryMaker } from "@legion/test-fixtures/temporary-directories";
 import { calculateJwkThumbprint, generateKeyPair, type JWK, SignJWT } from "jose";
-import type { SignInRecord } from "../src/signins";
+import {
+  BROKER_URL_VAR,
+  type BrokerEnvironment,
+  IDENTITY_VAR,
+  MACHINE_AUDIENCE_VAR,
+  SESSION_VAR,
+} from "../src/environment";
+import {
+  SIGNIN_CLIENT_ID_VAR,
+  SIGNIN_CLIENT_SECRET_FILE_VAR,
+  SIGNIN_DIR_VAR,
+  SIGNIN_ISSUER_VAR,
+  type SignInRecord,
+} from "../src/signins";
+
+/** The sign-in client a person's record names unless a row gives another ({@link signedIn}), and
+ *  the one a box's environment configures to renew it with ({@link boxes}). */
+export const CLIENT_ID = "example-device-client";
+
+/** The name a box's machine trades under for a caller that acts as no session of its own: the
+ *  `AGENT_SECRETS_SESSION` its environment sets ({@link boxes}). */
+export const MACHINE_SESSION = "legion-demo-controller";
 
 /** The RFC 7638 thumbprint of `jwk`: the one `agent-secrets login` records for a box key, and
  *  the one a broker reads off a proof's header, for a suite whose package has no `jose`. */
@@ -32,7 +54,7 @@ export async function signedIn(
   return {
     person,
     issuer: "https://accounts.example",
-    client_id: "example-device-client",
+    client_id: CLIENT_ID,
     // Random, as a real refresh token is: a value that held the person's email would be scrubbed
     // out of every line naming that person (`@legion/contracts/held-secrets`).
     refresh_token: `refresh-${crypto.randomUUID()}`,
@@ -66,6 +88,39 @@ export async function writeSignIn(dir: string, record: SignInRecord): Promise<st
   const json = JSON.stringify(enrollment_id === "" ? rest : record, null, 2);
   await writeFile(path, `${json}\n`, { mode: 0o600 });
   return path;
+}
+
+/**
+ * The box environments of a test file, each in a directory `makeDirectory` makes (the file's own
+ * `temporaryDirectories` maker, which removes it after the test): a box answers the environment of
+ * a Compute Engine box at `brokerUrl` whose sign-in directory holds `records`, with the sign-in
+ * client at `issuer` configured ({@link CLIENT_ID}) and `AGENT_SECRETS_SESSION` set
+ * ({@link MACHINE_SESSION}), as a daemon's environment sets it.
+ */
+export function boxes(
+  makeDirectory: TemporaryDirectoryMaker
+): (
+  brokerUrl: string,
+  issuer: string,
+  records: readonly SignInRecord[]
+) => Promise<BrokerEnvironment> {
+  return async (brokerUrl, issuer, records) => {
+    const dir = makeDirectory();
+    const signins = join(dir, "signins");
+    for (const record of records) await writeSignIn(signins, record);
+    const secret = join(dir, "client-secret");
+    await writeFile(secret, `${fixtureSecret("client")}\n`, { mode: 0o600 });
+    return {
+      [BROKER_URL_VAR]: brokerUrl,
+      [IDENTITY_VAR]: "metadata",
+      [MACHINE_AUDIENCE_VAR]: "example-machine-client-id",
+      [SESSION_VAR]: MACHINE_SESSION,
+      [SIGNIN_DIR_VAR]: signins,
+      [SIGNIN_ISSUER_VAR]: issuer,
+      [SIGNIN_CLIENT_ID_VAR]: CLIENT_ID,
+      [SIGNIN_CLIENT_SECRET_FILE_VAR]: secret,
+    };
+  };
 }
 
 /** One request the stub issuer was sent, as it saw it. */

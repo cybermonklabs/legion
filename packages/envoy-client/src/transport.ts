@@ -175,17 +175,19 @@ const ErrorWireSchema = z.object({
   // `consumer_error` (a consumer call that failed, or a listener holding no session-consumer
   // connection), 503 `no_grant` (the listener's NATS user may not manage session consumers), 503
   // `consumer_limit` (the stream holds as many consumers as its `max_consumers` allows, so the
-  // server creates no more), 409 `not_requested` (the registration asked for no consumer) and 409
-  // `invalid_session_id` (the id names no consumer). A registration an edge listener holds to the
-  // projects of the session's token: 403 `topic_not_in_project` (a topic of no project of the
-  // token's) and 403 `repository_not_in_project` (a GitHub topic of no repository of those
-  // projects), each naming the topics it refused in `refused` (`registerWithRelay` drops exactly
-  // those and registers the rest); 503 `repositories_unknown` (it could not read which
-  // repositories those projects hold, so every topic is kept and the heartbeat asks again) and
-  // 403 `token_not_admitted` (the token itself is not one the edge admits, on any of its routes),
-  // neither of which names a topic or drops one. A send or a publish: 429
-  // `sender_rate_limited` (its agent session sent faster than the listener lets one session send,
-  // so this message was not stored; `retry_after_seconds` says when it can be sent again).
+  // server creates no more), 413 `too_large` (the consumer's filter makes a request past the
+  // server's max payload, refused at every retry), 409 `not_requested` (the registration asked
+  // for no consumer) and 409 `invalid_session_id` (the id names no consumer). A registration an
+  // edge listener holds to the projects of the session's token: 403 `topic_not_in_project` (a
+  // topic of no project of the token's) and 403 `repository_not_in_project` (a GitHub topic of no
+  // repository of those projects), each naming the topics it refused in `refused`
+  // (`registerWithRelay` drops exactly those and registers the rest); 503 `repositories_unknown`
+  // (it could not read which repositories those projects hold, so every topic is kept and the
+  // heartbeat asks again) and 403 `token_not_admitted` (the token itself is not one the edge
+  // admits, on any of its routes), neither of which names a topic or drops one. A send or a
+  // publish: 429 `sender_rate_limited` (its agent session sent faster than the listener lets one
+  // session send, so this message was not stored; `retry_after_seconds` says when it can be sent
+  // again).
   reason: z.string().optional(),
   /** A project refusal's topics, each as the registration carried it on the wire. */
   refused: z.array(z.string()).optional(),
