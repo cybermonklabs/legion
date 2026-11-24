@@ -50,7 +50,7 @@ func TestWaitingLineReasonNamesTheMembersPlaceInWords(t *testing.T) {
 			partLength: 7,
 			otherPart:  18,
 			want: "Its work came back at 2026-11-10T15:11:32Z. It waits at P1, its own priority. It is 2nd of 7 issues at P1 whose work came back, " +
-				"and they take the free slots first.",
+				"and they take the free slots before the issues at P1 that have not started.",
 		},
 		{
 			name:       "an answered root in the returned part",
@@ -66,7 +66,7 @@ func TestWaitingLineReasonNamesTheMembersPlaceInWords(t *testing.T) {
 			partLength: 7,
 			otherPart:  18,
 			want: "Its design gate opened at 2026-11-10T15:11:32Z. It waits at P1, its own priority. It is 1st of 7 issues at P1 whose work came back, " +
-				"and they take the free slots first.",
+				"and they take the free slots before the issues at P1 that have not started.",
 		},
 		{
 			name:       "a queued root in the starting part",
@@ -137,7 +137,7 @@ func TestWaitingLineReasonNamesTheMembersPlaceInWords(t *testing.T) {
 			partLength: 13,
 			otherPart:  2,
 			want: "Its work came back at 2026-11-10T15:11:32Z. It waits at P1, its own priority. It is 11th of 13 issues at P1 whose work came back, " +
-				"and they take the free slots first.",
+				"and they take the free slots before the issues at P1 that have not started.",
 		},
 		{
 			name:       "the twelfth of its part",
@@ -155,7 +155,7 @@ func TestWaitingLineReasonNamesTheMembersPlaceInWords(t *testing.T) {
 			partLength: 1,
 			otherPart:  18,
 			want: "Its work came back at 2026-11-10T15:11:32Z. It waits at P1, its own priority. It is 1st of 1 issue at P1 whose work came back, " +
-				"and it takes the free slots first.",
+				"and it takes the free slots before the issues at P1 that have not started.",
 		},
 		{
 			name:       "the one issue of the starting part, behind one issue whose work came back",
@@ -190,7 +190,7 @@ func TestWaitingLineReasonNamesTheMembersPlaceInWords(t *testing.T) {
 			partLength: 7,
 			otherPart:  18,
 			want: "A person answered it, and its work came back. It waits at P1, its own priority. It is 3rd of 7 issues at P1 whose work came back, " +
-				"and they take the free slots first.",
+				"and they take the free slots before the issues at P1 that have not started.",
 		},
 		{
 			name:       "a design gate with no moment",
@@ -198,7 +198,7 @@ func TestWaitingLineReasonNamesTheMembersPlaceInWords(t *testing.T) {
 			partLength: 7,
 			otherPart:  18,
 			want: "Its design gate opened. It waits at P1, its own priority. It is 1st of 7 issues at P1 whose work came back, " +
-				"and they take the free slots first.",
+				"and they take the free slots before the issues at P1 that have not started.",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
