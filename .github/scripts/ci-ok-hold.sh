@@ -107,6 +107,30 @@ for input in CI_OK_HOLD_AGE_SECONDS CI_OK_HOLD_RUN_SECONDS poll; do
   fi
 done
 
+# What answers these reads in GitHub's place, the run's creation and the refs alike, holds gh's
+# token or reaches this step for it, and writes the answer. So no word of an answer is printed but
+# a closed value: the creation time as date reads it, written back in date's own words, and a ref's
+# commit as 40 hex digits. Any other answer is kept in a file of its own, which outlives this
+# script (RUNNER_TEMP's on a runner, until the job ends), and the line names that file (keep).
+# keep <what> <text>: writes the text to a file of its own and prints the words that name it.
+keep() {
+  local kept
+  if kept=$(mktemp "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/ci-ok-hold-$1.XXXXXX") &&
+    printf '%s\n' "$2" > "$kept"; then
+    echo "it is kept in $kept"
+  else
+    echo "it could not be kept"
+  fi
+}
+# commit <what> <sha>: the sha when it is a commit id, or words naming the file that keeps it.
+commit() {
+  if [[ $2 =~ ^[0-9a-f]{40}$ ]]; then
+    echo "$2"
+  else
+    echo "an answer that is no commit id ($(keep "$1" "$2"))"
+  fi
+}
+
 # The deadline, from the run's creation. The read runs with no limit for gh-read.sh to wait
 # within, so a spent budget refuses it at once rather than holding the group until a reset.
 start=$(date +%s)
@@ -114,9 +138,12 @@ if created=$(unset JOB_TIMEOUT_MINUTES STEP_TIMEOUT_MINUTES
   gh_read gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --jq .created_at) \
   && created_at=$(date -u -d "$created" +%s 2>/dev/null); then
   deadline=$((created_at + CI_OK_HOLD_AGE_SECONDS))
-  echo "This run was created at $created, so the hold ends at the latest at $(date -u -d "@$deadline" +%FT%TZ), when the group is $CI_OK_HOLD_AGE_SECONDS s old"
+  echo "This run was created at $(date -u -d "@$created_at" +%FT%TZ), so the hold ends at the latest at $(date -u -d "@$deadline" +%FT%TZ), when the group is $CI_OK_HOLD_AGE_SECONDS s old"
 else
   deadline=$((start + CI_OK_HOLD_AGE_SECONDS - CI_OK_HOLD_RUN_SECONDS))
+  if [ -n "$created" ]; then
+    created="an answer that is no time, $(keep created "$created")"
+  fi
   echo "::warning::GitHub did not give this run's creation time (${created:-refused}), so the hold counts from its own start: it ends at the latest at $(date -u -d "@$deadline" +%FT%TZ), $CI_OK_HOLD_AGE_SECONDS s less the $CI_OK_HOLD_RUN_SECONDS s the longest run takes"
 fi
 
@@ -141,11 +168,13 @@ while :; do
     exit 0
   fi
   if [ "$group" != "$HEAD_SHA" ]; then
-    echo "The queue no longer holds this group after $waited s: $HEAD_REF is ${group:-gone}, not its head $HEAD_SHA, so nothing can be built on it and the failing ci-ok goes up now"
+    group_said=gone
+    [ -z "$group" ] || group_said=$(commit group "$group")
+    echo "The queue no longer holds this group after $waited s: $HEAD_REF is $group_said, not its head $HEAD_SHA, so nothing can be built on it and the failing ci-ok goes up now"
     exit 0
   fi
   if [ "$tip" != "$seen" ]; then
-    echo "This group stands behind the front of the queue after $waited s: its base $BASE_SHA is not $tip, the tip of $BASE_REF. The failing ci-ok waits, so the queue builds nothing on this group"
+    echo "This group stands behind the front of the queue after $waited s: its base $BASE_SHA is not $(commit tip "$tip"), the tip of $BASE_REF. The failing ci-ok waits, so the queue builds nothing on this group"
     seen=$tip
   fi
   if [ "$now" -ge "$deadline" ]; then

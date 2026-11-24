@@ -8,9 +8,11 @@
 #
 # A field of the wrong type is never a reason to skip a project, and an image reference with a tab
 # in it is never read as the reference before the tab: YAML's false equals 0 in Python, and a tab
-# cut the gate's own line apart. The deployment's legion program refuses a file of legion/projects/
-# not named <nn>-<KEY>.yaml and a file whose key is not its name's KEY (projectFileRule), so the
-# gate takes neither as a project, and says so by name.
+# cut the gate's own line apart. Such a field is named by its kind, never its text, which is
+# GitHub's answer. The deployment's legion program refuses a file of legion/projects/ not named
+# <nn>-<KEY>.yaml and a file whose key is not its name's KEY (projectFileRule), so the gate takes
+# neither as a project, and says so: by name for a name the rule takes, else by its place in GitHub's
+# listing, the name kept.
 # shellcheck disable=SC2154 # every variable read here is set by the harness or the test that sources this file
 
 readonly invalid_fleet="    - key: LINUX
@@ -41,12 +43,12 @@ compare "$ahead_rev" ahead 0
 compare "$behind_rev" behind 3
 run_gate -- "$commit"
 check "exits 3" "$(is "$status" 3)"
-check "a replicas of false is no count, not a skip" "$(has_line "UNKNOWN: BET names replicas false, which is no count of replicas")"
-check "a daemon that is a string is no boolean" "$(has_line "UNKNOWN: OSSV names daemon \"false\", which is neither true nor false")"
-check "a negative replicas is no count" "$(has_line "UNKNOWN: RISK names replicas -1, which is no count of replicas")"
-check "a replicas that is a string is no count" "$(has_line "UNKNOWN: SIZE names replicas \"1\", which is no count of replicas")"
+check "a replicas of false is no count, not a skip" "$(has_line "UNKNOWN: BET names replicas (a boolean), which is no count of replicas")"
+check "a daemon that is a string is no boolean" "$(has_line "UNKNOWN: OSSV names daemon (a string), which is neither true nor false")"
+check "a negative replicas is no count" "$(has_line "UNKNOWN: RISK names replicas (a negative number), which is no count of replicas")"
+check "a replicas that is a string is no count" "$(has_line "UNKNOWN: SIZE names replicas (a string), which is no count of replicas")"
 check "an image with a tab is no reference, and is not read cut short" \
-  "$(has_line "UNKNOWN: INFRA names daemonImage \"${worker_a}\\tsuffix\", which is no image reference")"
+  "$(has_line "UNKNOWN: INFRA names daemonImage (a string), which is no image reference")"
 check "no project is skipped" "$(lacks "SKIPPED" "$out")"
 check "the image of a project whose fields are refused is never read" "$(lacks "$worker_b" "$calls")"
 check "the valid project is still read" "$(has_line "PASS: LINUX runs ${ahead_rev} (ahead of ${commit})")"
@@ -59,9 +61,9 @@ legion_stack "$invalid_fleet"
 worker_image "$worker_b" "$behind_rev"
 run_gate -- --clients "$commit"
 check "exits 3" "$(is "$status" 3)"
-check "a replicas of false is no count, not a skip" "$(has_line "UNKNOWN: BET names replicas false, which is no count of replicas")"
+check "a replicas of false is no count, not a skip" "$(has_line "UNKNOWN: BET names replicas (a boolean), which is no count of replicas")"
 check "an image with a tab is no reference" \
-  "$(has_line "UNKNOWN: INFRA names daemonImage \"${worker_a}\\tsuffix\", which is no image reference")"
+  "$(has_line "UNKNOWN: INFRA names daemonImage (a string), which is no image reference")"
 check "the image of a project whose fields are refused is never run" "$(lacks "$worker_b" "$calls")"
 check "the verdict is UNKNOWN, never GATE OPEN" "$(last_line_is "UNKNOWN")"
 
@@ -78,8 +80,8 @@ compare "$ahead_rev" ahead 0
 compare "$identical_rev" identical 0
 run_gate -- "$commit"
 check "exits 3" "$(is "$status" 3)"
-check "refuses UNKNOWN naming the file and its key" \
-  "$(has_line "UNKNOWN: ${deployment} legion/projects/20-LINUX.yaml declares key 'BET', not LINUX")"
+check "refuses UNKNOWN naming the file and the key it should declare" \
+  "$(has_line "UNKNOWN: ${deployment} legion/projects/20-LINUX.yaml declares a key that is not LINUX")"
 check "reads no image" "$(lacks "docker" "$calls")"
 check "the verdict is UNKNOWN, never GATE OPEN" "$(last_line_is "UNKNOWN")"
 
@@ -92,7 +94,7 @@ daemonImage: ${worker_a}"
 run_gate -- "$commit"
 check "exits 3" "$(is "$status" 3)"
 check "refuses UNKNOWN naming the file" \
-  "$(has_line "UNKNOWN: ${deployment} legion/projects/20-LINUX.yaml declares key None, not LINUX")"
+  "$(has_line "UNKNOWN: ${deployment} legion/projects/20-LINUX.yaml declares a key that is not LINUX")"
 check "reads no image" "$(lacks "docker" "$calls")"
 
 echo "case: a file of legion/projects/ not named <nn>-<KEY>.yaml"
@@ -106,7 +108,8 @@ compare "$ahead_rev" ahead 0
 compare "$identical_rev" identical 0
 run_gate -- "$commit"
 check "exits 3" "$(is "$status" 3)"
-check "refuses UNKNOWN naming the file" \
-  "$(has_line "UNKNOWN: ${deployment} legion/projects/README.yaml is not named <nn>-<KEY>.yaml, so no key is known to be its own")"
+check "refuses UNKNOWN naming the entry by its place, its name kept" \
+  "$(has_kept_line "UNKNOWN: ${deployment} legion/projects/ entry @N@ of GitHub's listing (its name kept in KEPT) is not named <nn>-<KEY>.yaml, so no key is known to be its own")"
+check "the kept file holds the name" "$(is "$(kept_text "legion/projects/ entry")" README.yaml)"
 check "reads no image from a directory it could not take" "$(lacks "docker" "$calls")"
 check "the verdict is UNKNOWN, never GATE OPEN" "$(last_line_is "UNKNOWN")"

@@ -21,6 +21,10 @@
 # GitHub calls a run makes. A stand-in `git` answers the hold's ref reads the same way. The map is
 # ci-ok.test.sh's four jobs and the always-run list ci.yaml's own two, in a ci.yaml of the case's
 # own (CI_OK_WORKFLOW); one case reads the real ci.yaml, and one reads the hold step out of it.
+# The cases on gh's words have the stand-ins answer with the marker not-a-secret-token where
+# GitHub's answer would be, and hold the scripts to print and post no run of it: each prints an
+# answer only as the closed value it expects (a commit id, a status of GitHub's, a time, this
+# repository's check-run URL) and names the file it keeps any other answer in.
 #
 # Run from anywhere: .github/scripts/ci-ok-report.test.sh
 # CI runs it in ci.yaml's test job.
@@ -86,6 +90,9 @@ case "\$*" in
     done
     cp "\$body" "$work/posted.\$n.json"
     if [ -e "$work/post-fails" ]; then echo "HTTP 403" >&2; exit 1; fi
+    # A post-answer file is what answers the post in GitHub's place: the rows about the URL a
+    # post prints write it.
+    if [ -e "$work/post-answer" ]; then cat "$work/post-answer"; exit 0; fi
     echo "https://github.com/o/r/runs/\$n" ;;
   *) echo "unexpected gh \$*" >&2; exit 2 ;;
 esac
@@ -104,18 +111,32 @@ YAML
 # worker-image held back by its pull_request-only `if:`.
 selects='{"result": "success", "outputs": {"typecheck": "true", "envoy_client": "true", "worker_image": "false", "docs": "false"}}'
 
+# The commits the cases name, 40 hex digits as GitHub and git give them, since the scripts print
+# a tip or a group's head only as a commit id (ci-ok-report.sh's header): the group's base, the
+# tips of two groups in front of it, another group's head, a front group's tip and the heads of
+# three groups built one on another. sha <hex>: that hex, padded to 40 digits with zeros.
+sha() { local hex=${1}0000000000000000000000000000000000000000; echo "${hex:0:40}"; }
+tip_base=$(sha ba5e123)
+tip_other=$(sha 0e456)
+tip_next=$(sha 0e789)
+head_other=$(sha def999)
+tip_front=$(sha f000)
+head_g1=$(sha 91ead)
+head_g2=$(sha 92ead)
+head_g3=$(sha 93ead)
+
 # jobs <name>=<status>[/<conclusion>]...: the run's jobs as the jobs route lists them, one JSON
 # object per line, as `gh api --jq '.jobs[] | …'` prints them, and the check run each of them
 # has on the head, as the commit's check-runs route lists them. The run's first case writes
 # none, which is both routes refusing the read. A job written here carries no annotation, so its
 # failure is read as a failure until a case writes the runner's with `annotations`. The queue's
-# branch is at base123, the base run_report hands the script, so the group is the front of the
+# branch is at tip_base, the base run_report hands the script, so the group is the front of the
 # queue until a case calls `behind` or `tip_refused`.
 jobs() {
   local pair n=0
   rm -f "$work"/posted.*.json "$work/post-fails" "$work/jobs" "$work/check-runs" "$work"/annotations.* \
-    "$work/calls" "$work/tips"
-  echo base123 > "$work/tip"
+    "$work/calls" "$work/tips" "$work/post-answer"
+  echo "$tip_base" > "$work/tip"
   for pair in "$@"; do
     jq -nc --arg name "${pair%%=*}" --arg status "${pair#*=}" \
       '{name: $name, status: ($status | split("/")[0]), conclusion: ($status | split("/")[1])}' \
@@ -129,7 +150,7 @@ jobs() {
 
 # behind: the queue's branch is at another commit than the group's base, so a group stands in
 # front of this one. tip_refused: GitHub refuses the read of the branch's tip.
-behind() { echo other456 > "$work/tip"; }
+behind() { echo "$tip_other" > "$work/tip"; }
 tip_refused() { rm -f "$work/tip"; }
 # tips <sha>...: main's tip at each of the report step's reads, one per read, the last for every
 # read after it.
@@ -151,12 +172,12 @@ annotations() {
 }
 
 # run_report <changes> <event> <job status> [<workflow>]: sets out and status. The group's base is
-# base123 on the queue's main, unless the case sets base_sha or base_ref.
+# tip_base on the queue's main, unless the case sets base_sha or base_ref.
 run_report() {
   set +e
   out=$(PATH="$work/bin:$PATH" GH_TOKEN=t GITHUB_REPOSITORY=o/r GITHUB_RUN_ID=41 \
-    GITHUB_SERVER_URL=https://github.com GH_RETRY_SECONDS=0 JOB=typecheck CHANGES=$1 \
-    EVENT=$2 JOB_STATUS=$3 HEAD_SHA=abc123 BASE_SHA=${base_sha-base123} \
+    GITHUB_SERVER_URL=https://github.com GH_RETRY_SECONDS=0 RUNNER_TEMP="$work/temp" JOB=typecheck \
+    CHANGES=$1 EVENT=$2 JOB_STATUS=$3 HEAD_SHA=abc123 BASE_SHA=${base_sha-$tip_base} \
     BASE_REF=${base_ref-refs/heads/main} CI_OK_WORKFLOW=${4:-$work/ci.yaml} \
     "$script_dir/ci-ok-report.sh" 2>&1)
   status=$?
@@ -184,6 +205,40 @@ verdict() {
 
 posted() { find "$work" -maxdepth 1 -name 'posted.*.json' | wc -l | tr -d ' '; }
 field() { jq -r "$1" "$work/posted.0.json"; }
+
+# The marker the rows on gh's words put in what a stand-in answers or says. Whatever answers gh's
+# calls in GitHub's place holds gh's token and writes those words, so no run of eight of its
+# characters (redacttest.Piece's run) may be in what a script prints, posts or leaves for its
+# caller to print. Each such row runs with RUNNER_TEMP in this file's work directory, where the
+# scripts keep an answer they do not print.
+marker=not-a-secret-token
+mkdir "$work/temp"
+# prints_no_marker <text>: true when the text holds no run of eight characters of the marker.
+prints_no_marker() {
+  local at
+  for ((at = 0; at + 8 <= ${#marker}; at++)); do
+    if [[ $1 == *"${marker:at:8}"* ]]; then
+      echo false
+      return
+    fi
+  done
+  echo true
+}
+# kept_in <text>: the file the first "kept in <file>" of the text names, without the `)`, `;`, `,`
+# or `.` that ends the words naming it.
+kept_in() { sed -n 's/.*kept in \([^ );,]*\).*/\1/p' <<<"$1" | sed -n '1s/\.$//;1p'; }
+# kept_marker <text>: true when the file the text names as keeping an answer holds the marker.
+kept_marker() {
+  local kept
+  kept=$(kept_in "$1")
+  if [ -n "$kept" ] && [ -f "$kept" ] && grep -qF -- "$marker" "$kept"; then echo true; else echo false; fi
+}
+# shown <text>: prints the text a row's script printed, each line under a `printed:` prefix, so the
+# log shows what reached the output whichever way the row's checks go.
+shown() {
+  local line
+  while IFS= read -r line; do printf '    printed: %s\n' "$line"; done <<<"$1"
+}
 
 echo "case: a merge_group run whose reporting job failed posts without waiting"
 jobs typecheck=in_progress lint=in_progress envoy-client=queued
@@ -230,7 +285,7 @@ run_report "$selects" merge_group failure
 check "exits 0" "$(is "$status" 0)"
 check "posts nothing" "$(is "$(posted)" 0)"
 check "says the group stands behind the front, naming its base and the branch's tip" \
-  "$(contains "$out" '^typecheck ended failure (changes ended success) on a merge-group run whose group stands behind the front of the queue: its base base123 is not other456, the tip of refs/heads/main')"
+  "$(contains "$out" "^typecheck ended failure (changes ended success) on a merge-group run whose group stands behind the front of the queue: its base $tip_base is not $tip_other, the tip of refs/heads/main")"
 check "leaves the verdict to the ci-ok job, which holds it until the group is the front" \
   "$(contains "$out" 'the ci-ok job reaches this run.s verdict at the end of the run and holds a failing one until the group is the front$')"
 check "makes one GitHub call, the read of the tip" "$(is "$(calls .)" 1)"
@@ -291,17 +346,51 @@ echo "case: a group of a queue on another branch reads that branch's tip, not ma
 # Main's tip is the group's base here, so a read of main would call the group the front. The
 # queue's own branch is elsewhere, so a group stands in front of it and nothing goes up.
 jobs typecheck=in_progress lint=in_progress envoy-client=queued
-echo other789 > "$work/tip-release"
+echo "$tip_next" > "$work/tip-release"
 base_ref=refs/heads/release run_report "$selects" merge_group failure
 check "posts nothing" "$(is "$(posted)" 0)"
 check "reads the release branch's tip" "$(is "$(calls 'repos/o/r/git/ref/heads/release')" 1)"
 check "and not main's" "$(is "$(calls 'repos/o/r/git/ref/heads/main')" 0)"
-check "names that branch" "$(contains "$out" 'is not other789, the tip of refs/heads/release')"
+check "names that branch" "$(contains "$out" "is not $tip_next, the tip of refs/heads/release")"
 # Control: with the release branch at the group's base, the group is that queue's front.
 jobs typecheck=in_progress lint=in_progress envoy-client=queued
-echo base123 > "$work/tip-release"
+echo "$tip_base" > "$work/tip-release"
 base_ref=refs/heads/release run_report "$selects" merge_group failure
 check "posts at once when that branch is at the group's base (control)" "$(is "$(posted)" 1)"
+
+echo "case: the tip of the queue's branch is printed only as a commit id"
+# Whatever answers the tip's read in GitHub's place holds gh's token and writes the answer, and
+# the line that says why nothing went up printed that answer whole. A tip holding the marker is
+# no commit id: it is not the group's base, so nothing goes up, as for any other tip.
+jobs typecheck=in_progress lint=in_progress envoy-client=queued
+echo "$marker" > "$work/tip"
+run_report "$selects" merge_group failure
+shown "$out"
+check "the stand-in gh is the one called, once, for the tip (control)" \
+  "$(is "$(calls 'repos/o/r/git/ref/heads/main')" 1)"
+check "twin: the stand-in's answer holds the marker" "$(is "$(grep -cF -- "$marker" "$work/tip")" 1)"
+check "posts nothing, as for any tip that is not the group's base" "$(is "$status $(posted)" '0 0')"
+check "prints no run of the marker the answer holds" "$(prints_no_marker "$out")"
+check "says the answer gave no commit id, and names the file that keeps it" \
+  "$(contains "$out" "its base $tip_base is not the tip of refs/heads/main, which GitHub's answer gave as no commit id (it is kept in $work/temp/ci-ok-report-tip\.")"
+check "the kept answer holds the marker, where the operator finds it" "$(kept_marker "$out")"
+
+echo "case: a job's live status is printed only as one of GitHub's"
+# The jobs read's answer names the status of each job that has not completed, and the verdict
+# printed it and the post carried it, in the summary and in the title. A status holding the marker
+# is none of GitHub's, so that job reads as unread, as every job of a refused list does.
+jobs typecheck=in_progress "lint=$marker" envoy-client=queued
+run_report "$selects" merge_group failure
+shown "$out"
+check "the stand-in gh is the one called for the jobs (control)" "$(is "$(calls 'actions/runs/41/jobs')" 1)"
+check "twin: the stand-in's answer holds the marker" "$(is "$(grep -cF -- "$marker" "$work/jobs")" 1)"
+check "posts the failing verdict all the same" \
+  "$(is "$status $(posted) $(field .conclusion)" '0 1 failure')"
+check "prints no run of the marker the answer holds" "$(prints_no_marker "$out")"
+check "and posts none, in the title or the summary" "$(prints_no_marker "$(cat "$work/posted.0.json")")"
+check "records that job as unread" "$(contains "$(field .output.summary)" '^lint: unread$')"
+check "and a status of GitHub's as the answer gave it (control)" \
+  "$(contains "$(field .output.summary)" '^envoy-client: queued (selected')"
 
 echo "case: a merge_group run without its group's base"
 jobs typecheck=in_progress
@@ -479,6 +568,43 @@ check "exits 0" "$(is "$status" 0)"
 check "posts one check run" "$(is "$(posted)" 1)"
 check "carrying that external_id" "$(is "$(field .external_id)" pr-title:41)"
 
+echo "case: post-check-run.sh prints the URL of the posted check run only when it is one of this repository's"
+# Whatever answers the post in GitHub's place holds gh's token and writes the answer, and the
+# script printed the answer's html_url whole. Each answer below holds the marker: in the run's
+# number, in the host, and as the whole answer. The post stands, so the step passes.
+# run_post: the post above, as ci.yaml's lint job calls it, with RUNNER_TEMP this file's own.
+run_post() {
+  : > "$work/summary.md"
+  set +e
+  out=$(PATH="$work/bin:$PATH" GH_TOKEN=t GITHUB_REPOSITORY=o/r GITHUB_SERVER_URL=https://github.com \
+    GH_RETRY_SECONDS=0 RUNNER_TEMP="$work/temp" HEAD_SHA=abc123 CHECK_NAME=pr-title CONCLUSION=success \
+    TITLE='the title is conventional' SUMMARY_FILE="$work/summary.md" \
+    DETAILS_URL=https://github.com/o/r/actions/runs/41 EXTERNAL_ID=pr-title:41 \
+    "$script_dir/post-check-run.sh" 2>&1)
+  status=$?
+  set -e
+}
+n=0
+for answer in "https://github.com/o/r/runs/$marker" "https://$marker.example/o/r/runs/1" "$marker"; do
+  n=$((n + 1))
+  jobs
+  printf '%s\n' "$answer" > "$work/post-answer"
+  run_post
+  shown "$out"
+  check "answer $n: the stand-in gh is the one called, and the post stands (control)" \
+    "$(is "$status $(posted) $(calls 'POST repos/o/r/check-runs')" '0 1 1')"
+  check "answer $n, twin: the stand-in's answer holds the marker" \
+    "$(is "$(grep -cF -- "$marker" "$work/post-answer")" 1)"
+  check "answer $n: prints no run of the marker the answer holds" "$(prints_no_marker "$out")"
+  check "answer $n: says the answer named no check run of o/r, and names the file that keeps it" \
+    "$(contains "$out" "^posted pr-title (success) on abc123; GitHub's answer named no check run of o/r, so it is not printed: it is kept in $work/temp/post-check-run-answer\.")"
+  check "answer $n: the kept answer holds the marker, where the operator finds it" "$(kept_marker "$out")"
+done
+jobs
+run_post
+check "GitHub's own answer, a check run of o/r, is printed whole (control)" \
+  "$(contains "$out" '^posted pr-title (success) on abc123: https://github.com/o/r/runs/0$')"
+
 # The hold reads refs with `git ls-remote`, so a stand-in git answers it: each line of the
 # remote file is one read's answer, `<main's tip> <the group branch's sha>` (`-` for a ref the
 # answer leaves out), and its last line answers every read after it. With no remote file, the
@@ -504,7 +630,7 @@ GIT
 chmod +x "$work/bin/git"
 
 # run_hold [<age>]: sets out and status to what ci-ok-hold.sh, the ci-ok job's hold step, did
-# for the group whose base is base123 (or base_sha) on the queue's main and whose head is abc123
+# for the group whose base is tip_base (or base_sha) on the queue's main and whose head is abc123
 # (or head_sha), ending at a group age of <age> seconds (3600 when not given), with `run_s`
 # seconds (600 when unset) as the longest run and a pause of `poll` seconds between reads (0 when
 # unset). A hold still running after 60 s is killed and its status is timeout's 124, so a hold
@@ -512,7 +638,8 @@ chmod +x "$work/bin/git"
 run_hold() {
   set +e
   out=$(PATH="$work/bin:$PATH" GH_TOKEN=t GITHUB_SERVER_URL=https://github.com GITHUB_REPOSITORY=o/r \
-    GITHUB_RUN_ID=41 GH_RETRY_SECONDS=0 BASE_SHA=${base_sha-base123} BASE_REF=refs/heads/main \
+    GITHUB_RUN_ID=41 GH_RETRY_SECONDS=0 RUNNER_TEMP="$work/temp" BASE_SHA=${base_sha-$tip_base} \
+    BASE_REF=refs/heads/main \
     HEAD_SHA=${head_sha-abc123} HEAD_REF=refs/heads/gh-readonly-queue/main/pr-1-base123 \
     CI_OK_HOLD_AGE_SECONDS=${1:-3600} CI_OK_HOLD_RUN_SECONDS=${run_s-600} \
     CI_OK_HOLD_POLL_SECONDS=${poll-0} timeout 60 "$script_dir/ci-ok-hold.sh" 2>&1)
@@ -547,7 +674,7 @@ jobs typecheck=in_progress lint=in_progress envoy-client=queued
 behind
 run_report "$selects" merge_group failure
 check "the failing job's report step posts nothing behind the front" "$(is "$(posted)" 0)"
-remote other456:abc123 other456:abc123 other789:abc123 base123:abc123
+remote "$tip_other:abc123" "$tip_other:abc123" "$tip_next:abc123" "$tip_base:abc123"
 run_hold
 check "exits 0, so the job ends on its failing verdict" "$(is "$status" 0)"
 check "read the refs four times: the hold ended at the read that found the group's base" \
@@ -557,9 +684,9 @@ check "made one REST call, the run's creation, and the rest git reads" \
 check "says when the hold ends at the latest, from the run's creation" \
   "$(contains "$out" '^This run was created at .*, so the hold ends at the latest at .*, when the group is 3600 s old$')"
 check "says the group stood behind the first group in front" \
-  "$(contains "$out" '^This group stands behind the front of the queue after [0-9]* s: its base base123 is not other456, the tip of refs/heads/main. The failing ci-ok waits')"
+  "$(contains "$out" "^This group stands behind the front of the queue after [0-9]* s: its base $tip_base is not $tip_other, the tip of refs/heads/main. The failing ci-ok waits")"
 check "and behind the next, once the first merged" \
-  "$(contains "$out" 'its base base123 is not other789, the tip of refs/heads/main')"
+  "$(contains "$out" "its base $tip_base is not $tip_next, the tip of refs/heads/main")"
 check "says once per tip, not once per read" \
   "$(is "$(grep -c 'stands behind the front' <<<"$out")" 2)"
 check "ends on the line that says the group is the front" \
@@ -567,7 +694,7 @@ check "ends on the line that says the group is the front" \
 check "posts no check run of its own: the job's own check run is the verdict" "$(is "$(posted)" 0)"
 check "warns of nothing" "$(is "$(contains "$out" '::warning::')" false)"
 # Control: the same hold for a group that is the front already lets the verdict go up at once.
-remote base123:abc123
+remote "$tip_base:abc123"
 run_hold
 check "lets the verdict of the front group go up at the first read (control)" "$(is "$(reads)" 1)"
 check "saying it is the front" "$(contains "$out" "$front_line")"
@@ -579,13 +706,13 @@ echo "case: a group behind the front whose entries ahead fail never lets its ver
 # posts nothing, and the hold waits; once the branch is gone the queue no longer holds the
 # group, so its verdict builds nothing and goes up.
 jobs typecheck=in_progress lint=in_progress envoy-client=queued
-tips other456 other789
+tips "$tip_other" "$tip_next"
 run_report "$selects" merge_group failure
 check "a failing job posts nothing while a group in front builds" "$(is "$(posted)" 0)"
 run_report "$selects" merge_group failure
 check "nor once main has moved to a rebuilt group's tip" "$(is "$(posted)" 0)"
-check "which is not this group's base" "$(contains "$out" 'its base base123 is not other789')"
-remote other456:abc123 other456:abc123 other789:-
+check "which is not this group's base" "$(contains "$out" "its base $tip_base is not $tip_next")"
+remote "$tip_other:abc123" "$tip_other:abc123" "$tip_next:-"
 run_hold
 check "the hold exits 0 at the read that finds the group's branch gone" \
   "$(is "$status $(reads)" '0 3')"
@@ -594,16 +721,16 @@ check "saying the queue no longer holds the group" \
 check "never says the group is the front" "$(is "$(contains "$out" "$front_line")" false)"
 check "and warns of nothing" "$(is "$(contains "$out" '::warning::')" false)"
 # A branch the queue reused for another group of the same pull request names another head.
-remote other456:abc123 other789:def999
+remote "$tip_other:abc123" "$tip_next:$head_other"
 run_hold
 check "a group branch at another head ends the hold as a gone one does" \
-  "$(is "$(reads) $(contains "$out" "${gone_line}def999, not its head abc123")" '2 true')"
+  "$(is "$(reads) $(contains "$out" "${gone_line}$head_other, not its head abc123")" '2 true')"
 
 echo "case: a hold behind the front ends at the group's age, counted from its run's creation"
 # The bound is for a group the queue still holds behind the front close to the queue's own check
 # timeout, which counts from the group, not from this step. A run created two hours ago is past
 # an age of one hour at the hold's first read, though the hold has just begun.
-remote other456:abc123
+remote "$tip_other:abc123"
 aged 7200
 run_hold 3600
 check "exits 0 after one read" "$(is "$status $(reads)" '0 1')"
@@ -611,13 +738,13 @@ check "never says the group is the front" "$(is "$(contains "$out" "$front_line"
 check "warns that the deadline, not the front, ended it" \
   "$(contains "$out" '^::warning::This group still stands behind the front of the queue after [0-9]* s, at its deadline ')"
 # Control: the same hold of a run created now holds on to its next read, where main is its base.
-remote other456:abc123 base123:abc123
+remote "$tip_other:abc123" "$tip_base:abc123"
 run_hold 3600
 check "a young run's hold waits past that first read, to the front (control)" \
   "$(is "$(reads) $(contains "$out" "$front_line")" '2 true')"
 # A run whose creation GitHub will not give: the hold counts from its own start, less the longest
 # run. With the longest run as long as the age, that deadline is now.
-remote other456:abc123
+remote "$tip_other:abc123"
 created_refused
 run_s=3600 run_hold 3600
 check "an unread creation: exits 0 after one read" "$(is "$status $(reads)" '0 1')"
@@ -629,8 +756,8 @@ check "having made the creation read with no deadline to wait within: three atte
 echo "case: one entry that breaks every group built on it builds no group more"
 # The 2026-11-22 cascade: #4812's entry broke every group built on it, and each group's failing
 # ci-ok made the queue count it as no longer building and build another on it, 41 groups in 28
-# minutes. Here g1 carries the broken entry, behind a front group f whose base is f000; g2 is
-# built on g1 (base g1head) and g3 on g2 (base g2head); every one of the three fails. The queue
+# minutes. Here g1 carries the broken entry, behind a front group f whose base is tip_front; g2 is
+# built on g1 (base head_g1) and g3 on g2 (base head_g2); every one of the three fails. The queue
 # builds a group whenever one of them concludes failure while it stands behind the front and the
 # queue still holds it, so the count of such conclusions is the count of groups built on the
 # broken entry. f merges and main reaches g1's base: g1's verdict goes up, the queue takes g1 out,
@@ -638,27 +765,27 @@ echo "case: one entry that breaks every group built on it builds no group more"
 # that ends any other way than at its front or on its gone branch is a verdict concluded behind
 # the front, and is counted.
 early=0
-for group in g1:base123 g2:g1head g3:g2head; do
+for group in "g1:$tip_base" "g2:$head_g1" "g3:$head_g2"; do
   jobs typecheck=in_progress lint=in_progress envoy-client=queued
-  echo f000 > "$work/tip"
+  echo "$tip_front" > "$work/tip"
   base_sha=${group#*:} run_report "$selects" merge_group failure
   early=$((early + $(posted)))
 done
 check "no group's failing job posts while f builds" "$(is "$early" 0)"
 # held <out>: whether the hold ended at its front or on its gone branch, and nowhere else.
 held() { [ "$(contains "$1" "$front_line")" = true ] || [ "$(contains "$1" "$gone_line")" = true ]; }
-remote f000:g1head f000:g1head f000:g1head base123:g1head
-head_sha=g1head base_sha=base123 run_hold
+remote "$tip_front:$head_g1" "$tip_front:$head_g1" "$tip_front:$head_g1" "$tip_base:$head_g1"
+head_sha=$head_g1 base_sha=$tip_base run_hold
 check "g1's hold ends at the read that finds main at g1's base" \
   "$(is "$(reads) $(contains "$out" "$front_line")" '4 true')"
 held "$out" || early=$((early + 1))
-for group in g2:g1head:g2head g3:g2head:g3head; do
+for group in "g2:$head_g1:$head_g2" "g3:$head_g2:$head_g3"; do
   IFS=: read -r name base head <<<"$group"
-  remote f000:"$head" base123:"$head" base123:-
+  remote "$tip_front:$head" "$tip_base:$head" "$tip_base:-"
   head_sha=$head base_sha=$base run_hold
   held "$out" || early=$((early + 1))
   check "$name's hold waits on past main at g1's base, until the queue drops $name" \
-    "$(is "$(reads) $(contains "$out" "its base $base is not base123") $(contains "$out" "$gone_line")" '3 true true')"
+    "$(is "$(reads) $(contains "$out" "its base $base is not $tip_base") $(contains "$out" "$gone_line")" '3 true true')"
 done
 check "no group concluded behind the front, so the queue built none on the broken entry" \
   "$(is "$early" 0)"
@@ -677,7 +804,7 @@ run_hold
 check "an answer with no tip for main: exits 0 at the first read" "$(is "$status $(reads)" '0 1')"
 check "and warns why" \
   "$(contains "$out" '^::warning::https://github.com/o/r.git answered no tip for refs/heads/main')"
-remote other456:abc123
+remote "$tip_other:abc123"
 head_sha='' run_hold
 check "a missing input: fails the step, which ends the job on its verdict" "$(is "$status" 1)"
 check "names the input" \
@@ -687,6 +814,57 @@ run_hold 30m
 check "an age that is no number of seconds: fails the step" "$(is "$status" 1)"
 check "names it" \
   "$(contains "$out" "ci-ok-hold.sh's CI_OK_HOLD_AGE_SECONDS is not a whole number of seconds: 30m")"
+
+echo "case: the hold prints no word of the answers it reads but a time and a commit id"
+# Whatever answers the creation read in GitHub's place holds gh's token and writes the answer, and
+# the hold printed it whole: as the creation time when date could read it, which date does for a
+# time with any TZ="..." before it, and inside its warning when date could not. The refs' answer
+# is the remote's, and the hold printed the tip and the group's head it named.
+remote "$tip_base:abc123"
+printf 'TZ="%s" %s\n' "$marker" "$(date -u +%FT%TZ)" > "$work/created"
+run_hold
+shown "$out"
+check "a creation date reads with the marker in it: the stand-in gh is the one called (control)" \
+  "$(is "$(calls 'repos/o/r/actions/runs/41 --jq .created_at')" 1)"
+check "  twin: the stand-in's answer holds the marker" "$(is "$(grep -cF -- "$marker" "$work/created")" 1)"
+check "  the hold reads it as the time it is, and ends at the front" \
+  "$(is "$status $(contains "$out" "$front_line")" '0 true')"
+check "  prints no run of the marker the answer holds" "$(prints_no_marker "$out")"
+check "  and gives the creation time in date's own words" \
+  "$(contains "$out" '^This run was created at [0-9-]*T[0-9:]*Z, so the hold ends at the latest at ')"
+remote "$tip_base:abc123"
+echo "$marker" > "$work/created"
+run_hold
+shown "$out"
+check "a creation that is no time: the stand-in gh is the one called (control)" \
+  "$(is "$(calls 'repos/o/r/actions/runs/41 --jq .created_at')" 1)"
+check "  twin: the stand-in's answer holds the marker" "$(is "$(grep -cF -- "$marker" "$work/created")" 1)"
+check "  prints no run of the marker the answer holds" "$(prints_no_marker "$out")"
+check "  warns it counts from its own start, naming the file that keeps the answer" \
+  "$(contains "$out" "^::warning::GitHub did not give this run's creation time (an answer that is no time, it is kept in $work/temp/ci-ok-hold-created\.")"
+check "  the kept answer holds the marker, where the operator finds it" "$(kept_marker "$out")"
+remote "$marker:abc123" "$tip_base:abc123"
+twin=$(grep -cF -- "$marker" "$work/remote")
+run_hold
+shown "$out"
+check "a tip that is no commit id: the stand-in git is the one called, twice (control)" "$(is "$(reads)" 2)"
+check "  twin: the stand-in's answer holds the marker" "$(is "$twin" 1)"
+check "  the hold waits past it, as for any tip that is not the base, to the front" \
+  "$(is "$status $(contains "$out" "$front_line")" '0 true')"
+check "  prints no run of the marker the answer holds" "$(prints_no_marker "$out")"
+check "  says the tip is no commit id, naming the file that keeps it" \
+  "$(contains "$out" "its base $tip_base is not an answer that is no commit id (it is kept in $work/temp/ci-ok-hold-tip\.")"
+check "  the kept answer holds the marker, where the operator finds it" "$(kept_marker "$out")"
+remote "$tip_other:$marker"
+twin=$(grep -cF -- "$marker" "$work/remote")
+run_hold
+shown "$out"
+check "a group's head that is no commit id: the stand-in git is the one called (control)" "$(is "$(reads)" 1)"
+check "  twin: the stand-in's answer holds the marker" "$(is "$twin" 1)"
+check "  prints no run of the marker the answer holds" "$(prints_no_marker "$out")"
+check "  ends the hold as another head does, naming the file that keeps it" \
+  "$(contains "$out" "${gone_line}an answer that is no commit id (it is kept in $work/temp/ci-ok-hold-group\.")"
+check "  the kept answer holds the marker, where the operator finds it" "$(kept_marker "$out")"
 
 echo "case: the real ci.yaml's ci-ok job holds a failing verdict of a merge group's first attempt"
 # The hold is the step right after the verdict and keys on the verdict step's own outcome, so a
@@ -726,7 +904,7 @@ check "an age that ends the hold inside the queue's 180-minute check timeout" \
   "$(is "$((age + 30 + 3 * 30 + 30 + 60 <= 180 * 60))" 1)"
 check "and a step limit that a hold of a run created moments before it can use whole" \
   "$(is "$((age + 30 + 3 * 30 + 30 < $(jq -r '."timeout-minutes"' <<<"$hold") * 60))" 1)"
-remote base123:abc123
+remote "$tip_base:abc123"
 run_hold "$age"
 check "a hold with that age lets the front group's verdict go up" \
   "$(is "$status $(contains "$out" "$front_line")" '0 true')"

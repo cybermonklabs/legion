@@ -14,8 +14,8 @@
 # script reads of a payload; a branch that names none is refused rather than guessed at, since a
 # group checked against the wrong pull request would report a `pr-title` about somebody else's
 # text. It reads them through GitHub's GraphQL API, whose budget is its own, as check-pr-text.sh
-# reads the rest (that script's header says why); an answer that names no base and head sha is
-# refused.
+# reads the rest (that script's header says why); an answer that names another pull request, or
+# no base and head sha of 40 lowercase hex digits, is refused, naming the file that keeps it.
 #
 # Its inputs, from the step's env:
 #   GITHUB_EVENT_NAME  the event, as Actions sets it.
@@ -61,11 +61,19 @@ jq -n --arg owner "${repository%%/*}" --arg repo "${repository#*/}" --argjson nu
   query: "query QueuedPull($owner: String!, $repo: String!, $number: Int!) { repository(owner: $owner, name: $repo) { pullRequest(number: $number) { number baseRefOid headRefOid } } }",
   variables: {owner: $owner, repo: $repo, number: $number}}' > "$request"
 gh_wait_reset gh api graphql --input "$request" > "$answer"
+# Whatever answers this read in GitHub's place holds gh's token and writes the answer, and
+# check-pr-text.sh prints the number and the two shas this payload hands it. So the answer is
+# held to what GitHub answers: the pull request the branch names, and a base and a head sha of 40
+# lowercase hex digits. Any other answer is refused, and stays in its file, which the refusal
+# names.
 if ! jq -e --argjson number "$number" '.data.repository.pullRequest
-    | {pull_request: {number, base: {sha: .baseRefOid}, head: {sha: .headRefOid}}, number: $number}
-    | select((.pull_request.base.sha | type) == "string" and (.pull_request.head.sha | type) == "string")' \
+    | select(.number == $number
+      and (.baseRefOid | type) == "string" and (.baseRefOid | test("^[0-9a-f]{40}$"))
+      and (.headRefOid | type) == "string" and (.headRefOid | test("^[0-9a-f]{40}$")))
+    | {pull_request: {number, base: {sha: .baseRefOid}, head: {sha: .headRefOid}}, number: $number}' \
   "$answer" > "$payload"; then
   echo "::error::GitHub's GraphQL API answered no base and head sha for #$number, the pull request $head_ref names" >&2
+  echo "find-pr-payload.sh: it answered no pull request #$number with a base and a head sha of 40 lowercase hex digits; its answer is in $answer" >&2
   exit 1
 fi
 echo "$payload"

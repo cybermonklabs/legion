@@ -54,13 +54,14 @@ esac
 });
 
 // The stage scripts' shell options, ERR trap and check helpers, then the lib, then the call and
-// its record.
+// its record. The evidence directory, under the run's own HOME, is where the lib keeps gh's own
+// words (gh_kept).
 const prelude = `set -Eeuo pipefail
 check=daemon-merge
 note() { printf '   %s\\n' "$*"; }
 fail() { printf 'FAIL %s: %s\\n' "$check" "$*" >&2; exit 1; }
 trap 'printf "FAIL %s: line %s exited %s: %s\\n" "$check" "$LINENO" "$?" "$BASH_COMMAND" >&2' ERR
-repo=sjawhar/legion-smoke project=S3TEST ptoken=s3test ok=
+repo=sjawhar/legion-smoke project=S3TEST ptoken=s3test ok= evidence="$HOME/evidence"
 . "$LIB"
 `;
 const record = `
@@ -149,6 +150,9 @@ function run(reads: PullRequest[], flags = "--squash --delete-branch", fake: Fak
     deletes: calls.filter((c) => c.startsWith("api -X DELETE ")),
     by: stdout.match(/^by=(.*)$/m)?.[1],
     commit: stdout.match(/^commit=(.*)$/m)?.[1],
+    // The file under the evidence directory the lib keeps gh's own words of a call in.
+    keptPath: (name: string) => join(state, "evidence", "gh", name),
+    kept: (name: string) => readFileSync(join(state, "evidence", "gh", name), "utf8"),
   };
 }
 
@@ -181,14 +185,15 @@ describe("merge_when_clean", () => {
     expect(r.stdout).toContain(
       `sjawhar/legion-smoke#7 merged by the merger's own merge at ${mergeCommit}`
     );
-    expect(r.stdout).toContain(`deleted sjawhar/legion-smoke's branch ${branch}`);
+    // The branch is named by its pull request: its name is gh's answer (gh_kept).
+    expect(r.stdout).toContain("deleted the head branch of sjawhar/legion-smoke#7");
   });
 
   test("a branch GitHub's auto-delete already removed is fine", () => {
     const r = run([merged], "--squash --delete-branch", { branchGone: true });
     expect(r.status).toBe(0);
     expect(r.deletes).toHaveLength(1);
-    expect(r.stdout).toContain(`branch ${branch} is already gone`);
+    expect(r.stdout).toContain("the head branch of sjawhar/legion-smoke#7 is already gone");
     expect(r.stderr).toBe("");
   });
 
@@ -255,8 +260,14 @@ describe("merge_when_clean", () => {
     expect(r.by).toBe("the merger's own merge");
     expect(r.commit).toBe(mergeCommit);
     expect(r.deletes).toHaveLength(1);
-    expect(r.stdout).toContain("the hand merge of sjawhar/legion-smoke#7 was refused");
-    expect(r.stderr).toBe("! Pull request sjawhar/legion-smoke#7 was already merged\n");
+    // gh's refusal is kept in a file the note names, never printed: its words are gh's (gh_kept).
+    expect(r.stdout).toContain(
+      `the hand merge of sjawhar/legion-smoke#7 was refused (gh's own words are in ${r.keptPath("hand-merge.log")})`
+    );
+    expect(r.kept("hand-merge.log")).toBe(
+      "! Pull request sjawhar/legion-smoke#7 was already merged\n"
+    );
+    expect(r.stderr).toBe("");
   });
 
   test("a refused hand merge on a pull request that stays open fails naming what it reads", () => {
@@ -273,9 +284,12 @@ describe("merge_when_clean", () => {
     expect(r.status).toBe(1);
     expect(r.merges).toHaveLength(0);
     expect(r.deletes).toHaveLength(0);
+    // A check's name is gh's answer: the timeout counts the unsettled checks and names the file
+    // that keeps each (gh_kept).
     expect(r.stderr).toMatch(
-      /^FAIL daemon-merge: timed out after \ds \(\d+ polls\) waiting for sjawhar\/legion-smoke#7 to merge: it reads OPEN, mergeStateStatus BLOCKED, nothing armed; unsettled checks: \[\{"name":"gate"/
+      /^FAIL daemon-merge: timed out after \ds \(\d+ polls\) waiting for sjawhar\/legion-smoke#7 to merge: it reads OPEN, mergeStateStatus BLOCKED, nothing armed; unsettled checks: 1, each in \S+\/unsettled-checks\.answer; /
     );
+    expect(r.kept("unsettled-checks.answer")).toContain('[{"name":"gate"');
     expect(r.stderr.trimEnd().split("\n")).toHaveLength(1);
   });
 
@@ -294,8 +308,8 @@ describe("merge_when_clean", () => {
     expect(r.reads).toHaveLength(5);
     expect(r.merges).toHaveLength(1);
     expect(r.by).toBe("the proof human");
-    expect(r.stderr).not.toContain("FAIL");
-    expect(r.stderr).toContain("gh: HTTP 502: Bad Gateway");
+    // A failed read prints nothing at all: gh's words stay in the file the next read writes over.
+    expect(r.stderr).toBe("");
   });
 
   test("a pull request closed without a merge fails at once", () => {

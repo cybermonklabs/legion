@@ -25,8 +25,8 @@
  *  `outside-agent-public.test.ts`'s.
  */
 
-import { describe, expect, test } from "bun:test";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { afterEach, describe, expect, test } from "bun:test";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { hostTool, skipWithout } from "@legion/test-fixtures/host-tools";
 import { memoryRoot, temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
@@ -47,6 +47,7 @@ import {
 } from "./outside-agent-fixture";
 import {
   fullLogin,
+  ghKeptDirectory,
   inviteUrl,
   linkToken,
   liveStandInDispatches,
@@ -102,6 +103,12 @@ const withoutTools = skipWithout("bash", "curl");
 // file, so 8 MiB leaves room for 8 runs sharing the host.
 const scratch = temporaryDirectories("outside-agent-acceptance", {
   root: memoryRoot({ need: 8 * 2 ** 20 }),
+});
+// The directory each stand-in run of the tailnet leg keeps what gh says and answers in, which the
+// leg leaves in place and names on stderr: removed after the row that read it.
+const ghKept: string[] = [];
+afterEach(() => {
+  for (const each of ghKept.splice(0)) rmSync(each, { recursive: true, force: true });
 });
 
 /** A copy of `leg` that defaults to PASS: every `UNKNOWN` reads `PASS` and every `exit 2` reads
@@ -477,10 +484,13 @@ echo "stopped seconds=$(since "$began") left=$(pgrep -f "^${sleep} ${base}1\\$" 
   }
 );
 
-/** The prepared leg's one run; its stand-in Dispatch stops when it ends. */
+/** The prepared leg's one run; its stand-in Dispatch stops when it ends, and the directory it kept
+ *  gh's words in goes after the row. */
 async function runStandIn(prepared: PreparedStandIn): Promise<StandInRun> {
   try {
     const run = await runLeg(prepared.leg, ["EXAMPLE"], prepared.env);
+    const kept = ghKeptDirectory(run.stderr);
+    if (kept !== undefined) ghKept.push(kept);
     return {
       ...run,
       seen: prepared.dispatch.seen(),
@@ -1376,11 +1386,16 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
           verdicts: { T1: "PASS", T4: "PASS", public: "PASS", sweep: "PASS" },
         });
         // An input the workflow does not declare: GitHub's 422, and no wait on the login only the
-        // run would have approved.
+        // run would have approved. gh's words are not printed: the row names the file that keeps
+        // them, and that file holds the refusal.
         expect({ verdicts: verdictsOf(refused.stdout), stdout: refused.stdout }).toMatchObject({
           verdicts: { T1: "UNKNOWN", public: "UNKNOWN" },
         });
+        const refusedKept = ghKeptDirectory(refused.stderr);
         expect(rowsOf(refused.stdout).get("public")?.got).toContain(
+          `gh workflow run printed no run URL; what it printed is kept in ${refusedKept}/workflow-run`
+        );
+        expect(readFileSync(`${refusedKept}/workflow-run`, "utf8")).toContain(
           'Unexpected inputs provided: ["edge_host"]'
         );
         expect(rowsOf(refused.stdout).get("T1")?.got).toContain("only the public leg approves");

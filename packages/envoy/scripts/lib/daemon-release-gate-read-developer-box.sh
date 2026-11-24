@@ -3,23 +3,30 @@
 #
 # The --clients reader of the developer box and of its versions, which daemon-release-gate.sh
 # sources; it is not run on its own. It reads the gate's dotfiles (--dotfiles, default ~/.dotfiles),
-# work, unknown, printable, first_line and last_line, and its compare_revision. Text it reads from
-# the dotfiles, a marketplace or npm is printed through printable.
+# work, unknown, printable, first_line, last_line, said and keep_text, and its compare_revision.
+# Text it reads from the dotfiles is printed through printable. A release tag's commit and the
+# marketplace are gh's answers, and npm's parse and pick read the marketplace's spec: a word of gh's
+# or npm's for a call that failed, and a value of the marketplace's the gate does not take, are kept
+# (said, keep_text), never printed; a spec npm takes is printed, through the gate's filter.
 # shellcheck disable=SC2154 # dotfiles and work are the gate's
 
 # release_commit <package> <version>: sets $tag to <package>-v<version>, the release tag of that
-# version, and $tag_commit to the commit it names in cybermonklabs/legion; GitHub's error into
-# $work/err.
+# version, and $tag_commit to the commit it names in cybermonklabs/legion; or returns 1 with
+# $tag_error naming why in the gate's own words, gh's kept.
 release_commit() {
   tag="$1-v$2"
+  tag_error=""
   mkdir -p "$work/tags"
   if [ -s "$work/tags/$tag" ]; then
     tag_commit=$(<"$work/tags/$tag")
     return 0
   fi
-  tag_commit=$(gh api "repos/cybermonklabs/legion/commits/refs/tags/$tag" --jq .sha 2>"$work/err") || return 1
+  if ! tag_commit=$(gh api "repos/cybermonklabs/legion/commits/refs/tags/$tag" --jq .sha 2>"$work/err"); then
+    tag_error=$(said gh "$work/err")
+    return 1
+  fi
   if ! [[ $tag_commit =~ ^[0-9a-f]{40}$ ]]; then
-    echo "GitHub answered $tag_commit, which is no commit id" >"$work/err"
+    tag_error="GitHub answered something that is no commit id, kept in $(keep_text gh "$tag_commit")"
     return 1
   fi
   printf '%s' "$tag_commit" >"$work/tags/$tag"
@@ -50,12 +57,12 @@ try {
 judge_release() {
   local label=$1 package=$2 version=$3 note=${4:-}
   if ! [[ $version =~ $release_version ]]; then
-    printf 'UNKNOWN: %s: %s %s is no exact release version\n' "$label" "$package" "$(printable "$version")"
+    printf 'UNKNOWN: %s: %s names a version that is no exact release version, kept in %s\n' "$label" "$package" "$(keep_text "$package" "$version")"
     unknown=$((unknown + 1))
     return
   fi
   if ! release_commit "$package" "$version"; then
-    printf 'UNKNOWN: %s: %s %s has no release tag %s in cybermonklabs/legion: %s\n' "$label" "$package" "$version" "$tag" "$(first_line "$work/err")"
+    printf 'UNKNOWN: %s: %s %s has no release tag %s in cybermonklabs/legion: %s\n' "$label" "$package" "$version" "$tag" "$tag_error"
     unknown=$((unknown + 1))
     return
   fi
@@ -326,7 +333,7 @@ dotfiles_clients() {
 # ~/.claude or the CLAUDE_CONFIG_DIR this run is given, is UNKNOWN.
 dotfiles_claude_envoy() {
   local root=$1 label="dotfiles .claude/settings.json" record state own_record=absent name version enabled others marketplace repo ref query plugin range packed served
-  local extra file shown_file shown_range shown_plugin registry kind
+  local extra file shown_file shown_range registry kind
   local -a registry_args=()
   for record in "$HOME/.claude/plugins/installed_plugins.json" ${CLAUDE_CONFIG_DIR:+"$CLAUDE_CONFIG_DIR/plugins/installed_plugins.json"} "$root/.claude/plugins/installed_plugins.json"; do
     state=$(entry_state "$record")
@@ -426,7 +433,7 @@ dotfiles_claude_envoy() {
   query=""
   [ -z "$ref" ] || query="?ref=$(jq -rn --arg ref "$ref" '$ref | @uri')"
   if ! gh api -H "Accept: application/vnd.github.raw+json" "repos/$repo/contents/$(jq -rn --arg file "$file" '$file | split("/") | map(@uri) | join("/")')${query}" >"$work/marketplace.json" 2>"$work/err"; then
-    printf 'UNKNOWN: %s: cannot read %s %s%s: %s\n' "$label" "$repo" "$shown_file" "${ref:+ at $(printable "$ref")}" "$(first_line "$work/err")"
+    printf 'UNKNOWN: %s: cannot read %s %s%s: %s\n' "$label" "$repo" "$shown_file" "${ref:+ at $(printable "$ref")}" "$(said gh "$work/err")"
     unknown=$((unknown + 1))
     return
   fi
@@ -434,25 +441,32 @@ dotfiles_claude_envoy() {
     [ "$(jq -r '.source? // ""' <<<"$plugin")" != npm ] ||
     [ "$(jq -r '.package? // ""' <<<"$plugin")" != "@sjawhar/claude-envoy" ] ||
     ! jq -e '.registry // "" | type == "string"' <<<"$plugin" >/dev/null; then
-    if [ -n "$plugin" ]; then shown_plugin=$(printable "$plugin"); else shown_plugin=$(first_line "$work/err"); fi
-    printf 'UNKNOWN: %s: %s %s serves claude-envoy as %s, not as one entry of the npm package @sjawhar/claude-envoy\n' "$label" "$repo" "$shown_file" "$shown_plugin"
+    printf 'UNKNOWN: %s: %s %s serves claude-envoy as no one entry of the npm package @sjawhar/claude-envoy; the marketplace is kept in %s\n' \
+      "$label" "$repo" "$shown_file" "$(keep gh "$work/marketplace.json")"
     unknown=$((unknown + 1))
     return
   fi
   extra=$(jq -r 'keys_unsorted - ["source", "package", "version", "registry"] | first // ""' <<<"$plugin")
   if [ -n "$extra" ]; then
-    printf 'UNKNOWN: %s: %s %s serves claude-envoy with %s, which this gate does not read\n' "$label" "$repo" "$shown_file" "$(printable "$extra")"
+    printf 'UNKNOWN: %s: %s %s serves claude-envoy with a key other than source, package, version and registry, which this gate does not read; the entry is kept in %s\n' "$label" "$repo" "$shown_file" "$(keep_text gh "$plugin")"
     unknown=$((unknown + 1))
     return
   fi
   range=$(jq -r '.version // "latest"' <<<"$plugin")
-  shown_range=$(printable "$range")
+  # The marketplace's version is gh's answer: a line prints it only as npm writes a range, an exact
+  # version or a dist-tag, in characters that leave out `_`, which every GitHub token holds; else
+  # by where it is kept.
+  if [[ $range =~ ^[0-9A-Za-z.^~\<\>=|\ *+-]{1,100}$ ]]; then
+    shown_range=$range
+  else
+    shown_range="<the version kept in $(keep_text gh "$range")>"
+  fi
   registry=$(jq -r '.registry // ""' <<<"$plugin")
   registry_args=()
   # Claude Code takes a registry other than the box's default only over https, and npm answers from
   # its default registry, with a warning on stderr, for a value it cannot read as a URL.
   if [ -n "$registry" ] && ! [[ $registry =~ ^https://[^[:space:]]+$ ]]; then
-    printf 'UNKNOWN: %s: %s %s serves claude-envoy from registry %s, which is no https URL\n' "$label" "$repo" "$shown_file" "$(printable "$registry")"
+    printf 'UNKNOWN: %s: %s %s serves claude-envoy from a registry that is no https URL, kept in %s\n' "$label" "$repo" "$shown_file" "$(keep_text gh "$registry")"
     unknown=$((unknown + 1))
     return
   fi
@@ -468,15 +482,19 @@ dotfiles_claude_envoy() {
   # shellcheck disable=SC2016 # npm exec's shell expands them, with the values npm gives it
   if ! kind=$(cd "$work" && env GATE_SPEC="@sjawhar/claude-envoy@$range" GATE_SPEC_TYPE="$spec_type_js" \
     npm exec --offline --yes=false -c '"$npm_node_execpath" -e "$GATE_SPEC_TYPE"' 2>"$work/err"); then
-    printf 'UNKNOWN: %s: npm cannot parse @sjawhar/claude-envoy@%s: %s\n' "$label" "$shown_range" "$(first_line "$work/err")"
+    printf 'UNKNOWN: %s: npm cannot parse the version %s %s serves claude-envoy at, kept in %s: %s\n' "$label" "$repo" "$shown_file" "$(keep_text gh "$range")" "$(said npm "$work/err")"
     unknown=$((unknown + 1))
     return
   fi
   case "$kind" in
     range | version | tag) ;;
     *)
-      printf 'UNKNOWN: %s: legion-plugins serves claude-envoy as @sjawhar/claude-envoy@%s, a %s spec, which npm builds from its source and no release names\n' \
-        "$label" "$shown_range" "$(printable "$kind")"
+      case "$kind" in
+        directory | file | git | remote | alias) ;;
+        *) kind="kind npm names no spec by" ;;
+      esac
+      printf 'UNKNOWN: %s: legion-plugins serves claude-envoy at a %s spec, which npm builds from its source and no release names; the spec is kept in %s\n' \
+        "$label" "$kind" "$(keep_text gh "$range")"
       unknown=$((unknown + 1))
       return
       ;;
@@ -490,7 +508,7 @@ dotfiles_claude_envoy() {
   # project. The dry run fetches the tarball into npm's cache and writes nothing else, and
   # --ignore-scripts keeps npm from running any script of the package.
   if ! packed=$(cd "$work" && npm pack "@sjawhar/claude-envoy@$range" --dry-run --ignore-scripts --json "${registry_args[@]}" 2>"$work/err"); then
-    printf 'UNKNOWN: %s: npm cannot resolve @sjawhar/claude-envoy@%s: %s\n' "$label" "$shown_range" "$(first_line "$work/err")"
+    printf 'UNKNOWN: %s: npm cannot resolve @sjawhar/claude-envoy@%s: %s\n' "$label" "$shown_range" "$(said npm "$work/err")"
     unknown=$((unknown + 1))
     return
   fi

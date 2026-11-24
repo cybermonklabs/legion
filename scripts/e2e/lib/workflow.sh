@@ -16,7 +16,8 @@
 #                  with. Headers go by file, so no bearer is ever in a process's argv. The caller
 #                  writes both headers itself or has write_dispatch_header write them from
 #                  dispatch_token_file
-#   evidence       the evidence directory
+#   evidence       the evidence directory, which outlives every run: gh's own words are kept under
+#                  its gh/ (gh_kept)
 #   project        the Dispatch project the run's issues live in; the daemon writes as
 #                  legion-daemon:<project>
 #   repo           the smoke repository, owner/name
@@ -450,14 +451,64 @@ role_app_slug() {
   printf '%s' "${login%"[bot]"}"
 }
 
+# ---- gh's own words -------------------------------------------------------------------------------
+
+# Whatever answers the proof human's gh in GitHub's place holds gh's token, and it writes both what
+# gh says on stderr (`gh: <message> (HTTP 404)`, or the client's own error) and what gh answers. So
+# the lib prints no word of either. gh's stderr, and an answer the lib does not hold to a closed
+# value (a state word, a 40-hex commit, a number), stay in a file under $evidence/gh, which outlives
+# every run, and the line that reports a failure names that file in the lib's own words. A tool's
+# error over gh's answer counts as gh's answer: jq quotes the start of a value it cannot read.
+#
+# gh_kept NAME prints $evidence/gh/NAME, making the directory: the file a gh call keeps its words
+# in, each call writing its own afresh.
+gh_kept() { mkdir -p "$evidence/gh" && printf '%s/gh/%s' "$evidence" "$1"; }
+# gh_quiet NAME WHAT CMD... runs CMD, a gh call behind its timeout when it has one, with its stderr
+# in gh_kept NAME, and answers CMD's status, leaving its answer (stdout) to the caller. A failure
+# prints, on stderr, WHAT, gh's exit status and that file.
+gh_quiet() {
+  local said status=0
+  said=$(gh_kept "$1") || return 1
+  "${@:3}" 2>"$said" || status=$?
+  [ "$status" = 0 ] || printf '%s failed (gh exited %s); its own words are in %s\n' "$2" "$status" "$said" >&2
+  return "$status"
+}
+# gh_jq NAME WHAT ARGS... runs `jq ARGS` over gh's answer with jq's stderr in gh_kept NAME, and
+# answers jq's status. An error (any status but 0 and -e's 1) prints, on stderr, WHAT, jq's exit
+# status and that file.
+gh_jq() {
+  local said status=0
+  said=$(gh_kept "$1") || return 1
+  jq "${@:3}" 2>"$said" || status=$?
+  [ "$status" -le 1 ] || printf "%s did not read (jq exited %s); jq's own words are in %s\n" "$2" "$status" "$said" >&2
+  return "$status"
+}
+# gh_form VAR VALUE FORM FILE sets VAR to VALUE, a field of gh's answer, when VALUE is whole a match
+# of the extended regular expression FORM, and otherwise to words naming FILE, which keeps the
+# answer: a comparison with a value of that form decides the same either way. gh_shown VALUE FORM
+# FILE prints what gh_form would set.
+gh_form() {
+  if [[ $2 =~ ^($3)$ ]]; then
+    printf -v "$1" '%s' "$2"
+  else
+    printf -v "$1" 'an answer outside its form (kept in %s)' "$4"
+  fi
+}
+gh_shown() {
+  local shown
+  gh_form shown "$@"
+  printf '%s' "$shown"
+}
+
 # ---- the proof human on the smoke repository ------------------------------------------------------
 
 # The proof human is the devbox's ordinary gh acting as the sjawhar-agent App, which the dotfiles gh
 # shim routes to only from the operator's own Oh My Pi session. A plain shell's gh is the user's own
 # login, a Legion pane's is one of Legion's Apps, and a personal GH_TOKEN in the environment makes
 # any session's gh that token's owner. require_proof_human asks gh which account it acts as for the
-# smoke repository and fails the check unless it is the App's bot, in one line naming the account,
-# that one requirement, and whatever gh wrote to stderr (the shim names an inherited GH_TOKEN there).
+# smoke repository and fails the check unless it is the App's bot, in one line naming that one
+# requirement and the files that keep what gh answered, the account it found, and what it wrote to
+# stderr (the shim names an inherited GH_TOKEN there): both are gh's words (gh_kept).
 # The probe is GraphQL's viewer, which answers an App installation token with the App's bot login,
 # where REST's GET /user refuses one (403, "Resource not accessible by integration"); GH_REPO names
 # the owner the shim routes by, as each write's own repository does. The probe gets 60 s, as Stage
@@ -468,37 +519,49 @@ role_app_slug() {
 proof_human_login='sjawhar-agent[bot]'
 proof_human=
 require_proof_human() {
-  local login found said status=0
-  login=$(GH_REPO="$repo" timeout 60 gh api graphql -f query='{viewer{login}}' --jq .data.viewer.login 2>"$work/proof-human.err") ||
-    { status=$?; login=; }
-  found=${login:-no account}
-  [ "$status" != 124 ] || found="no account (gh gave no answer within 60 s)"
-  said=$(<"$work/proof-human.err")
-  said=${said//$'\n'/ }
-  [ "$login" = "$proof_human_login" ] ||
-    fail "the devbox gh acts as $found for $repo, not the proof human $proof_human_login: run the script from the operator's own Oh My Pi session, not a Legion pane, with no personal GH_TOKEN in its environment${said:+; gh said: $said}"
+  local login='' found answer said words='' status=0
+  answer=$(gh_kept proof-human.answer) || fail "could not make $evidence/gh, where the proof human's gh keeps its words"
+  said=$(gh_kept proof-human.err) || fail "could not make $evidence/gh, where the proof human's gh keeps its words"
+  GH_REPO="$repo" timeout 60 gh api graphql -f query='{viewer{login}}' --jq .data.viewer.login >"$answer" 2>"$said" || status=$?
+  [ "$status" != 0 ] || login=$(<"$answer")
+  if [ "$login" != "$proof_human_login" ]; then
+    case "$status:$login" in
+      124:*) found="no account (gh gave no answer within 60 s)" ;;
+      *:) found="no account" ;;
+      *) found="an account other than the proof human (its login, gh's answer, is in $answer)" ;;
+    esac
+    [ ! -s "$said" ] || words="; gh's own words are in $said"
+    fail "the devbox gh acts as $found for $repo, not the proof human $proof_human_login: run the script from the operator's own Oh My Pi session, not a Legion pane, with no personal GH_TOKEN in its environment$words"
+  fi
   proof_human=$login
   note "the proof human: the devbox gh acts as $login for $repo"
 }
 
 # pull_request_product_files prints each file the pull request changes. A handoff is a record on
 # the Dispatch issue, so no file the pull request changes is a handoff: one under .legion/ is listed
-# with the rest, and a check that counts the product files counts it too.
+# with the rest, and a check that counts the product files counts it too. gh's stderr is kept
+# (gh_quiet), as in every read below.
 pull_request_product_files() {
-  gh api --paginate "repos/$repo/pulls/$pr_number/files" --jq '.[].filename'
+  gh_quiet pull-request-files.err "the proof human's read of the files of $repo#$pr_number" \
+    gh api --paginate "repos/$repo/pulls/$pr_number/files" --jq '.[].filename'
 }
 # pull_request_legion_only_commits prints each commit of the proof's pull request whose every
 # changed file is under .legion/: a handoff-only push, which no phase makes now that a handoff is a
 # record on the Dispatch issue. An empty commit changes no file and is not one. Each commit's files
 # are read whole before they are judged (no grep -q downstream of a live gh: under pipefail its
-# early close would read as gh's failure).
+# early close would read as gh's failure). A commit is printed as its 40-hex id, and an id gh
+# answered in another form as words naming the file that keeps the listing (gh_shown).
 pull_request_legion_only_commits() {
-  local commits sha files
-  commits=$(gh api --paginate "repos/$repo/pulls/$pr_number/commits" --jq '.[].sha') || return 1
+  local commits listed sha files
+  listed=$(gh_kept pull-request-commits.answer) || return 1
+  gh_quiet pull-request-commits.err "the proof human's read of the commits of $repo#$pr_number" \
+    gh api --paginate "repos/$repo/pulls/$pr_number/commits" --jq '.[].sha' >"$listed" || return 1
+  commits=$(<"$listed")
   for sha in $commits; do
-    files=$(timeout 60 gh api "repos/$repo/commits/$sha" --jq '.files[].filename') || return 1
+    files=$(gh_quiet pull-request-commit-files.err "the proof human's read of the files of a commit of $repo#$pr_number" \
+      timeout 60 gh api "repos/$repo/commits/$sha" --jq '.files[].filename') || return 1
     if [ -n "$files" ] && ! grep -qv '^\.legion/' <<<"$files"; then
-      printf '%s\n' "$sha"
+      printf '%s\n' "$(gh_shown "$sha" '[0-9a-f]{40}' "$listed")"
     fi
   done
 }
@@ -533,17 +596,23 @@ reviewer_requested_changes() {
 # changes-requested reviews on the proof's pull request, and the newest one's Legion footer names
 # SESSION. The footer is read as the daemon reads it (intake.PullRequestReview.LegionSession): the
 # `session` of the JSON object between the body's last `<!-- legion:` and the first `-->` after it,
-# none when either marker is missing, the JSON does not parse, or its session is not a string.
+# none when either marker is missing, the JSON does not parse, or its session is not a string. The
+# reviews are kept in a file the read of them names, and jq's error over them, which can quote a
+# review, in another (gh_jq).
 reviewer_requested_changes_from() {
   local app reviews
   app=$(role_app reviewer) || return 1
-  reviews=$(timeout 60 gh api --paginate "repos/$repo/pulls/$pr_number/reviews" --jq '.[]') || return 1
-  jq -es --arg app "$app" --argjson round "$1" --arg session "$2" '
+  reviews=$(gh_kept reviews.answer) || return 1
+  gh_quiet reviews.err "the proof human's read of the reviews on $repo#$pr_number" \
+    timeout 60 gh api --paginate "repos/$repo/pulls/$pr_number/reviews" --jq '.[]' >"$reviews" || return 1
+  # shellcheck disable=SC2016 # a jq program: its $ are jq's
+  gh_jq reviews.jq.err "the reviews on $repo#$pr_number, kept in $reviews," \
+    -es --arg app "$app" --argjson round "$1" --arg session "$2" '
     def legion_session:
       (split("<!-- legion:") | if length < 2 then "" else last | split("-->") | if length < 2 then "" else .[0] end end)
       | (try (fromjson | .session) catch null) | if type == "string" then . else "" end;
     [.[] | select(.user.login == $app and .state == "CHANGES_REQUESTED")]
-    | length >= $round and ((last.body // "") | legion_session) == $session' <<<"$reviews" >/dev/null
+    | length >= $round and ((last.body // "") | legion_session) == $session' "$reviews" >/dev/null
 }
 # round_line ROUND is the line a scripted review round asks for: distinct per round and run, and
 # within the spec, whose architect was told a review may ask for one more line in the smoke file.
@@ -554,7 +623,8 @@ round_line() { printf 'Legion proof review round %s (%s)' "$1" "$project"; }
 # pipe while gh still writes, and under the caller's pipefail the SIGPIPE (141) would read as absent.
 round_correction_pushed() {
   local patches
-  patches=$(gh api --paginate "repos/$repo/pulls/$pr_number/files" --jq ".[] | select(.filename == \"$smoke_file\") | .patch // \"\"") || return 1
+  patches=$(gh_quiet pull-request-patches.err "the proof human's read of the files of $repo#$pr_number" \
+    gh api --paginate "repos/$repo/pulls/$pr_number/files" --jq ".[] | select(.filename == \"$smoke_file\") | .patch // \"\"") || return 1
   grep -qF -- "+$(round_line "$1")" <<<"$patches"
 }
 
@@ -565,13 +635,14 @@ round_correction_pushed() {
 review_app_reviews() {
   local app
   app=$(role_app reviewer) || return 1
-  timeout 60 gh api --paginate "repos/$repo/pulls/$pr_number/reviews" \
-    --jq ".[] | select(.user.login == \"$app\" and ($1)) | .$2"
+  gh_quiet review-app-reviews.err "the proof human's read of the reviews on $repo#$pr_number" \
+    timeout 60 gh api --paginate "repos/$repo/pulls/$pr_number/reviews" --jq ".[] | select(.user.login == \"$app\" and ($1)) | .$2"
 }
 # reviewer_approved_head: the review App approved the pull request's current head.
 reviewer_approved_head() {
   local head approved
-  head=$(timeout 60 gh api "repos/$repo/pulls/$pr_number" --jq .head.sha) || return 1
+  head=$(gh_quiet pull-request.err "the proof human's read of $repo#$pr_number" \
+    timeout 60 gh api "repos/$repo/pulls/$pr_number" --jq .head.sha) || return 1
   approved=$(review_app_reviews '.state == "APPROVED"' commit_id) || return 1
   grep -qx -- "$head" <<<"$approved"
 }
@@ -654,7 +725,7 @@ release_smoke_main() {
 # retro learnings a proof pull request merged before retro stopped committing left there, or under
 # .legion/, which only a merge from before handoffs moved to Dispatch can have left.
 smoke_main_leftovers() {
-  gh api "repos/$repo/git/trees/main?recursive=1" \
+  gh_quiet smoke-main-tree.err "the proof human's read of $repo main's tree" gh api "repos/$repo/git/trees/main?recursive=1" \
     --jq '.tree[] | select(.type == "blob") | .path | select(startswith(".legion/") or startswith("docs/solutions/"))'
 }
 # merge_when_clean REPO PR MERGE_FLAG... is the proof human's merge of a pull request the merger
@@ -679,17 +750,18 @@ smoke_main_leftovers() {
 # (300), polled every MERGE_WHEN_CLEAN_POLL seconds (0.5), both from the environment so a test can
 # shorten them: the project's own required checks ordinarily settle within seconds of the pull
 # request's head existing, and a timeout names the actual state, mergeStateStatus, what is armed
-# and every check that is not a completed success, not only that time ran out. --match-head-commit
-# holds the hand merge to the head this call last read, so a push between the poll and the merge
-# is refused by its own sha instead of silently merging a later one. The merger's own merge can
-# land on the same CLEAN the hand merge acts on, and then refuses it ("Pull request #n is
-# already merged"), so a refused hand merge is followed by one re-read: MERGED with a merge commit
-# is the merger's outcome, not a failure; a hand merge that succeeds is re-read too, so the record
-# is GitHub's state, not gh's exit status; the hand merge runs as an `if` test, where neither
-# `set -e` nor the ERR trap acts on its failure, so the re-read judges it. When --delete-branch is
-# among the flags and the merge was not the proof human's, the head branch is deleted here, as the
-# hand merge's flag would have deleted it, so the callers find the same repository either way
-# (merge_when_clean_record).
+# and how many checks are not a completed success, beside the file naming each, not only that time
+# ran out. --match-head-commit holds the hand merge to the head this call last read, so a push
+# between the poll and the merge is refused by its own sha instead of silently merging a later one.
+# The hand merge's answer and stderr go to hand-merge.log under $evidence/gh (gh_kept), which its
+# refusal names. The merger's own merge can land on the same CLEAN the hand merge acts on, and
+# then refuses it ("Pull request #n is already merged"), so a refused hand merge is followed by one
+# re-read: MERGED with a merge commit is the merger's outcome, not a failure; a hand merge that
+# succeeds is re-read too, so the record is GitHub's state, not gh's exit status; the hand merge
+# runs as an `if` test, where neither `set -e` nor the ERR trap acts on its failure, so the re-read
+# judges it. When --delete-branch is among the flags and the merge was not the proof human's, the
+# head branch is deleted here, as the hand merge's flag would have deleted it, so the callers find
+# the same repository either way (merge_when_clean_record).
 merge_when_clean_by=
 merge_when_clean_commit=
 # merge_when_clean_read REPO PR reads the pull request's merge record in one GraphQL query into
@@ -698,37 +770,47 @@ merge_when_clean_commit=
 # at <when> (<method>)`, `merge queue position <n>, <state>`, both, or nothing). A read that fails
 # or answers short leaves every one of them empty, and its caller counts it as not yet rather than
 # ending the whole run through the ERR trap. The read carries its own timeout (rig.sh's until_true
-# house rule: a poll that never returns would hold the wait past its bound). Two separate things
-# keep it failing quietly: `mapfile` on an empty or truncated process substitution (the gh call
-# failed or was killed by its own timeout) returns 0 with fewer than the nine lines a whole answer
-# has, so the count of lines read, not mapfile's status, says whether the read succeeded (`read`
-# there would return non-zero at the end of input, which `set -e` does not exempt); and under
-# `set -E` the process substitution's subshell inherits the caller's ERR trap too, which would
-# otherwise print a false "CHECK ... FAIL: line N exited ..." line for every failed or timed-out
-# poll even though the run carries on — the `|| true` inside the substitution keeps that subshell's
-# own exit status 0, so nothing fires there.
+# house rule: a poll that never returns would hold the wait past its bound). gh's answer and its
+# stderr go to merge-record.answer and merge-record.err under $evidence/gh (gh_kept), which a timeout
+# names, and the answer is read from that file: the gh call is the left side of a `|| true`, where
+# neither `set -e` nor the ERR trap acts on its failure, and `mapfile` on an empty or truncated
+# answer (the gh call failed or was killed by its own timeout) returns 0 with fewer than the nine
+# lines a whole answer has, so the count of lines read, not mapfile's status, says whether the read
+# succeeded (`read` there would return non-zero at the end of input, which `set -e` does not
+# exempt). Every field the lib prints is held to its form (gh_form): a value of GitHub's enum, a
+# 40-hex commit, a time or a number. The head and its branch, which go back to gh as they came, are
+# kept as gh answered them; the head is printed only as gh_shown prints it, the branch never.
 merge_when_clean_read() {
-  local fields
+  local fields answer said at method position queue
+  pull_request_state='' pull_request_merge_state='' pull_request_head='' pull_request_head_ref='' pull_request_merge_commit='' pull_request_armed=''
+  answer=$(gh_kept merge-record.answer) && said=$(gh_kept merge-record.err) || return 0
   # shellcheck disable=SC2016 # a GraphQL query: its $ are GraphQL's
-  mapfile -t fields < <(timeout 60 gh api graphql -F owner="${1%%/*}" -F name="${1#*/}" -F number="$2" -f query='
+  timeout 60 gh api graphql -F owner="${1%%/*}" -F name="${1#*/}" -F number="$2" -f query='
     query($owner: String!, $name: String!, $number: Int!) {
       repository(owner: $owner, name: $name) { pullRequest(number: $number) {
         state mergeStateStatus headRefOid headRefName mergeCommit { oid }
         autoMergeRequest { enabledAt mergeMethod } mergeQueueEntry { position state } } } }' \
     --jq '.data.repository.pullRequest | .state, .mergeStateStatus, .headRefOid, .headRefName, (.mergeCommit.oid // ""),
-      (.autoMergeRequest.enabledAt // ""), (.autoMergeRequest.mergeMethod // ""), (.mergeQueueEntry.position // ""), (.mergeQueueEntry.state // "")' || true)
-  pull_request_state='' pull_request_merge_state='' pull_request_head='' pull_request_head_ref='' pull_request_merge_commit='' pull_request_armed=''
+      (.autoMergeRequest.enabledAt // ""), (.autoMergeRequest.mergeMethod // ""), (.mergeQueueEntry.position // ""), (.mergeQueueEntry.state // "")' \
+    >"$answer" 2>"$said" || true
+  mapfile -t fields <"$answer"
   [ "${#fields[@]}" -eq 9 ] || return 0
-  pull_request_state=${fields[0]} pull_request_merge_state=${fields[1]} pull_request_head=${fields[2]}
-  pull_request_head_ref=${fields[3]} pull_request_merge_commit=${fields[4]}
-  [ -z "${fields[5]}" ] || pull_request_armed="auto-merge enabled at ${fields[5]} (${fields[6]})"
-  [ -z "${fields[8]}" ] || pull_request_armed="${pull_request_armed:+$pull_request_armed, }merge queue position ${fields[7]}, ${fields[8]}"
+  gh_form pull_request_state "${fields[0]}" 'OPEN|MERGED|CLOSED' "$answer"
+  gh_form pull_request_merge_state "${fields[1]}" 'BEHIND|BLOCKED|CLEAN|DIRTY|DRAFT|HAS_HOOKS|UNKNOWN|UNSTABLE' "$answer"
+  pull_request_head=${fields[2]} pull_request_head_ref=${fields[3]}
+  gh_form pull_request_merge_commit "${fields[4]}" '([0-9a-f]{40})?' "$answer"
+  gh_form at "${fields[5]}" '[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z' "$answer"
+  gh_form method "${fields[6]}" 'MERGE|REBASE|SQUASH' "$answer"
+  gh_form position "${fields[7]}" '[0-9]+' "$answer"
+  gh_form queue "${fields[8]}" 'AWAITING_CHECKS|LOCKED|MERGEABLE|QUEUED|UNMERGEABLE' "$answer"
+  [ -z "${fields[5]}" ] || pull_request_armed="auto-merge enabled at $at ($method)"
+  [ -z "${fields[8]}" ] || pull_request_armed="${pull_request_armed:+$pull_request_armed, }merge queue position $position, $queue"
 }
 merge_when_clean() {
   local repo_name=$1 pr=$2
   shift 2
   local bound=${MERGE_WHEN_CLEAN_BOUND:-300} poll=${MERGE_WHEN_CLEAN_POLL:-0.5}
-  local started=$SECONDS beat=$SECONDS polls=0 armed="" flag delete_branch=""
+  local started=$SECONDS beat=$SECONDS polls=0 armed="" flag delete_branch="" said
   for flag in "$@"; do [ "$flag" != --delete-branch ] || delete_branch=1; done
   merge_when_clean_by='' merge_when_clean_commit=''
   note "waiting up to ${bound}s for $repo_name#$pr to merge: merged, enqueued or auto-merge armed is left to land; the proof human merges by hand only once it reads CLEAN with nothing armed"
@@ -751,11 +833,12 @@ merge_when_clean() {
   if [ "$pull_request_state" = MERGED ]; then
     merge_when_clean_by="the merger's own merge"
   elif [ -z "$pull_request_armed" ] && [ "$pull_request_merge_state" = CLEAN ]; then
-    note "$repo_name#$pr reads CLEAN with nothing armed; the proof human merges it by hand at $pull_request_head"
-    if gh -R "$repo_name" pr merge "$pr" --match-head-commit "$pull_request_head" "$@"; then
+    note "$repo_name#$pr reads CLEAN with nothing armed; the proof human merges it by hand at $(gh_shown "$pull_request_head" '[0-9a-f]{40}' "$(gh_kept merge-record.answer)")"
+    said=$(gh_kept hand-merge.log)
+    if gh -R "$repo_name" pr merge "$pr" --match-head-commit "$pull_request_head" "$@" >"$said" 2>&1; then
       merge_when_clean_by="the proof human"
     else
-      note "the hand merge of $repo_name#$pr was refused (gh's reason is above); re-reading it, since the merger's own merge may have landed first"
+      note "the hand merge of $repo_name#$pr was refused (gh's own words are in $said); re-reading it, since the merger's own merge may have landed first"
       merge_when_clean_by="the merger's own merge"
     fi
     merge_when_clean_read "$repo_name" "$pr"
@@ -770,7 +853,7 @@ merge_when_clean() {
 # merge-queue base — so a hand merge here would perform the product's own step and hide its
 # failure. It polls merge_when_clean_read within merge_when_clean's bound and poll, fails at once
 # on a pull request closed without a merge, and on a timeout names the state, what is armed and
-# every unsettled check. merge_when_clean_by is "the merger's own merge", and --delete-branch
+# how many checks are unsettled. merge_when_clean_by is "the merger's own merge", and --delete-branch
 # deletes the head branch once it has merged (merge_when_clean_record).
 await_merger_merge() {
   local repo_name=$1 pr=$2 delete_branch=
@@ -794,31 +877,43 @@ await_merger_merge() {
   merge_when_clean_by="the merger's own merge"
   merge_when_clean_record "$repo_name" "$pr" "$delete_branch"
 }
-# merge_when_clean_timeout REPO PR STARTED POLLS fails naming the pull request's last read and every
-# check that is not a completed success. The `|| echo` inside its diagnostic read needs no ERR-trap
-# guard: it is already the left side of a `||`, which is exempt whether or not it is in a process
-# substitution.
+# merge_when_clean_timeout REPO PR STARTED POLLS fails naming the pull request's last read and how
+# many checks are not a completed success, and the files under $evidence/gh (gh_kept) that keep
+# each such check and the last read's answer and gh's own words: a check's name is gh's answer, so
+# none is printed. jq counts the checks over gh's answer with its stderr discarded, and the count is
+# printed only as digits.
 merge_when_clean_timeout() {
-  fail "timed out after $((SECONDS - $3))s ($4 polls) waiting for $1#$2 to merge: it reads ${pull_request_state:-unread}, mergeStateStatus ${pull_request_merge_state:-unknown}, ${pull_request_armed:-nothing armed}; unsettled checks: $(timeout 60 gh -R "$1" pr view "$2" --json statusCheckRollup --jq '[.statusCheckRollup[]? | select(.conclusion != "SUCCESS" or .status != "COMPLETED") | {name: (.name // .context), workflow: .workflowName, status, conclusion}]' || echo "(could not be read)")"
+  local checks said count
+  checks=$(gh_kept unsettled-checks.answer) || fail "timed out after $((SECONDS - $3))s ($4 polls) waiting for $1#$2 to merge, and could not make $evidence/gh"
+  said=$(gh_kept unsettled-checks.err) || fail "timed out after $((SECONDS - $3))s ($4 polls) waiting for $1#$2 to merge, and could not make $evidence/gh"
+  if timeout 60 gh -R "$1" pr view "$2" --json statusCheckRollup --jq '[.statusCheckRollup[]? | select(.conclusion != "SUCCESS" or .status != "COMPLETED") | {name: (.name // .context), workflow: .workflowName, status, conclusion}]' >"$checks" 2>"$said" &&
+    count=$(jq length "$checks" 2>/dev/null) && [[ $count =~ ^[0-9]+$ ]]; then
+    count="$count, each in $checks"
+  else
+    count="(could not be read; gh's own words are in $said)"
+  fi
+  fail "timed out after $((SECONDS - $3))s ($4 polls) waiting for $1#$2 to merge: it reads ${pull_request_state:-unread}, mergeStateStatus ${pull_request_merge_state:-unknown}, ${pull_request_armed:-nothing armed}; unsettled checks: $count; the last read's answer and gh's own words are in $(gh_kept merge-record.answer) and $(gh_kept merge-record.err)"
 }
 # merge_when_clean_record REPO PR DELETE_BRANCH asserts the last read is MERGED with a merge commit,
 # records merge_when_clean_commit, and, when DELETE_BRANCH is set and the merge was not the proof
 # human's (whose gh flag deleted it), deletes the head branch; a 422 "Reference does not exist" is
-# fine, the repository's own auto-delete may have run.
+# fine, the repository's own auto-delete may have run. The delete's answer and stderr go to
+# branch-delete.log under $evidence/gh (gh_kept), which the 422 is read from and a failure names;
+# the branch is named by its pull request, since its name is gh's answer.
 merge_when_clean_record() {
-  local repo_name=$1 pr=$2 delete_branch=$3 out
+  local repo_name=$1 pr=$2 delete_branch=$3 said
   [ "$pull_request_state" = MERGED ] && [ -n "$pull_request_merge_commit" ] ||
     fail "$repo_name#$pr is not merged: it reads ${pull_request_state:-unread}, mergeStateStatus ${pull_request_merge_state:-unknown}, merge commit ${pull_request_merge_commit:-none} (the hand merge's own outcome, if any, is above)"
   merge_when_clean_commit=$pull_request_merge_commit
   note "$repo_name#$pr merged by $merge_when_clean_by at $merge_when_clean_commit"
   if [ -z "$delete_branch" ] || [ "$merge_when_clean_by" = "the proof human" ]; then return 0; fi
-  if out=$(timeout 60 gh api -X DELETE "repos/$repo_name/git/refs/heads/$pull_request_head_ref" 2>&1); then
-    note "deleted $repo_name's branch $pull_request_head_ref, as the hand merge's --delete-branch would have"
+  said=$(gh_kept branch-delete.log)
+  if timeout 60 gh api -X DELETE "repos/$repo_name/git/refs/heads/$pull_request_head_ref" >"$said" 2>&1; then
+    note "deleted the head branch of $repo_name#$pr, as the hand merge's --delete-branch would have"
+  elif grep -qF 'Reference does not exist' "$said"; then
+    note "the head branch of $repo_name#$pr is already gone (the repository's auto-delete, or an earlier hand)"
   else
-    case "$out" in
-      *"Reference does not exist"*) note "$repo_name's branch $pull_request_head_ref is already gone (the repository's auto-delete, or an earlier hand)" ;;
-      *) fail "could not delete $repo_name's branch $pull_request_head_ref after the merge: ${out//$'\n'/ }" ;;
-    esac
+    fail "could not delete the head branch of $repo_name#$pr after the merge; gh's own words are in $said"
   fi
 }
 # smoke_pr_mergeable PR: GitHub would merge the smoke repository's pull request PR now. The smoke
@@ -827,11 +922,19 @@ merge_when_clean_record() {
 # UNSTABLE while a check that is not required has not passed, then CLEAN. CLEAN, UNSTABLE and
 # HAS_HOOKS merge. Any other state, and a read that fails, is not yet, so the wait on a pull request
 # that can never merge (DIRTY, DRAFT) times out, and report_smoke_pr_merge_state, its timeout hook,
-# names smoke_pr_merge_state, the state the last poll read.
+# names smoke_pr_merge_state, the state the last poll read: one of GitHub's merge states (gh_form),
+# and otherwise words naming cleanup-merge-state.answer under $evidence/gh, which keeps gh's answer
+# beside its stderr (gh_kept).
 smoke_pr_merge_state=
 smoke_pr_mergeable() {
-  smoke_pr_merge_state=$(timeout 60 gh -R "$repo" pr view "$1" --json mergeStateStatus -q .mergeStateStatus) ||
-    { smoke_pr_merge_state="unread (gh exited $?)"; return 1; }
+  local answer said status=0
+  answer=$(gh_kept cleanup-merge-state.answer) && said=$(gh_kept cleanup-merge-state.err) || return 1
+  timeout 60 gh -R "$repo" pr view "$1" --json mergeStateStatus -q .mergeStateStatus >"$answer" 2>"$said" || status=$?
+  if [ "$status" != 0 ]; then
+    smoke_pr_merge_state="unread (gh exited $status; its own words are in $said)"
+    return 1
+  fi
+  gh_form smoke_pr_merge_state "$(<"$answer")" 'BEHIND|BLOCKED|CLEAN|DIRTY|DRAFT|HAS_HOOKS|UNKNOWN|UNSTABLE' "$answer"
   case "$smoke_pr_merge_state" in
     CLEAN | UNSTABLE | HAS_HOOKS) return 0 ;;
   esac
@@ -844,7 +947,8 @@ report_smoke_pr_merge_state() { note "the cleanup pull request's last merge stat
 # answers other failures; it matches by prefix, so only BRANCH's own ref counts.
 smoke_branch_state() {
   local refs
-  refs=$(timeout 60 gh api "repos/$repo/git/matching-refs/heads/$1" --jq ".[] | select(.ref == \"refs/heads/$1\") | .ref") || return 1
+  refs=$(gh_quiet branch-state.err "the proof human's read of $repo's branch $1" \
+    timeout 60 gh api "repos/$repo/git/matching-refs/heads/$1" --jq ".[] | select(.ref == \"refs/heads/$1\") | .ref") || return 1
   if [ -n "$refs" ]; then echo present; else echo absent; fi
 }
 # smoke_commit_files COMMIT prints the paths COMMIT changes on the smoke repository, one a line, as
@@ -852,18 +956,18 @@ smoke_branch_state() {
 # commit is not there: GitHub's 404 or 422 for a commit the repository does not hold fails naming
 # it; a rate limit the proof human's installation has spent is waited out, up to the 15 minutes
 # smoke_rate_limit_wait allows, reading the reset from `gh api rate_limit` (which no limit counts),
-# and the read made again once; any other failure fails naming gh's own answer. A bare `gh api`
+# and the read made again once; any other failure fails naming the file under $evidence/gh, which
+# keeps gh's own words (gh_kept) and which each read writes afresh. A bare `gh api`
 # whose failure was read as the commit's absence reported a spent rate limit as a missing commit
 # (INFRA-220, 2026-10-26).
 smoke_rate_limit_wait=900
 smoke_commit_files() {
   local commit=$1 out err status reset wait attempt
-  err=$(mktemp)
+  err=$(gh_kept commit-files.err) || fail "could not make $evidence/gh, where the proof human's gh keeps its words"
   for attempt in 1 2; do
     status=0
     out=$(timeout 60 gh api "repos/$repo/commits/$commit" --jq '.files[].filename' 2>"$err") || status=$?
     if [ "$status" = 0 ]; then
-      rm -f "$err"
       printf '%s\n' "$out"
       return 0
     fi
@@ -879,20 +983,17 @@ smoke_commit_files() {
     break
   done
   if grep -qE 'HTTP (404|422)' "$err"; then
-    rm -f "$err"
     fail "the commit $commit the implementer reported is not on $repo"
   fi
-  local said
-  said=$(tr '\n' ' ' <"$err" | cut -c1-400)
-  rm -f "$err"
-  fail "GitHub did not answer the proof human's read of $repo commit $commit (gh exited $status): $said"
+  fail "GitHub did not answer the proof human's read of $repo commit $commit (gh exited $status); gh's own words are in $err"
 }
 # The cleanup pull request's branch is proof/clean-main-<project, lowercased>. Stage 3's project is
 # a fresh key per run, but Stage 4b's is LEGSMOKE in every run, so the name alone cannot tell this
 # run's branch from one an earlier run left. smoke_cleanup_branch is the run's record that the
 # branch is its own: clean_smoke_main sets it once it has read that the branch does not exist and
 # just before it makes it, so a create whose answer is lost still counts, and empties it once the
-# merge has deleted the branch. smoke_cleanup_url is the pull request gh pr create answered.
+# merge has deleted the branch. smoke_cleanup_url is the pull request gh pr create answered, set
+# only when it is the URL GitHub gives a pull request of this repository: it is printed.
 smoke_cleanup_branch=
 smoke_cleanup_url=
 # clean_smoke_main removes every leftover from the smoke main through the proof human's ordinary
@@ -901,33 +1002,45 @@ smoke_cleanup_url=
 # leaves them. It merges its pull request once smoke_pr_mergeable holds, waiting up to 600 s. It
 # fails, naming the branch, when its branch exists before it makes it: that one is an earlier run's,
 # which this run neither uses nor removes. A run that stops between making the branch and the
-# merge leaves its teardown both to remove (close_smoke_cleanup).
+# merge leaves its teardown both to remove (close_smoke_cleanup). Each gh call keeps its stderr
+# under $evidence/gh (gh_quiet), and pr create's answer too: the pull request is named by its URL
+# only when it is https://github.com/<repo>/pull/<n>, the one form GitHub answers it in.
 clean_smoke_main() {
-  local paths base branch state path sha url pr
+  local paths base branch state path sha url pr answer shown through
   paths=$(smoke_main_leftovers)
   [ -n "$paths" ] || return 0
-  base=$(gh api "repos/$repo/git/ref/heads/main" --jq .object.sha)
+  base=$(gh_quiet main-ref.err "the proof human's read of $repo main" gh api "repos/$repo/git/ref/heads/main" --jq .object.sha)
   branch="proof/clean-main-${project,,}"
   state=$(smoke_branch_state "$branch")
   [ "$state" = absent ] ||
     fail "$repo already has the branch $branch, which this run did not make: an earlier run left it and the pull request on it, if any; close that pull request and delete the branch, then run again"
   smoke_cleanup_branch=$branch
-  gh api "repos/$repo/git/refs" -f ref="refs/heads/$branch" -f sha="$base" >/dev/null
+  gh_quiet cleanup-branch.err "the proof human's create of $repo's branch $branch" \
+    gh api "repos/$repo/git/refs" -f ref="refs/heads/$branch" -f sha="$base" >/dev/null
   while IFS= read -r path; do
-    sha=$(gh api "repos/$repo/contents/$path?ref=$branch" --jq .sha)
-    gh api -X DELETE "repos/$repo/contents/$path" -f message="proof fixture: remove $path" -f sha="$sha" -f branch="$branch" >/dev/null
+    sha=$(gh_quiet leftover.err "the proof human's read of a leftover path on $repo's branch $branch" \
+      gh api "repos/$repo/contents/$path?ref=$branch" --jq .sha)
+    gh_quiet leftover.err "the proof human's removal of a leftover path on $repo's branch $branch" \
+      gh api -X DELETE "repos/$repo/contents/$path" -f message="proof fixture: remove $path" -f sha="$sha" -f branch="$branch" >/dev/null
   done <<<"$paths"
-  url=$(gh -R "$repo" pr create --base main --head "$branch" --title "proof fixture: remove the handoffs and learnings Stage 3 runs merged ($project)" \
-    --body "The Stage 3 proof run $project removes what merged proof pull requests left on main: docs/solutions/ retro learnings, which proof merges from before retro stopped committing left, and any .legion/ handoffs a merge from before retro removed them left. This is a proof fixture change by the proof's human-merge identity; it changes no product.")
-  smoke_cleanup_url=$url
+  answer=$(gh_kept cleanup-pull-request.answer)
+  gh_quiet cleanup-pull-request.err "the proof human's pull request from $branch on $repo" \
+    gh -R "$repo" pr create --base main --head "$branch" --title "proof fixture: remove the handoffs and learnings Stage 3 runs merged ($project)" \
+    --body "The Stage 3 proof run $project removes what merged proof pull requests left on main: docs/solutions/ retro learnings, which proof merges from before retro stopped committing left, and any .legion/ handoffs a merge from before retro removed them left. This is a proof fixture change by the proof's human-merge identity; it changes no product." >"$answer"
+  url=$(<"$answer")
   pr=${url##*/}
+  if [ "${url%/*}" = "https://github.com/$repo/pull" ] && [[ $pr =~ ^[0-9]+$ ]]; then
+    smoke_cleanup_url=$url shown="$repo#$pr" through=$url
+  else
+    shown="the pull request gh pr create answered in another form (its answer is in $answer)" through=$shown
+  fi
   timeout_hook=report_smoke_pr_merge_state
-  until_true 600 "$repo#$pr to pass its required checks (merge state CLEAN, UNSTABLE or HAS_HOOKS)" smoke_pr_mergeable "$pr"
+  until_true 600 "$shown to pass its required checks (merge state CLEAN, UNSTABLE or HAS_HOOKS)" smoke_pr_mergeable "$pr"
   timeout_hook=
-  gh -R "$repo" pr merge "$pr" --squash --delete-branch
+  gh_quiet cleanup-merge.err "the proof human's merge of $shown" gh -R "$repo" pr merge "$pr" --squash --delete-branch >"$(gh_kept cleanup-merge.answer)"
   smoke_cleanup_branch=
   smoke_cleanup_url=
-  note "the proof human removed $(wc -l <<<"$paths") leftover paths from $repo main through $url"
+  note "the proof human removed $(wc -l <<<"$paths") leftover paths from $repo main through $through"
 }
 # close_smoke_cleanup is a teardown's part for a run that stopped between clean_smoke_main making
 # its branch and the merge deleting it (a merge GitHub answered with a 504, a wait that timed out, an
@@ -936,35 +1049,45 @@ clean_smoke_main() {
 # here, and another run's proof/clean-main-<project> is never touched. It prints one line for each
 # pull request it closed or could not close, by URL, and for the branch, and returns 1 when the pull
 # request may still be open or the branch remains. Each gh call gets 60 s. Only the listing's stdout
-# is parsed (see close_run_pull_requests); its stderr goes to the caller's.
+# is parsed (see close_run_pull_requests). Each call's answer and stderr stay in a file under
+# $evidence/gh (gh_kept) that a failure's line names, and a pull request is named by its URL only
+# when that is https://github.com/<repo>/pull/<n> for the number listed beside it.
 close_smoke_cleanup() {
-  local branch=$smoke_cleanup_branch prs number url out state refused=0
+  local branch=$smoke_cleanup_branch number url state refused=0 listed said shown kept
   [ -n "$branch" ] || return 0
-  if prs=$(timeout 60 gh -R "$repo" pr list --state open --limit 1000 --json number,url,headRefName \
-    --jq ".[] | select(.headRefName == \"$branch\") | \"\(.number) \(.url)\""); then
+  listed=$(gh_kept cleanup-open-pull-requests.answer) && said=$(gh_kept cleanup-open-pull-requests.err) || return 1
+  if timeout 60 gh -R "$repo" pr list --state open --limit 1000 --json number,url,headRefName \
+    --jq ".[] | select(.headRefName == \"$branch\") | \"\(.number) \(.url)\"" >"$listed" 2>"$said"; then
     while read -r number url; do
       [ -n "$number" ] || continue
-      if out=$(timeout 60 gh -R "$repo" pr close "$number" \
-        --comment "Closed by the run that opened it (${0##*/}, project $project, pid $$), at its teardown." </dev/null 2>&1); then
-        printf "closed the run's cleanup pull request %s\n" "$url"
+      if [[ $number =~ ^[0-9]+$ ]] && [ "$url" = "https://github.com/$repo/pull/$number" ]; then
+        shown=$url kept=$number
       else
-        printf "could not close the run's cleanup pull request %s: %s\n" "$url" "${out//$'\n'/ }"
+        shown="that gh listed in another form (the listing is in $listed)" kept=unnumbered
+      fi
+      said=$(gh_kept "cleanup-close-$kept.log")
+      if timeout 60 gh -R "$repo" pr close "$number" \
+        --comment "Closed by the run that opened it (${0##*/}, project $project, pid $$), at its teardown." </dev/null >"$said" 2>&1; then
+        printf "closed the run's cleanup pull request %s\n" "$shown"
+      else
+        printf "could not close the run's cleanup pull request %s; gh's own words are in %s\n" "$shown" "$said"
         refused=1
       fi
-    done <<<"$prs"
+    done <"$listed"
   else
-    printf "could not list the open pull requests on %s, so the run's cleanup pull request %s may still be open (gh's reason is on stderr)\n" \
-      "$repo" "${smoke_cleanup_url:-on $branch}"
+    printf "could not list the open pull requests on %s, so the run's cleanup pull request %s may still be open; gh's own words are in %s\n" \
+      "$repo" "${smoke_cleanup_url:-on $branch}" "$said"
     refused=1
   fi
   if ! state=$(smoke_branch_state "$branch"); then
-    printf "could not read whether the run's cleanup branch %s remains on %s (gh's reason is on stderr)\n" "$branch" "$repo"
+    printf "could not read whether the run's cleanup branch %s remains on %s; gh's own words are in %s\n" "$branch" "$repo" "$(gh_kept branch-state.err)"
     refused=1
   elif [ "$state" = present ]; then
-    if out=$(timeout 60 gh api -X DELETE "repos/$repo/git/refs/heads/$branch" 2>&1); then
+    said=$(gh_kept cleanup-branch-delete.log)
+    if timeout 60 gh api -X DELETE "repos/$repo/git/refs/heads/$branch" >"$said" 2>&1; then
       printf "deleted the run's cleanup branch %s from %s\n" "$branch" "$repo"
     else
-      printf "could not delete the run's cleanup branch %s from %s: %s\n" "$branch" "$repo" "${out//$'\n'/ }"
+      printf "could not delete the run's cleanup branch %s from %s; gh's own words are in %s\n" "$branch" "$repo" "$said"
       refused=1
     fi
   fi
@@ -977,32 +1100,43 @@ close_smoke_cleanup() {
 # branch is one of this run's issue branches, the daemon's `legion/<project>-*`, so a lane running
 # beside this one is untouched; clean_smoke_main's own is close_smoke_cleanup's. The limit is far
 # above the repository's open count: gh's default of 30 is a window of the newest, and this run's
-# own can sit outside it.
+# own can sit outside it. gh's stderr is kept (gh_quiet).
 run_pull_requests() {
-  gh -R "$repo" pr list --state open --limit 1000 --json number,headRefName \
+  gh_quiet run-pull-requests.err "the proof human's listing of the open pull requests on $repo" \
+    gh -R "$repo" pr list --state open --limit 1000 --json number,headRefName \
     --jq "[.[] | select(.headRefName | startswith(\"legion/$project-\")) | .number] | .[]"
 }
-# close_run_pull_requests closes each of them with its branch, printing one line per pull request
-# with gh's reason on anything short of a full close, and returns 1 when a pull request stays open
-# or the list itself fails. `gh pr close --delete-branch` also exits non-zero when the close
-# succeeded and only the branch delete failed; that one is read back and reported as closed. Only
-# the listing's stdout is parsed: gh can write to stderr on a listing that succeeds (the devbox shim
-# names an inherited GH_TOKEN on every call), and a word of that line would become a
-# `gh pr close <word>`, which gh reads as a branch name. The listing's stderr, its reason on a
-# failure included, goes to the caller's stderr.
+# close_run_pull_requests closes each of them with its branch, printing one line per pull request,
+# naming the file that keeps gh's own words on anything short of a full close, and returns 1 when a
+# pull request stays open or the list itself fails. `gh pr close --delete-branch` also exits
+# non-zero when the close succeeded and only the branch delete failed; that one is read back and
+# reported as closed. Only the listing's stdout is parsed: gh can write to stderr on a listing that
+# succeeds (the devbox shim names an inherited GH_TOKEN on every call), and a word of that line
+# would become a `gh pr close <word>`, which gh reads as a branch name. The listing's stderr, its
+# reason on a failure included, is kept as run_pull_requests keeps it, and the listing itself in
+# run-pull-requests.answer under $evidence/gh (gh_kept): a pull request is named by its number only
+# when that is digits.
 close_run_pull_requests() {
-  local prs pr out refused=0
-  prs=$(run_pull_requests) || {
-    printf "could not list the open pull requests on %s (gh's reason is on stderr)\n" "$repo"
+  local prs pr refused=0 listed said shown kept
+  listed=$(gh_kept run-pull-requests.answer) || return 1
+  run_pull_requests >"$listed" || {
+    printf "could not list the open pull requests on %s; gh's own words are in %s\n" "$repo" "$(gh_kept run-pull-requests.err)"
     return 1
   }
+  prs=$(<"$listed")
   for pr in $prs; do
-    if out=$(gh -R "$repo" pr close "$pr" --delete-branch 2>&1); then
-      printf 'closed %s#%s and deleted its branch\n' "$repo" "$pr"
-    elif [ "$(gh -R "$repo" pr view "$pr" --json state --jq .state 2>/dev/null)" = CLOSED ]; then
-      printf 'closed %s#%s; its branch was not deleted: %s\n' "$repo" "$pr" "$out"
+    if [[ $pr =~ ^[0-9]+$ ]]; then
+      shown="$repo#$pr" kept=$pr
     else
-      printf 'could not close %s#%s: %s\n' "$repo" "$pr" "$out"
+      shown="a pull request on $repo that gh listed in another form (the listing is in $listed)" kept=unnumbered
+    fi
+    said=$(gh_kept "run-pull-request-close-$kept.log")
+    if gh -R "$repo" pr close "$pr" --delete-branch >"$said" 2>&1; then
+      printf 'closed %s and deleted its branch\n' "$shown"
+    elif [ "$(gh -R "$repo" pr view "$pr" --json state --jq .state 2>/dev/null)" = CLOSED ]; then
+      printf "closed %s; its branch was not deleted (gh's own words are in %s)\n" "$shown" "$said"
+    else
+      printf "could not close %s; gh's own words are in %s\n" "$shown" "$said"
       refused=1
     fi
   done
@@ -1110,27 +1244,32 @@ assert_handoff_record() {
 # App routing fails; the roles treat a bot's thread by its author (the implementer answers and
 # resolves it as any thread, the reviewer adjudicates it and names it to the implementer, who
 # resolves it), so the thread's author is read back and anything but a bot outside Legion's Apps is
-# refused, naming it.
+# refused, naming the file under $evidence/gh that keeps it: the author is gh's answer (gh_kept).
 post_bot_thread() {
-  local head posted id login type implement review
+  local head answer posted id login type implement review
   implement=$(role_app implementer) && review=$(role_app reviewer) || return 1
-  head=$(timeout 60 gh api "repos/$repo/pulls/$pr_number" --jq .head.sha) || return 1
-  posted=$(jq -cn --arg head "$head" --arg path "$smoke_file" \
+  head=$(gh_quiet pull-request.err "the proof human's read of $repo#$pr_number" \
+    timeout 60 gh api "repos/$repo/pulls/$pr_number" --jq .head.sha) || return 1
+  answer=$(gh_kept bot-thread.answer) || return 1
+  jq -cn --arg head "$head" --arg path "$smoke_file" \
     '{commit_id:$head, path:$path, subject_type:"file", body:"Stage 3 proof bot: is this file change needed?"}' |
-    timeout 60 gh api --method POST "repos/$repo/pulls/$pr_number/comments" --input - --jq '"\(.node_id) \(.user.login) \(.user.type)"') || return 1
+    gh_quiet bot-thread.err "the proof human's review comment on $repo#$pr_number" \
+      timeout 60 gh api --method POST "repos/$repo/pulls/$pr_number/comments" --input - --jq '"\(.node_id) \(.user.login) \(.user.type)"' >"$answer" || return 1
+  posted=$(<"$answer")
   read -r id login type <<<"$posted"
   if [ "$type" != Bot ] || [ "$login" = "$implement" ] || [ "$login" = "$review" ]; then
-    echo "the thread was opened by $login ($type), not a bot account outside Legion's role Apps: the devbox gh is not acting as its App" >&2
+    echo "the thread was opened by an account that is not a bot outside Legion's role Apps (its login and type, gh's answer, are in $answer): the devbox gh is not acting as its App" >&2
     return 1
   fi
   printf '%s\n' "$id"
 }
 # bot_thread_replies COMMENT prints the review thread whose first comment is COMMENT: its isResolved
 # on the first line, then each reply's author (GraphQL names an App by its bare slug) and first
-# line, tab-separated.
+# line, tab-separated. gh's stderr is kept (gh_quiet), as in the two reads below.
 bot_thread_replies() {
   # shellcheck disable=SC2016 # a GraphQL query: its $ are GraphQL's
-  timeout 60 gh api graphql -F owner="${repo%%/*}" -F name="${repo#*/}" -F number="$pr_number" -f query='
+  gh_quiet bot-thread-replies.err "the proof human's read of the review threads on $repo#$pr_number" \
+    timeout 60 gh api graphql -F owner="${repo%%/*}" -F name="${repo#*/}" -F number="$pr_number" -f query='
     query($owner: String!, $name: String!, $number: Int!) {
       repository(owner: $owner, name: $name) { pullRequest(number: $number) {
         reviewThreads(first: 100) { nodes { isResolved comments(first: 50) { nodes { id author { login } body } } } } } } }' \
@@ -1142,7 +1281,8 @@ bot_thread_replies() {
 # resolveReviewThread).
 bot_thread_node_id() {
   # shellcheck disable=SC2016 # a GraphQL query: its $ are GraphQL's
-  timeout 60 gh api graphql -F owner="${repo%%/*}" -F name="${repo#*/}" -F number="$pr_number" -f query='
+  gh_quiet bot-thread-node.err "the proof human's read of the review threads on $repo#$pr_number" \
+    timeout 60 gh api graphql -F owner="${repo%%/*}" -F name="${repo#*/}" -F number="$pr_number" -f query='
     query($owner: String!, $name: String!, $number: Int!) {
       repository(owner: $owner, name: $name) { pullRequest(number: $number) {
         reviewThreads(first: 100) { nodes { id comments(first: 1) { nodes { id } } } } } } }' \
@@ -1163,18 +1303,21 @@ bot_thread_resolved() {
 # slug), body, state (a draft in a pending review is PENDING) and the state of the review it
 # belongs to (reviewState; a comment outside any review, which GitHub does not produce here, reads
 # null). A pull request with more threads or comments than one page holds fails rather than print
-# part of them.
+# part of them. The page gh answered is kept in review-threads.answer under $evidence/gh, and jq's
+# error over it, which quotes the start of a value it cannot read, beside it (gh_jq).
 review_threads() {
   local page
+  page=$(gh_kept review-threads.answer) || return 1
   # shellcheck disable=SC2016 # a GraphQL query: its $ are GraphQL's
-  page=$(timeout 60 gh api graphql -F owner="${repo%%/*}" -F name="${repo#*/}" -F number="$pr_number" -f query='
+  gh_quiet review-threads.err "the proof human's read of the review threads on $repo#$pr_number" \
+    timeout 60 gh api graphql -F owner="${repo%%/*}" -F name="${repo#*/}" -F number="$pr_number" -f query='
     query($owner: String!, $name: String!, $number: Int!) {
       repository(owner: $owner, name: $name) { pullRequest(number: $number) {
         reviewThreads(first: 100) { pageInfo { hasNextPage } nodes { id isResolved
-          comments(first: 100) { pageInfo { hasNextPage } nodes { author { login } body state pullRequestReview { state } } } } } } } }') || return 1
-  jq -ce '.data.repository.pullRequest.reviewThreads
+          comments(first: 100) { pageInfo { hasNextPage } nodes { author { login } body state pullRequestReview { state } } } } } } } }' >"$page" || return 1
+  gh_jq review-threads.jq.err "the review threads on $repo#$pr_number, kept in $page," -ce '.data.repository.pullRequest.reviewThreads
     | if .pageInfo.hasNextPage or any(.nodes[]; .comments.pageInfo.hasNextPage) then error("more review threads or comments than one page") else . end
-    | [.nodes[] | {id, isResolved, comments: [.comments.nodes[] | {author: .author.login, body, state, reviewState: .pullRequestReview.state}]}]' <<<"$page"
+    | [.nodes[] | {id, isResolved, comments: [.comments.nodes[] | {author: .author.login, body, state, reviewState: .pullRequestReview.state}]}]' "$page"
 }
 # reviewer_thread prints the node id of the one review thread the Legion reviewer opened with a
 # CHANGES_REQUESTED review on the proof's pull request, or fails naming how many such threads it
@@ -1218,16 +1361,20 @@ threads_all_resolved() {
 # APPROVED) on the proof's pull request names the head the daemon records for the pull request at
 # the round's end: the reviewer pushes nothing (its handoff is a record on the Dispatch issue), so
 # the head it reviewed is the head its decision ends the round on. The check runs right after the
-# round's transition, before the implementer's next push can move the head.
+# round's transition, before the implementer's next push can move the head. The reviews' commits
+# are kept in reviewed-head.answer under $evidence/gh (gh_kept), and one is printed only as a 40-hex
+# commit (gh_shown).
 assert_review_of_head() {
-  local head reviewed app
+  local head reviewed app answer
   app=$(role_app reviewer) || return 1
   head=$(daemon_state | jq -r --arg issue "$1" '.issues[$issue].pullRequest.head // empty')
   [ -n "$head" ] || fail "the daemon's state records no pull request head for $1 at its review round $2"
-  reviewed=$(gh api --paginate "repos/$repo/pulls/$pr_number/reviews" \
-    --jq ".[] | select(.user.login == \"$app\" and .state == \"$3\") | .commit_id" | tail -1) ||
+  answer=$(gh_kept reviewed-head.answer) || fail "could not make $evidence/gh, where the proof human's gh keeps its words"
+  gh_quiet reviewed-head.err "the proof human's read of the reviews on $repo#$pr_number" gh api --paginate "repos/$repo/pulls/$pr_number/reviews" \
+    --jq ".[] | select(.user.login == \"$app\" and .state == \"$3\") | .commit_id" >"$answer" ||
     fail "read the reviews on pull request #$pr_number"
-  [ "$reviewed" = "$head" ] || fail "the reviewer's round $2 $3 review names $reviewed, not $head, the pull request's head the daemon records"
+  reviewed=$(tail -n 1 "$answer")
+  [ "$reviewed" = "$head" ] || fail "the reviewer's round $2 $3 review names $(gh_shown "$reviewed" '([0-9a-f]{40})?' "$answer"), not $head, the pull request's head the daemon records"
   note "the reviewer's round $2 $3 review names $head, the pull request's head, with nothing pushed above it"
 }
 # retro_reported ISSUE: the daemon applied the implementer's retro completion, the one way out of

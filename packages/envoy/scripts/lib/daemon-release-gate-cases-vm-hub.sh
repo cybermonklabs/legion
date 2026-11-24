@@ -100,8 +100,9 @@ index "$dispatch_listener_pin" "$legion" "$ahead_rev"
 compare "$ahead_rev" ahead 0
 run_gate -- --listeners "$commit"
 check "exits 3" "$(is "$status" 3)"
-check "refuses UNKNOWN naming GitHub's answer" \
-  "$(has_line "UNKNOWN: envoy: cannot read the head of ${deployment}: gh: Bad credentials (HTTP 401)")"
+check "refuses UNKNOWN naming the head, gh's words kept" \
+  "$(has_kept_line "UNKNOWN: envoy: cannot read the head of ${deployment}: gh failed (HTTP 401); its own words are kept in KEPT")"
+check "the kept file holds gh's words" "$(is "$(kept_text "UNKNOWN: envoy: cannot read the head")" "gh: Bad credentials (HTTP 401)")"
 check "fetches no archive" "$(lacks "/tarball/" "$calls")"
 check "neither reads the VM pin nor says the hub is gone" \
   "$([ "$(lacks "$envoy_pin" "$calls")" = true ] && lacks "NO VM HUB" "$out" || echo false)"
@@ -116,8 +117,9 @@ index "$dispatch_listener_pin" "$legion" "$ahead_rev"
 compare "$ahead_rev" ahead 0
 run_gate FAKE_HEAD=main -- --listeners "$commit"
 check "exits 3" "$(is "$status" 3)"
-check "refuses UNKNOWN naming the answer" \
-  "$(has_line "UNKNOWN: envoy: GitHub answered main for the head of ${deployment}, which is no commit id")"
+check "refuses UNKNOWN, the answer kept, not printed" \
+  "$(has_kept_line "UNKNOWN: envoy: GitHub answered something that is no commit id for the head of ${deployment}, kept in KEPT")"
+check "the kept file holds GitHub's answer" "$(is "$(kept_text "UNKNOWN: envoy: GitHub answered")" main)"
 check "fetches no archive" "$(lacks "/tarball/" "$calls")"
 check "never says the hub is gone" "$(lacks "NO VM HUB" "$out")"
 
@@ -131,8 +133,8 @@ index "$dispatch_listener_pin" "$legion" "$ahead_rev"
 compare "$ahead_rev" ahead 0
 run_gate -- --listeners "$commit"
 check "exits 3" "$(is "$status" 3)"
-check "refuses UNKNOWN naming GitHub's answer" \
-  "$(has_line "UNKNOWN: envoy: cannot fetch ${deployment} at ${deployment_head}: gh: Resource not accessible by integration (HTTP 403)")"
+check "refuses UNKNOWN naming the fetch, gh's words kept" \
+  "$(has_kept_line "UNKNOWN: envoy: cannot fetch ${deployment} at ${deployment_head}: gh failed (HTTP 403); its own words are kept in KEPT")"
 check "neither reads the VM pin nor says the hub is gone" \
   "$([ "$(lacks "$envoy_pin" "$calls")" = true ] && lacks "NO VM HUB" "$out" || echo false)"
 check "still reads the other two" "$(has_line "PASS: envoy-cluster runs ${ahead_rev} (ahead of ${commit})")"
@@ -148,8 +150,8 @@ index "$dispatch_listener_pin" "$legion" "$ahead_rev"
 compare "$ahead_rev" ahead 0
 run_gate -- --listeners "$commit"
 check "exits 3" "$(is "$status" 3)"
-check "refuses UNKNOWN naming the archive" \
-  "$(grep -qF "UNKNOWN: envoy: cannot read the Go files of ${deployment} at ${deployment_head}: the archive cannot be read: " "$out" && echo true || echo false)"
+check "refuses UNKNOWN naming the archive, the reader's words kept" \
+  "$(has_kept_line "UNKNOWN: envoy: cannot read the Go files of ${deployment} at ${deployment_head}: the archive cannot be read as a gzipped tar; the reader's words with the names it read are kept in KEPT")"
 check "never says the hub is gone" "$(lacks "NO VM HUB" "$out")"
 
 echo "case: --listeners, envoy/ holds no Go file"
@@ -162,7 +164,7 @@ compare "$ahead_rev" ahead 0
 run_gate -- --listeners "$commit"
 check "exits 3" "$(is "$status" 3)"
 check "refuses UNKNOWN, having nothing to decide by" \
-  "$(has_line "UNKNOWN: envoy: cannot read the Go files of ${deployment} at ${deployment_head}: envoy/ holds no Go file to read the VM hub from")"
+  "$(has_kept_line "UNKNOWN: envoy: cannot read the Go files of ${deployment} at ${deployment_head}: envoy/ holds no Go file to read the VM hub from; the reader's words with the names it read are kept in KEPT")"
 check "never says the hub is gone" "$(lacks "NO VM HUB" "$out")"
 
 # Every form of a use declares the hub, wherever the repository's code holds it: a space or a
@@ -206,18 +208,23 @@ for shape in comment utf-8 unrelated; do
   new_case "listeners-hub-not-go-${shape}"
   listener_stacks "$envoy_pin" "$cluster_pin" "$server_pin" "$dispatch_listener_pin"
   envoy_program none
+  prefix="UNKNOWN: envoy: cannot read the Go files of ${deployment} at ${deployment_head}:"
+  kept="; the reader's words with the names it read are kept in KEPT"
   case "$shape" in
     comment)
       printf 'package main\n\n/* envoygcp.NewNatsHub(ctx, "hub") and a comment with no end\n' >"${case_root}/files/envoy/main.go"
-      want="UNKNOWN: envoy: cannot read the Go files of ${deployment} at ${deployment_head}: envoy/main.go names NewNatsHub and has a /* comment with no end"
+      want="${prefix} member @N@ of the archive, a Go file, names NewNatsHub and has a /* comment with no end${kept}"
+      detail="envoy/main.go names NewNatsHub and has a /* comment with no end"
       ;;
     utf-8)
       printf 'package main\n\n// \xff\nvar hub = envoygcp.NewNatsHub\n' >"${case_root}/files/envoy/main.go"
-      want="UNKNOWN: envoy: cannot read the Go files of ${deployment} at ${deployment_head}: envoy/main.go names NewNatsHub and is no UTF-8 text"
+      want="${prefix} member @N@ of the archive, a Go file, names NewNatsHub and is no UTF-8 text${kept}"
+      detail="envoy/main.go names NewNatsHub and is no UTF-8 text"
       ;;
     unrelated)
       printf 'package main\n\nfunc main( { /* \xff and no end\n' >"${case_root}/files/envoy/broken.go"
       want="NO VM HUB: envoy/ at ${deployment_head} declares no gcp:NatsHub"
+      detail=""
       ;;
   esac
   index "$cluster_pin" "$legion" "$ahead_rev"
@@ -225,7 +232,8 @@ for shape in comment utf-8 unrelated; do
   compare "$ahead_rev" ahead 0
   run_gate -- --listeners "$commit"
   check "exits $([ "$shape" = unrelated ] && echo 0 || echo 3)" "$(is "$status" "$([ "$shape" = unrelated ] && echo 0 || echo 3)")"
-  check "says ${want%%:*}" "$(has_line "$want")"
+  check "says ${want%%:*}, naming the file by its place in the archive" "$(has_kept_line "$want")"
+  [ -z "$detail" ] || check "the kept file names the file" "$(is "$(kept_text "$prefix")" "$detail")"
 done
 
 # A local replace or use that leaves the repository names code the gate cannot read, in any of the
@@ -246,17 +254,21 @@ for shape in relative quoted indented absolute block work missing; do
     work) printf 'go 1.26\n\nuse (\n\t./envoy\n\t../far\n)\n' >"${case_root}/files/go.work" && outside="../far" ;;
     missing) rm "$mod" ;;
   esac
+  prefix="UNKNOWN: envoy: cannot read the Go files of ${deployment} at ${deployment_head}:"
+  kept="; the reader's words with the names it read are kept in KEPT"
   case "$shape" in
-    work) want="UNKNOWN: envoy: cannot read the Go files of ${deployment} at ${deployment_head}: go.work names ../far, a directory outside this repository" ;;
-    missing) want="UNKNOWN: envoy: cannot read the Go files of ${deployment} at ${deployment_head}: envoy/ holds no go.mod" ;;
-    *) want="UNKNOWN: envoy: cannot read the Go files of ${deployment} at ${deployment_head}: envoy/go.mod names ${outside}, a directory outside this repository" ;;
+    work) want="${prefix} go.work names a directory outside this repository (line 5)${kept}" detail="go.work names ../far, a directory outside this repository" ;;
+    missing) want="${prefix} envoy/ holds no go.mod${kept}" detail="envoy/ holds no go.mod" ;;
+    block) want="${prefix} envoy/go.mod names a directory outside this repository (line 5)${kept}" detail="envoy/go.mod names ${outside}, a directory outside this repository" ;;
+    *) want="${prefix} envoy/go.mod names a directory outside this repository (line 3)${kept}" detail="envoy/go.mod names ${outside}, a directory outside this repository" ;;
   esac
   index "$cluster_pin" "$legion" "$ahead_rev"
   index "$dispatch_listener_pin" "$legion" "$ahead_rev"
   compare "$ahead_rev" ahead 0
   run_gate -- --listeners "$commit"
   check "exits 3" "$(is "$status" 3)"
-  check "refuses UNKNOWN naming why" "$(has_line "$want")"
+  check "refuses UNKNOWN naming why, by the module file's line" "$(has_kept_line "$want")"
+  check "the kept file names the directory" "$(is "$(kept_text "$prefix")" "$detail")"
   check "never says the hub is gone" "$(lacks "NO VM HUB" "$out")"
 done
 
@@ -296,12 +308,33 @@ for shape in outside absolute dangling hardlink directory duplicate; do
   envoy_program none
   dir="${case_root}/files/envoy"
   prefix="UNKNOWN: envoy: cannot read the Go files of ${deployment} at ${deployment_head}:"
+  kept="; the reader's words with the names it read are kept in KEPT"
   case "$shape" in
-    outside) ln -s ../../far "$dir/linked" && want="${prefix} envoy/linked is a link to ../../far, outside this repository" ;;
-    absolute) ln -s /srv/work/go.work "$dir/go.work" && want="${prefix} envoy/go.work is a link to /srv/work/go.work, outside this repository" ;;
-    dangling) ln -s missing.txt "$dir/zz_live.go" && want="${prefix} envoy/zz_live.go is a link to missing.txt, which is no file of this repository" ;;
-    hardlink) ln "$dir/main.go" "$dir/zz_copy.go" && want="${prefix} the archive holds envoy/zz_copy.go as a hard link, which git never writes" ;;
-    directory) mkdir "$dir/live.go" && want="${prefix} the archive holds envoy/live.go as no file and no link" ;;
+    outside)
+      ln -s ../../far "$dir/linked"
+      want="${prefix} member @N@ of the archive, a symbolic link, links outside this repository${kept}"
+      detail="envoy/linked is a link to ../../far, outside this repository"
+      ;;
+    absolute)
+      ln -s /srv/work/go.work "$dir/go.work"
+      want="${prefix} member @N@ of the archive, a symbolic link, links outside this repository${kept}"
+      detail="envoy/go.work is a link to /srv/work/go.work, outside this repository"
+      ;;
+    dangling)
+      ln -s missing.txt "$dir/zz_live.go"
+      want="${prefix} member @N@ of the archive, a symbolic link at the path of a Go file or a module file, links to no file of this repository${kept}"
+      detail="envoy/zz_live.go is a link to missing.txt, which is no file of this repository"
+      ;;
+    hardlink)
+      ln "$dir/main.go" "$dir/zz_copy.go"
+      want="${prefix} member @N@ of the archive is a hard link, which git never writes${kept}"
+      detail="the archive holds envoy/zz_copy.go as a hard link, which git never writes"
+      ;;
+    directory)
+      mkdir "$dir/live.go"
+      want="${prefix} member @N@ of the archive, a directory, is at the path of a Go file or a module file, where git writes a file or a link${kept}"
+      detail="the archive holds envoy/live.go as no file and no link"
+      ;;
     duplicate)
       python3 - "${case_root}/files" "${case_root}/archive.tgz" <<'PY'
 import io
@@ -316,7 +349,8 @@ with tarfile.open(out, "w:gz") as archive:
     info.size = len(data)
     archive.addfile(info, io.BytesIO(data))
 PY
-      want="${prefix} the archive holds envoy/main.go twice, which a repository cannot"
+      want="${prefix} member @N@ of the archive is at the path member @N@ is at, which a repository cannot hold twice${kept}"
+      detail="the archive holds envoy/main.go twice, which a repository cannot"
       ;;
   esac
   index "$envoy_pin" "$legion" "$behind_rev"
@@ -326,7 +360,8 @@ PY
   compare "$ahead_rev" ahead 0
   run_gate -- --listeners "$commit"
   check "exits 3" "$(is "$status" 3)"
-  check "refuses UNKNOWN naming the member" "$(has_line "$want")"
+  check "refuses UNKNOWN naming the member by its place and kind" "$(has_kept_line "$want")"
+  check "the kept file names the member" "$(is "$(kept_text "$prefix")" "$detail")"
   check "never says the hub is gone" "$(lacks "NO VM HUB" "$out")"
 done
 
@@ -347,7 +382,7 @@ compare "$ahead_rev" ahead 0
 run_gate -- --listeners "$commit"
 check "exits 3" "$(is "$status" 3)"
 check "refuses UNKNOWN naming the submodules" \
-  "$(has_line "UNKNOWN: envoy: cannot read the Go files of ${deployment} at ${deployment_head}: the repository holds .gitmodules, and submodule code is not in the archive")"
+  "$(has_kept_line "UNKNOWN: envoy: cannot read the Go files of ${deployment} at ${deployment_head}: the repository holds .gitmodules, and submodule code is not in the archive; the reader's words with the names it read are kept in KEPT")"
 check "never says the hub is gone" "$(lacks "NO VM HUB" "$out")"
 check "the verdict is UNKNOWN, never GATE OPEN" "$(last_line_is "UNKNOWN")"
 

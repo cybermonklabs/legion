@@ -1055,13 +1055,13 @@ A passing run's last three checks stop every process, kill the private tmux serv
 — its own, by branch, the daemon's `legion/<project>-*`;
 the proof human's fixture pull request merged in `smoke-main-clean` — before removing the isolated OMP profile and the scratch work directory, the agents' workspaces with it (`cleanup-is-complete`); each shows what it removed gone.
 The proof merges only the pull request its human-merge check merges, so the held-worker and outbox proofs are open when the run reaches here.
-A close GitHub refuses fails the check with gh's reason; a close whose branch delete failed is reported as closed with the reason the branch stayed.
+A close GitHub refuses fails the check naming the file under the evidence directory's `gh/` that keeps gh's own words; a close whose branch delete failed is reported as closed with the reason the branch stayed.
 On any exit the `EXIT` trap does the same teardown, except that a failure keeps the scratch work directory and prints its path.
 For a run that did not pass, the trap also closes the run's own pull requests, best effort:
-it prints each close to stderr, and a close GitHub refuses leaves that pull request open and prints gh's reason, with a line saying some may still be open.
+it prints each close to stderr, and a close GitHub refuses leaves that pull request open and names the file that keeps gh's own words, with a line saying some may still be open.
 When the run stopped inside `smoke-main-clean`, after the cleanup made its branch and before its merge deleted it (a merge GitHub answered with a 504, the wait that timed out), the trap also closes the fixture pull request if it is still open, with a comment naming the run, and deletes the branch (`close_smoke_cleanup` in `lib/workflow.sh`).
 It acts only on the branch the run recorded making, by its exact name, so a run that never reached the cleanup closes nothing of it, and another run's `proof/clean-main-<project>` is never touched.
-It prints the URL of each pull request it closed and of each it could not close, with gh's reason, and names a branch it could not delete.
+It prints the URL of each pull request it closed and of each it could not close, naming the file that keeps gh's own words, and names a branch it could not delete.
 A failed run also [notes](#libmodel-gateway-unservedsh) each agent that could have failed the check for want of a model key, and still exits 1.
 The trap still closes the run's pull requests in two further cases ([`lib/transcript.sh`](#libtranscriptsh)):
 
@@ -7404,7 +7404,7 @@ Stage 3's project is a fresh key per run, but Stage 4b's is `LEGSMOKE` in every 
 The run records the branch as its own (`smoke_cleanup_branch`) once it has read that no such branch exists (`smoke_branch_state`, through `matching-refs`, which answers an absent branch with an empty list), just before it makes it, and empties the record once the merge has deleted it;
 it fails, naming the branch, when one is already there.
 `close_smoke_cleanup` is both stages' teardown of a run that stopped in between (Stage 3's `close_unpassed_run_pull_requests`, Stage 4b's `remove_run_branches`):
-it closes each open pull request whose branch is exactly the recorded one, with a comment naming the run's script, project and pid, deletes the branch, prints one line per pull request (its URL, and gh's reason when the close failed) and for the branch, and returns 1 when the pull request may still be open or the branch remains.
+it closes each open pull request whose branch is exactly the recorded one, with a comment naming the run's script, project and pid, deletes the branch, prints one line per pull request (its URL, and the file that keeps gh's own words when the close failed) and for the branch, and returns 1 when the pull request may still be open or the branch remains.
 Without a record it makes no `gh` call.
 `lib/smoke-cleanup.test.ts` drives both teardowns against a fake `gh`.
 

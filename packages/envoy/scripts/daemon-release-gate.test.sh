@@ -38,12 +38,14 @@ readonly runner="${project_root}/packages/envoy/scripts/lib/daemon-release-gate-
 
 # The groups in reading order: the daemon leg, then the --listeners leg and the VM hub it reads,
 # then --clients (the images' clients, the developer box and its versions), then a project's
-# fields, which both legs read, then the reads that can come back short in every leg.
-readonly groups=(daemons listeners vm-hub image-clients developer-box versions project-fields short-reads)
+# fields, which both legs read, then the reads that can come back short in every leg, then the
+# words another party writes, which the gate keeps and does not print.
+readonly groups=(daemons listeners vm-hub image-clients developer-box versions project-fields short-reads words)
 # The same groups, longest first, which is the order they are started in: a group that is started
 # last cannot be the one the run waits for. The seconds are what each took in CI run 45054793501
-# (job 137308591036), where the whole file took 122.6 s in one process.
-readonly schedule=(developer-box image-clients short-reads versions vm-hub daemons listeners project-fields)
+# (job 137308591036), where the whole file took 122.6 s in one process; words, added later, was
+# measured beside them on a developer box.
+readonly schedule=(developer-box image-clients short-reads words versions vm-hub daemons listeners project-fields)
 if [ "$(printf '%s\n' "${groups[@]}" | sort)" != "$(printf '%s\n' "${schedule[@]}" | sort)" ]; then
   echo "daemon-release-gate.test.sh: the reading order and the start order name different groups" >&2
   exit 1

@@ -109,6 +109,23 @@ fail() {
   exit 1
 }
 
+# RUNS and CI_OK are what the step's `gh run list` and `gh api` answered, and whatever answers
+# those calls in GitHub's place holds gh's token and writes the answers. So this script prints no
+# word of either but a value GitHub gives a field: a conclusion as one of GitHub's, and a run's
+# workflow name as CI, the name of the ci.yaml that `--workflow ci.yaml` holds the list to. Any
+# other is named for what it is, and an input that is no list is kept in a file of its own, which
+# outlives this script (RUNNER_TEMP's on a runner, until the job ends), named in its stead (keep).
+# keep <what> <text>: writes the text to a file of its own and prints the words that name it.
+keep() {
+  local kept
+  if kept=$(mktemp "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/main-bypass-check-$1.XXXXXX") &&
+    printf '%s\n' "$2" > "$kept"; then
+    echo "it is kept in $kept"
+  else
+    echo "it could not be kept"
+  fi
+}
+
 for input in HEAD_SHA RUNS CI_OK; do
   if [ -z "${!input:-}" ]; then
     fail "main-bypass-check.sh needs $input in its environment"
@@ -122,7 +139,7 @@ HEAD_MESSAGE=${HEAD_MESSAGE:-}
 
 for input in RUNS CI_OK; do
   jq -e 'type == "array" and all(.[]; type == "object")' <<<"${!input}" >/dev/null 2>&1 ||
-    fail "$input is not a JSON array of what was read at the push's head: ${!input}"
+    fail "$input is not a JSON array of what was read at the push's head; $(keep "$input" "${!input}")"
 done
 
 # One row per line, tab-separated: `out` and the token for stdout, or `log` and a line of the
@@ -163,12 +180,20 @@ def subject:
   (split("\n") | first // "")
   | if . == "" then "no commit message in the push payload" else . end;
 
+# A field of RUNS or CI_OK as GitHub gives it, or words naming it for what it is.
+def conclusion_said:
+  if . == null or . == false then "not finished"
+  elif IN("success", "failure", "neutral", "cancelled", "skipped", "timed_out", "action_required", "stale", "startup_failure") then .
+  else "a conclusion that is none of GitHub's" end;
+def workflow_said:
+  if . == null or . == false then "no workflow name" elif . == "CI" then . else "another workflow's name" end;
+
 def runs_said($heads):
   if ($heads | length) == 0 then
     "it is the head of no ci.yaml merge-group run"
   else
     "it is the head of \($heads | length) ci.yaml merge-group run(s) (\($heads
-      | map("\(.workflowName // "no workflow name") \(.conclusion // "not finished")")
+      | map("\(.workflowName | workflow_said) \(.conclusion | conclusion_said)")
       | join(", ")))"
   end;
 
@@ -177,7 +202,7 @@ def checks_said($checks):
     "it carries no ci-ok check run"
   else
     "its \($checks | length) ci-ok check run(s) concluded \($checks
-      | map(.conclusion // "not finished") | join(", "))"
+      | map(.conclusion | conclusion_said) | join(", "))"
   end;
 
 ($message | skip_marker) as $marker

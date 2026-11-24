@@ -52,18 +52,23 @@ function reviewsFixture(reviews: Review[]): string {
 
 function run(fixture: string, call: string, args: { body?: string; note?: string } = {}) {
   const sent = join(dir, `sent-${fixtures}-${Math.random().toString(36).slice(2)}`);
+  // The lib keeps the reviews gh answered, and gh's and jq's own words, under the evidence
+  // directory (gh_kept, gh_quiet, gh_jq), taken from the lib beside the functions under test.
   const result = Bun.spawnSync(
     [
       "bash",
       "-c",
       `set -Eeuo pipefail
-repo=sjawhar/legion-smoke pr_number=614
+repo=sjawhar/legion-smoke pr_number=614 evidence="$SENT.evidence"
 implement_app_login='example-implement[bot]' review_app_login='${reviewApp}'
 note() { printf '   %s\\n' "$*"; }
 fail() { printf 'FAIL %s\\n' "$*" >&2; exit 1; }
 issue_worker_session() { printf '%s\\n' "\${REVIEWER_SESSION}"; }
 send_agent() { printf '%s' "$3" >"$SENT"; }
 until_true() { shift 2; "$@"; }
+${fn("gh_kept")}
+${fn("gh_quiet")}
+${fn("gh_jq")}
 ${fn("role_app")}
 ${fn("request_changes_as_reviewer")}
 ${fn("reviewer_requested_changes_from")}

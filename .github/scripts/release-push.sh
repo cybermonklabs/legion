@@ -137,10 +137,18 @@
 #            through gh_wait_reset of gh-read.sh, beside this file, which
 #            waits out a spent API budget within the step's
 #            JOB_TIMEOUT_MINUTES and fails by name past it; it runs gh, the
-#            shell, mktemp, cat, rm, grep, head, date, sleep, timeout, awk and
+#            shell, mktemp, cat, rm, grep, tail, date, sleep, timeout, awk and
 #            getconf, reads /proc, and sources nothing. A `release` create
 #            GitHub refuses after gh created the draft leaves the draft, which
 #            the step's re-run publishes, as any other failed upload does.
+#            No word gh said or answered is printed: whatever answers gh's
+#            call in GitHub's place holds $GH_TOKEN and writes both. gh-read.sh
+#            keeps gh's stderr in a file and names it; gh's answer is printed
+#            only where it is the one value this script expects (the URL of
+#            the run `restart` started, or of the release it wrote), and any
+#            other answer, and jq's words over the runs list, are kept in a
+#            file under $RUNNER_TEMP (TMPDIR, else /tmp, outside Actions) that
+#            a line names (said, keep_file).
 # push-tag:  push the local tag <tag> to $GITHUB_REPOSITORY on GitHub over SSH
 #            with the deploy key in $DEPLOY_KEY, for a job whose checkout keeps
 #            no credential. The key and GitHub's host keys, pinned below, go
@@ -323,6 +331,41 @@ exit_removes=()
 on_exit_remove() {
   exit_removes+=("$1")
   trap 'rm -rf "${exit_removes[@]}"' EXIT
+}
+
+# keep_file: a new file of its own under $RUNNER_TEMP (TMPDIR, else /tmp, outside
+# Actions) that no EXIT trap removes, for gh's answer or a tool's words over it,
+# which this script never prints (the header's paragraph on GitHub calls): a line
+# names the file instead. Prints its path. In CI the runner removes $RUNNER_TEMP
+# at the job's end, so the job log keeps the line alone.
+keep_file() { mktemp "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/release-push.XXXXXX"; }
+
+# said <what> <answer> [<expected>]: what this script prints of <answer>, gh's
+# answer to <what>: the answer itself when it is exactly <expected>, a value this
+# script builds from its own inputs; nothing when gh answered nothing; otherwise
+# a line naming the file keep_file keeps it in.
+said() {
+  local kept
+  if [ -n "${3:-}" ] && [ "$2" = "$3" ]; then
+    printf '%s\n' "$2"
+  elif [ -n "$2" ]; then
+    if kept=$(keep_file) && printf '%s\n' "$2" > "$kept"; then
+      echo "gh answered $1 with words this script does not print; they are in $kept"
+    else
+      echo "gh answered $1 with words this script does not print, and they could not be kept"
+    fi
+  fi
+}
+
+# gh_said <what> <expected> <command>...: runs <command>, a gh write, through
+# gh-read.sh's gh_wait_reset (its caller sources that), prints of its answer
+# what said prints, and returns the command's status.
+gh_said() {
+  local what=$1 expected=$2 answer status=0
+  shift 2
+  answer=$(gh_wait_reset "$@") || status=$?
+  said "$what" "$answer" "$expected"
+  return "$status"
 }
 
 # The leak guard's engine: gitleaks, the version packages/daemon/go.mod holds
@@ -991,11 +1034,22 @@ case "$command" in
     head=$(git rev-parse HEAD)
     # shellcheck source=.github/scripts/gh-read.sh
     source "$(dirname -- "${BASH_SOURCE[0]}")/gh-read.sh"
-    # Each in a command substitution, so a gh or jq failure fails the command.
+    # Each in a command substitution, so a gh or jq failure fails the command. jq's
+    # words over a list it cannot read quote the answer, so they go to a file.
+    restart_dir=$(mktemp -d)
+    on_exit_remove "$restart_dir"
     runs=$(gh_wait_reset gh run list --repo "$GITHUB_REPOSITORY" --workflow "$workflow" \
       --branch "$branch" --limit 50 --json databaseId,number,headSha,status)
+    status=0
     later=$(jq -r --argjson self "$GITHUB_RUN_NUMBER" \
-      '.[] | select(.status != "completed" and .number > $self) | "\(.databaseId) \(.headSha)"' <<< "$runs")
+      '.[] | select(.status != "completed" and .number > $self) | "\(.databaseId) \(.headSha)"' \
+      <<< "$runs" 2> "$restart_dir/jq") || status=$?
+    if [ "$status" -ne 0 ]; then
+      kept=$(keep_file) && { printf '%s\n' "$runs"; cat "$restart_dir/jq"; } > "$kept" ||
+        kept='no file: they could not be kept'
+      echo "::error title=No release run started::release-push.sh restart: jq could not read gh run list's answer as a list of runs (jq exited $status); gh's answer, then jq's words, are in $kept" >&2
+      exit "$status"
+    fi
     # The branch is fetched after the list, so every run the list names has its commit here; a
     # commit still missing counts as not holding HEAD, and a run is started.
     git fetch -q origin "refs/heads/$branch"
@@ -1014,10 +1068,19 @@ case "$command" in
     # This `gh workflow run` is deliberately outside the leak guard, and stays
     # there: its whole payload is lost_races, the count of 0 to 99 checked
     # above, and nothing of this checkout reaches the run it starts.
-    # gh prints the new run's URL: gh 2.102.0 on ubuntu-24.04 did on 2026-10-25.
+    # gh prints the new run's URL: gh 2.102.0 on ubuntu-24.04 did on 2026-10-25. It is
+    # printed when it is this repository's runs path and a run id, and kept otherwise.
     started=$(gh_wait_reset gh workflow run "$workflow" --repo "$GITHUB_REPOSITORY" --ref "$branch" \
       -f "lost_races=$next")
-    echo "::notice title=Release run started::another run took this run's version first, so a new run on $branch, ${started:-the newest run of $workflow}, releases this commit (lost_races $next)" >&2
+    runs_url="${GITHUB_SERVER_URL:-https://github.com}/$GITHUB_REPOSITORY/actions/runs/"
+    if [[ $started == "$runs_url"* && ${started#"$runs_url"} =~ ^[0-9]+$ ]]; then
+      run=$started
+    elif [ -z "$started" ]; then
+      run="the newest run of $workflow"
+    else
+      run="the newest run of $workflow ($(said 'the run start' "$started"))"
+    fi
+    echo "::notice title=Release run started::another run took this run's version first, so a new run on $branch, $run, releases this commit (lost_races $next)" >&2
     ;;
   release)
     shift
@@ -1046,6 +1109,8 @@ case "$command" in
     tag=$1 title=$2
     shift 2
     repo=${GITHUB_REPOSITORY:?GITHUB_REPOSITORY must name the repository as owner/repo}
+    # The URL gh prints for a release it wrote, the one answer of a write printed as it is.
+    release_url="${GITHUB_SERVER_URL:-https://github.com}/$repo/releases/tag/$tag"
     # shellcheck source=.github/scripts/gh-read.sh
     source "$(dirname -- "${BASH_SOURCE[0]}")/gh-read.sh"
     is_draft=$(gh_wait_reset --stderr /dev/null gh release view "$tag" --repo "$repo" \
@@ -1060,14 +1125,14 @@ case "$command" in
       # titles after this call, so no read before the create can see it, and
       # .github/scripts/check-pr-text.sh at the merge is what holds that half.
       leak_guard 'the release create' "$@" -- "$tag" "$title" "${notes[@]}"
-      gh_wait_reset gh release create "$tag" "$@" --repo "$repo" --title "$title" "${notes[@]}" \
-        --verify-tag
+      gh_said 'the release create' "$release_url" \
+        gh release create "$tag" "$@" --repo "$repo" --title "$title" "${notes[@]}" --verify-tag
       exit 0
     fi
     case $is_draft in
       true)
         leak_guard 'the asset upload to the draft release' "$@" --
-        gh_wait_reset gh release upload "$tag" "$@" --repo "$repo" --clobber || {
+        gh_said 'the asset upload to the draft release' '' gh release upload "$tag" "$@" --repo "$repo" --clobber || {
           echo "::error::Uploading this run's assets to the draft release $tag failed; the draft is left unpublished."
           exit 1
         }
@@ -1079,7 +1144,7 @@ case "$command" in
           exit 1
         }
         leak_guard 'the draft release publish' -- "$draft"
-        gh_wait_reset gh release edit "$tag" --repo "$repo" --draft=false || {
+        gh_said 'the draft release publish' "$release_url" gh release edit "$tag" --repo "$repo" --draft=false || {
           echo "::error::Publishing the draft release $tag failed; it holds this run's assets and is still a draft."
           exit 1
         }
@@ -1088,7 +1153,7 @@ case "$command" in
       false)
         if [ "$upload_to_published" = true ]; then
           leak_guard 'the asset upload to the published release' "$@" --
-          gh_wait_reset gh release upload "$tag" "$@" --repo "$repo" --clobber || {
+          gh_said 'the asset upload to the published release' '' gh release upload "$tag" "$@" --repo "$repo" --clobber || {
             echo "::error::Uploading this run's assets to the published release $tag failed."
             exit 1
           }
@@ -1098,8 +1163,7 @@ case "$command" in
         fi
         ;;
       *)
-        printf -v shown '%q' "$is_draft"
-        echo "::error::gh release view $tag printed $shown for isDraft, not true or false"
+        echo "::error::gh release view $tag answered neither true nor false for isDraft${is_draft:+; $(said 'the isDraft view' "$is_draft")}"
         exit 1
         ;;
     esac
@@ -1160,7 +1224,8 @@ case "$command" in
     fi
     # The bytes of $new are the release's public body after this edit.
     leak_guard 'the release-section body write' -- "$(<"$new")"
-    gh_wait_reset gh release edit "$tag" --repo "$repo" --notes-file "$new"
+    gh_said 'the release-section body write' "${GITHUB_SERVER_URL:-https://github.com}/$repo/releases/tag/$tag" \
+      gh release edit "$tag" --repo "$repo" --notes-file "$new"
     echo "Wrote the $heading section into the body of release $tag"
     ;;
   push-tag)

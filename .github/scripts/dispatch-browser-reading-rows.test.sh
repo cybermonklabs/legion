@@ -81,9 +81,12 @@ fixture() {
     echo "two cases named $1" >&2
     return 1
   fi
-  mkdir -p "$root/temp" "$root/.github/scripts"
+  mkdir -p "$root/temp" "$root/.github/scripts" "$root/.github/workflows"
   : > "$root/summary.md"
   cp "$rows_script" "$root/.github/scripts/dispatch-browser-reading-rows.sh"
+  # The workflow's own file, as the merge job's checkout holds it: the script reads the legs its
+  # two matrices name, and prints a leg only as one of those.
+  cp "$workflow" "$root/.github/workflows/dispatch-browser.yaml"
   cat > "$root/.github/scripts/dispatch-browser-run-reads.sh" <<'STANDIN'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -693,5 +696,44 @@ check "fails the step" "$(is "$status" 1)"
 check "naming what it takes and what it was given" \
   "$(contains "$out" '<selection conclusion> <job>. It was given: success success$')"
 check "and reads no jobs" "$(is "$(run_reads_calls "$root")" "")"
+
+echo "case: a leg whose name this workflow's file does not name is printed by no word of it"
+# A leg's name comes from a job's name in the jobs read's answer, and whatever answers that read
+# in GitHub's place holds gh's token and writes it. Here the answer gives an alone leg whose
+# project is the marker not-a-secret-token, which this workflow's matrices do not name: no run of
+# eight of its characters (redacttest.Piece's run) may be in what the reading prints or writes to
+# the job summary. The leg is still a leg: it owes a blob, and this case's blob is missing, which
+# is where a leg's name is printed.
+marker=not-a-secret-token
+# prints_no_marker <text>: true when the text holds no run of eight characters of the marker.
+prints_no_marker() {
+  local at
+  for ((at = 0; at + 8 <= ${#marker}; at++)); do
+    if [[ $1 == *"${marker:at:8}"* ]]; then
+      echo false
+      return
+    fi
+  done
+  echo true
+}
+root=$(fixture marked-leg)
+jq --arg leg "alone-$marker" --arg name "dispatch-browser / alone ($marker)" \
+  'map(if .leg == "alone-webkit-alone" then .conclusion = "failure" | .leg = $leg | .name = $name else . end)' \
+  "$root/.github/scripts/jobs.dispatch-browser.json" > "$root/.github/scripts/jobs.marked.json"
+mv "$root/.github/scripts/jobs.marked.json" "$root/.github/scripts/jobs.dispatch-browser.json"
+for each in 1 2 3 4; do leg "$root" "shard-$each" 30; done
+merged "$root" 120 0 0 0
+run_rows "$root" success success
+while IFS= read -r line; do printf '    printed: %s\n' "$line"; done <<<"$out"
+printf '    summary: %s\n' "$(tr '\n' ' ' < "$root/summary.md")"
+check "twin: the jobs the read answers with hold the marker, in the leg and in the job's name" \
+  "$(is "$(grep -cF -- "$marker" "$root/.github/scripts/jobs.dispatch-browser.json")" 2)"
+check "the leg still owes its blob, so the step fails on the missing one" "$(is "$status" 1)"
+check "prints no run of the marker the answer holds" "$(prints_no_marker "$out")"
+check "nor writes one to the job summary" "$(prints_no_marker "$(cat "$root/summary.md")")"
+check "names it as a leg this workflow's file does not name" \
+  "$(contains "$(error_line)" '^::error::no blob report arrived from: a leg \.github/workflows/dispatch-browser\.yaml does not name;')"
+check "and names the legs that file does name as they are (control)" \
+  "$(contains "$(notice_line)" 'shard-1 30, shard-2 30, shard-3 30, shard-4 30')"
 
 summary "dispatch-browser-reading-rows.sh names what its inputs did"

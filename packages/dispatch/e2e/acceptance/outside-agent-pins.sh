@@ -3,9 +3,10 @@
 # The deployed pins and the build Dispatch serves (rows pins and pins-end): outside-agent-tailnet.sh
 # sources this file from beside it, after outside-agent-lib.sh. It defines functions alone. They
 # read the leg's `work`, `newline`, `checkout`, `pin_names` (the deployments whose pins are read:
-# `broker dispatch edge-listener`, or `broker dispatch` for the browser gate) and the inputs
-# OUTSIDE_PINS, OUTSIDE_PINS_REPO, OUTSIDE_IMAGE_REVISION_COMMAND and OUTSIDE_TAILNET_DISPATCH_URL,
-# and set `pins_text`, `pins_problem`, `serving_commit`, `serving_fleet` and `serving_problem`.
+# `broker dispatch edge-listener`, or `broker dispatch` for the browser gate), its `keep_gh` and
+# `gh_kept` (the directory that keeps what gh says and answers) and the inputs OUTSIDE_PINS,
+# OUTSIDE_PINS_REPO, OUTSIDE_IMAGE_REVISION_COMMAND and OUTSIDE_TAILNET_DISPATCH_URL, and set
+# `pins_text`, `pins_said`, `pins_problem`, `serving_commit`, `serving_fleet` and `serving_problem`.
 #
 # What each service says of the build it serves: Dispatch's /healthz names `commit`, the legion
 # commit its binary was built from, and `fleet_commit`, the commit every live server process serves
@@ -22,12 +23,19 @@ pin_file() {
     [ -r "$1" ] && cp "$1" "$2"
   fi
 }
-# read_pins: sets pins_text, the `name image revision` lines of each name pin_names holds, or
-# pins_problem. A line of another name is not read.
+# read_pins: sets pins_text, the `name image revision` lines of each name pin_names holds, and
+# pins_said, the same lines as the rows print them, or pins_problem. A line of another name is not
+# read. A pin file read at OUTSIDE_PINS_REPO is gh's answer, which whatever answers gh in GitHub's
+# place writes: it is kept in gh_kept, and its image is printed only as the file that keeps it and
+# the image's sha256 digest. A revision is a whole commit id, 7 to 64 lowercase hex digits: the
+# registry an image names answers it, and gh's answer names that image.
 read_pins() {
-  local line name file key value image revision found copy
+  local line name file key value image revision found copy image_said
   pins_text=''
+  pins_said=''
   pins_problem=''
+  # How many times read_pins ran, which names the files this read keeps.
+  pins_reads=$((${pins_reads:-0} + 1))
   for name in $pin_names; do
     found=''
     while IFS= read -r line || [ -n "$line" ]; do
@@ -45,6 +53,10 @@ read_pins() {
       file=$2 key=$3 found=yes
       image=''
       copy="$work/pin-$name"
+      if [ -n "${OUTSIDE_PINS_REPO:-}" ] && command -v gh >/dev/null 2>&1; then
+        keep_gh
+        copy="$gh_kept/pin-$name.$pins_reads"
+      fi
       if pin_file "$file" "$copy"; then
         while IFS= read -r value || [ -n "$value" ]; do
           case $value in *"$key:"*) image=${value#*"$key:"} ;; esac
@@ -56,6 +68,12 @@ read_pins() {
         pins_problem="${pins_problem:+$pins_problem; }$name: $file${OUTSIDE_PINS_REPO:+ at the main of $OUTSIDE_PINS_REPO} holds no $key"
         continue
       fi
+      image_said=$image
+      if [ -n "${OUTSIDE_PINS_REPO:-}" ]; then
+        image_said="(the image in $copy, which gh read"
+        [[ ! $image =~ @sha256:[0-9a-f]{64}$ ]] || image_said="$image_said: @sha256:${image##*@sha256:}"
+        image_said="$image_said)"
+      fi
       revision=''
       if [ -n "${OUTSIDE_IMAGE_REVISION_COMMAND:-}" ]; then
         set -f
@@ -65,14 +83,12 @@ read_pins() {
       elif command -v crane >/dev/null 2>&1; then
         revision=$(json_field org.opencontainers.image.revision "$(crane config "$image" 2>/dev/null </dev/null)")
       fi
-      case $revision in
-        [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]*) ;;
-        *)
-          pins_problem="${pins_problem:+$pins_problem; }$name: no commit read for $image${OUTSIDE_IMAGE_REVISION_COMMAND:+ through OUTSIDE_IMAGE_REVISION_COMMAND}$(command -v crane >/dev/null 2>&1 || [ -n "${OUTSIDE_IMAGE_REVISION_COMMAND:-}" ] || printf ' (crane not on PATH)')"
-          continue
-          ;;
-      esac
+      if ! [[ $revision =~ ^[0-9a-f]{7,64}$ ]]; then
+        pins_problem="${pins_problem:+$pins_problem; }$name: no commit read for $image_said${OUTSIDE_IMAGE_REVISION_COMMAND:+ through OUTSIDE_IMAGE_REVISION_COMMAND}$(command -v crane >/dev/null 2>&1 || [ -n "${OUTSIDE_IMAGE_REVISION_COMMAND:-}" ] || printf ' (crane not on PATH)')"
+        continue
+      fi
       pins_text="${pins_text:+$pins_text$newline}$name $image $revision"
+      pins_said="${pins_said:+$pins_said$newline}$name $image_said $revision"
     done <"$OUTSIDE_PINS"
     [ -n "$found" ] || pins_problem="${pins_problem:+$pins_problem; }$OUTSIDE_PINS has no $name line"
   done

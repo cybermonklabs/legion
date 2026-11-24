@@ -1372,8 +1372,10 @@ EOF
 k6_azure() {
 	local d="$WORK_DIR/k6"
 	mkdir -p "$d"
-	gh api repos/sjawhar/dotfiles/contents/scripts/az-broker -H 'Accept: application/vnd.github.raw' >"$d/az-broker" || {
-		echo "airlock-check: sjawhar/dotfiles scripts/az-broker could not be fetched" >&2
+	# gh's own words for a fetch that failed are its answering party's, which holds gh's token, so
+	# they are kept in a file of the work directory and not printed (fetch_old_cli's rule).
+	gh api repos/sjawhar/dotfiles/contents/scripts/az-broker -H 'Accept: application/vnd.github.raw' >"$d/az-broker" 2>"$d/az-broker.gh-err" || {
+		echo "airlock-check: sjawhar/dotfiles scripts/az-broker could not be fetched; gh's own words are in $d/az-broker.gh-err (--keep-stack keeps it)" >&2
 		return 1
 	}
 	chmod +x "$d/az-broker"
@@ -1589,8 +1591,8 @@ k7_dotfiles() {
 	local d="$WORK_DIR/k7/dotfiles" path
 	mkdir -p "$d/scripts" "$d/agent-secrets" "$d/shims" "$d/gws"
 	for path in scripts/secret-run scripts/secret-run-reason scripts/gcloud-broker scripts/gh-agent-config scripts/public-text-gate shims/gh gws/accounts.json agent-secrets/broker-url.sh; do
-		gh api "repos/sjawhar/dotfiles/contents/$path" -H 'Accept: application/vnd.github.raw' >"$d/$path" || {
-			echo "airlock-check: sjawhar/dotfiles $path could not be fetched" >&2
+		gh api "repos/sjawhar/dotfiles/contents/$path" -H 'Accept: application/vnd.github.raw' >"$d/$path" 2>"$d/fetch.gh-err" || {
+			echo "airlock-check: sjawhar/dotfiles $path could not be fetched; gh's own words are in $d/fetch.gh-err (--keep-stack keeps it)" >&2
 			return 1
 		}
 	done
@@ -1648,8 +1650,11 @@ say "slack=\$(bun run $SCRIPT_DIR/airlock/slack.ts 2>&1 | tail -n 1 | tr -d '\r'
 # and the only other gh in this pod is Legion's wrapper, which refuses a call whose GH_TOKEN
 # is set and refuses to run at all when another gh is ahead of it on PATH; \$LEGION_GH_PATH is
 # the real CLI the wrapper itself runs. Nothing else of the step changes, so what GitHub is
-# sent is the consumer's own command with the consumer's own fake value.
-say "gh=\$(secret-run --reason 'k7: one gh api call with a fake admin token' GITHUB_ADMIN_PAT -- sh -c 'PATH=$K7_GH_DIR:\$PATH GH_TOKEN=\$GITHUB_ADMIN_PAT GITHUB_TOKEN=\$GITHUB_ADMIN_PAT exec gh api user' 2>&1 | tail -n 1 | tr -d '\r')"
+# sent is the consumer's own command with the consumer's own fake value. What gh says is
+# GitHub's answer, or that of whatever answers in its place, so it is kept in gh-step.out and
+# the step says only the three digits of gh's closing (HTTP nnn).
+secret-run --reason 'k7: one gh api call with a fake admin token' GITHUB_ADMIN_PAT -- sh -c 'PATH=$K7_GH_DIR:\$PATH GH_TOKEN=\$GITHUB_ADMIN_PAT GITHUB_TOKEN=\$GITHUB_ADMIN_PAT exec gh api user' >$d/gh-step.out 2>&1
+say "gh=\$(tail -n 1 $d/gh-step.out | tr -d '\r' | sed -n 's/.*(HTTP \([0-9][0-9][0-9]\))\$/HTTP \1/p')"
 
 # pulumi preview of a program whose Tailscale provider calls tailscale:getDevices.
 say "pulumi=\$(cd $d/pulumi && export PULUMI_CONFIG_PASSPHRASE= PULUMI_BACKEND_URL=file://$d/pulumi/state TAILSCALE_API_KEY="\$TAILSCALE_API_KEY" TAILSCALE_TAILNET=example.com && pulumi stack init k7 >/dev/null 2>&1; pulumi preview --stack k7 --non-interactive 2>&1 | grep -iE 'error|refus|unauthor|401|403' | head -n 1 | tr -d '\r')"
@@ -1729,7 +1734,7 @@ check_k7() {
 	start_stack
 	stack_facts
 	k7_dotfiles
-	observe "the consumers, fetched from sjawhar/dotfiles at main: $K7_FETCHED"
+	observe "the consumers, fetched from sjawhar/dotfiles at main: ${K7_FETCHED-none, the fetch above failed}"
 	K7_CONSUMER_WORK_DIR="$WORK_DIR/k7" \
 		k7_consumer_add_fixtures
 	k7_broker

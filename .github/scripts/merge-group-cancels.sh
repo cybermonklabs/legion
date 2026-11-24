@@ -57,6 +57,22 @@ fail() {
   exit 1
 }
 
+# RUNS is what `gh run list` answered, and whatever answers that call in GitHub's place holds gh's
+# token and writes the answer. So this script prints no word of RUNS but a value GitHub gives a
+# field: a run's id (a number), its createdAt once it reads as RFC3339, its status as one of
+# GitHub's, and its branch when that is this run's own base with a commit id for its parent. Any
+# other is named for what it is, and RUNS is kept in a file of its own, which outlives this script
+# (RUNNER_TEMP's on a runner, until the job ends), named in its stead (keep).
+# keep <what> <text>: writes the text to a file of its own and prints the words that name it.
+keep() {
+  local kept
+  if kept=$(mktemp "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/merge-group-cancels-$1.XXXXXX") &&
+    printf '%s\n' "$2" > "$kept"; then
+    echo "it is kept in $kept"
+  else
+    echo "it could not be kept"
+  fi
+}
 for input in RUN_ID HEAD_BRANCH RUNS; do
   if [ -z "${!input:-}" ]; then
     fail "merge-group-cancels.sh needs $input in its environment"
@@ -74,11 +90,12 @@ shape='type == "array" and all(.[];
   and (.status | type) == "string"
   and (.createdAt | type) == "string")'
 jq -e "$shape" <<<"$RUNS" >/dev/null 2>&1 ||
-  fail "RUNS is not a JSON array of runs with databaseId, headBranch, status and createdAt: $RUNS"
+  fail "RUNS is not a JSON array of runs with databaseId, headBranch, status and createdAt; $(keep runs "$RUNS")"
 rfc3339='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}([.][0-9]+)?Z$'
 bad_times=$(jq -r --arg re "$rfc3339" \
-  '[.[] | select((.createdAt | test($re)) | not) | "\(.databaseId) \(.createdAt)"] | join(", ")' <<<"$RUNS")
-[ -z "$bad_times" ] || fail "RUNS holds a createdAt that is no RFC3339 UTC time: $bad_times"
+  '[.[] | select((.createdAt | test($re)) | not) | .databaseId] | join(", ")' <<<"$RUNS")
+[ -z "$bad_times" ] ||
+  fail "RUNS holds a createdAt that is no RFC3339 UTC time, for run(s) $bad_times; $(keep runs "$RUNS")"
 
 # One row per line, tab-separated: `out` and a token for stdout, or `log` and a line of the
 # reasoning for stderr. Both are emitted in the order the caller must act on them.
@@ -86,6 +103,16 @@ read -r -d '' program <<'JQ' || true
 def parsed:
   [((. // "") | capture("^gh-readonly-queue/(?<base>.+)/pr-(?<pr>[0-9]+)-(?<parent>[0-9a-f]+)$"))][0];
 def ts: sub("[.][0-9]+Z$"; "Z") | fromdateiso8601;
+# A run's branch is printed when it is a branch of pull request $me.pr on the asking run's own
+# base, $me.base, whose parent is a commit id, and its status when it is one of GitHub's; the
+# header says why.
+def branch_said($me):
+  (.headBranch | parsed) as $p
+  | if $p.base == $me.base and ($p.parent | test("^[0-9a-f]{7,40}$")) then .headBranch
+    else "a branch of pull request \($me.pr) that is not on this run's base \($me.base) with a commit id for its parent" end;
+def status_said:
+  if IN(.status; "queued", "in_progress", "waiting", "requested", "pending", "action_required") then .status
+  else "in a status that is none of GitHub's" end;
 
 . as $runs
 | ([$runs[] | select(.databaseId == $run_id)] | first) as $self
@@ -107,7 +134,7 @@ def ts: sub("[.][0-9]+Z$"; "Z") | fromdateiso8601;
      ["log", "no group of pull request \($me.pr) created before this run (\($self.createdAt)) is still going"]
    else empty end),
   ($older[]
-   | ["log", "run \(.databaseId) (\(.headBranch)) is a group of pull request \($me.pr) created at \(.createdAt), before this run's \($self.createdAt), and is \(.status), so it tests a tree that will not land: cancel it"],
+   | ["log", "run \(.databaseId) (\(branch_said($me))) is a group of pull request \($me.pr) created at \(.createdAt), before this run's \($self.createdAt), and is \(status_said), so it tests a tree that will not land: cancel it"],
      ["out", "cancel \(.databaseId)"])
 | @tsv
 JQ

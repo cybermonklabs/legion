@@ -35,6 +35,10 @@
 # The step runs it from the repository root and carries no working directory of its own: the
 # call to .github/scripts/dispatch-browser-run-reads.sh below is relative to that root.
 #
+# It reads this workflow's own file too, .github/workflows/dispatch-browser.yaml beside it in the
+# tree (CI_BROWSER_WORKFLOW names another, which the tests use), for the legs its two matrices
+# name: a leg is printed only as one of those, for the reason given where it is read.
+#
 # The runner sets five variables it needs for every step: $RUNNER_TEMP and $GITHUB_STEP_SUMMARY,
 # and $GITHUB_REPOSITORY, $GITHUB_RUN_ID and $GITHUB_RUN_ATTEMPT, which that call of
 # dispatch-browser-run-reads.sh reads for this run's jobs.
@@ -152,6 +156,24 @@ if [ -z "$legs" ]; then
     "hold the merged report against"
   exit 1
 fi
+# A leg's name comes from a job's name in the jobs read's answer, and whatever answers that read
+# in GitHub's place holds gh's token and writes it. So a leg is printed only when this workflow's
+# own file names it: the shard numbers and the alone projects of its two matrices, read from the
+# tree this job checked out rather than from the answer. The lookups below take the leg as it
+# came, so which blob and which count each leg is held to is as it was; only the printing changes.
+# A name of another shape is a leg of this workflow all the same (its job name passed the filter
+# dispatch-browser-run-reads.sh holds it to), so it is counted and held to its files as any other.
+browser_workflow=${CI_BROWSER_WORKFLOW:-.github/workflows/dispatch-browser.yaml}
+legs_named=$( (yq -r '.jobs.shard.strategy.matrix.shard[] | "shard-" + (. | tostring)' "$browser_workflow"
+  yq -r '.jobs.alone.strategy.matrix.project[] | "alone-" + .' "$browser_workflow") 2> /dev/null) || true
+# leg_said <leg>: the leg's name when this workflow's file names it, else fixed words.
+leg_said() {
+  if grep -qxF -- "$1" <<< "$legs_named"; then
+    echo "$1"
+  else
+    echo "a leg $browser_workflow does not name"
+  fi
+}
 missing=""
 printed_total=0
 # The legs whose row count this job read, and those whose count it did not: a leg with no count
@@ -177,7 +199,7 @@ while IFS= read -r leg; do
   fi
   case "$printed" in
     '' | *[!0-9]*)
-      unread_legs="${unread_legs:+$unread_legs, }$leg"
+      unread_legs="${unread_legs:+$unread_legs, }$(leg_said "$leg")"
       cell="not read"
       ;;
     *)
@@ -189,7 +211,7 @@ while IFS= read -r leg; do
   if [ -f "$blobs/report-$leg.zip" ]; then
     held=yes
   else
-    missing="${missing:+$missing, }$leg"
+    missing="${missing:+$missing, }$(leg_said "$leg")"
     # MISSING only where the download and the selection both succeeded and found no blob for the
     # leg. Otherwise this job never read the leg's blob, and the table says what this reading
     # knows: not read.
@@ -199,8 +221,8 @@ while IFS= read -r leg; do
       held="not read"
     fi
   fi
-  line="$line$leg $cell, "
-  echo "| $leg | $cell | $held |" >> "$GITHUB_STEP_SUMMARY"
+  line="$line$(leg_said "$leg") $cell, "
+  echo "| $(leg_said "$leg") | $cell | $held |" >> "$GITHUB_STEP_SUMMARY"
 done <<< "$legs"
 # What this job holds of the merged report, as `report_state`:
 # - `none`: there is no report. The merge step did not run or failed, and this reading still

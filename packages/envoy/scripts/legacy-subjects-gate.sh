@@ -203,7 +203,10 @@
 # when the gate starts: a file made at that path meanwhile is left as it is, and the reading is
 # UNKNOWN. A second reading that opened is a first reading for the next one. A usage error exits
 # 2 and reads nothing. No line of a reading prints a URL's user, password or token (user:***@,
-# ***@ in its place), whether a NATS_URLS or a nats error naming its server holds it.
+# ***@ in its place), whether a NATS_URLS or a nats error naming its server holds it. Nor does any
+# line print gh's own words or its answer to a build's compare, but for GitHub's four statuses and
+# a count of commits: a compare that failed, or whose answer holds anything else, is kept in a new
+# file beside the record, <file>.compare.<six random characters>, which the build's line names.
 #
 # It needs bash, kubectl (a context for the cluster that runs the listeners and the hub bridge,
 # signed in as an account that may list pods in every namespace, read the logs of the listener
@@ -802,6 +805,26 @@ fi
 # tag's, passes when the build is ahead of it or identical (behind_by 0). The builds are few (one per
 # release and image in use); a census naming more than max_builds is not judged, and is unknown.
 readonly max_builds=40
+# gh's own words (its stderr) and its answer are never printed: whatever answers gh's call in
+# GitHub's place holds gh's token and writes both. A build's verdict prints of the answer only
+# GitHub's four statuses and a count of commits. For a compare that failed, or whose answer holds
+# anything else, keep_compare HEAD keeps gh's answer and its own words in a new file beside the
+# record, since the work directory goes when the gate ends, and sets compare_kept to the words that
+# name the file, which the verdict prints in their place.
+keep_compare() {
+  local kept
+  if kept=$(mktemp "$record.compare.XXXXXX" 2>/dev/null) &&
+    {
+      printf 'gh api repos/cybermonklabs/legion/compare/%s...%s --jq {status, behind_by}\nits answer:\n' "$new_form_commit" "$1"
+      cat "$work/compare"
+      printf '\nits own words (standard error):\n'
+      cat "$work/compare.err"
+    } >"$kept" 2>/dev/null; then
+    compare_kept="gh's answer and its own words are in $kept"
+  else
+    compare_kept="gh's answer and its own words could not be kept beside the record"
+  fi
+}
 if [ -n "$census_name" ] && [ -s "$work/census-lines.jsonl" ]; then
   jq -r -L "$here/lib" -s 'include "legacy-subjects-gate-forms";
     [.[] | select(.leg == "census") | .out | split("\n")[] | select(length > 0) | try fromjson catch empty
@@ -824,12 +847,20 @@ if [ -n "$census_name" ] && [ -s "$work/census-lines.jsonl" ]; then
       verdict='{"verdict": "unknown", "detail": "gh is not on PATH, so GitHub was not asked"}'
     elif gh api "repos/cybermonklabs/legion/compare/$new_form_commit...$head" --jq '{status, behind_by}' >"$work/compare" 2>"$work/compare.err"; then
       verdict=$(jq -c --arg head "$head" --arg commit "$new_form_commit" '
-        if (.status == "ahead" or .status == "identical") and .behind_by == 0 then {verdict: "pass", detail: "\($head) is \(.status) of \($commit)"}
-        elif .status == "behind" or .status == "diverged" then {verdict: "shut", detail: "\($head) is \(.status) \(if .status == "behind" then "" else "from " end)\($commit) (behind by \(.behind_by))"}
-        else {verdict: "unknown", detail: "GitHub compared \($head) with \($commit) as \(.status // "nothing")"} end' "$work/compare" 2>/dev/null) ||
-        verdict='{"verdict": "unknown", "detail": "GitHub'"'"'s compare answered no status"}'
+        (.status | if IN("ahead", "behind", "diverged", "identical") then . else null end) as $status
+        | (.behind_by | if type == "number" and . >= 0 and . == floor then . else null end) as $behind
+        | if ($status == "ahead" or $status == "identical") and $behind == 0 then {verdict: "pass", detail: "\($head) is \($status) of \($commit)"}
+          elif $status == "behind" or $status == "diverged" then {verdict: "shut", detail: "\($head) is \($status) \(if $status == "behind" then "" else "from " end)\($commit) (behind by \($behind // "a count GitHub did not give"))"}
+            + if $behind == null then {keep: true} else {} end
+          else {verdict: "unknown", detail: "GitHub compared \($head) with \($commit) as \($status // "none of its statuses (ahead, behind, diverged, identical)")", keep: true} end' "$work/compare" 2>/dev/null) ||
+        verdict='{"verdict": "unknown", "detail": "GitHub'"'"'s compare answered no status", "keep": true}'
+      if [ "$(jq -r '.keep // false' <<<"$verdict")" = true ]; then
+        keep_compare "$head"
+        verdict=$(jq -c --arg kept "$compare_kept" 'del(.keep) | .detail += "; \($kept)"' <<<"$verdict")
+      fi
     else
-      verdict=$(jq -cn --arg head "$head" --arg error "$(first_line "$work/compare.err")" '{verdict: "unknown", detail: "GitHub could not compare \($head): \($error)"}')
+      keep_compare "$head"
+      verdict=$(jq -cn --arg head "$head" --arg kept "$compare_kept" '{verdict: "unknown", detail: "GitHub could not compare \($head); \($kept)"}')
     fi
     jq -cn --arg build "$build" --argjson verdict "$verdict" '{key: $build, value: $verdict}' >>"$work/build-verdicts.jsonl"
   done <"$work/builds"

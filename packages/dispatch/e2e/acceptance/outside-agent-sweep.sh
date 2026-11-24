@@ -3,8 +3,8 @@
 # The read sweep's full-member half and its controls (restricted-sweep.sh, beside this file, row
 # sweep): outside-agent-tailnet.sh sources this file from beside it, after outside-agent-lib.sh. It
 # defines functions alone. They read the leg's `work`, `here`, `person`, `results`, `tab`,
-# `newline`, `background`, `browser_problem`, `token_problem` and its `browser` and
-# `full_token_get` functions, and set `sweep_problem`, `sweep_fills` (the fills file, base64, for
+# `newline`, `background`, `browser_problem`, `token_problem` and its `browser`, `full_token_get`
+# and `artifact_text` functions, and set `sweep_problem`, `sweep_fills` (the fills file, base64, for
 # the workflow), `writer_pid`, `proxy_control` and `proxy_control_problem`.
 #
 # A full member has no cookie at the outside origin, and no full member's credential goes on the
@@ -159,7 +159,7 @@ EOF
 sweep_row() {
   local want="restricted-sweep.sh on the runner PASS, with every write of the writer (a comment and a direct message) delivered and one inside its live window, and the full member answered 200 by the GitHub proxy for the repository its proxy rows read"
   local log="$results/restricted-sweep.log" sweep_exit window='' w0='' w1='' inside='' line verdict_line=''
-  local word began ended comment message state rest unread='' dropped=''
+  local word began ended comment message state rest unread='' dropped='' exit_said
   local stamp='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$'
   local id='^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
   if [ -n "$sweep_problem" ]; then
@@ -211,7 +211,12 @@ sweep_row() {
   while IFS= read -r line; do
     [ -z "$line" ] || verdict_line=$line
   done <"$log"
-  verdict_line=${verdict_line:0:300}
+  # Where gh downloaded the run's log and exit (the leg's artifact_text), the line is printed as the
+  # file that keeps it, and the exit only as a number of at most three digits.
+  verdict_line=$(artifact_text "$log" "${verdict_line:0:300}")
+  exit_said=${sweep_exit:-with no code read}
+  [[ -z $sweep_exit || $sweep_exit =~ ^[0-9]{1,3}$ ]] ||
+    exit_said=$(artifact_text "$results/restricted-sweep.exit" "$sweep_exit")
   case $sweep_exit in
     1) row sweep "$want" "the sweep failed: $verdict_line" FAIL ;;
     0)
@@ -229,6 +234,6 @@ sweep_row() {
         row sweep "$want" "the sweep passed; the writer's write $inside was delivered inside its live window $window; $proxy_control" PASS
       fi
       ;;
-    *) row sweep "$want" "the sweep exited ${sweep_exit:-with no code read}: $verdict_line${proxy_control_problem:+; its GitHub proxy rows have no positive control: $proxy_control_problem}" UNKNOWN ;;
+    *) row sweep "$want" "the sweep exited $exit_said: $verdict_line${proxy_control_problem:+; its GitHub proxy rows have no positive control: $proxy_control_problem}" UNKNOWN ;;
   esac
 }

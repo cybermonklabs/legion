@@ -2,28 +2,39 @@
 # packages/envoy/scripts/lib/daemon-release-gate-read-image-clients.sh
 #
 # The --clients reader of the images, which daemon-release-gate.sh sources; it is not run on its
-# own. It reads the gate's deployment, work, compared, unknown, printable, first_line, last_line,
-# fetch, stack_pin (which sets pin and refuses one that is no image reference), its
+# own. It reads the gate's deployment, work, compared, unknown, printable, first_line, said, keep,
+# keep_text, fetch, stack_pin (which sets pin and refuses one that is no image reference), its
 # compare_revision, and judge_release, which lib/daemon-release-gate-read-developer-box.sh defines.
+# An image is the registry's answer, and whatever answers docker in the registry's place holds
+# docker's login, so docker's words and a text read from an image that the gate does not take are
+# kept (said, keep_text), never printed; a value that holds to its grammar (a build commit, a
+# release version) is printed, through the gate's filter.
 # shellcheck disable=SC2154 # deployment, work, pin and fetch_error are the gate's
 
 # in_image <ref> <entrypoint> [<arg>...]: the output of <entrypoint> run in a container of <ref> with
 # no network, a read-only root, no capability and no gain of privileges, quiet so a pull of <ref>
 # adds nothing to its answer, and docker's exit status: 125 when docker could not run the container
-# at all. The error, into $work/err, is the last line of docker's or the command's that is not blank
-# and not docker's `Run 'docker run --help'` hint. A <ref> not pinned by digest is never run (125):
-# under a tag, docker runs whatever image it holds by that name, which need not be the one deployed,
-# and the deployment pins every image by digest.
+# at all. What docker or the command said is in $work/run.err, which the caller keeps. A <ref> not
+# pinned by digest is never run (125, with the gate's own words in $work/run.refused; a file, since
+# the caller runs this in a command substitution): under a tag, docker runs whatever image it holds
+# by that name, which need not be the one deployed, and the deployment pins every image by digest.
 in_image() {
   local status=0
+  rm -f "$work/run.refused"
+  : >"$work/run.err"
   if ! [[ $1 =~ @sha256:[0-9a-f]+$ ]]; then
-    printf '%s is not pinned by digest, so the image docker holds under that name need not be the one deployed\n' "$1" >"$work/err"
+    printf '%s is not pinned by digest, so the image docker holds under that name need not be the one deployed' "$1" >"$work/run.refused"
     return 125
   fi
   docker run --rm --quiet --network none --read-only --cap-drop ALL --security-opt no-new-privileges \
     --entrypoint "$2" "$1" "${@:3}" </dev/null 2>"$work/run.err" || status=$?
-  awk '!/^Run \047/ && NF { line = $0 } END { print line }' "$work/run.err" >"$work/err"
   return "$status"
+}
+
+# ran_said <tool>: why the in_image call that failed failed, in the gate's own words: its refusal,
+# or said <tool> of what docker or the command wrote.
+ran_said() {
+  if [ -s "$work/run.refused" ]; then cat "$work/run.refused"; else said "$1" "$work/run.err"; fi
 }
 
 # load_version <ref>: runs <ref>'s /opt/legion/bin/legion version once for the run, into
@@ -35,7 +46,7 @@ load_version() {
   if text=$(in_image "$1" /opt/legion/bin/legion version); then
     version_reads[$1]="ok"$'\n'"$text"
   else
-    version_reads[$1]="error $(first_line "$work/err")"
+    version_reads[$1]="error $(ran_said docker)"
   fi
 }
 
@@ -48,20 +59,22 @@ load_version() {
 # and pi-envoy's names a release version only when a release build sets it. It reads `legion
 # version` from version_reads, which load_version fills.
 read_clients() {
-  local ref=$1 client text name status answer
+  local ref=$1 client text name named status answer
   for client in pi-envoy claude-envoy; do
     status=0
     text=$(in_image "$ref" cat "/opt/legion/${client}/package.json") || status=$?
     if [ "$status" = 125 ]; then
-      printf 'error cannot run %s: %s\n' "$ref" "$(first_line "$work/err")"
+      printf 'error cannot run %s: %s\n' "$ref" "$(ran_said docker)"
       return
     elif [ "$status" != 0 ]; then
-      printf 'error %s carries no @sjawhar/%s at /opt/legion/%s/package.json: %s\n' "$ref" "$client" "$client" "$(first_line "$work/err")"
+      printf 'error %s carries no @sjawhar/%s at /opt/legion/%s/package.json: %s\n' "$ref" "$client" "$client" "$(ran_said cat)"
       return
     fi
     name=$(jq -r '.name // ""' <<<"$text" 2>/dev/null) || name=""
     if [ "$name" != "@sjawhar/${client}" ]; then
-      printf "error %s's /opt/legion/%s/package.json names %s, not @sjawhar/%s\n" "$ref" "$client" "$(printable "${name:-no package}")" "$client"
+      named="no package"
+      [ -z "$name" ] || named="another package"
+      printf "error %s's /opt/legion/%s/package.json names %s, not @sjawhar/%s; the manifest is kept in %s\n" "$ref" "$client" "$named" "$client" "$(keep_text docker "$text")"
       return
     fi
   done
@@ -72,7 +85,7 @@ read_clients() {
   fi
   text=$(head -n 1 <<<"${answer#ok$'\n'}")
   if ! [[ $text =~ ^legion\ [^\ ]+\ commit\ ([0-9a-f]{7,40})$ ]]; then
-    printf "error %s's /opt/legion/bin/legion version names no build commit: %s\n" "$ref" "$(printable "$text")"
+    printf "error %s's /opt/legion/bin/legion version names no build commit; its first line is kept in %s\n" "$ref" "$(keep_text docker "$text")"
     return
   fi
   printf 'commit %s\n' "${BASH_REMATCH[1]}"
@@ -98,11 +111,11 @@ client_image() {
 
 # golden_pi_envoy <file> <path>: the pi_envoy <file>, the project's rendered legion.yaml at <path> in
 # the deployment, sets under runtime.kubernetes.plugins, or nothing when it sets no plugins; it
-# fails, naming why, on a file that is not one YAML mapping and on plugins that name no pi_envoy
-# this gate can read, as the daemon refuses a plugins block that is no mapping of both versions.
+# fails, naming why in its own words, on a file that is not one YAML mapping and on plugins that
+# name no pi_envoy this gate can read, as the daemon refuses a plugins block that is no mapping of
+# both versions. The file is GitHub's answer, so no refusal quotes it.
 golden_pi_envoy() {
   python3 - "$1" "$2" <<'PY'
-import json
 import sys
 
 import yaml
@@ -114,7 +127,8 @@ try:
 except UnicodeDecodeError:
     sys.exit(f"{name} is not UTF-8 text")
 except yaml.YAMLError as error:
-    sys.exit(f"{name} is not YAML: {str(error).splitlines()[0]}")
+    mark = getattr(error, "problem_mark", None)
+    sys.exit(f"{name} is not YAML" + (f" (line {mark.line + 1}, column {mark.column + 1})" if mark else ""))
 if not isinstance(document, dict):
     sys.exit(f"{name} is not a mapping")
 # A kubernetes project's render always holds runtime.kubernetes, so a golden without it is a read
@@ -131,7 +145,7 @@ if plugins is None:
     sys.exit(0)
 version = plugins.get("pi_envoy") if isinstance(plugins, dict) else None
 if not isinstance(version, str) or not version or not version.isprintable():
-    sys.exit(f"{name} sets runtime.kubernetes.plugins to {json.dumps(plugins, default=str)}, which names no pi_envoy this gate can read")
+    sys.exit(f"{name} sets runtime.kubernetes.plugins to a value that names no pi_envoy this gate can read")
 print(version)
 PY
 }
@@ -154,7 +168,7 @@ client_daemon() {
     return
   fi
   if ! version=$(golden_pi_envoy "$work/golden.yaml" "$golden" 2>"$work/err"); then
-    printf 'UNKNOWN: %s: %s %s\n' "$label" "$deployment" "$(last_line "$work/err")"
+    printf 'UNKNOWN: %s: %s %s\n' "$label" "$deployment" "$(first_line "$work/err")"
     unknown=$((unknown + 1))
     return
   fi
@@ -176,7 +190,7 @@ client_daemon() {
     return
   fi
   if ! [[ $second =~ ^plugins\ @sjawhar/pi-legion\ [^\ ]+\ @sjawhar/pi-envoy\ ([0-9A-Za-z.+-]+)$ ]]; then
-    printf "UNKNOWN: %s: %s's /opt/legion/bin/legion version prints \"%s\" as its second line, which names no @sjawhar/pi-envoy version\n" "$label" "$ref" "$(printable "$second")"
+    printf "UNKNOWN: %s: %s's /opt/legion/bin/legion version prints a second line that names no @sjawhar/pi-envoy version, kept in %s\n" "$label" "$ref" "$(keep_text docker "$second")"
     unknown=$((unknown + 1))
     return
   fi

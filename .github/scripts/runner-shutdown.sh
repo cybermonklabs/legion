@@ -94,7 +94,8 @@
 # ci-ok-report.sh:180 one job per call. The variable dies with the subshell, so a call made
 # that way reads the route again and the keeping saves nothing across such calls — asking job
 # by job costs one read of the check runs per job. It returns 1, having warned, when GitHub
-# refused one of its reads at every attempt gh-read.sh made or the environment above is
+# refused one of its reads at every attempt gh-read.sh made, when the check runs' answer is no
+# list jq can read, or when the environment above is
 # incomplete: the caller then keeps every failure a failure and the verdict stays the failing one,
 # which is how ci-ok-report.sh:249-260 answers a refused jobs list too. Every warning goes to
 # stderr, where the job log holds it as gh-read.sh's own attempts are held, so a caller may read
@@ -140,7 +141,7 @@ _runner_shutdown_other_exit_code() {
 }
 
 runner_shutdown_kills() {
-  local input job urls url annotations shutdown
+  local input job urls url annotations shutdown words
   local kills=()
   [ "$#" -gt 0 ] || return 0
   for input in GH_TOKEN HEAD_SHA GITHUB_REPOSITORY GITHUB_RUN_ID; do
@@ -156,8 +157,19 @@ runner_shutdown_kills() {
       echo "::warning::GitHub refused the check runs on $HEAD_SHA at every attempt gh-read.sh made, so no failure of this run can be read as a runner shutdown; every failure stands as a failure" >&2
       return 1
     fi
-    _runner_shutdown_check_runs=$(jq -s --arg run "/actions/runs/$GITHUB_RUN_ID/job/" \
-      'map(select((.details_url // "") | contains($run)))' <<<"$_runner_shutdown_check_runs")
+    # Whatever answers the read in GitHub's place holds gh's token and writes the answer, and
+    # jq's error over a details_url that is no string quotes that field. So jq's own words go to
+    # a file of their own, which outlives this shell (RUNNER_TEMP's on a runner, until the job
+    # ends), and the warning names it; a list jq cannot read is no kill, as a refused one is not.
+    words=$(mktemp "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/runner-shutdown-check-runs.XXXXXX") || words=''
+    if ! _runner_shutdown_check_runs=$(jq -s --arg run "/actions/runs/$GITHUB_RUN_ID/job/" \
+      'map(select((.details_url // "") | contains($run)))' <<<"$_runner_shutdown_check_runs" \
+      2>"${words:-/dev/null}"); then
+      _runner_shutdown_check_runs=
+      echo "::warning::GitHub's answer for the check runs on $HEAD_SHA is no list of check runs jq can read, so no failure of this run can be read as a runner shutdown; every failure stands as a failure. jq's own words, which can quote that answer, $([ -n "$words" ] && echo "are kept in $words" || echo "could not be kept")" >&2
+      return 1
+    fi
+    [ -z "$words" ] || rm -f "$words"
   fi
   for job in "$@"; do
     urls=$(jq -r --arg job "$job" \

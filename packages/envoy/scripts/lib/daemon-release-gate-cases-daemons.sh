@@ -78,7 +78,8 @@ compare "main" ahead 0
 compare "abcdef1" identical 0
 run_gate -- "$commit"
 check "exits 3" "$(is "$status" 3)"
-check "refuses UNKNOWN naming the pin and its revision" "$(has_line "UNKNOWN: LINUX: ${worker_a} names revision main, which is no commit id")"
+check "refuses UNKNOWN naming the pin, its revision kept" "$(has_kept_line "UNKNOWN: LINUX: ${worker_a} names a revision that is no commit id, kept in KEPT")"
+check "the kept file holds the label docker answered" "$(is "$(kept_text "UNKNOWN: LINUX: ")" main)"
 check "makes no compare call for that revision" "$(lacks "...main" "$calls")"
 check "a revision of 7 hex digits is a commit id, and is compared" "$(has_line "PASS: INFRA runs abcdef1 (identical to ${commit})")"
 check "the verdict is UNKNOWN, never GATE OPEN" "$(last_line_is "UNKNOWN")"
@@ -90,7 +91,8 @@ single "$worker_a" "$legion" "$ahead_rev"
 single "$worker_b" "$legion" "$identical_rev"
 run_gate FAKE_API_DOWN=1 -- "$commit"
 check "exits 3" "$(is "$status" 3)"
-check "refuses UNKNOWN naming the pin and GitHub's answer" "$(has_line "UNKNOWN: LINUX: cannot compare ${commit}...${ahead_rev} in cybermonklabs/legion: error connecting to api.github.com")"
+check "refuses UNKNOWN naming the pin, gh's words kept" "$(has_kept_line "UNKNOWN: LINUX: cannot compare ${commit}...${ahead_rev} in cybermonklabs/legion: gh failed; its own words are kept in KEPT")"
+check "the kept file holds gh's words" "$(is "$(kept_text "UNKNOWN: LINUX: ")" "error connecting to api.github.com")"
 check "the verdict is UNKNOWN" "$(last_line_is "UNKNOWN")"
 
 echo "case: a daemon image built from another repository"
@@ -112,7 +114,8 @@ single "$worker_b" "$legion" "$identical_rev"
 compare "$identical_rev" identical 0
 run_gate -- "$commit"
 check "exits 3" "$(is "$status" 3)"
-check "refuses UNKNOWN naming the pin and docker's answer" "$(has_line "UNKNOWN: LINUX: cannot read ${worker_a}: ERROR: ${worker_a}: not found")"
+check "refuses UNKNOWN naming the pin, docker's words kept" "$(has_kept_line "UNKNOWN: LINUX: cannot read ${worker_a}: docker failed; its own words are kept in KEPT")"
+check "the kept file holds docker's words" "$(is "$(kept_text "UNKNOWN: LINUX: ")" "ERROR: ${worker_a}: not found")"
 
 echo "case: a running entry that names no image"
 new_case no-image
@@ -165,8 +168,8 @@ single "$worker_tmux" "$legion" "$ahead_rev"
 compare "$ahead_rev" ahead 0
 run_gate -- "$commit"
 check "exits 3" "$(is "$status" 3)"
-check "refuses UNKNOWN naming the entry and its runtime" \
-  "$(has_line "UNKNOWN: ODD names runtime nomad, which this gate does not know, so it reads no image for its daemon")"
+check "refuses UNKNOWN naming the entry and its runtime's kind, not the runtime" \
+  "$(has_line "UNKNOWN: ODD names runtime (a string), which this gate does not know, so it reads no image for its daemon")"
 check "never reads the entry's image" "$(lacks "$worker_tmux" "$calls")"
 check "the verdict is UNKNOWN, never GATE OPEN" "$(last_line_is "UNKNOWN")"
 
@@ -184,7 +187,8 @@ echo "case: the stack file cannot be read"
 new_case no-stack
 run_gate -- "$commit"
 check "exits 3" "$(is "$status" 3)"
-check "refuses UNKNOWN naming the file" "$(has_line "UNKNOWN: cannot read ${deployment} legion/Pulumi.prod.yaml: gh: Not Found (HTTP 404)")"
+check "refuses UNKNOWN naming the file, gh's words kept" "$(has_kept_line "UNKNOWN: cannot read ${deployment} legion/Pulumi.prod.yaml: gh failed (HTTP 404); its own words are kept in KEPT")"
+check "the kept file holds gh's words" "$(is "$(kept_text "UNKNOWN: cannot read ")" "gh: Not Found (HTTP 404)")"
 
 echo "case: a commit that is no commit id"
 new_case usage
@@ -363,8 +367,9 @@ legion_settings
 fleet_files
 run_gate FAKE_LIST_DOWN=1 -- "$commit"
 check "exits 3" "$(is "$status" 3)"
-check "refuses UNKNOWN naming the listing and GitHub's answer" \
-  "$(has_line "UNKNOWN: cannot list ${deployment} legion/projects: gh: Server Error (HTTP 500)")"
+check "refuses UNKNOWN naming the listing, gh's words kept" \
+  "$(has_kept_line "UNKNOWN: cannot list ${deployment} legion/projects: gh failed (HTTP 500); its own words are kept in KEPT")"
+check "the kept file holds gh's words" "$(is "$(kept_text "UNKNOWN: cannot list ")" "gh: Server Error (HTTP 500)")"
 check "reads no image" "$(lacks "docker" "$calls")"
 check "the verdict is UNKNOWN, never GATE OPEN" "$(last_line_is "UNKNOWN")"
 
@@ -380,8 +385,8 @@ compare "$ahead_rev" ahead 0
 compare "$identical_rev" identical 0
 run_gate FAKE_LIST_DOWN=1 -- "$commit"
 check "exits 3" "$(is "$status" 3)"
-check "refuses UNKNOWN naming the listing and GitHub's answer" \
-  "$(has_line "UNKNOWN: cannot list ${deployment} legion/projects: gh: Server Error (HTTP 500)")"
+check "refuses UNKNOWN naming the listing, gh's words kept" \
+  "$(has_kept_line "UNKNOWN: cannot list ${deployment} legion/projects: gh failed (HTTP 500); its own words are kept in KEPT")"
 check "never reads the leftover list's pins" "$(lacks "docker" "$calls")"
 check "the verdict is UNKNOWN, never GATE OPEN" "$(last_line_is "UNKNOWN")"
 
@@ -398,8 +403,10 @@ compare "$ahead_rev" ahead 0
 compare "$identical_rev" identical 0
 run_gate FAKE_LIST_DOWN=1 "FAKE_LIST_DOWN_TEXT=gh: the proxy answered HTTP 404 from its upstream (HTTP 502)" -- "$commit"
 check "exits 3" "$(is "$status" 3)"
-check "refuses UNKNOWN naming the listing and GitHub's answer" \
-  "$(has_line "UNKNOWN: cannot list ${deployment} legion/projects: gh: the proxy answered HTTP 404 from its upstream (HTTP 502)")"
+check "refuses UNKNOWN naming the listing, gh's words kept" \
+  "$(has_kept_line "UNKNOWN: cannot list ${deployment} legion/projects: gh failed (HTTP 502); its own words are kept in KEPT")"
+check "the kept file holds gh's words" \
+  "$(is "$(kept_text "UNKNOWN: cannot list ")" "gh: the proxy answered HTTP 404 from its upstream (HTTP 502)")"
 check "never reads the leftover list's pins" "$(lacks "docker" "$calls")"
 check "the verdict is UNKNOWN, never GATE OPEN" "$(last_line_is "UNKNOWN")"
 
@@ -431,7 +438,7 @@ legion_stack "$fleet"
 rm "${case_root}/files/legion/Pulumi.yaml"
 run_gate -- "$commit"
 check "exits 3" "$(is "$status" 3)"
-check "refuses UNKNOWN naming the file" "$(has_line "UNKNOWN: cannot read ${deployment} legion/Pulumi.yaml: gh: Not Found (HTTP 404)")"
+check "refuses UNKNOWN naming the file, gh's words kept" "$(has_kept_line "UNKNOWN: cannot read ${deployment} legion/Pulumi.yaml: gh failed (HTTP 404); its own words are kept in KEPT")"
 check "reads no image" "$(lacks "docker" "$calls")"
 check "the verdict is UNKNOWN, never GATE OPEN" "$(last_line_is "UNKNOWN")"
 

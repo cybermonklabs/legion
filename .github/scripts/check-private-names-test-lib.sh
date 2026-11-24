@@ -209,13 +209,20 @@ GREP
 # (`$work/pr-files`, one JSON list a page as `gh api --paginate` prints them, else a refusal; read
 # without --paginate, also a refusal). Any other call is refused. A case rewrites those files, then
 # calls run_pr_text, which runs the script and sets `out` and `status`; the stub logs each call it
-# answers to `$work/calls`, a GraphQL call as `graphql <operation> <variables>`. The repository's
+# answers to `$work/calls`, a GraphQL call as `graphql <operation> <variables>`. `gh auth token`,
+# which reads no GitHub, answers GH_TOKEN as gh does and is not logged: run_pr_text sets GH_TOKEN
+# to $pr_text_token, the token check-pr-text.sh filters its output for. The repository's
 # history and tags, which the rule reads with git, are a bare repository under `$work/remote`,
 # which run_pr_text names as GITHUB_SERVER_URL.
 mkdir -p "$work/bin"
 cat > "$work/bin/gh" <<'GH'
 #!/usr/bin/env bash
 dir=$PR_TEXT_TEST_DIR
+if [ "$1 $2" = "auth token" ]; then
+  if [ -n "${GH_TOKEN:-}" ]; then printf '%s\n' "$GH_TOKEN"; exit 0; fi
+  echo "no oauth token found for github.com" >&2
+  exit 1
+fi
 if [ "$1 $2" = "api graphql" ]; then
   # gh-read.sh calls once more after a wait, so the script sends the request as a file; `-` (one
   # stdin, read once) is answered too, so a script from before that reads the same rows.
@@ -225,8 +232,9 @@ if [ "$1 $2" = "api graphql" ]; then
   variables=$(jq -c '.variables' <<< "$request")
   printf 'graphql %s %s\n' "$operation" "$variables" >> "$dir/calls"
   if [ -e "$dir/graphql-fails" ] && [ "$(grep -c '^graphql ' "$dir/calls")" -eq "$(< "$dir/graphql-fails")" ]; then
-    echo '{"data": null, "errors": [{"message": "Something went wrong while executing your query."}]}'
-    echo 'gh: Something went wrong while executing your query.' >&2
+    says=$(cat "$dir/graphql-says" 2> /dev/null || echo "Something went wrong while executing your query.")
+    jq -nc --arg message "$says" '{data: null, errors: [{message: $message}]}'
+    echo "gh: $says" >&2
     exit 1
   fi
   if [ -e "$dir/graphql-rate-limited" ]; then
@@ -405,14 +413,21 @@ write_pr_text() {
   jq '.pull_request' "$work/event.json" > "$work/pull"
   rm -f "$work"/comments.* "$work"/reviews.* "$work"/review-comments.* "$work/cutoff-commits" \
     "$work"/release.* "$work"/commit.* "$work/pr-files" "$work"/cut.* "$work/base-gone" \
-    "$work/compare-not-found" "$work/graphql-fails" "$work/compare-rest" "$work/graphql-rate-limited" \
-    "$work/rate-reset"
+    "$work/compare-not-found" "$work/graphql-fails" "$work/graphql-says" "$work/compare-rest" \
+    "$work/graphql-rate-limited" "$work/rate-reset"
 }
+# The token every run holds as GH_TOKEN, which check-pr-text.sh filters its output for: no case's
+# text holds it, so the filter changes no line but a case's own. A case sets pr_text_token to its
+# own (the marker of a row whose stand-in answer holds the token), or to '' for a run with none.
+pr_text_token=fixture-token-the-output-is-filtered-for
+# The directory where check-pr-text.sh keeps gh's words (a job's RUNNER_TEMP), under $work.
+mkdir -p "$work/runner-temp"
 run_pr_text() {
   if [ $# -gt 0 ]; then write_pr_text "$@"; fi
   : > "$work/calls"
   set +e
-  out=$(GITHUB_EVENT_PATH="$work/event.json" GITHUB_REPOSITORY=example/repo \
+  out=$(env -u GITHUB_TOKEN -u GH_ENTERPRISE_TOKEN -u GITHUB_ENTERPRISE_TOKEN GH_TOKEN="$pr_text_token" \
+    RUNNER_TEMP="$work/runner-temp" GITHUB_EVENT_PATH="$work/event.json" GITHUB_REPOSITORY=example/repo \
     GITHUB_SERVER_URL="file://$work/remote" PR_TEXT_TEST_DIR="$work" PATH="$work/bin:$PATH" \
     "$pr_text_script" 2>&1)
   status=$?
@@ -431,7 +446,9 @@ run_pr_text_in_job() {
   set +e
   # `; exit $?` keeps the worker from replacing itself with the script, which would take it out
   # of the process tree the helper reads.
-  out=$(env -u STEP_TIMEOUT_MINUTES JOB_TIMEOUT_MINUTES="$1" GITHUB_EVENT_PATH="$work/event.json" \
+  out=$(env -u STEP_TIMEOUT_MINUTES -u GITHUB_TOKEN -u GH_ENTERPRISE_TOKEN -u GITHUB_ENTERPRISE_TOKEN \
+    GH_TOKEN="$pr_text_token" RUNNER_TEMP="$work/runner-temp" JOB_TIMEOUT_MINUTES="$1" \
+    GITHUB_EVENT_PATH="$work/event.json" \
     GITHUB_REPOSITORY=example/repo GITHUB_SERVER_URL="file://$work/remote" PR_TEXT_TEST_DIR="$work" \
     PATH="$work/bin:$PATH" "$work/job/Runner.Worker" -c '"$@"; exit $?' worker "$pr_text_script" 2>&1)
   status=$?

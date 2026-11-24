@@ -69,7 +69,12 @@
 # out, so that pull request's file is read as well rather than guessed at, and a read that fails
 # refuses the change and names itself. Each `gh api` runs through gh-read.sh's gh_wait_reset,
 # which waits out a spent API budget within the job's JOB_TIMEOUT_MINUTES and fails by name past
-# it; its own lines reach the step's log as they happen, and gh's words reach the refusal.
+# it; its own lines reach the step's log as they happen. No word gh said or answered reaches the
+# log but a closed value: whatever answers gh's call in GitHub's place holds GH_TOKEN and writes
+# both. gh's words and an answer this check cannot use are kept in a file under RUNNER_TEMP
+# (TMPDIR, else /tmp, outside Actions), which the refusal names with the HTTP status gh named; a
+# pull request's number is printed as a whole number and its head as a 40-hex commit id, and a
+# page that holds either otherwise is refused as a read that failed.
 #
 # Run from anywhere: .github/scripts/check-daemon-api-contract.sh
 # CI runs it in ci.yaml's lint job, and its tests in ci.yaml's test job.
@@ -145,26 +150,51 @@ def fatal(path: str, message: str) -> None:
     raise SystemExit(1)
 
 
+def kept(text: str) -> str:
+    """A file of its own under RUNNER_TEMP (TMPDIR, else /tmp) that holds text, gh's words or an
+    answer this check does not print, and that nothing removes: the refusal names it. In CI the
+    runner removes RUNNER_TEMP at the job's end."""
+    where = os.environ.get("RUNNER_TEMP") or os.environ.get("TMPDIR") or "/tmp"
+    try:
+        handle, path = tempfile.mkstemp(prefix="check-daemon-api-contract.", dir=where)
+        with os.fdopen(handle, "w", encoding="utf-8", errors="replace") as out:
+            out.write(text)
+    except OSError as error:
+        return f"no file, as it could not be kept ({type(error).__name__})"
+    return path
+
+
+def http_status(words: str) -> str:
+    """` (HTTP nnn)`, the last HTTP status gh named in its words, three digits alone."""
+    statuses = re.findall(r"\(HTTP ([0-9]{3})\)", words)
+    return f" (HTTP {statuses[-1]})" if statuses else ""
+
+
 def gh(args: list[str], what: str) -> str:
     """Every GitHub read goes through `gh api`, so one stub first on PATH serves them all, and
     through gh-read.sh's gh_wait_reset: its own lines (a wait, or a budget spent past the limit)
     go straight to this step's stderr, and the words gh printed on the call it ended on go to a
-    file, which the refusal quotes."""
+    file. A read that fails is refused naming gh's exit, the HTTP status gh named and the file that
+    keeps gh's words and its answer, never their text."""
     with tempfile.NamedTemporaryFile(prefix="gh-words.") as words:
         try:
             done = subprocess.run(
                 ["bash", "-c", 'source "$0"; gh_wait_reset --stderr "$1" gh api "${@:2}"',
                  os.environ["GH_READ"], words.name, *args],
-                stdout=subprocess.PIPE, text=True, encoding="utf-8",
+                stdout=subprocess.PIPE, text=True, encoding="utf-8", errors="replace",
             )
         except OSError as error:
             fatal(DECLARATION, f"could not read {what}: gh could not be run ({one_line(error)})")
         said = Path(words.name).read_text(encoding="utf-8", errors="replace")
     if done.returncode != 0:
+        if said or done.stdout:
+            where = kept(f"gh's words:\n{said}\ngh's answer:\n{done.stdout}")
+            told = f"gh's own words and its answer are in {where}"
+        else:
+            told = "gh said nothing"
         fatal(
             DECLARATION,
-            f"could not read {what}: gh api exited {done.returncode} "
-            f"({one_line(said) or one_line(done.stdout) or 'no output'})",
+            f"could not read {what}: gh api exited {done.returncode}{http_status(said)}; {told}",
         )
     return done.stdout
 
@@ -310,7 +340,7 @@ def declared_by_open_pull_requests(repository: str) -> dict[int, list[int]]:
             fatal(
                 DECLARATION,
                 f"could not read {what}: the answer carries no "
-                f"data.repository.pullRequests.nodes ({one_line(answer)[:200]})",
+                f"data.repository.pullRequests.nodes; it is in {kept(answer)}",
             )
         for node in listing["nodes"]:
             number = node.get("number")
@@ -324,9 +354,23 @@ def declared_by_open_pull_requests(repository: str) -> dict[int, list[int]]:
             cut_short = bool((files.get("pageInfo") or {}).get("hasNextPage"))
             if DECLARATION not in paths and not cut_short:
                 continue
+            head = node.get("headRefOid")
+            # The number and the head are printed below, so each is held to the one form GitHub
+            # gives it; a page that holds either otherwise is no answer this check can read.
+            if isinstance(number, bool) or not isinstance(number, int) or number < 1:
+                fatal(
+                    DECLARATION,
+                    f"could not read {what}: a pull request that changes {DECLARATION} answers "
+                    f"no whole number as its number; the answer is in {kept(answer)}",
+                )
+            if not isinstance(head, str) or not re.fullmatch(r"[0-9a-f]{40}", head):
+                fatal(
+                    DECLARATION,
+                    f"could not read {what}: #{number} answers no 40-hex commit id as its head; "
+                    f"the answer is in {kept(answer)}",
+                )
             # refs/pull/<number>/head is a ref of this repository, so it serves a fork's head too.
             ref = f"refs/pull/{number}/head"
-            head = node.get("headRefOid")
             at = f"{DECLARATION} at {ref} (#{number}, head {head})"
             holders.setdefault(number_in(read_at(repository, ref, at), at)[0], []).append(number)
         info = listing.get("pageInfo") or {}

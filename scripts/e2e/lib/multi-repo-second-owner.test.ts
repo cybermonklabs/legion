@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 
 import { createServer } from "node:http";
 import { join } from "node:path";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
+import { expectNoMarker, MARKER } from "./marker-runs";
 import {
   closeServers,
   daemonStub,
@@ -224,6 +225,8 @@ interface Scenario {
   prepareHome?: (home: string) => void;
   cwd?: string;
   hostEnv?: Record<string, string>;
+  // The host's own gh, the one the observer asks whether the pull request merged.
+  gh?: string;
 }
 
 // scenario runs second-owner against the stubs and the role's fakes; MULTIREPO_PROC_ROOT and
@@ -260,7 +263,7 @@ async function scenario(options: Scenario = {}): Promise<Outcome> {
       MULTIREPO_TEST_SEAM: "1",
       MULTIREPO_GITHUB_URL: github.url,
     },
-    { gh: goodGh, kubectl: podLabelKubectl },
+    { gh: options.gh ?? goodGh, kubectl: podLabelKubectl },
     options.cwd
   );
   expect(github.unexpected).toEqual([]);
@@ -903,5 +906,36 @@ esac`;
     });
     expect(status).not.toBe(0);
     expect(stderr).toContain("is not that issue's pod");
+  });
+});
+
+// second-owner prints no word of gh's: whatever answers a gh call in GitHub's place holds gh's
+// token and writes gh's stderr and its answer, so each row puts the marker there and holds all the
+// observation printed to no run of it. The host's gh asks whether the pull request merged; the
+// role's gh, which lib/as-role.py runs in the pod with its stderr in its answer, reads T, and that
+// answer reaches the probe's JSON and second-owner.txt alone.
+describe("second-owner prints no word of gh's", () => {
+  test("gh's own words on a failed merge read are kept in a file it names", async () => {
+    const records = newWork();
+    mkdirSync(records, { recursive: true });
+    const calls = join(records, "gh-calls");
+    const result = await scenario({
+      gh: `printf '%s\\n' "$*" >>'${calls}'\necho 'gh: ${MARKER} (HTTP 502)' >&2\nexit 1`,
+    });
+    expectVerdictFail(result);
+    const kept = join(result.evidence, "second-owner-merged.gh-stderr");
+    expectNoMarker(result.stdout + result.stderr);
+    expect(result.stderr).toContain(kept);
+    expect(readFileSync(kept, "utf8")).toContain(MARKER);
+    expect(readFileSync(calls, "utf8")).toBe(`api repos/${O}/pulls/7 --jq .merged\n`);
+  });
+
+  test("the role's read of T, answered with the marker, reaches the probe's evidence alone", async () => {
+    const result = await scenario({ readOutput: MARKER });
+    expectVerdictFail(result);
+    expectNoMarker(result.stdout + result.stderr);
+    expect(result.probe().read.output).toBe(MARKER);
+    expect(result.summary()).toContain(MARKER);
+    expect(recordedCalls(result.ghRecord).args).toEqual([`api repos/${T} --jq .full_name`]);
   });
 });
