@@ -10,7 +10,9 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"maps"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -19,6 +21,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/sjawhar/envoy/internal/ciphertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
+	"github.com/sjawhar/envoy/internal/ratelimit"
 )
 
 const (
@@ -199,9 +203,10 @@ func TestAConnectionProofIsRefused(t *testing.T) {
 // broker's answer: for every answer, a live one and each one Verify refuses, it answers what such a
 // verifier's Verify answers for a request presenting a token the broker answers that way with a
 // sound proof. A verifier with the switch also admits a read-only token, which SessionCaller
-// refuses (TestAReadOnlyTokenIsAcceptedOnlyByAVerifierThatServesOne).
+// refuses (TestAReadOnlyTokenIsAcceptedOnlyByAVerifierThatServesOne), a token narrowed to reading
+// among them: each answer of the narrowed answers' golden file is a row, refused by both
+// (TestANarrowedAnswerIsACallerOnlyToAVerifierThatServesReadOnly).
 func TestSessionCallerIsTheVerifyRule(t *testing.T) {
-	rig := newRig(t)
 	caller := newSigner(t)
 	inactive := liveToken(caller.jkt, time.Hour)
 	inactive.Active = false
@@ -215,21 +220,28 @@ func TestSessionCallerIsTheVerifyRule(t *testing.T) {
 	otherClient.ClientID = "another-client"
 	unknownScope := liveToken(caller.jkt, time.Hour)
 	unknownScope.ProjectScope = "everything"
-	// A named answer may name no project when it names a person (an account entry may
-	// name none), and names at most one.
+	// A named answer may name no project when it names a person (an account entry may name
+	// none), or when it names no person and names the account it acts as (an account entry may
+	// name neither), and names at most one. A named answer naming no person and a fleet is no
+	// token the broker mints: the service of that shape is always an account.
 	namedNoProject := liveToken(caller.jkt, time.Hour)
 	namedNoProject.ProjectScope, namedNoProject.Projects = ciphertoken.ProjectScopeNamed, nil
+	namedForAnAccount := liveToken(caller.jkt, time.Hour)
+	namedForAnAccount.Person, namedForAnAccount.Service, namedForAnAccount.Projects = "", "system:serviceaccount:example-ns:example-public", nil
+	namedForAFleet := liveToken(caller.jkt, time.Hour)
+	namedForAFleet.Person, namedForAFleet.Service, namedForAFleet.Projects = "", "example-fleet", nil
 	namedTwoProjects := liveToken(caller.jkt, time.Hour)
 	namedTwoProjects.ProjectScope, namedTwoProjects.Projects = ciphertoken.ProjectScopeNamed, []string{"ACME", "OTHER"}
 	serviceWithProjects := serviceToken(caller.jkt, time.Hour)
 	serviceWithProjects.Projects = []string{"ACME"}
 	// Each row names whether Verify admits it, so a row that answers otherwise fails by name with
 	// Verify's own error, rather than as a count that names none.
-	for _, row := range []struct {
+	type row struct {
 		name     string
 		answer   ciphertoken.Introspection
 		admitted bool
-	}{
+	}
+	rows := []row{
 		{"live", liveToken(caller.jkt, time.Hour), true},
 		{"service", serviceToken(caller.jkt, time.Hour), true},
 		{"machine login", machineLoginToken(caller.jkt, time.Hour), false},
@@ -240,9 +252,21 @@ func TestSessionCallerIsTheVerifyRule(t *testing.T) {
 		{"another client", otherClient, false},
 		{"unknown scope", unknownScope, false},
 		{"named with no project, for a person", namedNoProject, true},
+		{"named with no project, for an account", namedForAnAccount, true},
+		{"named with no project and no person, for a fleet", namedForAFleet, false},
 		{"named with two projects", namedTwoProjects, false},
 		{"service with projects", serviceWithProjects, false},
-	} {
+	}
+	narrowed := ciphertokentest.NarrowedAnswers(t, caller.jkt, "ses_narrowed", time.Now().Add(time.Hour).Unix())
+	for _, kind := range slices.Sorted(maps.Keys(narrowed)) {
+		rows = append(rows, row{"narrowed from a " + kind, narrowed[kind], false})
+	}
+	// Every row presents a token of its own, and the bucket admits each of them: what is under test
+	// is the answer, not the address.
+	rig := newRig(t, func(options *ciphertoken.Options) {
+		options.AddressLimit = ratelimit.Limit{Every: time.Nanosecond, Burst: len(rows)}
+	})
+	for _, row := range rows {
 		t.Run(row.name, func(t *testing.T) {
 			token := "token-" + row.name
 			rig.broker.Says(token, row.answer)

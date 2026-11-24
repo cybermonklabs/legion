@@ -32,6 +32,9 @@ type writeReading struct {
 	// changedBy names, by table, the first earlier pending migration that touches the table with
 	// anything but bounded writes (Census keeps it).
 	changedBy map[string]string
+	// reviewed are the enabled triggers a table may be admitted beside
+	// (CensusOptions.reviewedTriggers).
+	reviewed []reviewedTrigger
 }
 
 // boundedVerdict is what boundedWrites answers for one table: where it admits the table, the
@@ -163,7 +166,7 @@ func (w *writeReading) boundedWrites(ctx context.Context, table string, oid uint
 	case facts.rowSecurity:
 		return boundedVerdict{why: table + " has row-level security, whose policies can read any table for each row a write meets"}, nil
 	}
-	if why := unreviewedTriggers(table, facts.triggers); why != "" {
+	if why := unreviewedTriggers(table, facts.triggers, w.reviewed); why != "" {
 		return boundedVerdict{why: why}, nil
 	}
 	return boundedVerdict{statements: len(touching), triggers: facts.triggers}, nil
@@ -183,17 +186,41 @@ type reviewedTrigger struct {
 // enabled trigger that is not here is refused, and its trigger is reviewed and added before the
 // migration can pass. An entry names a trigger as the table holds it when the entry is written:
 // a later migration that replaces the trigger's function changes the body the entry reviewed, so
-// that migration reads the entry again. The store's census tests meet no shipped migration the
-// census admits for bounded writes of a table with an enabled trigger, so the list holds none.
-var reviewedTriggers = []reviewedTrigger{}
+// that migration reads the entry again.
+//
+// graph_nodes' two are Dispatch's: the first type migration written after the store's backfill
+// (20261123080000_graph_supertags_plan_task_steps) writes graph_nodes by bounded writes alone, and
+// the census admits it above the limit only beside them. Both run block_schema_changed, as
+// 20261109051232_graph_supertags created it and no later migration replaced it.
+var reviewedTriggers = []reviewedTrigger{
+	{table: "graph_nodes", trigger: "graph_nodes_block_schema_written",
+		bounded: "it runs, after an insert or update of a supertag or attribute node alone (its when clause), block_schema_changed, which reads no table and calls pg_notify('dispatch_block_schema', ''); Postgres folds the notifications of one channel and payload into one per transaction"},
+	{table: "graph_nodes", trigger: "graph_nodes_block_schema_removed",
+		bounded: "it runs, after a delete of a supertag or attribute node alone (its when clause), block_schema_changed, which reads no table and calls pg_notify('dispatch_block_schema', ''); Postgres folds the notifications of one channel and payload into one per transaction"},
+}
+
+// ReviewedTriggerNames is the names of the enabled triggers of table that reviewedTriggers holds,
+// in its order: the triggers a store's own test holds to the definitions their entries reviewed
+// (dispatch store's TestTheReviewedTriggersAreTheOnesTheStoreHolds), since this list names a
+// trigger and not its body.
+func ReviewedTriggerNames(table string) []string {
+	var names []string
+	for _, reviewed := range reviewedTriggers {
+		if reviewed.table == table {
+			names = append(names, reviewed.trigger)
+		}
+	}
+	return names
+}
 
 // unreviewedTriggers says why table, whose enabled triggers are triggers, is refused for the
-// triggers that are not on reviewedTriggers, in words that follow "and"; "" where every one is.
-func unreviewedTriggers(table string, triggers []string) string {
+// triggers that are not on reviewed, the census's list (CensusOptions.reviewedTriggers), in words
+// that follow "and"; "" where every one is.
+func unreviewedTriggers(table string, triggers []string, reviewed []reviewedTrigger) string {
 	var unreviewed []string
 	for _, trigger := range triggers {
-		if !slices.ContainsFunc(reviewedTriggers, func(reviewed reviewedTrigger) bool {
-			return reviewed.table == table && reviewed.trigger == trigger
+		if !slices.ContainsFunc(reviewed, func(entry reviewedTrigger) bool {
+			return entry.table == table && entry.trigger == trigger
 		}) {
 			unreviewed = append(unreviewed, trigger)
 		}

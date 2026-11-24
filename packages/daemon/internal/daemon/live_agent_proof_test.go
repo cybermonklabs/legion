@@ -28,6 +28,27 @@
 // late-completion and busy-relaunch proofs make (streamAnthropicToolUse).
 package daemon
 
+// The harness main's #2780 added under the e2e tag for the two agent proofs it brought
+// (claim_compaction_live_test.go and provider_error_retry_live_test.go): it builds the
+// `legion` their panes run and packs both Oh My Pi plugins into the run's own profile. No job
+// of ci.yaml applies this row today - the daemon's e2e tag is vetted (ci-job-typecheck.yaml's
+// `go vet -tags e2e ./...`) and never tested, and a vet run compiles a test file without
+// applying its rules - so it is what a `go test -tags e2e ./internal/daemon/` reads the day a
+// job runs one.
+//ci:builds packages/daemon ./cmd/legion buildProofLegion runs go build ./cmd/legion in packages/daemon
+//ci:reads scripts/e2e/lib/pack-plugin.sh installProofPlugins runs it in bash, once per plugin
+//ci:reads packages/pi-envoy/** installProofPlugins packs packages/pi-envoy and packages/pi-legion through scripts/e2e/lib/pack-plugin.sh, whose `bun pm pack` runs their prepack
+//ci:reads packages/pi-legion/** installProofPlugins packs packages/pi-envoy and packages/pi-legion through scripts/e2e/lib/pack-plugin.sh, whose `bun pm pack` runs their prepack
+//ci:reads packages/pi-shared/** installProofPlugins packs packages/pi-envoy and packages/pi-legion through scripts/e2e/lib/pack-plugin.sh, whose `bun pm pack` runs their prepack
+//ci:reads packages/envoy-client/** installProofPlugins packs packages/pi-envoy and packages/pi-legion through scripts/e2e/lib/pack-plugin.sh, whose `bun pm pack` runs their prepack
+//ci:reads packages/contracts/** installProofPlugins packs packages/pi-envoy and packages/pi-legion through scripts/e2e/lib/pack-plugin.sh, whose `bun pm pack` runs their prepack
+//ci:reads scripts/pi-plugin-prepack.sh installProofPlugins packs packages/pi-envoy and packages/pi-legion through scripts/e2e/lib/pack-plugin.sh, whose `bun pm pack` runs their prepack
+//ci:reads scripts/third-party-notices.ts installProofPlugins packs packages/pi-envoy and packages/pi-legion through scripts/e2e/lib/pack-plugin.sh, whose `bun pm pack` runs their prepack
+//ci:reads skills/** installProofPlugins packs packages/pi-envoy and packages/pi-legion through scripts/e2e/lib/pack-plugin.sh, whose `bun pm pack` runs their prepack
+//ci:reads package.json installProofPlugins packs packages/pi-envoy and packages/pi-legion through scripts/e2e/lib/pack-plugin.sh, whose `bun pm pack` runs their prepack
+//ci:reads bun.lock installProofPlugins packs packages/pi-envoy and packages/pi-legion through scripts/e2e/lib/pack-plugin.sh, whose `bun pm pack` runs their prepack
+//ci:reads patches/** installProofPlugins packs packages/pi-envoy and packages/pi-legion through scripts/e2e/lib/pack-plugin.sh, whose `bun pm pack` runs their prepack
+
 import (
 	"context"
 	"encoding/json"
@@ -131,8 +152,8 @@ func (r *liveAgentProof) awaitReady(token claim.Token) {
 		token, held.State, held.Session, held.PluginContract, held.Locator.Label())
 }
 
-// await polls until want holds, failing with what it waited for. testwait.Eventually bounds its
-// own wait at a minute, which is shorter than the ladder's own gaps.
+// await polls until want holds, failing with what it waited for once within has passed: the
+// ladder's waits each name the span they may take.
 func (r *liveAgentProof) await(what string, within time.Duration, want func() bool) {
 	r.t.Helper()
 	deadline := time.Now().Add(within)

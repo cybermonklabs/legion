@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { EnvelopeSchema } from "@legion/contracts";
 import type { LegionIssue } from "@legion/contracts/legion-api";
 import {
   createEnvoyClient,
@@ -344,6 +345,50 @@ test("the owner notice is kept", async () => {
   expect(warned).toEqual([]);
 });
 
+// A listener answers a notice whose key another sender's message already holds with that
+// message's ids and times alone (`requestSender.answer` in the listener). Nothing reached the
+// architect, so the notice is not reported, its key is cleared, and the next reminder publishes it
+// under a new key. The control is the envelope schema every answer was read by before, which
+// throws on that answer.
+test("a notice whose key another sender's message holds is sent again under a new key", async () => {
+  const taken = {
+    event_id: "event-other",
+    source: "",
+    source_event_id: "",
+    topic: "notifications.role.legion-legion-208-architect",
+    dedupe_key: "publish.key",
+    issued_at: 1,
+    payload_summary: "",
+    trace_id: "",
+    duplicate: true,
+  };
+  expect(() => EnvelopeSchema.parse(taken)).toThrow();
+  const client = createEnvoyClient({
+    baseUrl: "http://listener.test",
+    fetch: async () => Response.json(taken),
+  });
+  const { reminder, timers, entries, published, warned } = rig({
+    publish: (input) => client.publish(input),
+  });
+
+  expect(await reminder.settle(said("Pushed."))).toBeString();
+  expect(await reminder.settle(said("Still here."))).toBeUndefined();
+  await fireLast(timers);
+
+  expect(published).toHaveLength(1);
+  expect(warned).toEqual([
+    "legion: another sender's message holds the architect notice's key; telling it again later",
+  ]);
+  const cleared = entries.at(-1);
+  expect(cleared).toMatchObject({ count: 2, reported: false });
+  expect(cleared).not.toHaveProperty("reportKey");
+
+  expect(await reminder.settle(said("Still here."))).toBeUndefined();
+  await fireLast(timers);
+  expect(published).toHaveLength(2);
+  expect(published[1]?.idempotencyKey).not.toBe(published[0]?.idempotencyKey);
+});
+
 // A listener answers 404 with nothing kept when its keep failed, and a listener of an earlier
 // release answers it for an architect role whose holder is not live. That is the answer this
 // sender's retry exists for. Nobody was told, so the next delivered reminder publishes again
@@ -439,10 +484,10 @@ test("a failed delivery arms nothing once a turn has started meanwhile", async (
 
 // The whole of dispatch://INFRA-264: every turn of that implementer was refused by the provider,
 // and every reminder it was given at once bought another refused turn. So a refused turn earns no
-// continuation; but the daemon's task for the phase ended with that turn, and below
-// `launch_failure_limit` nothing fails the claim and nothing hands the task out again, so one
-// delayed reminder follows it rather than silence (the architect's decision, review round 2).
-test("a refused turn below the limit reminds once, after the delay and not before", async () => {
+// continuation; but the daemon's task for the phase ended with that turn, and a refusal that can
+// clear fails no claim (dispatch://INFRA-4508), so one delayed reminder follows it rather than
+// silence (the architect's decision, review round 2).
+test("a refused turn reminds once, after the delay and not before", async () => {
   const { reminder, timers, sent, entries } = rig({});
   const recorded = entries.length;
 
@@ -468,11 +513,34 @@ test("a refused turn below the limit reminds once, after the delay and not befor
   expect(timers).toHaveLength(2);
 });
 
-// At `launch_failure_limit` the daemon fails the claim, which is its own word that this session
-// is finished: the retry runs in a session of its own, in which the phase's task is given again.
-// The timer the last refused turn armed still fires, and its record check drops the reminder, so
-// nothing is written into a session nobody can act on.
-test("a refused turn at the limit, whose claim the daemon failed, reminds nothing", async () => {
+// A run of refusals that can clear — a provider overloaded, a team limit — fails no claim, a
+// reminder's own turn included: the daemon judges that turn from its turn-outcome report, counts
+// it in the claim's run of provider-error turns, and tells the project's controller once at six
+// in a row (dispatch://INFRA-4508). So each refused turn arms the next reminder at the same pace,
+// for as long as the run lasts, and the worker is reminded again the moment its provider takes a
+// turn. Only the daemon failing the claim stops them (the case below).
+test("a run of refused turns that can clear keeps arming its reminder", async () => {
+  const { reminder, timers, sent } = rig({});
+
+  for (let turn = 1; turn <= 6; turn += 1) {
+    reminder.turnStarted();
+    expect(
+      await reminder.settle({ kind: "refused", message: "529 overloaded_error: Overloaded" })
+    ).toBeUndefined();
+    expect(timers).toHaveLength(turn);
+    expect(timers.at(-1)?.delayMs).toBe(DEFAULT_STALL_LIMITS.reminderMs);
+    await fireLast(timers);
+    expect(sent).toHaveLength(turn);
+  }
+});
+
+// A refusal that cannot clear fails the claim, which is the daemon's own word that this session's
+// work is the architect's to decide: the daemon fails it at once, whether the refused turn ran its
+// prompt or was a reminder's own, which it judges from the turn-outcome report
+// (dispatch://INFRA-4508). The timer the refused turn armed still fires, and its record check
+// drops the reminder, so nothing is written into a session nobody can act on, and the reminding
+// ends.
+test("a refused turn whose claim the daemon failed reminds nothing", async () => {
   const { reminder, timers, sent } = rig({ record: claimFailed });
 
   expect(

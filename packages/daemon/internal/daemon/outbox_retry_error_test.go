@@ -28,6 +28,7 @@ import (
 // (settle, storetext.LogWhole), no line is over the 256 KiB one Cloud Logging entry takes, and
 // neither the row nor any line holds the token the text's URLs carried.
 func TestARetryOutboxErrorThatIsInvalidIsStoredBoundedAndLoggedWhole(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()

@@ -28,6 +28,7 @@ import (
 // (oauthrefusal.Refusal). The real broker answers access_denied 403, as authelia's OAuth library
 // does, which is the fake's own status for it; expired_token is 400 there.
 func TestALoginPollSettlesOnTheBrokersRefusal(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct {
 		status  int    // the answer's status in place of the fake's own; 0 keeps it
 		outcome string // the device code grant's answer: "denied" (access_denied) or "expired" (expired_token)
@@ -58,6 +59,7 @@ func TestALoginPollSettlesOnTheBrokersRefusal(t *testing.T) {
 // pending and the helper polls again, 5 s further apart; the same error at the broker's own status
 // then settles it, at that next poll.
 func TestALoginPollTheBrokerCouldNotAnswerSettlesNothing(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct {
 		status  int
 		outcome string // the device code grant's answer: "denied" (access_denied) or "expired" (expired_token)

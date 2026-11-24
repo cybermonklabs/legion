@@ -24,6 +24,7 @@ import (
 // which pg_blocking_pids reports as pid 0, still blocks - and a departed holder must not be named.
 // Each row is the sequence that tells one term of the rule from its absence.
 func TestObserveNamesOnlyAHolderTheLatestReadingsSupport(t *testing.T) {
+	t.Parallel()
 	named := func(pid uint32) *LockWait {
 		return &LockWait{LockType: "relation", Mode: "AccessExclusiveLock", Object: "messages", Holders: []Session{{PID: pid}}}
 	}
@@ -234,6 +235,7 @@ func (s *stallAtTheCleanup) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQ
 // outlives the answer: the forwarder is released only by its own cleanup, after the checks below,
 // and those checks fail a call that came back with nothing of its cleanup still held.
 func TestDiagnoseHoldersReturnsWhenTheCleanupCannotFinish(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	dsn := testpg.URL(t)
 	// The session the diagnosis reads. It stays connected, so pg_stat_activity has a row for it.
@@ -305,6 +307,7 @@ func TestDiagnoseHoldersReturnsWhenTheCleanupCannotFinish(t *testing.T) {
 // connection must still carry the row's setting after the commit, since Exec's settings end with
 // its transaction.
 func TestExecReadsAMigrationAsTheCensusReadsIt(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	// The census's parser reads each text below as one insert of the one constant after it. Under
 	// standard_conforming_strings off, \' escapes the quote after it: 'a\'' is a', and the rest of
@@ -449,6 +452,7 @@ func TestExecReadsAMigrationAsTheCensusReadsIt(t *testing.T) {
 // the two rows that set it skip when it is not, except on GitHub Actions, where they fail
 // (testdb.SkipOutsideCI).
 func TestExecResolvesNamesUnderTheValuesResetGives(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	url := testpg.URL(t)
 	config, err := pgx.ParseConfig(url)

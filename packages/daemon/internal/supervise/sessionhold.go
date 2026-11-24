@@ -195,9 +195,9 @@ func (e *NamesCarriedError) Error() string {
 func (m *Machine) ReleaseNames(ctx context.Context) (ReleasedNames, error) {
 	m.mu.Lock()
 	defer m.unlock()
-	// The read is bounded as a claim write is, as HoldsItsSession bounds its own, so a database
-	// that has stopped answering does not hold the machine's lock for the outage.
-	reading, cancel := context.WithTimeout(ctx, m.deps.claimWrite())
+	// The read is bounded as a claim write is (bounded), as HoldsItsSession bounds its own, so a
+	// database that has stopped answering does not hold the machine's lock for the outage.
+	reading, cancel := m.bounded(ctx)
 	holds, err := m.deps.Store.ClaimHolds(reading, m.claim.Project, m.claim.Token)
 	cancel()
 	if err != nil {
@@ -490,7 +490,7 @@ func UnholdableNames(session, sessionFile string) []Hold {
 // one that needs a new session starts none until an operator runs the command the line gives
 // (ReleaseNamesCommand). A store that does not answer refuses nothing: its error wraps
 // errHoldUnanswered, which a launch tries again at the probe interval charging nothing
-// (launchNow), and any other decision is asked again by the next one.
+// (launchTries), and any other decision is asked again by the next one.
 func (m *Machine) holdRecorded(ctx context.Context, session, sessionFile string) error {
 	return m.holdNames(ctx, session, sessionFile, RecordedHolds(session, sessionFile))
 }
@@ -592,6 +592,19 @@ type heldElsewhereError struct {
 
 func (e *heldElsewhereError) Error() string { return e.err.Error() }
 func (e *heldElsewhereError) Unwrap() error { return e.err }
+
+// IsSessionHeldElsewhere is whether err, anywhere in its chain, is holdRecorded's refusal of a
+// name held for another claim or for none (claim.SessionHeldRefusal, carried by
+// heldElsewhereError), whichever of the session's names was refused: its id, its file's name, or
+// an id the file's name gives. It matches the refusal by its kind, not by its value or its status:
+// the two other refusals of a hold, claim.SessionNameUnheldRefusal and claim.HeldNamesCapRefusal,
+// are 409s of the same claim.Refusal type, and neither is this. The controller keeper reads it to
+// ask for a new session when a retry's resume of the recorded session is refused for that alone
+// (internal/daemon's controllerKeeper.keep).
+func IsSessionHeldElsewhere(err error) bool {
+	var held *heldElsewhereError
+	return errors.As(err, &held)
+}
 
 // mayForget is nil when the claim may clear the session it records (forgetSession, retry's fresh
 // session), and otherwise why not. A claim holding its session, or recording none, forgets as
@@ -744,7 +757,7 @@ func (m *Machine) HoldsItsSession(ctx context.Context) error {
 	}
 	holds := RecordedHolds(c.Session, c.SessionFile)
 	if len(holds) > 0 {
-		asking, cancel := context.WithTimeout(ctx, m.deps.claimWrite())
+		asking, cancel := m.bounded(ctx)
 		holders, err := m.deps.Store.HoldSessions(asking, c.Project, c.Token, holds)
 		cancel()
 		switch {

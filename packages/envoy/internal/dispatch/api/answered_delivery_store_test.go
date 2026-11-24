@@ -62,6 +62,7 @@ func failingSendListener(t *testing.T, sessions ...string) string {
 // Without that record the flip left the census holding the store to a node nobody wrote, with
 // no later write that could ever close it.
 func TestAFailedAttemptTheSessionAnswersRecordsTheSessionItReached(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	const mentioned, targeted = "answers-a-failed-mention", "answers-a-failed-message"
 	handler, database := newTargetedMessageHandler(t, failingSendListener(t, mentioned, targeted))

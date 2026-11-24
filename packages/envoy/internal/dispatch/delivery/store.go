@@ -1055,20 +1055,23 @@ func OpenP0Keys(ctx context.Context, pool *store.Pool) (map[string]struct{}, err
 }
 
 // IssueAncestors is every ancestor of keys up their parent_key chains, at most maxDepth links up:
-// the issues whose component choice a key can inherit. The walk is a `union` recursion bounded by
-// maxDepth, so it terminates even if a raced reparent ever commits a cycle; the caller passes the
-// cap the API's other parent walks use (api.parentDepthCap), since this package cannot import api.
+// the issues whose component choice a key can inherit. A key inherits only from ancestors of its
+// own project, so each walk carries its key's project and climbs only to a parent of that
+// project, ending at the first ancestor of another project as at a root. The walk is a `union`
+// recursion bounded by maxDepth, so it terminates even if a raced reparent ever commits a cycle;
+// the caller passes the cap the API's other parent walks use (api.parentDepthCap), since this
+// package cannot import api.
 func IssueAncestors(ctx context.Context, q Querier, keys []string, maxDepth int) (map[string]struct{}, error) {
 	ancestors := map[string]struct{}{}
 	if len(keys) == 0 {
 		return ancestors, nil
 	}
 	rows, err := q.Query(ctx, `
-		with recursive chain(key, parent_key, depth) as (
-			select key, parent_key, 0 from issues where key = any($1)
+		with recursive chain(key, parent_key, project_key, depth) as (
+			select key, parent_key, project_key, 0 from issues where key = any($1)
 			union
-			select p.key, p.parent_key, c.depth + 1
-			from chain c join issues p on p.key = c.parent_key
+			select p.key, p.parent_key, c.project_key, c.depth + 1
+			from chain c join issues p on p.key = c.parent_key and p.project_key = c.project_key
 			where c.depth < $2
 		)
 		select distinct key from chain where depth > 0

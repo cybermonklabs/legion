@@ -1,5 +1,7 @@
 package main
 
+//ci:builds packages/envoy ./cmd/listener buildListener builds . in ../../../cmd/listener (root go.work)
+
 import (
 	"bufio"
 	"fmt"
@@ -19,6 +21,8 @@ import (
 	"github.com/sjawhar/envoy/infra/internal/pulumitest"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 )
+
+func TestMain(m *testing.M) { os.Exit(cmdtest.Main(m)) }
 
 // The wrapper's real-process tests: the wrapper this directory builds, run as the held-port image
 // runs it, against the socket server the live tests use (pulumitest.HoldPort) and the real

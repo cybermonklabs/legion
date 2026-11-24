@@ -30,6 +30,7 @@ import (
 // named by the project, however many ticks pass before it is published. Here a slot is free; the
 // tick's indifference to the slots is admission's to prove (controller_wake_test.go).
 func TestTheControllerTickQueuesOneWakeWhileASlotIsFree(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	// The daemon's own path: `legion controller start` mints the capability and its session
@@ -87,6 +88,7 @@ func TestTheControllerTickQueuesOneWakeWhileASlotIsFree(t *testing.T) {
 // more often than controller_wake_interval_seconds still wakes its controller: with an hour's
 // interval, the first tick is the early one.
 func TestTheControllerTickComesShortlyAfterTheRuntimeStarts(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	engine := workflow.New(record.NewStore(), workflow.Config{Project: "CAPTURE", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, log)
@@ -119,6 +121,7 @@ func TestTheControllerTickComesShortlyAfterTheRuntimeStarts(t *testing.T) {
 // silent worker is admission's own (internal/admit's silent_tick_test.go), and the architect of
 // the issue is told the same fact in a `worker-silent` notice.
 func TestControllerTickOfABootedWorkflowNamesTheSilentWorker(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	w := bootedTickWorkflow(t, pool)
@@ -136,6 +139,7 @@ func TestControllerTickOfABootedWorkflowNamesTheSilentWorker(t *testing.T) {
 // past it. The worker here reports background work, which the silence rule reads as explaining
 // its quiet, so a boot that registered only the silence bound would name nothing.
 func TestControllerTickOfABootedWorkflowNamesTheBackgroundStalledWorker(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	w := bootedTickWorkflow(t, pool)
@@ -183,7 +187,7 @@ func bootedTickWorkflow(t *testing.T, pool *store.Pool) *workflowRuntime {
 	}
 	tokens := loginTokens{appauth.Implement: "legion-implementer[bot]", appauth.Review: "legion-reviewer[bot]"}
 	w, err := openWorkflow(ctx, cfg, st, "project-id", "dispatch-token", nil,
-		newRepositories(cfg.Project, cfg.RepositoryRenames), appauth.NewInstalled(), log, tokens, repositoriesGitHub(t), nil, time.Now)
+		newRepositories(cfg.Project, cfg.RepositoryRenames), appauth.NewInstalled(), log, tokens, repositoriesGitHub(t), nil, time.Now, nil, nil)
 	if err != nil {
 		t.Fatalf("open the workflow: %v", err)
 	}

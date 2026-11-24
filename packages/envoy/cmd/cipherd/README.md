@@ -41,7 +41,8 @@ operate page's "A migration recorded under another file".
 `envoy-broker end-sessions <login>` ends every browser session that login holds on the approval
 page and prints how many it ended;
 it reads the same configuration, binds no listener and applies no migration.
-`envoy-broker profiles check <file> [--against <old file>]` reads a profiles file with the
+`envoy-broker profiles check <file> [--against <old file>] [--private-upstream '<host>=<url> ...']`
+reads a profiles file with the
 broker's own code and exits non-zero, naming the profile and the field or the parse position, when
 the broker would not serve that file;
 on a file it would serve it prints every field of each profile the file adds and removes against
@@ -50,6 +51,12 @@ requesters and `maxGrant`, its GitHub accounts, repositories, permissions and va
 scopes, and its proxy block's hosts, headers, `allow`, `kind`, `judge` and guidance.
 So a pull request changing the deployment's `profiles.json` leaves a reviewer only the question of
 whether each of those is right for its profile.
+A profile whose proxy block is of kind `dpop`, a capability the broker mints and holds, is held to
+the boot's rules for it: one exact host, a non-empty `allow` list none of whose entries is every path
+(`""` or `/`), the `Authorization` header alone, and no block of another kind on that host.
+Its host must also be one private destination's, which only the broker's own
+`BROKER_PROXY_PRIVATE_UPSTREAM` names: `--private-upstream '<host>=<url> ...'` checks that too, and
+without the flag each such profile gets one line saying its tie to the destination was not checked.
 `profiles check` reads no configuration, opens no database and binds nothing.
 The removed `envoy-broker airlock-check` exits 2 naming `profiles check`.
 

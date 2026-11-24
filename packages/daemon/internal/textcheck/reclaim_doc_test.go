@@ -1,5 +1,8 @@
 package textcheck
 
+//ci:reads docs/kubernetes.md reclaimGuide reads it under ../../../..
+//ci:reads packages/daemon/internal/runtime/sandbox/reclaim_doc_extract.txt reclaimExtractLists reads the committed copy it holds the guide's paragraph to (reclaimExtractLists)
+
 import (
 	"errors"
 	"fmt"

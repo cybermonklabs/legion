@@ -12,6 +12,7 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"fmt"
 	"slices"
 	"strings"
 	"time"
@@ -27,6 +28,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -130,6 +132,13 @@ type State struct {
 	// locator up with its process and lowers it by nothing, however old the plugin it last
 	// recorded (contract 193).
 	LowestPluginContract *int `json:"lowestPluginContract,omitempty"`
+	// IntakeGiveUps is the intake's open give-ups: the messages it gave up on that no replay or
+	// discard has closed, counted per consumer with the newest stream sequence among each
+	// consumer's (the `throughSeq` a bulk replay or discard of them all names), and the newest of
+	// them listed (IntakeGiveUpsView). Always written, its lists empty rather than null; a daemon
+	// with no workflow has none, and a body served a caller below intakeGiveUpsContract carries no
+	// such key (shaping.go's withoutIntakeGiveUps, contract 228).
+	IntakeGiveUps IntakeGiveUpsView `json:"intakeGiveUps"`
 	// wakesWaitingHidden is set on the copy the state route serves a caller whose plugin is older
 	// than the contract that added WakesWaiting (api's withoutWakesWaiting, below shaping.go's
 	// wakesWaitingContract): that reader knows no `wakesWaiting` and refuses the key as surely
@@ -143,6 +152,9 @@ type State struct {
 	// leaves it off that one body. The two flags compose on one body: a caller below
 	// wakesWaitingContract is below this contract too, and is served neither key.
 	claimsToRefreshHidden bool
+	// intakeGiveUpsHidden is the same for IntakeGiveUps, set on the copy the route serves a caller
+	// below shaping.go's intakeGiveUpsContract (api's withoutIntakeGiveUps).
+	intakeGiveUpsHidden bool
 }
 
 // ClaimsToRefreshField is the name ClaimsToRefresh carries on the wire, read from here by the
@@ -184,6 +196,58 @@ func ConsumerLagViewsOf(lags []intake.ConsumerLag) []ConsumerLagView {
 		views[i] = view
 	}
 	return views
+}
+
+// IntakeGiveUpsView is the intake's open give-ups as the state shows them (record.IntakeGiveUps):
+// Consumers, each consumer with an open give-up, by name, with how many it has and the newest
+// stream sequence among them; and Newest, the newest open give-ups, latest given up first, as many
+// as the projection lists (projection's stateNewestGiveUps), so a reader of the state finds the id
+// of a record to replay or discard and the consumer and sequence of a bulk one.
+type IntakeGiveUpsView struct {
+	Consumers []IntakeGiveUpCountView `json:"consumers"`
+	Newest    []IntakeGiveUpView      `json:"newest"`
+}
+
+// IntakeGiveUpCountView is one consumer's open give-ups: how many, and the newest stream sequence
+// among them, which a bulk replay or discard of all of them names as its `throughSeq`.
+type IntakeGiveUpCountView struct {
+	Name      string `json:"name"`
+	Open      int    `json:"open"`
+	NewestSeq uint64 `json:"newestSeq"`
+}
+
+// IntakeGiveUpView is one open give-up as the state lists it, without the message's headers and
+// payload, which the record keeps whole: its record id, the consumer that delivered it, its
+// subject as the store keeps text (storetext.Text: each NUL and each run of bytes that is no UTF-8
+// shown as U+FFFD, where the record keeps the publisher's bytes), stream sequence and stored
+// time, the fact's event id (null for a message that did not decode), how many deliveries
+// JetStream made of it, when the intake gave it up and why (record.IntakeGiveUpReason), and the
+// start of its last error, cut where the projection cuts it (projection's stateGiveUpErrorRunes).
+type IntakeGiveUpView struct {
+	ID         int64                     `json:"id"`
+	Consumer   string                    `json:"consumer"`
+	Subject    string                    `json:"subject"`
+	StreamSeq  uint64                    `json:"streamSeq"`
+	StoredAt   time.Time                 `json:"storedAt"`
+	EventID    *string                   `json:"eventId"`
+	Deliveries int                       `json:"deliveries"`
+	GaveUpAt   time.Time                 `json:"gaveUpAt"`
+	Reason     record.IntakeGiveUpReason `json:"reason"`
+	LastError  string                    `json:"lastError"`
+}
+
+// MarshalJSON keeps `consumers` and `newest` arrays on the wire: a nil Go slice is `null`, which
+// the plugin's reader refuses, and a daemon with no give-up open writes both empty.
+func (v IntakeGiveUpsView) MarshalJSON() ([]byte, error) {
+	type wire IntakeGiveUpsView
+	out := wire(v)
+	if out.Consumers == nil {
+		out.Consumers = []IntakeGiveUpCountView{}
+	}
+	if out.Newest == nil {
+		out.Newest = []IntakeGiveUpView{}
+	}
+	return json.Marshal(out)
 }
 
 // RepositoriesView is the repositories the daemon works in, as legion state reports them
@@ -468,29 +532,29 @@ type AgentSecretsLoginView struct {
 
 // MarshalJSON keeps `issues` an object and `pendingStatusWrites`, `heldOutboxRows`,
 // `strandedClaims`, `wakesWaiting`, `capabilities` and `consumers` arrays on the wire: a nil Go map
-// or slice is `null`, which the plugin's reader refuses. The exceptions are the two keys a
-// contract band hides from a caller below it, `wakesWaiting` and `claimsToRefresh`: such a body
-// carries no key of that name at all, and is marshaled through a value whose own field of that
-// name shadows the embedded one. Admission.MarshalJSON hides `trees` and `held`, the two keys of
-// its own block a downgrade hides, with `omitzero` on those fields instead. The optional keys need
-// none of this: `controllerLocator`, `agentSecretsLogin`, `paused` and `lastPause` are pointers
-// with `omitempty`, absent wherever the state holds none, which is how a band hides them too
-// (withoutPause).
+// or slice is `null`, which the plugin's reader refuses. The exceptions are the three keys a
+// contract band hides from a caller below it, `wakesWaiting`, `claimsToRefresh` and
+// `intakeGiveUps`: such a body carries no key of that name at all, and is marshaled through a
+// value whose own field of that name shadows the embedded one. Admission.MarshalJSON hides `trees`
+// and `held`, the two keys of its own block a downgrade hides, with `omitzero` on those fields
+// instead. The optional keys need none of this: `controllerLocator`, `agentSecretsLogin`, `paused`
+// and `lastPause` are pointers with `omitempty`, absent wherever the state holds none, which is
+// how a band hides them too (withoutPause).
 //
-// One shadow type carries both keys, and both its fields are pointers. `omitempty` leaves out a
+// One shadow type carries the three keys, and its fields are pointers. `omitempty` leaves out a
 // nil pointer, and a pointer at a value writes that value whatever it holds: `[]` for the empty
-// `wakesWaiting` every other body carries, `0` for the `claimsToRefresh` of a drained lane. A
-// `[]WakeWaiting` field could not write the empty array, since an empty slice is what
-// `omitempty` drops, so the pointer is what lets one type serve both keys — each field set when
-// its key is not hidden and left nil when it is — rather than a struct per pair of flags. The
-// two bands compose, so a caller below wakesWaitingContract (53) is below claimsToRefreshContract
-// (73) as well and is served neither key; a third banded key is one more field here, not four
-// more shapes.
+// `wakesWaiting` every other body carries, `0` for the `claimsToRefresh` of a drained lane, two
+// empty lists for the `intakeGiveUps` of an intake with none open. A `[]WakeWaiting` field could
+// not write the empty array, since an empty slice is what `omitempty` drops, so the pointer is
+// what lets one type serve every key — each field set when its key is not hidden and left nil
+// when it is — rather than a struct per set of flags. The bands compose, so a caller below
+// wakesWaitingContract (53) is below claimsToRefreshContract (73) and intakeGiveUpsContract (228)
+// as well and is served none of the three.
 //
-// A body that hides neither key is marshaled through the embedded value alone. The shadow's own
+// A body that hides none of them is marshaled through the embedded value alone. The shadow's own
 // fields are declared after the embedded one, so encoding/json writes a key that comes from them
 // after every other key of the body, and the fixtures under `packages/contracts/fixtures/daemon-api`
-// pin bodies that hide nothing: marshaling those through the shadow would move both keys to the
+// pin bodies that hide nothing: marshaling those through the shadow would move those keys to the
 // end of each pinned body.
 func (s State) MarshalJSON() ([]byte, error) {
 	type wire State
@@ -516,19 +580,23 @@ func (s State) MarshalJSON() ([]byte, error) {
 	if out.WakesWaiting == nil {
 		out.WakesWaiting = []WakeWaiting{}
 	}
-	if !s.wakesWaitingHidden && !s.claimsToRefreshHidden {
+	if !s.wakesWaitingHidden && !s.claimsToRefreshHidden && !s.intakeGiveUpsHidden {
 		return json.Marshal(out)
 	}
 	shadow := struct {
 		wire
-		WakesWaiting    *[]WakeWaiting `json:"wakesWaiting,omitempty"`
-		ClaimsToRefresh *int           `json:"claimsToRefresh,omitempty"`
+		WakesWaiting    *[]WakeWaiting     `json:"wakesWaiting,omitempty"`
+		ClaimsToRefresh *int               `json:"claimsToRefresh,omitempty"`
+		IntakeGiveUps   *IntakeGiveUpsView `json:"intakeGiveUps,omitempty"`
 	}{wire: out}
 	if !s.wakesWaitingHidden {
 		shadow.WakesWaiting = &shadow.wire.WakesWaiting
 	}
 	if !s.claimsToRefreshHidden {
 		shadow.ClaimsToRefresh = &shadow.wire.ClaimsToRefresh
+	}
+	if !s.intakeGiveUpsHidden {
+		shadow.IntakeGiveUps = &shadow.wire.IntakeGiveUps
 	}
 	return json.Marshal(shadow)
 }
@@ -572,24 +640,25 @@ type Admission struct {
 	Cap int `json:"cap"`
 	// Active is every issue holding an admission slot, a child as much as a root: the cap counts
 	// the issues the daemon has started rather than the trees (dispatch://INFRA-980), and an
-	// issue holds one of the cap's slots from the moment the daemon starts it until its work is
-	// past its review — accepting, retro and merging hold none — or until it is done or
-	// Dispatch takes it out of the workflow, except while it waits on another issue before that
-	// point (record.KeepsSlot, blockers.waitsOf). So one tree with three started children holds
+	// issue holds one of the cap's slots while it stands in a phase that keeps one, from the moment
+	// the daemon starts it until it is done or Dispatch takes it out of the workflow — accepting,
+	// retro and merging hold none, and a step after accepting whose phase keeps one waits for one
+	// again — except while it waits on another issue (record.KeepsSlot, blockers.waitsOf). So one tree with three started children holds
 	// three of these, and an issue at work, one held and one waiting on a person are each here,
-	// while one past its review — a merger at work in merging, one in merging whose start a
+	// while one in accepting, retro or merging — a merger at work in merging, one in merging whose start a
 	// closed design gate holds (the outbox's mergerWaitsForTheDesignGate) and a merged root
 	// standing in merging while the rest of its tree runs — and one whose phase has left the
 	// workflow, done or a status Dispatch took it out of the workflow with, are in neither list.
-	// An issue the daemon has started that waits on another issue before its review is missing
-	// from here too, other than the three roots that keep their slot through such a wait
+	// An issue the daemon has started that waits on another issue in a phase that keeps a slot is
+	// missing from here too, other than the three roots that keep their slot through such a wait
 	// (blockers.waitsOf): it holds no slot while it waits (record.Issue.ReleasedForWaitAt,
 	// admit.releaseSlotsForWaits) and stands in `waiting` and in `blocked`, which is how a reader
 	// tells it from an issue a person parked, which stands in none of the three.
 	Active []string `json:"active"`
-	// Waiting is the admission line, in the line's own order: the issues whose work came back,
-	// oldest first, then the issues whose first phase can start, by their tree root's Dispatch
-	// rank. It carries children as well as roots, for the same reason `active` does. An owed
+	// Waiting is the admission line, in the line's own order: by priority first (each issue's own
+	// Dispatch priority, else its tree root's, else after P3), and within one priority the issues
+	// whose work came back, oldest first, then the issues whose first phase can start, by their
+	// tree root's Dispatch rank. It carries children as well as roots, for the same reason `active` does. An owed
 	// start in it holds no row and waits for one, as does an issue released for what it waits
 	// on; an issue in it that holds a row already (the kinds record.LineEntry.Holds names)
 	// stands in both lists until the pass that promotes it, which takes no second row.
@@ -613,10 +682,10 @@ type Admission struct {
 	// issue key. It is the other half of the three lists above — a reader that has `active`,
 	// `waiting` and this one has every issue of the workflow and what each is doing — so the
 	// list names no issue `active` or `waiting` names. `heldBy` is absent where no issue holds
-	// the one that waits: a root whose Legion label is off, an issue none of the other words
-	// is true of, or an issue past its review under `at_work`, which no other issue holds
-	// (record.HeldAtWork says which issues read it). Never null; empty when every issue of the
-	// workflow runs or waits in the line.
+	// the one that waits: a root whose Legion label is off, a task that was stopped
+	// (`task_stopped`), an issue none of the other words is true of, or an issue in accepting, retro or merging
+	// under `at_work`, which no other issue holds (record.HeldAtWork says which issues read it).
+	// Never null; empty when every issue of the workflow runs or waits in the line.
 	Held []HeldIssue `json:"held,omitzero"`
 	// treesHidden is set on the copy the state route serves a caller whose plugin is older than
 	// the contract that added Trees (api's withoutTrees, below shaping.go's treeContract): that
@@ -701,8 +770,15 @@ type Issue struct {
 	Repo          string `json:"repo,omitempty"`
 	DefaultBranch string `json:"defaultBranch,omitempty"`
 	// HoldReason is why a held issue is held, when its hold has one: `escalated` once its architect
-	// sent it to the controller. Absent otherwise, and absent while the issue's tree lingers or is
-	// closed: the record keeps the reason, and the view shows it again once the tree is re-admitted.
+	// sent it to the controller (record.HoldEscalated), `task-stopped` once its owner stopped the task
+	// it ran (record.HoldTaskStopped), and `children` while a parent whose task's last step is not
+	// the owner's acceptance waits, before its retro, for the issues beneath it
+	// (record.HoldForChildren). A hold of either of the last two is no architect's to retry or
+	// escalate: a later version of the plan
+	// starts a stopped task again, and the last issue beneath a parent to leave starts its retro. A
+	// caller below OwnerPlanContract is served no reason for those two (withoutUnadmittedHoldReason).
+	// Absent otherwise, and absent while the issue's tree lingers or is closed: the record keeps the
+	// reason, and the view shows it again once the tree is re-admitted.
 	HoldReason string `json:"holdReason,omitempty"`
 	// HeldFrom is the phase the hold took the issue out of (record.Hold.From), and absent for an
 	// issue that is not held. Unlike HoldReason it is shown whatever the issue's tree is doing:
@@ -726,6 +802,13 @@ type Issue struct {
 	// reading on this wire.
 	Ancestry  []string   `json:"ancestry,omitempty"`
 	Architect *ClaimView `json:"architect,omitempty"`
+	// Priority is the issue's own Dispatch priority (record.Issue.Priority): its number, 0 for P0
+	// to 3 for P3, or null for an issue with none. It is the issue's own and never its tree
+	// root's; the priority that placed a member of the line is its waitingLine's. It is set on
+	// every issue the workflow records, and absent on an issue it does not record (an operator's
+	// claim, Unrecorded) and from every issue of the body served a caller below priorityContract
+	// (shaping.go's withoutPriority).
+	Priority *PriorityView `json:"priority,omitempty"`
 	// Workers is keyed by the role that holds the claim; the vocabulary of a claim belongs to
 	// `internal/claim`, which the runtime, the worker stream, and the supervisor all speak
 	// without importing this package.
@@ -837,7 +920,7 @@ type Issue struct {
 	// TreeMovedAt is when the daemon last saw anything of this issue's tree move and QuietHours
 	// is how long that tree has been still at this read, in hours (contract 111). The two are one
 	// measure read at one instant (record.TreeQuiet, through projection's quietTrees), so every
-	// issue of one tree carries the same pair: an issue past its review, which holds no slot, and
+	// issue of one tree carries the same pair: an issue in accepting, retro or merging, which holds no slot, and
 	// a done child recorded under a live tree each answer their tree's quiet time, because what
 	// has stopped is the tree and not the issue a reader happens to hold. Both are absent
 	// together for an issue whose tree is not live — one whose tree has left the workflow, and
@@ -860,11 +943,52 @@ type Issue struct {
 	// holds an answer for, so the wire never carries an empty list, and absent from every issue of
 	// the body the route serves a caller below 141 (shapeIssue, withoutAssignments).
 	Assignments []AssignmentView `json:"assignments,omitempty"`
+	// PodHold is the standing hold of the issue's pod: why the idle rule keeps that pod running
+	// past the idle period, from when, until which pass, and what holds it (PodHoldView). It is
+	// the streak of store's pod_holds that no pass has ended, read in this state's own snapshot
+	// (store.StandingPodHoldsTx). Absent for an issue whose pod no hold stands on: a pod the rule
+	// has not held, one it released, and one whose streak a later pass ended. Absent from every
+	// issue of the body the route serves a caller below podHoldContract (shapeIssue,
+	// withoutPodHold).
+	PodHold *PodHoldView `json:"podHold,omitempty"`
+}
+
+// PodHoldView is one pod's standing hold as the state shows it (store.PodHold): Reason, the idle
+// rule's own name for what holds the pod (workflow.IdleHold's String, as the daemon's hold
+// records and its per-pass log line spell it); FirstAt, the first pass of the streak; At, its
+// newest pass, so a reader tells a streak the passes still read from one whose passes stopped,
+// since a streak stays standing until the next pass of its pod ends it; and Detail, what that one
+// word leaves out (the kinds a background-work hold's session reported), cut to its first
+// podHoldDetailChars characters, and absent where the record holds none.
+type PodHoldView struct {
+	Reason  string    `json:"reason"`
+	FirstAt time.Time `json:"firstAt"`
+	At      time.Time `json:"at"`
+	Detail  string    `json:"detail,omitempty"`
+}
+
+// podHoldDetailChars is how many characters of a hold's detail the state shows: enough to name
+// every kind a session reports, and a bound on what one row adds to a body every issue carries.
+const podHoldDetailChars = 200
+
+// PodHoldViewOf is hold as the state shows it, its detail cut to its first podHoldDetailChars
+// characters. A character is a rune, so a cut never splits one.
+func PodHoldViewOf(hold store.PodHold) *PodHoldView {
+	detail, chars := hold.Detail, 0
+	for at := range detail {
+		if chars == podHoldDetailChars {
+			detail = detail[:at]
+			break
+		}
+		chars++
+	}
+	return &PodHoldView{Reason: hold.Reason, FirstAt: hold.FirstAt, At: hold.At, Detail: detail}
 }
 
 // AssignmentView is one experiment's answer for an issue as the state shows it
 // (record.Assignment): the name the project declares the experiment under, the arm the draw gave
-// the unit, the mode in force at that draw and the instant of it.
+// the unit, the mode in force at that draw, the instant of it, and the group the arm set (Plan,
+// `owner` or `default`), as the draw recorded it.
 //
 // Variant and Mode ride the wire whatever they hold, the empty string included, and DrawnAt is
 // absent where the row holds none: a hand-over settles a child at no arm for an experiment the
@@ -872,11 +996,15 @@ type Issue struct {
 // is how a reader tells a unit settled at no arm from a unit never drawn, which is no row at all.
 // Carried, the record's mark of such a row, is no part of the view: what a reader of the state
 // measures is the arm the unit ran under, and a carried row names the arm as a drawn one does.
+// Plan is absent where the arm named none. It is the group the issue runs on for its whole life,
+// read from the record rather than from the settings, which can change an arm's plan or rename
+// the arm after the draw.
 type AssignmentView struct {
 	Experiment string     `json:"experiment"`
 	Variant    string     `json:"variant"`
 	Mode       string     `json:"mode"`
 	DrawnAt    *time.Time `json:"drawnAt,omitempty"`
+	Plan       string     `json:"plan,omitempty"`
 }
 
 // WaitingOnView is what a root in awaiting_person waits on from a person (record.Awaiting). Kind
@@ -884,8 +1012,8 @@ type AssignmentView struct {
 // with GateVersion and ArtifactID, the spec version of its registered document a person has not
 // reviewed. Since is Dispatch's time of the hand-back the wait began at,
 // absent when unknown. AnsweredAt and AnsweredBy are absent until a person's act answers the
-// wait; the answered root then stands in admission's waiting line as well, among the issues
-// whose work came back, oldest first, until the pass that resumes it. AnsweredBy is every value
+// wait; the answered root then stands in admission's waiting line as well, within its priority,
+// among the issues whose work came back, oldest first, until the pass that resumes it. AnsweredBy is every value
 // of record.Answer, `declined` — a person who closed an ask of the root rather than answer it
 // (contract 68) — among them, and it names how the wait was answered, not always by a person.
 type WaitingOnView struct {
@@ -896,6 +1024,31 @@ type WaitingOnView struct {
 	Since       *time.Time    `json:"since,omitempty"`
 	AnsweredAt  *time.Time    `json:"answeredAt,omitempty"`
 	AnsweredBy  record.Answer `json:"answeredBy,omitempty"`
+}
+
+// PriorityView is a Dispatch priority on this wire, as Dispatch sends one: its number, 0 for P0
+// to 3 for P3, or null for none (record.Priority). A field of it is a pointer with `omitempty`,
+// so a view that carries the field says null for none, and a body served a caller below the
+// contract that added it carries no key at all.
+type PriorityView record.Priority
+
+// MarshalJSON writes the priority's number, or null for none (record.Priority.Level).
+func (p PriorityView) MarshalJSON() ([]byte, error) {
+	return json.Marshal(record.Priority(p).Level())
+}
+
+// UnmarshalJSON reads the number back, 0 for P0 to 3 for P3; null reads as none
+// (record.DecodePriority).
+func (p *PriorityView) UnmarshalJSON(data []byte) error {
+	priority, read, err := record.DecodePriority(data)
+	if err != nil {
+		return err
+	}
+	if !read {
+		return fmt.Errorf("priority %s is no priority Dispatch sends", data)
+	}
+	*p = PriorityView(priority)
+	return nil
 }
 
 // MarshalJSON keeps `workers` an object on the wire for an issue that has no worker yet.
@@ -969,11 +1122,19 @@ type ClaimView struct {
 	// start did not produce a running agent — a launcher that refused it, a failed init container,
 	// a pod that never became ready — and LastReady when its agent last said it could be prompted.
 	// Each is absent until it happens. The two causes are separate because they answer separate
-	// questions, and LastReady is what dates them: a cause older than it is one the agent running
-	// now has already survived.
-	LastDeathCause   string     `json:"lastDeathCause,omitempty"`
-	LastStartFailure string     `json:"lastStartFailure,omitempty"`
-	LastReady        *time.Time `json:"lastReady,omitempty"`
+	// questions. LastDeathAt and LastStartFailureAt are when the daemon recorded the cause beside
+	// each (causeTimesContract), set and cleared only with it, as supervise.Claim.LastDeathAt
+	// states; each is absent beside a cause an earlier release recorded, which wrote no time,
+	// except after a rollback (the migration's header, 20261124073512_claim_cause_times).
+	// LastDeathAt dates the death: a LastDeathAt before LastReady is a death the agent running now
+	// has survived. The claim drops its start failure, with its time, when its agent says it is
+	// ready (supervise.Claim.LastStartFailure says which older claims can still hold one from
+	// before).
+	LastDeathCause     string     `json:"lastDeathCause,omitempty"`
+	LastDeathAt        *time.Time `json:"lastDeathAt,omitempty"`
+	LastStartFailure   string     `json:"lastStartFailure,omitempty"`
+	LastStartFailureAt *time.Time `json:"lastStartFailureAt,omitempty"`
+	LastReady          *time.Time `json:"lastReady,omitempty"`
 	// ProviderErrorRun is how many turns of this claim ended in a provider error in a row
 	// (supervise.Claim.ProviderErrorRun), and is absent for a claim whose last turn ended with
 	// none. It bounds nothing — a limit here would fail every claim of a project at once in a
@@ -1108,14 +1269,17 @@ func ClaimViewOf(c supervise.Claim) ClaimView {
 		// What the daemon last saw this claim's agent do, which the stall backstop and an
 		// operator read alike; nil for a claim whose agent has not stepped (StepViewOf).
 		Step: StepViewOf(c.Step),
-		// When the agent last began and last ended a turn, and when it last said it could be
-		// prompted, each absent until it happens: they are what tells a worker still making
-		// progress from one wedged in a turn, and what dates the two causes below.
-		LastTurnStart:    instant(c.LastTurnStart),
-		LastTurnEnd:      instant(c.LastTurnEnd),
-		LastReady:        instant(c.LastReady),
-		LastDeathCause:   c.LastDeathCause,
-		LastStartFailure: c.LastStartFailure,
+		// When the agent last began and last ended a turn, when it last said it could be
+		// prompted, and when each cause was recorded, each absent until it happens: they are what
+		// tells a worker still making progress from one wedged in a turn, and a LastDeathAt before
+		// the ready is a death the running agent survived.
+		LastTurnStart:      instant(c.LastTurnStart),
+		LastTurnEnd:        instant(c.LastTurnEnd),
+		LastReady:          instant(c.LastReady),
+		LastDeathCause:     c.LastDeathCause,
+		LastDeathAt:        instant(c.LastDeathAt),
+		LastStartFailure:   c.LastStartFailure,
+		LastStartFailureAt: instant(c.LastStartFailureAt),
 		// Why the claim failed, for as long as the daemon holds a record of it: a claim an
 		// operator retired after it failed carries the record still, since nothing but the launch
 		// that runs it again clears it (FailureViewOf). It is keyed on the stored record rather
@@ -1206,7 +1370,7 @@ func CapabilityReportViewOf(report capabilities.Report) *CapabilityReportView {
 // completion reported, the Dispatch handoff record it named — and the three counts the phase
 // carries: the passes it has made through its stretch of the workflow, which every backward move
 // counts one of, the review rounds, which only a review that requested changes counts, and the
-// counts of the moves back, by kind, that made those rounds.
+// counts of the moves back, by kind, that made those passes.
 type PhaseView struct {
 	Claim         ClaimView          `json:"claim"`
 	HandoffCommit string             `json:"handoffCommit,omitempty"`
@@ -1214,14 +1378,14 @@ type PhaseView struct {
 	Pass          int                `json:"pass"`
 	Rounds        int                `json:"rounds"`
 	// BackwardMoves is how many times the issue's work has gone back by each kind of move, keyed
-	// "<from>-<to>" as phase.BackwardPairs() writes the pairs: "testing-implementing",
+	// "<from>-<to>" as phase.MovePairs() writes the pairs: "testing-implementing",
 	// "reviewing-implementing", "merging-implementing" and the rest. It is absent, and never
 	// `{}`, for an issue that has had no move back, so a reader tells an issue that carries no
-	// counts at all from one whose counts the daemon holds. Rounds beside it keeps its meaning
-	// exactly: it rises on every move back, a conflict round included, where no pair counts a
-	// conflict round, since nobody sent the work back. The counts start empty at the migration
-	// that added them and are never filled in from the past, so an issue already in flight reads
-	// counts that add up to less than its `rounds`.
+	// counts at all from one whose counts the daemon holds. Rounds beside it counts review rounds
+	// alone, a conflict round included, and Pass counts every move back, where no pair counts a
+	// move made at a conflicting head, since nobody sent the work back. The counts start empty at
+	// the migration that added them and are never filled in from the past, so an issue already in
+	// flight reads counts that add up to less than its `pass`.
 	BackwardMoves map[string]int `json:"backwardMoves,omitempty"`
 	// passHidden is set on the copy the state route serves a caller below the contract that added
 	// Pass (api's withoutStateMachineFields, below shaping.go's stateMachineContract): that reader
@@ -1407,13 +1571,13 @@ const MergeWaitField = "mergeWait"
 
 // WaitingLineView is the issue's place in `admission.waiting`, where 1 is first in the line,
 // and the length of that list at this read, beside the waiting line's own fields for a program
-// that acts on the line rather than reading the sentence Reason renders: which part the issue
-// waits in and why it waits there (record.LinePart and record.LineKind, whose String methods
-// are the words carried here), its place within its own part and that part's length, whether it
-// already holds one of the cap's slots, and what placed it — the moment its work came back for
-// a member of the returned part, the Dispatch ranks and the tree root's key for a member of the
-// starting part. It says where the issue stands, not what holds it: `admission.blocked` names
-// what holds it.
+// that acts on the line rather than reading the sentence Reason renders: the priority that placed
+// it, which part the issue waits in within that priority's band and why it waits there
+// (record.LinePart and record.LineKind, whose String methods are the words carried here), its
+// place within its band's part and that part's length, whether it already holds one of the cap's
+// slots, and what placed it there — the moment its work came back for a member of the returned
+// part, the Dispatch ranks and the tree root's key for a member of the starting part. It says
+// where the issue stands, not what holds it: `admission.blocked` names what holds it.
 //
 // Every field beside Place and Length is omitempty, for two readers at once: a member carries
 // the fields of its own part alone, so a returned member's body names no rank and a starting
@@ -1438,6 +1602,11 @@ type WaitingLineView struct {
 	RootRank  string     `json:"rootRank,omitempty"`
 	OwnRank   string     `json:"ownRank,omitempty"`
 	RootKey   string     `json:"rootKey,omitempty"`
+	// Priority is the priority that placed the member (record.LineEntry.Priority): the issue's
+	// own, else its tree root's, as a number from 0 for P0 to 3 for P3, or null for a member
+	// neither it nor its tree root has a priority for, whose band stands after P3. It is the first
+	// key of the whole line; Part, PartPlace and PartLength count within its band.
+	Priority *PriorityView `json:"priority,omitempty"`
 	// Reason is the rendered sentence of this member's wait, the one answer a person reads: what
 	// put it in the line and when, where it stands in its own part, and what that place means
 	// for the slot it waits for. The projection renders it from the fields above and the length

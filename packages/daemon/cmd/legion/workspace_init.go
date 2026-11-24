@@ -65,15 +65,15 @@ func secretFileFromEnv(name string) (string, error) {
 // mounted in. The controller's pod (`controller: daemon`) runs none. A repository cache's pod runs
 // `cache` as its one container, on its own volume, until it is stopped. Each one's log lines go to
 // stdout and its refusals and failures to stderr — together the init log the runtime quotes —
-// both through the URL rule (redact.Writer), as Go's standard logger is for the run of each
-// (podLogs): a failure that quotes --cache-url, the cache's address, loses its query and its
-// userinfo. No child process is handed either writer. A usage error exits 2
-// (workspace.InitExitUsage), as for every legion command. `fetch` and `provision` exit 3
-// (workspace.InitExitOutsideVolume) for a failure whose cause is outside the issue's volume, and 1
-// for every other failure (issuePodInitExit). `cache` exits 1 for every failure
+// both through the URL rule (redact.Writer here for stdout, newRoot's for stderr), as Go's
+// standard logger is for the run of each (podLogs): a failure that quotes --cache-url, the cache's
+// address, loses its query and its userinfo. No child process is handed either writer. A usage
+// error exits 2 (workspace.InitExitUsage), as for every legion command. `fetch` and `provision`
+// exit 3 (workspace.InitExitOutsideVolume) for a failure whose cause is outside the issue's
+// volume, and 1 for every other failure (issuePodInitExit). `cache` exits 1 for every failure
 // (workspaceInitExit).
 func newWorkspaceInitCommand(stdout, stderr io.Writer) *cobra.Command {
-	stdout, stderr = redact.Writer(stdout), redact.Writer(stderr)
+	stdout = redact.Writer(stdout)
 	return group(&cobra.Command{
 		Use:    "workspace-init",
 		Short:  "an issue pod's init containers: fetch the repository, provision the issue's workspace; and a repository cache pod's process",
@@ -145,7 +145,11 @@ func issuePodInitExit(cmd *cobra.Command, err error, stderr io.Writer) int {
 // the clone: it is the issue's own, on the issue's own disk, and no other pod mounts that disk
 // while this one runs, since the issue's Sandbox runs one pod at a time. For the same reason, and
 // because the pod's launcher container has not started, no process holds a git lock on the disk
-// while this runs, so every one there is stale and would fail each later write of what it locks
+// while this runs but a git or jj the provision itself starts, and each of those holds its locks
+// only while it runs: every git provisioning starts, directly or through jj, reads gc.auto=0 and
+// maintenance.auto=false among its pinned settings (the workspace package's pinnedGitConfig), so
+// no fetch leaves git's automatic maintenance holding a lock behind it.
+// So every lock there when this starts is stale and would fail each later write of what it locks
 // (LEGION-731). The kubelet restarts a failed init container on the same pod, and so on the same
 // disk, so a first attempt killed mid-fetch leaves exactly those locks for the retry to clear. An
 // earlier pod that was stopped on a kept volume leaves its locks for the next pod in the same way.

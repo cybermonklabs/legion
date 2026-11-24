@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Tests for `edited-migrations-base.sh`: the base envoy-go-checks' edited-migrations check
+# Tests for `edited-migrations-base.sh`: the base envoy-go-build's edited-migrations check
 # compares a run's tree with, for each event the job runs on.
 #
 # Each case clones a fixture origin the way actions/checkout leaves a run's tree, one commit deep

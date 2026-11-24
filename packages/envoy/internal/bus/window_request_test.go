@@ -70,6 +70,7 @@ func answerOf(t *testing.T, outcome <-chan error) error {
 // else. An empty receipt is passed over, so a Request to a subject the stream does not capture
 // runs out of time though a subscriber of that subject answered it at once.
 func TestARequestIsAnsweredByTheStreamsAcknowledgementAlone(t *testing.T) {
+	t.Parallel()
 	_, url, client := requestClient(t)
 	window := client.WindowUntil(nil)
 
@@ -122,6 +123,7 @@ func TestARequestNobodyAnswersIsNotAcknowledgedWithinItsTimeout(t *testing.T) {
 // it has settled its flush, so it settles a flush that beat its timeout, every time. The frozen
 // Request below keeps its timer.
 func TestAnUnansweredRequestSaysWhetherItsPublishWasConfirmed(t *testing.T) {
+	t.Parallel()
 	var requests atomic.Int32
 	server, _, client := requestClient(t, bus.WithRequestExpiry(func(time.Time) (<-chan time.Time, func()) {
 		switch requests.Add(1) {
@@ -166,6 +168,7 @@ func TestAnUnansweredRequestSaysWhetherItsPublishWasConfirmed(t *testing.T) {
 // often they are sent, the repeat's duplicate acknowledgement still answering it; the same envelope
 // to another subject is a copy of its own there.
 func TestRequestsUnderOneMsgIDLeaveTheStreamOneCopy(t *testing.T) {
+	t.Parallel()
 	_, _, client := requestClient(t)
 	window := client.WindowUntil(nil)
 	item := forwardEnvelope("once")
@@ -207,6 +210,7 @@ func TestRequestsUnderOneMsgIDLeaveTheStreamOneCopy(t *testing.T) {
 // loss and never a timeout; a Request that never answered the loss would wait until the test
 // binary's deadline less testwait's margin, or under -timeout 0 a day, and fail the row either way.
 func TestARequestWhoseConnectionIsLostAnswersUnavailable(t *testing.T) {
+	t.Parallel()
 	lost := make(chan struct{})
 	server, _, client := requestClient(t, bus.WithBeforeRequestFlush(func() {
 		<-lost
@@ -236,6 +240,7 @@ func TestARequestWhoseConnectionIsLostAnswersUnavailable(t *testing.T) {
 
 // A Request to a subject NATS does not accept is refused before anything is sent.
 func TestARequestToASubjectNATSRefusesIsRefusedAtOnce(t *testing.T) {
+	t.Parallel()
 	_, _, client := requestClient(t)
 	select {
 	case err := <-client.WindowUntil(nil).Request("notifications.agent..bad", forwardEnvelope("bad"), bus.RequestOptions{MsgID: bus.ForwardMsgID("bad", "notifications.agent..bad")}):
@@ -284,6 +289,7 @@ func TestARequestAFullStreamRefusesIsAnsweredByThatRefusalAtOnce(t *testing.T) {
 // Many Requests in flight on one window, sent from several goroutines while others publish on it,
 // are each answered by the stream's acknowledgement of their own copy.
 func TestManyRequestsInFlightOnOneWindowEachTakeTheirOwnAnswer(t *testing.T) {
+	t.Parallel()
 	const senders = 20
 	_, _, client := requestClient(t)
 	subject := contracts.LegacyAgentSubject("ses_request_many")
