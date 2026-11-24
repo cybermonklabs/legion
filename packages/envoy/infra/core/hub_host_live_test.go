@@ -53,7 +53,7 @@ func TestHubListenerServesItsTailnetName(t *testing.T) {
 			process := startListenerConfig(t, listener, uri, seed, held, served)
 			// Nothing is read from a listener still answering "starting": it must hold its durable
 			// before a refusal can be the host guard's doing.
-			t.Logf("healthy /healthz body: %s", requireHealthy(t, process, held.Port, liveHealthWindow, listenerHealthy))
+			t.Logf("healthy /healthz body: %s", requireHealthy(t, process, held.Port, listenerHealthy))
 
 			status, body := postListenerHost(t, held.Port, "/v1/interests/subscribe", subscribeBody, own)
 			require.Equal(t, http.StatusOK, status,
@@ -75,7 +75,7 @@ func TestHubListenerServesItsTailnetName(t *testing.T) {
 			unserved.AllowedHosts = nil
 			bug := startListenerConfig(t, listener, bugURI, bugSeed, bugHeld, unserved)
 			t.Logf("healthy /healthz body of the listener without the list: %s",
-				requireHealthy(t, bug, bugHeld.Port, liveHealthWindow, listenerHealthy))
+				requireHealthy(t, bug, bugHeld.Port, listenerHealthy))
 
 			status, body = postListenerHost(t, bugHeld.Port, "/v1/interests/subscribe", subscribeBody, own)
 			require.Equal(t, http.StatusMisdirectedRequest, status,

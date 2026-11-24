@@ -7,6 +7,7 @@ package core_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -27,6 +28,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 func TestMain(m *testing.M) { os.Exit(cmdtest.Main(m)) }
@@ -40,9 +42,6 @@ const (
 	liveMachineID = "example-host-a"
 	liveSession   = "s1"
 	liveRole      = "example-role"
-	// liveHealthWindow is how long the listener has to answer "healthy" (its durable bound under
-	// the grant), and how long a negative control watches one that must not.
-	liveHealthWindow = 60 * time.Second
 )
 
 // hubServerArgs are the arguments the GCP hub runs nats-server with.
@@ -70,7 +69,7 @@ func TestHostPermissionsOnRealServers(t *testing.T) {
 				process := startListenerConfig(t, listener, uri, seed, held, core.ListenerConfig{
 					MachineID: liveMachineID,
 				})
-				t.Logf("healthy /healthz body: %s", requireHealthy(t, process, port, liveHealthWindow, listenerHealthy))
+				t.Logf("healthy /healthz body: %s", requireHealthy(t, process, port, listenerHealthy))
 
 				// A session on a host user shares that user, and the operations of its own hold:
 				// it reads its agent stream's control subject and writes that stream's frames.
@@ -78,7 +77,7 @@ func TestHostPermissionsOnRealServers(t *testing.T) {
 				_, err := conn.SubscribeSync(contracts.AgentStreamControlSubject(liveSession))
 				require.NoError(t, err)
 				require.NoError(t, conn.Publish(contracts.AgentStreamFramesSubject(liveSession), []byte(`[]`)))
-				require.NoError(t, conn.Flush())
+				flushed(t, conn)
 
 				// The host's set holds no session consumer's call, so this listener can give no
 				// session a consumer, and a session is reached through its own consumer and
@@ -102,7 +101,7 @@ func TestHostPermissionsOnRealServers(t *testing.T) {
 				// on the subject itself, whoever is registered.
 				adhoc, err := conn.SubscribeSync("notifications.team.>")
 				require.NoError(t, err)
-				require.NoError(t, conn.Flush())
+				flushed(t, conn)
 				postListener(t, process, port, "/v1/messages/publish", `{"topic":"notifications.team.deploy-squad","message":"example ad-hoc message"}`)
 				team, _ := nextEnvelope(t, process, adhoc)
 				require.Equal(t, "notifications.team.deploy-squad", team.Topic)
@@ -131,7 +130,7 @@ func TestHostPermissionsOnRealServers(t *testing.T) {
 
 				seed, server, uri := startGrantServer(t, image.Ref, grant)
 				process, port := startListener(t, listener, uri, seed)
-				requireNeverHealthy(t, port)
+				requireNeverHealthy(t, process, port)
 				// The removed subject is what the server refused, and all it refused: the listener
 				// stopped short of healthy for the grant's reason.
 				logged := violationsOnceLogged(t, server, removed)
@@ -162,7 +161,7 @@ func TestListenerAndCredentialFreeSessionsOnRealServers(t *testing.T) {
 			t.Parallel()
 			seed, server, uri := startSplitServer(t, image.Ref)
 			process, port := startListener(t, listener, uri, seed)
-			t.Logf("healthy /healthz body: %s", requireHealthy(t, process, port, liveHealthWindow, listenerHealthy))
+			t.Logf("healthy /healthz body: %s", requireHealthy(t, process, port, listenerHealthy))
 
 			// The session's set holds no notification topic of its own: it reads its relay
 			// subject, the one the listener publishes its consumer's messages on.
@@ -172,7 +171,7 @@ func TestListenerAndCredentialFreeSessionsOnRealServers(t *testing.T) {
 			_, err = conn.SubscribeSync(contracts.AgentStreamControlSubject(liveSession))
 			require.NoError(t, err)
 			require.NoError(t, conn.Publish(contracts.AgentStreamFramesSubject(liveSession), []byte(`[]`)))
-			require.NoError(t, conn.Flush())
+			flushed(t, conn)
 
 			answer := postListener(t, process, port, "/v1/interests/subscribe", `{"session_id":"`+liveSession+
 				`","topics":["notifications.team.deploy-squad"],"self_subscribed":true,"delivery":{"consumer":true,"epoch":"live-epoch"}}`)
@@ -210,7 +209,7 @@ func TestListenerAndCredentialFreeSessionsOnRealServers(t *testing.T) {
 			postListener(t, process, port, "/v1/messages/send", `{"target_session":"`+offline+`","message":"example missed message"}`)
 			missedRelay, err := conn.SubscribeSync(bus.DeliverSubject(offline))
 			require.NoError(t, err)
-			require.NoError(t, conn.Flush())
+			flushed(t, conn)
 			missed := nextRelayed(t, process, missedRelay)
 			require.Equal(t, contracts.LegacyAgentSubject(offline), missed.Topic)
 			require.Equal(t, "example missed message", missed.PayloadSummary)
@@ -243,14 +242,14 @@ func TestListenerHostPermissionsOnRealServers(t *testing.T) {
 			process := startListenerConfig(t, listener, uri, seed, held, core.ListenerConfig{
 				MachineID: liveMachineID,
 			})
-			t.Logf("healthy /healthz body: %s", requireHealthy(t, process, port, liveHealthWindow, listenerHealthy))
+			t.Logf("healthy /healthz body: %s", requireHealthy(t, process, port, listenerHealthy))
 
 			// The session connects as the credential-free session user, as a session on another
 			// machine does, and reads its relay subject, which consumer delivery sends it on.
 			conn, errs := connect(t, uri, "")
 			relayed, err := conn.SubscribeSync(bus.DeliverSubject(liveSession))
 			require.NoError(t, err)
-			require.NoError(t, conn.Flush())
+			flushed(t, conn)
 
 			answer := postListener(t, process, port, "/v1/interests/subscribe", `{"session_id":"`+liveSession+
 				`","topics":[],"self_subscribed":true,"delivery":{"consumer":true,"epoch":"live-epoch"}}`)
@@ -304,7 +303,7 @@ func TestSessionPermissionsOnRealServers(t *testing.T) {
 			_, err = conn.SubscribeSync(contracts.AgentStreamControlSubject(liveSession))
 			require.NoError(t, err)
 			require.NoError(t, conn.Publish(natsgo.InboxPrefix+"example.1", nil))
-			require.NoError(t, conn.Flush())
+			flushed(t, conn)
 
 			item := contracts.Envelope{
 				EventID:        "evt-session-grant",
@@ -323,10 +322,10 @@ func TestSessionPermissionsOnRealServers(t *testing.T) {
 			listener, _ := connect(t, uri, listenerSeed)
 			answers, err := listener.SubscribeSync(natsgo.NewInbox())
 			require.NoError(t, err)
-			require.NoError(t, listener.Flush())
+			flushed(t, listener)
 			require.NoError(t, listener.PublishRequest(bus.DeliverSubject(liveSession), answers.Subject, data))
-			require.NoError(t, listener.Flush())
-			frame, err := relayed.NextMsg(10 * time.Second)
+			flushed(t, listener)
+			frame, err := relayed.NextMsgWithContext(testwait.Context(t))
 			require.NoError(t, err, "no relay frame reached %s", bus.DeliverSubject(liveSession))
 			var received contracts.Envelope
 			require.NoError(t, json.Unmarshal(frame.Data, &received))
@@ -337,8 +336,8 @@ func TestSessionPermissionsOnRealServers(t *testing.T) {
 			// the server refuses is reported on the connection's error handler and never by
 			// Respond, so the answer arriving at the listener is what says the entry is held.
 			require.NoError(t, frame.Respond([]byte("done")))
-			require.NoError(t, conn.Flush())
-			answer, err := answers.NextMsg(10 * time.Second)
+			flushed(t, conn)
+			answer, err := answers.NextMsgWithContext(testwait.Context(t))
 			require.NoError(t, err, "the session's answer never reached the listener's inbox %s", answers.Subject)
 			require.Equal(t, "done", string(answer.Data))
 
@@ -470,40 +469,38 @@ func healthz(port int) (int, string, error) {
 // listenerHealthy is the answer the listener's /healthz gives once its durable is bound.
 func listenerHealthy(_ int, body string) bool { return strings.Contains(body, `"status":"healthy"`) }
 
-// requireHealthy waits up to window for /healthz to answer a response healthy accepts and returns
+// requireHealthy waits for /healthz to answer a response healthy accepts and returns
 // that body, failing at once when process exits first.
-func requireHealthy(t *testing.T, process *cmdtest.Process, port int, window time.Duration, healthy func(status int, body string) bool) string {
+func requireHealthy(t *testing.T, process *cmdtest.Process, port int, healthy func(status int, body string) bool) string {
 	t.Helper()
-	deadline := time.Now().Add(window)
-	var status int
-	var body string
-	var err error
-	for time.Now().Before(deadline) {
-		if status, body, err = healthz(port); err == nil && healthy(status, body) {
-			return body
-		}
+	return testwait.Until(t, fmt.Sprintf("the answer of /healthz on %d that this test calls healthy", port), func() (string, bool) {
 		select {
 		case <-process.Exited:
 			t.Fatalf("the process exited before /healthz answered healthy:\n%s", process.Output.String())
-		case <-time.After(500 * time.Millisecond):
+		default:
 		}
-	}
-	t.Fatalf("/healthz did not answer healthy within %s: last status %d, body %q, error %v\n%s",
-		window, status, body, err, process.Output.String())
-	return ""
+		status, body, err := healthz(port)
+		if err != nil {
+			return fmt.Sprintf("status %d, body %q, error %v", status, body, err), false
+		}
+		return fmt.Sprintf("status %d, body %q", status, body), healthy(status, body)
+	})
 }
 
-// requireNeverHealthy watches /healthz for liveHealthWindow and fails if it ever answers
-// "healthy".
-func requireNeverHealthy(t *testing.T, port int) {
+// requireNeverHealthy reads /healthz until the listener logs that it refused its start and is
+// shutting down (cmd/listener's durableRefusedLine), and fails if any answer says "healthy". The
+// refusal ends the listener's start, so no later answer can be healthy: the watch ends on that
+// fact, not on a span of its own, which a listener a loaded machine had not yet run through its
+// bind would outlast without having been seen to refuse.
+func requireNeverHealthy(t *testing.T, process *cmdtest.Process, port int) {
 	t.Helper()
-	deadline := time.Now().Add(liveHealthWindow)
-	for time.Now().Before(deadline) {
+	testwait.Until(t, "the listener's line \"subscribe refused, shutting down\"", func() (string, bool) {
 		if status, body, err := healthz(port); err == nil && listenerHealthy(status, body) {
 			t.Fatalf("the listener answered \"healthy\": %s", body)
 		}
-		time.Sleep(time.Second)
-	}
+		output := process.Output.String()
+		return output, strings.Contains(output, "subscribe refused, shutting down")
+	})
 }
 
 // postListener posts body to one of the listener's /v1 routes, requires a 200 and returns the
@@ -535,12 +532,11 @@ func nextRelayed(t *testing.T, process *cmdtest.Process, sub *natsgo.Subscriptio
 // that read the answer itself, the listener's host guard's and a route's own refusal alike.
 func postListenerHost(t *testing.T, port int, path, body, host string) (int, string) {
 	t.Helper()
-	req, err := http.NewRequest(http.MethodPost, "http://127.0.0.1:"+strconv.Itoa(port)+path, strings.NewReader(body))
+	req, err := http.NewRequestWithContext(testwait.Context(t), http.MethodPost, "http://127.0.0.1:"+strconv.Itoa(port)+path, strings.NewReader(body))
 	require.NoError(t, err)
 	req.Host = host
 	req.Header.Set("Content-Type", "application/json")
-	client := http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
 	defer resp.Body.Close()
 	answer, err := io.ReadAll(resp.Body)
@@ -549,11 +545,13 @@ func postListenerHost(t *testing.T, port int, path, body, host string) (int, str
 }
 
 // getListener reads one of the listener's routes over loopback and returns the status and the body
-// it answered, requiring nothing: it is for the checks that read the answer itself.
+// it answered, requiring nothing: it is for the checks that read the answer itself. The read ends
+// when every wait of this binary does (testwait.Context).
 func getListener(t *testing.T, port int, path string) (int, string) {
 	t.Helper()
-	client := http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Get("http://127.0.0.1:" + strconv.Itoa(port) + path)
+	req, err := http.NewRequestWithContext(testwait.Context(t), http.MethodGet, "http://127.0.0.1:"+strconv.Itoa(port)+path, nil)
+	require.NoError(t, err)
+	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
 	defer resp.Body.Close()
 	answer, err := io.ReadAll(resp.Body)
@@ -561,16 +559,16 @@ func getListener(t *testing.T, port int, path string) (int, string) {
 	return resp.StatusCode, string(answer)
 }
 
-// nextEnvelope returns the next message sub receives within 10 s that is not the listener's
-// connection probe, with the envelope it carries. A send to a session whose entry records
-// consumer delivery probes the session's relay subject (bus.ConnectionProbeHeader) before it
-// stores the message, so the probe can arrive ahead of the frame: it is answered done, as a plugin
-// answers it, and the wait goes on for the frame within the same 10 s.
+// nextEnvelope returns the next message sub receives that is not the listener's connection probe,
+// with the envelope it carries. A send to a session whose entry records consumer delivery probes
+// the session's relay subject (bus.ConnectionProbeHeader) before it stores the message, so the
+// probe can arrive ahead of the frame: it is answered done, as a plugin answers it, and the wait
+// goes on for the frame.
 func nextEnvelope(t *testing.T, process *cmdtest.Process, sub *natsgo.Subscription) (contracts.Envelope, *natsgo.Msg) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	ctx := testwait.Context(t)
 	for {
-		msg, err := sub.NextMsg(time.Until(deadline))
+		msg, err := sub.NextMsgWithContext(ctx)
 		require.NoError(t, err, "no message reached %s:\n%s", sub.Subject, process.Output.String())
 		if msg.Header.Get(bus.ConnectionProbeHeader) == "1" {
 			if msg.Reply != "" {
@@ -602,21 +600,14 @@ func violations(t *testing.T, server natsServer) [][]string {
 	return serverViolation.FindAllStringSubmatch(serverLog(t, server), -1)
 }
 
-// violationsOnceLogged waits up to 10 s for the server to log a violation naming subject, then
-// returns every violation it has logged.
+// violationsOnceLogged waits for the server to log a violation naming subject, then returns every
+// violation it has logged.
 func violationsOnceLogged(t *testing.T, server natsServer, subject string) [][]string {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
+	return testwait.Until(t, "the server's own log of a violation naming "+subject, func() ([][]string, bool) {
 		logged := violations(t, server)
-		if slices.ContainsFunc(logged, func(v []string) bool { return v[2] == subject }) {
-			return logged
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the server logged no violation naming %s within 10s:\n%s", subject, serverLog(t, server))
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
+		return logged, slices.ContainsFunc(logged, func(v []string) bool { return v[2] == subject })
+	})
 }
 
 // sessionConsumerCall reports whether a refused subject is one of the session consumers' calls
@@ -668,8 +659,7 @@ func TestListenerPermissionsManageSessionConsumersOnRealServers(t *testing.T) {
 			require.NoError(t, err)
 			t.Cleanup(consumers.Close)
 
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
+			ctx := testwait.Context(t)
 			agent := contracts.LegacyAgentSubject(liveSession)
 			filters := []string{agent, "notifications.github.example.repo.>"}
 			start, err := consumers.Ensure(ctx, liveSession, filters, 0)
@@ -694,10 +684,13 @@ func TestListenerPermissionsManageSessionConsumersOnRealServers(t *testing.T) {
 			require.NoError(t, msg.Ack())
 			pull.Stop()
 			// An ack is a publish the server answers nothing to; the floor shows it was taken.
-			require.Eventually(t, func() bool {
+			testwait.Until(t, fmt.Sprintf("the ack of %d at the consumer's floor", msg.StreamSeq), func() (string, bool) {
 				info, err := consumers.Info(ctx, liveSession)
-				return err == nil && info.AckFloor.Stream == msg.StreamSeq
-			}, 10*time.Second, 50*time.Millisecond, "the ack of %d never reached the consumer", msg.StreamSeq)
+				if err != nil {
+					return err.Error(), false
+				}
+				return fmt.Sprintf("ack floor %d", info.AckFloor.Stream), info.AckFloor.Stream == msg.StreamSeq
+			})
 			restarted, err := consumers.RestartAtFloor(ctx, liveSession, filters)
 			require.NoError(t, err)
 			require.Equal(t, msg.StreamSeq+1, restarted.StartSeq)
@@ -728,7 +721,7 @@ func TestListenerPermissionsManageSessionConsumersOnRealServers(t *testing.T) {
 			listenerConn, listenerErrs := connect(t, uri, seed)
 			_, err = listenerConn.QueueSubscribe(contracts.RoleTopicPrefix+">", bus.ListenerQueue(liveMachineID), func(*natsgo.Msg) {})
 			require.NoError(t, err)
-			require.NoError(t, listenerConn.Flush())
+			flushed(t, listenerConn)
 			select {
 			case err := <-listenerErrs:
 				t.Fatalf("the server refused the listener's user something: %v", err)
