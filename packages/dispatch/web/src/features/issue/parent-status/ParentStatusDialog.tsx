@@ -15,7 +15,7 @@ import {
   textSecondaryOnSurface,
 } from "../../../theme/classes";
 import { IN_WORK_STATUSES, statusText } from "../../project/board-model";
-import { useDialog } from "../../shell/useDialog";
+import { useCloseOnNavigation, useDialog } from "../../shell/useDialog";
 import type {
   ParentStatusChoice,
   ParentStatusOption,
@@ -105,9 +105,10 @@ function ChoiceRow({
 /**
  * The question a status write asks when Dispatch's rule would refuse it (R24): a sibling of
  * `ConfirmDialog` on `useDialog`, so it traps focus, closes on Escape and gives focus back to the
- * control the person came from. It names the issues that hold the write, offers each choice
- * those issues allow with what its dry run says it changes, and "Keep as it is" and Cancel, which
- * write nothing. A choice is pressed only once its dry run has answered.
+ * control the person came from. A navigation closes it too, as Keep as it is does
+ * (`useCloseOnNavigation`). It names the issues that hold the write, offers each choice those
+ * issues allow with what its dry run says it changes, and "Keep as it is" and Cancel, which write
+ * nothing. A choice is pressed only once its dry run has answered.
  */
 export function ParentStatusDialog({ question }: { question: ParentStatusQuestion }): ReactNode {
   const keepRef = useRef<HTMLButtonElement>(null);
@@ -116,6 +117,7 @@ export function ParentStatusDialog({ question }: { question: ParentStatusQuestio
     onClose: question.close,
     open: true,
   });
+  useCloseOnNavigation(true, question.close);
   const title = `Move ${question.key} to ${statusText(question.status)}?`;
   const closing = question.writing !== undefined;
   return (

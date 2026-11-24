@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -210,7 +211,7 @@ type ruleRig struct {
 func newRuleRig(t *testing.T, on bool) ruleRig {
 	t.Helper()
 	handler, database, deps := newTestServer(t, testServerOptions{parentStatusRule: on})
-	createProjects(t, handler, ruleProject)
+	createTestProject(t, handler, ruleProject)
 	return ruleRig{handler: handler, database: database, deps: deps}
 }
 
@@ -503,6 +504,52 @@ func TestTheRuleJudgesOnlyThePairsAWriteChanges(t *testing.T) {
 	}
 	if status, parentOf := rig.issue(t, grandchild); status != "testing" || parentOf == nil || *parentOf != child {
 		t.Errorf("%s is %s under %v, want testing under %s", grandchild, status, parentOf, child)
+	}
+}
+
+// TestTheParentStatusRuleDecidesBeforeTheOpenForeignChildCheck: with DISPATCH_PARENT_STATUS_RULE
+// on, the PATCH judges an acceptance write by R24 first, and runs the open-child check that
+// refuse_open_foreign_children asks for only on a write that R24 takes. So done over an open child
+// of another project is 409 PARENT_STATUS_CONFLICT, since a parent is done only when each child is
+// done, and retro over that child, which R24 takes, is 409 FOREIGN_CHILD_OPEN. Done over a child
+// in icebox, which the open-child check alone takes, is still R24's refusal.
+func TestTheParentStatusRuleDecidesBeforeTheOpenForeignChildCheck(t *testing.T) {
+	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour, parentStatusRule: true})
+	rig := ruleRig{handler: handler, database: database, deps: deps}
+	parent := createListedIssues(t, handler, "CORE", 1)[0]
+	child := createListedIssues(t, handler, "SIDE", 1)[0]
+	// The test writes the link itself rather than through the route, so it reads the same at a
+	// build whose routes still refuse a parent of another project, as
+	// TestAnAcceptanceWriteWaitsForAnOpenChildOfAnotherProject does.
+	if _, err := database.Pool.Exec(context.Background(), `update issues set parent_key = $1 where key = $2`, parent, child); err != nil {
+		t.Fatalf("put %s under %s: %v", child, parent, err)
+	}
+	for _, row := range []struct{ write, child, code string }{
+		{"done", "triage", "PARENT_STATUS_CONFLICT"},
+		{"retro", "triage", "FOREIGN_CHILD_OPEN"},
+		{"done", "icebox", "PARENT_STATUS_CONFLICT"},
+	} {
+		t.Run(row.write+" over a child of another project in "+row.child+" is "+row.code, func(t *testing.T) {
+			setIssueStatus(t, handler, parent, "in_progress")
+			setIssueStatus(t, handler, child, row.child)
+			write := patchOf(parent, map[string]any{"status": row.write, "refuse_open_foreign_children": true})
+			response := rig.send(t, write)
+			if row.code == "PARENT_STATUS_CONFLICT" {
+				requireParentStatusConflict(t, write.String(), response, child)
+			} else {
+				refusal := decodeBody[foreignChildOpenAnswer](t, response)
+				named := make([]string, 0, len(refusal.Issues))
+				for _, issue := range refusal.Issues {
+					named = append(named, issue.Key)
+				}
+				if response.Code != http.StatusConflict || refusal.Code != row.code || !slices.Equal(named, []string{child}) {
+					t.Errorf("%s: status=%d body=%.300s, want 409 %s naming %s", write, response.Code, response.Body.String(), row.code, child)
+				}
+			}
+			if status, _ := rig.issue(t, parent); status != "in_progress" {
+				t.Errorf("the refused write left %s %s, want in_progress", parent, status)
+			}
+		})
 	}
 }
 

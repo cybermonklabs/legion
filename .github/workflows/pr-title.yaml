@@ -86,8 +86,8 @@ concurrency:
   group: pr-title-${{ github.event.pull_request.number }}
   cancel-in-progress: false
 
-# The job clones the repository for check-pr-text.sh, which reads the pull request's commits
-# through the compare route (`contents: read`), its reviews and review comments
+# The job clones the repository for check-pr-text.sh, which reads through GitHub's GraphQL API the
+# pull request's commits (`contents: read`), its reviews and review comments
 # (`pull-requests: read`), and its issue comments (`issues: read`); it writes nothing.
 permissions: {}
 
@@ -95,6 +95,8 @@ jobs:
   pr-title:
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 10
+    env:
+      JOB_TIMEOUT_MINUTES: 10 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
     permissions:
       contents: read
       issues: read

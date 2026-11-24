@@ -60,6 +60,14 @@ func newRelayRigReceipt(t *testing.T, first, max, receipt time.Duration) *relayR
 // this way rather than by timing.
 func newRelayRigUnowned(t *testing.T, first, max time.Duration) *relayRig {
 	t.Helper()
+	return newRelayRigUnownedAs(t, first, max, nil)
+}
+
+// newRelayRigUnownedAs is newRelayRigUnowned whose relay is an edge listener's when edge is set,
+// as main starts it in edge mode (listenerDeliveryHandlerConfig.edge): its receipts arrive under
+// bus.RelayReplyPrefix.
+func newRelayRigUnownedAs(t *testing.T, first, max time.Duration, edge *edgeGrant) *relayRig {
+	t.Helper()
 	url := testnats.URL(t)
 	client, err := bus.ConnectOwningStream([]string{url}, bus.WithReplicas(1))
 	if err != nil {
@@ -67,7 +75,9 @@ func newRelayRigUnowned(t *testing.T, first, max time.Duration) *relayRig {
 	}
 	t.Cleanup(client.Close)
 	rig := newSessionConsumerRigOn(t, client, url)
-	relays, err := startSessionRelays(rig.deps.consumers, rig.harness.config)
+	config := rig.harness.config
+	config.edge = edge
+	relays, err := startSessionRelays(rig.deps.consumers, config)
 	if err != nil {
 		t.Fatalf("start the session relays: %v", err)
 	}
@@ -128,12 +138,16 @@ func (f relayedFrame) listener() string {
 // silent. A message carrying the connection probe's header (bus.ConnectionProbeHeader) is no frame:
 // it is answered done before anything is decoded, as the plugins' shared consumer delivery
 // answers it, unless the stand-in is silent, and counted in probed rather than collected; the last
-// probe's reply subject is kept in probeReply.
+// probe's reply subject is kept in probeReply. Once it is closed (close), by its test's cleanup or
+// by a test that stops the session early, it reports no answer the closed connection cut short: a
+// frame the listener delivers just as the test ends meets that close, and its reply has no session
+// left to reach (closedUnder).
 type sessionStandIn struct {
 	t          *testing.T
 	conn       *natsgo.Conn
 	frames     chan relayedFrame
 	silent     atomic.Bool
+	closed     atomic.Bool
 	probed     atomic.Int32
 	probeReply atomic.Pointer[string]
 }
@@ -151,13 +165,13 @@ func startSessionStandIn(t *testing.T, url, sessionID string, answer func(relaye
 func startSessionStandInOn(t *testing.T, conn *natsgo.Conn, sessionID string, answer func(relayedFrame) []string) *sessionStandIn {
 	t.Helper()
 	standIn := &sessionStandIn{t: t, conn: conn, frames: make(chan relayedFrame, 256)}
-	t.Cleanup(standIn.conn.Close)
+	t.Cleanup(standIn.close)
 	if _, err := standIn.conn.Subscribe(bus.DeliverSubject(sessionID), func(msg *natsgo.Msg) {
 		if msg.Header.Get(bus.ConnectionProbeHeader) == "1" {
 			standIn.probeReply.Store(&msg.Reply)
 			standIn.probed.Add(1)
 			if !standIn.silent.Load() {
-				if err := msg.Respond([]byte(relayReplyDone)); err != nil {
+				if err := msg.Respond([]byte(relayReplyDone)); err != nil && !standIn.closedUnder(err) {
 					t.Errorf("answer the connection probe of %s: %v", sessionID, err)
 				}
 			}
@@ -188,11 +202,28 @@ func startSessionStandInOn(t *testing.T, conn *natsgo.Conn, sessionID string, an
 	return standIn
 }
 
+// close marks the stand-in closed and closes its connection, as its test's cleanup does and as a
+// test does that stops the session's plugin early. Marked first, so a reply the close cuts short
+// finds it marked.
+func (s *sessionStandIn) close() {
+	s.closed.Store(true)
+	s.conn.Close()
+}
+
+// closedUnder reports whether err is the closed connection of a stand-in that was closed (close):
+// its test is over, or stopped the session, and the answer has no session left to reach. Any
+// other failure to answer is the test's.
+func (s *sessionStandIn) closedUnder(err error) bool {
+	return s.closed.Load() && errors.Is(err, natsgo.ErrConnectionClosed)
+}
+
+// reply sends word as the answer to frame, and fails the test when it cannot, unless the stand-in
+// was closed under it (closedUnder).
 func (s *sessionStandIn) reply(frame relayedFrame, word string) {
-	if err := s.conn.Publish(frame.msg.Reply, []byte(word)); err != nil {
+	if err := s.conn.Publish(frame.msg.Reply, []byte(word)); err != nil && !s.closedUnder(err) {
 		s.t.Errorf("reply %s to a frame: %v", word, err)
 	}
-	if err := s.conn.Flush(); err != nil {
+	if err := s.conn.Flush(); err != nil && !s.closedUnder(err) {
 		s.t.Errorf("flush the reply %s: %v", word, err)
 	}
 }
@@ -251,6 +282,35 @@ func requireFrames(t *testing.T, frames []relayedFrame, want ...contracts.Envelo
 	}
 }
 
+// requireEventuallyDelivered returns the frame carrying want once it reaches the stand-in within
+// the bound. A frame carrying one of allowRedelivered's events is a legitimate at-least-once
+// redelivery - a relay handoff gives the server back the frames the old relay held unacked, which
+// the new relay then delivers again, and the client dedupes - so it is passed over; any other event
+// fails the test, since it is a frame the session must never see.
+func requireEventuallyDelivered(t *testing.T, s *sessionStandIn, want contracts.Envelope, within time.Duration, allowRedelivered ...contracts.Envelope) relayedFrame {
+	t.Helper()
+	allowed := map[string]bool{}
+	for _, item := range allowRedelivered {
+		allowed[item.EventID] = true
+	}
+	deadline := time.After(within)
+	for {
+		select {
+		case frame := <-s.frames:
+			switch {
+			case frame.item.EventID == want.EventID:
+				return frame
+			case allowed[frame.item.EventID]:
+				continue
+			default:
+				t.Fatalf("the session received %s on %s, want the %s frame; only a redelivery of an earlier frame is allowed", frame.item.EventID, frame.item.Topic, want.EventID)
+			}
+		case <-deadline:
+			t.Fatalf("the %s frame did not reach the session within %s", want.EventID, within)
+		}
+	}
+}
+
 // A session away during publishes (its connection gone) receives each on its return, when it
 // registers with a new epoch, once and in stream order, from its consumer: nothing it receives
 // comes from a subscription of its own.
@@ -264,7 +324,7 @@ func TestSessionConsumerAwaySessionReceivesEachMessageOnceOnReturn(t *testing.T)
 	requireFrames(t, first.collect(t, 1, 5*time.Second), before)
 	awaitAcked(t, rig.consumers, sessionID, beforeSeq)
 
-	first.conn.Close()
+	first.close()
 	var away []contracts.Envelope
 	for range 3 {
 		item, _ := rig.storeEvent(t, agent)
@@ -327,38 +387,38 @@ func TestSessionConsumerAcksAFrameOnlyOnDone(t *testing.T) {
 	awaitAcked(t, rig.consumers, sessionID, seq)
 }
 
-// awaitAcked waits up to 5 s for sessionID's consumer to hold nothing for an ack with every message
-// through seq acked.
+// awaitAcked waits for sessionID's consumer to hold nothing for an ack with every message through
+// seq acked (awaitAckState).
 func awaitAcked(t *testing.T, consumers *bus.SessionConsumers, sessionID string, seq uint64) {
 	t.Helper()
 	awaitAckState(t, consumers, sessionID, 0, seq)
 }
 
-// awaitAckState waits up to 5 s for sessionID's consumer to hold pending messages for an ack with
-// every message through floor acked. A consumer that does not exist yet is waited for within the
-// same bound: a registration with a new epoch restarts the session's relay, which deletes its
-// consumer and creates it again at the floor, and a read between the two finds none.
+// awaitAckState waits for sessionID's consumer to hold pending messages for an ack with every
+// message through floor acked. A consumer that does not exist yet is waited for the same way: a
+// registration with a new epoch restarts the session's relay, which deletes its consumer and
+// creates it again at the floor, and a read between the two finds none. The wait ends on that
+// state, bounded only by the test binary's deadline (testwait.UntilPolling): an ack is the
+// session's answer reaching the relay, and a loaded machine delays it without anything being wrong,
+// so a fixed span (5 s, before) failed rows whose session answered late. It reads the consumer
+// every ackStatePoll, a CONSUMER.INFO request too costly to send every 10 ms.
 func awaitAckState(t *testing.T, consumers *bus.SessionConsumers, sessionID string, pending int, floor uint64) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for {
+	testwait.UntilPolling(t, ackStatePoll, fmt.Sprintf("the consumer of %s to hold %d pending ack with everything through %d acked", sessionID, pending, floor), func() (string, bool) {
 		info, err := consumers.Info(context.Background(), sessionID)
-		if errors.Is(err, bus.ErrSessionConsumerNotFound) && time.Now().Before(deadline) {
-			time.Sleep(20 * time.Millisecond)
-			continue
+		if errors.Is(err, bus.ErrSessionConsumerNotFound) {
+			return "no consumer yet", false
 		}
 		if err != nil {
 			t.Fatalf("read the consumer of %s: %v", sessionID, err)
 		}
-		if info.NumAckPending == pending && info.AckFloor.Stream >= floor {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the consumer of %s has %d pending ack, ack floor %d; want %d pending and everything through %d acked", sessionID, info.NumAckPending, info.AckFloor.Stream, pending, floor)
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+		return fmt.Sprintf("%d pending ack, ack floor %d", info.NumAckPending, info.AckFloor.Stream), info.NumAckPending == pending && info.AckFloor.Stream >= floor
+	})
 }
+
+// ackStatePoll is how often awaitAckState reads a session's consumer: the 20 ms its fixed-span
+// loop read it at before.
+const ackStatePoll = 20 * time.Millisecond
 
 // A frame the session holds unwritten (received and progress, no done, as a side question held
 // over a turn) does not delay the receipt of the frames after it, which are written and done. When
@@ -408,7 +468,7 @@ func TestSessionConsumerHeldFrameDoesNotDelayLaterReceiptsAndSurvivesARestart(t 
 	// Everything but the held frame is written and acked; the held one waits, in progress.
 	awaitAckState(t, rig.consumers, sessionID, 1, e0Seq)
 
-	first.conn.Close()
+	first.close()
 	ledgerMu.Lock()
 	held = ""
 	ledgerMu.Unlock()

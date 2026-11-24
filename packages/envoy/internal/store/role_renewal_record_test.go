@@ -33,10 +33,13 @@ var (
 // countedKeyValue is a bucket's legacy handle with every Get counted, and every Get or Update
 // failing while the test says so. The count is what says which reads an act made of the bucket
 // it wraps, so it wraps the handle the registry reads through and nothing else. bus.Bounded runs
-// each call on a goroutine of its own, so the count and the switches are atomic.
+// each call on a goroutine of its own, so the count and the switches are atomic. A role bucket's
+// handle also answers the leader's read of a claim (leaderReader, which a controller notice lane's
+// decision makes, Registry.roleClaimFromLeader) through leader, counted and failed as a Get is.
 type countedKeyValue struct {
 	natsgo.KeyValue
 
+	leader      func(ctx context.Context, key string) (natsgo.KeyValueEntry, error)
 	gets        atomic.Int64
 	failGets    atomic.Bool
 	failUpdates atomic.Bool
@@ -50,6 +53,17 @@ func (kv *countedKeyValue) Get(key string) (natsgo.KeyValueEntry, error) {
 	return kv.KeyValue.Get(key)
 }
 
+func (kv *countedKeyValue) GetFromLeader(ctx context.Context, key string) (natsgo.KeyValueEntry, error) {
+	kv.gets.Add(1)
+	if kv.failGets.Load() {
+		return nil, errClaimReadFailed
+	}
+	if kv.leader == nil {
+		return nil, errors.New("this counted handle reads no bucket stream's leader")
+	}
+	return kv.leader(ctx, key)
+}
+
 func (kv *countedKeyValue) Update(key string, value []byte, revision uint64) (uint64, error) {
 	if kv.failUpdates.Load() {
 		return 0, errClaimWriteFailed
@@ -57,17 +71,19 @@ func (kv *countedKeyValue) Update(key string, value []byte, revision uint64) (ui
 	return kv.KeyValue.Update(key, value, revision)
 }
 
-// reads is how many Gets the bucket has taken through this handle.
+// reads is how many Gets, and leader reads, the bucket has taken through this handle.
 func (kv *countedKeyValue) reads() int64 { return kv.gets.Load() }
 
 // countRoleReads puts a countedKeyValue in front of the registry's role bucket handle, the one
 // every claim read and write of the registry goes through (Registry.roles), for the rest of the
 // test (swapRoleBucketHandle); the role claim watcher reads through a handle of its own, so the
-// copy goes on following the bucket.
+// copy goes on following the bucket. Its leader reads go to the bucket stream's leader through
+// the handle it replaces.
 func countRoleReads(t *testing.T, reg *Registry) *countedKeyValue {
 	t.Helper()
+	base := reg.roles()
 	return swapRoleBucketHandle(t, reg, func(legacy natsgo.KeyValue) *countedKeyValue {
-		return &countedKeyValue{KeyValue: legacy}
+		return &countedKeyValue{KeyValue: legacy, leader: base.GetFromLeader}
 	}, nil)
 }
 
@@ -219,7 +235,7 @@ func TestARenewRenewsAClaimTheCopyLostFromTheRecordItIsGiven(t *testing.T) {
 	reads := rig.reg.RoleClaimRepair().Completed
 	at := beat(rig)
 
-	control, err := rig.reg.RenewRoleClaims(context.Background(), holder, roleClaimInstance, Interest{SessionID: holder})
+	control, err := rig.reg.RenewRoleClaims(context.Background(), holder, roleClaimInstance, Interest{SessionID: holder}, nil)
 	if err != nil {
 		t.Fatalf("the renewal from the copy alone: %v", err)
 	}
@@ -231,7 +247,7 @@ func TestARenewRenewsAClaimTheCopyLostFromTheRecordItIsGiven(t *testing.T) {
 	}
 
 	row := registered(t, rig.reg, holder, own)
-	renewal, err := rig.reg.RenewRoleClaims(context.Background(), holder, roleClaimInstance, row)
+	renewal, err := rig.reg.RenewRoleClaims(context.Background(), holder, roleClaimInstance, row, nil)
 	if err != nil {
 		t.Fatalf("renew %s's role claims: %v", holder, err)
 	}
@@ -315,7 +331,7 @@ func TestTheSetReadFromTheStoreRenewsARoleAStaleInterestCacheHides(t *testing.T)
 	}
 	registrationReads := interests.reads() - start
 
-	renewal, err := rig.reg.RenewRoleClaims(ctx, holder, roleClaimInstance, row)
+	renewal, err := rig.reg.RenewRoleClaims(ctx, holder, roleClaimInstance, row, nil)
 	if err != nil {
 		t.Fatalf("renew %s's role claims: %v", holder, err)
 	}
@@ -407,7 +423,7 @@ func TestARenewalThatLandsClearsItsFailureRecord(t *testing.T) {
 
 	roles.failGets.Store(true)
 	readFailedAt := beat(rig)
-	if _, err := rig.reg.RenewRoleClaims(ctx, holder, roleClaimInstance, row); !errors.Is(err, errClaimReadFailed) {
+	if _, err := rig.reg.RenewRoleClaims(ctx, holder, roleClaimInstance, row, nil); !errors.Is(err, errClaimReadFailed) {
 		t.Fatalf("a renewal whose claim read failed answered %v, want %v", err, errClaimReadFailed)
 	}
 	requireRenewalFailure(t, rig.reg, role, holder, readFailedAt, errClaimReadFailed)
@@ -415,14 +431,14 @@ func TestARenewalThatLandsClearsItsFailureRecord(t *testing.T) {
 
 	roles.failUpdates.Store(true)
 	writeFailedAt := beat(rig)
-	if _, err := rig.reg.RenewRoleClaims(ctx, holder, roleClaimInstance, row); !errors.Is(err, errClaimWriteFailed) {
+	if _, err := rig.reg.RenewRoleClaims(ctx, holder, roleClaimInstance, row, nil); !errors.Is(err, errClaimWriteFailed) {
 		t.Fatalf("a renewal whose write failed answered %v, want %v", err, errClaimWriteFailed)
 	}
 	requireRenewalFailure(t, rig.reg, role, holder, writeFailedAt, errClaimWriteFailed)
 	roles.failUpdates.Store(false)
 
 	beat(rig)
-	stood, err := rig.reg.RenewRoleClaims(ctx, holder, roleClaimSecondInstance, row)
+	stood, err := rig.reg.RenewRoleClaims(ctx, holder, roleClaimSecondInstance, row, nil)
 	if err != nil || len(stood.Renewed) != 0 {
 		t.Fatalf("a renewal by another process renewed %v with %v, want nothing and no error", stood.Renewed, err)
 	}
@@ -431,7 +447,7 @@ func TestARenewalThatLandsClearsItsFailureRecord(t *testing.T) {
 	landedAt := beat(rig)
 	withUnclaimed := row
 	withUnclaimed.Topics = append(slices.Clone(row.Topics), contracts.RoleTopicPrefix+unclaimed)
-	landed, err := rig.reg.RenewRoleClaims(ctx, holder, roleClaimInstance, withUnclaimed)
+	landed, err := rig.reg.RenewRoleClaims(ctx, holder, roleClaimInstance, withUnclaimed, nil)
 	if err != nil {
 		t.Fatalf("a renewal with reads and writes answering: %v", err)
 	}
@@ -546,7 +562,7 @@ func TestEachActReadsTheRecordInBothDirections(t *testing.T) {
 					row := registered(t, rig.reg, holder, own)
 					beat(rig)
 
-					renewal, err := rig.reg.RenewRoleClaims(context.Background(), holder, roleClaimInstance, row)
+					renewal, err := rig.reg.RenewRoleClaims(context.Background(), holder, roleClaimInstance, row, nil)
 					if err != nil {
 						t.Fatalf("renew %s's role claims: %v", holder, err)
 					}
@@ -574,7 +590,7 @@ func TestEachActReadsTheRecordInBothDirections(t *testing.T) {
 			row := registered(t, rig.reg, holder, own)
 			at := beat(rig)
 
-			renewal, err := rig.reg.RenewRoleClaims(context.Background(), holder, roleClaimInstance, row)
+			renewal, err := rig.reg.RenewRoleClaims(context.Background(), holder, roleClaimInstance, row, nil)
 			if err != nil {
 				t.Fatalf("renew %s's role claims: %v", holder, err)
 			}
@@ -759,7 +775,7 @@ func TestTheActHoldsOnAFailedRead(t *testing.T) {
 				roles.failGets.Store(fails)
 				at := beat(rig)
 
-				renewal, err := rig.reg.RenewRoleClaims(context.Background(), holder, roleClaimInstance, row)
+				renewal, err := rig.reg.RenewRoleClaims(context.Background(), holder, roleClaimInstance, row, nil)
 				roles.failGets.Store(false)
 				stored := storedRoleClaim(t, rig.reg, role)
 				if !fails {

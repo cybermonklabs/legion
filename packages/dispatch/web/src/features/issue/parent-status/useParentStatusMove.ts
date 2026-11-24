@@ -1,6 +1,6 @@
 import type { ISSUE_STATUS_OPTIONS } from "@legion/contracts/dispatch-tools";
 import { type QueryClient, useQueryClient } from "@tanstack/react-query";
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
   ApiError,
@@ -51,8 +51,14 @@ export function issueHasParentOrOpenChild(
 export function cardHasParentOrOpenChild(
   issue: Pick<IssueSummary, "parent" | "progress">
 ): boolean {
+  return issue.parent !== null || cardHasOpenChild(issue);
+}
+
+/** Whether a card's count of its children (`progress.children`) shows one that is not done. A
+ *  card with no count shows none. */
+export function cardHasOpenChild(issue: Pick<IssueSummary, "progress">): boolean {
   const children = issue.progress.children;
-  return issue.parent !== null || (children !== null && children.done < children.total);
+  return children !== null && children.done < children.total;
 }
 
 /**
@@ -87,7 +93,7 @@ export interface StatusMove extends StatusPick {
   readonly related: boolean;
   /** The write the surface makes when the rule asks nothing: the issue's `PATCH`. Its refusal is
    *  the surface's to show, and a `409 PARENT_STATUS_CONFLICT` of it the surface hands to `ask`
-   *  (`askOnConflict`). */
+   *  (an issue header's through `useIssueStatusMove`'s `onError`). */
   readonly patch: () => unknown;
 }
 
@@ -98,7 +104,8 @@ export type StatusMoveEnd =
   /** The person chose an option, and Dispatch made that status change; `null` where it landed
    *  with no answer to give. */
   | { readonly kind: "changed"; readonly answer: StatusChangeAnswer | null }
-  /** Nothing was written: Keep as it is, Cancel or Escape, after any answer of the question. */
+  /** Nothing was written: Keep as it is, Cancel, Escape or a navigation, after any answer of the
+   *  question; or the surface went away while the question was open, or before it could open. */
   | { readonly kind: "kept" }
   /** The dry run was refused for another reason than the rule, so nothing was written. */
   | { readonly kind: "refused"; readonly refusal: unknown }
@@ -129,7 +136,7 @@ export interface ParentStatusQuestion extends StatusPick {
   /** Why the chosen write was refused. The question then takes no other write. */
   readonly refusal: string | undefined;
   readonly choose: (option: ParentStatusOption) => void;
-  /** Keep as it is, Cancel and Escape: closes, and writes nothing. */
+  /** Keep as it is, Cancel, Escape and a navigation: closes, and writes nothing. */
   readonly close: () => void;
 }
 
@@ -148,22 +155,6 @@ export interface ParentStatusMove {
   /** Why the last move's dry run was refused, until the next move. */
   readonly refusal: unknown;
   readonly question: ParentStatusQuestion | undefined;
-}
-
-/** A surface's `onError` of a write of `key` it made itself: where the write set the status and
- *  Dispatch refused it under the rule, it asks the question (`ask`), as a refused dry run does. The
- *  surface took the issue for one the rule could not refuse: it read the parent or the children
- *  before they changed. Each such write carries one field, so a write that sets the status sets
- *  nothing else. Any other refusal stays the surface's to show. */
-export function askOnConflict(
-  parentStatus: Pick<ParentStatusMove, "ask">,
-  key: string,
-  input: { readonly status?: string | undefined },
-  error: unknown
-): void {
-  if (input.status !== undefined && isParentStatusConflict(error)) {
-    void parentStatus.ask({ key, status: input.status }, error);
-  }
 }
 
 /** The options the question offers for the issues that hold a write: the children's two where a
@@ -245,9 +236,12 @@ function writeRefusal(client: QueryClient, error: unknown): string {
  * do: it lists the issues that hold the move, sends the dry run of each choice the listed issues
  * allow, and lists what each choice changes. A choice confirmed is one status change with that
  * option, written through the write store; once it lands, each issue it changed and the issue
- * lists are read again. Keep as it is, Cancel and Escape write nothing. A `PATCH` the surface made
- * for an issue it knew no parent or open child of, refused by the rule all the same, opens the
- * same question (`ask`).
+ * lists are read again. Keep as it is, Cancel, Escape and a navigation write nothing, and so does
+ * the surface going away while it asks: a question it leaves open ends as kept, and one that
+ * would open after it has gone ends so at once, since nobody is left to answer. A move that needs
+ * no answer still makes its write once the surface has gone: its dry run runs, and where the rule
+ * asks nothing the surface's `PATCH` goes. A `PATCH` the surface made for an issue it knew no
+ * parent or open child of, refused by the rule all the same, opens the same question (`ask`).
  */
 export function useParentStatusMove(): ParentStatusMove {
   const client = useQueryClient();
@@ -267,6 +261,9 @@ export function useParentStatusMove(): ParentStatusMove {
   /** Which round of the choices' dry runs is the question's now: an answer of an earlier round,
    *  or one that comes once the question has closed, is not read. */
   const round = useRef(0);
+  /** Whether the surface is still drawn: once it has gone, no question opens, since nobody is
+   *  left to answer it. */
+  const live = useRef(true);
   const change = useKeyedWrite({
     inline: true,
     label: ({ input, key }: StatusChangePress) => `${key} set to ${statusText(input.status)}`,
@@ -307,6 +304,12 @@ export function useParentStatusMove(): ParentStatusMove {
 
   const open = useCallback(
     (pick: StatusPick, conflict: ApiError): Promise<StatusMoveEnd> => {
+      // A question that would open once the surface has gone - its dry run, or a write the surface
+      // made, answered after it - has nobody to ask: it ends at once as kept, and writes nothing.
+      if (!live.current) {
+        busy.current = false;
+        return Promise.resolve({ kind: "kept" });
+      }
       busy.current = true;
       const issues = conflict.issues ?? [];
       setPending(pick);
@@ -334,6 +337,17 @@ export function useParentStatusMove(): ParentStatusMove {
     settle.current = undefined;
     resolve?.(result);
   }, []);
+  // The surface going away - a navigation that unmounts it - ends an open question as Keep as it
+  // is ends it, so its move ends, and with it a board's turn that waits for it: the board's later
+  // moves and its list's reads do not wait on a question nobody can see. A choice's write already
+  // out still lands, and its landing reads the issues again.
+  useEffect(() => {
+    live.current = true;
+    return () => {
+      live.current = false;
+      if (settle.current !== undefined) end({ kind: "kept" });
+    };
+  }, [end]);
 
   const move = useCallback(
     async (next: StatusMove): Promise<StatusMoveEnd> => {
@@ -378,7 +392,8 @@ export function useParentStatusMove(): ParentStatusMove {
         return { kind: "refused", refusal: error };
       }
       // The rule asks nothing of this move as the issues stood at the dry run. The `PATCH` goes,
-      // and Dispatch judges it as it stands then: a refusal of it asks (`ask`).
+      // and Dispatch judges it as it stands then: a refusal of it asks (`ask`). It goes whether or
+      // not the surface is still drawn: the person's pick needs no answer of theirs.
       busy.current = false;
       unshow();
       const patched = next.patch();
@@ -392,6 +407,9 @@ export function useParentStatusMove(): ParentStatusMove {
   const ask = useCallback(
     (pick: StatusPick, conflict: ApiError): Promise<StatusMoveEnd> => {
       if (busy.current) return Promise.resolve({ kind: "busy" });
+      // Once the surface has gone, nobody is left to ask: the refused write stays the shell's
+      // indicator's to show.
+      if (!live.current) return Promise.resolve({ kind: "kept" });
       // A refused write the surface left for the shell's indicator is this question's now: the
       // person's choice is a write of its own.
       for (const row of writes.rows()) {

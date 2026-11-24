@@ -23,6 +23,7 @@ type projectResponse struct {
 }
 
 func TestCreateProjectRejectsDuplicateKeyWithProjectExists(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 
 	first := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
@@ -51,6 +52,7 @@ func TestCreateProjectRejectsDuplicateKeyWithProjectExists(t *testing.T) {
 // credential acts for — a caller that reaches the end of them is refused, whichever step answers
 // must name somebody who has signed in, and no write clears a stored default.
 func TestEveryProjectNamesAPerson(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 
 	named := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
@@ -154,6 +156,7 @@ func TestEveryProjectNamesAPerson(t *testing.T) {
 // and the list does not, since the person-scoped GET /api/v1/settings/project-default-assignees
 // is the one read of a project's default.
 func TestASessionBearerCreatesAProject(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 
 	created := sessionRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]any{
@@ -202,6 +205,7 @@ func TestASessionBearerCreatesAProject(t *testing.T) {
 // seeded here because establishing their session records no `people` row (newCookieServerOn),
 // and a create names somebody who has signed in.
 func TestCreatingATakenProjectKeyIsRefusedForABearerAndACookie(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	seedPeople(t, database, "alice@d.example")
 	handler, _, _, withCookie, _ := newCookieServerOn(t, database, 0)
@@ -236,6 +240,7 @@ func TestCreatingATakenProjectKeyIsRefusedForABearerAndACookie(t *testing.T) {
 // so an agent learns the rule once, whichever route it called. The rule is contracts'
 // PROJECT_KEY_RULE, generated into Go, which the dispatch command's own refusal gives too.
 func TestEveryRouteRefusesABadProjectKeyInOneWording(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	rule := contracts.ProjectKeyRule
 	for _, probe := range []struct {
@@ -244,7 +249,6 @@ func TestEveryRouteRefusesABadProjectKeyInOneWording(t *testing.T) {
 	}{
 		{"create project", http.MethodPost, "/api/v1/projects", "INVALID_PROJECT", map[string]string{"key": "bad", "name": "Bad"}},
 		{"create issue", http.MethodPost, "/api/v1/issues", "INVALID_ISSUE", map[string]string{"project": "bad", "title": "Title"}},
-		{"map a repository", http.MethodPut, "/api/v1/settings/repo-projects/owner/repo", "INVALID_REPO_PROJECT", map[string]string{"project": "bad"}},
 		{"search", http.MethodGet, "/api/v1/search?q=ok&project=bad", "INVALID_PROJECT", nil},
 		{"related-item check", http.MethodGet, "/api/v1/projects/bad/related?title=ok", "INVALID_PROJECT", nil},
 		{"related-item check by POST", http.MethodPost, "/api/v1/projects/bad/related", "INVALID_PROJECT", map[string]string{"title": "ok"}},
@@ -262,6 +266,7 @@ func TestEveryRouteRefusesABadProjectKeyInOneWording(t *testing.T) {
 // A bad key or an empty name is 400 INVALID_PROJECT for a session as for a person, and the
 // refusal names which of the two is wrong: an agent reads it as the whole answer.
 func TestAnInvalidProjectIsRefusedForABearerAndAPerson(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	badKey := func(key string) string {
 		return fmt.Sprintf(`key \"%s\" is not a project key: %s`, key, contracts.ProjectKeyRule)
@@ -320,6 +325,7 @@ func TestAnInvalidProjectIsRefusedForABearerAndAPerson(t *testing.T) {
 // soft hyphen - or a combining mark on a letter, and in any script, Hangul included. No route
 // renames a project, so refusing one leaves its maker no way to the name they meant.
 func TestAVisibleNameWithFormatCharactersIsAcceptedForABearerAndAPerson(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	for index, name := range []string{
 		"Team 👨\u200d👩\u200d👧\u200d👦",
@@ -361,6 +367,7 @@ func TestAVisibleNameWithFormatCharactersIsAcceptedForABearerAndAPerson(t *testi
 // point of plane 3 (outside the noncharacter and default-ignorable ranges) they leave unassigned,
 // so it keeps testing that rule on whatever toolchain runs it, and fails if none is left to find.
 func TestACodePointGoLeavesUnassignedIsVisibleForABearerAndAPerson(t *testing.T) {
+	t.Parallel()
 	unassigned := rune(-1)
 	for candidate := rune(0x30000); candidate <= 0x3FFFD; candidate++ {
 		if unicode.Is(unicode.Cn, candidate) {
@@ -392,6 +399,7 @@ func TestACodePointGoLeavesUnassignedIsVisibleForABearerAndAPerson(t *testing.T)
 // every dashboard reads, and no route renames a project. The cap counts UTF-16 units after the
 // trim, so a name at it is created and one unit over is CAP_EXCEEDED, for a session as for a person.
 func TestAProjectNameOverTheCapIsCapExceededForABearerAndAPerson(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	for _, caller := range []struct {
 		name, key string
@@ -419,6 +427,7 @@ func TestAProjectNameOverTheCapIsCapExceededForABearerAndAPerson(t *testing.T) {
 }
 
 func TestListProjectsIncludesCreatedAt(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
@@ -438,16 +447,17 @@ func TestListProjectsIncludesCreatedAt(t *testing.T) {
 }
 
 func TestProjectAndSettingsMutationsAppendLiveEvents(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "CORE", "name": "Core",
 	}, "alice"); response.Code != http.StatusCreated {
 		t.Fatalf("create project: status=%d body=%s", response.Code, response.Body.String())
 	}
-	if response := dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/owner/repo", map[string]string{
-		"project": "CORE",
+	if response := dispatchRequest(t, handler, http.MethodPut, "/api/v1/projects/CORE/default-repository", map[string]string{
+		"repo": "owner/repo",
 	}, "alice"); response.Code != http.StatusOK {
-		t.Fatalf("map repository: status=%d body=%s", response.Code, response.Body.String())
+		t.Fatalf("set the default repository: status=%d body=%s", response.Code, response.Body.String())
 	}
 	created := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]string{
 		"project": "CORE", "title": "State owner",
@@ -467,7 +477,7 @@ func TestProjectAndSettingsMutationsAppendLiveEvents(t *testing.T) {
 	rows, err := database.Pool.Query(t.Context(), `
 		select type, coalesce(project_key, ''), coalesce(issue_key, ''), notify
 		from events
-		where type in ('project.created', 'settings.repo_project.updated', 'user_state.updated')
+		where type in ('project.created', 'project.updated', 'user_state.updated')
 		order by id
 	`)
 	if err != nil {
@@ -491,9 +501,11 @@ func TestProjectAndSettingsMutationsAppendLiveEvents(t *testing.T) {
 	if err := rows.Err(); err != nil {
 		t.Fatalf("iterate settings events: %v", err)
 	}
+	// The default-repository write is a project.updated by a person, which wakes the project's
+	// readers as every person's write does (events.Broker.Notify).
 	want := []persistedEvent{
 		{Type: "project.created", Project: "CORE"},
-		{Type: "settings.repo_project.updated", Project: "CORE"},
+		{Type: "project.updated", Project: "CORE", Notify: true},
 		{Type: "user_state.updated", Project: "CORE"},
 	}
 	if len(got) != len(want) {
@@ -507,6 +519,7 @@ func TestProjectAndSettingsMutationsAppendLiveEvents(t *testing.T) {
 }
 
 func TestListProjectsCountsOpenAsksOnIssuesAndDocuments(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "CORE", "name": "Core",

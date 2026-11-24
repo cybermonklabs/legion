@@ -1,9 +1,10 @@
 //go:build e2e
 
-// The GitHub envelopes two whole-daemon live proofs publish alike, merge_wait_readable_live_test.go's
-// and review_range_live_test.go's: the review App's review of a pull request, the implementer's push
-// and GitHub's synchronize, each published on the ENVOY_NOTIFICATIONS stream as Envoy relays the
-// webhook (liveProof's publish) and waited on until the daemon's intake has applied it
+// The GitHub envelopes whole-daemon live proofs publish alike: the review App's review of a pull
+// request, the implementer's push and GitHub's synchronize (merge_wait_readable_live_test.go's and
+// review_range_live_test.go's), and CI's settlement of a head (merge_wait_readable_live_test.go's
+// and conflict_merger_live_test.go's), each published on the ENVOY_NOTIFICATIONS stream as Envoy
+// relays it (liveProof's publish) and waited on until the daemon's intake has applied it
 // (waitProcessed). It carries `//go:build e2e` because no untagged test calls it.
 package daemon
 
@@ -82,4 +83,36 @@ func (p *liveProof) publishSynchronizeOf(number int, issue, head, base, title st
 	}
 	subject := fmt.Sprintf("notifications.github.%s.pr.%d", p.subjectRepo(), number)
 	p.waitProcessed(p.publish(subject, "github", fmt.Sprintf("pr-%d-synchronize-%s", number, head[:8]), string(payload)))
+}
+
+// publishSettlementOf publishes CI's settlement of the pull request numbered number at head, as
+// Envoy relays the listener's settlement (intake's decodeChecks reads it, which takes the subject
+// as part of the fact's identity): one run of each name of passed and failed, those of failed
+// named failing and none cancelled. seq numbers the settlement, and the runs' ids and snapshot are
+// its own, so a head settled twice is the same checks re-run rather than the same report again
+// (classify's redundantSettlement). Each run reaches the fence stamped with the head it ran on and
+// the conclusion the settlement's lists give it (classify's stampedRuns), which is what makes it a
+// run of this head's own.
+func (p *liveProof) publishSettlementOf(number int, head string, seq int64, passed, failed []string) {
+	p.t.Helper()
+	names := append(append([]string{}, passed...), failed...)
+	runs := make([]map[string]any, 0, len(names))
+	for i, name := range names {
+		runs = append(runs, map[string]any{"name": name, "id": int64(number)*1000 + seq*10 + int64(i) + 1})
+	}
+	group := func(names []string) map[string]any {
+		return map[string]any{"count": len(names), "checks": append([]string{}, names...)}
+	}
+	payload, err := json.Marshal(map[string]any{
+		"kind": "checks", "repo": liveRepo, "number": strconv.Itoa(number), "sha": head, "check_runs": runs,
+		"generation": 0, "snapshot": fmt.Sprintf("snapshot-%s-%d", head[:8], seq), "settled_at": time.Now().UnixMilli(),
+		"failed": group(failed), "cancelled": group(nil), "running": group(nil), "queued": group(nil), "skipped": group(nil),
+		"passed":         group(passed),
+		"failing_checks": append([]string{}, failed...),
+	})
+	if err != nil {
+		p.t.Fatalf("encode the checks payload: %v", err)
+	}
+	subject := fmt.Sprintf("notifications.github.%s.pr.%d.checks", p.subjectRepo(), number)
+	p.waitProcessed(p.publish(subject, "github", fmt.Sprintf("checks-%d-%d", number, seq), string(payload)))
 }

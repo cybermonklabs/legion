@@ -2,10 +2,12 @@
 //
 // The listener records a check run or a check suite from the webhook GitHub sends it, and the
 // Legion daemon reads the settlement those records produce (`ci-ok`, `pr-title`). A webhook that
-// reaches no record leaves that head short of a check, and a head short of a check never settles:
-// the daemon waits for an answer that never comes. GitHub holds the same objects the webhook
-// carries, so every Interval a pass reads each open pull request's head and records every
-// completed check run and completed check suite the listener's record of that head lacks.
+// reaches no record leaves that head's record behind GitHub: a run whose end it missed holds the
+// head for ever, and the daemon waits for an answer that never comes, and a run it missed whole
+// is absent, so the head settles while GitHub still runs it and the daemon reads the head as done.
+// GitHub holds the same objects the webhook carries, so every Interval a pass reads each open
+// pull request's head and records every check run, finished or not, in one write of the head's
+// record, and every completed check suite the listener's record of that head lacks (recordRuns).
 //
 // A pass reads GitHub in batches, over GraphQL: one query answers twenty open pull requests of
 // one repository with every check suite and every check run of each one's head commit
@@ -68,13 +70,13 @@
 //
 // One pass is bound at the interval its loop runs it on (Reconciler.PassTimeout), so it always
 // ends before the pass after it is due and always logs its one line. The pass walks one stable
-// order -- the repositories covered() answers, the ones repo_projects maps and the ones an issue
-// names as its own, and within each its open pull requests by number -- from the
-// first repository to the last page of the last one, and keeps a cursor in it. A pass cut off by
-// its bound or by a rate limit leaves the cursor at the first page or REST head it did not
-// finish and the pass after it takes up there; a pass that reaches the end of the order ends
-// there rather than beginning again, and leaves the cursor at the start of the order for the
-// pass after it. No head starves behind the heads the order holds before it.
+// order -- the repositories covered() answers, every project's default repository and every
+// repository an issue names as its own, and within each its open pull requests by number --
+// from the first repository to the last page of the last one, and keeps a cursor in it. A pass
+// cut off by its bound or by a rate limit leaves the cursor at the first page or REST head it
+// did not finish and the pass after it takes up there; a pass that reaches the end of the order
+// ends there rather than beginning again, and leaves the cursor at the start of the order for
+// the pass after it. No head starves behind the heads the order holds before it.
 //
 // One sweep from the start of the order to the end of it is a cycle, which takes as many passes
 // as their bounds leave them, and what the Reconciler keeps of a head is forgotten only where a
@@ -93,9 +95,11 @@ import (
 	"maps"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/ratelimit"
 	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -129,9 +133,14 @@ const (
 // own. One Reconciler runs one pass at a time: it remembers between passes the ETags GitHub
 // answered with and the pages they belong to, and nothing guards that memory.
 type Reconciler struct {
-	// Pool reads the repositories a pass covers: the ones repo_projects maps to a project, and
-	// the ones issues name as their own (covered).
+	// Pool reads the repositories a pass covers: every project's default repository, and the
+	// ones issues name as their own (covered).
 	Pool *store.Pool
+	// Renames is the rename pairs the boot read (store.ReadRepoRenames). covered names each
+	// repository by its canonical name under them, so no pass asks GitHub about a name a
+	// repository was renamed away from. The zero value holds no pairs, which names every
+	// repository as it is stored.
+	Renames refs.Renames
 	// GitHub reads the repositories, their open pull requests and each head's check objects, as
 	// the App the listener's webhook is of (R5: no credential of its own).
 	GitHub *githubapp.Client
@@ -149,6 +158,11 @@ type Reconciler struct {
 	// (`tester`, `architect`) is recorded only when that App created it
 	// (contracts.ReviewerVerdictDecision); unset, no verdict check is recorded at all.
 	ReviewerAppID string
+	// VerdictAppID is the verdict App's id, Dispatch's DISPATCH_VERDICT_APP_ID, the App that
+	// writes `legion-verdict`. Its check suites are no CI result, and the listener leaves them out
+	// of the record (contracts.VerdictAppsOwnSuite); the pass leaves them out too. Unset, the pass
+	// records every App's completed suite.
+	VerdictAppID string
 	// Logger takes the one INFO line each pass writes and the WARN lines of what it skipped. It is
 	// required.
 	Logger *slog.Logger
@@ -178,18 +192,18 @@ type Reconciler struct {
 	// a record apart from ci_reconcile_passes, which says how the pass ended: a pass can complete
 	// there and still have failed here, on a repository it skipped. Nil records nothing.
 	GitHubReads githubreads.Recorder
-	// MappingRepairs is what the WARN of a skipped mapped name names beside it, as slog fields:
-	// the settings route's request that mends the mapping, which api.MappingRepairs reads from
-	// repo_projects (resolve). It is a field because that reading inverts api's readers of the
-	// route's path, and package api imports this one. Nil names no repairs.
-	MappingRepairs func(ctx context.Context, row string) []any
+	// VerifyLeases is the lease-pool reservation the verify loop answers its requests under
+	// (Verify, VerifyLease): one of its own, apart from the one the reconcile pass holds its lease
+	// on, since both can be inside a lease at once. Nil answers with no lease, which is a test's
+	// Reconciler.
+	VerifyLeases duty.Leases
 	// now is the clock the answers held in absent are timed by, and time.Now when it is nil,
 	// which is every Reconciler but a test's: a test of how long an answer is held moves its
 	// own clock rather than waiting out AbsentAppRecheck.
 	now func() time.Time
 
 	// rows is what the last pass learned of each repository the pass read, keyed by the canonical
-	// name it read it under, which two mappings renamed onto one repository share as one entry:
+	// name it read it under, which an old name and the name it was renamed to share as one entry:
 	// the ETag of GitHub's answer about it, and the name and id that answer gave.
 	rows map[string]rowState
 	// absent is the repositories GitHub said the App is not installed on, keyed as rows is,
@@ -218,6 +232,10 @@ type Reconciler struct {
 	// of it. reconcile is the one place that writes it, from the ending the walk of the order
 	// answered with.
 	resume cursor
+	// starved says the pass's own bound ended a pass before it reached a head, and no pass has
+	// reached one since: the passes in between read at the floor, and gap says why. Pass is the
+	// one place that writes it.
+	starved bool
 	// seenRows, seenRepositories and seenHeads are everything the passes of the cycle now
 	// running have reached, keyed as the maps above are. They are what the pass closing the
 	// cycle forgets by, and they are cleared with it.
@@ -229,6 +247,12 @@ type Reconciler struct {
 	seenRows         map[string]struct{}
 	seenRepositories map[int64]struct{}
 	seenHeads        map[string]struct{}
+	// verifyFailed is the heads the verify loop could not answer, by head (pullHead.key), each
+	// with the episode and revision it failed at, how often in a row that episode failed, when the
+	// loop reads the head again and whether it gave the episode up (Verify, verifyRetryAfter,
+	// permanentVerifyFailure). Only Verify touches it, never a pass, and a head is forgotten
+	// verifyForget after its last failure.
+	verifyFailed map[string]verifyFailure
 }
 
 // stop is the rate limit that ended a pass: the scope it was found or answered under, and when

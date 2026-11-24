@@ -68,22 +68,18 @@ import { ReferencedBy, ReferencedByToggle } from "../refs/ReferencedBy";
 import { buildDispatchReference, buildIssuePath, sessionOfAddress } from "../refs/routes";
 import { useKeymap } from "../shell/keymap";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
-import { refusedNote, stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
+import { stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
 import { ApprovalSteps } from "./ApprovalSteps";
 import { AssigneeControl } from "./AssigneeControl";
 import { ClaimChip } from "./ClaimChip";
 import { GitHubLink } from "./GitHubLink";
-import { gatedStepEntries } from "./gated-steps";
+import { gatedStepEntries, isProjectRoot } from "./gated-steps";
 import { IssueComponentsLine } from "./IssueComponentsLine";
 import { IssueLabels } from "./IssueLabels";
 import { PriorityEditor } from "./PriorityControl";
 import { ProgressChips } from "./ProgressChips";
-import { ParentStatusDialog } from "./parent-status/ParentStatusDialog";
-import {
-  askOnConflict,
-  issueHasParentOrOpenChild,
-  useParentStatusMove,
-} from "./parent-status/useParentStatusMove";
+import { IssueStatusNotes } from "./parent-status/IssueStatusNotes";
+import { useIssueStatusMove } from "./parent-status/useIssueStatusMove";
 import { stateForIssue } from "./pins";
 import { RepoControl } from "./RepoControl";
 import {
@@ -190,10 +186,10 @@ export function IssueHeader({
     },
   });
   // Every status write of the header - the select, Close, Reopen and the palette's rows - goes
-  // through the rule's question (`useParentStatusMove`): a dry run first for an issue with a
+  // through the rule's question (`useIssueStatusMove`): a dry run first for an issue with a
   // parent or an open child, then the write below, or the question where Dispatch's rule would
   // refuse it.
-  const parentStatus = useParentStatusMove();
+  const statusMove = useIssueStatusMove(issue);
   // A title, route, parent or close the header shows refused itself, beside its draft; a status
   // pick is a control, so its refusal is the shell's (`PendingWritesIndicator`), and the pick
   // rolls back. Every field write goes in the issue's line (`issue:<key>`), so an older one still
@@ -205,9 +201,9 @@ export function IssueHeader({
     target: () => `issue:${issue.key}`,
     request: (input: IssueUpdateInput) => issuePatchRequest(issue.key, input),
     // A status the page took for one the rule could not refuse, which Dispatch refused under it
-    // all the same, asks as a refused dry run does (`askOnConflict`).
+    // all the same, asks as a refused dry run does (`statusMove.onError`).
     onError: (error, input) => {
-      askOnConflict(parentStatus, issue.key, input, error);
+      statusMove.onError(error, issue.key, input);
     },
     onSettled: (_data, error) => {
       drafts.onIssueSettled(error);
@@ -233,16 +229,11 @@ export function IssueHeader({
   });
   const drafts = useIssueDrafts(issue, updateIssue);
   const requestStatus = (status: string) => {
-    void parentStatus.move({
-      key: issue.key,
-      patch: () => drafts.requestStatusSubmit(status),
-      related: issueHasParentOrOpenChild(issue),
-      status,
-    });
+    statusMove.move(status, () => drafts.requestStatusSubmit(status));
   };
   // A status write is out, or the rule's question is checking or asking about one: no second
   // status write can start.
-  const statusBusy = updateIssue.isPending || parentStatus.pending !== undefined;
+  const statusBusy = updateIssue.isPending || statusMove.pending !== undefined;
   // Palette-only: closing and reopening an issue are too consequential for a single key, so they
   // are reachable from `$mod+k` alone, through the same handlers and the same guards as the
   // Close and Reopen buttons below. `IssuePage` pushes the `issue` scope these are offered under.
@@ -274,7 +265,7 @@ export function IssueHeader({
   ]);
   // The status the select and the closed line show while it is out: the one the rule's question
   // is checking or asking about, else the one the write is saving.
-  const checkingStatus = parentStatus.pending?.status;
+  const checkingStatus = statusMove.pending;
   const statusSaving =
     checkingStatus !== undefined ||
     (updateIssue.isPending && updateIssue.variables?.status !== undefined);
@@ -298,10 +289,11 @@ export function IssueHeader({
   // palette already hold, so the daemon's `project.updated` publish refreshes these steps with
   // no reload and the header makes no second, per-issue read. While that read is pending or
   // failed there is no row, so the steps are empty and the header draws its one chip below
-  // rather than claiming a gate it has not read. Only a root issue has steps at all
-  // (`gatedStepEntries`), so a child issue does not ask for the list: a disabled query still
-  // reads whatever the shared cache holds, and a child draws the single chip either way.
-  const projects = useQuery({ ...projectsQuery(), enabled: issue.parent === null });
+  // rather than claiming a gate it has not read. Only a root of the issue's project has steps at
+  // all (`isProjectRoot`: no parent, or a parent of another project), so a child issue does not
+  // ask for the list: a disabled query still reads whatever the shared cache holds, and a child
+  // draws the single chip either way.
+  const projects = useQuery({ ...projectsQuery(), enabled: isProjectRoot(issue) });
   const projectRow = projects.data?.find((candidate) => candidate.key === issue.project);
   const entries = gatedStepEntries(projectRow, issue);
   // Which document a step reviews is `gated-steps.ts`'s to say, so the chip asks the drawn
@@ -735,7 +727,8 @@ export function IssueHeader({
           {/* The repository is where the work goes, like the parent, so it sits in this rail,
               which scrolls rather than wrapping: a repository name can be long, and the state
               row above must keep every control on one row at a phone width. Every issue has an
-              item here, since every issue takes a repository whatever its project maps. */}
+              item here: an issue resolves to its own repository, an ancestor's, or its
+              project's default repository, and any issue can take a repository of its own. */}
           <RepoControl
             disabled={isClosed || updateIssue.isPending}
             issueKey={issue.key}
@@ -855,7 +848,8 @@ export function IssueHeader({
             Cancel
           </button>
           <span className="sr-only" id="issue-parent-help">
-            Parent issue key in {issue.project}; leave empty to clear the parent.
+            Parent issue key, in {issue.project} or another project; leave empty to clear the
+            parent.
           </span>
         </form>
       ) : null}
@@ -873,16 +867,11 @@ export function IssueHeader({
               : "Saving…"}
         </span>
       ) : null}
-      {parentStatus.refusal === undefined ? null : (
-        // The dry run of a status pick was refused, so the pick went back: the header says why,
-        // as it says why for a write it shows refused itself.
-        <p className={`mt-1 text-sm ${dangerText}`} role="alert">
-          {refusedNote(`change the status of ${issue.key}`, parentStatus.refusal)}
-        </p>
-      )}
-      {parentStatus.question === undefined ? null : (
-        <ParentStatusDialog question={parentStatus.question} />
-      )}
+      <IssueStatusNotes
+        issueKey={issue.key}
+        noteClassName={`mt-1 text-sm ${dangerText}`}
+        statusMove={statusMove}
+      />
       {subscribersOpen ? (
         <SubscribedAgents
           onUnsubscribe={(sessionId) => unsubscribe.mutate(sessionId)}

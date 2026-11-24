@@ -264,6 +264,62 @@ test("the live editor is told to draw the title for a link whose text is its own
   }
 });
 
+// The editor draws a reference's title over the words it covers, so the title is a print of the
+// post it names: a deleted comment's says it is deleted, never the empty headline of its cleared
+// body, and an edited message's carries ` · edited` (INFRA-1523, R2 and R3; `useReferenceLabel`).
+test("the live editor is told to draw a deleted comment as deleted and an edited message as edited", async () => {
+  const deleted = "5b0e2c41-7d3a-4f6e-8a1b-2c3d4e5f6a7b";
+  const edited = "7d2a4e63-9f5c-4b8a-8c3d-4e5f6a7b8c9d";
+  const queryClient = seededQueryClient();
+  queryClient.setQueryData(["comment", deleted], {
+    comment: {
+      author: { id: "alice", kind: "user" },
+      body: "",
+      deleted_at: "2026-11-13T12:00:00Z",
+      deleted_by: { id: "alice", kind: "user" },
+      edited_at: null,
+      id: deleted,
+      issue_key: "CORE-1",
+    },
+    replies: [],
+  });
+  queryClient.setQueryData(["issue-message", "CORE-1", edited], {
+    message: {
+      author: { id: "alice", kind: "user" },
+      body: "Shipped it, as corrected.",
+      deleted_at: null,
+      deleted_by: null,
+      edited_at: "2026-11-13T12:00:00Z",
+      id: edited,
+      issue_key: "CORE-1",
+    },
+    replies: [],
+  });
+  const { editors, sync, view } = renderProofDocument({ queryClient });
+  const comment = `dispatch://CORE-1/comment/${deleted}`;
+  const message = `dispatch://CORE-1/message/${edited}`;
+
+  try {
+    await sync();
+    await waitFor(() => expect(editors).toHaveLength(1));
+    await waitFor(() => expect(editors[0]?.references).toBeDefined());
+    act(() => {
+      editors[0]?.references?.onKeys([comment, message]);
+    });
+
+    await waitFor(
+      () =>
+        expect(drawnTitles(editors[0]?.references)).toEqual({
+          [comment]: "Deleted by alice",
+          [message]: "Shipped it, as corrected. · edited",
+        }),
+      { timeout: 2000 }
+    );
+  } finally {
+    view.unmount();
+  }
+});
+
 function CurrentRoute(): ReactNode {
   const location = useLocation();
   return <div data-testid="current-route">{location.pathname}</div>;

@@ -1,0 +1,51 @@
+{
+  "id": 696186,
+  "issue_key": null,
+  "artifact_id": "d54983d3-fcdd-459b-885a-fa213f590237",
+  "project": "ACME",
+  "seq": 387,
+  "type": "comment.created",
+  "actor": {
+    "kind": "session",
+    "id": "01a1de2a-c741-740a-922c-3b3dcff7e469"
+  },
+  "notify": false,
+  "created_at": "2026-11-17T22:15:29.522934Z",
+  "payload": {
+    "id": "9e92acbc-44e3-4ec7-bd31-54f744908c11",
+    "body": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum d",
+    "turn": null,
+    "anchor": null,
+    "ask_id": null,
+    "author": {
+      "id": "01a1de2a-c741-740a-922c-3b3dcff7e469",
+      "kind": "session"
+    },
+    "answers": "042a1457-f259-4f84-bfae-70847c6ee882",
+    "mentions": [
+      {
+        "target": "session:01a1de28-e1a9-747a-b364-36a0d04de354",
+        "delivery": "steer",
+        "session_id": "01a1de28-e1a9-747a-b364-36a0d04de354"
+      }
+    ],
+    "reply_to": "042a1457-f259-4f84-bfae-70847c6ee882",
+    "resolved": false,
+    "edited_at": null,
+    "issue_key": null,
+    "created_at": "2026-11-17T22:15:29.528706Z",
+    "deliveries": [],
+    "suggestion": null,
+    "artifact_id": "d54983d3-fcdd-459b-885a-fa213f590237",
+    "project_key": "ACME",
+    "reply_block": null,
+    "resolved_at": null,
+    "resolved_by": null,
+    "artifact_name": "",
+    "artifact_slug": "lorem ipsum dolor s",
+    "thread_logins": [],
+    "suppress_route": false,
+    "thread_root_id": "042a1457-f259-4f84-bfae-70847c6ee882",
+    "mentions_decide_routes": true
+  }
+}

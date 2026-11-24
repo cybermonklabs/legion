@@ -15,6 +15,7 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/id"
 )
 
 // ErrRoleClaimContended is an outright claim (no IfClaimRevision, not soft) whose every try of its
@@ -125,7 +126,9 @@ func (r *Registry) SetRole(sessionID, machineID, role string, soft bool, superse
 // The record it writes is a fresh claim and never the standing one amended, so the hand-back
 // mark goes with the claim it was written on (RoleClaim.HandedBack): a role granted again to
 // the very process that handed it back is that process's to renew from this write on, which is
-// how a holder takes back a role it gave up without waiting out the role claim reaper.
+// how a holder takes back a role it gave up without waiting out the role claim reaper. The
+// record carries a grant id this call draws at random (RoleClaim.GrantID), so a hand-back that
+// read the claim before this one tells the two apart whatever millisecond each was stamped in.
 //
 // Each bucket call waits no longer than ctx (bus.Bounded): POST /v1/roles/set passes its request's
 // own context. A call ctx abandoned may still land after this answer. Every claim writes with the
@@ -194,6 +197,7 @@ func (r *Registry) SetRoleWithPrevious(ctx context.Context, req RoleClaimRequest
 	}
 
 	roles := r.roles()
+	grantID := id.New()
 	var (
 		revision uint64
 		epoch    uint64
@@ -210,6 +214,7 @@ func (r *Registry) SetRoleWithPrevious(ctx context.Context, req RoleClaimRequest
 			HolderSessionID:   req.SessionID,
 			ClaimedAt:         now,
 			PreviousSessionID: "",
+			GrantID:           grantID,
 			ClientInstanceID:  req.ClientInstanceID,
 			RenewedAt:         now,
 		}
@@ -251,7 +256,7 @@ func (r *Registry) SetRoleWithPrevious(ctx context.Context, req RoleClaimRequest
 		if err == nil {
 			break
 		}
-		if answered && !req.Soft && req.IfClaimRevision == nil && errors.Is(err, nats.ErrKeyExists) {
+		if answered && !req.Soft && req.IfClaimRevision == nil && bus.IsCASConflict(err) {
 			var readErr error
 			if tries.Err() == nil {
 				var next RoleClaim
@@ -283,7 +288,7 @@ func (r *Registry) SetRoleWithPrevious(ctx context.Context, req RoleClaimRequest
 			return Interest{}, errors.Join(err, holderErr, rollbackErr)
 		}
 		holder := current.HolderSessionID
-		// A conditional claim that lost the write's own compare-and-swap (nats.ErrKeyExists)
+		// A conditional claim that lost the write's own compare-and-swap (bus.IsCASConflict)
 		// lost it to a claim that landed after the read this call weighed its precondition on:
 		// the precondition failing a moment later, not a storage failure, and the caller is
 		// told exactly that rather than reading an unexplained failure or another session's
@@ -304,7 +309,7 @@ func (r *Registry) SetRoleWithPrevious(ctx context.Context, req RoleClaimRequest
 		// with whatever claim stands.
 		heldBySession := holderErr == nil && holder == req.SessionID
 		heldByClaimant := heldBySession && current.HeldByProcess(req.ClientInstanceID)
-		conditionalLoss := req.IfClaimRevision != nil && holderErr == nil && errors.Is(err, nats.ErrKeyExists)
+		conditionalLoss := req.IfClaimRevision != nil && holderErr == nil && bus.IsCASConflict(err)
 		if heldByClaimant && !conditionalLoss {
 			return item, nil
 		}
@@ -319,7 +324,7 @@ func (r *Registry) SetRoleWithPrevious(ctx context.Context, req RoleClaimRequest
 				Holder:   holder,
 			}
 		}
-		// A soft claim that lost its conditional write (wrong last sequence, nats.ErrKeyExists)
+		// A soft claim that lost its conditional write (wrong last sequence, bus.IsCASConflict)
 		// lost to a concurrent claimant; report that as held rather than as a storage failure.
 		if req.Soft && holder != "" {
 			return Interest{}, &ErrRoleHeld{Role: req.Role, Holder: holder}

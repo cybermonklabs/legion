@@ -192,6 +192,7 @@ func dispatchClusterOnlyRefusals() []dispatchInput {
 		{"appId", func(a *gcp.DispatchArgs) { a.AppId = "123456" }},
 		{"appPrivateKeySecretName", func(a *gcp.DispatchArgs) { a.AppPrivateKeySecretName = "example-app-key" }},
 		{"appPrivateKeySecretKey", func(a *gcp.DispatchArgs) { a.AppPrivateKeySecretKey = "private-key.b64" }},
+		{"verdictAppId", func(a *gcp.DispatchArgs) { a.VerdictAppId = pulumi.StringRef("5341240") }},
 		{"databaseVersion", func(a *gcp.DispatchArgs) { a.DatabaseVersion = pulumi.StringRef("POSTGRES_18") }},
 		{"databaseTier", func(a *gcp.DispatchArgs) { a.DatabaseTier = pulumi.StringRef("db-custom-4-15360") }},
 		{"databaseAvailabilityType", func(a *gcp.DispatchArgs) { a.DatabaseAvailabilityType = pulumi.StringRef("REGIONAL") }},
@@ -240,6 +241,8 @@ func dispatchClusterOnlyRefusals() []dispatchInput {
 		{"chatEndpoint", func(a *gcp.DispatchArgs) { a.ChatEndpoint = pulumi.String(chatEndpointURL) }},
 		{"chatModel", func(a *gcp.DispatchArgs) { a.ChatModel = pulumi.StringRef("example-chat-model") }},
 		{"chatTokenSecret", func(a *gcp.DispatchArgs) { a.ChatTokenSecret = pulumi.String(chatTokenSecret) }},
+		{"consumerNames", func(a *gcp.DispatchArgs) { a.ConsumerNames = "fresh" }},
+		{"replaceUnderHold", func(a *gcp.DispatchArgs) { a.ReplaceUnderHold = true }},
 	})
 }
 

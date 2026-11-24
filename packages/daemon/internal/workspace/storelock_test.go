@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/testfifo"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // heldLock is a Request.StoreLock that knows whether it is held, so a runner can read, at each
@@ -371,61 +373,100 @@ func TestRemoveLetsTheStoreLockGoBeforeItDeletesTheWorkspace(t *testing.T) {
 // workspace's parent directory is on the issue's volume, which a role can swap for a fifo, and a
 // plain os.RemoveAll of the aside then opens that fifo plainly and waits for a writer for as long
 // as none comes, holding the outbox's turn. So the aside is removed through rolefile.RemoveTree,
-// which answers ENOTDIR at once: Remove returns, refusing, and the fifo is left as it was. The
-// parent is swapped as the store lock is let go, which is after the git worktree entry's removal
-// and before the aside's deletion.
+// which answers ENOTDIR without waiting: Remove returns, refusing, and the fifo is left as it was.
+// The parent is swapped as the store lock is let go, which is after the git worktree entry's
+// removal and before the aside's deletion. Remove's answer is waited for with no span of its own
+// (testwait.Receive), so the jj and git runs before it are as slow as the host makes them, and
+// a removal that opens the fifo plainly fails the row by name as soon as the fifo watch beside
+// that wait reads the open from the kernel (testfifo.WatchBeside), or at the deadline where it
+// cannot.
 func TestRemoveAsideAnswersAParentSwappedForAFifo(t *testing.T) {
+	// The verdict needs the kernel's record of what each thread is asleep in; where it keeps
+	// none, as gVisor keeps none, the row fails under CI and skips elsewhere
+	// (testfifo.RequireWatch).
+	testfifo.RequireWatch(t)
 	run := newLocalRunner(t)
 	working, err := Provision(context.Background(), run, provisionRequest(t))
 	if err != nil {
 		t.Fatalf("Provision: %v", err)
 	}
 	parent := filepath.Dir(working.Dir)
-	// The bound guards the aside's removal alone, so it starts at the swap: the jj and git Remove
-	// runs under the lock before it are as slow as the host is, with nothing blocking them.
+	// The swap records its errors rather than reporting them: it runs in Remove's goroutine, which
+	// a row that failed early has stopped waiting for, and the row reads them once Remove answers.
 	swapped := make(chan struct{})
 	var once sync.Once
+	var swapErr error
 	lock := &unlockWatch{onUnlock: func() {
 		once.Do(func() {
 			defer close(swapped)
 			if err := os.Rename(parent, parent+".moved"); err != nil {
-				t.Error(err)
+				swapErr = err
+				return
 			}
-			if err := syscall.Mkfifo(parent, 0o644); err != nil {
-				t.Error(err)
-			}
+			swapErr = syscall.Mkfifo(parent, 0o644)
 		})
 	}}
 	done := make(chan error, 1)
 	go func() { done <- Remove(context.Background(), run, working, lock) }()
-	var armed, bound = (<-chan struct{})(swapped), (<-chan time.Time)(nil)
-	for answered := false; !answered; {
-		select {
-		case err := <-done:
-			answered = true
-			if !errors.Is(err, syscall.ENOTDIR) || !strings.Contains(err.Error(), "remove workspace directory") {
-				t.Fatalf("Remove with its workspace's parent swapped for a fifo answered %v, want the aside's removal refused with ENOTDIR", err)
-			}
-		case <-armed:
-			armed, bound = nil, time.After(30*time.Second)
-		case <-bound:
-			// Open the fifo for writing so the blocked open returns and Remove's goroutine ends.
-			if writer, openErr := os.OpenFile(parent, os.O_WRONLY, 0); openErr == nil {
-				_ = writer.Close()
-			}
-			<-done
-			t.Fatalf("Remove was still opening %s 30s after its parent became a fifo: a workspace parent swapped for a fifo blocks the aside's removal", parent)
-		}
+	// Remove's answer is waited for with testwait.Receive, as main waits for it. Beside that wait,
+	// the fifo watch reads from the kernel whether the removal opens the swapped parent plainly and
+	// waits there for a writer (testfifo.WatchBeside); the correct removal opens it with
+	// O_NONBLOCK and holds it for a moment, which is no such wait. The watch's own open for
+	// writing is the writer a plain open needed, so Remove then answers, and the row fails naming
+	// the open at once rather than at the test binary's deadline.
+	stopWatch := testfifo.WatchBeside(swapped, parent)
+	defer func() { _, _ = stopWatch() }()
+	err = testwait.Receive(t, "Remove with its workspace's parent "+parent+" swapped for a fifo", done)
+	if opened, watchErr := stopWatch(); watchErr != nil {
+		t.Fatalf("cannot tell whether Remove waits in a plain open of %s: %v", parent, watchErr)
+	} else if opened != "" {
+		t.Fatalf("Remove opened %s, its workspace's parent swapped for a fifo, plainly and waited there for a writer: a workspace parent swapped for a fifo blocks the aside's removal", opened)
+	}
+	if swapErr != nil {
+		t.Fatalf("swap %s for a fifo as the store lock was let go: %v", parent, swapErr)
+	}
+	if !errors.Is(err, syscall.ENOTDIR) || !strings.Contains(err.Error(), "remove workspace directory") {
+		t.Fatalf("Remove with its workspace's parent swapped for a fifo answered %v, want the aside's removal refused with ENOTDIR", err)
 	}
 	if info, err := os.Lstat(parent); err != nil || info.Mode()&os.ModeNamedPipe == 0 {
 		t.Fatalf("the fifo %s is no longer there as it was (%v, %v)", parent, info, err)
 	}
 }
 
+// sharedStoreLock is one repository's store lock, which several provisions share, each through
+// an issueLock of its own, so a runner can read which issue's provision holds it.
+type sharedStoreLock struct {
+	mu     sync.Mutex
+	holder atomic.Pointer[string]
+}
+
+// issueLock is the Request.StoreLock of issue's provision: shared, held under issue's name.
+type issueLock struct {
+	shared *sharedStoreLock
+	issue  string
+}
+
+func (l *issueLock) Lock()   { l.shared.mu.Lock(); l.shared.holder.Store(&l.issue) }
+func (l *issueLock) Unlock() { l.shared.holder.Store(nil); l.shared.mu.Unlock() }
+
 // overlapRunner holds the first checkout until a second one starts, so two provisions' checkouts
 // are seen to run at once, and counts the other commands that run at once.
+//
+// What ends that hold is an event, never a clock. A checkout that starts while its own provision
+// holds the store lock is refused at once: the other provision needs that lock for every command
+// before its own checkout, so no checkout could ever start beside this one. A provision that
+// returns while a checkout is held is no overlap either, and ends the hold. Any other hold ends
+// when the other checkout starts, however long a loaded machine takes over the other provision's
+// commands; giveUpAt, 30 s before the test binary's deadline (testwait.Bounded, read when the
+// runner is built), bounds only a jj that never returns.
 type overlapRunner struct {
 	*recordingRunner
+	lock *sharedStoreLock
+	// issueOf names the issue whose workspace a checkout runs in, by the workspace's directory.
+	issueOf map[string]string
+	// returned gets the issue of each provision that returns, whatever it answered.
+	returned                     chan string
+	giveUpAt                     time.Time
 	checkouts, store, worstStore atomic.Int32
 	overlapped                   chan struct{}
 	once                         sync.Once
@@ -439,13 +480,28 @@ func (r *overlapRunner) Run(ctx context.Context, command Command) (Result, error
 		}
 		return r.recordingRunner.Run(ctx, command)
 	}
+	issue, ok := r.issueOf[command.Dir]
+	if !ok {
+		return Result{}, fmt.Errorf("a checkout ran in %s, which is no workspace of this row's issues, so the runner cannot read whose store lock is held", command.Dir)
+	}
+	if holder := r.lock.holder.Load(); holder != nil && *holder == issue {
+		return Result{}, fmt.Errorf("%s's checkout started with its own provision holding the store lock, which the other provision needs before its checkout, so the checkouts can never overlap", issue)
+	}
 	if r.checkouts.Add(1) == 2 {
 		r.once.Do(func() { close(r.overlapped) })
 	}
+	giveUp := time.NewTimer(time.Until(r.giveUpAt))
+	defer giveUp.Stop()
 	select {
 	case <-r.overlapped:
-	case <-time.After(20 * time.Second):
-		return Result{}, fmt.Errorf("the checkouts never overlapped: %s waited 20s for another issue's checkout", strings.Join(command.Argv, " "))
+	case other := <-r.returned:
+		select {
+		case <-r.overlapped:
+		default:
+			return Result{}, fmt.Errorf("%s's provision returned while %s's checkout waited for another to start beside it", other, issue)
+		}
+	case <-giveUp.C:
+		return Result{}, fmt.Errorf("the checkouts never overlapped: %s's checkout waited to 30 s before the test binary's deadline for another issue's", issue)
 	}
 	return r.recordingRunner.Run(ctx, command)
 }
@@ -454,26 +510,39 @@ func (r *overlapRunner) Run(ctx context.Context, command Command) (Result, error
 // side, and no two of the clone's other commands ever do. Both workspaces are then whole, and the
 // clone knows both.
 func TestTwoIssuesProvisionedAtOnceOverlapOnlyInTheirCheckouts(t *testing.T) {
-	lock := &sync.Mutex{}
+	lock := &sharedStoreLock{}
 	base := newLocalRunner(t)
 	req := provisionRequest(t)
-	req.StoreLock = lock
 	// The clone exists first, as it does once a repository's first issue ran.
 	req.Issue = "WIDGETS-41"
+	req.StoreLock = &issueLock{shared: lock, issue: req.Issue}
 	if _, err := Provision(context.Background(), base, req); err != nil {
 		t.Fatalf("Provision of the first issue: %v", err)
 	}
-	run := &overlapRunner{recordingRunner: base, overlapped: make(chan struct{})}
+	issues := []string{"WIDGETS-42", "WIDGETS-43"}
+	run := &overlapRunner{
+		recordingRunner: base, lock: lock, issueOf: map[string]string{}, returned: make(chan string, len(issues)),
+		giveUpAt: time.Now().Add(testwait.Bounded(t, 1<<60, 30*time.Second)), overlapped: make(chan struct{}),
+	}
+	for _, issue := range issues {
+		working, err := Location(req.StateDir, req.Repo, issue)
+		if err != nil {
+			t.Fatal(err)
+		}
+		run.issueOf[working.Dir] = issue
+	}
 
 	var wg sync.WaitGroup
 	results := make(map[string]Workspace)
 	var resultsMu sync.Mutex
-	for _, issue := range []string{"WIDGETS-42", "WIDGETS-43"} {
+	for _, issue := range issues {
 		wg.Add(1)
 		go func(issue string) {
 			defer wg.Done()
+			defer func() { run.returned <- issue }()
 			mine := req
 			mine.Issue = issue
+			mine.StoreLock = &issueLock{shared: lock, issue: issue}
 			working, err := Provision(context.Background(), run, mine)
 			if err != nil {
 				t.Errorf("Provision %s: %v", issue, err)

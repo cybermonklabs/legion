@@ -1,0 +1,6 @@
+kind: Changed
+custom:
+  Issue: pr4622
+body: |-
+  `envoy` and `agent-secrets` correct the sentences that were false against the code, and the
+  thermonuclear review skills no longer hold the follow-the-code sentence.

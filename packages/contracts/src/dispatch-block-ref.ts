@@ -146,8 +146,8 @@ const ITEM_BLOCK_REFERENCE = new RegExp(
  * fragment. Go's validator reads the value through `text.ParseRef`, which first ends it at a
  * character no reference holds (`referenceEnd`: `'`, `"`, `<`, `>`, a backtick, `[`, `]`, `|` or
  * whitespace) and trims trailing punctuation, so such a value may be refused here with a different
- * reason than Go gives; both refuse it. A message never changes, so a pinned message block is no
- * reference.
+ * reason than Go gives; both refuse it. A message records no revisions, so a pinned message block
+ * is no reference.
  */
 function itemBlockKind(value: string): "ask" | "comment" | "message" | undefined {
   const match = ITEM_BLOCK_REFERENCE.exec(value);
@@ -464,7 +464,7 @@ export const DISPATCH_BLOCK_POINTER_VALUES: readonly {
  * Go's reader refuses one holding `&`, so the two never read one back alike. Go's twin is
  * `pmdoc.typedBlockIDShortcutExcluded`.
  */
-const TYPED_BLOCK_ID_SHORTCUT_EXCLUDED = "\t\n\r \"#&'.<=>`}";
+export const TYPED_BLOCK_ID_SHORTCUT_EXCLUDED = "\t\n\r \"#&'.<=>`}";
 
 /**
  * How a typed block's opening line writes the block's id, as Go's renderer

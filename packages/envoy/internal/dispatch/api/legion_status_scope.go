@@ -141,7 +141,7 @@ func refuseLegionStatusStep(ctx context.Context, q pgx.Tx, step issueWriteStep) 
 		return err
 	}
 	// (b) The removal of the legion label.
-	if leavesNoLegionLabel && holdsLegionLabel(stored) {
+	if leavesNoLegionLabel && holdsLegionLabel(stored.labels) {
 		return legionStatusScopeRefusal(step.key, "the removal of the legion label")
 	}
 	if !walks {
@@ -175,19 +175,26 @@ func refuseLegionStatusStep(ctx context.Context, q pgx.Tx, step issueWriteStep) 
 	return nil
 }
 
-// legionIssueBefore reads key's stored row: its labels and, when walk is set, whether it is a
-// Legion issue (legionManagedStatusWithLabelsSQL), in one statement. Without walk it reads the
-// labels alone.
-func legionIssueBefore(ctx context.Context, q pgx.Tx, key string, walk bool) (labels []string, legion bool, err error) {
+// legionIssueBefore reads key's stored row: its labels, its project and, when walk is set,
+// whether it is a Legion issue (legionManagedStatusWithLabelsSQL), in one statement. Without walk
+// it reads the labels and the project alone.
+func legionIssueBefore(ctx context.Context, q pgx.Tx, key string, walk bool) (stored storedLegionRow, legion bool, err error) {
 	if walk {
-		err = q.QueryRow(ctx, legionManagedStatusWithLabelsSQL, key).Scan(&labels, &legion)
+		err = q.QueryRow(ctx, legionManagedStatusWithLabelsSQL, key).Scan(&stored.labels, &stored.project, &legion)
 	} else {
-		err = q.QueryRow(ctx, `select labels from issues where key = $1`, key).Scan(&labels)
+		err = q.QueryRow(ctx, `select labels, project_key from issues where key = $1`, key).Scan(&stored.labels, &stored.project)
 	}
 	if err != nil {
-		return nil, false, fmt.Errorf("read %s as it is stored, for R26's refusal: %w", key, err)
+		return storedLegionRow{}, false, fmt.Errorf("read %s as it is stored, for R26's refusal: %w", key, err)
 	}
-	return labels, legion, nil
+	return stored, legion, nil
+}
+
+// storedLegionRow is what R26's refusal reads of a step's issue as it is stored: its labels and
+// its project, which the walk after the call starts from (legionIssueAfter).
+type storedLegionRow struct {
+	labels  []string
+	project string
 }
 
 // parentLeft is the parent that the step leaves on its issue: the parent it writes, or the
@@ -200,19 +207,20 @@ func (step issueWriteStep) parentLeft() *string {
 }
 
 // legionIssueAfter says whether the step's issue is a Legion issue after the call. stored is the
-// issue's stored labels, and before is the answer before the call. The walk starts from the
+// issue's stored row, and before is the answer before the call. No write moves an issue to
+// another project, so the walk climbs from the stored project. The walk starts from the
 // parent and the labels that the step leaves: the labels it writes, or the stored labels when it
 // keeps them. A step that changes neither the parent nor the labels keeps the answer before the
 // call, so it is answered without a second walk.
-func (step issueWriteStep) legionIssueAfter(ctx context.Context, q pgx.Tx, stored []string, before bool) (bool, error) {
-	labels := stored
+func (step issueWriteStep) legionIssueAfter(ctx context.Context, q pgx.Tx, stored storedLegionRow, before bool) (bool, error) {
+	labels := stored.labels
 	if step.labelsAfter != nil {
 		labels = *step.labelsAfter
 	}
-	if !step.changesParent() && slices.Equal(stored, labels) {
+	if !step.changesParent() && slices.Equal(stored.labels, labels) {
 		return before, nil
 	}
-	return legionManagedStatusOfRow(ctx, q, step.key, step.parentLeft(), labels)
+	return legionManagedStatusOfRow(ctx, q, step.key, stored.project, step.parentLeft(), labels)
 }
 
 // holdsLegionLabel says whether labels hold the legion label in any letter case. Labels keep the

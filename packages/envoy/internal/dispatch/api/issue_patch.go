@@ -51,6 +51,10 @@ type updateIssueInput struct {
 	Components       json.RawMessage `json:"components"`
 	Repo             json.RawMessage `json:"repo"`
 	Actor            *model.Actor    `json:"actor"`
+	// RefuseOpenForeignChildren asks, beside a status of retro or done, that the write be refused
+	// while a child of another project is open (refuseOpenForeignChildren). The Legion daemon's
+	// sign_off and close_root send it; a person's status write does not, and is taken as before.
+	RefuseOpenForeignChildren bool `json:"refuse_open_foreign_children"`
 }
 
 // patchIssue is PATCH /api/v1/issues/{key}: it decodes the body, resolves who writes it, and
@@ -66,9 +70,6 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		s.writeAuthenticationError(w, err)
 		return
 	}
-	// A credential that names one project is refused a target outside it where a target's
-	// project is read, since this route's own address names no target (project_scope.go): the
-	// lock step refuses it before any lock, and writeBlockedBy again under them.
 	callerProject, _ := s.callerProject(r)
 	written, err := s.writeIssue(r.Context(), issueWriteCall{
 		writer:        writer,
@@ -118,15 +119,24 @@ type issueWriteCall struct {
 // under its own owner lock, not from the plan that the call read before its first step.
 type issueWriteCallStep struct {
 	// named is the issue that the status change names, or empty for a step of R25's fix, which
-	// names none. A fenced step, or a step of a keyed call, that holds its owner lock reads back
-	// the ids of every event the step appended on it (issueWriteResult.namedEvents).
+	// names none. A fenced step, or a step of a keyed call (claim), that holds its owner lock reads
+	// back the ids of every event the step appended on it (issueWriteResult.namedEvents).
 	named string
 	// fence is the call's fence on named, or nil for a call that sent no expected_sequence.
 	fence *issueWriteFence
+	// claim is the request key's claim of a keyed status change, nil for a call with no key and
+	// for a step of R25's fix: a step that writes adds its entry to the call's recovery point
+	// under it (queueStatusChangeStep).
+	claim *requestKeyClaim
 	// leaves reports, from the issue as the step reads it under its owner lock, that the step
 	// leaves the issue as it stands: the step writes no row, no event and no comment, and rolls
 	// its transaction back. It is nil for a step that always writes: the named issue's own.
 	leaves func(before model.Issue) bool
+	// moved is what the write of a step of an option changes, from the issue as the step reads it
+	// under its owner lock, which the comment on named lists (statusChangeRun.namedComment). A
+	// step of a keyed call that writes keeps it in the call's recovery point (queueStatusChangeStep).
+	// It is nil for the named issue's own step and for a step of R25's fix.
+	moved func(before model.Issue) statusChangeMove
 	// sweepsLater is that the caller runs the ask sweep of the step's close itself, after the
 	// call's last step (issueWriteResult.closed), so that no fence of the call reads the events of
 	// the sweep. Only the named issue's own step sets it.
@@ -193,6 +203,9 @@ type issueWriteResult struct {
 	// sweep itself, except for a step whose caller sweeps later (issueWriteCallStep.sweepsLater).
 	closed    bool
 	withdrawn []model.Ask
+	// moved is what the write of a step of an option changed (issueWriteCallStep.moved): nil for
+	// every other write, and for a write that wrote nothing.
+	moved *statusChangeMove
 }
 
 // writeIssue is the PATCH's write core. It parses the call's fields, takes the owner locks of
@@ -237,6 +250,9 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 			return issueWriteResult{}, errorf(http.StatusBadRequest, "INVALID_STATUS", "status is not in the Legion lifecycle")
 		}
 	}
+	if input.RefuseOpenForeignChildren && status != "retro" && status != "done" {
+		return issueWriteResult{}, errorf(http.StatusBadRequest, "INVALID_ISSUE", "refuse_open_foreign_children goes only with status retro or done")
+	}
 	if input.Route != nil && *input.Route != "" {
 		if _, err := model.ParseRoute(*input.Route); err != nil {
 			return issueWriteResult{}, errorf(http.StatusBadRequest, "ROUTE_INVALID", "invalid route")
@@ -276,12 +292,39 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 	if err != nil {
 		return issueWriteResult{}, err
 	}
-	repo, repoProvided, err := parseIssueRepo(input.Repo)
+	repo, repoProvided, err := parseIssueRepo(input.Repo, "INVALID_ISSUE")
 	if err != nil {
 		return issueWriteResult{}, err
 	}
+	repo = s.renamedRepo(repo)
+	// Each link URL is stored under its repository's new name where a rename pair renames it
+	// away (refs.Renames.CanonicalURL), as every write of a stored URL is. It is rewritten here,
+	// before the closed-issue gate compares the links with the stored ones, so a link resent
+	// under the old name is the link the issue already has.
+	if input.ExternalLinks != nil {
+		for i := range *input.ExternalLinks {
+			(*input.ExternalLinks)[i].URL = s.deps.Renames.CanonicalURL((*input.ExternalLinks)[i].URL)
+		}
+	}
 
 	key := call.key
+	parentKey := ""
+	if parent != nil {
+		parentKey = *parent
+	}
+	// A credential that names one project is refused a target or a parent outside it where its
+	// project is read, since this route's own address names neither (project_scope.go). It is read
+	// first here, with no lock held and before a close settles the issue's documents or the
+	// transaction begins, so a write the credential may not make settles nothing; the
+	// pre-handler check already held the issue to the credential's project, which is therefore
+	// the issue's own, and a status change holds each issue a step of it writes to that project
+	// before its first step (refuseStepsOutsideCallerProject). The lock step refuses it again
+	// before any lock, and writeBlockedBy or validateIssueParent under them.
+	if call.callerProject != "" && (parentKey != "" || len(blockers) > 0) {
+		if _, err := foreignDependencyTargets(ctx, s.deps.Store.Pool, call.callerProject, call.callerProject, blockers, parentKey); err != nil {
+			return issueWriteResult{}, err
+		}
+	}
 	// Whether the write closes the issue (closing) waits for the issue's owner lock; whether it
 	// asks to is known now.
 	closes := input.Status != nil && status == "done"
@@ -304,14 +347,19 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 	documentCtx, ledger := s.deps.Docs.Join(ctx, tx)
 	defer ledger.Discard()
 
-	dependencyWrite := input.BlockedBy != nil || parentProvided
+	// A write that asks for the open-child check of an acceptance is a dependency write too: the
+	// check and the status it guards run under the deployment dependency lock that every create
+	// with a parent and every reparent takes, so no child is filed between the two.
+	dependencyWrite := input.BlockedBy != nil || parentProvided || input.RefuseOpenForeignChildren
+	// The lock step below reads each target's project again and refuses a scoped caller one
+	// outside it before any lock is taken (lockIssueDependencyWrite).
 	if dependencyWrite || input.Rank != nil {
 		var project string
 		if err := tx.QueryRow(ctx, `select project_key from issues where key = $1`, key).Scan(&project); err != nil {
 			return issueWriteResult{}, err
 		}
 		if dependencyWrite {
-			if err := lockIssueDependencyWrite(ctx, tx, project, call.callerProject, blockers); err != nil {
+			if err := lockIssueDependencyWrite(ctx, tx, project, call.callerProject, blockers, parentKey); err != nil {
 				return issueWriteResult{}, err
 			}
 		}
@@ -378,13 +426,10 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 	// reads here: the named issue's own step, a fenced step, and the step of a direct child, whose
 	// parent lockPatchOwnersAndParent locked. The read is a plain one, before the first write. A
 	// step of an unfenced call with no request key reads none, since nothing reads those events.
-	var claim requestKeyClaim
-	keyed := false
 	namedLastSeq, holdsNamed := 0, false
 	if step != nil {
-		claim, keyed = ctx.Value(requestKeyClaimKey{}).(requestKeyClaim)
 		switch {
-		case step.fence == nil && !keyed:
+		case step.fence == nil && step.claim == nil:
 		case step.named == key:
 			namedLastSeq, holdsNamed = before.LastSeq, true
 		case step.fence != nil || (before.Parent != nil && *before.Parent == step.named):
@@ -394,13 +439,19 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 			holdsNamed = true
 		}
 	}
-	// The call's comment is worded from the issue as the write reads it under its owner lock.
+	// The call's comment is worded from the issue as the write reads it under its owner lock, and
+	// so is what a step of an option changes.
 	var commentBody string
 	if call.comment != nil {
 		commentBody = call.comment.words(before)
 	}
+	var moved *statusChangeMove
+	if step != nil && step.moved != nil {
+		move := step.moved(before)
+		moved = &move
+	}
 	if parentProvided && parent != nil {
-		if err := validateIssueParent(ctx, tx, key, before.Project, *parent); err != nil {
+		if err := validateIssueParent(ctx, tx, key, call.callerProject, *parent); err != nil {
 			return issueWriteResult{}, err
 		}
 	}
@@ -454,6 +505,13 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 	}
 	if conflict != nil {
 		return issueWriteResult{}, conflict
+	}
+	if input.RefuseOpenForeignChildren {
+		// An open child of another project refuses the acceptance with 409 FOREIGN_CHILD_OPEN,
+		// which writeHandlerError answers with the children it names.
+		if err := refuseOpenForeignChildren(ctx, tx, key, before.Project); err != nil {
+			return issueWriteResult{}, err
+		}
 	}
 	// The `advances` revision rule is decided here, beside the other refusals of this handler
 	// and before the first row is written: a refused write leaves the issue exactly as it was.
@@ -578,7 +636,7 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 	// and its parent (writeAdviceBefore), and the open asks the close withdraws or the reopen
 	// restores, whose rows the patch writes afterwards (adviceAsks). Nothing else the patch writes
 	// changes what it reads.
-	afterRow := adviceIssueRow{parent: afterParent, labels: before.Labels}
+	afterRow := adviceIssueRow{project: before.Project, parent: afterParent, labels: before.Labels}
 	afterStatus := before.Status
 	if input.Status != nil {
 		afterStatus = status
@@ -810,31 +868,29 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 	}
 	if call.comment != nil {
 		// The call's comment comes after the write's own events, on the issue's owner, which the
-		// write's lock holds.
-		commented, err := s.queueIssueComment(ctx, tx, ledger, key, call.comment.author, commentBody)
+		// write's lock holds. Its body is the one the row holds, which the comment route's checks
+		// leave (queueIssueComment).
+		commented, stored, err := s.queueIssueComment(ctx, tx, ledger, key, call.comment.author, commentBody)
 		if err != nil {
 			return issueWriteResult{}, err
 		}
 		appended = append(appended, commented)
+		commentBody = stored
 	}
 	// A step that holds the named issue's lock reads back the ids of the events on it after the
 	// last_seq it read under that lock. The ids exist only once the write phase's batch has run,
 	// so the statement derives them in its own SQL, after the step's last event insert. They hold
 	// what document work appended there through the ledger's event sink too, which appended does
-	// not. A step of a keyed call writes the call's recovery point with the same statement, run
-	// right after the batch rather than on it (docs.Ledger.AfterWrites): it adds to the head the
-	// key holds, which is the call's point so far, since only the attempt that holds the key
-	// writes it, those ids and, for the named issue's own close, the ids of the asks it withdrew,
-	// and it adds the step's entry as a row of request_key_steps, with the issue as this write
-	// answers it - its last_seq the one its own events reached and a close's closed_at the
-	// restamp below - which are known only once the batch's callbacks have read them. The
-	// statement is scoped to the request's own claim, so a step whose key another attempt took
-	// over rolls back (errRequestKeyTakenOver). A step that holds no lock of the named issue adds
-	// no ids, and an unkeyed step writes no point.
+	// not. A step of a keyed call reads them with the statement that writes the call's recovery
+	// point (queueStatusChangeStep), run right after the batch rather than on it
+	// (docs.Ledger.AfterWrites), with the issue as this write answers it - its last_seq the one its
+	// own events reached and a close's closed_at the restamp below - which are known only once the
+	// batch's callbacks have read them. A step that holds no lock of the named issue adds no ids,
+	// and an unkeyed step writes no point.
 	var namedEvents []int64
 	if step != nil {
 		switch {
-		case keyed:
+		case step.claim != nil:
 			var closedAsks []string
 			if closing && key == step.named {
 				closedAsks = askIDs(withdrawn)
@@ -842,34 +898,8 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 			if err := ledger.AfterWrites(func(b *store.WriteBatch) error {
 				answered := after
 				answered.LastSeq = appendedIssueLastSeq(key, appended)
-				entry, err := json.Marshal(answeredStatusChangeEntry(answered, before.LastSeq))
-				if err != nil {
-					return err
-				}
-				b.Queue("write the recovery point of a status change", `
-					with named as (
-						select coalesce(array_agg(id order by id), '{}') as ids from events
-						where $4 and issue_key = $5 and seq > $6
-					), head as (
-						update request_keys set recovery = jsonb_build_object(
-							'events', coalesce(recovery -> 'events', '[]') || to_jsonb(named.ids),
-							'withdrawn', coalesce(recovery -> 'withdrawn', '[]') || coalesce(to_jsonb($8::text[]), '[]'))
-						from named
-						where login = $1 and idempotency_key = $2 and attempt = $3 and status is null
-						returning named.ids
-					), step as (
-						insert into request_key_steps (login, idempotency_key, entry) select $1, $2, $7::jsonb from head
-					)
-					select ids from head
-				`, claim.login, claim.key, claim.attempt, holdsNamed, step.named, namedLastSeq, entry, closedAsks,
-				).QueryRow(func(row pgx.Row) error {
-					err := row.Scan(&namedEvents)
-					if errors.Is(err, pgx.ErrNoRows) {
-						return errRequestKeyTakenOver
-					}
-					return err
-				})
-				return nil
+				return queueStatusChangeStep(b, step, answeredStatusChangeEntry(answered, before.LastSeq), moved,
+					namedLastSeq, holdsNamed, closedAsks, &namedEvents)
 			}); err != nil {
 				return issueWriteResult{}, err
 			}
@@ -930,7 +960,7 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 	}
 	return issueWriteResult{
 		issue: after, advice: advice, previousLastSeq: before.LastSeq, wrote: true, appended: appended,
-		namedEvents: namedEvents, closed: closing, withdrawn: withdrawn,
+		namedEvents: namedEvents, closed: closing, withdrawn: withdrawn, moved: moved,
 	}, nil
 }
 

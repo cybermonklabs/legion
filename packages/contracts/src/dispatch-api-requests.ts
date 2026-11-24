@@ -40,9 +40,11 @@ export interface UploadPrecondition {
 interface CreateArtifactOptions {
   readonly name: string;
   readonly summary?: string;
-  /** The token of the version this upload is replacing, which `dispatch doc-read` prints. Every
-   *  upload over a document the owner already holds names it, and one that names none is refused
-   *  `400 PRECONDITION_REQUIRED`. A token behind the live document is refused
+  /** The token of the version this upload is replacing, which `dispatch doc-read` prints. An
+   *  upload over a document the owner already holds names it, and Dispatch checks it under the
+   *  write's own lock. One that names none is taken for now without a check, since older
+   *  `dispatch` commands cannot name one; a later release refuses it `400 PRECONDITION_REQUIRED`
+   *  (INFRA-4980). A token behind the live document is refused
    *  `409 PRECONDITION_FAILED`, whose `current` carries the live token and `current.version` the
    *  live version number. A first upload under a name replaces no version, and a file is no
    *  document, so neither names one. An upload that names a token where the document has none
@@ -98,7 +100,10 @@ export const ID_AMBIGUOUS = "ID_AMBIGUOUS";
  * document of an agent's conversation). At most one of `issue_key` and `document` names its
  * owner: the issue that owns it, or the reference of the project document it is written on.
  * `first_line` is the head of what tells two candidates apart, absent for a direct message a
- * caller may not read.
+ * caller may not read. `edited_at` is the time a comment's or a message's author last edited it,
+ * and `deleted_at` with `deleted_by` the mark of one its author deleted, whose `first_line` the
+ * cleared body leaves absent; each is absent on a post that stands unedited, on every other kind,
+ * and from a Dispatch older than the fields.
  */
 export interface IDCandidate {
   readonly kind: "ask" | "comment" | "message" | "artifact" | "block";
@@ -107,6 +112,9 @@ export interface IDCandidate {
   readonly issue_key?: string;
   readonly document?: string;
   readonly first_line?: string;
+  readonly edited_at?: string;
+  readonly deleted_at?: string;
+  readonly deleted_by?: Actor;
 }
 
 export interface DispatchServiceErrorShape {

@@ -1,11 +1,28 @@
 package webhook
 
 import (
+	"fmt"
+	"os"
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/fixtureenv"
 	"github.com/sjawhar/envoy/internal/ghrename"
 )
+
+// clearEnvoyEnvironment unsets, for the rest of the test, every ENVOY_ variable the test process
+// holds, so a row's result depends on the variables the row sets and not on the shell that runs
+// the test. Every variable LoadWebhookConfig reads starts with ENVOY_, so this clears each of
+// them, and any the loader starts reading under that prefix. fixtureenv.Unset puts the shell's
+// values back when the test ends.
+func clearEnvoyEnvironment(t *testing.T) {
+	t.Helper()
+	for _, entry := range os.Environ() {
+		if name, _, _ := strings.Cut(entry, "="); strings.HasPrefix(name, "ENVOY_") {
+			fixtureenv.Unset(t, name)
+		}
+	}
+}
 
 func TestLoadWebhookConfig(t *testing.T) {
 	cases := []struct {
@@ -113,7 +130,7 @@ func TestLoadWebhookConfig(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Setenv("ENVOY_REVIEWER_APP_ID", "")
+			clearEnvoyEnvironment(t)
 			for k, v := range tc.env {
 				t.Setenv(k, v)
 			}
@@ -138,6 +155,46 @@ func TestLoadWebhookConfig(t *testing.T) {
 			}
 			if cfg.GitHub != nil && cfg.GitHub.ReviewerAppID != tc.wantReviewerAppID {
 				t.Errorf("GitHub.ReviewerAppID = %q, want %q", cfg.GitHub.ReviewerAppID, tc.wantReviewerAppID)
+			}
+		})
+	}
+}
+
+// ENVOY_VERDICT_APP_ID is a GitHub App's id, which GitHub's JSON gives as a whole number above 0
+// and the listener compares as written (contracts.VerdictAppsOwnSuite): any other non-blank value
+// would match no App and leave every suite in the record, so the listener refuses to start and
+// names the variable. Unset or blank is no verdict App, and the value is trimmed.
+func TestLoadWebhookConfigReadsTheVerdictAppID(t *testing.T) {
+	for _, tc := range []struct {
+		value, want, err string
+	}{
+		{value: "", want: ""},
+		{value: "  ", want: ""},
+		{value: " 5341240 ", want: "5341240"},
+		{value: "not-a-number", err: `ENVOY_VERDICT_APP_ID "not-a-number" is not a GitHub App id`},
+		{value: "05341240", err: `ENVOY_VERDICT_APP_ID "05341240" is not a GitHub App id`},
+		{value: "0", err: `ENVOY_VERDICT_APP_ID "0" is not a GitHub App id`},
+		{value: "-5341240", err: `ENVOY_VERDICT_APP_ID "-5341240" is not a GitHub App id`},
+		{value: "5341240.0", err: `ENVOY_VERDICT_APP_ID "5341240.0" is not a GitHub App id`},
+	} {
+		t.Run(fmt.Sprintf("%q", tc.value), func(t *testing.T) {
+			clearEnvoyEnvironment(t)
+			t.Setenv("ENVOY_WEBHOOKS", "github")
+			t.Setenv("ENVOY_GITHUB_WEBHOOK_SECRET", "s")
+			t.Setenv("ENVOY_REVIEWER_APP_ID", "1")
+			t.Setenv("ENVOY_VERDICT_APP_ID", tc.value)
+			cfg, err := LoadWebhookConfig()
+			if tc.err != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.err) {
+					t.Fatalf("LoadWebhookConfig() error = %v, want one holding %q", err, tc.err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("LoadWebhookConfig() error = %v, want none", err)
+			}
+			if cfg.GitHub.VerdictAppID != tc.want {
+				t.Fatalf("GitHub.VerdictAppID = %q, want %q", cfg.GitHub.VerdictAppID, tc.want)
 			}
 		})
 	}
@@ -190,9 +247,7 @@ func TestLoadWebhookConfigRefusesGhostWisprWithoutASecret(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			for _, k := range []string{"ENVOY_GHOSTWISPR_SIGNING_SECRET", "ENVOY_SLACK_SIGNING_SECRET", "ENVOY_GITHUB_WEBHOOK_SECRET"} {
-				t.Setenv(k, "")
-			}
+			clearEnvoyEnvironment(t)
 			t.Setenv("ENVOY_REVIEWER_APP_ID", "1")
 			for k, v := range tc.env {
 				t.Setenv(k, v)
@@ -261,6 +316,7 @@ func TestLoadWebhookConfigRepositoryRenames(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			clearEnvoyEnvironment(t)
 			t.Setenv("ENVOY_WEBHOOKS", "github")
 			t.Setenv("ENVOY_GITHUB_WEBHOOK_SECRET", "s")
 			t.Setenv("ENVOY_REVIEWER_APP_ID", "app123")
@@ -293,5 +349,53 @@ func TestLoadWebhookConfigRepositoryRenames(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// ENVOY_WEBHOOK_BODY_BUDGET sizes the listener's one webhook body budget: unset or blank is the
+// default, a positive whole number of bytes is that budget, and anything else refuses the start
+// with an error naming the variable and the value, with or without a webhook route enabled.
+func TestLoadWebhookConfigReadsTheBodyBudget(t *testing.T) {
+	for _, tc := range []struct {
+		name, value string
+		set         bool
+		want        int64
+		refused     bool
+	}{
+		{name: "unset", want: DefaultBodyBudget},
+		{name: "blank", value: " \t", set: true, want: DefaultBodyBudget},
+		{name: "a whole number of bytes", value: " 1048576 ", set: true, want: 1 << 20},
+		{name: "zero", value: "0", set: true, refused: true},
+		{name: "negative", value: "-1", set: true, refused: true},
+		{name: "a unit", value: "64MiB", set: true, refused: true},
+		{name: "a fraction", value: "1.5", set: true, refused: true},
+	} {
+		for _, webhooks := range []string{"", "slack"} {
+			t.Run(tc.name+", ENVOY_WEBHOOKS="+webhooks, func(t *testing.T) {
+				clearEnvoyEnvironment(t)
+				t.Setenv("ENVOY_WEBHOOKS", webhooks)
+				t.Setenv("ENVOY_SLACK_SIGNING_SECRET", "s")
+				if tc.set {
+					t.Setenv(BodyBudgetEnvVar, tc.value)
+				}
+				cfg, err := LoadWebhookConfig()
+				if tc.refused {
+					want := "invalid " + BodyBudgetEnvVar + ` "` + strings.TrimSpace(tc.value) + `"`
+					if err == nil || !strings.Contains(err.Error(), want) {
+						t.Fatalf("err = %v, want one containing %s", err, want)
+					}
+					return
+				}
+				if err != nil {
+					t.Fatalf("err = %v", err)
+				}
+				if cfg.BodyBudget != tc.want {
+					t.Fatalf("BodyBudget = %d, want %d", cfg.BodyBudget, tc.want)
+				}
+			})
+		}
+	}
+	if got, want := DescribeBodyBudget(DefaultBodyBudget), "listener webhook body budget: 67108864 bytes (64.0 MiB) held at once across every webhook route"; got != want {
+		t.Fatalf("start line %q, want %q", got, want)
 	}
 }

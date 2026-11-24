@@ -115,6 +115,12 @@ writer are spent alike. Where the rule changes nothing, the client still removes
 final line feed, which it has always done, so `echo` and a file that ends in a newline store the
 value without one.
 
+`--type` names what the broker mints a release from rather than releasing the stored value as it
+is: `github-app`, `github-installations`, `google-login`, `azure-login`, `google-service-account`
+or `anthropic-federation`, or `none` for a stored secret. The docs site's
+[Concepts](https://cybermonklabs.github.io/legion/broker/concepts/#requests-and-grants) page says
+what each type's value holds and what its release returns.
+
 A type secret's value is checked before it is written, by the decoder the broker's minter for that
 type reads it with: `secret create --type` checks the value it stores, `secret set` checks it under
 the type tag the secret holds, and `secret retag` checks the value the secret holds when it
@@ -170,7 +176,16 @@ this order, and needs no registered agent session:
    `$XDG_RUNTIME_DIR/agent-secrets`), a box's or a pod's. Absent without `key.pem`; a `key.pem`
    that does not parse, one with no `enrollment`, or a fresh `enrollment.pending` still without
    `key.pem` after `AGENT_SECRETS_ENROLL_WAIT` (a launcher still enrolling), stops the command.
-2. `sign-in`: a person's `agent-secrets login` on this machine. Absent when nobody signed in.
+   While it waits on a fresh `enrollment.pending`, the command says so on stderr, naming the files
+   it waits for, and again once `key.pem` is there and `enrollment` is not.
+2. `sign-in`: a person's `agent-secrets login` on this machine. Absent when nobody signed in, and
+   when this machine cannot renew the sign-in (no `AGENT_SECRETS_SIGNIN_CLIENT_ID` and
+   `AGENT_SECRETS_SIGNIN_CLIENT_SECRET_FILE`, or another client than the person signed in with)
+   and it holds no live enrollment: none in its record, or one that `GET /v1/enrollments/self`,
+   signed with the sign-in's key, answers not live. That read is made only for such a sign-in.
+   The command then says so on stderr, in one line ending `; using the <source> source` where a
+   later source serves, or `; tried the <source> source next` before that source's own refusal.
+   `renew` never passes a sign-in over: it reports the ended enrollment (exit 76).
 3. `helper`: `agent-secrets-helper`, asked first whether the caller is in a session it registered.
    Absent when there is no socket and no helper is expected (`AGENT_SECRETS_HELPER_SOCK` unset, no
    helper unit installed), or the helper answers `NOT_A_SESSION`, as it does for a process that
@@ -194,7 +209,7 @@ this order, and needs no registered agent session:
    once register one session between them. A broker that names no exchange audience is skipped
    with that reason; a broker that refuses the exchange stops the command.
 
-A source that is present but broken, and any broker refusal, stop the command with that error
+A source that is present but broken, and any other broker refusal, stop the command with that error
 (exit 1); with no source, one refusal names each source and why it had nothing:
 `no broker identity for this process: key-dir: …; sign-in: …; helper: …; machine: …`. Since the
 cache is read below the sign-in, a person who runs `agent-secrets login` acts as themselves from
@@ -264,8 +279,9 @@ removes it.
 A pod whose account the broker's `BROKER_POD_OPERATORS` maps to a person acts for that person, and
 names its Dispatch projects as that person's session does: `enroll --pod` sends the list
 `AGENT_SECRETS_PROJECTS` holds, or `--projects` over it. The broker takes the list only when
-Dispatch says the person may see every project on it, and a restricted member's pod must name at
-least one. Any other pod names no project: the broker refuses its list `PROJECTS_NEED_A_PERSON`.
+Dispatch says the person may see every project on it. A restricted member's pod enrols nothing,
+whatever it names (`RESTRICTED_MEMBER_ENROLLS_NOTHING`). Any other pod names no project: the
+broker refuses its list `PROJECTS_NEED_A_PERSON`.
 
 **Nothing in the pod ends its enrollment.** `unenroll` goes through the machine's
 `agent-secrets-helper`, which a pod has not, so a pod cannot end its own; and the broker is never
@@ -396,7 +412,10 @@ guide covers each step in full.
 Each grant is for one session, and lasts until that session ends or for `--ttl`. What happens to a
 request depends on the secret's `owner` and `tier` tags. Your own `tier=agent` secret is granted at
 once to a session on a machine you logged in, and goes to you for approval from any other session.
-Your own `tier=human` secret always goes to you for approval. A `shared` agent-tier secret is
+Your own `tier=human` secret always goes to you for approval. A secret a Google group owns
+(`owner=group:<address>`) is each member's as if it were their own: its `tier=agent` secret is
+granted at once to a member's own session, and every other request for it waits for any member's
+approval. A `shared` agent-tier secret is
 granted at once; a `shared` human-tier one waits for anyone who signs in to the broker. A
 service's secret goes only to that service's pods and VMs. Approvals happen on the broker's
 approval page, which the approver's Dispatch Inbox links to. The docs site's
@@ -453,12 +472,14 @@ source it used (`using …`) before its first store call, and a store refusal na
 choose another from that source. The store's IAM decides what each may do. `--owner me` is the
 email of the person that credential names, and is refused where it names none (a machine's role,
 a service account, a token without an email scope); `--owner <email>` names the owning person
-outright:
+outright, and `--owner group:<email>` a Google group by its lowercase email, each member of which
+decides the secret's requests as the one owner would:
 
 ```sh
 agent-secrets secret list
 agent-secrets secret show NAME
 agent-secrets secret create NAME --owner me --tier agent
+agent-secrets secret create NAME --owner group:approvers@example.com --tier human
 agent-secrets secret set NAME
 agent-secrets secret retag NAME --tier human
 agent-secrets secret delete NAME
@@ -466,9 +487,13 @@ agent-secrets secret restore NAME
 ```
 
 `--requesters` lists who may ask for a secret at all — people by their lowercase sign-in email,
-services by their registered name, separated by spaces — and a secret carrying such a list bounds
-its grants to an hour, so give it `--max-grant 1h` or less; `--requesters none` removes the list
-on retag. `secret create` and `secret retag` check those rules before they write, but neither can
+Google groups as `group:` and the group's lowercase email, which admits each member's sessions,
+and services by their registered name, separated by spaces; `--requesters none` removes the list
+on retag. The list bounds no grant by itself. A `google-service-account` or
+`anthropic-federation` secret names its owner in the list exactly once, beside the registered
+services a human-tier one may list: `--owner <email> --requesters <email>` for a person, and
+`--owner group:<email> --requesters group:<email>`, with no person, for a group. `secret create`
+and `secret retag` check those rules before they write, but neither can
 check whether an entry naming a service is one your deployment registers: this CLI holds no list
 of registered services, so only the broker knows. The reread that follows the write is what
 catches an unregistered name — the broker's refusal prints with its reason and the command exits

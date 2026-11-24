@@ -2,6 +2,9 @@
 
 package smoke
 
+//ci:builds packages/envoy ./internal/smoke/systemroots CGO_ENABLED=0 GOOS=linux TestRDSBundle cmdtest.BuildCommand ./systemroots CGO_ENABLED=0 GOOS=linux
+//ci:reads packages/envoy/docker/rds-global-bundle.pem TestRDSBundle
+
 import (
 	"bytes"
 	"context"
@@ -16,6 +19,8 @@ import (
 	"github.com/testcontainers/testcontainers-go"
 	tcexec "github.com/testcontainers/testcontainers-go/exec"
 )
+
+func TestMain(m *testing.M) { os.Exit(cmdtest.Main(m)) }
 
 // rdsBundleInImage is where the Envoy image ships the RDS CA bundle (docker/Dockerfile).
 const rdsBundleInImage = "/etc/ssl/rds/global-bundle.pem"

@@ -105,7 +105,11 @@ const linkedPullRequestReads = 10
 // repository (comparisonReader.onNamedBranch) and reads a `before_merge` result's pull requests
 // through it (comparisonReader.readThroughHead); and the read-through after the write reads the
 // commit's pull requests through it, or through repo where it answers nil
-// (readThroughPullRequests).
+// (readThroughPullRequests). The linked repository is under the name it is called today: the
+// links are read under the boot's rename pairs (delivery.Attributor.LinkedPullRequests, through
+// refs.CanonicalRepoSQL, which answers as refs.Renames.Canonical does), so the row stores no
+// name a repository was renamed away from, as no write of a repository does, and the boot's
+// pass rewrites a row stored before (store.RewriteRenamedRepositories, check_results.commit_repo).
 func (s *server) refuseUnknownCommit(ctx context.Context, q refs.Queryer, issueKey string, repo *string, sha string) (*string, error) {
 	if repo == nil {
 		return nil, nil
@@ -122,7 +126,7 @@ func (s *server) refuseUnknownCommit(ctx context.Context, q refs.Queryer, issueK
 		slog.Info("dispatch: GitHub could not say whether a recorded result's commit is held",
 			"repo", *repo, "commit", sha, "error", err)
 	}
-	links, err := linkedRepositories(ctx, q, issueKey)
+	links, err := s.linkedRepositories(ctx, q, issueKey)
 	if err != nil {
 		return nil, err
 	}
@@ -328,12 +332,12 @@ type linkedRepository struct {
 // linkedRepositories is every repository that the issue does not resolve to and in which the
 // external links of issueKey name a GitHub pull request, each once with the numbers of its
 // linked pull requests, in the order the issue lists its links. It groups
-// delivery.LinkedPullRequests, the list whose heads the results read compares a `before_merge`
-// check with, so the route and the read take one list. A link to a pull request of the issue's
-// own repository names nothing here: that repository is asked about the commit before any link
-// is read.
-func linkedRepositories(ctx context.Context, q refs.Queryer, issueKey string) ([]linkedRepository, error) {
-	pulls, err := delivery.LinkedPullRequests(ctx, q, issueKey)
+// delivery.Attributor.LinkedPullRequests, the list whose heads the results read compares a
+// `before_merge` check with, so the route and the read take one list, under the rename pairs
+// the boot read. A link to a pull request of the issue's own repository names nothing here:
+// that repository is asked about the commit before any link is read.
+func (s *server) linkedRepositories(ctx context.Context, q refs.Queryer, issueKey string) ([]linkedRepository, error) {
+	pulls, err := s.deps.Attributor.LinkedPullRequests(ctx, q, issueKey)
 	if err != nil {
 		return nil, err
 	}
@@ -420,23 +424,11 @@ type commitRepository struct {
 	// where the commit is of the repository the check's issue resolves to, which no answer about
 	// it names.
 	linked string
-	// unread says the read of the linked repository's canonical name failed, so Dispatch cannot
-	// say where the commit is: every answer about it is unknown with model.ReasonReadFailed
-	// (readFailed), and names linked, which is then the name the row stores, or "" where that name
-	// is the issue's own repository's.
-	unread bool
 	// readable says the App answered the default branch of linked (defaultBranchIn): the one
 	// answer to whether Dispatch can read a linked repository, which commitStands decides a
 	// `before_merge` result by and readThroughRepository decides its read-through by. It is false
-	// where linked is "" or unread is set, since no linked repository is read then.
+	// where linked is "", since no linked repository is read then.
 	readable bool
-}
-
-// readFailed is where the commit of a result stands whose repository's canonical name could not
-// be read (unread): unknown with model.ReasonReadFailed, naming linked. commitStands and
-// onNamedBranch each answer it from here.
-func (owner commitRepository) readFailed() model.ResultCommitStands {
-	return model.ResultCommitStands{Answer: model.CommitUnknown, Reason: model.ReasonReadFailed, Repo: owner.linked}
 }
 
 // commitRepositoryOf is whose the commit of a result of the check of issueKey is taken to be,
@@ -449,41 +441,28 @@ func (owner commitRepository) readFailed() model.ResultCommitStands {
 // and reads nothing, so the ordinary result costs what it always did. A row that names one names
 // a repository GitHub said holds the commit when the result was recorded (refuseUnknownCommit),
 // under the name it was called then, which is read again under the name it is called today
-// (refs.CanonicalRepo), once per name per read of the results: the repository can be renamed
-// since, and GitHub answers 404 for the old name's installation, so every result of it would
-// read unknown — the reason the repository of the check's issue is read under its canonical name
-// (checkIssueRepository). A read that failed leaves the result's repository unknown (unread),
-// which each reader answers as model.ReasonReadFailed, or by reading nothing, rather than walking
-// a repository that holds no such commit.
+// (refs.Renames.Canonical over Deps.Renames, the pairs the boot read, so it costs no read): the
+// repository can be renamed since, and GitHub answers 404 for the old name's installation, so
+// every result of it would read unknown — the reason the repository of the check's issue is read
+// under its canonical name (checkIssueRepository).
 //
 // A name that is the repository the check's issue resolves to now, compared without case, is the
 // issue's own repository: a row stored while the issue resolved elsewhere names that repository,
 // and once the issue has come to resolve to it, the result is read as every other result of the
 // issue is, and no answer about it names a repository.
 //
-// For a linked repository whose canonical name it read, it also reads whether the App can read
-// that repository (readable), from defaultBranchIn's memo. Every reader of such a repository
-// reads that memo for it next anyway, so the answer costs no GitHub call they would not make.
+// For a linked repository, it also reads whether the App can read that repository (readable),
+// from defaultBranchIn's memo. Every reader of such a repository reads that memo for it next
+// anyway, so the answer costs no GitHub call they would not make.
 func (c *comparisonReader) commitRepositoryOf(ctx context.Context, issueKey string, commitRepo *string) commitRepository {
 	if commitRepo == nil {
 		return commitRepository{}
 	}
-	answer, memoized := c.commitRepos[*commitRepo]
-	if !memoized {
-		canonical, err := refs.CanonicalRepo(ctx, c.server.deps.Store.Pool, *commitRepo)
-		if err != nil {
-			slog.Warn("dispatch: canonical name of the repository a result's commit is taken to be of",
-				"repo", *commitRepo, "error", err)
-			canonical = *commitRepo
-		}
-		answer = repositoryAnswer{repo: &canonical, answered: err == nil}
-		c.commitRepos[*commitRepo] = answer
-	}
-	owner := commitRepository{linked: *answer.repo, unread: !answer.answered}
+	owner := commitRepository{linked: c.server.deps.Renames.Canonical(*commitRepo)}
 	if own, answered := c.repositoryOf(ctx, issueKey); answered && own != nil && strings.EqualFold(owner.linked, *own) {
 		owner.linked = ""
 	}
-	if owner.linked != "" && !owner.unread {
+	if owner.linked != "" {
 		_, owner.readable = c.defaultBranchIn(ctx, owner.linked)
 	}
 	return owner
@@ -524,7 +503,7 @@ func (c *comparisonReader) linkedBranchBases(ctx context.Context, check model.Ch
 }
 
 // baseBranchMergedIn is the branch the newest pull request the check's issue links in repo, a
-// linked repository, merged into (delivery.BaseBranchMergedIn), read once per issue and
+// linked repository, merged into (delivery.Attributor.BaseBranchMergedIn), read once per issue and
 // repository per read of the results, and whether the read answered at all. The attribution
 // never gives the issue a pull request of a repository it does not resolve to, so the links are
 // what name its merge there, where baseBranchMergedFor reads the pull requests attributed to it
@@ -536,7 +515,7 @@ func (c *comparisonReader) baseBranchMergedIn(ctx context.Context, issueKey, rep
 	if answer, memoized := c.linkedBaseBranches[memo]; memoized {
 		return answer.branch, answer.read
 	}
-	branch, err := delivery.BaseBranchMergedIn(ctx, c.server.deps.Store.Pool, issueKey, repo)
+	branch, err := c.server.deps.Attributor.BaseBranchMergedIn(ctx, c.server.deps.Store.Pool, issueKey, repo)
 	if err != nil {
 		slog.Warn("dispatch: read the branch a result's issue merged into", "issue", issueKey, "repo", repo, "error", err)
 	}

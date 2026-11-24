@@ -21,11 +21,13 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/ciphertest"
 	"github.com/sjawhar/envoy/internal/cipher/helper"
+	"github.com/sjawhar/envoy/internal/testtmp"
 )
 
 // peerRequest is one connection fakeHelperWithPids answered: the pid the kernel names for its
@@ -84,16 +86,15 @@ func TestRegisterExecStillPinsTheReplacedProcess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sh must print its pid, got %q", out)
 	}
-	select {
-	case seen := <-requests:
-		if seen.pid != printed {
-			t.Fatalf("the pid the helper pinned (%d) must be the pid the command runs as (%d)", seen.pid, printed)
-		}
-		if strings.Contains(seen.line, `"root_pid"`) || strings.Contains(seen.line, `"attach"`) {
-			t.Fatalf("register --exec sent %s; want neither root_pid nor attach", strings.TrimSpace(seen.line))
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("the helper saw no register")
+	seen, ok := received(t, requests)
+	if !ok {
+		t.Fatalf("the helper saw no register, %s before the test binary's deadline", waitMargin)
+	}
+	if seen.pid != printed {
+		t.Fatalf("the pid the helper pinned (%d) must be the pid the command runs as (%d)", seen.pid, printed)
+	}
+	if strings.Contains(seen.line, `"root_pid"`) || strings.Contains(seen.line, `"attach"`) {
+		t.Fatalf("register --exec sent %s; want neither root_pid nor attach", strings.TrimSpace(seen.line))
 	}
 }
 
@@ -115,7 +116,7 @@ func serveRealHelper(t *testing.T, brokerURL, operator string) (*helper.Server, 
 
 func helperSessions(t *testing.T, sock string) []helper.SessionInfo {
 	t.Helper()
-	resp, err := helper.Call(sock, helper.Request{Op: "sessions"}, 5*time.Second)
+	resp, err := helper.Call(sock, helper.Request{Op: "sessions"}, untilGiveUp(t))
 	if err != nil || !resp.OK {
 		t.Fatalf("sessions: %+v %v", resp, err)
 	}
@@ -251,11 +252,9 @@ func TestRegisterSessionIDInsideAnUnregisteredOmpAttachesTheOmpTree(t *testing.T
 			}
 		}
 	}()
-	var report launcherReport
-	select {
-	case report = <-reports:
-	case <-time.After(60 * time.Second):
-		t.Fatalf("the launcher never reported; stderr %q", stderr.String())
+	report, ok := received(t, reports)
+	if !ok {
+		t.Fatalf("the launcher never reported, %s before the test binary's deadline; stderr %q", waitMargin, stderr.String())
 	}
 
 	if report.RegisterCode != 0 || !strings.HasSuffix(strings.TrimSpace(report.RegisterOut), "enrolled") {
@@ -326,20 +325,20 @@ func TestRegisterSessionIDInsideAnExecSessionWithNoOmpNamesIt(t *testing.T) {
 //
 // The orphan cannot be waited on, so it reports through files: its process ID, its stdout, its
 // stderr and its exit code. The process ID and the exit code are written under another name and
-// renamed, so a read of either is never a partial write.
+// renamed, so a read of either is never a partial write. The orphan waits for the go-ahead with
+// no span of its own: it gives up when this test writes the stop file (its cleanup) or when this
+// test's process is gone, so it outlives neither.
 func runWithNoLauncherAbove(t *testing.T, binary string, env []string, args ...string) (code int, stdout, stderr string) {
 	t.Helper()
 	dir := t.TempDir()
 	script := filepath.Join(dir, "orphan.sh")
 	const body = `d=$1
-shift
+test=$2
+shift 2
 printf '%s\n' "$$" > "$d/shell.pid.tmp"
 mv "$d/shell.pid.tmp" "$d/shell.pid"
-i=0
 while [ ! -e "$d/go" ]; do
-	if [ -e "$d/stop" ]; then exit 1; fi
-	i=$((i + 1))
-	if [ "$i" -gt 1500 ]; then exit 1; fi
+	if [ -e "$d/stop" ] || ! kill -0 "$test" 2>/dev/null; then exit 1; fi
 	sleep 0.02
 done
 "$@" > "$d/out" 2> "$d/err"
@@ -349,13 +348,13 @@ mv "$d/code.tmp" "$d/code"
 	if err := os.WriteFile(script, []byte(body), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	outer := exec.Command("sh", "-c", `sh "$0" "$@" &`, script, dir, binary)
+	outer := exec.Command("sh", "-c", `sh "$0" "$@" &`, script, dir, strconv.Itoa(os.Getpid()), binary)
 	outer.Args = append(outer.Args, args...)
 	outer.Env = append(os.Environ(), env...)
 	if err := outer.Run(); err != nil {
 		t.Fatalf("starting the orphaned shell: %v", err)
 	}
-	shellPID := atoiFile(t, filepath.Join(dir, "shell.pid"), 10*time.Second)
+	shellPID := atoiFile(t, filepath.Join(dir, "shell.pid"))
 	t.Cleanup(func() { _ = os.WriteFile(filepath.Join(dir, "stop"), nil, 0o600) })
 	if pid, found := ancestorNamed(t, shellPID, "omp"); found {
 		t.Fatalf("pid %d is still an `omp` above the orphaned shell %d, so this test could not show the refusal it is for", pid, shellPID)
@@ -363,14 +362,14 @@ mv "$d/code.tmp" "$d/code"
 	if err := os.WriteFile(filepath.Join(dir, "go"), nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	code = atoiFile(t, filepath.Join(dir, "code"), 60*time.Second)
+	code = atoiFile(t, filepath.Join(dir, "code"))
 	return code, readFile(t, filepath.Join(dir, "out")), readFile(t, filepath.Join(dir, "err"))
 }
 
-// atoiFile is the number in path once it is there, waiting at most wait for it.
-func atoiFile(t *testing.T, path string, wait time.Duration) int {
+// atoiFile is the number in path once it is there, waiting for it until the waits of these tests
+// give up (waitsGaveUp).
+func atoiFile(t *testing.T, path string) int {
 	t.Helper()
-	deadline := time.Now().Add(wait)
 	for {
 		data, err := os.ReadFile(path)
 		if err == nil {
@@ -380,8 +379,8 @@ func atoiFile(t *testing.T, path string, wait time.Duration) int {
 			}
 			return n
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("%s was never written (%v)", path, err)
+		if waitsGaveUp(t) {
+			t.Fatalf("%s was never written (%v), %s before the test binary's deadline", path, err, waitMargin)
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
@@ -518,13 +517,12 @@ func TestRegisterSendsTheNearestLauncherAsRoot(t *testing.T) {
 	if code := cmdRegister([]string{"--session-id", "s"}, &stdout, &stderr); code != 0 {
 		t.Fatalf("register --session-id: exit %d, stderr %q", code, stderr.String())
 	}
-	select {
-	case req := <-reqs:
-		if req.Op != "register" || !req.Attach || req.RootPID != launcher {
-			t.Fatalf("the request the helper saw: %+v; want register, attach, root_pid %d", req, launcher)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("the fake helper saw no request")
+	req, ok := received(t, reqs)
+	if !ok {
+		t.Fatalf("the fake helper saw no request, %s before the test binary's deadline", waitMargin)
+	}
+	if req.Op != "register" || !req.Attach || req.RootPID != launcher {
+		t.Fatalf("the request the helper saw: %+v; want register, attach, root_pid %d", req, launcher)
 	}
 	wire, err := json.Marshal(helper.Request{Op: "register", Attach: true, RootPID: 4242})
 	if err != nil || !strings.Contains(string(wire), `"attach":true`) || !strings.Contains(string(wire), `"root_pid":4242`) {
@@ -546,13 +544,12 @@ func TestRegisterWithNoLauncherStillAsksTheHelper(t *testing.T) {
 	if code != 0 || stdout.String() != "session-s\tenr-h\tenrolled\n" {
 		t.Fatalf("register with no launcher inside a session: exit %d, stdout %q, stderr %q; want 0 and the session's line", code, stdout.String(), stderr.String())
 	}
-	select {
-	case req := <-reqs:
-		if req.Op != "register" || !req.Attach || req.RootPID != 0 {
-			t.Fatalf("the request the helper saw: %+v; want register, attach, no root_pid", req)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("the fake helper saw no request")
+	req, ok := received(t, reqs)
+	if !ok {
+		t.Fatalf("the fake helper saw no request, %s before the test binary's deadline", waitMargin)
+	}
+	if req.Op != "register" || !req.Attach || req.RootPID != 0 {
+		t.Fatalf("the request the helper saw: %+v; want register, attach, no root_pid", req)
 	}
 }
 
@@ -560,19 +557,114 @@ func TestRegisterWithNoLauncherStillAsksTheHelper(t *testing.T) {
 // nearest `omp` — an `omp` run under a shell the docs register with `--exec -- bash` — the
 // helper answers that session, rooted above the launcher this command named. A root that is an
 // ancestor of this process is this session's, so the command prints it and exits 0.
+//
+// The test builds the tree it needs rather than reading the one `go test` ran in, where the
+// parent of the test process's parent may be init: `go test` started by a container's first
+// process has nothing between them. It starts a shell, the root, which starts a second shell,
+// the launcher, which writes its own pid to a file and runs this test binary as
+// TestRegisterAcceptsARootAboveTheLauncherHelper; that process runs the command and reports the
+// root and launcher it named. The root it reports must be the shell this test started, and the
+// launcher the pid the launcher shell wrote. The helper runs with a TMPDIR of this test's own, so
+// the directories it makes go when this test ends, even when a stall kills it before its own
+// cleanup runs.
 func TestRegisterAcceptsARootAboveTheLauncher(t *testing.T) {
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	// Each shell runs one more command after its child, so neither replaces itself with it.
+	launcherScript := filepath.Join(dir, "launcher.sh")
+	rootScript := filepath.Join(dir, "root.sh")
+	launcherPIDFile := filepath.Join(dir, "launcher.pid")
+	for path, body := range map[string]string{
+		launcherScript: "printf '%s\\n' \"$$\" > \"$(dirname \"$0\")/launcher.pid\"\n\"$@\"\nexit $?\n",
+		rootScript:     "sh \"$(dirname \"$0\")/launcher.sh\" \"$@\"\nexit $?\n",
+	} {
+		if err := os.WriteFile(path, []byte(body), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The helper's own temporary directories (its fake helper's socket directory, its cmdtest
+	// build directory, its t.TempDir) go under this one, which the test removes when it ends. The
+	// room asked for is the helper's socket path under a directory testtmp.Dir makes there.
+	helperTmp := testtmp.Dir(t, filepath.Join("lg4294967295", "agent-secrets", "helper.sock"))
+	root := exec.Command("sh", rootScript, self, "-test.run=^TestRegisterAcceptsARootAboveTheLauncherHelper$", "-test.count=1")
+	root.Env = append(os.Environ(), "AGENT_SECRETS_ROOT_ABOVE_HELPER=1", "TMPDIR="+helperTmp)
+	var out bytes.Buffer
+	root.Stdout, root.Stderr = &out, &out
+	// The tree is a process group of its own, so a stall kills all three processes, and Wait stops
+	// waiting for their output 5 s after the root shell exits.
+	root.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	root.WaitDelay = 5 * time.Second
+	if err := root.Start(); err != nil {
+		t.Fatal(err)
+	}
+	waited := make(chan error, 1)
+	go func() { waited <- root.Wait() }()
+	select {
+	case err = <-waited:
+	case <-time.After(60 * time.Second):
+		_ = syscall.Kill(-root.Process.Pid, syscall.SIGKILL)
+		<-waited
+		t.Fatalf("the root shell's tree did not end in 60 s; output %q", out.String())
+	}
+	if err != nil {
+		t.Fatalf("the root shell's tree ended with %v, want exit 0; output %q", err, out.String())
+	}
+	var report rootAboveReport
+	for _, line := range strings.Split(out.String(), "\n") {
+		if json.Unmarshal([]byte(line), &report) == nil && report.Launcher != 0 {
+			break
+		}
+	}
+	if report.Launcher == 0 {
+		t.Fatalf("the helper in the built tree reported nothing; output %q", out.String())
+	}
+	if report.Root != root.Process.Pid {
+		t.Fatalf("the helper named root %d, want the root shell this test started, %d; output %q", report.Root, root.Process.Pid, out.String())
+	}
+	written, err := os.ReadFile(launcherPIDFile)
+	if err != nil {
+		t.Fatalf("the launcher shell wrote no pid: %v; output %q", err, out.String())
+	}
+	if launcher, err := strconv.Atoi(strings.TrimSpace(string(written))); err != nil || report.Launcher != launcher {
+		t.Fatalf("the helper named launcher %d, want the launcher shell, which wrote %q; output %q", report.Launcher, written, out.String())
+	}
+	if report.Code != 0 || report.Stdout != "session-s\tenr-h\tenrolled\n" {
+		t.Fatalf("register answered a root above its launcher: exit %d, stdout %q, stderr %q; want 0 and the session's line", report.Code, report.Stdout, report.Stderr)
+	}
+}
+
+// rootAboveReport is what TestRegisterAcceptsARootAboveTheLauncherHelper tells its test: the
+// launcher it named (its parent), the root above that the helper answered (the launcher's
+// parent), and what register printed and exited with.
+type rootAboveReport struct {
+	Launcher int    `json:"launcher"`
+	Root     int    `json:"root"`
+	Code     int    `json:"code"`
+	Stdout   string `json:"stdout"`
+	Stderr   string `json:"stderr"`
+}
+
+// TestRegisterAcceptsARootAboveTheLauncherHelper is the process at the bottom of the tree the
+// test above builds: it names its parent the launcher, has the helper answer the launcher's
+// parent as the session's root, runs register, and prints a rootAboveReport line.
+func TestRegisterAcceptsARootAboveTheLauncherHelper(t *testing.T) {
+	if os.Getenv("AGENT_SECRETS_ROOT_ABOVE_HELPER") == "" {
+		t.Skip("subprocess helper")
+	}
 	launcher := fixedLauncher(t)
 	above := parentPID(t, launcher)
-	if above <= 1 {
-		t.Fatalf("the test process's parent %d has no parent above init (%d), so this test cannot name a root above it", launcher, above)
-	}
 	sock, _ := fakeHelper(t, helper.Response{OK: true, RuntimeID: "session-s", EnrollmentID: "enr-h", State: "enrolled", RootPID: above})
 	t.Setenv("AGENT_SECRETS_HELPER_SOCK", sock)
 	var stdout, stderr bytes.Buffer
 	code := cmdRegister([]string{"--session-id", "s"}, &stdout, &stderr)
-	if code != 0 || stdout.String() != "session-s\tenr-h\tenrolled\n" {
-		t.Fatalf("register answered a root above its launcher: exit %d, stdout %q, stderr %q; want 0 and the session's line", code, stdout.String(), stderr.String())
+	line, err := json.Marshal(rootAboveReport{Launcher: launcher, Root: above, Code: code, Stdout: stdout.String(), Stderr: stderr.String()})
+	if err != nil {
+		t.Fatal(err)
 	}
+	fmt.Println(string(line))
 }
 
 // TestRegisterRefusesAHelperThatNamesNoRoot: a helper from before this change pins the caller,
@@ -634,6 +726,49 @@ func TestRegisterWithoutExecExitsOneWhenWaitedButNotEnrolled(t *testing.T) {
 	}
 }
 
+// TestRegisterExitsOneWhenTheBrokerRefusesTheSessionForGood: a helper whose one enroll call the
+// broker refused 403 RESTRICTED_MEMBER_ENROLLS_NOTHING answers state refused and asks no more, so
+// register prints the session's line and exits 1 naming the refusal, whether it was asked to wait
+// or not: there is no enrollment to wait for.
+func TestRegisterExitsOneWhenTheBrokerRefusesTheSessionForGood(t *testing.T) {
+	const refusal = "broker 403 RESTRICTED_MEMBER_ENROLLS_NOTHING: a restricted member's machine login enrolls no session"
+	for _, args := range [][]string{nil, {"--wait", "5"}} {
+		t.Run(strings.Join(append([]string{"register"}, args...), " "), func(t *testing.T) {
+			launcher := fixedLauncher(t)
+			sock, _ := fakeHelper(t, helper.Response{OK: true, RuntimeID: "h:1:1", State: "refused", Error: refusal, RootPID: launcher})
+			t.Setenv("AGENT_SECRETS_HELPER_SOCK", sock)
+			var stdout, stderr bytes.Buffer
+			code := cmdRegister(args, &stdout, &stderr)
+			if code != 1 || stdout.String() != "h:1:1\t\trefused\n" ||
+				!strings.Contains(stderr.String(), "the broker refuses to enroll this session, and the helper asks no more: "+refusal) {
+				t.Fatalf("register against a refused session: exit %d, stdout %q, stderr %q; want 1, the refused line and the refusal", code, stdout.String(), stderr.String())
+			}
+		})
+	}
+}
+
+// TestRegisterExecLaunchesARefusedSessionWithNoSecretsAccess: `register --exec` never blocks a
+// launch on the broker, a refusal included: against a helper that answers the session refused
+// (403 RESTRICTED_MEMBER_ENROLLS_NOTHING), the command still runs, and stderr says the broker
+// refuses the session, the helper asks no more, and the session launches with no secrets access.
+func TestRegisterExecLaunchesARefusedSessionWithNoSecretsAccess(t *testing.T) {
+	const refusal = "broker 403 RESTRICTED_MEMBER_ENROLLS_NOTHING: a restricted member's machine login enrolls no session"
+	binary := buildAgentSecrets(t)
+	sock, _ := fakeHelper(t, helper.Response{OK: true, RuntimeID: "h:1:1", State: "refused", Error: refusal})
+	cmd := exec.Command(binary, "register", "--exec", "--", "sh", "-c", "echo ran")
+	cmd.Env = append(os.Environ(), "AGENT_SECRETS_HELPER_SOCK="+sock, "AGENT_SECRETS_KEY_DIR=")
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil || strings.TrimSpace(string(out)) != "ran" {
+		t.Fatalf("register --exec of a refused session: %q, %v (stderr %q); want the command run", out, err, stderr.String())
+	}
+	want := "agent-secrets register: the broker refuses to enroll this session, and the helper asks no more (" + refusal + "); launching anyway, with no secrets access\n"
+	if stderr.String() != want {
+		t.Fatalf("register --exec of a refused session: stderr %q, want %q", stderr.String(), want)
+	}
+}
+
 // TestRegisterFindsTheHelperOnItsDefaultSocket pins that register, like machine login and every
 // other helper-mode form, reaches a helper listening on its default socket
 // ($XDG_RUNTIME_DIR/agent-secrets/helper.sock) with AGENT_SECRETS_HELPER_SOCK unset: a machine set
@@ -652,12 +787,11 @@ func TestRegisterFindsTheHelperOnItsDefaultSocket(t *testing.T) {
 	if got, want := stdout.String(), "h:1:1\tenr-h\tenrolled\n"; got != want {
 		t.Fatalf("register output: got %q, want %q", got, want)
 	}
-	select {
-	case req := <-reqs:
-		if req.Op != "register" {
-			t.Fatalf("request sent to the default socket: %+v", req)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("the helper on the default socket never saw a request")
+	req, ok := received(t, reqs)
+	if !ok {
+		t.Fatalf("the helper on the default socket never saw a request, %s before the test binary's deadline", waitMargin)
+	}
+	if req.Op != "register" {
+		t.Fatalf("request sent to the default socket: %+v", req)
 	}
 }

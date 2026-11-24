@@ -1,9 +1,9 @@
 // person_pod_projects_test.go drives POST /v1/enrollments for a person's pod that names
 // projects, on the real handlers api_test.go mounts. BROKER_POD_OPERATORS maps the pod's account
-// to bob, a restricted member, who sees only the projects whose access list names him. The pod
-// logs in with its own token and names its projects as bob's own session does, and the broker
-// takes them. The refusals of a pod's list are enroll.Service.Create's, which
-// enroll/person_pod_test.go drives for a person's pod.
+// to bob, a full member. The pod logs in with its own token and names its projects as bob's own
+// session does, and the broker takes them. A restricted member's pod enrolls nothing at all
+// (enroll/restricted_member_test.go); the refusals of a pod's list are
+// enroll.Service.Create's, which enroll/person_pod_test.go drives for a person's pod.
 package api_test
 
 import (
@@ -27,13 +27,13 @@ const (
 )
 
 // newPersonPodProjectsServer is newTestServer with bob's account mapped to bob and a client of a
-// Dispatch stand-in in which bob is a restricted member, and PRIV is private and its access list
-// names bob.
+// Dispatch stand-in in which bob is a full member, and PRIV is private and its access list names
+// bob.
 func newPersonPodProjectsServer(t *testing.T) *testServer {
 	t.Helper()
 	dispatch := projectaccesstest.NewServer(t, map[string]projectaccesstest.Row{
 		"PRIV": {Visibility: "private", Owner: testApprover, Listed: []string{projectsPodPerson}},
-	}, map[string]string{projectsPodPerson: projectaccess.MemberRestricted})
+	}, map[string]string{projectsPodPerson: projectaccess.MemberFull})
 	return newTestServerWith(t, func(d *api.Deps) {
 		d.Enroll.Projects = projectaccess.New(dispatch.URL, dispatch.Account, nil)
 		d.Enroll.ServiceLogins[projectsPodAccount] = projectsPodService
@@ -76,12 +76,12 @@ func (p bobsPod) enrol(t *testing.T, ts *testServer, projects []string) (int, []
 	return ts.launcher(t, p.loginKey, p.login, http.MethodPost, "/v1/enrollments", body)
 }
 
-// TestARestrictedMembersPodEnrollsNamingItsProjects: bob's pod naming PRIV, whose access list
-// names him, is enrolled: 201, and the same call again answers 200 with the same enrollment, as
-// the route answers a key already enrolled. GET /v1/enrollments/self answers bob as its operator
-// and PRIV as its projects. So the route takes a pod's projects and gives them to the rule that
-// checks a person's pod against its person.
-func TestARestrictedMembersPodEnrollsNamingItsProjects(t *testing.T) {
+// TestAPersonsPodEnrollsNamingItsProjects: bob, a full member, has a pod naming PRIV, whose access
+// list names him, and it is enrolled: 201, and the same call again answers 200 with the same
+// enrollment, as the route answers a key already enrolled. GET /v1/enrollments/self answers bob as
+// its operator and PRIV as its projects. So the route takes a pod's projects and gives them to the
+// rule that checks a person's pod against its person.
+func TestAPersonsPodEnrollsNamingItsProjects(t *testing.T) {
 	ts := newPersonPodProjectsServer(t)
 
 	pod := logInBobsPod(t, ts, "pod-uid-bob-priv")

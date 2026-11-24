@@ -9,6 +9,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/sjawhar/envoy/internal/cipher/config"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -49,7 +50,7 @@ func TestTheLivenessHandlerFailsWhileTheCalloutLoopIsStalled(t *testing.T) {
 	require.Equal(t, http.StatusOK, livenessStatus(idle), "an idle service read as stalled")
 
 	release := make(chan struct{})
-	stuck := func(context.Context, Deps, []ServiceEntry, Request) (Decision, error) {
+	stuck := func(context.Context, Deps, []config.NATSService, Request) (Decision, error) {
 		<-release
 		return Decision{}, nil
 	}

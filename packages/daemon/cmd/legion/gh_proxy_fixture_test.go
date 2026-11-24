@@ -22,6 +22,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // testGhChildEnv names, to this package's test binary run as `legion` (TestMain), environment
@@ -139,7 +141,9 @@ func startCaptureProxy(t *testing.T) *captureProxy {
 	}
 
 	inner := &chanListener{conns: make(chan net.Conn), done: make(chan struct{})}
-	server := &http.Server{Handler: http.HandlerFunc(p.serve), ReadHeaderTimeout: 10 * time.Second}
+	// A request's headers have what is left of the test binary's deadline less 30 s to arrive: a gh
+	// or git a loaded machine makes slow to write them is still answered.
+	server := &http.Server{Handler: http.HandlerFunc(p.serve), ReadHeaderTimeout: testwait.Bounded(t, 1<<60, 30*time.Second)}
 	go func() { _ = server.Serve(inner) }()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

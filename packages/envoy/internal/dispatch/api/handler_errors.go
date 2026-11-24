@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // How a handler's error becomes a response: one function, writeHandlerError, that every route's
@@ -116,6 +117,16 @@ type editLostError struct {
 	Suggestion   *string       `json:"suggestion,omitempty"`
 }
 
+// deletedPostError is the 409 every write that would put text on a post its author withdrew
+// answers, and the one place that names that refusal's code and its words: a reply under the
+// post, an edit or a delete of it, an accept or a reject of its suggestion, a send or a reply
+// of a delivery of it. kind names the post in the message, as the route's caller met it ("this
+// comment is deleted"). A deleted post keeps its row and its place, so a write that moves no
+// text - a resolve, a reopen - takes it and meets this refusal nowhere.
+func deletedPostError(kind refs.ItemKind) *apiError {
+	return errorf(http.StatusConflict, "POST_DELETED", "this %s is deleted", kind)
+}
+
 func (s *server) writeHandlerError(w http.ResponseWriter, err error) {
 	var apiErr *apiError
 	if errors.As(err, &apiErr) {
@@ -137,6 +148,13 @@ func (s *server) writeHandlerError(w http.ResponseWriter, err error) {
 	var conflict *parentStatusConflict
 	if errors.As(err, &conflict) {
 		WriteJSON(w, http.StatusConflict, conflict.body())
+		return
+	}
+	// An acceptance write refused for an open child of another project names each such child
+	// (refuseOpenForeignChildren in issue_parent.go).
+	var open openForeignChildrenError
+	if errors.As(err, &open) {
+		WriteJSON(w, http.StatusConflict, open.body())
 		return
 	}
 	documentCode := documentErrorCode(err)

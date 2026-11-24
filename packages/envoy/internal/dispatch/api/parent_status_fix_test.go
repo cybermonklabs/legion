@@ -132,7 +132,7 @@ func newFixRig(t *testing.T) fixRig {
 	t.Helper()
 	ctx := context.Background()
 	rig := newRuleRig(t, false)
-	createProjects(t, rig.handler, "ZETA")
+	createTestProject(t, rig.handler, "ZETA")
 	data, err := os.ReadFile(filepath.Join("testdata", "parent-status-fix", "chains.jsonl"))
 	if err != nil {
 		t.Fatalf("read the captured chains: %v", err)

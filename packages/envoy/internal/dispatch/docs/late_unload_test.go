@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -131,6 +132,192 @@ func TestARoomALateSettlementLoadedStaysForAWriterThatTookItUp(t *testing.T) {
 	r.service.retireSettlementRoom(r.room)
 	if got := r.service.srv.GetDoc(r.room); got != settlementRoom {
 		t.Errorf("the room the late settlement loaded is %p once the writer that took it up and every settlement have ended, want it resident (%p): the writer took it up, so it idles out as any room a write loaded", got, settlementRoom)
+	}
+}
+
+// A writer that takes the writer slot while the room a late departure's settlement loads is still
+// loading - before that load's hook takes the room's record - takes that room up too: the load
+// that reaches the record under the writer's slot records no mark for the settlement
+// (onLoadDocument), so the write's own clearing of the mark at its slot (openLiveWrite) is not
+// undone by a load that ends after it. The writer forks from the store, since the room is still
+// loading (coldFork), and publishes into the room once it has loaded (publishLiveWrite): its commit
+// can come before the load finishes, when its publish waits for the load, or after. Once the
+// write, its own settlement and the late settlement have all ended, a retirement leaves the room
+// resident, as for a writer that took the room up after it loaded.
+func TestARoomALateSettlementLoadedStaysForAWriterThatTookItUpWhileItLoaded(t *testing.T) {
+	t.Run("the load ends before the write commits", func(t *testing.T) {
+		writerTakesUpALoadingSettlementRoom(t, false)
+	})
+	t.Run("the write commits before the load ends", func(t *testing.T) {
+		writerTakesUpALoadingSettlementRoom(t, true)
+	})
+}
+
+// writerTakesUpALoadingSettlementRoom holds the load of the room a late departure's settlement
+// makes while it decodes the stored history (bootstrapping), before its hook takes the room's
+// record, and opens a joined write held after its fork read. It lets the load go first, or, with
+// writeFirst, the write first, which commits and reaches its publish while the room still loads.
+// It then requires that room to stay resident once a retirement runs after every holder has ended
+// (TestARoomALateSettlementLoadedStaysForAWriterThatTookItUpWhileItLoaded).
+func writerTakesUpALoadingSettlementRoom(t *testing.T, writeFirst bool) {
+	r := unloadAcrossAReload(t)
+	r.releaseFirstRoom()
+	// The write's own settlement runs once the write has ended, so nothing holds the room's
+	// record by the time the test retires the room.
+	r.service.settle = 20 * time.Millisecond
+
+	// The load held is the late departure's settlement's own, which carries its mark
+	// (withSettlementLoad): its hook is on the load's goroutine, ahead of the decode, and is handed
+	// the room's document, which GetDoc answers once the room has loaded.
+	var settlementDoc atomic.Pointer[crdt.Doc]
+	load := r.service.srv.OnLoadDocument
+	r.service.srv.OnLoadDocument = func(ctx context.Context, room string, doc *crdt.Doc) error {
+		if room == r.room && isSettlementLoad(ctx) {
+			settlementDoc.CompareAndSwap(nil, doc)
+		}
+		return load(ctx, room, doc)
+	}
+	loading, letLoad := make(chan struct{}), make(chan struct{})
+	var loadOnce sync.Once
+	releaseLoad := func() { loadOnce.Do(func() { close(letLoad) }) }
+	t.Cleanup(releaseLoad)
+	var loadHeld atomic.Bool
+	countLoad := r.service.bootstrapping
+	r.service.bootstrapping = func(room string, state []byte) {
+		countLoad(room, state)
+		if room == r.room && settlementDoc.Load() != nil && !loadHeld.Swap(true) {
+			close(loading)
+			<-letLoad
+		}
+	}
+	// The writer holds the writer slot from before its fork read, and is held after that read.
+	forked, letWrite := make(chan struct{}), make(chan struct{})
+	var writeOnce sync.Once
+	releaseWrite := func() { writeOnce.Do(func() { close(letWrite) }) }
+	t.Cleanup(releaseWrite)
+	var writeHeld atomic.Bool
+	r.service.afterForkRead = func(room string) {
+		if room == r.room && !writeHeld.Swap(true) {
+			close(forked)
+			<-letWrite
+		}
+	}
+	type publish struct {
+		cold bool
+		held *crdt.Doc
+	}
+	publishes := make(chan publish, 1)
+	r.service.checkRendering = func(at string, write *liveWrite) {
+		if at == "publish" && write.artifactID == r.room {
+			select {
+			case publishes <- publish{cold: write.cold, held: r.service.srv.GetDoc(r.room)}:
+			default:
+			}
+		}
+	}
+	var refused atomic.Bool
+	r.service.afterPublishRefused = func(room string) {
+		if room == r.room {
+			refused.Store(true)
+		}
+	}
+
+	r.closeUnderHeldDeparture()()
+	select {
+	case <-loading:
+	case <-time.After(roomWait(t)):
+		t.Fatal("the late departure's settlement never loaded a room, so nothing here is tested")
+	}
+	if loads := r.loads.Load(); loads != 3 {
+		t.Fatalf("the late departure's settlement's load is the document's load %d, want the third; nothing here is tested", loads)
+	}
+	wrote := make(chan error, 1)
+	go func() {
+		_, err := joinedReplaceText(r.service, r.room, "A write that takes the settlement's room up while it loads.\n", model.Actor{Kind: "user", ID: "alice"})
+		wrote <- err
+	}()
+	select {
+	case <-forked:
+	case err := <-wrote:
+		t.Fatalf("the write returned before its fork read was held: %v; nothing here is tested", err)
+	case <-time.After(roomWait(t)):
+		t.Fatal("the write never read its fork while the settlement's room loaded, so nothing here is tested")
+	}
+	var published publish
+	if writeFirst {
+		releaseWrite()
+		select {
+		case published = <-publishes:
+		case <-time.After(roomWait(t)):
+			t.Fatal("the write never reached its publish while the settlement's room loaded, so nothing here is tested")
+		}
+		if published.held != nil {
+			t.Fatalf("the write reached its publish with room %p resident, want the settlement's room still loading; nothing here is tested", published.held)
+		}
+		releaseLoad()
+	} else {
+		releaseLoad()
+		waitFor(t, roomWait(t), "the settlement's room to finish loading", func() bool {
+			return r.service.srv.GetDoc(r.room) != nil
+		})
+		releaseWrite()
+	}
+	select {
+	case err := <-wrote:
+		if err != nil {
+			t.Fatalf("write while the late settlement's room loads: %v", err)
+		}
+	case <-time.After(roomWait(t)):
+		t.Fatal("the write that took the slot while the room loaded never returned")
+	}
+	if !writeFirst {
+		select {
+		case published = <-publishes:
+		default:
+			t.Fatal("the write published nothing, so nothing here is tested")
+		}
+	}
+	// No other room of the document loaded and nothing refused the publish; the room's text, read
+	// once nothing holds the record, says the publish reached the settlement's room.
+	settlementRoom := settlementDoc.Load()
+	if loads := r.loads.Load(); loads != 3 || !published.cold || refused.Load() {
+		t.Fatalf("after the write the document was loaded %d times, and the write forked cold: %v and had its publish refused: %v; want the settlement's room, the third load, published into by a cold write; nothing here is tested", loads, published.cold, refused.Load())
+	}
+	if !writeFirst && published.held != settlementRoom {
+		t.Fatalf("the write published into room %p, want the room the late settlement loaded (%p); nothing here is tested", published.held, settlementRoom)
+	}
+
+	r.awaitSocketEnd("the second room's browser")
+	waitFor(t, roomWait(t), "the write and every settlement of the document to end, and nothing else to hold the room's record", func() bool {
+		owed, err := settlementPending(context.Background(), r.service.store.Pool, r.room)
+		if err != nil || owed {
+			return false
+		}
+		state := r.service.lockExistingState(r.room)
+		if state == nil {
+			return true
+		}
+		defer r.service.unlockState(r.room, state)
+		return r.service.unusedLocked(state)
+	})
+	// The settlement's load read the store before the write committed, so only the write's publish
+	// put the write's text into that room.
+	if got := docMarkdown(settlementRoom); !strings.Contains(got, "up while it loads.") {
+		t.Fatalf("the room the late settlement loaded holds %q, want the write's text: the write did not publish into it, so nothing here is tested", got)
+	}
+	if state := r.service.lockExistingState(r.room); state != nil {
+		marked := state.warmed != nil
+		r.service.unlockState(r.room, state)
+		if marked {
+			t.Errorf("the room's record holds the late settlement's mark once the writer that took the room up while it loaded has ended, want none: a retirement closes a marked room")
+		}
+	}
+	r.service.retireSettlementRoom(r.room)
+	if got := r.service.srv.GetDoc(r.room); got != settlementRoom {
+		t.Errorf("the room the late settlement loaded is %p once the writer that took it up while it loaded and every settlement have ended, want it resident (%p): the writer took it up, so it idles out as any room a write loaded", got, settlementRoom)
+	}
+	if loads, _ := r.counted(); loads != 1 {
+		t.Errorf("the document counts %d loads once the write and every settlement have ended, want the settlement room's one", loads)
 	}
 }
 

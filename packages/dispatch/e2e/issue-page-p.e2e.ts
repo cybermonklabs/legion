@@ -17,7 +17,7 @@ import {
   setGatedSteps,
 } from "./api";
 import { closeDetails, gotoIssue, phase } from "./issue-page";
-import { focusThePage } from "./issue-page-g";
+import { expectOpeningLanded, focusThePage } from "./issue-page-g";
 import { withIssuePage } from "./issue-page-option";
 import {
   actionsMenuDrop,
@@ -36,6 +36,7 @@ import {
   headerLabels,
   headerParts,
   holdClipboard,
+  holdFrames,
   holdLabelsAtTheirChips,
   holdReviewReads,
   IPHONE_13,
@@ -65,7 +66,7 @@ import {
   waitingCount,
   waitingPressInHistory,
 } from "./issue-page-p";
-import { leaveFocus, onBody } from "./keyboard-issue";
+import { onBody } from "./keyboard-issue";
 import { boxesApart } from "./layout";
 import { answeredPost, holdPosts, navigateInApp } from "./sends";
 import { expect, type Locator, type Page, type Request, test } from "./test";
@@ -1388,7 +1389,8 @@ test("the header's keys and the palette reach their controls", async ({ browser 
     await page.setViewportSize({ height: 900, width: 1280 });
     await gotoIssue(page, `/issues/${key}`);
     await expectHeaderDrawn(page);
-    await leaveFocus(page);
+    await expectOpeningLanded(page);
+    await focusThePage(page);
     const header = issueHeader(page);
     const priority = header.getByRole("combobox", { name: `Priority of ${key}` });
     const status = header.getByRole("combobox", { name: "Status" });
@@ -1444,7 +1446,8 @@ test("the header's keys and the palette reach their controls", async ({ browser 
     await page.unroute(refused);
     await gotoIssue(page, `/issues/${key}`);
     await expectHeaderDrawn(page);
-    await leaveFocus(page);
+    await expectOpeningLanded(page);
+    await focusThePage(page);
 
     // A digit sets the priority through the picker's write, and Shift+P pins through the
     // header's own control; both hold after a new load.
@@ -1456,7 +1459,7 @@ test("the header's keys and the palette reach their controls", async ({ browser 
     expect((await write).postDataJSON()).toEqual({ priority: 2 });
     await expect(badgeValue(page, `Priority of ${key}`)).toHaveText("P2");
     await expect.poll(() => getIssue(key)).toMatchObject({ priority: 2 });
-    await leaveFocus(page);
+    await focusThePage(page);
     const pinned = page.waitForResponse(
       (response) =>
         response.request().method() === "PUT" &&
@@ -1475,7 +1478,8 @@ test("the header's keys and the palette reach their controls", async ({ browser 
       "aria-pressed",
       "true"
     );
-    await leaveFocus(page);
+    await expectOpeningLanded(page);
+    await focusThePage(page);
 
     // e puts the caret in the title, where every key is text: "sp0" is typed there, and Escape
     // keeps the title.
@@ -1523,7 +1527,7 @@ test("the header's keys and the palette reach their controls", async ({ browser 
     );
     await expect(heading, "Details did not give the focus back to the heading").toBeFocused();
     await page.keyboard.press("x");
-    await leaveFocus(page);
+    await focusThePage(page);
     expect(
       (await getIssue(key)).title,
       "a focus given back to the heading opened the title's editor"
@@ -1557,7 +1561,7 @@ test("the header's keys and the palette reach their controls", async ({ browser 
     await status.selectOption("todo");
     await expect.poll(() => holding, { message: "the status's write was not sent" }).toBe(1);
     await expect(priority, "the priority refuses input while the status is saved").toBeEnabled();
-    await leaveFocus(page);
+    await focusThePage(page);
     await page.keyboard.press("Control+k");
     await expect(
       actions.getByRole("option", { name: "Set priority P2" }),
@@ -1577,14 +1581,14 @@ test("the header's keys and the palette reach their controls", async ({ browser 
     // Close issue nor a priority, as the header offers Reopen and refuses a priority; Reopen
     // gives the issue back to the backlog. The rows are taken when the palette opens, so it
     // opens once the page has taken in the close and has no write in flight.
-    await leaveFocus(page);
+    await focusThePage(page);
     await page.keyboard.press("Control+k");
     await actions.getByRole("option", { name: "Close issue" }).click();
     await expect(palette, "Close issue did not close the palette").toHaveCount(0);
     await expect.poll(() => getIssue(key).then((read) => read.status)).toBe("done");
     await expect(priority, "the closed issue's priority takes input").toBeDisabled();
     await expect(header.getByRole("status"), "the close is still being saved").toHaveCount(0);
-    await leaveFocus(page);
+    await focusThePage(page);
     await page.keyboard.press("Control+k");
     const reopen = actions.getByRole("option", { name: "Reopen issue" });
     await expect(reopen, "the closed issue's palette offers no Reopen issue").toBeVisible();
@@ -1606,7 +1610,7 @@ async function openScrollingPage(page: Page, key: string, width: number): Promis
   // The outline opens with the focus on the first question that waits on the reader and holds
   // that row on screen until the reader acts or the focus leaves it, so the page's
   // growth below would scroll back to it: the focus lands, then leaves the tree.
-  await expect(page.locator("[data-node-row]:focus"), "the load focused no row").toHaveCount(1);
+  await expectOpeningLanded(page);
   await focusThePage(page);
   await page.evaluate(() => {
     const page = document.querySelector("[data-issue-page]");
@@ -2114,7 +2118,8 @@ test("a focus given back to the title's heading opens no editor", async ({ brows
   await phase(browser, seedHeader, async (page, seeded) => {
     await gotoIssue(page, `/issues/${seeded.key}`);
     await expectHeaderDrawn(page);
-    await leaveFocus(page);
+    await expectOpeningLanded(page);
+    await focusThePage(page);
     const header = issueHeader(page);
     const heading = header.getByRole("heading", { level: 1 });
     const editor = header.getByRole("textbox", { name: "Issue title" });
@@ -2134,7 +2139,7 @@ test("a focus given back to the title's heading opens no editor", async ({ brows
       0
     );
     await page.keyboard.press("x");
-    await leaveFocus(page);
+    await focusThePage(page);
     expect(
       (await getIssue(seeded.key)).title,
       "a key typed after a focus given back to the heading changed the title"
@@ -2161,7 +2166,8 @@ test("a keyboard pick of the status keeps the focus on the status while it saves
     await page.setViewportSize(viewportAt(DESKTOP.width));
     await gotoIssue(page, `/issues/${key}`);
     await expectHeaderDrawn(page);
-    await leaveFocus(page);
+    await expectOpeningLanded(page);
+    await focusThePage(page);
     const status = issueHeader(page).getByRole("combobox", { name: "Status" });
     await expect(status).toHaveValue("in_progress");
     const statusFocused = () => status.evaluate((select) => select === document.activeElement);
@@ -2416,7 +2422,8 @@ test("the header's menu gives the focus back to its control on Escape and after 
       await page.setViewportSize(viewportAt(width));
       await gotoIssue(page, `/issues/${seeded.key}`);
       await expectHeaderDrawn(page);
-      await leaveFocus(page);
+      await expectOpeningLanded(page);
+      await focusThePage(page);
 
       await onAction(1);
       await page.keyboard.press("Escape");
@@ -2525,6 +2532,7 @@ test("the header's menu closes once Tab takes the focus out of it, leaving the f
   await phase(browser, seedHeader, async (page, seeded) => {
     await page.setViewportSize(IPHONE_13);
     await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectOpeningLanded(page);
     await expectHeaderDrawn(page);
     const header = issueHeader(page);
     const trigger = header.getByRole("button", { exact: true, name: CONTROL_LABELS.issue_actions });
@@ -2618,6 +2626,7 @@ test("Details closed after a write removed the labels' count leaves the focus in
   await phase(browser, seedHeader, async (page, seeded) => {
     await patchIssue(seeded.key, { labels: [...TWENTY_LABELS] });
     await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectOpeningLanded(page);
     await expectHeaderDrawn(page);
     const count = labelsLeft(page);
     await expect(count, "twenty labels draw no labels' count").toBeVisible();
@@ -2653,6 +2662,7 @@ test("Details closed after a write removed the labels' count while the palette w
   await phase(browser, seedHeader, async (page, seeded) => {
     await patchIssue(seeded.key, { labels: [...TWENTY_LABELS] });
     await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectOpeningLanded(page);
     await expectHeaderDrawn(page);
     const count = labelsLeft(page);
     await expect(count, "twenty labels draw no labels' count").toBeVisible();
@@ -2690,6 +2700,7 @@ test("Details closed after a write removed the parent link leaves the focus in t
   test.setTimeout(120_000);
   await phase(browser, seedHeader, async (page, seeded) => {
     await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectOpeningLanded(page);
     await expectHeaderDrawn(page);
     const parent = issueHeader(page).getByRole("link", { exact: true, name: seeded.parentKey });
     await parent.focus();
@@ -2723,6 +2734,7 @@ test("Details closed after an answer elsewhere removed Approve leaves the focus 
   await phase(browser, seedHeader, async (page, seeded) => {
     await requestApproval(seeded.specArtifactId, { summary: "Read it." });
     await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectOpeningLanded(page);
     await expectHeaderDrawn(page);
     const header = issueHeader(page);
     const approve = header.getByRole("button", { exact: true, name: "Approve" });
@@ -2782,6 +2794,7 @@ test("the approval chip's a approves the document whose request waits, and a els
     await requestApproval(seeded.specArtifactId, { summary: "Read it." });
     const reviewed = reviewsSent(page);
     await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectOpeningLanded(page);
     await expectHeaderDrawn(page);
     const header = issueHeader(page);
     const approve = header.getByRole("button", { exact: true, name: "Approve" });
@@ -2839,6 +2852,7 @@ test("the approval chip's Shift+R opens Request changes, from the chip and from 
   await phase(browser, seedHeader, async (page, seeded) => {
     await requestApproval(seeded.specArtifactId, { summary: "Read it." });
     await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectOpeningLanded(page);
     await expectHeaderDrawn(page);
     const header = issueHeader(page);
     const approve = header.getByRole("button", { exact: true, name: "Approve" });
@@ -2895,6 +2909,8 @@ test("an approval entry's a approves that entry's document and no other", async 
     },
     async (page, seeded) => {
       const reviewed = reviewsSent(page);
+      // no opening focus: the seed's spec and Verification document hold no block a row draws,
+      // and the issue nothing else, so the outline has no row and the page places no focus.
       await gotoIssue(page, `/issues/${seeded.key}`);
       await expectHeaderDrawn(page);
       await expect(waitingCount(page)).toHaveText("Waiting on you (2)");
@@ -2965,6 +2981,7 @@ test("the key card and the palette offer the approval chip's two keys while the 
   await phase(browser, seedHeader, async (page, seeded) => {
     await requestApproval(seeded.specArtifactId, { summary: "Read it." });
     await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectOpeningLanded(page);
     await expectHeaderDrawn(page);
     await expect(
       issueHeader(page).getByRole("button", { exact: true, name: "Approve" }),
@@ -2983,7 +3000,7 @@ test("the key card and the palette offer the approval chip's two keys while the 
         await chip.focus();
         await expect(chip).toBeFocused();
       } else {
-        await leaveFocus(page);
+        await focusThePage(page);
       }
       await page.keyboard.press("?");
       await expect(help, "? did not open the key card").toBeVisible();
@@ -3004,7 +3021,7 @@ test("the key card and the palette offer the approval chip's two keys while the 
 
     const palette = page.getByRole("dialog", { name: "Search" });
     const actions = palette.getByRole("group", { name: "Actions" });
-    await leaveFocus(page);
+    await focusThePage(page);
     await page.keyboard.press("Control+k");
     await expect(palette, "Control+k did not open the palette").toBeVisible();
     for (const [label] of lines) {
@@ -3076,6 +3093,7 @@ test("the palette's Close issue, run from a header control, leaves the focus in 
     ] as const) {
       await patchIssue(key, { status: "in_progress" });
       await gotoIssue(page, `/issues/${key}`);
+      await expectOpeningLanded(page);
       await expectHeaderDrawn(page);
       await control.focus();
       await expect(control).toBeFocused();
@@ -3135,6 +3153,8 @@ test("a change request sent from the header leaves the focus in the header", asy
       ],
     ] as const) {
       await requestApproval(seeded.specArtifactId, { summary: "Read it." });
+      // no opening focus: `open` presses the control or focuses it before any key (a reader's
+      // act or a script's focus), and either ends the page's opening.
       await gotoIssue(page, `/issues/${seeded.key}`);
       await expectHeaderDrawn(page);
       await expect(
@@ -3143,6 +3163,15 @@ test("a change request sent from the header leaves the focus in the header", asy
       ).toBeVisible();
       await open();
       await expect(dialog, `${from} opened no Request changes`).toBeVisible();
+      // The dialog is laid out, and so visible to the row, before it takes the focus: `useDialog`
+      // moves the focus into its Reason box at the next animation frame, which a loaded machine
+      // draws late. A key typed before that frame lands on the control that opened the dialog,
+      // and the Space of "One change." then presses Approve and approves the document. A reader
+      // types once the caret is in the box.
+      await expect(
+        dialog.getByRole("textbox", { name: "Reason" }),
+        `${from} left the focus outside Request changes' Reason`
+      ).toBeFocused();
       await page.keyboard.type("One change.");
       await dialog.getByRole("button", { exact: true, name: "Request changes" }).focus();
       await page.keyboard.press("Enter");
@@ -3165,6 +3194,52 @@ test("a change request sent from the header leaves the focus in the header", asy
   });
 });
 
+// Request changes gives its Reason the focus a frame after it opens, and a loaded machine draws
+// that frame late. A key typed into the dialog before that frame presses nothing behind it: the
+// dialog holds the focus itself from the moment it opens. Shift+R opens it from Approve, so a
+// Space that reached Approve would approve the document. The page's frames are held while the row
+// types, then let go.
+// SLOW(>=2s): 2.2 to 2.5 s in three one-worker runs on a dev box: one load after an approval
+// request, Shift+R and the typing with the page's frames held, two frames once they go, and
+// Escape.
+test("a key typed into Request changes in its first frame presses no Approve behind it", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  await phase(browser, seedHeader, async (page, seeded) => {
+    await requestApproval(seeded.specArtifactId, { summary: "Read it." });
+    const reviewed = reviewsSent(page);
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectOpeningLanded(page);
+    await expectHeaderDrawn(page);
+    const header = issueHeader(page);
+    const approve = header.getByRole("button", { exact: true, name: "Approve" });
+    await expect(approve, "the chip carries no Approve while its request waits").toBeVisible();
+    await approve.focus();
+    await expect(approve).toBeFocused();
+
+    const frames = await holdFrames(page);
+    await page.keyboard.press("Shift+R");
+    const dialog = page.getByRole("dialog", { name: "Request changes" });
+    await expect(dialog, "Shift+R on Approve opened no Request changes").toBeVisible();
+    await page.keyboard.type("One change.");
+    await frames.release();
+    await framesDrawn(page, 2);
+
+    expect(reviewed, "a key typed in Request changes' first frame sent a review").toEqual([]);
+    expect(
+      (await getArtifact(seeded.specArtifactId)).approval?.state,
+      "a key typed in Request changes' first frame answered the request"
+    ).toBe("awaiting");
+    await expect(
+      dialog.getByRole("textbox", { name: "Reason" }),
+      "the frame after Request changes opened gave its Reason no focus"
+    ).toBeFocused();
+    await page.keyboard.press("Escape");
+    await expect(dialog, "Escape left Request changes open").toHaveCount(0);
+  });
+});
+
 // Approve pressed by Enter on the header's chip keeps the focus while its review is written:
 // it is `aria-disabled` then and a press of it does nothing, so nothing moves the focus off it
 // (decision 223). Once the approval is read the header draws no Approve, and the focus goes to
@@ -3183,6 +3258,7 @@ test("Approve by Enter on the header's chip leaves the focus on the approved chi
   await phase(browser, seedHeader, async (page, seeded) => {
     await requestApproval(seeded.specArtifactId, { summary: "Read it." });
     await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectOpeningLanded(page);
     await expectHeaderDrawn(page);
     const header = issueHeader(page);
     const approve = header.getByRole("button", { exact: true, name: "Approve" });
@@ -3236,6 +3312,7 @@ test("a change request sent from the header's Request changes leaves the focus o
   await phase(browser, seedHeader, async (page, seeded) => {
     await requestApproval(seeded.specArtifactId, { summary: "Read it." });
     await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectOpeningLanded(page);
     await expectHeaderDrawn(page);
     const header = issueHeader(page);
     const requestChanges = header.getByRole("button", { exact: true, name: "Request changes" });
@@ -3248,6 +3325,9 @@ test("a change request sent from the header's Request changes leaves the focus o
     await page.keyboard.press("Enter");
     const dialog = page.getByRole("dialog", { name: "Request changes" });
     await expect(dialog, "Enter on Request changes opened no dialog").toBeVisible();
+    // The keys wait for the caret in Reason (the row "a change request sent from the header
+    // leaves the focus in the header" says why).
+    await expect(dialog.getByRole("textbox", { name: "Reason" })).toBeFocused();
     await page.keyboard.type("One change.");
     await dialog.getByRole("button", { exact: true, name: "Request changes" }).focus();
     await page.keyboard.press("Enter");
@@ -3283,6 +3363,7 @@ test("a change request sent after the header's actions went leaves the focus on 
   await phase(browser, seedHeader, async (page, seeded) => {
     await requestApproval(seeded.specArtifactId, { summary: "Read it." });
     await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectOpeningLanded(page);
     await expectHeaderDrawn(page);
     const header = issueHeader(page);
     const requestChanges = header.getByRole("button", { exact: true, name: "Request changes" });
@@ -3295,6 +3376,9 @@ test("a change request sent after the header's actions went leaves the focus on 
     await page.keyboard.press("Enter");
     const dialog = page.getByRole("dialog", { name: "Request changes" });
     await expect(dialog, "Enter on Request changes opened no dialog").toBeVisible();
+    // The keys wait for the caret in Reason (the row "a change request sent from the header
+    // leaves the focus in the header" says why).
+    await expect(dialog.getByRole("textbox", { name: "Reason" })).toBeFocused();
     await page.keyboard.type("One change.");
 
     await reviewArtifact(seeded.specArtifactId, { state: "approved" }, { login: "bob" });
@@ -3350,6 +3434,7 @@ test("Approve pressed again by Enter before its approval is drawn sends no secon
     const reviewed = reviewsSent(page);
     const reads = await holdReviewReads(page, seeded.key, seeded.specArtifactId);
     await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectOpeningLanded(page);
     await expectHeaderDrawn(page);
     const header = issueHeader(page);
     const approve = header.getByRole("button", { exact: true, name: "Approve" });
@@ -3421,6 +3506,7 @@ test("Request changes in its dialog pressed again by Enter before the change req
     const reviewed = reviewsSent(page);
     const reads = await holdReviewReads(page, seeded.key, seeded.specArtifactId);
     await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectOpeningLanded(page);
     await expectHeaderDrawn(page);
     const header = issueHeader(page);
     const requestChanges = header.getByRole("button", { exact: true, name: "Request changes" });
@@ -3433,6 +3519,9 @@ test("Request changes in its dialog pressed again by Enter before the change req
     await page.keyboard.press("Enter");
     const dialog = page.getByRole("dialog", { name: "Request changes" });
     await expect(dialog, "Enter on Request changes opened no dialog").toBeVisible();
+    // The keys wait for the caret in Reason (the row "a change request sent from the header
+    // leaves the focus in the header" says why).
+    await expect(dialog.getByRole("textbox", { name: "Reason" })).toBeFocused();
     await page.keyboard.type("One change.");
     const submit = dialog.getByRole("button", { exact: true, name: "Request changes" });
     await submit.focus();
@@ -3510,6 +3599,7 @@ test("Copy issue key pressed again by Enter while its write is out makes no seco
   await phase(browser, seedHeader, async (page, seeded) => {
     const clipboard = await holdClipboard(page);
     await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectOpeningLanded(page);
     await expectHeaderDrawn(page);
     const header = issueHeader(page);
     const copy = header.getByRole("button", { name: new RegExp(`^Copy issue key ${seeded.key} `) });
@@ -3612,6 +3702,7 @@ test("a keyboard Retry of a refused write keeps the focus in the header", async 
       ],
     ] as const) {
       await gotoIssue(page, `/issues/${key}`);
+      await expectOpeningLanded(page);
       await expectHeaderDrawn(page);
       // Every write is refused until Retry is pressed; the Retry's write is held open, so the
       // focus is read while it runs, and then let through.
@@ -3680,7 +3771,8 @@ test("Shift+P pins and unpins and leaves the focus where it was", async ({ brows
     const pin = header.locator('[data-issue-action="pin"]');
     await expect(pin).toHaveAttribute("aria-pressed", "false");
 
-    await leaveFocus(page);
+    await expectOpeningLanded(page);
+    await focusThePage(page);
     await page.keyboard.press("Shift+P");
     await expect(pin, "Shift+P did not pin the issue").toHaveAttribute("aria-pressed", "true");
     await framesDrawn(page, 2);
@@ -3724,6 +3816,8 @@ test("an approval entry's a approves its own document when an earlier entry also
     },
     async (page, seeded) => {
       const reviewed = reviewsSent(page);
+      // no opening focus: the seed's spec and Verification document hold no block a row draws,
+      // and the issue nothing else, so the outline has no row and the page places no focus.
       await gotoIssue(page, `/issues/${seeded.key}`);
       await expectHeaderDrawn(page);
       await expect(waitingCount(page)).toHaveText("Waiting on you (2)");

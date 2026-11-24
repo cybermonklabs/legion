@@ -43,8 +43,9 @@ const (
 	baselineStateDir   = "/state"
 )
 
-// baselineRoles are the roles the baseline covers: the six of the workflow, in the order the
-// workflow reaches them, then the project controller, which is none of them.
+// baselineRoles are the roles the baseline covers: the six of the workflow, in the order of the
+// default steps (claim.Roles; each task names its own), then the project controller, which is
+// none of them.
 func baselineRoles() []claim.Role {
 	return slices.Concat(claim.Roles, []claim.Role{claim.RoleController})
 }

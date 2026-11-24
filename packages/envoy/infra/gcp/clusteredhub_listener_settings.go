@@ -11,8 +11,10 @@ import (
 // clusteredHubListener is the resolved session listener the hub runs as a workload of its own,
 // nil without one: the tailnet hosts forward the Tailscale Service's port 9020 to it, and the
 // pods of clientNamespaces reach it at its cluster Service. env is its environment but the seed
-// and its credential (core.ListenerConfig.Env), and credential is the token check it requires of
-// every caller, nil where it serves with none (clusteredHubListenerEnv).
+// and its credential (core.ListenerConfig.Env), its consumer-name setting included, credential is
+// the token check it requires of every caller, nil where it serves with none
+// (clusteredHubListenerEnv), and replaceUnderHold is the writer hold's update rule for its
+// Deployment (heldReplacement).
 type clusteredHubListener struct {
 	image, machineID              string
 	seedSecretName, seedSecretKey string
@@ -20,6 +22,7 @@ type clusteredHubListener struct {
 	cpu, memory                   string
 	env                           []string
 	credential                    *clusteredHubListenerCredential
+	replaceUnderHold              bool
 }
 
 // clusteredHubListenerCredential is the token check a listener requires: the issuer and audience
@@ -64,7 +67,8 @@ func clusteredHubListenerArgs(args *ClusteredNatsHubArgs) (*ClusteredHubListener
 // that requires none answers on the Service's tailnet name and on every further address
 // allowedHosts names; the operator's entries are checked as their own list, so a refusal names
 // <path>.allowedHosts and the index the operator wrote. Its sender limit is core's rule
-// (core.CheckSenderLimit), naming <path>.senderMessagesPerMinute or <path>.senderMessageBurst.
+// (core.CheckSenderLimit), naming <path>.senderMessagesPerMinute or <path>.senderMessageBurst,
+// and so is its consumer-name setting (core.CheckConsumerNames), naming <path>.consumerNames.
 func newClusteredHubListenerSettings(args *ClusteredNatsHubArgs, l *ClusteredHubListenerArgs, path string, s clusteredHubSettings) (*clusteredHubListener, *listenerUser, error) {
 	if l == nil {
 		if args.Tailnet != nil {
@@ -96,7 +100,7 @@ func newClusteredHubListenerSettings(args *ClusteredNatsHubArgs, l *ClusteredHub
 	if !dnsSubdomain(l.SeedSecretName) {
 		return nil, nil, core.InputErrorf(path+".seedSecretName", "%s.seedSecretName %q must be a DNS subdomain, the name of a Secret in namespace %s", path, l.SeedSecretName, s.namespace)
 	}
-	if !secretKeyRule.MatchString(l.SeedSecretKey) {
+	if !isSecretKey(l.SeedSecretKey) {
 		return nil, nil, core.InputErrorf(path+".seedSecretKey", "%s.seedSecretKey %q must match %s", path, l.SeedSecretKey, secretKeyRule)
 	}
 	if err := checkNamespaces(path+".clientNamespaces", l.ClientNamespaces); err != nil {
@@ -112,6 +116,9 @@ func newClusteredHubListenerSettings(args *ClusteredNatsHubArgs, l *ClusteredHub
 	if err != nil {
 		return nil, nil, err
 	}
+	if err := core.CheckConsumerNames(path+".consumerNames", l.ConsumerNames); err != nil {
+		return nil, nil, err
+	}
 	credential, err := clusteredHubListenerCredentialFor(args, l, path)
 	if err != nil {
 		return nil, nil, err
@@ -123,6 +130,7 @@ func newClusteredHubListenerSettings(args *ClusteredNatsHubArgs, l *ClusteredHub
 		seedSecretKey:    l.SeedSecretKey,
 		clientNamespaces: l.ClientNamespaces,
 		credential:       credential,
+		replaceUnderHold: l.ReplaceUnderHold,
 	}
 	// The listener is the only container of its own pod, so its size is that pod's whole request,
 	// refused where Autopilot would raise or reject the pod, as the hub pod's size is.
@@ -157,10 +165,11 @@ func newClusteredHubListenerSettings(args *ClusteredNatsHubArgs, l *ClusteredHub
 		StreamMaxBytes:          s.streamMaxBytes,
 		SenderMessagesPerMinute: rate,
 		SenderMessageBurst:      burst,
+		ConsumerNames:           l.ConsumerNames,
 	}).Env([]string{s.serviceURL}); err != nil {
 		return nil, nil, err
 	}
-	return listener, &listenerUser{machineID: machineID, nkey: l.NKey}, nil
+	return listener, &listenerUser{path: path, machineID: machineID, nkey: l.NKey}, nil
 }
 
 // clusteredHubListenerCredentialFor resolves the token check the listener l, declared at path,

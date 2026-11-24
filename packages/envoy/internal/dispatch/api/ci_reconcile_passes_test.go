@@ -56,15 +56,17 @@ func endedCIPass(t *testing.T, database *store.Store, instance string, startedAg
 }
 
 // seedServerProcess writes the registry row processes.Register writes, with a heartbeat of the
-// given age, and answers the instance id.
+// given age, and answers the instance id. It names this build's owner lock protocol, as Register
+// does: a row at the column's default, 0, is an earlier build's arrival, whose insert waits for
+// the owner lock gate (fleetProcess in internal/dispatch/docs says why).
 func seedServerProcess(t *testing.T, database *store.Store, heartbeatAge time.Duration) string {
 	t.Helper()
 	var instance string
 	if err := database.Pool.QueryRow(context.Background(), `
-		insert into server_processes (instance, heartbeat_at)
-		values (gen_random_uuid(), now() - make_interval(secs => $1))
+		insert into server_processes (instance, heartbeat_at, owner_lock_protocol)
+		values (gen_random_uuid(), now() - make_interval(secs => $1), $2)
 		returning instance::text
-	`, heartbeatAge.Seconds()).Scan(&instance); err != nil {
+	`, heartbeatAge.Seconds(), store.OwnerLockProtocol).Scan(&instance); err != nil {
 		t.Fatalf("seed a server process: %v", err)
 	}
 	return instance
@@ -99,6 +101,7 @@ type ciPassView struct {
 // The route answers the passes of the last 24 hours, newest first, with every count the pass's
 // one log line carries, and leaves out the passes older than that however long they are kept.
 func TestCIReconcilePassesAnswersTheLastDayNewestFirst(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	instance := seedServerProcess(t, database, 0)
 	older := endedCIPass(t, database, instance, 6*time.Hour, "complete")
@@ -177,6 +180,7 @@ func holdCIReconcileLease(t *testing.T, database *store.Store) {
 // is live, the `ci-reconcile` lease is held, and it is the newest row. The lease here is held by
 // a session of the test's own, standing for the loop that is running the pass.
 func TestCIReconcilePassesShowsARunningPass(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	instance := seedServerProcess(t, database, 0)
 	running := openCIPass(t, database, instance, time.Minute)
@@ -228,6 +232,7 @@ func TestCIReconcilePassesShowsAKilledPassAsEndedWithoutCompleting(t *testing.T)
 // The route is a read any signed-in person or agent token may make, as the other reads of its
 // kind are, and nobody else: it refuses an anonymous caller and answers a bearer.
 func TestCIReconcilePassesIsReadableBySignedInCallersAlone(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	instance := seedServerProcess(t, database, 0)
 	endedCIPass(t, database, instance, time.Minute, "complete")
@@ -251,6 +256,7 @@ func TestCIReconcilePassesIsReadableBySignedInCallersAlone(t *testing.T) {
 // A deployment that has run no pass answers an empty list rather than null, so a client that
 // draws the rows need not tell the two apart.
 func TestCIReconcilePassesAnswersAnEmptyListWhenNoPassHasRun(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 
 	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/ci-reconcile/passes", nil, "alice")

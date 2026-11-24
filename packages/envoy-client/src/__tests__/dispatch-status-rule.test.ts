@@ -7,7 +7,7 @@ import { temporaryDirectories } from "@legion/test-fixtures/temporary-directorie
 import { bearerCredential } from "../bearer";
 import { runDispatchCli } from "../dispatch-cli";
 import { executeDispatchTool, resetAdviceMemory } from "../dispatch-execute";
-import { DispatchServiceError, forgetKeyedLayerMemory } from "../dispatch-http";
+import { DispatchServiceError } from "../dispatch-http";
 import { messageFor } from "../errors";
 import { ToolInputError } from "../tool-input-errors";
 
@@ -269,7 +269,6 @@ beforeEach(() => {
   createAnswer = undefined;
   stateDir = makeDirectory();
   resetAdviceMemory();
-  forgetKeyedLayerMemory();
 });
 
 /** The host `run` acts as unless a case names another: Oh My Pi, which never cuts output. */
@@ -374,10 +373,7 @@ describe("dispatch issue-update with an option of the status change", () => {
     ]);
 
     expect(code).toBe(2);
-    expect(stdout.split("\n").slice(0, 2)).toEqual([
-      "dispatch issue-update was not called: 1 problem",
-      "- include_children does not go with status done. Only a person who is signed in at a browser can close the open issues under an issue together with it, and this call presents a token. That person does it on the issue's page in Dispatch: Close issue, then Move them with it.",
-    ]);
+    expect(stdout).toContain("include_children does not go with status done");
     expect(requests).toEqual([]);
   });
 
@@ -554,10 +550,11 @@ describe("dispatch issue-update with an option of the status change", () => {
       ["--unlink-children", "unlink_children"],
       ["--include-parent", "include_parent"],
     ] as const) {
-      for (const other of [
-        ["--title", "Renamed"],
-        ["--parent", "ACME-4"],
-        ["--priority", "1"],
+      for (const [other, value, name] of [
+        ["--title", "Renamed", "title"],
+        ["--parent", "ACME-4", "parent"],
+        ["--priority", "1", "priority"],
+        ["--labels-add", "x", "labels_add"],
       ] as const) {
         const { code, stdout } = await run([
           "issue-update",
@@ -566,9 +563,9 @@ describe("dispatch issue-update with an option of the status change", () => {
           "--status",
           "in_progress",
           flag,
-          ...other,
+          other,
+          value,
         ]);
-        const name = other[0].slice(2);
         expect({ flag, other: name, code }).toEqual({ flag, other: name, code: 2 });
         expect(stdout).toStartWith("dispatch issue-update was not called: 1 problem\n");
         expect(stdout).toContain(
@@ -663,12 +660,41 @@ describe("dispatch issue-update with an option of the status change", () => {
 });
 
 describe("a PARENT_STATUS_CONFLICT", () => {
-  const childFlags =
-    "dispatch issue-update --status takes --unlink-children, which removes its open children from it, or, with a status other than done, --include-children, which moves the open issues under the issue with it. A person signed in at a browser closes them with it on the issue's page.";
+  // The line after the issues says what to do next; the flags and commands it names are the
+  // stable part, and the words around them are the CLI's to change.
+  const childFlags = expect.stringMatching(/--unlink-children\b.*--include-children\b/);
+  const parentFlags = expect.stringMatching(/dispatch issue-update --status\b.*--include-parent\b/);
+  // A create takes no flag that moves its parent: reopen it, or file under an open one or none.
+  const reopenParent = expect.stringMatching(
+    /dispatch issue-update --issue ACME-4 --status\b.*\bdispatch issue\b.*--parent\b/
+  );
+
+  /** Dispatch's refusal of a write that leaves `of` under ACME-4, done, in the words of
+   *  `parentStatusConflict.Error` (packages/envoy/internal/dispatch/api/parent_status_rule.go),
+   *  as `TestAReparentAndACreateAreCheckedToo` there holds them for a create under a done parent.
+   *  The route's recorded answers name no parent, so this one is written here. */
+  function doneParentRefusal(of: string): Answer {
+    return {
+      status: 409,
+      body: {
+        code: "PARENT_STATUS_CONFLICT",
+        error: `this change would leave a parent's status out of line with its children's. ACME-4 (done) is the parent of ${of} and is done. A parent is done only when each child is done, and while a child is in work, its parent is in work.`,
+        issues: [
+          {
+            key: "ACME-4",
+            title: "Parent closed with its tree",
+            status: "done",
+            relation: "parent",
+          },
+        ],
+      },
+    };
+  }
 
   // Whichever command Dispatch refuses, the CLI prints the refusal, each issue that holds the
-  // rule as `KEY [status] title`, and the flags that move them, and exits 1, as it prints a near
-  // copy's refusal.
+  // rule as `KEY [status] title`, and what the refused command's caller does next, and exits 1,
+  // as it prints a near copy's refusal: `dispatch issue-update` names its flags that move the
+  // issues, and a create under a done parent says how to reopen it or file elsewhere.
   test("a PARENT_STATUS_CONFLICT prints each issue that holds it", async () => {
     // The PATCH's refusal, which carries no `changed`, after the close's reason landed.
     const { changed: _, ...patchRefusal } = conflict.body;
@@ -715,8 +741,12 @@ describe("a PARENT_STATUS_CONFLICT", () => {
       "",
     ]);
 
-    // Another command prints it the same way: a create, answered the route's recorded refusal.
-    createAnswer = conflict;
+    // A create under a done parent takes none of those flags: it is told to reopen the parent
+    // first, or to file the issue under an open parent or none. The reopen takes --include-parent,
+    // since the rule refuses a plain status change of that parent under a done issue or one not
+    // started.
+    const createRefusal = doneParentRefusal("the new issue");
+    createAnswer = createRefusal;
     const create = await run([
       "issue",
       "--project",
@@ -727,14 +757,218 @@ describe("a PARENT_STATUS_CONFLICT", () => {
       "ACME-4",
     ]);
     expect(create.code).toBe(1);
-    expect(create.stdout).toBe(
-      [
-        `PARENT_STATUS_CONFLICT: ${errorOf(conflict)}`,
-        "ACME-5 [todo] Child in work",
-        childFlags,
-        "",
-      ].join("\n")
+    expect(create.stdout.split("\n")).toEqual([
+      `PARENT_STATUS_CONFLICT: ${errorOf(createRefusal)}`,
+      "ACME-4 [done] Parent closed with its tree",
+      reopenParent,
+      "",
+    ]);
+    expect(create.stdout).toMatch(
+      /\bdispatch issue-update --issue ACME-4 --status in_progress --include-parent\b/
     );
+
+    // The same refusal of `dispatch issue-update` names the flag that command takes.
+    const reopenRefusal = doneParentRefusal("ACME-5");
+    patchAnswer = reopenRefusal;
+    const reopen = await run(["issue-update", "--issue", "ACME-5", "--status", "in_progress"]);
+    expect(reopen.code).toBe(1);
+    const reopenLines = reopen.stdout.split("\n");
+    expect(reopenLines[0]).toStartWith(`PARENT_STATUS_CONFLICT: ${errorOf(reopenRefusal)}`);
+    expect(reopenLines.slice(1)).toEqual([
+      "ACME-4 [done] Parent closed with its tree",
+      parentFlags,
+      "",
+    ]);
+  });
+
+  // A reparent is refused for the parent the call names, which the issue is not under yet: a
+  // status change of that issue with --include-parent moves the issues above it now and leaves
+  // the reparent refused, and issue-update refuses --include-parent beside --parent. So the
+  // caller is told to move the named parent first, then to send the reparent again.
+  test("a refused reparent says to move the parent it names first, then to send the reparent again", async () => {
+    const moveParentFirst = (parent: string) =>
+      expect.stringMatching(
+        new RegExp(
+          `dispatch issue-update --issue ${parent} --status\\b.*\\bdispatch issue-update\\b.*--parent\\b`
+        )
+      );
+
+    // Under a done parent: ACME-8, under ACME-7, to ACME-4.
+    const doneRefusal = doneParentRefusal("ACME-8");
+    patchAnswer = doneRefusal;
+    const underDone = await run(["issue-update", "--issue", "ACME-8", "--parent", "ACME-4"]);
+    expect(underDone.code).toBe(1);
+    expect(underDone.stdout.split("\n")).toEqual([
+      `PARENT_STATUS_CONFLICT: ${errorOf(doneRefusal)}`,
+      "ACME-4 [done] Parent closed with its tree",
+      moveParentFirst("ACME-4"),
+      "",
+    ]);
+
+    // Under a parent out of work: ACME-6, in work, to ACME-1 on the backlog, in the words
+    // Dispatch answers such a reparent with.
+    const outOfWork: Answer = {
+      status: 409,
+      body: {
+        code: "PARENT_STATUS_CONFLICT",
+        error:
+          "this change would leave a parent's status out of line with its children's. ACME-1 (backlog) is the parent of ACME-6 and is not in work. A parent is done only when each child is done, and while a child is in work, its parent is in work.",
+        issues: [
+          { key: "ACME-1", title: "Epic on the backlog", status: "backlog", relation: "parent" },
+        ],
+      },
+    };
+    patchAnswer = outOfWork;
+    const underBacklog = await run(["issue-update", "--issue", "ACME-6", "--parent", "ACME-1"]);
+    expect(underBacklog.code).toBe(1);
+    expect(underBacklog.stdout.split("\n")).toEqual([
+      `PARENT_STATUS_CONFLICT: ${errorOf(outOfWork)}`,
+      "ACME-1 [backlog] Epic on the backlog",
+      moveParentFirst("ACME-1"),
+      "",
+    ]);
+  });
+
+  // A reparent that also writes a status is refused for a child against that status. The flags
+  // that move the children go with --status alone, so the caller is told to run the status change
+  // first, in a call of its own, and the reparent after it, without --status.
+  test("a reparent beside --status refused for a child says to run the status change first, then the reparent", async () => {
+    const childRefusal: Answer = {
+      status: 409,
+      body: {
+        code: "PARENT_STATUS_CONFLICT",
+        error:
+          "this change would leave a parent's status out of line with its children's. ACME-5 (todo) is a child of ACME-4 and is in work. A parent is done only when each child is done, and while a child is in work, its parent is in work.",
+        issues: [{ key: "ACME-5", title: "Child in work", status: "todo", relation: "child" }],
+      },
+    };
+    patchAnswer = childRefusal;
+    const reparent = await run([
+      "issue-update",
+      "--issue",
+      "ACME-4",
+      "--parent",
+      "ACME-7",
+      "--status",
+      "backlog",
+    ]);
+    expect(reparent.code).toBe(1);
+    expect(reparent.stdout.split("\n")).toEqual([
+      `PARENT_STATUS_CONFLICT: ${errorOf(childRefusal)}`,
+      "ACME-5 [todo] Child in work",
+      expect.stringMatching(
+        /--unlink-children\b.*--include-children\b.*--status alone\b.*\bfirst\b.*\bdispatch issue-update --issue ACME-4 --parent ACME-7\b(?! --status)/
+      ),
+      "",
+    ]);
+  });
+
+  // A status change beside another field is refused for its parent. --include-parent goes with
+  // --status alone, so the caller is told to send the other change in a call of its own.
+  test("a status change beside --title refused for its parent says --include-parent goes with --status alone", async () => {
+    const parentRefusal = doneParentRefusal("ACME-5");
+    patchAnswer = parentRefusal;
+    const retitle = await run([
+      "issue-update",
+      "--issue",
+      "ACME-5",
+      "--status",
+      "in_progress",
+      "--title",
+      "Child back in work",
+    ]);
+    expect(retitle.code).toBe(1);
+    expect(retitle.stdout.split("\n")).toEqual([
+      `PARENT_STATUS_CONFLICT: ${errorOf(parentRefusal)}`,
+      "ACME-4 [done] Parent closed with its tree",
+      expect.stringMatching(
+        /dispatch issue-update --status\b.*--include-parent\b.*--status alone\b/
+      ),
+      "",
+    ]);
+  });
+
+  // Since main's #4896 a parent may be an issue of another project, and Dispatch refuses a
+  // credential scoped to one project each step that writes an issue of another project (403
+  // PROJECT_SCOPE). The CLI does not know its credential's scope, so where an issue the refusal
+  // names, which a flag of the line writes, is in another project than the issue the call names
+  // (by --issue, or by LEGION_ISSUE), the line says that such a credential is refused that step,
+  // and that a person, or a credential that names no project, must make it. A refusal that names
+  // only issues of the call's own project says nothing of projects.
+  test("a refusal naming an issue of another project says a credential scoped to one project is refused that step", async () => {
+    const scopeRefused = (flags: string, key: string, named: string) =>
+      expect.stringMatching(
+        new RegExp(
+          `${flags}.*\\b${key}\\b.*\\b${named}\\b.*\\b403 PROJECT_SCOPE\\b.*\\ba person\\b.*\\bno project\\b`
+        )
+      );
+
+    // A status change of ACME-5 refused for its parent BETA-1, which --include-parent would move.
+    const otherParent: Answer = {
+      status: 409,
+      body: {
+        code: "PARENT_STATUS_CONFLICT",
+        error:
+          "this change would leave a parent's status out of line with its children's. BETA-1 (done) is the parent of ACME-5 and is done. A parent is done only when each child is done, and while a child is in work, its parent is in work.",
+        issues: [
+          { key: "BETA-1", title: "Epic of another project", status: "done", relation: "parent" },
+        ],
+      },
+    };
+    patchAnswer = otherParent;
+    for (const [argv, host] of [
+      [["issue-update", "--issue", "ACME-5", "--status", "in_progress"], omp],
+      [["issue-update", "--status", "in_progress"], { ...omp, LEGION_ISSUE: "ACME-5" }],
+    ] as const) {
+      const refused = await run(argv, host);
+      expect(refused.code).toBe(1);
+      expect(refused.stdout.split("\n")).toEqual([
+        `PARENT_STATUS_CONFLICT: ${errorOf(otherParent)}`,
+        "BETA-1 [done] Epic of another project",
+        scopeRefused("dispatch issue-update --status\\b.*--include-parent\\b", "BETA-1", "ACME-5"),
+        "",
+      ]);
+    }
+
+    // A status change of ACME-4 refused for its child BETA-7, which --unlink-children and
+    // --include-children would write, alone and beside a reparent.
+    const otherChild: Answer = {
+      status: 409,
+      body: {
+        code: "PARENT_STATUS_CONFLICT",
+        error:
+          "this change would leave a parent's status out of line with its children's. BETA-7 (in_progress) is a child of ACME-4 and is in work. A parent is done only when each child is done, and while a child is in work, its parent is in work.",
+        issues: [
+          {
+            key: "BETA-7",
+            title: "Child of another project",
+            status: "in_progress",
+            relation: "child",
+          },
+        ],
+      },
+    };
+    patchAnswer = otherChild;
+    for (const argv of [
+      ["issue-update", "--issue", "ACME-4", "--status", "backlog"],
+      ["issue-update", "--issue", "ACME-4", "--parent", "ACME-7", "--status", "backlog"],
+    ]) {
+      const refused = await run(argv);
+      expect(refused.code).toBe(1);
+      expect(refused.stdout.split("\n")).toEqual([
+        `PARENT_STATUS_CONFLICT: ${errorOf(otherChild)}`,
+        "BETA-7 [in_progress] Child of another project",
+        scopeRefused("--unlink-children\\b.*--include-children\\b", "BETA-7", "ACME-4"),
+        "",
+      ]);
+    }
+
+    // The same refusal for a parent of the call's own project says nothing of projects.
+    patchAnswer = doneParentRefusal("ACME-5");
+    const ownProject = await run(["issue-update", "--issue", "ACME-5", "--status", "in_progress"]);
+    expect(ownProject.code).toBe(1);
+    expect(ownProject.stdout).toContain("--include-parent");
+    expect(ownProject.stdout).not.toContain("PROJECT_SCOPE");
   });
 });
 

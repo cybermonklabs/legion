@@ -84,7 +84,10 @@ func TestScheduleMatchesThePredicates(t *testing.T) {
 	}{
 		{"settled", ready(func(st *State) { st.SettledEmitted = true; st.EmittedCount = 1 }), debounce, []verdict{verdictIdle}},
 		{"not ready", ready(func(st *State) { st.Checks["build"] = Check{Name: "build", CheckRunID: 700, Status: "in_progress"} }), debounce, []verdict{verdictWait, verdictStuck}},
-		{"not ready and unstamped", ready(unstamped, func(st *State) { st.Suites["9002"] = Suite{ID: "9002", AppID: "5789269", Status: "queued"} }), debounce, []verdict{verdictWait, verdictStuck}},
+		{"not ready and unstamped", ready(unstamped, func(st *State) { st.Suites["9002"] = Suite{ID: "9002", AppID: githubActionsAppID, Status: "queued"} }), debounce, []verdict{verdictWait, verdictStuck}},
+		{"another App's empty suite beside the finished run", ready(func(st *State) {
+			st.Suites["9003"] = Suite{ID: "9003", AppID: "5789269", Status: "queued"}
+		}), debounce, []verdict{verdictWait, verdictAttempt}},
 		{"overflowed", ready(func(st *State) { st.Overflowed = true }), debounce, []verdict{verdictWait, verdictStuck}},
 		{"stamped and terminal", ready(), debounce, []verdict{verdictWait, verdictAttempt}},
 		{"unstamped and terminal", ready(unstamped), debounce, []verdict{verdictWait, verdictAttempt, verdictHeld}},

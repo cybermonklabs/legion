@@ -34,7 +34,7 @@ import {
  *    is left alone, which is how a subagent's own runner of the same command, with the same
  *    parent and the same working directory, is spared.
  *
- * **Three things it never ends.**
+ * **Four things it never ends.**
  *
  * - **The agent's own process.** A plain `bash` command has no process of its own: the shell runs
  *   inside Oh My Pi, a command's `$$` is the agent's own pid and `sleep` is a builtin (measured),
@@ -47,6 +47,16 @@ import {
  *   job manager still carries that call's id: the host's background jobs are spared by this one
  *   rule, and rule 3 asks the host's job manager as well, because a backgrounded `eval` has
  *   closed its call's record while still using the runner.
+ * - **A copy of the agent that has not yet become its program.** A child the agent has forked and
+ *   not yet exec'd reads in `/proc` as the agent itself: the agent's command line and the agent's
+ *   environment, so no `PI_TOOL_CALL_ID`, whichever call it is being started for, and rule 2 would
+ *   take another call's child in that gap as a process of no call that started inside this one.
+ *   So a direct child of the agent whose command line is the agent's own, byte for byte
+ *   (`StallScannedProcess.cmdline`, not the bounded digest the evidence prints), and which
+ *   carries no call's name, is left alone. A child with the agent's command line that names this
+ *   call is this call's own process, as a `bash` call that runs the agent's command line makes,
+ *   and is taken. Once a copy execs it carries its program's command line and its call's name,
+ *   and is judged as any other process.
  *
  * A process the kernel holds as a zombie has already ended and is waiting to be reaped, so it is
  * not ended again and is not counted: that is what keeps the step's own count the number of
@@ -98,13 +108,25 @@ export function stallCallProcesses(input: StallCallProcessesInput): StallCallPro
     return { rule: "none", why: `the process tree could not be read: ${scan.reason}` };
   const byPid = new Map(scan.processes.map((process) => [process.pid, process]));
 
-  /** A process is never ended when it is the agent itself, when its environment names a call
-   * other than this one — whatever became of that call — or when the kernel has it as a zombie,
-   * which is a process that has already ended and is waiting to be reaped. */
+  const agentCmdline = byPid.get(agentPid)?.cmdline;
+
+  /** A process is never ended when it is the agent itself, when it is a copy of the agent that
+   * has not yet exec'd its program, when its environment names a call other than this one —
+   * whatever became of that call — or when the kernel has it as a zombie, which is a process that
+   * has already ended and is waiting to be reaped. */
   const sparing = (process: StallScannedProcess): string | undefined => {
     if (process.pid === agentPid) return "it is the agent's own process";
     if (process.state === "Z") return "it has already ended";
     const named = process.environment.PI_TOOL_CALL_ID;
+    if (
+      process.ppid === agentPid &&
+      named === undefined &&
+      agentCmdline !== undefined &&
+      agentCmdline !== "" &&
+      process.cmdline === agentCmdline
+    ) {
+      return "it is a copy of the agent that has not yet exec'd its program";
+    }
     if (named !== undefined && named !== call.toolCallId) return `its environment names ${named}`;
     return undefined;
   };

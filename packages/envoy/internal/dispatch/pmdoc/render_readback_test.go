@@ -1,5 +1,12 @@
 package pmdoc
 
+//ci:reads packages/envoy/internal/dispatch/pmdoc/gen/** engineReadings bun run gen/differential.ts
+//ci:reads packages/proof-editor/** engineReadings bun run gen/differential.ts
+//ci:reads packages/contracts/src/** engineReadings bun run gen/differential.ts
+//ci:reads package.json engineReadings bun run gen/differential.ts
+//ci:reads bun.lock engineReadings bun run gen/differential.ts
+//ci:reads patches/** engineReadings bun run gen/differential.ts
+
 import (
 	"encoding/json"
 	"math/rand/v2"

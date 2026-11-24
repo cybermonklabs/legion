@@ -49,7 +49,8 @@ func wantSettled(t *testing.T, what string, resp Response, code string, elapsed,
 // TestAFailedRequestIsKnownOrUnknownByWhetherTheBrokerGotIt: a broker request that failed after
 // the broker got it (a 503, which a front door can send after the broker acted, or a 2xx the
 // helper cannot read, which the broker answered and so may have acted on) has an unknown outcome,
-// and one that never reached the broker (a refused dial) is a known failure. Each case answers
+// and one that never reached the broker (a refused dial) is a known failure. So is the broker's
+// own 503 MEMBER_KIND_UNCHECKABLE, which it answers before it writes anything. Each case answers
 // one code; each unknown answer says that the outcome is unknown, and no known one does.
 func TestAFailedRequestIsKnownOrUnknownByWhetherTheBrokerGotIt(t *testing.T) {
 	enroll := Request{Op: "enroll-session-key", RuntimeID: "box-1", Thumbprint: "tp-1"}
@@ -67,6 +68,7 @@ func TestAFailedRequestIsKnownOrUnknownByWhetherTheBrokerGotIt(t *testing.T) {
 		unknown bool
 	}{
 		{name: "a 503 on the enrollment is unknown", req: enroll, fail: func(f *fakeBroker) { f.failFirst = 1 }, code: CodeEnrollUnknown, unknown: true},
+		{name: "the broker's 503 MEMBER_KIND_UNCHECKABLE on the enrollment is a known failure", req: enroll, fail: func(f *fakeBroker) { f.enrollUncheckable = true }, code: CodeEnrollFailed},
 		{name: "a 200 with no enrollment_id on the enrollment is unknown", req: enroll, fail: func(f *fakeBroker) { f.enrollEmpty2xx = true }, code: CodeEnrollUnknown, unknown: true},
 		{name: "a refused dial on the enrollment is a known failure", req: enroll, refuse: true, code: CodeEnrollFailed},
 		{name: "a 503 on the revoke is unknown", req: unenroll, fail: func(f *fakeBroker) { f.revokeFailFirst = 1 }, code: CodeUnenrollUnknown, unknown: true},

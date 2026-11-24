@@ -172,7 +172,7 @@ function Header({ shown }: { shown: IssueDetails }): ReactNode {
 function renderHeader(shown: IssueDetails) {
   const reads = [
     spyOn(api, "getIssueSubscribers").mockResolvedValue([]),
-    spyOn(api, "listRepoProjects").mockResolvedValue([]),
+    spyOn(api, "listProjects").mockResolvedValue([]),
     spyOn(api, "listProjectArchitectureSources").mockResolvedValue([]),
   ];
   const view = render(

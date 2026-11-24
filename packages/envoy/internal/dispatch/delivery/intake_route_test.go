@@ -24,6 +24,7 @@ import (
 )
 
 func TestIntakeDedupesAMergedPullRequestEnvelope(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	settings := seedDeliverySettings(t, ctx, pool)
 
@@ -54,7 +55,7 @@ func TestIntakeDedupesAMergedPullRequestEnvelope(t *testing.T) {
 	}
 	t.Cleanup(natsClient.Close)
 
-	intake := newIntake(natsClient, pool, deliveryTestLeases(t, pool), client, events.NewBroker(), loadedSettingsCache(t, ctx, pool))
+	intake := newIntake(natsClient, pool, deliveryTestLeases(t, pool), client, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed())
 	startIntake(t, intake)
 
 	envelopeFields := map[string]string{
@@ -123,7 +124,7 @@ func TestIntakeAcksAKindItDoesNotRecordWithoutLoggingOrWriting(t *testing.T) {
 	logs := captureLogs(t)
 	fake := newFakeGitHub(t)
 	natsClient := intakeTestClient(t)
-	startIntake(t, newIntake(natsClient, pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool)))
+	startIntake(t, newIntake(natsClient, pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
 	awaitBoundDurable(t, natsClient)
 
 	checks, err := json.Marshal(cistore.Summary{
@@ -178,7 +179,7 @@ func TestIntakeAcksAnEnvelopeWithNoPayloadSilently(t *testing.T) {
 	logs := captureLogs(t)
 	fake := newFakeGitHub(t)
 	natsClient := intakeTestClient(t)
-	startIntake(t, newIntake(natsClient, pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool)))
+	startIntake(t, newIntake(natsClient, pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
 	awaitBoundDurable(t, natsClient)
 
 	publishGitHubEnvelope(t, natsClient, contracts.GithubSubject("unknown", "unknown", "comment"), "")
@@ -225,7 +226,7 @@ func TestIntakeHandlesAMergedPullRequestEnvelopeWithAMemberItDoesNotRead(t *test
 		})
 	})
 	natsClient := intakeTestClient(t)
-	startIntake(t, newIntake(natsClient, pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool)))
+	startIntake(t, newIntake(natsClient, pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
 	awaitBoundDurable(t, natsClient)
 
 	topic := contracts.GithubResourceSubject("acme", "widgets", "pr", "7")
@@ -265,7 +266,7 @@ func TestIntakeWarnsOfAWorkflowRunWhoseRunIDIsNotAString(t *testing.T) {
 	logs := captureLogs(t)
 	fake := newFakeGitHub(t)
 	natsClient := intakeTestClient(t)
-	startIntake(t, newIntake(natsClient, pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool)))
+	startIntake(t, newIntake(natsClient, pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
 	awaitBoundDurable(t, natsClient)
 
 	topic := contracts.GithubWorkflowSubject("acme", "widgets", "deploy_yml", "completed")
@@ -311,7 +312,7 @@ func TestIntakeLogsAMalformedEnvelopePayload(t *testing.T) {
 			logs := captureLogs(t)
 			fake := newFakeGitHub(t)
 			natsClient := intakeTestClient(t)
-			startIntake(t, newIntake(natsClient, pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool)))
+			startIntake(t, newIntake(natsClient, pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
 			awaitBoundDurable(t, natsClient)
 
 			publishGitHubEnvelope(t, natsClient, topic, envelope.payload)
@@ -355,7 +356,7 @@ func TestIntakeDiscardsAnEnvelopeItDoesNotWantWithoutCallingGitHub(t *testing.T)
 	})
 
 	natsClient := intakeTestClient(t)
-	intake := newIntake(natsClient, pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool))
+	intake := newIntake(natsClient, pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed())
 	startIntake(t, intake)
 	awaitBoundDurable(t, natsClient)
 
@@ -427,7 +428,7 @@ func TestIntakeRoutesByTheSettingsInForceWhenAnEnvelopeArrives(t *testing.T) {
 	natsClient := intakeTestClient(t)
 	settingsCache := newSettingsCache(pool, settingsWake(t, pool))
 	runSettingsCache(t, settingsCache)
-	intake := newIntake(natsClient, pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), settingsCache)
+	intake := newIntake(natsClient, pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), settingsCache, unrenamed())
 	startIntake(t, intake)
 	awaitBoundDurable(t, natsClient)
 

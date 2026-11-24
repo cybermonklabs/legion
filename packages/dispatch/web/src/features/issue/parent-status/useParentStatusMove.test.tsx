@@ -5,6 +5,7 @@ import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import { http } from "msw";
 import type { ReactNode } from "react";
+import { MemoryRouter, type NavigateFunction, useNavigate } from "react-router-dom";
 
 import { realClock, settle, tick } from "../../../__tests__/fake-clock";
 import { keyedAttempt } from "../../../__tests__/keyed-attempt";
@@ -67,16 +68,19 @@ const never = () => new Promise<StatusChangeAnswer>(() => {});
 const refuse = (refusal: ApiError) => () => Promise.reject(refusal);
 
 /** A surface that makes its status moves through the hook, as the issue header does, with the
- *  pending status, the refusal and the question drawn as the header draws them. */
+ *  pending status, the refusal and the question drawn as the header draws them. It is drawn under
+ *  a router, as every page is: `navigate` moves the page under it, as a link would. */
 function renderSurface() {
   const client = new QueryClient({
     defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
   });
   client.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
   let current: ParentStatusMove | undefined;
+  let navigateTo: NavigateFunction | undefined;
   function Surface(): ReactNode {
     const parentStatus = useParentStatusMove();
     current = parentStatus;
+    navigateTo = useNavigate();
     return (
       <>
         <output aria-label="Pending status">{parentStatus.pending?.status ?? ""}</output>
@@ -91,11 +95,13 @@ function renderSurface() {
   }
   // The dialog's Escape is a binding of the page's keymap, which `KeymapProvider` listens for.
   const view = render(
-    <QueryClientProvider client={client}>
-      <KeymapProvider>
-        <Surface />
-      </KeymapProvider>
-    </QueryClientProvider>
+    <MemoryRouter initialEntries={["/issues/ACME-4"]}>
+      <QueryClientProvider client={client}>
+        <KeymapProvider>
+          <Surface />
+        </KeymapProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
   );
   const hook = (): ParentStatusMove => {
     if (current === undefined) throw new Error("the surface has not rendered");
@@ -111,7 +117,12 @@ function renderSurface() {
     });
     return { ended };
   };
-  return { client, hook, start, unmount: view.unmount };
+  const navigate = (to: string) =>
+    act(() => {
+      if (navigateTo === undefined) throw new Error("the surface has not rendered");
+      void navigateTo(to);
+    });
+  return { client, hook, navigate, start, unmount: view.unmount };
 }
 
 /** ACME-4, which has a child in work, picked for `done`. */
@@ -379,11 +390,13 @@ test("checking: a live event changes the issue, and the dry run's answer is stil
   const patch = mock(() => {});
   const user = userEvent.setup();
   const view = render(
-    <QueryClientProvider client={client}>
-      <KeymapProvider>
-        <CloseFromTheCache patch={patch} />
-      </KeymapProvider>
-    </QueryClientProvider>
+    <MemoryRouter>
+      <QueryClientProvider client={client}>
+        <KeymapProvider>
+          <CloseFromTheCache patch={patch} />
+        </KeymapProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
   );
   const related = () => screen.getByRole("status", { name: "Parent or open child" });
   try {
@@ -500,6 +513,117 @@ for (const [name, close] of closes) {
     }
   });
 }
+
+// A link or the browser's Back moves the page under the question: it closes as Keep as it is
+// does, as the page's other dialogs close on a navigation (`useCloseOnNavigation`).
+test("asking: a navigation closes the question, writes nothing and puts the status back", async () => {
+  const statusChanges = answerBy({
+    "dry run of done with no option": refuse(fixtureRefusal("conflict")),
+    "dry run of done with include_children": async () => fixtureAnswer("dry-run"),
+    "dry run of done with unlink_children": never,
+  });
+  const surface = renderSurface();
+  try {
+    const move = closeAcme4();
+    const { ended } = await surface.start(move);
+    expect(question()).toBeInTheDocument();
+    surface.navigate("/issues/ACME-5");
+    expect(await ended).toEqual({ kind: "kept" });
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(pendingStatus()).toHaveTextContent("");
+    expect(requests(statusChanges).filter((request) => request.startsWith("write"))).toEqual([]);
+    expect(move.patch).not.toHaveBeenCalled();
+  } finally {
+    surface.unmount();
+  }
+});
+
+// A navigation that takes the surface away ends its question as Keep as it is would, so the move
+// ends and nothing waits on it.
+test("asking: the surface going away ends the move as kept, and writes nothing", async () => {
+  const statusChanges = answerBy({
+    "dry run of done with no option": refuse(fixtureRefusal("conflict")),
+    "dry run of done with include_children": never,
+    "dry run of done with unlink_children": never,
+  });
+  const surface = renderSurface();
+  try {
+    const move = closeAcme4();
+    const { ended } = await surface.start(move);
+    expect(question()).toBeInTheDocument();
+    surface.unmount();
+    expect(await ended).toEqual({ kind: "kept" });
+    expect(requests(statusChanges).filter((request) => request.startsWith("write"))).toEqual([]);
+    expect(move.patch).not.toHaveBeenCalled();
+  } finally {
+    surface.unmount();
+  }
+});
+
+/** Answers the move's own dry run with `answer`, once the test lets it go (`answerNow`). */
+function holdTheDryRun(answer: () => Promise<StatusChangeAnswer>) {
+  const held = Promise.withResolvers<void>();
+  const statusChanges = answerBy({
+    "dry run of done with no option": async () => {
+      await held.promise;
+      return answer();
+    },
+  });
+  return { answerNow: () => held.resolve(), statusChanges };
+}
+
+// The person's pick needs no answer of theirs where the rule asks nothing, so it is saved even
+// though the surface went away while its dry run was out.
+test("checking: a dry run answered 200 once the surface has gone still sends the PATCH, once", async () => {
+  const { answerNow, statusChanges } = holdTheDryRun(async () => fixtureAnswer("dry-run"));
+  const surface = renderSurface();
+  try {
+    const move = closeAcme4();
+    const { ended } = await surface.start(move);
+    surface.unmount();
+    answerNow();
+    expect(await ended).toEqual({ kind: "patched" });
+    expect(requests(statusChanges)).toEqual(["dry run of done with no option"]);
+    expect(move.patch).toHaveBeenCalledTimes(1);
+  } finally {
+    surface.unmount();
+  }
+});
+
+// Where the rule would refuse the pick, only the person could say what to do, and they have gone
+// with the surface: the question never opens, and nothing is written.
+test("checking: a dry run answered 409 PARENT_STATUS_CONFLICT once the surface has gone ends the move as kept, and writes nothing", async () => {
+  const { answerNow, statusChanges } = holdTheDryRun(refuse(fixtureRefusal("conflict")));
+  const surface = renderSurface();
+  try {
+    const move = closeAcme4();
+    const { ended } = await surface.start(move);
+    surface.unmount();
+    answerNow();
+    expect(await ended).toEqual({ kind: "kept" });
+    expect(requests(statusChanges)).toEqual(["dry run of done with no option"]);
+    expect(move.patch).not.toHaveBeenCalled();
+  } finally {
+    surface.unmount();
+  }
+});
+
+// The write store keeps a write going once its page has gone, so the rule may refuse it then:
+// nobody is left to ask, and the refusal stays the shell's indicator's to show.
+test("idle: a PATCH refused under the rule once the surface has gone asks nothing", async () => {
+  const statusChanges = answerStatusChanges();
+  const surface = renderSurface();
+  try {
+    const { ask } = surface.hook();
+    surface.unmount();
+    expect(await ask({ key: "ACME-4", status: "done" }, fixtureRefusal("conflict"))).toEqual({
+      kind: "kept",
+    });
+    expect(statusChanges).not.toHaveBeenCalled();
+  } finally {
+    surface.unmount();
+  }
+});
 
 test("asking: a choice confirmed sends the status change with that option", async () => {
   const statusChanges = answerBy({

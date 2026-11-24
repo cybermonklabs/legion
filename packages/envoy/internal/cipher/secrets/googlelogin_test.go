@@ -2,6 +2,7 @@ package secrets_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -150,6 +151,42 @@ func TestGoogleLoginMintNamesARateLimitAsUpstream(t *testing.T) {
 			}
 			if calls.Load() != 1 {
 				t.Fatalf("Mint against Google's %s asked %d times; want once", tc.name, calls.Load())
+			}
+		})
+	}
+}
+
+// TestGoogleLoginMintReadsInvalidGrantOnlyFromARefusal: a login that needs a new sign-in is read
+// from Google's invalid_grant only when the answer's status is a refusal (oauthrefusal.Refuses):
+// a 400 or a 403 naming it is refused. A 5xx naming it is Google's own failure, and a 408 Google
+// timing the request out: both are upstream, which points the broker's operator at Google rather
+// than at the login.
+func TestGoogleLoginMintReadsInvalidGrantOnlyFromARefusal(t *testing.T) {
+	value := `{"type":"authorized_user","client_id":"client-id","cli` + `ent_secret":"client-secret","ref` + `resh_token":"refresh-token"}`
+	for _, tc := range []struct {
+		status int
+		body   string
+		class  string
+	}{
+		{http.StatusBadRequest, `{"error":"invalid_grant"}`, "refused"},
+		{http.StatusForbidden, `{"error":"invalid_grant","error_subtype":"invalid_rapt"}`, "refused"},
+		{http.StatusInternalServerError, `{"error":"invalid_grant"}`, "upstream"},
+		{http.StatusServiceUnavailable, `{"error":"invalid_grant","error_subtype":"invalid_rapt"}`, "upstream"},
+		{http.StatusRequestTimeout, `{"error":"invalid_grant"}`, "upstream"},
+	} {
+		t.Run(fmt.Sprintf("%d %s", tc.status, tc.body), func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer server.Close()
+			_, err := (secrets.GoogleLogin{TokenURL: server.URL, HTTP: server.Client()}).Mint(t.Context(), secrets.MintRequest{Value: value})
+			if secrets.MintErrorClass(err) != tc.class {
+				t.Fatalf("Mint against Google answering %d %s = %v (class %s), want %s", tc.status, tc.body, err, secrets.MintErrorClass(err), tc.class)
+			}
+			if wantSignIn := tc.class == "refused"; strings.Contains(err.Error(), "needs a new sign-in") != wantSignIn {
+				t.Fatalf("Mint against Google answering %d: %v; want it to say the login needs a new sign-in: %t", tc.status, err, wantSignIn)
 			}
 		})
 	}

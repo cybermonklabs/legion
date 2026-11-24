@@ -239,6 +239,8 @@ func TestSummaryTickPublishesOneChecksEnvelopeWithoutSuites(t *testing.T) {
 	t.Logf("payload: %s", env.Payload)
 }
 
+// A suite that holds its head - GitHub Actions' - holds the settlement while it is not completed,
+// and its completion settles the head, again after the suite is opened and completed once more.
 func TestSummaryTickRequiresCompletedSuitesWhenRecorded(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
@@ -254,7 +256,7 @@ func TestSummaryTickRequiresCompletedSuitesWhenRecorded(t *testing.T) {
 	if err := recordCheck(store, owner, repo, number, sha, "build", "801", "https://example-host/checks/801", "completed", "success", "2026-09-07T03:00:00Z"); err != nil {
 		t.Fatalf("record check: %v", err)
 	}
-	if err := recordSuite(store, owner, repo, number, sha, "900", "in_progress", "", "77", ""); err != nil {
+	if err := recordSuite(store, owner, repo, number, sha, "900", "in_progress", "", githubActionsAppID, ""); err != nil {
 		t.Fatalf("record in-progress suite: %v", err)
 	}
 	waitCacheChecks(t, store, owner, repo, number, sha, 1)
@@ -264,7 +266,7 @@ func TestSummaryTickRequiresCompletedSuitesWhenRecorded(t *testing.T) {
 		t.Fatalf("in-progress suite allowed %d checks envelopes", pub.count())
 	}
 
-	if err := recordSuite(store, owner, repo, number, sha, "900", "completed", "success", "77", ""); err != nil {
+	if err := recordSuite(store, owner, repo, number, sha, "900", "completed", "success", githubActionsAppID, ""); err != nil {
 		t.Fatalf("complete suite: %v", err)
 	}
 	setLastEventAt(t, store, owner, repo, number, sha, 0)
@@ -273,7 +275,7 @@ func TestSummaryTickRequiresCompletedSuitesWhenRecorded(t *testing.T) {
 		t.Fatalf("completed suite published %d envelopes, want checks", pub.count())
 	}
 
-	if err := recordSuite(store, owner, repo, number, sha, "900", "in_progress", "", "77", ""); err != nil {
+	if err := recordSuite(store, owner, repo, number, sha, "900", "in_progress", "", githubActionsAppID, ""); err != nil {
 		t.Fatalf("reopen suite: %v", err)
 	}
 	setLastEventAt(t, store, owner, repo, number, sha, 0)
@@ -282,7 +284,7 @@ func TestSummaryTickRequiresCompletedSuitesWhenRecorded(t *testing.T) {
 		t.Fatalf("reopened suite published %d envelopes", pub.count())
 	}
 
-	if err := recordSuite(store, owner, repo, number, sha, "900", "completed", "success", "77", ""); err != nil {
+	if err := recordSuite(store, owner, repo, number, sha, "900", "completed", "success", githubActionsAppID, ""); err != nil {
 		t.Fatalf("recomplete suite: %v", err)
 	}
 	setLastEventAt(t, store, owner, repo, number, sha, 0)
@@ -869,18 +871,18 @@ func TestSummaryTickRefusesReclaimedClaimWhoseSnapshotWasReplaced(t *testing.T) 
 		releaseBOnce.Do(func() { close(releaseB) })
 	})
 	originalKV := replicaA.watcher.KV()
-	var keyGets int
+	var aClaimed bool
 	useKV(t, replicaA, &interleavingKV{
 		KeyValue: originalKV.Legacy(),
-		beforeGet: func(got string) {
-			if got != key {
+		afterUpdate: func(got string, _ []byte, _ uint64) {
+			if got != key || aClaimed {
 				return
 			}
-			keyGets++
-			if keyGets == 2 {
-				close(aReady)
-				<-releaseA
-			}
+			// Replica A's first write of the record in this tick is its claim; it verifies the claim
+			// from the stream's leader next (ClaimStillHeld), so it waits here, between the two.
+			aClaimed = true
+			close(aReady)
+			<-releaseA
 		},
 	})
 	t.Cleanup(func() { useKV(t, replicaA, originalKV.Legacy()) })

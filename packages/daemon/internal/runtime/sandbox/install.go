@@ -131,7 +131,7 @@ func (d IssueDisks) templates(project, label string) []volumeClaimTemplate {
 	if !keptVolume(issuePod{}, microVM) {
 		return nil
 	}
-	return keptVolumeTemplates(project, label, claimSpec(d.StorageClass, d.Volume, microVM))
+	return keptVolumeTemplates(project, label, claimSpec(d.StorageClass, d.Volume, issuePod{}, microVM))
 }
 
 // rejectLegacyIssueSandboxes refuses the project's Sandboxes whose pod is not one this runtime

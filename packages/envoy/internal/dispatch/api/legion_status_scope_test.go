@@ -197,18 +197,18 @@ func (rig *legionStatusRig) issue(t *testing.T, labels []string, parent, status 
 	return key
 }
 
-// legionIssueState is what R26 guards on an issue, and the sequence that every write of the
+// guardedIssueState is what R26 guards on an issue, and the sequence that every write of the
 // issue moves.
-type legionIssueState struct {
+type guardedIssueState struct {
 	status  string
 	labels  []string
 	parent  *string
 	lastSeq int
 }
 
-func readLegionIssue(t *testing.T, database *store.Store, key string) legionIssueState {
+func readLegionIssue(t *testing.T, database *store.Store, key string) guardedIssueState {
 	t.Helper()
-	var state legionIssueState
+	var state guardedIssueState
 	if err := database.Pool.QueryRow(context.Background(),
 		`select status, labels, parent_key, last_seq from issues where key = $1`, key,
 	).Scan(&state.status, &state.labels, &state.parent, &state.lastSeq); err != nil {
@@ -217,7 +217,7 @@ func readLegionIssue(t *testing.T, database *store.Store, key string) legionIssu
 	return state
 }
 
-func (s legionIssueState) String() string {
+func (s guardedIssueState) String() string {
 	parent := "none"
 	if s.parent != nil {
 		parent = *s.parent
@@ -225,14 +225,14 @@ func (s legionIssueState) String() string {
 	return fmt.Sprintf("status %s, labels %q, parent %s, last_seq %d", s.status, s.labels, parent, s.lastSeq)
 }
 
-func (s legionIssueState) equal(other legionIssueState) bool {
+func (s guardedIssueState) equal(other guardedIssueState) bool {
 	return s.status == other.status && slices.Equal(s.labels, other.labels) &&
 		stringPointersEqual(s.parent, other.parent) && s.lastSeq == other.lastSeq
 }
 
 // requireLegionIssueUnchanged fails unless key is as before: a refused write changes no status,
 // label or parent, and appends no event.
-func requireLegionIssueUnchanged(t *testing.T, database *store.Store, key string, before legionIssueState) {
+func requireLegionIssueUnchanged(t *testing.T, database *store.Store, key string, before guardedIssueState) {
 	t.Helper()
 	if after := readLegionIssue(t, database, key); !after.equal(before) {
 		t.Errorf("%s after the refused write: %s; want it as it was: %s", key, after, before)
@@ -276,7 +276,7 @@ func requireLegionStatusRefusal(t *testing.T, response *httptest.ResponseRecorde
 //   - The server takes every other write, 200.
 //
 // A refused write leaves key as before.
-func (rig *legionStatusRig) answered(t *testing.T, credential legionCredential, judged bool, key string, before legionIssueState, response *httptest.ResponseRecorder) bool {
+func (rig *legionStatusRig) answered(t *testing.T, credential legionCredential, judged bool, key string, before guardedIssueState, response *httptest.ResponseRecorder) bool {
 	t.Helper()
 	switch {
 	case credential.verdict == legionRefusedFirst:
@@ -296,10 +296,10 @@ func (rig *legionStatusRig) answered(t *testing.T, credential legionCredential, 
 }
 
 // legionCheck checks one value a taken write left on its issue.
-type legionCheck func(t *testing.T, after legionIssueState)
+type legionCheck func(t *testing.T, after guardedIssueState)
 
 func hasStatus(status string) legionCheck {
-	return func(t *testing.T, after legionIssueState) {
+	return func(t *testing.T, after guardedIssueState) {
 		t.Helper()
 		if after.status != status {
 			t.Errorf("the taken write left %s, want status %s", after, status)
@@ -308,7 +308,7 @@ func hasStatus(status string) legionCheck {
 }
 
 func hasLabels(labels ...string) legionCheck {
-	return func(t *testing.T, after legionIssueState) {
+	return func(t *testing.T, after guardedIssueState) {
 		t.Helper()
 		if !slices.Equal(after.labels, labels) {
 			t.Errorf("the taken write left %s, want labels %q", after, labels)
@@ -318,7 +318,7 @@ func hasLabels(labels ...string) legionCheck {
 
 // hasParent checks the issue's parent: an empty parent is no parent.
 func hasParent(parent string) legionCheck {
-	return func(t *testing.T, after legionIssueState) {
+	return func(t *testing.T, after guardedIssueState) {
 		t.Helper()
 		if (parent == "" && after.parent != nil) || (parent != "" && (after.parent == nil || *after.parent != parent)) {
 			t.Errorf("the taken write left %s, want parent %q", after, parent)
@@ -552,13 +552,13 @@ type legionStatusChangeCall struct {
 // legionCallState is what a status change can change on its issues: the state of each issue, and
 // the number of events and of comments on the issues.
 type legionCallState struct {
-	issues           map[string]legionIssueState
+	issues           map[string]guardedIssueState
 	events, comments int64
 }
 
 func readLegionCall(t *testing.T, database *store.Store, keys []string) legionCallState {
 	t.Helper()
-	state := legionCallState{issues: make(map[string]legionIssueState, len(keys))}
+	state := legionCallState{issues: make(map[string]guardedIssueState, len(keys))}
 	for _, key := range keys {
 		state.issues[key] = readLegionIssue(t, database, key)
 	}
@@ -888,7 +888,7 @@ func TestACascadeThatWritesALegionIssueIsRefusedWhole(t *testing.T) {
 				key: root, body: map[string]any{"status": "backlog", "include_children": true}, issues: []string{root, child},
 				written: map[string][]legionCheck{
 					root: {hasStatus("backlog")},
-					child: {func(t *testing.T, after legionIssueState) {
+					child: {func(t *testing.T, after guardedIssueState) {
 						t.Helper()
 						if !after.equal(kept) {
 							t.Errorf("the cascade changed %s to %s, want it as it was: %s", child, after, kept)

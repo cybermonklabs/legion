@@ -73,21 +73,26 @@ func listenerBrokerTokens(t *testing.T, broker *ciphertokentest.StubBroker) *bro
 }
 
 // listenerBrokerTokensOver is the same credential over the broker at brokerURL and the spent-proof
-// store named, which is how the outcomes of that store reach apiAuth.
-func listenerBrokerTokensOver(t *testing.T, brokerURL string, replay rfc9449.DPoPReplayStorage) *brokerTokens {
+// store named, which is how the outcomes of that store reach apiAuth. Each of adjust changes the
+// verifier's options before it is built, as a row that needs its own clock or bucket sets them.
+func listenerBrokerTokensOver(t *testing.T, brokerURL string, replay rfc9449.DPoPReplayStorage, adjust ...func(*ciphertoken.Options)) *brokerTokens {
 	t.Helper()
 	tokens := newBrokerTokens(listenerBrokerConfig{
 		BrokerURL:        brokerURL,
 		AccountTokenFile: "/var/run/secrets/broker/token",
 		Origin:           listenerBrokerOrigin,
 	})
-	verifier, err := ciphertoken.New(ciphertoken.Options{
+	options := ciphertoken.Options{
 		BrokerURL: brokerURL,
 		Account:   listenerBrokerAccount("listener-account-token"),
 		Origin:    listenerBrokerOrigin,
 		Replay:    replay,
 		Address:   listenerSourceAddress,
-	})
+	}
+	for _, change := range adjust {
+		change(&options)
+	}
+	verifier, err := ciphertoken.New(options)
 	if err != nil {
 		t.Fatalf("build the broker-token verifier: %v", err)
 	}
@@ -286,8 +291,8 @@ func TestAPIAuthBrokerToken(t *testing.T) {
 			// change for that: its verifier is built without the read-only switch, so the token
 			// is refused as a build before the switch refuses it. The row "admits a token naming
 			// a service and no person" sends the same request under a token of the same kind — a
-			// session and a service, no person — whose project scope is named, with a project
-			// and no scope read, and it is admitted, so the refusal is the scope's.
+			// session and a service, no person and no project — whose project scope is person
+			// and which holds no scope read, and it is admitted, so the refusal is the scope's.
 			name:       "refuses a token that only reads",
 			configured: true,
 			started:    true,
@@ -653,15 +658,16 @@ func TestAPIAuthReadsOnlyTheDPoPSchemeAsABrokerToken(t *testing.T) {
 }
 
 // R9, the whole of it for this credential: with none of the broker variables set the listener
-// is the listener it was before this credential existed, whatever a client presents. A client
-// sends `Authorization: DPoP` whenever it has a broker and an identity to trade and no Envoy
+// admits and refuses as it did before this credential existed, whatever a client presents. A
+// client sends `Authorization: DPoP` whenever it has a broker and an identity to trade and no Envoy
 // bearer is set (packages/envoy-client/src/envoy-settings.ts), so it presents one to every
 // listener it is pointed at — including the no-bearer listeners a GCP VM and the clustered hub
 // run, one on loopback and one off it behind its NetworkPolicy, which take no broker token. Such
 // a listener reads that header as it read every Authorization header it did not know: the open
 // one serves the request, the one that requires a bearer answers the 401 it always answered. It
 // asks the broker nothing, binds no caller, and writes no refusal of a credential kind it does
-// not take.
+// not take. The open one counts the admission as none_broker_token and warns once a minute
+// (TestEveryAdmittedRequestCountsItsCredential holds both), so the census sees it.
 func TestAPIAuthWithNoBrokerSettingIsTheListenerItAlwaysWas(t *testing.T) {
 	broker := ciphertokentest.NewStubBroker(t)
 	caller := ciphertokentest.NewCaller(t)
@@ -669,10 +675,7 @@ func TestAPIAuthWithNoBrokerSettingIsTheListenerItAlwaysWas(t *testing.T) {
 	broker.Says(token, sessionAnswer("ses_elsewhere", "ada@example.com", caller.JKT()))
 
 	issuer := oidctest.New(t)
-	verifier, err := oidc.New(context.Background(), issuer.URL(), listenerTestAudience)
-	if err != nil {
-		t.Fatalf("oidc.New(%q, %q): %v", issuer.URL(), listenerTestAudience, err)
-	}
+	verifier := oidc.NewLazyVerifier(issuer.URL(), listenerTestAudience)
 
 	bound := false
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -683,7 +686,7 @@ func TestAPIAuthWithNoBrokerSettingIsTheListenerItAlwaysWas(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
 		shared     string
-		verifier   *oidc.Verifier
+		verifier   *oidc.LazyVerifier
 		wantStatus int
 	}{
 		{
