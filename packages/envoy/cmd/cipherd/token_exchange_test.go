@@ -121,23 +121,20 @@ const (
 	// otherPersonSecret is person's own, nobody else's: what a signed-in person is refused on a
 	// box, so that a sign-in is read as that one person's authority and not as every person's.
 	otherPersonSecret = "OTHER_PERSON_SECRET"
-	// The values the fake store holds for them.
+	// The values the memory store holds for them.
 	personSecretValue      = "person-secret-v1"
 	otherPersonSecretValue = "other-person-secret-v1"
 	sharedSecretValue      = "shared-secret-v1"
 	pinnedFleetSecretValue = "pinned-fleet-secret-v1"
 	poolFleetSecretValue   = "pool-fleet-secret-v1"
-	// secretKMSKey is the key the fake store records against each, a placeholder of the shape an
-	// ARN has.
-	secretKMSKey = "arn:aws:kms:us-east-1:111122223333:key/1234abcd-12ab-34cd-56ef-1234567890ab"
 )
 
-// fakeSecret is one row of the store the broker reads with BROKER_FAKE_SECRETS_FILE: its path,
+// fakeSecret is one row of the memory store the broker reads (BROKER_MEMORY_SECRETS_FILE): its path,
 // the owner tag that decides who gets it, and its value. Its exposed name is the last path
 // element upper-cased with its hyphens turned to underscores, which is what a request asks for.
 func fakeSecret(path, owner, value string) string {
-	return `{"name": "` + path + `", "kms_key_id": "` + secretKMSKey +
-		`", "tags": {"owner": "` + owner + `", "tier": "agent"}, "value": "` + value + `"}`
+	return `{"name": "` + path + `", "tags": {"owner": "` +
+		owner + `", "tier": "agent"}, "value": "` + value + `"}`
 }
 
 // TestTheBinaryExchangesAPodsTokenIntrospectsItAndRenewsIt is the live proof of the exchange: the
@@ -1562,13 +1559,13 @@ func TestTheProjectsClaimSurvivesTheStore(t *testing.T) {
 // of both listed accounts (BROKER_POD_REGISTRARS), and how long an access token it mints lasts.
 func exchangeEnv(t *testing.T, databaseURL string, cluster, github *oidctest.Issuer, accessSeconds int, extraSecrets ...string) []string {
 	t.Helper()
-	fakeSecretsFile := filepath.Join(t.TempDir(), "fake-secrets.json")
+	memorySecretsFile := filepath.Join(t.TempDir(), "memory-secrets.json")
 	rows := append([]string{
 		fakeSecret("example/agent-secrets/person-secret", fleetPerson, personSecretValue),
 		fakeSecret("example/agent-secrets/other-person-secret", person, otherPersonSecretValue),
 		fakeSecret("example/agent-secrets/shared-secret", "shared", sharedSecretValue),
 	}, extraSecrets...)
-	if err := os.WriteFile(fakeSecretsFile, []byte(`{"secrets": [`+strings.Join(rows, ",\n")+`]}`), 0o600); err != nil {
+	if err := os.WriteFile(memorySecretsFile, []byte(`{"secrets": [`+strings.Join(rows, ",\n")+`]}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	// The machine-login page is named here because the rows these brokers serve include a
@@ -1579,7 +1576,8 @@ func exchangeEnv(t *testing.T, databaseURL string, cluster, github *oidctest.Iss
 		"BROKER_DATABASE_URL=" + databaseURL,
 		"BROKER_LISTEN_ADDR=127.0.0.1:0",
 		"BROKER_PUBLIC_URL=http://127.0.0.1:0",
-		"BROKER_FAKE_SECRETS_FILE=" + fakeSecretsFile,
+		"BROKER_SECRETS_STORE=memory",
+		"BROKER_MEMORY_SECRETS_FILE=" + memorySecretsFile,
 		"BROKER_K8S_OIDC_ISSUER=" + cluster.URL(),
 		"BROKER_K8S_OIDC_AUDIENCE=" + enrolmentAudience,
 		"BROKER_EXCHANGE_K8S_AUDIENCE=" + exchangeAudience,

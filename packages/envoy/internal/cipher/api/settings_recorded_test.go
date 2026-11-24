@@ -7,13 +7,13 @@ package api_test
 //
 //	go test ./internal/cipher/api/ -run TestSettingsRecordedOnMain -args -record
 //
-// Never write the records again from later code: a record written by the code it checks compares
-// that code with itself and proves nothing. A change that means to move a field of either body is
-// a change to the settings every deployed CLI reads, which the records exist to catch.
+// The flag that wrote them went with the store packages' move, so no later code can write them:
+// a record written by the code it checks compares that code with itself and proves nothing. A
+// change that means to move a field of either body is a change to the settings every deployed CLI
+// reads, which the records exist to catch.
 
 import (
 	"encoding/json"
-	"flag"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -25,29 +25,35 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/api"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/backends"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/gcp"
 )
 
-var recordSettings = flag.Bool("record", false, "write testdata/settings-recorded-on-main-*.json instead of comparing; run only on main, as settings_recorded_test.go's head comment says")
-
 // TestSettingsRecordedOnMain: GET /v1/settings for a broker on AWS Secrets Manager and for one on
-// Google Secret Manager answers, field for field, the body main answered for the same
-// configuration. With -record it writes the records instead, which the head comment allows on main
-// alone.
+// Google Secret Manager, each configured by its registry entry from the variables a deployment
+// sets, answers, field for field, the body main answered for the same configuration.
 func TestSettingsRecordedOnMain(t *testing.T) {
 	for _, row := range []struct {
-		store string
-		deps  api.Deps
+		store, name, prefix string
+		env                 map[string]string
 	}{
-		{"aws", api.Deps{SecretsStore: aws.Name, SecretsPrefix: "example/agent-secrets/",
-			SecretsKMSKey: "arn:aws:kms:us-east-1:111122223333:key/1234abcd-12ab-34cd-56ef-1234567890ab"}},
-		{"gcp", api.Deps{SecretsStore: gcp.Name, SecretsPrefix: "projects/000000000000/secrets/agent-secrets-",
-			SecretsKMSKey: "projects/example/locations/global/keyRings/agent-secrets/cryptoKeys/agent-secrets"}},
+		{"aws", aws.Name, "example/agent-secrets/",
+			map[string]string{"BROKER_SECRETS_KMS_KEY_ARN": "arn:aws:kms:us-east-1:111122223333:key/1234abcd-12ab-34cd-56ef-1234567890ab"}},
+		{"gcp", gcp.Name, "projects/000000000000/secrets/agent-secrets-",
+			map[string]string{"BROKER_SECRETS_KMS_KEY_NAME": "projects/example/locations/global/keyRings/agent-secrets/cryptoKeys/agent-secrets"}},
 	} {
 		t.Run(row.store, func(t *testing.T) {
 			record := filepath.Join("testdata", "settings-recorded-on-main-"+row.store+".json")
+			b, err := backends.Lookup(row.name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := b.ParseConfig(row.prefix, func(name string) string { return row.env[name] })
+			if err != nil {
+				t.Fatal(err)
+			}
 			mux := http.NewServeMux()
-			api.Register(mux, row.deps)
+			api.Register(mux, api.Deps{SecretsStore: b.Name(), SecretsPrefix: cfg.Prefix(), SettingsFields: cfg.Settings()})
 			srv := httptest.NewServer(mux)
 			t.Cleanup(srv.Close)
 			resp, err := http.Get(srv.URL + "/v1/settings")
@@ -65,20 +71,6 @@ func TestSettingsRecordedOnMain(t *testing.T) {
 			var got map[string]any
 			if err := json.Unmarshal(body, &got); err != nil {
 				t.Fatalf("decode GET /v1/settings %s: %v", body, err)
-			}
-			if *recordSettings {
-				raw, err := json.MarshalIndent(got, "", "  ")
-				if err != nil {
-					t.Fatal(err)
-				}
-				if err := os.MkdirAll(filepath.Dir(record), 0o755); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.WriteFile(record, append(raw, '\n'), 0o644); err != nil {
-					t.Fatal(err)
-				}
-				t.Logf("wrote %d fields to %s", len(got), record)
-				return
 			}
 			raw, err := os.ReadFile(record)
 			if err != nil {

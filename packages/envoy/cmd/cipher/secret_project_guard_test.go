@@ -8,12 +8,11 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
-
-	// guarded is list, a requesters list ("" for none), with the project tags' rollback guard after it,
-	// as the requesters tag a secret carrying a project tag holds.
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 )
 
+// guarded is list, a requesters list ("" for none), with the project tags' rollback guard after it,
+// as the requesters tag a secret carrying a project tag holds.
 func guarded(list string) string {
 	if list == "" {
 		return policy.RequestersRollbackGuard

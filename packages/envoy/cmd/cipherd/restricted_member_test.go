@@ -197,7 +197,7 @@ func TestARestrictedMembersMachineLoginEnrollsNothing(t *testing.T) {
 // issuer of the account the routes Dispatch's server calls take (BROKER_API_ACCOUNTS).
 func restrictedMemberEnv(t *testing.T, databaseURL string, cluster *oidctest.Issuer) []string {
 	t.Helper()
-	secretsFile := filepath.Join(t.TempDir(), "fake-secrets.json")
+	secretsFile := filepath.Join(t.TempDir(), "memory-secrets.json")
 	content := `{"secrets": [` + fakeSecret(testSecretsPrefix+"shared-secret", policy.OwnerShared, sharedSecretValue) + `]}`
 	if err := os.WriteFile(secretsFile, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
@@ -207,7 +207,8 @@ func restrictedMemberEnv(t *testing.T, databaseURL string, cluster *oidctest.Iss
 		"BROKER_DATABASE_URL=" + databaseURL,
 		"BROKER_LISTEN_ADDR=127.0.0.1:0",
 		"BROKER_PUBLIC_URL=" + restrictedPublicURL,
-		"BROKER_FAKE_SECRETS_FILE=" + secretsFile,
+		"BROKER_SECRETS_STORE=memory",
+		"BROKER_MEMORY_SECRETS_FILE=" + secretsFile,
 		"BROKER_K8S_OIDC_ISSUER=" + cluster.URL(),
 		"BROKER_K8S_OIDC_AUDIENCE=" + enrolmentAudience,
 		"BROKER_API_ACCOUNTS=dispatch=" + apiAccount,

@@ -146,8 +146,8 @@ func newEdgeRig(t *testing.T) edgeRig {
 	}
 	dir := t.TempDir()
 	tokenFile := filepath.Join(dir, "dispatch-access-token")
-	fakeSecretsFile := filepath.Join(dir, "fake-secrets.json")
-	for path, body := range map[string]string{tokenFile: rig.dispatch.Token + "\n", fakeSecretsFile: `{"secrets": []}`} {
+	memorySecretsFile := filepath.Join(dir, "memory-secrets.json")
+	for path, body := range map[string]string{tokenFile: rig.dispatch.Token + "\n", memorySecretsFile: `{"secrets": []}`} {
 		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -156,7 +156,8 @@ func newEdgeRig(t *testing.T) edgeRig {
 		"BROKER_DATABASE_URL=" + storetest.URL(t),
 		"BROKER_LISTEN_ADDR=127.0.0.1:0",
 		"BROKER_PUBLIC_URL=http://127.0.0.1:0",
-		"BROKER_FAKE_SECRETS_FILE=" + fakeSecretsFile,
+		"BROKER_SECRETS_STORE=memory",
+		"BROKER_MEMORY_SECRETS_FILE=" + memorySecretsFile,
 		"BROKER_K8S_OIDC_ISSUER=" + cluster.URL(),
 		"BROKER_K8S_OIDC_AUDIENCE=" + enrolmentAudience,
 	}

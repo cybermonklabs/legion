@@ -40,6 +40,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 	"github.com/sjawhar/envoy/internal/cipher/store"
 	brokerstoretest "github.com/sjawhar/envoy/internal/cipher/store/storetest"
@@ -48,12 +49,10 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
-
-	// contractOther is a second allowed Dispatch login, neither any record's approver nor any
-	// enrollment's operator.
-	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
 )
 
+// contractOther is a second allowed Dispatch login, neither any record's approver nor any
+// enrollment's operator.
 const (
 	contractApprover = "sami@example.com"
 
@@ -139,7 +138,7 @@ func newContractRig(t *testing.T) *contractRig {
 		Enroll:        enr, Machine: reqMachine, MachineLogin: mach,
 		OAuth: provider, DeviceLogin: mach.LoginDevice, TokenHooks: mach.TokenHooks(),
 		Proof:  &proof.Verifier{Skew: time.Minute, Lookup: enr.Lookup, LookupLauncher: enr.AuthenticateLauncher, Replay: enr.Replay},
-		Policy: cur, SecretsStore: aws.Name, SecretsPrefix: policytest.Prefix, SecretsKMSKey: policytest.KeyARN,
+		Policy: cur, SecretsStore: aws.Name, SecretsPrefix: policytest.Prefix,
 		// People sign in to the broker's approval page at the same local issuer, which stands in for
 		// every provider.
 		Approval: ciphertest.NewApprovalPage(t, ciphertest.SignIn(issuer, issuerKey), brokerServer.URL, brokerStore, reqMachine),

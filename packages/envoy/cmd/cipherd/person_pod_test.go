@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess/projectaccesstest"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/memory"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 )
@@ -79,8 +80,8 @@ func TestAPersonsPodReadsThePersonsAgentSecretWithNoApproval(t *testing.T) {
 	issuer := oidctest.New(t)
 	clusterKey := issuer.PublishKey(t, "cluster-key")
 	store := &requesterStore{
-		path: filepath.Join(t.TempDir(), "fake-secrets.json"),
-		rows: []awstest.LocalSecret{requesterRow(personPodSecret, personPodPerson, policy.TierAgent, personPodSecretValue, nil)},
+		path: filepath.Join(t.TempDir(), "memory-secrets.json"),
+		rows: []memory.Secret{requesterRow(personPodSecret, personPodPerson, policy.TierAgent, personPodSecretValue, nil)},
 	}
 	store.write(t)
 	cli := buildAgentSecrets(t)
@@ -89,7 +90,8 @@ func TestAPersonsPodReadsThePersonsAgentSecretWithNoApproval(t *testing.T) {
 		"BROKER_DATABASE_URL=" + databaseURL,
 		"BROKER_LISTEN_ADDR=127.0.0.1:0",
 		"BROKER_PUBLIC_URL=http://127.0.0.1:0",
-		"BROKER_FAKE_SECRETS_FILE=" + store.path,
+		"BROKER_SECRETS_STORE=memory",
+		"BROKER_MEMORY_SECRETS_FILE=" + store.path,
 		"BROKER_K8S_OIDC_ISSUER=" + issuer.URL(),
 		"BROKER_K8S_OIDC_AUDIENCE=" + personPodAudience,
 		// Nothing is left in flight when the test ends, so the broker exits at once.
@@ -203,7 +205,7 @@ func TestAPersonsPodNamesItsProjectsThroughTheBinaries(t *testing.T) {
 		privProject: {Visibility: "private", Owner: privateOwner, Listed: []string{personPodPerson}},
 		elseProject: {Visibility: "private", Owner: privateOwner},
 	}
-	store := &requesterStore{path: filepath.Join(t.TempDir(), "fake-secrets.json"), rows: []awstest.LocalSecret{
+	store := &requesterStore{path: filepath.Join(t.TempDir(), "memory-secrets.json"), rows: []memory.Secret{
 		requesterRow(privKey, policy.OwnerShared, policy.TierAgent, privValue, map[string]string{policy.TagProject: privProject}),
 		requesterRow(elseKey, policy.OwnerShared, policy.TierAgent, "else-value", map[string]string{policy.TagProject: elseProject}),
 	}}
@@ -221,7 +223,8 @@ func TestAPersonsPodNamesItsProjectsThroughTheBinaries(t *testing.T) {
 			"BROKER_DATABASE_URL=" + databaseURL,
 			"BROKER_LISTEN_ADDR=127.0.0.1:0",
 			"BROKER_PUBLIC_URL=http://127.0.0.1:0",
-			"BROKER_FAKE_SECRETS_FILE=" + store.path,
+			"BROKER_SECRETS_STORE=memory",
+			"BROKER_MEMORY_SECRETS_FILE=" + store.path,
 			"BROKER_K8S_OIDC_ISSUER=" + issuer.URL(),
 			"BROKER_K8S_OIDC_AUDIENCE=" + personPodAudience,
 			"BROKER_PROJECT_ACCESS_URL=" + dispatch.URL,

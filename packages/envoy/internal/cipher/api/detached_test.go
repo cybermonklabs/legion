@@ -25,7 +25,6 @@ func TestARereadStartedAfterDetachedWaitBeganIsNotCounted(t *testing.T) {
 		Detached:      detached,
 		SecretsStore:  aws.Name,
 		SecretsPrefix: policytest.Prefix,
-		SecretsKMSKey: policytest.KeyARN,
 	})
 	logged := policytest.CaptureLog(t)
 	recorder := httptest.NewRecorder()

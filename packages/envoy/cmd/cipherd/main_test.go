@@ -29,6 +29,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -43,6 +44,9 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/proxy"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/memory"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
 	"github.com/sjawhar/envoy/internal/cmdtest"
@@ -50,12 +54,12 @@ import (
 )
 
 // testSecretsPrefix and testSecretsKMSKeyARN are the name prefix every agent secret sits under
-// and the key every one of them is encrypted with, as productionEnv configures every broker
-// these tests start (BROKER_SECRETS_PREFIX, BROKER_SECRETS_KMS_KEY_ARN). A fake secrets file a
-// test writes names its secrets under this prefix and on this key, through these constants and
-// not a literal of its own (multiprocess_test.go's fakeSecretsJSON): the policy loader refuses a
-// secret under another prefix or on another key, which shows up as nothing but a secret never
-// served, and one constant per fact is what leaves no second value to drift from this one.
+// and the key every one of them is encrypted with on the AWS store, as productionEnv configures
+// every broker these tests start (BROKER_SECRETS_PREFIX, BROKER_SECRETS_KMS_KEY_ARN). A memory
+// secrets file a test writes names its secrets under this prefix, through this constant and not a
+// literal of its own (multiprocess_test.go's fakeSecretsJSON): the policy loader refuses a secret
+// under another prefix, which shows up as nothing but a secret never served, and one constant per
+// fact is what leaves no second value to drift from this one.
 const (
 	testSecretsPrefix    = "example/agent-secrets/"
 	testSecretsKMSKeyARN = "arn:aws:kms:us-east-1:111122223333:key/1234abcd-12ab-34cd-56ef-1234567890ab"
@@ -85,30 +89,35 @@ func signInClientSecretFile(t *testing.T) string {
 const testMachineLoginURL = "https://dispatch.example/credentials/machine"
 
 // productionEnv is the configuration every broker needs besides its addresses and database: the
-// namespace it serves, the key every secret there is on, and the four settings a person signs
-// in to its approval page with, which it refuses to start without. It also empties
-// KUBERNETES_SERVICE_HOST, which Kubernetes sets in every container: a test run in a pod would
-// otherwise hand it to each broker it starts, and every broker with an airlock would refuse to
-// start for want of BROKER_AIRLOCK_CLUSTER_RANGES. A broker these tests start is a local process,
-// outside any cluster, unless its row names KUBERNETES_SERVICE_HOST itself.
-func productionEnv(t *testing.T) []string {
+// namespace it serves, and, unless env names a store of its own (BROKER_SECRETS_STORE, such as the
+// memory store), the AWS store's key every secret there is on, which another store refuses; and
+// the four settings a person signs in to its approval page with, which it refuses to start
+// without. env is the rest of the start's environment. It also empties KUBERNETES_SERVICE_HOST,
+// which Kubernetes sets in every container: a test run in a pod would otherwise hand it to each
+// broker it starts, and every broker with an airlock would refuse to start for want of
+// BROKER_AIRLOCK_CLUSTER_RANGES. A broker these tests start is a local process, outside any
+// cluster, unless its row names KUBERNETES_SERVICE_HOST itself.
+func productionEnv(t *testing.T, env []string) []string {
 	t.Helper()
-	return []string{
-		"BROKER_SECRETS_PREFIX=" + testSecretsPrefix,
-		"BROKER_SECRETS_KMS_KEY_ARN=" + testSecretsKMSKeyARN,
-		"BROKER_SIGNIN_ISSUER=" + testSignInIssuer,
-		"BROKER_SIGNIN_CLIENT_ID=" + ciphertest.SignInClientID,
-		"BROKER_SIGNIN_CLIENT_SECRET_FILE=" + signInClientSecretFile(t),
-		"BROKER_SIGNIN_DOMAIN=" + ciphertest.SignInDomain,
-		"KUBERNETES_SERVICE_HOST=",
+	store := []string{"BROKER_SECRETS_KMS_KEY_ARN=" + testSecretsKMSKeyARN}
+	if slices.ContainsFunc(env, func(e string) bool { return strings.HasPrefix(e, "BROKER_SECRETS_STORE=") }) {
+		store = nil
 	}
+	return append(store,
+		"BROKER_SECRETS_PREFIX="+testSecretsPrefix,
+		"BROKER_SIGNIN_ISSUER="+testSignInIssuer,
+		"BROKER_SIGNIN_CLIENT_ID="+ciphertest.SignInClientID,
+		"BROKER_SIGNIN_CLIENT_SECRET_FILE="+signInClientSecretFile(t),
+		"BROKER_SIGNIN_DOMAIN="+ciphertest.SignInDomain,
+		"KUBERNETES_SERVICE_HOST=",
+	)
 }
 
 // TestAnHTTPEdgeURLIsRefusedOutsideALocalRun: a BROKER_EDGE_URL or BROKER_EDGE_MACHINE_LOGIN_URL
 // that is not https, however its scheme is written, refuses a start that is not a local run,
 // naming that setting and never the rest of the URL's text but what redact.URL keeps; https ones
-// start, a broker with no edge is refused nothing, and a local run (BROKER_FAKE_SECRETS_FILE set)
-// may use http for either.
+// start, a broker with no edge is refused nothing, and a local run (a development store, the
+// memory store) may use http for either.
 //
 // The named reverts: drop refuseHTTPEdgeURLsInProduction's scheme check, and the http rows start;
 // check BROKER_EDGE_URL alone, as before, and the plain-http machine login page starts.
@@ -119,18 +128,18 @@ func TestAnHTTPEdgeURLIsRefusedOutsideALocalRun(t *testing.T) {
 			{"BROKER_EDGE_URL", plain, machineLoginURL},
 			{"BROKER_EDGE_MACHINE_LOGIN_URL", edgeURL, plain},
 		} {
-			err := refuseHTTPEdgeURLsInProduction(row.edgeURL, row.machineLoginURL, "")
+			err := refuseHTTPEdgeURLsInProduction(row.edgeURL, row.machineLoginURL, productionStore)
 			if err == nil || !strings.HasPrefix(err.Error(), row.setting+" ") || !strings.Contains(err.Error(), "must be https in production") {
-				t.Errorf("%s %s with no BROKER_FAKE_SECRETS_FILE = %v, want the https refusal naming %s", row.setting, plain, err, row.setting)
+				t.Errorf("%s %s on a production store = %v, want the https refusal naming %s", row.setting, plain, err, row.setting)
 			}
-			if err := refuseHTTPEdgeURLsInProduction(row.edgeURL, row.machineLoginURL, "/dev/fake-secrets.json"); err != nil {
+			if err := refuseHTTPEdgeURLsInProduction(row.edgeURL, row.machineLoginURL, localStore); err != nil {
 				t.Errorf("%s %s in a local run = %v, want nil", row.setting, plain, err)
 			}
 		}
 	}
 	for _, row := range [][2]string{{edgeURL, machineLoginURL}, {"HTTPS://edge.invalid:8443", "HTTPS://dispatch.edge.invalid:8443/m"}, {"", ""}} {
-		if err := refuseHTTPEdgeURLsInProduction(row[0], row[1], ""); err != nil {
-			t.Errorf("BROKER_EDGE_URL %q and BROKER_EDGE_MACHINE_LOGIN_URL %q with no BROKER_FAKE_SECRETS_FILE = %v, want nil", row[0], row[1], err)
+		if err := refuseHTTPEdgeURLsInProduction(row[0], row[1], productionStore); err != nil {
+			t.Errorf("BROKER_EDGE_URL %q and BROKER_EDGE_MACHINE_LOGIN_URL %q on a production store = %v, want nil", row[0], row[1], err)
 		}
 	}
 }
@@ -145,12 +154,12 @@ var portZeroPublicURLs = []string{"http://127.0.0.1:0", "http://127.0.0.1:00", "
 // The named revert: compare the port as the text "0", and the ":00" rows load.
 func TestPortZeroPublicURLRefusedInProduction(t *testing.T) {
 	for _, publicURL := range portZeroPublicURLs {
-		err := refusePortZeroPublicURLInProduction(publicURL, "")
+		err := refusePortZeroPublicURLInProduction(publicURL, productionStore)
 		if err == nil {
-			t.Errorf("BROKER_PUBLIC_URL %s with no BROKER_FAKE_SECRETS_FILE: want an error, got nil", publicURL)
+			t.Errorf("BROKER_PUBLIC_URL %s on a production store: want an error, got nil", publicURL)
 			continue
 		}
-		want := "BROKER_PUBLIC_URL " + strconv.Quote(publicURL) + ": port 0 is never dialable in production (BROKER_FAKE_SECRETS_FILE is unset); only a local run may use it as dev-broker.sh's derive-from-bind convention"
+		want := "BROKER_PUBLIC_URL " + strconv.Quote(publicURL) + ": port 0 is never dialable in production (BROKER_SECRETS_STORE=aws-secrets-manager is no development store); only a local run may use it as dev-broker.sh's derive-from-bind convention"
 		if err.Error() != want {
 			t.Errorf("error = %q, want %q", err.Error(), want)
 		}
@@ -159,15 +168,15 @@ func TestPortZeroPublicURLRefusedInProduction(t *testing.T) {
 
 func TestPortZeroPublicURLIsFineForALocalRun(t *testing.T) {
 	for _, publicURL := range portZeroPublicURLs {
-		if err := refusePortZeroPublicURLInProduction(publicURL, "/dev/fake-secrets.json"); err != nil {
-			t.Errorf("BROKER_PUBLIC_URL %s with BROKER_FAKE_SECRETS_FILE set: want nil, got %v", publicURL, err)
+		if err := refusePortZeroPublicURLInProduction(publicURL, localStore); err != nil {
+			t.Errorf("BROKER_PUBLIC_URL %s on the memory store: want nil, got %v", publicURL, err)
 		}
 	}
 }
 
 func TestNonZeroPortPublicURLIsFineInProduction(t *testing.T) {
 	for _, publicURL := range []string{"https://broker.invalid", "https://broker.invalid:443", "http://127.0.0.1:010", "http://127.0.0.1:"} {
-		if err := refusePortZeroPublicURLInProduction(publicURL, ""); err != nil {
+		if err := refusePortZeroPublicURLInProduction(publicURL, productionStore); err != nil {
 			t.Errorf("BROKER_PUBLIC_URL %s: want nil, got %v", publicURL, err)
 		}
 	}
@@ -250,18 +259,18 @@ func TestEachAirlockTestSettingIsRefusedInProduction(t *testing.T) {
 	for _, setting := range airlockTestSettings() {
 		var cfg config.Config
 		setting.cfg(&cfg)
-		err := refuseAirlockTestSettingsInProduction(cfg, "")
+		err := refuseAirlockTestSettingsInProduction(cfg, productionStore)
 		if err == nil {
-			t.Errorf("%s set with no BROKER_FAKE_SECRETS_FILE: want an error, got nil", setting.name)
+			t.Errorf("%s set on a production store: want an error, got nil", setting.name)
 			continue
 		}
-		if !strings.Contains(err.Error(), setting.name) || !strings.Contains(err.Error(), "BROKER_FAKE_SECRETS_FILE is unset") {
-			t.Errorf("%s set: error = %q; want it to name the setting and the local-run file", setting.name, err)
+		if !strings.Contains(err.Error(), setting.name) || !strings.Contains(err.Error(), "BROKER_SECRETS_STORE=aws-secrets-manager is no development store") {
+			t.Errorf("%s set: error = %q; want it to name the setting and that the store is no development store", setting.name, err)
 		}
 	}
 }
 
-// TestEveryAirlockTestSettingIsFineForALocalRun: all fourteen at once, with the fake secrets file
+// TestEveryAirlockTestSettingIsFineForALocalRun: all fourteen at once, on the development store
 // that makes a start a local run, are accepted - and a production start naming none of them is
 // accepted too, since this refusal must not stand in the way of an ordinary boot.
 func TestEveryAirlockTestSettingIsFineForALocalRun(t *testing.T) {
@@ -269,12 +278,30 @@ func TestEveryAirlockTestSettingIsFineForALocalRun(t *testing.T) {
 	for _, setting := range airlockTestSettings() {
 		setting.cfg(&cfg)
 	}
-	if err := refuseAirlockTestSettingsInProduction(cfg, "/dev/fake-secrets.json"); err != nil {
-		t.Fatalf("all fourteen with BROKER_FAKE_SECRETS_FILE set: want nil, got %v", err)
+	if err := refuseAirlockTestSettingsInProduction(cfg, localStore); err != nil {
+		t.Fatalf("all fourteen on the memory store: want nil, got %v", err)
 	}
-	if err := refuseAirlockTestSettingsInProduction(config.Config{}, ""); err != nil {
+	if err := refuseAirlockTestSettingsInProduction(config.Config{}, productionStore); err != nil {
 		t.Fatalf("a production start naming none of them: want nil, got %v", err)
 	}
+}
+
+// productionStore and localStore are the stores the refusal rows above run on: the default store,
+// on which a start is a production one, and the memory store, the development store a local run
+// is on.
+var productionStore, localStore secretstore.Backend = aws.Backend{}, memory.Backend{}
+
+// awsSecretsConfig is the AWS store's configuration for prefix on the test key, as config.Load
+// parses it for a broker on that store.
+func awsSecretsConfig(t *testing.T, prefix string) secretstore.Config {
+	t.Helper()
+	cfg, err := aws.Backend{}.ParseConfig(prefix, func(name string) string {
+		return map[string]string{"BROKER_SECRETS_KMS_KEY_ARN": testSecretsKMSKeyARN}[name]
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cfg
 }
 
 // TestMainRefusesAnAirlockTestSettingInProduction drives the REAL compiled binary with each of
@@ -404,7 +431,7 @@ func TestTheAnthropicMinterMintsAtTheLocalStacksStandIns(t *testing.T) {
 // correct, and with this guard's only call site moved to run after st.Migrate, the first Secrets
 // Manager read, and net.Listen, a misconfigured production boot would migrate the production
 // database and bind a socket before ever refusing. This builds cmd/cipherd once, execs it with
-// BROKER_PUBLIC_URL=http://127.0.0.1:0 and no BROKER_FAKE_SECRETS_FILE (plus an unreachable
+// BROKER_PUBLIC_URL=http://127.0.0.1:0 on the default store, no development store (plus an unreachable
 // BROKER_DATABASE_URL and just enough other required BROKER_* variables for config.Load to succeed
 // — the refusal must run before store.Open, so no real Postgres or AWS credential, and no
 // successful bind, is ever needed), and asserts the process exits non-zero naming the port-0
@@ -413,7 +440,7 @@ func TestTheAnthropicMinterMintsAtTheLocalStacksStandIns(t *testing.T) {
 // real socket.
 func TestMainRefusesPortZeroPublicURLInProduction(t *testing.T) {
 	cmd := exec.Command(buildBroker(t))
-	cmd.Env = append(append(os.Environ(), productionEnv(t)...),
+	cmd.Env = append(append(os.Environ(), productionEnv(t, nil)...),
 		"BROKER_DATABASE_URL=postgres://nonexistent-host-this-test-must-never-reach/db",
 		"BROKER_PUBLIC_URL=http://127.0.0.1:0",
 	)
@@ -433,7 +460,7 @@ func TestMainRefusesPortZeroPublicURLInProduction(t *testing.T) {
 }
 
 // TestMainRefusesAnHTTPEdgeURLInProduction: the binary, with an edge whose BROKER_EDGE_URL is
-// plain http and no BROKER_FAKE_SECRETS_FILE, exits non-zero naming the https refusal before it
+// plain http, on the default store, exits non-zero naming the https refusal before it
 // reaches the database or binds a socket (refuseHTTPEdgeURLsInProduction runs beside the port-0
 // refusal, before store.Open), as TestMainRefusesPortZeroPublicURLInProduction holds for that one.
 //
@@ -441,7 +468,7 @@ func TestMainRefusesPortZeroPublicURLInProduction(t *testing.T) {
 // on to dial the unreachable database instead of naming the refusal.
 func TestMainRefusesAnHTTPEdgeURLInProduction(t *testing.T) {
 	cmd := exec.Command(buildBroker(t))
-	cmd.Env = append(append(os.Environ(), productionEnv(t)...),
+	cmd.Env = append(append(os.Environ(), productionEnv(t, nil)...),
 		"BROKER_DATABASE_URL=postgres://nonexistent-host-this-test-must-never-reach/db",
 		"BROKER_PUBLIC_URL=https://broker.invalid",
 		"BROKER_MACHINE_LOGIN_URL=https://dispatch.invalid/credentials/machine",
@@ -496,7 +523,7 @@ func buildBroker(t *testing.T) string {
 func runRefusedBroker(t *testing.T, binPath string, env ...string) string {
 	t.Helper()
 	cmd := exec.Command(binPath)
-	cmd.Env = append(append(append(os.Environ(), productionEnv(t)...), noAWSEnv(t)...), env...)
+	cmd.Env = append(append(append(os.Environ(), productionEnv(t, env)...), noAWSEnv(t)...), env...)
 	out, err := cmd.CombinedOutput()
 	exitErr, isExit := err.(*exec.ExitError)
 	if err == nil || !isExit || exitErr.ExitCode() == 0 {
@@ -565,8 +592,8 @@ func TestMainSignsInToALocalPasswordlessURLAsGiven(t *testing.T) {
 	if err := os.WriteFile(passfile, []byte("*:*:*:"+parsed.User.Username()+":"+password+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	fakeSecretsFile := filepath.Join(t.TempDir(), "fake-secrets.json")
-	if err := os.WriteFile(fakeSecretsFile, []byte(`{"secrets": []}`), 0o600); err != nil {
+	memorySecretsFile := filepath.Join(t.TempDir(), "memory-secrets.json")
+	if err := os.WriteFile(memorySecretsFile, []byte(`{"secrets": []}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	broker := startBroker(t, brokerOptions{Env: append(noAWSEnv(t),
@@ -574,7 +601,8 @@ func TestMainSignsInToALocalPasswordlessURLAsGiven(t *testing.T) {
 		"PGPASSFILE="+passfile,
 		"BROKER_LISTEN_ADDR=127.0.0.1:0",
 		"BROKER_PUBLIC_URL=http://127.0.0.1:0",
-		"BROKER_FAKE_SECRETS_FILE="+fakeSecretsFile,
+		"BROKER_SECRETS_STORE=memory",
+		"BROKER_MEMORY_SECRETS_FILE="+memorySecretsFile,
 	)})
 	addr, boot := broker.Addr, broker.Boot
 	requireHealthy(t, addr)
@@ -602,7 +630,8 @@ func TestTheBrokerLogsTheSessionAccountPairsItRead(t *testing.T) {
 			"BROKER_DATABASE_URL=" + storetest.URL(t),
 			"BROKER_LISTEN_ADDR=127.0.0.1:0",
 			"BROKER_PUBLIC_URL=http://127.0.0.1:0",
-			"BROKER_FAKE_SECRETS_FILE=" + emptySecretsFile(t),
+			"BROKER_SECRETS_STORE=memory",
+			"BROKER_MEMORY_SECRETS_FILE=" + emptyMemoryFile(t),
 		}, env...)})
 	}
 	// line is the one "session account pairs" line broker logs, failing t unless it logged
@@ -712,7 +741,7 @@ func startBroker(t *testing.T, options brokerOptions) *brokerProcess {
 		binary = buildBroker(t)
 	}
 	cmd := exec.Command(binary)
-	cmd.Env = append(append(append(os.Environ(), productionEnv(t)...), metricsListenEnv), options.Env...)
+	cmd.Env = append(append(append(os.Environ(), productionEnv(t, options.Env)...), metricsListenEnv), options.Env...)
 	p := &brokerProcess{Process: cmdtest.Start(t, "broker", cmd)}
 	// Cleanups run last-registered-first, so this one — registered after cmdtest.Start's own —
 	// asks the broker to stop and waits its whole stop budget out before cmdtest's cleanup kills
@@ -965,27 +994,27 @@ func requireHealthy(t *testing.T, addr string) {
 }
 
 // refusedSecretEnv is what TestMainLogsRealBoundAddress and TestTheBinaryLogsOneJSONObjectPerLine
-// start a broker with: a database of its own, a port the kernel picks, and a fake Secrets Manager
+// start a broker with: a database of its own, a port the kernel picks, and the memory store
 // holding one secret it serves, one whose owner tag names nobody, which it refuses
 // owner-tag-malformed at boot, and one owned by example-service, which BROKER_SERVICES registers,
 // on the database at databaseURL.
 func refusedSecretEnv(t *testing.T, databaseURL string) []string {
 	t.Helper()
-	fakeSecretsFile := filepath.Join(t.TempDir(), "fake-secrets.json")
-	const key = "arn:aws:kms:us-east-1:111122223333:key/1234abcd-12ab-34cd-56ef-1234567890ab"
+	memorySecretsFile := filepath.Join(t.TempDir(), "memory-secrets.json")
 	const fakeSecrets = `{"secrets": [
-		{"name": "example/agent-secrets/demo-key", "kms_key_id": "` + key + `", "tags": {"owner": "shared", "tier": "agent"}, "value": "demo"},
-		{"name": "example/agent-secrets/untagged-key", "kms_key_id": "` + key + `", "tags": {"owner": "sjawhar", "tier": "agent"}, "value": "nope"},
-		{"name": "example/agent-secrets/service-key", "kms_key_id": "` + key + `", "tags": {"owner": "example-service", "tier": "agent"}, "value": "service"}
+		{"name": "example/agent-secrets/demo-key", "tags": {"owner": "shared", "tier": "agent"}, "value": "demo"},
+		{"name": "example/agent-secrets/untagged-key", "tags": {"owner": "sjawhar", "tier": "agent"}, "value": "nope"},
+		{"name": "example/agent-secrets/service-key", "tags": {"owner": "example-service", "tier": "agent"}, "value": "service"}
 	]}`
-	if err := os.WriteFile(fakeSecretsFile, []byte(fakeSecrets), 0o600); err != nil {
+	if err := os.WriteFile(memorySecretsFile, []byte(fakeSecrets), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	return []string{
 		"BROKER_DATABASE_URL=" + databaseURL,
 		"BROKER_LISTEN_ADDR=127.0.0.1:0",
 		"BROKER_PUBLIC_URL=http://127.0.0.1:0",
-		"BROKER_FAKE_SECRETS_FILE=" + fakeSecretsFile,
+		"BROKER_SECRETS_STORE=memory",
+		"BROKER_MEMORY_SECRETS_FILE=" + memorySecretsFile,
 		"BROKER_SERVICES=example-service=system:serviceaccount:example:example-sa",
 	}
 }
@@ -1000,7 +1029,7 @@ func refusedSecretEnv(t *testing.T, databaseURL string) []string {
 // a completely different, already-running instance answered its healthz check; binding
 // synchronously before logging anything means the address this test reads can only ever name this
 // process's own listener.
-// It also holds a fake Secrets Manager with one secret whose owner tag names nobody, and asserts
+// It also holds a memory store with one secret whose owner tag names nobody, and asserts
 // the real binary refuses it at boot with one RefusedMessage line, at ERROR with its name, its
 // reason, an empty owner (the tag is the fault) and first_load, and no second one for the boot's
 // catch-up load, which finds it refused as the first load did, while still booting to serve the
@@ -1154,40 +1183,6 @@ func TestTheBrokerServesItsMetricsOnAPortOfItsOwn(t *testing.T) {
 		if row.status == http.StatusOK && strings.HasSuffix(row.url, "/metrics") && !strings.HasPrefix(resp.Header.Get("Content-Type"), "text/plain; version=0.0.4") {
 			t.Errorf("%s: Content-Type %q; want the Prometheus text format's text/plain; version=0.0.4", row.name, resp.Header.Get("Content-Type"))
 		}
-	}
-}
-
-// TestFakeSecretsFileServesUnderTheGCPStore pins that the local stand-in serves its secrets with the
-// GCP store selected: the file's kms_key_id names the agent-secrets key as that store configures
-// it (BROKER_SECRETS_KMS_KEY_NAME), and its names sit under the GCP prefix.
-func TestFakeSecretsFileServesUnderTheGCPStore(t *testing.T) {
-	const (
-		prefix = "projects/000000000000/secrets/agent-secrets-"
-		key    = "projects/example-project/locations/global/keyRings/agent-secrets/cryptoKeys/agent-secrets"
-	)
-	fakeSecretsFile := filepath.Join(t.TempDir(), "fake-secrets.json")
-	if err := os.WriteFile(fakeSecretsFile, []byte(`{"secrets": [
-		{"name": "`+prefix+`demo-key", "kms_key_id": "`+key+`", "tags": {"owner": "shared", "tier": "agent"}, "value": "demo"}
-	]}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	databaseURL := storetest.URL(t)
-	broker := startBroker(t, brokerOptions{Env: []string{
-		"BROKER_DATABASE_URL=" + databaseURL,
-		"BROKER_LISTEN_ADDR=127.0.0.1:0",
-		"BROKER_PUBLIC_URL=http://127.0.0.1:0",
-		"BROKER_FAKE_SECRETS_FILE=" + fakeSecretsFile,
-		"BROKER_SECRETS_STORE=gcp-secret-manager",
-		"BROKER_SECRETS_PREFIX=" + prefix,
-		"BROKER_SECRETS_KMS_KEY_ARN=",
-		"BROKER_SECRETS_KMS_KEY_NAME=" + key,
-	}})
-	boot := broker.Boot
-	if strings.Contains(boot, "agent secret policy refused") {
-		t.Fatalf("boot log refuses a fake secret on the configured key:\n%s", boot)
-	}
-	if status, _, answer := broker.sessionReread(t, databaseURL, "DEMO_KEY"); status != http.StatusOK || answer["served"] != true {
-		t.Fatalf("a session's reread of DEMO_KEY = status %d, %v; want served under the GCP store's key", status, answer)
 	}
 }
 
@@ -1419,15 +1414,16 @@ func TestTheBootRefusesTheRemovedRulesSetting(t *testing.T) {
 // boot, and the broker goes on to serve: a kind with an allow list, and a profile whose own allow
 // narrows its source at the proxy within the kind's.
 func TestMainStartsWithAProfilesFile(t *testing.T) {
-	fakeSecretsFile := filepath.Join(t.TempDir(), "fake-secrets.json")
-	if err := os.WriteFile(fakeSecretsFile, []byte(`{"secrets": []}`), 0o600); err != nil {
+	memorySecretsFile := filepath.Join(t.TempDir(), "memory-secrets.json")
+	if err := os.WriteFile(memorySecretsFile, []byte(`{"secrets": []}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	broker := startBroker(t, brokerOptions{Env: append(airlockEnv(t),
 		"BROKER_DATABASE_URL="+storetest.URL(t),
 		"BROKER_LISTEN_ADDR=127.0.0.1:0",
 		"BROKER_PUBLIC_URL=http://127.0.0.1:0",
-		"BROKER_FAKE_SECRETS_FILE="+fakeSecretsFile,
+		"BROKER_SECRETS_STORE=memory",
+		"BROKER_MEMORY_SECRETS_FILE="+memorySecretsFile,
 		"BROKER_PROFILES_FILE="+profilesFile(t, `{"kinds": [
 			{"name": "deel", "hosts": ["api.deel.com"], "ways": ["swap"], "allow": [{"method": "GET", "pathPrefix": "/rest/"}]}
 		], "profiles": [
@@ -1442,8 +1438,8 @@ func TestMainStartsWithAProfilesFile(t *testing.T) {
 // deployment ran before the kinds), and goes on to serve: the file declares no kind, so the
 // broker reads its blocks as the broker before the kinds did (policy.ParseProfiles).
 func TestMainStartsWithAFileOfProxyBlocks(t *testing.T) {
-	fakeSecretsFile := filepath.Join(t.TempDir(), "fake-secrets.json")
-	if err := os.WriteFile(fakeSecretsFile, []byte(`{"secrets": []}`), 0o600); err != nil {
+	memorySecretsFile := filepath.Join(t.TempDir(), "memory-secrets.json")
+	if err := os.WriteFile(memorySecretsFile, []byte(`{"secrets": []}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	profiles, err := filepath.Abs(proxyBlocksFixture)
@@ -1454,7 +1450,8 @@ func TestMainStartsWithAFileOfProxyBlocks(t *testing.T) {
 		"BROKER_DATABASE_URL="+storetest.URL(t),
 		"BROKER_LISTEN_ADDR=127.0.0.1:0",
 		"BROKER_PUBLIC_URL=http://127.0.0.1:0",
-		"BROKER_FAKE_SECRETS_FILE="+fakeSecretsFile,
+		"BROKER_SECRETS_STORE=memory",
+		"BROKER_MEMORY_SECRETS_FILE="+memorySecretsFile,
 		"BROKER_SERVICES=legion-daemon=system:serviceaccount:legion:legion-daemon",
 		"BROKER_PROFILES_FILE="+profiles,
 	)})
@@ -1465,15 +1462,16 @@ func TestMainStartsWithAFileOfProxyBlocks(t *testing.T) {
 // hosts the one grammar a rules host is written in serves, in a case a reader of the file could
 // fold (foldedRuleHosts), are no obstacle to the boot, and the broker goes on to serve.
 func TestMainStartsWithAProxyHostWrittenAsTheProxyReadsIt(t *testing.T) {
-	fakeSecretsFile := filepath.Join(t.TempDir(), "fake-secrets.json")
-	if err := os.WriteFile(fakeSecretsFile, []byte(`{"secrets": []}`), 0o600); err != nil {
+	memorySecretsFile := filepath.Join(t.TempDir(), "memory-secrets.json")
+	if err := os.WriteFile(memorySecretsFile, []byte(`{"secrets": []}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	broker := startBroker(t, brokerOptions{Env: append(airlockEnv(t),
 		"BROKER_DATABASE_URL="+storetest.URL(t),
 		"BROKER_LISTEN_ADDR=127.0.0.1:0",
 		"BROKER_PUBLIC_URL=http://127.0.0.1:0",
-		"BROKER_FAKE_SECRETS_FILE="+fakeSecretsFile,
+		"BROKER_SECRETS_STORE=memory",
+		"BROKER_MEMORY_SECRETS_FILE="+memorySecretsFile,
 		"BROKER_PROFILES_FILE="+profilesFile(t, profilesWithHosts(t, "DEEL_API_KEY", foldedRuleHosts...)),
 	)})
 	requireHealthy(t, broker.Addr)

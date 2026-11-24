@@ -18,10 +18,8 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/answer"
 	"github.com/sjawhar/envoy/internal/cipher/awssdk"
-	"github.com/sjawhar/envoy/internal/cipher/config"
 	"github.com/sjawhar/envoy/internal/cipher/logmask"
 	"github.com/sjawhar/envoy/internal/cipher/placeholder"
-	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
 )
 
@@ -244,19 +242,4 @@ func (r *redirectedStderr) point(w io.Writer) {
 	r.mu.Lock()
 	r.to = w
 	r.mu.Unlock()
-}
-
-// TestOpenStoreLoadsTheAWSConfigurationWithTheBrokersLogger: the AWS configuration openStore
-// loads for the AWS store, or an IAM database, is the one with awssdk.Log as its logger, whose lines
-// are the broker's own rather than the SDK's own log.Logger on stderr.
-func TestOpenStoreLoadsTheAWSConfigurationWithTheBrokersLogger(t *testing.T) {
-	isolateAWS(t)
-	st, awsCfg, err := openStore(t.Context(), config.Config{DatabaseURL: storetest.URL(t)}, true)
-	if err != nil {
-		t.Fatalf("openStore: %v", err)
-	}
-	t.Cleanup(st.Close)
-	if _, ok := awsCfg.Logger.(awssdk.Log); !ok {
-		t.Fatalf("openStore's AWS configuration logs through %T; want awssdk.Log, the broker's own", awsCfg.Logger)
-	}
 }

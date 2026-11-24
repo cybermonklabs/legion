@@ -115,10 +115,10 @@ func startDeviceAuthorization(t *testing.T, addr string, key *ecdsa.PrivateKey) 
 	return response.StatusCode, body
 }
 
-// emptySecretsFile writes the fake store a broker with no secrets reads.
-func emptySecretsFile(t *testing.T) string {
+// emptyMemoryFile writes the memory store's file of a broker with no secrets.
+func emptyMemoryFile(t *testing.T) string {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "fake-secrets.json")
+	path := filepath.Join(t.TempDir(), "memory-secrets.json")
 	if err := os.WriteFile(path, []byte(`{"secrets": []}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -135,7 +135,8 @@ func TestTheBinaryWithNoMachineLoginURLServesNoDeviceGrant(t *testing.T) {
 		"BROKER_DATABASE_URL=" + storetest.URL(t),
 		"BROKER_LISTEN_ADDR=127.0.0.1:0",
 		"BROKER_PUBLIC_URL=http://127.0.0.1:0",
-		"BROKER_FAKE_SECRETS_FILE=" + emptySecretsFile(t),
+		"BROKER_SECRETS_STORE=memory",
+		"BROKER_MEMORY_SECRETS_FILE=" + emptyMemoryFile(t),
 	}})
 	requireHealthy(t, broker.Addr)
 	if record := broker.AwaitRecord(t, "machine login device grant", nil); record["state"] != "off" {
@@ -173,7 +174,8 @@ func TestTheBinaryWithAMachineLoginURLServesTheDeviceGrant(t *testing.T) {
 		"BROKER_DATABASE_URL=" + storetest.URL(t),
 		"BROKER_LISTEN_ADDR=127.0.0.1:0",
 		"BROKER_PUBLIC_URL=http://127.0.0.1:0",
-		"BROKER_FAKE_SECRETS_FILE=" + emptySecretsFile(t),
+		"BROKER_SECRETS_STORE=memory",
+		"BROKER_MEMORY_SECRETS_FILE=" + emptyMemoryFile(t),
 	}})
 	requireHealthy(t, broker.Addr)
 

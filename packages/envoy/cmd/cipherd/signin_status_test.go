@@ -409,7 +409,7 @@ func TestEndSessionsDoesNotMigrateTheDatabase(t *testing.T) {
 func runBrokerCommand(t *testing.T, binary, databaseURL, publicURL string, wantExit int, args ...string) string {
 	t.Helper()
 	cmd := exec.Command(binary, args...)
-	cmd.Env = append(append(os.Environ(), productionEnv(t)...),
+	cmd.Env = append(append(os.Environ(), productionEnv(t, nil)...),
 		"BROKER_DATABASE_URL="+databaseURL,
 		"BROKER_LISTEN_ADDR=127.0.0.1:0",
 		"BROKER_PUBLIC_URL="+publicURL,

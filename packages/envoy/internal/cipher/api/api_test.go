@@ -41,6 +41,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/requests"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 	"github.com/sjawhar/envoy/internal/cipher/store"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
@@ -48,12 +49,10 @@ import (
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 	"github.com/sjawhar/envoy/internal/ratelimit"
-
-	// testApprover owns DEEL_API_KEY, a human-tier secret, so every request for it is an approval
-	// request to them; they are also every machine login's login_hint below.
-	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
 )
 
+// testApprover owns DEEL_API_KEY, a human-tier secret, so every request for it is an approval
+// request to them; they are also every machine login's login_hint below.
 const (
 	testApprover = "sami@example.com"
 	// dispatchAccount is the ServiceAccount BROKER_API_ACCOUNTS names as the caller "dispatch",
@@ -216,7 +215,7 @@ func newProfiledTestServer(t *testing.T, file string, adjust func(*api.Deps)) *t
 		PodRegistrars: podRegistrars, PodRegistrationTokens: enroll.K8sPodVerifier{Verifier: registrationVerifier},
 		OAuth: provider, DeviceLogin: mach.LoginDevice, TokenHooks: mach.TokenHooks(),
 		Proof:  &proof.Verifier{Skew: time.Minute, Lookup: enr.Lookup, LookupLauncher: enr.AuthenticateLauncher, Replay: enr.Replay},
-		Policy: cur, SecretsStore: aws.Name, SecretsPrefix: policytest.Prefix, SecretsKMSKey: policytest.KeyARN,
+		Policy: cur, SecretsStore: aws.Name, SecretsPrefix: policytest.Prefix, SettingsFields: awsSettings(t),
 		// The page signs people in at the same local issuer, which stands in for every provider.
 		Approval: ciphertest.NewApprovalPage(t, ciphertest.SignIn(issuer, podKey), srv.URL, st, reqMachine),
 	}

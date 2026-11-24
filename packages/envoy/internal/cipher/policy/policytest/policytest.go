@@ -24,14 +24,13 @@ import (
 	smtypes "github.com/aws/aws-sdk-go-v2/service/secretsmanager/types"
 
 	"github.com/sjawhar/envoy/internal/cipher/policy"
+	awsstore "github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/metrics"
-
-	// Prefix is the namespace every Secret sits under.
-	awsstore "github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
 )
 
+// Prefix is the namespace every Secret sits under.
 const (
 	Prefix = "example/agent-secrets/"
 	// KeyARN is the agent-secrets key every Secret is encrypted with (an AWS documentation

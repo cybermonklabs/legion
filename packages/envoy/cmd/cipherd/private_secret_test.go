@@ -18,7 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess/projectaccesstest"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
-	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/memory"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 )
@@ -62,7 +62,7 @@ func TestThePrivateSecretGoesOnlyToTheSessionThatNamesIt(t *testing.T) {
 	if err := os.WriteFile(tokenFile, []byte(dispatch.Token+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	store := &requesterStore{path: filepath.Join(t.TempDir(), "fake-secrets.json"), rows: []awstest.LocalSecret{
+	store := &requesterStore{path: filepath.Join(t.TempDir(), "memory-secrets.json"), rows: []memory.Secret{
 		requesterRow(privSecret, policy.OwnerShared, policy.TierAgent, privValue, map[string]string{policy.TagProject: privateProject}),
 		requesterRow(plainSecret, policy.OwnerShared, policy.TierAgent, plainValue, nil),
 		requesterRow(lateSecret, policy.OwnerShared, policy.TierAgent, "late-value", map[string]string{policy.TagProject: lateProject}),
@@ -74,7 +74,8 @@ func TestThePrivateSecretGoesOnlyToTheSessionThatNamesIt(t *testing.T) {
 		"BROKER_DATABASE_URL=" + databaseURL,
 		"BROKER_LISTEN_ADDR=127.0.0.1:0",
 		"BROKER_PUBLIC_URL=http://127.0.0.1:0",
-		"BROKER_FAKE_SECRETS_FILE=" + store.path,
+		"BROKER_SECRETS_STORE=memory",
+		"BROKER_MEMORY_SECRETS_FILE=" + store.path,
 		"BROKER_MACHINE_LOGIN_URL=" + testMachineLoginURL,
 		"BROKER_K8S_OIDC_ISSUER=" + issuer.URL(),
 		"BROKER_K8S_OIDC_AUDIENCE=" + enrolmentAudience,

@@ -26,7 +26,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode"
 
 	"github.com/jackc/pgx/v5/pgconn"
 
@@ -41,8 +40,8 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/rulehost"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
-	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
-	"github.com/sjawhar/envoy/internal/cipher/secretstore/gcp"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/backends"
 	"github.com/sjawhar/envoy/internal/fold"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/redact"
@@ -263,30 +262,15 @@ type Config struct {
 	// exchange is. Beside BROKER_SIGNIN=off it is refused with them, since that broker holds no
 	// BROKER_SIGNIN_DOMAIN to hold a person to.
 	SignInDeviceAudience string
-	// BROKER_SECRETS_STORE: which secret store the agent secrets live in: aws-secrets-manager (the
-	// default when unset, AWS Secrets Manager with the agent-secrets key in AWS KMS) or
-	// gcp-secret-manager (Google Cloud Secret Manager with the agent-secrets key in Cloud KMS, read
-	// under Application Default Credentials: on GKE, Workload Identity for the broker's
-	// ServiceAccount, with no key file). It decides BROKER_SECRETS_PREFIX's form and which key
-	// variable is required.
-	SecretsStore string
-	// BROKER_SECRETS_PREFIX: the namespace of the agent secrets. Required. With
-	// aws-secrets-manager, a Secrets Manager name prefix ending in "/" (for example
-	// production/agent-secrets/); with gcp-secret-manager,
-	// projects/<project number>/secrets/<secret-id prefix>- (for example
-	// projects/000000000000/secrets/agent-secrets-), the project by its number, since Secret
-	// Manager answers every resource name with the number. The broker serves every secret under
-	// it that carries an owner and a tier tag (Secret Manager: annotation) and is encrypted with
-	// the agent-secrets key, and rereads them every five minutes.
-	SecretsPrefix string
-	// BROKER_SECRETS_KMS_KEY_ARN, BROKER_SECRETS_KMS_KEY_NAME: the agent-secrets key every agent
-	// secret is encrypted with, one variable per store, each required with its store and refused
-	// with the other. With aws-secrets-manager, BROKER_SECRETS_KMS_KEY_ARN, the AWS KMS key's ARN;
-	// with gcp-secret-manager, BROKER_SECRETS_KMS_KEY_NAME, the Cloud KMS key's resource name
-	// projects/<project>/locations/global/keyRings/<ring>/cryptoKeys/<key> (global, since a secret
-	// with automatic replication takes a global key). A secret under the prefix encrypted with any
-	// other key, the provider's default one included, is refused.
-	SecretsKMSKey string
+	// BROKER_SECRETS_STORE: which secret store the agent secrets live in, by its name in the store
+	// registry (internal/cipher/secretstore/backends): aws-secrets-manager (the default when unset,
+	// AWS Secrets Manager with the agent-secrets key in AWS KMS), gcp-secret-manager (Google Cloud
+	// Secret Manager with the agent-secrets key in Cloud KMS, read under Application Default
+	// Credentials: on GKE, Workload Identity for the broker's ServiceAccount, with no key file), or
+	// memory (the development store, for local runs and tests alone: the JSON file
+	// BROKER_MEMORY_SECRETS_FILE names). It decides BROKER_SECRETS_PREFIX's form and which of the
+	// stores' own variables is required; a variable of another store is refused.
+	Secrets secretstore.Config
 	// BROKER_PROFILES_FILE: the path of the profiles file, profiles.json, whose kinds say which
 	// hosts a credential of each kind may reach and in which headers, and which names each
 	// profile a caller asks for: its source secret and its scope. The broker reads it once at
@@ -1295,6 +1279,7 @@ var removedVars = []struct{ name, reason string }{
 	{"BROKER_ENVOY_TOKEN", noSharedEnvoyBearer},
 	{"BROKER_ENVOY_TOKEN_FILE", noSharedEnvoyBearer},
 	{"BROKER_AIRLOCK_RULES_FILE", "replaced by BROKER_PROFILES_FILE"},
+	{"BROKER_FAKE_SECRETS_FILE", "the memory store replaced the fake secrets file: set BROKER_SECRETS_STORE=memory and BROKER_MEMORY_SECRETS_FILE to the file, whose secrets drop kms_key_id"},
 }
 
 // NATSCallout is the NATS auth service's settings: Config.NATS documents each.
@@ -2837,6 +2822,14 @@ func httpURLSetting(name, value string) error {
 	return nil
 }
 
+// lookupStore and allStores are the store registry Load reads (secretstore/backends): the store
+// BROKER_SECRETS_STORE names, and every store this build holds, whose own variables Load refuses
+// with any other store. A test swaps them for a build that holds other stores.
+var (
+	lookupStore = backends.Lookup
+	allStores   = backends.All
+)
+
 func Load(getenv func(string) string) (Config, error) {
 	for _, removed := range removedVars {
 		if getenv(removed.name) != "" {
@@ -2874,8 +2867,6 @@ func Load(getenv func(string) string) (Config, error) {
 		EdgeListenAddr:            strings.TrimSpace(getenv("BROKER_EDGE_LISTEN_ADDR")),
 		EdgeURL:                   strings.TrimSpace(getenv("BROKER_EDGE_URL")),
 		EdgeMachineLoginURL:       strings.TrimSpace(getenv("BROKER_EDGE_MACHINE_LOGIN_URL")),
-		SecretsStore:              orDefault(getenv("BROKER_SECRETS_STORE"), aws.Name),
-		SecretsPrefix:             getenv("BROKER_SECRETS_PREFIX"),
 		ProfilesFile:              getenv("BROKER_PROFILES_FILE"),
 		AirlockListenAddr:         orDefault(getenv("BROKER_AIRLOCK_LISTEN_ADDR"), "127.0.0.1:13381"),
 		AirlockProxyURL:           strings.TrimSpace(getenv("BROKER_AIRLOCK_PROXY_URL")),
@@ -2942,22 +2933,31 @@ func Load(getenv func(string) string) (Config, error) {
 			return Config{}, fmt.Errorf("BROKER_AZURE_LOGIN_SECRET: %w", err)
 		}
 	}
-	if cfg.SecretsStore != aws.Name && cfg.SecretsStore != gcp.Name {
-		return Config{}, fmt.Errorf("BROKER_SECRETS_STORE must be %s or %s, got %q", aws.Name, gcp.Name, cfg.SecretsStore)
+	// The store comes from the registry; each store parses its own variables (ParseConfig, below)
+	// and every other store's are refused, so a deployment moved between stores cannot keep the
+	// old store's settings and silently mean nothing by them.
+	storeName := getenv("BROKER_SECRETS_STORE")
+	backend, err := lookupStore(orDefault(storeName, secretstore.DefaultName))
+	if err != nil {
+		if storeName == "" {
+			return Config{}, fmt.Errorf("BROKER_SECRETS_STORE is unset, and this build holds no %s store, the default", secretstore.DefaultName)
+		}
+		return Config{}, err
 	}
-	// Each store takes its own key variable and refuses the other's, so a deployment moved
-	// between stores cannot keep the old key set and silently mean nothing by it.
-	keyVar, otherKeyVar := "BROKER_SECRETS_KMS_KEY_ARN", "BROKER_SECRETS_KMS_KEY_NAME"
-	if cfg.SecretsStore == gcp.Name {
-		keyVar, otherKeyVar = otherKeyVar, keyVar
+	for _, other := range allStores() {
+		if other.Name() == backend.Name() {
+			continue
+		}
+		for _, variable := range other.Variables() {
+			if getenv(variable) != "" {
+				return Config{}, fmt.Errorf("%s is not read with BROKER_SECRETS_STORE=%s; it is a variable of BROKER_SECRETS_STORE=%s", variable, backend.Name(), other.Name())
+			}
+		}
 	}
-	if getenv(otherKeyVar) != "" {
-		return Config{}, fmt.Errorf("%s is not read with BROKER_SECRETS_STORE=%s; set %s instead", otherKeyVar, cfg.SecretsStore, keyVar)
-	}
-	cfg.SecretsKMSKey = getenv(keyVar)
+	secretsPrefix := getenv("BROKER_SECRETS_PREFIX")
 	for _, req := range []struct{ name, value string }{
 		{"BROKER_DATABASE_URL", cfg.DatabaseURL}, {"BROKER_PUBLIC_URL", cfg.PublicURL},
-		{"BROKER_SECRETS_PREFIX", cfg.SecretsPrefix}, {keyVar, cfg.SecretsKMSKey},
+		{"BROKER_SECRETS_PREFIX", secretsPrefix},
 	} {
 		if strings.TrimSpace(req.value) == "" {
 			return Config{}, fmt.Errorf("%s is required", req.name)
@@ -3124,21 +3124,8 @@ func Load(getenv func(string) string) (Config, error) {
 	if cfg.HoldRequiresDeadline && cfg.ProjectAccessURL == "" {
 		return Config{}, errors.New("BROKER_HOLD_REQUIRES_DEADLINE is true and BROKER_PROJECT_ACCESS_URL is not set: the deadline rules the hold of refused people, which a broker builds only when it has a Dispatch to ask, so with no URL it holds nobody; set BROKER_PROJECT_ACCESS_URL and BROKER_PROJECT_ACCESS_TOKEN_FILE, or unset BROKER_HOLD_REQUIRES_DEADLINE")
 	}
-	switch cfg.SecretsStore {
-	case aws.Name:
-		if !strings.HasSuffix(cfg.SecretsPrefix, "/") || strings.HasPrefix(cfg.SecretsPrefix, "/") || strings.ContainsFunc(cfg.SecretsPrefix, unicode.IsSpace) {
-			return Config{}, fmt.Errorf("BROKER_SECRETS_PREFIX must be a Secrets Manager name prefix ending in /, such as production/agent-secrets/, got %q", cfg.SecretsPrefix)
-		}
-		if !aws.ValidKeyARN(cfg.SecretsKMSKey) {
-			return Config{}, fmt.Errorf("BROKER_SECRETS_KMS_KEY_ARN must be a KMS key ARN, arn:aws:kms:<region>:<account>:key/<key id>, got %q", cfg.SecretsKMSKey)
-		}
-	case gcp.Name:
-		if err := gcp.ValidPrefix(cfg.SecretsPrefix); err != nil {
-			return Config{}, fmt.Errorf("BROKER_SECRETS_PREFIX: %w", err)
-		}
-		if err := gcp.ValidKeyName(cfg.SecretsKMSKey); err != nil {
-			return Config{}, fmt.Errorf("BROKER_SECRETS_KMS_KEY_NAME: %w", err)
-		}
+	if cfg.Secrets, err = backend.ParseConfig(secretsPrefix, getenv); err != nil {
+		return Config{}, err
 	}
 	services, err := parseServiceAccounts("BROKER_SERVICES", getenv("BROKER_SERVICES"))
 	if err != nil {

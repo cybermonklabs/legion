@@ -35,13 +35,12 @@ func TestOneServicesTwoAccountsEachGetItsSecret(t *testing.T) {
 		accountC     = "system:serviceaccount:example:example-worker-c"
 		secretName   = "SERVICE_KEY"
 		secretValue  = "service-value"
-		kmsKey       = "arn:aws:kms:us-east-1:111122223333:key/1234abcd-12ab-34cd-56ef-1234567890ab"
 	)
-	fakeSecretsFile := filepath.Join(t.TempDir(), "fake-secrets.json")
+	memorySecretsFile := filepath.Join(t.TempDir(), "memory-secrets.json")
 	fakeSecrets := `{"secrets": [
-		{"name": "example/agent-secrets/service-key", "kms_key_id": "` + kmsKey + `", "tags": {"owner": "` + service + `", "tier": "agent"}, "value": "` + secretValue + `"}
+		{"name": "example/agent-secrets/service-key", "tags": {"owner": "` + service + `", "tier": "agent"}, "value": "` + secretValue + `"}
 	]}`
-	if err := os.WriteFile(fakeSecretsFile, []byte(fakeSecrets), 0o600); err != nil {
+	if err := os.WriteFile(memorySecretsFile, []byte(fakeSecrets), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -49,7 +48,8 @@ func TestOneServicesTwoAccountsEachGetItsSecret(t *testing.T) {
 		"BROKER_DATABASE_URL=" + databaseURL,
 		"BROKER_LISTEN_ADDR=127.0.0.1:0",
 		"BROKER_PUBLIC_URL=http://127.0.0.1:0",
-		"BROKER_FAKE_SECRETS_FILE=" + fakeSecretsFile,
+		"BROKER_SECRETS_STORE=memory",
+		"BROKER_MEMORY_SECRETS_FILE=" + memorySecretsFile,
 		"BROKER_K8S_OIDC_ISSUER=" + issuer.URL(),
 		"BROKER_K8S_OIDC_AUDIENCE=" + podAudience,
 		"BROKER_SERVICE_LOGINS=" + service + "=" + loginAccount,

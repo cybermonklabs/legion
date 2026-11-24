@@ -14,14 +14,13 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
-	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
-
-	// tagJudge gives the judge seconds of name, and guidance unless it is "", on the server d builds:
-	// the judge and guidance tags on its stored secret, as its owner's retag writes them, and the
-	// policy read again (policytest.JudgeTags).
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 )
 
+// tagJudge gives the judge seconds of name, and guidance unless it is "", on the server d builds:
+// the judge and guidance tags on its stored secret, as its owner's retag writes them, and the
+// policy read again (policytest.JudgeTags).
 func tagJudge(t *testing.T, d *api.Deps, name string, seconds int, guidance string) {
 	t.Helper()
 	store, isAWS := d.Machine.Secrets.(aws.Store)

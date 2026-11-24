@@ -45,6 +45,7 @@ var settingRoles = map[string]settingRole{
 	"BROKER_ENVOY_TOKEN":          givesNone("a removed setting, refused when set"),
 	"BROKER_ENVOY_TOKEN_FILE":     givesNone("a removed setting, refused when set"),
 	"BROKER_AIRLOCK_RULES_FILE":   givesNone("a removed setting, refused when set"),
+	"BROKER_FAKE_SECRETS_FILE":    givesNone("a removed setting, refused when set"),
 
 	"BROKER_DATABASE_URL": givesNone("the database's URL"),
 	"BROKER_SIGNIN":       givesNone("the person sign-in's switch"),
@@ -103,6 +104,7 @@ var settingRoles = map[string]settingRole{
 
 	"BROKER_SECRETS_KMS_KEY_ARN":    givesNone("a KMS key"),
 	"BROKER_SECRETS_KMS_KEY_NAME":   givesNone("a KMS key"),
+	"BROKER_MEMORY_SECRETS_FILE":    givesNone("a file path"),
 	"BROKER_AIRLOCK_CLUSTER_RANGES": givesNone("address ranges"),
 	"BROKER_PROXY_PRIVATE_UPSTREAM": givesNone("a host and a URL"),
 
@@ -191,10 +193,9 @@ var settingRoles = map[string]settingRole{
 // each setting every condition Load puts in front of a read, and together they make Load read every
 // name settingRoles holds. The test sees only names read through Load's getenv on those paths. A
 // setting read under a condition the two do not set, or read other than through getenv, is outside
-// it: cmd/cipherd's BROKER_FAKE_SECRETS_FILE, which main reads itself, and the PG* variables
-// pgconn.ParseConfig reads in databaseIAM are two today. For such a setting the class is a
-// convention rather than a rule, and a branch added later that reads a setting needs its condition
-// set in both configurations.
+// it: the PG* variables pgconn.ParseConfig reads in databaseIAM are one today. For such a setting
+// the class is a convention rather than a rule, and a branch added later that reads a setting
+// needs its condition set in both configurations.
 func TestEveryBrokerSettingLoadReadsIsMarked(t *testing.T) {
 	cases := mappedAccountRefusalCases(t)
 	read := settingsLoadReads(t)

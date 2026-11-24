@@ -4,6 +4,7 @@ package config
 //ci:reads packages/envoy/docker/rds-global-bundle.pem TestLoadSignsInByIAMOnlyForAPasswordlessRDSURL and TestLoadLeavesAPasswordLibpqSuppliesToSignIn Load the URL whose sslrootcert is this bundle (rdsBundle), which pgx reads to build the root pool
 
 import (
+	"fmt"
 	"maps"
 	"net/netip"
 	"os"
@@ -20,7 +21,9 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/leasetime"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/backends"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/gcp"
 	"github.com/sjawhar/envoy/internal/redact"
 )
@@ -1819,7 +1822,7 @@ func TestLoadRequiresTheNamespaceAndItsKey(t *testing.T) {
 		}
 	}
 	cfg, err := Load(env(validEnv()))
-	if err != nil || cfg.SecretsPrefix != "example/agent-secrets/" || cfg.SecretsKMSKey != validEnv()["BROKER_SECRETS_KMS_KEY_ARN"] {
+	if err != nil || cfg.Secrets.Prefix() != "example/agent-secrets/" || cfg.Secrets.Settings()["kms_key_arn"] != validEnv()["BROKER_SECRETS_KMS_KEY_ARN"] {
 		t.Fatalf("Load(valid) = %+v, %v", cfg, err)
 	}
 }
@@ -1832,8 +1835,8 @@ func TestLoadRequiresTheNamespaceAndItsKey(t *testing.T) {
 // naming both.
 func TestLoadReadsTheSecretStore(t *testing.T) {
 	cfg, err := Load(env(validEnv()))
-	if err != nil || cfg.SecretsStore != aws.Name || cfg.SecretsKMSKey != validEnv()["BROKER_SECRETS_KMS_KEY_ARN"] {
-		t.Fatalf("Load(unset store) = %+v, %v; want %s", cfg, err, aws.Name)
+	if err != nil || cfg.Secrets.Store() != aws.Name || cfg.Secrets.Settings()["kms_key_arn"] != validEnv()["BROKER_SECRETS_KMS_KEY_ARN"] {
+		t.Fatalf("Load(unset store) = %+v, %v; want %s", cfg.Secrets, err, aws.Name)
 	}
 
 	gcpEnv := func() map[string]string {
@@ -1845,8 +1848,8 @@ func TestLoadReadsTheSecretStore(t *testing.T) {
 		return e
 	}
 	cfg, err = Load(env(gcpEnv()))
-	if err != nil || cfg.SecretsStore != gcp.Name || cfg.SecretsPrefix != "projects/000000000000/secrets/agent-secrets-" || cfg.SecretsKMSKey != gcpEnv()["BROKER_SECRETS_KMS_KEY_NAME"] {
-		t.Fatalf("Load(gcp) = %+v, %v", cfg, err)
+	if err != nil || cfg.Secrets.Store() != gcp.Name || cfg.Secrets.Prefix() != "projects/000000000000/secrets/agent-secrets-" || cfg.Secrets.Settings()["kms_key_name"] != gcpEnv()["BROKER_SECRETS_KMS_KEY_NAME"] {
+		t.Fatalf("Load(gcp) = %+v, %v", cfg.Secrets, err)
 	}
 
 	e := gcpEnv()
@@ -1859,10 +1862,10 @@ func TestLoadReadsTheSecretStore(t *testing.T) {
 		edit func(map[string]string)
 		want string
 	}{
-		"an unknown store": {func(e map[string]string) { e["BROKER_SECRETS_STORE"] = "vault" }, "BROKER_SECRETS_STORE must be aws-secrets-manager or gcp-secret-manager"},
+		"an unknown store": {func(e map[string]string) { e["BROKER_SECRETS_STORE"] = "vault" }, `BROKER_SECRETS_STORE must be one of aws-secrets-manager, gcp-secret-manager, memory, got "vault"`},
 		"gcp with the ARN set": {func(e map[string]string) {
 			e["BROKER_SECRETS_KMS_KEY_ARN"] = validEnv()["BROKER_SECRETS_KMS_KEY_ARN"]
-		}, "BROKER_SECRETS_KMS_KEY_ARN is not read with BROKER_SECRETS_STORE=gcp-secret-manager; set BROKER_SECRETS_KMS_KEY_NAME instead"},
+		}, "BROKER_SECRETS_KMS_KEY_ARN is not read with BROKER_SECRETS_STORE=gcp-secret-manager; it is a variable of BROKER_SECRETS_STORE=aws-secrets-manager"},
 		"gcp with no key name": {func(e map[string]string) { delete(e, "BROKER_SECRETS_KMS_KEY_NAME") }, "BROKER_SECRETS_KMS_KEY_NAME is required"},
 		"gcp with a project id": {func(e map[string]string) {
 			e["BROKER_SECRETS_PREFIX"] = "projects/example-project/secrets/agent-secrets-"
@@ -1884,8 +1887,40 @@ func TestLoadReadsTheSecretStore(t *testing.T) {
 
 	awsEnv := validEnv()
 	awsEnv["BROKER_SECRETS_KMS_KEY_NAME"] = gcpEnv()["BROKER_SECRETS_KMS_KEY_NAME"]
-	if _, err := Load(env(awsEnv)); err == nil || !strings.HasPrefix(err.Error(), "BROKER_SECRETS_KMS_KEY_NAME is not read with BROKER_SECRETS_STORE=aws-secrets-manager; set BROKER_SECRETS_KMS_KEY_ARN instead") {
+	if _, err := Load(env(awsEnv)); err == nil || !strings.HasPrefix(err.Error(), "BROKER_SECRETS_KMS_KEY_NAME is not read with BROKER_SECRETS_STORE=aws-secrets-manager; it is a variable of BROKER_SECRETS_STORE=gcp-secret-manager") {
 		t.Fatalf("Load(aws with the key name set) = %v, want a refusal naming both", err)
+	}
+
+	memoryEnv := validEnv()
+	memoryEnv["BROKER_SECRETS_STORE"] = "memory"
+	delete(memoryEnv, "BROKER_SECRETS_KMS_KEY_ARN")
+	memoryEnv["BROKER_MEMORY_SECRETS_FILE"] = "/srv/memory-secrets.json"
+	cfg, err = Load(env(memoryEnv))
+	if err != nil || cfg.Secrets.Store() != "memory" || cfg.Secrets.Settings()["memory_secrets_file"] != "/srv/memory-secrets.json" {
+		t.Fatalf("Load(memory) = %+v, %v; want the memory store on its file", cfg.Secrets, err)
+	}
+	memoryEnv["BROKER_SECRETS_KMS_KEY_ARN"] = validEnv()["BROKER_SECRETS_KMS_KEY_ARN"]
+	if _, err := Load(env(memoryEnv)); err == nil || err.Error() != "BROKER_SECRETS_KMS_KEY_ARN is not read with BROKER_SECRETS_STORE=memory; it is a variable of BROKER_SECRETS_STORE=aws-secrets-manager" {
+		t.Fatalf("Load(memory with the ARN set) = %v, want a refusal naming both stores", err)
+	}
+}
+
+// TestABuildWithoutTheDefaultStoreNamesIt: a build that leaves out the default store
+// (cipher_no_aws) refuses a start that names no store, naming the default it does not hold,
+// rather than the registry's list, which would not say why a deployment that set nothing fails.
+func TestABuildWithoutTheDefaultStoreNamesIt(t *testing.T) {
+	t.Cleanup(func() { lookupStore = backends.Lookup })
+	lookupStore = func(name string) (secretstore.Backend, error) {
+		if name == secretstore.DefaultName {
+			return nil, fmt.Errorf("BROKER_SECRETS_STORE must be one of gcp-secret-manager, memory, got %q", name)
+		}
+		return backends.Lookup(name)
+	}
+	e := validEnv()
+	delete(e, "BROKER_SECRETS_STORE")
+	_, err := Load(env(e))
+	if want := "BROKER_SECRETS_STORE is unset, and this build holds no aws-secrets-manager store, the default"; err == nil || err.Error() != want {
+		t.Fatalf("Load(no store, no default store) = %v, want %q", err, want)
 	}
 }
 

@@ -16,13 +16,12 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 	"github.com/sjawhar/envoy/internal/metrics"
-
-	// awsListLag is the AWS store's ListLag, which every Local-backed Current here runs on.
-	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
 )
 
+// awsListLag is the AWS store's ListLag, which every Local-backed Current here runs on.
 var awsListLag = policytest.Store(awstest.NewLocal()).ListLag()
 
 // staleLister freezes ListSecrets at construction while DescribeSecret stays live: AWS's

@@ -35,9 +35,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/service/kms"
-	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 	"github.com/google/uuid"
 	"golang.org/x/oauth2"
 
@@ -69,7 +66,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/reread"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore"
-	awsstore "github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/backends"
 	"github.com/sjawhar/envoy/internal/cipher/store"
 	"github.com/sjawhar/envoy/internal/cipher/wake"
 	"github.com/sjawhar/envoy/internal/cipher/wire"
@@ -77,15 +74,12 @@ import (
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/redact"
-
-	// machineLoginPendingTTL bounds how long a typed-code machine login waits for a human to decide
-	// it before the Sweeper expires it. Not a BROKER_* config knob (the shared broker contract's
-	// Configuration deltas name none for it): 15 minutes comfortably covers the "look at the
-	// terminal, type the code" UX the confirmation-code flow is built around.
-	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
-	"github.com/sjawhar/envoy/internal/cipher/secretstore/gcp"
 )
 
+// machineLoginPendingTTL bounds how long a typed-code machine login waits for a human to decide
+// it before the Sweeper expires it. Not a BROKER_* config knob (the shared broker contract's
+// Configuration deltas name none for it): 15 minutes comfortably covers the "look at the
+// terminal, type the code" UX the confirmation-code flow is built around.
 const machineLoginPendingTTL = 15 * time.Minute
 
 // agentSecretPendingTTL bounds how long an agent_secret request waits for approval before the
@@ -217,22 +211,16 @@ func main() {
 
 	cfg, err := config.Load(os.Getenv)
 	fatal(err)
-	// BROKER_FAKE_SECRETS_FILE: for local development only, a JSON file standing in for the secret
-	// store, in Secrets Manager's shape whatever BROKER_SECRETS_STORE says,
-	// {"secrets": [{"name", "kms_key_id", "tags", "value", "deleted_at"}]}: the broker lists
-	// the agent secrets and reads their values from it instead of from the store, reading the file again
-	// on each of those calls, so an edit to it is a write as Secrets Manager would see one. A secret
-	// with no "value" is one created without a value, which the broker refuses as no-current-value;
-	// one with a "deleted_at" (RFC 3339) is scheduled for deletion, which the broker no longer lists.
-	// Its "kms_key_id" names the agent-secrets key as the selected store configures it:
-	// BROKER_SECRETS_KMS_KEY_ARN, or BROKER_SECRETS_KMS_KEY_NAME under gcp-secret-manager.
-	fakeSecrets := os.Getenv("BROKER_FAKE_SECRETS_FILE")
-	fatal(refusePortZeroPublicURLInProduction(cfg.PublicURL, fakeSecrets))
-	fatal(refuseHTTPEdgeURLsInProduction(cfg.EdgeURL, cfg.EdgeMachineLoginURL, fakeSecrets))
+	// The store's registry entry: which store this broker reads, and whether it is a development
+	// store (the memory store), the one kind with which a local run's settings start.
+	storeBackend, err := backends.Lookup(cfg.Secrets.Store())
+	fatal(err)
+	fatal(refusePortZeroPublicURLInProduction(cfg.PublicURL, storeBackend))
+	fatal(refuseHTTPEdgeURLsInProduction(cfg.EdgeURL, cfg.EdgeMachineLoginURL, storeBackend))
 	// And, in the same breath, the airlock's test-only settings: every one of them is a local
 	// run's, so a production start that names any of them is refused here rather than running
 	// a broker that mints against a stand-in or dials an address no production proxy may.
-	fatal(refuseAirlockTestSettingsInProduction(cfg, fakeSecrets))
+	fatal(refuseAirlockTestSettingsInProduction(cfg, storeBackend))
 	// And the NATS writer hold's switch, in the same breath: BROKER_NATS_HOLD_READ on without the
 	// operator who writes the hold row, or without the keys it is signed by, would have the auth
 	// service refuse every client of the hub for good, so it refuses this start instead, before
@@ -347,11 +335,9 @@ func main() {
 	} else {
 		slog.Info("approval sign-in on", "issuer", cfg.SignIn.Issuer, "client_id", cfg.SignIn.ClientID, "domain", cfg.SignIn.Domain)
 	}
-	// The database, and with it the AWS config loaded once when anything needs it: an IAM-form
-	// BROKER_DATABASE_URL, whose connections sign in with RDS IAM tokens minted from it, and the
-	// Secrets Manager and KMS clients of the AWS store, unless the fake secrets file stands in.
-	// The GCP store needs none.
-	st, awsCfg, err := openStore(ctx, cfg, fakeSecrets == "" && cfg.SecretsStore == awsstore.Name)
+	// The database, and with it the AWS config loaded for an IAM-form BROKER_DATABASE_URL, whose
+	// connections sign in with RDS IAM tokens minted from it.
+	st, err := openStore(ctx, cfg)
 	fatal(err)
 	fatal(st.Migrate(ctx))
 	// The schema those migrations created their tables in, by which the NATS writer hold's routes
@@ -362,31 +348,25 @@ func main() {
 	// hold view share (api.NATSHold.RowFloor, natscallout.NewHoldView), so neither half trusts a row
 	// the other has moved past.
 	holdFloor := &signedrecord.Floor{}
-	// The secret store, logged with how it signs in so an operator reads it from the log: the
-	// fake file (an AWS-shaped store whatever BROKER_SECRETS_STORE says, since the file holds
-	// Secrets Manager's fields), Secrets Manager under the AWS SDK's credential chain, or Secret
-	// Manager under Application Default Credentials.
-	var secretStore secretstore.Store
-	var credentials string
-	switch {
-	case fakeSecrets != "":
-		local, err := awstest.FromFile(fakeSecrets)
-		fatal(err)
-		// The file's kms_key_id names the agent-secrets key as the selected store configures it.
-		// Under gcp-secret-manager this is still the AWS store over the file, holding the Cloud KMS
-		// key name where it would hold an ARN: names follow Secrets Manager's rules and a source
-		// is a local ARN, which only a local run sees.
-		secretStore, credentials = awsstore.Store{Client: local, KMS: local, KeyARN: cfg.SecretsKMSKey}, "fake secrets file"
-	case cfg.SecretsStore == gcp.Name:
-		client, err := gcp.NewClient(ctx)
-		fatal(err)
-		defer client.Close()
-		secretStore, credentials = gcp.New(client, cfg.SecretsKMSKey), "application-default"
-	default:
-		sm := secretsmanager.NewFromConfig(awsCfg)
-		secretStore, credentials = awsstore.Store{Client: sm, KMS: kms.NewFromConfig(awsCfg), KeyARN: cfg.SecretsKMSKey}, "aws-sdk"
+	// BROKER_SECRETS_PREFIX: the namespace of the agent secrets. Required. With
+	// aws-secrets-manager, a Secrets Manager name prefix ending in "/" (for example
+	// production/agent-secrets/); with gcp-secret-manager,
+	// projects/<project number>/secrets/<secret-id prefix>- (for example
+	// projects/000000000000/secrets/agent-secrets-), the project by its number, since Secret
+	// Manager answers every resource name with the number. The broker serves every secret under
+	// it that carries an owner and a tier tag (Secret Manager: annotation) and is encrypted with
+	// the agent-secrets key, and rereads them every five minutes.
+
+	// The secret store, opened by its registry entry and logged with how it signs in, so an
+	// operator reads it from the log: the AWS SDK's credential chain, Application Default
+	// Credentials, or the memory secrets file.
+	opened, err := storeBackend.OpenStore(ctx, cfg.Secrets, secretstore.OpenEnv{Log: slog.Default()})
+	fatal(err)
+	if opened.Close != nil {
+		defer opened.Close()
 	}
-	slog.Info("secret store", "store", cfg.SecretsStore, "credentials", credentials)
+	secretStore := opened.Store
+	slog.Info("secret store", "store", storeBackend.Name(), "credentials", opened.Credentials)
 	// The one registry every metric this process serves is built on, and the one the metrics
 	// port serves (BROKER_METRICS_LISTEN_ADDR). The policy's store-read counter is built on it
 	// here, before the loader that counts through it takes the first load, so the boot's own
@@ -746,15 +726,11 @@ func main() {
 	}
 
 	mux := http.NewServeMux()
-	// Under the GCP store a reread spends Secret Manager's shared metadata quota, so the fleet
-	// budget this process divides is the GCP one. api.RereadRate divides it among the pods the
-	// serving clock counts below, and moves this process's reread buckets whenever that count
-	// changes.
-	rereadBudget := api.DefaultRereadFleetBudget
-	if cfg.SecretsStore == gcp.Name {
-		rereadBudget = gcp.RereadBudget
-	}
-	rereadRate := api.NewRereadRate(rereadBudget, slog.Default())
+	// The fleet budget this process divides is its store's own (Backend.RereadBudget): under
+	// Google Secret Manager a reread spends that project's shared metadata quota.
+	// api.RereadRate divides it among the pods the serving clock counts below, and moves this
+	// process's reread buckets whenever that count changes.
+	rereadRate := api.NewRereadRate(storeBackend.RereadBudget(), slog.Default())
 	// draining is set once, by the signal handler below, and read by every handler goroutine
 	// GET /healthz runs on, which is why it is atomic rather than a plain bool.
 	var draining atomic.Bool
@@ -784,8 +760,8 @@ func main() {
 		Enroll: enr, Machine: reqMachine, MachineLogin: mach,
 		OAuth: provider, DeviceLogin: mach.LoginDevice, TokenHooks: mach.TokenHooks(),
 		Proof:  &proof.Verifier{Skew: time.Duration(cfg.ProofSkewSeconds) * time.Second, Lookup: enr.Lookup, LookupLauncher: enr.AuthenticateLauncher, Replay: enr.Replay},
-		Policy: current, SecretsStore: cfg.SecretsStore, SecretsPrefix: cfg.SecretsPrefix,
-		SecretsKMSKey:          cfg.SecretsKMSKey,
+		Policy: current, SecretsStore: storeBackend.Name(), SecretsPrefix: cfg.Secrets.Prefix(),
+		SettingsFields:         cfg.Secrets.Settings(),
 		GoogleExchangeAudience: googleExchangeAudience(cfg),
 		TrustedProxyHeader:     cfg.TrustedProxyHeader,
 		Approval:               page,
@@ -1095,60 +1071,57 @@ func fatal(err error) {
 	}
 }
 
-// openStore opens the broker's database as cfg says, and answers the AWS configuration it loaded
-// for it. An IAM-form BROKER_DATABASE_URL signs each new connection in with an RDS IAM token
-// minted from that configuration, so it is loaded before the database is opened; awsAlso asks for
-// it where the database does not, for the Secrets Manager and KMS clients of the AWS store, and
-// with neither the answer is the zero aws.Config. It migrates nothing: the server migrates after
-// this, and the end-sessions and versions subcommands must not. All three open the store here, so
-// each subcommand reaches the same database and signs in to it the same way as the server.
-func openStore(ctx context.Context, cfg config.Config, awsAlso bool) (*store.Store, aws.Config, error) {
-	var awsCfg aws.Config
-	var err error
-	if cfg.DatabaseIAM || awsAlso {
-		if awsCfg, err = awssdk.LoadConfig(ctx); err != nil {
-			return nil, aws.Config{}, fmt.Errorf("load the AWS configuration: %w", err)
-		}
-	}
+// openStore opens the broker's database as cfg says. An IAM-form BROKER_DATABASE_URL signs each
+// new connection in with an RDS IAM token minted from the AWS configuration (awssdk.LoadConfig),
+// so it is loaded, for that alone, before the database is opened. It migrates nothing: the server
+// migrates after this, and the end-sessions and versions subcommands must not. All three open the
+// store here, so each subcommand reaches the same database and signs in to it the same way as the
+// server.
+func openStore(ctx context.Context, cfg config.Config) (*store.Store, error) {
 	var opts []store.Option
 	if cfg.DatabaseIAM {
+		awsCfg, err := awssdk.LoadConfig(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("load the AWS configuration: %w", err)
+		}
 		mint, err := rdsAuthTokens(awsCfg)
 		if err != nil {
-			return nil, aws.Config{}, err
+			return nil, err
 		}
 		opts = append(opts, store.WithTokenMinter(mint))
 	}
 	st, err := store.Open(ctx, cfg.DatabaseURL, opts...)
 	if err != nil {
-		return nil, aws.Config{}, fmt.Errorf("open the database: %w", err)
+		return nil, fmt.Errorf("open the database: %w", err)
 	}
-	return st, awsCfg, nil
+	return st, nil
 }
 
 // refusePortZeroPublicURLInProduction refuses a BROKER_PUBLIC_URL whose port is 0
-// (publicURLPortZero) unless BROKER_FAKE_SECRETS_FILE makes this a local run: port 0 is never
+// (publicURLPortZero) unless the store is a development store (the memory store) and so this is
+// a local run: port 0 is never
 // dialable, so it can only be dev-broker.sh's own "derive my public URL from whatever address I
 // actually bind" convention (BROKER_PUBLIC_URL mirrors BROKER_LISTEN_ADDR=127.0.0.1:0). A stray
 // ":0" reaching a real deployment, however its zero is written, must fail loudly at boot, never
 // silently reinterpret the broker's own public identity as its internal bind address. Extracted
 // from main so a test can drive it directly instead of through fatal, which calls os.Exit.
-func refusePortZeroPublicURLInProduction(publicURL, fakeSecretsFile string) error {
-	if !publicURLPortZero(publicURL) || fakeSecretsFile != "" {
+func refusePortZeroPublicURLInProduction(publicURL string, store secretstore.Backend) error {
+	if !publicURLPortZero(publicURL) || store.Development() {
 		return nil
 	}
-	return fmt.Errorf("BROKER_PUBLIC_URL %q: port 0 is never dialable in production (BROKER_FAKE_SECRETS_FILE is unset); only a local run may use it as dev-broker.sh's derive-from-bind convention", redact.URL(publicURL))
+	return fmt.Errorf("BROKER_PUBLIC_URL %q: port 0 is never dialable in production (BROKER_SECRETS_STORE=%s is no development store); only a local run may use it as dev-broker.sh's derive-from-bind convention", redact.URL(publicURL), store.Name())
 }
 
 // refuseHTTPEdgeURLsInProduction refuses a BROKER_EDGE_URL or BROKER_EDGE_MACHINE_LOGIN_URL whose
-// scheme is not https unless BROKER_FAKE_SECRETS_FILE makes this a local run, as
+// scheme is not https unless the store is a development store and so this is a local run, as
 // refusePortZeroPublicURLInProduction does. Both are on the path of a person on the internet. Over
 // plain http, anyone on the path could rewrite the edge's device authorization, its
 // verification_uri and user_code among them, or serve a page of their own where
 // BROKER_EDGE_MACHINE_LOGIN_URL sends the person to type the user code while signed in to Dispatch.
 // A setting left empty (a broker with no edge) is refused nothing. Extracted from main so a test
 // can drive it directly instead of through fatal, which calls os.Exit.
-func refuseHTTPEdgeURLsInProduction(edgeURL, machineLoginURL, fakeSecretsFile string) error {
-	if fakeSecretsFile != "" {
+func refuseHTTPEdgeURLsInProduction(edgeURL, machineLoginURL string, store secretstore.Backend) error {
+	if store.Development() {
 		return nil
 	}
 	for _, setting := range []struct{ name, value, what string }{
@@ -1161,7 +1134,7 @@ func refuseHTTPEdgeURLsInProduction(edgeURL, machineLoginURL, fakeSecretsFile st
 		if u, err := url.Parse(setting.value); err == nil && strings.EqualFold(u.Scheme, "https") {
 			continue
 		}
-		return fmt.Errorf("%s %q: %s, so it must be https in production (BROKER_FAKE_SECRETS_FILE is unset); only a local run may use http", setting.name, redact.URL(setting.value), setting.what)
+		return fmt.Errorf("%s %q: %s, so it must be https in production (BROKER_SECRETS_STORE=%s is no development store); only a local run may use http", setting.name, redact.URL(setting.value), setting.what, store.Name())
 	}
 	return nil
 }
@@ -1181,16 +1154,16 @@ func publicURLPortZero(publicURL string) bool {
 }
 
 // refuseAirlockTestSettingsInProduction refuses every setting of the airlock's local stand-ins:
-// the ten BROKER_AIRLOCK_TEST_* ones, the proxy chain's three and the judge's one, unless
-// BROKER_FAKE_SECRETS_FILE makes this a local run, as the port-0 refusal above does and for the
-// same reason: each points the broker at a stand-in, lets it dial an address no production proxy
-// may dial, moves its clock, or turns off a check the proxy or the judge is made of. One reaching
-// a real deployment must fail loudly at boot rather than quietly serve a broker that is not the
-// one the operator configured. The refusal names the variable it found, since an operator reads
-// which of its settings it has to take out. Extracted from main so a test can drive it directly
-// instead of through fatal, which calls os.Exit.
-func refuseAirlockTestSettingsInProduction(cfg config.Config, fakeSecretsFile string) error {
-	if fakeSecretsFile != "" {
+// the ten BROKER_AIRLOCK_TEST_* ones, the proxy chain's three and the judge's one, unless the
+// store is a development store and so this is a local run, as the port-0 refusal above does and
+// for the same reason: each points the broker at a stand-in, lets it dial an address no
+// production proxy may dial, moves its clock, or turns off a check the proxy or the judge is
+// made of. One reaching a real deployment must fail loudly at boot rather than quietly serve a
+// broker that is not the one the operator configured. The refusal names the variable it found,
+// since an operator reads which of its settings it has to take out. Extracted from main so a
+// test can drive it directly instead of through fatal, which calls os.Exit.
+func refuseAirlockTestSettingsInProduction(cfg config.Config, store secretstore.Backend) error {
+	if store.Development() {
 		return nil
 	}
 	for _, setting := range []struct {
@@ -1213,7 +1186,7 @@ func refuseAirlockTestSettingsInProduction(cfg config.Config, fakeSecretsFile st
 		{"BROKER_JUDGE_TEST_SKIP_CHECKS", cfg.JudgeTestSkipChecks},
 	} {
 		if setting.set {
-			return fmt.Errorf("%s is for the broker's local stack alone and is set on a production start (BROKER_FAKE_SECRETS_FILE is unset); take it out", setting.name)
+			return fmt.Errorf("%s is for the broker's local stack alone and is set on a production start (BROKER_SECRETS_STORE=%s is no development store); take it out", setting.name, store.Name())
 		}
 	}
 	return nil
@@ -1645,7 +1618,7 @@ func policyLoader(cfg config.Config, secretStore secretstore.Store, profiles pol
 	// and folds each profile's digest into its version, so an edit of a profile's entry ends that
 	// name's grants. With no profiles file it serves no profile and refuses every github-app
 	// secret, whose tokens a profile alone scopes.
-	return policy.Loader{Store: secretStore, Prefix: cfg.SecretsPrefix, Services: serviceNames(cfg), ServiceAccounts: cfg.ServiceAccountSecrets, Profiles: profiles,
+	return policy.Loader{Store: secretStore, Prefix: cfg.Secrets.Prefix(), Services: serviceNames(cfg), ServiceAccounts: cfg.ServiceAccountSecrets, Profiles: profiles,
 		StoreReads: policy.NewStoreReads(registry), Groups: groupReader}
 }
 
@@ -2061,7 +2034,7 @@ func versions(ctx context.Context, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "%s: %v\n", versionsCommand, err)
 		return 2
 	}
-	st, _, err := openStore(ctx, cfg, false)
+	st, err := openStore(ctx, cfg)
 	if err != nil {
 		fmt.Fprintf(stderr, "%s: %v\n", versionsCommand, err)
 		return 2
@@ -2102,7 +2075,7 @@ func endSessions(ctx context.Context, login string, stdout, stderr io.Writer) in
 		fmt.Fprintf(stderr, "%s: %v\n", endSessionsCommand, err)
 		return 1
 	}
-	st, _, err := openStore(ctx, cfg, false)
+	st, err := openStore(ctx, cfg)
 	if err != nil {
 		fmt.Fprintf(stderr, "%s: %v\n", endSessionsCommand, err)
 		return 1

@@ -30,11 +30,11 @@ const (
 	signInOffSharedValue   = "shared-read-token-value"
 )
 
-// signInOffSecrets writes the fake secrets file both brokers below serve and answers its path.
+// signInOffSecrets writes the memory secrets file both brokers below serve and answers its path.
 func signInOffSecrets(t *testing.T) string {
 	t.Helper()
 	secret := func(slug, owner, tier, value string) string {
-		return `{"name": "` + testSecretsPrefix + slug + `", "kms_key_id": "` + testSecretsKMSKeyARN + `", "tags": {"owner": "` + owner + `", "tier": "` + tier + `"}, "value": "` + value + `"}`
+		return `{"name": "` + testSecretsPrefix + slug + `", "tags": {"owner": "` + owner + `", "tier": "` + tier + `"}, "value": "` + value + `"}`
 	}
 	content := `{"secrets": [` + strings.Join([]string{
 		secret("owner-deploy-key", signInOffOwner, "human", "owner-deploy-key-value"),
@@ -42,7 +42,7 @@ func signInOffSecrets(t *testing.T) string {
 		secret("launcher-token", approvalLauncherService, "agent", signInOffServiceValue),
 		secret("shared-read-token", "shared", "agent", signInOffSharedValue),
 	}, ", ") + `]}`
-	path := filepath.Join(t.TempDir(), "fake-secrets.json")
+	path := filepath.Join(t.TempDir(), "memory-secrets.json")
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}

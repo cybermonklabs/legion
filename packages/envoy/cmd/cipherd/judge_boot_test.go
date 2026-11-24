@@ -69,7 +69,8 @@ func judgeBootEnv(t *testing.T, model, dispatch *countingServer) []string {
 		"BROKER_DATABASE_URL=" + storetest.URL(t),
 		"BROKER_LISTEN_ADDR=127.0.0.1:0",
 		"BROKER_PUBLIC_URL=http://127.0.0.1:0",
-		"BROKER_FAKE_SECRETS_FILE=" + emptySecretsFile(t),
+		"BROKER_SECRETS_STORE=memory",
+		"BROKER_MEMORY_SECRETS_FILE=" + emptyMemoryFile(t),
 		"BROKER_JUDGE_MODEL_URL=" + model.URL,
 		"BROKER_JUDGE_MODEL=" + testJudgeModel,
 		"BROKER_JUDGE_MODEL_AUDIENCE=" + testJudgeAudience,
@@ -129,7 +130,8 @@ func TestTheBinaryLogsWhichJudgeItBooted(t *testing.T) {
 			"BROKER_DATABASE_URL=" + storetest.URL(t),
 			"BROKER_LISTEN_ADDR=127.0.0.1:0",
 			"BROKER_PUBLIC_URL=http://127.0.0.1:0",
-			"BROKER_FAKE_SECRETS_FILE=" + emptySecretsFile(t),
+			"BROKER_SECRETS_STORE=memory",
+			"BROKER_MEMORY_SECRETS_FILE=" + emptyMemoryFile(t),
 		}})
 		record := broker.AwaitRecord(t, "model judge", nil)
 		if record["state"] != "off" {

@@ -42,7 +42,7 @@ const (
 // approvalFixture is everything a broker started for the approval page shares: one local issuer
 // standing in for both the cluster's ServiceAccount token issuer (BROKER_K8S_OIDC_ISSUER) and the
 // person's sign-in provider (BROKER_SIGNIN_ISSUER, its code flow armed for the broker's own
-// client), the fake secrets file holding ada's human-tier secret, and the accounts the binary
+// client), the memory secrets file holding ada's human-tier secret, and the accounts the binary
 // lists: the service whose token login enrolls the pods, and Dispatch's server.
 type approvalFixture struct {
 	binary     string
@@ -72,11 +72,11 @@ func newApprovalFixture(t *testing.T) approvalFixture {
 		binary: buildBroker(t), issuer: issuer,
 		podKey:    issuer.PublishKey(t, "pod-key"),
 		signInKey: issuer.PublishKey(t, "signin-key"),
-		secrets:   filepath.Join(t.TempDir(), "fake-secrets.json"),
+		secrets:   filepath.Join(t.TempDir(), "memory-secrets.json"),
 	}
 	ciphertest.SignIn(issuer, f.signInKey)
 	content := `{"secrets": [
-		{"name": "` + testSecretsPrefix + `ada-deploy-key", "kms_key_id": "` + testSecretsKMSKeyARN + `", "tags": {"owner": "` + ada + `", "tier": "human"}, "value": "` + approvalSecretValue + `"}
+		{"name": "` + testSecretsPrefix + `ada-deploy-key", "tags": {"owner": "` + ada + `", "tier": "human"}, "value": "` + approvalSecretValue + `"}
 	]}`
 	if err := os.WriteFile(f.secrets, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
@@ -93,7 +93,8 @@ func (f approvalFixture) baseEnv(databaseURL, publicURL string) []string {
 		"BROKER_DATABASE_URL=" + databaseURL,
 		"BROKER_LISTEN_ADDR=127.0.0.1:0",
 		"BROKER_PUBLIC_URL=" + publicURL,
-		"BROKER_FAKE_SECRETS_FILE=" + f.secrets,
+		"BROKER_SECRETS_STORE=memory",
+		"BROKER_MEMORY_SECRETS_FILE=" + f.secrets,
 		"BROKER_K8S_OIDC_ISSUER=" + f.issuer.URL(),
 		"BROKER_K8S_OIDC_AUDIENCE=" + approvalPodAudience,
 		"BROKER_SERVICE_LOGINS=" + approvalLauncherService + "=" + approvalLauncherAccount,
