@@ -11,7 +11,6 @@ import (
 
 	"github.com/reearth/ygo/crdt"
 	ygsync "github.com/reearth/ygo/sync"
-
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/stacktest"
 )
@@ -78,7 +77,7 @@ func TestDeletingADeeplyNestedLiveTreeNeedsNoStackPerLevel(t *testing.T) {
 		waitFor(t, 30*time.Second, "the room to hold the nested chain", func() bool {
 			return live.StateVector().Clock(client) == sent
 		})
-		if _, err := service.Text(context.Background(), artifactID); !errors.Is(err, ErrDocSchema) {
+		if _, err := service.Text(context.Background(), serverReader, artifactID); !errors.Is(err, ErrDocSchema) {
 			t.Fatalf("the room holding the chain reads as %v, want %v", err, ErrDocSchema)
 		}
 
@@ -103,7 +102,7 @@ func TestDeletingADeeplyNestedLiveTreeNeedsNoStackPerLevel(t *testing.T) {
 		}
 
 		waitFor(t, 30*time.Second, "the room to read back as the document it was", func() bool {
-			text, err := service.Text(context.Background(), artifactID)
+			text, err := service.Text(context.Background(), serverReader, artifactID)
 			return err == nil && strings.TrimSpace(text) == "before"
 		})
 		state := service.room(artifactID)

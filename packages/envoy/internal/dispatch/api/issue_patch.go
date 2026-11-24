@@ -67,6 +67,12 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// The issue is read as the caller reads it (loadIssue), so the reader is resolved here,
+	// before the write holds a connection.
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
 	var blockers []string
 	if input.BlockedBy != nil {
 		var err error
@@ -180,14 +186,14 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	if parent != nil {
 		parentKey = *parent
 	}
-	// A credential that names one project is refused a target or a parent outside it where its
-	// project is read, since this route's own address names neither (project_scope.go). It is read
-	// first here, with no lock held and before a close settles the issue's documents or the
-	// transaction begins, so a write the credential may not make settles nothing; the
-	// pre-handler check already held the issue to the credential's project, which is therefore
-	// the issue's own. The lock step refuses it again before any lock, and writeBlockedBy or
-	// validateIssueParent under them.
-	callerProject, scoped := s.callerProject(r)
+	// A full member's broker token scoped to one project (namedProjectOf) is refused a target or a
+	// parent outside it where its project is read, since this route's own address names neither
+	// (project_scope.go). It is read first here, with no lock held and before a close settles the
+	// issue's documents or the transaction begins, so a write the credential may not make settles
+	// nothing; the pre-handler check already held the issue to the credential's project, which is
+	// therefore the issue's own. The lock step refuses it again before any lock, and writeBlockedBy
+	// or validateIssueParent under them.
+	callerProject, scoped := namedProjectOf(who.Viewer, resolvedCredential(r.Context()))
 	if scoped && (parentKey != "" || len(blockers) > 0) {
 		if _, err := foreignDependencyTargets(r.Context(), s.deps.Store.Pool, callerProject, callerProject, blockers, parentKey); err != nil {
 			s.writeHandlerError(w, err)
@@ -200,7 +206,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	if closes {
 		// Before the transaction, which settlement's own would queue behind on the issue's owner
 		// lock.
-		s.settleIssueBeforeClose(outlivingTheClient(r), key)
+		s.settleIssueBeforeClose(outlivingTheClient(r), who, key)
 	}
 	tx, err := s.begin(r.Context())
 	if err != nil {
@@ -268,11 +274,11 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	if input.Status != nil || parentProvided {
 		lock = lockPatchOwnersAndParent
 	}
-	if err := lock(r.Context(), tx, key, named...); err != nil {
+	if err := lock(r.Context(), tx, who, key, named...); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	before, err := s.loadIssue(r.Context(), tx, key)
+	before, err := s.loadIssue(r.Context(), tx, who, key)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -306,7 +312,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	}
 	if input.RefuseOpenForeignChildren {
 		var open openForeignChildrenError
-		if err := refuseOpenForeignChildren(r.Context(), tx, key, before.Project); errors.As(err, &open) {
+		if err := refuseOpenForeignChildren(r.Context(), tx, who, key, before.Project); errors.As(err, &open) {
 			WriteJSON(w, http.StatusConflict, open.body())
 			return
 		} else if err != nil {
@@ -372,7 +378,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		sets = append(sets, "status = "+placeholder, "closed_at = case when "+placeholder+" = 'done' then now() else null end")
 	}
 	if input.Rank != nil {
-		issueRank, err := s.rankForInput(r.Context(), tx, before.Project, key, *input.Rank)
+		issueRank, err := s.rankForInput(r.Context(), tx, who, before.Project, key, *input.Rank)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
@@ -592,7 +598,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	// response's last_seq and the status event's payload are filled in from what those appends
 	// took (appendedIssueLastSeq, model.IssueEventPayload.WithOwnerLastSeq) rather than counted
 	// here.
-	after, err := s.loadIssue(r.Context(), tx, key)
+	after, err := s.loadIssue(r.Context(), tx, who, key)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

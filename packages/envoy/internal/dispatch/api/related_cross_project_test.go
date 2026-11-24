@@ -140,7 +140,7 @@ func seedAnsweredQuestion(
 // crossProjectCheck runs one check whose write is a question, as an ask create runs it.
 func crossProjectCheck(srv *server, project string) *model.Suggestions {
 	return srv.relatedCheck(context.Background(), relatedInput{
-		project: project, text: crossProjectQuestion, title: crossProjectQuestion, question: true,
+		who: everyReader, project: project, text: crossProjectQuestion, title: crossProjectQuestion, question: true,
 	})
 }
 
@@ -892,7 +892,7 @@ func TestCrossProjectRelatedAnswersWithLessThanTheGraceLeft(t *testing.T) {
 	marked := context.WithValue(context.Background(), heldReadKey{}, true)
 	suggestions := answeredBeforeTheBinaryDeadline(t, "the check", func() *model.Suggestions {
 		answer, _ := srv.runRelatedCheck(marked, relatedInput{
-			project: "XEDGE", text: crossProjectQuestion, title: crossProjectQuestion, question: true,
+			who: everyReader, project: "XEDGE", text: crossProjectQuestion, title: crossProjectQuestion, question: true,
 		}, started)
 		return answer
 	})

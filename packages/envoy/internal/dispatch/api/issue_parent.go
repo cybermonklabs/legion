@@ -12,7 +12,9 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -316,7 +318,7 @@ func refuseParentOutsideCallerProject(caller, parent, parentProject string) erro
 // refuses it. The parent is read in the statement after the locks, never in the same one, so it
 // is the parent the lock's previous holder committed (store.LockOwnersAndRead): every writer of
 // parent_key holds the issue's lock.
-func lockIssueOwners(ctx context.Context, tx pgx.Tx, key string, others ...string) (*string, error) {
+func lockIssueOwners(ctx context.Context, tx pgx.Tx, who model.Actor, key string, others ...string) (*string, error) {
 	owners := make([]store.Owner, 0, len(others)+1)
 	owners = append(owners, store.IssueOwner(key))
 	for _, other := range others {
@@ -343,8 +345,8 @@ const parentLockAttempts = 2
 // lockPatchOwners takes the owner locks of the issue and of the issues in named (a proposed parent,
 // rank neighbours) in one lock order, for a PATCH that appends no event to the issue's current
 // parent.
-func lockPatchOwners(ctx context.Context, tx pgx.Tx, key string, named ...string) error {
-	_, err := lockIssueOwners(ctx, tx, key, named...)
+func lockPatchOwners(ctx context.Context, tx pgx.Tx, who model.Actor, key string, named ...string) error {
+	_, err := lockIssueOwners(ctx, tx, who, key, named...)
 	return err
 }
 
@@ -359,7 +361,7 @@ func lockPatchOwners(ctx context.Context, tx pgx.Tx, key string, named ...string
 // It does not use resolveThenLock, whose resolve half runs with nothing held and whose write half
 // owns its own transaction: both halves here run inside the PATCH's transaction, after its
 // advisory locks, so the locks they take commit with the PATCH's writes.
-func lockPatchOwnersAndParent(ctx context.Context, tx pgx.Tx, key string, named ...string) error {
+func lockPatchOwnersAndParent(ctx context.Context, tx pgx.Tx, who model.Actor, key string, named ...string) error {
 	rows := make([]string, 0, len(named)+1)
 	for range parentLockAttempts {
 		var parent *string
@@ -374,7 +376,7 @@ func lockPatchOwnersAndParent(ctx context.Context, tx pgx.Tx, key string, named 
 		if err != nil {
 			return err
 		}
-		locked, err := lockIssueOwners(ctx, attempt, key, rows...)
+		locked, err := lockIssueOwners(ctx, attempt, who, key, rows...)
 		if err != nil {
 			_ = attempt.Rollback(ctx)
 			return err
@@ -519,12 +521,13 @@ func (e openForeignChildrenError) body() foreignChildOpenError {
 // The caller holds the deployment dependency lock (lockIssueDependencyWrite), which every create
 // with a parent and every reparent takes, so no child is filed under key, or moved under it,
 // between this read and the status the write sets.
-func refuseOpenForeignChildren(ctx context.Context, tx pgx.Tx, key, project string) error {
+func refuseOpenForeignChildren(ctx context.Context, tx pgx.Tx, who model.Actor, key, project string) error {
 	rows, err := tx.Query(ctx, `
 		select key, project_key, status from issues
 		where parent_key = $1 and project_key <> $2 and status not in ('done', 'icebox')
+		  and `+access.ProjectClause("project_key", "$3")+`
 		order by key
-	`, key, project)
+	`, key, project, refs.VisibilityArg(who))
 	if err != nil {
 		return err
 	}

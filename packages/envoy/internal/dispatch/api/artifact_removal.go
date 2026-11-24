@@ -7,7 +7,6 @@ import (
 	"net/http"
 
 	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -59,7 +58,11 @@ func (s *server) removeArtifact(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	tx, artifact, _, ok := s.beginArtifactWrite(w, r)
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
+	tx, artifact, _, ok := s.beginArtifactWrite(w, r, who)
 	if !ok {
 		return
 	}

@@ -5,10 +5,11 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
-
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/architecture"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -23,10 +24,11 @@ import (
 // listArchitectureSources answers every source of every project, by project and then in the
 // order each project's sources were added.
 func (s *server) listArchitectureSources(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) {
+	who, ok := s.readerOf(w, r)
+	if !ok {
 		return
 	}
-	sources, err := querySources(r.Context(), s.deps.Store.Pool, `order by project_key, id`)
+	sources, err := querySources(r.Context(), s.deps.Store.Pool, who, `true`, `project_key, id`)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -39,11 +41,12 @@ func (s *server) listArchitectureSources(w http.ResponseWriter, r *http.Request)
 // ordinary negative answer; a project that does not exist is still a 404, so a mistyped key is
 // reported rather than read as "no model".
 func (s *server) listProjectArchitectureSources(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) {
+	who, ok := s.readerOf(w, r)
+	if !ok {
 		return
 	}
 	key := r.PathValue("key")
-	sources, err := querySources(r.Context(), s.deps.Store.Pool, `where project_key = $1 order by id`, key)
+	sources, err := querySources(r.Context(), s.deps.Store.Pool, who, `project_key = $1`, `id`, key)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -63,12 +66,13 @@ func (s *server) listProjectArchitectureSources(w http.ResponseWriter, r *http.R
 // server ship separately, so a removed route turned every create into false "Could not check"
 // advice (#1522 fixed the same skew); it stays until no such client is left.
 func (s *server) getArchitectureSource(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) {
+	who, ok := s.readerOf(w, r)
+	if !ok {
 		return
 	}
 	key := r.PathValue("key")
 	slog.Warn("dispatch: GET /api/v1/projects/{key}/architecture-source called by a dispatch client older than this release; upgrade it, the route will be removed", "project", key)
-	sources, err := querySources(r.Context(), s.deps.Store.Pool, `where project_key = $1 order by id limit 1`, key)
+	sources, err := querySources(r.Context(), s.deps.Store.Pool, who, `project_key = $1`, `id limit 1`, key)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -84,9 +88,21 @@ func (s *server) getArchitectureSource(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, sources[0])
 }
 
-// querySources reads the source rows the tail (a where and order by clause) selects.
-func querySources(ctx context.Context, q queryer, tail string, args ...any) ([]model.ArchitectureSource, error) {
-	rows, err := q.Query(ctx, `select `+architecture.SourceColumns+` from architecture_sources `+tail, args...)
+// requireVisibleProject answers pgx.ErrNoRows, writeHandlerError's 404 NOT_FOUND, for a project
+// key no project holds, or one who does not see (access.ProjectClause).
+func (s *server) requireVisibleProject(ctx context.Context, who model.Actor, key string) error {
+	return s.deps.Store.Pool.QueryRow(ctx, "select key from projects where key = $1 and "+access.ProjectClause("key", "$2"),
+		key, refs.VisibilityArg(who)).Scan(new(string))
+}
+
+// querySources reads the source rows that condition (over architecture_sources' columns, its
+// placeholders args' from $1) selects, in order, of the projects who sees: the viewer is bound
+// after args, so a project who does not see holds no source.
+func querySources(ctx context.Context, q queryer, who model.Actor, condition, order string, args ...any) ([]model.ArchitectureSource, error) {
+	seen := "$" + strconv.Itoa(len(args)+1)
+	rows, err := q.Query(ctx, `select `+architecture.SourceColumns+` from architecture_sources
+		where (`+condition+`) and `+access.ProjectClause("project_key", seen)+` order by `+order,
+		append(args, refs.VisibilityArg(who))...)
 	if err != nil {
 		return nil, err
 	}
@@ -124,7 +140,13 @@ func (s *server) putArchitectureSource(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "SOURCE_INPUT", http.StatusBadRequest, "branch is required")
 		return
 	}
-	if err := s.deps.Store.Pool.QueryRow(r.Context(), "select key from projects where key = $1", key).Scan(new(string)); err != nil {
+	// The project as the caller reads it, before GitHub is asked anything: a project it does not
+	// see is a key no project holds, whatever the repository's access would answer.
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
+	if err := s.requireVisibleProject(r.Context(), who, key); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -370,6 +392,29 @@ func (s *server) syncProjectSources(w http.ResponseWriter, r *http.Request) ([]m
 
 func writeSourceNotFound(w http.ResponseWriter, key, repo string) {
 	writeError(w, "SOURCE_NOT_FOUND", http.StatusNotFound, "no architecture source from "+repo+" configured for "+key)
+}
+
+// sourceProjectVisible answers the caller as a read binds it (readerOf) and whether it sees
+// project key (requireVisibleProject), and, where it does not, answers notFound, the answer of a
+// source nobody configured, before any lock, delete, GitHub call or sync: a source write to a
+// hidden project answers exactly as one to a project with no such source
+// (TestNoWriteReachesAHiddenObject). A key no project holds answers the same. A read that fails
+// otherwise answers the handler error.
+func (s *server) sourceProjectVisible(w http.ResponseWriter, r *http.Request, key string, notFound func()) (model.Actor, bool) {
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return model.Actor{}, false
+	}
+	err := s.requireVisibleProject(r.Context(), who, key)
+	switch {
+	case err == nil:
+		return who, true
+	case errors.Is(err, pgx.ErrNoRows):
+		notFound()
+	default:
+		s.writeHandlerError(w, err)
+	}
+	return model.Actor{}, false
 }
 
 // sourcePathRepo reads the {owner}/{repo} path segments as parseSourceRepo reads a repository,

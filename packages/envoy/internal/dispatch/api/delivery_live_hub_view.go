@@ -7,6 +7,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
 // parseDeliveryLiveView resolves a subscribed view as the matching GET route reads its query, or
@@ -31,7 +34,7 @@ func parseDeliveryLiveView(view DeliveryLiveView) (deliveryLiveSpec, *LiveError)
 	if view.Project != nil && classes.reads != viewReadsLegion {
 		return deliveryLiveSpec{}, invalidLiveView("INVALID_FRAME", "only a legion view names a project")
 	}
-	spec := deliveryLiveSpec{kind: view.Kind}
+	spec := deliveryLiveSpec{kind: view.Kind, reader: everyReader}
 	if refusal := classes.parse(&spec, view); refusal != nil {
 		return deliveryLiveSpec{}, refusal
 	}
@@ -106,7 +109,7 @@ func parseLegionLiveView(spec *deliveryLiveSpec, view DeliveryLiveView) *LiveErr
 	// (legionProject), which are every project route's (INVALID_PROJECT, projectKeyProblem), so a
 	// person who meets the mistake at either door learns one name for it. A project that does not
 	// exist is the read's to refuse, as the route's is (readLegionBoardView, loadProject).
-	if !projectKeyPattern.MatchString(project) {
+	if !contracts.ValidProjectKey(project) {
 		return invalidLiveView("INVALID_PROJECT", projectKeyProblem("project", project))
 	}
 	spec.project = project
@@ -169,4 +172,29 @@ func (spec *deliveryLiveSpec) readWindow(window *DeliveryLiveWindow) (string, *L
 	default:
 		return refuse("INVALID_FRAME", "a window is a preset or a from and to")
 	}
+}
+
+// deliveryReaderKey is the part of a view's key its reader decides: whether the reader is the
+// server's own viewer and whether it is open; and, for a reader that does not see every object
+// (seesEveryObject), the projects it sees, which the timeline's rule reads of a viewer
+// (readDeliveryRows: access.ProjectClause on each pull request's issue, and openness for one that
+// names none and for a run that shipped none), and its person and session, which the event rule
+// the view's session titles are read under reads (delivery.ResolveSessionTitles under
+// readableEvents: its party and own-session arms), as access.SessionClause's own-session arm does
+// for the session groups (groupsShown). Readers that agree on the key read the same rows and share
+// one view. A reader that sees every object is shown every row, whatever projects it sees, so where
+// no project is private every open viewer shares the one view it always did, and a new project
+// leaves it there: the view is read for the newest of its readers (recheckSubs), which sees the new
+// project, and no page of it is sent a snapshot for the project (R9). A reader with no viewer is
+// the closed one, which sees nothing.
+func deliveryReaderKey(reader model.Actor) string {
+	viewer := reader.Viewer
+	if viewer == nil {
+		viewer = &model.Viewer{}
+	}
+	key := "all=" + strconv.FormatBool(viewer.All) + ",open=" + strconv.FormatBool(viewer.Open)
+	if !seesEveryObject(reader) {
+		key += ",sees=" + strings.Join(viewer.Sees, ",") + ",person=" + viewer.Person + ",session=" + viewer.Session
+	}
+	return key
 }

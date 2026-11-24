@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -381,7 +380,7 @@ func (s *server) readMyAgentRows(
 // nameAgentSessions names the session of every Agent row on the page. A session's name is the
 // newest title it stamped on anything it wrote (delivery.ResolveSessionTitles, the Delivery page's
 // own read), which outlives the session; one it never stamped is named by its id.
-func nameAgentSessions(ctx context.Context, tx pgx.Tx, rows []model.MyReplyRow) error {
+func nameAgentSessions(ctx context.Context, tx pgx.Tx, who model.Actor, rows []model.MyReplyRow) error {
 	sessions := []string{}
 	for _, row := range rows {
 		if row.Session != nil {

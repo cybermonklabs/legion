@@ -30,7 +30,7 @@ func TestOwedExcerptsAreFoundThroughTheDriftIndexAndRecordedOnce(t *testing.T) {
 	if _, err := tx.Exec(ctx, `insert into artifact_versions (artifact_id, number, markdown, authors) values ($1, 1, 'v1', '[]')`, document); err != nil {
 		t.Fatalf("write version 1: %v", err)
 	}
-	if _, err := replaceRefs(ctx, tx, "artifact", document, text.Extract("see dispatch://CORE-1 and dispatch://CORE-2", "https://dispatch.example"), nil); err != nil {
+	if _, err := replaceRefs(ctx, tx, "artifact", document, text.Extract("see dispatch://CORE-1 and dispatch://CORE-2", text.NewOrigins("https://dispatch.example")), nil); err != nil {
 		t.Fatalf("index mentions: %v", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -54,10 +54,10 @@ func TestOwedExcerptsAreFoundThroughTheDriftIndexAndRecordedOnce(t *testing.T) {
 	if drifted, err := DriftedExcerpts(ctx, database.Pool, 20); err != nil || len(drifted) != 0 {
 		t.Fatalf("drift after recording = %#v, %v; want none", drifted, err)
 	}
-	if stored, err := StoredExcerpts(ctx, database.Pool, model.Actor{}, "issue", "CORE-1"); err != nil || stored[document] != excerpt {
+	if stored, err := StoredExcerpts(ctx, database.Pool, serverReader, "issue", "CORE-1"); err != nil || stored[document] != excerpt {
 		t.Fatalf("stored = %#v, %v; want %#v", stored, err, excerpt)
 	}
-	if stored, _ := StoredExcerpts(ctx, database.Pool, model.Actor{}, "issue", "CORE-2"); len(stored) != 0 {
+	if stored, _ := StoredExcerpts(ctx, database.Pool, serverReader, "issue", "CORE-2"); len(stored) != 0 {
 		t.Fatalf("a mention in no block stored %#v; want none", stored)
 	}
 
@@ -100,7 +100,7 @@ func TestOwedExcerptsAreFoundThroughTheDriftIndexAndRecordedOnce(t *testing.T) {
 	if drifted, err := DriftedExcerpts(ctx, database.Pool, 20); err != nil || len(drifted) != 1 || drifted[0].Version != 2 {
 		t.Fatalf("drift after an older binary's version = %#v, %v; want the document at version 2", drifted, err)
 	}
-	if stored, _ := StoredExcerpts(ctx, database.Pool, model.Actor{}, "issue", "CORE-1"); len(stored) != 0 {
+	if stored, _ := StoredExcerpts(ctx, database.Pool, serverReader, "issue", "CORE-1"); len(stored) != 0 {
 		t.Fatalf("a mention owed an excerpt serves %#v; want no stored excerpt", stored)
 	}
 	if marked, err := MarkStaleExcerpts(ctx, database.Pool); err != nil || marked != 0 {
@@ -124,7 +124,7 @@ func owedDocument(t *testing.T, database *store.Store, slug string) string {
 	if _, err := tx.Exec(ctx, `insert into artifact_versions (artifact_id, number, markdown, authors) values ($1, 1, 'v1', '[]')`, document); err != nil {
 		t.Fatalf("write version 1: %v", err)
 	}
-	if _, err := replaceRefs(ctx, tx, "artifact", document, text.Extract("see dispatch://CORE-1", "https://dispatch.example"), nil); err != nil {
+	if _, err := replaceRefs(ctx, tx, "artifact", document, text.Extract("see dispatch://CORE-1", text.NewOrigins("https://dispatch.example")), nil); err != nil {
 		t.Fatalf("index mentions: %v", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -338,7 +338,7 @@ func TestRecordExcerptsReportsTheMentionsWhoseExcerptMoved(t *testing.T) {
 	}
 	createReferenceProject(t, tx, "CORE")
 	document, _ := createReferenceArtifact(t, tx, "", "CORE", "design")
-	if _, err := replaceRefs(ctx, tx, "artifact", document, text.Extract("see dispatch://CORE-1, later dispatch://CORE-2", "https://dispatch.example"), nil); err != nil {
+	if _, err := replaceRefs(ctx, tx, "artifact", document, text.Extract("see dispatch://CORE-1, later dispatch://CORE-2", text.NewOrigins("https://dispatch.example")), nil); err != nil {
 		t.Fatalf("index mentions: %v", err)
 	}
 	if err := tx.Commit(ctx); err != nil {

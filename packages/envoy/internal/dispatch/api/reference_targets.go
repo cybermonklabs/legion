@@ -78,7 +78,7 @@ const referenceTargetsMax = contracts.ReferenceTargetsMax
 // (blockTrees). The trees are resolved before the ETag is made, because the ETag hashes them: a
 // block's name stops at its stored excerpt, so a change past it moves the tree and not the name.
 func (s *server) getReferenceTargets(w http.ResponseWriter, r *http.Request) {
-	who, ok := s.actingReader(w, r)
+	who, ok := s.readerOf(w, r)
 	if !ok {
 		return
 	}
@@ -123,7 +123,7 @@ func (s *server) referenceTargets(r *http.Request, who model.Actor, trees *displ
 	}
 	parsed := make([]text.Ref, len(raw))
 	for index, value := range raw {
-		ref, err := parseRequestRef(strings.TrimSpace(value), s.deps.ServerURL)
+		ref, err := parseRequestRef(strings.TrimSpace(value), s.deps.Origins)
 		if err != nil {
 			return nil, err
 		}

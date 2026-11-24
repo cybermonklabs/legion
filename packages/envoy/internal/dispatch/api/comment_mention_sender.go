@@ -84,6 +84,11 @@ type mentionSend struct {
 	// the wait would have closed before the try it paces, and the first take-over answer would
 	// settle the attempt failed with no try again.
 	takeover takeoverRetry
+	// reader is the reader the comment was written under, which enqueue takes from the request's
+	// context: the send resolves a role's holder under it (mentionSendContext), as the request
+	// itself would have, so a mention reaches no session its author may not see. nil is a send
+	// queued with no reader in its context, which resolves as one does (resolveDeliveryTarget).
+	reader *model.Actor
 	// fromHeldLane is that the lane this send was last taken from is a held lane (next), so its
 	// whole delivery starts its take-over window again (takeover).
 	fromHeldLane bool
@@ -321,6 +326,9 @@ func (m *mentionSender) stoppedLocked() bool {
 // stopped, or the queue is full - gives its attempt's claim back, so the attempt is pending with
 // no claim, as it is when no sender ever held it.
 func (m *mentionSender) enqueue(ctx context.Context, item mentionSend) {
+	if reader, ok := readerFromContext(ctx); ok && item.reader == nil {
+		item.reader = &reader
+	}
 	m.mu.Lock()
 	queued, full := m.queueLocked(item)
 	m.mu.Unlock()
@@ -708,4 +716,13 @@ func (s *server) sendCommentMention(ctx context.Context, item mentionSend) (ment
 			"comment", item.comment.ID, "target", item.mention.Target, "error", err)
 	}
 	return mentionSend{}, false
+}
+
+// mentionSendContext is ctx, the sender's own, holding the reader item's comment was written under
+// (mentionSend.reader) where it carries one, so every resolve the send makes reads as its author.
+func mentionSendContext(ctx context.Context, item mentionSend) context.Context {
+	if item.reader == nil {
+		return ctx
+	}
+	return withReader(ctx, *item.reader)
 }

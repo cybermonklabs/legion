@@ -61,8 +61,8 @@
 # within a year, which would fail the next run's check of that year (C7) on a corpus of its own
 # rather than on the growth it watches. The removal takes the documents this run
 # wrote under its own issue, their blocks, the nodes and tuples those blocks made and every row
-# that references those documents, and nothing else; it leaves the issue, closed, and the one
-# comment C2 wrote. What it cannot remove it prints, with what that leaves behind. Two runs of
+# that references those documents, and nothing else; it leaves the issue, closed, and the two
+# comments C2 wrote. What it cannot remove it prints, with what that leaves behind. Two runs of
 # this driver over one database therefore both pass, which is how it is proved.
 #
 # The database every figure above comes from is this pod's own test database and never the
@@ -81,8 +81,10 @@
 # Inputs: DISPATCH_URL (the server), DISPATCH_TOKEN or DISPATCH_TOKEN_FILE (an agent bearer, read
 # here and never printed), PROJECT (an existing project key), DATABASE_URL (the database that
 # server serves, which `envoy-dispatch census` reads from its own environment: no bearer reaches
-# the command and no route serves it), and `envoy-dispatch` on PATH. A missing DATABASE_URL and a
-# missing command are each exit 2, as every unmet input of this driver is. The production reading
+# the command and no route serves it), `envoy-dispatch` on PATH, and optionally DEV_SIGNIN_LOGIN
+# (default alice), a person the server's dev sign-in route signs in, who writes the comment that
+# gives the census's person kind a row. A missing DATABASE_URL and a missing command are each
+# exit 2, as every unmet input of this driver is. The production reading
 # takes two more required inputs: PRODUCTION_PROJECT, the Google Cloud project whose Cloud
 # Monitoring holds the series, and PRODUCTION_DATABASE_ID, the Cloud SQL instance the series is
 # read for, which the negative control points at an instance no project carries. This repository
@@ -133,7 +135,13 @@ if [[ ! "$production_days" =~ ^[0-9]+$ ]] || [[ "$production_days" -lt 14 ]]; th
   exit 2
 fi
 
+# shellcheck disable=SC2031 # the DISPATCH_URL lib.sh's `cli` exports is its own subshell's; this one is the caller's
 readonly base="${DISPATCH_URL%/}"
+# The dashboard's origin, the scheme and host of DISPATCH_URL: a write the person's cookie
+# authenticates must name it (enforceCookieOrigin).
+base_host="${base#*://}"
+readonly origin="${base%%://*}://${base_host%%/*}"
+readonly login="${DEV_SIGNIN_LOGIN:-alice}"
 # shellcheck disable=SC2153 # PROJECT is the caller's input, checked by name above
 readonly project="$PROJECT"
 # shellcheck disable=SC2153 # DATABASE_URL is the caller's input, checked by name above
@@ -290,7 +298,7 @@ send() {
 # driver that half-cleans is worse than one that says what it left behind.
 remove_corpus() {
   local counted removed
-  counted="$(env -u PGHOSTADDR psql "$database_url" -Atq -v ON_ERROR_STOP=1 2>"$work/psql" <<SQL
+  counted="$(env -u PGHOSTADDR -u PGSERVICE -u PGSERVICEFILE psql "$database_url" -Atq -v ON_ERROR_STOP=1 2>"$work/psql" <<SQL
 select (select count(*) from artifacts where issue_key = '$key'),
        (select count(*) from document_blocks b join artifacts a on a.id = b.artifact_id
           where a.issue_key = '$key')
@@ -301,14 +309,17 @@ SQL
     return 0
   }
   [[ "$counted" != '0|0' ]] || return 0
-  removed="$(env -u PGHOSTADDR psql "$database_url" -Atq -v ON_ERROR_STOP=1 2>"$work/psql" <<SQL
+  removed="$(env -u PGHOSTADDR -u PGSERVICE -u PGSERVICEFILE psql "$database_url" -Atq -v ON_ERROR_STOP=1 2>"$work/psql" <<SQL
 begin;
 create temporary table corpus_documents as select id from artifacts where issue_key = '$key';
 create temporary table corpus_nodes as
   select node_kind as kind, node_id as id from document_blocks
    where artifact_id in (select id from corpus_documents)
   union
-  select kind, id from graph_nodes where id in (select id::text from corpus_documents);
+  select kind, id from graph_nodes where id in (select id::text from corpus_documents)
+  union
+  -- A document's own node is addressed by its ref_key, not its id.
+  select 'artifact', ref_key from artifacts where id in (select id from corpus_documents);
 -- A temporary table the planner has no statistics for is read as a handful of rows, and both
 -- deletes below then run as nested loops over the whole of graph_tuples and graph_nodes: 14
 -- minutes and 2 against the 2 seconds an index and one analyze buy.
@@ -355,7 +366,7 @@ SQL
   printf 'graph-sizing.sh: removed the corpus it wrote under %s: %s document(s), %s block(s), %s node(s) and %s tuple(s), with every row that references those documents\n' \
     "$key" "${counted%%|*}" "${counted##*|}" \
     "$(echo "$removed" | cut -d'|' -f2)" "$(echo "$removed" | cut -d'|' -f3)"
-  printf 'graph-sizing.sh: it leaves %s itself, closed and routed to its role, and the one comment C2 wrote with that comment'"'"'s own node and tuples, which no run of this driver grows; the spec and the citing document this run wrote with the issue went with the corpus, as documents of that issue\n' "$key"
+  printf 'graph-sizing.sh: it leaves %s itself, closed and routed to its role, and the two comments C2 wrote with those comments'"'"' own nodes and tuples, which no run of this driver grows; the spec and the citing document this run wrote with the issue went with the corpus, as documents of that issue\n' "$key"
 }
 
 # want_line SECTION WHAT PATTERN: the report holds a line matching the extended regex PATTERN.
@@ -379,15 +390,6 @@ want_line_in() {
   pass "$1" "$2: $line"
 }
 
-# declared SECTION WHAT FILE SED: the one value SED prints out of a Go source file, refused when
-# the file or the declaration is gone. Every figure this driver holds the loop to is read from the
-# source that declares it, so a build that moved one moves this check with it.
-declared() {
-  [[ -r "$3" ]] || fail "$1" "$2" "$3 is unreadable"
-  answer="$(sed -n "$4" "$3")"
-  [[ -n "$answer" ]] || fail "$1" "$2" "no such declaration in $3"
-}
-
 # owed SECTION WHAT: how many documents the block-index reconciliation still owes an index. It is
 # the read cmd/dispatch/graph_cost_test.go's costBlockIndexDrained takes, over the column migration
 # 0122's trigger leaves null for a write that deferred its blocks.
@@ -403,7 +405,7 @@ owed() {
 hold_block_index() {
   local polls=0
   : >"$work/lease"
-  env -u PGHOSTADDR psql "$database_url" -Atq -o /dev/null >/dev/null 2>"$work/lease" <<SQL &
+  env -u PGHOSTADDR -u PGSERVICE -u PGSERVICEFILE psql "$database_url" -Atq -o /dev/null >/dev/null 2>"$work/lease" <<SQL &
 select pg_advisory_lock($lease_namespace, hashtext('$lease_name'));
 \\warn the $lease_name lease is held
 select pg_sleep($lease_seconds);
@@ -502,13 +504,9 @@ read_production_series() {
 }
 
 # C1: the inputs. The database is on this machine and is the one the server serves.
-host="${database_url#*://}"
-host="${host#*@}"
-host="${host%%[:/]*}"
-case "$host" in
-  127.0.0.1 | ::1 | localhost) pass C1 "DATABASE_URL names this machine ($host)" ;;
-  *) fail C1 "DATABASE_URL names this machine" "host $host is not loopback; this driver reads this pod's own test database and never a deployment's" ;;
-esac
+loopback_database_url "$database_url" ||
+  fail C1 "DATABASE_URL names this machine" "the URL must name one loopback host with no connection override; this driver reads this pod's own test database, never a deployment's"
+pass C1 "DATABASE_URL names this machine"
 [[ -r "$census_source" ]] || fail C1 "read the census limit" "$census_source is unreadable"
 limit_expression="$(sed -n 's/^const CensusTableLimit int64 = \(.*\)$/\1/p' "$census_source")"
 [[ -n "$limit_expression" ]] ||
@@ -536,11 +534,13 @@ query C2 "read that comment through DATABASE_URL" \
 pass C2 "DATABASE_URL is the database the server serves"
 
 # C2: a row of every kind the store census covers. The census refuses a kind it checked no row of
-# (R19), and a database this driver runs over need hold no block reference and no role: a
-# document of this issue that cites the issue gives the block references a row, and the issue
-# routed to a role gives the role and its page theirs. The publisher writes the role's node and its
-# page from the route's event, so the driver waits for both before the census. The document goes
-# with the corpus at the end; the route stays on the closed issue, with the role's node and page.
+# (R19), and a database this driver runs over need hold no block reference, no role and no
+# person: a document of this issue that cites the issue gives the block references a row, the
+# issue routed to a role gives the role and its page theirs, and a comment the signed-in person
+# writes on it gives the person its node. The publisher writes the role's node and its page from
+# the route's event, so the driver waits for both before the census. The document goes with the
+# corpus at the end; the route and the person's comment stay on the closed issue, with the role's
+# node and page.
 readonly census_role="graph-sizing-reader"
 send POST "/api/v1/issues/$key/artifacts" "$(jq -cn --arg s "$session" --arg key "$key" \
   '{name: "sizing-cites.md", content: ("# Cites\n\nThe block reference of this run, to " + $key + ".\n"), actor: {kind: "session", id: $s}}')"
@@ -548,6 +548,14 @@ want_status 201 C2 "write a document of $key that cites it"
 send PATCH "/api/v1/issues/$key" "$(jq -cn --arg r "role:$census_role" --arg s "$session" \
   '{route: $r, actor: {kind: "session", id: $s}}')"
 want_status 200 C2 "route $key to role $census_role"
+curl -sS -o /dev/null -c "$work/jar" -G --data-urlencode "login=$login" "$base/auth/_dev/signin" 2>"$work/curl" ||
+  fail C2 "sign $login in" "curl: $(<"$work/curl")"
+[[ -s "$work/jar" ]] ||
+  fail C2 "sign $login in" "the dev sign-in route left no cookie; this driver needs a person to write a comment"
+status="$(curl -sS -X POST -o "$work/body" -w '%{http_code}' -b "$work/jar" -H "Origin: $origin" \
+  -H 'Content-Type: application/json' --data-binary '{"body":"A remark the person wrote, for the census of persons."}' \
+  "$base/api/v1/issues/$key/comments" 2>"$work/curl")" || status="curl failed: $(<"$work/curl")"
+want_status 201 C2 "$login comments on $key"
 populated_polls=0
 while :; do
   query C2 "read the block reference and the role's node and page" \
@@ -563,6 +571,17 @@ while :; do
   sleep 0.2
 done
 pass C2 "$key's documents hold ${answer%%|*} block reference(s), and the store holds role $census_role's node and its page"
+
+# C2: the rows an earlier build or a seed wrote without their node. A database this driver runs
+# over may hold issues, documents, asks or messages that no node writer wrote, and the project
+# census refuses on each of them, so the backfill writes their nodes, as an operator runs it
+# before the census, and the store C3 reads is the store after it.
+backfill_code=0
+env -u DISPATCH_TOKEN -u DISPATCH_TOKEN_FILE DATABASE_URL="$database_url" \
+  envoy-dispatch backfill-graph-store >"$work/backfill" 2>&1 || backfill_code=$?
+[[ "$backfill_code" == 0 ]] ||
+  fail C2 "run the backfill before the census" "envoy-dispatch backfill-graph-store exited $backfill_code: $(tail -n 5 "$work/backfill")"
+pass C2 "envoy-dispatch backfill-graph-store ran, so every row the census reads has its node"
 
 # C3: the store before the census, which must be the store after it.
 query C3 "read the highest tuple sequence" "select coalesce(max(seq), 0) from graph_tuples"

@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -83,8 +83,13 @@ const eventSelect = `select e.id, e.issue_key, e.artifact_id::text, coalesce(e.p
 // entry, and the read behind it attaches all of them again. An entry the cache evicts and a
 // restart end it sooner. Those fields are an ask's own facts rather than the feed's, and the
 // Inbox, the ask read and the issue read answer them fresh, from no kept list.
+//
+// An issue of a project the caller does not see is an issue no row holds (issueEventSequence),
+// so its feed is the empty page under the ETag a missing key answers, and nothing is kept. The
+// kept bytes of a feed the caller does see are filed under what the caller sees beside the key
+// (keptViewOf), since referenced_by_count counts only the edges a reader sees.
 func (s *server) listIssueEvents(w http.ResponseWriter, r *http.Request) {
-	who, ok := s.actingReader(w, r)
+	who, ok := s.readerOf(w, r)
 	if !ok {
 		return
 	}
@@ -93,7 +98,7 @@ func (s *server) listIssueEvents(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	lastSeq, createdAt, issueHeld, err := s.issueEventSequence(r.Context(), r.PathValue("key"))
+	lastSeq, createdAt, issueHeld, err := s.issueEventSequence(r.Context(), who, r.PathValue("key"))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -103,8 +108,11 @@ func (s *server) listIssueEvents(w http.ResponseWriter, r *http.Request) {
 	if answerNotModified(w, r, etag) {
 		return
 	}
-	key := listAnswerKeyFor(r, eventFeedRoute, r.PathValue("key"), etag)
-	if s.listAnswers.answer(w, key) {
+	// While a project is private, a reader that does not see every object is handed no kept page
+	// and keeps none (keepsListAnswerFor): what its payloads and counts name moves with rows the
+	// key does not name.
+	key, keep := listAnswerKeyFor(r, eventFeedRoute, r.PathValue("key")+keptViewOf(who), etag), keepsListAnswerFor(who)
+	if keep && s.listAnswers.answer(w, key) {
 		return
 	}
 	events, err := s.readEvents(r.Context(), who, issueOwner(r.PathValue("key")), options)
@@ -122,7 +130,24 @@ func (s *server) listIssueEvents(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	s.writeListAnswer(w, key, encoded, issueHeld)
+	s.writeListAnswer(w, key, encoded, issueHeld && keep)
+}
+
+// keptViewOf is what a kept list answer read for who is filed under beside the owner the request
+// names, for a list whose bytes turn on what the reader sees: an ask event's referenced_by_count
+// counts only the edges whose source the reader sees (refs.QueueBacklinkCounts), so a feed kept
+// for a reader of a private project is never handed to one who does not see it. An open viewer of
+// a deployment that holds no private project sees every project, so it files under the owner
+// alone, as every reader did before a project could be private.
+func keptViewOf(who model.Actor) string {
+	if seesEveryObject(who) {
+		return ""
+	}
+	viewer := who.Viewer
+	if viewer == nil {
+		return "\x00closed"
+	}
+	return fmt.Sprintf("\x00%s\x00%s\x00%t\x00%s", viewer.Person, viewer.Session, viewer.Open, strings.Join(viewer.Sees, ","))
 }
 
 // eventFeedETag hashes what one page of an issue's activity feed is made of: the issue whose feed
@@ -156,14 +181,16 @@ func (s *server) eventFeedETag(lastSeq int, createdAt time.Time, options eventLi
 // tells that issue from the next one to take its key, with whether any issue holds that key at
 // all. A key no issue holds reads zero for both, and its feed is the empty page readEvents
 // answers rather than a refusal; the server keeps that page under no key, since the key is the
-// path the caller spelled (writeListAnswer). Every append to the issue advances the column in
-// the append's own transaction (events/broker.go), and nothing moves the stamp, so this one
-// statement is the whole of what the feed's validator reads.
-func (s *server) issueEventSequence(ctx context.Context, key string) (int, time.Time, bool, error) {
+// path the caller spelled (writeListAnswer). An issue of a project who does not see reads as a
+// key no issue holds. Every append to the issue advances the column in the append's own
+// transaction (events/broker.go), and nothing moves the stamp, so this one statement is the whole
+// of what the feed's validator reads.
+func (s *server) issueEventSequence(ctx context.Context, who model.Actor, key string) (int, time.Time, bool, error) {
 	var lastSeq int
 	var createdAt time.Time
 	err := s.deps.Store.Pool.QueryRow(ctx,
-		`select last_seq, created_at from issues where key = $1`, key).Scan(&lastSeq, &createdAt)
+		`select last_seq, created_at from issues where key = $1 and `+access.ProjectClause("project_key", "$2"),
+		key, refs.VisibilityArg(who)).Scan(&lastSeq, &createdAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return 0, time.Time{}, false, nil
 	}
@@ -175,8 +202,8 @@ func (s *server) issueEventSequence(ctx context.Context, key string) (int, time.
 
 // listEventLog pages the whole event log by id, whatever owns each event: an issue, a document,
 // a project or nothing. It answers the events after ?after= (default 0) in ascending id order,
-// at most ?limit= of them. Any authenticated caller may read it, as the events view on a page's
-// live socket carries every event to them.
+// at most ?limit= of them, of those the caller may read (eventReadableSQL): an event of a project
+// it does not see, or of a conversation it may not read, is not in the log it pages.
 //
 // Ids are not commit order (events.Broker.Append), so a caller that pages by the id of the last
 // row it was answered would step over a lower id still open and never see it. The page is
@@ -184,7 +211,7 @@ func (s *server) issueEventSequence(ctx context.Context, key string) (int, time.
 // the same wait GET /api/v1/references?since= reads under (sinceHorizon): every event committed
 // before the request stands at or below it, so paging to the end of this answer skips nothing.
 func (s *server) listEventLog(w http.ResponseWriter, r *http.Request) {
-	who, ok := s.actingReader(w, r)
+	who, ok := s.readerOf(w, r)
 	if !ok {
 		return
 	}
@@ -690,7 +717,7 @@ func (s *server) attachAskEventFields(ctx context.Context, who model.Actor, even
 		payloads[index].payload[model.ReferencedByCountKey] = *asks[index].ReferencedByCount
 		attachAskEventPartIDs(payloads[index].payload, asks[index])
 	}
-	if err := s.attachAskDocumentArtifacts(ctx, payloads); err != nil {
+	if err := s.attachAskDocumentArtifacts(ctx, who, payloads); err != nil {
 		return err
 	}
 	for _, payload := range payloads {
@@ -771,8 +798,9 @@ func normalizeAnsweredSelected(raw json.RawMessage, payload map[string]any) erro
 // attachAskDocumentArtifacts hydrates anchor_artifact and approval_artifact on every ask event
 // payload that names one, the same live lookup ask_rows.go's scanAskRow does for a read: an
 // anchored ask's quoted document, or an approval request's document, both resolved by their
-// current slug and primary flag rather than a value frozen at write time.
-func (s *server) attachAskDocumentArtifacts(ctx context.Context, eventPayloads []decodedAskEventPayload) error {
+// current slug and primary flag rather than a value frozen at write time. A document of a
+// project who does not see is one the read does not find, so its payload names none.
+func (s *server) attachAskDocumentArtifacts(ctx context.Context, who model.Actor, eventPayloads []decodedAskEventPayload) error {
 	payloads := map[string][]decodedAskEventPayload{}
 	for _, eventPayload := range eventPayloads {
 		payload := eventPayload.payload
@@ -802,9 +830,11 @@ func (s *server) attachAskDocumentArtifacts(ctx context.Context, eventPayloads [
 			pa.project_key, pa.slug, pa.name, pa.is_primary
 		from asks a
 		left join artifacts aa on aa.id = `+store.CastableUUID(`a.anchor->>'artifact_id'`)+`
+			and (aa.project_key is null or `+access.ProjectClause("aa.project_key", "$2")+`)
 		left join artifacts pa on pa.id = (a.approval->>'artifact_id')::uuid
-		where a.id::text = any($1)
-	`, askIDs)
+			and (pa.project_key is null or `+access.ProjectClause("pa.project_key", "$2")+`)
+		where a.id::text = any($1) and `+access.ItemOwnerClause("a.issue_key", "a.artifact_id", "$2")+`
+	`, askIDs, refs.VisibilityArg(who))
 	if err != nil {
 		return err
 	}

@@ -12,10 +12,9 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"golang.org/x/sync/singleflight"
-
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"golang.org/x/sync/singleflight"
 )
 
 const (

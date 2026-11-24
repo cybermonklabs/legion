@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
-
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )

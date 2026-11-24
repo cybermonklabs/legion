@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -190,6 +189,13 @@ var personNodesQuery = personNodesTied + `, items as (
 // route decided, never 200 with no rows for a person the route decided holds a node they may see.
 func (s *server) listPersonNodes(w http.ResponseWriter, r *http.Request) {
 	caller, ok := s.actingPerson(w, r)
+	if !ok {
+		return
+	}
+	// The acting credential is marshalled once and bound by both reads: it is one value for the
+	// request, and the two statements name the same reader. Its author is the person the request
+	// acts for, as it always was, and its viewer is what the caller sees (readerAs).
+	caller, ok = s.readerAs(w, r, caller)
 	if !ok {
 		return
 	}

@@ -13,7 +13,6 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
-
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -148,11 +147,12 @@ func newLockOrderFixture(t *testing.T) *lockOrderFixture {
 	return fixture
 }
 
-// lockOrderNode is one node as this test writes it.
+// lockOrderNode is one node as this test writes it: in the test's project, as every node of an
+// object a project owns is, so the write under test binds and states the project too.
 func lockOrderNode(kind, id string) Node {
 	return Node{
 		Kind: kind, ID: id, Supertag: kind,
-		Visibility: VisibilityProject, State: StateLive,
+		Visibility: VisibilityProject, State: StateLive, Project: lockOrderProj,
 		MadeAt: time.Date(2026, 11, 9, 0, 0, 0, 0, time.UTC),
 		MadeBy: model.Actor{Kind: "user", ID: "alice"}, SourceEvent: NoEvent,
 	}

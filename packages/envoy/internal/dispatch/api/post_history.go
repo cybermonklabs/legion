@@ -19,7 +19,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -318,10 +317,19 @@ func queueDeletedPostSettlement(b *store.WriteBatch, itemID string, read pending
 	})
 }
 
-// getCommentHistory answers GET /api/v1/comments/{id}/history, read by whoever GET
-// /api/v1/comments/{id} answers: any authenticated caller.
+// getCommentHistory answers GET /api/v1/comments/{id}/history under the read rule of GET
+// /api/v1/comments/{id}: the comment is read as who may read it first (loadComment), so one the
+// caller may not read answers as an id no comment holds, before any kept body is read.
 func (s *server) getCommentHistory(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) || !requireUUIDPath(w, r, "comment") {
+		return
+	}
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
+	if _, err := s.loadComment(r.Context(), s.deps.Store.Pool, who, r.PathValue("id")); err != nil {
+		s.writeHandlerError(w, err)
 		return
 	}
 	s.writePostHistory(w, r, refs.ItemComment)
@@ -332,7 +340,7 @@ func (s *server) getCommentHistory(w http.ResponseWriter, r *http.Request) {
 // message is edited or deleted, and that rule asks for a session on a thread with no issue
 // alone, so it costs this read nothing.
 func (s *server) getMessageHistory(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.readableMessageThread(w, r); !ok {
+	if _, _, ok := s.readableMessageThread(w, r); !ok {
 		return
 	}
 	s.writePostHistory(w, r, refs.ItemMessage)

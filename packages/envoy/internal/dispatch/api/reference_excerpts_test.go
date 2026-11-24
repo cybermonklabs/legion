@@ -22,24 +22,24 @@ type readCountingDocs struct {
 	reads atomic.Int64
 }
 
-func (d *readCountingDocs) Text(ctx context.Context, artifactID string) (string, error) {
+func (d *readCountingDocs) Text(ctx context.Context, who model.Actor, artifactID string) (string, error) {
 	d.reads.Add(1)
-	return d.API.Text(ctx, artifactID)
+	return d.API.Text(ctx, who, artifactID)
 }
 
-func (d *readCountingDocs) TextWithToken(ctx context.Context, artifactID string) (string, string, error) {
+func (d *readCountingDocs) TextWithToken(ctx context.Context, who model.Actor, artifactID string) (string, string, error) {
 	d.reads.Add(1)
-	return d.API.TextWithToken(ctx, artifactID)
+	return d.API.TextWithToken(ctx, who, artifactID)
 }
 
-func (d *readCountingDocs) Blocks(ctx context.Context, artifactID string) ([]model.ArtifactBlock, error) {
+func (d *readCountingDocs) Blocks(ctx context.Context, who model.Actor, artifactID string) ([]model.ArtifactBlock, error) {
 	d.reads.Add(1)
-	return d.API.Blocks(ctx, artifactID)
+	return d.API.Blocks(ctx, who, artifactID)
 }
 
-func (d *readCountingDocs) TextWithBlocks(ctx context.Context, artifactID string) (string, []model.ArtifactBlock, error) {
+func (d *readCountingDocs) TextWithBlocks(ctx context.Context, who model.Actor, artifactID string) (string, []model.ArtifactBlock, error) {
 	d.reads.Add(1)
-	return d.API.TextWithBlocks(ctx, artifactID)
+	return d.API.TextWithBlocks(ctx, who, artifactID)
 }
 
 func referenceExcerptHandler(t *testing.T) (http.Handler, *store.Store, *docs.Service, *readCountingDocs) {
@@ -47,7 +47,7 @@ func referenceExcerptHandler(t *testing.T) (http.Handler, *store.Store, *docs.Se
 	var service *docs.Service
 	var counted *readCountingDocs
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
-		service = docs.New(docs.Deps{Store: database, ServerURL: "https://dispatch.example", Settle: time.Hour})
+		service = docs.New(docs.Deps{Store: database, Origins: text.NewOrigins("https://dispatch.example"), Settle: time.Hour})
 		t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
 		counted = &readCountingDocs{API: service}
 		return counted
@@ -60,7 +60,7 @@ func referenceExcerptHandler(t *testing.T) (http.Handler, *store.Store, *docs.Se
 // tightest byte range, that holds the mention.
 func renderedMentionExcerpt(t *testing.T, service *docs.Service, artifactID, reference string) model.GraphExcerpt {
 	t.Helper()
-	markdown, blocks, err := service.TextWithBlocks(context.Background(), artifactID)
+	markdown, blocks, err := service.TextWithBlocks(context.Background(), everyReader, artifactID)
 	if err != nil {
 		t.Fatalf("render %s: %v", artifactID, err)
 	}

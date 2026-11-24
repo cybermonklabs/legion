@@ -8,7 +8,6 @@ import (
 	"testing"
 
 	"github.com/reearth/ygo/crdt"
-
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 )
@@ -172,7 +171,7 @@ func TestTheAsksOfADocumentPastTheBoundCanStillBeAnsweredAndResolved(t *testing.
 	if err := joinedSetBlockAttributes(service, artifactID, "worded", answered, alice); err != nil {
 		t.Fatalf("answering an ask in words on a document past the bound: %v", err)
 	}
-	markdown, err := service.Text(context.Background(), artifactID)
+	markdown, err := service.Text(context.Background(), serverReader, artifactID)
 	if err != nil {
 		t.Fatal(err)
 	}

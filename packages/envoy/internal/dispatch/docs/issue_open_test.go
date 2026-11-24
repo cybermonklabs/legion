@@ -16,13 +16,13 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/reearth/ygo/crdt"
 	"github.com/reearth/ygo/persistence"
-
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 // Closing or reopening an issue changes every process's rooms of its documents (plan
@@ -447,7 +447,7 @@ func newHeldAppendsService(t *testing.T, database *store.Store) (*Service, *http
 		Store:     database,
 		Events:    events.NewBroker(),
 		Identity:  headerIdentity(database),
-		ServerURL: "https://dispatch.example",
+		Origins:   text.NewOrigins("https://dispatch.example"),
 		Settle:    time.Hour,
 		TestHooks: true,
 	})

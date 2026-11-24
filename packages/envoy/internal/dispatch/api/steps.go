@@ -8,9 +8,10 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/workflowstore"
 )
@@ -106,7 +107,7 @@ func (s *server) putIssueStep(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	s.writeIssueStep(w, r, input.write(), actor, key)
+	s.writeIssueStep(w, r, input.write(), actor, key, false)
 }
 
 // putIssueStepRating writes the rating of a retro's run, with every field of the run the body
@@ -137,21 +138,28 @@ func (s *server) putIssueStepRating(w http.ResponseWriter, r *http.Request) {
 	if input.RatingReason != nil {
 		write.Rating.Reason = *input.RatingReason
 	}
-	s.writeIssueStep(w, r, write, actor, key)
+	s.writeIssueStep(w, r, write, actor, key, true)
 }
 
 // writeIssueStep is the one write of a step record behind both routes, by actor to the issue key,
 // each of which the route has checked (requireIssueDaemon): the issue is read, write (its ID,
 // Issue and Project filled here from the path and the issue row) is written, and the record is
-// answered as the read lists it.
-func (s *server) writeIssueStep(w http.ResponseWriter, r *http.Request, write workflowstore.StepWrite, actor model.Actor, key string) {
+// answered as the read lists it. The request's reader is resolved once, before the transaction
+// opens, and handed on in the request's context (withReader), so the issue's read and the read of
+// its runs bind the one viewer.
+func (s *server) writeIssueStep(w http.ResponseWriter, r *http.Request, write workflowstore.StepWrite, actor model.Actor, key string, rated bool) {
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
+	r = r.WithContext(withReader(r.Context(), who))
 	tx, err := s.begin(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
 	defer tx.Rollback(r.Context())
-	project, ok := s.lockRecordedIssue(w, r, tx, key)
+	project, ok := s.lockRecordedIssue(w, r, tx, key, actor, "a step record")
 	if !ok {
 		return
 	}
@@ -213,16 +221,37 @@ func (s *server) requireIssueDaemon(w http.ResponseWriter, r *http.Request, supp
 // issue's writer that holds the owner and holds off the next one, and two record writes do not
 // wait on each other. The store's write (workflowstore's putNode) then locks the record's own row,
 // which only it writes, so the two are always taken in this order. The read has no open check, so
-// the merge that closes an issue still records its step. An issue Dispatch does not hold is
-// refused with a code of its own rather than loadIssue's NOT_FOUND: the daemon must tell a
-// Dispatch that holds no such issue from one that does not serve the route, whose router answers
-// NOT_FOUND.
-func (s *server) lockRecordedIssue(w http.ResponseWriter, r *http.Request, tx pgx.Tx, key string) (string, bool) {
+// the merge that closes an issue still records its step. An issue Dispatch does not hold, or one
+// of a project the request's caller does not see (access.ProjectClause), is refused with a code of
+// its own rather than loadIssue's NOT_FOUND: the daemon must tell a Dispatch that holds no such
+// issue from one that does not serve the route, whose router answers NOT_FOUND. The path names the
+// issue by its key alone, so the issue is read so once before the lock is asked for, and a hidden
+// one is refused without waiting behind its project's writers, as a key no issue holds is.
+func (s *server) lockRecordedIssue(w http.ResponseWriter, r *http.Request, tx pgx.Tx, key string, actor model.Actor, record string) (string, bool) {
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return "", false
+	}
+	var project string
+	read := func() bool {
+		err := tx.QueryRow(r.Context(), `
+			select project_key from issues where key = $1 and `+access.ProjectClause("project_key", "$2")+`
+		`, key, refs.VisibilityArg(who)).Scan(&project)
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
+			writeError(w, "ISSUE_NOT_FOUND", http.StatusNotFound, fmt.Sprintf("no issue %s", key))
+		case err != nil:
+			s.writeHandlerError(w, err)
+		}
+		return err == nil
+	}
+	if !read() {
+		return "", false
+	}
 	if err := store.LockOwnersShared(r.Context(), tx, store.IssueOwner(key)); err != nil {
 		s.writeHandlerError(w, err)
 		return "", false
 	}
-	var project string
 	if err := tx.QueryRow(r.Context(), `
 		select project_key from issues where key = $1
 	`, key).Scan(&project); err != nil {

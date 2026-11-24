@@ -137,7 +137,7 @@ func TestRelatedCheckReportsNotMadeWhenItsContextIsDone(t *testing.T) {
 	<-expired.Done()
 
 	suggestions := srv.relatedCheck(expired, relatedInput{
-		project: "ANY", text: "a title that would otherwise search",
+		who: everyReader, project: "ANY", text: "a title that would otherwise search",
 		source: suggestionSource{kind: "issue", issueKey: "ANY-1"},
 	})
 	if suggestions.Outcome != "not_made" || suggestions.Missing != "the request that ran it ended before the check finished" || suggestions.Search != "" {

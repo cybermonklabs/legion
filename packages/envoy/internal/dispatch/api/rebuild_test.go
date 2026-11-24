@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/reearth/ygo/persistence"
-
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -62,7 +61,7 @@ func TestRebuildArtifactRouteNeedsThePersonScopeAndRefusesADocumentThatLoads(t *
 	if after != before {
 		t.Fatalf("refused rebuild changed doc_updates from %d to %d", before, after)
 	}
-	if text, err := documentService.Text(context.Background(), artifact.ID); err != nil || text != "unsettled\n" {
+	if text, err := documentService.Text(context.Background(), everyReader, artifact.ID); err != nil || text != "unsettled\n" {
 		t.Fatalf("healthy document after refused rebuild: %q (%v), want its unsettled update", text, err)
 	}
 }

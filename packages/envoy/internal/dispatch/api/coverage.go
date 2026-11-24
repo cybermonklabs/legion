@@ -38,12 +38,12 @@ const (
 // no requirements, answers no requirements and the single gap line. A caller that sent
 // `Dispatch-Trees: 1` is given each requirement's whole content as its text_tree.
 func (s *server) getIssueCoverage(w http.ResponseWriter, r *http.Request) {
-	who, ok := s.actingReader(w, r)
+	who, ok := s.readerOf(w, r)
 	if !ok {
 		return
 	}
 	issueKey := r.PathValue("key")
-	if err := s.requireIssueExists(r.Context(), issueKey); err != nil {
+	if err := s.requireIssueExists(r.Context(), who, issueKey); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -79,7 +79,7 @@ func (s *server) issueCoverage(ctx context.Context, q queryer, who model.Actor, 
 		coverage.Gaps = []string{noRequirementsGap}
 		return coverage, nil
 	}
-	requirements, err := s.requirementBlocksIn(ctx, coverage.SpecArtifactID, trees)
+	requirements, err := s.requirementBlocksIn(ctx, who, coverage.SpecArtifactID, trees)
 	if err != nil {
 		return model.IssueCoverage{}, err
 	}
@@ -148,10 +148,10 @@ func missingCheckGaps(coverage model.IssueCoverage) []string {
 // answers here the tree the batched reference read answers for it. It registers once the slice
 // has stopped growing, since what is registered is a pointer into the row, and the caller fills
 // in the rest of each row in place.
-func (s *server) requirementBlocksIn(ctx context.Context, artifactID string, trees *displayTreeReader) ([]model.RequirementCoverage, error) {
+func (s *server) requirementBlocksIn(ctx context.Context, who model.Actor, artifactID string, trees *displayTreeReader) ([]model.RequirementCoverage, error) {
 	var requirements []model.RequirementCoverage
 	var contents []string
-	err := s.typedBlocksIn(ctx, artifactID, "requirement", trees != nil, func(node *pmdoc.Node, id, content string) {
+	err := s.typedBlocksIn(ctx, who, artifactID, "requirement", trees != nil, func(node *pmdoc.Node, id, content string) {
 		requirements = append(requirements, model.RequirementCoverage{BlockID: id, Text: blockWords(node)})
 		if trees != nil {
 			contents = append(contents, content)
@@ -228,7 +228,7 @@ func servingBlockCounts(ctx context.Context, q queryer, specArtifactID string, i
 // could not count the gaps rather than that it found none. Reading the document itself is the
 // request's error, as it is inside the transaction.
 func (s *server) approvalCoverage(ctx context.Context, q queryer, who model.Actor, id string) (gaps []string, unread bool, err error) {
-	artifact, err := s.loadArtifact(ctx, q, id)
+	artifact, err := s.loadArtifact(ctx, q, who, id)
 	if err != nil {
 		return nil, false, err
 	}

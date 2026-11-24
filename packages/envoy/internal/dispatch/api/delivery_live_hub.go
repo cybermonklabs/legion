@@ -9,9 +9,9 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/workflowstore"
 	"github.com/sjawhar/envoy/internal/pglisten"
@@ -367,6 +367,7 @@ type deliveryLiveSpec struct {
 	// view's board shows, and the one a legion_issue view's key names (parseLegionIssueLiveView).
 	// A delivery view names none.
 	project string
+	reader  model.Actor
 	// issue is the issue a legion_issue view shows (DeliveryLiveView.Issue), which a write of one
 	// of its runs marks (dirtyLegionIssue); every other kind names none.
 	issue string

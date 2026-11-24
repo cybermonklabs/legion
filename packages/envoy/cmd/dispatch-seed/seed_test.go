@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
@@ -625,7 +624,7 @@ func assertEveryAskHasItsOpeningEvent(t *testing.T, database *store.Store) {
 	if len(askIDs) == 0 {
 		t.Fatal("the seeded database holds no ask, so this check proves nothing")
 	}
-	openedEventIDs, err := events.OpenedEventIDs(ctx, database.Pool, askIDs)
+	openedEventIDs, err := events.OpenedEventIDs(ctx, database.Pool, askIDs, events.EveryEvent)
 	if err != nil {
 		t.Fatalf("resolve the opening events: %v", err)
 	}

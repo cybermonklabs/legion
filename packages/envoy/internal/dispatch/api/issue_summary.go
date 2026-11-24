@@ -81,7 +81,8 @@ func (s *server) getIssueSummary(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) getProjectDocumentSummary(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) {
+	who, ok := s.readerOf(w, r)
+	if !ok {
 		return
 	}
 	ctx := r.Context()
@@ -98,7 +99,7 @@ func (s *server) getProjectDocumentSummary(w http.ResponseWriter, r *http.Reques
 		}
 		return summary, err
 	}
-	summary, err := resolveDocumentReference(ctx, s, q, artifactTarget{Project: r.PathValue("key")}, r.PathValue("slug"),
+	summary, err := resolveDocumentReference(ctx, s, q, who, artifactTarget{Project: r.PathValue("key")}, r.PathValue("slug"),
 		func(refKey string) (documentSummary, error) { return read(`a.ref_key = $1`, refKey) },
 		func(id string) (documentSummary, error) { return read(`a.id = $1::uuid`, id) },
 	)

@@ -30,15 +30,16 @@
  * `outside-agent-tailnet-stand-ins.ts` starts, and the squatters `squat` of
  * `outside-agent-acceptance.test.ts` leaves running until its row ends. Three subprocesses a row
  * can wait for run outside it, as stated edges. One is the psql of `e2e/psql.ts` (the rows and
- * hooks of `psql-session.test.ts`, and the scratch databases of `replace-blocks-guard.test.ts`),
- * whose `sqlAt` `e2e/harness-postgres.ts` and `e2e/local-instance.ts` call too, so bounding that
- * psql would reach past `e2e/__tests__/`. Another is the `ps` that reads the process table on a
- * machine with no `/proc`, here (`processTable`) and in `bounded-subprocess.test.ts`, which runs
- * with no bound. Linux lists its processes under `/proc` and never runs that `ps`. The third is
- * the shell of two synchronous waits for a port, each ended by its own clock within 11 s: the one
- * `squat` of `outside-agent-acceptance.test.ts` waits for while it takes a port over, synchronous
- * because the listener stop it follows is and the port must be taken before that stop returns,
- * and the stand-in Dispatch's readiness wait in `outside-agent-tailnet-stand-ins.ts`.
+ * hooks of `psql-session.test.ts` and `node-projects-horizon-hold.test.ts`, and the scratch
+ * databases of `replace-blocks-guard.test.ts`), whose `sqlAt` `e2e/harness-postgres.ts` and
+ * `e2e/local-instance.ts` call too, so bounding that psql would reach past `e2e/__tests__/`.
+ * Another is the `ps` that reads the process table on a machine with no `/proc`, here
+ * (`processTable`) and in `bounded-subprocess.test.ts`, which runs with no bound. Linux lists its
+ * processes under `/proc` and never runs that `ps`. The third is the shell of two synchronous
+ * waits for a port, each ended by its own clock within 11 s: the one `squat` of
+ * `outside-agent-acceptance.test.ts` waits for while it takes a port over, synchronous because
+ * the listener stop it follows is and the port must be taken before that stop returns, and the
+ * stand-in Dispatch's readiness wait in `outside-agent-tailnet-stand-ins.ts`.
  *
  * `bun test` collects only a file whose name carries a `test` or `spec` token, `*.test.ts` and
  * its kin (`collectedTestFile` of `e2e/row-limits.ts` holds the measured set), so a plain `.ts`
@@ -1060,7 +1061,7 @@ export function named({ argv, env, from }: Child): string {
  *  process table, which takes seconds on a machine of many processes (`processTableYielding`), so
  *  the time `runBounded` answers at is the child's end and that kill, and the cost line's time is
  *  both. */
-interface BoundedRun {
+export interface BoundedRun {
   readonly code: number;
   readonly endedAt: number;
   readonly named: string;

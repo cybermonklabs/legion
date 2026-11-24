@@ -86,7 +86,11 @@ func (s *server) putProjectGatedSteps(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	project, err := s.loadProject(r.Context(), s.deps.Store.Pool, r.PathValue("key"))
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
+	project, err := s.loadProject(r.Context(), s.deps.Store.Pool, who, r.PathValue("key"))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

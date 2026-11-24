@@ -13,7 +13,6 @@ import (
 	"time"
 
 	gws "github.com/gorilla/websocket"
-
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
@@ -355,6 +354,12 @@ func (socket *liveSocket) writeFrame(frame any) bool {
 func (s *server) serveLiveSocket(w http.ResponseWriter, r *http.Request) {
 	actor, _, err := s.optionalActor(r)
 	if err != nil {
+		s.writeAuthenticationError(w, err)
+		return
+	}
+	// A caller whose viewer does not resolve is refused here, as every read refuses one; each view
+	// resolves what the caller sees again for itself (readerFor).
+	if _, err := s.readerFor(r.Context(), actor); err != nil {
 		s.writeAuthenticationError(w, err)
 		return
 	}

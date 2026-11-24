@@ -142,7 +142,7 @@ func TestTheDrainIndexesTextStoredWithoutTheWholeGrammar(t *testing.T) {
 		t.Fatalf("create the notes: %v", err)
 	}
 	seedServiceText(t, service, notes, "Ship it after CORE-2.\n")
-	live, _, err := service.TextWithBlocks(ctx, notes)
+	live, _, err := service.TextWithBlocks(ctx, serverReader, notes)
 	if err != nil {
 		t.Fatalf("read the notes: %v", err)
 	}
@@ -254,7 +254,7 @@ func TestTheDrainOwesADocumentIndexedByAnEarlierGrammar(t *testing.T) {
 		t.Fatalf("create the notes: %v", err)
 	}
 	seedServiceText(t, service, notes, "Ship it after CORE-2.\n")
-	live, _, err := service.TextWithBlocks(ctx, notes)
+	live, _, err := service.TextWithBlocks(ctx, serverReader, notes)
 	if err != nil {
 		t.Fatalf("read the notes: %v", err)
 	}

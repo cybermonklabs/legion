@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -833,7 +832,7 @@ func (s *server) scanIssuePage(ctx context.Context, listQuery string, arguments 
 // a statement of its own for the listener's stored answer (storedRouteRoster), and a shared listener
 // fetch only when that answer is stale, so a routed issue's read is one round trip more.
 func (s *server) getIssue(w http.ResponseWriter, r *http.Request) {
-	who, ok := s.actingReader(w, r)
+	who, ok := s.readerOf(w, r)
 	if !ok {
 		return
 	}
@@ -982,7 +981,7 @@ func (s *server) readIssue(ctx context.Context, who model.Actor, key string, tre
 // nothing, so it queues nothing and sends no batch.
 func (s *server) readIssueDetails(ctx context.Context, who model.Actor, artifacts []*model.Artifact, asks []*model.Ask) error {
 	batch := &pgx.Batch{}
-	applyArtifacts := queueArtifactDetails(batch, artifacts)
+	applyArtifacts := queueArtifactDetails(batch, who, artifacts)
 	applyAsks := queueAskDetails(batch, who, asks)
 	if batch.Len() == 0 {
 		return nil
@@ -1017,9 +1016,122 @@ func issueOpenAsksOf(asks []model.Ask, replies map[string]model.AskLastReply, re
 	return openAsks
 }
 
-func (s *server) loadIssue(ctx context.Context, q queryer, key string) (model.Issue, error) {
-	issue, _, err := s.loadIssueWithProgress(ctx, q, key)
+// loadIssue is one issue as who reads it: an issue of a project who does not see is
+// pgx.ErrNoRows, which every caller answers as it answers a key no issue carries. Every caller
+// binds a reader: a read the one readerOf answers, a write the one it resolved before it opened
+// its transaction. The issue is the row as it stands, every other row it names included, which a
+// write's event payload records whole; an answer to a reader leaves out what the reader does not
+// see (leaveOutHiddenIssueReferences).
+func (s *server) loadIssue(ctx context.Context, q queryer, who model.Actor, key string) (model.Issue, error) {
+	issue, _, err := s.loadIssueWithProgress(ctx, q, who, key)
 	return issue, err
+}
+
+// leaveOutHiddenIssueReferences writes issue, and the claims of children when it is not nil, as who
+// reads them (the rule of references, references_seen.go), in one read: a blocker who does not see
+// is dropped; an assignee, and a claim whose holder (a session or a person), who does not see are
+// null, so the issue reads as one nobody claims; a child's claim whose holder who does not see is
+// left out; and a route to a session, or to a role of a project, who does not see is no route
+// (leaveOutRoute). The issue page runs it before it reads the roster (getIssue), and its one
+// statement is made whatever the issue names (seenReferences), so an issue claimed by a hidden
+// holder, or routed to a role of a hidden project, costs what an unclaimed, unrouted one costs. A
+// reader that sees every object is answered the issue as it stands, with no read.
+func leaveOutHiddenIssueReferences(ctx context.Context, q queryer, who model.Actor, issue *model.Issue, children []model.IssueChild) error {
+	if seesEveryObject(who) {
+		return nil
+	}
+	named := references{}
+	for _, blocker := range issue.BlockedBy {
+		named.name(issueReference, blocker)
+	}
+	if issue.Assignee != nil {
+		named.name(personReference, *issue.Assignee)
+	}
+	if issue.Claim != nil {
+		named.nameActor(issue.Claim.Actor)
+	}
+	for _, child := range children {
+		if child.Claim != nil {
+			named.nameActor(child.Claim.Actor)
+		}
+	}
+	named.nameRoute(issue.Route)
+	seen, err := seenReferences(ctx, q, who, named)
+	if err != nil {
+		return err
+	}
+	issue.BlockedBy = slices.DeleteFunc(slices.Clone(issue.BlockedBy), func(blocker string) bool {
+		return !seen.holds(issueReference, blocker)
+	})
+	if issue.Assignee != nil && !seen.holds(personReference, *issue.Assignee) {
+		issue.Assignee = nil
+	}
+	if issue.Claim != nil && !seen.holdsActor(issue.Claim.Actor) {
+		issue.Claim = nil
+	}
+	for index := range children {
+		if claim := children[index].Claim; claim != nil && !seen.holdsActor(claim.Actor) {
+			children[index].Claim = nil
+		}
+	}
+	seen.leaveOutRoute(&issue.Route)
+	return nil
+}
+
+// leaveOutHiddenSummaryReferences writes each listing row as who reads it, as
+// leaveOutHiddenIssueReferences writes one issue, before the listing reads the roster and in one
+// statement whatever the rows name: an assignee, a claim and the actor who moved the issue
+// (?moved=true), that who does not see, are null, and so is a route to a session, or to a role of a
+// project, who does not see. A row's blockers are left out in its statement (issueSummaryJoins).
+func leaveOutHiddenSummaryReferences(ctx context.Context, q queryer, who model.Actor, issues []model.IssueSummary) error {
+	if seesEveryObject(who) || len(issues) == 0 {
+		return nil
+	}
+	named := references{}
+	for index := range issues {
+		issue := &issues[index]
+		if issue.Assignee != nil {
+			named.name(personReference, *issue.Assignee)
+		}
+		if issue.Claim != nil {
+			named.nameActor(issue.Claim.Actor)
+		}
+		if issue.MovedBy != nil {
+			named.nameActor(*issue.MovedBy)
+		}
+		named.nameRoute(issue.Route)
+	}
+	seen, err := seenReferences(ctx, q, who, named)
+	if err != nil {
+		return err
+	}
+	for index := range issues {
+		issue := &issues[index]
+		if issue.Assignee != nil && !seen.holds(personReference, *issue.Assignee) {
+			issue.Assignee = nil
+		}
+		if issue.Claim != nil && !seen.holdsActor(issue.Claim.Actor) {
+			issue.Claim = nil
+		}
+		if issue.MovedBy != nil && !seen.holdsActor(*issue.MovedBy) {
+			issue.MovedBy = nil
+		}
+		seen.leaveOutRoute(&issue.Route)
+	}
+	return nil
+}
+
+// leaveOutHiddenSummaryRouteHolders is leaveOutHiddenRouteHolders over the listing's rows, once the
+// roster judged their routes.
+func leaveOutHiddenSummaryRouteHolders(ctx context.Context, q queryer, who model.Actor, issues []model.IssueSummary) error {
+	if seesEveryObject(who) {
+		return nil
+	}
+	routes := make([]routedReach, len(issues))
+	for index := range issues {
+		routes[index] = routedReach{route: issues[index].Route, reach: &issues[index].IssueRouteReach}
+	}
+	return leaveOutHiddenRouteHolders(ctx, q, who, routes)
 }
 
 // issueRowStatement reads one issue with its progress, $1 its key; scanIssueRow decodes it. It
@@ -1134,7 +1246,7 @@ func scanExternalLinks(rows pgx.Rows) ([]model.ExternalLink, error) {
 
 // loadIssueWithProgress is loadIssue together with the issue's progress, which the read response
 // carries beside the issue (model.IssueProgress says why it is not a field of it).
-func (s *server) loadIssueWithProgress(ctx context.Context, q queryer, key string) (model.Issue, model.IssueProgress, error) {
+func (s *server) loadIssueWithProgress(ctx context.Context, q queryer, who model.Actor, key string) (model.Issue, model.IssueProgress, error) {
 	issue, progress, err := scanIssueRow(q.QueryRow(ctx, issueRowStatement, key))
 	if err != nil {
 		return model.Issue{}, model.IssueProgress{}, err

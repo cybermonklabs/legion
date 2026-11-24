@@ -10,7 +10,6 @@ import (
 	"github.com/reearth/ygo/crdt"
 	"github.com/reearth/ygo/persistence"
 	"github.com/reearth/ygo/provider/websocket"
-
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 )
@@ -797,7 +796,7 @@ func (s *Service) docTree(ctx context.Context, artifactID string) (*pmdoc.Node, 
 		valid, err := s.readForkTree(fork)
 		return valid.Node(), err
 	}
-	head, err := s.readStoredHead(ctx, artifactID)
+	head, err := s.writerStoredHead(ctx, artifactID)
 	if err != nil {
 		return nil, err
 	}

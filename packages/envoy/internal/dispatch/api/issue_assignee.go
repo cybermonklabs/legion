@@ -8,8 +8,9 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5"
-
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // parseIssueAssignee decodes the tri-state `assignee` field of an issue write. Absent →
@@ -40,8 +41,15 @@ func (s *server) allowedLogin(ctx context.Context, login string) (string, error)
 	canonical := model.CanonicalLogin(login)
 	var known bool
 	if canonical != "" {
-		if err := s.deps.Store.Pool.QueryRow(ctx, `select exists(select 1 from people where email = $1)`, canonical).Scan(&known); err != nil {
-			return "", fmt.Errorf("read person %q: %w", canonical, err)
+		reader, ok := readerFromContext(ctx)
+		if !ok {
+			reader = everyReader
+		}
+		viewer := refs.VisibilityArg(reader)
+		if err := s.deps.Store.Pool.QueryRow(ctx, `select exists(select 1 from people where email = $1 and `+
+			access.PersonClause("people.email", "$2")+`)`, canonical, viewer).Scan(&known); err != nil {
+			// The error reaches a log line, so it names no person (TestAnAssigneeReadFailureNamesNoPerson).
+			return "", fmt.Errorf("read whether the login may be assigned: %w", err)
 		}
 	}
 	if !known {
@@ -112,7 +120,14 @@ func (s *server) listUsers(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.actingPerson(w, r); !ok {
 		return
 	}
-	rows, err := s.deps.Store.Pool.Query(r.Context(), `select email from people order by email`)
+	reader, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
+	rows, err := s.deps.Store.Pool.Query(r.Context(), `
+		select person.email from people person
+		where `+access.PersonClause("person.email", "$1")+`
+		order by person.email`, refs.VisibilityArg(reader))
 	if err != nil {
 		s.writeHandlerError(w, fmt.Errorf("list people: %w", err))
 		return
@@ -195,11 +210,15 @@ func (s *server) whoami(w http.ResponseWriter, r *http.Request) {
 	if actor.Kind == "session" && actor.ID != "" {
 		session = &actor.ID
 	}
+	var project *string
+	if actor.Credential != nil && actor.Credential.NamedProject != "" {
+		project = &actor.Credential.NamedProject
+	}
 	_, signInRequired := s.signInRequired(r)
 	WriteJSON(w, http.StatusOK, whoamiAgent{
 		Kind:           "agent",
 		Owner:          owner,
-		Project:        actor.Project,
+		Project:        project,
 		Scopes:         scopes,
 		Service:        actor.Service,
 		Session:        session,

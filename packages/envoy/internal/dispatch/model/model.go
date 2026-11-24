@@ -88,6 +88,12 @@ type Credential struct {
 	// requirement; it narrows what this credential may call rather than widening it. False for
 	// every other credential.
 	ReadOnly bool
+	// NamedProject is the one project a broker token an operator's entry mapped to one project
+	// may write (ciphertoken.ProjectScopeNamed), set by brokerTokenActor, and empty for every
+	// other credential. It is the write scope such a token had before projects could be private,
+	// which holds whatever the deployment holds: api's namedProjectOf reads it. A fact of the
+	// request, never written to a row or an answer.
+	NamedProject string `json:"-"`
 	// ProjectScope is a broker-issued token's project scope as the broker answered it
 	// (ciphertoken.Caller.ProjectScope): `named` for a token an operator's entry mapped, `person`
 	// for one acting as its person or for a machine nobody signed in on, `none` for a read-only
@@ -120,17 +126,15 @@ func BrowserActor(login string) Actor {
 // Actor identifies the user or agent session that caused a change. Service is
 // the verified Kubernetes subject of the projected service-account token a
 // session authenticated with ("system:serviceaccount:<namespace>:<name>"), set
-// by the server from the token and never from a request body. Project is the
-// one project key a broker-issued access token lets its session write, set by
-// the server from that token and never from a request body; it is nil for
-// every other credential and for a token whose scope names no single project.
+// by the server from the token and never from a request body. The projects a
+// credential may use are its own (Credential.Projects), a fact of the request
+// that no record carries.
 type Actor struct {
 	Kind    string       `json:"kind"`
 	ID      string       `json:"id"`
 	Origin  *ActorOrigin `json:"origin,omitempty"`
 	Owner   *string      `json:"owner,omitempty"`
 	Service *string      `json:"service,omitempty"`
-	Project *string      `json:"project,omitempty"`
 	// Act names the agent that made this act for the person, and is set only where a
 	// credential acted as its person (actingPerson). A browser's act carries none, and so
 	// does an agent's own write on a route that always took tokens, which is recorded as the
@@ -257,9 +261,9 @@ func (a Actor) SameAs(other Actor) bool {
 // in, so a going run asked under "Dana@Example.COM" is the run of the token whose owner now reads
 // dana@example.com. Service is a workload's subject, no login, and is compared byte for byte.
 //
-// Origin, Project, Act and Proven are not compared: they say where a write came from, who it acted
-// for and whether its credential proved its id, which two requests of one credential differ in,
-// so comparing them would call one credential two.
+// Origin, Act and Proven are not compared: they say where a write came from, who it acted for and
+// whether its credential proved its id, which two requests of one credential differ in, so
+// comparing them would call one credential two.
 func (a Actor) SameCredential(other Actor) bool {
 	return a.SameAs(other) && sameActorName(a.Owner, other.Owner, sameLogin) && sameActorName(a.Service, other.Service, sameName)
 }

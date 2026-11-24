@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 )
@@ -190,7 +189,7 @@ func TestAnEditIsRefusedWhenAConcurrentChangeRemovesItsTextBeforeTheVersion(t *t
 			if versions != 1 {
 				t.Fatalf("versions = %d, want only the seeded one: a refused edit writes none", versions)
 			}
-			live, err := service.Text(context.Background(), artifactID)
+			live, err := service.Text(context.Background(), serverReader, artifactID)
 			if err != nil {
 				t.Fatalf("read live document: %v", err)
 			}
@@ -240,7 +239,7 @@ func TestAnEditThatSurvivesAConcurrentChangeStillReportsSuccess(t *testing.T) {
 			if !known || len(lost) != 0 {
 				t.Fatalf("published verdict = %v (known %t), want no operation lost", lost, known)
 			}
-			live, err := service.Text(context.Background(), artifactID)
+			live, err := service.Text(context.Background(), serverReader, artifactID)
 			if err != nil {
 				t.Fatalf("read live document: %v", err)
 			}
@@ -301,7 +300,7 @@ func TestAnEditReportsTextTheRoomLostBetweenTheVersionAndThePublish(t *testing.T
 	if want := []int{0}; !reflect.DeepEqual(lost, want) {
 		t.Fatalf("published verdict = %v, want %v: the version carries text the live document no longer has", lost, want)
 	}
-	live, err := service.Text(context.Background(), artifactID)
+	live, err := service.Text(context.Background(), serverReader, artifactID)
 	if err != nil {
 		t.Fatalf("read live document: %v", err)
 	}
@@ -521,7 +520,7 @@ func TestABatchAnswersForTheBlocksItsUpdateRewroteInPassing(t *testing.T) {
 			if err := edit.tx.Rollback(context.Background()); err != nil {
 				t.Fatalf("roll back: %v", err)
 			}
-			live, err := service.Text(context.Background(), artifactID)
+			live, err := service.Text(context.Background(), serverReader, artifactID)
 			if err != nil {
 				t.Fatalf("read live document: %v", err)
 			}

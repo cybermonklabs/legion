@@ -153,7 +153,7 @@ func TestConcurrentMentionRetryResolvesNewAttemptUnderLock(t *testing.T) {
 	`, created.ID); err != nil {
 		t.Fatalf("restore concurrent pending delivery: %v", err)
 	}
-	comment, err := direct.loadComment(context.Background(), database.Pool, created.ID)
+	comment, err := direct.loadComment(context.Background(), database.Pool, everyReader, created.ID)
 	if err != nil {
 		t.Fatalf("load retry comment: %v", err)
 	}

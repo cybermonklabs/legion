@@ -13,23 +13,26 @@ package graphstoretest
 // of the set graphstore.IsBaseAttribute reads, which graphstore's
 // TestGraphstoretestBaseAttributesAreTheStoresOwn holds equal to it, element for element. No other
 // attribute's values may be stored under one of these kinds: a value tuple of one of them out of a
-// node reads as that node's own visibility or state, whoever wrote it, so an attribute a type
-// declares under one of these names is stored under another name
+// node reads as that node's own visibility, state, project or parties, whoever wrote it, so an
+// attribute a type declares under one of these names is stored under another name
 // (pmdoc/schemanodes/schemanodestest.StoreName).
-func BaseAttributes() []string { return []string{"visibility", "state"} }
+func BaseAttributes() []string { return []string{"visibility", "state", "project", "parties"} }
 
 // WriteFunctions is the name of every function of graphstore a write of graph_nodes and
 // graph_tuples from outside that package goes through, a fresh slice for each caller: Write and
 // Caused in a caller's transaction, and QueueWrite, QueueNodes and QueueCaused, the same writes
 // queued on a write phase's batch; WriteArms and WriteArmsUncaused spliced into a caller's
-// statement; and QueueAuthored, QueueReached and QueueSessionRecorded, which queue those arms for
-// the writers that record an author, a reached session and a session an ask names. Each is a
-// function of the package, never a method, so a call of one is named by the package wherever it
-// is made. It is the one list the source scans that hold the store's writers read: graphstore's
-// register of their call sites (TestEveryStoreWriteCallSiteIsListed) and api's scan of the writers
-// of the projected tables (TestNoProjectionRowIsWrittenWithoutTheStore).
+// statement; QueueAuthored, QueueReached and QueueSessionRecorded, which queue those arms for the
+// writers that record an author, a reached session and a session an ask names; and FillScopes, the
+// backfill's fill of the project of a node stored with none. Each is a function of the package,
+// never a method, so a call of one is named by the package wherever it is made. It is the one list
+// the source scans that hold the store's writers read: graphstore's register of their call sites
+// (TestEveryStoreWriteCallSiteIsListed), api's scan of the writers of the projected tables
+// (TestNoProjectionRowIsWrittenWithoutTheStore) and docs' scan of the passes that write the store
+// (TestTheIndexPassesAreStoreWritersAndNoRepairExists).
 func WriteFunctions() []string {
 	return []string{"Write", "WriteArms", "WriteArmsUncaused", "Caused",
 		"QueueWrite", "QueueNodes", "QueueCaused",
-		"QueueAuthored", "QueueReached", "QueueSessionRecorded"}
+		"QueueAuthored", "QueueReached", "QueueSessionRecorded",
+		"FillScopes"}
 }

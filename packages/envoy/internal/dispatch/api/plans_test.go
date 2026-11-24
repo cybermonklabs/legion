@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"

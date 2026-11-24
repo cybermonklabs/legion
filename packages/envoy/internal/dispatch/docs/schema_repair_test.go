@@ -12,14 +12,15 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 func newSchemaRepairService(database *store.Store) *Service {
 	return New(Deps{
-		Store:     database,
-		Events:    events.NewBroker(),
-		ServerURL: "https://dispatch.example",
-		Settle:    20 * time.Millisecond,
+		Store:   database,
+		Events:  events.NewBroker(),
+		Origins: text.NewOrigins("https://dispatch.example"),
+		Settle:  20 * time.Millisecond,
 	})
 }
 
@@ -38,7 +39,7 @@ func TestStoredTreeOutsideSchemaIsRepairedByReplacementAfterRestart(t *testing.T
 	first := newSchemaRepairService(database)
 	seedServiceText(t, first, artifactID, "before\n")
 	writeSchemaInvalidElement(t, first, artifactID)
-	if _, err := first.Text(context.Background(), artifactID); !errors.Is(err, ErrDocSchema) {
+	if _, err := first.Text(context.Background(), serverReader, artifactID); !errors.Is(err, ErrDocSchema) {
 		t.Fatalf("read crafted tree: %v, want ErrDocSchema", err)
 	}
 	if err := first.Shutdown(context.Background()); err != nil {
@@ -51,13 +52,13 @@ func TestStoredTreeOutsideSchemaIsRepairedByReplacementAfterRestart(t *testing.T
 			t.Errorf("shutdown second service: %v", err)
 		}
 	})
-	if _, err := second.Text(context.Background(), artifactID); !errors.Is(err, ErrDocOutsideSchema) {
+	if _, err := second.Text(context.Background(), serverReader, artifactID); !errors.Is(err, ErrDocOutsideSchema) {
 		t.Fatalf("read crafted tree after restart: %v, want ErrDocOutsideSchema", err)
 	}
 	if _, err := joinedReplaceText(second, artifactID, "repaired\n", model.Actor{Kind: "user", ID: "alice"}); err != nil {
 		t.Fatalf("replace unreadable document after restart: %v", err)
 	}
-	if text, err := second.Text(context.Background(), artifactID); err != nil || text != "repaired\n" {
+	if text, err := second.Text(context.Background(), serverReader, artifactID); err != nil || text != "repaired\n" {
 		t.Fatalf("read repaired document: %q (%v), want repaired markdown", text, err)
 	}
 	if err := second.Shutdown(context.Background()); err != nil {
@@ -70,7 +71,7 @@ func TestStoredTreeOutsideSchemaIsRepairedByReplacementAfterRestart(t *testing.T
 			t.Errorf("shutdown third service: %v", err)
 		}
 	})
-	if text, err := third.Text(context.Background(), artifactID); err != nil || text != "repaired\n" {
+	if text, err := third.Text(context.Background(), serverReader, artifactID); err != nil || text != "repaired\n" {
 		t.Fatalf("read repaired document after second restart: %q (%v), want repaired markdown", text, err)
 	}
 }
@@ -101,13 +102,13 @@ func TestSchemaRepairRefusesAReplacementThatNamesAToken(t *testing.T) {
 	if _, err := joinedReplaceTextNaming(second, artifactID, "repaired\n", alice, named); !errors.Is(err, ErrPreconditionUnavailable) {
 		t.Fatalf("a repair naming a token = %v, want ErrPreconditionUnavailable", err)
 	}
-	if _, err := second.Text(context.Background(), artifactID); !errors.Is(err, ErrDocOutsideSchema) {
+	if _, err := second.Text(context.Background(), serverReader, artifactID); !errors.Is(err, ErrDocOutsideSchema) {
 		t.Fatalf("read after the refused repair: %v, want the document outside the schema, as it stood", err)
 	}
 	if _, err := joinedReplaceText(second, artifactID, "repaired\n", alice); err != nil {
 		t.Fatalf("the repair naming no token: %v", err)
 	}
-	if text, err := second.Text(context.Background(), artifactID); err != nil || text != "repaired\n" {
+	if text, err := second.Text(context.Background(), serverReader, artifactID); err != nil || text != "repaired\n" {
 		t.Fatalf("read the repaired document: %q (%v), want repaired markdown", text, err)
 	}
 }
@@ -186,7 +187,7 @@ func TestSchemaRepairRefusesAnAskBlockTheContentRuleRefuses(t *testing.T) {
 			if !errors.As(err, &invalid) {
 				t.Fatalf("replace with an ask block holding only a list: %v, want ErrInvalidAskBlock", err)
 			}
-			text, err := service.Text(context.Background(), artifactID)
+			text, err := service.Text(context.Background(), serverReader, artifactID)
 			if test.unreadable {
 				if !errors.Is(err, ErrDocOutsideSchema) {
 					t.Fatalf("read after the refused repair: %q (%v), want ErrDocOutsideSchema", text, err)
@@ -218,19 +219,19 @@ func TestStoredRenderOnlySchemaViolationLoadsForRepair(t *testing.T) {
 		read func() error
 	}{
 		{"text", func() error {
-			_, err := service.Text(context.Background(), artifactID)
+			_, err := service.Text(context.Background(), serverReader, artifactID)
 			return err
 		}},
 		{"text with token", func() error {
-			_, _, err := service.TextWithToken(context.Background(), artifactID)
+			_, _, err := service.TextWithToken(context.Background(), serverReader, artifactID)
 			return err
 		}},
 		{"text with blocks", func() error {
-			_, _, err := service.TextWithBlocks(context.Background(), artifactID)
+			_, _, err := service.TextWithBlocks(context.Background(), serverReader, artifactID)
 			return err
 		}},
 		{"blocks", func() error {
-			_, err := service.Blocks(context.Background(), artifactID)
+			_, err := service.Blocks(context.Background(), serverReader, artifactID)
 			return err
 		}},
 	} {
@@ -246,13 +247,13 @@ func TestStoredRenderOnlySchemaViolationLoadsForRepair(t *testing.T) {
 			}
 		})
 	}
-	if _, err := service.BlockPath(context.Background(), artifactID, "absent"); !errors.Is(err, pmdoc.ErrTargetNotFound) {
+	if _, err := service.BlockPath(context.Background(), serverReader, artifactID, "absent"); !errors.Is(err, pmdoc.ErrTargetNotFound) {
 		t.Fatalf("cold path for absent block: %v, want ErrTargetNotFound", err)
 	}
 	if err := service.warmLiveDocument(context.Background(), artifactID); err != nil {
 		t.Fatalf("load render-only violation for repair: %v", err)
 	}
-	if _, _, err := service.TextWithBlocks(context.Background(), artifactID); !errors.Is(err, ErrDocOutsideSchema) {
+	if _, _, err := service.TextWithBlocks(context.Background(), serverReader, artifactID); !errors.Is(err, ErrDocOutsideSchema) {
 		t.Fatalf("read render-only violation: %v, want ErrDocOutsideSchema", err)
 	}
 }

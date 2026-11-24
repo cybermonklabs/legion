@@ -248,6 +248,16 @@ func sendReplayedEvents(ctx context.Context, stream liveStreamer, sub string, ev
 	return true
 }
 
+// eventsReader is who an events subscription sends the log to: the caller as last resolved
+// (reader), and through, the log's newest id as it stood just after the subscription last resolved
+// the caller where no event asked it to (feedEvents, resumeAfterOverflow). An access change that
+// resolution can hold committed before it and so stands at or below through; one above through
+// committed after it and is not in it.
+type eventsReader struct {
+	reader  model.Actor
+	through int64
+}
+
 // eventReplay is what one events subscription is replayed before its live events, or after an
 // overflow (resumeAfterOverflow): the events to send, whether they are everything the page lacks
 // (complete), the id its events_start names (start), and the id at or below which the live loop
@@ -288,7 +298,7 @@ func (s *server) resolveEventReplay(ctx context.Context, since *int64, published
 		if replacedFrom < 0 {
 			return eventReplay{start: published, after: published}, nil
 		}
-		return s.replayThrough(ctx, min(replacedFrom, published), published, false, -1)
+		return s.replayThrough(ctx, everyReader, min(replacedFrom, published), published, false, -1)
 	}
 	resume := *since
 	if resume > published {
@@ -297,7 +307,7 @@ func (s *server) resolveEventReplay(ctx context.Context, since *int64, published
 		}
 		return eventReplay{start: published, after: published}, nil
 	}
-	return s.replayThrough(ctx, resume, published, true, behind)
+	return s.replayThrough(ctx, everyReader, resume, published, true, behind)
 }
 
 // replayThrough is the bounded replay of (from, published]: every event there, each encoded once,
@@ -306,7 +316,7 @@ func (s *server) resolveEventReplay(ctx context.Context, since *int64, published
 // subscription starts at published, not complete, so its page refreshes what it shows. behind is
 // how many events stand there, counted up to maxLiveReplay+1, or below zero when the caller has not
 // counted them, and it counts them itself.
-func (s *server) replayThrough(ctx context.Context, from, published int64, complete bool, behind int) (eventReplay, error) {
+func (s *server) replayThrough(ctx context.Context, reader model.Actor, from, published int64, complete bool, behind int) (eventReplay, error) {
 	if behind < 0 {
 		if err := s.deps.Store.Pool.QueryRow(ctx, `
 			select count(*) from (select 1 from events where id > $1 and id <= $2 order by id limit $3) as behind
@@ -317,10 +327,7 @@ func (s *server) replayThrough(ctx context.Context, from, published int64, compl
 	if behind > maxLiveReplay {
 		return eventReplay{start: published, after: published}, nil
 	}
-	// The replay serves whoever subscribed, and this read resolves no credential of theirs, so it
-	// reads as one that proves no author: an ask reserved for its author carries no detail here
-	// (refs' visibility registry).
-	missed, err := s.readEventsAfterID(ctx, model.Actor{}, from, published, maxLiveReplay)
+	missed, err := s.readEventsAfterID(ctx, reader, from, published, maxLiveReplay)
 	if err != nil {
 		return eventReplay{}, err
 	}

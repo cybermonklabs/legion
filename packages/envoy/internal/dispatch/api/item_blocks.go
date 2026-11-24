@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -20,24 +19,26 @@ func (s *server) getCommentBlocks(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) || !requireUUIDPath(w, r, "comment") {
 		return
 	}
-	s.writeItemBlocks(w, r, refs.ItemComment)
-}
-
-// getMessageBlocks answers GET /api/v1/messages/{id}/blocks: the message's current blocks, under
-// the read rule of GET /api/v1/messages/{id} (readableMessageThread), so a session reads the blocks
-// of a direct message only in a conversation it is in.
-func (s *server) getMessageBlocks(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.readableMessageThread(w, r); !ok {
-		return
-	}
-	s.writeItemBlocks(w, r, refs.ItemMessage)
-}
-
-func (s *server) writeItemBlocks(w http.ResponseWriter, r *http.Request, kind refs.ItemKind) {
-	who, ok := s.actingReader(w, r)
+	who, ok := s.readerOf(w, r)
 	if !ok {
 		return
 	}
+	s.writeItemBlocks(w, r, who, refs.ItemComment)
+}
+
+// getMessageBlocks answers GET /api/v1/messages/{id}/blocks: the message's current blocks, under
+// the read rule of GET /api/v1/messages/{id} (readableMessageThread), so a thread the caller may
+// not read answers as an id no message holds, and a session reads the blocks of a direct message
+// only in a conversation it is in.
+func (s *server) getMessageBlocks(w http.ResponseWriter, r *http.Request) {
+	_, who, ok := s.readableMessageThread(w, r)
+	if !ok {
+		return
+	}
+	s.writeItemBlocks(w, r, who, refs.ItemMessage)
+}
+
+func (s *server) writeItemBlocks(w http.ResponseWriter, r *http.Request, who model.Actor, kind refs.ItemKind) {
 	answer, err := s.itemBlocks(r.Context(), who, kind, r.PathValue("id"))
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -55,7 +56,7 @@ func (s *server) writeItemBlocks(w http.ResponseWriter, r *http.Request, kind re
 // says. Were the parser to read the body otherwise since, the two disagree and the item reads as
 // not indexed, as an owed one does, until the reconciliation indexes it again.
 func (s *server) itemBlocks(ctx context.Context, who model.Actor, kind refs.ItemKind, id string) (model.ItemBlocks, error) {
-	stored, err := readItemBlockRows(ctx, s.deps.Store.Pool, kind, id)
+	stored, err := readItemBlockRows(ctx, s.deps.Store.Pool, who, kind, id)
 	if err != nil {
 		return model.ItemBlocks{}, err
 	}
@@ -117,7 +118,7 @@ func (s *server) itemBlocks(ctx context.Context, who model.Actor, kind refs.Item
 			ChangedAt:       row.changedAt,
 		}
 	}
-	embedding, err := refs.BlockEmbeddingStates(ctx, s.deps.Store.Pool, kind.WindowKind(), kind.WindowOwnerKey(id))
+	embedding, err := refs.BlockEmbeddingStates(ctx, s.deps.Store.Pool, who, kind.WindowKind(), kind.WindowOwnerKey(id))
 	if err != nil {
 		return model.ItemBlocks{}, err
 	}
@@ -189,14 +190,14 @@ var itemBlockRowsQueries = map[refs.ItemKind]string{
 }
 
 // readItemBlockRows reads comment or message id's body, block state and current block rows;
-// pgx.ErrNoRows when there is no such item.
-func readItemBlockRows(ctx context.Context, q queryer, kind refs.ItemKind, id string) (storedItemBlocks, error) {
+// pgx.ErrNoRows when there is no such item, or who may not read it.
+func readItemBlockRows(ctx context.Context, q queryer, who model.Actor, kind refs.ItemKind, id string) (storedItemBlocks, error) {
 	var stored storedItemBlocks
 	var ids, types, sums []string
 	var positions []int
 	var revisions []*int
 	var ats []*time.Time
-	err := q.QueryRow(ctx, itemBlockRowsQueries[kind], id).Scan(&stored.body, &stored.revision, &stored.owed, &stored.bodySHA256,
+	err := q.QueryRow(ctx, itemBlockRowsQueries[kind], id, refs.VisibilityArg(who)).Scan(&stored.body, &stored.revision, &stored.owed, &stored.bodySHA256,
 		&ids, &types, &sums, &positions, &revisions, &ats)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return storedItemBlocks{}, err

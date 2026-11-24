@@ -455,6 +455,15 @@ func personalTokenHolding(t *testing.T, database *store.Store, scopes ...string)
 // with an empty id (agent_tokens.go), so only the owner tells them apart.
 func personalTokenOwnedBy(t *testing.T, database *store.Store, owner string, scopes ...string) string {
 	t.Helper()
+	return personalTokenListing(t, database, owner, nil, scopes...)
+}
+
+// personalTokenListing is personalTokenOwnedBy for a token whose row lists projects, written
+// straight to the table as that one is: a row a build mints no longer, such as a restricted
+// member's token holding a scope or listing other than one project, which a mint before the rule
+// that holds such a token to one project and no scope (tokenScopes, tokenProjects) wrote.
+func personalTokenListing(t *testing.T, database *store.Store, owner string, projects []string, scopes ...string) string {
+	t.Helper()
 	plaintext, hash, err := newAgentToken()
 	if err != nil {
 		t.Fatalf("mint a personal token: %v", err)
@@ -464,10 +473,13 @@ func personalTokenOwnedBy(t *testing.T, database *store.Store, owner string, sco
 		// an empty set, as the shared token's credential holds, rather than a null one.
 		scopes = []string{}
 	}
+	if projects == nil {
+		projects = []string{}
+	}
 	if _, err := database.Pool.Exec(context.Background(), `
-		insert into agent_tokens (owner, name, token_hash, prefix, scopes)
-		values ($1, $2, $3, $4, $5)
-	`, owner, "probe", hash[:], plaintext[len("dsp_"):len("dsp_")+agentTokenPrefixLength], scopes); err != nil {
+		insert into agent_tokens (owner, name, token_hash, prefix, scopes, projects)
+		values ($1, $2, $3, $4, $5, $6)
+	`, owner, "probe", hash[:], plaintext[len("dsp_"):len("dsp_")+agentTokenPrefixLength], scopes, projects); err != nil {
 		t.Fatalf("insert a personal token: %v", err)
 	}
 	return plaintext

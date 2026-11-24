@@ -27,7 +27,6 @@ import (
 	"time"
 
 	natsgo "github.com/nats-io/nats.go"
-
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
@@ -41,6 +40,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/routes"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/githubappjwt"
 	"github.com/sjawhar/envoy/internal/googleidentity"
 	"github.com/sjawhar/envoy/internal/logtest"
@@ -241,7 +241,7 @@ func appContextFor(t testing.TB, boot bootConfig, built routes.AppContextOptions
 		if options.Events == nil {
 			options.Events = events.NewBroker()
 		}
-		documents := docs.New(docs.Deps{Store: options.Store, Events: options.Events, Identity: options.Identity, ServerURL: options.ServerURL})
+		documents := docs.New(docs.Deps{Store: options.Store, Events: options.Events, Identity: options.Identity, Origins: text.NewOrigins(options.ServerURL)})
 		t.Cleanup(func() {
 			if err := documents.Shutdown(context.Background()); err != nil {
 				t.Errorf("shut the document service down: %v", err)
@@ -2267,7 +2267,7 @@ func TestDocumentDepsCarryEveryBootSetting(t *testing.T) {
 		MaxDocConnections: 16,
 		TestHooksEnabled:  true,
 	}
-	got := documentDeps(boot, docs.Deps{})
+	got := documentDeps(boot, "", docs.Deps{})
 	for _, field := range []struct {
 		name      string
 		got, want any
@@ -2294,7 +2294,7 @@ func documentCapReachesTheService(t *testing.T, name string, capOf func(rooms, c
 	t.Helper()
 	for value, want := range map[string]int{"": 1000, " 25 ": 25} {
 		boot := resolveWith(t, map[string]string{name: value})
-		documents := newDocumentService(boot, docs.Deps{})
+		documents := newDocumentService(boot, "", docs.Deps{})
 		t.Cleanup(func() {
 			if err := documents.Shutdown(context.Background()); err != nil {
 				t.Errorf("shut the document service down: %v", err)

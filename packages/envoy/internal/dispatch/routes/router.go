@@ -29,9 +29,6 @@ import (
 	"time"
 	"unicode"
 
-	"golang.org/x/sync/semaphore"
-	"golang.org/x/sync/singleflight"
-
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
@@ -45,12 +42,15 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/githubapi"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
+	"github.com/sjawhar/envoy/internal/dispatch/readclass"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/sessionanswers"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/oidc"
+	"golang.org/x/sync/semaphore"
+	"golang.org/x/sync/singleflight"
 )
 
 // AppContext holds shared dependencies for the HTTP handlers. All fields are
@@ -338,30 +338,36 @@ func New(ctx *AppContext) (http.Handler, api.Background) {
 	return requireHost(ctx.devSignInHost, r.enforceCookieOrigin(mux)), background
 }
 
-// mount builds New's router and mounts every route the server serves on mux, the API's table
-// among them (api.Register), so a mux that keeps what is mounted on it reads the server's routes
-// from the mounting itself (TestAKeyedWriteNeverRunsUnkeyed).
-func mount(ctx *AppContext, mux api.RouteMux) (*router, api.Background) {
+// mount builds New's router, mounts every route the server serves on mux, the API's table among
+// them (api.Register), and answers the API server's background work. Each pattern beside the API
+// route table is mounted through readclass.Handle with what it reads; api.Register mounts the
+// table and the two sockets. A test reads the server's routes from this mounting itself
+// (TestAKeyedWriteNeverRunsUnkeyed, TestEveryGETRouteHasAReadClass).
+func mount(ctx *AppContext, mux *http.ServeMux) (*router, api.Background) {
 	r := &router{
 		ctx:          ctx,
 		retainedHeld: semaphore.NewWeighted(maxRetainedBytesHeld),
 		assets:       newAssetCache(maxCachedAssetBytes),
 	}
+	none := []readclass.Class{readclass.None}
 	// Every route the server itself answers writes one access-log line (accesslog.Handler); the
 	// dashboard's own files, served by staticHandler, write none.
-	mux.HandleFunc("GET /auth/start", accesslog.HandlerFunc("/auth/start", r.authStart))
-	mux.HandleFunc("GET /auth/callback", accesslog.HandlerFunc("/auth/callback", r.authCallback))
-	mux.HandleFunc("POST /auth/logout", accesslog.HandlerFunc("/auth/logout", r.authLogout))
-	mux.HandleFunc("GET /auth/whoami", accesslog.HandlerFunc("/auth/whoami", r.authWhoami))
-	mux.HandleFunc(githubapi.Prefix, accesslog.HandlerFunc(githubapi.Prefix, r.apiGithubRest))
+	readclass.Handle(mux, none, "GET /auth/start", accesslog.HandlerFunc("/auth/start", r.authStart))
+	readclass.Handle(mux, none, "GET /auth/callback", accesslog.HandlerFunc("/auth/callback", r.authCallback))
+	readclass.Handle(mux, none, "POST /auth/logout", accesslog.HandlerFunc("/auth/logout", r.authLogout))
+	// The signed-in person's own login and the event log's head, which names no row.
+	readclass.Handle(mux, []readclass.Class{readclass.Caller}, "GET /auth/whoami", accesslog.HandlerFunc("/auth/whoami", r.authWhoami))
+	// A repository's GitHub state, shown by the issues that resolve to the repository
+	// (apiGithubRest, refs.RepositoryClause).
+	readclass.Handle(mux, []readclass.Class{readclass.Project}, githubapi.Prefix, accesslog.HandlerFunc(githubapi.Prefix, r.apiGithubRest))
 	background := api.Register(mux, r.ctx.lifetime, r.ctx.apiDeps)
 	r.eventHead = ctx.eventHead
 	if r.eventHead == nil {
 		r.eventHead = background.EventHead
 	}
-	mux.HandleFunc("/", r.staticHandler)
+	readclass.Handle(mux, none, "/", http.HandlerFunc(r.staticHandler))
 	if ctx.devSignInHost != "" {
-		mux.HandleFunc("GET /auth/_dev/signin", accesslog.HandlerFunc("/auth/_dev/signin", r.authDevSignIn))
+		readclass.Handle(mux, none, "GET /auth/_dev/signin", accesslog.HandlerFunc("/auth/_dev/signin", r.authDevSignIn))
 	}
 	return r, background
 }

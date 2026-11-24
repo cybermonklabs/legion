@@ -11,7 +11,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
-
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
@@ -72,7 +71,11 @@ type createIssueInput struct {
 }
 
 func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) {
+	// The reader is resolved before any connection is held: the body's project, and an issue an
+	// external ref names, are read as the caller reads them, and the related-item check below
+	// offers only what it may read (relatedInput.who).
+	who, ok := s.readerOf(w, r)
+	if !ok {
 		return
 	}
 	var input createIssueInput
@@ -119,18 +122,19 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	}
 	// The one write whose project its address does not name, so withinProjectScope leaves it
 	// here by its class (scopeProjectInBody). It runs once the body's project is read, and so
-	// before the external ref is resolved to an issue already imported: a scoped caller naming
-	// one imported into another project is refused rather than answered that project's issue,
-	// which respondWithExistingExternalIssue would also record a related-check outcome on.
-	// Nothing is written before this point.
-	// callerProject is empty for a credential that names none, which is every caller that
-	// exists today; the dependency lock step, the parent's read and writeBlockedBy below read it
-	// again, since neither a blocked_by target's project nor the parent's is part of this address.
-	callerProject, scoped := s.callerProject(r)
-	if scoped && callerProject != input.Project {
-		refuseWriteOutsideProjectScope(w, callerProject, input.Project)
+	// before the external ref is resolved to an issue already imported: a caller whose
+	// credential's list does not cover that project (access.CredentialCovers), or a broker token
+	// scoped to another project, naming one imported into it is refused rather than answered that
+	// project's issue, which respondWithExistingExternalIssue would also record a related-check
+	// outcome on. Nothing is written before this point.
+	if s.refuseOutsideCallerProjects(w, r, input.Project) {
 		return
 	}
+	// callerProject is the one project a full member's broker token scoped to one project may
+	// write (namedProjectOf), and empty for every other caller; the dependency lock step, the
+	// parent's read and writeBlockedBy below read it again, since neither a blocked_by target's
+	// project nor the parent's is part of this address.
+	callerProject, scoped := namedProjectOf(who.Viewer, resolvedCredential(r.Context()))
 	// A scoped caller is refused a parent or a blocked_by target outside its project here too,
 	// with no lock held, before the near-copy gate and every other write before the transaction,
 	// so a create it may not make records no near-copy check and gets no 409 in place of its 403.
@@ -142,7 +146,7 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if input.External != "" {
-		existingKey, err := s.resolveIssueRef(r.Context(), input.External)
+		existingKey, err := s.resolveIssueRef(r.Context(), who, input.External)
 		if err == nil {
 			var existingProject string
 			if err := s.deps.Store.Pool.QueryRow(r.Context(), `
@@ -166,7 +170,7 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 				)
 				return
 			}
-			s.respondWithExistingExternalIssue(w, r, existingKey, input.Project, actor)
+			s.respondWithExistingExternalIssue(w, r, who, existingKey, input.Project, actor)
 			return
 		}
 		if !errors.Is(err, pgx.ErrNoRows) {
@@ -177,7 +181,7 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 			input.Title = input.External
 		}
 	}
-	if !projectKeyPattern.MatchString(input.Project) {
+	if !contracts.ValidProjectKey(input.Project) {
 		writeError(w, "INVALID_ISSUE", http.StatusBadRequest, projectKeyProblem("project", input.Project))
 		return
 	}
@@ -494,12 +498,12 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 				s.writeHandlerError(w, err)
 				return
 			}
-			existingKey, err := s.resolveIssueRef(r.Context(), input.External)
+			existingKey, err := s.resolveIssueRef(r.Context(), who, input.External)
 			if err != nil {
 				s.writeHandlerError(w, err)
 				return
 			}
-			s.respondWithExistingExternalIssue(w, r, existingKey, input.Project, actor)
+			s.respondWithExistingExternalIssue(w, r, who, existingKey, input.Project, actor)
 			return
 		}
 	}
@@ -511,7 +515,7 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	issue, err := s.loadIssue(r.Context(), tx, key)
+	issue, err := s.loadIssue(r.Context(), tx, who, key)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -585,6 +589,7 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	// response is written.
 	trees := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
 	suggestions := s.relatedCheck(r.Context(), relatedInput{
+		who:     who,
 		project: input.Project,
 		text:    input.Title + "\n" + markdown,
 		title:   input.Title,
@@ -709,6 +714,7 @@ func (outcome nearCopyOutcome) unrecorded() nearCopyOutcome {
 func (s *server) respondWithExistingExternalIssue(
 	w http.ResponseWriter,
 	r *http.Request,
+	who model.Actor,
 	existingKey string,
 	project string,
 	actor model.Actor,
@@ -727,7 +733,7 @@ func (s *server) respondWithExistingExternalIssue(
 		s.writeHandlerError(w, err)
 		return
 	}
-	existing, err := s.loadIssue(r.Context(), adviceReadTx, existingKey)
+	existing, err := s.loadIssue(r.Context(), adviceReadTx, who, existingKey)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

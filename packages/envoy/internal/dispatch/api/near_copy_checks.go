@@ -13,7 +13,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -251,7 +251,7 @@ func (s *server) getNearCopyChecks(w http.ResponseWriter, r *http.Request) {
 		Project: strings.TrimSpace(query.Get("project")),
 		Checks:  []model.NearCopyCheck{},
 	}
-	if !projectKeyPattern.MatchString(page.Project) {
+	if !contracts.ValidProjectKey(page.Project) {
 		writeError(w, "INVALID_PROJECT", http.StatusBadRequest, projectKeyProblem("project", page.Project))
 		return
 	}

@@ -8,9 +8,9 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/going"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -119,14 +119,29 @@ func (s *server) recordGoingRequest(ctx context.Context, author model.Actor, pro
 	return request, nil
 }
 
-// readGoingRequest is one run by id, pgx.ErrNoRows when the record holds none: a run that was
-// never asked, or one the sweep has deleted past contracts.GoingRequestTTL. What a run the
-// caller does not own answers is the caller's to decide, which is why the row carries its
-// Author: model.Actor.SameCredential compares it with the reader's.
-func (s *server) readGoingRequest(ctx context.Context, id string) (goingRequest, error) {
+// readGoingRequest is one run by id as who reads it, pgx.ErrNoRows when the record holds none: a
+// run that was never asked, one the sweep has deleted past contracts.GoingRequestTTL, or one
+// asked of a project its asker saw and who does not see now (access.ProjectClause), whose frames
+// hold that project's hits and so answer as a run nobody asked. A run asked of every project
+// (""), of a key no project holds, or of a project its asker could not see when it asked
+// (asked_unseen), holds no project's content, since its search read as the asker; it is read by
+// its author whatever it sees, so a run asked of a hidden project answers as one asked of a key no
+// project holds. What a run the caller does not own answers is the caller's to decide, which is
+// why the row carries its Author: model.Actor.SameCredential compares it with the reader's.
+func (s *server) readGoingRequest(ctx context.Context, who model.Actor, id string) (goingRequest, error) {
 	return scanGoingRequest(s.deps.Store.Pool.QueryRow(ctx, `
-		select `+goingRequestColumns+` from going_requests where id = $1::uuid
-	`, id))
+		select `+goingRequestColumns+` from going_requests r
+		where r.id = $1::uuid and `+goingRunSeen("r", "$2")+`
+	`, id, refs.VisibilityArg(who)))
+}
+
+// goingRunSeen is the rule of which runs the viewer bound at viewerParam reads, over the
+// going_requests row alias names (readGoingRequest says why): a run asked of every project, or
+// of a project its asker could not see, or of a key no project holds, and a run of a project the
+// viewer sees. Every read of a run and of its frames binds it in its own statement.
+func goingRunSeen(alias, viewerParam string) string {
+	return `(` + alias + `.project = '' or ` + alias + `.asked_unseen or ` + access.ProjectClause(alias+".project", viewerParam) + `
+			or not exists (select 1 from projects asked where asked.key = ` + alias + `.project offset 0))`
 }
 
 // appendGoingEvent stores event as the run's next frame and answers the sequence it took. The
@@ -269,18 +284,19 @@ const goingRunStateOf = `
 // the withdrawal it does, which is why the state is queued second: the verdict is then never
 // older than the frames it is read beside, so a poll whose frames were read after a delete
 // committed is answered withdrawn, and the stream writes none of them (goingWithdrawal).
-func (s *server) readGoingStream(ctx context.Context, requestID string, after int) ([]goingEvent, goingRunState, error) {
+func (s *server) readGoingStream(ctx context.Context, who model.Actor, requestID string, after int) ([]goingEvent, goingRunState, error) {
 	var frames []goingEvent
 	var state goingRunState
+	viewer := refs.VisibilityArg(who)
 	batch := &pgx.Batch{}
-	batch.Queue(goingEventsAfter, requestID, after).Query(func(rows pgx.Rows) error {
+	batch.Queue(goingEventsAfter, requestID, after, viewer).Query(func(rows pgx.Rows) error {
 		collected, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (goingEvent, error) {
 			return scanGoingEvent(row)
 		})
 		frames = collected
 		return err
 	})
-	batch.Queue(goingRunStateOf, requestID, goingTerminalNames).QueryRow(func(row pgx.Row) error {
+	batch.Queue(goingRunStateOf, requestID, goingTerminalNames, viewer).QueryRow(func(row pgx.Row) error {
 		return row.Scan(&state.Terminal, &state.PastDeadline, &state.Withdrawn)
 	})
 	if err := s.deps.Store.Pool.SendBatch(ctx, batch).Close(); err != nil {

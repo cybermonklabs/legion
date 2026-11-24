@@ -413,7 +413,7 @@ func rejectedSuggestion(t *testing.T, kind string, retyped, legacy bool) suggest
 		t.Fatalf("the row stores the kind %q after the reject (stored %t), want %q", stored, held, kind)
 	}
 	// An insert's reject took its words out of the document, and a replace's left its quote there.
-	if markdown, err := documentService.Text(context.Background(), issue.PrimaryArtifactID); err != nil ||
+	if markdown, err := documentService.Text(context.Background(), everyReader, issue.PrimaryArtifactID); err != nil ||
 		strings.Contains(markdown, suggestedWordsStem) || !strings.Contains(markdown, "brown") {
 		t.Fatalf("the document after the reject = %q (%v), want it holding none of %q", markdown, err, suggestedWordsStem)
 	}

@@ -23,6 +23,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
@@ -128,11 +129,15 @@ func (s *server) deleteLegionSetting(w http.ResponseWriter, r *http.Request) {
 // PROJECT_NOT_FOUND.
 func (s *server) legionProject(w http.ResponseWriter, r *http.Request) (string, bool) {
 	project := strings.TrimSpace(r.PathValue("key"))
-	if !projectKeyPattern.MatchString(project) {
+	if !contracts.ValidProjectKey(project) {
 		writeError(w, "INVALID_PROJECT", http.StatusBadRequest, projectKeyProblem("project", project))
 		return "", false
 	}
-	if _, err := s.loadProject(r.Context(), s.deps.Store.Pool, project); err != nil {
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return "", false
+	}
+	if _, err := s.loadProject(r.Context(), s.deps.Store.Pool, who, project); err != nil {
 		s.writeHandlerError(w, err)
 		return "", false
 	}

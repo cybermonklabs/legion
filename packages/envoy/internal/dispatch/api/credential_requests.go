@@ -20,6 +20,7 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -28,6 +29,57 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/cipher"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
+
+// restrictedOwnLoginRoutes are the rows of the deployment a restricted member reaches, and at a
+// browser alone (restrictedOwnLoginAtBrowser, which both gates read: withinProjectScope for the
+// writes, withinReadScope for the read): the lookup of a machine login by the code its machine
+// shows and that login's approve and deny, and the list of their machine logins and the revoke of
+// one. Each handler then holds the member to a machine login of their own (ownMachineLogin for a
+// pending one, memberMachineLogins, their own machines' and their pods', for an issued one).
+// Through a token a restricted member is refused every one of them: no token of theirs holds a
+// scope - their agent's named broker token, a broker token acting as them, and their personal
+// token (personalTokenActor) - so gateRouteScopes, which runs first, answers 403
+// OAUTH_SCOPE_REQUIRED, and restrictedOwnLoginRefusal's 403 RESTRICTED_MEMBER stands behind it for
+// any credential of theirs that held a row's scopes; so no agent of theirs decides, lists or ends
+// any credential, their own machine's included.
+var restrictedOwnLoginRoutes = map[string]bool{
+	"POST /api/v1/credential-requests/machine-lookup": true,
+	"POST /api/v1/credential-requests/{id}/approve":   true,
+	"POST /api/v1/credential-requests/{id}/deny":      true,
+	"GET /api/v1/machine-logins":                      true,
+	"POST /api/v1/machine-logins/{id}/revoke":         true,
+}
+
+// restrictedOwnLoginAtBrowser is the one rule of a restricted member's call of a row of
+// restrictedOwnLoginRoutes, which both gates read. governed reports whether it decides the call:
+// the row is one of them and reader's viewer is a restricted member's. allowed reports whether the
+// call reaches the handler: the member is at their browser (atBrowser), whose cookie's credential
+// holds no list and names no project (model.BrowserActor), so no list holds the call. A governed
+// call that is not allowed is refused restrictedOwnLoginRefusal, by either gate; an ungoverned one
+// meets the gate's own rule.
+func restrictedOwnLoginAtBrowser(route apiRoute, reader model.Actor, r *http.Request) (governed, allowed bool) {
+	if !restrictedOwnLoginRoutes[route.Method+" "+route.Pattern] || reader.Viewer == nil || !reader.Viewer.Restricted {
+		return false, false
+	}
+	return true, atBrowser(r)
+}
+
+// restrictedOwnLoginRefusal answers a restricted member's call of a row of restrictedOwnLoginRoutes
+// other than at their browser: 403 RESTRICTED_MEMBER, naming the row.
+func restrictedOwnLoginRefusal(w http.ResponseWriter, route apiRoute) {
+	writeError(w, codeRestrictedMember, http.StatusForbidden, fmt.Sprintf(
+		"a restricted member reaches %s %s at their browser alone, for a machine login of their own, and never through a token", route.Method, route.Pattern))
+}
+
+// restrictedCaller reports whether the caller is a restricted member, read from the reader the
+// route's gate (withinProjectScope, withinReadScope) resolved for this request.
+func (s *server) restrictedCaller(w http.ResponseWriter, r *http.Request) (restricted, ok bool) {
+	reader, ok := s.readerOf(w, r)
+	if !ok {
+		return false, false
+	}
+	return reader.Viewer != nil && reader.Viewer.Restricted, true
+}
 
 // noteActingAgent names the agent behind a decision on this request's access-log line: the
 // session the act names, and otherwise the personal token, by its owner, which is what the line

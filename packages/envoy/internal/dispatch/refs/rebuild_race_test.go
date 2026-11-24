@@ -10,7 +10,6 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -201,7 +200,7 @@ func (g *readGate) rebuild(t *testing.T, ctx context.Context, database *store.St
 	}}
 	rebuilt := make(chan error, 1)
 	go func() {
-		_, err := RebuildAll(ctx, gated, resolverServer)
+		_, err := RebuildAll(ctx, gated, text.NewOrigins(resolverServer))
 		rebuilt <- err
 	}()
 	select {
@@ -276,7 +275,7 @@ func editText(t *testing.T, ctx context.Context, tx pgx.Tx, sql, kind, id, body 
 // resolved for writer, the author the source records.
 func writeEdges(t *testing.T, ctx context.Context, tx pgx.Tx, kind, id, body string, writer model.Actor) {
 	t.Helper()
-	located := NewReader(ctx, tx, writer, kind, id, resolverServer).Mentions(body)
+	located := NewReader(ctx, tx, writer, kind, id, text.NewOrigins(resolverServer)).Mentions(body)
 	if _, err := replaceRefs(ctx, tx, kind, id, text.Refs(located), nil); err != nil {
 		t.Fatalf("write the edges of the edited text: %v", err)
 	}

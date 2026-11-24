@@ -9,6 +9,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 func TestApprovalAskSummaryRoundTripsTheSharedQuestion(t *testing.T) {
@@ -84,7 +85,7 @@ func TestRewritingAnApprovalAskWithNoLedgerIsRefusedAndRewordsNothing(t *testing
 	// What a version move would reword the request to: its one document at a second version,
 	// with the version its agent last handed to the human unchanged.
 	moved := []model.AskApprovalDocument{{ArtifactID: artifactID, Name: "document.md", Version: 2, RequestedVersion: 1}}
-	if err := RewriteApprovalAsk(ctx, tx, events.NewBroker(), ask, mover, moved, "The second cut.", "https://dispatch.example"); !errors.Is(err, errUnjoined) {
+	if err := RewriteApprovalAsk(ctx, tx, events.NewBroker(), ask, mover, moved, "The second cut.", text.NewOrigins("https://dispatch.example")); !errors.Is(err, errUnjoined) {
 		t.Fatalf("rewording an approval request with no ledger = %v, want errUnjoined", err)
 	}
 	var stored string

@@ -79,13 +79,13 @@ func TestTheBackfillsEventReadsProbeTheirIndexes(t *testing.T) {
 	requireSameEvents(t, "the block batch", gotBlockEvents, wantBlockEvents, eventPlanIssues*eventPlanVersions*eventPlanBlocksPerVersion)
 
 	wantCommentEvents := eventsByKey(t, pool, `select payload->>'id', id from events where type = 'comment.created'`)
-	commentIDs, causes, err := readCommentRows(ctx, database, "00000000-0000-0000-0000-000000000000")
+	comments, err := readCommentRows(ctx, database, "00000000-0000-0000-0000-000000000000")
 	if err != nil {
 		t.Fatalf("read the first comment batch: %v", err)
 	}
 	gotCommentEvents := map[string]int64{}
-	for i, id := range commentIDs {
-		gotCommentEvents[id] = causes[i]
+	for _, comment := range comments {
+		gotCommentEvents[comment.id] = comment.cause
 	}
 	requireSameEvents(t, "the comment batch", gotCommentEvents, wantCommentEvents, eventPlanComments)
 

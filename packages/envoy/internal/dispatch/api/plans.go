@@ -76,7 +76,7 @@ func (s *server) putIssuePlan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(r.Context())
-	project, ok := s.lockRecordedIssue(w, r, tx, key)
+	project, ok := s.lockRecordedIssue(w, r, tx, key, actor, "a plan")
 	if !ok {
 		return
 	}
@@ -137,8 +137,12 @@ func (s *server) listProjectPlans(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "INVALID_QUERY", http.StatusBadRequest, err.Error())
 		return
 	}
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
 	key := r.PathValue("key")
-	if _, err := s.loadProject(r.Context(), s.deps.Store.Pool, key); err != nil {
+	if _, err := s.loadProject(r.Context(), s.deps.Store.Pool, who, key); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
