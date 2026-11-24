@@ -1876,15 +1876,24 @@ function statedBounds(name: string): string[] {
   return held(specFor(name).arguments(api) as Record<string, Bounded>);
 }
 
+/** The text of a file of the Dispatch server's API package. */
+function serverSource(path: string): string {
+  return readFileSync(resolve(import.meta.dir, "../../envoy/internal/dispatch/api", path), "utf8");
+}
+
 /** The value of an integer constant a file of the Dispatch server declares, `name = N`. */
 function serverConstant(path: string, name: string): number {
-  const source = readFileSync(
-    resolve(import.meta.dir, "../../envoy/internal/dispatch/api", path),
-    "utf8"
-  );
-  const value = source.match(new RegExp(`\\b${name}\\s*=\\s*(\\d+)\\b`))?.[1];
+  const value = serverSource(path).match(new RegExp(`\\b${name}\\s*=\\s*(\\d+)\\b`))?.[1];
   if (value === undefined) throw new Error(`${path} declares no ${name}`);
   return Number(value);
+}
+
+/** A function a file of the Dispatch server declares, from its signature to its closing brace. */
+function serverFunction(path: string, name: string): string {
+  const source = serverSource(path);
+  const start = source.indexOf(`\nfunc ${name}(`);
+  if (start < 0) throw new Error(`${path} declares no func ${name}`);
+  return source.slice(start, source.indexOf("\n}\n", start) + 2);
 }
 
 /** The rule of a `components` argument's parts, as dispatch_issue and dispatch_issue_update
@@ -1943,13 +1952,22 @@ describe("the bounds and words each tool states beside its arguments", () => {
     expect(goFieldBounds(tool, field)).toEqual({ own: [...own], item: [...item] });
   });
 
-  // The route refuses a components of mode explicit naming no ids, and of mode none naming no
-  // reason or a blank one, 400 COMPONENTS_INPUT (parseIssueComponents, issue_components.go). The
-  // tool refuses the same calls before anything is sent, in the rule its field states.
+  // parseIssueComponents (issue_components.go) refuses, 400 COMPONENTS_INPUT, mode explicit with
+  // no ids or an empty list, and mode none with no reason or one that is blank once trimmed. Each
+  // row reads those two conditions from the route's Go, as the bound rows read its limits, and
+  // holds the tool to them: it refuses what the route refuses, in the rule its field states, before
+  // anything is sent, and takes what the route takes.
+  const parseComponents = serverFunction("issue_components.go", "parseIssueComponents");
   test.each([
     "dispatch_issue",
     "dispatch_issue_update",
-  ] as const)("%s refuses the components its route refuses, in the rule its field states", (name) => {
+  ] as const)("%s refuses the components parseIssueComponents refuses, in the rule its field states", (name) => {
+    expect(parseComponents).toMatch(
+      /case "explicit":\s*if input\.IDs == nil \|\| len\(\*input\.IDs\) == 0 \{\s*return nil, true, errorf\(http\.StatusBadRequest, "COMPONENTS_INPUT"/
+    );
+    expect(parseComponents).toMatch(
+      /case "none":\s*if input\.Reason == nil \|\| strings\.TrimSpace\(\*input\.Reason\) == "" \{\s*return nil, true, errorf\(http\.StatusBadRequest, "COMPONENTS_INPUT"/
+    );
     const schema = schemaFor(name);
     for (const components of [
       { mode: "explicit" },
@@ -1963,6 +1981,8 @@ describe("the bounds and words each tool states beside its arguments", () => {
         JSON.stringify(components)
       ).toEqual([COMPONENTS_RULE]);
     }
+    const empty = { mode: "explicit", ids: [] };
+    expect(schema.safeParse({ ...validCalls[name], components: empty }).success).toBe(false);
     for (const components of [
       { mode: "inherit" },
       { mode: "explicit", ids: ["web"] },
@@ -1987,11 +2007,7 @@ describe("the bounds and words each tool states beside its arguments", () => {
     expect(external).toContain("owner/repo#n");
     expect(external).toContain("answers its issue and creates nothing");
     expect(external).toContain("400 EXTERNAL_PROJECT_MISMATCH");
-    const route = readFileSync(
-      resolve(import.meta.dir, "../../envoy/internal/dispatch/api/issue_create.go"),
-      "utf8"
-    );
-    expect(route).toContain(`"EXTERNAL_PROJECT_MISMATCH"`);
+    expect(serverSource("issue_create.go")).toContain(`"EXTERNAL_PROJECT_MISMATCH"`);
   });
 
   // A suggestion's replacement is markdown: text alone stays in the quoted text's block, and whole
