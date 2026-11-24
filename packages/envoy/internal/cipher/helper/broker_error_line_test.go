@@ -25,6 +25,7 @@ import (
 // broker's OAuth answer (oauthBrokerError), which holds the code and words as they came. The code
 // the helper matches against is still the code as it came.
 func TestABrokerRefusalPrintsOnOneLine(t *testing.T) {
+	t.Parallel()
 	answer := func(code, words string) *Broker {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
@@ -99,6 +100,7 @@ func TestABrokerRefusalPrintsOnOneLine(t *testing.T) {
 // own and a plain id prints as it came. A second quoting on top would only print the quotes
 // escaped. The premise is checked first: an id written into the line as it came does start one.
 func TestACredentialIDTheBrokerIssuedLogsOnOneLine(t *testing.T) {
+	t.Parallel()
 	oneLine := func(out string) bool {
 		return strings.Count(out, "\n") == 1 && strings.HasSuffix(out, "\n") && !strings.ContainsAny(strings.TrimSuffix(out, "\n"), "\r\x1b")
 	}

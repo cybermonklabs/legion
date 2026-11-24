@@ -358,39 +358,15 @@ func Answered(err error) bool {
 	return err == nil || errors.As(err, &answer) || errors.As(err, &graphQLErrors)
 }
 
-// retryAfter is how long GitHub asks a caller its rate limit answered to wait before calling again,
-// as its REST documentation's "Exceeding the rate limit" says: the retry-after header's seconds,
-// else, when x-ratelimit-remaining is 0, until the x-ratelimit-reset epoch second, capped at an
-// hour, GitHub's primary rate limit's window, so a host clock behind GitHub's never stretches the
-// wait past it; else at least a minute, which is what a secondary limit named by its message alone
-// is waited. A reset this host's clock already reads as past is waited the minute too. Zero for an
-// answer that is not a rate limit.
+// retryAfter is how long GitHub asks a caller its rate limit answered to wait before calling
+// again, read from the answer's headers at now (LimitHeaders.WaitAt); zero for an answer that is
+// not a rate limit.
 func retryAfter(response *http.Response, body []byte, now time.Time) time.Duration {
 	if !RateLimited(response, body) {
 		return 0
 	}
-	return limitWait(response.Header, now)
-}
-
-// limitWait is how long a rate limit's headers ask a caller to wait, read as retryAfter reads
-// them: the retry-after header's seconds, else the x-ratelimit-reset epoch second when
-// x-ratelimit-remaining is 0, capped at an hour, else a minute. GraphQL's own rate limit, which
-// GitHub answers 200 with, is read through it too (Client.GraphQL).
-func limitWait(headers http.Header, now time.Time) time.Duration {
-	if seconds, err := strconv.Atoi(headers.Get("Retry-After")); err == nil && seconds > 0 {
-		return time.Duration(seconds) * time.Second
-	}
-	if headers.Get("X-RateLimit-Remaining") == "0" {
-		if reset, err := strconv.ParseInt(headers.Get("X-RateLimit-Reset"), 10, 64); err == nil {
-			if wait := time.Unix(reset, 0).Sub(now); wait > 0 {
-				if wait > time.Hour {
-					return time.Hour
-				}
-				return wait
-			}
-		}
-	}
-	return time.Minute
+	wait, _ := limitHeaders(response.Header).WaitAt(now)
+	return wait
 }
 
 // nextPage is the URL a Link header names rel="next", "" when it names none.
@@ -423,8 +399,9 @@ type Answer struct {
 // LimitHeaders is the rate-limit headers of a GitHub answer as GitHub sent them, "" for each it did
 // not send: Retry-After, X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Reset (an epoch
 // second) and X-RateLimit-Resource. RetryAfter and Budget are what the client reads from them and
-// decides by; these decide nothing, and are kept as received so that a log of a refusal names the
-// limit that refused it in GitHub's own words, including where they disagree with the body.
+// decides by; the headers are kept as received so that a log of a refusal names the limit that
+// refused it in GitHub's own words, including where they disagree with the body, and so that a
+// caller keeping time on a clock of its own reads GitHub's wait at its own time (WaitAt).
 type LimitHeaders struct {
 	RetryAfter string
 	Limit      string
@@ -432,6 +409,37 @@ type LimitHeaders struct {
 	Reset      string
 	Resource   string
 }
+
+// WaitAt is the wait these headers ask for at now, as GitHub's REST documentation's "Exceeding the
+// rate limit" reads them, and whether they name when the limit ends (named): Retry-After's seconds,
+// at most maxRetryAfter; else, with no call left (X-RateLimit-Remaining 0), until the
+// X-RateLimit-Reset epoch second, at most an hour, GitHub's primary rate limit's window, so a
+// clock behind GitHub's never stretches the wait past it. Else a minute, the least a secondary
+// limit named by its message alone is waited, and named false; a reset already past at now names
+// no time either. An answer's RetryAfter is this at the host's time when the answer arrived, a
+// REST answer's (retryAfter) and a GraphQL rate limit's, which GitHub answers 200 with
+// (Client.GraphQL); internal/daemon's startWaits reads it at the time of its own clock, on which
+// it waits, and waits its own time where named is false.
+func (l LimitHeaders) WaitAt(now time.Time) (wait time.Duration, named bool) {
+	if seconds, err := strconv.ParseInt(l.RetryAfter, 10, 64); err == nil && seconds > 0 {
+		return time.Duration(min(seconds, int64(maxRetryAfter/time.Second))) * time.Second, true
+	}
+	if l.Remaining == "0" {
+		if reset, err := strconv.ParseInt(l.Reset, 10, 64); err == nil {
+			if wait := time.Unix(reset, 0).Sub(now); wait > 0 {
+				return min(wait, time.Hour), true
+			}
+		}
+	}
+	return time.Minute, false
+}
+
+// maxRetryAfter is the longest Retry-After WaitAt reads whole. Seconds are clamped to it before
+// they are multiplied, so a header past what a time.Duration holds (more than 9,223,372,036
+// seconds) never wraps to a negative wait, which a caller would sleep as none and try again at
+// once. A day is far past any wait a caller takes whole: the daemon's start waits at most an hour
+// (rateLimitPolicy.Max).
+const maxRetryAfter = 24 * time.Hour
 
 // limitHeaders is headers' rate-limit headers as GitHub sent them.
 func limitHeaders(headers http.Header) LimitHeaders {
