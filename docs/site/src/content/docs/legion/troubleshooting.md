@@ -216,11 +216,18 @@ prompt it launched with until then.
 - **The daemon logs `legion daemon launches with the instructions it last read: its copy could not
   be replaced` at ERROR.** The daemon read the edit but could not write its own copy under the state
   directory, which the prompt is composed from (`error` names the path and the cause). Launches go
-  on carrying the old text. Never delete the copy itself: while the write still fails, every launch
-  that reads it, the controller's included, then fails to compose its prompt. Fix what `error`
-  names: `permission denied`, give the daemon's user write access to the copy's directory; `is a
-  directory` or `file exists`, remove the directory that stands at the copy's path; `no space left
-  on device` or `read-only file system`, free space on, or remount, the state directory's volume.
+  on carrying the old text while the old copy is still there. Never delete the copy yourself: while
+  the write fails, each launch whose prompt reads that copy fails to compose it. For the deployment's
+  copy that is every launch, the controller's included; for an arm's copy, the memory block's among
+  them, it is each launch of a unit drawn into that arm. Fix what `error` names:
+  - `permission denied`: give the daemon's user write access to the copy's directory.
+  - `is a directory`, or `file exists` when the directory holds files: a directory stands at the
+    copy's path, so the old copy is already gone and each launch that reads it fails. Remove that
+    directory.
+  - `not a directory`: a file stands where the copy's directory should be. Remove that file.
+  - `no space left on device`, `disk quota exceeded` or `read-only file system`: free space or
+    quota on the state directory's volume, or remount it writable.
+
   The next launch writes the copy and logs the edit.
 - **The daemon logs none of these lines, and the edit is still not in a new launch's prompt.**
   Under Kubernetes, check how the daemon's pod mounts the file: the kubelet updates a ConfigMap
