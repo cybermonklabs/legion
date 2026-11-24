@@ -4,22 +4,24 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptrace"
-	"strings"
 	"sync/atomic"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/redact"
+	"github.com/sjawhar/envoy/internal/urljoin"
 	"github.com/sjawhar/envoy/redirects"
 )
 
 // api is a Dispatch HTTP client: agent requests use the stack's shared bearer and name a session
 // actor in a write's body; a person's request names the person in the trusted identity header
-// (DISPATCH_IDENTITY=header:X-Dispatch-User).
+// (DISPATCH_IDENTITY=header:X-Dispatch-User). base is the Dispatch URL as it was given, which each
+// call joins its path onto (callRawKeyed).
 type api struct {
 	base   string
 	token  string
@@ -33,7 +35,7 @@ func newAPI(base, token string, maxIdle int) *api {
 		MaxIdleConnsPerHost: maxIdle,
 		IdleConnTimeout:     90 * time.Second,
 	}
-	return &api{base: strings.TrimRight(base, "/"), token: token, client: redirects.Refused(&http.Client{Transport: tr, Timeout: 30 * time.Second})}
+	return &api{base: base, token: token, client: redirects.Refused(&http.Client{Transport: tr, Timeout: 30 * time.Second})}
 }
 
 // who is a request's identity: a person through the identity header when person is set, the
@@ -130,8 +132,19 @@ func (a *api) callRaw(ctx context.Context, method, path string, w who, contentTy
 	return a.callRawKeyed(ctx, method, path, w, contentType, payload, "")
 }
 
-// callRawKeyed is callRaw under an idempotency key; an empty key sends none.
+// callRawKeyed is callRaw under an idempotency key; an empty key sends none. The request goes to
+// path, with its own query, joined onto the Dispatch URL (urljoin.Join): onto its path, after its
+// query, its fragment dropped, where path appended to the URL's text would sit inside a query or a
+// fragment and Dispatch would be asked another path. A URL and path that do not join, or whose
+// joined URL does not parse again (url.URL.String can write text url.Parse refuses, such as an
+// IPv6 zone escape), are refused in fixed words: url.Parse's error, which http.NewRequest's
+// carries, quotes the URL whole, user information and query included.
 func (a *api) callRawKeyed(ctx context.Context, method, path string, w who, contentType string, payload []byte, key string) callResult {
+	joined, err := urljoin.Join(a.base, path)
+	if err != nil {
+		return callResult{err: errors.New("the Dispatch URL and the call's path do not join into a URL (neither is printed)")}
+	}
+	callURL := joined.String()
 	var getConn, gotConn, wrote atomic.Int64
 	trace := &httptrace.ClientTrace{
 		GetConn: func(string) { getConn.Store(time.Now().UnixNano()) },
@@ -146,9 +159,9 @@ func (a *api) callRawKeyed(ctx context.Context, method, path string, w who, cont
 	if payload != nil {
 		rdr = bytes.NewReader(payload)
 	}
-	req, err := http.NewRequestWithContext(httptrace.WithClientTrace(ctx, trace), method, a.base+path, rdr)
+	req, err := http.NewRequestWithContext(httptrace.WithClientTrace(ctx, trace), method, callURL, rdr)
 	if err != nil {
-		return callResult{err: err}
+		return callResult{err: errors.New("the Dispatch URL joined with the call's path does not parse (it is not printed)")}
 	}
 	req.Header.Set("Accept", "application/json")
 	if payload != nil && contentType != "" {
@@ -166,7 +179,7 @@ func (a *api) callRawKeyed(ctx context.Context, method, path string, w who, cont
 	resp, err := a.client.Do(req)
 	if err != nil {
 		// Error rather than Cause: the callers name the request by its step, so err keeps its URL.
-		err = redact.Error(err, a.base+path)
+		err = redact.Error(err, callURL)
 	} else {
 		res.status = resp.StatusCode
 		res.etag = resp.Header.Get("ETag")
