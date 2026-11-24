@@ -40,9 +40,21 @@ type Options struct {
 //     A check's test part and job name code by design and are not read. Parse reads each heading
 //     for code too, and refuses a claim of more than one sentence (bad-field).
 func Validate(t Tree, o Options) []Problem {
-	v := validator{tree: t, kinds: map[string]string{}, retired: map[string]bool{}, edges: map[string][]edge{}}
+	v := validator{tree: t, kinds: map[string]string{}, retired: map[string]bool{}, edges: map[string][]edge{},
+		checked: map[string]bool{}, parents: map[string]bool{}, servedBy: map[string]bool{}}
 	for _, id := range o.Retired {
 		v.retired[id] = true
+	}
+	for _, c := range t.Checks {
+		v.checked[c.Serves] = true
+	}
+	for _, s := range t.Statements {
+		v.parents[s.Parent] = true
+		for _, id := range s.Serves {
+			if id != s.ID {
+				v.servedBy[id] = true
+			}
+		}
 	}
 	v.ids()
 	for _, s := range t.Statements {
@@ -69,13 +81,18 @@ func Validate(t Tree, o Options) []Problem {
 }
 
 // validator is the state of one Validate: the kind and the first position of each id, the
-// relations the loop finder walks, and the problems found so far.
+// relations the loop finder walks, each id that a check serves, that a statement names as its
+// parent and that another statement serves, read once so that a statement's rules read no list of
+// the tree, and the problems found so far.
 type validator struct {
 	tree     Tree
 	kinds    map[string]string // id -> kindOf its first node
 	first    map[string]Position
 	retired  map[string]bool
 	edges    map[string][]edge
+	checked  map[string]bool // each id that a check serves
+	parents  map[string]bool // each id that a statement names as its parent
+	servedBy map[string]bool // each id that a statement other than itself serves
 	problems []Problem
 }
 
@@ -193,21 +210,15 @@ func (v *validator) statement(s Statement) {
 	if s.Kind == KindStructure && len(s.About) == 0 {
 		v.problem(s.Pos, s.ID, "no-about: a statement of kind structure names its components or interfaces")
 	}
-	if s.ID != "" && len(v.tree.ChecksOf(s.ID)) == 0 {
+	if s.ID != "" && !v.checked[s.ID] {
 		switch {
-		case len(v.tree.Children(s.ID)) == 0:
+		case !v.parents[s.ID]:
 			v.problem(s.Pos, s.ID, "leaf-without-check: no statement is under it and no check serves it")
-		case v.served(s.ID):
+		case v.servedBy[s.ID]:
 			v.problem(s.Pos, s.ID, "supported-without-check: other statements serve it and no check serves it")
 		}
 	}
 	v.code(s.Pos, s.ID, "text", s.Text)
-}
-
-// served reports whether another statement serves the statement id: one that other statements
-// support still has checks of its own (R5).
-func (v *validator) served(id string) bool {
-	return slices.ContainsFunc(v.tree.Statements, func(s Statement) bool { return s.ID != id && slices.Contains(s.Serves, id) })
 }
 
 func (v *validator) check(c Check) {

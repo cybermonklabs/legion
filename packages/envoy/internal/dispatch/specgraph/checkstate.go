@@ -2,6 +2,7 @@ package specgraph
 
 import (
 	"cmp"
+	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -254,7 +255,9 @@ func deriveChecks(in Input) (*checkJudge, []CheckState, error) {
 
 // newCheckJudge is the judge of the checks of in: the current approved text of each node, which
 // approved text of each node the files hold, the checks and statements of the files that the tree
-// rules refuse, and the results of each check; or the first fault of in (Input.check).
+// rules refuse, and the results of each check; or the first fault of in (Input.check). It reads a
+// FixtureHistory by the tree of each commit by its id (fixtureTrees), built once, so that the
+// judge's question of each commit takes no walk of the list of commits.
 func newCheckJudge(in Input) (*checkJudge, error) {
 	// Current leaves out a node that the approved spec removed, and Input.check refuses each other
 	// node that it would leave out: one under another key than its id, one with no version, and one
@@ -262,6 +265,12 @@ func newCheckJudge(in Input) (*checkJudge, error) {
 	current, _ := in.Approved.Current()
 	if err := in.check(current); err != nil {
 		return nil, err
+	}
+	switch h := in.History.(type) {
+	case FixtureHistory:
+		in.History = h.trees()
+	case *FixtureHistory:
+		in.History = h.trees()
 	}
 	j := &checkJudge{in: in, current: current, holds: Compare(in.Files, in.Approved).Holds, refused: refusals(in.Files),
 		results: map[string][]Result{}, changed: map[string]changedPaths{}, placed: map[string]bool{}}
@@ -307,18 +316,29 @@ type checkJudge struct {
 // problem, of a component, an interface, a term or no node, refuses each check and statement of
 // files: a file is no relation of The Spec, so the split of the tree into files changes no state.
 // Validate runs with no Options, as the scenario reader runs it: the files may still hold a node
-// that the approved spec removed (Compare).
+// that the approved spec removed (Compare). Each problem is read once, by sets of the ids, and none
+// after each check and statement is refused, so the time grows with the tree and not with its
+// square.
 func refusals(files Tree) map[string]string {
 	problems := Validate(files, Options{})
 	if len(problems) == 0 {
 		return nil
 	}
-	nodes := make([]string, 0, len(files.Statements)+len(files.Checks))
+	statements := make(map[string]bool, len(files.Statements))
+	nodes := make(map[string]bool, len(files.Statements)+len(files.Checks))
 	for _, s := range files.Statements {
-		nodes = append(nodes, s.ID)
+		statements[s.ID], nodes[s.ID] = true, true
 	}
 	for _, c := range files.Checks {
-		nodes = append(nodes, c.ID)
+		nodes[c.ID] = true
+	}
+	// The loop rule of Validate names the smallest id of a loop, and the loop refuses each statement
+	// of its strongly connected part (loopParts), so that no state depends on the order of the ids.
+	loopOf := map[string][]string{}
+	for _, part := range loopParts(statementEdges(files.Statements)) {
+		for _, id := range part {
+			loopOf[id] = part
+		}
 	}
 	refused := map[string]string{}
 	refuse := func(rule string, ids ...string) {
@@ -328,21 +348,17 @@ func refusals(files Tree) map[string]string {
 			}
 		}
 	}
-	// The loop rule of Validate names the smallest id of a loop, and the loop refuses each statement
-	// of its strongly connected part (loopParts), so that no state depends on the order of the ids.
-	loops := loopParts(statementEdges(files.Statements))
 	for _, p := range problems {
 		switch {
-		case p.Rule == "loop" && slices.ContainsFunc(files.Statements, func(s Statement) bool { return s.ID == p.Node }):
-			for _, part := range loops {
-				if slices.Contains(part, p.Node) {
-					refuse(p.Rule, part...)
-				}
-			}
-		case slices.Contains(nodes, p.Node):
+		case p.Rule == "loop" && statements[p.Node]:
+			refuse(p.Rule, loopOf[p.Node]...)
+		case nodes[p.Node]:
 			refuse(p.Rule, p.Node)
 		default:
-			refuse(p.Rule, nodes...)
+			refuse(p.Rule, slices.Collect(maps.Keys(nodes))...)
+		}
+		if len(refused) == len(nodes) {
+			break // each is refused, and a later problem changes no rule
 		}
 	}
 	return refused
@@ -470,10 +486,20 @@ func (j *checkJudge) candidates(c Check, job string) (runs, faults []Result, sta
 // it names the author of the fault and one or more authors of the test, and the author of the fault
 // is none of them. A record that names no author of one of the two cannot show it, and an author
 // of no letter and no digit, by the test that Validate reads a missing text with (hasWord), names
-// nobody.
+// nobody. Two names that could be one agent's count as one agent, the safe reading, since a fault
+// whose author is the test's would read as one by another agent otherwise: the white space at the
+// ends of a name and inside it counts as one space, and case does not count (agentName,
+// strings.EqualFold), so "alice", " alice" and "Alice" are one agent.
 func byAnotherAgent(fault Result) bool {
 	namesTestAuthor := slices.ContainsFunc(fault.TestAuthors, hasWord)
-	return hasWord(fault.FaultAuthor) && namesTestAuthor && !slices.Contains(fault.TestAuthors, fault.FaultAuthor)
+	author := agentName(fault.FaultAuthor)
+	return hasWord(fault.FaultAuthor) && namesTestAuthor &&
+		!slices.ContainsFunc(fault.TestAuthors, func(a string) bool { return strings.EqualFold(agentName(a), author) })
+}
+
+// agentName is a name of an agent as byAnotherAgent compares it: its words, one space between two.
+func agentName(name string) string {
+	return strings.Join(strings.Fields(name), " ")
 }
 
 // newestApproval is the statement, of statement and each statement above it in the approved spec,

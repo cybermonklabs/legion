@@ -149,7 +149,8 @@ const (
 //     approved spec, needs naming units of the file; with none, no wait is read;
 //   - want.txt (optional), which ReadScenario does not read.
 //
-// A JSON null is refused at each place of each file (decodeJSON).
+// A JSON null is refused at each place of each file (decodeJSON), and so is each file that holds
+// more than fileBound bytes, 16 MiB, which is read no further.
 func ReadScenario(fsys fs.FS) (Scenario, error) {
 	var s Scenario
 	entries, err := fs.ReadDir(fsys, ".")
@@ -269,7 +270,7 @@ func readScenarioFiles(fsys fs.FS, subjects []ScenarioSubject) (map[string]Tree,
 			if !entry.Type().IsRegular() || path.Ext(entry.Name()) != ".md" {
 				return nil, scenarioFault(name, "the spec files of a commit are *.md files directly in its directory")
 			}
-			if files[entry.Name()], err = fs.ReadFile(fsys, name); err != nil {
+			if files[entry.Name()], err = readFile(fsys, name); err != nil {
 				return nil, &ScenarioError{File: name, Err: err}
 			}
 		}
@@ -438,7 +439,7 @@ func readEach[T any](fsys fs.FS, name, noun, form string) ([]T, error) {
 
 // readJSON decodes the file name into v with decodeJSON, in the form form.
 func readJSON(fsys fs.FS, name string, v any, form string) error {
-	content, err := fs.ReadFile(fsys, name)
+	content, err := readFile(fsys, name)
 	if err != nil {
 		return &ScenarioError{File: name, Err: err}
 	}
@@ -446,6 +447,16 @@ func readJSON(fsys fs.FS, name string, v any, form string) error {
 		return &ScenarioError{File: name, Err: err}
 	}
 	return nil
+}
+
+// readFile is the file name of fsys, at most fileBound bytes of it (readBounded).
+func readFile(fsys fs.FS, name string) ([]byte, error) {
+	f, err := fsys.Open(name)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	return readBounded(f)
 }
 
 // scenarioFault is the fault of the file name, the format filled with args.

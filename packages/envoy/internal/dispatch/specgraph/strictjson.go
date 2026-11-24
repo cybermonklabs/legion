@@ -97,13 +97,34 @@ func nullPlace(data []byte) (place string, null bool, err error) {
 	}
 }
 
-// decodeJSONFrom reads all of r and decodes it with decodeJSON.
+// decodeJSONFrom reads r, at most fileBound bytes of it (readBounded), and decodes it with
+// decodeJSON.
 func decodeJSONFrom(r io.Reader, v any, form string) error {
-	data, err := io.ReadAll(r)
+	data, err := readBounded(r)
 	if err != nil {
 		return err
 	}
 	return decodeJSON(data, v, form)
+}
+
+// fileBound is the most bytes of one file that the package reads: a JSON file of a format
+// (decodeJSONFrom, so approved.json, history.json and ties.json, and each other JSON file of a
+// scenario) and a spec file of a scenario. 16 MiB is far above any such file, and a file over it is
+// refused, before any of it is decoded or parsed, so that a file which grew past any use cannot
+// take the memory of the process.
+const fileBound = 16 << 20
+
+// readBounded is all of r, or an error that names fileBound where r holds more than it, read up to
+// one byte past the bound.
+func readBounded(r io.Reader) ([]byte, error) {
+	data, err := io.ReadAll(io.LimitReader(r, fileBound+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > fileBound {
+		return nil, fmt.Errorf("it holds more than %d bytes, the most that the reader reads of a file", fileBound)
+	}
+	return data, nil
 }
 
 // quotedBound is the most bytes of a value of the input that quoted prints whole. encoding/json/v2

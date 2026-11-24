@@ -102,8 +102,8 @@ const approvedForm = `{"nodes":[{"id":"<id>","removed":<true or false>,"partly_c
 // whose id is no id (versionText), a block that names at a relation no node of the approved spec,
 // or, as the current text of a node that the approved spec keeps, a node of a kind that the
 // relation may not name (relationFault), naming the version, and a loop of parent and serves
-// relations among the current statements, as Validate's loop rule writes it. It reads the whole
-// file, with no bound on its size.
+// relations among the current statements, as Validate's loop rule writes it. It reads at most
+// fileBound bytes, and refuses a file that holds more.
 func ReadApproved(r io.Reader) (Approved, error) {
 	var file approvedFile
 	if err := decodeJSONFrom(r, &file, approvedForm); err != nil {

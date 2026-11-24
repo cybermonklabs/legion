@@ -106,8 +106,10 @@ func scenarioFileTypes() map[string]reflect.Type {
 var libraryInputTypes = []reflect.Type{reflect.TypeFor[Input](), reflect.TypeFor[FixtureHistory](), reflect.TypeFor[GitHistory](), reflect.TypeFor[[]Unit]()}
 
 // TestEachHistoryOfThePackageIsAnInputType reads the non-test source of the package with go/types,
-// and fails for each type of it that implements History, by value or by pointer, that
+// and fails for each exported type of it that implements History, by value or by pointer, that
 // libraryInputTypes does not name, and when it finds no such type at all, since it then read none.
+// A caller gives only an exported type; an unexported one, such as fixtureTrees, the judge's view of
+// a FixtureHistory, is built by the package from an input whose members the marks already read.
 func TestEachHistoryOfThePackageIsAnInputType(t *testing.T) {
 	t.Parallel()
 	dir, err := filepath.Abs(".")
@@ -138,7 +140,7 @@ func TestEachHistoryOfThePackageIsAnInputType(t *testing.T) {
 	found := 0
 	for _, name := range pkg.Scope().Names() {
 		typ, ok := pkg.Scope().Lookup(name).(*types.TypeName)
-		if !ok || types.IsInterface(typ.Type()) || !types.Implements(typ.Type(), history) && !types.Implements(types.NewPointer(typ.Type()), history) {
+		if !ok || !typ.Exported() || types.IsInterface(typ.Type()) || !types.Implements(typ.Type(), history) && !types.Implements(types.NewPointer(typ.Type()), history) {
 			continue
 		}
 		found++
