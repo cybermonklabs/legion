@@ -8657,6 +8657,9 @@ A restart has every live role's launcher say hello again, and each hello reads i
 at 50 a second three hundred launchers' reads clear in about 4 s.
 A launch, about eight requests into a running pod and about thirty when it replaces the pod, waits a fraction of a second more for each launch ahead of it.
 
+Every client the daemon makes of its cluster's configuration sends its `Authorization` (the service account's bearer, or the kubeconfig user's credential) to the API server's own scheme, host and port alone (`keepAuthorizationOnOrigin`, `internal/runtime/sandbox/clients.go`).
+client-go follows a redirect as Go does; a redirect to any other origin is followed without it.
+
 A request waits on the limiter as long as its caller allows, a launch as long as the launch's own deadlines allow, and only then does its own 30 s bound start:
 client-go starts a client's timeout after its wait on the limiter (`rest/request.go`), and the runtime's informers use clients of their own with no timeout, since one would end a watch.
 A launch the limiter holds back waits its turn and is charged no launch failure.
