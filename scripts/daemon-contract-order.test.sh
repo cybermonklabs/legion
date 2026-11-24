@@ -5,9 +5,11 @@
 # then entry A, whose id is earlier; a branch adds C and then forward-merges main; a merge group's
 # line past main adds D, then C again with an id earlier than D's, and holds no merge commit;
 # another line adds two entries in one commit. Every case reads a clone of that repository, as a
-# build does, so main is refs/remotes/origin/main there, the default the script reads. The last
-# case reads a clone that holds main's history and only the merge group's newest commit, and
-# requires the script to fail naming the commit before it, which that clone lacks.
+# build does, so main is refs/remotes/origin/main there, the default the script reads. One case
+# runs the script from the clone's packages/daemon, where ci-job-daemon-go.yaml's stamped shape
+# gate runs it, and requires the list the root prints. The last case reads a clone that holds
+# main's history and only the merge group's newest commit, and requires the script to fail naming
+# the commit before it, which that clone lacks.
 #
 # Run from the repository root: bash scripts/daemon-contract-order.test.sh
 set -euo pipefail
@@ -79,10 +81,18 @@ status=0
 output=''
 errors=''
 
-# run <argument>...: the script over the clone, its exit status, standard output and error.
+# run <argument>...: the script over the clone, run from its root.
 run() {
+  run_in "$clone" "$@"
+}
+
+# run_in <directory> <argument>...: the script run from the directory, its exit status, standard
+# output and error.
+run_in() {
+  local directory=$1
+  shift
   status=0
-  output="$(cd "$clone" && bash "$script" "$@" 2>"$temporary_dir/stderr")" || status=$?
+  output="$(cd "$directory" && bash "$script" "$@" 2>"$temporary_dir/stderr")" || status=$?
   errors="$(cat "$temporary_dir/stderr")"
 }
 
@@ -136,6 +146,12 @@ case_name='--stamp of a commit of no entry prints v1: alone'
 run --stamp "$root"
 expect 'v1:'
 
+# The clone's checkout is main, which holds B and A. Every path the script reads is the
+# repository's, so the directory it runs from changes nothing it prints.
+case_name='--stamp HEAD run from packages/daemon prints the list the root prints'
+run_in "$clone/packages/daemon" --stamp HEAD
+expect "v1:$B,$A"
+
 # With the branch named as main, its own first-parent line is the history read: C, which the
 # branch added, comes before A, which its merge of main added.
 case_name='--main names the ref whose first-parent line is read as main'
@@ -149,9 +165,7 @@ readonly lacking="${temporary_dir}/lacking"
 git clone -q --no-local --single-branch --branch main "$origin" "$lacking"
 git -C "$lacking" fetch -q --depth=1 origin refs/heads/merge-group:refs/remotes/origin/merge-group
 lacked=$(git -C "$origin" rev-parse merge-group~1)
-status=0
-output="$(cd "$lacking" && bash "$script" origin/merge-group 2>"$temporary_dir/stderr")" || status=$?
-errors="$(cat "$temporary_dir/stderr")"
+run_in "$lacking" origin/merge-group
 if [[ $status == 0 ]]; then
   fail 'expected a failure'
 elif [[ $errors != *"$lacked"* ]]; then
