@@ -62,6 +62,7 @@ import (
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/pglisten"
+	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/roles"
 	"github.com/sjawhar/envoy/listenfd"
 )
@@ -1628,6 +1629,21 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 			return bootConfig{}, errors.New("DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE is required when DISPATCH_AGENT_SECRETS_URL is set: Dispatch calls the broker with its own projected Kubernetes ServiceAccount token")
 		}
 	}
+	// DISPATCH_GITHUB_API_BASE is an origin, and the table of the request names a contract
+	// declares public names GitHub's GraphQL endpoint on it as `POST /graphql`
+	// (packages/contracts/src/public-request-names.ts): that is the one route the merged pull
+	// request search's cursor is public on, and the table's routes cannot name `/graphql` under
+	// a prefix. Under a base with a path the cursor would read as a credential the request
+	// carried, the search would refuse to send it back, and the reading would end at its second
+	// page. The refusal names the setting, and the base prints as the rule reads it, since a
+	// configured origin can carry a credential in its user information, query or fragment.
+	if base := strings.TrimSuffix(boot.GitHubAPIBase, "/"); base != "" {
+		parsed, err := url.Parse(base)
+		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" || parsed.Path != "" {
+			return bootConfig{}, fmt.Errorf("DISPATCH_GITHUB_API_BASE=%q (expected an absolute http(s) URL with no path)", redact.URL(base))
+		}
+		boot.GitHubAPIBase = base
+	}
 	boot.Embedder, err = resolveEmbedder(env)
 	if err != nil {
 		return bootConfig{}, err
@@ -1716,7 +1732,7 @@ func devSignInLoadedFence(boot bootConfig, serverURL string, app *auth.AppConfig
 		return fmt.Errorf("DISPATCH_DEV_SIGNIN=1 refuses the App private key in %s, whatever DISPATCH_GITHUB_API_BASE names: that file is where the real App's key is kept, and with the flag any loopback client can have the App sign calls. Pass a throwaway App in the environment instead (DISPATCH_APP_CLIENT_ID and a generated DISPATCH_APP_PEM_B64, which take precedence over app.json), with DISPATCH_GITHUB_API_BASE naming a GitHub fake on a loopback host, as packages/dispatch/e2e/run-server.sh does", source.Path)
 	}
 	if !routes.LoopbackURL(boot.GitHubAPIBase) {
-		return fmt.Errorf("DISPATCH_DEV_SIGNIN=1 lets the App private key (DISPATCH_APP_PEM_B64) sign calls only to a loopback host: DISPATCH_GITHUB_API_BASE=%q (empty is https://api.github.com) must name 127.0.0.1, [::1] or localhost. Use a throwaway key: every App call hands a signed App JWT to whatever listens there", boot.GitHubAPIBase)
+		return fmt.Errorf("DISPATCH_DEV_SIGNIN=1 lets the App private key (DISPATCH_APP_PEM_B64) sign calls only to a loopback host: DISPATCH_GITHUB_API_BASE=%q (empty is https://api.github.com) must name 127.0.0.1, [::1] or localhost. Use a throwaway key: every App call hands a signed App JWT to whatever listens there", redact.URL(boot.GitHubAPIBase))
 	}
 	return nil
 }

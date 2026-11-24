@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/redact/redacttest"
 )
 
@@ -41,6 +42,13 @@ func TestABootRefusalNamesNoCredentialItsAddressCarries(t *testing.T) {
 			"DISPATCH_AGENT_SECRETS_URL":                credentialedAddress("https", "broker.example"),
 			"DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE": tokenFile,
 		})},
+		// A base with a path is refused because the table of the request names a contract
+		// declares public names GitHub's GraphQL endpoint as `POST /graphql` on the origin
+		// alone, so under such a base the merged pull request search could not send GitHub's
+		// cursor back.
+		{"github-api-base-path", "DISPATCH_GITHUB_API_BASE", envGetter(headerIdentityEnvironment(map[string]string{
+			"DISPATCH_GITHUB_API_BASE": credentialedAddress("https", "github.example/api/v3"),
+		}))},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			_, err := resolveBootConfig(row.env)
@@ -52,5 +60,22 @@ func TestABootRefusalNamesNoCredentialItsAddressCarries(t *testing.T) {
 				t.Errorf("the refusal %q does not name %s", err, row.setting)
 			}
 		})
+	}
+}
+
+// TestTheDevSignInFenceNamesNoCredentialTheGitHubBaseCarries: with the dev sign-in flag and an
+// App private key from the environment, the App may sign calls only to a loopback host. The
+// refusal names DISPATCH_GITHUB_API_BASE and none of the credentials that base carries. Captures
+// dispatch.configured-url/github-api-base-fence.
+func TestTheDevSignInFenceNamesNoCredentialTheGitHubBaseCarries(t *testing.T) {
+	base := credentialedAddress("https", "github.example")
+	boot := devSignInBoot(t, map[string]string{"DISPATCH_GITHUB_API_BASE": base})
+	err := devSignInLoadedFence(boot, devSignInOrigin, &auth.AppConfig{ClientID: "Iv1.app", PEM: "app private key"}, appCredentialSource{})
+	if err == nil {
+		t.Fatal("the fence accepted an App key signing calls to a base that is no loopback host")
+	}
+	redacttest.RequireNone(t, "dispatch.configured-url/github-api-base-fence", err.Error())
+	if !strings.Contains(err.Error(), "DISPATCH_GITHUB_API_BASE=") {
+		t.Errorf("the refusal %q does not name DISPATCH_GITHUB_API_BASE", err)
 	}
 }
