@@ -272,7 +272,7 @@ func (c *Client) CommitCheckRuns(ctx context.Context, token, owner, repo, sha st
 		if err := body.Decode(&answer); err != nil {
 			return nil, fmt.Errorf("decode the check_runs of %s: %w", repoFull, err)
 		}
-		return objectsOf(answer.CheckRuns, (*listedRun).object), nil
+		return objectsOf(answer.CheckRuns), nil
 	})
 }
 
@@ -292,7 +292,7 @@ func (c *Client) CommitCheckSuites(ctx context.Context, token, owner, repo, sha 
 		if err := body.Decode(&answer); err != nil {
 			return nil, fmt.Errorf("decode the check_suites of %s: %w", repoFull, err)
 		}
-		return objectsOf(answer.CheckSuites, (*listedSuite).object), nil
+		return objectsOf(answer.CheckSuites), nil
 	})
 }
 
@@ -317,7 +317,7 @@ func (c *Client) CommitStatuses(ctx context.Context, token, owner, repo, sha str
 		if err := body.Decode(&answer); err != nil {
 			return nil, fmt.Errorf("decode the statuses of %s: %w", repoFull, err)
 		}
-		return objectsOf(answer.Statuses, (*listedStatus).object), nil
+		return objectsOf(answer.Statuses), nil
 	})
 }
 
