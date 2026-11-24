@@ -23,8 +23,8 @@ import {
 } from "./layout-check";
 import { type LayoutBreach, type LayoutReading, measureLayout } from "./layout-measure";
 import { openCappedGroups } from "./layout-routes";
+import { ONE_PIXEL_PNG } from "./one-pixel-png";
 import { trackDocumentRequests, waitForRouteSettled } from "./review-routes";
-import { ONE_PIXEL_PNG } from "./sends";
 import { stubbed } from "./stub/stub-test";
 
 // No row takes a `scene`, so no seed ever runs and no recording is read or written.

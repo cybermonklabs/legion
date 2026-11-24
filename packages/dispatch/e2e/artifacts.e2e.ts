@@ -17,7 +17,8 @@ import {
   getArtifactText,
 } from "./api";
 import { countDocumentSockets, documentEditor, documentTransport, typeAtEnd } from "./editor";
-import { navigateInApp, ONE_PIXEL_PNG } from "./sends";
+import { ONE_PIXEL_PNG } from "./one-pixel-png";
+import { navigateInApp } from "./sends";
 import { expandedState } from "./settled";
 import { expect, type Locator, type Page, type Request, type TestInfo, test } from "./test";
 

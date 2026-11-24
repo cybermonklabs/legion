@@ -677,20 +677,25 @@ function feedsInboxCount(url: string): boolean {
   );
 }
 
-/** The URLs of a page's requests still waiting for their answer, as one source reads them. */
+/** The URLs of the requests a page has in flight that feed the Inbox number. A source may leave
+ *  out a request `feedsInboxCount` rejects, since the wait reads no other. */
 export type InFlightRequests = () => Promise<readonly string[]>;
 
 /** The requests of `page.requests()` - the page's latest hundred, which holds every request
  *  recent enough to still be waiting - that can still answer: the ones the page's current
  *  document sent (`requestsOfThisDocument`), each until Playwright has heard that it ended
- *  (`stillAnswering`). The source of a page a real server answers. */
+ *  (`stillAnswering`). The source of a page a real server answers.
+ *
+ *  `stillAnswering` asks Playwright's server about a request it has not heard the end of, so only
+ *  the requests the wait reads are asked: a page draws a hundred of them and reads the Inbox
+ *  number through four. */
 export function listedRequests(page: Page): InFlightRequests {
   return async () => {
     const waiting: string[] = [];
     // Every request is asked, not only those up to the first still in flight, so the next poll
     // has heard of each one that has already ended.
     for (const request of await requestsOfThisDocument(page)) {
-      if (stillAnswering(request)) waiting.push(request.url());
+      if (feedsInboxCount(request.url()) && stillAnswering(request)) waiting.push(request.url());
     }
     return waiting;
   };

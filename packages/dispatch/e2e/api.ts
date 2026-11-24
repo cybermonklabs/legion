@@ -20,7 +20,7 @@ import {
 import type { Actor, GatedStep } from "../web/src/api/types";
 import { harnessPorts } from "./harness-ports";
 import { type DispatchProcess, pinnedTo } from "./harness-processes";
-import { ONE_PIXEL_PNG } from "./sends";
+import { ONE_PIXEL_PNG } from "./one-pixel-png";
 
 /** The Dispatch server a process of `env`'s stack addresses: the deployed server `env` names,
  *  else the harness server of that stack, whose port e2e/global-setup.ts writes into the
