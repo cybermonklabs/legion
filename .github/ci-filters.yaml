@@ -1025,6 +1025,8 @@ go_cache_working_set_test: &go_cache_working_set_test
   - '.github/scripts/test-lib.sh'
   - '.github/scripts/go-cache-working-set.test.sh'
   - '.github/scripts/go-cache-working-set.sh'
+  - 'packages/daemon/go.mod'
+  - 'packages/envoy/go.mod'
 # why: .github/ci-notes/ci.md#priorities_seed_check_test-the-one-harness-of-the-job-outside-githubscripts
 priorities_seed_check_test: &priorities_seed_check_test
   - *ci_router

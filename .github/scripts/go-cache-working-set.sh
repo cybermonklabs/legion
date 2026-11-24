@@ -7,7 +7,8 @@
 #
 # Run `begin` after the restore and before the build, `end` after the build and before the save,
 # each with the GOCACHE the build uses (the script asks `go env GOCACHE`). <state-dir> is the
-# script's own scratch directory for that pair; it must not exist before `begin`.
+# script's own scratch directory for that pair; it must not exist before `begin`. A relative
+# <state-dir> or <earlier-state-dir> is taken from the current directory.
 #
 # Why: a fill restores the newest entry of its family, builds on it and saves the result. Each
 # build adds the objects of every package whose inputs changed since that entry, and nothing
@@ -22,19 +23,21 @@
 # miss writes both files new. A restored entry keeps the times of the fill that saved it, often
 # minutes old, so its files would not be marked. So:
 #
-#   begin  sets every entry's modification time to two hours ago, older than mtimeInterval so the
-#          build marks what it uses and younger than trimLimit (five days and an hour) so Go's own
-#          trim, which can run at the end of any go command of the build, deletes none of them;
-#          then writes its mark, and lists the entries as they stand. With <earlier-state-dir>, it
-#          then marks the entries the earlier pair kept: a job that fills two families saves the
-#          second as the union of both builds, and the second restore can put older times on
-#          files the first build used.
+#   begin  lists the entries as they stand, sets the modification time of each to two hours ago,
+#          past mtimeInterval so the build marks what it uses, and short of Trim's cutoff (trimLimit,
+#          five days, plus mtimeInterval) so Go's own trim, which can run at the end of any go
+#          command of the build, deletes none of them; then writes its mark, a minute old. With
+#          <earlier-state-dir>, it then marks the entries the earlier pair kept: a job that fills
+#          two families saves the second as the union of both builds, and the second restore can
+#          put older times on files the first build used.
 #   end    deletes every entry the build did not mark or write: an `-a` or `-d` file or directory
 #          in one of the 256 two-hex directories whose time is not newer than the mark, unless a
 #          kept action file names it as its output (a miss whose output another action already
 #          wrote does not mark that output). It leaves everything else in GOCACHE alone (trim.txt,
 #          README, the fuzz directory). It lists what it kept, for a later `begin`, and prints
-#          what it kept, deleted and found new.
+#          what it kept, deleted and found new. When the restore held entries and the build marked
+#          none of them, it warns: a Go that no longer marks what it reads would empty the entry on
+#          every fill, and every job that restores it would build from nothing every other push.
 set -euo pipefail
 
 usage() {
@@ -47,10 +50,13 @@ fail() {
   exit 1
 }
 
-# entries <cache>: every cache entry of <cache>, as paths relative to it, sorted.
+# entries <cache> [<find test>...]: every cache entry of <cache> that passes the find tests given,
+# as paths relative to it, sorted. The one rule for what an entry is.
 entries() {
-  (cd "$1" && find . -mindepth 2 -maxdepth 2 -path './[0-9a-f][0-9a-f]/*' \( -name '*-a' -o -name '*-d' \) -printf '%P\n') |
-    LC_ALL=C sort
+  local cache=$1
+  shift
+  (cd "$cache" && find . -mindepth 2 -maxdepth 2 -path './[0-9a-f][0-9a-f]/*' \( -name '*-a' -o -name '*-d' \) \
+    "$@" -printf '%P\n') | LC_ALL=C sort
 }
 
 # size <cache> <list>: the bytes of the entries <list> names, directories included.
@@ -69,12 +75,12 @@ mb() {
 
 (($# >= 2)) || usage
 command=$1
-state=$2
+state=$(realpath -ms -- "$2")
 
 case $command in
 begin)
   (($# <= 3)) || usage
-  earlier=${3:-}
+  earlier=${3:+$(realpath -ms -- "$3")}
   [[ ! -e $state ]] || fail "$state exists already; give each begin/end pair a directory of its own."
   if [[ -n $earlier && ! -f $earlier/kept ]]; then
     fail "$earlier holds no list of kept entries; give the state directory of an earlier end."
@@ -90,24 +96,25 @@ begin)
   # file with a coarse clock, so a file touched in the same tick as a mark made now would not be
   # newer than it.
   touch -m -d "@$((now - 60))" -- "$state/mark"
+  : >"$state/carried"
   if [[ -n $earlier ]]; then
     # After the mark, so each one counts as used: the files that still exist, as the earlier end
-    # left them.
+    # left them. Listed, so that end does not count them as entries this build reused.
     (cd "$cache" && while IFS= read -r entry; do
-      [[ ! -e $entry ]] || printf '%s\0' "$entry"
-    done <"$earlier/kept" | xargs -0 -r touch -m --)
+      [[ ! -e $entry ]] || printf '%s\n' "$entry"
+    done <"$earlier/kept") >"$state/carried"
+    (cd "$cache" && tr '\n' '\0' <"$state/carried" | xargs -0 -r touch -m --)
   fi
   echo "go build cache $cache: $(wc -l <"$state/before") entries, $(mb "$(size "$cache" "$state/before")") MB, marked unused until the build uses them"
   ;;
 end)
   (($# == 2)) || usage
-  [[ -f $state/mark && -f $state/cache ]] || fail "$state holds no mark; run begin with it first."
+  [[ -f $state/mark && -f $state/cache && -f $state/carried ]] || fail "$state holds no mark; run begin with it first."
   cache=$(<"$state/cache")
   [[ $cache == "$(go env GOCACHE)" ]] ||
     fail "go env GOCACHE is $(go env GOCACHE), but begin marked $cache; run both with the build's GOCACHE."
   entries "$cache" >"$state/now"
-  (cd "$cache" && find . -mindepth 2 -maxdepth 2 -path './[0-9a-f][0-9a-f]/*' \( -name '*-a' -o -name '*-d' \) \
-    -newer "$state/mark" -printf '%P\n') | LC_ALL=C sort >"$state/used"
+  entries "$cache" -newer "$state/mark" >"$state/used"
   # The outputs the used action files name: field 3 of "v1 <id> <out> <size> <time>".
   awk '/-a$/' "$state/used" | (cd "$cache" && tr '\n' '\0' | xargs -0 -r cat --) |
     awk '$1 == "v1" && $3 ~ /^[0-9a-f]+$/ { print substr($3, 1, 2) "/" $3 "-d" }' |
@@ -121,6 +128,14 @@ end)
   (cd "$cache" && tr '\n' '\0' <"$state/unused" | xargs -0 -r rm -rf --)
   echo "go build cache $cache: kept $(wc -l <"$state/kept") entries ($(mb "$kept_bytes") MB) this build used," \
     "$(wc -l <"$state/new") of them new ($(mb "$new_bytes") MB); deleted $(wc -l <"$state/unused") entries ($(mb "$unused_bytes") MB) it did not use"
+  # The restored entries this build read itself: kept, there at begin, and not carried over from
+  # an earlier pair.
+  reused=$(LC_ALL=C comm -12 "$state/kept" "$state/before" | LC_ALL=C comm -23 - "$state/carried" | wc -l)
+  if [[ -s $state/before && $reused -eq 0 ]]; then
+    echo "::warning::go-cache-working-set: the build marked none of the $(wc -l <"$state/before") entries the restore" \
+      "held, so the saved entry holds only what it compiled. A restore of another Go version does this; so would a Go" \
+      "that no longer marks the cache entries it reads (cmd/go/internal/cache's markUsed), which go-cache-working-set.test.sh checks."
+  fi
   ;;
 *)
   usage

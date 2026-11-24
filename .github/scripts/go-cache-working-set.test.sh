@@ -7,8 +7,8 @@
 # (cmd/go/internal/cache/cache.go's markUsed), which is what the script reads; a Go that stopped
 # would fail them. The later cases run the script against a stand-in `go` that only answers
 # `go env GOCACHE`, over cache files written here, for what no small real build reaches: an
-# output another action wrote before, the second family of a job, and the files that are not
-# entries.
+# output another action wrote before, the second family of a job, the files that are not
+# entries, a build that reads none of the restored entries, and relative state directories.
 #
 # Run from anywhere: .github/scripts/go-cache-working-set.test.sh
 # CI runs it in ci.yaml's test job, after its setup-go.
@@ -37,10 +37,13 @@ entries() {
   find "$1" -mindepth 2 -maxdepth 2 \( -name '*-a' -o -name '*-d' \) | wc -l | tr -d ' '
 }
 
+# lacks <text> <regex>: contains' opposite, for check.
+lacks() { grep -q -- "$2" <<<"$1" && echo false || echo true; }
+
 # --- the real go ---------------------------------------------------------------------------------
 module=$work/module
 mkdir -p "$module/a" "$module/b"
-# source <file> <text>: writes a source file a minute old. go records some cache entries only for
+# source_file <file> <text>: writes a source file a minute old. go records some cache entries only for
 # files at least two seconds old (cmd/go's modTimeCutoff), so a build straight after a write would
 # add on the next fill what this one skipped; a fill's checkout is minutes old by its build.
 source_file() {
@@ -74,7 +77,7 @@ check "end exits 0" "$(is "$status" 0)"
 check "names what it kept, what was new and what it deleted" \
   "$(contains "$out" "kept [1-9][0-9]* entries (.* MB) this build used, [1-9][0-9]* of them new (.* MB); deleted [1-9][0-9]* entries")"
 fill1=$(entries "$GOCACHE")
-check "holds fewer entries than the cache it began with plus the build's new ones" \
+check "holds no more entries than the cache it began with" \
   "$( ((fill1 <= cold)) && echo true || echo false)"
 check "no entry it deleted is still there" \
   "$(is "$(LC_ALL=C comm -12 <(cd "$GOCACHE" && find . -mindepth 2 -maxdepth 2 \( -name '*-a' -o -name '*-d' \) -printf '%P\n' | LC_ALL=C sort) "$work/fill1/unused" | wc -l | tr -d ' ')" 0)"
@@ -86,6 +89,7 @@ check "the build compiled no package of the module" "$(is "$(compiled)" "")"
 run end "$work/fill2"
 echo "  $out"
 check "keeps every entry, none new" "$(contains "$out" "kept $(entries "$GOCACHE") entries (.* MB) this build used, 0 of them new")"
+check "and does not warn: the real go marked the restored entries it read" "$(lacks "$out" '::warning::')"
 
 echo "case: a job that changes one package, on the pruned cache, compiles that package and what imports it"
 source_file "$module/b/b.go" $'package b\n\nimport "example.com/m/a"\n\nfunc B() int { return a.A() + 3 }'
@@ -187,6 +191,54 @@ touch "$c/cd/$second_id-d"
 PATH=$fake/bin:$PATH run end "$fake/second"
 check "keeps the second build's entry" "$( [ -e "$c/cd/$second_id-d" ] && echo true || echo false)"
 check "keeps the first build's entry, restored with an old time" "$( [ -e "$c/ab/$first_id-d" ] && echo true || echo false)"
+check "does not warn: the second build read an entry of its own restore" "$(lacks "$out" '::warning::')"
+
+echo "case: a build that reads none of the restored entries is named, and an empty restore is not"
+fake=$work/fake5
+fake_cache "$fake"
+c=$fake/cache
+printf 'object' >"$c/ab/ab$(hexid 7 | cut -c3-)-d"
+PATH=$fake/bin:$PATH run begin "$fake/state"
+printf 'compiled' >"$c/cd/cd$(hexid 8 | cut -c3-)-d" # the build writes one entry and reads none
+PATH=$fake/bin:$PATH run end "$fake/state"
+check "end exits 0" "$(is "$status" 0)"
+check "warns that the build marked none of the restored entries" \
+  "$(contains "$out" '^::warning::go-cache-working-set: the build marked none of the 1 entries the restore held')"
+check "and keeps what the build wrote" "$( [ -e "$c/cd/cd$(hexid 8 | cut -c3-)-d" ] && echo true || echo false)"
+fake=$work/fake6
+fake_cache "$fake"
+c=$fake/cache
+PATH=$fake/bin:$PATH run begin "$fake/state"
+printf 'compiled' >"$c/cd/cd$(hexid 9 | cut -c3-)-d"
+PATH=$fake/bin:$PATH run end "$fake/state"
+check "an end after a restore that held nothing does not warn" "$(lacks "$out" '::warning::')"
+fake=$work/fake8
+fake_cache "$fake"
+c=$fake/cache
+printf 'first' >"$c/ab/ab$(hexid 11 | cut -c3-)-d"
+PATH=$fake/bin:$PATH run begin "$fake/first"
+touch "$c/ab/ab$(hexid 11 | cut -c3-)-d"
+PATH=$fake/bin:$PATH run end "$fake/first"
+printf 'second' >"$c/cd/cd$(hexid 12 | cut -c3-)-d"
+PATH=$fake/bin:$PATH run begin "$fake/second" "$fake/first"
+PATH=$fake/bin:$PATH run end "$fake/second"
+check "a second family whose build read nothing of its own restore warns: the first build's entries do not count" \
+  "$(contains "$out" '^::warning::go-cache-working-set: the build marked none of the 2 entries the restore held')"
+
+echo "case: relative state directories are taken from the current directory"
+fake=$work/fake7
+fake_cache "$fake"
+c=$fake/cache
+printf 'object' >"$c/ab/ab$(hexid 10 | cut -c3-)-d"
+# in_fake <args...>: the script run from $fake, its exit status on stdout.
+in_fake() { (cd "$fake" && PATH=$fake/bin:$PATH "$prune" "$@" >/dev/null 2>&1) && echo 0 || echo $?; }
+check "begin with a relative state directory exits 0" "$(is "$(in_fake begin first)" 0)"
+check "and writes its list there" "$( [ -s "$fake/first/before" ] && echo true || echo false)"
+touch "$c/ab/ab$(hexid 10 | cut -c3-)-d"
+check "end with it exits 0" "$(is "$(in_fake end first)" 0)"
+check "and keeps the entry the build used" "$( [ -e "$c/ab/ab$(hexid 10 | cut -c3-)-d" ] && echo true || echo false)"
+check "begin with a relative earlier state directory exits 0" "$(is "$(in_fake begin second first)" 0)"
+check "and reads its kept list" "$(is "$(cat "$fake/second/carried" 2>/dev/null)" "ab/ab$(hexid 10 | cut -c3-)-d")"
 
 echo "case: the script refuses what would prune the wrong cache or a cache it never marked"
 fake=$work/fake3
