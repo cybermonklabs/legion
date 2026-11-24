@@ -17,12 +17,14 @@ import (
 )
 
 // midPhaseStart is one supervise start row of an issue, with whether a lane may run it now
-// (record.Store.DueRows, the predicate the outbox claims by).
+// (record.Store.DueRows, the predicate the outbox claims by) and whether it is a news-only start,
+// which brings no work (workflow's startsWork).
 type midPhaseStart struct {
 	role      claim.Role
 	task      string
 	needsSlot bool
 	claimable bool
+	news      bool
 }
 
 // startsOf is every supervise start row issue holds, oldest first.
@@ -40,7 +42,7 @@ func startsOf(t *testing.T, pool *pgxpool.Pool, issue string) []midPhaseStart {
 			runnable[row.ID] = struct{}{}
 		}
 		all, err := tx.Query(ctx, `select id, coalesce(payload->>'role', ''), coalesce(payload->>'task', ''),
-			coalesce(payload->>'needsSlot', '') = 'true'
+			coalesce(payload->>'needsSlot', '') = 'true', coalesce(payload->>'news', '') = 'true'
 			from outbox where issue = $1 and kind = 'supervise' and payload->>'op' = 'start' order by id`, issue)
 		if err != nil {
 			t.Fatalf("list the starts of %s: %v", issue, err)
@@ -49,7 +51,7 @@ func startsOf(t *testing.T, pool *pgxpool.Pool, issue string) []midPhaseStart {
 		for all.Next() {
 			var id int64
 			var row midPhaseStart
-			if err := all.Scan(&id, &row.role, &row.task, &row.needsSlot); err != nil {
+			if err := all.Scan(&id, &row.role, &row.task, &row.needsSlot, &row.news); err != nil {
 				t.Fatalf("scan a start of %s: %v", issue, err)
 			}
 			_, row.claimable = runnable[id]

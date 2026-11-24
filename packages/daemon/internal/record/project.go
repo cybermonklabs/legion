@@ -1189,7 +1189,7 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) ([]LineEntry, []Held
 	queuedKeys := make(map[string]struct{}, len(queued))
 	// unopened is the queued roots whose promotion has still to open their tree (AwaitsPromotion):
 	// nothing of such a tree starts before that promotion, which offers the root's own work and
-	// brings back its members (admit's startMidPhaseMembers), so the line offers none of its members
+	// brings back its members (admit's returnOwedMembers), so the line offers none of its members
 	// a place (inUnopenedTree). A queued root holding a row the daemon granted it in this tree has
 	// been promoted already, and its members stand in the line as the members of any tree that
 	// runs. The ladder's tree_closed word reads the open-gate members of these trees
@@ -1367,10 +1367,13 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) ([]LineEntry, []Held
 		// skip below holds the member, but in two cases: a re-admitted root whose tree has no
 		// lifecycle open under the workflow, whose gate says nothing until its promotion (ran), and
 		// a root another tree handed over with an open gate (dispatch://INFRA-5471). A root whose
-		// re-admission still owes its members their return takes no first phase of its own before
-		// that return either: the admission pass brings them back before it judges the line
-		// (admit's returnMembersOfRunningTrees), so the one such root this meets is one whose label
-		// a person took off, which nothing hands to the daemon (record.MembersReturnOwed).
+		// label a person took off while its re-admission still owes its members their return takes
+		// no first phase of its own either: nothing hands its tree to the daemon, so the admission
+		// pass brings no member back (record.MembersReturnOwed), and a first phase would start its
+		// work ahead of them. A marked root that is still handed over is not held here: the pass
+		// brings its members back before the line is judged, and a root that pass passes over for
+		// the promotion's hold (admit's heldKeys) is offered its first phase here and stopped by
+		// the promotion loop through the same hold, so the candidates behind it keep waiting.
 		if _, waitingAsRoot := queuedKeys[issue.Key]; waitingAsRoot || !runs(issue) || inUnopenedTree(issue) ||
 			(issue.MembersOwed && !issue.HandedOver) {
 			hold(issue)
@@ -1567,21 +1570,23 @@ func ran(issue Issue, lifecycle treelifecycle.Lifecycle, gate TreeGate) bool {
 // (Issue.HandedOverFrom) may carry the row it held there and still wait; Waiting's queued-root
 // loop, which reads this, states why. Until that promotion nothing of the tree runs: the root's
 // carried phase, and each member a re-admission left mid-phase, start their runs there (admit's
-// startMidPhaseMembers), so the boot and the settle open and record no run of such a tree
+// returnOwedMembers), so the boot and the settle open and record no run of such a tree
 // (workflow's generationStarted).
 func AwaitsPromotion(root Issue, lifecycle treelifecycle.Lifecycle, gate TreeGate, holds bool) bool {
 	return QueuedRoot(root, lifecycle, gate) && !(holds && root.HandedOverFrom == "")
 }
 
-// MembersReturnOwed says whether the admission pass brings back root's members now: a re-admission
-// owes them their return (Issue.MembersOwed), the root's design gate has opened (TreeGate.EverOpened)
-// and its tree runs (TreeRuns, over lifecycle, its tree's lifecycle), so the root is no queued
-// root and no promotion will come for it. That is a re-admitted root whose architect registered
-// an approved design while the root still waited in the line: the promotion that brings a
-// re-admitted tree's members back (admit's startMidPhaseMembers and reenterStrandedChildren) no
-// longer comes, and the pass brings them back instead, once, and clears the mark
-// (dispatch://INFRA-5471). A promotion clears the mark itself, so a tree it opened never reads
-// true here.
+// MembersReturnOwed says whether the admission pass acts on root's mark now: a re-admission owes
+// the members their return (Issue.MembersOwed), the root's design gate has opened
+// (TreeGate.EverOpened) and its tree runs (TreeRuns, over lifecycle, its tree's lifecycle), so the
+// root is no queued root and no promotion will come for it. That is a re-admitted root whose
+// architect registered an approved design while the root still waited in the line: the promotion
+// that brings a re-admitted tree's members back (admit's returnOwedMembers) no longer comes, and
+// the pass brings them back instead, once, and clears the mark (dispatch://INFRA-5471). This
+// release's promotion clears the mark itself, so a tree it opened never reads true here. A true
+// answer for a root that holds a slot, a wait mark or a phase of its own past admitted is a stale
+// mark an earlier release's promotion left, which never names the column: the pass clears it and
+// starts nothing (admit's returnMembersOfRunningTrees).
 //
 // The root must still be handed to Legion (Issue.HandedOver), as a promotion asks of a queued root:
 // a root whose label a person took off while it waited is no queued root either, and the tree runs

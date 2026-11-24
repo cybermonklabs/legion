@@ -288,16 +288,17 @@ type Issue struct {
 	TreeStalledToldAt *time.Time
 	// MembersOwed says that a re-admission started this root's generation and its tree has not yet
 	// run in it, so the members that re-admission left mid-phase, and the members reopened at done,
-	// are still to be brought back (dispatch://INFRA-5471). admit's readmit sets it. Two writes
-	// clear it, each in the transaction that brings the members back (admit's returnOwedMembers):
-	// the root's promotion from the waiting line, and the first admission pass that finds its tree
-	// running before any promotion while the root is still handed to Legion and its design gate
-	// has opened (admit's returnMembersOfRunningTrees, MembersReturnOwed). A root whose label a
-	// person takes off while it waits stops being a queued root and keeps the mark until the label
-	// returns. That pass also clears, and starts nothing for, the mark of a root a daemon of an
-	// earlier release promoted, which brought the members back and never names the column. While
-	// the mark stands, a tree whose lifecycle is not open under the workflow keeps its root queued
-	// whatever the gate says (ran).
+	// are still to be brought back (dispatch://INFRA-5471). admit's readmit sets it. It is cleared
+	// in three places. Two bring the members back in the same transaction (admit's
+	// returnOwedMembers): the root's promotion from the waiting line, and the first admission pass
+	// that finds its tree running before any promotion while the root is still handed to Legion
+	// and its design gate has opened (admit's returnMembersOfRunningTrees, MembersReturnOwed). The
+	// third is that same pass meeting a root a daemon of an earlier release promoted, which brought
+	// the members back and never names the column: a root holding a slot, a wait mark or a phase of
+	// its own past admitted. It clears that mark and starts nothing. A root whose label a person
+	// takes off while it waits stops being a queued root and keeps the mark until the label
+	// returns. While the mark stands, a tree whose lifecycle is not open under the workflow keeps
+	// its root queued whatever the gate says (ran).
 	// It is false on a child's row and on every root no re-admission started. Only Store.OweMembers
 	// and Store.ClearMembersOwed write it, and PutIssue keeps the stored value, as it does for
 	// released_for_wait_at: every write site that records the root holds a copy read before its own

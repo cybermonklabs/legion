@@ -30,9 +30,11 @@
 -- reads none of this one, so every row it inserts takes the default. Daemons of several projects
 -- that share the database may upgrade one after another: a daemon still on the release before
 -- promotes a root this statement marked without clearing the mark, and it re-admits a root without
--- setting one. The first is caught by this release's pass, which clears the mark of a root holding
--- a slot or the mark of a slot given back for a wait and starts nothing for it (admit's
--- returnMembersOfRunningTrees); the second leaves that generation as the release before left it,
+-- setting one. The first is caught by this release's pass, which clears the mark of a root such a
+-- promotion left and starts nothing for it: a root that holds a slot, carries the mark of a slot
+-- given back for a wait, or stands in a phase of its own tree past admitted, as it does once it
+-- has moved on to accepting, retro or merging, which keep no slot (admit's
+-- returnMembersOfRunningTrees). The second leaves that generation as the release before left it,
 -- its members brought back at its promotion only.
 --
 -- There is no down file. This directory keeps none — migrations here are forward-only and no
