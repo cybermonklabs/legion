@@ -193,6 +193,11 @@
 # size_bytes, used_before, used_after, used_peak, free_min, samples (each reading with its time)
 # and threshold_pct; a read that failed is a sample with error and no number.
 #
+# gh's words: whatever answers up's and redeploy's gh calls in GitHub's place holds gh's token and
+# writes what gh says on its stderr and what it answers, so neither is printed. Each call keeps both
+# in a directory gh-words.<random> of LOADTEST_CLUSTER_ROOT, which a refusal names, and an answer
+# is printed only as the value it is held to (a 40-hex commit, a Postgres major's digits).
+#
 # A read-only kubectl exec (psql reads, nats-box reads, the runner's file reads) that fails on a
 # transient API server error (error dialing backend, a refused or reset connection to the API
 # server) is retried once, 5 s later; a write is never retried.
@@ -609,31 +614,52 @@ resolve_image() {
   printf '%s/%s@%s\n' "$registry" "$repo" "$got"
 }
 
+# gh_kept: a new directory gh-words.<random> in CLUSTER_ROOT, its path on stdout, for one gh call's
+# answer (answer) and its stderr (said), neither of which is printed (see the header). The caller
+# names the file a refusal rests on, and removes the directory when it names none.
+gh_kept() {
+  (umask 077 && mkdir -p -- "$CLUSTER_ROOT") || die "cannot create $CLUSTER_ROOT"
+  mktemp -d "$CLUSTER_ROOT/gh-words.XXXXXX" || die "cannot create a directory for gh's words in $CLUSTER_ROOT"
+}
+
 # image_for_commit SHA: ghcr.io's envoy image of SHA by digest. With none, it walks SHA's
 # first-parent ancestors on cybermonklabs/legion (gh api) to the newest that has one and dies naming
-# both; nothing has been created by then.
+# both; nothing has been created by then. A parent is read as gh's answer only when it is a 40-hex
+# commit; gh's own words stay in gh_kept's directory.
 image_for_commit() {
-  local commit=$1 image c i
+  local commit=$1 image c i kept
   if image=$(resolve_image "$ENVOY_IMAGE_REPO:$commit" 2>/dev/null); then
     printf '%s\n' "$image"
     return 0
   fi
+  kept=$(gh_kept) || exit 1
   c=$commit
   for ((i = 0; i < 100; i++)); do
-    c=$(gh api "repos/$LEGION_REPO/commits/$c" --jq '.parents[0].sha // empty') ||
-      die "no image $ENVOY_IMAGE_REPO:$commit, and gh api could not read commit $c of $LEGION_REPO"
-    [[ $c =~ ^[0-9a-f]{40}$ ]] || die "no image $ENVOY_IMAGE_REPO:$commit, and no first-parent ancestor of it on $LEGION_REPO within $i commits has one"
+    gh api "repos/$LEGION_REPO/commits/$c" --jq '.parents[0].sha // empty' >"$kept/answer" 2>"$kept/said" ||
+      die "no image $ENVOY_IMAGE_REPO:$commit, and gh api could not read commit $c of $LEGION_REPO; gh's own words are in $kept/said"
+    c=$(<"$kept/answer")
+    if ! [[ $c =~ ^[0-9a-f]{40}$ ]]; then
+      rm -rf -- "$kept"
+      die "no image $ENVOY_IMAGE_REPO:$commit, and no first-parent ancestor of it on $LEGION_REPO within $i commits has one"
+    fi
     if resolve_image "$ENVOY_IMAGE_REPO:$c" >/dev/null 2>&1; then
+      rm -rf -- "$kept"
       die "no image $ENVOY_IMAGE_REPO:$commit (images are built for main commits that touch packages/envoy, or by release-envoy-listener.yaml on a branch); the newest first-parent ancestor on $LEGION_REPO main that has one is $c: pass --dispatch-commit $c, or publish an image of $commit"
     fi
   done
+  rm -rf -- "$kept"
   die "no image $ENVOY_IMAGE_REPO:$commit, and none of its 100 newest first-parent ancestors on $LEGION_REPO has one"
 }
 
-# production_file PATH: PATH on the production repository's main (--production-repo).
+# production_file PATH: PATH on the production repository's main (--production-repo), as the file
+# answer of a new gh_kept directory, whose path it prints. The caller reads that file and removes
+# the directory, or names the file in its refusal.
 production_file() {
-  gh api "repos/$PRODUCTION_REPO/contents/$1?ref=main" -H 'Accept: application/vnd.github.raw' ||
-    die "gh api could not read $1 on $PRODUCTION_REPO main"
+  local kept
+  kept=$(gh_kept) || exit 1
+  gh api "repos/$PRODUCTION_REPO/contents/$1?ref=main" -H 'Accept: application/vnd.github.raw' >"$kept/answer" 2>"$kept/said" ||
+    die "gh api could not read $1 on $PRODUCTION_REPO main; gh's own words are in $kept/said"
+  printf '%s\n' "$kept"
 }
 
 # ---- manifests ------------------------------------------------------------------------------------
@@ -3663,21 +3689,35 @@ up_run() {
       "so it has no browsertype for browser typing (INFRA-707)"
   fi
 
-  # Production's facts, from the production repository's main.
-  local prod_major listener_ref
-  prod_major=$(production_file dispatch/main.go | sed -n 's/^[[:space:]]*databaseVersion[[:space:]]*=[[:space:]]*"POSTGRES_\([0-9][0-9]*\)".*$/\1/p' | head -n1)
-  [ -n "$prod_major" ] || die "up: $PRODUCTION_REPO main's dispatch/main.go holds no databaseVersion = \"POSTGRES_<n>\""
+  # Production's facts, from the production repository's main. A listener image read from gh's
+  # answer is printed nowhere: resolve_image's notes, and curl's errors under them, name the
+  # reference, so they are dropped for the refusal's own words.
+  local prod_major listener_ref kept listener_kept=""
+  kept=$(production_file dispatch/main.go) || exit 1
+  prod_major=$(sed -n 's/^[[:space:]]*databaseVersion[[:space:]]*=[[:space:]]*"POSTGRES_\([0-9][0-9]*\)".*$/\1/p' "$kept/answer" | head -n1)
+  [ -n "$prod_major" ] || die "up: $PRODUCTION_REPO main's dispatch/main.go holds no databaseVersion = \"POSTGRES_<n>\"; gh's answer is in $kept/answer"
+  rm -rf -- "$kept"
   [ "$prod_major" = "$major" ] || die "up: --pg-major $major differs from production's Postgres $prod_major ($PRODUCTION_REPO main, dispatch/main.go databaseVersion POSTGRES_$prod_major); the copy runs production's major"
   listener_ref=${OPT[listener-image]:-}
   if [ -z "$listener_ref" ]; then
-    listener_ref=$(production_file dispatch/Pulumi.prod.yaml | sed -n 's/^[[:space:]]*[A-Za-z0-9_.-]*:listenerImage:[[:space:]]*"\{0,1\}\([^"[:space:]]*\)"\{0,1\}.*$/\1/p' | head -n1)
-    [ -n "$listener_ref" ] || die "up: $PRODUCTION_REPO main's dispatch/Pulumi.prod.yaml holds no <project>:listenerImage; give --listener-image"
+    listener_kept=$(production_file dispatch/Pulumi.prod.yaml) || exit 1
+    listener_ref=$(sed -n 's/^[[:space:]]*[A-Za-z0-9_.-]*:listenerImage:[[:space:]]*"\{0,1\}\([^"[:space:]]*\)"\{0,1\}.*$/\1/p' "$listener_kept/answer" | head -n1)
+    [ -n "$listener_ref" ] || die "up: $PRODUCTION_REPO main's dispatch/Pulumi.prod.yaml holds no <project>:listenerImage; give --listener-image; gh's answer is in $listener_kept/answer"
   fi
 
   # Every image by digest, before anything is created.
   local dispatch_image listener_image pg_image socat_image runner_image nats_images
-  dispatch_image=$(image_for_commit "$commit")
-  listener_image=$(resolve_image "$listener_ref") || die "up: the listener image does not resolve"
+  dispatch_image=$(image_for_commit "$commit") || {
+    [ -z "$listener_kept" ] || rm -rf -- "$listener_kept"
+    exit 1
+  }
+  if [ -z "$listener_kept" ]; then
+    listener_image=$(resolve_image "$listener_ref") || die "up: the listener image does not resolve"
+  else
+    listener_image=$(resolve_image "$listener_ref" 2>/dev/null) ||
+      die "up: the listener image $PRODUCTION_REPO main's dispatch/Pulumi.prod.yaml names is no image reference or does not resolve; gh's answer is in $listener_kept/answer"
+    rm -rf -- "$listener_kept"
+  fi
   pg_image=$(resolve_image "$PG_IMAGE_PREFIX$major") || die "up: the Postgres image does not resolve"
   socat_image=$(resolve_image "$SOCAT_IMAGE") || die "up: the pprof sidecar image does not resolve"
   runner_image=$(resolve_image "$RUNNER_IMAGE") || die "up: the runner image does not resolve"

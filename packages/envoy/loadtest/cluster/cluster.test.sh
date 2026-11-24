@@ -29,7 +29,11 @@
 # naming the holder and the heartbeat's age, and past 15 min calling it stale and naming the down
 # command; down refuses another run's lock; replay-prepare refuses a manifest whose seed is null and
 # a seed check that failed (check.passed false, version_size_mismatches or
-# anchors_outside_logged_block not 0), each before any kubectl call; (c) up, seed, step,
+# anchors_outside_logged_block not 0), each before any kubectl call; (b2) up prints no run of the
+# marker the fake gh says or answers for a commit's first parent, dispatch/main.go or
+# dispatch/Pulumi.prod.yaml (a listener image of no shape, or one that does not resolve), and
+# names the gh-words file that keeps it, while a refusal that names none and an up that goes on
+# leave no gh-words directory; (c) up, seed, step,
 # replay-prepare, replay, db-size, collect, status, down and all run through to the end, and every
 # kubectl call any of them makes, the background heartbeat and sampler included, carries
 # `-n <namespace>`; each step and replay writes pg-stats-before.json and pg-stats-after.json; a
@@ -671,12 +675,28 @@ EOF
 
 cat >"$bin/gh" <<'EOF'
 #!/usr/bin/env bash
-# The fake gh: the production repository's two files and each commit's first parent.
+# The fake gh: the production repository's two files and each commit's first parent. The call
+# FAKE_GH_FAILS names (main.go, Pulumi.prod.yaml or commits) fails instead, answering
+# FAKE_GH_ANSWERS on its stdout and saying FAKE_GH_SAYS on its stderr; Pulumi.prod.yaml's
+# listenerImage is FAKE_LISTENER_IMAGE where it is set.
 printf '%s\n' "$*" >>"$FAKE_DIR/gh.log"
+fails() {
+  [ "${FAKE_GH_FAILS:-}" = "$1" ] || return 0
+  [ -z "${FAKE_GH_ANSWERS:-}" ] || printf '%s\n' "$FAKE_GH_ANSWERS"
+  printf '%s\n' "${FAKE_GH_SAYS:-}" >&2
+  exit 1
+}
 case $* in
-  *contents/dispatch/main.go*) printf 'const (\n\tdatabaseVersion = "POSTGRES_%s"\n)\n' "${FAKE_PROD_MAJOR:-16}" ;;
-  *contents/dispatch/Pulumi.prod.yaml*) printf 'config:\n  example:listenerImage: ghcr.io/cybermonklabs/legion/envoy@sha256:%064d\n' 1 ;;
+  *contents/dispatch/main.go*)
+    fails main.go
+    printf 'const (\n\tdatabaseVersion = "POSTGRES_%s"\n)\n' "${FAKE_PROD_MAJOR:-16}"
+    ;;
+  *contents/dispatch/Pulumi.prod.yaml*)
+    fails Pulumi.prod.yaml
+    printf 'config:\n  example:listenerImage: %s\n' "${FAKE_LISTENER_IMAGE:-ghcr.io/cybermonklabs/legion/envoy@sha256:$(printf '%064d' 1)}"
+    ;;
   "api repos/cybermonklabs/legion/commits/"*)
+    fails commits
     c=${2##*/}
     awk -v c="$c" '$1 == c { print $2 }' "$FAKE_DIR/parents"
     ;;
@@ -1049,7 +1069,8 @@ unset FAKE_EXEC_FAIL FAKE_SAMPLE FAKE_PROD_MAJOR FAKE_LOADGEN_FAIL FAKE_APPLY_FA
   FAKE_PG_DF_SEQ FAKE_PG_DF_DELAY FAKE_RC_UNTIL_STOP FAKE_RC_UNTIL_KILL FAKE_HEAP_COPY_FAIL FAKE_HEAP_EXISTS_FAIL FAKE_HEAP_KEEP_REMOVE_FAIL \
   FAKE_LOCK_GET_FAIL FAKE_LOCK_GET_FAIL_TIMES FAKE_LOCK_GET_OK_TIMES FAKE_LOCK_GET_DELAY \
   FAKE_RUNNER_EXEC_FAIL FAKE_RUNNER_EXEC_FAIL_AT_STOP FAKE_RUNNER_EXEC_FAIL_AT_KILL FAKE_SLEEP_GATE \
-  FAKE_IDENTITY_ANSWER FAKE_LISTENER_NO_PRINCIPAL FAKE_MINT_TOKEN FAKE_LOADGEN_NO_MINT FAKE_DAEMON_START_NAPS
+  FAKE_IDENTITY_ANSWER FAKE_LISTENER_NO_PRINCIPAL FAKE_MINT_TOKEN FAKE_LOADGEN_NO_MINT FAKE_DAEMON_START_NAPS \
+  FAKE_GH_FAILS FAKE_GH_ANSWERS FAKE_GH_SAYS FAKE_LISTENER_IMAGE
 export DISPATCH_URL=http://dispatch.invalid DISPATCH_TOKEN_FILE=$fake/token
 # The manifest names no issue: the operator does, and replay-prepare refuses without it.
 export LOADTEST_REPLAY_ISSUE=INFRA-639
@@ -1299,6 +1320,101 @@ grep -q -- '--pg-major 18 differs from production.s Postgres 16' "$tmp/out" || f
 grep -q 'POSTGRES_16' "$tmp/out" || fail "up's refusal does not name production's databaseVersion"
 no_create || fail "up created something before refusing the Postgres major"
 pass "up refuses a --pg-major that differs from the production repository's, naming both"
+
+# (b2) up prints no word of gh's. Whatever answers gh's calls in GitHub's place holds gh's token and
+# writes what gh says on its stderr and what it answers, so up keeps both in a gh-words directory
+# of LOADTEST_CLUSTER_ROOT (gh_kept) and names the file there. Each case has the fake gh say or
+# answer the marker not-a-secret-token where up reads it, and no run of eight of its characters
+# (redacttest.Piece's run) may be in what up printed. The twin is the file up names, which does
+# hold the marker, and gh.log is the control that the fake gh is the one called; an answer of the
+# shape up holds it to is still printed, as the cases above show (the ancestor's 40-hex commit, the
+# Postgres major). Every case runs and prints its failures, and the block fails once at its end.
+# shellcheck disable=SC2031 # the subshells that change tmp and ns are sourced cluster.sh's locals
+readonly gh_marker=not-a-secret-token gh_root=$tmp/root-ghwords gh_out=$tmp/out gh_ns=$ns
+gh_prior_root=$LOADTEST_CLUSTER_ROOT
+export LOADTEST_CLUSTER_ROOT=$gh_root
+gh_failed=0
+gh_fail() {
+  printf 'FAIL: %s\n' "$*" >&2
+  gh_failed=$((gh_failed + 1))
+}
+# holds_marker TEXT: TEXT holds a run of eight characters of gh_marker.
+holds_marker() {
+  local at
+  for ((at = 0; at + 8 <= ${#gh_marker}; at++)); do
+    [[ $1 == *"${gh_marker:at:8}"* ]] && return 0
+  done
+  return 1
+}
+# gh_case WHAT CALL FILE EXPECT: after run_cluster up, where the fake gh said or answered the marker
+# in its call CALL, up refused, created nothing and printed no run of the marker, its refusal holds
+# EXPECT and names a gh-words FILE (said or answer) that does hold the marker, into GH_NAMED, and
+# the fake gh was called for CALL.
+gh_case() {
+  local what=$1 call=$2 file=$3 expect=$4 printed
+  printed=$(<"$gh_out")
+  grep -qF -- "$call" "$fake/gh.log" || gh_fail "control: the fake gh was never called for $call, so the case where $what proves nothing"
+  ((RC != 0)) || gh_fail "up went on where $what"
+  no_create || gh_fail "up created something before refusing where $what"
+  ! holds_marker "$printed" || gh_fail "up printed a run of the marker where $what: $printed"
+  [[ $printed == *"$expect"* ]] || gh_fail "up's refusal where $what does not say '$expect': $printed"
+  GH_NAMED=$(grep -oE -- "$gh_root/gh-words\.[A-Za-z0-9]+/$file" "$gh_out" | head -n1 || true)
+  if [ -z "$GH_NAMED" ]; then
+    gh_fail "up's refusal where $what names no gh-words file $file: $printed"
+  elif ! grep -qF -- "$gh_marker" "$GH_NAMED"; then
+    gh_fail "twin: $GH_NAMED, the file up names where $what, does not hold the marker the fake gh gave it"
+  fi
+}
+
+reset_fake
+: >"$fake/gh.log"
+FAKE_GH_FAILS=commits FAKE_GH_ANSWERS=$gh_marker FAKE_GH_SAYS="gh: $gh_marker (HTTP 502)" \
+  run_cluster up "${up_args[@]}" --dispatch-commit "$commit_none"
+gh_case "gh's read of a commit's first parent failed, answering and saying the marker" \
+  "api repos/cybermonklabs/legion/commits/$commit_none" said \
+  "no image ghcr.io/cybermonklabs/legion/envoy:$commit_none, and gh api could not read commit $commit_none of cybermonklabs/legion; gh's own words are in "
+[ -z "$GH_NAMED" ] || grep -qF -- "$gh_marker" "${GH_NAMED%/said}/answer" ||
+  gh_fail "twin: ${GH_NAMED%/said}/answer does not hold the marker the failed read of a first parent answered"
+
+for gh_file in main.go Pulumi.prod.yaml; do
+  reset_fake
+  : >"$fake/gh.log"
+  FAKE_GH_FAILS=$gh_file FAKE_GH_SAYS="gh: $gh_marker (HTTP 404)" run_cluster up "${up_args[@]}" --dispatch-commit "$commit_ok"
+  gh_case "gh's read of dispatch/$gh_file failed, saying the marker" "contents/dispatch/$gh_file" said \
+    "gh api could not read dispatch/$gh_file on example/deploy main; gh's own words are in "
+done
+
+# The listener's image as gh answered it: no image reference at all, and one that is but resolves
+# to no manifest at the registry (the fake curl's 404).
+printf '%s\n' "$gh_marker" >>"$fake/missing-refs"
+for gh_image in "$gh_marker" "ghcr.io/example/listener:$gh_marker"; do
+  reset_fake
+  : >"$fake/gh.log"
+  FAKE_LISTENER_IMAGE=$gh_image run_cluster up "${up_args[@]}" --dispatch-commit "$commit_ok"
+  gh_case "Pulumi.prod.yaml's listenerImage, as gh answered it, is '$gh_image'" "contents/dispatch/Pulumi.prod.yaml" answer \
+    "up: the listener image example/deploy main's dispatch/Pulumi.prod.yaml names is no image reference or does not resolve; gh's answer is in "
+done
+grep -qF -- "/manifests/$gh_marker" "$fake/curl.log" ||
+  gh_fail "control: the listener image that is a reference was never read at the registry, so its case did not reach the read that refuses it"
+
+# What names nothing goes: a refusal that names no gh-words file, and an up that goes on, leave no
+# gh-words directory. The cases above, which name one each, are the control that the glob finds one.
+gh_dirs() { compgen -G "$gh_root/gh-words.*" || true; }
+[ -n "$(gh_dirs)" ] || gh_fail "control: the cases above left no gh-words directory, so a check for none proves nothing"
+rm -rf -- "$gh_root"/gh-words.*
+reset_fake
+run_cluster up "${up_args[@]}" --dispatch-commit "$commit_none"
+[ -z "$(gh_dirs)" ] || gh_fail "up's refusal of a commit with no image left a gh-words directory it does not name: $(gh_dirs)"
+run_cluster up --namespace "$gh_ns" --storage-class premium-rwo --pg-major 18 --production-repo example/deploy --dispatch-commit "$commit_ok"
+[ -z "$(gh_dirs)" ] || gh_fail "up's refusal of --pg-major 18 left a gh-words directory it does not name: $(gh_dirs)"
+run_cluster up "${up_args[@]}" --dispatch-commit "$commit_ok"
+((RC == 0)) || gh_fail "up exited $RC: $(cat "$gh_out")"
+[ -z "$(gh_dirs)" ] || gh_fail "an up that went on left a gh-words directory: $(gh_dirs)"
+run_cluster down --namespace "$gh_ns"
+((RC == 0)) || gh_fail "down exited $RC: $(cat "$gh_out")"
+export LOADTEST_CLUSTER_ROOT=$gh_prior_root
+((gh_failed == 0)) || fail "up printed gh's words, or did not keep them where it says, in $gh_failed checks (each FAIL above)"
+pass "up prints no run of what gh said or answered for a commit's first parent, dispatch/main.go or dispatch/Pulumi.prod.yaml, names the gh-words file that keeps it, and leaves no gh-words directory that it names nowhere"
 
 # checker_refused WHAT: up's refusal of WHAT left nothing: no kubectl create or apply, no lock, no
 # envoy-dispatch built, and no checker scratch directory.
