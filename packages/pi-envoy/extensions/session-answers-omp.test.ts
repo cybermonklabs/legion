@@ -6,6 +6,7 @@ import { DISPATCH_FIRST_MARKER } from "@legion/envoy-client/dispatch-first";
 import {
   ANSWERS_WAIT_RECORD_FILE,
   isSessionAnswersText,
+  leftOutLine,
   renderSessionAnswers,
   SESSION_ANSWERS_DEADLINE_MS,
   SESSION_ANSWERS_MARKER,
@@ -847,11 +848,7 @@ test.skipIf(skipped)(
     expect(count).toBeGreaterThan(0);
     expect(shown.slice(count).every((included) => !included)).toBe(true);
     const leftOut = items.length - count;
-    expect(
-      list.endsWith(
-        `\n\n${leftOut} older items left out to stay under 8,000 characters: run \`dispatch answers\` to read every one in full.`
-      )
-    ).toBe(true);
+    expect(list.endsWith(`\n\n${leftOutLine(leftOut, true)}`)).toBe(true);
     expect(carried).toBe(sentList(renderSessionAnswers(items, { now: Date.now() })));
   }
 );
