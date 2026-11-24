@@ -9,7 +9,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
-// The fences of a start are one judgment (fenceOf), which the outbox's run of the row logs from and
+// The fences of a start are one judgment (startFenceOf), which the outbox's run of the row logs from and
 // the judgment again under the machine's lock reads (stepStands), so neither can hold a fence the
 // other lacks, as the old step check held the phase where the outbox held the step's role. It
 // names the first fence a row fails, in the outbox's order: the generation, then the phase and the
@@ -43,7 +43,7 @@ func TestAStartRowNamesTheFirstFenceItFailsAndReadsThePhasesRowsForTheEntryAlone
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			read := 0
-			got, err := fenceOf(tc.issue, tc.payload, func() ([]record.PhaseRow, error) {
+			got, err := startFenceOf(tc.issue, tc.payload, func() ([]record.PhaseRow, error) {
 				read++
 				return rows, nil
 			})
@@ -56,7 +56,7 @@ func TestAStartRowNamesTheFirstFenceItFailsAndReadsThePhasesRowsForTheEntryAlone
 		})
 	}
 	refused := errors.New("the store is gone")
-	if _, err := fenceOf(checking, record.SuperviseRequest{Op: "start", Role: "checker", Phase: phase.Step, Entry: 5, Generation: 2},
+	if _, err := startFenceOf(checking, record.SuperviseRequest{Op: "start", Role: "checker", Phase: phase.Step, Entry: 5, Generation: 2},
 		func() ([]record.PhaseRow, error) { return nil, refused }); !errors.Is(err, refused) {
 		t.Fatalf("the fence over a failed read of the phases rows = %v, want that read's error", err)
 	}

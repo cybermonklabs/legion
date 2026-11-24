@@ -2522,7 +2522,7 @@ func (r *outbox) controllerNotice(ctx context.Context, row record.OutboxRow, pay
 	return nil
 }
 
-// startFence names the fence a supervise row of a phase's work fails (fenceOf): fenceHolds where
+// startFence names the fence a supervise row of a phase's work fails (startFenceOf): fenceHolds where
 // every fence lets it through.
 type startFence int
 
@@ -2537,7 +2537,7 @@ const (
 	fenceEntry
 )
 
-// fenceOf is the one judgment of whether a supervise row that is no production check's look
+// startFenceOf is the one judgment of whether a supervise row that is no production check's look
 // (payload) is still the work of its issue, and the first fence it fails: the outbox's run of the
 // row logs that fence and finishes the row (supervise), and the judgment again under a machine's
 // lock asks only whether every fence holds (stepStands). Three fences, all of them and not a part:
@@ -2560,7 +2560,7 @@ const (
 //
 // rows reads the issue's phases rows, and is called for the entry fence alone, the one that reads
 // them.
-func fenceOf(issue record.Issue, payload record.SuperviseRequest, rows func() ([]record.PhaseRow, error)) (startFence, error) {
+func startFenceOf(issue record.Issue, payload record.SuperviseRequest, rows func() ([]record.PhaseRow, error)) (startFence, error) {
 	if payload.Generation != issue.Generation {
 		return fenceGeneration, nil
 	}
@@ -2621,14 +2621,14 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 	// A check start (CheckLook) runs after the close: its issue holds no phase, its generation may
 	// be a later run's and its tree may linger, so it is fenced on the open check — the instance the
 	// row names — and its look (checkLookHolds) where every other row is fenced on the generation,
-	// the phase and the entry (fenceOf), and logs the fence it failed.
+	// the phase and the entry (startFenceOf), and logs the fence it failed.
 	var check *record.ProductionCheck
 	if payload.CheckLook > 0 {
 		if check, err = r.checkLookHolds(ctx, row, payload, issue); err != nil || check == nil {
 			return err
 		}
 	} else {
-		fence, err := fenceOf(issue, payload, phaseRows)
+		fence, err := startFenceOf(issue, payload, phaseRows)
 		if err != nil {
 			return err
 		}
