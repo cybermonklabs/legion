@@ -1023,6 +1023,35 @@ func TestACreateWhoseSentStreamCreateLosesItsAnswerSaysTheBucketMayBeThere(t *te
 	}
 }
 
+// A create whose STREAM.CREATE the server answers with a refusal says what the server answered,
+// and not that the bucket may have been created: an answered refusal made no stream. The hub's
+// account here holds at most one stream (an account limit), and holds one already, so the server
+// answers the bucket's create that the account has reached its maximum number of streams. The run
+// fails naming that answer, and the hub holds no bucket. At 19efccd870 the bus marked every failed
+// create that had sent a STREAM.CREATE with bus.ErrStreamCreateSent, a refused one included, so
+// the run's line said the create "may have landed" of a bucket the hub does not hold.
+func TestACreateWhoseStreamCreateIsRefusedSaysNothingMayHaveLanded(t *testing.T) {
+	t.Setenv(bus.ReplicasEnvVar, "")
+	const config = "accounts {\n  LIMITED {\n    jetstream { max_streams: 1 }\n    users = [ { user: limited, password: limited } ]\n  }\n}\nno_auth_user: limited\n"
+	_, uri := testnats.StartConfig(t, config, []string{"-js"}, true)
+	conn, js := jetStream(t, uri)
+	if _, err := js.AddStream(&natsgo.StreamConfig{Name: "FILLER", Subjects: []string{"filler.>"}}); err != nil {
+		t.Fatalf("make the account's one stream: %v", err)
+	}
+	var out, errOut strings.Builder
+	code := createBuckets(t.Context(), &out, &errOut, conn, js, []string{bus.KnownSessionBucket}, 1, func(string) {})
+	stdout, stderr := out.String(), errOut.String()
+	if code != 1 || stdout != "" || !strings.Contains(stderr, "maximum number of streams reached") {
+		t.Fatalf("the run = %d, want 1 naming the server's refusal\nstdout: %q\nstderr: %q", code, stdout, stderr)
+	}
+	if strings.Contains(stderr, "may have landed") || strings.Contains(stderr, "may have been created") {
+		t.Fatalf("the run says a create the server refused may have landed:\nstderr: %q", stderr)
+	}
+	if _, err := js.StreamInfo("KV_" + bus.KnownSessionBucket); !errors.Is(err, natsgo.ErrStreamNotFound) {
+		t.Fatalf("the hub holds KV_%s after the refused create (%v), so the refusal this test reads never happened", bus.KnownSessionBucket, err)
+	}
+}
+
 // A request refused through a whole wait is reported once: by the run's one line naming the
 // refusal on standard error, and by no line of the connection's, where the bus logs each refused
 // message at ERROR ("envoy nats async error", options' async error callback). The read of the

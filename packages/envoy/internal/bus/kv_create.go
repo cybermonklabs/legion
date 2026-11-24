@@ -112,10 +112,12 @@ func addBucketStream(ctx context.Context, conn *nats.Conn, js nats.JetStreamCont
 var ErrNoServerVersion = errors.New("the connection reports no server version, as one that is not connected does")
 
 // ErrStreamCreateSent marks the error of a create that sent a STREAM.CREATE whose answer it never
-// read: the stream may be there. openKeyValue wraps every failed create of a call that sent one
-// with it, so a caller says what the hub may hold rather than that nothing was created. A create
-// the server left unanswered is sent again (sentAgain), and the send after it can end before it
-// sends anything, such as on a connection that is reconnecting (ErrNoServerVersion).
+// read: the stream may be there. openKeyValue wraps a failed create with it when a send of that
+// call ended unanswered or on a connection that dropped under it, so a caller says what the hub
+// may hold rather than that nothing was created. A create the server answered, with a refusal
+// included, carries no mark: a refusal made no stream. A create the server left unanswered is sent
+// again (sentAgain), and the send after it can end before it sends anything, such as on a
+// connection that is reconnecting (ErrNoServerVersion).
 var ErrStreamCreateSent = errors.New("a STREAM.CREATE of this create was sent, and may have landed")
 
 // ServerVersion is the version of the server conn is connected to, for a read that chooses a

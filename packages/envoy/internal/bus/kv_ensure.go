@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"time"
 	"weak"
 
@@ -219,16 +220,28 @@ func openKeyValue(ctx context.Context, guard time.Duration, conn *nats.Conn, js 
 		// (addBucketStream). A request of the step the server refuses under the connection's grant
 		// ends the step at that send instead (refusedBy): it would be refused again. No request of
 		// the step is sent once ctx has ended, though Bounded has stopped waiting for it.
-		sentCreate := false
+		// unread is whether a STREAM.CREATE of this call went out and its answer was never read:
+		// the send ended unanswered (unanswered: nats.ErrTimeout or a deadline) or on a connection
+		// that dropped under it. Such a create may have landed. A send the server answered, with
+		// the stream or with a refusal (an account's stream limit, say), was read, and a refusal
+		// made no stream, so it marks nothing. The flag is atomic: a send Bounded stopped waiting
+		// for runs on, on its own goroutine, after this call has read it.
+		var unread atomic.Bool
+		note := func(sent bool, err error) {
+			if sent && (unanswered(err) || errors.Is(err, nats.ErrConnectionClosed) ||
+				errors.Is(err, nats.ErrConnectionReconnecting) || errors.Is(err, nats.ErrDisconnected)) {
+				unread.Store(true)
+			}
+		}
 		send := func() (struct{}, error) {
 			sent, err := createBucketStream(ctx, conn, js, config)
-			sentCreate = sentCreate || sent
+			note(sent, err)
 			return struct{}{}, err
 		}
 		if mode == createOnly {
 			send = func() (struct{}, error) {
 				_, sent, err := addBucketStream(ctx, conn, js, config)
-				sentCreate = sentCreate || sent
+				note(sent, err)
 				return struct{}{}, err
 			}
 		}
@@ -269,8 +282,8 @@ func openKeyValue(ctx context.Context, guard time.Duration, conn *nats.Conn, js 
 		// after it answered: a create the server leaves unanswered is sent again, and that send
 		// can end before it sends anything (ErrNoServerVersion). So the failure says the stream
 		// may be there (ErrStreamCreateSent), rather than leave a caller to say nothing was
-		// created.
-		if err != nil && sentCreate {
+		// created. A create the server refused is answered as it is, with no mark.
+		if err != nil && unread.Load() {
 			err = fmt.Errorf("%w: %w", err, ErrStreamCreateSent)
 		}
 		created = err == nil
