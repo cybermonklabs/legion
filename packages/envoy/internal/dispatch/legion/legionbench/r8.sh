@@ -24,6 +24,9 @@
 #   R8_HEAD_FACTS (1): whether this head's server runs the Legion facts consumer; 0 drives this head
 #                as main is driven, for a head whose server starts no consumer yet
 #   R8_PGPORT (55432), R8_SHARED_BUFFERS (2GB), PGBIN (the newest /usr/lib/postgresql/*/bin)
+#   R8_PROFILE (unset): seconds of CPU profile to take of each arm's server during its drive,
+#                R8_PROFILE_AFTER (60) seconds into it; the two profiles are compared at the end
+#                (go tool pprof), the hub's recompute (deliveryHub.recompute) on its own and whole
 set -euo pipefail
 
 : "${R8_WORK:?R8_WORK must name a scratch directory for the run}"
@@ -39,6 +42,7 @@ head_facts=${R8_HEAD_FACTS:-1}
 R8_MAIN=$(git -C "$source_dir" rev-parse "$R8_MAIN^{commit}")
 R8_HEAD=$(git -C "$source_dir" rev-parse "$R8_HEAD^{commit}")
 server_port=58111
+pprof_port=58112
 standin_port=13370
 # The agent token of both servers, which the probe reads from $work/token: drawn for this run.
 token=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
@@ -109,7 +113,7 @@ start_server() {
   (cd "$home" && exec env -i PATH="$PATH" HOME="$home" XDG_CONFIG_HOME="$home" XDG_DATA_HOME="$home" \
     DATABASE_URL="$url" DISPATCH_AGENT_TOKEN="$token" DISPATCH_IDENTITY=header:X-Dispatch-User \
     DISPATCH_IDENTITY_HEADER_TRUSTED=1 DISPATCH_LISTEN_HOST=127.0.0.1 DISPATCH_PORT="$server_port" \
-    DISPATCH_WEB_DIST="$work/web" DISPATCH_NATS_DISABLED=1 "$bin" >>"$log" 2>&1) &
+    DISPATCH_WEB_DIST="$work/web" DISPATCH_NATS_DISABLED=1 ${R8_PROFILE:+DISPATCH_PPROF_PORT=$pprof_port} "$bin" >>"$log" 2>&1) &
   server_pid=$!
   pids+=("$server_pid")
   local started=$SECONDS
@@ -174,10 +178,18 @@ arm() {
   if [ "$facts" = 1 ]; then
     facts_flags=(-facts -pg-log "$pg_log")
   fi
-  local rc=0
+  local rc=0 profile_pid=""
+  if [ -n "${R8_PROFILE:-}" ]; then
+    (sleep "${R8_PROFILE_AFTER:-60}" && curl -fsS -o "$work/out/$name.cpu.pprof" \
+      "http://127.0.0.1:$pprof_port/debug/pprof/profile?seconds=$R8_PROFILE" && mark "took $name's profile") &
+    profile_pid=$!
+  fi
   "$work/bin/legionbench" drive -arm "$name" -url "http://127.0.0.1:$server_port" -token-file "$work/token" \
     -database "$url" -probe-dir "$head_tree/packages/dispatch" -server-log "$work/server-$name.log" \
     -out "$work/out" -rate "${R8_RATE:-0.26}" -duration "${R8_DURATION:-10m}" "${facts_flags[@]}" || rc=$?
+  if [ -n "$profile_pid" ]; then
+    wait "$profile_pid" || { echo "FAIL r8 arm=$name the CPU profile was not taken"; rc=1; }
+  fi
   if [ "$facts" = 1 ] && [ -s "$work/out/facts-read.json" ]; then
     LEGIONBENCH_DATABASE_URL="$url" LEGIONBENCH_FACTS_READ="$work/out/facts-read.json" \
       "$work/bin/legionbench.test" -test.run '^TestFarmBoardFactsRead$' -test.v -test.count=1 || rc=1
@@ -197,6 +209,29 @@ if [ -s "$work/out/main-summary.json" ] && [ -s "$work/out/head-summary.json" ];
 else
   echo "FAIL r8 an arm wrote no summary, so the two medians are not compared"
   status=1
+fi
+# The profiles: each arm's top functions inside the hub's recompute, by their own time and with
+# what they call, and this head's against main's (positive is this head's extra time). An empty
+# profile prints UNKNOWN rather than a clean comparison.
+if [ -n "${R8_PROFILE:-}" ]; then
+  focus='deliveryHub..recompute$'
+  for name in main head; do
+    profile=$work/out/$name.cpu.pprof
+    if [ ! -s "$profile" ]; then
+      echo "FAIL r8 PROFILE UNKNOWN: $name's profile is empty or missing"
+      status=1
+      continue
+    fi
+    echo "PROFILE $name whole server, flat:"
+    go tool pprof -top -nodecount=25 "$work/bin/server-$name" "$profile" 2>&1 | sed 's/^/PROFILE '"$name"' all /'
+    echo "PROFILE $name inside deliveryHub.recompute, cumulative:"
+    go tool pprof -top -cum -nodecount=45 -focus="$focus" "$work/bin/server-$name" "$profile" 2>&1 | sed 's/^/PROFILE '"$name"' recompute /'
+  done
+  if [ -s "$work/out/main.cpu.pprof" ] && [ -s "$work/out/head.cpu.pprof" ]; then
+    echo "PROFILE diff head - main inside deliveryHub.recompute, cumulative:"
+    go tool pprof -top -cum -nodecount=45 -focus="$focus" -diff_base="$work/out/main.cpu.pprof" \
+      "$work/bin/server-head" "$work/out/head.cpu.pprof" 2>&1 | sed 's/^/PROFILE diff /'
+  fi
 fi
 mark "r8.sh exits $status"
 exit "$status"
