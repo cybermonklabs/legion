@@ -46,9 +46,12 @@ DEFAULT_LIMIT_KB = 8388608
 
 SAMPLE_SECONDS = 5.0
 
-# The -json actions that end a test. "cont" and "pause" leave it running; "output" carries the
-# text and changes nothing.
-DONE_ACTIONS = frozenset({"pass", "fail", "skip"})
+# The -json actions after which a test is not running: "pass", "fail" and "skip" end it, and a
+# parallel test reports "pause" at its t.Parallel call and "cont" when go test lets it go on, running
+# nothing in between. In a package whose tests are parallel most of them sit paused while a few
+# run, so a paused test is not named as running. "output" carries the text and changes nothing.
+NOT_RUNNING_ACTIONS = frozenset({"pass", "fail", "skip", "pause"})
+RUN_ACTIONS = frozenset({"run", "cont"})
 
 
 def status_field(text: str, field: str) -> str | None:
@@ -87,7 +90,9 @@ def tree_statuses(root_pid: int) -> list[str]:
     One pass over /proc reads each process's status once: the text carries the parent pid the tree
     is built from (`PPid:`) along with the sizes. A process that exits between the walk and the
     read is skipped, which is the common case under `go test`: the compiler's children come and go
-    while the sampler walks.
+    while the sampler walks. The walk reads every process on the machine, and a process's `Name:`
+    is whatever bytes it set (prctl PR_SET_NAME), so the text is decoded with replacement: a
+    strict decode ended the whole step on another process's name that was no UTF-8.
     """
     texts: dict[int, str] = {}
     children: dict[int, list[int]] = {}
@@ -95,7 +100,7 @@ def tree_statuses(root_pid: int) -> list[str]:
         if not entry.name.isdigit():
             continue
         try:
-            text = (entry / "status").read_text()
+            text = (entry / "status").read_text(errors="replace")
         except OSError:
             continue
         parent = status_field(text, "PPid")
@@ -171,9 +176,9 @@ class RunningTests:
             return
         action = event.get("Action")
         with self._lock:
-            if action == "run":
+            if action in RUN_ACTIONS:
                 self._running.add(name)
-            elif action in DONE_ACTIONS:
+            elif action in NOT_RUNNING_ACTIONS:
                 self._running.discard(name)
 
     def names(self) -> str:

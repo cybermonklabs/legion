@@ -48,15 +48,19 @@ check "exits 3" "$(is "$status" 3)"
 check "names the default limit" "$(contains "$out" 'the limit is 8388608 kB (the default')"
 
 echo "case: a peak over the limit fails the run and names the test that was running"
-# Prints a -json stream naming a test as running, then grows past a 1 kB limit and lives until
-# the case has seen the sampler take its second sample (the first at 0 s, the next 5 s later, by
-# when the stream has been read), and only then ends: the case waits on the sampler's own lines,
-# not on a clock, so a sampler a loaded runner holds back still samples the grown process. The
-# 60 s bounds only end a run whose sample never comes, which the checks then report.
+# Prints a -json stream naming a test as running, a parallel test that ran, paused and was let go
+# on, and another left paused, then grows past a 1 kB limit and lives until the case has seen the
+# sampler take its second sample (the first at 0 s, the next 5 s later, by when the stream has
+# been read), and only then ends: the case waits on the sampler's own lines, not on a clock, so a
+# sampler a loaded runner holds back still samples the grown process. The 60 s bounds only end a
+# run whose sample never comes, which the checks then report.
 release=$(mktemp -u)
 grower='
 import json, os, sys, time
-sys.stdout.write(json.dumps({"Action": "run", "Test": "TestTheSamplerNamesMe"}) + "\n")
+for action, test in [("run", "TestTheSamplerNamesMe"), ("run", "TestAParallelOneLetGoOn"),
+                     ("pause", "TestAParallelOneLetGoOn"), ("cont", "TestAParallelOneLetGoOn"),
+                     ("run", "TestAParallelOneStillPaused"), ("pause", "TestAParallelOneStillPaused")]:
+    sys.stdout.write(json.dumps({"Action": action, "Test": test}) + "\n")
 sys.stdout.flush()
 block = b"x" * (64 * 1024 * 1024)
 deadline = time.monotonic() + 60
@@ -81,7 +85,9 @@ rm -f "$release" "$sampled"
 check "exits 1" "$(is "$status" 1)"
 check "names the limit it was given" "$(contains "$out" 'the limit is 1 kB (RACE_MEM_LIMIT_KB)')"
 check "its decision line names the tests at the highest sample" \
-  "$(contains "$out" 'had these tests running: TestTheSamplerNamesMe')"
+  "$(contains "$out" 'had these tests running: TestAParallelOneLetGoOn, TestTheSamplerNamesMe')"
+check "its decision line leaves out a test that is paused at its t.Parallel" \
+  "$(is "$(contains "$out" 'TestAParallelOneStillPaused')" false)"
 check "says the peak passed the limit" "$(contains "$out" 'passed the limit of 1 kB')"
 # How that line ends depends on the kernel, so this is the end-to-end check only — that the
 # field the sampler chose reaches the line main writes. The rule itself, both of its branches,
