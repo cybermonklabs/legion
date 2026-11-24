@@ -1039,6 +1039,27 @@ remove_run_branch() {
     printf 'could not delete %s branch legion/%s\n' "$repo" "$issue" >&2
   fi
 }
+# require_smoke_repo_read: the devbox's ordinary gh reads the smoke repository. Whatever answers gh
+# in GitHub's place holds gh's token and writes gh's stderr, so gh's own words are kept in
+# $evidence/gh/repo-view.err, which outlives the run, and a refusal names that file and never
+# quotes it.
+require_smoke_repo_read() {
+  mkdir -p "$evidence/gh"
+  gh repo view "$repo" --json name >/dev/null 2>"$evidence/gh/repo-view.err" ||
+    fail "the devbox's ordinary gh cannot read $repo; gh's own words are in $evidence/gh/repo-view.err"
+}
+# require_commit_outside_legion COMMIT: the implementer's commit COMMIT changes no file under
+# .legion/, where no handoff goes now. Its paths are gh's answer (smoke_commit_files), which
+# whatever answers gh in GitHub's place writes, so they are kept in
+# $evidence/gh/implementer-commit-files.answer and a refusal names that file, never a path.
+require_commit_outside_legion() {
+  local files kept="$evidence/gh/implementer-commit-files.answer"
+  files=$(smoke_commit_files "$1") || exit 1
+  mkdir -p "$evidence/gh"
+  printf '%s\n' "$files" >"$kept"
+  ! grep -q '^\.legion/' <<<"$files" ||
+    fail "the implementer's commit $1 changes files under .legion/, where no handoff goes now; the paths GitHub answered are in $kept"
+}
 # require_app_tokens_home fails, naming what is wrong, unless XDG_RUNTIME_DIR, where the App
 # credential files go under bridge, is set and is a directory the devbox user owns, of mode 0700,
 # on a tmpfs (or a ramfs): no other user can list or read the files, and they never reach a disk.
@@ -1297,7 +1318,7 @@ else
 fi
 read_app_logins
 require_proof_human
-gh repo view "$repo" --json name >/dev/null || fail "the devbox's ordinary gh cannot read $repo"
+require_smoke_repo_read
 case "$pod_reachability" in
   aws-private-ip)
     imds=$(curl -sf -m 5 -X PUT http://169.254.169.254/latest/api/token -H 'X-aws-ec2-metadata-token-ttl-seconds: 60') ||
@@ -1583,8 +1604,7 @@ send_agent "$issue" implementer "Claude backend sandbox proof implementation ope
 until_true 1200 "the daemon to record the implementer's handoff_complete" handoff_recorded
 commit=$(role_handoff "$issue" implementer implementing)
 assert_handoff_record "$issue" implementer implementing 0
-files=$(smoke_commit_files "$commit") || exit 1
-! grep -q '^\.legion/' <<<"$files" || fail "the implementer's commit $commit changes files under .legion/, where no handoff goes now: $(tr '\n' ' ' <<<"$files")"
+require_commit_outside_legion "$commit"
 legion_handoff_in || fail "the transcript $transcript holds no successful legion handoff_complete call"
 until_true 300 "the implementer's turn to end" issue_worker_state "$issue" implementer idle
 note "handoff_complete through mcp__legion__legion named the implementer's Dispatch handoff record, written under its Claude Code session $session, and its pushed commit $commit on $repo, which changes nothing under .legion/"
