@@ -993,7 +993,6 @@ func (c *Client) send(ctx context.Context, scope, method, target, authorization,
 	githubreads.NoteSent(ctx)
 	response, err := c.http.Do(request)
 	if err != nil {
-		// GET /healthz serves this error as a read's cause.
 		err = fmt.Errorf("%s %s: %w", method, ShownBody(target), redact.Unanswered(err, request, ""))
 		noteFailure(ctx, err)
 		return redact.Answer{}, 0, nil, err

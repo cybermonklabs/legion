@@ -500,10 +500,6 @@ const shownBodyRunes = 512
 //   - A refusal's body is cut alone, with the body's size. Every error of this package whose text
 //     holds a body GitHub answered holds it as this shows it (withBody). A reader that finds the
 //     body at the end of such a text (api's gitHubErrorText) finds it as this shows it.
-//   - A value an answer could not decode is in no error: each answer decodes through
-//     redact.Answer.Decode, whose error names the member that did not decode and the types around
-//     it, quotes none of the value, whole or cut, and reaches none of the decoder's own errors,
-//     whose text quotes it.
 //   - A transport error of send names its target as ShownBody shows it, with the target's size,
 //     and then the URL it asked and its failure by redact.Unanswered: a transport failure's own
 //     words or a fixed class, so it quotes no line of an answer at all.
@@ -535,12 +531,7 @@ func ShownBody[Body ~string | ~[]byte](body Body) string {
 // shownErrMost is the longest text ShownErr answers, 4,414 bytes: two texts as ShownBody shows
 // them, and 256 bytes for the words of the error's type around them. A text ShownBody shows is at
 // most 2,079 bytes: shownBodyRunes runes of at most utf8.UTFMax bytes each, and `… (<n> bytes)`
-// for the largest n, 9223372036854775807 (math.MaxInt64). The one type ShownErr cuts the fields
-// of, a url.Error, holds two cut fields: its URL and its cause. In the usual case, its text is
-// inside the bound and still names each. A field the text escapes can make the text longer, since
-// a url.Error quotes its URL with %q, and so can its Op, which ShownErr keeps. ShownErr cuts whole
-// each error whose text is still longer after it cuts the fields (shownErr), so no answer passes
-// the bound, whatever field is long.
+// for the largest n, 9223372036854775807 (math.MaxInt64).
 const shownErrMost = 2*(shownBodyRunes*utf8.UTFMax+len("… (9223372036854775807 bytes)")) + 256
 
 // ShownErr is err as the errors of this package show it, cut once where it enters such an error,
@@ -561,13 +552,6 @@ const shownErrMost = 2*(shownBodyRunes*utf8.UTFMax+len("… (9223372036854775807
 //     ShownBody shows it, with the size of err's text, and whose Unwrap is err (shownError). So
 //     errors.Is and errors.As still reach err, and Timeout and Temporary still answer through err's
 //     chain. Go's own words take part of the shownBodyRunes runes there.
-//
-// A decode error has no case of its own: every answer decodes through redact.Answer.Decode, whose
-// error is fixed text that quotes none of the answer and wraps no error of the decoder's. The
-// package cuts with ShownErr the error of every JSON decode of an answer GitHub gave whose error
-// it returns, the error of a URL that does not parse, and the error of send's read of the answer.
-// Another package cuts with it an error whose text quotes GitHub's text (redeliver's bucketErr,
-// for a bucket error that quotes a key).
 func ShownErr(err error) error {
 	shown, _ := shownErr(err)
 	return shown
