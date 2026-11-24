@@ -56,6 +56,7 @@ type connectOpts struct {
 	promptReconnect             bool
 	inboxPrefix                 string
 	streamMessageReads          bool
+	keeperStepGuard             time.Duration
 	// credentialWait, credentialRefused and credentialAdmitted are WithCredentialWait's bound and
 	// reports, and startCheck WithStartCheck's check.
 	credentialWait     time.Duration
@@ -571,6 +572,9 @@ type Client struct {
 	// streamMessageReads is WithStreamMessageReads: every KV handle opened on the client's
 	// connection reads with a stream message get rather than a direct get (wrapKeyValue).
 	streamMessageReads bool
+	// keeperStepGuard is withKeeperStepGuard's hang guard of each keeper step, zero for
+	// startHangGuard (keepPass). It is set before the keeper starts and never changed.
+	keeperStepGuard time.Duration
 
 	// recovery state
 	recovering int32
@@ -789,6 +793,7 @@ func startClient(urls []string, ownsStream bool, opts connectOpts, settings nats
 		beforeCoreSendFlush:         opts.beforeCoreSendFlush,
 		afterCoreSendFlush:          opts.afterCoreSendFlush,
 		streamMessageReads:          opts.streamMessageReads,
+		keeperStepGuard:             opts.keeperStepGuard,
 		requestExpiry:               opts.requestExpiry,
 		closedHook:                  opts.closedHook,
 		closeSettleBound:            opts.closeSettleBound,

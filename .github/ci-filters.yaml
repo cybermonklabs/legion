@@ -2890,6 +2890,7 @@ envoy_go_race:
   - '!packages/envoy/internal/testnats/responsetimer_test.go'
   - '!packages/envoy/internal/testnats/start_wait_test.go'
   - '!packages/envoy/internal/testnats/stream_create_test.go'
+  - '!packages/envoy/internal/testnats/update_stream_test.go'
   - '!packages/envoy/internal/testnats/wait_bound_test.go'
   - '!packages/envoy/internal/testnats/cmd/**/*_test.go'
   - '!packages/envoy/internal/testport/**/*_test.go'
