@@ -1061,7 +1061,7 @@ func (s *server) loadAskAnswersByAsk(ctx context.Context, q queryer, who model.A
 	}
 	rows, err := q.Query(ctx, answerEventsQuery(
 		`e.payload->>'id', e.payload->'answer', e.id`,
-		`e.payload->>'id' = any($1::text[])`, "$2",
+		`e.payload->>'id' = any($1::text[])`, "",
 	), askIDs)
 	if err != nil {
 		return nil, fmt.Errorf("load ask answers: %w", err)

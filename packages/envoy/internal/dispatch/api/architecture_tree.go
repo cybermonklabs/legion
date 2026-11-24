@@ -174,7 +174,7 @@ var treeIssuesQuery = `
 // effective attachment resolved, in the issue list's order (lifecycle status, then rank), seen
 // being the reader's visibility argument.
 func loadTreeIssues(ctx context.Context, q queryer, seen any, project string) ([]treeIssue, error) {
-	rows, err := q.Query(ctx, treeIssuesQuery, project, seen)
+	rows, err := q.Query(ctx, treeIssuesQuery, project)
 	if err != nil {
 		return nil, err
 	}

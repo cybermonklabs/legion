@@ -809,10 +809,11 @@ func (s *server) relatedSearch(
 	}
 	// The acting credential, last of the parameters each statement declares. The check runs off
 	// the write that triggered it, on a context of its own and with no credential of that
-	// writer's to hand, so it reads as one that proves no author (graphstore.ProvesAuthor): a
-	// node reserved for its author is suggested to nobody, which is the answer that can mislead
-	// no reader.
-	args = append(args, refs.VisibilityArg(model.Actor{}))
+	// writer's to hand, so it reads as the server's own reader (everyReader), which proves no
+	// author: a node reserved for its author is suggested to nobody, which is the answer that can
+	// mislead no reader. The reader of the write the check runs off is not carried this far, and
+	// until a project can be private the server's reader sees what every caller sees.
+	args = append(args, refs.VisibilityArg(everyReader))
 	rows, err := q.Query(ctx, query, args...)
 	if err != nil {
 		return model.SearchResponse{}, err
@@ -883,6 +884,12 @@ func (s *server) fillRelatedItems(
 	// (access.ErrUnresolvedActor), and the zero reader is the closed viewer, which reads no answer.
 	who := input.source.actor.Reader()
 	who.Viewer = input.who.Viewer
+	if who.Viewer == nil {
+		// The check runs off a write whose handler resolved no reader (a queue worker, a test's
+		// direct call), and the zero reader is the closed viewer, which reads no answer. Until a
+		// project can be private the server's reader sees what that writer sees.
+		who.Viewer = everyReader.Viewer
+	}
 	if err := s.attachAskStates(ctx, s.deps.Store.Pool, who, candidates, input.trees); err != nil {
 		// attachAskStates sets each row's state before it reads resolved asks' answers, so a
 		// failure partway would leave a resolved ask that was answered showing no answer.

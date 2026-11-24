@@ -11,7 +11,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
-	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/legionagents"
@@ -136,7 +135,7 @@ const issueRoleHoldersStatement = `
 // readIssueRoleHolders answers the stored set of issueKey as who reads it, and false when no
 // issue carries the key or who may not see it.
 func readIssueRoleHolders(ctx context.Context, q queryer, who model.Actor, issueKey string) (issueRoleHolders, bool, error) {
-	rows, err := q.Query(ctx, issueRoleHoldersStatement, issueKey, legionagents.Roles, refs.VisibilityArg(who))
+	rows, err := q.Query(ctx, issueRoleHoldersStatement, issueKey, legionagents.Roles)
 	if err != nil {
 		return issueRoleHolders{}, false, err
 	}

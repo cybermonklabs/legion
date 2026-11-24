@@ -1248,7 +1248,7 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 // the delete marks of its comments and messages (stampSearchPostMarks), one read by id of the
 // page's own posts.
 func (s *server) runSearch(ctx context.Context, parameters searchParameters) (model.SearchResponse, error) {
-	keys, err := s.searchOwnIssueKeys(ctx, parameters.text, parameters.numberScope(), parameters.who)
+	keys, err := s.searchOwnIssueKeys(ctx, parameters.text, parameters.numberScope())
 	if err != nil {
 		return model.SearchResponse{}, err
 	}
