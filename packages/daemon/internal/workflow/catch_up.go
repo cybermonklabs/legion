@@ -22,15 +22,15 @@ import (
 // a re-entered child resumes its session. A tree's root architect is launched with the task its
 // record derives (ArchitectStartTask, Engine.StartArchitect), which names the decisions kept while
 // nobody in its tree could hear them (ParkedDecisionTask), or with none where the derivation gives
-// none, and a re-admitted tree resumes its session. A claim the provider refused out of its launch
-// budget has failed, and the start that retries it starts a new session (supervise's
-// freshSession), as does any launch whose session no store holds any more (startFresh). So at each
-// launch's ready the daemon sends it a catch-up notice of the issues it owns (QueueCatchUp) — a
-// root architect its whole tree, a child's architect the child and every issue under it — and so
-// does a start that finds the claim still running (the outbox's start), as the TypeScript daemon
-// sends the overseer catch-up at every ready of an active root (onTreeReady). A relaunch in the
-// same generation is told again: it may be an architect that died during the turn a catch-up
-// started, resumed idle, or a fresh agent whose workspace was lost, and nothing else wakes either.
+// none, and a re-admitted tree resumes its session. A retry that asks for a new session starts
+// one (supervise's freshSession), as does any launch whose session no store holds any more
+// (startFresh). So at each launch's ready the daemon sends it a catch-up notice of the issues it
+// owns (QueueCatchUp) — a root architect its whole tree, a child's architect the child and every
+// issue under it — and so does a start that finds the claim still running (the outbox's start), as
+// the TypeScript daemon sends the overseer catch-up at every ready of an active root
+// (onTreeReady). A relaunch in the same generation is told again: it may be an architect that died
+// during the turn a catch-up started, resumed idle, or a fresh agent whose workspace was lost, and
+// nothing else wakes either.
 // The ready is one fact per launch (workflowRuntime.applyTerminal keys it by the claim's launch
 // generation), so the boot's replay of a ready already applied tells nothing more, and one never
 // applied tells it once. The catch-up a root architect's ready writes names every decision nobody

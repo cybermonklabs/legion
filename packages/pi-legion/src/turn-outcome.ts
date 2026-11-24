@@ -25,15 +25,16 @@ import { turnGoesOn } from "./turn-end";
  * ever read out of the refusal's words.
  *
  * Which turns a prompt ran is read the way the host decides which run a `prompt_result` reports
- * (`RpcPromptResults`, `packages/coding-agent/src/modes/rpc/rpc-prompt-results.ts` at the pinned
- * tag): a prompt the daemon sent arrives as `input` with `source: "rpc"` — the daemon is this
- * pane's one RPC client — and its result reports the first run that starts after it, up to the
- * first end the host does not go on from itself (`turnGoesOn`) and that leaves no message waiting
- * to run next. Every report from that run's start to that end is a prompted one, which the result
- * alone judges, whichever of the two reaches the daemon first. Where this reading could part from
- * the host's — a prompt the host refused as busy after its `input`, which leaves the next run
- * taken for that prompt's — the report goes as prompted, so that the turn goes uncounted rather
- * than counted twice.
+ * (`RpcPromptResults`, `packages/coding-agent/src/modes/rpc/rpc-prompt-results.ts:164-169` at the
+ * pinned tag): a prompt the daemon sent arrives as `input` with `source: "rpc"` — the daemon is
+ * this pane's one RPC client — and its result reports the first run that starts after it, up to
+ * the first end the host does not go on from itself (`turnGoesOn`, the host's own "yielded"),
+ * whatever message waits to run next. Every report from that run's start to that end is a
+ * prompted one, which the result alone judges, whichever of the two reaches the daemon first; a
+ * run a waiting message starts after that end, an Envoy steer among them, is no prompt's, and its
+ * report goes as unprompted. Where this reading could part from the host's — a prompt the host
+ * refused as busy after its `input`, which leaves the next run taken for that prompt's — the
+ * report goes as prompted, so that the turn goes uncounted rather than counted twice.
  *
  * The count is this producer's alone. It is not the daemon's turn ordinal and not
  * `supervise.StreamTurnEnd`'s: two counters would drift the moment one of them missed an end, and
@@ -70,13 +71,11 @@ export interface TurnOutcomeReporter {
   /** A run started in the session (`agent_start`). */
   readonly runStarted: (sessionID: string) => void;
   /**
-   * Reports the turn that `agent_end` just ended, for the claim the session holds. `pending` is
-   * the host's `hasPendingMessages()` at that end: a message waiting to run next, which the run
-   * it starts carries on. Never rejects: Oh My Pi does not await an `agent_end` handler, so a
-   * rejection here would be an unhandled one, and nothing of the turn waits on the report either
-   * way.
+   * Reports the turn that `agent_end` just ended, for the claim the session holds. Never rejects:
+   * Oh My Pi does not await an `agent_end` handler, so a rejection here would be an unhandled one,
+   * and nothing of the turn waits on the report either way.
    */
-  readonly report: (sessionID: string, event: AgentEndEvent, pending?: boolean) => Promise<void>;
+  readonly report: (sessionID: string, event: AgentEndEvent) => Promise<void>;
 }
 
 export function createTurnOutcomeReporter(deps: TurnOutcomeReporterDeps): TurnOutcomeReporter {
@@ -100,7 +99,7 @@ export function createTurnOutcomeReporter(deps: TurnOutcomeReporterDeps): TurnOu
         promptOwed = false;
       }
     },
-    report: async (sessionID, event, pending = false) => {
+    report: async (sessionID, event) => {
       const claim = deps.claim(sessionID);
       if (claim === undefined) return;
       const last = event.messages?.findLast((message) => message.role === "assistant");
@@ -113,9 +112,10 @@ export function createTurnOutcomeReporter(deps: TurnOutcomeReporterDeps): TurnOu
       // refusals before it.
       if (refusal !== undefined && turnGoesOn(event)) return;
       const unprompted = !prompted;
-      // The end a prompt's result reports is the first the host does not go on from with nothing
-      // waiting to run next; a run after it is no prompt's until another prompt arrives.
-      if (!turnGoesOn(event) && !pending) prompted = false;
+      // The end a prompt's result reports is the first the host does not go on from, whatever
+      // waits to run next (rpc-prompt-results.ts:164-169 at the pinned tag); a run after it is no
+      // prompt's until another prompt arrives.
+      if (!turnGoesOn(event)) prompted = false;
       // Taken before the first await, so two turns can never take the same number nor take them
       // out of the order they ended in. A generation this producer has not counted within starts
       // the count again, as a fresh launch's does.
@@ -128,7 +128,8 @@ export function createTurnOutcomeReporter(deps: TurnOutcomeReporterDeps): TurnOu
       // below are written after an await.
       const mine = sequence;
       // The status the host recorded on the refused message, and none for a number that is no
-      // HTTP status, since the daemon refuses a report whose status is outside 100 to 599.
+      // HTTP status: the contract admits 100 to 599 alone (`LegionTurnOutcomeRequest`), and the
+      // daemon takes any other number as no status.
       const recorded = refusal === undefined ? undefined : last?.errorStatus;
       const status =
         typeof recorded === "number" &&

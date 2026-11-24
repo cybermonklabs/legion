@@ -271,3 +271,74 @@ func TestAPluginTurnReportOfAGenerationTheClaimLeftIsNotJudged(t *testing.T) {
 	}
 	h.wantRefusedRun(1)
 }
+
+// The controller's notice says what the daemon does about the turn that reached the count. A run
+// of refused reminders on an idle claim owes no task, so nothing is sent again, and the notice
+// says that; a run that a refused prompt reaches six at keeps that prompt's task and sends it
+// again, and its notice says that (TestTheSixthProviderErrorTurnInARowTellsTheControllerOnce
+// holds the model it names).
+func TestTheNoticeOfARunEndedByAPluginTurnSendsNoTaskAgain(t *testing.T) {
+	var reasons []string
+	tell := func(d *Deps) {
+		d.ProviderErrorRunReached = func(_ Claim, reason string) { reasons = append(reasons, reason) }
+	}
+
+	h := idleClaim(t, tell)
+	for turn := 1; turn <= providerErrorRunTold; turn++ {
+		h.pluginTurn(uint64(turn), true, 529)
+	}
+	if len(reasons) != 1 {
+		t.Fatalf("the controller was told %d times, want once", len(reasons))
+	}
+	for _, want := range []string{"6 turns in a row", "HTTP 529", "no prompt of the daemon's", "sends no task again"} {
+		if !strings.Contains(reasons[0], want) {
+			t.Errorf("the notice is %q, want it to say %q", reasons[0], want)
+		}
+	}
+	if strings.Contains(reasons[0], "keeps the task") {
+		t.Errorf("the notice is %q, want no word of a task kept and sent again: the claim owes none", reasons[0])
+	}
+
+	reasons = nil
+	p := workingClaim(t, tell)
+	for turn := 1; turn < providerErrorRunTold; turn++ {
+		p.pluginTurn(uint64(turn), true, 529)
+	}
+	p.refusedTurn(providerErrorRunTold, 529, "529 overloaded_error: Overloaded")
+	if len(reasons) != 1 || !strings.Contains(reasons[0], "keeps the task and sends it again") {
+		t.Fatalf("the notices are %q, want one that says the prompt's task is kept and sent again", reasons)
+	}
+}
+
+// The turn-outcome answer says whether this report failed the claim, read under the report's own
+// decision (HandleTurnOutcome): true for the report of a plugin turn refused with a 400, and false
+// for a clean report, a refused report of a turn a prompt ran, and one that can clear.
+func TestTheTurnOutcomeAnswerSaysWhetherThisReportFailedTheClaim(t *testing.T) {
+	h := workingClaim(t)
+	for i, tc := range []struct {
+		refused, unprompted bool
+		status              int
+	}{
+		{false, true, 0},
+		{true, false, 400},
+		{true, true, 529},
+	} {
+		answer, err := h.m.HandleTurnOutcome(h.ctx, RequestTurnOutcome{
+			Claim: h.token, Generation: h.generation(), Sequence: uint64(i + 1), Refused: tc.refused,
+			HTTPStatus: tc.status, Unprompted: tc.unprompted,
+		})
+		if err != nil || answer.Failed {
+			t.Fatalf("report %d (%+v) answered %+v, %v; want it not failed", i+1, tc, answer, err)
+		}
+	}
+	h.wantState(StateWorking)
+
+	answer, err := h.m.HandleTurnOutcome(h.ctx, RequestTurnOutcome{
+		Claim: h.token, Generation: h.generation(), Sequence: 4, Refused: true, HTTPStatus: 400, Unprompted: true,
+	})
+
+	if want := (TurnOutcomeAnswer{RefusedRun: min(3, testLimits().LaunchFailures), Failed: true}); err != nil || answer != want {
+		t.Fatalf("the 400 answered %+v, %v; want %+v: the run of the three refused reports, and the claim failed", answer, err, want)
+	}
+	h.wantState(StateFailed)
+}

@@ -9,9 +9,7 @@ body: |-
 
   A claim that forgets a session records which one it abandoned and why, and the agent that
   replaces it is told in the first task it is given: the session that was left behind, why, the
-  issue's branch and the handoff records its phases wrote on the Dispatch issue. A retry of a claim
-  whose provider refused the recorded session's last `launch_failure_limit` turns in a row starts a
-  new session whoever retries it.
+  issue's branch and the handoff records its phases wrote on the Dispatch issue.
 
   The boot-token form of `POST /legion/v1/claims/turn-outcome` is held to the launch it was minted
   for, as the shim's hello is: a token of a launch the claim has moved past is refused, and so is a

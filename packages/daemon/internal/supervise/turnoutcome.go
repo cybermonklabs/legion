@@ -148,6 +148,7 @@ func (m *Machine) freshRun() { m.claim.TurnOutcomes = nil }
 // such turn ends the run, as a clean prompt's turn does.
 func turnOutcome(m *Machine, ctx context.Context, ev Event) error {
 	r := ev.(RequestTurnOutcome)
+	m.turnOutcomeFailed = false
 	kept := m.recordTurnOutcome(TurnOutcome{Generation: r.Generation, Sequence: r.Sequence, Refused: r.Refused, Message: r.Message})
 	m.log.Info("supervise: a turn ended", "generation", r.Generation, "sequence", r.Sequence,
 		"refused", r.Refused, "httpStatus", r.HTTPStatus, "unprompted", r.Unprompted,
@@ -156,34 +157,6 @@ func turnOutcome(m *Machine, ctx context.Context, ev Event) error {
 		return m.persist(ctx)
 	}
 	return m.unpromptedTurnEnded(ctx, r)
-}
-
-// unpromptedTurnEnded judges a turn that ran no prompt of the daemon's from its report, as
-// providerErrored judges a prompt's turn from that prompt's result, with one difference: no task
-// is the turn's to keep or send again, since whatever the claim owes, this turn did not carry it,
-// and the reminder that started it keeps its own pace (packages/pi-shared/src/phase-reminder.ts).
-// The cause is built from the status alone (providerErrorCause), and the controller's notice names
-// no model, since a report carries none.
-func (m *Machine) unpromptedTurnEnded(ctx context.Context, r RequestTurnOutcome) error {
-	if !r.Refused {
-		if m.claim.ProviderErrorRun != 0 {
-			m.log.Info("supervise: a turn that ran no prompt of the daemon's ended with no provider error; the run of provider errors is over",
-				"generation", r.Generation, "sequence", r.Sequence, "providerErrorRun", m.claim.ProviderErrorRun)
-			m.claim.ProviderErrorRun = 0
-		}
-		return m.persist(ctx)
-	}
-	cause := providerErrorCause(r.HTTPStatus)
-	m.claim.ProviderErrorRun++
-	m.log.Warn("supervise: a turn that ran no prompt of the daemon's ended in a provider error",
-		"generation", r.Generation, "sequence", r.Sequence, "httpStatus", r.HTTPStatus,
-		"providerErrorRun", m.claim.ProviderErrorRun)
-	m.tellControllerOfProviderErrors("", cause)
-	if holdsTheIssue(r.HTTPStatus) {
-		return m.fail(ctx, CauseProviderError,
-			"a provider error that cannot clear ended a turn this claim's agent ran with no prompt of the daemon's: "+cause)
-	}
-	return m.persist(ctx)
 }
 
 // freshSession is whether a retry starts a new session rather than relaunching the recorded one,

@@ -1432,12 +1432,13 @@ export type LegionReadyRequestBody = z.output<typeof LegionReadyRequest>;
  * `httpStatus` is the HTTP status the provider refused the turn with, where the producer's
  * provider library gives one (Oh My Pi's `errorStatus` on the refused assistant message, Claude
  * Code's `api_error_status`); a refusal without it is one whose status cannot be read, and the
- * daemon reads no status out of `message`. `unprompted: true` says the turn ran no prompt the
- * daemon sent — a phase reminder, an Envoy message, a background job's result — so no prompt
- * result comes for it and the daemon judges it from this report: a refusal whose status cannot
- * clear (a 4xx other than 401, 403, 408 and 429) fails the claim, and any other refusal counts in
- * the claim's run of provider-error turns. A report without it is judged by the result of the
- * prompt its turn ran, never by itself (`claim.TurnOutcomeRequest`). */
+ * daemon reads no status out of `message`. This schema admits 100 to 599 alone; a daemon that is
+ * sent another number takes it as no status and warns. `unprompted: true` says the turn ran no
+ * prompt the daemon sent — a phase reminder, an Envoy message, a background job's result — so no
+ * prompt result comes for it and the daemon judges it from this report: a refusal whose status
+ * cannot clear (a 4xx other than 401, 403, 408 and 429) fails the claim, and any other refusal
+ * counts in the claim's run of provider-error turns. A report without it is judged by the result
+ * of the prompt its turn ran, never by itself (`claim.TurnOutcomeRequest`). */
 const turnOutcomeFields = {
   generation: z.number().int().positive(),
   sequence: z.number().int().positive(),

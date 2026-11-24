@@ -5,6 +5,4 @@ body: |-
   provider refused, the provider's own words for it, under a sequence this plugin counts itself,
   monotonic from 1 within the claim's launch generation. The daemon keys each outcome by
   `(generation, sequence)`, so a report that arrives late lands in its own place and a repeat
-  writes the same cell. A retry of a claim whose trailing run of refusals has reached
-  `launch_failure_limit` starts a new session, which moves the work to a session the provider can
-  answer. `legion.daemonApiVersion` is 86, the contract that adds the route.
+  writes the same cell. `legion.daemonApiVersion` is 86, the contract that adds the route.

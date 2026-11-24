@@ -1468,6 +1468,11 @@ type Machine struct {
 	// the behaviour it had before the set: a turn that starts is taken for the task by askFirst,
 	// and credits the delivery's own copy (Delivery.Carried).
 	outstanding awaitedPrompts
+	// turnOutcomeFailed is whether the turn-outcome report this decision handles failed the
+	// claim: turnOutcome clears it, unpromptedTurnEnded sets it when it fails the claim, and
+	// HandleTurnOutcome reads it before the decision's lock is let go. It is memory only and
+	// means nothing outside that one decision.
+	turnOutcomeFailed bool
 	// askFirst is a restored claim whose agent an earlier daemon was talking to: a pending
 	// delivery it may already have sent, or a turn it saw start and may not have seen end. The
 	// machine asks the agent (get_state) before it acts on either. On a working claim it is one of
@@ -1866,8 +1871,35 @@ func NewMachine(ctx context.Context, deps Deps, c Claim) (*Machine, error) {
 // takes the start out of the gate and names that row's end: a suspension's or a retirement's
 // (endPodPark, dispatch://INFRA-5297).
 //
-// Handle gives ev through the store's rule first; the comment that opens its body says why.
+// Handle gives ev through the store's rule first; the comment that opens handle's body says why.
 func (m *Machine) Handle(ctx context.Context, ev Event) error {
+	return m.handle(ctx, ev, nil)
+}
+
+// TurnOutcomeAnswer is what one turn-outcome report's decision left, read under that decision's
+// own lock (HandleTurnOutcome): the claim's run of refused turns (Claim.RefusedRun), and whether
+// this report failed the claim, which only the report of a turn that ran no prompt of the
+// daemon's, refused with a status that cannot clear, does (unpromptedTurnEnded).
+type TurnOutcomeAnswer struct {
+	RefusedRun int
+	Failed     bool
+}
+
+// HandleTurnOutcome is Handle for one turn-outcome report, answering what that decision left. The
+// answer is read before the lock is let go, so a decision of another event that runs next — a
+// prompt result's 400, or a death that spends the launch budget — cannot make a clean or prompted
+// report answer that it failed the claim, as a read of the claim after Handle returned could.
+func (m *Machine) HandleTurnOutcome(ctx context.Context, r RequestTurnOutcome) (TurnOutcomeAnswer, error) {
+	var answer TurnOutcomeAnswer
+	err := m.handle(ctx, r, func() {
+		answer = TurnOutcomeAnswer{RefusedRun: m.claim.RefusedRun(), Failed: m.turnOutcomeFailed}
+	})
+	return answer, err
+}
+
+// handle is Handle, and calls read, when it is given, at the end of the decision with the lock
+// still held, whatever the decision returned.
+func (m *Machine) handle(ctx context.Context, ev Event, read func()) error {
 	// An event is a far side's or an agent's words — a session id, a task, an update round's id
 	// and reasons, a worker's head — and the claim keeps each text as the store keeps it, so the
 	// claim in memory, the store and a restart agree. So the event is given through the store's
@@ -1879,6 +1911,9 @@ func (m *Machine) Handle(ctx context.Context, ev Event) error {
 	}
 	m.mu.Lock()
 	defer m.unlock()
+	if read != nil {
+		defer read()
+	}
 	// A refresh post carries a credit of the gate, and this decision is the last place that credit
 	// can come back if the machine does not take it: a state whose row ignores the post, a settle
 	// or fence that returns first, or a post for another claim (RefreshGate, the rule of return).

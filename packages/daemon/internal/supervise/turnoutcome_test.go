@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
@@ -260,29 +261,33 @@ func TestTheRefusedRunCarriesAcrossAGenerationThatResumesTheSameSession(t *testi
 // A retry resumes the recorded session with fresh budgets, whoever makes it, unless it asks for a
 // new session (dispatch://INFRA-4508's R5, check c-retry-keeps-session): a run of refused turns,
 // however long, is the claim's own count of refusals, mostly ones that can clear — a team limit's
-// 429 refuses every session of the team alike — and no sign that its session is bad. The two runs
-// here are of twenty refused turns, each a plugin turn's report, one run with a 429 and one with
-// no status; neither fails the claim, so it fails the way such a claim does, its process dying
-// until its launch budget runs out. A claim a prompt result's 400 failed resumes too. Only the
-// retry that asks for a new session (`--fresh-session`, the controller's fresh_session) leaves the
-// recorded session behind. With freshSession as at 9e30e970, which started a new session for a
-// run that reached launch_failure_limit, the 429 and no-status cases start a new session and fail.
+// 429 refuses every session of the team alike — and no sign that its session is bad. Two runs here
+// are of twenty refused turns, each a plugin turn's report, one with a 429 and one with no status;
+// neither fails the claim, so it fails the way such a claim does, its process dying until its
+// launch budget runs out. A claim a prompt result's 400 failed resumes too, and so do claims that
+// failed on deaths, retried by the workflow or by an operator. Only the retry that asks for a new
+// session (`--fresh-session`, the controller's fresh_session) leaves the recorded session behind,
+// whatever failed the claim. Each row states which it wants. With freshSession as at 9e30e970,
+// which started a new session for a run that reached launch_failure_limit, the 429 and no-status
+// rows that ask for nothing start a new session and fail.
 func TestARetryResumesTheRecordedSessionUnlessItAsksForANewOne(t *testing.T) {
 	const run = 20
 	const newSessionLine = "supervise: retrying in a new session"
-	refusedRun := func(t *testing.T, status int) *harness {
-		t.Helper()
-		h := newHarness(t)
-		h.reach(StateReady)
-		for turn := 1; turn <= run; turn++ {
-			h.pluginTurn(uint64(turn), true, status)
+	refusedRun := func(status int) func(*testing.T) *harness {
+		return func(t *testing.T) *harness {
+			t.Helper()
+			h := newHarness(t)
+			h.reach(StateReady)
+			for turn := 1; turn <= run; turn++ {
+				h.pluginTurn(uint64(turn), true, status)
+			}
+			for range testLimits().LaunchFailures {
+				h.observe(runtime.Gone)
+			}
+			h.wantState(StateFailed)
+			h.wantRefusedRun(testLimits().LaunchFailures)
+			return h
 		}
-		for range testLimits().LaunchFailures {
-			h.observe(runtime.Gone)
-		}
-		h.wantState(StateFailed)
-		h.wantRefusedRun(testLimits().LaunchFailures)
-		return h
 	}
 	failedByA400 := func(t *testing.T) *harness {
 		t.Helper()
@@ -291,104 +296,75 @@ func TestARetryResumesTheRecordedSessionUnlessItAsksForANewOne(t *testing.T) {
 		h.wantState(StateFailed)
 		return h
 	}
-
-	for _, tc := range []struct {
-		name  string
-		claim func(*testing.T) *harness
-	}{
-		{"a run of 20 refused turns that ends in a 429", func(t *testing.T) *harness { return refusedRun(t, 429) }},
-		{"a run of 20 refused turns that ends in a report with no status", func(t *testing.T) *harness { return refusedRun(t, 0) }},
-		{"a claim a prompt result's 400 failed", failedByA400},
-	} {
-		t.Run(tc.name+" resumes its session", func(t *testing.T) {
-			h := tc.claim(t)
-			resumes, spawns := len(h.calls("Resume")), len(h.calls("Spawn"))
-
-			h.must(RequestRetry{Claim: h.token})
-
-			h.wantState(StateLaunching)
-			h.wantCalls("Resume", resumes+1)
-			h.wantCalls("Spawn", spawns)
-			if c := h.claim(); c.Session != session || c.SessionFile != sessionFile || c.Abandoned.Session != "" {
-				t.Fatalf("the retried claim records session %q (%s) and abandoned %+v, want %q resumed and nothing abandoned",
-					c.Session, c.SessionFile, c.Abandoned, session)
-			}
-			h.wantBudgets(Budgets{})
-			if lines := h.records.of(newSessionLine); len(lines) != 0 {
-				t.Fatalf("the retry logged %q %d times, want never", newSessionLine, len(lines))
-			}
-		})
-	}
-
-	t.Run("a run of 20 refused turns that ends in a 429, retried with --fresh-session, starts a new session", func(t *testing.T) {
-		h := refusedRun(t, 429)
-		resumes, spawns := len(h.calls("Resume")), len(h.calls("Spawn"))
-
-		h.must(RequestRetry{Claim: h.token, FreshSession: true})
-
-		h.wantState(StateLaunching)
-		h.wantCalls("Spawn", spawns+1)
-		h.wantCalls("Resume", resumes)
-		if c := h.claim(); c.Session != "" || c.SessionFile != "" || c.Abandoned.Session != session {
-			t.Fatalf("the retried claim records session %q (%s) and abandoned %+v, want the recorded %q forgotten",
-				c.Session, c.SessionFile, c.Abandoned, session)
-		}
-		h.wantRefusedRun(0)
-		lines := h.records.of(newSessionLine)
-		if len(lines) != 1 {
-			t.Fatalf("the retry logged %q %d times, want once", newSessionLine, len(lines))
-		}
-		if why, ok := lines[0].attr("why"); !ok || why.String() != "the retry asked for a new session" {
-			t.Fatalf("the line's why is %v, want the retry's own ask", why)
-		}
-	})
-}
-
-// A retry that asks for a new session starts one whatever failed the claim, and a retry that asks
-// for nothing resumes the recorded session as every retry did before: the operator's
-// `legion claims retry --fresh-session` is the ask, and the architect's and the workflow's retries
-// make none. The claim here failed on deaths rather than refusals, so the ask is the only thing
-// deciding it.
-func TestARetryStartsANewSessionWhenItAsksAndResumesTheRecordedOneWhenItDoesNot(t *testing.T) {
-	for _, tc := range []struct {
-		name  string
-		claim Claim
-		retry Event
-	}{
-		{"the workflow's retry asking for a new session", queuedClaim(), RequestRetry{Claim: testToken, FreshSession: true}},
-		{"the operator's retry asking for a new session", rootClaim(), RequestOperatorRetry{Claim: rootToken, FreshSession: true}},
-		{"the workflow's retry asking for nothing", queuedClaim(), RequestRetry{Claim: testToken}},
-		{"the operator's retry asking for nothing", rootClaim(), RequestOperatorRetry{Claim: rootToken}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			h := newHarnessOf(t, tc.claim)
+	diedOut := func(c Claim) func(*testing.T) *harness {
+		return func(t *testing.T) *harness {
+			t.Helper()
+			h := newHarnessOf(t, c)
 			h.reach(StateReady)
 			h.report(1, true, "refused once, which is not the budget")
 			for range testLimits().LaunchFailures {
 				h.observe(runtime.Gone)
 			}
 			h.wantState(StateFailed)
+			return h
+		}
+	}
+	byWorkflow := func(fresh bool) func(claim.Token) Event {
+		return func(token claim.Token) Event { return RequestRetry{Claim: token, FreshSession: fresh} }
+	}
+	byOperator := func(fresh bool) func(claim.Token) Event {
+		return func(token claim.Token) Event { return RequestOperatorRetry{Claim: token, FreshSession: fresh} }
+	}
+
+	for _, tc := range []struct {
+		name  string
+		claim func(*testing.T) *harness
+		retry func(claim.Token) Event
+		fresh bool
+	}{
+		{"a run of 20 refused turns that ends in a 429 resumes its session", refusedRun(429), byWorkflow(false), false},
+		{"a run of 20 refused turns that ends in a report with no status resumes its session", refusedRun(0), byWorkflow(false), false},
+		{"a claim a prompt result's 400 failed resumes its session", failedByA400, byWorkflow(false), false},
+		{"a claim that died out, retried by the workflow, resumes its session", diedOut(queuedClaim()), byWorkflow(false), false},
+		{"a claim that died out, retried by an operator, resumes its session", diedOut(rootClaim()), byOperator(false), false},
+		{"a run of 20 refused turns that ends in a 429, retried with --fresh-session, starts a new session", refusedRun(429), byWorkflow(true), true},
+		{"a claim that died out, retried by the workflow asking for a new session, starts one", diedOut(queuedClaim()), byWorkflow(true), true},
+		{"a claim that died out, retried by an operator asking for a new session, starts one", diedOut(rootClaim()), byOperator(true), true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := tc.claim(t)
 			resumes, spawns := len(h.calls("Resume")), len(h.calls("Spawn"))
 
-			h.must(tc.retry)
+			h.must(tc.retry(h.token))
 
 			h.wantState(StateLaunching)
-			asked, _ := freshSession(tc.retry)
-			if asked {
-				h.wantCalls("Spawn", spawns+1)
-				h.wantCalls("Resume", resumes)
-				if c := h.claim(); c.Session != "" || c.SessionFile != "" {
-					t.Errorf("the claim still records session %q (%s), want a new one started", c.Session, c.SessionFile)
+			lines := h.records.of(newSessionLine)
+			if !tc.fresh {
+				h.wantCalls("Resume", resumes+1)
+				h.wantCalls("Spawn", spawns)
+				if c := h.claim(); c.Session != session || c.SessionFile != sessionFile || c.Abandoned.Session != "" {
+					t.Fatalf("the retried claim records session %q (%s) and abandoned %+v, want %q resumed and nothing abandoned",
+						c.Session, c.SessionFile, c.Abandoned, session)
 				}
-				h.wantRefusedRun(0)
+				h.wantBudgets(Budgets{})
+				if len(lines) != 0 {
+					t.Fatalf("the retry logged %q %d times, want never", newSessionLine, len(lines))
+				}
 				return
 			}
-			h.wantCalls("Resume", resumes+1)
-			h.wantCalls("Spawn", spawns)
-			if c := h.claim(); c.Session != session {
-				t.Errorf("the claim records session %q, want the recorded %q resumed", c.Session, session)
+			h.wantCalls("Spawn", spawns+1)
+			h.wantCalls("Resume", resumes)
+			if c := h.claim(); c.Session != "" || c.SessionFile != "" || c.Abandoned.Session != session {
+				t.Fatalf("the retried claim records session %q (%s) and abandoned %+v, want the recorded %q forgotten",
+					c.Session, c.SessionFile, c.Abandoned, session)
 			}
-			h.wantRefusedRun(1)
+			h.wantRefusedRun(0)
+			if len(lines) != 1 {
+				t.Fatalf("the retry logged %q %d times, want once", newSessionLine, len(lines))
+			}
+			if why, ok := lines[0].attr("why"); !ok || why.String() != "the retry asked for a new session" {
+				t.Fatalf("the line's why is %v, want the retry's own ask", why)
+			}
 		})
 	}
 }

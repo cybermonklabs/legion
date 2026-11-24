@@ -308,9 +308,10 @@ test("input that is not the daemon's prompt leaves the run it starts unprompted"
   expect(posted[0]).toMatchObject({ outcome: "clean", unprompted: true });
 });
 
-// The host reports a prompt's result at the first end it does not go on from with nothing waiting
-// to run next: a retry, a hook's continuation and a message waiting to run all carry the prompt's
-// run on, so every report up to that end is the prompt's, and the run after it is not.
+// The host reports a prompt's result at the first end it does not go on from itself, whatever
+// waits to run next (`rpc-prompt-results.ts:164-169` at the pinned tag): a retry and a hook's
+// continuation carry the prompt's run on, so every report up to that end is the prompt's, and the
+// run after it is not.
 test("a prompt's turn runs through the ends the host goes on from, up to the end its result reports", async () => {
   const { report, inputArrived, runStarted, posted } = rig();
 
@@ -318,8 +319,7 @@ test("a prompt's turn runs through the ends the host goes on from, up to the end
   runStarted(SESSION);
   await report(SESSION, { ...clean, willContinue: true });
   runStarted(SESSION);
-  await report(SESSION, clean, true);
-  runStarted(SESSION);
+  await report(SESSION, step);
   await report(SESSION, refusedWith(503));
   runStarted(SESSION);
   await report(SESSION, refusedWith(503));
@@ -327,9 +327,31 @@ test("a prompt's turn runs through the ends the host goes on from, up to the end
   expect(posted.map((body) => [body.sequence, body.unprompted ?? false])).toEqual([
     [1, false],
     [2, false],
-    [3, false],
-    [4, true],
+    [3, true],
   ]);
+});
+
+// A message waiting when the prompt's run ends — an Envoy steer — starts a run of its own, which
+// the host gives no prompt's result: the prompt's result has already reported the end before it.
+// So that run is reported unprompted, and the daemon judges it from the report: a 400 there fails
+// the claim at once rather than nothing.
+test("a run a waiting message starts right after a prompt's run is reported unprompted", async () => {
+  const { report, inputArrived, runStarted, posted } = rig();
+
+  inputArrived(SESSION, { text: "Continue the task.", source: "rpc" });
+  runStarted(SESSION);
+  await report(SESSION, clean);
+  runStarted(SESSION);
+  await report(SESSION, refusedWith(400));
+
+  expect(posted[0]).toMatchObject({ sequence: 1, outcome: "clean" });
+  expect(posted[0]).not.toHaveProperty("unprompted");
+  expect(posted[1]).toMatchObject({
+    sequence: 2,
+    outcome: "refused",
+    httpStatus: 400,
+    unprompted: true,
+  });
 });
 
 // A prompt the daemon sends while a turn of the plugin's own runs waits for that turn to end, and

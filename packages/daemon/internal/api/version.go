@@ -3402,8 +3402,8 @@ package api
 // 240: dispatch://INFRA-4508 -- `POST /legion/v1/claims/turn-outcome` takes two optional fields.
 // `httpStatus` is the HTTP status the provider refused the turn with, from 100 to 599, where the
 // producer's provider library gives one (Oh My Pi's `errorStatus` on the refused assistant
-// message, Claude Code's `api_error_status`); one outside that range is refused
-// `400 httpStatus <n> is no HTTP status: give one from 100 to 599, or none`. `unprompted: true`
+// message, Claude Code's `api_error_status`); a number outside that range is taken as no status,
+// and the daemon logs a warning naming it rather than refusing the report. `unprompted: true`
 // says the turn ran no prompt the daemon sent: a phase reminder, an Envoy message, a background
 // job's result. The daemon judges such a turn from its report, as it judges a prompt's turn from
 // that prompt's result: a refusal whose status cannot clear (a 4xx other than 401, 403, 408 and

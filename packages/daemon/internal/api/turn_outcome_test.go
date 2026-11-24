@@ -112,9 +112,8 @@ func TestATurnOutcomeFromAReplacedLaunchIsRefusedAndRecordsNothing(t *testing.T)
 
 // Every body the route cannot act on is refused with the sentence that says what to send, and
 // nothing is recorded: a caller that names no identity or both, a sequence of 0 (how a body that
-// named none decodes, which would collide every turn on one key), a generation of 0, an outcome
-// that is neither word, and a status outside the HTTP range, which is no status a provider
-// answered.
+// named none decodes, which would collide every turn on one key), a generation of 0, and an
+// outcome that is neither word.
 func TestATurnOutcomeTheRouteCannotActOnIsRefusedAndRecordsNothing(t *testing.T) {
 	h := newHarness(t)
 	token, boot := h.launch("LEGION-208", claim.RoleArchitect)
@@ -155,14 +154,6 @@ func TestATurnOutcomeTheRouteCannotActOnIsRefusedAndRecordsNothing(t *testing.T)
 			status:  http.StatusBadRequest,
 			message: `outcome "refused-ish" is neither "clean" nor "refused"`,
 		},
-		"with a status outside the HTTP range": {
-			body: func(req claim.TurnOutcomeRequest) claim.TurnOutcomeRequest {
-				req.Outcome, req.HTTPStatus, req.Unprompted = claim.TurnRefused, 1400, true
-				return req
-			},
-			status:  http.StatusBadRequest,
-			message: "httpStatus 1400 is no HTTP status: give one from 100 to 599, or none",
-		},
 		"with the wrong secret": {
 			body:    func(req claim.TurnOutcomeRequest) claim.TurnOutcomeRequest { req.Secret = "not the secret"; return req },
 			status:  claim.InvalidSecret.Status,
@@ -184,6 +175,34 @@ func TestATurnOutcomeTheRouteCannotActOnIsRefusedAndRecordsNothing(t *testing.T)
 				t.Fatalf("the refused report left %+v on the claim, want nothing recorded", kept)
 			}
 		})
+	}
+}
+
+// A status outside the HTTP range is no status a provider answered, and the rollout of the field
+// is warn-first: the report is taken, as one whose status cannot be read, and the daemon warns
+// naming the number rather than refusing it. So a turn that ran no prompt of the daemon's, refused
+// with 1400, counts in the claim's run of provider-error turns and fails nothing, as a refusal
+// with no status does, where a 400 would fail the claim.
+func TestATurnOutcomeWithAStatusOutsideTheHTTPRangeIsTakenAsNoStatusWithAWarning(t *testing.T) {
+	h := newHarness(t)
+	token, boot := h.launch("LEGION-208", claim.RoleArchitect)
+	registered := h.registered(boot, "ses_architect")
+
+	recorder, answer := h.turnOutcome(claim.TurnOutcomeRequest{
+		ClaimToken: token, SessionID: "ses_architect", Secret: registered.Secret,
+		Generation: 1, Sequence: 1, Outcome: claim.TurnRefused, Message: "the provider refused the reminder's turn",
+		HTTPStatus: 1400, Unprompted: true,
+	})
+
+	if recorder.Code != http.StatusOK || answer != (claim.TurnOutcomeResponse{RefusedRun: 1}) {
+		t.Fatalf("the report = %d %+v, want 200 with a run of 1 and the claim not failed", recorder.Code, answer)
+	}
+	if stored := h.stored(token); stored.State == supervise.StateFailed || stored.ProviderErrorRun != 1 {
+		t.Fatalf("the claim is %s with a run of %d provider errors, want it live with 1: a refusal with no status",
+			stored.State, stored.ProviderErrorRun)
+	}
+	if lines := h.serverLog.lines("level=WARN", "taken as no status", "httpStatus=1400"); len(lines) != 1 {
+		t.Fatalf("the route warned %q, want one line naming the status it took as none", h.serverLog.lines("httpStatus"))
 	}
 }
 

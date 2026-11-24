@@ -156,7 +156,8 @@ func (c BootCaller) named() bool { return c.BootToken != "" }
 // provider library gives one: Oh My Pi's `errorStatus` on the assistant message that ended the
 // turn, the same field its prompt_result's `httpStatus` is copied from, and Claude Code's
 // `api_error_status`. It is 0 (absent) for a clean turn and for a refusal whose status cannot be
-// read, such as a content filter's. The daemon reads no status out of Message.
+// read, such as a content filter's. The daemon reads no status out of Message, and it takes a
+// number outside 100 to 599 as no status, with a warning that names it (api's turnOutcome).
 //
 // Unprompted says the turn ran no prompt the daemon sent: the plugin started it itself (a phase
 // reminder), another extension did (an Envoy message), or the host did (a background job's

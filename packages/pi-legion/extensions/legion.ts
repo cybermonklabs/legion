@@ -898,11 +898,7 @@ export default function legionExtension(pi: PiApi): void {
     return undefined;
   });
   pi.on("agent_end", async (event, context) => {
-    await turnOutcomes.report(
-      context.sessionManager.getSessionId(),
-      event,
-      context.hasPendingMessages?.() === true
-    );
+    await turnOutcomes.report(context.sessionManager.getSessionId(), event);
   });
 
   // The run is about to settle with nothing left for the host to continue: a phase still open
