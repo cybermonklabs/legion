@@ -10,7 +10,7 @@ A `silent` entry is a phase worker nothing will prompt: the daemon sends its tas
 
 ## `awaiting-person`
 
-A root that waits only on a person keeps its slot: do not park it or take anything for its wait. The person's answer puts it in `admission.waiting` by itself, among the issues whose work came back, oldest first, and its promotion gives its architect the answer task.
+A root that waits only on a person keeps its slot: do not park it or take anything for its wait. The person's answer puts it in `admission.waiting` by itself, within its priority, among the issues whose work came back, oldest first, and its promotion gives its architect the answer task.
 
 ## `tree-stalled`
 
