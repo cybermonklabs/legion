@@ -418,11 +418,11 @@ func (f *replayFetcher) createdSpecs(ctx context.Context, window []replayEvent) 
 			}
 			var listing []listedArtifact
 			// The key is the event's, so an issue key (eventInShape). The listing is Dispatch's,
-			// or the words of whatever answers in its place: none of it is named, since its
-			// decoder's error can quote a time it could not read, and one that names an artifact
-			// by an id out of Dispatch's shape is refused, as the fetch's listings are.
-			if err := json.Unmarshal(body, &listing); err != nil {
-				return fmt.Errorf("%s artifacts: the listing is not the shape replay-fetch reads", k)
+			// or the words of whatever answers in its place: none of it is named (decodeCached),
+			// since its decoder's error can quote a time it could not read, and one that names an
+			// artifact by an id out of Dispatch's shape is refused, as the fetch's listings are.
+			if err := decodeCached("the listing", body, &listing); err != nil {
+				return fmt.Errorf("%s artifacts: %w", k, err)
 			}
 			if !listingInShape(listing) {
 				return fmt.Errorf("%s artifacts: the listing names an artifact by an id that is not in Dispatch's shape", k)
@@ -798,9 +798,10 @@ func (f *replayFetcher) fetchBlockMaps(ctx context.Context, st *replayState, win
 					return refused(err)
 				}
 				// The id is an anchor's, so in Dispatch's shape (eventInShape). The answer is
-				// Dispatch's: none of it is named, since its decoder's error can quote a time.
-				if err := json.Unmarshal(meta, &la); err != nil {
-					return fmt.Errorf("artifact %s: the answer is not the shape replay-fetch reads", id)
+				// Dispatch's: none of it is named (decodeCached), since its decoder's error can
+				// quote a time.
+				if err := decodeCached("the answer", meta, &la); err != nil {
+					return fmt.Errorf("artifact %s: %w", id, err)
 				}
 			}
 			cur := 0
@@ -818,7 +819,7 @@ func (f *replayFetcher) fetchBlockMaps(ctx context.Context, st *replayState, win
 				markdown = string(b)
 			}
 			var served []servedBlock
-			if err := json.Unmarshal(body, &served); err != nil {
+			if err := decodeCached("the answer", body, &served); err != nil {
 				return fmt.Errorf("artifact %s blocks: %w", id, err)
 			}
 			bm, bad := buildBlockMap(cur, markdown, served)

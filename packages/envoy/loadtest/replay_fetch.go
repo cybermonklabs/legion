@@ -177,7 +177,7 @@ func (f *replayFetcher) fetchLog(ctx context.Context, key string, number int, un
 			return lg, err
 		}
 		var page []json.RawMessage
-		if err := json.Unmarshal(body, &page); err != nil {
+		if err := decodeCached("the page", body, &page); err != nil {
 			return lg, fmt.Errorf("%s events after %d: %w", key, after, err)
 		}
 		for i, raw := range page {
@@ -264,7 +264,7 @@ func (f *replayFetcher) docText(ctx context.Context, id string, n int) ([]byte, 
 	var v struct {
 		Markdown *string `json:"markdown"`
 	}
-	if err := json.Unmarshal(body, &v); err != nil {
+	if err := decodeCached("the answer", body, &v); err != nil {
 		return nil, false, fmt.Errorf("artifact %s version %d: %w", id, n, err)
 	}
 	if v.Markdown == nil {
@@ -286,7 +286,7 @@ func (f *replayFetcher) run(ctx context.Context, project string, at, until time.
 	var listed []struct {
 		Key string `json:"key"`
 	}
-	if err := json.Unmarshal(listBody, &listed); err != nil {
+	if err := decodeCached("the listing", listBody, &listed); err != nil {
 		return counts, fmt.Errorf("issue listing: %w", err)
 	}
 	numbers := map[string]int{}
@@ -347,8 +347,8 @@ func (f *replayFetcher) run(ctx context.Context, project string, at, until time.
 			if err != nil {
 				return err
 			}
-			if json.Unmarshal(body, &listingsByIdx[i]) != nil {
-				return fmt.Errorf("%s artifacts: the listing is not the shape replay-fetch reads", k)
+			if err := decodeCached("the listing", body, &listingsByIdx[i]); err != nil {
+				return fmt.Errorf("%s artifacts: %w", k, err)
 			}
 			if !listingInShape(listingsByIdx[i]) {
 				return fmt.Errorf("%s artifacts: the listing names an artifact by an id that is not in Dispatch's shape", k)
