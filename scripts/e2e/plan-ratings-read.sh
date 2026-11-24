@@ -44,9 +44,10 @@ read_dispatch plans --project "$project"
 
 # Each line after the header is one finished issue, as `dispatch plans` prints it
 # (packages/envoy-client/src/dispatch-commands/plans.ts):
-#   <issue> closed <closed_at> plan <none|<source> (<n> tasks: <steps|->)> ratings <none|<r>/<most> "<reason>", …> time <-|<h>h<m>m> failed steps <n>
+#   <issue> closed <closed_at> plan <none|<source> (<n> tasks: <steps|->)> ratings <none|<r>/<most> "<reason>", …> time <-|<h>h<m>m> failed steps <n> on set model <-|<on>> off <-|<off>> unknown <-|<unknown>>
 # Each reason is a JSON string, so a quotation mark or a line break in it keeps the issue on one
-# line; the ratings are separated by `, ` outside those strings.
+# line. The ratings are separated by `, ` outside those strings. A count is `-` where the Dispatch
+# that answered counts none.
 awk -v project="$project" -v issue="$issue" '
   function unknown(why) { print "UNKNOWN: " why; status = 2; exit }
   # ratingsOf reads the ratings text of one line: the number of ratings it lists, 0 for `none`,
@@ -86,7 +87,7 @@ awk -v project="$project" -v issue="$issue" '
   NF == 0 { next }
   {
     line = $0
-    if ($2 != "closed" || $4 != "plan" || !match(line, / time (-|[0-9]+h[0-9]+m) failed steps [0-9]+$/)) unknown("the line is no finished issue: " line)
+    if ($2 != "closed" || $4 != "plan" || !match(line, / time (-|[0-9]+h[0-9]+m) failed steps [0-9]+ on set model (-|[0-9]+) off (-|[0-9]+) unknown (-|[0-9]+)$/)) unknown("the line is no finished issue: " line)
     tail = substr(line, RSTART + 1)
     lead = length($1 " closed " $3 " plan ")
     middle = substr(line, lead + 1, RSTART - lead - 1)
