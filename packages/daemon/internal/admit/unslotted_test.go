@@ -30,7 +30,9 @@ import (
 // waits in the line the same way, and leaves it the same way. A root whose key an operator's tree
 // holds leaves the same way but lingers no tree, since the tree under its key is the operator's
 // (workflow's leave, leaveUnderOperator): its phase is done with no linger, the controller is told
-// once all the same (releaseUnslotted), and a todo with the label admits it again.
+// once all the same (releaseUnslotted), and a todo with the label admits it again. With a slot
+// free it then waits while the operator's tree is open (treelifecycle.ErrAuthorityHeld), and no
+// architect starts.
 func TestAWaitingRootMovedToARunningTreesStatusLeavesTheWorkflow(t *testing.T) {
 	for _, tc := range []struct {
 		name, actor, status string
@@ -120,11 +122,18 @@ func TestAWaitingRootMovedToARunningTreesStatusLeavesTheWorkflow(t *testing.T) {
 			t.Fatalf("controller notices = %#v, want one unslotted notice on %s", notices, key)
 		}
 
-		// Set back to todo with the label, it is admitted again and waits behind the operator's tree.
+		// The running tree finishes, freeing its slot; then the root is set back to todo with the
+		// label: it is admitted again and waits behind the operator's tree, so the free slot stays
+		// free and no architect starts.
+		apply(t, pool, admission, "first-done", intake.DispatchIssue{Key: "LEGION-1", ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "done", Title: "LEGION-1", Rank: "A", HandedOver: true}, engine)
 		apply(t, pool, admission, "queued-again", intake.DispatchIssue{Key: key, ResolvedRepo: "acme/widgets", Seq: 3, Type: "issue.updated", Status: "todo", Title: key, Rank: "B", HandedOver: true}, engine)
 		if got := issue(t, pool, key); got.Phase != phase.Admitted || got.Generation != 2 || got.LingerUntil != nil || got.Status != "todo" {
-			t.Fatalf("%s set back to todo = %#v, want it admitted at generation 2, waiting at todo", key, got)
+			t.Errorf("%s set back to todo = %#v, want it admitted at generation 2, waiting at todo", key, got)
 		}
+		if started := architectStarts(t, pool, key); started != 0 {
+			t.Errorf("architect starts for %s = %d, want none while the operator holds its tree", key, started)
+		}
+		assertSlots(t, pool, nil)
 		assertWaiting(t, pool, []string{key})
 		if notices := controllerNotices(t, pool); len(notices) != 1 {
 			t.Fatalf("controller notices after the todo = %#v, want the one the leave wrote", notices)

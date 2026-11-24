@@ -238,8 +238,8 @@ func TestATodoOnAHeldRootReleasesTheHold(t *testing.T) {
 	// workflow as a parked root does (releaseUnslotted, workflow's LeaveUnslotted), done and
 	// lingering, with one unslotted notice for the controller and nothing started. The person's todo
 	// with the label then queues it again (readmit), so it never reaches the release of a hold
-	// (workflow's releaseHeldRoot) and no worker starts in a tree that has not opened. The test
-	// leaves open what that re-admission does to the phase and the hold the hand-over carried.
+	// (workflow's releaseHeldRoot) and no worker starts in a tree that has not opened. The
+	// re-admission starts a new generation with no carry, which the hand-over's owner called no defect.
 	t.Run("a carried held root a person moves out of the line leaves the workflow, and its todo starts no worker", func(t *testing.T) {
 		const other = "LEGION-9"
 		pool := migratedPool(t)
@@ -265,8 +265,8 @@ func TestATodoOnAHeldRootReleasesTheHold(t *testing.T) {
 		}
 
 		apply(t, pool, admission, "todo", childEvent("todo", 4, false), engine)
-		if back := issue(t, pool, child); back.Status != "todo" || back.LingerUntil != nil {
-			t.Errorf("the carried child after a person's todo = %#v, want it todo and lingering no more", back)
+		if back := issue(t, pool, child); back.Phase != phase.Admitted || back.Hold != nil || back.Generation != 3 || back.Status != "todo" || back.LingerUntil != nil {
+			t.Errorf("the carried child after a person's todo = %#v, want it re-admitted with no carry: phase admitted, no hold, generation 3, todo and lingering no more", back)
 		}
 		if line := waitingLine(t, pool, testProject, config.DesignGateRootIssues.Steps()); !slices.Contains(line, child) {
 			t.Errorf("the waiting line after a person's todo = %v, want %s queued in it again", line, child)
