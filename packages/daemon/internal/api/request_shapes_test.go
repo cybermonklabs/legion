@@ -329,10 +329,18 @@ func TestEveryRecordedRequestFieldIsReadByName(t *testing.T) {
 	if rewritingFixtures() {
 		t.Skip("the fixtures are being rewritten; run the suite again without -update")
 	}
-	onFile := requestRecordsOfBuild(t)
-	for _, problem := range requestShapeProblems(onFile, walkedRequests(t), AcceptedByName(), RemovedRoutes(), DaemonAPIVersion()) {
+	for _, problem := range recordedRequestProblems(t, packageEntryFixtures) {
 		t.Error(problem)
 	}
+}
+
+// recordedRequestProblems is every problem of this build's request records, its entry fixtures
+// read from dir, against the case above: requestShapeProblems, and each route of pluginRequests
+// that the record of this daemon's own contract does not hold.
+func recordedRequestProblems(t *testing.T, dir string) []string {
+	t.Helper()
+	onFile := requestRecordsOfBuild(t, dir)
+	problems := requestShapeProblems(onFile, walkedRequests(t), AcceptedByName(), RemovedRoutes(), DaemonAPIVersion())
 	routes := map[string]bool{}
 	for _, record := range onFile {
 		if record.Contract == DaemonAPIVersion() {
@@ -341,9 +349,10 @@ func TestEveryRecordedRequestFieldIsReadByName(t *testing.T) {
 	}
 	for _, route := range slices.Sorted(maps.Keys(pluginRequests())) {
 		if !routes[route] {
-			t.Errorf("%s has no record at contract %d: an entry that adds the route writes it into its fixture, with `go test ./internal/api/ -update`", route, DaemonAPIVersion())
+			problems = append(problems, fmt.Sprintf("%s has no record at contract %d: an entry that adds the route writes it into its fixture, with `go test ./internal/api/ -update`", route, DaemonAPIVersion()))
 		}
 	}
+	return problems
 }
 
 // withScratchRequestEntry is records, this build's, with the record of a scratch entry at next
@@ -378,7 +387,7 @@ func TestTheRequestGateCatchesARemovedField(t *testing.T) {
 	if rewritingFixtures() {
 		t.Skip("the fixtures are being rewritten; run the suite again without -update")
 	}
-	onFile := requestRecordsOfBuild(t)
+	onFile := requestRecordsOfBuild(t, packageEntryFixtures)
 	const route, field = "POST /legion/v1/roots/close", "reason"
 	next := DaemonAPIVersion() + 1
 	walked := walkedRequests(t)
@@ -454,7 +463,7 @@ func TestTheRequestGateCatchesAReadFieldItsRecordDoesNotHold(t *testing.T) {
 	if rewritingFixtures() {
 		t.Skip("the fixtures are being rewritten; run the suite again without -update")
 	}
-	onFile := requestRecordsOfBuild(t)
+	onFile := requestRecordsOfBuild(t, packageEntryFixtures)
 	walked := walkedRequests(t)
 	wantNamed := func(t *testing.T, problems []string, route, field string) {
 		t.Helper()
@@ -499,7 +508,7 @@ func TestTheRequestGateCatchesARemovedRouteItDoesNotDeclare(t *testing.T) {
 	if rewritingFixtures() {
 		t.Skip("the fixtures are being rewritten; run the suite again without -update")
 	}
-	onFile := requestRecordsOfBuild(t)
+	onFile := requestRecordsOfBuild(t, packageEntryFixtures)
 	const route = "POST /legion/v1/children/park"
 	if _, isRemoved := RemovedRoutes()[route]; !isRemoved {
 		t.Fatalf("requests.go's RemovedRoutes declares no %s; deleting its entry proves nothing", route)

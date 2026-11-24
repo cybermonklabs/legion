@@ -832,16 +832,16 @@ func shapeRecordsOfBuild(t *testing.T, dir string) []contractShape {
 }
 
 // requestRecordsOfBuild is every record of the requests this build reads: the frozen records of
-// requestShapesFixture, then the records of each entry's number (buildRecords over
-// packageEntryFixtures).
-func requestRecordsOfBuild(t *testing.T) []requestShape {
+// requestShapesFixture, then the records of each entry's number, its fixture read from dir
+// (buildRecords).
+func requestRecordsOfBuild(t *testing.T, dir string) []requestShape {
 	t.Helper()
 	frozen, written := readRequestShapes(t)
 	if !written {
 		t.Fatalf("%s is missing: it holds the frozen records of the numbered entries, which no flag writes", requestShapesFixture)
 	}
 	records := slices.Clone(frozen)
-	for _, contract := range buildRecords(t, packageEntryFixtures) {
+	for _, contract := range buildRecords(t, dir) {
 		records = append(records, contract.Requests...)
 	}
 	return records

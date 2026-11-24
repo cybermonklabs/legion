@@ -1564,38 +1564,84 @@ func TestTheRecordSetIsOneRecordPerAnswerPerContract(t *testing.T) {
 	}
 }
 
-// censusAddTestContract and censusRemoveTestContract are the ids of two test entries, the second a
-// revert of the first: the first adds `censusRevert` to the domain of censusRevertKeyPath on the
-// issue record, and the second takes it out again and retires censusRetiredRoute, as a fixture
-// may (entryFixture). Each id is later than any entry of this tree can be, and no other test
-// registry registers either.
+// The ids of two pairs of test entries, the second of each pair a revert of the first, as a
+// fixture may write one (entryFixture). In the first pair, census-value-add adds `censusRevert`
+// to the domain of `phase` on the issue record, and census-value-remove takes it out again and
+// retires censusRetiredRoute. In the second, census-answer-add adds censusAnswer and gives the
+// no-content answer a body, and census-answer-remove removes censusAnswer and gives no-content
+// no body again. Each id is later than any entry of this tree can be, and no other test registry
+// registers any of them.
 const (
-	censusAddTestContract    = 20990505050505
-	censusRemoveTestContract = 20990606060606
+	censusAddTestContract          = 20990505050505
+	censusRemoveTestContract       = 20990606060606
+	censusAnswerAddTestContract    = 20990707070707
+	censusAnswerRemoveTestContract = 20990808080808
 )
 
-// censusRetiredRoute is the route a plugin calls that the revert retires.
+// censusRetiredRoute is the route a plugin calls that the first pair's revert retires.
 const censusRetiredRoute = "POST /legion/v1/phase/retry"
 
+// censusAnswer is the answer the second pair adds and then removes.
+const censusAnswer AnswerID = "census-answer"
+
 // A revert is a new entry that undoes an earlier one, so the census holds each contract to what
-// the composition gives it: the value the first entry adds is on the first entry's record and on
-// no record after the revert, and the route the revert retires is wanted at no contract the
-// revert's number reaches. A census that wanted every value from its arrival up, or every route
-// of the frozen rows and the entries' rows, would fail this build and could pass only by editing
-// a frozen row.
+// the composition gives it: what the first entry of a pair adds or changes is on the first
+// entry's record and on no record after the revert. A census that wanted every value or answer
+// from its arrival up, one noBody for an answer at every contract, or every route of the frozen
+// rows and the entries' rows at this daemon's own contract, would fail these builds and could
+// pass only by editing a frozen row. Each case first holds the composition to the change, so a
+// fixture the composition reads as no change proves nothing.
 func TestTheCensusHoldsAnEntryThatRevertsAnEarlierOne(t *testing.T) {
 	if rewritingFixtures() {
 		t.Skip("the fixtures are being rewritten; run the suite again without -update")
 	}
-	installContractRegistry(t, testRegistry(t, stampOf(censusAddTestContract, censusRemoveTestContract),
-		contractEntry{id: censusAddTestContract, slug: "census-value-add"},
-		contractEntry{id: censusRemoveTestContract, slug: "census-value-remove", removedRoutes: map[string]int{censusRetiredRoute: censusRemoveTestContract}}))
-	for _, problem := range recordSetProblems(t, pairEntryFixtures) {
-		t.Error(problem)
+	recordOf := func(t *testing.T, contract contractRecords, answer AnswerID) (contractShape, bool) {
+		t.Helper()
+		at := slices.IndexFunc(contract.Records, func(record contractShape) bool { return record.Answer == answer })
+		if at < 0 {
+			return contractShape{}, false
+		}
+		return contract.Records[at], true
 	}
-	if _, wanted := pluginRequests()[censusRetiredRoute]; wanted {
-		t.Errorf("pluginRequests holds %s, which the revert retires (RemovedRoutes): no record of this daemon's own contract holds it", censusRetiredRoute)
-	}
+	t.Run("an entry takes out a value an earlier one added and retires a route", func(t *testing.T) {
+		installContractRegistry(t, testRegistry(t, stampOf(censusAddTestContract, censusRemoveTestContract),
+			contractEntry{id: censusAddTestContract, slug: "census-value-add"},
+			contractEntry{id: censusRemoveTestContract, slug: "census-value-remove", removedRoutes: map[string]int{censusRetiredRoute: censusRemoveTestContract}}))
+		composed := buildRecords(t, pairEntryFixtures)
+		for i, holds := range []bool{true, false} {
+			record, _ := recordOf(t, composed[i], AnswerIssueRecord)
+			if got := slices.Contains(record.Domains["phase"], "censusRevert"); got != holds {
+				t.Fatalf("the issue record's domain of `phase` at contract %d admits `censusRevert`: %t, want %t", composed[i].Contract, got, holds)
+			}
+			routed := slices.ContainsFunc(composed[i].Requests, func(request requestShape) bool { return request.Route == censusRetiredRoute })
+			if routed != holds {
+				t.Fatalf("the record of contract %d holds %s: %t, want %t", composed[i].Contract, censusRetiredRoute, routed, holds)
+			}
+		}
+		for _, problem := range slices.Concat(recordSetProblems(t, pairEntryFixtures), recordedRequestProblems(t, pairEntryFixtures)) {
+			t.Error(problem)
+		}
+		if _, wanted := pluginRequests()[censusRetiredRoute]; wanted {
+			t.Errorf("pluginRequests holds %s, which the revert retires (RemovedRoutes): no record of this daemon's own contract holds it", censusRetiredRoute)
+		}
+	})
+	t.Run("an entry removes an answer an earlier one added and changes an answer's noBody back", func(t *testing.T) {
+		installContractRegistry(t, testRegistry(t, stampOf(censusAnswerAddTestContract, censusAnswerRemoveTestContract),
+			contractEntry{id: censusAnswerAddTestContract, slug: "census-answer-add"},
+			contractEntry{id: censusAnswerRemoveTestContract, slug: "census-answer-remove"}))
+		composed := buildRecords(t, pairEntryFixtures)
+		for i, holds := range []bool{true, false} {
+			if _, got := recordOf(t, composed[i], censusAnswer); got != holds {
+				t.Fatalf("the records of contract %d hold the %s answer: %t, want %t", composed[i].Contract, censusAnswer, got, holds)
+			}
+			if record, _ := recordOf(t, composed[i], AnswerNoContent); record.NoBody == holds {
+				t.Fatalf("the %s answer's record at contract %d has noBody %t, want %t", AnswerNoContent, composed[i].Contract, record.NoBody, !holds)
+			}
+		}
+		for _, problem := range slices.Concat(recordSetProblems(t, pairEntryFixtures), recordedRequestProblems(t, pairEntryFixtures)) {
+			t.Error(problem)
+		}
+	})
 }
 
 // recordSetProblems is every problem of the record set of this build, its entry fixtures read from
