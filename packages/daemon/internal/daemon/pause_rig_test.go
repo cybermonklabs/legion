@@ -77,12 +77,12 @@ const pauseRigReason = "the model provider is refusing every request"
 // pauseRuntime is the fake runtime with the moment of every launch on the test clock, as
 // waveRuntime has it (wake_wave_test.go), and the calls an issue pod's idle release makes of a
 // Kubernetes runtime, as releaseRuntime has them (idle_release_test.go): whether a pod runs the
-// configured image (always), whether the runtime still holds an issue's Sandbox, the bundle of a
-// pod's unpushed work, and the issue-level teardowns, a release's (ReleaseIssue) and a close's
-// (SuspendIssue), whose every deletion it records. The release's executors ask for the release's
-// teardown (runtime.IssueReleaser) and save nothing without it, so a rig without ReleaseIssue
-// would read no release and no save, whatever the pause held. IssuePod and IssueKeepsVolume are
-// the embedded fake's.
+// configured image (always), whether the runtime still holds an issue's Sandbox, the read of a
+// pod's workspace (the embedded fake's WorkspaceWork), and the issue-level teardowns, a release's
+// (ReleaseIssue) and a close's (SuspendIssue), whose every deletion it records. The release's
+// executors ask for the release's teardown (runtime.IssueReleaser) and check nothing without it,
+// so a rig without ReleaseIssue would read no release and no check, whatever the pause held.
+// IssuePod and IssueKeepsVolume are the embedded fake's.
 type pauseRuntime struct {
 	*fake.Runtime
 	clock *waveClock
@@ -90,10 +90,9 @@ type pauseRuntime struct {
 	runs  []waveLaunch
 	// sandboxes is every issue whose Sandbox (and pod) the runtime holds.
 	sandboxes map[string]bool
-	// deleted is every issue whose pod a teardown deleted, in order; bundled every issue a
-	// release asked for a bundle of.
+	// deleted is every issue whose pod a teardown deleted, in order. The workspace reads a release
+	// asked for are the embedded fake's (WorkspaceWork), which answers no work.
 	deleted []string
-	bundled []string
 }
 
 func newPauseRuntime(clock *waveClock) *pauseRuntime {
@@ -205,13 +204,6 @@ func (r *pauseRuntime) IssueSandbox(issue string) (string, bool) {
 	return "sandbox-" + strings.ToLower(issue), r.sandboxes[issue]
 }
 
-func (r *pauseRuntime) BundleWorkspace(_ context.Context, issue string, _ claim.Role) (runtime.WorkspaceBundle, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.bundled = append(r.bundled, issue)
-	return runtime.WorkspaceBundle{}, nil
-}
-
 func (r *pauseRuntime) ReleaseIssue(ctx context.Context, issue, _ string, authorize func(context.Context) (bool, error)) error {
 	return r.teardown(ctx, issue, authorize)
 }
@@ -235,11 +227,14 @@ func (r *pauseRuntime) teardown(ctx context.Context, issue string, authorize fun
 }
 
 // podReads is what the runtime was asked to do to the pods: the issues whose pod a teardown
-// deleted and the issues a release asked for a bundle of.
-func (r *pauseRuntime) podReads() (deleted, bundled []string) {
+// deleted and the issues whose workspace a release read.
+func (r *pauseRuntime) podReads() (deleted, read []string) {
+	for _, call := range r.CallsOf("WorkspaceWork") {
+		read = append(read, call.Issue)
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return slices.Clone(r.deleted), slices.Clone(r.bundled)
+	return slices.Clone(r.deleted), read
 }
 
 // suspendedOf is how many times the runtime was asked to stop a process of token.

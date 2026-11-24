@@ -575,14 +575,6 @@ func (r *idleWakeRig) newRuntime(ctx context.Context, listener *stream.Listener,
 	}
 	tools := r.toolsDir()
 	opts.Conns, opts.StreamURL, opts.Store = listener, address, st
-	// The two halves of a release's saved work, as the daemon's own factory hands them to the
-	// runtime it builds (sandboxRuntime): what the launcher of the pod that replaces a released
-	// one is sent before any role of that pod starts, and what the launcher's confirmation
-	// drops. Without them no pod of this rig is ever offered a bundle. They cost a rig whose
-	// releases save none one indexed read per role start, which answers no row: the save of a
-	// workspace with nothing unpushed stores nothing and deletes what the issue had
-	// (outbox.bundleIssueWorkspace), and this rig's role processes bundle an empty workspace.
-	opts.SavedWorkspaceBundle, opts.WorkspaceBundleRestored = savedWorkspaceBundle(st, opts.Project), st.DeleteRestoredWorkspaceBundle
 	opts.Tokens = idleRigTokens{}
 	opts.GitHubCredential = func(_ context.Context, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
 		rendered := ghconfig.Render("ghs_idle_rig", string(appauth.AppRoleFor(role)), time.Now().Add(time.Hour))

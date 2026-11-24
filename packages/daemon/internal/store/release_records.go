@@ -10,10 +10,9 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// PodRelease is one release of an issue pod: which roles were in it, when their claims were
-// suspended as released, and how large the workspace bundle it saved was. It is the row every
-// resume of that pod hangs from, so a reader can pair a release with what woke it and how long
-// the agent waited.
+// PodRelease is one release of an issue pod: which roles were in it and when their claims were
+// suspended as released. It is the row every resume of that pod hangs from, so a reader can pair
+// a release with what woke it and how long the agent waited.
 type PodRelease struct {
 	// ID is the row's own id, which the store fills.
 	ID int64
@@ -26,8 +25,10 @@ type PodRelease struct {
 	Roles []string
 	// At is when the release completed.
 	At time.Time
-	// BundleBytes is the size of the bundle the release saved; zero when it saved none because
-	// the workspace held nothing unpushed.
+	// BundleBytes is the size of the git bundle of unpushed work an earlier release saved, which
+	// pod_releases.bundle_bytes keeps for the rows those releases wrote. No release saves one
+	// now, so every release this daemon records writes zero; the column stays because the release
+	// before still writes it, and a rollback runs that release over this table.
 	BundleBytes int
 }
 

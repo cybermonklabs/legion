@@ -1361,7 +1361,7 @@ func TestClaimRowReEvaluatesTheOrderingRulesAtTheClaim(t *testing.T) {
 }
 
 // A lease is renewed only by its holder: the right token moves lease_until, a wrong one moves
-// nothing, and a finished row has no lease to renew.
+// nothing and finds the row still there, and a finished row has no lease to renew and is gone.
 func TestRenewOutboxLeaseRenewsOnlyUnderItsToken(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
@@ -1383,21 +1383,22 @@ func TestRenewOutboxLeaseRenewsOnlyUnderItsToken(t *testing.T) {
 		return len(due) == 1
 	}
 	inTx(t, st, func(tx pgx.Tx) {
-		renewed, err := records.RenewOutboxLease(ctx, tx, leased.ID, "another-lane", now.Add(5*time.Minute))
+		renewed, gone, err := records.RenewOutboxLease(ctx, tx, leased.ID, "another-lane", now.Add(5*time.Minute))
 		must(t, err)
-		if renewed || !dueAt(tx, now.Add(2*time.Minute)) {
-			t.Fatalf("renewal under a wrong token = %v and the row due at two minutes = %v, want false and true", renewed, dueAt(tx, now.Add(2*time.Minute)))
+		if renewed || gone || !dueAt(tx, now.Add(2*time.Minute)) {
+			t.Fatalf("renewal under a wrong token = %v, gone %v, and the row due at two minutes = %v, want false, false and true",
+				renewed, gone, dueAt(tx, now.Add(2*time.Minute)))
 		}
-		renewed, err = records.RenewOutboxLease(ctx, tx, leased.ID, leased.LeaseToken, now.Add(5*time.Minute))
+		renewed, gone, err = records.RenewOutboxLease(ctx, tx, leased.ID, leased.LeaseToken, now.Add(5*time.Minute))
 		must(t, err)
-		if !renewed || dueAt(tx, now.Add(2*time.Minute)) || !dueAt(tx, now.Add(6*time.Minute)) {
-			t.Fatalf("renewal under the lease's token = %v, want true and the row due only after five minutes", renewed)
+		if !renewed || gone || dueAt(tx, now.Add(2*time.Minute)) || !dueAt(tx, now.Add(6*time.Minute)) {
+			t.Fatalf("renewal under the lease's token = %v, gone %v, want true, false and the row due only after five minutes", renewed, gone)
 		}
 		must(t, records.FinishOutbox(ctx, tx, leased.ID, leased.LeaseToken))
-		renewed, err = records.RenewOutboxLease(ctx, tx, leased.ID, leased.LeaseToken, now.Add(9*time.Minute))
+		renewed, gone, err = records.RenewOutboxLease(ctx, tx, leased.ID, leased.LeaseToken, now.Add(9*time.Minute))
 		must(t, err)
-		if renewed {
-			t.Fatal("a finished row's lease was renewed")
+		if renewed || !gone {
+			t.Fatalf("a finished row's renewal = %v, gone %v, want false and true", renewed, gone)
 		}
 	})
 }
