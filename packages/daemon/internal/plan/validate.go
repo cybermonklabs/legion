@@ -3,7 +3,6 @@ package plan
 import (
 	"fmt"
 	"slices"
-	"strconv"
 	"strings"
 
 	"github.com/sjawhar/legion/daemon/internal/redact"
@@ -53,10 +52,7 @@ func quoted(word string) string {
 // listed is ids as a reason lists them: the first MostReasons, joined by ", ", and past them a
 // count of the rest.
 func listed(ids []string) string {
-	if len(ids) <= MostReasons {
-		return strings.Join(ids, ", ")
-	}
-	return fmt.Sprintf("%s and %d more", strings.Join(ids[:MostReasons], ", "), len(ids)-MostReasons)
+	return strings.Join(ids, ", ")
 }
 
 // noTask is the reason a plan with no task block gets. No later release takes such a plan, so it
@@ -215,19 +211,11 @@ func Validate(p Plan, d Deployment) []Refusal {
 // MostReasons - 1 needs, a count of the needs between, and the need that closes it. So a chain
 // names at most MostReasons needs, of two task ids each.
 func chainOf(cycle []string) string {
-	link := func(i int) string { return cycle[i] + " needs " + cycle[(i+1)%len(cycle)] }
-	chain := make([]string, 0, MostReasons+1)
-	for i := range min(len(cycle), MostReasons) - 1 {
-		chain = append(chain, link(i))
+	chain := make([]string, len(cycle))
+	for i := range cycle {
+		chain[i] = cycle[i] + " needs " + cycle[(i+1)%len(cycle)]
 	}
-	if left := len(cycle) - MostReasons; left > 0 {
-		word := " more needs"
-		if left == 1 {
-			word = " more need"
-		}
-		chain = append(chain, strconv.Itoa(left)+word)
-	}
-	return strings.Join(append(chain, link(len(cycle)-1)), ", ")
+	return strings.Join(chain, ", ")
 }
 
 // cycles is one cycle of needs for each set of tasks that need each other: each strongly
