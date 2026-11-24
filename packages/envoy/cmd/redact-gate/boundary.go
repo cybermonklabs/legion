@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
@@ -90,5 +91,27 @@ func (c *census) addBoundary(out []byte, prefix, what string, needAPI bool) {
 		c.Unknown = append(c.Unknown, fmt.Sprintf("boundary census: %s: it enumerated no function of its library", what))
 	case strings.Contains(summary, "files=0\t") || strings.HasSuffix(summary, "files=0"):
 		c.Unknown = append(c.Unknown, fmt.Sprintf("boundary census: %s: the census read no production file", what))
+	}
+}
+
+// judgeTargets fails each of ciTargets no API line of the boundary census names, and a census
+// that printed no API line at all. An API line names the targets whose builds import its library
+// package, which addBoundary reads into the finding's What, so a target no line names is one no
+// build of any module loaded, and a census with no API line read nothing.
+func (g *gate) judgeTargets(c census) {
+	var api []string
+	for _, b := range c.Boundary {
+		if b.Kind == "api" {
+			api = append(api, b.What)
+		}
+	}
+	if len(api) == 0 {
+		g.fail("stage 2 (boundary census) UNKNOWN: it printed no BOUNDARY api line, so it names no build target")
+		return
+	}
+	for _, target := range ciTargets {
+		if !slices.ContainsFunc(api, func(line string) bool { return strings.Contains(line, target.String()) }) {
+			g.fail("stage 2 (boundary census) no BOUNDARY api line names the build target %s", target)
+		}
 	}
 }

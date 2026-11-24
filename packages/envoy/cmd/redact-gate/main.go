@@ -743,8 +743,8 @@ func (g *gate) judge(c census, ranges map[*row][2]int, bindErr map[*row]error) b
 }
 
 // judgeStructural fails each box-storage use the box census could not classify, each holder no
-// print-test row names, each reflection or unsafe site it does not allow, and a census that
-// listed nothing.
+// print-test row names, each reflection or unsafe site it does not allow, each build target no
+// API line of the boundary census names (judgeTargets), and a census that listed nothing.
 func (g *gate) judgeStructural(c census) {
 	if len(c.Box) == 0 {
 		g.fail("stage 2 (box census) UNKNOWN: it listed no use of the box's storage")
@@ -817,6 +817,7 @@ func (g *gate) judgeStructural(c census) {
 	if calls == 0 {
 		g.fail("stage 2 (boundary census) UNKNOWN: it listed no call of a library")
 	}
+	g.judgeTargets(c)
 	if len(c.Fields) == 0 {
 		g.fail("stage 2 (field census) UNKNOWN: it listed no field the boundary sets")
 	}
