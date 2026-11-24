@@ -739,16 +739,7 @@ func TestAnOlderPluginContractGetsTheStateWithoutIntakeGiveUps(t *testing.T) {
 	if len(narrowings) == 0 || narrowings[0].Dropped != "intakeGiveUps" || narrowings[0].PluginContract != intakeGiveUpsContract-1 {
 		t.Errorf("the daemon logged %+v for a caller at %d, want its first line saying it dropped intakeGiveUps", narrowings, intakeGiveUpsContract-1)
 	}
-	expected := narrowingsExpected(populatedState(t), intakeGiveUpsContract-1)
-	if len(narrowings) != len(expected) {
-		t.Fatalf("the daemon wrote %d narrowing lines for a caller at %d, want %d, one for each contract above it: %+v",
-			len(narrowings), intakeGiveUpsContract-1, len(expected), narrowings)
-	}
-	for i, line := range narrowings {
-		if line.Dropped != expected[i] {
-			t.Errorf("line %d of a caller at %d says it dropped %q, want %q", i, intakeGiveUpsContract-1, line.Dropped, expected[i])
-		}
-	}
+	wantNarrowings(t, narrowings, intakeGiveUpsContract-1, narrowingsExpected(populatedState(t), intakeGiveUpsContract-1))
 	for _, body := range []map[string]json.RawMessage{olderBody, currentBody} {
 		delete(body, "intakeGiveUps")
 		delete(body, "contract")
