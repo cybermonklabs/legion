@@ -84,7 +84,7 @@ const (
 	// constant, holds the files of packages/daemon to it directly and holds every quotation of
 	// the copy to it too, so the rename fails there while the quotations here stay the texts'
 	// own words.
-	waitingLineBand = "among the issues whose work came back, oldest first"
+	waitingLineBand = "within its priority, among the issues whose work came back, oldest first"
 	// The one form word a section marker of the workflow package's copy carries, and the only
 	// one either reader of that copy knows: a body in that form is the quoted file's prose on
 	// one line. TestEveryWaitingLineWordsExtractSectionIsCollapsed below is what holds the copy

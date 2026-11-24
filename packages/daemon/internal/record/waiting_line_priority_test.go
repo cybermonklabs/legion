@@ -58,7 +58,7 @@ func TestTheWaitingLinePutsAP0ChildOfAP1TreeAheadOfAP1RootWhoseWorkCameBackAndAP
 		},
 		Gates:      map[string]TreeGate{"LEGION-10": openGate("LEGION-10", opened), "LEGION-20": openGate("LEGION-20", opened)},
 		Owed:       map[string]OwedStart{"LEGION-20": {Issue: "LEGION-20", ID: 42, CreatedAt: owedAt}},
-		ChildWaits: map[string][]string{"LEGION-10": {"LEGION-11"}},
+		ChildWaits: map[string]ChildWait{"LEGION-10": {Parent: "LEGION-10", Open: []OpenChild{{Key: "LEGION-11", Status: "todo", Released: true}}}},
 	}
 	slots := []Slot{{Issue: "LEGION-10", Index: 0, AdmittedAt: opened}}
 
@@ -115,7 +115,7 @@ func TestTheWaitingLinePlacesAnIssueWithNoPriorityAtItsRootsAndOneWithNoneOnEith
 	facts := LineFacts{
 		Lifecycles: map[string]treelifecycle.Lifecycle{"LEGION-40": {Tree: "LEGION-40", Authority: treelifecycle.AuthorityWorkflow}},
 		Gates:      map[string]TreeGate{"LEGION-40": openGate("LEGION-40", opened)},
-		ChildWaits: map[string][]string{"LEGION-40": {"LEGION-41"}},
+		ChildWaits: map[string]ChildWait{"LEGION-40": {Parent: "LEGION-40", Open: []OpenChild{{Key: "LEGION-41", Status: "todo", Released: true}}}},
 	}
 	slots := []Slot{{Issue: "LEGION-40", Index: 0, AdmittedAt: opened}}
 
