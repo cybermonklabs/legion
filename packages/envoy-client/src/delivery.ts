@@ -41,6 +41,7 @@ import type { ActiveDispatchConfig } from "./dispatch-config";
 import { DispatchClient } from "./dispatch-http";
 import { dispatchChildRef, dispatchDocumentRef, dispatchIssueRef } from "./dispatch-owner";
 import { pictureAddresses } from "./dispatch-pictures";
+import { parseFrameJSON } from "./frame-json";
 import { humanEditDiffBlock, humanEditHead } from "./human-edit";
 import { sessionAnswerRelationPhrase } from "./session-answer-relations";
 
@@ -72,6 +73,8 @@ export const InboundExpectsReplySchema = z
   .literal([...EXPECTS_REPLY_VALUES, "none"] as const)
   .transform((value): ExpectsReply => (value === "none" ? false : value));
 
+// Parsed only from `parseFrameJSON`'s value: this schema passes unknown keys through by
+// assignment, so a `__proto__` key that JSON.parse kept would become the envelope's prototype.
 const InboundEnvelopeSchema = z
   .object({
     event_id: z.string().optional(),
@@ -1018,7 +1021,7 @@ function withWholeBody(event: DispatchEvent, body: string | undefined): Dispatch
 function parseDispatchFrame(rawPayload: string, wholeBody?: string): DispatchFrame {
   let value: unknown;
   try {
-    value = JSON.parse(rawPayload);
+    value = parseFrameJSON(rawPayload);
   } catch {
     return { raw: rawPayload };
   }
@@ -1095,7 +1098,7 @@ export function renderInbound(
 ): RenderInboundResult {
   let value: unknown;
   try {
-    value = JSON.parse(raw);
+    value = parseFrameJSON(raw);
   } catch {
     return {
       skip: false,
@@ -1330,7 +1333,7 @@ export function renderInbound(
     (envelope.source === "github" || envelope.payload !== envelope.payload_summary)
   ) {
     try {
-      parsedPayload = JSON.parse(envelope.payload);
+      parsedPayload = parseFrameJSON(envelope.payload);
     } catch {
       parsedPayload = envelope.payload;
     }

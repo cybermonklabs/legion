@@ -31,6 +31,7 @@ import (
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/roles"
 	"github.com/sjawhar/envoy/internal/session"
+	"github.com/sjawhar/envoy/internal/store"
 )
 
 // roleKeepWindow is a kept copy's hour: how old it may be, counted from the time the stream stored
@@ -967,7 +968,7 @@ func handOverKeptRole(ctx context.Context, cfg listenerDeliveryHandlerConfig, ro
 			return ended()
 		}
 		holderCtx, cancelHolder := context.WithTimeout(ctx, roleKeepHolderWindow)
-		resolved, holderErr := roles.ResolveHolder(holderCtx, cfg.registry, roleHolderSessions{cfg.sessions}, role)
+		resolved, holderErr := roles.ResolveHolder(holderCtx, leaderRoleClaims{cfg.registry}, roleHolderSessions{cfg.sessions}, role)
 		cancelHolder()
 		// The walk forwards to a live holder alone, and walks with no holder for every other
 		// resolution, one that did not answer included.
@@ -1343,19 +1344,35 @@ func roleKeepDrainHolds(ctx context.Context, cfg listenerDeliveryHandlerConfig, 
 	return claimed == holder, nil
 }
 
-// readRoleClaimHolder reads role's claim record from the role bucket through the role lane's own
-// claim read (roleLaneClaims.RoleClaim, within ctx and roleHolderReadTimeout, whichever ends
+// readRoleClaimHolder reads role's claim record from the role bucket stream's leader
+// (store.Registry.RoleClaimFromLeader, within ctx and roleHolderReadTimeout, whichever ends
 // first), and returns the session it names, empty for a role no record claims. It is the read the
-// kept lane makes of who holds a role outside a resolution - the handover's retry and the drain
-// hold - so each decides on the record, and none on the registry's watched copy of the bucket,
-// which can lack a claim the bucket holds or keep one the bucket dropped. Reading through
-// roleLaneClaims keeps the bound on a claim read in one place for both lanes.
+// session relay makes before it delivers a role message (takeOverFrame) and the read the kept lane
+// makes of who holds a role outside a resolution - the handover's retry and the drain hold - so
+// each decides on the record, and none on the registry's watched copy of the bucket, which can
+// lack a claim the bucket holds or keep one the bucket dropped. It is never a direct get: on a
+// replicated bucket a copy that has not applied a takeover answers the previous holder's claim,
+// and the relay would hand that holder a role message the new holder never receives.
 func readRoleClaimHolder(ctx context.Context, cfg listenerDeliveryHandlerConfig, role string) (string, error) {
-	claim, err := roleLaneClaims{cfg.registry}.RoleClaim(ctx, role)
+	readCtx, cancel := context.WithTimeout(ctx, roleHolderReadTimeout)
+	defer cancel()
+	claim, err := cfg.registry.RoleClaimFromLeader(readCtx, role)
 	if err != nil {
 		return "", err
 	}
 	return claim.HolderSessionID, nil
+}
+
+// leaderRoleClaims is the claim side (roles.ClaimStore) of the kept lane handover's resolution of
+// the role's holder: each claim read is the role bucket stream leader's
+// (store.Registry.RoleClaimFromLeader). On a replicated bucket a direct get can answer the claim
+// as it stood before a takeover; the handover would then walk the lane for the previous holder,
+// whose drain hold (roleKeepDrainHolds, a leader read) refuses every forward, and give the lane up
+// with the copy left on it until the next sweep, minutes later.
+type leaderRoleClaims struct{ registry *store.Registry }
+
+func (c leaderRoleClaims) RoleClaim(ctx context.Context, role string) (store.RoleClaim, error) {
+	return c.registry.RoleClaimFromLeader(ctx, role)
 }
 
 // isOutboxCopy reports whether item is a copy Dispatch's outbox kept on a role's kept lane rather

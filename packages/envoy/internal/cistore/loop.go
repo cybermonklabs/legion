@@ -542,6 +542,9 @@ const (
 // the head, the generation and snapshot it settled, whether it superseded an earlier settlement of
 // the record, and the verify request it was published on, so a settlement that never became a role
 // message is shown to have left the listener; a publication refused or failed logs no such line.
+// A mark that did not apply (MarkSettled, whose decline the stream leader's read confirmed) logs
+// `checks settlement not marked` at WARN: the claim it marks is gone, so another pass may publish
+// the head again.
 func (z *summarizer) publish(pub Publisher, logger *logging.Logger, key string, state State, requested uint64, now int64) publishOutcome {
 	store := z.store
 	env, err := settlementEnvelope(state, contracts.NowMillis())
@@ -599,8 +602,19 @@ func (z *summarizer) publish(pub Publisher, logger *logging.Logger, key string, 
 		slog.Bool("superseded", state.EmittedCount > 0),
 		slog.Uint64("verify_request", requested),
 	)
-	if _, err := store.MarkSettled(key, state.Generation); err != nil {
-		logger.Warn("checks mark-settled failed", slog.String("error", err.Error()))
+	marked, err := store.MarkSettled(key, state.Generation)
+	if err != nil {
+		logger.Warn("checks mark-settled failed", slog.String("error", err.Error()), slog.String("sha", state.SHA))
+		return publishEnded
+	}
+	if !marked {
+		logger.Warn("checks settlement not marked",
+			slog.String("owner", state.Owner),
+			slog.String("repo", state.Repo),
+			slog.String("number", state.Number),
+			slog.String("sha", state.SHA),
+			slog.Uint64("generation", state.Generation),
+		)
 	}
 	return publishEnded
 }

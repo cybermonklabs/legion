@@ -9,7 +9,7 @@ tags:
   - review
   - long-lived-pr
 date: 2026-09-13
-status: superseded in part by sjawhar/legion#2423 — a branch no longer carries a rebuilt `dist/` commit and `check-dist` forces no rebuild in a pull request, since main's Rebuild Claude Envoy plugin workflow commits the bundle after each merge; the one-fileset fingerprint, its verification by a pair and the rules for what a rebase may change stand
+status: superseded in part by sjawhar/legion#2423 — a branch no longer carries a rebuilt `dist/` commit and `check-dist` forces no rebuild in a pull request, since main's Rebuild Claude Envoy plugin workflow commits the bundle after each merge; the one-fileset fingerprint, its verification by a pair and the rules for what a rebase may change stand. An issue's steps now run in any order the plan validator allows, and a task may leave out any step but the implementer's, so a fixed order of steps here holds only for the default steps.
 module: skills/legion-worker
 related_issues:
   - "LEGION-59"
