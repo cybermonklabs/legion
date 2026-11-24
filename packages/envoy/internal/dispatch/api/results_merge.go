@@ -87,11 +87,6 @@ func (s *server) fillMergeTimes(ctx context.Context, fills *mergeTimeFills, rows
 	for index := range rows {
 		row := &rows[index]
 		if row.MergedAt == nil {
-			if _, refreshed := fills.refreshed[mergeRowOf(row.Repo, row.Number)]; refreshed || row.AttributionRule < delivery.AttributionRuleVersion {
-				row.MergedAt = s.refreshMerge(ctx, fills, row.Repo, row.Number).pull.MergedAt
-			}
-		}
-		if row.MergedAt == nil {
 			return false
 		}
 	}
