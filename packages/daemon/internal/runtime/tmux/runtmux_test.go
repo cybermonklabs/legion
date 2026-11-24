@@ -12,6 +12,10 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/clock/clocktest"
+	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // A tmux client that exits on its own did not time out, however long pipeDrainDelay then holds
@@ -79,6 +83,80 @@ func TestRunTmuxReportsAClientItsTimeoutKilledAsTimedOut(t *testing.T) {
 	}
 	if got := "list-panes" + exited(answered); got != "list-panes exited 1: no server running" {
 		t.Errorf("exited = %q for a client that exited 1", got)
+	}
+}
+
+// The clock a tmux client's timeout runs on is Options.Clock, and the wall clock where a
+// configuration names none, which is every daemon in production (config builds Options without
+// one). The row drives both: a runtime with a fake clock holds a client that never exits until
+// the row moves the fake past the client's deadline, which no span of the machine's own can
+// bring on, and a runtime with no clock, built as production builds it, ends the same client
+// itself. Both answer timedOut, and the one on the fake answers only after the move, so a seam
+// wired to the wall clock in both places would fail this row at its first wait.
+func TestTheCommandTimeoutRunsOnTheConfiguredClockAndOnTheWallClockWhenThereIsNone(t *testing.T) {
+	client := fakeTmuxClient(t, t.TempDir(), "exec sleep 300")
+	fake := clocktest.New(time.Now())
+	onFake := &Runtime{tmuxPath: client, commandTimeout: time.Minute, clock: fake, environ: []string{"PATH=" + os.Getenv("PATH")}}
+	ran := make(chan ranTmux, 1)
+	go func() {
+		res, err := onFake.runTmux(context.Background(), []string{"tmux", "-L", "legion-test", "list-panes"})
+		ran <- ranTmux{res, err}
+	}()
+	ends := fake.Now().Add(time.Minute)
+	testwait.Until(t, "the client's timeout armed on the fake clock at "+ends.Format(time.RFC3339Nano), func() ([]time.Time, bool) {
+		select {
+		case got := <-ran:
+			t.Fatalf("the run on the fake clock returned %+v, %v before its timeout was moved past", got.res, got.err)
+		default:
+		}
+		armed := fake.Armed()
+		return armed, slices.Contains(armed, ends)
+	})
+	fake.Set(ends)
+	if got := testwait.Receive(t, "the run once the fake clock passed its timeout", ran); got.err != nil || got.res.timedOut != time.Minute {
+		t.Errorf("the run on the fake clock = %+v, %v; want timed out after 1m", got.res, got.err)
+	}
+
+	// No clock: Options.Clock is nil, as every production Options is, and the wall clock ends it.
+	onWall, err := New(productionOptions(t, client))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if onWall.clock != nil {
+		t.Errorf("a runtime of a production Options holds clock %v, want none", onWall.clock)
+	}
+	if _, real := onWall.timers().(interface{ Now() time.Time }); !real {
+		t.Errorf("timers() of a runtime with no clock is %T, want the wall clock", onWall.timers())
+	}
+	onWall.commandTimeout = 200 * time.Millisecond
+	onWall.tmuxPath, onWall.environ = client, []string{"PATH=" + os.Getenv("PATH")}
+	res, err := onWall.runTmux(context.Background(), []string{"tmux", "-L", "legion-test", "list-panes"})
+	if err != nil || res.timedOut != 200*time.Millisecond || res.exitCode != -1 {
+		t.Errorf("the run with no clock = exit %d, timed out %s, error %v; want the wall clock's own timeout", res.exitCode, res.timedOut, err)
+	}
+}
+
+// ranTmux is what one runTmux answered.
+type ranTmux struct {
+	res result
+	err error
+}
+
+// productionOptions is an Options as config builds one for a daemon: every field a runtime needs,
+// and no Clock.
+func productionOptions(t *testing.T, tmuxPath string) Options {
+	t.Helper()
+	bin := t.TempDir()
+	if err := os.Symlink(tmuxPath, filepath.Join(bin, "tmux")); err != nil {
+		t.Fatal(err)
+	}
+	return Options{
+		Project: "omp", StateDir: t.TempDir(), StreamAddress: "unix:///s", DaemonURL: "http://127.0.0.1:1",
+		EnvoyURL: "http://127.0.0.1:2", Launchers: ompOnly("omp"), StopGrace: time.Second, ProbeInterval: time.Second,
+		AdoptTimeout: time.Second, Conns: fake.NewConns(), Environ: []string{"PATH=" + bin},
+		Executable:       func() (string, error) { return "/opt/legion", nil },
+		GitHubCredential: staticCredential, ControllerCredential: staticControllerCredential,
+		GH: fakeGH, ClaimRepository: acmeWidgets,
 	}
 }
 
