@@ -9,6 +9,8 @@ import (
 	"time"
 )
 
+const afterMergeC2 = newHeadCommit
+
 type observedDeploy struct {
 	ID         int64     `json:"id"`
 	Repo       string    `json:"repo"`
