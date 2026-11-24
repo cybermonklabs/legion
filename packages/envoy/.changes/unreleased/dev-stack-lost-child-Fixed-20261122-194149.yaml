@@ -1,0 +1,16 @@
+kind: Fixed
+body: |-
+  `scripts/dev-stack.sh` no longer waits its whole grace on a process that has already exited when
+  its process group gets a SIGTERM, as a supervisor's stop sends it, and no longer logs that it
+  killed that process. Bash can lose the exit of a child that ends while a trapped signal
+  interrupts `wait -n`, and then lists the child as running; the stop now also asks the kernel
+  whether the child is still there and still this script's own, so it neither waits on such a child
+  nor signals a process that took its pid, and an in-place restart no longer waits on it for good.
+  The stop's grace is now the whole 10 s (it counted whole seconds, so it was 9 to 10 s), and its
+  line for a process it kills says how long after the SIGTERM it killed it.
+  `DEV_STACK_STOP_GRACE_SECONDS` and `DEV_STACK_READINESS_REQUEST_SECONDS` set the grace and the
+  5 s bound of each readiness request to another whole number of seconds from 1 to 9999; any other
+  value, an empty one among them, is refused before anything is created or started.
+time: 2026-11-22T19:41:49Z
+custom:
+    Issue: dev-stack-lost-child

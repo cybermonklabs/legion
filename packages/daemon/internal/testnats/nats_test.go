@@ -277,9 +277,10 @@ func TestADurableOfAnEarlierTestDoesNotReachTheNextTest(t *testing.T) {
 		durables = append(durables, jetstream.ConsumerConfig{Durable: name, AckPolicy: jetstream.AckExplicitPolicy, DeliverPolicy: jetstream.DeliverNewPolicy})
 	}
 	var streams, plant string
+	var held *server
 	t.Cleanup(func() {
 		if plant != "" {
-			onTheServersHost(t, "rm", "-rf", plant)
+			onServersHost(t, held, "rm", "-rf", plant)
 		}
 	})
 	leave := func(t *testing.T) {
@@ -290,7 +291,7 @@ func TestADurableOfAnEarlierTestDoesNotReachTheNextTest(t *testing.T) {
 				t.Fatalf("create durable %s: %v", durable.Durable, err)
 			}
 		}
-		streams = streamsDirectory(t)
+		streams, held = streamsDirectory(t), heldBy(t)
 		onTheServersHost(t, "test", "-d", filepath.Join(streams, config.Name))
 		plant = filepath.Join(streams, "."+config.Name)
 		onTheServersHost(t, "mkdir", "-p", filepath.Join(plant, "still-being-removed"))
@@ -306,6 +307,12 @@ func TestADurableOfAnEarlierTestDoesNotReachTheNextTest(t *testing.T) {
 			t.Fatal("no earlier test left durables and a held removal of their stream (-run filtered out both subtests that lay them), so this subtest would prove nothing")
 		}
 		js := JetStream(t)
+		// The pool hands a test the server freed last, and this package's tests run one at a
+		// time, so this is the server the earlier subtest held; a run that hands it another fails
+		// here by name rather than on a store directory that server never had.
+		if heldBy(t) != held {
+			t.Fatal("this subtest holds another NATS server of the pool than the one the earlier subtest left its durables on, so it would prove nothing")
+		}
 		onTheServersHost(t, "test", "-d", filepath.Join(streams, config.Name))
 		stream := CreateStream(t, js, config)
 		published, err := js.Publish(t.Context(), "left.one", []byte("x"))
@@ -329,7 +336,7 @@ func TestADurableOfAnEarlierTestDoesNotReachTheNextTest(t *testing.T) {
 	})
 }
 
-// streamsDirectory is the directory the shared server keeps its streams in: its JetStream store,
+// streamsDirectory is the directory the server t holds keeps its streams in: its JetStream store,
 // as its monitoring endpoint reports it, and in that the global account's directory, $G, which
 // holds every stream of a server with no accounts configured. The row that reads it acts on that
 // path where the server runs, so an external server's store must be on this host, writable by the
@@ -337,6 +344,7 @@ func TestADurableOfAnEarlierTestDoesNotReachTheNextTest(t *testing.T) {
 // server resolves from its own working directory, fails t by name.
 func streamsDirectory(t *testing.T) string {
 	t.Helper()
+	monitorURL := heldServer(t).monitor
 	response, err := monitorClient.Get(monitorURL + "/jsz")
 	if err != nil {
 		t.Fatalf("read the NATS server's JetStream configuration: %v", err)
@@ -362,19 +370,36 @@ func streamsDirectory(t *testing.T) string {
 	return filepath.Join(jsz.Config.StoreDir, "$G", "streams")
 }
 
-// onTheServersHost runs a command where the shared server keeps its store: in the package's
-// container, or on this host for an external server, which a host with no Docker runs itself
-// (the package comment). It fails t when the command fails, with what the command printed.
+// heldServer is the NATS server of the pool t holds, and fails t when it holds none.
+func heldServer(t *testing.T) *server {
+	t.Helper()
+	s := heldBy(t)
+	if s == nil {
+		t.Fatalf("testnats: %s holds no NATS server of the package: take one through URL or JetStream first", t.Name())
+	}
+	return s
+}
+
+// onTheServersHost runs a command where the server t holds keeps its store (onServersHost).
 func onTheServersHost(t *testing.T, name string, args ...string) {
 	t.Helper()
+	onServersHost(t, heldServer(t), name, args...)
+}
+
+// onServersHost runs a command where s keeps its store: in its container, or on this host for an
+// external server, which a host with no Docker runs itself (the package comment). It fails t when
+// the command fails, with what the command printed.
+func onServersHost(t *testing.T, s *server, name string, args ...string) {
+	t.Helper()
 	command := strings.Join(append([]string{name}, args...), " ")
-	if shared == nil {
+	container := s.container
+	if container == nil {
 		if out, err := exec.Command(name, args...).CombinedOutput(); err != nil {
 			t.Fatalf("%s on this host, where the external NATS server keeps its store: %v: %s", command, err, out)
 		}
 		return
 	}
-	code, reader, err := shared.Exec(context.Background(), append([]string{name}, args...), tcexec.Multiplexed())
+	code, reader, err := container.Exec(context.Background(), append([]string{name}, args...), tcexec.Multiplexed())
 	if err != nil {
 		t.Fatalf("%s in the NATS container: %v", command, err)
 	}
@@ -558,7 +583,7 @@ func TestASecondTakeByTheSameTestFailsAtOnce(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("a second take by the same test waited on itself")
 	}
-	if !strings.Contains(again.message, "already holds the shared NATS server") {
+	if !strings.Contains(again.message, "already holds a NATS server of the package") {
 		t.Errorf("a second take by the same test failed with %q, not the re-entry refusal", again.message)
 	}
 }
@@ -613,7 +638,7 @@ func TestTheCheckClosesTheFixtureClientsItReported(t *testing.T) {
 	if len(recorder.messages) == 0 {
 		t.Fatalf("the leak check reported nothing for the %d connections %v left open, so this row proves nothing about the closes", len(listed), listed)
 	}
-	open, err := readConnections()
+	open, err := readConnections(heldBy(t))
 	if err != nil {
 		t.Fatalf("read the NATS server's connections after the leak check: %v", err)
 	}
@@ -626,7 +651,7 @@ func TestTheCheckClosesTheFixtureClientsItReported(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		drained(next)
+		drained(next, heldBy(t))
 	}()
 	select {
 	case <-done:
@@ -654,7 +679,7 @@ func TestAConnectionTheFixtureDidNotOpenFailsTheNextTakeAtOnce(t *testing.T) {
 	defer raw.Close()
 	listed := openedSince(t, armed, ownName)
 	recorder := &leakRecorder{TB: t}
-	leakCheck(recorder, armed)
+	leakCheck(recorder, heldBy(t), armed)
 	report := recorder.only(t)
 	if !strings.Contains(report, listed[ownName].String()) {
 		t.Errorf("the leak check reported %q, which does not name connection %s by its id and its name", report, listed[ownName])
@@ -665,7 +690,7 @@ func TestAConnectionTheFixtureDidNotOpenFailsTheNextTakeAtOnce(t *testing.T) {
 	started := time.Now()
 	go func() {
 		defer close(done)
-		drained(next)
+		drained(next, heldBy(t))
 	}()
 	select {
 	case <-done:
@@ -682,7 +707,7 @@ func TestAConnectionTheFixtureDidNotOpenFailsTheNextTakeAtOnce(t *testing.T) {
 	// The row leaves the server as it found it: the connection closed, and no record for the
 	// test after this one to be failed by.
 	raw.Close()
-	recordLeft(t.Name(), nil)
+	recordLeft(heldBy(t), t.Name(), nil)
 }
 
 // A read of the server that fails after the check has closed the fixture's own clients leaves
@@ -697,30 +722,30 @@ func TestAFailedReadAfterTheCloseKeepsTheRecord(t *testing.T) {
 	armed := armedNow(t)
 	conn := Connect(cleanupDropped{TB: t}, url)
 	listed := openedSince(t, armed, t.Name())
-	server := readConnections
-	t.Cleanup(func() { readConnections = server })
-	readConnections = func() ([]Connection, error) {
+	real := readConnections
+	t.Cleanup(func() { readConnections = real })
+	readConnections = func(s *server) ([]Connection, error) {
 		if conn.IsClosed() {
 			return nil, errors.New("the monitoring endpoint cannot be read")
 		}
-		return server()
+		return real(s)
 	}
 
 	recorder := &leakRecorder{TB: t}
-	leakCheck(recorder, armed)
+	leakCheck(recorder, heldBy(t), armed)
 
 	report := strings.Join(recorder.messages, "\n")
 	if !strings.Contains(report, listed[t.Name()].String()) {
 		t.Errorf("the leak check reported %q, which does not name connection %s, the one the read before the close found", report, listed[t.Name()])
 	}
-	leaker, all := leftByTheLastTest([]Connection{listed[t.Name()]})
+	leaker, all := leftByTheLastTest(heldBy(t), []Connection{listed[t.Name()]})
 	if leaker != t.Name() || !all {
 		t.Errorf("after a read that failed once the fixture's clients were closed, the record answers (%q, %t) for connection %s, want (%q, true): that answer is what the next test's drain fails by, at once and in this test's name", leaker, all, listed[t.Name()], t.Name())
 	}
 
 	// The row leaves the server as it found it: the check closed the connection the fixture
 	// held, and no record for the test after this one to be failed by.
-	recordLeft(t.Name(), nil)
+	recordLeft(heldBy(t), t.Name(), nil)
 }
 
 // A check whose every read of the server fails leaves no record at all, the one an earlier
@@ -737,20 +762,20 @@ func TestACheckWhoseEveryReadFailsLeavesNoEarlierTestsName(t *testing.T) {
 	armed := armedNow(t)
 	earlier := "TestATestThatRanBeforeThisOne" + rand.Text()
 	recorded := []Connection{{CID: math.MaxUint64, Name: earlier}}
-	recordLeft(earlier, recorded)
-	server := readConnections
-	t.Cleanup(func() { readConnections = server })
-	readConnections = func() ([]Connection, error) {
+	recordLeft(heldBy(t), earlier, recorded)
+	real := readConnections
+	t.Cleanup(func() { readConnections = real })
+	readConnections = func(*server) ([]Connection, error) {
 		return nil, errors.New("the monitoring endpoint cannot be read")
 	}
 
 	recorder := &leakRecorder{TB: t}
-	leakCheck(recorder, armed)
+	leakCheck(recorder, heldBy(t), armed)
 
 	if len(recorder.messages) == 0 {
 		t.Fatalf("the leak check reported nothing although every read of the server failed, so this row drove neither of its reads")
 	}
-	if leaker, _ := leftByTheLastTest(recorded); leaker != "" {
+	if leaker, _ := leftByTheLastTest(heldBy(t), recorded); leaker != "" {
 		t.Errorf("after a check whose every read of the server failed, the record still names %q, the test before it: the next test's drain would fail in that test's name for connections it never left. Want nobody named, whatever else the record answers", leaker)
 	}
 }
@@ -765,7 +790,7 @@ func TestTheCheckRefusesToArmWhenItCannotSeeItsOwnClient(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		armLeakCheck(blind)
+		armLeakCheck(blind, heldBy(t))
 	}()
 	select {
 	case <-done:
@@ -788,14 +813,14 @@ func TestTheFixtureNamesItsClientAfterTheTest(t *testing.T) {
 	var open []Connection
 	var err error
 	if !testwait.Holds(leakSettle, leakPoll, func() bool {
-		open, err = readConnections()
+		open, err = readConnections(heldBy(t))
 		return err == nil && slices.ContainsFunc(open, func(c Connection) bool { return c.Name == t.Name() })
 	}) {
 		t.Fatalf("the NATS server lists %v (%v), none of them named %s", open, err, t.Name())
 	}
 }
 
-// clientsLeftOpen takes the shared server for t, opens two clients of the fixture's and leaves
+// clientsLeftOpen takes a server of the pool for t, opens two clients of the fixture's and leaves
 // both open — one the fixture names after t, one its caller names ownName — and runs the leak
 // check as the end of t would. It answers what the check reported and the two connections the
 // server listed for those clients, by name.
@@ -807,7 +832,7 @@ func clientsLeftOpen(t *testing.T, ownName string) (*leakRecorder, map[string]Co
 	Connect(t, url, nats.Name(ownName))
 	listed := openedSince(t, armed, t.Name(), ownName)
 	recorder := &leakRecorder{TB: t}
-	leakCheck(recorder, armed)
+	leakCheck(recorder, heldBy(t), armed)
 	return recorder, listed
 }
 
@@ -816,7 +841,7 @@ func clientsLeftOpen(t *testing.T, ownName string) (*leakRecorder, map[string]Co
 // the real t and that one is what holds the row to its own promise to leave nothing open.
 func armedNow(t *testing.T) map[uint64]bool {
 	t.Helper()
-	open, err := readConnections()
+	open, err := readConnections(heldBy(t))
 	if err != nil {
 		t.Fatalf("read the NATS server's connections to arm the leak check: %v", err)
 	}
@@ -839,7 +864,7 @@ func openedSince(t *testing.T, armed map[uint64]bool, want ...string) map[string
 		return listed
 	}
 	if !testwait.Holds(leakSettle, leakPoll, func() bool {
-		found, err = opened(readConnections, armed)
+		found, err = opened(func() ([]Connection, error) { return readConnections(heldBy(t)) }, armed)
 		if err != nil || len(found) != len(want) {
 			return false
 		}

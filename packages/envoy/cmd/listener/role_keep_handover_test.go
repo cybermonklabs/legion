@@ -836,7 +836,8 @@ func TestAHandoverOfAClaimedRoleRetriesAHolderResolutionThatFailed(t *testing.T)
 	}
 }
 
-// bucketThatFails is a bucket no read of which answers: err is what each read answers with, and
+// bucketThatFails is a bucket no read of which answers, a direct get (Get) or a read from the
+// stream's leader (NewestFromLeader, bus.LeaderReads): err is what each read answers with, and
 // before runs first, which is where a test ends the context of the handover making that read, or
 // counts the read (failRoleClaimReads).
 type bucketThatFails struct {
@@ -850,6 +851,10 @@ func (kv bucketThatFails) Get(string) (natsgo.KeyValueEntry, error) {
 		kv.before()
 	}
 	return nil, kv.err
+}
+
+func (kv bucketThatFails) NewestFromLeader(context.Context, string) (natsgo.KeyValueEntry, error) {
+	return kv.Get("")
 }
 
 // sessionBucketThatStalls is a session bucket whose first read fails at once and whose reads

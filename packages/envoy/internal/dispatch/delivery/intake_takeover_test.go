@@ -63,6 +63,7 @@ func (a *takeOverAttempt) delivers() string { return a.intake.subject }
 // (TestTwoProcessesPollingOneDurableNeverBothBindIt in #2913), asked of the mechanism that
 // replaced it.
 func TestTwoProcessesPollingOneDurableNeverBothBindIt(t *testing.T) {
+	t.Parallel()
 	t.Run("back to back", func(t *testing.T) {
 		pool, ctx := deliveryTestPool(t)
 		seedDeliverySettings(t, ctx, pool)

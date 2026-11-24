@@ -323,7 +323,7 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 			"updateReasons":     current.UpdateReasons,
 			"updateState":       api.UpdateStateAnswered,
 			"providerErrorRun":  current.ProviderErrorRun,
-			// The turn times and the two causes, with the ready that dates them: the view
+			// The turn times and the two causes, with the ready that dates the death: the view
 			// carries each as the record holds it.
 			"lastTurnStart":    current.LastTurnStart,
 			"lastTurnEnd":      current.LastTurnEnd,

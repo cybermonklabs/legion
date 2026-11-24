@@ -360,8 +360,18 @@ func TestEveryMarkingStatementKeepsOrRaisesTheRuleAsR13States(t *testing.T) {
 // digest is taken over each statement's words joined by single spaces, so a statement's layout -
 // its line breaks and indentation, which the text it splices in from another place gives it -
 // moves no digest, and a change of any word does.
+//
+// A change of words that keeps every statement's rows keeps the rule, and records its digest in
+// place of the rule's old one, with the test that proves the rows unchanged. Rule 1's digest moved
+// once so, from 127c62eb231428cab90c580dacb6d4ceda4f8137e4ac91b2924e982e7e5357ea: the backfill's
+// block selection (graphcensus.BlockRowsStatement) wrote its version lookups `caused as
+// materialized (`, a planner hint that runs them once per batch, which changes the statement's plan
+// and not its rows (graphcensus' TestTheBlockBatchAnswersTheSameRowsWithItsLookupsMaterializedOrNot
+// walks a seed with the word and without it, under both plan-cache modes, and holds the two to the
+// same rows). The documents a pass of rule 1 marks are the same, so a build of either text beside
+// the other reads rule 1's cursors, horizons and marks as its own rightly.
 var markingStatementDigests = map[int]string{
-	1: "127c62eb231428cab90c580dacb6d4ceda4f8137e4ac91b2924e982e7e5357ea",
+	1: "86cea356636cc095fe73ddbd7a74a7c96b9d1fcfccb154be4773ba0a3b970887",
 }
 
 // The marking rule is held to the statements whose results decide which documents a build marks

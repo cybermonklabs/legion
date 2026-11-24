@@ -35,7 +35,7 @@ func newClaimsCommand(stdout, stderr io.Writer) *cobra.Command {
 		claimsCommand("suspend", "suspend a claim, once the turn its agent is in ends", claimsSuspend, stdout, stderr),
 		claimsCommand("resume", "resume a suspended claim", claimRequest("resume"), stdout, stderr),
 		claimsCommand("stop", "stop a claim's agent", claimRequest("stop"), stdout, stderr),
-		claimsCommand("retry", "retry a failed claim, or every failed claim", claimsRetry, stdout, stderr),
+		claimsCommand("retry", "retry a failed claim, or every failed claim; a claim with no process whose launch waits its paced turn launches now", claimsRetry, stdout, stderr),
 		claimsCommand("compact", "compact a claim's Oh My Pi session and send it the task it owes again", claimsCompact, stdout, stderr),
 		claimsCommand("forget-session", "clear a stopped claim's recorded session", claimsForgetSession, stdout, stderr),
 		claimsCommand("release-names", "free the names of a claim's other sessions once the secrets broker carries nothing of them", claimsReleaseNames, stdout, stderr),
