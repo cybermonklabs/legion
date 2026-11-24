@@ -39341,7 +39341,7 @@
     "domains": {}
   },
   {
-    "contract": 256,
+    "contract": 250,
     "answer": "compact",
     "noBody": false,
     "keyPaths": [
@@ -39351,14 +39351,14 @@
     "domains": {}
   },
   {
-    "contract": 256,
+    "contract": 250,
     "answer": "empty-object",
     "noBody": false,
     "keyPaths": [],
     "domains": {}
   },
   {
-    "contract": 256,
+    "contract": 250,
     "answer": "fresh-session",
     "noBody": false,
     "keyPaths": [
@@ -39367,7 +39367,7 @@
     "domains": {}
   },
   {
-    "contract": 256,
+    "contract": 250,
     "answer": "grant",
     "noBody": false,
     "keyPaths": [
@@ -39377,14 +39377,14 @@
     "domains": {}
   },
   {
-    "contract": 256,
+    "contract": 250,
     "answer": "handoff-complete",
     "noBody": false,
     "keyPaths": [],
     "domains": {}
   },
   {
-    "contract": 256,
+    "contract": 250,
     "answer": "health",
     "noBody": false,
     "keyPaths": [
@@ -39394,7 +39394,7 @@
     "domains": {}
   },
   {
-    "contract": 256,
+    "contract": 250,
     "answer": "intake-discard",
     "noBody": false,
     "keyPaths": [
@@ -39404,7 +39404,7 @@
     "domains": {}
   },
   {
-    "contract": 256,
+    "contract": 250,
     "answer": "intake-replay",
     "noBody": false,
     "keyPaths": [
@@ -39427,7 +39427,7 @@
     }
   },
   {
-    "contract": 256,
+    "contract": 250,
     "answer": "issue-record",
     "noBody": false,
     "keyPaths": [
@@ -39443,11 +39443,9 @@
       "architect.failure.attempts.promptRetires",
       "architect.failure.cause",
       "architect.failure.detail",
-      "architect.lastDeathAt",
       "architect.lastDeathCause",
       "architect.lastReady",
       "architect.lastStartFailure",
-      "architect.lastStartFailureAt",
       "architect.lastTurnEnd",
       "architect.lastTurnStart",
       "architect.locator",
@@ -39541,6 +39539,7 @@
       "podHold.detail",
       "podHold.firstAt",
       "podHold.reason",
+      "priority",
       "pullRequest",
       "pullRequest.head",
       "pullRequest.mergeState",
@@ -39565,6 +39564,7 @@
       "waitingLine.partLength",
       "waitingLine.partPlace",
       "waitingLine.place",
+      "waitingLine.priority",
       "waitingLine.reason",
       "waitingLine.rootKey",
       "waitingLine.rootRank",
@@ -39875,14 +39875,14 @@
     }
   },
   {
-    "contract": 256,
+    "contract": 250,
     "answer": "no-content",
     "noBody": true,
     "keyPaths": [],
     "domains": {}
   },
   {
-    "contract": 256,
+    "contract": 250,
     "answer": "plan-register",
     "noBody": false,
     "keyPaths": [
@@ -39897,7 +39897,7 @@
     "domains": {}
   },
   {
-    "contract": 256,
+    "contract": 250,
     "answer": "project-pause",
     "noBody": false,
     "keyPaths": [
@@ -39912,7 +39912,7 @@
     "domains": {}
   },
   {
-    "contract": 256,
+    "contract": 250,
     "answer": "project-resume",
     "noBody": false,
     "keyPaths": [
@@ -39932,7 +39932,7 @@
     "domains": {}
   },
   {
-    "contract": 256,
+    "contract": 250,
     "answer": "refusal",
     "noBody": false,
     "keyPaths": [
@@ -39965,7 +39965,7 @@
     "domains": {}
   },
   {
-    "contract": 256,
+    "contract": 250,
     "answer": "register",
     "noBody": false,
     "keyPaths": [
@@ -39990,7 +39990,7 @@
     }
   },
   {
-    "contract": 256,
+    "contract": 250,
     "answer": "register-controller",
     "noBody": false,
     "keyPaths": [
@@ -40002,7 +40002,7 @@
     "domains": {}
   },
   {
-    "contract": 256,
+    "contract": 250,
     "answer": "release-records",
     "noBody": false,
     "keyPaths": [
@@ -40040,7 +40040,7 @@
     "domains": {}
   },
   {
-    "contract": 256,
+    "contract": 250,
     "answer": "state",
     "noBody": false,
     "keyPaths": [
@@ -40137,11 +40137,9 @@
       "issues.*.architect.failure.attempts.promptRetires",
       "issues.*.architect.failure.cause",
       "issues.*.architect.failure.detail",
-      "issues.*.architect.lastDeathAt",
       "issues.*.architect.lastDeathCause",
       "issues.*.architect.lastReady",
       "issues.*.architect.lastStartFailure",
-      "issues.*.architect.lastStartFailureAt",
       "issues.*.architect.lastTurnEnd",
       "issues.*.architect.lastTurnStart",
       "issues.*.architect.locator",
@@ -40235,6 +40233,7 @@
       "issues.*.podHold.detail",
       "issues.*.podHold.firstAt",
       "issues.*.podHold.reason",
+      "issues.*.priority",
       "issues.*.pullRequest",
       "issues.*.pullRequest.head",
       "issues.*.pullRequest.mergeState",
@@ -40259,6 +40258,7 @@
       "issues.*.waitingLine.partLength",
       "issues.*.waitingLine.partPlace",
       "issues.*.waitingLine.place",
+      "issues.*.waitingLine.priority",
       "issues.*.waitingLine.reason",
       "issues.*.waitingLine.rootKey",
       "issues.*.waitingLine.rootRank",
@@ -40742,7 +40742,7 @@
     }
   },
   {
-    "contract": 256,
+    "contract": 250,
     "answer": "turn-outcome",
     "noBody": false,
     "keyPaths": [
@@ -40752,7 +40752,7 @@
     "domains": {}
   },
   {
-    "contract": 256,
+    "contract": 250,
     "answer": "wave-release",
     "noBody": false,
     "keyPaths": [
