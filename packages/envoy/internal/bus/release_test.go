@@ -244,6 +244,7 @@ func TestDrainSubscriptionEndsWhatARestoreBoundAfterTheSubscriptionEnded(t *test
 // the giving-up client's own reads run over the link under test, and can say nothing while it is
 // down.
 func TestDrainSubscriptionWhileTheConnectionIsDownLeavesNoPushBindingBehind(t *testing.T) {
+	t.Parallel()
 	_, uri := startNATS(t)
 	relay := startRelayProxy(t, uri)
 	client, err := bus.ConnectOwningStream([]string{relay.url()})
@@ -330,6 +331,7 @@ func TestDrainSubscriptionWhileTheConnectionIsDownLeavesNoPushBindingBehind(t *t
 // The server is read from a second client connected to it directly, as the row above does: the
 // giving-up client's own reads run over the link under test.
 func TestDrainSubscriptionWhileTheDrainIsInFlightLeavesNoPushBindingBehind(t *testing.T) {
+	t.Parallel()
 	_, uri := startNATS(t)
 	relay := startRelayProxy(t, uri)
 	client, err := bus.ConnectOwningStream([]string{relay.url()})

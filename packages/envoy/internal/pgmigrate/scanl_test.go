@@ -48,6 +48,7 @@ import (
 // reads 13,110 times its length - the same work either way, since the branch is the only thing
 // between them.
 func TestOperatorRunLexingIsLinear(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct {
 		piece    string
 		multiple int
@@ -74,12 +75,12 @@ func TestOperatorRunLexingIsLinear(t *testing.T) {
 // reuse branch read 858,901,710 bytes of a 64 KiB text while the count built on measureOpRun's
 // own report came to 262,140 - its extent loop and the searches together, the extent loop's own
 // share of that being 131,070 - and the test passed on it. What that moves is where the claim
-// sits, not whether one is made. Both hooks are set for this one reading and put back after it,
-// so no other test of this package counts anything.
+// sits, not whether one is made. Both hooks belong to this one reading (lexHooks), so no other
+// reading counts anything, nor does this count hold another test's reading beside it.
 func lexingWork(text string) int {
 	scanned := 0
-	opCharRead = func() { scanned++ }
-	opRunScanned = func(run opRun, slash, dash int) {
+	hooks := &lexHooks{opCharRead: func() { scanned++ }}
+	hooks.opRunScanned = func(run opRun, slash, dash int) {
 		at := run.from
 		if slash >= 0 {
 			scanned += slash + 2
@@ -103,10 +104,35 @@ func lexingWork(text string) int {
 			scanned += run.stop - 1 - at
 		}
 	}
-	defer func() {
-		opCharRead = nil
-		opRunScanned = nil
-	}()
-	redactedQuery(text)
+	redactedQueryWith(text, hooks)
 	return scanned
+}
+
+// A reading given one hook and not the other calls the one it was given, and reads as a reading
+// given none: a nil hook is not called. The text holds an operator run and a comment inside it,
+// so both hooks' call sites are reached. Control: drop the nil check on either hook in scanl.go
+// and the row given only the other one panics with a nil func.
+func TestALexingGivenOneHookCallsItAndSkipsTheOther(t *testing.T) {
+	t.Parallel()
+	const text = "select 1 +/* a comment */- 2 -- and a line comment"
+	want := redactedQueryWith(text, nil)
+	for _, c := range []struct {
+		name  string
+		hooks func(called *int) *lexHooks
+	}{
+		{"opCharRead alone", func(called *int) *lexHooks { return &lexHooks{opCharRead: func() { *called++ }} }},
+		{"opRunScanned alone", func(called *int) *lexHooks {
+			return &lexHooks{opRunScanned: func(opRun, int, int) { *called++ }}
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			called := 0
+			if got := redactedQueryWith(text, c.hooks(&called)); got != want {
+				t.Errorf("the reading with %s answers %q; want %q, as with no hooks", c.name, got, want)
+			}
+			if called == 0 {
+				t.Errorf("the reading with %s never called it: the text reaches no call site, so the test is blind", c.name)
+			}
+		})
+	}
 }

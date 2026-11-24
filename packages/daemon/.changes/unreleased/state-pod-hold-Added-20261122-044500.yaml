@@ -1,0 +1,13 @@
+kind: Added
+body: |-
+  Each issue of `GET /legion/v1/state` (and `legion state --json`) carries `podHold`, the standing hold of its pod: why the idle rule keeps that quiet pod running.
+  It is `{reason, firstAt, at, detail}`.
+  `reason` is the rule's own word for the hold, as the daemon's hold records spell it (`background_work`, `image`, `delivery_waiting` and the others).
+  `firstAt` is the first pass of the hold's streak and `at` its newest pass, so a reader can tell a streak that the passes still read from one whose passes stopped.
+  `detail` is what the reason leaves out, such as the kinds of background work a session reported, cut to its first 200 characters and absent when the record holds none.
+  The key is absent when no hold stands on the pod: a pod that the rule has not held, a pod it released, and a pod whose streak a later pass ended.
+  The daemon reads the holds from `pod_holds` in the state's own transaction, in one statement for the whole project.
+  This is daemon API contract 246: a caller whose plugin is below 246 gets every issue without `podHold`.
+time: 2026-11-22T04:45:00Z
+custom:
+    Issue: state-pod-hold
