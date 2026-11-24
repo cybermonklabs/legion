@@ -209,7 +209,7 @@ func (s *server) reopenComment(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	comment, err = s.hydrateWrittenComment(r.Context(), tx, actor, comment)
+	comment, err = s.hydrateWrittenComment(r.Context(), tx, who, comment)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -356,7 +356,7 @@ func (s *server) editComment(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	comment, err = s.hydrateWrittenComment(r.Context(), tx, actor, comment)
+	comment, err = s.hydrateWrittenComment(r.Context(), tx, who, comment)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -622,7 +622,7 @@ func (s *server) commentAction(w http.ResponseWriter, r *http.Request, action st
 		return
 	}
 	events = append(events, event)
-	comment, err = s.hydrateWrittenComment(r.Context(), tx, actor, comment)
+	comment, err = s.hydrateWrittenComment(r.Context(), tx, who, comment)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

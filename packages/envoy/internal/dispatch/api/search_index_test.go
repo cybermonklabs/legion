@@ -90,7 +90,7 @@ func meaningPlanOf(
 	t.Helper()
 	const q = "index test"
 	return planTreeOf(t, database, statement, searchMeaningQueryArguments(
-		searchParameters{text: q, project: project, limit: searchDefaultLimit},
+		searchParameters{text: q, project: project, limit: searchDefaultLimit, who: everyReader},
 		queryVector(), embedder.Identity()), settings...)
 }
 
@@ -454,7 +454,7 @@ func TestTheIssueKeywordArmMatchesItsVectorThroughIssuesSearch(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
 	createInteractionIssue(t, handler, "SRCH", "Navigation instruments", "The astrolabe measures altitude.\n")
 
-	parameters := searchParameters{text: "astrolabe", limit: searchDefaultLimit}
+	parameters := searchParameters{text: "astrolabe", limit: searchDefaultLimit, who: everyReader}
 	plan := planWithoutSeqScans(t, database, searchQuery, searchQueryArguments(parameters)...)
 
 	matched := false

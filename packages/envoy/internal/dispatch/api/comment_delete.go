@@ -221,7 +221,7 @@ func (s *server) deleteComment(w http.ResponseWriter, r *http.Request) {
 	// below is queued, so the attempts it settles are set in the answer as it leaves them, and
 	// each one's receipt is built from that. The settle refuses should a row no longer stand as
 	// this read found it (queueDeletedPostSettlement).
-	answer, err := s.hydrateWrittenComment(r.Context(), tx, actor, comment)
+	answer, err := s.hydrateWrittenComment(r.Context(), tx, who, comment)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

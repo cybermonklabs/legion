@@ -1143,7 +1143,7 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 	// with a write phase.
 	var plan messageReplyPlan
 	if input.Body != nil {
-		if plan, err = s.planMessageReply(r.Context(), tx, actor, message, *input.Body, input.InReplyToBlock); err != nil {
+		if plan, err = s.planMessageReply(r.Context(), tx, who, message, *input.Body, input.InReplyToBlock); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
@@ -1203,7 +1203,7 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 		// It is a database read, and loadMessage beside it is in this window whatever this read
 		// does, so it stays on the transaction, where replyComment's own replay hydrates too.
 		if posted == nil {
-			if err := hydrateMessageReplyBlocks(r.Context(), tx, actor, &read.Message); err != nil {
+			if err := hydrateMessageReplyBlocks(r.Context(), tx, who, &read.Message); err != nil {
 				s.writeHandlerError(w, err)
 				return
 			}
