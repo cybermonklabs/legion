@@ -1,0 +1,9 @@
+kind: Changed
+body: |-
+  The ask gate's decision record tells Dispatch's refusal of a reused idempotency key apart
+  through the box the Dispatch client now holds the code in (`error.code.equals(...)`) rather
+  than by comparing a string, so the code prints only as the rule reads it. The decision it
+  takes is unchanged.
+time: 2026-11-24T20:44:37.515474419Z
+custom:
+    Issue: redact-remote-words-second

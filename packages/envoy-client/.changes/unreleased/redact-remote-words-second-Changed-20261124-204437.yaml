@@ -1,0 +1,15 @@
+kind: Changed
+body: |-
+  The error classes hold the words another party wrote in the contracts `RemoteText` box rather
+  than as strings, so printing one prints no credential those words carry. `EnvoyApiError`'s
+  `code`, `reason`, `holder`, `expected`, `refused`, `roleHeld` and `details.responseBody`, and
+  `DispatchServiceError`'s and `DispatchGatewayError`'s `code` and their `candidates`, `current`
+  and `mismatches`, are `RemoteText`. Code that tells answers apart compares through the box
+  (`code.equals("IDEMPOTENCY_KEY_REUSED")`, `reason?.equals("sender_rate_limited")`), and code
+  that prints one gets the rule's reading, with each credential the request carried redacted, so
+  an echoed bearer prints as `[redacted]`. A fallback body excerpt runs the same rule after its
+  token scrub. A consumer that read one of those fields as a string reads it through the box's
+  comparison methods, or prints it, instead.
+time: 2026-11-24T20:44:37.515474419Z
+custom:
+    Issue: redact-remote-words-second

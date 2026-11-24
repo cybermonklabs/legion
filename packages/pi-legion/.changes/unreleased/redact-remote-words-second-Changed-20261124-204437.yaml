@@ -1,0 +1,9 @@
+kind: Changed
+body: |-
+  The stall teller reads a send's refusal reason through the box the Envoy client now holds it in
+  (`error.reason?.equals("sender_rate_limited")`) rather than as a string, and its rate-limited
+  and attempt notices hold the listener's words the same way, so a notice prints no credential
+  those words carry. Which notice it records, and when, is unchanged.
+time: 2026-11-24T20:44:37.515474419Z
+custom:
+    Issue: redact-remote-words-second

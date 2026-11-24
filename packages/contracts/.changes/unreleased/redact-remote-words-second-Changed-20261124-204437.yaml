@@ -1,0 +1,12 @@
+kind: Changed
+body: |-
+  `RemoteText.sendBack()` answers an id the party that wrote it named, for the next request to
+  that party to carry, and only where the rule prints the field as it came, each credential the
+  request carried redacted first; it answers `undefined` for an empty field and for one the rule
+  changes or cannot read, so it never sends back more of the field than a print of it shows. The
+  table of the request names a contract declares public gains `after` on `POST /graphql`, which
+  is GitHub's page cursor: the search that pages through merged pull requests sends it back under
+  that name, and the table names GitHub's GraphQL endpoint on the API origin alone.
+time: 2026-11-24T20:44:37.515474419Z
+custom:
+    Issue: redact-remote-words-second
