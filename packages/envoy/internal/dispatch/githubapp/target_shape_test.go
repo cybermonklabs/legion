@@ -74,3 +74,28 @@ func TestABranchHoldingASlashPrintsReadably(t *testing.T) {
 		t.Errorf("CommitOnBranch answered %v, want %q", err, want)
 	}
 }
+
+// A note's path read from GitHub's tree answer (Dir) is held with that answer's record, and a
+// path that holds no credential the read carried prints as it came: the error of a blob read
+// GitHub failed names `docs/release-notes.md` whole.
+func TestATreePathReadFromGitHubPrintsReadably(t *testing.T) {
+	client := branchServer(t, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/repos/acme/web/git/trees/"):
+			fmt.Fprintf(w, `{"sha":"t1","truncated":false,"tree":[{"path":"release-notes.md","mode":"100644","type":"blob","sha":%q,"size":1}]}`, mainCommit)
+		case r.URL.Path == "/repos/acme/web/git/blobs/"+mainCommit:
+			serverError(w, r)
+		default:
+			githubtest.Unexpected(t, w, r)
+		}
+	})
+	ctx := context.Background()
+	listing, err := client.Dir(ctx, "ghs_test", "acme", "web", mainCommit, "docs")
+	if err != nil {
+		t.Fatalf("Dir: %v", err)
+	}
+	_, err = client.DirFiles(ctx, "ghs_test", "acme", "web", listing)
+	if want := fmt.Sprintf(`GET %s/repos/acme/web/git/blobs/%s (docs/release-notes.md): status 500: {"message":"Server Error"}`, client.base, mainCommit); err == nil || err.Error() != want {
+		t.Errorf("DirFiles answered %v, want %q", err, want)
+	}
+}

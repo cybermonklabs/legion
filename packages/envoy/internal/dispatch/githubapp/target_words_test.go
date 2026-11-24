@@ -391,3 +391,104 @@ func TestADefaultBranchGitHubAnsweredPrintsAsTheRuleReadsIt(t *testing.T) {
 		})
 	}
 }
+
+// echoToken is the installation token a request to a stand-in GitHub carried, which the stand-in
+// echoes in its answer.
+func echoToken(r *http.Request) string { return strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ") }
+
+// TestATreePathPrintsNoTokenItsReadCarried: whatever answers in GitHub's place lists a note whose
+// path echoes the installation token the tree read (Dir) carried. DirFiles names that path, as
+// the record of the tree's answer holds it, with no piece of the token: in notes.CheckSize's
+// refusal of a listed size past its bound, and in the error of a blob read GitHub failed. Captures
+// githubapp.tree-path-echo/<row>.
+func TestATreePathPrintsNoTokenItsReadCarried(t *testing.T) {
+	const token = "ghs_" + "treeEchoInstallationToken0123456789"
+	for _, row := range []struct {
+		name string
+		size int64
+	}{
+		{"path-past-the-bound", notes.MaxFileSize + 1},
+		{"path-of-a-failed-read", 1},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			client := branchServer(t, func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case strings.HasPrefix(r.URL.Path, "/repos/acme/web/git/trees/"):
+					fmt.Fprintf(w, `{"sha":"t1","truncated":false,"tree":[{"path":%q,"mode":"100644","type":"blob","sha":%q,"size":%d}]}`,
+						"note-"+echoToken(r)+".md", mainCommit, row.size)
+				case strings.HasPrefix(r.URL.Path, "/repos/acme/web/git/blobs/"):
+					serverError(w, r)
+				default:
+					githubtest.Unexpected(t, w, r)
+				}
+			})
+			ctx := context.Background()
+			listing, err := client.Dir(ctx, token, "acme", "web", mainCommit, "docs")
+			if err != nil || len(listing.Files) != 1 || listing.Files[0].Path != "docs/note-"+token+".md" {
+				t.Fatalf("Dir = %+v, %v; want the one note the stand-in listed, its path as it came", listing, err)
+			}
+			_, err = client.DirFiles(ctx, token, "acme", "web", listing)
+			if err == nil {
+				t.Fatal("DirFiles answered no error")
+			}
+			redacttest.RequireNoPiece(t, "githubapp.tree-path-echo/"+row.name, err.Error(), token)
+			if !strings.Contains(err.Error(), "docs/note-") {
+				t.Errorf("DirFiles answered %q, want the note's path named", err)
+			}
+		})
+	}
+}
+
+// TestADefaultBranchPrintsNoTokenItsReadCarried: whatever answers in GitHub's place names a
+// default_branch that echoes the installation token the read carried, and the comparison against
+// that branch, made under the same token, then fails: GitHub answers it 500, past responseLimit,
+// or with a status that does not decode. Neither the error CommitOnBranch answers nor the note send
+// makes on the attempt holds a piece of the token. Captures githubapp.default-branch-echo/<row>.
+func TestADefaultBranchPrintsNoTokenItsReadCarried(t *testing.T) {
+	const token = "ghs_" + "branchEchoInstallationToken0123456789"
+	for _, row := range []struct {
+		name    string
+		compare http.HandlerFunc
+	}{{
+		name:    "status-500",
+		compare: serverError,
+	}, {
+		name: "past-the-bound",
+		compare: func(w http.ResponseWriter, _ *http.Request) {
+			fmt.Fprint(w, strings.Repeat("x", responseLimit+1))
+		},
+	}, {
+		name: "not-decoded",
+		compare: func(w http.ResponseWriter, _ *http.Request) {
+			fmt.Fprint(w, `{"status":7}`)
+		},
+	}} {
+		t.Run(row.name, func(t *testing.T) {
+			client := branchServer(t, func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case r.URL.Path == "/repos/acme/web":
+					fmt.Fprintf(w, `{"default_branch":%q}`, "release-"+echoToken(r))
+				case strings.HasPrefix(r.URL.Path, "/repos/acme/web/compare/"):
+					row.compare(w, r)
+				default:
+					githubtest.Unexpected(t, w, r)
+				}
+			})
+			ctx, attempt := githubreads.Begin(context.Background())
+			branch, err := client.DefaultBranch(ctx, token, "acme", "web")
+			if err != nil || branch != "release-"+token {
+				t.Fatalf("DefaultBranch = %q, %v; want GitHub's default_branch as it came", branch, err)
+			}
+			_, err = client.CommitOnBranch(ctx, token, "acme", "web", branch, mainCommit)
+			if err == nil {
+				t.Fatal("a comparison GitHub failed answered no error")
+			}
+			githubreads.NoteFailure(ctx, err)
+			_, _, cause := attempt.Outcome()
+			redacttest.RequireNoPiece(t, "githubapp.default-branch-echo/"+row.name, err.Error()+" | "+cause, token)
+			if !strings.Contains(err.Error(), "release-") {
+				t.Errorf("CommitOnBranch answered %q, want the branch named", err)
+			}
+		})
+	}
+}

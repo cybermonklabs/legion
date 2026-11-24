@@ -1195,6 +1195,21 @@ type DirFile struct {
 	Path string // repo-relative path, for error messages
 	SHA  string // blob id
 	Size int64
+	// shown is Path as an error names it, which Dir sets: the directory, Dispatch's own text, and
+	// the entry's path, GitHub's, held with the record of the tree answer that named it
+	// (redact.Answer.Said), so it prints as the rule reads it with every credential the tree read
+	// carried redacted, then as ShownBody shows GitHub's text. Empty for a listing not read from
+	// GitHub, whose Path prints as the rule reads it (shownPath).
+	shown string
+}
+
+// shownPath is the file's path as an error names it: as Dir printed it from the tree answer, and
+// for a listing not read from GitHub as the rule reads Path, then as ShownBody shows GitHub's text.
+func (f DirFile) shownPath() string {
+	if f.shown != "" {
+		return f.shown
+	}
+	return ShownBody(redact.Field(f.Path))
 }
 
 // Dir lists the markdown files directly inside dir at commit sha with one
@@ -1252,6 +1267,7 @@ func (c *Client) Dir(ctx context.Context, token, owner, repo, sha, dir string) (
 		}
 		listing.Files = append(listing.Files, DirFile{
 			Name: entry.Path, Path: dir + "/" + entry.Path, SHA: entry.SHA, Size: entry.Size,
+			shown: ShownBody(dir + "/" + body.Said(entry.Path).String()),
 		})
 	}
 	return listing, nil
@@ -1262,21 +1278,21 @@ func (c *Client) Dir(ctx context.Context, token, owner, repo, sha, dir string) (
 // size exceeds notes.MaxFileSize is notes.ErrFileTooLarge (notes.CheckSize)
 // before any blob is fetched, and so is a decoded blob over it; a blob that
 // vanished between the listing and the read fails the whole set. A path is
-// GitHub's text (Dir), so the error of notes.CheckSize names it as shownPath
-// prints it.
+// GitHub's text (Dir), so the error of notes.CheckSize names it as
+// DirFile.shownPath prints it.
 func (c *Client) DirFiles(ctx context.Context, token, owner, repo string, listing Dir) (map[string][]byte, error) {
 	if c == nil {
 		return nil, ErrNoAppKey
 	}
 	for _, file := range listing.Files {
-		if err := notes.CheckSize(shownPath(file.Path), file.Size); err != nil {
+		if err := notes.CheckSize(file.shownPath(), file.Size); err != nil {
 			return nil, err
 		}
 	}
 	repoBase := c.base + "/repos/" + url.PathEscape(owner) + "/" + url.PathEscape(repo)
 	files := make(map[string][]byte, len(listing.Files))
 	for _, file := range listing.Files {
-		content, err := c.blob(ctx, token, repoBase, file.Path, file.SHA)
+		content, err := c.blob(ctx, token, repoBase, file.shownPath(), file.SHA)
 		if err != nil {
 			return nil, err
 		}
@@ -1285,17 +1301,12 @@ func (c *Client) DirFiles(ctx context.Context, token, owner, repo string, listin
 	return files, nil
 }
 
-// shownPath is path, a file's path a tree GitHub answered names (Dir), as an error names it: as
-// the rule reads it (redact.Field), then as ShownBody shows GitHub's text.
-func shownPath(path string) string { return ShownBody(redact.Field(path)) }
-
-// blob reads the blob sha, the file at path, under token. sha and path come from GitHub's tree
-// answer (Dir), so blob refuses a sha that is not a SHA before it builds the blob's target
-// (ErrNotASHA), and every error it answers names path as shownPath prints it: blob's own errors
-// and notes.CheckSize's. The target holds a checked SHA and names Dispatch keeps, so send names
-// it as ShownBody shows it.
-func (c *Client) blob(ctx context.Context, token, repoBase, path, sha string) ([]byte, error) {
-	shown := shownPath(path)
+// blob reads the blob sha, the file whose path an error names as shown (DirFile.shownPath), under
+// token. sha comes from GitHub's tree answer (Dir), so blob refuses a sha that is not a SHA before
+// it builds the blob's target (ErrNotASHA), and every error it answers names the file by shown:
+// blob's own errors and notes.CheckSize's. The target holds a checked SHA and names Dispatch
+// keeps, so send names it as ShownBody shows it.
+func (c *Client) blob(ctx context.Context, token, repoBase, shown, sha string) ([]byte, error) {
 	if err := notASHA("read the blob of "+shown, "blob", sha); err != nil {
 		return nil, err
 	}

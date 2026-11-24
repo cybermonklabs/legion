@@ -2129,6 +2129,24 @@
         "capture": "githubapp.next-link-echo"
       },
       {
+        "row": "githubapp-tree-path-echo",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": [
+          "packages/envoy/internal/dispatch/githubapp/target_words_test.go",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "githubapp.tree-path-echo"
+      },
+      {
+        "row": "githubapp-default-branch-echo",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": [
+          "packages/envoy/internal/dispatch/githubapp/target_words_test.go",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "githubapp.default-branch-echo"
+      },
+      {
         "row": "api-ci-detail-repo",
         "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
         "files": [
@@ -7400,13 +7418,13 @@
       "requirement": "r3-each-site",
       "package": "./internal/dispatch/githubapp",
       "test": "TestATreeEntryPrintsAsTheRuleReadsIt",
-      "production": "github.com/sjawhar/envoy/internal/dispatch/githubapp.shownPath: a path a tree GitHub answered names prints as the rule reads it, then as ShownBody cuts it",
-      "function": "github.com/sjawhar/envoy/internal/dispatch/githubapp.shownPath",
+      "production": "(github.com/sjawhar/envoy/internal/dispatch/githubapp.DirFile).shownPath: a path of a listing not read from GitHub prints as the rule reads it, then as ShownBody cuts it",
+      "function": "(github.com/sjawhar/envoy/internal/dispatch/githubapp.DirFile).shownPath",
       "capture": "githubapp.tree-entry",
       "mutation": {
         "file": "packages/envoy/internal/dispatch/githubapp/client.go",
-        "preimage": "redact.Field(path)",
-        "replacement": "path"
+        "preimage": "ShownBody(redact.Field(f.Path))",
+        "replacement": "ShownBody(f.Path)"
       }
     },
     {
@@ -7414,13 +7432,13 @@
       "requirement": "r3-each-site",
       "package": "./internal/dispatch/githubapp",
       "test": "TestATreeEntryPrintsAsTheRuleReadsIt/path-past-the-bound",
-      "production": "(*github.com/sjawhar/envoy/internal/dispatch/githubapp.Client).DirFiles: notes.CheckSize's refusal of a listed size names the path as shownPath prints it",
+      "production": "(*github.com/sjawhar/envoy/internal/dispatch/githubapp.Client).DirFiles: notes.CheckSize's refusal of a listed size names the path as DirFile.shownPath prints it",
       "function": "(*github.com/sjawhar/envoy/internal/dispatch/githubapp.Client).DirFiles",
       "capture": "githubapp.tree-entry/path-past-the-bound",
       "mutation": {
         "file": "packages/envoy/internal/dispatch/githubapp/client.go",
-        "preimage": "notes.CheckSize(shownPath(file.Path), file.Size)",
-        "replacement": "notes.CheckSize(ShownBody(file.Path), file.Size)"
+        "preimage": "notes.CheckSize(file.shownPath(), file.Size)",
+        "replacement": "notes.CheckSize(file.Path, file.Size)"
       }
     },
     {
@@ -7428,13 +7446,13 @@
       "requirement": "r3-each-site",
       "package": "./internal/dispatch/githubapp",
       "test": "TestATreeEntryPrintsAsTheRuleReadsIt/path-of-a-failed-read",
-      "production": "(*github.com/sjawhar/envoy/internal/dispatch/githubapp.Client).blob: each error of a blob read names the path as shownPath prints it",
-      "function": "(*github.com/sjawhar/envoy/internal/dispatch/githubapp.Client).blob",
+      "production": "(*github.com/sjawhar/envoy/internal/dispatch/githubapp.Client).DirFiles: each error of a blob read names the path as DirFile.shownPath prints it",
+      "function": "(*github.com/sjawhar/envoy/internal/dispatch/githubapp.Client).DirFiles",
       "capture": "githubapp.tree-entry/path-of-a-failed-read",
       "mutation": {
         "file": "packages/envoy/internal/dispatch/githubapp/client.go",
-        "preimage": "shown := shownPath(path)",
-        "replacement": "shown := ShownBody(path)"
+        "preimage": "c.blob(ctx, token, repoBase, file.shownPath(), file.SHA)",
+        "replacement": "c.blob(ctx, token, repoBase, file.Path, file.SHA)"
       }
     },
     {
@@ -7461,9 +7479,44 @@
       "capture": "githubapp.default-branch",
       "mutation": {
         "file": "packages/envoy/internal/dispatch/githubapp/commits.go",
-        "preimage": "redact.Field(branch)",
+        "preimage": "shown := redact.Field(redact.Tokens(branch, -1, token))",
+        "replacement": "shown := redact.Tokens(branch, -1, token)"
+      }
+    },
+    {
+      "id": "githubapp-default-branch-echo",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/githubapp",
+      "test": "TestADefaultBranchPrintsNoTokenItsReadCarried",
+      "production": "(*github.com/sjawhar/envoy/internal/dispatch/githubapp.Client).CommitOnBranch: a default branch that echoes the installation token prints without it",
+      "function": "(*github.com/sjawhar/envoy/internal/dispatch/githubapp.Client).CommitOnBranch",
+      "capture": "githubapp.default-branch-echo",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/githubapp/commits.go",
+        "preimage": "redact.Tokens(branch, -1, token)",
         "replacement": "branch"
       }
+    },
+    {
+      "id": "githubapp-tree-path-echo",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/githubapp",
+      "test": "TestATreePathPrintsNoTokenItsReadCarried",
+      "production": "(*github.com/sjawhar/envoy/internal/dispatch/githubapp.Client).Dir: a tree entry's path is held with the tree answer's record, so one that echoes the token prints without it",
+      "function": "(*github.com/sjawhar/envoy/internal/dispatch/githubapp.Client).Dir",
+      "capture": "githubapp.tree-path-echo",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/githubapp/client.go",
+        "preimage": "body.Said(entry.Path).String()",
+        "replacement": "redact.Field(entry.Path)"
+      }
+    },
+    {
+      "id": "githubapp-tree-path-readable",
+      "requirement": "r4-unchanged",
+      "package": "./internal/dispatch/githubapp",
+      "test": "TestATreePathReadFromGitHubPrintsReadably",
+      "production": "githubapp Dir and DirFiles: a tree path read from GitHub that holds no credential the read carried prints as it came"
     },
     {
       "id": "githubapp-branch-slash-readable",
@@ -10362,6 +10415,16 @@
       "site": "githubapp nextLink and Deliveries: a Link header's next page that echoes the request's JWT, read with no record of the request",
       "source": "the review of the slice's report",
       "guard": "githubapp-next-link-echo"
+    },
+    {
+      "site": "githubapp Dir and DirFiles: a tree entry's path that echoes the tree read's installation token, read with no record of the request",
+      "source": "the review of the slice's report",
+      "guard": "githubapp-tree-path-echo"
+    },
+    {
+      "site": "githubapp CommitOnBranch: a default_branch that echoes the installation token, read with no record of the request",
+      "source": "the review of the slice's report",
+      "guard": "githubapp-default-branch-echo"
     },
     {
       "site": "api ciUnreadDetail and readCIRuns: the stored head's repository as it came, in the detail and in refs.SplitGitHubRepo's refusal",

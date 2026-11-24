@@ -111,6 +111,10 @@ func CheckRepositoryResponse(status int, header http.Header, body redact.Answer,
 // text, the default_branch DefaultBranch answers as it came, so every error and note of the read
 // names the branch as the rule reads it, unescaped, never as the target holds it: the rule reads
 // a branch's `/` as text, where it would refuse the path-escaped %2F and the whole target with it.
+// Before the rule reads it, the branch has token redacted (redact.Tokens): the comparison's own
+// credential, the record its answer holds, and the token the read that named the branch carried,
+// since both are minted for the repository's installation and the client hands out the one it
+// holds until it expires (RepositoryToken), so a default_branch that echoes it prints without it.
 func (c *Client) CommitOnBranch(ctx context.Context, token, owner, repo, branch, sha string) (bool, error) {
 	if c == nil {
 		return false, ErrNoAppKey
@@ -118,7 +122,7 @@ func (c *Client) CommitOnBranch(ctx context.Context, token, owner, repo, branch,
 	if err := notASHA("read the comparison of "+owner+"/"+repo, "commit", sha); err != nil {
 		return false, err
 	}
-	shown := redact.Field(branch)
+	shown := redact.Field(redact.Tokens(branch, -1, token))
 	// The three dots are the comparison's own syntax and travel unescaped; each side is escaped
 	// on its own so a `/` in a branch name travels as %2F.
 	path := repoPath(owner, repo) +
