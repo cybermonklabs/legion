@@ -2749,6 +2749,146 @@
       }
     },
     {
+      "id": "configaddr-string",
+      "requirement": "r2-held",
+      "package": "./configaddr",
+      "test": "TestEachPrinterOfAnAddressPrintsNoneOfItsCredentials/String",
+      "production": "(github.com/sjawhar/envoy/configaddr.Address).String: the address as redact.URL prints it",
+      "function": "(github.com/sjawhar/envoy/configaddr.Address).String",
+      "capture": "configaddr.String",
+      "mutation": {
+        "file": "packages/envoy/configaddr/address.go",
+        "preimage": "redact.URL(a.Raw())",
+        "replacement": "a.Raw()"
+      }
+    },
+    {
+      "id": "configaddr-format",
+      "requirement": "r2-held",
+      "package": "./configaddr",
+      "test": "TestEachPrinterOfAnAddressPrintsNoneOfItsCredentials/Format",
+      "production": "(github.com/sjawhar/envoy/configaddr.Address).Format: String under every verb, directly and in an unexported field",
+      "function": "(github.com/sjawhar/envoy/configaddr.Address).Format",
+      "capture": "configaddr.Format",
+      "mutation": {
+        "file": "packages/envoy/configaddr/address.go",
+        "preimage": "a.String()",
+        "replacement": "a.Raw()"
+      }
+    },
+    {
+      "id": "configaddr-logvalue",
+      "requirement": "r2-held",
+      "package": "./configaddr",
+      "test": "TestEachPrinterOfAnAddressPrintsNoneOfItsCredentials/LogValue",
+      "production": "(github.com/sjawhar/envoy/configaddr.Address).LogValue: String, as a slog value and in a slog line",
+      "function": "(github.com/sjawhar/envoy/configaddr.Address).LogValue",
+      "capture": "configaddr.LogValue",
+      "mutation": {
+        "file": "packages/envoy/configaddr/address.go",
+        "preimage": "slog.StringValue(a.String())",
+        "replacement": "slog.StringValue(a.Raw())"
+      }
+    },
+    {
+      "id": "configaddr-call",
+      "requirement": "r2-held",
+      "package": "./configaddr",
+      "test": "TestEachPrinterOfAnAddressPrintsNoneOfItsCredentials/Call",
+      "production": "(github.com/sjawhar/envoy/configaddr.Address).Call: a request URL built from the address, as redact.Call prints it",
+      "function": "(github.com/sjawhar/envoy/configaddr.Address).Call",
+      "capture": "configaddr.Call",
+      "mutation": {
+        "file": "packages/envoy/configaddr/address.go",
+        "preimage": "redact.Call(a.Raw(), callURL)",
+        "replacement": "callURL"
+      }
+    },
+    {
+      "id": "configaddr-error",
+      "requirement": "r2-held",
+      "package": "./configaddr",
+      "test": "TestEachPrinterOfAnAddressPrintsNoneOfItsCredentials/Error",
+      "production": "(github.com/sjawhar/envoy/configaddr.Address).Error: the error of a request built from the address, as redact.Error prints it",
+      "function": "(github.com/sjawhar/envoy/configaddr.Address).Error",
+      "capture": "configaddr.Error",
+      "mutation": {
+        "file": "packages/envoy/configaddr/address.go",
+        "preimage": "redact.Error(err, a.Raw())",
+        "replacement": "err"
+      }
+    },
+    {
+      "id": "configaddr-cause",
+      "requirement": "r2-held",
+      "package": "./configaddr",
+      "test": "TestEachPrinterOfAnAddressPrintsNoneOfItsCredentials/Cause",
+      "production": "(github.com/sjawhar/envoy/configaddr.Address).Cause: the failure of a request built from the address, as redact.Cause prints it",
+      "function": "(github.com/sjawhar/envoy/configaddr.Address).Cause",
+      "capture": "configaddr.Cause",
+      "mutation": {
+        "file": "packages/envoy/configaddr/address.go",
+        "preimage": "redact.Cause(err, a.Raw())",
+        "replacement": "err"
+      }
+    },
+    {
+      "id": "configaddr-named",
+      "requirement": "r2-held",
+      "package": "./configaddr",
+      "test": "TestEachPrinterOfAnAddressPrintsNoneOfItsCredentials/Named",
+      "production": "(github.com/sjawhar/envoy/configaddr.Address).Named: a request's failure named in the caller's words, as redact.Named prints it",
+      "function": "(github.com/sjawhar/envoy/configaddr.Address).Named",
+      "capture": "configaddr.Named",
+      "mutation": {
+        "file": "packages/envoy/configaddr/address.go",
+        "preimage": "redact.Named(err, a.Raw(), name)",
+        "replacement": "err"
+      }
+    },
+    {
+      "id": "configaddr-credential-prints-nothing",
+      "requirement": "r2-held",
+      "package": "./configaddr",
+      "test": "TestAnAddressCarryingACredentialPrintsNoPartOfIt",
+      "production": "configaddr.Address String, every verb (through a pointer too) and LogValue of addresses carrying a user name, a password, a query or a fragment, none of them written or hex-encoded"
+    },
+    {
+      "id": "configaddr-format-flags",
+      "requirement": "r2-held",
+      "package": "./configaddr",
+      "test": "TestFormatKeepsTheFlagsWidthAndPrecision",
+      "production": "configaddr.Address.Format under flags, width and precision"
+    },
+    {
+      "id": "configaddr-slog-field",
+      "requirement": "r2-held",
+      "package": "./configaddr",
+      "test": "TestASlogFieldPrintsTheAddressAsAMessageMay",
+      "production": "configaddr.Address.LogValue under slog's text and JSON handlers"
+    },
+    {
+      "id": "configaddr-request-error",
+      "requirement": "r2-held",
+      "package": "./configaddr",
+      "test": "TestARequestsURLAndErrorPrintAsTheRedactorPrintsThem",
+      "production": "configaddr.Address Call, Error and Cause of a refused request, each still unwrapping to the failure"
+    },
+    {
+      "id": "configaddr-setting",
+      "requirement": "r4-unchanged",
+      "package": "./configaddr",
+      "test": "TestAnAddressNamesTheSettingItWasReadFrom",
+      "production": "configaddr.Address.Setting: the name New was given, kept by an empty address"
+    },
+    {
+      "id": "configaddr-words-not-printed",
+      "requirement": "r4-unchanged",
+      "package": "./configaddr",
+      "test": "TestAnAddressNamesTheSettingItWasReadFrom",
+      "production": "configaddr.Address.WordsNotPrinted: what Words and WordsOf print beside an address that is not clean, worded with its setting and not the broker, and no word of the answer"
+    },
+    {
       "id": "agent-secrets-error-withheld",
       "requirement": "r3-each-site",
       "package": "./cmd/cipher",
