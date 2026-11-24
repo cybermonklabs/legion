@@ -783,9 +783,8 @@ func populatedState(t *testing.T) State {
 			// read GitHub for a round), so each carries a `mergeWait`. They are the two readings
 			// the object was added for: a round GitHub has answered nothing about yet, and a
 			// round GitHub has held `behind` its base for days, whose architect and reviewer have
-			// been told of it. A head GitHub answers `blocked` and MERGEABLE for once its own check
-			// runs have concluded, with no review request open, carries none: that answer ends the
-			// round.
+			// been told of it. A head whose `blocked` answer ends the round carries none
+			// (classify.MergeOutcomeOf).
 			"LEGION-218": {
 				Key:           "LEGION-218",
 				Generation:    1,

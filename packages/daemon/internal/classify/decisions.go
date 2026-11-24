@@ -145,7 +145,7 @@ func advance(pr record.PullRequest, arrival Arrival, headSHA string, names []rec
 	// it was read goes with it, since it is then the time of a read about the head the record has
 	// left, and a stamp kept over a move would say this head had been read when it never was.
 	if headSHA != pr.HeadSHA {
-		pr.Mergeability, pr.MergeState, pr.ReviewsRequested, pr.StateReadAt = "", record.MergeStateUnread, 0, time.Time{}
+		pr.Mergeability, pr.MergeState, pr.ReviewsRequested, pr.HeadChecks, pr.StateReadAt = "", record.MergeStateUnread, nil, record.HeadChecksUnread, time.Time{}
 	}
 	if !read.waits {
 		// An arrival that waits is judged for now by pushes that may not be its own (provisional),
@@ -664,19 +664,16 @@ func Settled(pr record.PullRequest) bool {
 // head is a run that concluded there, and its settlement is the account of every check GitHub
 // had reported on that head having concluded.
 //
-// It is what an approval waiting on GitHub's merge state reads before it ends its round on
-// `blocked` (RoundWaitsOnMergeState) or reports the head one GitHub will not merge (workflow's
-// reviewRound). A check the base requires holds the head `blocked` while it runs, which says
-// nothing about the round. Once the head's own checks have concluded, what still holds it
-// `blocked` is a rule the daemon cannot read past: one about the reader (a token without the
-// workflows permission reads `blocked` for every pull request that changes .github/workflows/,
-// dispatch://INFRA-4192/comment/a6559c76-d385-4925-b8cd-26cfa2c53482) or one it reads nothing of.
-// So the round ends there, and the merger's enqueue, which GitHub accepts or refuses with its
-// reason, answers the state at merging. Until then the round waits rather than ending on, or
-// naming as stuck, a state the daemon cannot tell apart from a check it has not been told of yet.
-// A head GitHub reports no check run on at all never satisfies this, so such a round neither ends
-// on `blocked` nor is reported stuck, and waits on GitHub's next answer; that is the rule's cost,
-// and it is the smaller one.
+// It is one of the conditions of MergeOutcomeOf, which says what each merge state the record holds
+// comes to for an approved round. A check the base requires holds the head `blocked` while it
+// runs, which says nothing about the round, and until the head's own checks have concluded the
+// round waits rather than ending on, or naming as stuck, a state the daemon cannot tell apart from
+// a check it has not been told of yet. It is evidence about the last settlement the daemon applied,
+// not about the head now, so MergeOutcomeOf ends a round on `blocked` only beside the read's own
+// account that no check of the head runs (record.PullRequest.HeadChecks). A head GitHub reports no
+// check run on at all never satisfies this, so such a round neither ends on `blocked` nor is
+// reported stuck, and waits on GitHub's next answer; that is the rule's cost, and it is the
+// smaller one.
 //
 // A run stored before the fence carried the head it ran on names no head, so it is no run on the
 // current head and such a record waits for the head's next settlement (record.AttemptRun).
@@ -1241,7 +1238,7 @@ func withoutDeletions(pushes []record.ClassifiedPush) []record.ClassifiedPush {
 // approved the head the pull request now stands at (ApprovalStands, which is the whole of that
 // test: a review of another head approves nothing, and a push on its way takes an approval of this
 // head back), the merge state the record holds for that head does not end the round
-// (mergeStateEndsRound), the unread state among them, and the record does not hold that head in a
+// (MergeOutcomeOf), the unread state among them, and the record does not hold that head in a
 // confirmed conflict with its base (ConflictRound).
 //
 // Two readers ask it, and they must answer alike, which is the whole reason the rule is here
@@ -1252,24 +1249,19 @@ func withoutDeletions(pushes []record.ClassifiedPush) []record.ClassifiedPush {
 // the two would drift, and the state would then say the daemon waits on an answer it never asks
 // for, or stay silent about a round it does read for.
 //
-// It holds for the round waiting for a first answer and for the stuck round alike - the head the
-// record holds no merge state for or GitHub answered `unknown` for, the head GitHub answered
-// `blocked` for while its own checks are still running, and the head GitHub answered `behind` or
-// `draft` for and the architect was told of - because each of them is waiting on GitHub's next
-// answer about the same head: the state a head is in changes under it, a base push clearing
-// `behind` and the last check of the head concluding making `blocked` a state the round ends on,
-// and a read is the only thing that would ever say so. What tells the waiting round from the
-// stuck one is read by the caller that needs them apart (ChecksConcludedOnHead), never here. A
-// head GitHub answered `dirty` for while its first conflicting read waits for the second
-// (FirstConflictReadWaits) waits the same way: the second read decides whether the conflict
-// stands (dispatch://INFRA-4374 R2).
+// It holds for the round that waits quietly and for the stuck round alike (MergeOutcomeOf's two
+// outcomes other than MergeEndsRound), because each of them is waiting on GitHub's next answer
+// about the same head: the state a head is in changes under it, a base push clearing `behind` and
+// the last check of the head concluding making `blocked` a state the round ends on, and a read is
+// the only thing that would ever say so. What tells the waiting round from the stuck one is
+// MergeOutcomeOf too, which workflow's reviewRound reads.
 //
 // It does not hold for a head the record holds in a confirmed conflict: that approval ends the
 // round whatever the merge state (workflow's reviewRound), since nothing GitHub answers about the
 // head will change until the base is merged forward. Where no ask of that merge was made before,
 // the issue's move into merging is what asks the merger for it (cybermonklabs/legion#4979,
-// record.ConflictMergeNext). Nor for a head whose state ends the round (mergeStateEndsRound).
-// Read here, the state build shows no mergeWait for the round the engine has just ended.
+// record.ConflictMergeNext). Nor for a head whose state ends the round (MergeOutcomeOf). Read
+// here, the state build shows no mergeWait for the round the engine has just ended.
 //
 // It holds only for an open pull request. A merged one has nothing left to merge. GitHub answers
 // `unknown` for it for good, and the daemon never reads its state after the merge: workflow's
@@ -1282,35 +1274,103 @@ func RoundWaitsOnMergeState(issue record.Issue, reviewer record.PhaseRow, pr *re
 		return false
 	}
 	return pr.State == record.PullRequestOpen && reviewer.Decision.State == "approved" &&
-		ApprovalStands(*pr, reviewer.Decision.Head) && !mergeStateEndsRound(*pr) && !ConflictRound(*pr)
+		ApprovalStands(*pr, reviewer.Decision.Head) && MergeOutcomeOf(*pr) != MergeEndsRound && !ConflictRound(*pr)
 }
 
-// mergeStateEndsRound says whether the merge state the record holds for the pull request's head
-// ends the review round of an approval that stands on that head: a state GitHub would merge from
-// (record.MergeState.Mergeable), or `blocked` with the head MERGEABLE and no review request open
-// (record.PullRequest.ReviewsRequested) once GitHub has reported a check run on that head and
-// every one of them has concluded (ChecksConcludedOnHead), while no first conflicting read of the
-// head waits for its second (FirstConflictReadWaits).
+// MergeOutcome is what the merge state the record holds for a pull request's head comes to for
+// the review round of an approval that stands on that head (MergeOutcomeOf).
+type MergeOutcome int
+
+const (
+	// MergeEndsRound: the approval ends the round, and the issue moves on to its task's next step.
+	MergeEndsRound MergeOutcome = iota + 1
+	// MergeWaitsQuietly: the round waits on GitHub's next answer about the head, and nobody is
+	// told: GitHub has given no answer the round can decide on yet, or a check of the head is
+	// still running, and a later fact - a read, a settlement - brings the answer.
+	MergeWaitsQuietly
+	// MergeWaitsTold: the round waits on GitHub's next answer about the head, and the architect
+	// and the reviewer are told once for the head and state (workflow's stuckMergeState): the
+	// head's own checks are over and what holds the head is something only a push, a person or
+	// GitHub's own computation will clear.
+	MergeWaitsTold
+)
+
+// MergeOutcomeOf is the one rule of what the merge state the record holds for pr's head comes to
+// for an approved round: RoundWaitsOnMergeState, which the engine and the state build read, and
+// workflow's reviewRound, which tells the waiting round from the stuck one, both read it.
+//
+//   - A state GitHub would merge from (record.MergeState.Mergeable) ends the round.
+//   - No state read, `unknown`, a first conflicting read waiting for its second
+//     (FirstConflictReadWaits), and a head with no concluded check run of its own
+//     (ChecksConcludedOnHead) wait quietly.
+//   - `blocked` waits quietly while the read's rollup says a check or a status of the head is
+//     still running (record.HeadChecksRunning), while GitHub has not computed whether the head
+//     merges cleanly (mergeability not MERGEABLE: GitHub answers `mergeable` null while a
+//     background job computes it, routinely on the first read after a push), and while no read
+//     has given the rollup or the count of open review requests (record.HeadChecksUnread, a nil
+//     ReviewsRequested). The readers read each such answer again (MergeAnswerIncomplete): a climb
+//     of reads, then the base's follow reads, up to ten minutes apart, for as long as the head
+//     stands, so the round never waits with no read on its way. It waits and is told while
+//     GitHub holds a review request open. Otherwise - MERGEABLE, no check of the head running,
+//     every check run of the head concluded, no review asked for - it ends the round.
+//   - Every other state GitHub would not merge from - `behind`, `draft`, a `dirty` no second read
+//     confirmed - waits and is told.
 //
 // `blocked` ends the round because it is GitHub's answer to the reader, not its verdict on the
 // merge: a rule about the reader holds a head `blocked` for one token and `clean` for another at
 // the same moment (a token without the workflows permission reads `blocked` for every pull request
 // that changes .github/workflows/), a check suite of another pull request on the same commit can
 // hold a required check `expected` that passed on this one, and the daemon reads no ruleset, so it
-// cannot tell such a hold from a required check or review that holds the head. A round that waited
-// for `clean` on such a head would wait for good. The merger's enqueue is the call GitHub answers
-// about the merge itself, accepted or refused with its reason, and the merger answers that refusal
-// (step 6 of prompts/roles/merger.md). The two holds the daemon can read stop the round from
-// ending there: a check run of the head still running, and a review GitHub asked a person, a team
-// or a code owner for that is not given yet, which the merger would meet as a refusal it already
-// knows. Every other state GitHub would not merge from - `behind`, `draft`, `dirty`, `unknown`, and
-// none read - ends no round.
-func mergeStateEndsRound(pr record.PullRequest) bool {
-	if pr.MergeState == record.MergeStateBlocked {
-		return pr.Mergeability == record.MergeabilityMergeable && pr.ReviewsRequested == 0 &&
-			ChecksConcludedOnHead(pr) && !FirstConflictReadWaits(pr)
+// cannot tell such a hold from a required check or review that holds the head
+// (dispatch://INFRA-4192/comment/1c89885e-5e89-42f7-8122-9cdc697d0ccd). A round that waited for
+// `clean` on such a head would wait for good. The merger's enqueue is the call GitHub answers about
+// the merge itself, accepted or refused with its reason, and the merger answers that refusal (step
+// 6 of prompts/roles/merger.md). The holds the daemon can read - a check of the head running, a
+// review asked for - keep the round here, since the merger would meet them as a refusal already
+// known. A confirmed conflict is no outcome of this rule: RoundWaitsOnMergeState ends that round
+// whatever the merge state (ConflictRound).
+func MergeOutcomeOf(pr record.PullRequest) MergeOutcome {
+	switch {
+	case pr.MergeState.Mergeable():
+		return MergeEndsRound
+	case pr.MergeState == record.MergeStateUnread, pr.MergeState == record.MergeStateUnknown,
+		FirstConflictReadWaits(pr), !ChecksConcludedOnHead(pr):
+		return MergeWaitsQuietly
+	case pr.MergeState != record.MergeStateBlocked:
+		return MergeWaitsTold
+	case pr.HeadChecks == record.HeadChecksRunning, pr.Mergeability != record.MergeabilityMergeable,
+		pr.HeadChecks == record.HeadChecksUnread, pr.ReviewsRequested == nil:
+		return MergeWaitsQuietly
+	case *pr.ReviewsRequested > 0:
+		return MergeWaitsTold
 	}
-	return pr.MergeState.Mergeable()
+	return MergeEndsRound
+}
+
+// MergeAnswerIncomplete says whether GitHub's answer about merging a head, as a read gives it, is
+// one the readers read again before they leave the head (daemon's climbMergeState and the base's
+// batch): `unknown`, which GitHub answers while it computes the merge state; and `blocked` with a
+// part of the answer MergeOutcomeOf needs missing - mergeability not computed (`mergeable` null),
+// or no rollup of the head's checks or no count of its review requests in the answer. Any other
+// answer is one the round can decide on, and the readers stop at it.
+func MergeAnswerIncomplete(answer record.PullRequest) bool {
+	switch answer.MergeState {
+	case record.MergeStateUnknown:
+		return true
+	case record.MergeStateBlocked:
+		return answer.Mergeability != record.MergeabilityMergeable && answer.Mergeability != record.MergeabilityConflicting ||
+			answer.HeadChecks == record.HeadChecksUnread || answer.ReviewsRequested == nil
+	}
+	return false
+}
+
+// SameCount says whether two counts of a pull request's open review requests
+// (record.PullRequest.ReviewsRequested) are the same answer: both unread, or both read and equal.
+func SameCount(a, b *int) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
 }
 
 // FirstConflictReadWaits says whether a first read that found the pull request's current head

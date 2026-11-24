@@ -131,7 +131,8 @@ func pullRequestNews(before, after record.PullRequest) bool {
 		before.ReviewSeen != after.ReviewSeen ||
 		before.Mergeability != after.Mergeability ||
 		before.MergeState != after.MergeState ||
-		before.ReviewsRequested != after.ReviewsRequested ||
+		!classify.SameCount(before.ReviewsRequested, after.ReviewsRequested) ||
+		before.HeadChecks != after.HeadChecks ||
 		before.ConflictingHead != after.ConflictingHead ||
 		before.MergeSHA != after.MergeSHA
 }

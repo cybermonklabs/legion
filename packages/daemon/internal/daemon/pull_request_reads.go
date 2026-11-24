@@ -154,17 +154,30 @@ func (w *workflowRuntime) openRecord(ctx context.Context, pr record.PullRequest)
 // round's own mark (record.ReviewDecision.ToldStuckHead); and a settlement that finds the round
 // mergeable advances the issue, which is the right answer whenever it is true.
 //
+// A read GitHub answered `blocked` and MERGEABLE carries the rest of what the round decides such a
+// head on (classify.MergeOutcomeOf): the count of open review requests, which the REST answer
+// holds and a batch counts, and the head's rollup, which a batch reads in its own query and a REST
+// read asks GitHub's GraphQL API for here (readHeadChecks), before the fact is applied. Any other
+// answer reads no rollup, and its fact carries record.HeadChecksUnread.
+//
 // The fact names the head GitHub answered for (`head.sha` of the same answer), which the engine
 // records the verdict against only while the record still stands at it: every read that applies
 // this runs outside the record's transaction, so a push can land between GitHub's answer and the
-// apply.
+// apply. It answers the fact it applied, so a reader can tell an answer it must read again
+// (classify.MergeAnswerIncomplete, answerIncomplete).
 // An apply that fails is returned, not logged: each caller logs it once, in its own words, with
 // what it does next. The per-issue read and the merge-state reads go on, and their next read of
 // the pull request applies it again; an outbox row fails its attempt and is retried.
-func (w *workflowRuntime) applyMergeability(ctx context.Context, github githubrest.Client, pr record.PullRequest, pull githubPullRequest, readAt time.Time, eventID string) error {
+func (w *workflowRuntime) applyMergeability(ctx context.Context, github githubrest.Client, pr record.PullRequest, pull githubPullRequest, readAt time.Time, eventID string) (intake.PullRequestMergeability, error) {
 	base, mergeable, state := pull.Base.Ref, pull.mergeability(), pull.mergeState()
 	fact := intake.PullRequestMergeability{Repo: pr.Repo, Number: pr.Number, Base: base, HeadSHA: pull.Head.SHA,
 		Mergeable: mergeable, MergeState: state, ReviewsRequested: pull.reviewsRequested(), ReadAt: readAt}
+	switch {
+	case pull.batch != nil:
+		fact.HeadChecks = pull.batch.checks
+	case state == record.MergeStateBlocked && mergeable == record.MergeabilityMergeable:
+		fact.HeadChecks = w.readHeadChecks(ctx, pr, pull.Head.SHA)
+	}
 	if mergeable == record.MergeabilityConflicting {
 		if base == "" {
 			base = pr.Base
@@ -173,6 +186,46 @@ func (w *workflowRuntime) applyMergeability(ctx context.Context, github githubre
 		fact.Rules = &rules
 	}
 	_, err := intake.ApplyFact(ctx, w.pool, "github", eventID, fact, w.handlers...)
+	return fact, err
+}
+
+// readHeadChecks is the rollup of head, pr's head as a REST read found it, read from GitHub's
+// GraphQL API in the query a base's batch asks (queryChunk, through the same gate of the
+// installation): the REST answer of a pull request carries no rollup, and the combined status and
+// the check suites are two more reads that still leave the suites' runs to page. A query that
+// fails, a pull request it does not answer, and an answer at another head are logged and read as
+// record.HeadChecksUnread, an answer the readers read again (classify.MergeAnswerIncomplete).
+func (w *workflowRuntime) readHeadChecks(ctx context.Context, pr record.PullRequest, head string) record.HeadChecks {
+	recorded, err := ghrepo.Parse("the pull request's repository", pr.Repo)
+	if err != nil {
+		w.log.Warn("github: read the rollup of a blocked head's checks; it is read again", "repo", pr.Repo, "pullRequest", pr.Number, "error", err)
+		return record.HeadChecksUnread
+	}
+	got, err := w.queryChunk(ctx, w.repositories.serving(recorded), []int{pr.Number})
+	node, answered := got.answers[pr.Number]
+	switch {
+	case err != nil:
+		w.log.Warn("github: read the rollup of a blocked head's checks; it is read again", "repo", pr.Repo, "pullRequest", pr.Number, "head", head, "error", err)
+		return record.HeadChecksUnread
+	case !answered || node.HeadRefOid != head:
+		w.log.Warn("github: GitHub's rollup answer names no rollup of the head it was asked for; it is read again",
+			"repo", pr.Repo, "pullRequest", pr.Number, "head", head, "answeredHead", node.HeadRefOid, "unanswered", got.unanswered[pr.Number])
+		return record.HeadChecksUnread
+	}
+	return node.headChecks()
+}
+
+// answerIncomplete says whether fact, an answer a read applied, is one the readers read again
+// before they leave the pull request (classify.MergeAnswerIncomplete).
+func answerIncomplete(fact intake.PullRequestMergeability) bool {
+	return classify.MergeAnswerIncomplete(record.PullRequest{MergeState: fact.MergeState, Mergeability: fact.Mergeable,
+		ReviewsRequested: fact.ReviewsRequested, HeadChecks: fact.HeadChecks})
+}
+
+// applyAnswer is applyMergeability for the outbox's two reads, which decide on their own answer
+// (mergeQueueRead, conflictConfirm) and so have no use for the fact it applied.
+func (w *workflowRuntime) applyAnswer(ctx context.Context, github githubrest.Client, pr record.PullRequest, pull githubPullRequest, readAt time.Time, eventID string) error {
+	_, err := w.applyMergeability(ctx, github, pr, pull, readAt, eventID)
 	return err
 }
 

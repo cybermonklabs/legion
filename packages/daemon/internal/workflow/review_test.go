@@ -240,10 +240,11 @@ func TestAnApprovalOnADraftHeadGitHubLaterReportsCleanMovesOnAndTellsOnce(t *tes
 
 // The notice of a head GitHub will not merge from is read by a person deciding what to push next,
 // so it names GitHub's state and every check GitHub reported on that head with its conclusion, and
-// what ends the round at that head: a state GitHub would merge from, or `blocked` with every check
-// run of the head concluded. The reviewer is told as well as the architect, since it approved that
-// head and is the role that reads the head's checks on GitHub; both are told once for the head and
-// the state.
+// what ends the round at that head: a state GitHub would merge from, or `blocked` with the head
+// MERGEABLE, nothing of it running, every check run of the head concluded and no review request
+// open (classify.MergeOutcomeOf). The reviewer is told as well as the architect, since it
+// approved that head and is the role that reads the head's checks on GitHub; both are told once
+// for the head and the state.
 func TestAnApprovalOnABehindHeadNamesTheStateAndEveryCheckGitHubReported(t *testing.T) {
 	pool := migratedPool(t)
 	seedMergeStateRound(t, pool, record.MergeStateBehind)
@@ -264,7 +265,7 @@ func TestAnApprovalOnABehindHeadNamesTheStateAndEveryCheckGitHubReported(t *test
 		t.Fatalf("review-stuck notices %+v, want one reading %q", told, want)
 	}
 	for _, phrase := range []string{"GitHub reports that head behind", `"unit tests" succeeded`,
-		"until GitHub reports that head clean, unstable or has_hooks, or blocked with every check run it reported there concluded"} {
+		"until GitHub reports that head clean, unstable or has_hooks, or blocked with the head MERGEABLE, no check or status of it running, every check run it reported there concluded and no review request open"} {
 		if !strings.Contains(told[0].Reason, phrase) {
 			t.Fatalf("the notice reads %q, want it to name %q", told[0].Reason, phrase)
 		}

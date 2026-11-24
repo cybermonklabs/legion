@@ -10,6 +10,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
+	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
 // queryTimeoutNear is how long a GraphQL query that failed has run when it ran into the time
@@ -51,10 +52,14 @@ func (w *workflowRuntime) chunkSize() int {
 
 // pullRequestFields is what a read of a base's batch asks GitHub of each pull request: its
 // number, whether it is open, its head, the base it sits on now, GitHub's lazily computed
-// mergeability and merge state for that head, and how many review requests it holds open, which a
-// GET /pulls/{number} answers as `state`, `head`, `base`, `mergeable`, `mergeable_state`,
-// `requested_reviewers` and `requested_teams` (graphQLPull.githubPullRequest).
-const pullRequestFields = "number state headRefOid headRefName baseRefName mergeable mergeStateStatus reviewRequests { totalCount }"
+// mergeability and merge state for that head, which a GET /pulls/{number} answers as `state`,
+// `head`, `base`, `mergeable` and `mergeable_state` (graphQLPull.githubPullRequest), and the rest
+// of the answer the round reads for a `blocked` head (classify.MergeOutcomeOf): how many review
+// requests it holds open, and the head commit's `statusCheckRollup`, whether a check or a status of
+// it still runs. The REST read asks the same query of the one pull request it read when that read
+// answers `blocked` and MERGEABLE (readHeadChecks).
+const pullRequestFields = "number state headRefOid headRefName baseRefName mergeable mergeStateStatus " +
+	"reviewRequests { totalCount } commits(last: 1) { nodes { commit { oid statusCheckRollup { state } } } }"
 
 // chunkQuery is the GraphQL query of numbers, pull requests of the repository $owner/$name: each
 // asked for by its number under its own alias (pullAlias), so one that GitHub cannot answer leaves
@@ -75,7 +80,9 @@ func pullAlias(number int) string {
 	return "p" + strconv.Itoa(number)
 }
 
-// graphQLPull is one pull request as chunkQuery answers it.
+// graphQLPull is one pull request as chunkQuery answers it. ReviewRequests and a commit's
+// StatusCheckRollup are pointers because GitHub's schema makes both nullable: a null count is no
+// count, and a null rollup is a commit with no check and no status at all.
 type graphQLPull struct {
 	Number           int    `json:"number"`
 	State            string `json:"state"`
@@ -84,9 +91,19 @@ type graphQLPull struct {
 	BaseRefName      string `json:"baseRefName"`
 	Mergeable        string `json:"mergeable"`
 	MergeStateStatus string `json:"mergeStateStatus"`
-	ReviewRequests   struct {
+	ReviewRequests   *struct {
 		TotalCount int `json:"totalCount"`
 	} `json:"reviewRequests"`
+	Commits struct {
+		Nodes []struct {
+			Commit struct {
+				OID               string `json:"oid"`
+				StatusCheckRollup *struct {
+					State string `json:"state"`
+				} `json:"statusCheckRollup"`
+			} `json:"commit"`
+		} `json:"nodes"`
+	} `json:"commits"`
 }
 
 // githubPullRequest is p as GET /pulls/{number} answers the same pull request, the shape
@@ -94,13 +111,17 @@ type graphQLPull struct {
 // are its `closed`; its `mergeable` MERGEABLE, CONFLICTING and UNKNOWN are the REST `mergeable`
 // true, false and null; and its `mergeStateStatus` is the REST `mergeable_state` in capitals
 // (CLEAN, BLOCKED, BEHIND, DIRTY, DRAFT, HAS_HOOKS, UNSTABLE, UNKNOWN). A state outside those reads
-// as unknown, as a REST one does (githubPullRequest.mergeState). Its `reviewRequests` count is the
-// REST `requested_reviewers` and `requested_teams` together, people, Apps and teams alike, which
-// the REST shape holds as entries the record only counts (githubPullRequest.reviewsRequested); an
-// entry of an empty struct takes no memory.
+// as unknown, as a REST one does (githubPullRequest.mergeState). The count of review requests and
+// the head's rollup, which no REST field of the pull request carries as such, ride beside it as
+// the batch's own read (batchRead).
 func (p graphQLPull) githubPullRequest() githubPullRequest {
+	read := &batchRead{checks: p.headChecks()}
+	if p.ReviewRequests != nil {
+		count := p.ReviewRequests.TotalCount
+		read.reviews = &count
+	}
 	pull := githubPullRequest{Number: p.Number, State: "closed", MergeableState: strings.ToLower(p.MergeStateStatus), Merged: p.State == "MERGED",
-		RequestedReviewers: make([]struct{}, p.ReviewRequests.TotalCount)}
+		batch: read}
 	if p.State == "OPEN" {
 		pull.State = "open"
 	}
@@ -114,6 +135,28 @@ func (p graphQLPull) githubPullRequest() githubPullRequest {
 		pull.Mergeable = &mergeable
 	}
 	return pull
+}
+
+// headChecks is the rollup of p's head commit as record.HeadChecks: the answer's last commit must
+// be the head it names, or the answer says nothing of that head. A rollup GitHub answers null is
+// a commit with no check and no status, so nothing of it runs; PENDING is a check or a status
+// still running; SUCCESS, FAILURE, ERROR and EXPECTED, a required status nobody has reported,
+// have nothing running. Any other word is read as no rollup.
+func (p graphQLPull) headChecks() record.HeadChecks {
+	if len(p.Commits.Nodes) == 0 || p.Commits.Nodes[len(p.Commits.Nodes)-1].Commit.OID != p.HeadRefOid || p.HeadRefOid == "" {
+		return record.HeadChecksUnread
+	}
+	rollup := p.Commits.Nodes[len(p.Commits.Nodes)-1].Commit.StatusCheckRollup
+	if rollup == nil {
+		return record.HeadChecksConcluded
+	}
+	switch rollup.State {
+	case "PENDING":
+		return record.HeadChecksRunning
+	case "SUCCESS", "FAILURE", "ERROR", "EXPECTED":
+		return record.HeadChecksConcluded
+	}
+	return record.HeadChecksUnread
 }
 
 // chunkAnswer is what one query of a base's batch read (queryChunk): github, the implement App's
@@ -196,10 +239,21 @@ func (w *workflowRuntime) queryChunk(ctx context.Context, repo ghrepo.Repository
 			continue
 		}
 		alias, _ := entry.Path[1].(string)
-		if number, ok := asked[alias]; ok {
-			if _, left := got.unanswered[number]; left {
-				got.unanswered[number] = entry.Message
-			}
+		number, ok := asked[alias]
+		if !ok {
+			continue
+		}
+		if _, left := got.unanswered[number]; left {
+			got.unanswered[number] = entry.Message
+			continue
+		}
+		// An error inside an answered pull request names one of its fields, and GitHub answers
+		// that field null. The count and the rollup are the nullable ones a round decides on, so
+		// both read as no answer rather than as none open and nothing running.
+		if len(entry.Path) > 2 {
+			node := got.answers[number]
+			node.ReviewRequests, node.Commits.Nodes = nil, nil
+			got.answers[number] = node
 		}
 	}
 	return got, nil

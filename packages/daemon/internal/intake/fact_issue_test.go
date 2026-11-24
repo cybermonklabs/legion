@@ -62,6 +62,7 @@ func TestIssueOfAnswersEachFactThatNamesOneIssue(t *testing.T) {
 		"PullRequestMerged":         PullRequestMerged{},
 		"PullRequestClosed":         PullRequestClosed{},
 		"PullRequestDequeued":       PullRequestDequeued{},
+		"PullRequestReviewRequests": PullRequestReviewRequests{},
 		"Push":                      Push{},
 		"BasePush":                  BasePush{},
 		"DaemonBooted":              DaemonBooted{},

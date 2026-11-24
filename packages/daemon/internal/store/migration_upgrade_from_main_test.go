@@ -188,8 +188,9 @@ import (
 // issues.priority, null on every row it finds, which reads as an issue with no priority.
 // dispatch://INFRA-4192's count of the review requests GitHub holds open on a pull request
 // (20261124130001) is applied after all of these and touches no outbox_kind_check: it adds
-// pull_requests.reviews_requested at its default, 0, on every row it finds
-// (migration_20261124130001_test.go reads it).
+// pull_requests.reviews_requested, null on every row it finds, and pull_requests.head_checks at
+// its default, the empty string, which say no read wrote them (migration_20261124130001_test.go
+// reads it).
 var thisBranchsMigrations = []int{
 	20261029120000, 20261029120100, 20261029120200, 20261029120300, 20261029120400,
 	20261029120600, 20261029120700, 20261029120800, 20261029120900, 20261029121000,

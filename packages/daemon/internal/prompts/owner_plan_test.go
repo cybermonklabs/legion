@@ -770,8 +770,8 @@ func TestTheSentencesTheLastAcceptanceRoundShowedFalseAgreeWithTheDaemon(t *test
 	}{
 		{
 			"go/architect-common.md", func(t *testing.T) string { return goPart(t, "architect-common.md") },
-			[]string{"An approved head that GitHub holds blocked, on a check or a review the base requires, keeps the issue in `reviewing` until that merge state comes clean."},
-			[]string{"ends the round whatever CI says"},
+			[]string{"An approved head that GitHub holds blocked keeps the issue in `reviewing` while a check of it runs, while GitHub has not computed whether it merges, and while GitHub holds a review request open; once it is mergeable, nothing of it runs, its own checks have concluded and no review is asked for, the approval ends the round and the merger's merge answers the blocked state."},
+			[]string{"ends the round whatever CI says", "until that merge state comes clean"},
 		},
 		{
 			"go/reviewer.md", func(t *testing.T) string { return goPart(t, "reviewer.md") },

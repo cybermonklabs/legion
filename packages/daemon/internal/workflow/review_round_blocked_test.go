@@ -23,11 +23,13 @@ type githubFake struct {
 	t      *testing.T
 	pool   *pgxpool.Pool
 	engine *Engine
-	// mergeable, state and requested are GitHub's answer for the head the branch stands at:
-	// requested is how many review requests it holds open on the pull request.
+	// mergeable, state, requested and checks are GitHub's answer for the head the branch stands
+	// at: requested is how many review requests it holds open on the pull request, and checks is
+	// the head's rollup, whether a check or a status of it still runs.
 	mergeable record.Mergeability
 	state     record.MergeState
 	requested int
+	checks    record.HeadChecks
 	// reads is how many reads the engine has asked for that GitHub has not answered.
 	reads int
 	// answered is each state GitHub answered a read with, in order, and at the moment of the last
@@ -38,10 +40,11 @@ type githubFake struct {
 }
 
 // newGitHubFake is the fake GitHub of pool's LEGION-208, wired into engine as its reader of the
-// merge state. GitHub answers MERGEABLE and state until a test says otherwise.
+// merge state. GitHub answers MERGEABLE and state, no review requested and nothing of the head
+// running, until a test says otherwise.
 func newGitHubFake(t *testing.T, pool *pgxpool.Pool, engine *Engine, state record.MergeState) *githubFake {
 	g := &githubFake{t: t, pool: pool, engine: engine, mergeable: record.MergeabilityMergeable, state: state,
-		at: time.Date(2026, 9, 23, 1, 0, 0, 0, time.UTC)}
+		checks: record.HeadChecksConcluded, at: time.Date(2026, 9, 23, 1, 0, 0, 0, time.UTC)}
 	engine.cfg.ReadMergeState = func(string) { g.reads++ }
 	return g
 }
@@ -75,7 +78,7 @@ func (g *githubFake) read() {
 	g.answered = append(g.answered, g.state)
 	if result := applyFacts(g.t, g.pool, g.engine)("read-"+g.at.Format(time.RFC3339), intake.PullRequestMergeability{
 		Repo: "sjawhar/legion", Number: 42, Base: "main", HeadSHA: head, Mergeable: g.mergeable, MergeState: g.state,
-		ReviewsRequested: g.requested, ReadAt: g.at}); result.Refusal != nil {
+		ReviewsRequested: new(g.requested), HeadChecks: g.checks, ReadAt: g.at}); result.Refusal != nil {
 		g.t.Fatalf("GitHub's answer %s for %s was refused: %+v", g.state, head, result.Refusal)
 	}
 }
@@ -119,12 +122,12 @@ func waits(t *testing.T, pool *pgxpool.Pool, why string) {
 // suite of another pull request on the same commit that holds a required check `expected`, and
 // rules the daemon reads nothing of. The merger's enqueue is the call GitHub answers about the
 // merge itself, accepted or refused with its reason. So an approval that stands on the head ends
-// the round on `blocked` with the head MERGEABLE and no review request open as it does on a state
-// GitHub would merge from, once GitHub has reported a check run on that head and every one of
-// them has concluded (classify.ChecksConcludedOnHead), whatever each concluded to, and the merger
-// answers the state at merging. The round still waits while GitHub has given no answer, unread or
-// `unknown`, while a check run of the head is still running, and while GitHub holds a review
-// request open, which is told once; `behind` and `draft` keep the stuck round and its notice, told
+// the round on `blocked` as classify.MergeOutcomeOf says - the head MERGEABLE, the read's rollup
+// saying nothing of it runs, every check run GitHub reported on that head concluded, whatever each
+// concluded to, and no review request open - and the merger answers the state at merging. The
+// round waits quietly while GitHub has given no whole answer, while a check of the head runs, and
+// while GitHub has not computed whether the head merges; it waits and is told once while GitHub
+// holds a review request open; and `behind` and `draft` keep the stuck round and its notice, told
 // once.
 func TestAnApprovalOfABlockedHeadWhoseChecksConcludedMovesToAccepting(t *testing.T) {
 	// rig is LEGION-208 in reviewing, its pull request #42 at headOne with CI settled there and no
@@ -234,6 +237,74 @@ func TestAnApprovalOfABlockedHeadWhoseChecksConcludedMovesToAccepting(t *testing
 		github.state = record.MergeStateBlocked
 		github.read()
 		standsUntold(t, pool, phase.Accepting, "the read after unknown answered blocked")
+	})
+
+	// A check re-run on the same head leaves the head's settlement standing, every run of it
+	// concluded, while GitHub holds the head `blocked` for the run again under way. The read's own
+	// rollup says so (record.HeadChecksRunning), and the round waits on it quietly rather than
+	// ending on the settlement it has outlived; the read after the re-run ends it.
+	t.Run("a check re-run on the head the settlement already concluded", func(t *testing.T) {
+		pool, github := rig(t, record.MergeStateBlocked)
+		github.checks = record.HeadChecksRunning
+		github.apply("approve", approve)
+		waits(t, pool, "GitHub's rollup says a check of the head runs again")
+		github.checks = record.HeadChecksConcluded
+		github.read()
+		standsUntold(t, pool, phase.Accepting, "the read after the re-run found nothing of the head running")
+	})
+
+	// GitHub answers `blocked` with `mergeable` null while a background job computes whether the
+	// head merges cleanly, routinely on the first read after a push. The round does not end on it
+	// and tells nobody: the readers read such an answer again (classify.MergeAnswerIncomplete), and
+	// the read that finds the head MERGEABLE ends the round.
+	t.Run("GitHub answers blocked before it computed whether the head merges", func(t *testing.T) {
+		pool, github := rig(t, record.MergeStateBlocked)
+		github.mergeable, github.checks = record.MergeabilityUnknown, record.HeadChecksUnread
+		github.apply("approve", approve)
+		waits(t, pool, "GitHub has not said the head merges")
+		github.mergeable, github.checks = record.MergeabilityMergeable, record.HeadChecksConcluded
+		github.read()
+		standsUntold(t, pool, phase.Accepting, "the read found the head MERGEABLE")
+	})
+
+	// A row an earlier release wrote holds `blocked` and MERGEABLE beside no count of review
+	// requests and no rollup (migration 20261124130001). The approval does not end the round on
+	// it: the round waits quietly for the read the approval asks, which writes both.
+	t.Run("a row recorded blocked before the count and the rollup were read", func(t *testing.T) {
+		pool := migratedPool(t)
+		seedMergeStateRound(t, pool, record.MergeStateBlocked)
+		if _, err := pool.Exec(t.Context(), "update pull_requests set reviews_requested = null, head_checks = '' where issue = 'LEGION-208'"); err != nil {
+			t.Fatalf("leave the row as an earlier release wrote it: %v", err)
+		}
+		engine := testEngine(config.DesignGateRootIssues, nil)
+		github := newGitHubFake(t, pool, engine, record.MergeStateBlocked)
+		if result := applyFacts(t, pool, engine)("approve", approve); result.Refusal != nil {
+			t.Fatalf("the approval was refused: %+v", result.Refusal)
+		}
+		waits(t, pool, "no read has counted the review requests or read the rollup")
+		github.serve()
+		standsUntold(t, pool, phase.Accepting, "the read wrote a count of none and a rollup with nothing running")
+	})
+
+	// GitHub sends `review_request_removed` when a requested review is withdrawn, and no other
+	// event says so. The fact asks a read, which counts the requests again, and the read that finds
+	// none open ends the round.
+	t.Run("a review request withdrawn", func(t *testing.T) {
+		pool, github := rig(t, record.MergeStateBlocked)
+		github.requested = 1
+		github.apply("approve", approve)
+		if got := issuePhase(t, pool); got != phase.Reviewing {
+			t.Fatalf("LEGION-208 is in %s, want reviewing while a review is asked for", got)
+		}
+		github.requested = 0
+		reads := len(github.answered)
+		github.apply("withdrawn", intake.PullRequestReviewRequests{Repo: "sjawhar/legion", Number: 42, HeadSHA: headOne})
+		if len(github.answered) != reads+1 {
+			t.Fatalf("the withdrawn request asked GitHub for %d reads, want one", len(github.answered)-reads)
+		}
+		if got := issuePhase(t, pool); got != phase.Accepting {
+			t.Fatalf("LEGION-208 is in %s, want accepting: the read after the withdrawal found no request open", got)
+		}
 	})
 
 	t.Run("a check run of the head is still running", func(t *testing.T) {

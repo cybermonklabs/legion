@@ -1168,9 +1168,8 @@ func TestProjectShowsTheFailureRecordAndTheHeldPhase(t *testing.T) {
 // end on, `behind`, whose architect and reviewer have been told (LEGION-209, which carries the
 // told marks the first does not). A round whose issue is not reviewing (LEGION-210), one no
 // approval decided (LEGION-211), one whose head GitHub reports mergeable (LEGION-212), one whose
-// pull request the record no longer holds open (LEGION-213) and one whose head GitHub answers
-// `blocked` and MERGEABLE with two check runs of that head concluded and no review request open
-// (LEGION-215), a state the round ends on, carry none.
+// pull request the record no longer holds open (LEGION-213) and one whose `blocked` answer ends the
+// round (LEGION-215, classify.MergeOutcomeOf) carry none.
 //
 // checkRuns counts the fence's runs stamped with the current head alone: LEGION-209 counts the
 // two reported on its own head and not the third, of a name reported on the head before it, and
@@ -1207,11 +1206,12 @@ func TestProjectShowsWhatAReviewRoundWaitsOnFromGitHub(t *testing.T) {
 	merged.State = record.PullRequestMerged
 	mergeable := behind("LEGION-212", 46)
 	mergeable.MergeState = record.MergeStateClean
-	// The head GitHub holds `blocked` and MERGEABLE once both of its own check runs have concluded,
-	// with no review asked for: the merger's enqueue answers that state, so the approval ends the
-	// round.
+	// The head GitHub holds `blocked` and MERGEABLE, nothing of it running, once both of its own
+	// check runs have concluded, with no review asked for: the merger's merge answers that state,
+	// so the approval ends the round.
 	concluded := behind("LEGION-215", 49)
 	concluded.Mergeability, concluded.MergeState = record.MergeabilityMergeable, record.MergeStateBlocked
+	concluded.ReviewsRequested, concluded.HeadChecks = new(0), record.HeadChecksConcluded
 	// The row a daemon wrote before the migration that added the read stamp: GitHub's answer is
 	// recorded and the moment of the read is not, which no row written since can be.
 	premigration := behind("LEGION-214", 48)

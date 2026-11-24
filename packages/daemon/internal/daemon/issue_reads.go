@@ -50,8 +50,10 @@ const issueRead = 30 * time.Second
 // logs it; the record then stands as it was, and the next read of the issue asks again.
 //
 // It answers whether GitHub is still computing the merge of the pull request's head: its read
-// found the pull request open with merge state `unknown` or `mergeable` null. The start read
-// queues a ladder of reads for such an issue (readIssuesAtStart), which a handoff's read does not.
+// found the pull request open with `mergeable` null, or an answer the readers read again
+// (answerIncomplete: `unknown`, or `blocked` missing part of what the round decides it on). The
+// start read queues a ladder of reads for such an issue (readIssuesAtStart), which a handoff's
+// read does not.
 // A read whose reviews read must stop - ctx ended, or GitHub's rate limit, which the ladder's reads
 // would meet as well - answers false.
 func (w *workflowRuntime) readIssuePullRequest(ctx context.Context, issue string) (bool, error) {
@@ -83,14 +85,15 @@ func (w *workflowRuntime) readIssuePullRequest(ctx context.Context, issue string
 	// which the GitHub consumer's backlog can hold for a while.
 	prCtx, cancelReads := context.WithTimeout(ctx, issueRead)
 	defer cancelReads()
-	if err := w.applyMergeability(ctx, github, pr, pull, answeredAt, w.mergeabilityEventID(pr, answeredAt)); err != nil && ctx.Err() == nil {
+	fact, err := w.applyMergeability(ctx, github, pr, pull, answeredAt, w.mergeabilityEventID(pr, answeredAt))
+	if err != nil && ctx.Err() == nil {
 		w.log.Warn("apply whether a pull request's head can be merged into its base; the issue's next read applies it again",
 			"issue", pr.Issue, "repo", pr.Repo, "pullRequest", pr.Number, "head", pull.Head.SHA, "error", err)
 	}
 	if w.readReviews(ctx, prCtx, github, pr) {
 		return false, nil
 	}
-	return pull.State == "open" && (pull.mergeState() == record.MergeStateUnknown || pull.mergeability() == record.MergeabilityUnknown), nil
+	return pull.State == "open" && (pull.mergeability() == record.MergeabilityUnknown || answerIncomplete(fact)), nil
 }
 
 // issuePullRequest is the open pull request the per-issue read judges for key: the record's, when

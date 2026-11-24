@@ -160,9 +160,9 @@ func newMergeWaitReadableLive(t *testing.T) *mergeWaitReadableLive {
 	r.github = newMergeWaitGitHub(t)
 	// GitHub answers `mergeable: true` for a draft as surely as for a head it would merge now, which
 	// is what makes `mergeable_state` the only answer that tells those two apart
-	// (record.PullRequest.MergeState). A `blocked` head would not do for the stuck round: once every
-	// check run of the head has concluded, with the head MERGEABLE and no review request open,
-	// `blocked` ends the round (classify.RoundWaitsOnMergeState).
+	// (record.PullRequest.MergeState). A `blocked` head would not do for the stuck round: a
+	// `blocked` answer either ends the round or waits quietly, and only one with a review request
+	// open is told of (classify.MergeOutcomeOf).
 	r.github.open(r.stuckNumber, claim.IssueBranch(r.stuck), mergeWaitFirstHead, true, "draft", r.openedAt)
 	r.github.open(r.movingNumber, claim.IssueBranch(r.moving), mergeWaitMovingHead, true, "blocked", r.openedAt)
 	r.seed()

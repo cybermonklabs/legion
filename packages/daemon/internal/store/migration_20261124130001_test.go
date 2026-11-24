@@ -5,15 +5,16 @@ import (
 	"testing"
 )
 
-// 20261124130001 records how many review requests GitHub holds open on a pull request, read from
-// the same answer as its merge state. A pull request written before it holds no such count, and
-// nothing in the row derives one, so the column takes 0 beside the merge_state the row already
-// held: the count a read that found no request open writes. The daemon's next read of the pull
-// request writes the count that read finds.
-func TestAPullRequestRecordedBefore20261124130001HoldsNoReviewRequest(t *testing.T) {
+// 20261124130001 records, beside a pull request's merge state, how many review requests GitHub
+// holds open on it and whether a check of its head was still running when that state was read. A
+// pull request written before it holds neither, and nothing in the row derives either, so the row
+// takes the values that say no read wrote them - a null count and an empty rollup - beside the
+// merge_state it already held, never a zero that would read as none open. The round does not end
+// on `blocked` beside them, and the daemon's next read of the pull request writes both.
+func TestAPullRequestRecordedBefore20261124130001HoldsNoCountAndNoRollup(t *testing.T) {
 	store := emptyStore(t)
 	ctx := context.Background()
-	migrateThrough(t, store, 20261123212127)
+	migrateThrough(t, store, 20261124060500)
 	if _, err := store.Pool().Exec(ctx, `insert into issues
 		(key, tree, project, title, phase, generation, status, rank, last_dispatch_seq)
 		values ('LEGION-208', 'LEGION-208', 'LEGION', 'root', 'reviewing', 1, 'needs_review', 'A', 1)`); err != nil {
@@ -29,18 +30,26 @@ func TestAPullRequestRecordedBefore20261124130001HoldsNoReviewRequest(t *testing
 	if _, err := store.Migrate(ctx); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
-	var requested int
-	var state string
+	var requested *int
+	var checks, state string
 	if err := store.Pool().QueryRow(ctx,
-		`select reviews_requested, merge_state from pull_requests where issue = 'LEGION-208'`).Scan(&requested, &state); err != nil {
+		`select reviews_requested, head_checks, merge_state from pull_requests where issue = 'LEGION-208'`).Scan(&requested, &checks, &state); err != nil {
 		t.Fatalf("read the pull request after 20261124130001: %v", err)
 	}
-	if requested != 0 || state != "blocked" {
-		t.Fatalf("after 20261124130001 the row holds %d review requests and merge state %q, want 0 beside the blocked it held",
-			requested, state)
+	if requested != nil || checks != "" || state != "blocked" {
+		t.Fatalf("after 20261124130001 the row holds %v review requests, rollup %q and merge state %q, want no count and no rollup beside the blocked it held",
+			requested, checks, state)
+	}
+	for _, statement := range []string{
+		`update pull_requests set reviews_requested = -1 where issue = 'LEGION-208'`,
+		`update pull_requests set head_checks = 'pending' where issue = 'LEGION-208'`,
+	} {
+		if _, err := store.Pool().Exec(ctx, statement); err == nil {
+			t.Fatalf("%s was taken, want the column's check to refuse it", statement)
+		}
 	}
 	if _, err := store.Pool().Exec(ctx,
-		`update pull_requests set reviews_requested = -1 where issue = 'LEGION-208'`); err == nil {
-		t.Fatalf("the column took a negative count of review requests, want the check to refuse it")
+		`update pull_requests set reviews_requested = 2, head_checks = 'running' where issue = 'LEGION-208'`); err != nil {
+		t.Fatalf("a read's count and rollup were refused: %v", err)
 	}
 }

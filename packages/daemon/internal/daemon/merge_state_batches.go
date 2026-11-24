@@ -600,8 +600,9 @@ func (w *workflowRuntime) readChunk(ctx context.Context, key string, repo ghrepo
 			continue
 		}
 		answer := node.githubPullRequest()
-		state := answer.mergeState()
-		if err := w.applyMergeability(ctx, got.github, r.pr, answer, got.readAt, w.mergeabilityEventID(r.pr, got.readAt)); err != nil {
+		fact, err := w.applyMergeability(ctx, got.github, r.pr, answer, got.readAt, w.mergeabilityEventID(r.pr, got.readAt))
+		state := fact.MergeState
+		if err != nil {
 			if ctx.Err() == nil {
 				w.log.Warn("github: the record did not take GitHub's merge state for a pull request owed a merge-state read; it is read again",
 					"issue", r.issue, "head", r.pr.HeadSHA, "repo", repo.String(), "pullRequest", r.pr.Number, "answered", string(state), "error", err)
@@ -616,7 +617,9 @@ func (w *workflowRuntime) readChunk(ctx context.Context, key string, repo ghrepo
 				"answered", string(state))
 		}
 		switch {
-		case answer.State != "open" || state != record.MergeStateUnknown:
+		// An answer the round can decide on ends the pull request's reads; `unknown`, and a
+		// `blocked` answer missing part of what the round decides it on, keep them (answerIncomplete).
+		case answer.State != "open" || !answerIncomplete(fact):
 			w.leaveBase(key, r.issue, r.owed.asked)
 		case answer.Base.Ref != "" && answer.Base.Ref != base:
 			w.log.Info("github: GitHub holds a pull request owed a merge-state read on another base; its reads go on there",
