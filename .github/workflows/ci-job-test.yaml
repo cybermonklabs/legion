@@ -224,6 +224,10 @@ on:
         description: "ci.yaml's needs.changes.outputs.merge_group_cancels_test: merge-group-cancels.test.sh and what it tests."
         type: string
         required: false
+      cancel_started_act_test:
+        description: "ci.yaml's needs.changes.outputs.cancel_started_act_test: cancel-started-act.test.sh and what it tests."
+        type: string
+        required: false
       main_bypass_check_test:
         description: "ci.yaml's needs.changes.outputs.main_bypass_check_test: main-bypass-check.test.sh and what it tests."
         type: string
@@ -484,6 +488,10 @@ jobs:
       - name: Test the merge-group cancel decision
         if: inputs.changes-result != 'success' || inputs.merge_group_cancels_test == 'true'
         run: .github/scripts/merge-group-cancels.test.sh
+
+      - name: Test the merge-group cancel act (a stand-in gh)
+        if: inputs.changes-result != 'success' || inputs.cancel_started_act_test == 'true'
+        run: .github/scripts/cancel-started-act.test.sh
 
       - name: Test the main bypass check's decision
         if: inputs.changes-result != 'success' || inputs.main_bypass_check_test == 'true'
