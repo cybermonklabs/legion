@@ -22,6 +22,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/redact"
+	"github.com/sjawhar/envoy/internal/urljoin"
 )
 
 const (
@@ -269,6 +270,11 @@ func (r *Reader) read(ctx context.Context, name string) {
 
 // list reads every page of name's members.list, derived members included, and answers the
 // people among them by their record.CanonicalLogin form. A failed page fails the whole read.
+// Each page's URL is the members route and that page's own parameters joined onto BaseURL
+// (urljoin.Join, which says what the join is for), so the configured query stays ahead of the
+// parameters and no second "?" is written, which would have put them inside it. A BaseURL the
+// join cannot use fails the read in fixed words, since url.Parse's error quotes the URL whole,
+// user information and query included.
 func (r *Reader) list(ctx context.Context, name string) (map[string]struct{}, error) {
 	token, err := redact.OAuth2(r.Source.Token())
 	if err != nil {
@@ -276,13 +282,17 @@ func (r *Reader) list(ctx context.Context, name string) (map[string]struct{}, er
 	}
 	// The calls go through call (token.go), which follows no redirect: they carry a token.
 	client := cmp.Or(r.HTTP, http.DefaultClient)
-	endpoint := cmp.Or(r.BaseURL, googleDirectoryURL) + "/admin/directory/v1/groups/" + url.PathEscape(name) + "/members"
+	route := "/admin/directory/v1/groups/" + url.PathEscape(name) + "/members"
 	members := map[string]struct{}{}
 	query := url.Values{"includeDerivedMembership": {"true"}, "maxResults": {pageSize}}
 	for {
-		request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint+"?"+query.Encode(), nil)
+		asked, err := urljoin.Join(cmp.Or(r.BaseURL, googleDirectoryURL), route+"?"+query.Encode())
 		if err != nil {
-			return nil, err
+			return nil, errors.New("the Directory URL does not parse")
+		}
+		request, err := http.NewRequestWithContext(ctx, http.MethodGet, asked.String(), nil)
+		if err != nil {
+			return nil, errors.New("the URL the Directory read joined does not parse")
 		}
 		token.SetAuthHeader(request)
 		answer, err := call(client, request, "the Directory")
