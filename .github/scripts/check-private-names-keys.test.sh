@@ -134,6 +134,19 @@ pr_files() {
 }
 key_run() { PRIVATE_NAME_TERMS=$key_terms run_pr_text; }
 key_refused="names an issue key of the deployment's own projects"
+# The commit ids the fixtures use. check-pr-text.sh prints a commit by the first 12 characters of
+# its id, and holds the id GitHub answers to the 40 hex digits GitHub writes: a fixture id of any
+# other shape is refused as a read that failed, so each one here is 40 hex digits and each
+# assertion names its first 12.
+new_sha=1111111111111111111111111111111111111111
+old_sha=2222222222222222222222222222222222222222
+west_sha=3333333333333333333333333333333333333333
+east_sha=4444444444444444444444444444444444444444
+merge_sha=5555555555555555555555555555555555555555
+first_sha=6666666666666666666666666666666666666666
+second_sha=7777777777777777777777777777777777777777
+new_short=${new_sha:0:12} merge_short=${merge_sha:0:12} west_short=${west_sha:0:12}
+second_short=${second_sha:0:12}
 
 echo "case: the issue-key rule is inactive until a release carries its marker commit"
 write_pr_text "fix(dispatch): keep the $planted_key order" "Refs LEGION-7" "fix: keep the order"
@@ -204,15 +217,15 @@ marker_on_main
 echo 'HTTP 500' > "$work/release.legion-v9.0.0"
 key_run
 check "a server error on a release exits 2" "$(is "$status" 2)"
-check "names the release it could not read" \
-  "$(contains "$out" '^::error::UNKNOWN: GitHub did not answer for the release of legion-v9.0.0 (gh: Server Error (HTTP 500))')"
+check "names the release it could not read, and the file that keeps gh's words" \
+  "$(contains "$out" '^::error::UNKNOWN: GitHub did not answer for the release of legion-v9\.0\.0 (gh (HTTP 500); its own words are in ')"
 write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order"
 key_rule_on
 mv "$work/remote" "$work/remote.held"
 key_run
 mv "$work/remote.held" "$work/remote"
 check "a history git cannot read exits 2" "$(is "$status" 2)"
-check "says git could not read it" "$(contains "$out" "^::error::UNKNOWN: git could not read main's history")"
+check "says git could not read it" "$(contains "$out" "^::error::UNKNOWN: git could not read main's history (git; its own words are in ")"
 write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order"
 key_rule_on
 git_fixture "$work/remote/example/repo" for-each-ref --format='create %(refname) %(objectname)' 'refs/tags/legion-v*' \
@@ -235,7 +248,7 @@ check "names the release the rule is active since" \
 check "says the pull request is not read" "$(contains "$out" 'before the issue-key rule.s cutoff')"
 
 echo "case: a pull request opened after the cutoff is read in its title and body, not its branch"
-opened_after() { key_rule_on; opened_at 2026-11-21T00:00:00Z; commits new-sha 2026-11-21T01:00:00Z "fix: keep the order"; commit_file new-sha modified docs/notes.md $'@@ -1,1 +1,1 @@\n+clean text'; }
+opened_after() { key_rule_on; opened_at 2026-11-21T00:00:00Z; commits "$new_sha" 2026-11-21T01:00:00Z "fix: keep the order"; commit_file "$new_sha" modified docs/notes.md $'@@ -1,1 +1,1 @@\n+clean text'; }
 write_pr_text "fix(dispatch): keep the $planted_key order" "Refs LEGION-7" "fix: keep the order"
 opened_after
 key_run
@@ -288,14 +301,14 @@ write_pr_text "fix(dispatch): keep the inbox order" \
   "$(printf 'See %sLEGION-7/ask/x for the decision.\nTracked as %s.\n' "$link" "$planted_key")" \
   "fix: keep the order"
 opened_after
-commits new-sha 2026-11-21T01:00:00Z "fix: keep the order, as ${link}LEGION-7 says"
-commit_file new-sha modified docs/notes.md $'@@ -1,1 +1,1 @@\n+See '"$link"'example/1.'
+commits "$new_sha" 2026-11-21T01:00:00Z "fix: keep the order, as ${link}LEGION-7 says"
+commit_file "$new_sha" modified docs/notes.md $'@@ -1,1 +1,1 @@\n+See '"$link"'example/1.'
 items 701 "Answered at ${link}example/ask/1." > "$work/comments.1"
 key_run
 check "a body with a link and a key fails, on the key" "$(is "$status" 1)"
 check "names the key's line" "$(contains "$out" "body:2: $key_refused")"
 check "and not the link's line" "$(is "$(contains "$out" 'body:1:')" false)"
-check "and not the commit's message, which holds only a link" "$(is "$(contains "$out" 'commit:new-sha:1:')" false)"
+check "and not the commit's message, which holds only a link" "$(is "$(contains "$out" "commit:$new_short:1:")" false)"
 check "and not the line it adds, which holds only a link" "$(is "$(contains "$out" 'docs/notes.md:1:')" false)"
 check "and not the comment, which holds only a link" "$(is "$(contains "$out" 'comment:701')" false)"
 check "and the run over the text, the first, reports one finding, the key" \
@@ -317,16 +330,16 @@ echo "case: a commit is read after the cutoff and not before it"
 write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order"
 key_rule_on
 opened_at 2026-11-21T00:00:00Z
-commits old-sha 2026-11-19T00:00:00Z "fix: as $planted_key said" new-sha 2026-11-21T01:00:00Z "fix: as $planted_key said"
-commit_file old-sha modified docs/notes.md $'@@ -0,0 +1,2 @@\n+line one\n+old '"$planted_key"' line'
-commit_file new-sha modified docs/notes.md $'@@ -3,0 +4,2 @@\n+clean\n+new '"$planted_key"' line'
+commits "$old_sha" 2026-11-19T00:00:00Z "fix: as $planted_key said" "$new_sha" 2026-11-21T01:00:00Z "fix: as $planted_key said"
+commit_file "$old_sha" modified docs/notes.md $'@@ -0,0 +1,2 @@\n+line one\n+old '"$planted_key"' line'
+commit_file "$new_sha" modified docs/notes.md $'@@ -3,0 +4,2 @@\n+clean\n+new '"$planted_key"' line'
 key_run
 check "fails on the new commit" "$(is "$status" 1)"
-check "names the new commit's message" "$(contains "$out" "commit:new-sha:1: $key_refused")"
+check "names the new commit's message" "$(contains "$out" "commit:$new_short:1: $key_refused")"
 check "names the line the new commit adds, at its line in the file" \
-  "$(contains "$out" "commit:new-sha:docs/notes.md:5: $key_refused")"
-check "reads nothing of the commit dated before the cutoff" "$(is "$(contains "$out" 'old-sha')" false)"
-check "and never asks GitHub for its files" "$(is "$(contains "$(< "$work/calls")" 'commits/old-sha')" false)"
+  "$(contains "$out" "commit:$new_short:docs/notes.md:5: $key_refused")"
+check "reads nothing of the commit dated before the cutoff" "$(is "$(contains "$out" "${old_sha:0:12}")" false)"
+check "and never asks GitHub for its files" "$(is "$(contains "$(< "$work/calls")" "commits/$old_sha")" false)"
 
 echo "case: a commit's date is compared in UTC, whatever offset its committer's clock wrote"
 # GitHub's GraphQL committer { date } keeps the committer's own offset, where the cutoff is in UTC;
@@ -336,23 +349,23 @@ echo "case: a commit's date is compared in UTC, whatever offset its committer's 
 write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order"
 key_rule_on
 opened_at 2026-11-21T00:00:00Z
-commits west-sha 2026-11-19T20:00:00-08:00 "fix: as $planted_key said" \
-  east-sha 2026-11-20T06:00:00+08:00 "fix: as $planted_key said"
-commit_file west-sha modified docs/notes.md $'@@ -3,0 +4,1 @@\n+new '"$planted_key"' line'
+commits "$west_sha" 2026-11-19T20:00:00-08:00 "fix: as $planted_key said" \
+  "$east_sha" 2026-11-20T06:00:00+08:00 "fix: as $planted_key said"
+commit_file "$west_sha" modified docs/notes.md $'@@ -3,0 +4,1 @@\n+new '"$planted_key"' line'
 key_run
 check "fails on the commit made after the cutoff on a clock behind UTC" "$(is "$status" 1)"
-check "names its message" "$(contains "$out" "commit:west-sha:1: $key_refused")"
-check "names the line it adds" "$(contains "$out" "commit:west-sha:docs/notes.md:4: $key_refused")"
+check "names its message" "$(contains "$out" "commit:$west_short:1: $key_refused")"
+check "names the line it adds" "$(contains "$out" "commit:$west_short:docs/notes.md:4: $key_refused")"
 check "reads nothing of the commit made before the cutoff on a clock ahead of UTC" \
-  "$(is "$(contains "$out" 'east-sha')" false)"
-check "and never asks GitHub for its files" "$(is "$(contains "$(< "$work/calls")" 'commits/east-sha')" false)"
+  "$(is "$(contains "$out" "${east_sha:0:12}")" false)"
+check "and never asks GitHub for its files" "$(is "$(contains "$(< "$work/calls")" "commits/$east_sha")" false)"
 
 echo "case: the marker commit is found past the first page of its history"
 # The marker commit is the oldest that touches the marker, the last listed; here 100 later commits
 # touch it too, so it is on the second page.
 write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order"
 key_rule_on
-jq -nc --arg sha "$marker_sha" '[range(100) | {sha: "later-\(.)"}] + [{sha: $sha}]
+jq -nc --arg sha "$marker_sha" '[range(100) | "\(.)" | {sha: ("c" * (40 - length) + .)}] + [{sha: $sha}]
   | map(. + {commit: {committer: {date: "2026-11-18T00:00:00Z"}}})' > "$work/cutoff-commits"
 key_run
 check "the rule is active since the release that holds it" \
@@ -369,18 +382,18 @@ echo "case: a path a new commit adds is new text, and a path it only changes is 
 write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order"
 key_rule_on
 opened_at 2026-11-21T00:00:00Z
-commits new-sha 2026-11-21T01:00:00Z "fix: keep the order"
-commit_file new-sha added "docs/notes-$planted_key.md" $'@@ -0,0 +1,1 @@\n+clean text'
+commits "$new_sha" 2026-11-21T01:00:00Z "fix: keep the order"
+commit_file "$new_sha" added "docs/notes-$planted_key.md" $'@@ -0,0 +1,1 @@\n+clean text'
 key_run
 check "an added file whose path holds a key fails" "$(is "$status" 1)"
 check "names the path, masked" \
-  "$(contains "$out" "^::error::commit:new-sha:docs/<name>: $key_refused .* in its path\$")"
+  "$(contains "$out" "^::error::commit:$new_short:docs/<name>: $key_refused .* in its path\$")"
 check "prints no key" "$(is "$(contains "$out" "$planted_key")" false)"
 write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order"
 key_rule_on
 opened_at 2026-11-21T00:00:00Z
-commits new-sha 2026-11-21T01:00:00Z "fix: keep the order"
-commit_file new-sha modified "docs/notes-$planted_key.md" $'@@ -1,0 +2,1 @@\n+clean text'
+commits "$new_sha" 2026-11-21T01:00:00Z "fix: keep the order"
+commit_file "$new_sha" modified "docs/notes-$planted_key.md" $'@@ -1,0 +2,1 @@\n+clean text'
 key_run
 check "a clean line added to a file whose old path holds a key passes" "$(is "$status" 0)"
 
@@ -389,21 +402,21 @@ echo "case: a commit neither GitHub nor git returns whole is UNKNOWN, never pass
 write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order"
 key_rule_on
 opened_at 2026-11-21T00:00:00Z
-commits new-sha 2026-11-21T01:00:00Z "fix: keep the order"
-commit_file new-sha modified docs/big.md - 
-jq -c '.files[0].additions = 5 | .files[0].changes = 5 | .stats.total = 5' "$work/commit.new-sha" > "$work/commit.next"
-mv "$work/commit.next" "$work/commit.new-sha"
+commits "$new_sha" 2026-11-21T01:00:00Z "fix: keep the order"
+commit_file "$new_sha" modified docs/big.md -
+jq -c '.files[0].additions = 5 | .files[0].changes = 5 | .stats.total = 5' "$work/commit.$new_sha" > "$work/commit.next"
+mv "$work/commit.next" "$work/commit.$new_sha"
 key_run
 check "a file with added lines and no patch, which git cannot read either, exits 2" "$(is "$status" 2)"
-check "says UNKNOWN for that file" "$(contains "$out" 'UNKNOWN: GitHub returned no patch for file 1 of commit new-sha, and git could not read it either')"
+check "says UNKNOWN for that file" "$(contains "$out" "UNKNOWN: GitHub returned no patch for file 1 of commit $new_short, and git could not read it either")"
 write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order"
 key_rule_on
 opened_at 2026-11-21T00:00:00Z
-commits new-sha 2026-11-21T01:00:00Z "fix: keep the order"
-commit_file new-sha modified docs/notes.md $'@@ -1,0 +2,1 @@\n+clean text' 9
+commits "$new_sha" 2026-11-21T01:00:00Z "fix: keep the order"
+commit_file "$new_sha" modified docs/notes.md $'@@ -1,0 +2,1 @@\n+clean text' 9
 key_run
 check "a commit whose listed files fall short of its total exits 2" "$(is "$status" 2)"
-check "says UNKNOWN for that commit" "$(contains "$out" 'UNKNOWN: commit new-sha changes 9 lines')"
+check "says UNKNOWN for that commit" "$(contains "$out" "UNKNOWN: commit $new_short changes 9 lines")"
 
 echo "case: a commit GitHub returns without a whole patch is read from git"
 # GitHub leaves the patch out for a large file, and past a response's patch budget; git reads the
@@ -587,8 +600,8 @@ carry_commit() {
   write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order"
   key_rule_on
   opened_at 2026-11-21T00:00:00Z
-  commits new-sha 2026-11-21T01:00:00Z "fix: keep the order"
-  commit_file new-sha "$1" "$2" "$3"
+  commits "$new_sha" 2026-11-21T01:00:00Z "fix: keep the order"
+  commit_file "$new_sha" "$1" "$2" "$3"
 }
 carry_commit modified docs/notes.md \
   "$(printf '@@ -2,1 +2,1 @@\n-Tracked as %s, see %sexample/1.\n+Now tracked as %s, see %sexample/1.' \
@@ -600,8 +613,8 @@ carry_commit modified docs/notes.md \
     "$planted_key" "$planted_key" "$planted_key")"
 key_run
 check "a second copy of the key, which no removed line carries, fails" "$(is "$status" 1)"
-check "names the second copy's line" "$(contains "$out" "commit:new-sha:docs/notes.md:3: $key_refused")"
-check "and not the carried one's" "$(is "$(contains "$out" "commit:new-sha:docs/notes.md:2:")" false)"
+check "names the second copy's line" "$(contains "$out" "commit:$new_short:docs/notes.md:3: $key_refused")"
+check "and not the carried one's" "$(is "$(contains "$out" "commit:$new_short:docs/notes.md:2:")" false)"
 carry_commit modified docs/notes.md "$(printf '@@ -2,1 +2,1 @@\n-See %sexample/1.\n+See %sexample/2.' "$link" "$link")"
 key_run
 check "a link to another place passes: a link is no private name" "$(is "$status" 0)"
@@ -613,30 +626,30 @@ carry_commit modified docs/notes.md \
   "$(printf '@@ -2,1 +2,1 @@\n-See %sexample/1.\n+See %s%s/ask/1.' "$link" "$link" "$planted_key")"
 key_run
 check "a key a link gains, which no removed line carries, fails" "$(is "$status" 1)"
-check "names its line as a key" "$(contains "$out" "commit:new-sha:docs/notes.md:2: $key_refused")"
+check "names its line as a key" "$(contains "$out" "commit:$new_short:docs/notes.md:2: $key_refused")"
 carry_commit added docs/new.md "$(printf '@@ -0,0 +1,1 @@\n+Tracked as %s.' "$planted_key")"
 jq -c --arg old "$(printf '@@ -1,1 +0,0 @@\n-Tracked as %s.' "$planted_key")" \
   '.files = [{filename: "docs/old.md", status: "removed", additions: 0, changes: 1, patch: $old}] + .files
-   | .stats.total = 2' "$work/commit.new-sha" > "$work/commit.next"
-mv "$work/commit.next" "$work/commit.new-sha"
+   | .stats.total = 2' "$work/commit.$new_sha" > "$work/commit.next"
+mv "$work/commit.next" "$work/commit.$new_sha"
 key_run
 check "a key a commit moves from a removed file into an added one passes" "$(is "$status" 0)"
 carry_commit renamed "docs/$planted_key-notes.md" $'@@ -1,0 +2,1 @@\n+clean text'
-jq -c --arg old "docs/old/$planted_key-notes.md" '.files[0].previous_filename = $old' "$work/commit.new-sha" \
+jq -c --arg old "docs/old/$planted_key-notes.md" '.files[0].previous_filename = $old' "$work/commit.$new_sha" \
   > "$work/commit.next"
-mv "$work/commit.next" "$work/commit.new-sha"
+mv "$work/commit.next" "$work/commit.$new_sha"
 key_run
 check "a renamed file whose new path keeps its old path's key passes" "$(is "$status" 0)"
 carry_commit renamed "docs/$planted_key-notes.md" $'@@ -1,0 +2,1 @@\n+clean text'
-jq -c '.files[0].previous_filename = "docs/notes.md"' "$work/commit.new-sha" > "$work/commit.next"
-mv "$work/commit.next" "$work/commit.new-sha"
+jq -c '.files[0].previous_filename = "docs/notes.md"' "$work/commit.$new_sha" > "$work/commit.next"
+mv "$work/commit.next" "$work/commit.$new_sha"
 key_run
 check "a renamed file whose new path adds a key fails" "$(is "$status" 1)"
-check "names the path, masked" "$(contains "$out" "^::error::commit:new-sha:docs/<name>: $key_refused .* in its path\$")"
+check "names the path, masked" "$(contains "$out" "^::error::commit:$new_short:docs/<name>: $key_refused .* in its path\$")"
 carry_commit modified docs/notes.md "$(printf '@@ -2,1 +2,1 @@\n-Filed as \xc3\xa9%s.\n+Filed as %s.' "$planted_key" "$planted_key")"
 key_run
 check "a removed word beside a non-ASCII letter, which is no key, carries no key: fails" "$(is "$status" 1)"
-check "names the added key's line" "$(contains "$out" "commit:new-sha:docs/notes.md:2: $key_refused")"
+check "names the added key's line" "$(contains "$out" "commit:$new_short:docs/notes.md:2: $key_refused")"
 carry_commit modified docs/notes.md "$(printf '@@ -2,1 +2,1 @@\n-Filed as fix_%s.\n+Filed as %s.' "$planted_key" "$planted_key")"
 key_run
 check "a removed key beside a \"_\", which is a key, carries it: passes" "$(is "$status" 0)"
@@ -659,9 +672,9 @@ two_commits() {
   write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order"
   key_rule_on
   opened_at 2026-11-21T00:00:00Z
-  commits first-sha 2026-11-21T01:00:00Z "$1" second-sha 2026-11-21T02:00:00Z "$4"
-  commit_file first-sha modified "$2" "$3"
-  commit_file second-sha modified "$5" "$6"
+  commits "$first_sha" 2026-11-21T01:00:00Z "$1" "$second_sha" 2026-11-21T02:00:00Z "$4"
+  commit_file "$first_sha" modified "$2" "$3"
+  commit_file "$second_sha" modified "$5" "$6"
 }
 removed_line=$(printf '@@ -2,1 +1,0 @@\n-Tracked as %s.' "$planted_key")
 added_line=$(printf '@@ -0,0 +1,1 @@\n+Tracked as %s.' "$planted_key")
@@ -675,8 +688,8 @@ two_commits "refactor: take the note out" docs/a.md "$removed_line" "refactor: p
   "$(printf '@@ -0,0 +1,2 @@\n+Tracked as %s.\n+Tracked as %s.' "$planted_key" "$planted_key")"
 key_run
 check "put back twice, one removal carries one copy: fails" "$(is "$status" 1)"
-check "names the second copy's line" "$(contains "$out" "commit:second-sha:docs/b.md:2: $key_refused")"
-check "and not the carried one's" "$(is "$(contains "$out" "commit:second-sha:docs/b.md:1:")" false)"
+check "names the second copy's line" "$(contains "$out" "commit:$second_short:docs/b.md:2: $key_refused")"
+check "and not the carried one's" "$(is "$(contains "$out" "commit:$second_short:docs/b.md:1:")" false)"
 
 echo "case: a merge commit's own diff is not read, and the pull request's net diff is, once"
 # A forward merge's diff against its first parent is everything the base branch changed since the
@@ -688,34 +701,34 @@ merge_branch() {
   write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order"
   key_rule_on
   opened_at 2026-11-21T00:00:00Z
-  commits new-sha 2026-11-21T01:00:00Z "fix: keep the order" merge-sha 2026-11-21T02:00:00Z "${1:-Merge main forward}"
-  as_merge merge-sha
-  commit_file new-sha modified docs/notes.md $'@@ -1,0 +2,1 @@\n+clean text'
+  commits "$new_sha" 2026-11-21T01:00:00Z "fix: keep the order" "$merge_sha" 2026-11-21T02:00:00Z "${1:-Merge main forward}"
+  as_merge "$merge_sha"
+  commit_file "$new_sha" modified docs/notes.md $'@@ -1,0 +2,1 @@\n+clean text'
 }
 write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order"
 key_rule_on
 opened_at 2026-11-21T00:00:00Z
-commits new-sha 2026-11-21T01:00:00Z "fix: keep the order"
-commit_file new-sha modified docs/notes.md $'@@ -1,0 +2,1 @@\n+clean text'
+commits "$new_sha" 2026-11-21T01:00:00Z "fix: keep the order"
+commit_file "$new_sha" modified docs/notes.md $'@@ -1,0 +2,1 @@\n+clean text'
 key_run
 check "control 1, the branch's own clean commit alone, exits 0" "$(is "$status" 0)"
 merge_branch
-commit_file merge-sha modified docs/other-pr.md $'@@ -0,0 +1,1 @@\n+other '"$planted_key"' line'
+commit_file "$merge_sha" modified docs/other-pr.md $'@@ -0,0 +1,1 @@\n+other '"$planted_key"' line'
 pr_files modified docs/notes.md $'@@ -1,0 +2,1 @@\n+clean text'
 key_run
 check "control 2, a merge whose own diff adds another pull request's key, exits 0" "$(is "$status" 0)"
-check "never asks GitHub for the merge's own files" "$(is "$(contains "$(< "$work/calls")" 'commits/merge-sha')" false)"
+check "never asks GitHub for the merge's own files" "$(is "$(contains "$(< "$work/calls")" "commits/$merge_sha")" false)"
 check "reads the pull request's files once" "$(is "$(grep -c 'pulls/7/files' "$work/calls")" 1)"
 merge_branch
-commit_file merge-sha modified docs/big.md -
-jq -c '.files[0].additions = 5000 | .files[0].changes = 5000 | .stats.total = 5000' "$work/commit.merge-sha" > "$work/commit.next"
-mv "$work/commit.next" "$work/commit.merge-sha"
+commit_file "$merge_sha" modified docs/big.md -
+jq -c '.files[0].additions = 5000 | .files[0].changes = 5000 | .stats.total = 5000' "$work/commit.$merge_sha" > "$work/commit.next"
+mv "$work/commit.next" "$work/commit.$merge_sha"
 pr_files modified docs/notes.md $'@@ -1,0 +2,1 @@\n+clean text'
 key_run
 check "control 3, a merge whose own diff holds a large file with no patch, exits 0" "$(is "$status" 0)"
 check "and says nothing UNKNOWN" "$(is "$(contains "$out" 'UNKNOWN')" false)"
 merge_branch
-commit_file merge-sha modified docs/notes.md $'@@ -1,0 +2,1 @@\n+clean text'
+commit_file "$merge_sha" modified docs/notes.md $'@@ -1,0 +2,1 @@\n+clean text'
 pr_files modified docs/notes.md $'@@ -1,0 +2,2 @@\n+clean text\n+resolved as '"$planted_key"' said'
 key_run
 check "a key typed while resolving a conflict, in the net diff, fails" "$(is "$status" 1)"
@@ -725,7 +738,7 @@ merge_branch "Merge main forward, as $planted_key asked"
 pr_files modified docs/notes.md $'@@ -1,0 +2,1 @@\n+clean text'
 key_run
 check "a merge's message is still read" "$(is "$status" 1)"
-check "names the merge's message" "$(contains "$out" "commit:merge-sha:1: $key_refused")"
+check "names the merge's message" "$(contains "$out" "commit:$merge_short:1: $key_refused")"
 # A forward merge's message names the pull request's branch, and an issue branch is named after its
 # key: the branch is not read through the message. A key the message names some other way still is.
 # forward_merge <message> [head branch]: a pull request from that branch (legion/<key> by default)
@@ -734,9 +747,9 @@ forward_merge() {
   write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order" "${2:-legion/$planted_key}"
   key_rule_on
   opened_at 2026-11-21T00:00:00Z
-  commits new-sha 2026-11-21T01:00:00Z "fix: keep the order" merge-sha 2026-11-21T02:00:00Z "$1"
-  as_merge merge-sha
-  commit_file new-sha modified docs/notes.md $'@@ -1,0 +2,1 @@\n+clean text'
+  commits "$new_sha" 2026-11-21T01:00:00Z "fix: keep the order" "$merge_sha" 2026-11-21T02:00:00Z "$1"
+  as_merge "$merge_sha"
+  commit_file "$new_sha" modified docs/notes.md $'@@ -1,0 +2,1 @@\n+clean text'
   pr_files modified docs/notes.md $'@@ -1,0 +2,1 @@\n+clean text'
 }
 forward_merge "Merge main into legion/$planted_key"
@@ -751,7 +764,7 @@ check "git's message for a merge of origin/main: passes" "$(is "$status" 0)"
 forward_merge "Merge main into legion/$planted_key, as $key_project-""77 asked"
 key_run
 check "the same message naming another key: fails" "$(is "$status" 1)"
-check "names the merge's message" "$(contains "$out" "commit:merge-sha:1: $key_refused")"
+check "names the merge's message" "$(contains "$out" "commit:$merge_short:1: $key_refused")"
 # A stacked pull request's base is another issue branch, which its forward merge names too.
 forward_merge "Merge legion/$key_project-""77 into legion/$planted_key"
 git_fixture "$work/remote/example/repo" branch -f "legion/$key_project-""77" main
@@ -764,7 +777,7 @@ check "a stacked pull request's merge of its base issue branch: passes" "$(is "$
 forward_merge "Merge branch legion/$planted_key into legion/$key_project-""12" "legion/$key_project-""12"
 key_run
 check "head legion/<key>-12, a message naming the branch legion/<key>-123: fails" "$(is "$status" 1)"
-check "names the merge's message" "$(contains "$out" "commit:merge-sha:1: $key_refused")"
+check "names the merge's message" "$(contains "$out" "commit:$merge_short:1: $key_refused")"
 forward_merge "Merge main into legion/$key_project-""12" "legion/$key_project-""12"
 key_run
 check "the same head's own forward merge still passes" "$(is "$status" 0)"
@@ -773,11 +786,11 @@ check "the same head's own forward merge still passes" "$(is "$status" 0)"
 write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order" "$planted_key"
 key_rule_on
 opened_at 2026-11-21T00:00:00Z
-commits new-sha 2026-11-21T01:00:00Z "fix: close the order, as $planted_key asked"
-commit_file new-sha modified docs/notes.md $'@@ -1,0 +2,1 @@\n+clean text'
+commits "$new_sha" 2026-11-21T01:00:00Z "fix: close the order, as $planted_key asked"
+commit_file "$new_sha" modified docs/notes.md $'@@ -1,0 +2,1 @@\n+clean text'
 key_run
 check "head named exactly the key, a commit (no merge) naming it: fails" "$(is "$status" 1)"
-check "names that commit's message" "$(contains "$out" "commit:new-sha:1: $key_refused")"
+check "names that commit's message" "$(contains "$out" "commit:$new_short:1: $key_refused")"
 merge_branch
 pr_files modified docs/notes.md $'@@ -1,0 +2,1 @@\n+clean text' modified docs/big.md -
 jq -c '.[1].additions = 5 | .[1].changes = 5' "$work/pr-files" > "$work/pr-files.next"
@@ -813,16 +826,16 @@ echo "case: a commit dated before the cutoff is read after all when the pull req
 write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order"
 key_rule_on
 opened_at 2026-11-21T00:00:00Z
-commits old-sha 2026-11-19T00:00:00Z "fix: keep the order"
-commit_file old-sha modified docs/notes.md $'@@ -1,0 +2,1 @@\n+old '"$planted_key"' line'
+commits "$old_sha" 2026-11-19T00:00:00Z "fix: keep the order"
+commit_file "$old_sha" modified docs/notes.md $'@@ -1,0 +2,1 @@\n+old '"$planted_key"' line'
 key_run
 check "D1, the old commit alone, is not read: exits 0" "$(is "$status" 0)"
 write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order"
 key_rule_on
 opened_at 2026-11-21T00:00:00Z
-commits old-sha 2026-11-19T00:00:00Z "fix: keep the order" merge-sha 2026-11-21T02:00:00Z "Merge main forward"
-as_merge merge-sha
-commit_file old-sha modified docs/notes.md $'@@ -1,0 +2,1 @@\n+old '"$planted_key"' line'
+commits "$old_sha" 2026-11-19T00:00:00Z "fix: keep the order" "$merge_sha" 2026-11-21T02:00:00Z "Merge main forward"
+as_merge "$merge_sha"
+commit_file "$old_sha" modified docs/notes.md $'@@ -1,0 +2,1 @@\n+old '"$planted_key"' line'
 pr_files modified docs/notes.md $'@@ -1,0 +2,1 @@\n+old '"$planted_key"' line'
 key_run
 check "D2, the same branch with a clean forward merge, is read through its net diff: exits 1" "$(is "$status" 1)"
@@ -930,6 +943,122 @@ check "the path's report is masked" "$(contains "$out" "docs/<name>/notes.md: $k
 check "the run's search grep, its pattern from a file, reached the fake grep" \
   "$(contains "$(< "$argv_log")" '^<search grep -f>$')"
 check "no grep was handed the project's key in its arguments" "$(is "$(contains "$(< "$argv_log")" "$key_project")" false)"
+
+# --- What check-pr-text.sh prints of GitHub's. Whatever answers gh's calls in GitHub's place
+# holds the token gh sends and writes gh's words and gh's answer, so each case below puts the
+# marker not-a-secret-token in one of them: no run of eight of its characters (the run the
+# redaction rule's gate reads) may be in what the script printed. The twin of each: the file the
+# line names holds the marker, or (for the filter) the same answer reaches the output with the
+# token set to something else. The control: the stub was asked for that read.
+marker=not-a-secret-token
+holds_marker() {
+  local at
+  for ((at = 0; at + 8 <= ${#marker}; at++)); do
+    [[ "$1" == *"${marker:at:8}"* ]] && return 0
+  done
+  return 1
+}
+prints_no_marker() { holds_marker "$1" && echo false || echo true; }
+holds() { holds_marker "$1" && echo true || echo false; }
+# kept_in <pattern>: the file the output's last line holding <pattern> names after it.
+kept_in() { sed -n "s/^.*$1\([^ ,;)]*\).*\$/\1/p" <<<"$out" | tail -n 1; }
+kept_holds_marker() {
+  local file
+  file=$(kept_in "$1")
+  [ -n "$file" ] && grep -q -F "$marker" -- "$file" && echo true || echo false
+}
+
+echo "case: a read GitHub's GraphQL API refuses with the marker in its words"
+write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order"
+key_rule_on
+printf 'Something went wrong: %s\n' "$marker" > "$work/graphql-says"
+echo 1 > "$work/graphql-fails"
+key_run
+check "exits 1, as it did" "$(is "$status" 1)"
+check "prints no run of the marker" "$(prints_no_marker "$out")"
+check "names the read and the file that keeps gh's words" \
+  "$(contains "$out" "^::error::GitHub's GraphQL API did not answer the PrText read of #7 (gh; its own words are in ")"
+check "twin: that file holds the marker" "$(kept_holds_marker "its own words are in ")"
+check "control: the stub answered the read" "$(contains "$(< "$work/calls")" '^graphql PrText ')"
+
+echo "case: a base branch, a time, an association and a path GitHub answers that hold the marker"
+write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order"
+key_rule_on
+jq --arg ref "main $marker" '.base.ref = $ref' "$work/pull" > "$work/pull.next" && mv "$work/pull.next" "$work/pull"
+key_run
+check "a base branch that is no branch name: prints no run of the marker" "$(prints_no_marker "$out")"
+check "names it as none and the file that keeps it" \
+  "$(contains "$out" 'the base branch GitHub.s GraphQL API named (no branch name git accepts; it is in ')"
+check "twin: that file holds the marker" "$(kept_holds_marker 'it is in ')"
+write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order"
+key_rule_on
+opened_at "$marker"
+key_run
+check "an opened-at time that is no timestamp: prints no run of the marker" "$(prints_no_marker "$out")"
+write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order"
+key_rule_on
+release legion-v9.0.0 "$marker"
+key_run
+check "a published time that is no timestamp: prints no run of the marker" "$(prints_no_marker "$out")"
+check "names it as none and the file that keeps it" \
+  "$(contains "$out" 'at a time that is no UTC timestamp (it is in ')"
+check "twin: that file holds the marker" "$(kept_holds_marker 'it is in ')"
+write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order"
+key_rule_on
+items 801 "fine" > "$work/comments.1"
+by stranger User "$marker" "$work/comments.1"
+key_run
+check "an author association that is none of GitHub's: prints no run of the marker" "$(prints_no_marker "$out")"
+check "names it as none and the file that keeps it" \
+  "$(contains "$out" "^skipped comment:801: its author (an association that is none of GitHub's, which is in ")"
+check "twin: that file holds the marker" "$(kept_holds_marker 'which is in ')"
+write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order"
+key_rule_on
+opened_at 2026-11-21T00:00:00Z
+commits "$new_sha" 2026-11-21T01:00:00Z "fix: keep the order"
+commit_file "$new_sha" modified "../$marker-notes.md" "$(printf '@@ -1,0 +2,1 @@\n+Tracked as %s.' "$planted_key")"
+key_run
+check "a path that is no relative path: prints no run of the marker" "$(prints_no_marker "$out")"
+check "and names the finding by the place the path has in the diff" \
+  "$(contains "$out" "commit:$new_short:file 1:2: $key_refused")"
+check "names it by its place and the file that keeps it" \
+  "$(contains "$out" "^check-pr-text: file 1 of the diff of commit $new_short has a path that is no relative path; it is in ")"
+check "twin: that file holds the marker" "$(kept_holds_marker 'it is in ')"
+
+echo "case: a commit id that is no commit id, holding the marker"
+write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order"
+key_rule_on
+opened_at 2026-11-21T00:00:00Z
+commits "$marker" 2026-11-21T01:00:00Z "fix: keep the order"
+key_run
+check "exits 2: UNKNOWN, never passed" "$(is "$status" 2)"
+check "prints no run of the marker" "$(prints_no_marker "$out")"
+check "says the id is no commit id and names the file that keeps it" \
+  "$(contains "$out" '^::error::UNKNOWN: GitHub lists a commit of #7 from after the cutoff whose id is no 40-hex commit id (it is in ')"
+check "twin: that file holds the marker" "$(kept_holds_marker 'it is in ')"
+
+echo "case: every line passes the filter for the token gh sends"
+# A path that holds to the grammar is printed as the check's reading of it, and a path is GitHub's
+# answer: a path that holds the token is written [redacted] by the filter every line passes. The
+# twin is the same run under another token, where that path prints whole.
+write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order"
+key_rule_on
+opened_at 2026-11-21T00:00:00Z
+commits "$new_sha" 2026-11-21T01:00:00Z "fix: keep the order"
+commit_file "$new_sha" modified "docs/$marker.md" "$(printf '@@ -1,0 +2,1 @@\n+Tracked as %s.' "$planted_key")"
+pr_text_token=$marker key_run
+check "a path holding the token: prints no run of it" "$(prints_no_marker "$out")"
+check "and writes it as [redacted] in the line that names the path" \
+  "$(contains "$out" "commit:$new_short:docs/\[redacted\]")"
+check "control: the line is the finding over that file's added line" \
+  "$(contains "$out" ":2: $key_refused")"
+pr_text_token=another-token-entirely key_run
+check "twin: the same run under another token prints the path whole" "$(holds "$out")"
+write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order"
+key_rule_on
+pr_text_token='' key_run
+check "a run with no token says no line is filtered" \
+  "$(contains "$out" '^check-pr-text: gh auth token answered no token, and no token variable is set, so no line below is filtered for one$')"
 
 finish_self_log
 summary "check-private-names.sh's issue-key rule"
