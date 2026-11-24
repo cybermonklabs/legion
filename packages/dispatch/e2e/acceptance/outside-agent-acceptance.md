@@ -220,7 +220,11 @@ The tailnet leg does these steps, in this order:
 9. It waits for the public run to end, at most two hours (the workflow's budget is 115 minutes;
    a run not ended by then reads as no end, and the public row UNKNOWN), downloads its artifacts
    `outside-agent-public`, `outside-edge-revocations` and `restricted-sweep`, stops the sweep's
-   writer, and runs row T4. The wait for the T5 window to open is held to an hour alike.
+   writer, and runs row T4. The wait for the T5 window to open is held to an hour alike. The
+   artifacts, and everything else gh says and answers, go into a directory the leg makes under
+   TMPDIR and leaves in place (outside-agent-tailnet-gh.XXXXXX, named on stderr); a row prints of
+   them only a verdict, an exit, a status, a conclusion, a commit id or an image digest, and names
+   the kept file for the rest.
 10. It judges T5 from the public leg's T5 rows and the removal's two clocks, prints rows P1-P10
     and C0-C7, the public leg's own last word and the sweep, reads the pins and Dispatch's serving
     build again (row `pins-end`), and prints the gate.
@@ -469,7 +473,11 @@ secret, and asks no terminal. In this gate it does these steps:
    read is T5's UNKNOWN, and no removal is made.
 8. It waits for the run's end, downloads its artifacts `outside-edge-refusals`,
    `outside-path-reach`, `outside-edge`, `outside-edge-grants`, `restricted-sweep` and
-   `outside-edge-t5`, and reads the full member's list of credential grants again.
+   `outside-edge-t5`, and reads the full member's list of credential grants again. The artifacts,
+   and everything else gh says and answers, go into a directory the leg makes under TMPDIR and
+   leaves in place (outside-agent-tailnet-gh.XXXXXX, named on stderr); a row prints of them only a
+   verdict, an exit, a status, a conclusion, a commit id or an image digest, and names the kept
+   file for the rest.
 
 It prints the rows pins, issue, unlisted, T5, refusals, reach, sign-in, projects, limits, grants,
 public, sweep, pins-end and the gate:
@@ -478,7 +486,7 @@ public, sweep, pins-end and the gate:
 | --- | --- |
 | unlisted | The owner's invite for the unlisted address prints `409 PERSON_NOT_LISTED` and exits 1, and the same command made the test person's link, its positive control. A link made reads FAIL, and the row prints no link; any other refusal (a 403, a 404, another code) or exit reads UNKNOWN. |
 | T5 | As the tailnet leg's T5 above, from the rows `T5-cookie` (401 within 30 s of the first clock) and `T5-passkey` (refused within 325 s) of `outside-edge-t5.tsv` alone: on this path the person has no device login and no socket. The owner's list command names the person before the removal and not after the run. |
-| refusals | The run's `outside-edge-refusals.code`, the exit its Verdict step reads, is 0; 1 reads FAIL, and 2, none or another word UNKNOWN. Its `got` is the last line the check printed. |
+| refusals | The run's `outside-edge-refusals.code`, the exit its Verdict step reads, is 0; 1 reads FAIL, and 2, none or another word UNKNOWN. Its `got` names the file, kept from the run's artifacts, that holds the last line the check printed: the line is what gh downloaded, which whatever answers gh in GitHub's place can write, so it is not printed. |
 | reach | The same, of `outside-path-reach`. |
 | sign-in, projects | The driver's rows of those names in `outside-edge.tsv`, read through `worst_row`. |
 | limits | Every `limit-*` row of `outside-edge.tsv` passes, and there is at least one. One FAIL reads FAIL; the driver's `limits` row of no request counted, or no limit row, reads UNKNOWN. |
