@@ -274,6 +274,7 @@ func (s *server) listIssueSteps(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	plan = nil
 	read := model.IssueSteps{Issue: key, Tasks: []model.StepTask{}}
 	tasks := map[string]int{}
 	if plan != nil {

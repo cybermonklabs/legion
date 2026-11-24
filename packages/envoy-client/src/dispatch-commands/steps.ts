@@ -1,4 +1,4 @@
-import type { PlannedStep, StepRecord } from "@legion/contracts";
+import type { StepRecord } from "@legion/contracts";
 import type { CommandContext, DispatchToolResult } from "./context";
 
 /** A field the record does not hold prints `-`, so every line keeps its columns. */
@@ -26,38 +26,18 @@ function stepLine(record: StepRecord): string {
   ].join(" ");
 }
 
-/** A task of the plan: the tasks it needs - `nothing` for none, and `are not recorded` where its
- *  plan node recorded none - then each step the plan gives it, at the state Dispatch answers for it
- *  from the runs of the plan's own run of the issue. */
-function taskLine(
-  task: string,
-  needs: readonly string[] | null,
-  planned: readonly PlannedStep[]
-): string {
-  const states = planned.map((step) => `${step.step} ${step.name} ${step.state}`);
-  const needed =
-    needs === null ? "are not recorded" : needs.length === 0 ? "nothing" : needs.join(", ");
-  return `task ${task} needs ${needed}: ${states.join(", ")}`;
-}
-
-/** `dispatch steps`: each task of an issue as Dispatch lists them, the tasks of its plan first,
- *  and each run of each step, task by task. A task of the plan prints the line of its needs and
- *  its planned steps (taskLine) before its runs; any other task prints its runs alone. */
+/** `dispatch steps`: each run of each step of an issue, task by task, as Dispatch lists them. */
 export async function stepsCommand(context: CommandContext): Promise<DispatchToolResult> {
   const { client, issue } = context;
   const read = await client.listSteps(issue());
   // The generated shape lets either list be null; Dispatch writes `[]`, and null reads the same.
-  // A Dispatch older than the plan's tasks sends no `needs` or `planned`: no task line prints.
-  const tasks = (read.tasks ?? []).map((task) => ({ ...task, steps: task.steps ?? [] }));
-  const count = tasks.reduce((count, task) => count + task.steps.length, 0);
-  const lines = tasks.flatMap((task) => {
-    const runs = task.steps.map(stepLine);
-    const planned = task.planned ?? [];
-    if (planned.length === 0) return runs;
-    return [taskLine(task.task, task.needs ?? null, planned), ...runs];
-  });
+  const tasks = (read.tasks ?? []).map((task) => ({ task: task.task, steps: task.steps ?? [] }));
+  const records = tasks.flatMap((task) => task.steps);
   return {
-    text: [`${read.issue}: ${count} steps in ${tasks.length} tasks`, ...lines].join("\n"),
+    text: [
+      `${read.issue}: ${records.length} steps in ${tasks.length} tasks`,
+      ...records.map(stepLine),
+    ].join("\n"),
     details: { issue: read.issue, tasks },
   };
 }
