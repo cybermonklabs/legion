@@ -116,6 +116,7 @@ describe("the broker client trades at the token route joined onto the broker URL
         key: await newDpopKey(),
         subject: {
           read: async () => ({ token: "projected", tokenType: SUBJECT_TOKEN_TYPE_KUBERNETES }),
+          describe: () => "a scripted identity",
         },
       });
       stops.push(() => client.close());
