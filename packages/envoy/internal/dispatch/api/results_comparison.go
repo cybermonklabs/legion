@@ -620,9 +620,19 @@ func (c *comparisonReader) onNamedBranch(
 		walked, named = owner.linked, owner.linked
 	}
 	defaultBranch, readable := c.defaultBranchIn(ctx, walked)
+	if named == "" {
+		for _, linked := range c.linkedMerged(ctx, check.IssueKey).repos {
+			other := c.linkedBranchBases(ctx, check, linked)
+			compared.bases = append(compared.bases, other.bases...)
+			compared.merges = append(compared.merges, other.merges...)
+		}
+	}
 	unknown, asked := false, false
 	answer := delivery.BranchDoesNotCarry
 	for index, basis := range compared.bases {
+		if basis.Repo != "" {
+			walked = basis.Repo
+		}
 		merge := compared.merges[index]
 		if merge.state == mergeAbsent {
 			continue

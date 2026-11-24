@@ -231,8 +231,14 @@ func TestAResultBeforeTheLinkedMergeDoesNotCount(t *testing.T) {
 			check.ComparedWith, check.ComparedNothing, check.PassStands)
 	}
 
+	// One pull request belongs to one issue. The third issue therefore needs its own pull
+	// request, with the same merge, rather than taking the first issue's link.
+	linked.mu.Lock()
+	linked.pulls["acme/tools#10"] = "merged"
+	linked.merged["acme/tools#10"] = linked.merged["acme/tools#9"]
+	linked.mu.Unlock()
 	both := issueOfProject(t, handler, afterMergeProject, "Work merged in both repositories", afterMergeAndDefaultChecks)
-	linkPullRequests(t, handler, both, toolsPull)
+	linkPullRequests(t, handler, both, "https://github.com/acme/tools/pull/10")
 	linked.mu.Lock()
 	linked.merged["acme/widgets#3"] = linkedMerge{title: both + ": the work", headRef: "legion/" + both, headSHA: widgetsHead,
 		base: "main", mergeCommit: widgetsMerge, mergedAt: "2026-11-21T12:00:00Z"}
