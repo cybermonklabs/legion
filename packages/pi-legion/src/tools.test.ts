@@ -370,7 +370,7 @@ test("a root architect's handoff_complete is refused as unavailable before its a
     content: [
       {
         type: "text",
-        text: 'handoff_complete does not accept field "phase"; it takes summary, issue, verdict, wake_at, plan_rating, plan_reason, return_to; handoff_complete is not available to a root architect session, which runs no phase',
+        text: 'handoff_complete does not accept field "phase"; it takes summary, issue, verdict, wake_at, check_opened_at, plan_rating, plan_reason, return_to; handoff_complete is not available to a root architect session, which runs no phase',
       },
     ],
   });
@@ -1212,8 +1212,7 @@ test("handoff_complete finds the phase's handoff record and the pushed tip, post
   expect(calls).toHaveLength(before);
   expect(completed).toHaveLength(4);
 
-  // `pending` is a production check's verdict: on a phase completion it is refused once the record
-  // says the completion is a phase's, with nothing minted or posted.
+  // Without check_opened_at, pending is refused as a phase completion before any daemon call.
   const pendingOnPhase = await run(claimSession("tester"), {
     op: "handoff_complete",
     summary: "Waiting on the deploy.",
@@ -1223,10 +1222,10 @@ test("handoff_complete finds the phase's handoff record and the pushed tip, post
   expect(pendingOnPhase.content).toEqual([
     {
       type: "text",
-      text: "handoff_complete's verdict is pass or fail on a phase completion; pending is a production check's",
+      text: "handoff_complete's pending verdict reports a production check: send check_opened_at from the look task, or pass or fail to complete a step",
     },
   ]);
-  expect(calls.at(-1)).toEqual(["record", { issue: "LEGION-208" }]);
+  expect(calls).toHaveLength(before);
   expect(completed).toHaveLength(4);
 
   // Each refusal of the report is the tool's error, naming the remedy: the state is read, and

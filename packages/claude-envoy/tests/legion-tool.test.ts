@@ -118,6 +118,7 @@ async function daemon(
         },
       })
     }
+    if (path === "/legion/v1/claims/ready-for-update") return new Response(null, { status: 204 })
     // One issue's record, as the daemon answers it, and its 404 for an issue it records
     // nothing of (dispatch://INFRA-2694).
     const named = /^\/legion\/v1\/issues\/([^/]+)\/record$/.exec(path)
@@ -168,7 +169,7 @@ const grantRequest = {
 }
 
 test("answerLegionTool closes only a step and answers an update without closing a look", async () => {
-  const { client } = await daemon({ state: stateAtPhase("testing"), "/legion/v1/claims/ready-for-update": {} })
+  const { client } = await daemon({ state: stateAtPhase("testing") })
   const calls: string[] = []
   const runtime = { daemon: client, claim: () => implementer, handoffReport: async () => ({ commit: "c0ffee" }), branchHead: async () => "" }
   const hook = { phaseClosed: () => { calls.push("closed") }, updateAnswered: () => { calls.push("update") } }

@@ -602,15 +602,16 @@ const legionCheckWakeView = z.object({
  * pending report, the retry of a look nobody reported, or the check's own bound — the moment its
  * last look starts — where neither stands. The bound has no field of its own: `nextWakeAt` is the
  * bound whenever no agent's time is set, `openedAt` is here, and `production_check_hours` is in
- * the settings. Present on the issue record only while the check is open; absent once it closed
- * or while none was opened. */
-const legionCheckView = z.object({
+ * settings. These members are optional: the tool reads no check state to choose a call or
+ * validate a look. The daemon validates the named check; read_record passes this record on.
+ */
+const legionOpenProductionCheck = z.object({
   repo: nonEmptyString.optional(),
   pullRequest: z.number().int().positive().optional(),
   mergeCommit: z.string().optional(),
   openedAt: timestamp.optional(),
   role: nonEmptyString.optional(),
-  looks: z.number().int().nonnegative(),
+  looks: z.number().int().nonnegative().optional(),
   lookOpen: z.boolean().optional(),
   lastWake: legionCheckWakeView.optional(),
   nextWakeAt: timestamp.optional(),
@@ -2438,8 +2439,6 @@ const ISSUE_RECORD_READS = [
   "workers{}.claim.state",
   "workers{}.claim.lastTurnStart",
   "workers{}.claim.lastTurnEnd",
-  "check",
-  "check.looks",
   "designGate",
   "designGate.currentVersion",
   "designGate.approvedVersion",

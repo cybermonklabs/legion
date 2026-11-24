@@ -3663,4 +3663,8 @@ package api
 // answer and request record stays intact. SupportedContracts appends this entry, leaving 256
 // recorded in its own right. Before rollback, clear kept looks only for running issues of the
 // rolled-back project, as docs/kubernetes.md documents and the store test exercises.
+// Allocated for this change: the census at its push read all 503 open heads during
+// 2026-11-24T21:55:55Z–21:56:44Z, highest 276, none at 283 and none UNKNOWN. Its control
+// read 237 at a9a9d8b264d. A build-numbered head with last numbered contract 256 and no
+// registered entries read as 256, not UNKNOWN. No answer's shaping band changes.
 const DaemonAPIVersion = 283

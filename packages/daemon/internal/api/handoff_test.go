@@ -903,6 +903,7 @@ func TestHandoffCompleteRefusesAnImplementersLeftCompletionNamingNoRecord(t *tes
 			h := newWorkflowHandoffHarness(t, newHandoffGitHub(t), io.Discard)
 			seedIssueAt(t, h, "LEGION-208", phase.Implementing)
 			seedPullRequest(t, h, "LEGION-208", headSHA)
+			seedEntry(t, h, "LEGION-208", claim.RoleImplementer, 1)
 			implementer := newLiveClaim(t, h, "LEGION-208", claim.RoleImplementer)
 			at := tc.stand(t, h, implementer)
 			assertIssuePhase(t, h, at)
@@ -1233,7 +1234,7 @@ func TestACheckReportOfAPendingWithoutAWakeIsRefusedAndTheSameReportWithOneIsRec
 		t.Fatalf("the check after the refusal = %+v, want it open at look 2 with the look open", check)
 	}
 
-	completion(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "no deploy carries the merge", Verdict: "pending", WakeAt: &checkWakeAt}))
+	completion(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "no deploy carries the merge", Verdict: "pending", WakeAt: &checkWakeAt, CheckOpenedAt: &checkOpenedAt}))
 	want := intake.CheckReport{Issue: "LEGION-208", Claim: implementer.token, Look: 2, Verdict: "pending", Summary: "no deploy carries the merge", WakeAt: &checkWakeAt}
 	if got := lastCheckReport(t, facts); !sameCheckReport(got, want) {
 		t.Fatalf("the report sent again = %+v, want %+v", got, want)
