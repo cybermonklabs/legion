@@ -419,16 +419,12 @@ func (g *gate) goPackage(c *census, dir, path string, build goBuild, broken bool
 		return
 	}
 	g.structural(c, dir, path, build, fset, parsed, info)
-	// Export data loads a package only as far as it names it, so net/http can be in the imports
-	// without its Response, which the answer census compares a type's struct with: load it whole
-	// there.
-	if http := importedPackage(checked, "net/http"); http != nil && http.Scope().Lookup("Response") == nil {
-		if _, err := conf.Importer.Import("net/http"); err != nil {
-			c.Unknown = append(c.Unknown, fmt.Sprintf("%s: net/http cannot be loaded for the answer census: %v", path, err))
-			return
-		}
+	response, err := httpResponse(checked, conf.Importer)
+	if err != nil {
+		c.Unknown = append(c.Unknown, fmt.Sprintf("%s: %v", path, err))
+		return
 	}
-	g.answerCensus(c, dir, path, fset, parsed, info, checked)
+	g.answerCensus(c, dir, path, fset, parsed, info, checked, response)
 	if entry := g.inv.Gate.BoundaryFields.Entry; len(entry) > 0 {
 		if entryPkg, _ := splitTypeName(entry[0]); entryPkg == path {
 			g.fieldCensus(c, dir, path, fset, parsed, info)
