@@ -259,6 +259,14 @@ Each item below names a script, then what it proves.
   this build answers that path narrowed, and answers `GET /api/v1/search` carrying the member the same way, so a page an earlier release served is still answered correctly.
   Commenting out the `GET /api/v1/search/results` row of `routes_table.go` leaves neither build serving the path, which is the negative control
 
+- `hook-prompt-two-builds.sh`
+
+  the daemon that keeps a hook prompt's row waiting while no live session holds its role ships before the listener that refuses to keep a role publish naming no source session, driven through `TestIdleReleaseAndWake/TheHookPromptsOfAReleasedRoleReachItsWokenSessionOnce` (a real daemon, a real listener binary, a `nats-server` container and a loopback PostgreSQL the caller names) from two trees — the tree of the commit `--base-commit` names, taken with `git archive` into the run's own work directory, which for this proof is `legion-v23.21.0`, the daemon release before that change, and this checkout — with the listener of either tree (`LEGION_E2E_REPO_ROOT`):
+  the base tree's test passes with the base tree's listener, which is the negative control;
+  with this checkout's listener the base tree's test fails on the line that says no message reached the released role's woken session, since that daemon ends each prompt's row at the listener's 404;
+  and this checkout's test passes with this checkout's listener, each prompt reaching the woken session once.
+  Run by hand from a full checkout with go, git, tar and docker
+
 - `verification-results.sh`
 
   a recorded check result says where its commit stands against the commits and branches its check compares with, and the head it is compared with moves with the pull-request events Dispatch takes off the bus, driven over HTTP through the real `envoy-dispatch` against a loopback PostgreSQL the caller names, a NATS of the run's own and the e2e harness's fake GitHub:
@@ -6073,7 +6081,7 @@ Exit status: 0 every check passed; 1 a check failed (`FAIL <check>: …`); 2 ref
 
 Prints what libpq reads from a PostgreSQL DSN, rewrites that DSN to name a run's own database, or refuses the DSN in one line.
 Python 3.9 or later, the standard library, and libpq itself, which it loads with `ctypes`.
-Eleven call sites read a DSN with it before they start anything, each of which creates, resets or drops something on the server its caller's DSN names.
+Twelve call sites read a DSN with it before they start anything, each of which creates, resets or drops something on the server its caller's DSN names.
 Seven are proofs of their own:
 [`plan-pointer-drive.sh`](#plan-pointer-drivesh), [`verification-results.sh`](#verification-resultssh), [`dispatch-claimant-delivery.sh`](#dispatch-claimant-deliverysh), `clean-session-stop-tmux.sh`, `envoy-session-states.sh`, [`envoy-session-delivery.sh`](#envoy-session-deliverysh) and [`dispatch-session-settings.sh`](#dispatch-session-settingssh).
 The eighth is [`lib/two-builds.sh`](#libtwo-buildssh), the harness the two two-builds proofs share, which reads `DATABASE_URL` once for `dispatch-two-builds.sh` and `dispatch-search-two-builds.sh`.
@@ -6087,6 +6095,7 @@ require_loopback_dsn db_host DATABASE_URL "$database_url" "this run resets the d
 The ninth is [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh), whose `prerequisites` check reads `LEGION_TEST_PG_DSN` for each proof that makes that run, which is every entry script that sources it.
 The tenth is [`busy-relaunch-delivery.sh`](#busy-relaunch-deliverysh)'s negative control, which reads `LEGION_TEST_PG_DSN` with `require_loopback_dsn` before it builds the base commit's tree, through the copy [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh) sources.
 The eleventh is [`approved-version-news.sh`](#approved-version-newssh)'s `arguments` check, which reads `LEGION_TEST_PG_DSN` with `require_loopback_dsn` before it builds or extracts anything, through that same copy.
+The twelfth is `hook-prompt-two-builds.sh`'s `prerequisites` check, which reads `LEGION_TEST_PG_DSN` with `require_loopback_dsn` before it takes the base commit's tree, sourcing [`lib/loopback-dsn.sh`](#libloopback-dsnsh) itself.
 [`envoy-session-delivery.sh`](#envoy-session-deliverysh) and [`dispatch-session-settings.sh`](#dispatch-session-settingssh) read their DSN with `run_database_url` alone, in the step that names the run's own database.
 Every proof that writes a server its caller's DSN names reads that DSN with this guard before it starts anything.
 That is the first of two frames for the whole-daemon proofs: this guard reads the caller's DSN with libpq in the shell, and the test binary each of them runs reads every DSN it builds from that one back with pgx inside itself (`DatabaseURL`, `packages/daemon/internal/testpg/testdb/testdb.go`).
@@ -6139,10 +6148,11 @@ Two more cases pin a refusal of that mode: a password of bytes libpq reads as no
 The two helpers a proof that writes a PostgreSQL server reads its caller's DSN with, and the one copy of why they ask libpq.
 Both answers come from [`lib/loopback-dsn.py`](#libloopback-dsnpy), which this file addresses beside itself, so it needs nothing of its caller's.
 A third helper, `empty_public_schema`, empties the database a run was given, so that a server migrates it from nothing.
-[`lib/rig.sh`](#librigsh) sources this file, which is how seven of the eleven scripts that call its helpers themselves have it, and [`envoy-session-delivery.sh`](#envoy-session-deliverysh) sources it on its own, since that proof keeps an `await_port_file` and a `keep_port` of its own and sources no rig.
+[`lib/rig.sh`](#librigsh) sources this file, which is how seven of the twelve scripts that call its helpers themselves have it, and [`envoy-session-delivery.sh`](#envoy-session-deliverysh) sources it on its own, since that proof keeps an `await_port_file` and a `keep_port` of its own and sources no rig.
 The ninth, [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh), sources it on its own too, and calls `require_loopback_dsn` in `prerequisites` for each proof that makes its run.
 The tenth, [`busy-relaunch-delivery.sh`](#busy-relaunch-deliverysh), has it through that file, and calls `require_loopback_dsn` itself once more, for its negative control.
 The eleventh, [`approved-version-news.sh`](#approved-version-newssh), has it through that file too, and calls `require_loopback_dsn` in its own `arguments` check as well, before it builds or extracts anything.
+The twelfth, `hook-prompt-two-builds.sh`, sources it on its own, and calls `require_loopback_dsn` in its `prerequisites` check, before it takes the base commit's tree.
 
 ```sh
 . "$root/scripts/e2e/lib/loopback-dsn.sh"     # sourced, never run
@@ -6807,7 +6817,7 @@ a file it can open takes both, which still reach the reader, and a file whose di
 A proof's last line, and the mark it rests on: the one rule for every script here whose `EXIT` trap prints PASS.
 Sourced by each of them, never run.
 Every other `EXIT` trap here that prints a verdict prints FAIL only, from a mark of its own, and its script does not source the lib.
-[`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh) and [`lib/two-builds.sh`](#libtwo-buildssh) source it for the proofs that make their runs, and `burstable-kind.sh`, `controller-sweep-kind.sh`, `share-volumes-kind.sh`, `dispatch-claimant-delivery.sh`, `verification-results.sh`, `plan-pointer-drive.sh`, `refusal-fallback-omp.sh`, `dispatch-session-settings.sh`, `clean-session-stop-tmux.sh` and `envoy-session-states.sh` source it themselves.
+[`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh) and [`lib/two-builds.sh`](#libtwo-buildssh) source it for the proofs that make their runs, and `burstable-kind.sh`, `controller-sweep-kind.sh`, `share-volumes-kind.sh`, `dispatch-claimant-delivery.sh`, `verification-results.sh`, `plan-pointer-drive.sh`, `refusal-fallback-omp.sh`, `dispatch-session-settings.sh`, `clean-session-stop-tmux.sh`, `envoy-session-states.sh` and `hook-prompt-two-builds.sh` source it themselves.
 
 ```sh
 . "$root/scripts/e2e/lib/run-verdict.sh"     # sourced, never run
