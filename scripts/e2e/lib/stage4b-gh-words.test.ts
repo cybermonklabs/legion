@@ -134,14 +134,16 @@ interface Ran {
   // calls are the stand-in gh's log, one call a line.
   calls: string[];
   dir: string;
-  // kept is the file the site kept gh's words (err) or answer (out) in, as gh_kept names it.
+  // kept is the file the site kept gh's words (err) or answer (out) in, as keep_gh names it.
   kept: (name: string, stream: "out" | "err") => string;
 }
 
-// The run's own values, as the script sets them before these sites run: its repository, project
-// and trees, the two Apps' logins (read_app_logins), the role gh bundle's directories, its evidence
-// and work directories, and the real gh (mise's), here the stand-in.
+// The run's own values, as the script sets them before these sites run: the checkout (root, whose
+// lib/*.jq the session readers include), its repository, project and trees, the two Apps' logins
+// (read_app_logins), the role gh bundle's directories, its evidence and work directories, and the
+// real gh (mise's), here the stand-in.
 const values = [
+  `root=${JSON.stringify(root)}`,
   "check=gh-words",
   "timeout_hook=",
   "capacity_subject=",
@@ -1510,5 +1512,192 @@ describe("production_audit's read of the run's pull requests (run_pull_request_n
     expect(readFileSync(outside(other), "utf8")).toContain(
       "notifications.github.acme.legion-smoke.pr.5"
     );
+  });
+});
+
+// full-agent-tools: each role runs `gh api graphql` in its own bash, and its FullAgentGh subagent
+// runs it in its bash and answers in its task result, so the role's session records gh's answer.
+// Whatever answers gh in GitHub's place holds the role's token. The session a row hands the site is
+// that record, the answer holding the marker where gh's answer stands: no stand-in gh answers here,
+// since the gh call is the agent's and the script reads only its session. full_agent_role_checks
+// takes the role's excerpt from its claim's session, from the instruction's delivery on, into
+// $evidence/full-agent-tools/<role>.jsonl, and the subagent's session beside it.
+interface ToolCall {
+  name: string;
+  args: Record<string, unknown>;
+  text: string;
+}
+// sessionOf is a session as Oh My Pi records it: the instruction's delivery carrying NONCE, then each
+// call and the result that answers it.
+function sessionOf(nonce: string, calls: ToolCall[]): string {
+  const user = {
+    role: "user",
+    content: [{ type: "text", text: `full-agent-tools operation ${nonce}` }],
+  };
+  const lines = [JSON.stringify({ type: "message", message: user })];
+  calls.forEach((call, i) => {
+    const id = `toolu_${i}`;
+    const content = [{ type: "toolCall", id, name: call.name, arguments: call.args }];
+    lines.push(JSON.stringify({ type: "message", message: { role: "assistant", content } }));
+    const result = { role: "toolResult", toolName: call.name, toolCallId: id, isError: false };
+    lines.push(
+      JSON.stringify({
+        type: "message",
+        message: { ...result, content: [{ type: "text", text: call.text }] },
+      })
+    );
+  });
+  return `${lines.join("\n")}\n`;
+}
+
+describe("full_agent_role_checks, full_agent_common_asserts and full_agent_summary, a role's own gh", () => {
+  const nonce = "fa-architect";
+  // The architect acts as the review App, and the implement App is the other one.
+  const app = "acme-review[bot]";
+  const other = "acme-implement[bot]";
+  const graphql = "gh api graphql -f query='{ viewer { login } }' --jq .data.viewer.login";
+  const chain =
+    "go version && bun --version && python3 --version && curl --version | head -1 && gh --version | head -1 && git --version";
+  const versions =
+    "go version go1.25.1 linux/amd64\n1.4.4\nPython 3.12.3\ncurl 8.5.0\ngh version 2.98.0\ngit version 2.45.2";
+  // role is the role's calls as the operation asks for them, ANSWER gh's answer to its graphql call,
+  // EXTRA calls before the rest, and TOOLCHAIN and TASK the chain's and the subagent's results.
+  const role = ({ answer = app, extra = [] as ToolCall[], toolchain = versions, task = "" } = {}) =>
+    sessionOf(nonce, [
+      ...extra,
+      { name: "eval", args: { language: "py" }, text: `${nonce} py 42` },
+      { name: "eval", args: { language: "js" }, text: `${nonce} js 42` },
+      { name: "eval", args: { language: "js" }, text: `title: full-agent-tools ${nonce}` },
+      {
+        name: "web_search",
+        args: { query: "Jujutsu version control" },
+        text: "https://jj-vcs.github.io/jj/",
+      },
+      { name: "bash", args: { command: chain }, text: toolchain },
+      {
+        name: "edit",
+        args: { input: "/tmp/full-agent-tools-architect.html" },
+        text: `edited ${nonce}`,
+      },
+      {
+        name: "read",
+        args: { path: "/tmp/full-agent-tools-architect.html" },
+        text: `<title>edited ${nonce}</title>`,
+      },
+      { name: "bash", args: { command: graphql }, text: answer },
+      {
+        name: "task",
+        args: { agent: "FullAgentGh" },
+        text: task || `<task-result id="FullAgentGh">${app}</task-result>`,
+      },
+    ]);
+  // subagent is the FullAgentGh subagent's session: its bash answered ANSWER and its yield was taken.
+  const subagent = (answer = app) =>
+    sessionOf(nonce, [
+      { name: "bash", args: { command: graphql }, text: answer },
+      { name: "yield", args: {}, text: "accepted" },
+    ]);
+  const site: Site = {
+    entry: ["full_agent_role_checks"],
+    stubs: [
+      'claim_session_text() { cat "$evidence/claim-$2.jsonl"; }',
+      "claim_session_file() { printf '%s\\n' \"$evidence/sessions/$2.jsonl\"; }",
+      'session_text() { cat "$evidence/subagent.jsonl"; }',
+    ].join("\n"),
+    setup: [
+      'mkdir -p "$evidence/full-agent-tools"',
+      `declare -A fa_nonce=([architect]=${nonce})`,
+      // The loop's variable, which the role's checks read before they were a function of their own.
+      "role=architect",
+    ].join("\n"),
+    body: "full_agent_role_checks architect",
+  };
+  const files = (claim: string, sub = subagent()) => ({
+    "claim-architect.jsonl": claim,
+    "subagent.jsonl": sub,
+  });
+  const excerpt = "full-agent-tools/architect.jsonl";
+
+  test("prints no run of the marker gh answers the role's graphql call in place of its App", () => {
+    const ran = run(site, [], files(role({ answer: marker })));
+    leaked(ran, "", "out", excerpt);
+    expect(ran.exitCode).toBe(1);
+  });
+
+  test("prints no run of the marker a bash result carries beside the other App", () => {
+    const ran = run(
+      site,
+      [],
+      files(
+        role({
+          extra: [{ name: "bash", args: { command: "gh pr view 42" }, text: `${other} ${marker}` }],
+        })
+      )
+    );
+    leaked(ran, "", "out", excerpt);
+    expect(ran.printed).toContain(`a bash result carries ${other}, the other App`);
+  });
+
+  test("prints no run of the marker gh answered when the toolchain's result lacks a version", () => {
+    const ran = run(
+      site,
+      [],
+      files(role({ answer: `${app} ${marker}`, toolchain: "go version go1.25.1" }))
+    );
+    leaked(ran, "", "out", excerpt);
+    expect(ran.printed).toContain("carries 'Python 3'");
+  });
+
+  test("prints no run of the marker the subagent's task result answers in place of the App", () => {
+    const ran = run(
+      site,
+      [],
+      files(role({ task: `<task-result id="FullAgentGh">${marker}</task-result>` }))
+    );
+    leaked(ran, "", "out", excerpt);
+    expect(ran.printed).toContain("no task result carries");
+  });
+
+  test("prints no run of the marker a task result carries beside the App but without its block", () => {
+    const ran = run(site, [], files(role({ task: `${app} ${marker}` })));
+    leaked(ran, "", "out", excerpt);
+    expect(ran.printed).toContain("holds no <task-result id=…> block");
+  });
+
+  test("prints no run of the marker the subagent's own gh answered beside the other App", () => {
+    const ran = run(site, [], files(role(), subagent(`${other} ${marker}`)));
+    leaked(ran, "", "out", "full-agent-tools/architect-FullAgentGh.jsonl");
+    expect(ran.printed).toContain('{"login":false,"yield":true,"other":true}');
+  });
+
+  test("prints no run of the marker gh answered beside the App in the role's summary", () => {
+    const ran = run(site, [], files(role({ answer: `${app} ${marker}` })));
+    expectNoMarker(ran.printed);
+    expect(markerFiles(ran)).toContain(join(ran.dir, "evidence", excerpt));
+    expect(ran.printed).toContain(`login ${app}; browser`);
+    expect(ran.exitCode).toBe(0);
+  });
+
+  test("prints no run of the marker a bash result before the toolchain's carries beside its first word", () => {
+    const extra = [
+      { name: "bash", args: { command: "gh api user" }, text: `go version ${marker}` },
+    ];
+    const ran = run(site, [], files(role({ extra })));
+    expectNoMarker(ran.printed);
+    expect(markerFiles(ran)).toContain(join(ran.dir, "evidence", excerpt));
+    expect(ran.printed).toContain("toolchain go version go1.25.1 linux/amd64 1.4.4 Python 3.12.3");
+  });
+
+  test("control: the role's operation passes, and its summary names its App and its toolchain", () => {
+    const ran = run(site, [], files(role()));
+    expect(ran).toMatchObject({
+      exitCode: 0,
+      printed:
+        `   architect as ${app}: login ${app}; browser title: full-agent-tools ${nonce}; toolchain ` +
+        "go version go1.25.1 linux/amd64 1.4.4 Python 3.12.3 curl 8.5.0 gh version 2.98.0 git version 2.45.2; " +
+        `search https://jj-vcs.github.io/jj/; its subagent FullAgentGh answered ${app} and yielded\n`,
+    });
+    // The control's twin: the role's graphql answer without the App fails the role.
+    expect(run(site, [], files(role({ answer: other }))).exitCode).toBe(1);
   });
 });

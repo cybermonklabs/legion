@@ -2700,20 +2700,24 @@ full_agent_subagent_verdict() {
        bash: [$bash[] | tool_result_quote(""; 200)]}'
 }
 # full_agent_summary SESSION APP prints one line of what the session's tools returned: the login,
-# the browser's title line, the toolchain's versions and the first search hit, each trimmed.
-# shellcheck disable=SC2016 # $app, $texts and $text are jq's own variables
+# the browser's title line, the toolchain's versions and the first search hit, each trimmed. The
+# login is APP, the App a bash result was compared with, when one carries it: a bash result of
+# `gh api graphql` is gh's answer, so it is never quoted. The toolchain is the result of the call
+# whose command runs the chain (`go version &&`), whose gh answers `--version` from its own binary.
+# shellcheck disable=SC2016 # $app, $texts, $text and $bash are jq's own variables
 full_agent_summary() {
   session_jq "$1" -r --arg app "$2" 'include "stage4b-tools";
     def said($texts; $text): [$texts[] | select(contains($text))] | first // "none";
     def line: split("\n")[0] | .[0:120];
-    tool_result_texts("bash") as $bash | tool_result_texts("eval") as $eval | tool_result_texts("web_search") as $search
-    | "login \(said($bash; $app) | line); browser \(said($eval; "title: ") | line); toolchain \(said($bash; "go version") | gsub("\\s+"; " ") | .[0:200]); search \(said($search; "https://") | line)"'
+    [tool_results("bash")[] | select(.isError == false)] as $bash | tool_result_texts("eval") as $eval | tool_result_texts("web_search") as $search
+    | "login \(if any($bash[]; .text | contains($app)) then $app else "none" end); browser \(said($eval; "title: ") | line); toolchain \([$bash[] | select(arguments_carry("bash"; "go version &&")) | .text] | first // "none" | gsub("\\s+"; " ") | .[0:200]); search \(said($search; "https://") | line)"'
 }
 # full_agent_common_asserts WHO EXCERPT NONCE APP OTHER: the four assertions the role loop and the
 # merger block of full-agent-tools share, WHO the fail lines' prefix: an edit result and a read
 # result carry `edited NONCE`, a bash call running gh api graphql answered APP, the role's own App,
 # and no bash result carries OTHER, the other App. The notebook negative stays in each block, after
-# its own further assertions, so neither block's order of fail lines moves.
+# its own further assertions, so neither block's order of fail lines moves. A bash result is gh's
+# answer to the role's `gh api graphql`, so a failure names EXCERPT, which keeps them, and quotes none.
 full_agent_common_asserts() {
   local who=$1 excerpt=$2 nonce=$3 app=$4 other=$5
   tool_result_said "$excerpt" edit "edited $nonce" ||
@@ -2721,9 +2725,9 @@ full_agent_common_asserts() {
   tool_result_said "$excerpt" read "edited $nonce" ||
     fail "$who: no read result carries 'edited $nonce', so the edited page was not read back; its reads: $(tool_result_quotes "$excerpt" read /tmp/full-agent-tools)"
   tool_result_answered "$excerpt" bash 'gh api graphql' "$app" ||
-    fail "$who: no result of a bash call running gh api graphql carries $app, so gh did not answer as $who's App; its bash results: $(tool_result_quotes "$excerpt" bash)"
+    fail "$who: no result of a bash call running gh api graphql carries $app, so gh did not answer as $who's App; its bash results are in $excerpt"
   ! tool_result_said "$excerpt" bash "$other" ||
-    fail "$who: a bash result carries $other, the other App; its bash results: $(tool_result_quotes "$excerpt" bash)"
+    fail "$who: a bash result carries $other, the other App; its bash results are in $excerpt"
 }
 # agent_pid POD ROLE prints the pid of ROLE's Oh My Pi in POD (agent_pid_sh).
 agent_pid() {
@@ -5306,7 +5310,11 @@ for role in architect planner implementer tester reviewer; do
   on_tree "$tree1" until_true 900 "tree 1's $role to answer ${fa_nonce[$role]}-answer" assistant_said "$tree1" "$role" "${fa_nonce[$role]}-answer"
 done
 on_tree "$tree1" until_true 900 "tree 1's merger to answer $merger_nonce-answer" assistant_said "$tree1" merger "$merger_nonce-answer"
-for role in architect planner implementer tester reviewer; do
+# full_agent_role_checks ROLE judges ROLE's full-agent-tools operation. A bash result, a task result
+# and a subagent's bash results are gh's answers or quote them (the role's and its subagent's
+# `gh api graphql`), so a failure names the session file that keeps them and quotes none.
+full_agent_role_checks() {
+  local role=$1
   nonce=${fa_nonce[$role]}
   app=$(role_app "$role")
   other=$(role_app reviewer)
@@ -5328,13 +5336,13 @@ for role in architect planner implementer tester reviewer; do
     fail "$role: no web_search result carries an https:// URL; its web_search results: $(tool_result_quotes "$excerpt" web_search)"
   for want in "go version go" "Python 3" "curl " "gh version" "git version"; do
     tool_result_answered "$excerpt" bash 'go version &&' "$want" ||
-      fail "$role: no result of the toolchain chain (a bash call whose command carries 'go version &&') carries '$want'; its bash results: $(tool_result_quotes "$excerpt" bash)"
+      fail "$role: no result of the toolchain chain (a bash call whose command carries 'go version &&') carries '$want'; its bash results are in $excerpt"
   done
   full_agent_common_asserts "$role" "$excerpt" "$nonce" "$app" "$other"
   tool_result_said "$excerpt" task "$app" ||
-    fail "$role: no task result carries $app, so its FullAgentGh subagent did not answer as the role's App; its task results: $(tool_result_quotes "$excerpt" task)"
+    fail "$role: no task result carries $app, so its FullAgentGh subagent did not answer as the role's App; its task results are in $excerpt"
   id=$(full_agent_task_id "$excerpt" "$app")
-  [ -n "$id" ] || fail "$role: the task result carrying $app holds no <task-result id=…> block; its task results: $(tool_result_quotes "$excerpt" task)"
+  [ -n "$id" ] || fail "$role: the task result carrying $app holds no <task-result id=…> block; its task results are in $excerpt"
   session=$(claim_session_file "$tree1" "$role") || fail "$role on $tree1 has no session file"
 
   sub="$evidence/full-agent-tools/$role-$id.jsonl"
@@ -5342,9 +5350,12 @@ for role in architect planner implementer tester reviewer; do
     fail "$role: its subagent's session ${session%.jsonl}/$id.jsonl is not in the session database beside its parent's"
   verdict=$(full_agent_subagent_verdict "$sub" "$app" "$other")
   jq -e '.login and .yield and (.other | not)' <<<"$verdict" >/dev/null ||
-    fail "$role: its subagent $id's session must hold a bash result carrying $app, an accepted yield, and no bash result carrying $other: $verdict"
+    fail "$role: its subagent $id's session must hold a bash result carrying $app, an accepted yield, and no bash result carrying $other: $(jq -c '{login, yield, other}' <<<"$verdict"); its bash results are in $sub"
   ! tool_ran "$excerpt" notebook || fail "$role's session shows the notebook tool ran, which nothing asked for"
   note "$role as $app: $(full_agent_summary "$excerpt" "$app"); its subagent $id answered $app and yielded"
+}
+for role in architect planner implementer tester reviewer; do
+  full_agent_role_checks "$role"
 done
 merger_app=$(role_app merger)
 merger_other=$(role_app reviewer)
