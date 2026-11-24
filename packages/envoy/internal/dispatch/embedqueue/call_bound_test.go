@@ -9,9 +9,6 @@ import (
 	"testing/synctest"
 	"time"
 
-	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/credentials"
-
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 )
 
@@ -77,11 +74,7 @@ func TestABedrockCallPastTheBoundEndsWithTheDeadline(t *testing.T) {
 	}))
 	defer server.Close()
 	defer close(release)
-	client := embed.NewBedrockWithConfig(aws.Config{
-		Region:      "us-west-2",
-		Credentials: credentials.NewStaticCredentialsProvider("test-access-key", "test-secret-key", ""),
-		Retryer:     func() aws.Retryer { return aws.NopRetryer{} },
-	}, embed.WithBaseEndpoint(server.URL))
+	client := bedrockClientFor(server)
 	deps := Deps{Embedder: client}.Paced()
 	renewal := newClaimRenewal(deps, []pendingRow{{kind: "issue", id: "bedrock", text: "bedrock"}})
 	renewal.extend = func(context.Context, []pendingRow) error { return nil }

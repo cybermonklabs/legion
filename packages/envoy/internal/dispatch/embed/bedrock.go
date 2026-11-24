@@ -31,6 +31,15 @@ const (
 	// bedrockBackgroundTokensPerMinute is two thirds of the account's Cohere Embed v4 quota of
 	// 300,000 tokens a minute, left to background work; the other third is live search's.
 	bedrockBackgroundTokensPerMinute = 200_000
+	// bedrockMaxBatchBytes is Limits().MaxBatchBytes: the most bytes of text (BoundedBytes) one
+	// background call carries, chosen to keep the call inside embedqueue's callBound (60 s), the
+	// only bound a Bedrock call has. It is no measurement of Bedrock, whose rate this repository
+	// has not measured: it is Azure's measured rate for the same model applied to Bedrock. A
+	// Cohere token is at least one byte, so 320,000 bytes is at most 320,000 tokens, about 20 s at
+	// the slowest rate Azure was measured embedding (azureMaxBatchBytes), a third of the bound.
+	// What embedqueue's rows prove is the grouping, not the time: a group at this edge is split
+	// rather than cut off, and a group past it never reaches the call.
+	bedrockMaxBatchBytes = 320_000
 )
 
 // BedrockClient calls Cohere Embed v4 on AWS Bedrock (InvokeModel).
@@ -96,10 +105,14 @@ func NewBedrockWithConfig(cfg aws.Config, opts ...BedrockOption) *BedrockClient 
 // Identity is the Bedrock model id this client calls: BedrockModel unless WithModel overrode it.
 func (c *BedrockClient) Identity() string { return c.model }
 
-// Limits reports Bedrock's batch limit and the background share of the account's quota, and no
-// byte budget (MaxBatchBytes 0): a Bedrock batch is bounded by its text count and token ceiling.
+// Limits reports Bedrock's batch limit, the background share of the account's quota and the byte
+// budget each background call keeps to (bedrockMaxBatchBytes).
 func (c *BedrockClient) Limits() Limits {
-	return Limits{MaxBatchTexts: BedrockMaxBatchTexts, BackgroundTokensPerMinute: bedrockBackgroundTokensPerMinute}
+	return Limits{
+		MaxBatchTexts:             BedrockMaxBatchTexts,
+		MaxBatchBytes:             bedrockMaxBatchBytes,
+		BackgroundTokensPerMinute: bedrockBackgroundTokensPerMinute,
+	}
 }
 
 type bedrockEmbedRequest struct {

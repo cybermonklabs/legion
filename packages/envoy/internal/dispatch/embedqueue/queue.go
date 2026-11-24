@@ -451,15 +451,15 @@ type throttledGroup struct {
 
 // embedRows embeds and commits rows group by group (chunkForBudget splits rows so no single
 // reservation ever exceeds the embedder's BackgroundTokensPerMinute and no Embed call carries
-// more than its MaxBatchBytes, so a call of dense text finishes inside the place's request
-// timeout instead of timing out and being bisected), committing each group's vectors to the
-// database as soon as that group's own Embed call succeeds: a later group's failure never
-// re-embeds an earlier group's already-committed rows, and a group that itself fails
-// non-throttled is handed to handleGroupFailure, which isolates it without ever re-embedding that
-// exact group again. The returned bisectResult accumulates every group's own outcome across the
-// whole call. A genuine infrastructure error (commitEmbeddings' own) stops the loop immediately
-// and propagates as-is, abandoning whatever groups were not yet attempted - ProcessBatch and
-// bisectSplit both treat it as a hard failure, never a reason to retry row by row.
+// more than its MaxBatchBytes, so a call of dense text finishes inside callBound instead of
+// running out of time and being bisected), committing each group's vectors to the database as soon
+// as that group's own Embed call succeeds: a later group's failure never re-embeds an earlier
+// group's already-committed rows, and a group that itself fails non-throttled is handed to
+// handleGroupFailure, which isolates it without ever re-embedding that exact group again. The
+// returned bisectResult accumulates every group's own outcome across the whole call. A genuine
+// infrastructure error (commitEmbeddings' own) stops the loop immediately and propagates as-is,
+// abandoning whatever groups were not yet attempted - ProcessBatch and bisectSplit both treat it as
+// a hard failure, never a reason to retry row by row.
 func embedRows(ctx context.Context, deps Deps, rows []pendingRow, renewal *claimRenewal) bisectResult {
 	var result bisectResult
 	limits := deps.Embedder.Limits()
@@ -598,14 +598,15 @@ type budgetedGroup struct {
 // closing a group before the row that would take it past either of the embedder's limits: its
 // estimated tokens (embed.EstimateTokens) past BackgroundTokensPerMinute, so reserveTokens never
 // has to reserve more than one minute's worth of budget for a single group, or its bytes
-// (embed.BoundedBytes) past MaxBatchBytes when that is set, so every background call fits the
-// place's request timeout (Azure's, azureMaxBatchBytes' comment). Each row is in exactly one
-// group. A row that alone meets or passes either limit - a MaxInputRunes-length document under
-// a small quota, say - still gets a group of its own rather than being split further: both counts
-// already truncate at MaxInputRunes, so even that worst case is a known, bounded size (at most
-// 128,000 bytes, under Azure's 320,000), and one row is the smallest unit this package ever
-// embeds. Each group's tokens field is the sum of its own rows' estimates, computed here once and
-// carried forward rather than re-estimated from the group's joined texts later.
+// (embed.BoundedBytes) past MaxBatchBytes when that is set, so every background call finishes
+// inside callBound (azureMaxBatchBytes' and bedrockMaxBatchBytes' comments). Each row is in
+// exactly one group. A row that alone meets or passes either limit - a MaxInputRunes-length
+// document under a small quota, say - still gets a group of its own rather than being split
+// further: both counts already truncate at MaxInputRunes, so even that worst case is a known,
+// bounded size (at most 128,000 bytes, under either place's 320,000), and one row is the smallest
+// unit this package ever embeds. Each group's tokens field is the sum of its own rows' estimates,
+// computed here once and carried forward rather than re-estimated from the group's joined texts
+// later.
 func chunkForBudget(rows []pendingRow, limits embed.Limits) []budgetedGroup {
 	if len(rows) == 0 {
 		return nil

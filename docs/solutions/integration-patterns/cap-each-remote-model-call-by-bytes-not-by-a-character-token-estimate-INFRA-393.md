@@ -38,5 +38,11 @@ Azure's count, against an estimate of 8,000.
 
 With `azureMaxBatchBytes = 320_000` (`embed/azure.go`; about 20 s at the slowest rate measured),
 the same 50 comments went in 17 calls of at most 3 bodies and 287,988 bytes. All became current
-with no retry and no dead row. Bedrock sets no byte budget (`MaxBatchBytes` 0), so its batches are
-unchanged.
+with no retry and no dead row.
+
+Bedrock has the same budget, `bedrockMaxBatchBytes = 320_000` (`embed/bedrock.go`), since
+`embedqueue` ends every call at 60 s (`callBound`). It is Azure's measured Cohere Embed v4 rate
+applied to Bedrock, which this repository has not measured: a bound chosen to keep a group inside
+the call's 60 s, not a measurement of Bedrock. Its rows prove the grouping only: a group at the
+budget's edge is split rather than cut off (`TestABedrockGroupAtItsByteBudgetIsSplitNotCutOff`),
+and a group past it never reaches the call (`TestNoBedrockCallCarriesMoreThanItsByteBudget`).

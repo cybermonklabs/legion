@@ -22,8 +22,8 @@ import (
 func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
 
 // bedrockShaped gives a test embedder the Identity and Limits embed.Embedder asks for: Bedrock's
-// own, so the batch size and token ceiling the tests below count against are Bedrock's. Every
-// fake in this file embeds it.
+// own, so the batch size, byte budget and token ceiling the tests below count against are
+// Bedrock's. Every fake in this file embeds it.
 type bedrockShaped struct{}
 
 func (bedrockShaped) Identity() string     { return embed.BedrockModel }
@@ -765,12 +765,19 @@ func seedManyIssues(t *testing.T, database *store.Store, projectKey string, coun
 
 // countingGroupEmbedder fails any call whose texts include poison (simulating one bad row's
 // group) and otherwise succeeds, recording every call's own size so a test can prove exactly how
-// many Embed calls ran and how many total rows they carried.
+// many Embed calls ran and how many total rows they carried. Its limits are Bedrock's with no byte
+// budget, so the token ceiling is what closes a group of its test.
 type countingGroupEmbedder struct {
 	bedrockShaped
 	poison   string
 	calls    int
 	rowsSent int
+}
+
+func (*countingGroupEmbedder) Limits() embed.Limits {
+	limits := new(embed.BedrockClient).Limits()
+	limits.MaxBatchBytes = 0
+	return limits
 }
 
 func (e *countingGroupEmbedder) Embed(_ context.Context, texts []string, _ embed.InputType) ([][]float32, error) {

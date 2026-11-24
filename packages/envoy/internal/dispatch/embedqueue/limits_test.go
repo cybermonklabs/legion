@@ -14,6 +14,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/credentials"
+
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/embed/embedtest"
 	"github.com/sjawhar/envoy/internal/dispatch/retry"
@@ -278,6 +281,16 @@ func azureClientFor(t *testing.T, server *httptest.Server) *embed.AzureClient {
 	return client
 }
 
+// bedrockClientFor is a real BedrockClient that calls server, with static fake credentials (nothing
+// on server's side checks the signature) and the AWS SDK's own retries off.
+func bedrockClientFor(server *httptest.Server) *embed.BedrockClient {
+	return embed.NewBedrockWithConfig(aws.Config{
+		Region:      "us-west-2",
+		Credentials: credentials.NewStaticCredentialsProvider("test-access-key", "test-secret-key", ""),
+		Retryer:     func() aws.Retryer { return aws.NopRetryer{} },
+	}, embed.WithBaseEndpoint(server.URL))
+}
+
 // embeddingStates is each issue row's id with whether it is embedded, its confirmed failures and
 // whether it is dead.
 func embeddingStates(t *testing.T, database *store.Store) map[string]string {
@@ -520,42 +533,148 @@ func TestChunkForBudgetKeepsEachCallWithinTheByteBudget(t *testing.T) {
 	for i := range rows {
 		rows[i] = pendingRow{kind: "comment", id: fmt.Sprint(i), text: denseCJK(32_000, i)}
 	}
-	check := func(limits embed.Limits, wantSizes []int) {
-		t.Helper()
-		groups := chunkForBudget(rows, limits)
-		sizes := make([]int, len(groups))
-		next := 0
-		for g, group := range groups {
-			sizes[g] = len(group.rows)
-			texts := make([]string, len(group.rows))
-			for i, row := range group.rows {
-				if row.id != rows[next].id {
-					t.Fatalf("group %d row %d is %s, want %s: every row once, in order", g, i, row.id, rows[next].id)
-				}
-				texts[i] = row.text
-				next++
-			}
-			if limits.MaxBatchBytes > 0 && batchBytes(texts) > limits.MaxBatchBytes {
-				t.Errorf("group %d carries %d bytes, over the %d budget", g, batchBytes(texts), limits.MaxBatchBytes)
-			}
-			if group.tokens != embed.EstimateTokens(texts) || group.tokens > limits.BackgroundTokensPerMinute {
-				t.Errorf("group %d tokens = %d, want its texts' estimate %d, at most %d", g, group.tokens, embed.EstimateTokens(texts), limits.BackgroundTokensPerMinute)
-			}
-		}
-		if next != len(rows) {
-			t.Fatalf("groups hold %d rows, want all %d", next, len(rows))
-		}
-		if fmt.Sprint(sizes) != fmt.Sprint(wantSizes) {
-			t.Errorf("group sizes = %v, want %v", sizes, wantSizes)
-		}
-	}
 	threes := make([]int, 32)
 	for i := range threes {
 		threes[i] = 3
 	}
-	check(limits, threes)
+	requireGroups(t, rows, limits, threes)
 	limits.MaxBatchBytes = 0
-	check(limits, []int{25, 25, 25, 21})
+	requireGroups(t, rows, limits, []int{25, 25, 25, 21})
+}
+
+// requireGroups requires chunkForBudget to group rows under limits in groups of wantSizes: every
+// row in exactly one group, whole and in order, and no group past limits' byte budget (when it has
+// one) or token ceiling.
+func requireGroups(t *testing.T, rows []pendingRow, limits embed.Limits, wantSizes []int) {
+	t.Helper()
+	groups := chunkForBudget(rows, limits)
+	sizes := make([]int, len(groups))
+	next := 0
+	for g, group := range groups {
+		sizes[g] = len(group.rows)
+		texts := make([]string, len(group.rows))
+		tokens := 0
+		for i, row := range group.rows {
+			if row.id != rows[next].id || row.text != rows[next].text {
+				t.Fatalf("group %d row %d is %s, want %s whole: every row once, whole and in order", g, i, row.id, rows[next].id)
+			}
+			texts[i] = row.text
+			tokens += embed.EstimateTokens([]string{row.text})
+			next++
+		}
+		if limits.MaxBatchBytes > 0 && batchBytes(texts) > limits.MaxBatchBytes {
+			t.Errorf("group %d carries %d bytes, over the %d budget", g, batchBytes(texts), limits.MaxBatchBytes)
+		}
+		if group.tokens != tokens || group.tokens > limits.BackgroundTokensPerMinute {
+			t.Errorf("group %d tokens = %d, want its rows' estimates' sum %d, at most %d", g, group.tokens, tokens, limits.BackgroundTokensPerMinute)
+		}
+	}
+	if next != len(rows) {
+		t.Fatalf("groups hold %d rows, want all %d", next, len(rows))
+	}
+	if fmt.Sprint(sizes) != fmt.Sprint(wantSizes) {
+		t.Errorf("group sizes = %v, want %v", sizes, wantSizes)
+	}
+}
+
+// fullText is a MaxInputRunes-long ASCII text, 32,000 bytes as sent, told apart from the others by
+// i.
+func fullText(i int) string {
+	return fmt.Sprintf("%05d", i) + strings.Repeat("x", embed.MaxInputRunes-5)
+}
+
+// With Bedrock's limits, a group whose bytes reach the 320,000-byte budget exactly is one call, and
+// the row that would take a group past it starts the next group whole, however far past the edge it
+// would have reached: no row is cut to fit or left out, and no group carries more than the budget.
+// The last case is the largest group Bedrock's token ceiling alone allows, 25 full texts (800,000
+// bytes), which goes in three.
+func TestABedrockGroupAtItsByteBudgetIsSplitNotCutOff(t *testing.T) {
+	limits := new(embed.BedrockClient).Limits()
+	if limits.MaxBatchBytes != 320_000 {
+		t.Fatalf("Bedrock limits = %+v, want a 320,000-byte budget", limits)
+	}
+	full := func(n int) []pendingRow {
+		rows := make([]pendingRow, n)
+		for i := range rows {
+			rows[i] = pendingRow{kind: "comment", id: fmt.Sprint(i), text: fullText(i)}
+		}
+		return rows
+	}
+	for _, tc := range []struct {
+		name      string
+		rows      []pendingRow
+		wantSizes []int
+	}{
+		{"ten full texts fill the budget exactly", full(10), []int{10}},
+		{"one byte past it starts a second group", append(full(10), pendingRow{kind: "comment", id: "byte", text: "y"}), []int{10, 1}},
+		{"a text that would cross the edge starts the next group whole", append(full(9),
+			// 10,667 runes of three bytes: 32,001 bytes, one past the room the nine leave.
+			pendingRow{kind: "comment", id: "cross", text: denseCJK(10_667, 0)},
+			pendingRow{kind: "comment", id: "after", text: "y"}), []int{9, 2}},
+		{"the token ceiling's largest group goes in three", full(25), []int{10, 10, 5}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			requireGroups(t, tc.rows, limits, tc.wantSizes)
+		})
+	}
+}
+
+// bedrockFake stands in for Bedrock's InvokeModel route: it answers each request one vector per
+// text, in Bedrock's shape (embeddings.float), and records each request's texts as the client sent
+// them.
+type bedrockFake struct {
+	mu       sync.Mutex
+	requests [][]string
+}
+
+func (f *bedrockFake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		Texts []string `json:"texts"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	f.mu.Lock()
+	f.requests = append(f.requests, request.Texts)
+	f.mu.Unlock()
+	var response struct {
+		Embeddings struct {
+			Float [][]float32 `json:"float"`
+		} `json:"embeddings"`
+	}
+	response.Embeddings.Float = fakeVectors(len(request.Texts))
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(response)
+}
+
+// The largest group Bedrock's token ceiling alone allows, 25 pending full texts (800,000 bytes),
+// goes through ProcessBatch and the paced Bedrock client cmd/dispatch builds, over HTTP to a
+// stand-in Bedrock, as three calls of 10, 10 and 5 texts: two exactly at the 320,000-byte budget
+// and none past it, every text sent once (nothing was bisected), and every row current.
+func TestNoBedrockCallCarriesMoreThanItsByteBudget(t *testing.T) {
+	database := storetest.Open(t)
+	seedManyIssues(t, database, "BYTE", 25, fullText)
+	fake := &bedrockFake{}
+	server := httptest.NewServer(fake)
+	defer server.Close()
+	client := bedrockClientFor(server)
+	const budget = 320_000 // Bedrock's MaxBatchBytes, which TestABedrockGroupAtItsByteBudgetIsSplitNotCutOff checks
+
+	succeeded, failed, blocked, throttled, err := ProcessBatch(context.Background(), Deps{Store: database, Embedder: client}.Paced())
+	if err != nil || succeeded != 25 || failed != 0 || blocked || throttled {
+		t.Fatalf("ProcessBatch = %d, %d, %v, %v, %v; want all 25 committed", succeeded, failed, blocked, throttled, err)
+	}
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	sizes := callSizes(fake.requests)
+	carried, distinct := requireCallsWithinBudget(t, fake.requests, budget)
+	if fmt.Sprint(sizes) != "[10 10 5]" || fmt.Sprint(carried) != "[320000 320000 160000]" || distinct != 25 {
+		t.Errorf("calls of %v texts and %v bytes carrying %d distinct texts, want [10 10 5] and [320000 320000 160000], all 25", sizes, carried, distinct)
+	}
+	if got := pendingCount(t, database); got != 0 {
+		t.Errorf("pending after the batch = %d, want 0", got)
+	}
 }
 
 // timeoutEmbedder answers like a place whose request timeout a call over its byte budget passes:
@@ -590,10 +709,26 @@ func TestAFullBatchOfDenseTextIsEmbeddedWithinTheByteBudgetWithoutBisection(t *t
 	if err != nil || succeeded != 96 || failed != 0 || blocked || throttled {
 		t.Fatalf("ProcessBatch = %d, %d, %v, %v, %v; want all 96 committed", succeeded, failed, blocked, throttled, err)
 	}
+	_, distinct := requireCallsWithinBudget(t, embedder.calls, limits.MaxBatchBytes)
+	if len(embedder.calls) != 32 || distinct != 96 {
+		t.Errorf("%d calls carrying %d distinct texts, want 32 calls of three: the fewest the budget allows", len(embedder.calls), distinct)
+	}
+	if got := pendingCount(t, database); got != 0 {
+		t.Errorf("pending after the batch = %d, want 0", got)
+	}
+}
+
+// requireCallsWithinBudget requires each of calls to carry at most budget bytes, and no text a call
+// before it carried (a call that failed and was bisected sends its texts again), and returns each
+// call's bytes and how many distinct texts the calls carried.
+func requireCallsWithinBudget(t *testing.T, calls [][]string, budget int) (carried []int, distinct int) {
+	t.Helper()
+	carried = make([]int, len(calls))
 	seen := map[string]bool{}
-	for i, call := range embedder.calls {
-		if size := batchBytes(call); size > limits.MaxBatchBytes {
-			t.Errorf("call %d carried %d bytes, over the %d budget", i, size, limits.MaxBatchBytes)
+	for i, call := range calls {
+		carried[i] = batchBytes(call)
+		if carried[i] > budget {
+			t.Errorf("call %d carried %d bytes, over the %d budget", i, carried[i], budget)
 		}
 		for _, text := range call {
 			if seen[text] {
@@ -602,12 +737,7 @@ func TestAFullBatchOfDenseTextIsEmbeddedWithinTheByteBudgetWithoutBisection(t *t
 			seen[text] = true
 		}
 	}
-	if len(embedder.calls) != 32 || len(seen) != 96 {
-		t.Errorf("%d calls carrying %d distinct texts, want 32 calls of three: the fewest the budget allows", len(embedder.calls), len(seen))
-	}
-	if got := pendingCount(t, database); got != 0 {
-		t.Errorf("pending after the batch = %d, want 0", got)
-	}
+	return carried, len(seen)
 }
 
 func callSizes(calls [][]string) []int {
