@@ -154,7 +154,7 @@ type relayEvent uint8
 const (
 	// relayCheck: the session's entry changed; start or stop its relay to match it.
 	relayCheck relayEvent = 0
-	// relayResume: the session registered or claimed a role through this listener; a relay that
+	// relayResume: the session registered, or at the edge claimed a role through this listener; a relay that
 	// paused or ended starts again.
 	relayResume relayEvent = 1 << iota
 	// relayRestart: the session registered with a new epoch; its relay restarts at the ack floor.
@@ -533,7 +533,7 @@ func (r *relayRun) waitRetry(ctx context.Context, d time.Duration) bool {
 }
 
 // ended reports whether the run's goroutine has returned: it was stopped, or it may start again
-// only at the session's next registration or a role claim it makes through this listener.
+// only at the session's next registration, or at the edge a role claim it makes through this listener.
 func (r *relayRun) ended() bool {
 	select {
 	case <-r.done:
@@ -631,7 +631,7 @@ func (m *sessionRelays) setOwned(owned bool) {
 	m.signal()
 }
 
-// registered implements sessionRelay: the session registered or claimed a role through this
+// registered implements sessionRelay: the session registered, or at the edge claimed a role through this
 // listener, so a relay that paused or ended starts again and a new epoch restarts it at the ack
 // floor, unless it restarted after heard (relayRun.restartedBefore).
 func (m *sessionRelays) registered(sessionID string, epochChanged bool, heard uint64) {
@@ -749,7 +749,7 @@ func (m *sessionRelays) loop() {
 }
 
 // apply makes sessionID's relay match its entry and notice: started when the session is this
-// listener's to relay, stopped when it is not, started again when it registered or claimed a role
+// listener's to relay, stopped when it is not, started again when it registered or, at the edge, claimed a role
 // here and the run ended or is returning on its own (relayRun.wake), restarted at the ack floor on
 // a new epoch registered after the run's last restart (relayRun.restartedBefore), and, for a run
 // waiting out a pause or a retry, woken by that resume so it restarts at once.
@@ -876,7 +876,7 @@ func (m *sessionRelays) start(sessionID string, previous <-chan struct{}) {
 // relay runs one session's relay until it is stopped, restarting at the ack floor after a failed
 // call or pull, with a wait that doubles from relayRetryFirst to relayRetryMax, and after a pause
 // (relayPaused), with a wait that doubles from pauseFirst to pauseMax, both cut short by the
-// session's next registration, or a role claim it makes through this listener. Both only while
+// session's next registration, or at the edge a role claim it makes through this listener. Both only while
 // the session is still this listener's.
 //
 // The pause is logged once an episode: the line is written for the first pause since the session

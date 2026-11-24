@@ -897,8 +897,10 @@ func TestSessionConsumerRegistrationTellsTheRelayWhenTheEpochChanges(t *testing.
 
 // TestAHubRoleClaimSendsNoRelayResume: the resume a role claim's refresh sends is gated to the edge
 // (api.go's roleSetHandler, heldProjects). On a hub heldProjects is false, so a claim tells the
-// relay nothing; apply starts any ended run a claim can cure there itself. The edge side, where the
-// resume does fire, is TestAnEdgeRoleClaimResumesARelayRunThatEndedForWantOfAnAdmission.
+// relay nothing, and nothing is lost: a hub run ends for want of a consumer or a grant
+// (restartFailed), which a claim cannot cure, and a session the claim moves here has no run, which
+// apply starts on the entry's change. The edge side, where the resume does fire, is
+// TestAnEdgeRoleClaimResumesARelayRunThatEndedForWantOfAnAdmission.
 func TestAHubRoleClaimSendsNoRelayResume(t *testing.T) {
 	rig := newSessionConsumerRig(t)
 	relay := &recordingRelay{}

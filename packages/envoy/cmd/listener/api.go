@@ -2253,8 +2253,10 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 		}
 		// At the edge the claim just recorded the session's admission; a resume starts this replica's
 		// relay run for the session if it had ended for want of one, which the entry's change (a
-		// relayCheck) does not. heldProjects is true only at the edge, the one place an admission
-		// guard ends a run a claim can cure; on a hub apply starts any ended run itself (run == nil).
+		// relayCheck) does not. heldProjects is true only at the edge, where the admission guard
+		// (relayNATS) ends a run the claim's admission cures. On a hub a run ends for want of a
+		// consumer or a grant (restartFailed), which a claim cannot cure, and a session the claim
+		// moves here has no run, which apply starts on the entry's change (run == nil).
 		if _, held := heldProjects(r); held && d.consumers != nil && d.consumers.relay != nil {
 			d.consumers.relay.registered(body.SessionID, false, 0)
 		}

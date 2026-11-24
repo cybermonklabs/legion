@@ -126,8 +126,8 @@ func (o sessionDeliveryOutcome) relayed() bool {
 	return o.answer != nil && o.answer.Mode == deliveryModeConsumer
 }
 
-// sessionRelay is what the relay of session consumers hears from registrations, and from role
-// claims through this listener.
+// sessionRelay is what the relay of session consumers hears from registrations, and, at the edge,
+// from role claims through this listener.
 type sessionRelay interface {
 	// registered reports a registration of sessionID that recorded consumer delivery on its entry,
 	// or, at the edge, a role claim refresh that wrote the session's record (api.go's roleSetHandler).
@@ -161,8 +161,9 @@ type sessionDelivery struct {
 	// and main's start ends when that relay cannot start), so a registration answered consumer is relayed.
 	relay sessionRelay
 	// admissions is, on an edge listener, the projects of the token each session's latest
-	// registration here was admitted on (subscribeHandler), which the relay holds the session's
-	// frames to (edge_frames.go). Every other listener records none.
+	// registration or role claim here was admitted on (subscribeHandler and the claim's admitHeld,
+	// api.go), which the relay holds the session's frames to (edge_frames.go). Every other listener
+	// records none.
 	admissions edgeAdmissions
 	// marks is the last mark taken (mark).
 	marks atomic.Uint64
