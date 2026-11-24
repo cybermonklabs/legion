@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"strconv"
@@ -36,6 +37,31 @@ func startsIgnoring(t *testing.T, wrap func(string) string, sig string) bool {
 	}
 	t.Fatalf("a child shell's probe of its SIG%s printed %q, want %q or %q", sig, out, "sent\n", "caught\nsent\n")
 	return false
+}
+
+// requireStartedAtDefault ends t where this test process was started with the signal named sig
+// (TSTP, TTOU) ignored, as a child shell started bare shows it (startsIgnoring): the row could then
+// not tell an ignore the attempt set from one this process inherited. Either way it first writes
+// what it found to stderr, as one line that starts "signal probe:". Where the signal was ignored
+// the row follows the daemon's rule for a test this machine cannot run (internal/launcher's
+// skipOutsideCI): under GITHUB_ACTIONS it fails, since CI's runner starts go test with every signal
+// at its default, so an ignore there is a broken runner or a probe that cannot see a default, never
+// a green job with the proof gone from it; anywhere else it skips, naming why.
+func requireStartedAtDefault(t *testing.T, sig string) {
+	t.Helper()
+	ignored := startsIgnoring(t, bare, sig)
+	found, verdict := "trapped it", "at its default, so the row runs"
+	if ignored {
+		found, verdict = "could not trap it", "ignored, so the row cannot run"
+	}
+	_, _ = fmt.Fprintf(os.Stderr, "signal probe: %s needs this test process started with SIG%s at its default; a child shell started bare %s, so SIG%s is %s\n", t.Name(), sig, found, sig, verdict)
+	if !ignored {
+		return
+	}
+	if os.Getenv("GITHUB_ACTIONS") == "true" {
+		t.Fatalf("this test process was started with SIG%s ignored (a child shell started bare could not trap it); CI's runner starts go test with every signal at its default, so this runner, or startsIgnoring, is broken", sig)
+	}
+	t.Skipf("this test process was started with SIG%s ignored (a child shell started bare could not trap it), so the row cannot tell an ignore the attempt set from one it inherited", sig)
 }
 
 // ignoredBy is the SigIgn mask of a process that reads its own /proc/self/status, run as wrap has
@@ -85,9 +111,7 @@ func terminalAttempt(t *testing.T) (*terminalJob, *exec.Cmd) {
 // the build cluster's gVisor keeps none.
 func TestATerminalAttemptLeavesLaterChildrenSIGTTOUsDefault(t *testing.T) {
 	// Not parallel: it changes the whole process's SIGTTOU disposition (terminalJob.attach, release).
-	if startsIgnoring(t, bare, "TTOU") {
-		t.Skip("this test process was started with SIGTTOU ignored")
-	}
+	requireStartedAtDefault(t, "TTOU")
 	job, attempt := terminalAttempt(t)
 	job.attach(attempt)
 	during := startsIgnoring(t, bare, "TTOU")
@@ -121,10 +145,7 @@ func TestATerminalAttemptLeavesLaterChildrenSIGTTOUsDefault(t *testing.T) {
 // keeps one (testkernel.RequireSignalMasks).
 func TestATerminalAttemptIgnoresSIGTSTP(t *testing.T) {
 	t.Parallel()
-	var background *terminalJob
-	if startsIgnoring(t, background.script, "TSTP") {
-		t.Skip("this test process was started with SIGTSTP ignored")
-	}
+	requireStartedAtDefault(t, "TSTP")
 	job := &terminalJob{}
 	if !startsIgnoring(t, job.script, "TSTP") {
 		t.Fatal("a terminal attempt's launch can trap SIGTSTP: SIGTSTP is not ignored")

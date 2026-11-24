@@ -210,6 +210,11 @@ itself, whose tests import its sources by relative path.
   for a signal it was started ignoring (`startsIgnoring` in
   `packages/daemon/internal/daemon/foreground_test.go`), and a shell started ignoring SIGHUP
   survives the hangup it sends itself (`ghHangupProbe` in `packages/daemon/cmd/legion/gh_test.go`).
+  A row that cannot run because the test process itself was started with its signal ignored is a
+  machine the row cannot run on too: it prints one `signal probe:` line either way, skips outside
+  CI and fails under `GITHUB_ACTIONS`, whose runner starts `go test` with every signal at its
+  default (`requireStartedAtDefault` in the same file). A skip there would leave `go test` green
+  with nothing proved, since CI runs it without `-v`.
 
 - Start a container with `docker run --rm` and register its removal the moment `docker run` returns,
   not once the whole start has succeeded: a start that throws half-way has already made the
