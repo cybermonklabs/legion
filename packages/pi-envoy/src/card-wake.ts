@@ -577,18 +577,22 @@ export class CardWake {
     this.#owed.clear();
     this.#startupPhase = false;
     if (unread === 0) return;
-    // Worded for a session that has had no turn yet too: a startup card's wake may be its first.
     this.#deps.sendMessage(
       {
         customType: "envoy-message",
-        content:
-          unread === 1
-            ? "1 Envoy message above arrived with no turn to read it: read it and act on it."
-            : `${unread} Envoy messages above arrived with no turn to read them: read them and act on them.`,
+        content: wakeText(unread),
         display: false,
         details: LOCAL_ENVOY_NOTICE,
       },
       { deliverAs: "nextTurn", triggerTurn: true }
     );
   }
+}
+
+/** What the wake says for `unread` cards the host folded. Worded for a session that has had no
+ *  turn yet too: a startup card's wake may be its first. */
+export function wakeText(unread: number): string {
+  return unread === 1
+    ? "1 Envoy message above arrived with no turn to read it: read it and act on it."
+    : `${unread} Envoy messages above arrived with no turn to read them: read them and act on them.`;
 }

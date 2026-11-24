@@ -1307,7 +1307,7 @@ test.skipIf(skip)(
 
     // Nothing is hidden from the model: it reads the same report.
     const request = await probe(session);
-    expect(conversation(request)).toContain("The command ended with exit status 127.");
+    expect(conversation(request)).toContain(reply);
   },
   120_000
 );

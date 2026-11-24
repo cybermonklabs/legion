@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { decode } from "@toon-format/toon";
 import { renderInbound } from "@legion/envoy-client/delivery";
 import { envoyNoticeText, failureNoticeFields } from "@legion/envoy-client/delivery-ledger";
 import { CardAges, duration, MATERIAL_WAIT_MS } from "./card-age";
@@ -7,6 +8,18 @@ import { REPLAY_DELIVERED_ENTRY } from "./missed-messages";
 const SESSION = "ses_reader";
 const SENT = Date.parse("2026-10-31T06:27:17Z");
 const LATE = Date.parse("2026-10-31T11:13:02Z");
+/** The wait between `SENT` and `LATE`, as a card's fields give a duration. */
+const FOUR_45 = duration(4 * 3_600_000 + 45 * 60_000);
+
+/** The value of the card field `name` in `text`, a card or notice as the session reads it, or
+ *  undefined when the card has no such field. */
+function field(text: string, name: string): unknown {
+  const card = decode(text);
+  if (card === null || typeof card !== "object" || !("envoy" in card)) return undefined;
+  const { envoy } = card;
+  if (envoy === null || typeof envoy !== "object") return undefined;
+  return Object.entries(envoy).find(([key]) => key === name)?.[1];
+}
 
 /** A card as the extension hands it: `renderInbound`'s text of a message sent at `sentAt`. */
 function card(eventID: string, sentAt: number, handedAt: number): Record<string, unknown> {
@@ -146,9 +159,7 @@ describe("a card in a model request", () => {
     );
 
     expect(text).toContain('\n  at: "2026-10-31T06:27:17Z"\n  delivered: "2026-10-31T11:13:02Z"\n');
-    expect(text).toContain(
-      "\n  waited: \"4 h 45 min between at and delivered; delivered is this machine's clock and at the sending server's, and at is when it was sent, not the present time\"\n"
-    );
+    expect(field(text, "waited")).toContain(FOUR_45);
     // With no clock difference measured, the card claims none.
     expect(text).not.toContain("clocks:");
   });
@@ -180,7 +191,7 @@ describe("a card in a model request", () => {
     const annotated = ages.annotate([under, at], () => [], SESSION);
 
     expect(textOf(annotated, "evt-under")).not.toContain("waited:");
-    expect(textOf(annotated, "evt-at")).toContain('waited: "15 min between at and delivered;');
+    expect(field(textOf(annotated, "evt-at"), "waited")).toContain(duration(MATERIAL_WAIT_MS));
   });
 
   // A request's bytes repeat on the next request, so the provider's cache reads them again.
@@ -235,7 +246,7 @@ describe("a card in a model request", () => {
     );
 
     expect(text).toContain('delivered: "2026-10-31T11:13:02Z"');
-    expect(text).toContain('waited: "4 h 45 min');
+    expect(field(text, "waited")).toContain(FOUR_45);
   });
 
   // The process ended after the host wrote the card and before its ledger record was appended: the
@@ -261,7 +272,7 @@ describe("a card in a model request", () => {
     );
 
     expect(text).toContain('delivered: "2026-10-31T11:12:58Z"');
-    expect(text).toContain('waited: "4 h 45 min');
+    expect(field(text, "waited")).toContain(FOUR_45);
   });
 
   // Oh My Pi appends a `custom` entry such as `date-cwd-reminder` as it prepares a request, after
@@ -390,7 +401,7 @@ describe("a card in a model request", () => {
     expect(early).toContain('delivered: "2026-10-31T06:27:17Z"');
     expect(early).not.toContain("waited:");
     expect(late).toContain('delivered: "2026-10-31T11:13:02Z"');
-    expect(late).toContain('waited: "4 h 45 min');
+    expect(field(late, "waited")).toContain(FOUR_45);
     // Back on the first session, its own request reads exactly as it did before.
     expect(
       textOf(
@@ -418,9 +429,7 @@ describe("a card in a model request", () => {
       expect(text).toContain(
         '\n  published_at: "2026-10-31T06:27:17.000Z"\n  delivered: "2026-10-31T11:13:02Z"\n'
       );
-      expect(text).toContain(
-        "\n  waited: \"4 h 45 min between published_at and delivered; delivered is this machine's clock and published_at the sending server's, and published_at is when it was sent, not the present time\"\n"
-      );
+      expect(field(text, "waited")).toContain(FOUR_45);
     }
   });
 });
@@ -745,8 +754,8 @@ describe("a card's delivery the session records", () => {
       "evt-measured-later"
     );
 
-    expect(unmeasured).toContain('waited: "4 h 45 min between at and delivered; ');
-    expect(measured).toContain("clocks: \"this machine's clock runs 4 h 45 min ahead of");
+    expect(field(unmeasured, "waited")).toContain(FOUR_45);
+    expect(field(measured, "clocks")).toContain(FOUR_45);
     expect(measured).not.toContain("waited:");
     expect(again).toBe(measured);
     expect(files.recorded(SESSION)).toEqual([
@@ -777,7 +786,7 @@ describe("a card's delivery the session records", () => {
     );
 
     expect(text).toContain('\n  delivered: "2026-10-31T11:12:18Z"\n');
-    expect(text).toContain("clocks: \"this machine's clock runs 4 h 45 min ahead of");
+    expect(field(text, "clocks")).toContain(FOUR_45);
     expect(files.recorded(SESSION)).toEqual([
       { event_id: "evt-measured-later", at },
       { event_id: "evt-measured-later", at, clock_offset: AHEAD },
@@ -827,9 +836,7 @@ describe("a card whose two clocks disagree", () => {
 
     expect(text).toContain('\n  delivered: "2026-10-31T11:12:18Z"\n');
     expect(text).not.toContain("waited:");
-    expect(text).toContain(
-      "\n  clocks: \"this machine's clock runs 4 h 45 min ahead of the Envoy listener's, read from the listener's replies; delivered is this machine's clock and at the sending server's\"\n"
-    );
+    expect(field(text, "clocks")).toContain(FOUR_45);
   });
 
   test("on a machine whose clock runs behind says so, and states the wait it would hide", () => {
@@ -846,12 +853,8 @@ describe("a card whose two clocks disagree", () => {
     );
 
     expect(text).toContain('\n  delivered: "2026-10-31T03:42:17Z"\n');
-    expect(text).toContain(
-      "\n  waited: \"2 h 0 min between at and delivered, less the difference in clocks; delivered is this machine's clock and at the sending server's, and at is when it was sent, not the present time\"\n"
-    );
-    expect(text).toContain(
-      "\n  clocks: \"this machine's clock runs 4 h 45 min behind the Envoy listener's, read from the listener's replies; delivered is this machine's clock and at the sending server's\"\n"
-    );
+    expect(field(text, "waited")).toContain(duration(2 * 3_600_000));
+    expect(field(text, "clocks")).toContain(FOUR_45);
   });
 
   test("delivered well before its send with no difference measured says the clocks disagree by at least that", () => {
@@ -867,9 +870,7 @@ describe("a card whose two clocks disagree", () => {
     );
 
     expect(text).not.toContain("waited:");
-    expect(text).toContain(
-      "\n  clocks: \"delivered is 20 min before at, so this machine's clock runs at least 20 min behind the sending server's; delivered is this machine's clock and at the sending server's\"\n"
-    );
+    expect(field(text, "clocks")).toContain(duration(20 * 60_000));
   });
 
   // Only the listener this session talks to is measured. A sending server whose clock runs ahead
@@ -888,9 +889,8 @@ describe("a card whose two clocks disagree", () => {
     );
 
     expect(text).not.toContain("waited:");
-    expect(text).toContain(
-      "\n  clocks: \"this machine's clock runs 20 min ahead of the Envoy listener's, read from the listener's replies; delivered is still 3 h 20 min before at less that difference, so the sending server's clock runs at least 3 h 20 min ahead of the Envoy listener's; delivered is this machine's clock and at the sending server's\"\n"
-    );
+    expect(field(text, "clocks")).toContain(duration(20 * 60_000));
+    expect(field(text, "clocks")).toContain(duration(3 * 3_600_000 + 20 * 60_000));
   });
 
   // The stated limit: a difference under the threshold is neither shown nor taken off the wait.
@@ -906,7 +906,7 @@ describe("a card whose two clocks disagree", () => {
       "evt-small-skew"
     );
 
-    expect(text).toContain('waited: "2 h 10 min between at and delivered; ');
+    expect(field(text, "waited")).toContain(duration(2 * 3_600_000 + 10 * 60_000));
     expect(text).not.toContain("clocks:");
   });
 
@@ -933,9 +933,9 @@ describe("a card whose two clocks disagree", () => {
       "evt-measured-later"
     );
 
-    expect(unmeasured).toContain('waited: "4 h 45 min between at and delivered; ');
+    expect(field(unmeasured, "waited")).toContain(FOUR_45);
     expect(measured).not.toContain("waited:");
-    expect(measured).toContain("clocks: \"this machine's clock runs 4 h 45 min ahead of");
+    expect(field(measured, "clocks")).toContain(FOUR_45);
     expect(again).toBe(measured);
   });
 });

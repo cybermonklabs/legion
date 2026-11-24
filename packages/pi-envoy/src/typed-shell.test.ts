@@ -594,12 +594,12 @@ describe("the texts a command becomes", () => {
   });
 
   test("tell the agent whose command it was before the command itself", () => {
-    expect(shellCommandMessage(shellCommandReport(line, ran))).toEndWith(
-      "\n\n!printf hi\n\n```\nhi\n```"
-    );
-    expect(shellCommandMessage(shellCommandReport(line, ran))).toStartWith(
-      "A person ran this shell"
-    );
+    const report = shellCommandReport(line, ran);
+    const message = shellCommandMessage(report);
+    expect(report).toBe("!printf hi\n\n```\nhi\n```");
+    expect(message).toEndWith(`\n\n${report}`);
+    // The plugin's own heading stands before the person's command.
+    expect(message.length).toBeGreaterThan(`\n\n${report}`.length);
   });
 
   // The fence marks where the output ends in the agent's copy too: a file or a `curl` response

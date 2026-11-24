@@ -25,6 +25,7 @@ import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { settled, timeLeft, until as waitUntil } from "@legion/test-fixtures/wait";
 import { connect, createInbox, headers, type NatsConnection, StringCodec } from "nats";
 import { z } from "zod";
+import { wakeText } from "../src/card-wake";
 import { readCardLines } from "../test/card-entries";
 
 // How an Envoy card and a person's Send reach the real Oh My Pi (extensions/envoy.ts's card send,
@@ -44,8 +45,12 @@ const { skip, setup } = ompNatsGuard();
 /** The Dispatch token the session is handed. */
 const DISPATCH_TOKEN = fixtureSecret("dsp");
 
-/** What the wake (src/card-wake.ts, `CardWake`) says, in its one- and many-card forms. */
-const WAKE_TEXT = /Envoy messages? above arrived with no turn to read (it|them)/;
+/** What the wake (src/card-wake.ts, `wakeText`) says for one card up to twenty, as one pattern. */
+const WAKE_TEXT = new RegExp(
+  Array.from({ length: 20 }, (_, index) =>
+    wakeText(index + 1).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+  ).join("|")
+);
 
 /** The one stream the stand-in listener answers a consumer registration with, and stamps every
  *  relay frame it publishes with: one stream for the run, so no frame reports a replaced one. */
