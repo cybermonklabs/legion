@@ -11,8 +11,9 @@
 import { readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-import { expect, type Page } from "@playwright/test";
+import { expect, type Page, type Route } from "@playwright/test";
 
+import { TINY_PNG } from "./api";
 import type { KnownLayoutBreach } from "./layout-breaches";
 import {
   judgeReading,
@@ -23,6 +24,7 @@ import {
 } from "./layout-check";
 import { type LayoutBreach, type LayoutReading, measureLayout } from "./layout-measure";
 import { openCappedGroups } from "./layout-routes";
+import { trackDocumentRequests, waitForRouteSettled } from "./review-routes";
 import { stubbed } from "./stub/stub-test";
 
 // No row takes a `scene`, so no seed ever runs and no recording is read or written.
@@ -39,8 +41,7 @@ const PATH = "packages/dispatch/e2e/acceptance/converted-verification-check-with
 const BARE_PATH = "packages/dispatch/e2e/acceptance/convertedverificationcheckwithalongpath.sh";
 
 /** A one-pixel picture, drawn as wide as an `img` is told to be. */
-const PIXEL =
-  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL0eAAAAABJRU5ErkJggg==";
+const PIXEL = `data:image/png;base64,${TINY_PNG}`;
 
 /** `count` spans, each one entry of a group. */
 function entries(count: number): string {
@@ -393,6 +394,37 @@ const defects: readonly {
     locator: '[data-testid="block-text"]',
     name: "text in a block child of a truncating box",
   },
+  {
+    // A span in a block child of a truncating box: it draws in the block's lines, which the box's
+    // ellipsis does not reach (`text-overflow` is not inherited), so it is cut bare.
+    body:
+      '<div style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap; width: 100px">' +
+      `<div><span data-testid="span-in-block">${LONG}</span></div></div>`,
+    kind: "clipped",
+    locator: '[data-testid="span-in-block"]',
+    name: "a span in a block child of a truncating box",
+  },
+  {
+    // The same in a flex row: the `min-w-0` item shrinks to the row, and its span draws in the
+    // item's lines; a flex container has no lines for its ellipsis.
+    body:
+      '<div style="display: flex; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; width: 100px">' +
+      `<div style="min-width: 0"><span data-testid="span-in-flex-item">${LONG}</span></div></div>`,
+    kind: "clipped",
+    locator: '[data-testid="span-in-flex-item"]',
+    name: "a span in a min-width-0 flex item of a truncating box",
+  },
+  {
+    // A highlighted line of a code block whose overflow is visible: the block cuts nothing, so the
+    // box around it cuts the highlight's span, and that box's ellipsis does not reach the block's
+    // lines.
+    body:
+      '<div style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap; width: 100px">' +
+      `<pre style="margin: 0"><span data-testid="highlight-in-pre">${LONG}</span></pre></div>`,
+    kind: "clipped",
+    locator: '[data-testid="highlight-in-pre"]',
+    name: "a highlighted span of a code block a truncating box cuts",
+  },
 ];
 
 /** Every case the rule allows, on one page: none of them may be reported. */
@@ -401,6 +433,13 @@ const allowed = [
   `<span style="display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; width: 100px">Opened by <a href="#x">${LONG}</a></span>`,
   `<pre style="overflow-x: auto; width: 200px">${LONG}</pre>`,
   `<div style="overflow-x: auto; width: 200px"><pre>${LONG}</pre></div>`,
+  // A highlighted code block that scrolls its own lines: its spans are its own to scroll.
+  `<pre style="overflow-x: auto; width: 200px"><span>${LONG}</span> <span>${LONG}</span></pre>`,
+  // A truncating block inside a truncating box, Tailwind's most common nested truncation: the
+  // inner block clips its own text and draws its own ellipsis.
+  `<div style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap; width: 100px"><div style="overflow: hidden; text-overflow: ellipsis">${LONG}</div></div>`,
+  // A link in a wrapper that draws no box (`display: contents`): it draws in the box's own lines.
+  `<span style="display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; width: 100px"><span style="display: contents"><a href="#x">${LONG}</a></span></span>`,
   `<div style="overflow-x: auto; width: 200px"><table><tr><td style="white-space: nowrap">${LONG}</td></tr></table></div>`,
   '<div style="overflow-x: auto; width: 200px"><div role="grid" style="height: 20px; width: 400px"></div></div>',
   `<div style="overflow-x: auto; width: 200px"><img alt="" height="10" src="${PIXEL}" style="display: block" width="400"></div>`,
@@ -587,7 +626,16 @@ test("a window scrolled sideways reads as it does unscrolled @pr", async ({ page
 // download, which a loaded box provokes (`net::ERR_NETWORK_CHANGED`, seen in a trace of the
 // agents row). The layout sheet reaches the new document without another call, so the reading
 // taken there is still in the pinned faces and with no transitions.
-test("a pinned face that does not load fails a reading, and the layout sheet reaches a document the page replaces @pr", async ({
+//
+// The settle wait then counts the Inbox number's reads of the document the page shows, and of no
+// document the page replaced: a replaced document's reads stay in `page.requests()` answered by
+// nothing and failed by nothing, and a wait that counted them never settled (dispatch://INFRA-5200:
+// 10 of 80 repeats of the issue-spec-outline row under address changes). The replaced document
+// here leaves two such reads: one sent before its successor's navigation request, and one sent
+// after it and before the successor commits. The shown document's own read is held a moment, and
+// the wait settles only once that read has its answer.
+// SLOW(>=2s): three loads of a page, then a page held mid-reload and a read held 600 ms.
+test("a pinned face that does not load fails a reading, and a document the page replaces keeps the layout sheet and is the one the settle wait waits on @pr", async ({
   page,
 }) => {
   const origin = "http://layout-fonts.test";
@@ -620,6 +668,60 @@ test("a pinned face that does not load fails a reading, and the layout sheet rea
   );
   await page.goto(`${origin}/`);
   await expect(pinFontFaces(page)).rejects.toThrow("Liberation Sans 700");
+
+  const settle = "http://layout-settle.test";
+  const html = (read: string) =>
+    `<!doctype html><main>A page</main><script>fetch("/api/v1/inbox?${read}")</script>`;
+  // The first load is answered; the reload's document request is held, so the replaced document
+  // is still there to send a read after its successor's navigation request.
+  const successor = Promise.withResolvers<Route>();
+  let documents = 0;
+  await page.route(`${settle}/`, async (route) => {
+    documents += 1;
+    if (documents === 1) await route.fulfill({ body: html("before"), contentType: "text/html" });
+    else successor.resolve(route);
+  });
+  const reads: Route[] = [];
+  await page.route(`${settle}/api/v1/inbox?*`, (route) => {
+    reads.push(route);
+  });
+
+  await trackDocumentRequests(page);
+  await page.goto(`${settle}/`);
+  await expect.poll(() => reads.length).toBe(1);
+  // The replaced document reloads, and sends its second read 50 ms later from a timer of its own,
+  // after its successor's navigation request: Playwright evaluates nothing in a page whose
+  // navigation is pending.
+  await page.evaluate(() => {
+    window.location.reload();
+    setTimeout(() => void fetch("/api/v1/inbox?after"), 50);
+  });
+  const held = await successor.promise;
+  await expect.poll(() => reads.length).toBe(2);
+  await held.fulfill({ body: html("shown"), contentType: "text/html" });
+  await expect.poll(() => reads.length).toBe(3);
+  // The control's premise: both reads of the replaced document are still listed, answered by
+  // nothing and failed by nothing, and the second was sent after the successor's own request.
+  const listed = await page.requests();
+  for (const read of reads.slice(0, 2)) {
+    const request = read.request();
+    expect(listed.includes(request)).toBe(true);
+    expect([request.existingResponse(), request.failure()]).toEqual([null, null]);
+  }
+  expect(listed.indexOf(held.request())).toBeLessThan(listed.indexOf(reads[1]?.request() as never));
+
+  let answeredAt = 0;
+  const answer = (async () => {
+    // Held for 600 ms so the wait is seen waiting on the shown document's read: a wait that
+    // ignored it would settle 500 ms after the load.
+    await page.waitForTimeout(600);
+    answeredAt = Date.now();
+    await reads[2]?.fulfill({ json: [] });
+  })();
+  await waitForRouteSettled(page, { ready: (current) => [current.getByRole("main")] });
+  const settledAt = Date.now();
+  await answer;
+  expect(settledAt - answeredAt).toBeGreaterThanOrEqual(500);
 });
 
 test("a layout reading fails on a blank page and on an entry its reading did not match @pr", async ({
@@ -652,7 +754,6 @@ test("a layout reading fails on a blank page and on an entry its reading did not
   const entry: KnownLayoutBreach = {
     element: chipStrip.locator,
     kind: "box-scroll",
-    reason: "D surfaces",
     route: "control",
     width: 360,
   };
@@ -679,7 +780,6 @@ test("a layout entry accepts its own count of breaches and no new one in its reg
   const entry: KnownLayoutBreach = {
     element: '[data-testid="region"]',
     kind: "clipped",
-    reason: "D surfaces",
     route: "counted",
     width: 360,
   };
@@ -710,7 +810,6 @@ test("a layout entry names a required group no shown entry marks, and a page-scr
   const missing: KnownLayoutBreach = {
     element: "labels",
     kind: "group-missing",
-    reason: "B issue page",
     route: "grouped",
     width: 360,
   };
@@ -758,7 +857,6 @@ test("a layout entry names a required group no shown entry marks, and a page-scr
     count,
     element,
     kind: "page-scroll",
-    reason: "D surfaces",
     route: "grouped",
     width: 360,
   });

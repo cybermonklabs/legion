@@ -11,7 +11,7 @@
  *  `./delivery-seed`: its only imports are `@playwright/test` - its types and `expect`, which
  *  `waitForRouteSettled` asserts with - and `./two-builds-routes`'s route paths, and that
  *  module imports nothing at all. */
-import { expect, type Locator, type Page, type Request } from "@playwright/test";
+import { expect, type Locator, type Page } from "@playwright/test";
 
 import type { WalkRoutePath } from "./two-builds-routes";
 
@@ -653,21 +653,83 @@ export async function waitForRouteSettled(
  *  longer than that gap, which is tens of milliseconds over a local socket. */
 const INBOX_COUNT_QUIET_MS = 500;
 
-/** Whether `request` feeds the shell's one Inbox number (`web/src/features/inbox/useInboxCount.ts`)
- *  or moves it. The reads are the asks (`GET /api/v1/inbox`) counted for the viewer
- *  `/auth/whoami` names, the pending credential requests, and the unread total of
- *  `GET /api/v1/me/replies`. The writes are the viewer's own read state under `/api/v1/me/`: the
- *  broadcast page's read mark (`PUT /api/v1/me/agents/{session}/state`, `useMarkShownRepliesRead`
- *  in `web/src/features/agents/unread.ts`) is one, and the reads under that prefix answer the
- *  number too. */
-function feedsInboxCount(request: Request): boolean {
-  const { pathname } = new URL(request.url());
+/** Whether a request to `url` feeds the shell's one Inbox number
+ *  (`web/src/features/inbox/useInboxCount.ts`) or moves it. The reads are the asks
+ *  (`GET /api/v1/inbox`) counted for the viewer `/auth/whoami` names, the pending credential
+ *  requests, and the unread total of `GET /api/v1/me/replies`. The writes are the viewer's own read
+ *  state under `/api/v1/me/`: the broadcast page's read mark (`PUT /api/v1/me/agents/{session}/state`,
+ *  `useMarkShownRepliesRead` in `web/src/features/agents/unread.ts`) is one, and the reads under
+ *  that prefix answer the number too. */
+function feedsInboxCount(url: string): boolean {
+  const { pathname } = new URL(url);
   return (
     pathname === "/api/v1/inbox" ||
     pathname === "/api/v1/credential-requests" ||
     pathname === "/auth/whoami" ||
     pathname.startsWith("/api/v1/me/")
   );
+}
+
+/** The requests a page's documents have in flight, as Chromium itself reports them to a CDP
+ *  session of their own (`trackDocumentRequests`): each with the document (`loaderId`) that sent
+ *  it, and the document the page's main frame shows now. */
+interface DocumentRequests {
+  shown: string;
+  readonly inFlight: Map<string, { readonly document: string; readonly url: string }>;
+}
+
+const documentRequests = new WeakMap<Page, DocumentRequests>();
+
+/** Starts reading `page`'s requests by the document that sent them, which the Inbox wait below
+ *  then reads instead of `page.requests()`. Call it before the page's first load: a request sent
+ *  before it is not seen. Chromium only.
+ *
+ *  A page whose answers come from routes needs it (the layout rows, `e2e/layout-check.ts`). Such
+ *  a page can replace its document on its own after the load - the app reloads when a lazy chunk
+ *  fails to download (`features/shell/DeploymentResilience.tsx`), which a network change on a
+ *  busy host provokes - and a request a route held when its document went stays in
+ *  `page.requests()` for ever, with neither an answer nor a failure, so a wait that read that
+ *  list never settled. Traced in dispatch://INFRA-5200's reproduction (the issue-spec-outline row
+ *  repeated 80 times while the host's addresses changed every 150 ms): 10 rows failed in the wait,
+ *  each with a replaced document's Inbox reads listed as in flight 15 s after the page had loaded
+ *  again, some of them sent after the next document's own navigation request had gone out. The
+ *  document that sent a request is what tells them apart, and only Chromium's own events carry
+ *  it. */
+export async function trackDocumentRequests(page: Page): Promise<void> {
+  if (documentRequests.has(page)) return;
+  const cdp = await page.context().newCDPSession(page);
+  const log: DocumentRequests = { inFlight: new Map(), shown: "" };
+  cdp.on("Network.requestWillBeSent", (event) => {
+    log.inFlight.set(event.requestId, { document: event.loaderId, url: event.request.url });
+  });
+  cdp.on("Network.loadingFinished", (event) => log.inFlight.delete(event.requestId));
+  cdp.on("Network.loadingFailed", (event) => log.inFlight.delete(event.requestId));
+  cdp.on("Page.frameNavigated", (event) => {
+    if (event.frame.parentId === undefined) log.shown = event.frame.loaderId;
+  });
+  await cdp.send("Network.enable");
+  await cdp.send("Page.enable");
+  log.shown = (await cdp.send("Page.getFrameTree")).frameTree.frame.loaderId;
+  documentRequests.set(page, log);
+}
+
+/** Whether a request that feeds the Inbox number can still answer: one the shown document sent,
+ *  where `trackDocumentRequests` reads the page, else one of this document's listed requests
+ *  (`requestsOfThisDocument`, `stillAnswering`). */
+async function inboxReadInFlight(page: Page): Promise<boolean> {
+  const tracked = documentRequests.get(page);
+  if (tracked !== undefined) {
+    return [...tracked.inFlight.values()].some(
+      (sent) => sent.document === tracked.shown && feedsInboxCount(sent.url)
+    );
+  }
+  // Every request is asked, not only those up to the first still in flight, so the next poll has
+  // heard of each one that has already ended.
+  let waiting = false;
+  for (const request of await requestsOfThisDocument(page)) {
+    if (feedsInboxCount(request.url()) && stillAnswering(request)) waiting = true;
+  }
+  return waiting;
 }
 
 /** The rail's Inbox entry, the link whose text carries the shell's one Inbox number from the wide
@@ -707,9 +769,10 @@ export function topBarInboxBadge(page: Page): Locator {
  *  that will change it is in flight; an idle network alone is not enough either, because the
  *  refetch a write causes is sent only once the socket's event arrives. So both are asked for,
  *  and the window restarts whenever either fails. The requests come from `page.requests()`, the
- *  page's latest hundred, which holds every request recent enough to still be waiting, and only
- *  those that can still answer count: the ones the page's current document sent
- *  (`requestsOfThisDocument`), each until Playwright has heard that it ended (`stillAnswering`). */
+ *  page's latest hundred, of which only those that can still answer count: the ones the page's
+ *  current document sent (`requestsOfThisDocument`), each until Playwright has heard that it
+ *  ended (`stillAnswering`). A page whose answers come from routes reads them from
+ *  `trackDocumentRequests` instead, which says why. */
 async function waitForInboxCountSettled(page: Page): Promise<void> {
   const count = wideLayout(page) ? railInboxLink(page) : topBarInboxBadge(page);
   let held: string | undefined;
@@ -717,12 +780,7 @@ async function waitForInboxCountSettled(page: Page): Promise<void> {
   await expect
     .poll(
       async () => {
-        // Every request is asked, not only those up to the first still in flight, so the next
-        // poll has heard of each one that has already ended.
-        let waiting = false;
-        for (const request of await requestsOfThisDocument(page)) {
-          if (feedsInboxCount(request) && stillAnswering(request)) waiting = true;
-        }
+        const waiting = await inboxReadInFlight(page);
         const reading = (await count.allTextContents()).join(" | ");
         if (waiting || reading !== held) {
           held = reading;

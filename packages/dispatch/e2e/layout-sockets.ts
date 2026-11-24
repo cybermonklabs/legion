@@ -51,8 +51,6 @@ function messageOf(frame: Frame): string | Buffer {
   return frame.binary ? Buffer.from(frame.data, "base64") : frame.data;
 }
 
-type LiveFrame = LiveClientFrame;
-
 function viewKey(view: unknown): string {
   return JSON.stringify(view ?? null);
 }
@@ -82,7 +80,7 @@ async function record(page: Page, testInfo: TestInfo): Promise<() => void> {
     const server = socket.connectToServer();
     socket.onMessage((message) => {
       if (typeof message === "string") {
-        const sent = JSON.parse(message) as LiveFrame;
+        const sent = JSON.parse(message) as LiveClientFrame;
         if (sent.type === "subscribe" && sent.sub !== undefined) {
           views.set(sent.sub, viewKey(sent.view));
         }
@@ -91,7 +89,7 @@ async function record(page: Page, testInfo: TestInfo): Promise<() => void> {
     });
     server.onMessage((message) => {
       if (typeof message === "string") {
-        const answered = JSON.parse(message) as LiveFrame;
+        const answered = JSON.parse(message) as LiveClientFrame;
         const view = answered.sub === undefined ? undefined : views.get(answered.sub);
         if (view !== undefined) {
           recorded.live[view] ??= [];
@@ -130,14 +128,14 @@ async function replay(page: Page, testInfo: TestInfo): Promise<void> {
   await page.routeWebSocket(LIVE, (socket: WebSocketRoute) => {
     socket.onMessage((message) => {
       if (typeof message !== "string") return;
-      const sent = JSON.parse(message) as LiveFrame;
+      const sent = JSON.parse(message) as LiveClientFrame;
       if (sent.type === "heartbeat") {
         socket.send(JSON.stringify(answerTo({ type: "heartbeat" })));
         return;
       }
       if (sent.type !== "subscribe" || sent.sub === undefined) return;
       for (const frame of recorded.live[viewKey(sent.view)] ?? []) {
-        socket.send(JSON.stringify({ ...(JSON.parse(frame) as LiveFrame), sub: sent.sub }));
+        socket.send(JSON.stringify({ ...(JSON.parse(frame) as LiveClientFrame), sub: sent.sub }));
       }
     });
   });

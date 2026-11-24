@@ -11,8 +11,8 @@
  *  to stdout. Re-record after a change to the stress layer or to what a page reads:
  *  `bun run e2e:stub:record -- layout-rule.stub`. */
 import { expectTimeout } from "./expect-timeout";
-import { checkLayout } from "./layout-check";
-import { layoutRoutes, layoutRowTimeoutMs } from "./layout-routes";
+import { checkLayout, layoutRowTimeoutMs } from "./layout-check";
+import { layoutRoutes } from "./layout-routes";
 import { seedLayoutStress } from "./layout-seed";
 import { answerIssueReadMarks, routeLayoutSockets } from "./layout-sockets";
 import { stubbed } from "./stub/stub-test";

@@ -3,11 +3,16 @@ package githubapi
 import (
 	"bytes"
 	"encoding/json"
+	"flag"
 	"os"
 	"reflect"
 	"strings"
 	"testing"
 )
+
+// updateContract is this package's -update flag, as internal/dispatch/api's: it rewrites the
+// contract file from the proxy's declarations rather than comparing them.
+var updateContract = flag.Bool("update", false, "rewrite testdata/proxy-contract.json from the proxy's declarations")
 
 // contractPath is the proxy's contract, which the dashboard's recording test reads
 // (packages/dispatch/e2e/__tests__/stub-recordings.test.ts) to hold every committed GitHub answer
@@ -72,7 +77,7 @@ func renderContract() []byte {
 		WorkflowRunsQuery:  workflowRunsQuery.String(),
 		WorkflowRunsCommit: workflowRunsCommit,
 		WorkflowRunsChecks: checks,
-		ErrorCodes:         errorCodes,
+		ErrorCodes:         []string{codeMethodNotAllowed, codePathRefused, codeTokenUnavailable, codeUpstream, codeRateLimited},
 		WorkflowRuns:       fieldsOf(reflect.TypeFor[workflowRuns]()),
 	}
 	var rendered bytes.Buffer
@@ -86,19 +91,19 @@ func renderContract() []byte {
 }
 
 // TestProxyContractFile holds the committed contract to a fresh render of the proxy's own
-// declarations. UPDATE_GITHUB_PROXY_CONTRACT=1 writes the render instead.
+// declarations. -update writes the render instead.
 func TestProxyContractFile(t *testing.T) {
 	rendered := renderContract()
-	if os.Getenv("UPDATE_GITHUB_PROXY_CONTRACT") == "1" {
+	if *updateContract {
 		if err := os.WriteFile(contractPath, rendered, 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
 	committed, err := os.ReadFile(contractPath)
 	if err != nil {
-		t.Fatalf("read %s: %v; write it with UPDATE_GITHUB_PROXY_CONTRACT=1 go test ./internal/dispatch/githubapi/", contractPath, err)
+		t.Fatalf("read %s: %v; write it with go test ./internal/dispatch/githubapi/ -run TestProxyContractFile -update", contractPath, err)
 	}
 	if !bytes.Equal(committed, rendered) {
-		t.Fatalf("%s differs from the proxy's declarations; rewrite it with UPDATE_GITHUB_PROXY_CONTRACT=1 go test ./internal/dispatch/githubapi/\nrendered:\n%s", contractPath, rendered)
+		t.Fatalf("%s differs from the proxy's declarations; rewrite it with go test ./internal/dispatch/githubapi/ -run TestProxyContractFile -update\nrendered:\n%s", contractPath, rendered)
 	}
 }

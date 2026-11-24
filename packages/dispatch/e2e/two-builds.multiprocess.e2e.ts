@@ -18,7 +18,7 @@ import {
   publishAgentStreamFrame,
   putArchitectureSource,
   syncArchitectureSource,
-  uploadAgentFile,
+  uploadAgentPicture,
 } from "./api";
 import { seedDeliveryFixture } from "./delivery-seed";
 import { connectedDot, documentEditor } from "./editor";
@@ -168,21 +168,6 @@ const messageAuthor = {
   as: "agent" as const,
 };
 
-/** The 1x1 PNG e2e/artifacts.e2e.ts uploads. */
-const tinyPng =
-  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL0eAAAAABJRU5ErkJggg==";
-
-/** Uploads a picture to the session's conversation as alice, as a paste on the Agents page
- *  does, and answers its slug. */
-async function uploadAgentPicture(sessionID: string): Promise<string> {
-  const uploaded = await uploadAgentFile(sessionID, {
-    bytes: new Uint8Array(Buffer.from(tinyPng, "base64")),
-    contentType: "image/png",
-    name: "shot.png",
-  });
-  return uploaded.artifact.slug;
-}
-
 interface Seeded {
   readonly agentArtifact: string;
   readonly broadcast: string;
@@ -278,7 +263,7 @@ async function seedEveryRoute(): Promise<Seeded> {
     },
     "replay"
   );
-  const agentArtifact = await uploadAgentPicture(session.session_id);
+  const agentArtifact = await uploadAgentPicture(session.session_id, "shot.png");
   await seedDeliveryFixture();
   return {
     agentArtifact,

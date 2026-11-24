@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import { type KnownLayoutBreach, layoutBreaches } from "../layout-breaches";
-import { layoutRoutes, layoutRowTimeoutMs, layoutUnread } from "../layout-routes";
+import { layoutRoutes, layoutUnread } from "../layout-routes";
 import { reviewRoutes } from "../review-routes";
 
 /** The entries that name a place the layout rows never read: a route the list does not hold, or
@@ -48,7 +48,6 @@ describe("the layout layer's route list", () => {
     const read: KnownLayoutBreach = {
       element: '[data-testid="issue-metadata-rail"]',
       kind: "box-scroll",
-      reason: "B issue page",
       route: "issue-spec",
       width: 360,
     };
@@ -58,13 +57,5 @@ describe("the layout layer's route list", () => {
       { ...read, route: "agents", state: "peek-drawers" },
     ];
     expect(unreadPlaces(invented)).toEqual(invented);
-  });
-
-  test("gives a route row a budget that follows its readings, 6 s each, and never under 60 s", () => {
-    const state = { act: async () => undefined, name: "a state" };
-    // Five widths and three states: 20 readings, 120 s.
-    expect(layoutRowTimeoutMs({ states: [state, state, state] })).toBe(120_000);
-    // Five widths and no state: 5 readings, which keep Playwright's 60 s.
-    expect(layoutRowTimeoutMs({})).toBe(60_000);
   });
 });

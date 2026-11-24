@@ -56,7 +56,7 @@ import {
   recordCheckResult,
   replyToCommentDelivery,
   syncArchitectureSource,
-  uploadAgentFile,
+  uploadAgentPicture,
 } from "./api";
 import { seedFakeGithub } from "./fake-github-helpers";
 import {
@@ -178,19 +178,6 @@ function stressSession(index: number): FakeSession {
   const session = stressSessions[index];
   if (session === undefined) throw new Error(`seedLayoutStress: no stress session ${index}`);
   return session;
-}
-
-/** A picture uploaded to `sessionID`'s conversation as alice, as a paste on the Agents page
- *  does; answers its slug. */
-async function uploadAgentPicture(sessionID: string): Promise<string> {
-  const png =
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL0eAAAAABJRU5ErkJggg==";
-  const uploaded = await uploadAgentFile(sessionID, {
-    bytes: new Uint8Array(Buffer.from(png, "base64")),
-    contentType: "image/png",
-    name: AGENT_PICTURE,
-  });
-  return uploaded.artifact.slug;
 }
 
 /** The pull requests, their checks and the architecture model, in the fake GitHub's one seed:
@@ -511,7 +498,7 @@ export async function seedLayoutStress({
     },
     "replay"
   );
-  const agentArtifactSlug = await uploadAgentPicture(live.session_id);
+  const agentArtifactSlug = await uploadAgentPicture(live.session_id, AGENT_PICTURE);
 
   // The route nobody holds is drawn as a warning only once Dispatch has judged it `no_holder`
   // against the listener's session list, which it re-reads every few seconds: before that it

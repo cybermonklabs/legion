@@ -48,9 +48,6 @@ const (
 	codeRateLimited      = "GITHUB_RATE_LIMITED"
 )
 
-// errorCodes are those codes, as the proxy's contract file lists them (contract_test.go).
-var errorCodes = []string{codeMethodNotAllowed, codePathRefused, codeTokenUnavailable, codeUpstream, codeRateLimited}
-
 // workflowRunsResponseLimit bounds GitHub's workflow-runs answer, which the proxy trims to three
 // fields per run before forwarding. GitHub writes each run's repository, head repository and head
 // commit (about 12.8 KB a run on cybermonklabs/legion), so a page of 100 runs passes the client's 1 MiB

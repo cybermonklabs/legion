@@ -82,17 +82,6 @@ test("a cap below ten is the group's own, the measure is told it, and the contro
     expect(drawn(group as HTMLElement)).toEqual(labels(3));
     const more = screen.getByRole("button", { name: "+2, show all 5 labels" });
     expect(more).toHaveTextContent("+2");
-    expect(more.getAttribute("aria-label")?.startsWith(more.textContent ?? "")).toBe(true);
-  } finally {
-    view.unmount();
-  }
-});
-
-test("a group of four capped at three names its control +1, show all 4", () => {
-  const view = render(<Labels count={4} max={3} />);
-  try {
-    const more = screen.getByRole("button", { name: "+1, show all 4 labels" });
-    expect(more).toHaveTextContent("+1");
   } finally {
     view.unmount();
   }

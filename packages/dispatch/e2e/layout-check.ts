@@ -4,8 +4,8 @@ import { expect, type Page } from "@playwright/test";
 
 import { type KnownLayoutBreach, type LayoutBreachKind, layoutBreaches } from "./layout-breaches";
 import { LAYOUT_WIDTHS, type LayoutReading, measureLayout } from "./layout-measure";
-import type { LayoutRoute, LayoutSeed } from "./layout-routes";
-import { waitForRouteSettled } from "./review-routes";
+import type { LayoutRoute, LayoutSeed, LayoutState } from "./layout-routes";
+import { trackDocumentRequests, waitForRouteSettled } from "./review-routes";
 
 /** The fewest elements a page's own region (`[data-testid="main-content"]`) holds once it has
  *  drawn, unless the route names a floor of its own (`minElements`) with why. */
@@ -323,15 +323,26 @@ export function judgeReading(
  *  agents row under load). Nothing was committed then, so loading again is the same load. */
 const NETWORK_CHANGE_RETRIES = 2;
 
-/** Runs `load` until it does not fail with `net::ERR_NETWORK_CHANGED`, at most
- *  `NETWORK_CHANGE_RETRIES` times more; any other failure, or the last of those, is thrown. */
-export async function loadRetryingNetworkChange(load: () => Promise<unknown>): Promise<void> {
+const NETWORK_CHANGED = "net::ERR_NETWORK_CHANGED";
+
+/** Runs `load` until it does not fail for a network change, at most `NETWORK_CHANGE_RETRIES`
+ *  times more; any other failure, or the last of those, is thrown. A failure is a network change
+ *  when its message says `net::ERR_NETWORK_CHANGED`, or when `documentFailure` - the failure of
+ *  the load's own document request - does: Playwright reports some such loads only as a
+ *  navigation to Chromium's error page that interrupted them (seen in dispatch://INFRA-5200's
+ *  reproduction under address changes). */
+export async function loadRetryingNetworkChange(
+  load: () => Promise<unknown>,
+  documentFailure: () => Promise<string | undefined> = async () => undefined
+): Promise<void> {
   for (let retries = 0; ; retries += 1) {
     try {
       await load();
       return;
     } catch (error) {
-      const changed = error instanceof Error && error.message.includes("net::ERR_NETWORK_CHANGED");
+      const changed =
+        (error instanceof Error && error.message.includes(NETWORK_CHANGED)) ||
+        (await documentFailure()) === NETWORK_CHANGED;
       if (!changed || retries >= NETWORK_CHANGE_RETRIES) throw error;
     }
   }
@@ -341,7 +352,14 @@ export async function loadRetryingNetworkChange(load: () => Promise<unknown>): P
  *  every document the page loads (`installLayoutSheet`), so a document the page replaces on its
  *  own after the load has it too, and the settle wait follows the page to that document. */
 async function loadSettled(page: Page, route: LayoutRoute, address: string): Promise<void> {
-  await loadRetryingNetworkChange(() => page.goto(address));
+  await loadRetryingNetworkChange(
+    () => page.goto(address),
+    async () =>
+      (await page.requests())
+        .filter((request) => request.isNavigationRequest() && request.frame() === page.mainFrame())
+        .at(-1)
+        ?.failure()?.errorText
+  );
   await waitForRouteSettled(page, route);
 }
 
@@ -354,12 +372,33 @@ async function measureSettledPage(page: Page): Promise<LayoutReading> {
   return await page.evaluate(measureLayout);
 }
 
+/** The groups a reading of `route` must mark: the route's own, and in a state the state's too,
+ *  since a state draws on the page its route loads. */
+export function requiredGroupsOf(
+  route: Pick<LayoutRoute, "requiredGroups">,
+  state?: Pick<LayoutState, "requiredGroups">
+): string[] {
+  return [...(route.requiredGroups ?? []), ...(state?.requiredGroups ?? [])];
+}
+
+/** A route row's time budget, which follows `checkLayout`'s readings: one per width as the page
+ *  loads, and one per width in each of its states. Six seconds a reading is twice what one cost
+ *  on CI (2.9 s on the agents row of D's branch, run 45301444362, whose 20 readings ran out of
+ *  Playwright's 60 s); a route of few readings keeps that 60 s. */
+export function layoutRowTimeoutMs(route: Pick<LayoutRoute, "states">): number {
+  const readings = LAYOUT_WIDTHS.length * (1 + (route.states?.length ?? 0));
+  return Math.max(60_000, readings * 6_000);
+}
+
 /** Reads `route` at every width of `LAYOUT_WIDTHS`: the page loaded fresh and settled, and then,
  *  for each of its states, loaded fresh again, settled, acted on and settled again. Fails once,
  *  after every reading, with every failure `judgeReading` found. */
 export async function checkLayout(page: Page, route: LayoutRoute, seed: LayoutSeed): Promise<void> {
   await route.prepare?.(page.context());
   await installLayoutSheet(page);
+  // The page answers from routes, so its settle wait reads requests by the document that sent
+  // them (`trackDocumentRequests` says why), from before the first load.
+  await trackDocumentRequests(page);
   // A minute after the seed, held there: a relative time ("just now", "2 minutes ago", "3 weeks
   // ago") widens its column with the gap between the seed and the read, which moves with the
   // run's pace on the stack and with the recording's age in a replay. `setFixedTime` keeps the
@@ -374,7 +413,7 @@ export async function checkLayout(page: Page, route: LayoutRoute, seed: LayoutSe
     const plain = { route: route.name, width };
     failures.push(
       ...judgeReading(plain, await measureSettledPage(page), {
-        groups: route.requiredGroups,
+        groups: requiredGroupsOf(route),
         minElements,
       })
     );
@@ -385,7 +424,7 @@ export async function checkLayout(page: Page, route: LayoutRoute, seed: LayoutSe
       const acted = { route: route.name, state: state.name, width };
       failures.push(
         ...judgeReading(acted, await measureSettledPage(page), {
-          groups: state.requiredGroups,
+          groups: requiredGroupsOf(route, state),
           minElements,
         })
       );

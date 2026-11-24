@@ -11,11 +11,10 @@
  *
  *  Data and locators only, as `e2e/review-routes.ts` is, so `e2e/__tests__/layout-routes.test.ts`
  *  reads it without a browser or a harness: its imports are Playwright's types, the review
- *  table, the measure's widths, and `./issue-page-option`, which imports a type alone. */
+ *  table, and `./issue-page-option`, which imports a type alone. */
 import type { BrowserContext, Locator, Page } from "@playwright/test";
 
 import { withIssuePage } from "./issue-page-option";
-import { LAYOUT_WIDTHS } from "./layout-measure";
 import { type ReviewedRoute, type ReviewSeed, reviewRoutes } from "./review-routes";
 import type { WalkRoutePath } from "./two-builds-routes";
 
@@ -106,7 +105,9 @@ export interface LayoutState {
   /** The state's own name, which a breach list entry names it by. */
   readonly name: string;
   readonly act: (page: Page) => Promise<void>;
-  /** The `data-layout-group` names the page must mark in this state. */
+  /** The `data-layout-group` names the page must mark in this state beyond its route's own: a
+   *  state draws on the page its route loads, so a state reading requires the route's groups
+   *  (`LayoutRoute.requiredGroups`) and these (`requiredGroupsOf` in `e2e/layout-check.ts`). */
   readonly requiredGroups?: readonly string[];
 }
 
@@ -156,7 +157,6 @@ const twoRowsSelected: LayoutState = {
     await page.getByRole("toolbar").filter({ hasText: "2 selected" }).waitFor();
   },
   name: "two-rows-selected",
-  requiredGroups: ["labels"],
 };
 
 /** Every agent selected for a broadcast, which draws the composer and its list of chosen agents
@@ -198,6 +198,8 @@ const additions: Readonly<
   machines: { minElements: shortPage(15) },
   "not-found": { minElements: shortPage(4) },
   person: { minElements: shortPage(27) },
+  // The Labels cell of the stress issue's row in the priority's issues table: its 13 labels.
+  priority: { requiredGroups: ["labels"] },
   "project-document": { minElements: shortPage(49) },
   "project-documents": { minElements: shortPage(40) },
   // The Labels cell of the stress issue's row: its 13 labels, a list of R3.
@@ -318,12 +320,3 @@ export const layoutRoutes: readonly LayoutRoute[] = [
     ],
   },
 ];
-
-/** A route row's time budget, which follows its readings: one per width as the page loads, and
- *  one per width in each of its states. Six seconds a reading is twice what one cost on CI (2.9 s
- *  on the agents row of D's branch, run 45301444362, whose 20 readings ran out of Playwright's
- *  60 s); a route of few readings keeps that 60 s. */
-export function layoutRowTimeoutMs(route: Pick<LayoutRoute, "states">): number {
-  const readings = LAYOUT_WIDTHS.length * (1 + (route.states?.length ?? 0));
-  return Math.max(60_000, readings * 6_000);
-}
