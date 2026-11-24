@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
@@ -6,122 +7,233 @@ import { temporaryDirectories } from "@legion/test-fixtures/temporary-directorie
 import { runDispatchCli } from "../dispatch-cli";
 import { resetAdviceMemory } from "../dispatch-execute";
 
-// `dispatch artifact` under the name of a file its owner already holds is refused before anything
-// is sent, and the refusal names only a remedy Dispatch takes: `--force` with the token of the
-// version it replaces, which the owner's listing states and the refusal names, or `--force` alone
-// from a Dispatch that states no token for a file and refuses one on its upload. Each test sends
-// exactly what the refusal says, read out of it, and is taken. The command runs whole, through
-// runDispatchCli, against a stub Dispatch that answers a file's upload as Dispatch does: the token
-// of the version that stands is taken, any other is refused 409, and a Dispatch that states no
-// token refuses every token on a file 400.
+// `dispatch artifact` under a name its owner already holds is refused before anything is sent,
+// and the refusal names only a remedy Dispatch takes and prints no token. Of the stored kind, a
+// file or picture is replaced with --force and the token the writer's own `dispatch doc-read`
+// printed, so a writer whose read is stale is refused 409 rather than handed the newest token;
+// where the standing version states no token, --force alone. Of another kind, by Dispatch's rule
+// (declared Markdown is a document, PNG, JPEG, GIF or WebP bytes a picture, anything else a
+// file), the name cannot take it, so the refusal names another name and nothing else. Each row
+// runs the command whole, through runDispatchCli, against a stub Dispatch that keeps DSP-1's
+// artifacts and answers reads and uploads as Dispatch does.
 
 const makeDirectory = temporaryDirectories("artifact-held-file-name");
 
 /** The Dispatch bearer each command is handed. */
 const TOKEN = fixtureSecret("dsp");
 
-const NOTES_TOKEN = `sha256:${"a".repeat(64)}`;
+type Kind = "doc" | "file" | "image";
 
-interface StatedVersion {
+interface StoredVersion {
   readonly number: number;
-  readonly named: boolean;
-  readonly summary: null;
-  readonly authors: readonly { readonly kind: string; readonly id: string }[];
-  readonly created_at: string;
-  readonly size: number;
+  readonly bytes: Uint8Array;
   readonly mime: string;
-  readonly sha256?: string;
-  readonly token?: string;
+  /** Whether the stub states this version's token: false for a version stored with no hash. */
+  readonly hashed: boolean;
 }
 
-const version = (number: number, token?: string): StatedVersion => ({
-  number,
+interface StoredArtifact {
+  readonly id: string;
+  readonly name: string;
+  readonly slug: string;
+  readonly kind: Kind;
+  readonly versions: StoredVersion[];
+}
+
+/** The eight bytes every PNG starts with. */
+const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
+const pictureOf = (text: string) => new Uint8Array([...PNG, ...new TextEncoder().encode(text)]);
+const textOf = (text: string) => new TextEncoder().encode(`${text}\n`);
+const hexOf = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
+
+/** Whether this stub is a Dispatch that states file tokens (this build) or one from before them,
+ *  which refuses any token on a file's upload 400 INVALID_PRECONDITION. */
+let statesTokens = true;
+let held: StoredArtifact[] = [];
+/** Every upload Dispatch was sent: its name and the precondition it named. */
+const uploads: Array<{ readonly name: string; readonly precondition: unknown }> = [];
+let stateDir = "";
+
+const versionOf = (artifact: StoredArtifact, version: StoredVersion) => ({
+  number: version.number,
   named: false,
   summary: null,
   authors: [{ kind: "session", id: "ses-0" }],
   created_at: "2026-11-24T00:00:00Z",
-  size: 6,
-  mime: "text/plain",
-  ...(token === undefined ? {} : { sha256: token.slice("sha256:".length), token }),
+  size: version.bytes.length,
+  mime: version.mime,
+  ...(artifact.kind !== "doc" && version.hashed ? { sha256: hexOf(version.bytes) } : {}),
+  ...(artifact.kind !== "doc" && version.hashed && statesTokens
+    ? { token: `sha256:${hexOf(version.bytes)}` }
+    : {}),
 });
 
-const artifact = (id: string, name: string, versions: readonly StatedVersion[]) => ({
-  id,
+const artifactOf = (artifact: StoredArtifact) => ({
+  id: artifact.id,
   issue_key: "DSP-1",
   project: "DSP",
   session_id: null,
-  slug: name.replace(".", "-"),
-  name,
-  kind: "file",
+  slug: artifact.slug,
+  name: artifact.name,
+  kind: artifact.kind,
   primary: false,
   created_by: { kind: "session", id: "ses-0" },
   created_at: "2026-11-24T00:00:00Z",
-  versions,
+  versions: artifact.versions.map((version) => versionOf(artifact, version)),
 });
 
-/** DSP-1's files: notes.txt from a Dispatch that states each version's token, and old.txt from
- *  one that states none. */
-const held = [
-  artifact("file-1", "notes.txt", [version(1, NOTES_TOKEN)]),
-  artifact("file-2", "old.txt", [version(1)]),
-];
-
-interface Upload {
-  readonly name: string;
-  readonly precondition: unknown;
+/** The kind Dispatch stores an upload as: its rule, in artifactKind. */
+function kindOf(mime: string, bytes: Uint8Array): Kind {
+  if (mime.split(";")[0]?.trim() === "text/markdown") return "doc";
+  return PNG.every((byte, index) => bytes[index] === byte) ? "image" : "file";
 }
 
-const uploads: Upload[] = [];
-let stateDir = "";
+const refusal = (status: number, code: string, error: string) =>
+  Response.json({ code, error }, { status });
 
-beforeEach(() => {
-  uploads.length = 0;
-  stateDir = makeDirectory();
-  resetAdviceMemory();
-});
+/** One upload, answered as Dispatch answers it. */
+function store(name: string, kind: Kind, bytes: Uint8Array, mime: string, precondition: unknown) {
+  uploads.push({ name, precondition });
+  const document = (precondition as { document?: string } | undefined)?.document;
+  const target = held.find((artifact) => artifact.name === name || artifact.slug === name);
+  if (target === undefined) {
+    if (document !== undefined) {
+      return refusal(409, "PRECONDITION_FAILED", `"${name}" has no token for an upload to name`);
+    }
+    const created: StoredArtifact = {
+      id: `artifact-${held.length + 1}`,
+      name,
+      slug: name.replaceAll(".", "-"),
+      kind,
+      versions: [{ number: 1, bytes, mime, hashed: true }],
+    };
+    held.push(created);
+    return Response.json(
+      {
+        artifact: artifactOf(created),
+        version: versionOf(created, created.versions[0] as StoredVersion),
+      },
+      { status: 201 }
+    );
+  }
+  if (target.kind !== kind) {
+    return refusal(
+      400,
+      "ARTIFACT_KIND_MISMATCH",
+      `"${name}" names a ${target.kind}; this upload is a ${kind}: give it another name`
+    );
+  }
+  const standing = target.versions.at(-1);
+  if (document !== undefined && target.kind !== "doc") {
+    if (!statesTokens) {
+      return refusal(
+        400,
+        "INVALID_PRECONDITION",
+        "only a document has a version token; this upload is stored as a file"
+      );
+    }
+    if (standing === undefined || !standing.hashed) {
+      return refusal(409, "PRECONDITION_FAILED", `"${name}" has no token for an upload to name`);
+    }
+    if (document !== `sha256:${hexOf(standing.bytes)}`) {
+      return refusal(
+        409,
+        "PRECONDITION_FAILED",
+        `file upload precondition failed: "${name}" stands at another version`
+      );
+    }
+  }
+  const next: StoredVersion = { number: (standing?.number ?? 0) + 1, bytes, mime, hashed: true };
+  target.versions.push(next);
+  return Response.json(
+    { artifact: artifactOf(target), version: versionOf(target, next) },
+    { status: 201 }
+  );
+}
 
 const stubDispatch = (async (input: string | URL | Request, init?: RequestInit) => {
   const request = new Request(input, init);
   const { pathname } = new URL(request.url);
   if (request.method === "GET" && pathname === "/api/v1/issues/DSP-1/artifacts") {
-    return Response.json(held);
+    return Response.json(held.map(artifactOf));
+  }
+  if (request.method === "GET" && pathname === "/api/v1/issues/DSP-1") {
+    return Response.json({
+      key: "DSP-1",
+      primary_artifact_id: null,
+      artifacts: held.map(artifactOf),
+      open_asks: [],
+    });
+  }
+  const read = pathname.match(/^\/api\/v1\/artifacts\/([^/]+)\/versions\/(\d+)$/);
+  if (request.method === "GET" && read !== null) {
+    const version = held.find((artifact) => artifact.id === read[1])?.versions[Number(read[2]) - 1];
+    if (version === undefined) return refusal(404, "NOT_FOUND", "no version");
+    return new Response(new Uint8Array(version.bytes), {
+      status: 200,
+      headers: { "Content-Type": version.mime },
+    });
   }
   if (request.method === "POST" && pathname === "/api/v1/issues/DSP-1/artifacts") {
+    if (request.headers.get("content-type")?.startsWith("application/json") === true) {
+      const body = (await request.json()) as {
+        name: string;
+        content: string;
+        precondition?: unknown;
+      };
+      return store(body.name, "doc", textOf(body.content), "text/markdown", body.precondition);
+    }
+    // The type the part declares, as the server reads it off the part's header: Bun's parsed
+    // File reports a type guessed from the file name instead, which is not what was sent.
+    const raw = await request.clone().text();
+    const declared =
+      raw.match(/name="file"; filename="[^"]*"\r\nContent-Type: ([^\r\n]+)/)?.[1] ??
+      "application/octet-stream";
     const form = await request.formData();
-    const name = String(form.get("name"));
+    const file = form.get("file") as File;
+    const bytes = new Uint8Array(await file.arrayBuffer());
     const field = form.get("precondition");
-    const precondition = field === null ? undefined : JSON.parse(String(field));
-    uploads.push({ name, precondition });
-    const target = held.find((file) => file.name === name);
-    if (target === undefined)
-      return Response.json({ code: "NOT_FOUND", error: "no" }, { status: 404 });
-    const standing = target.versions.at(-1)?.token;
-    if (precondition !== undefined && standing === undefined) {
-      return Response.json(
-        {
-          code: "INVALID_PRECONDITION",
-          error:
-            "invalid document edit precondition: only a document has a version token; this upload is stored as a file",
-        },
-        { status: 400 }
-      );
-    }
-    if (precondition !== undefined && precondition.document !== standing) {
-      return Response.json(
-        {
-          code: "PRECONDITION_FAILED",
-          error: "document edit precondition failed: document changed",
-        },
-        { status: 409 }
-      );
-    }
-    return Response.json(
-      { artifact: target, version: version(2), advice: { issue_status: "in_progress" } },
-      { status: 201 }
+    return store(
+      String(form.get("name")),
+      kindOf(declared, bytes),
+      bytes,
+      declared,
+      field === null ? undefined : JSON.parse(String(field))
     );
   }
-  return Response.json({ error: "not found", code: "NOT_FOUND" }, { status: 404 });
+  return refusal(404, "NOT_FOUND", "not found");
 }) as typeof fetch;
+
+beforeEach(() => {
+  statesTokens = true;
+  held = [
+    {
+      id: "doc-1",
+      name: "plan.md",
+      slug: "plan-md",
+      kind: "doc",
+      versions: [{ number: 1, bytes: textOf("# Plan"), mime: "text/markdown", hashed: false }],
+    },
+    {
+      id: "file-1",
+      name: "notes",
+      slug: "notes",
+      kind: "file",
+      versions: [{ number: 1, bytes: textOf("first"), mime: "text/plain", hashed: true }],
+    },
+    {
+      id: "image-1",
+      name: "chart",
+      slug: "chart",
+      kind: "image",
+      versions: [{ number: 1, bytes: pictureOf("first"), mime: "image/png", hashed: true }],
+    },
+  ];
+  uploads.length = 0;
+  stateDir = makeDirectory();
+  resetAdviceMemory();
+});
 
 async function run(argv: readonly string[]): Promise<{ code: number; stdout: string }> {
   let stdout = "";
@@ -148,15 +260,19 @@ async function run(argv: readonly string[]): Promise<{ code: number; stdout: str
   return { code, stdout };
 }
 
-/** The upload of a file's second version under `name`, plus the flags given. */
-function upload(name: string, flags: readonly string[]): Promise<{ code: number; stdout: string }> {
-  const path = join(stateDir, name);
-  writeFileSync(path, "second\n");
-  return run(["artifact", "--issue", "DSP-1", "--name", name, "--path", path, ...flags]);
+/** `bytes` written to a file named `file` in the row's directory, for --path. */
+function pathOf(file: string, bytes: Uint8Array): string {
+  const path = join(stateDir, file);
+  writeFileSync(path, bytes);
+  return path;
 }
 
-/** The refusal's own line, the problem the command names for `name`, without the allowed flags
- *  and the example the command prints under every refusal. */
+/** An upload under `name` of `source` (--path of a file, or --content), plus `flags`. */
+function upload(name: string, source: readonly string[], flags: readonly string[] = []) {
+  return run(["artifact", "--issue", "DSP-1", "--name", name, ...source, ...flags]);
+}
+
+/** The refusal's own line, without the allowed flags and the example every refusal prints. */
 function refusalOf(stdout: string, name: string): string {
   const line = stdout
     .split("\n")
@@ -165,45 +281,136 @@ function refusalOf(stdout: string, name: string): string {
   return line ?? "";
 }
 
-describe("dispatch artifact under the name of a file the owner holds", () => {
-  // R3: the refusal names --force and the token of the version it replaces, and the upload that
-  // sends exactly those is taken.
-  test("names the standing version's token, and the upload that sends exactly that is taken", async () => {
-    const refused = await upload("notes.txt", []);
+/** The token the writer's own `dispatch doc-read` of `slug` printed, read off its header. */
+async function readToken(slug: string): Promise<string> {
+  const read = await run(["doc-read", "--issue", "DSP-1", "--artifact", slug]);
+  expect(read.code, read.stdout).toBe(0);
+  const token = read.stdout.split("\n")[1]?.match(/^Document token: (sha256:[0-9a-f]{64})$/)?.[1];
+  expect(token, read.stdout).toBeDefined();
+  return token ?? "";
+}
+
+/** The flags a refusal advises, read out of it: --force with the writer's own token where it names
+ *  --precondition-json, --force alone where it says so. */
+function advisedFlags(text: string, ownToken: string | undefined): string[] {
+  if (text.includes("(--force) alone")) return ["--force"];
+  expect(text).toContain("--precondition-json");
+  return ["--force", "--precondition-json", JSON.stringify({ document: ownToken })];
+}
+
+describe("dispatch artifact under a name the owner holds", () => {
+  // R3: the refusal prints no token, and sends the writer to its own read: a writer who read v1
+  // and follows it after another session wrote v2 is refused 409, v2 stands, and the same writer
+  // reading again is taken.
+  test.each([
+    ["a file", "notes", "notes.txt", textOf],
+    ["a picture", "chart", "chart.png", pictureOf],
+  ] as const)("for %s, prints no token, and a stale reader following it cannot overwrite the newer version", async (_label, name, file, bytesOf) => {
+    const v1Token = await readToken(name);
+    const written = await upload(
+      name,
+      ["--path", pathOf(`b-${file}`, bytesOf("from B"))],
+      ["--force"]
+    );
+    expect(written.code, written.stdout).toBe(0);
+    const standing = held.find((artifact) => artifact.name === name)?.versions.at(-1);
+
+    const refused = await upload(name, ["--path", pathOf(`a-${file}`, bytesOf("from A"))]);
     expect(refused.code, refused.stdout).toBe(2);
-    const refusal = refusalOf(refused.stdout, "notes.txt");
-    expect(refusal).toContain("(slug notes-txt, kind file) at version 1");
-    expect(uploads).toEqual([]);
+    const text = refusalOf(refused.stdout, name);
+    expect(text).not.toContain("sha256:");
+    expect(text).toContain("dispatch doc-read");
+    expect(text).toContain("--force");
 
-    const advised = refusal.match(/--force --precondition-json '(\{[^']*\})'/);
-    expect(advised, refusal).not.toBeNull();
-    const precondition = advised?.[1] ?? "";
-    expect(JSON.parse(precondition)).toEqual({ document: NOTES_TOKEN });
+    const stale = await upload(
+      name,
+      ["--path", pathOf(`a-${file}`, bytesOf("from A"))],
+      advisedFlags(text, v1Token)
+    );
+    expect(stale.code, stale.stdout).toBe(1);
+    expect(stale.stdout).toContain("PRECONDITION_FAILED");
+    expect(held.find((artifact) => artifact.name === name)?.versions.at(-1)).toBe(standing);
 
-    const taken = await upload("notes.txt", ["--force", "--precondition-json", precondition]);
-    expect(taken.code, taken.stdout).toBe(0);
-    expect(taken.stdout).toStartWith("Uploaded notes.txt as version 2");
-    expect(uploads).toEqual([{ name: "notes.txt", precondition: { document: NOTES_TOKEN } }]);
+    const fresh = await upload(
+      name,
+      ["--path", pathOf(`a-${file}`, bytesOf("from A"))],
+      advisedFlags(text, await readToken(name))
+    );
+    expect(fresh.code, fresh.stdout).toBe(0);
+    expect(held.find((artifact) => artifact.name === name)?.versions).toHaveLength(3);
   });
 
-  // R3, from a Dispatch that states no token for a file: it refuses any token on a file's upload,
-  // so the refusal names --force alone, and the upload that sends it is taken.
-  test("names --force alone where Dispatch states no token, and the upload that sends it is taken", async () => {
-    const refused = await upload("old.txt", []);
+  // R3: where the standing version states no token, --force alone, read out of the refusal, is
+  // taken: from a Dispatch without file tokens, and for a version stored with no hash.
+  test.each([
+    [
+      "a Dispatch that states no file token",
+      () => {
+        statesTokens = false;
+      },
+    ],
+    [
+      "a version stored with no hash",
+      () => {
+        const notes = held.find((artifact) => artifact.name === "notes");
+        if (notes !== undefined)
+          notes.versions[0] = { ...(notes.versions[0] as StoredVersion), hashed: false };
+      },
+    ],
+  ] as const)("advises --force alone for %s, and the upload sending exactly that is taken", async (_label, arrange) => {
+    arrange();
+    const refused = await upload("notes", ["--path", pathOf("n.txt", textOf("second"))]);
     expect(refused.code, refused.stdout).toBe(2);
-    const refusal = refusalOf(refused.stdout, "old.txt");
-    expect(refusal).toContain("send the upload again with force (--force) alone");
-    expect(refusal).not.toContain("--precondition-json");
+    const text = refusalOf(refused.stdout, "notes");
+    expect(text).toContain("(--force) alone");
+    expect(text).not.toContain("--precondition-json");
 
-    const taken = await upload("old.txt", ["--force"]);
+    const taken = await upload(
+      "notes",
+      ["--path", pathOf("n.txt", textOf("second"))],
+      advisedFlags(text, undefined)
+    );
     expect(taken.code, taken.stdout).toBe(0);
-    expect(taken.stdout).toStartWith("Uploaded old.txt as version 2");
-    expect(uploads).toEqual([{ name: "old.txt", precondition: undefined }]);
+    expect(uploads).toEqual([{ name: "notes", precondition: undefined }]);
+  });
+
+  // R3: an upload of another kind than the name holds, by Dispatch's rule, is told to take another
+  // name and is offered no flag: Dispatch refuses it under that name with --force too, and takes
+  // it under another.
+  test.each([
+    ["a --content document over a file", "notes", ["--content", "# Notes\n"]],
+    ["a --content document over a picture", "chart", ["--content", "# Chart\n"]],
+    ["PNG bytes over a file", "notes", ["--path", "shot.png"]],
+    ["text bytes over a picture", "chart", ["--path", "data.txt"]],
+    ["a file over a document", "plan.md", ["--path", "data.txt"]],
+    ["PNG bytes over a document", "plan.md", ["--path", "shot.png"]],
+  ] as const)("refuses %s naming another name and no flag", async (_label, name, given) => {
+    const source =
+      given[0] === "--path"
+        ? [
+            "--path",
+            pathOf(given[1], given[1].endsWith(".png") ? pictureOf("other") : textOf("other")),
+          ]
+        : [...given];
+    const refused = await upload(name, source);
+    expect(refused.code, refused.stdout).toBe(2);
+    const text = refusalOf(refused.stdout, name);
+    expect(text).toContain("Give the upload another name.");
+    expect(text).not.toContain("--force");
+    expect(text).not.toContain("--precondition-json");
+    expect(uploads).toEqual([]);
+
+    const forced = await upload(name, source, ["--force"]);
+    expect(forced.code, forced.stdout).toBe(1);
+    expect(forced.stdout).toContain("ARTIFACT_KIND_MISMATCH");
+
+    const renamed = await upload(`${name.replace(".md", "")}-other`, source);
+    expect(renamed.code, renamed.stdout).toBe(0);
   });
 
   // A file holds no text dispatch doc-edit changes, so the refusal never sends the writer there.
   test("does not name dispatch doc-edit for a file", async () => {
-    const refused = await upload("notes.txt", []);
-    expect(refusalOf(refused.stdout, "notes.txt")).not.toContain("doc-edit");
+    const refused = await upload("notes", ["--path", pathOf("n.txt", textOf("second"))]);
+    expect(refusalOf(refused.stdout, "notes")).not.toContain("doc-edit");
   });
 });

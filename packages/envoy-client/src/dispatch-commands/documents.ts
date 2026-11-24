@@ -56,6 +56,7 @@ import {
   artifactUnderName,
   roundTripRouteAbsent,
   storedTextCheckFailed,
+  uploadKindOf,
 } from "./upload-checks";
 
 /** The asks of the document's `ask` blocks. An issue lists them under the issue, since the artifact
@@ -83,13 +84,16 @@ async function blockAsks(
  * `agent/<session id>`) as `dispatch_read` does, which a host reads back from a transcript; a
  * larger picture is described without its bytes being fetched when Dispatch states its size. Any
  * other file comes back as text when it is UTF-8, and is described with the route that serves its
- * bytes when it is not. Each ends with the token of the version read, in the `Document token:`
- * line a document read prints, which the upload of the next version names as its precondition:
- * Dispatch states it beside the version in the artifact's version list, so no other read is made
- * for it, and a Dispatch that states none takes none on an upload, so nothing is printed. A file
- * carries no anchors or approval, so nothing else is read. A picture is shown whatever `shown`
- * holds, and joins it under its address, so the session's later reads name it instead of sending
- * it.
+ * bytes when it is not. The header names the version read by its hash, on the line under its
+ * first: the latest version's `Document token:` line, as a document read prints its token, which
+ * the upload of the next version names as its precondition; a named version's `Content: sha256:`
+ * line, as a named document version's read prints its hash. It goes in the header, never after
+ * the text, so the text after the header is the stored file byte for byte, and a script or patch
+ * read back ends where the file ends. Dispatch states both beside the version in the artifact's
+ * version list, so no other read is made for them, and a Dispatch or a version that states none
+ * prints no line: such a Dispatch takes no token on a file's upload. A file carries no anchors or
+ * approval, so nothing else is read. A picture is shown whatever `shown` holds, and joins it
+ * under its address, so the session's later reads name it instead of sending it.
  */
 async function readUploadedFile(
   client: DispatchClient,
@@ -105,11 +109,18 @@ async function readUploadedFile(
   const of = number === latest ? "" : ` of ${latest}`;
   const bytesRoute = `GET /api/v1/artifacts/${artifact.id}/versions/${number} serves its bytes.`;
   const stated = versions.find((version) => version.number === number);
-  const tokenTrailer = stated?.token === undefined ? "" : `\n\nDocument token: ${stated.token}`;
+  const hashLine =
+    requested === undefined
+      ? stated?.token === undefined
+        ? ""
+        : `\nDocument token: ${stated.token}`
+      : stated?.sha256 === undefined
+        ? ""
+        : `\nContent: sha256:${stated.sha256}`;
   const tooLarge = (mime: string, bytes: number): DispatchToolResult => ({
     text:
       `${oversizePictureText(artifact.name, bytes)}, so dispatch doc-read cannot show this ` +
-      `uploaded ${mime} picture (version ${number}${of}). ${bytesRoute}${tokenTrailer}`,
+      `uploaded ${mime} picture (version ${number}${of}). ${bytesRoute}${hashLine}`,
     details,
   });
   if (
@@ -128,9 +139,8 @@ async function readUploadedFile(
       shown?.add(address);
       return {
         text:
-          `Picture ${artifact.name}: ${image.mimeType}, version ${number}${of}, ${size}.\n` +
-          shownPictureLine(1, address, artifact.name, image.mimeType, file.bytes.length) +
-          tokenTrailer,
+          `Picture ${artifact.name}: ${image.mimeType}, version ${number}${of}, ${size}.${hashLine}\n` +
+          shownPictureLine(1, address, artifact.name, image.mimeType, file.bytes.length),
         details,
         images: [image],
       };
@@ -144,12 +154,12 @@ async function readUploadedFile(
     return {
       text:
         `${artifact.name} is an uploaded ${file.mime} file (version ${number}${of}, ${size}) that is not ` +
-        `UTF-8 text, so dispatch doc-read cannot show it. ${bytesRoute}${tokenTrailer}`,
+        `UTF-8 text, so dispatch doc-read cannot show it. ${bytesRoute}${hashLine}`,
       details,
     };
   }
   return {
-    text: `File ${artifact.name}: ${file.mime}, version ${number}${of}, ${size}.\n\n${text}${tokenTrailer}`,
+    text: `File ${artifact.name}: ${file.mime}, version ${number}${of}, ${size}.${hashLine}\n\n${text}`,
     details,
   };
 }
@@ -733,10 +743,26 @@ export async function artifactCommand(context: CommandContext): Promise<Dispatch
       name
     );
     if (held !== undefined) {
+      // The kind Dispatch would store this upload as decides what the refusal may advise: an
+      // upload of another kind than the name holds is refused under that name whatever it
+      // carries, so it is told to take another name. Only a path that is not Markdown has bytes
+      // to read, and only their first twelve decide.
+      const kind = await uploadKindOf(path, async () =>
+        input.uploadBytes === undefined
+          ? new Uint8Array(
+              await Bun.file(resolvePath(input.cwd, path ?? ""))
+                .slice(0, 12)
+                .arrayBuffer()
+            )
+          : input.uploadBytes.subarray(0, 12)
+      );
       throw new ToolInputError(input.tool, [
         artifactNameExistsProblem(
           held,
-          artifactOwner.kind === "project" ? `project ${artifactOwner.project}` : `issue ${issue()}`
+          artifactOwner.kind === "project"
+            ? `project ${artifactOwner.project}`
+            : `issue ${issue()}`,
+          kind
         ),
       ]);
     }

@@ -851,7 +851,6 @@ func Outgoing(ctx context.Context, q Queryer, who model.Actor, artifactID string
 		if err := json.Unmarshal(authors, &version.Authors); err != nil {
 			return nil, fmt.Errorf("decode artifact version authors: %w", err)
 		}
-		version.StateFileToken()
 		if position, found := positions[reference.ToID]; found {
 			outgoing[position].Artifact.Versions = append(outgoing[position].Artifact.Versions, version)
 			continue
@@ -863,6 +862,11 @@ func Outgoing(ctx context.Context, q Queryer, who model.Actor, artifactID string
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
+	}
+	for _, reference := range outgoing {
+		if reference.Artifact != nil {
+			model.StateFileTokens(reference.Artifact.Kind, reference.Artifact.Versions)
+		}
 	}
 	return outgoing, nil
 }

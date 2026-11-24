@@ -1790,7 +1790,7 @@ type Version struct {
 	SHA256 *string `json:"sha256,omitempty"`
 	// Token is a file's or an image's version token (FileVersionToken): what an upload replacing
 	// that version names as its precondition's document token, and what `dispatch doc-read`
-	// prints for it. Every read of a version row states it (StateFileToken). A document's version
+	// prints for it. Every read of a version row states it (StateFileTokens). A document's version
 	// carries none here, since a document's token is its live tree's (GET
 	// /api/v1/artifacts/{id}/text).
 	Token *string `json:"token,omitempty"`
@@ -1804,15 +1804,21 @@ func FileVersionToken(sha string) string {
 	return "sha256:" + sha
 }
 
-// StateFileToken sets Token from SHA256, for a version read from its row. A row's sha256 is
-// written by a file's or an image's upload alone, never with a document's version, so a version
-// that carries one is a file's or an image's; one that carries none is left with no token.
-func (v *Version) StateFileToken() {
-	if v.SHA256 == nil {
+// StateFileTokens sets each version's Token from its SHA256 where kind, the artifact's, is a
+// file or an image, for versions read from their rows. A document's versions get none whatever
+// their rows hold: a document's token is its live tree's, and a hash its row held would be no
+// token an upload of it takes. A file's version stored with no hash gets none either, so an
+// upload naming a token for it is refused.
+func StateFileTokens(kind string, versions []Version) {
+	if kind != "file" && kind != "image" {
 		return
 	}
-	token := FileVersionToken(*v.SHA256)
-	v.Token = &token
+	for index := range versions {
+		if sha := versions[index].SHA256; sha != nil {
+			token := FileVersionToken(*sha)
+			versions[index].Token = &token
+		}
+	}
 }
 
 // VersionSize is the SQL a version's Size is selected with, over artifact_versions aliased v. A
