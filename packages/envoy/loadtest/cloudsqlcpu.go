@@ -169,10 +169,12 @@ func cloudsqlFilter(metric, databaseID string) string {
 // cloudsqlMetadataToken is the access token of this pod's Google identity, from the metadata
 // server at tokenURL. Every failure is named: the metadata server is how a pod with no gcloud
 // authenticates, so a read that cannot say who it is must not look like an instance with no CPU.
+// A tokenURL that does not parse is named in fixed words: url.Parse's error, which
+// http.NewRequest's carries, quotes it whole, its user information and query included.
 func cloudsqlMetadataToken(ctx context.Context, client *http.Client, tokenURL string) (string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, tokenURL, nil)
 	if err != nil {
-		return "", err
+		return "", errors.New("the -token-url does not parse (it is not printed)")
 	}
 	req.Header.Set("Metadata-Flavor", "Google")
 	resp, err := client.Do(req)
