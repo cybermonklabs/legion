@@ -1,11 +1,7 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { z } from "zod";
-import {
-  PROTOCOL_METHODS,
-  PUBLIC_REQUEST_NAMES,
-  type PublicRequestName,
-} from "./public-request-names";
+import { PROTOCOL_METHODS, PUBLIC_REQUEST_NAMES } from "./public-request-names";
 
 // The names a credential travels under, which Go's public_names_test.go reads too.
 const FORBIDDEN_PATH = new URL(
@@ -44,20 +40,20 @@ const ROUTE_SHAPE = /^[A-Z]+ \/[^ ]*$/;
 /** A route on every path of its method. */
 const EVERY_PATH = /^[A-Z]+ \/\*$/;
 
-/** Why `route`, one of `entry`'s, is no route its source names, or "" where it is one: a route on
- *  every path of its method is one a protocol of PROTOCOL_METHODS fixes, whose section the source
- *  cites, since no contract writes `/*` and a source that repeats the route names nothing; any
- *  other route is one the source names in its own words. Go's `routeProblem`. */
-function routeProblem(entry: PublicRequestName, route: string): string {
+/** Why an entry's `route` is no route its `source` names, or "" where it is one: a route on every
+ *  path of its method is one a protocol of PROTOCOL_METHODS fixes, whose section the source cites,
+ *  since no contract writes `/*` and a source that repeats the route names nothing; any other route
+ *  is one the source names in its own words. Go's `routeProblem`. */
+function routeProblem(source: string, route: string): string {
   if (!ROUTE_SHAPE.test(route)) return 'is no "<METHOD> /<path>"';
   if (EVERY_PATH.test(route)) {
     return PROTOCOL_METHODS.some(
-      (protocol) => protocol.route === route && entry.source.includes(protocol.source)
+      (protocol) => protocol.route === route && source.includes(protocol.source)
     )
       ? ""
       : "is every path of its method, which no protocol its source cites fixes (PROTOCOL_METHODS)";
   }
-  return entry.source.includes(route) ? "" : "is a route its source does not name";
+  return source.includes(route) ? "" : "is a route its source does not name";
 }
 
 // Every entry names the contract that declares its value public, and each route it is public on
@@ -72,7 +68,7 @@ test("the public-name table holds only contract names no credential travels unde
   for (const entry of PUBLIC_REQUEST_NAMES) {
     expect(entry.source.trim(), `${entry.name} names no contract`).not.toBe("");
     for (const route of entry.routes ?? []) {
-      expect(routeProblem(entry, route), `${entry.name} is public on ${route}`).toBe("");
+      expect(routeProblem(entry.source, route), `${entry.name} is public on ${route}`).toBe("");
     }
     for (const name of forbidden.names) {
       expect(entry.name.toLowerCase(), `${entry.name} is a credential's name`).not.toBe(
@@ -108,7 +104,6 @@ test("the public-name table holds only contract names no credential travels unde
 // names it. Go's TestARouteOnEveryPathIsOneAProtocolItsSourceCitesFixes.
 test("a route on every path is one a protocol its source cites fixes", () => {
   for (const { id, source, route, refused } of sources.rows) {
-    const entry: PublicRequestName = { place: "field", name: "planted", source, routes: [route] };
-    expect(routeProblem(entry, route) !== "", id).toBe(refused);
+    expect(routeProblem(source, route) !== "", id).toBe(refused);
   }
 });

@@ -46,7 +46,7 @@ func TestThePublicNameTableHoldsOnlyContractNamesNoCredentialTravelsUnder(t *tes
 			t.Errorf("the public name %q is carried at %q, neither header nor field", entry.Name, entry.Place)
 		}
 		for _, route := range entry.Routes {
-			if problem := routeProblem(entry, route); problem != "" {
+			if problem := routeProblem(entry.Source, route); problem != "" {
 				t.Errorf("the public name %q is public on %q, which %s; its source is %q", entry.Name, route, problem, entry.Source)
 			}
 		}
@@ -65,10 +65,9 @@ func TestThePublicNameTableHoldsOnlyContractNamesNoCredentialTravelsUnder(t *tes
 		if !everyPath.MatchString(protocol.Route) || strings.TrimSpace(protocol.Source) == "" || strings.TrimSpace(protocol.Words) == "" {
 			t.Errorf("the protocol %+v names no method's every path, no section or none of its words", protocol)
 		}
-		cited := false
-		for _, entry := range publicRequestNames {
-			cited = cited || (slices.Contains(entry.Routes, protocol.Route) && strings.Contains(entry.Source, protocol.Source))
-		}
+		cited := slices.ContainsFunc(publicRequestNames, func(entry publicRequestName) bool {
+			return slices.Contains(entry.Routes, protocol.Route) && strings.Contains(entry.Source, protocol.Source)
+		})
 		if !cited {
 			t.Errorf("no entry public on %q cites the protocol %q, so nothing needs it", protocol.Route, protocol.Source)
 		}
@@ -82,22 +81,22 @@ var (
 	everyPath  = regexp.MustCompile(`^[A-Z]+ /\*$`)
 )
 
-// routeProblem is why route, one of entry's, is no route its source names, or "" where it is one:
-// a route on every path of its method is one a protocol of protocolMethods fixes, whose section the
+// routeProblem is why an entry's route is no route its source names, or "" where it is one: a
+// route on every path of its method is one a protocol of protocolMethods fixes, whose section the
 // source cites, since no contract writes "/*" and a source that repeats the route names nothing;
 // any other route is one the source names in its own words.
-func routeProblem(entry publicRequestName, route string) string {
+func routeProblem(source, route string) string {
 	switch {
 	case !routeShape.MatchString(route):
 		return `is no "<METHOD> /<path>"`
 	case everyPath.MatchString(route):
 		for _, protocol := range protocolMethods {
-			if protocol.Route == route && strings.Contains(entry.Source, protocol.Source) {
+			if protocol.Route == route && strings.Contains(source, protocol.Source) {
 				return ""
 			}
 		}
 		return "is every path of its method, which no protocol its source cites fixes (protocolMethods)"
-	case !strings.Contains(entry.Source, route):
+	case !strings.Contains(source, route):
 		return "is a route its source does not name"
 	}
 	return ""
@@ -135,7 +134,7 @@ func TestARouteOnEveryPathIsOneAProtocolItsSourceCitesFixes(t *testing.T) {
 			t.Fatalf("the row %+v names no id or route, so it checks nothing", row)
 		}
 		t.Run(row.ID, func(t *testing.T) {
-			problem := routeProblem(publicRequestName{Place: "field", Name: "planted", Source: row.Source, Routes: []string{row.Route}}, row.Route)
+			problem := routeProblem(row.Source, row.Route)
 			if refused := problem != ""; refused != row.Refused {
 				t.Errorf("routeProblem(%q, %q) = %q; want it refused: %v", row.Source, row.Route, problem, row.Refused)
 			}
