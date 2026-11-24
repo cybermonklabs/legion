@@ -409,7 +409,7 @@ func TestALeftPodWithALiveRoleIsReadBeforeItsClose(t *testing.T) {
 	}
 	rig.drain(t)
 
-	if read, suspended := rig.rt.reads(); !slices.Equal(read, []claim.Role{claim.RolePlanner}) || suspended != 1 {
+	if read, suspended := rig.rt.reads(); !slices.Equal(read, []claim.Token{rig.token}) || suspended != 1 {
 		t.Fatalf("the workspace was read through %v and %d Sandbox teardowns were authorized, want one read through the planner and the park's teardown alone",
 			read, suspended)
 	}
@@ -655,7 +655,7 @@ func checkedLeftPodClose(t *testing.T, reading func(rig *idleRig, readAt time.Ti
 		}
 	}}
 	rig.drain(t)
-	if read, _ := rig.rt.reads(); !slices.Equal(read, []claim.Role{claim.RolePlanner}) {
+	if read, _ := rig.rt.reads(); !slices.Equal(read, []claim.Token{rig.token}) {
 		t.Fatalf("the workspace was read through %v, want one read through the planner", read)
 	}
 	if rig.declined(t) {

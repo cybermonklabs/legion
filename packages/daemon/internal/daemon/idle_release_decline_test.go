@@ -392,7 +392,7 @@ func TestACleanReadForgetsTheDecline(t *testing.T) {
 		endedDecline(t, rig, claim.RolePlanner)
 		idlePasses(rig)
 		rig.drain(t)
-		if read, _ := rig.rt.reads(); !slices.Equal(read, []claim.Role{claim.RolePlanner}) {
+		if read, _ := rig.rt.reads(); !slices.Equal(read, []claim.Token{rig.token}) {
 			t.Fatalf("the workspace was read through %v, want one clean read through the planner", read)
 		}
 		if got := rig.machine.Claim(); got.State != supervise.StateSuspended {
