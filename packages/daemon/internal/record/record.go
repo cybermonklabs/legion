@@ -256,12 +256,12 @@ type Issue struct {
 	// first phase waits for — and nil for every other record. It is the mark that stands an issue
 	// whose row was taken away for a wait in the waiting line at the moment it lost that row
 	// (Waiting). The row and the mark are written together, so no pass reads a mark beside a row:
-	// only Store.ReleaseSlotForWait writes it, with the delete of the row in one statement. Four
-	// writes clear it (Store.ClearReleasedForWait, Store.ReleaseTreeSlots): the grant of a slot, the
-	// ordinary release of a row for good, the issue's departure from the workflow, which the
-	// release's own read of the live issues no longer reaches (workflow's leave), and the
-	// re-admission of its tree's root, for every issue of the tree (admit's releaseTreeSlots).
-	// PutIssue keeps the stored value.
+	// only Store.ReleaseSlotForWait writes it, with the delete of the row in one statement. These
+	// writes clear it (Store.ClearReleasedForWait, Store.ReleaseTreeSlots), and this is the one
+	// list of them: the grant of a slot, the ordinary release of a row for good, the issue's
+	// departure from the workflow, which the release's own read of the live issues no longer
+	// reaches (workflow's leave), and the re-admission of its tree's root, for every issue of the
+	// tree (admit's releaseTreeSlots). PutIssue keeps the stored value.
 	ReleasedForWaitAt *time.Time
 	// MovedAt is when the daemon last saw the issue move: the time of the newest fact it recorded
 	// that meant the issue's own record changed — a Dispatch event of the issue, a GitHub event of
@@ -2353,10 +2353,10 @@ type Store interface {
 	// again, or holds none for a reason that is not a wait.
 	ClearReleasedForWait(ctx context.Context, tx pgx.Tx, issue string) error
 	// ReleaseTreeSlots frees the slot of every issue of tree and clears Issue.ReleasedForWaitAt
-	// from every issue of it, and answers the issues whose slot it freed, in slot order: the
-	// re-admission of the tree's own root, which ends the generation those rows and marks were of
-	// (admit's releaseTreeSlots).
-	ReleaseTreeSlots(ctx context.Context, tx pgx.Tx, tree string) ([]string, error)
+	// from every issue of it, and answers the issues whose slot it freed, in slot order, and the
+	// number of slots project's issues hold afterwards: the re-admission of the tree's own root,
+	// which ends the generation those rows and marks were of (admit's releaseTreeSlots).
+	ReleaseTreeSlots(ctx context.Context, tx pgx.Tx, project, tree string) ([]string, int, error)
 	// OweMembers sets Issue.MembersOwed on the root key: its re-admission has started a generation
 	// whose members are still to be brought back (admit's readmit).
 	OweMembers(ctx context.Context, tx pgx.Tx, key string) error

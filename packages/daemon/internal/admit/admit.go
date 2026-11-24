@@ -1612,22 +1612,22 @@ func (a *Admission) readmit(ctx context.Context, tx pgx.Tx, stored record.Issue,
 // The root's own wait mark is gone already, since its leave cleared it (workflow's leave); its
 // members' are not.
 //
-// The rows freed here reach neither the pass's released list nor the controller's slot-free wake
-// (wakeForFreeSlot): the re-admitted root waits in the line, so this fact's pass, or the resume's
-// where a pause holds the project, promotes into them, and no slot stands free for the controller
-// to fill. A member arriving from another tree keeps the row it held there (Waiting's queued-root
-// loop), so only the tree's own root coming back reaches this.
+// Rows are freed here only under a pause, and they reach neither the pass's released list nor the
+// controller's slot-free wake (wakeForFreeSlot): the project is still paused, so a wake would call
+// the controller to fill capacity it cannot use, and the resume's notice tells it of the capacity
+// instead. The resume's pass promotes the root into one of them at most, and into none while its
+// tree's cleanup is reserved or a Dispatch blocker holds it, and its own release finds nothing, so
+// no slot-free wake follows for these rows. A member arriving from another tree keeps the row it
+// held there (Waiting's queued-root loop), so only the tree's own root coming back reaches this.
+// Each release is logged with the slots the project holds after it, lowered in slot order, as
+// releaseSlots logs its own.
 func (a *Admission) releaseTreeSlots(ctx context.Context, tx pgx.Tx, tree string) error {
-	released, err := a.store.ReleaseTreeSlots(ctx, tx, tree)
-	if err != nil || len(released) == 0 {
-		return err
-	}
-	slotted, err := a.store.SlottedIssues(ctx, tx, a.project)
+	released, held, err := a.store.ReleaseTreeSlots(ctx, tx, a.project, tree)
 	if err != nil {
 		return err
 	}
-	for _, key := range released {
-		a.logSlot(ctx, "released", key, len(slotted))
+	for i, key := range released {
+		a.logSlot(ctx, "released", key, held+len(released)-1-i)
 	}
 	return nil
 }
@@ -2819,17 +2819,18 @@ func (a *Admission) returnMembersOfRunningTrees(ctx context.Context, tx pgx.Tx, 
 // mark (record.PhaseKeepsSlot, releaseSlots).
 //
 // A marked root of this release is none of these. Its promotion clears the mark in the
-// transaction that grants the slot; its re-admission frees every slot of its tree
-// (releaseTreeSlots), so a slot on a marked root that re-admitted itself was granted after; and it
-// takes no first phase before returnMembersOfRunningTrees has brought its members back, since that
-// pass runs ahead of the promotion loop, a root it passes over for the promotion's hold is one that
-// loop stops at through the same hold, and a root whose label a person took off is held in the
-// line (record.Waiting). The phase is read where the root stands (record.StandsAt), not as
-// Issue.CarriesRun reads it: a marked root whose retried architect failed is held while its
-// members are still owed, and it stands at admitted. A root that arrived from another tree
-// carrying its phase there (Issue.HandedOverFrom) stays a queued root until its promotion, which
-// clears that mark, so it is never one either. Once no daemon of an earlier release shares a
-// database, this is the one place to delete.
+// transaction that grants the slot; its re-admission leaves its tree no slot of the generation
+// before (releaseTreeSlots says why); and it takes no first phase before
+// returnMembersOfRunningTrees has brought its members back, since that pass runs ahead of the
+// promotion loop, a root it passes over for the promotion's hold is one that loop stops at through
+// the same hold, and a root whose label a person took off is held in the line (record.Waiting).
+// The phase is read where the root stands (record.StandsAt), not as Issue.CarriesRun reads it: a
+// marked root whose retried architect failed is held while its members are still owed, and it
+// stands at admitted. A root that arrived from another tree carrying its phase there
+// (Issue.HandedOverFrom) stays a queued root until its promotion, which clears that mark, so it is
+// never one either. Once no daemon of an earlier release shares a database, this goes with its
+// branch in returnMembersOfRunningTrees, the slotted map it reads and that function's slots
+// parameter.
 func promotedByEarlierRelease(root record.Issue, holds bool) bool {
 	return holds || root.ReleasedForWaitAt != nil || (root.HandedOverFrom == "" && record.StandsAt(root) != phase.Admitted)
 }

@@ -11,10 +11,11 @@ body: |-
     lifecycle is not open (its cleanup reserved after the linger ended) stays in the line whatever
     its design gate says until the promotion that opens its tree; meanwhile no member of the tree
     starts, and each reads `tree_closed`. A root whose label is taken off while it waits brings
-    nothing back until the label returns. A root re-admitted in its own tree frees every slot of
-    that tree and the wait marks of its issues, as the release of a lingering tree does; before, a
-    tree moved out and back while its project was paused kept its old slots, which could fill the
-    cap and leave its root unpromoted after the resume. Store migration
+    nothing back until the label returns. A root moved out of the workflow and back gives back
+    every admission slot its tree still held, and no issue of the tree stays `waiting_on_issue`
+    for a slot it gave back, as when the tree's linger releases them; before, a tree moved out and
+    back while its project was paused kept its old slots, which could fill the cap and leave its
+    root unpromoted after the resume. Store migration
     `20261123224717_members_owed` adds `issues.members_owed` and marks every re-admitted root no
     promotion has opened yet: a tree whose gate opened before its promotion on the release before
     has its members brought back once, at the first admission pass of this release. A root that a

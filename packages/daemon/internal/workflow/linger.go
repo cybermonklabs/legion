@@ -53,12 +53,11 @@ import (
 //
 // Whatever the departure, the issue carries no mark of a slot released for a wait afterwards.
 // The mark is the daemon's answer to "this issue was started and its row is gone because it
-// waits on another issue" (record.Issue.ReleasedForWaitAt), and this write is one of the four
-// that clear it: the others are the grant of a slot, admission's release, which reads the
-// project's live issues alone (admit's releaseSlots), and the re-admission of the tree's root
-// (admit's releaseTreeSlots), and a child this function parks at phase.Done is in neither half of
-// that release's read (record.Postgres.LiveIssues) and may never see its tree re-admitted, so
-// without this write nothing would ever clear it. Left standing, a person's later todo would
+// waits on another issue" (record.Issue.ReleasedForWaitAt, which lists every write that clears
+// it). Admission's release reads the project's live issues alone (admit's releaseSlots), and a
+// child this function parks at phase.Done is in neither half of that read
+// (record.Postgres.LiveIssues) and may never see its tree re-admitted, so without this write
+// nothing would ever clear it. Left standing, a person's later todo would
 // re-enter the issue carrying it, and the line would stand it among the issues whose work came
 // back, at a moment from before the leave, rather than among the issues whose first phase can
 // start, which are ordered by Dispatch rank (record.Waiting). The write is made whatever the

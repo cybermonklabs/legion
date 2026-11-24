@@ -245,8 +245,8 @@ func (s *Postgres) PutIssue(ctx context.Context, tx pgx.Tx, issue Issue) error {
 	// spelling it was recorded with: a write naming others changes no row, and is refused below.
 	// handout_seq, declared_seq and declared_at are StartHandout's, TakeInThrough's, Declare's and
 	// ClearDeclared's alone, moved_at is MarkIssueMoved's, released_for_wait_at is
-	// ReleaseSlotForWait's and ClearReleasedForWait's, and members_owed is OweMembers's and
-	// ClearMembersOwed's, so a copy of the issue read before any of
+	// ReleaseSlotForWait's, ClearReleasedForWait's and ReleaseTreeSlots's, and members_owed is
+	// OweMembers's and ClearMembersOwed's, so a copy of the issue read before any of
 	// them never writes them back. That is what keeps the movement safe, since every write site
 	// that marks one holds a copy of the issue read before its own fact and records the issue
 	// through this statement in that same transaction. An insert names moved_at nowhere
@@ -2271,21 +2271,26 @@ func (s *Postgres) ClearReleasedForWait(ctx context.Context, tx pgx.Tx, issue st
 	return nil
 }
 
-func (s *Postgres) ReleaseTreeSlots(ctx context.Context, tx pgx.Tx, tree string) ([]string, error) {
+func (s *Postgres) ReleaseTreeSlots(ctx context.Context, tx pgx.Tx, project, tree string) ([]string, int, error) {
 	if _, err := tx.Exec(ctx, "update issues set released_for_wait_at = null where tree = $1 and released_for_wait_at is not null", tree); err != nil {
-		return nil, fmt.Errorf("clear the releases for a wait of %s's tree: %w", tree, err)
+		return nil, 0, fmt.Errorf("clear the releases for a wait of %s's tree: %w", tree, err)
 	}
 	rows, err := tx.Query(ctx, `with released as (delete from slots using issues
 		where slots.issue = issues.key and issues.tree = $1 returning slots.issue, slots.index)
 		select issue from released order by index, issue`, tree)
 	if err != nil {
-		return nil, fmt.Errorf("release the slots of %s's tree: %w", tree, err)
+		return nil, 0, fmt.Errorf("release the slots of %s's tree: %w", tree, err)
 	}
 	released, err := pgx.CollectRows(rows, pgx.RowTo[string])
 	if err != nil {
-		return nil, fmt.Errorf("release the slots of %s's tree: %w", tree, err)
+		return nil, 0, fmt.Errorf("release the slots of %s's tree: %w", tree, err)
 	}
-	return released, nil
+	var held int
+	if err := tx.QueryRow(ctx, `select count(*) from slots join issues on issues.key = slots.issue
+		where issues.project = $1`, project).Scan(&held); err != nil {
+		return nil, 0, fmt.Errorf("count the slots of %s after releasing %s's tree: %w", project, tree, err)
+	}
+	return released, held, nil
 }
 
 // OweMembers and ClearMembersOwed are the two writers of members_owed: PutIssue names the column
