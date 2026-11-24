@@ -1336,3 +1336,4 @@ case "$command" in
     ;;
 esac
 
+# (A control run for #5309: this line only changes the file, so the test job runs this harness alone. Never merged.)
