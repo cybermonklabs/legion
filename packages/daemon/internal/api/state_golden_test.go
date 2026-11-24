@@ -1107,6 +1107,27 @@ func populatedState(t *testing.T) State {
 		issue.TreeMovedAt, issue.QuietHours = &movedAt, &hours
 		state.Issues[key] = issue
 	}
+	// Every issue the workflow records carries its own Dispatch priority, null for none, and each
+	// member of the waiting line the priority that placed it (contract 221): LEGION-212 is P0 and
+	// waits at it, LEGION-211 has none of its own and waits at its tree root's P1 as the
+	// projection places it, and every other issue has none.
+	for key, issue := range state.Issues {
+		if issue.Phase == Unrecorded {
+			continue
+		}
+		own := PriorityView(record.NoPriority)
+		if key == "LEGION-212" {
+			own = PriorityView(record.P0)
+		}
+		issue.Priority = &own
+		if issue.WaitingLine != nil {
+			line := *issue.WaitingLine
+			placed := map[bool]PriorityView{true: PriorityView(record.P0), false: PriorityView(record.P1)}[key == "LEGION-212"]
+			line.Priority = &placed
+			issue.WaitingLine = &line
+		}
+		state.Issues[key] = issue
+	}
 	return state
 }
 
