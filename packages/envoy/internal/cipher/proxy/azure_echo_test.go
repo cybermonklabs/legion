@@ -145,9 +145,10 @@ func tokenEndpointNamed(t *testing.T, r *rig, names ...string) {
 // TestAnExchangeWhoseEndpointsCertificateNamesTheTokenWritesNoneOfIt: the command's exchange goes
 // to a token endpoint whose certificate names other hosts than the bound one, the real federated
 // token among them. crypto/x509's error lists every name it holds, with no quotation mark for
-// logmask.HidePeerBytes to find, so the refusal of the exchange and its line write
-// certificateNotForHost in its place (upstreamReason), as an upstream failure's line does, and
-// hold none of the token.
+// logmask.HidePeerBytes to find, so the refusal of the exchange and its line write redact's fixed
+// words for the failure in its place (upstreamReason, redact.TLSWords), as an upstream failure's
+// line does, and hold none of the token. The answer holds the words whole; the line's reason,
+// which names the endpoint before them and is cut to 256 bytes, holds their start.
 func TestAnExchangeWhoseEndpointsCertificateNamesTheTokenWritesNoneOfIt(t *testing.T) {
 	r, _ := newAzureRig(t, Options{})
 	tokenEndpointNamed(t, r, azureRealFederated, "other.example.net")
@@ -158,7 +159,10 @@ func TestAnExchangeWhoseEndpointsCertificateNamesTheTokenWritesNoneOfIt(t *testi
 	if answer.StatusCode != http.StatusBadGateway {
 		t.Fatalf("the exchange answered %d %q; want 502", answer.StatusCode, body)
 	}
-	noFederatedToken(t, r, body, certificateNotForHost)
+	if !strings.Contains(body, wantHostnameWords) {
+		t.Errorf("the answer the command was given is %q; want it to hold %q", body, wantHostnameWords)
+	}
+	noFederatedToken(t, r, body, hostnameWordsHead)
 }
 
 // TestAnExchangeWhoseEndpointEchoesTheTokenWritesNoneOfIt: the command's exchange, which this pod

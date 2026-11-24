@@ -616,6 +616,13 @@ func transportWords(err error) string {
 	return err.Error()
 }
 
+// TLSWords is the words of the first TLS record or certificate failure in err's tree, as this
+// package prints one (tlsWords: fixed words for its type, and for x509's CertificateInvalidError
+// for its reason, never its own text), and whether err holds one: the one rule for a printer
+// outside this package that writes such a failure in words of its own, such as the airlock
+// proxy's line of a call to a service, where Cause, Error and Unanswered do not fit.
+func TLSWords(err error) (string, bool) { return tlsWords(err) }
+
 // tlsWords is the words of the first TLS record or certificate failure in err's tree - err itself,
 // then each error it wraps, in the order errors.As walks them - as tlsErrorWords gives them, and
 // whether there is one.
