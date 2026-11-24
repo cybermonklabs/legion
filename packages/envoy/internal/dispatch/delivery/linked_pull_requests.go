@@ -150,29 +150,3 @@ func mergeInQuery(renames refs.Renames) string {
 	) merged
 	order by ` + newestMergeFirst
 }
-
-// BaseBranchMergedIn is BaseBranchMergedFor for a repository issueKey does not resolve to: the
-// branch the merged pull request that the issue's external links name in repoFull merged into
-// (linkedPullRequestTerms), and "" where Dispatch holds no merge of such a pull request. An
-// issue whose work spans two repositories links the pull request it has in the second one,
-// and the attribution can never give that pull request to it, so BaseBranchMergedFor, which
-// reads the attributed rows, never names that merge. The results read measures an
-// `after_merge` result whose commit the second repository holds against the branch answered
-// here (api/results_comparison.go).
-//
-// It is the base branch of MergeIn's first row, so it orders the rows as MergeIn and
-// BaseBranchMergedFor do, and the empty answer means what BaseBranchMergedFor's empty answer
-// means: no branch to measure against. A link to a pull request of the repository the issue
-// resolves to names nothing here, as it names nothing in HeadsAttributedTo, so a repoFull the
-// issue resolves to answers "". repoFull is compared without case with the canonical name each
-// link is read under, as every other comparison of a repository here is.
-//
-// The linked rows are read through pull_request_heads_repo_head's leading column, one
-// repository's rows for each linked pull request, as HeadsAttributedTo's are.
-func (a *Attributor) BaseBranchMergedIn(ctx context.Context, pool *store.Pool, issueKey, repoFull string) (string, error) {
-	merged, err := a.MergeIn(ctx, pool, issueKey, repoFull)
-	if err != nil || len(merged) == 0 {
-		return "", err
-	}
-	return merged[0].BaseRef, nil
-}

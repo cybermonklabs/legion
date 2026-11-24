@@ -4078,6 +4078,7 @@ export interface components {
       /** @enum {string} */
       kind: "named" | "pull_request" | "branch";
       learned_at?: components["schemas"]["BasisLearnedAt"];
+      merge_commit?: string;
       merged?: boolean;
       pull_request?: number;
       repo?: string;
@@ -4088,7 +4089,11 @@ export interface components {
       ci?: components["schemas"]["CheckCI"];
       ci_check?: string;
       /** @enum {string} */
-      compared_nothing?: "no_pull_request_or_branch" | "repository_unreadable" | "read_failed";
+      compared_nothing?:
+        | "no_pull_request_or_branch"
+        | "repository_unreadable"
+        | "read_failed"
+        | "not_merged";
       compared_with: components["schemas"]["CheckBasis"][] | null;
       issue_key: string;
       negative_control: string;
@@ -4125,8 +4130,9 @@ export interface components {
     CheckPassStands: {
       /** @enum {string} */
       answer: "yes" | "no" | "unknown";
+      commit?: string;
       /** @enum {string} */
-      reason?: "pass_and_fail" | "read_failed";
+      reason?: "pass_and_fail" | "fail" | "no_result" | "not_placed" | "read_failed";
       results?: string[];
       roles?: string[];
       subjects?: components["schemas"]["PassStandsSubject"][];

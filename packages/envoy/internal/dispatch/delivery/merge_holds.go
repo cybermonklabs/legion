@@ -16,7 +16,8 @@ import (
 // merge_holds.go owns what Dispatch knows of the merge of an issue's work: which merged pull
 // requests are an issue's, in its own repository and in a repository it links one in, newest
 // merge first (MergeOfIssue, MergeIn); which merged pull requests landed a branch on the base it
-// merged into (LandingOf); and whether a commit's history holds a merge commit (CommitHolds).
+// merged into (LandingOf); one merged pull request by its number (MergedPullRequestOf); and
+// whether a commit's history holds a merge commit (CommitHolds).
 // The results read (api/results_merge.go) chooses from these the merge each branch a check is
 // compared with must hold, and holds no store or GitHub read of its own.
 
@@ -77,15 +78,9 @@ func readMerged(ctx context.Context, pool *store.Pool, what, query string, args 
 
 // MergeOfIssue is every merged pull request attributed to issueKey, newest merge first
 // (newestMergeFirst): the merges of the issue's work in the repository it resolves to, each on
-// the branch it merged into. BaseBranchMergedFor answers its first row's base branch. The rows
-// are read through pull_request_heads_issue_head's leading column.
+// the branch it merged into. The rows are read through pull_request_heads_issue_head's leading
+// column.
 func (a *Attributor) MergeOfIssue(ctx context.Context, pool *store.Pool, issueKey string) ([]MergedPullRequest, error) {
-	return mergeOfIssue(ctx, pool, issueKey)
-}
-
-// mergeOfIssue is MergeOfIssue's read, which needs no rename pairs, so BaseBranchMergedFor,
-// which holds no Attributor, reads it too.
-func mergeOfIssue(ctx context.Context, pool *store.Pool, issueKey string) ([]MergedPullRequest, error) {
 	return readMerged(ctx, pool, "the merged pull requests of "+issueKey, `
 		select `+mergedColumns+` from pull_request_heads
 		where issue_key = $1 and state = 'merged'
@@ -94,8 +89,8 @@ func mergeOfIssue(ctx context.Context, pool *store.Pool, issueKey string) ([]Mer
 
 // MergeIn is MergeOfIssue for repoFull, a repository issueKey does not resolve to: every merged
 // pull request the issue's external links name there (linkedPullRequestTerms), newest merge
-// first. BaseBranchMergedIn answers its first row's base branch. A repository the issue
-// resolves to answers none. A pull request two links name is listed once.
+// first. A repository the issue resolves to answers none. A pull request two links name is listed
+// once.
 func (a *Attributor) MergeIn(ctx context.Context, pool *store.Pool, issueKey, repoFull string) ([]MergedPullRequest, error) {
 	return readMerged(ctx, pool, fmt.Sprintf("the merged pull requests %s links in %s", issueKey, repoFull),
 		a.mergeInQuery, issueKey, repoFull)
@@ -113,6 +108,22 @@ func LandingOf(ctx context.Context, pool *store.Pool, repo, branch string) ([]Me
 		select `+mergedColumns+` from pull_request_heads
 		where lower(repo) = lower($1) and head_ref = $2 and state = 'merged'
 		order by `+newestMergeFirst, repo, branch)
+}
+
+// MergedPullRequestOf is pull request number of repo as pull_request_heads stores it where it
+// merged, and false where no merged row of it is stored: the read a results read makes of a row
+// it has just refreshed (Attributor.RefreshPullRequestHead, which answers only whether the
+// refresh failed, and nothing where GitHub answered 404 and the row was stamped), to learn the
+// merge commit and the time of merge the refresh stored (api/results_merge.go). repo is compared
+// without case, as LandingOf compares it.
+func MergedPullRequestOf(ctx context.Context, pool *store.Pool, repo string, number int) (MergedPullRequest, bool, error) {
+	merged, err := readMerged(ctx, pool, fmt.Sprintf("the merged pull request %s#%d", repo, number), `
+		select `+mergedColumns+` from pull_request_heads
+		where lower(repo) = lower($1) and number = $2 and state = 'merged'`, repo, number)
+	if err != nil || len(merged) == 0 {
+		return MergedPullRequest{}, false, err
+	}
+	return merged[0], true, nil
 }
 
 // HoldAnswer is what Dispatch can say about one commit's history holding one merge commit.

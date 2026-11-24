@@ -51,6 +51,9 @@ func standingCommit(result model.CheckResult) string {
 // branch answers no: there is nothing for a pass to stand at, and that is a fact about the work
 // rather than a failed read.
 func passStandsOf(check model.CheckBlock, compared comparison) model.CheckPassStands {
+	if check.When == checkWhenAfterMerge || check.When == checkWhenDefaultBranch {
+		return newestResultStands(check, compared)
+	}
 	if compared.reason == model.ReasonRepositoryUnreadable {
 		return model.CheckPassStands{Answer: model.PassStandsUnknown}
 	}
@@ -246,4 +249,48 @@ func passAndFailCommits(check model.CheckBlock) map[string]bool {
 		}
 	}
 	return conflicted
+}
+
+// newestResultStands reads branch results newest first. The first result that counts decides,
+// unless a result Dispatch could not place precedes it, or both verdicts count at its commit.
+func newestResultStands(check model.CheckBlock, compared comparison) model.CheckPassStands {
+	switch compared.reason {
+	case model.ReasonRepositoryUnreadable, model.ReasonReadFailed:
+		return model.CheckPassStands{Answer: model.PassStandsUnknown, Reason: "read_failed"}
+	case model.ReasonNotMerged, model.ReasonNoPullRequestOrBranch:
+		return model.CheckPassStands{Answer: model.PassStandsNo, Reason: "no_result"}
+	}
+	for _, result := range check.Results {
+		switch standingCommit(result) {
+		case model.CommitUnknown:
+			return model.CheckPassStands{Answer: model.PassStandsUnknown, Reason: "not_placed", Results: []string{result.ID}, Commit: result.CommitSHA}
+		case model.CommitAtBasis:
+			var pass, fail string
+			var roles []string
+			for _, at := range check.Results {
+				if at.CommitSHA != result.CommitSHA || standingCommit(at) != model.CommitAtBasis {
+					continue
+				}
+				if at.Verdict == "pass" {
+					if pass == "" {
+						pass = at.ID
+					}
+					if !slices.Contains(roles, at.Role) {
+						roles = append(roles, at.Role)
+					}
+				} else if fail == "" {
+					fail = at.ID
+				}
+			}
+			switch {
+			case pass != "" && fail != "":
+				return model.CheckPassStands{Answer: model.PassStandsUnknown, Reason: "pass_and_fail", Results: []string{pass, fail}, Commit: result.CommitSHA}
+			case fail != "":
+				return model.CheckPassStands{Answer: model.PassStandsNo, Reason: "fail", Results: []string{fail}, Commit: result.CommitSHA}
+			default:
+				return model.CheckPassStands{Answer: model.PassStandsYes, Roles: roles, Results: []string{pass}, Commit: result.CommitSHA}
+			}
+		}
+	}
+	return model.CheckPassStands{Answer: model.PassStandsNo, Reason: "no_result"}
 }
