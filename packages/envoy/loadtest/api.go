@@ -14,11 +14,14 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/redact"
+	"github.com/sjawhar/envoy/redirects"
 )
 
 // api is a Dispatch HTTP client: agent requests use the stack's shared bearer and name a session
 // actor in a write's body; a person's request names the person in the trusted identity header
-// (DISPATCH_IDENTITY=header:X-Dispatch-User).
+// (DISPATCH_IDENTITY=header:X-Dispatch-User). Since every request carries one of the two, its
+// client follows no redirect (redirects.Refused): Dispatch's API answers none, and a Location is
+// the answering party's words.
 type api struct {
 	base   string
 	token  string
@@ -32,7 +35,7 @@ func newAPI(base, token string, maxIdle int) *api {
 		MaxIdleConnsPerHost: maxIdle,
 		IdleConnTimeout:     90 * time.Second,
 	}
-	return &api{base: strings.TrimRight(base, "/"), token: token, client: &http.Client{Transport: tr, Timeout: 30 * time.Second}}
+	return &api{base: strings.TrimRight(base, "/"), token: token, client: redirects.Refused(&http.Client{Transport: tr, Timeout: 30 * time.Second})}
 }
 
 // who is a request's identity: a person through the identity header when person is set, the
@@ -163,7 +166,15 @@ func (a *api) callRawKeyed(ctx context.Context, method, path string, w who, cont
 	}
 	res := callResult{start: time.Now().UnixNano()}
 	resp, err := a.client.Do(req)
-	if err == nil {
+	if err != nil {
+		// net/http's error can quote the answering party's words (a Location that does not parse,
+		// read before any redirect policy), which can echo the request's bearer, and callers print
+		// it: it prints as the request's address allows (redact.Error), net/http's own line beside
+		// a clean address and the failure's class beside any other. Error rather than Cause: it
+		// answers err itself where that text may print, so the callers' messages, which name the
+		// request by its step and not its URL, read as before.
+		err = redact.Error(err, a.base+path)
+	} else {
 		res.status = resp.StatusCode
 		res.etag = resp.Header.Get("ETag")
 		res.answer, err = redact.ReadAnswer(resp, answerLimit)
