@@ -71,10 +71,16 @@ func readRuntime(pool *store.Pool, api string, log *slog.Logger) *workflowRuntim
 		mergeStates: newWakeSet[string](), mergeStateRunning: map[string]*mergeStateRun{}, baseWake: newWakeSet[string](),
 		etags: githubrest.NewETags(etagBytes),
 	}
-	w.engine = workflow.New(record.NewStore(), workflow.Config{Project: "CAPTURE", Repositories: testRepositories,
-		ReadMergeState: w.queueMergeState, ReadBaseMergeStates: w.queueBaseMergeStates}, log)
-	w.handlers = []intake.Handler{w.engine}
+	w.engineOver(record.NewStore())
 	return w
+}
+
+// engineOver gives w the engine readRuntime gives it, writing through records, and applies the
+// facts w's reads make with it (workflowRuntime.handlers).
+func (w *workflowRuntime) engineOver(records record.Store) {
+	w.engine = workflow.New(records, workflow.Config{Project: "CAPTURE", Repositories: testRepositories,
+		ReadMergeState: w.queueMergeState, ReadBaseMergeStates: w.queueBaseMergeStates}, w.log)
+	w.handlers = []intake.Handler{w.engine}
 }
 
 // servedAcme is the repository state of a project that has prepared acme/widgets alone, both

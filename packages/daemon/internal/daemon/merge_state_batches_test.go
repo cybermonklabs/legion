@@ -871,6 +871,41 @@ func TestAFastServerErrorIsAFailedReadOfItsChunk(t *testing.T) {
 	}
 }
 
+// A token the implement App could not mint for a query stops the read where it stands, as a rate
+// limit does (readStopped): the read sends no query after it, and every pull request it owed goes
+// on along its climb, with no query of its own for any of them. The failure is logged as the
+// mint's, once, and the climb's next read asks for each again. Read as any other failed query, the
+// failed mint would have sent the next chunk's query in the same read, and asked for the first
+// chunk's pull request alone from then on.
+func TestAFailedMintStopsTheRead(t *testing.T) {
+	t.Parallel()
+	pool := isolatedOutboxPool(t)
+	seedOnMain(t, pool, "CAPTURE-1", 86, phase.Testing, "testing", "U")
+	seedOnMain(t, pool, "CAPTURE-2", 87, phase.Testing, "testing", "V")
+	rig := newBatchRig(t, pool, func(_ int32, asked []int, _ http.Header) (int, string) {
+		return http.StatusOK, eachAsked(t, asked, func(n int) map[string]any { return batchNode(n, fmt.Sprintf("head-%d", n), "MERGEABLE", "BLOCKED") })
+	})
+	rig.w.baseChunk = 1
+	armed := &armedFailure{}
+	armed.on.Store(true)
+	rig.w.tokens = failingTokens{Tokens: rig.w.tokens, armed: armed}
+
+	pushOntoMain(t, pool, rig.w, "main-2")
+	testwait.Eventually(t, "both pull requests answered and the batch ended", func() bool {
+		return recordedPull(t, pool, "CAPTURE-1").MergeState == record.MergeStateBlocked &&
+			recordedPull(t, pool, "CAPTURE-2").MergeState == record.MergeStateBlocked && rig.ended()
+	})
+	if fired := armed.fired.Load(); fired != 1 {
+		t.Fatalf("%d mints failed, want the one armed before the push", fired)
+	}
+	if asked := rig.askedOf(); len(asked) != 2 || !slices.Equal(asked[0], []int{86}) || !slices.Equal(asked[1], []int{87}) {
+		t.Fatalf("GitHub was asked for %v, want [86] and then [87], both by the climb's next read: the read whose first mint failed sends no query", asked)
+	}
+	if minted := loggedLines(t, rig.logs.String(), "github: mint the implement App token to read the merge state"); len(minted) != 1 {
+		t.Fatalf("the daemon logged %v, want the failed mint once", minted)
+	}
+}
+
 // A pull request whose query of its own ran out of GitHub's time, after its chunk's did, is asked
 // for alone on the reads after, until GitHub answers it, so it costs the pull requests beside it no
 // second timeout; the others are asked for together again.

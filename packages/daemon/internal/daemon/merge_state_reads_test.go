@@ -347,37 +347,36 @@ func TestTheMergeStateFollowsGitHubAfterASecondReadEndsOnUnknown(t *testing.T) {
 	}
 }
 
-// A head GitHub has answered `unknown` for reaches its base's reads, and they read it until GitHub
-// answers it (dispatch://INFRA-4374 R4), though a read fails after that answer: the record's read
-// of the pull request, as a transient error of the database fails it; the mint of the implement
-// token for the base's query, as a mint GitHub does not answer in time fails it; or GitHub's REST
-// read, which answers 403 once the implement App's REST budget is spent, the failure this batch
-// exists for (dispatch://INFRA-3663). Each row arms its failure at one of GitHub's answers, and the
-// next read of that kind fails:
+// A head GitHub has answered for reaches its base's reads, and they read it until GitHub's answer is
+// recorded (dispatch://INFRA-4374 R4), though one step fails once after that answer: the record's
+// read of the pull request, as a transient error of the database fails it; the mint of the
+// implement token for the base's query, as a mint GitHub does not answer in time fails it; GitHub's
+// REST read, which answers 403 once the implement App's REST budget is spent, the failure this
+// batch exists for (dispatch://INFRA-3663); or the record's write of GitHub's answer. Each row arms
+// its failure at one of GitHub's answers (after), and the next step of that kind fails:
 //
 //   - After a climb's last `unknown`, and after a second read whose attempts all read `unknown`,
 //     the head goes to its base with the pull request the read before held (followOnBase), so the
-//     failed read is the base's own: its record read, or its mint, which keeps the issue owed and
-//     leaves the installation's backoff as it stood, since GitHub answered nothing (settle). The
+//     failed step is the base's own: its record read, or its mint, which keeps the issue owed. The
 //     base logs that read with no answer and reads the head at its next step. Had the handover
 //     read the record again, its failed read would have ended the reads there.
 //   - After a climb's first `unknown`, its second read fails - the record's read, or GitHub's 403 -
 //     and the climb hands the pull request its `unknown` was read of to its base (climbMergeState)
 //     as after its last read. Had it handed over nothing, nothing would read the head again until
 //     its next event, and the record would stand at `unknown`.
+//   - GitHub answers a state, CONFLICTING, and the database fails the write of it
+//     (applyMergeability): at a climb's first read, which hands the pull request to its base as if
+//     GitHub had answered nothing (climbMergeState, errUnapplied), and at the base's first read,
+//     which keeps the issue owed, logs that read with no answer and reads it at its next step
+//     (readChunk). Had either taken GitHub's state as recorded, the climb would have ended on it
+//     and the base would have let the issue go, and the record would hold what it held before the
+//     read until the issue's next event.
 //
 // Either way GitHub's CONFLICTING, at the base's read, is recorded as the first conflicting read
-// of code on main.
+// of code on main. Each row counts the failures it caused and holds that there was one, and holds
+// that the step it failed logged its failure once, with the line of that step.
 func TestAFailedReadLosesNoHeadHandedToItsBase(t *testing.T) {
 	t.Parallel()
-	const (
-		failRecord = "the record's read of the pull request"
-		failMint   = "the mint of the implement token"
-		failGitHub = "GitHub's REST read"
-	)
-	// refused is GitHub's answer to a read once the installation's REST budget is spent.
-	refused := pullAnswer{status: http.StatusForbidden, header: http.Header{"X-Ratelimit-Remaining": {"0"}},
-		body: `{"message":"API rate limit exceeded for installation ID 171972716.","documentation_url":"https://docs.github.com/rest/using-the-rest-api/rate-limits-for-the-rest-api"}`}
 	// A read the base logs: its attempt, its wait in the ladder's waits, and what it answered.
 	type logged struct {
 		attempt, waits int
@@ -385,63 +384,71 @@ func TestAFailedReadLosesNoHeadHandedToItsBase(t *testing.T) {
 	}
 	noAnswerThenDirty := []logged{{1, 2, "no answer"}, {2, 4, string(record.MergeStateDirty)}}
 	dirty := []logged{{1, 2, string(record.MergeStateDirty)}}
+	failReads := func(w *workflowRuntime, armed *armedFailure) {
+		w.records = failingPullRecords{Store: w.records, armed: armed}
+	}
+	failMints := func(w *workflowRuntime, armed *armedFailure) {
+		w.tokens = failingTokens{Tokens: w.tokens, armed: armed}
+	}
+	failWrites := func(w *workflowRuntime, armed *armedFailure) {
+		w.engineOver(failingPullWrites{Store: record.NewStore(), armed: armed})
+	}
+	// The lines the failed steps log: the base's record read, the base's mint, the climb's read,
+	// and a write the climb's read and the base's read made of GitHub's answer.
+	const (
+		baseRecordRead = "github: read the record of a pull request owed a merge-state read"
+		baseMint       = "github: mint the implement App token to read the merge state"
+		climbRead      = "read GitHub's merge state for an issue whose read was asked for"
+		climbWrite     = "github: the record did not take GitHub's merge state for an issue whose read was asked for"
+		baseWrite      = "github: the record did not take GitHub's merge state for a pull request owed a merge-state read"
+	)
 	for _, tc := range []struct {
 		name string
 		// second is whether a second read of a conflict hands the head over, rather than a climb.
 		second bool
-		fails  string
-		// after is GitHub's answer, by its count, after which the failure is armed: the next read
-		// of its kind fails, and the next answer after a failed REST read is the 403.
-		after int32
+		// GitHub answers `unknown` before its answer after, answer at it, then the next time, and
+		// CONFLICTING after that. A then that is no 2xx is the failure, and wrap nil arms nothing;
+		// otherwise wrap puts in the step that fails once it is armed, at answer after.
+		after        int32
+		answer, then pullAnswer
+		wrap         func(*workflowRuntime, *armedFailure)
+		// warning is the line the failed step logs, once.
+		warning string
 		// logs is every read the base logs; reads, GitHub's reads in all, the base's among them.
 		logs  []logged
 		reads int32
 	}{
-		{name: "the base's record read after a climb's handover", fails: failRecord, after: mergeStateLadderReads, logs: noAnswerThenDirty, reads: mergeStateLadderReads + 1},
-		{name: "the base's record read after a second read's handover", second: true, fails: failRecord, after: mergeStateLadderReads, logs: noAnswerThenDirty, reads: mergeStateLadderReads + 1},
-		{name: "the base's mint after a climb's handover", fails: failMint, after: mergeStateLadderReads, logs: noAnswerThenDirty, reads: mergeStateLadderReads + 1},
-		{name: "a climb's record read after an unknown answer", fails: failRecord, after: 1, logs: dirty, reads: 2},
-		{name: "a climb's REST read refused 403 after an unknown answer", fails: failGitHub, after: 1, logs: dirty, reads: 3},
+		{name: "the base's record read after a climb's handover", after: mergeStateLadderReads, answer: unknownPull, then: conflictingPull, wrap: failReads, warning: baseRecordRead, logs: noAnswerThenDirty, reads: mergeStateLadderReads + 1},
+		{name: "the base's record read after a second read's handover", second: true, after: mergeStateLadderReads, answer: unknownPull, then: conflictingPull, wrap: failReads, warning: baseRecordRead, logs: noAnswerThenDirty, reads: mergeStateLadderReads + 1},
+		{name: "the base's mint after a climb's handover", after: mergeStateLadderReads, answer: unknownPull, then: conflictingPull, wrap: failMints, warning: baseMint, logs: noAnswerThenDirty, reads: mergeStateLadderReads + 1},
+		{name: "a climb's record read after an unknown answer", after: 1, answer: unknownPull, then: conflictingPull, wrap: failReads, warning: climbRead, logs: dirty, reads: 2},
+		{name: "a climb's REST read refused 403 after an unknown answer", after: 1, answer: unknownPull, then: refusedPull, warning: climbRead, logs: dirty, reads: 3},
+		{name: "the record's write of a climb's answer", after: 1, answer: conflictingPull, then: conflictingPull, wrap: failWrites, warning: climbWrite, logs: dirty, reads: 2},
+		{name: "the record's write of the base's answer", after: mergeStateLadderReads + 1, answer: conflictingPull, then: conflictingPull, wrap: failWrites, warning: baseWrite, logs: noAnswerThenDirty, reads: mergeStateLadderReads + 2},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			fail := &atomic.Bool{}
-			// The installation's gate stands at a backoff of a minute, its hold long over, and
-			// the base's query after a failed mint reads it: GitHub answered the mint nothing, so
-			// nothing ends the backoff (settle).
-			var gate atomic.Pointer[queryGate]
-			var heldAfterMint atomic.Int64
-			answer := func(read int32) pullAnswer {
-				switch {
-				case read < tc.after:
-					return unknownPull
-				case read == tc.after:
-					fail.Store(tc.fails != failGitHub)
-					return unknownPull
-				case read == tc.after+1 && tc.fails == failGitHub:
-					return refused
-				case read == tc.after+1 && tc.fails == failMint:
-					installation := gate.Load()
-					installation.mu.Lock()
-					heldAfterMint.Store(int64(installation.held))
-					installation.mu.Unlock()
-				}
-				return conflictingPull
-			}
+			armed := &armedFailure{}
 			seed := approvedCapture
 			if tc.second {
 				seed = captureInTesting
 			}
-			rig := newReadRig(t, seed, answer)
-			switch tc.fails {
-			case failRecord:
-				rig.w.records = failingPullRecords{Store: rig.w.records, fail: fail}
-			case failMint:
-				rig.w.tokens = failingTokens{Tokens: rig.w.tokens, fail: fail}
-				installation := rig.w.queryGate(implementScope(ghrepo.MustParse("acme/widgets")))
-				installation.mu.Lock()
-				installation.held, installation.hold = time.Minute, time.Now().Add(-time.Hour)
-				installation.mu.Unlock()
-				gate.Store(installation)
+			rig := newReadRig(t, seed, func(read int32) pullAnswer {
+				switch {
+				case read < tc.after:
+					return unknownPull
+				case read == tc.after:
+					armed.on.Store(tc.wrap != nil)
+					return tc.answer
+				case read == tc.after+1:
+					if tc.then.status != 0 {
+						armed.fired.Add(1)
+					}
+					return tc.then
+				}
+				return conflictingPull
+			})
+			if tc.wrap != nil {
+				tc.wrap(rig.w, armed)
 			}
 			if tc.second {
 				rig.runSecondReadOut(t)
@@ -449,12 +456,15 @@ func TestAFailedReadLosesNoHeadHandedToItsBase(t *testing.T) {
 				rig.start(t)
 			}
 
-			testwait.Eventually(t, "the base's reads to record GitHub's CONFLICTING after "+tc.fails+" failed", func() bool {
+			testwait.Eventually(t, "the base's reads to record GitHub's CONFLICTING after the failure", func() bool {
 				_, pr := capturePhase(t, rig.pool)
 				return pr.ConflictRead != nil && len(rig.follows(t)) >= len(tc.logs)
 			})
-			if fail.Load() {
-				t.Fatalf("no %s failed, want the one armed at GitHub's answer %d", tc.fails, tc.after)
+			if fired := armed.fired.Load(); fired != 1 {
+				t.Fatalf("%d steps failed, want the one armed at GitHub's answer %d", fired, tc.after)
+			}
+			if warned := loggedLines(t, rig.logs.String(), tc.warning); len(warned) != 1 {
+				t.Fatalf("the daemon logged %v, want %q once", warned, tc.warning)
 			}
 			unit := rig.w.mergeStateWait()
 			follows := rig.follows(t)
@@ -474,41 +484,135 @@ func TestAFailedReadLosesNoHeadHandedToItsBase(t *testing.T) {
 			if pr.Mergeability != record.MergeabilityConflicting || pr.ConflictRead.Head != "code" || pr.ConflictRead.Base != "main" {
 				t.Fatalf("the record holds %s with first read %+v, want GitHub's CONFLICTING recorded as the first read of code on main", pr.Mergeability, pr.ConflictRead)
 			}
-			if tc.fails == failMint {
-				if held := time.Duration(heldAfterMint.Load()); held != time.Minute {
-					t.Fatalf("after the failed mint the installation's backoff was %s, want the minute it stood at: GitHub answered nothing", held)
-				}
-			}
 		})
 	}
 }
 
-// failingPullRecords is a runtime's records whose next read of a pull request fails once fail is
-// set, as a transient error of the database fails it, and which read as records do after that.
+// refusedPull is GitHub's answer to a read of the pull request once the implement App
+// installation's REST budget is spent: 403, with the budget's remaining count at 0.
+var refusedPull = pullAnswer{status: http.StatusForbidden, header: http.Header{"X-Ratelimit-Remaining": {"0"}},
+	body: `{"message":"API rate limit exceeded for installation ID 171972716.","documentation_url":"https://docs.github.com/rest/using-the-rest-api/rate-limits-for-the-rest-api"}`}
+
+// A climb asked for while its base's reads follow the head - here the head's next CI settlement,
+// after a climb handed the head over - takes the issue out of those reads only once its first read
+// has read GitHub (climbMergeState). Its first read here is refused 403, as GitHub refuses every
+// read once the implement App's REST budget is spent, so the climb has nothing to hand back, and
+// the base's reads go on: they read the head on their ladder and record GitHub's CONFLICTING. Had
+// the request taken the issue out of them at once, nothing would read the head again until its
+// next event, and the record would stand at `unknown`.
+func TestAClimbWhoseFirstReadFailsLeavesTheHeadWithItsBase(t *testing.T) {
+	t.Parallel()
+	// A larger unit, so the base's first read after the handover, two of them on, is far later
+	// than the test's own step from the handover to the request, and the refused read is the
+	// climb's.
+	const slower = 200 * time.Millisecond
+	rig := newReadRig(t, approvedCapture, func(read int32) pullAnswer {
+		switch {
+		case read <= mergeStateLadderReads:
+			return unknownPull
+		case read == mergeStateLadderReads+1:
+			return refusedPull
+		}
+		return conflictingPull
+	})
+	rig.w.mergeStateRetry = slower
+	rig.start(t)
+	testwait.Eventually(t, "the climb to hand the head to its base", func() bool {
+		rig.w.mergeStateMu.Lock()
+		defer rig.w.mergeStateMu.Unlock()
+		return rig.w.baseReadOf["CAPTURE-1"] != ""
+	})
+	// The head's next CI settlement asks for a read of its own (workflow's askMergeState).
+	later := settledChecksOnCode()
+	later.Generation, later.Snapshot = 2, "settled-later"
+	later.CheckRuns = []record.AttemptRun{{Name: "pr-checks-result", ID: 4}}
+	applyFact(t, rig.pool, "github", "checks-on-code-again", later, rig.w.handlers...)
+
+	testwait.Eventually(t, "the base's reads to record GitHub's CONFLICTING after the climb's refused read", func() bool {
+		_, pr := capturePhase(t, rig.pool)
+		return pr.ConflictRead != nil
+	})
+	refused := loggedLines(t, rig.logs.String(), "read GitHub's merge state for an issue whose read was asked for")
+	if len(refused) != 1 || refused[0]["read"] != float64(1) || refused[0]["handedToBase"] != false {
+		t.Fatalf("the climbs logged %v failed reads, want the second climb's first read refused, with nothing to hand back", refused)
+	}
+	follows := rig.follows(t)
+	if len(follows) != 1 || follows[0]["attempt"] != float64(1) || follows[0]["wait"] != float64(2*slower) ||
+		follows[0]["answered"] != string(record.MergeStateDirty) {
+		t.Fatalf("the base's reads logged %v, want its first read of the head handed over, after two of the ladder's waits, answering dirty", follows)
+	}
+	if got := rig.reads.Load(); got != mergeStateLadderReads+2 {
+		t.Fatalf("GitHub was read %d times, want the first climb's %d, the second climb's refused read and the base's", got, mergeStateLadderReads)
+	}
+	_, pr := capturePhase(t, rig.pool)
+	if pr.Mergeability != record.MergeabilityConflicting || pr.ConflictRead.Head != "code" || pr.ConflictRead.Base != "main" {
+		t.Fatalf("the record holds %s with first read %+v, want GitHub's CONFLICTING recorded as the first read of code on main", pr.Mergeability, pr.ConflictRead)
+	}
+}
+
+// armedFailure is a failure a test arms (on) and the stand-in that fails takes up once, counting
+// each time it fails (fired).
+type armedFailure struct {
+	on    atomic.Bool
+	fired atomic.Int32
+}
+
+// fire says whether the step that asks fails now: once, the first time it asks after the failure
+// was armed.
+func (a *armedFailure) fire() bool {
+	if a.on.CompareAndSwap(true, false) {
+		a.fired.Add(1)
+		return true
+	}
+	return false
+}
+
+// failingPullRecords is a runtime's records whose next read of a pull request fails once armed, as
+// a transient error of the database fails it, and which read as records do after that.
 type failingPullRecords struct {
 	record.Store
-	fail *atomic.Bool
+	armed *armedFailure
 }
 
 func (s failingPullRecords) PullRequest(ctx context.Context, tx pgx.Tx, issue string) (*record.PullRequest, error) {
-	if s.fail.CompareAndSwap(true, false) {
+	if s.armed.fire() {
 		return nil, errors.New("the database closed the connection")
 	}
 	return s.Store.PullRequest(ctx, tx, issue)
 }
 
+// failingPullWrites is an engine's records whose next write of a pull request fails once armed, as
+// a transient error of the database fails it, and which write as records do after that.
+type failingPullWrites struct {
+	record.Store
+	armed *armedFailure
+}
+
+func (s failingPullWrites) PutPullRequest(ctx context.Context, tx pgx.Tx, pr record.PullRequest) error {
+	if s.armed.fire() {
+		return errors.New("the database closed the connection")
+	}
+	return s.Store.PutPullRequest(ctx, tx, pr)
+}
+
 // failingTokens is a runtime's token source whose next mint of an installation token fails once
-// fail is set, as a mint GitHub does not answer in time fails, and which mints as before after it.
+// armed, as a mint GitHub does not answer in time fails, and which mints as before after it.
 type failingTokens struct {
 	appauth.Tokens
-	fail *atomic.Bool
+	armed *armedFailure
 }
 
 func (s failingTokens) Token(ctx context.Context, role appauth.AppRole, owner string) (appauth.Lease, error) {
-	if s.fail.CompareAndSwap(true, false) {
-		return appauth.Lease{}, &appauth.TransientError{Err: fmt.Errorf("mint the %s token for %s: %w", role, owner, context.DeadlineExceeded)}
+	if s.armed.fire() {
+		return appauth.Lease{}, mintTimedOut(role, owner)
 	}
 	return s.Tokens.Token(ctx, role, owner)
+}
+
+// mintTimedOut is the error a mint of role's token for owner answers when GitHub does not answer
+// it in time: appauth's TransientError, which carries no answer of GitHub's.
+func mintTimedOut(role appauth.AppRole, owner string) error {
+	return &appauth.TransientError{Err: fmt.Errorf("mint the %s token for %s: %w", role, owner, context.DeadlineExceeded)}
 }
 
 // The reads that follow GitHub's merge state are held in memory, so a restart ends them, and the

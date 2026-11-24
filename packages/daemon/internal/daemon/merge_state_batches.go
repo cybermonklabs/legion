@@ -169,7 +169,8 @@ func (w *workflowRuntime) batchLocked(repo ghrepo.Repository, base string) (*bas
 }
 
 // leaveBaseLocked takes issue out of the batch it is owed a read in, if any, under mergeStateMu: a
-// climb of its own reads it now (queueMergeStateFollow), or another batch takes it (putLocked).
+// climb of its own reads it, once its first read has read GitHub (climbMergeState), or another
+// batch takes it (putLocked).
 // A batch left with no issue is woken, so its follow ends rather than wait to read nothing.
 func (w *workflowRuntime) leaveBaseLocked(issue string) {
 	key, owed := w.baseReadOf[issue]
@@ -546,7 +547,11 @@ type chunkOutcome struct {
 // state for, or answers closed, leaves the batch; one it answers `unknown` for on another base
 // moves to that base's batch (moveBase), by GitHub's word alone, so no stale record sends it back;
 // and one it answers `unknown` for here goes on along its climb or its ladder. One the answer left
-// out (an error of GitHub's for that pull request alone) goes on along its climb or its ladder too.
+// out (an error of GitHub's for that pull request alone) goes on along its climb or its ladder too,
+// and so does one whose answer the record did not take (applyMergeability failed, as a write the
+// database fails fails it), whatever GitHub answered: the record holds what it held before, so the
+// pull request is owed a read still, and leaving the batch would leave it unread until its next
+// event (dispatch://INFRA-4374 R4).
 //
 // A query that failed has none of part touched, and its outcome says how it failed, which its
 // caller acts on (readBase).
@@ -581,9 +586,15 @@ func (w *workflowRuntime) readChunk(ctx context.Context, key string, repo ghrepo
 			continue
 		}
 		answer := node.githubPullRequest()
-		// A failed apply is logged there, and the next read of the pull request applies it again.
-		_ = w.applyMergeability(ctx, got.github, r.pr, answer, got.readAt, w.mergeabilityEventID(r.pr, got.readAt))
 		state := answer.mergeState()
+		if err := w.applyMergeability(ctx, got.github, r.pr, answer, got.readAt, w.mergeabilityEventID(r.pr, got.readAt)); err != nil {
+			if ctx.Err() == nil {
+				w.log.Warn("github: the record did not take GitHub's merge state for a pull request owed a merge-state read; it is read again",
+					"issue", r.issue, "head", r.pr.HeadSHA, "repo", repo.String(), "pullRequest", r.pr.Number, "answered", string(state), "error", err)
+			}
+			w.missed(key, r.issue, r.owed, 0, false)
+			continue
+		}
 		next := w.nextPlace(r.owed, r.pr.HeadSHA, got.readAt, 0)
 		next.alone = false
 		if !r.owed.climb {

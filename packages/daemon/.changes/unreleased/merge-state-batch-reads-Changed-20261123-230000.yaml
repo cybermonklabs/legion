@@ -18,12 +18,13 @@ body: |-
   GitHub or a restart, still reads that pull request alone, and hands a head GitHub still answers
   `unknown` for to its base's reads with the pull request its last read held, with no second read
   of the daemon's database between them. A read of the climb that fails after GitHub answered
-  `unknown` - the database's read, or GitHub's 403 once the implement App's REST budget is spent -
-  hands that head to its base's reads too. The base's reads keep a pull request whose record they
-  fail to read, and read it at its next turn. Each answer is stamped with the time its own query
-  was answered, so an answer older than one the record holds changes nothing. The query asks
-  GitHub for each pull request's base too, so a pull request moved to another base is recorded and
-  read on that base.
+  `unknown` (the database's read or GitHub's, as GitHub answers 403 once the REST budget is spent)
+  hands that head to its base's reads too, and so does a read whose answer the database fails to
+  record, whatever GitHub answered. The base's reads keep a pull request whose record they fail to
+  read, or whose answer they fail to record, and read it at its next turn. Each answer is stamped
+  with the time its own query was answered, so an answer older than one the record holds changes
+  nothing. The query asks GitHub for each pull request's base too, so a pull request moved to
+  another base is recorded and read on that base.
 
   The queries of every base of an installation's repositories go one at a time, and after each
   the next waits (1 - share) / share of the time it took, at most 15 minutes, where share is the

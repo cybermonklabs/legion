@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
 )
@@ -50,11 +51,12 @@ func TestARepeatedLimitDoublesTheInstallationsHoldUpToItsCap(t *testing.T) {
 	held("a limit longer after the hold than the hold lasted", limit(time.Minute), time.Minute)
 }
 
-// A query that reached no answer of GitHub's - a connection that failed, its own deadline - says
-// nothing of whether GitHub still limits the installation, so it leaves the backoff as it stands:
-// a limit, then such a failure, then a limit within one hold-length of the hold's end doubles the
-// hold. An answer of GitHub's own that is no limit - a 502, GraphQL errors - ends the backoff as an
-// answer with the data does.
+// A query that reached no answer of GitHub's - a connection that failed, its own deadline, a token
+// that could not be minted for it, whose error queryChunk hands the gate as the mint returned it -
+// says nothing of whether GitHub still limits the installation, so it leaves the backoff as it
+// stands: a limit, then such a failure, then a limit within one hold-length of the hold's end
+// doubles the hold. An answer of GitHub's own that is no limit - a 502, GraphQL errors - ends the
+// backoff as an answer with the data does.
 func TestATransportFailureKeepsTheBackoff(t *testing.T) {
 	t.Parallel()
 	limit := &githubrest.Answer{Method: http.MethodPost, Path: "/graphql", Status: http.StatusForbidden, RateLimited: true, RetryAfter: time.Minute, Budget: githubrest.BudgetSecondary}
@@ -66,6 +68,7 @@ func TestATransportFailureKeepsTheBackoff(t *testing.T) {
 	}{
 		{"a connection that failed", &url.Error{Op: "Post", URL: "https://api.github.com/graphql", Err: errors.New("connection reset by peer")}, false},
 		{"the query's own deadline", &url.Error{Op: "Post", URL: "https://api.github.com/graphql", Err: context.DeadlineExceeded}, false},
+		{"a token that could not be minted", mintTimedOut(appauth.Implement, "acme"), false},
 		{"a 502 of GitHub's", &githubrest.Answer{Method: http.MethodPost, Path: "/graphql", Status: http.StatusBadGateway, Body: `{"message":"Server Error"}`}, true},
 		{"GraphQL errors", githubrest.GraphQLErrors{{Type: "NOT_FOUND", Message: "Could not resolve to a PullRequest with the number of 87."}}, true},
 	} {
