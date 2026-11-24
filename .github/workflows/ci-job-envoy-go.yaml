@@ -261,6 +261,18 @@ jobs:
       - name: Vet agent-secrets' moto run (no moto)
         run: go vet -tags moto ./cmd/cipher/
         working-directory: packages/envoy
+      # A build can leave an identity provider out with -tags cipher_no_<kind>, which drops that
+      # kind's file of internal/cipher/identity/boot. Vetting each tag keeps every consumer of the
+      # registry compiling without each provider; a few seconds each on a warm cache.
+      - name: Vet the build with no kubernetes identity provider
+        run: go vet -tags cipher_no_kubernetes ./cmd/cipherd/ ./cmd/cipher/ ./cmd/cipher-helper/ ./internal/cipher/... ./internal/cipherclient/...
+        working-directory: packages/envoy
+      - name: Vet the build with no google identity provider
+        run: go vet -tags cipher_no_google ./cmd/cipherd/ ./cmd/cipher/ ./cmd/cipher-helper/ ./internal/cipher/... ./internal/cipherclient/...
+        working-directory: packages/envoy
+      - name: Vet the build with no github identity provider
+        run: go vet -tags cipher_no_github ./cmd/cipherd/ ./cmd/cipher/ ./cmd/cipher-helper/ ./internal/cipher/... ./internal/cipherclient/...
+        working-directory: packages/envoy
       # internal/testnats runs its server in the test process, so the untagged step above starts
       # no container. The real-server tests, a rendered authorization on the image the hub runs
       # among them, are the one thing an in-process server cannot reproduce: they sit behind the

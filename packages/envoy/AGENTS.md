@@ -33,6 +33,8 @@ Start with `docs/architecture.md`; `.dispatch/architecture/` at the repository r
 - `infra/` imports packages of this module (`internal/bus` and `internal/contracts` among them) but builds apart from it:
   check a change to one of them in `infra/` too.
 
+- A caller identity provider is one package `internal/cipher/identity/<kind>` (its verifier, token types, decision, principals, subjects and the parsing of its own `BROKER_*` variables, and a `contract_test.go` calling `identitytest.Contract`) and one file behind `!cipher_no_<kind>` in `internal/cipher/identity/boot`.
+
 - Compare a topic through `contracts.TopicForms`, never as one string: issue, agent and role subjects have an old and a project form.
 
 - In Dispatch, call the listener before a transaction opens, never inside one (`internal/dispatch/api/envoy_resolve.go`).
