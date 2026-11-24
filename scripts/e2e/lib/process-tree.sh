@@ -350,23 +350,18 @@ incarnation_pid() {
 # read it sends nothing more, and thaws PID only when this stop is what stopped it: a process that
 # was stopped already (state T or t at the first read, a job its shell stopped) stays stopped. It
 # fails too when PID cannot be signalled (signalable) or stopped; a process of another user cannot
-# be stopped at all. It fails with 2, sending nothing more, where CHECK failed with 2 (a check that
-# could not read PID, as held_names_dir answers for a read no exec let it make), and with 1 on any
-# other refusal.
+# be stopped at all.
 freeze_if() {
-  local pid=$1 start=$2 signal=$3 was checked=0
+  local pid=$1 start=$2 signal=$3 was
   shift 3
   signalable "$pid" || return 1
   [ "$(proc_start "$pid")" = "$start" ] || return 1
-  [ "$#" = 0 ] || "$@" "$pid" || checked=$?
-  [ "$checked" = 0 ] || return "$((checked == 2 ? 2 : 1))"
+  [ "$#" = 0 ] || "$@" "$pid" || return 1
   was=$(proc_stat_field "$pid" 3 state)
   kill -STOP "$pid" 2>/dev/null || return 1
-  [ "$(proc_start "$pid")" = "$start" ] || checked=1
-  [ "$checked" != 0 ] || [ "$#" = 0 ] || "$@" "$pid" || checked=$?
-  if [ "$checked" != 0 ]; then
+  if [ "$(proc_start "$pid")" != "$start" ] || { [ "$#" -gt 0 ] && ! "$@" "$pid"; }; then
     case $was in T | t) ;; *) kill -CONT "$pid" 2>/dev/null || true ;; esac
-    return "$((checked == 2 ? 2 : 1))"
+    return 1
   fi
   kill -"$signal" "$pid" 2>/dev/null || true
   case $signal in KILL | STOP) ;; *) kill -CONT "$pid" 2>/dev/null || true ;; esac
@@ -393,55 +388,6 @@ names_dir() {
     done
   done
   return 1
-}
-
-# held_names_dir DIR NAME… PID answers what names_dir answers for PID, from a read of PID's
-# environment that falls within one exec, as procs_naming's own reads do: it reads the environment
-# between two reads of PID's bounds (exec_state), and takes the answer only when both show the same
-# bounds, set. A read across an exec comes back empty, or cut short at a page with the mark further
-# on, and the sweep that took one such read for an answer took a marked process for an unmarked one
-# and left it running (a reviewer's forcing: 3 of 25 sweeps). While PID is inside one exec it waits
-# (every 10 ms, up to procs_naming_hold_seconds, 300), and while its bounds move under each read it
-# reads again (up to procs_naming_exec_seconds, 10); past either, or when this user cannot open
-# PID's environment any more, it says why and fails with 2, so a check that could not read PID is
-# never taken for one that found no mark. An ended PID, and bounds set and equal after the exec (an
-# environment of no variable), answer 1. Where the kernel shows no bounds (bounds_shown) each read
-# is taken as it comes. PID comes last, so freeze_if can run it as a CHECK.
-held_names_dir() {
-  local pid=${!#} before held again found shown hold='' deadline=''
-  before=$(proc_start "$pid")
-  [ -n "$before" ] || return 1
-  bounds_shown shown
-  while :; do
-    exec_state "$pid" "$before" held "$shown"
-    case $held in
-      gone | empty*) return 1 ;;
-      exec)
-        hold=${hold:-$((SECONDS + ${procs_naming_hold_seconds:-300}))}
-        [ "$SECONDS" -lt "$hold" ] || {
-          echo "held_names_dir: process $pid stayed inside one exec for ${procs_naming_hold_seconds:-300} s, so whether it carries the run's mark was not checked" >&2
-          return 2
-        }
-        sleep 0.01
-        continue
-        ;;
-    esac
-    found=0
-    names_dir "$@" || found=$?
-    exec_state "$pid" "$before" again "$shown"
-    [ "$again" != "$held" ] || [ "$found" = 2 ] || return "$found"
-    [ "$again" != gone ] || return 1
-    { : <"/proc/$pid/environ"; } 2>/dev/null || {
-      echo "held_names_dir: the environment of process $pid can no longer be read, so whether it carries the run's mark was not checked" >&2
-      return 2
-    }
-    deadline=${deadline:-$((SECONDS + ${procs_naming_exec_seconds:-10}))}
-    [ "$SECONDS" -lt "$deadline" ] || {
-      echo "held_names_dir: process $pid gave no read of its environment within one exec for ${procs_naming_exec_seconds:-10} s, so whether it carries the run's mark was not checked" >&2
-      return 2
-    }
-    sleep 0.01
-  done
 }
 
 # proc_descendants PID [START] prints `PID START` for every process below PID, children first, then
@@ -486,25 +432,17 @@ kill_frozen() {
 # kill_held DIR NAME… reads `PID START` lines on stdin, as a walk of the run's processes prints them
 # (procs_naming), and ends each with everything under it (kill_frozen) once freeze_if has stopped it
 # while it is still the process that started at START and its environment still gives one of the
-# NAMEs the value DIR or a path under it (held_names_dir, a read within one exec). A pid that passed
-# to another process since the walk gets no signal, and a blank line is skipped. The run's sweep
-# (stop_marked_processes, with run_marks) and the skill-scenario rig's stop_env_processes (with
-# SKILL_SCENARIO_RUN) end their walks' processes through it, so the loop and its rows are written
-# once. It fails with 2 when a tree's processes could not all be read (kill_frozen), and when a
-# process's check could not read it (freeze_if's 2), which is left running and named.
+# NAMEs the value DIR or a path under it (names_dir). A pid that passed to another process since
+# the walk gets no signal, and a blank line is skipped. The run's sweep (stop_marked_processes, with
+# run_marks) and the skill-scenario rig's stop_env_processes (with SKILL_SCENARIO_RUN) end their
+# walks' processes through it, so the loop and its rows are written once. It fails with 2 when a
+# tree's processes could not all be read (kill_frozen).
 kill_held() {
-  local dir=$1 pid start status=0 held
+  local dir=$1 pid start status=0
   shift
   while read -r pid start; do
     [ -n "$pid" ] || continue
-    held=0
-    freeze_if "$pid" "$start" STOP held_names_dir "$dir" "$@" || held=$?
-    if [ "$held" = 2 ]; then
-      echo "kill_held: process $pid of the run under $dir could not be checked, so it was left running" >&2
-      status=2
-      continue
-    fi
-    [ "$held" = 0 ] || continue
+    freeze_if "$pid" "$start" STOP names_dir "$dir" "$@" || continue
     kill_frozen "$pid" || status=2
   done
   return "$status"
@@ -534,231 +472,19 @@ stop_tree() {
 # proc_walk_complaint ERRFILE PROC prints the first line of a walk of PROC's stderr that is neither an
 # entry this user may not read, another user's process's, nor one whose process ended during the
 # walk, and fails when every line is one of those two: what a walk of every process meets on a
-# busy machine and no error of its own. It reads a find's lines (`find: 'PROC/<pid>…': …`) and a
-# grep's of an environment (`grep: PROC/<pid>/environ: …`), for which a process that ended between
-# the path's lookup and the open reads as ESRCH (`No such process`), the kernel's answer for an
-# environ whose task has gone. A walk that could not start (E2BIG, a find that is not there, or
-# one too old to read -files0-from) leaves a line of its own or the shell's, which is a complaint.
-# listening_holders (lib/rig.sh) and refuse_leftovers (lib/leftovers.sh) read their find's stderr
-# with it, and procs_naming its grep's.
+# busy machine and no error of its own. A walk that could not start (E2BIG, a find that is not
+# there, or one too old to read -files0-from) leaves a line of its own or the shell's, which is a
+# complaint. listening_holders (lib/rig.sh) and refuse_leftovers (lib/leftovers.sh) read their
+# find's stderr with it.
 proc_walk_complaint() {
   local line rest
   while IFS= read -r line; do
     rest=${line#*find: \'"$2"/}
     [ "$rest" = "$line" ] || [[ ! $rest =~ ^[0-9]+(/[^\']*)?\':\ (Permission\ denied|No\ such\ file\ or\ directory)$ ]] || continue
-    rest=${line#*grep: "$2"/}
-    [ "$rest" = "$line" ] || [[ ! $rest =~ ^[0-9]+/environ:\ (Permission\ denied|No\ such\ file\ or\ directory|No\ such\ process)$ ]] || continue
     printf '%s\n' "$line"
     return 0
   done <"$1"
   return 1
-}
-
-# proc_nspid PID NAME assigns to NAME the pids of PID's NSpid line in /proc/PID/status, from the pid
-# namespace /proc shows down to PID's own, one space between, or nothing where that file cannot be
-# read (PID has gone) or the kernel writes no such line (Linux before 4.1, gVisor). It reads in this
-# shell, so `proc_nspid self NAME` reads this shell's own.
-proc_nspid() {
-  local -a nspid_words=()
-  local nspid_out='' nspid_word
-  { while read -r -a nspid_words; do [ "${nspid_words[0]-}" != NSpid: ] || break; nspid_words=(); done <"/proc/$1/status"; } 2>/dev/null || :
-  for nspid_word in "${nspid_words[@]:1}"; do nspid_out+="${nspid_out:+ }$nspid_word"; done
-  printf -v "$2" '%s' "$nspid_out"
-}
-
-# ns_init_adopts PID succeeds when PID, a process older than this shell, is the init of a pid
-# namespace below this shell's (its NSpid, proc_nspid, names more than one pid, the last 1) that may
-# hold an orphan of the run, and fails otherwise. procs_naming walks only from a shell in the pid
-# namespace /proc shows, so the init of this shell's own is pid 1 there, which each walk judges
-# itself. The run's orphans reach the init of a namespace below it only through a process of the run
-# that entered it (nsenter, a setns), and entering it takes privilege over its owner, which reading
-# its namespace links takes too (`/proc/PID/ns/pid`): the kernel shows them (ptrace_may_access, in
-# its read mode) only to a process whose fsuid and fsgid equal PID's real, effective and saved uid
-# and gid while PID is dumpable, or to one that holds CAP_SYS_PTRACE in PID's user namespace, as in
-# one this user made. So an init whose links this user cannot read is one whose namespace the run
-# could not enter: a rootful container's docker-init, below which only the container runtime puts
-# processes (`docker exec`), with the environment the runtime gives them, which holds the run's
-# mark only where a caller copied it in by name (`docker exec -e LEGION_E2E_RUN`). Tester4784-3 at
-# fe4ead44bb: another session's not-dumpable perl that docker-init adopted failed every walk with 2.
-# Such an init holds none of the run's orphans, and a process whose first older parent it is cannot
-# carry the mark. It may hold them, and this succeeds, where this user may read its links, and
-# where this kernel shows no namespace links at all. Not covered: a privileged entry into a
-# namespace this user cannot enter that keeps the run's mark (`sudo -E nsenter`, `docker exec -e`
-# with the mark) and leaves a not-dumpable process there; no script of this repository does so.
-ns_init_adopts() {
-  local ns_pids
-  proc_nspid "$1" ns_pids
-  [ "${ns_pids% *}" != "$ns_pids" ] && [ "${ns_pids##* }" = 1 ] || return 1
-  [ -e "/proc/$1/ns/pid" ] && return 0
-  [ -e /proc/self/ns/pid ] || return 0
-  return 1
-}
-
-# unread_may_carry PID SHELL_START ANCESTOR… succeeds when PID, a process of this user whose
-# environment this user cannot read, may carry the mark of the run this shell runs, and fails when
-# it cannot. The kernel gives a process's environ to root while the process is not dumpable: one
-# that set PR_SET_DUMPABLE to 0 (ssh-agent and gpg-agent do at their start), one whose credentials
-# changed (a login session's process that tailscaled or sshd started as root), and one with no
-# memory left (a zombie); its /proc/PID directory, its stat and its status stay its own user's.
-# SHELL_START is the start (proc_start) of this shell, $$, the run's own, and each ANCESTOR is one
-# of this shell's whole line of parents up to its top, as PID:START (proc_parent and proc_start;
-# procs_naming refuses a line it could not read to the top), so a pid another process has taken
-# since matches none. A process that started in the same clock tick as this shell is taken for one
-# that started after it, and a parent of the same tick for a younger one: the refusal is the side a
-# tie falls on. A process of the run is one this shell started, or one started for it, so it
-# started after this shell. Its parent is the process that started it, or, once that one ended,
-# the nearest subreaper above it, or pid 1, which adopted it: each parent read up from it is one of
-# its ancestors, and for a process of the run every one below this shell, or below the ANCESTOR
-# that adopted it, started after this shell, so the first one older than this shell is an
-# ANCESTOR, or the init of this shell's pid namespace: a shell that entered a namespace from outside
-# (`docker exec`, `kubectl exec`, a step of a GitHub Actions `container:` job) has no parent there
-# (its parent reads 0), and the run's orphans go to the namespace's init. A subreaper that is none
-# of the ANCESTORs adopts none of the run's processes, since the kernel gives an orphan only to a
-# subreaper above its own dead parent. So PID cannot carry the mark when it runs nothing (it has
-# ended or is a zombie), when it started before this shell (a devbox's own ssh-agent, gpg-agent or
-# forward), and when the first of its parents older than this shell is none of the ANCESTORs and
-# no init of a pid namespace that may hold the run's orphans (pid 1 here, or the init of a namespace
-# below this shell's, as ns_init_adopts judges it): a process that ran outside the run before it,
-# below which nothing inherited the run's environment (another session's tool, a login session's
-# process, one that `docker exec` left in a rootful container's namespace). Any other may: a child
-# of the run, one double-forked away from it to a reaper, as an ssh-agent the run started is, and
-# one whose line of parents could not be read to its end (a parent that ended during the read),
-# unless it has ended since. A process of another session that double-forked away during the run
-# (a gpg-agent started for a new homedir), or that the init of this shell's own namespace adopted,
-# reads as one
-# of the run's: its parent is then a reaper too, and nothing readable tells the two apart, on a
-# devbox often enough to fail a long run's teardown (the tester of aec1fb77ff saw 13 of 60 walks
-# exit 2 on such processes). A shell that is a child subreaper (lib/subreaper.py) is judged by
-# run_descendant instead, which tells them apart. Each process on the way is read once, its parent
-# and its start from one read of its stat (as proc_start reads it), in this shell: a devbox holds
-# dozens of this user's zombies and not-dumpable processes, and a subshell for each read doubled the
-# time of a walk of its /proc.
-unread_may_carry() {
-  local pid=$1 shell=$2 at parent=$1 start='' stat ancestor i
-  local -a fields
-  shift 2
-  for ((i = 0; i < 4096; i++)); do
-    stat=
-    { IFS= read -r -d '' stat <"/proc/$parent/stat"; } 2>/dev/null || :
-    [ -n "$stat" ] || break
-    read -r -a fields <<<"${stat##*) }"
-    [ "${fields[0]}" != Z ] || break
-    at=${fields[19]}
-    if [ -z "$start" ]; then
-      start=$at
-      [ "$start" -ge "$shell" ] || return 1
-    elif [ "$at" -lt "$shell" ]; then
-      for ancestor; do [ "$ancestor" != "$parent:$at" ] || return 0; done
-      [ "$parent" != 1 ] || return 0
-      ns_init_adopts "$parent" && return 0
-      return 1
-    fi
-    parent=${fields[1]}
-  done
-  [ -n "$start" ] && [ "$(proc_start "$pid")" = "$start" ]
-}
-
-# run_descendant PID SHELL_START succeeds when PID, a process of this user whose environment this
-# user cannot read, may carry the mark of the run this shell runs, where this shell, $$, is a child
-# subreaper (lib/subreaper.py, which names it in LEGION_E2E_SUBREAPER as `PID START`), and fails
-# when it cannot.
-# Every process of the run then stays below this shell for its whole life: one whose parent ends
-# goes to the nearest subreaper above that parent, which is this shell or one below it, never pid 1
-# or a reaper above this shell; except one in another pid namespace, which goes to that namespace's
-# init however far above it the subreaper is (a reviewer's forcing: the run nsenter'd a namespace
-# older than the shell, its sh exited, and that namespace's init adopted the run's not-dumpable
-# orphan). So PID may carry the mark when its line of parents reaches this shell itself (its pid
-# and SHELL_START, the start proc_start reads) before a process older than this shell, or meets
-# first an older process that is the init of a pid namespace below this shell's and that may hold
-# the run's orphans (ns_init_adopts), and one whose line could not be read to there (a parent that
-# ended during the read) may, unless it has ended since. PID cannot when it runs nothing (it has
-# ended or is a zombie), when it started before this shell, and when its line meets first another
-# process older than this shell, this namespace's pid 1 among them, and an init whose namespace
-# the run could not enter (a rootful container's docker-init): a process another session left
-# behind during the run, however young. Each process on the way is read once, as unread_may_carry
-# reads it, in this shell.
-run_descendant() {
-  local pid=$1 shell=$2 at parent=$1 start='' stat i
-  local -a fields
-  for ((i = 0; i < 4096; i++)); do
-    stat=
-    { IFS= read -r -d '' stat <"/proc/$parent/stat"; } 2>/dev/null || :
-    [ -n "$stat" ] || break
-    read -r -a fields <<<"${stat##*) }"
-    [ "${fields[0]}" != Z ] || break
-    at=${fields[19]}
-    if [ -z "$start" ]; then
-      start=$at
-      [ "$start" -ge "$shell" ] || return 1
-    elif [ "$parent" = "$$" ] && [ "$at" = "$shell" ]; then
-      return 0
-    elif [ "$at" -lt "$shell" ]; then
-      [ "$parent" != 1 ] || return 1
-      ns_init_adopts "$parent" && return 0
-      return 1
-    fi
-    parent=${fields[1]}
-  done
-  [ -n "$start" ] && [ "$(proc_start "$pid")" = "$start" ]
-}
-
-# exec_state PID START NAME [SHOWN] assigns to NAME what one read of /proc/PID/stat says of PID's
-# environment while PID is still the process that started at START (proc_start): `gone` once it has
-# ended, is a zombie, or its pid is another's; `exec` inside an exec; `empty START` for bounds set
-# and equal, an environment of no variable; and `set START-END` for one with variables, its two
-# bounds (fields 50 and 51, env_start and env_end). An exec gives the process new memory, all of
-# whose bounds read 0, then sets env_start and env_end both to the start of the variables, counts
-# them, and sets env_end to their end, and only after that sets start_code (field 26). So a read is
-# `exec` while env_start or start_code reads 0: of 100,000 reads of a process re-exec'ing itself,
-# 116 found the bounds set and equal, and all 116 found start_code 0; a process held inside that
-# count (SCHED_IDLE on a busy CPU) stays there as long as it is held, and a walk that took it for
-# `empty` named nothing of it. The two bounds come from the one read, so they are one moment's, and
-# an exec places them anew (address space randomization places each new stack elsewhere). A read of
-# /proc/PID/environ reads the memory the process had when the file was opened, and comes back empty,
-# or cut short, when an exec ends that memory during the read; so the same `set` read before the
-# open and after the read holds that read to one exec's memory, whole. The kernel shows these
-# fields to a reader that may read the process's memory, as this user may read its own dumpable
-# process's. A kernel that shows none of them, as gVisor shows all of them as 0, cannot tell an exec
-# from its end: a caller that found so (bounds_shown) passes SHOWN empty, and a live process then
-# reads `set -`, so each read of its environment is taken as it comes. It runs in this shell and
-# assigns, never prints: a subshell for each read took longer than an exec of sh, and two reads
-# around one environment never met one exec.
-exec_state() {
-  local stat=
-  local -a fields
-  { IFS= read -r -d '' stat <"/proc/$1/stat"; } 2>/dev/null || :
-  if [ -z "$stat" ]; then
-    printf -v "$3" '%s' gone
-    return 0
-  fi
-  read -r -a fields <<<"${stat##*) }"
-  if [ "${fields[0]}" = Z ] || [ "${fields[19]}" != "$2" ]; then
-    printf -v "$3" '%s' gone
-  elif [ "$#" -ge 4 ] && [ -z "$4" ]; then
-    printf -v "$3" '%s' 'set -'
-  elif [ "${fields[47]:-0}" = 0 ] || [ "${fields[23]:-0}" = 0 ]; then
-    printf -v "$3" '%s' exec
-  elif [ "${fields[48]:-}" = "${fields[47]}" ]; then
-    printf -v "$3" 'empty %s' "${fields[47]}"
-  else
-    printf -v "$3" 'set %s-%s' "${fields[47]}" "${fields[48]}"
-  fi
-}
-
-# bounds_shown NAME assigns 1 to NAME when this kernel shows a process's memory bounds in its stat
-# (exec_state), and nothing when it does not: this shell runs, has an environment and is in no exec,
-# so its own env_start and start_code read 0 only where the kernel shows them all as 0, as gVisor
-# (4.19.0-gvisor) does.
-bounds_shown() {
-  local stat=
-  local -a fields
-  { IFS= read -r -d '' stat <"/proc/$BASHPID/stat"; } 2>/dev/null || :
-  read -r -a fields <<<"${stat##*) }"
-  if [ "${fields[47]:-0}" != 0 ] && [ "${fields[23]:-0}" != 0 ]; then
-    printf -v "$1" '%s' 1
-  else
-    printf -v "$1" '%s' ''
-  fi
 }
 
 # procs_naming DIR NAME… prints `PID START` (proc_start) for each process whose environment gives
@@ -769,304 +495,50 @@ bounds_shown() {
 # host's process count. Every process is read since a process that left every tree the run
 # recorded, a double-forked daemon the kernel gave to pid 1, is one of them: one grep narrows the
 # environments to those holding a NAME=DIR anywhere, and each is then read whole, variable by
-# variable. The shell's glob lists the entries, the shell's own test keeps those this user may read,
-# and xargs hands them to grep in calls that fit ARG_MAX: as grep's own arguments, past about
-# 80,000 processes, grep could not start. Another user's environment, which a walk of a shared
-# machine meets by the thousand, is no process of a run, and each would add a complaint below. One
-# of this user's that the kernel keeps from this user (/proc/<pid> is this user's and its environ
-# root's), or that grep could not read once the test had passed it (a process that made itself not
-# dumpable between), is judged once grep is done (unread_may_carry): one that may carry the run's
-# mark makes procs_naming name it and fail with 2, since whether it carries the mark was not
-# checked, and one that cannot is passed, a zombie or a devbox's ssh-agent from before this shell
-# among them. The start is read before and after the environment, and a process that ended or whose
-# start moved between is left out. A process grep matched, and one whose read by grep may have
-# fallen inside an exec (the bound where its environment starts, read from the stat before and after
-# grep, read 0 or moved), is read whole between two reads of its bounds, and the read decides only
-# when both show the same bounds, set (exec_state): a read across an exec comes back empty or cut
-# short. So a marked process caught inside an exec is still named, and one with no such read at the
-# walk's bound of 10 s makes procs_naming say so and fail with 2. Where the kernel places a new
-# stack where the old one was (address space randomization off), an exec that began and ended
-# between two reads of the bounds is not seen. xargs exits 123 both for a batch whose command exits
-# 1 and for one whose command exits 2, and grep exits 1 for no match in its batch, as most batches
-# of a busy machine have, and 2 for an error. So each batch runs grep under a sh of its own (batch
-# below), which turns grep's no match into 0, passes grep's complaints on, and, for a grep that
-# failed and said nothing, says so itself: every failed batch leaves a line of its own, whatever
-# another batch printed, and a 123 is always a grep's error. A grep a signal ended ends its sh with
-# that signal, which xargs reads as 125. A grep's complaint about an environment this user may not
-# read or whose process ended during the walk is no error (proc_walk_complaint), this user's judged
-# as above. Any other complaint, and any other status, xargs's own (a batch it could not start, a
-# grep a signal ended, 125), like a proc root that lists no process at all (an empty tmpfs where
-# /proc should be, or one whose pid entries this user cannot see), make procs_naming print why and
-# fail with 2, so no caller reads an unread machine as one with nothing left. So does a shell in a
-# pid namespace below the one /proc shows (its own NSpid, read from /proc/self, names more than one
-# pid: a shell that `nsenter --pid` put in a namespace without mounting its /proc): there $$ is its
-# pid in its own namespace, which /proc numbers as another process, and every read the walk makes of
-# this shell and its line of parents would read that other process.
+# variable. The shell's glob hands the entries to grep through xargs, which splits them into calls
+# that fit ARG_MAX: as grep's own arguments, past about 80,000 processes, grep could not start. The
+# start is read before and after the environment, and a process that ended or whose start moved
+# between is left out. xargs exits 123 when a batch's grep exits 1 or 2 (no match in it, or an
+# environment this user may not read, another user's, or whose process ended during the walk),
+# which is no error here. Any other status is xargs's own, a batch it could not start or a grep a
+# signal ended (125), and like a proc root that lists no process at all (an empty tmpfs where /proc
+# should be, or one whose pid entries this user cannot see), it makes procs_naming print why and
+# fail with 2, so no caller reads an unread machine as one with nothing left.
 procs_naming() {
-  local dir=$1 proc=${proc_root:-/proc} p pid before status=0 name err empties complaint line rest shell comm unread=
-  local child child_start at lost='' lineage='' found held again shown walk_snap hold deadline=
-  # $0 is the batch's name and "$@" the patterns (-e PATTERN pairs) and the batch's entries. grep's
-  # matches go out on fd 3, the walk's own output, and its complaints on stderr. Around grep the
-  # batch reads the bound where each entry's environment starts (env_start, field 50 of its stat;
-  # NAMING_SNAP) and puts out on fd 4 each entry whose bound read 0 or moved between the two reads
-  # (NAMING_MOVED): its process was inside an exec then, which gives it memory whose environment
-  # bounds read 0 until the exec is done and whose stack, so its environment, the kernel places
-  # anew (address space randomization), and grep's read of it may have come back empty. An awk of
-  # the bounds that fails (either read, or their comparison) leaves the batch no list of the entries
-  # an exec met, so the batch says which and exits 2, as for a grep that failed: a walk that took
-  # its empty list for "none moved" read clean (a reviewer's forcing, status 0, named []). The list
-  # of failed reads starts empty in the batch itself, so no value from the caller's environment
-  # reads as one.
-  local batch='awk_failed=
-before=$(awk "$NAMING_SNAP" "$@" 2>/dev/null) || awk_failed="the bounds read before grep (awk exited $?)"
-said=$(grep -lzF "$@" 2>&1 >&3 3>&- 4>&-)
-status=$?
-after=$(awk "$NAMING_SNAP" "$@" 2>/dev/null) || awk_failed="${awk_failed:+$awk_failed, }the bounds read after grep (awk exited $?)"
-{ printf "%s\n" "$before"; echo --; printf "%s\n" "$after"; } | awk -F "\t" "$NAMING_MOVED" >&4 ||
-  awk_failed="${awk_failed:+$awk_failed, }the bounds compared (awk exited $?)"
-[ -z "$said" ] || printf "%s\n" "$said" >&2
-[ -z "$awk_failed" ] || echo "awk failed at $awk_failed" >&2
-case $status in
-  0 | 1) [ -n "$awk_failed" ] || exit 0 ;;
-  2) [ -n "$said" ] || echo "grep exited 2 and printed nothing" >&2 ;;
-  *)
-    [ "$status" -le 128 ] || kill "-$((status - 128))" "$$"
-    echo "grep exited $status" >&2
-    ;;
-esac
-exit 2'
-  # One line an entry, the entry and its process's env_start, a tab between, or 0 while its exec is
-  # still filling in its bounds (start_code, field 26, still 0: exec_state); none for a process gone.
-  # The -e PATTERN pairs among the batch's arguments are passed over. Fields after the command name
-  # start at the state, field 3, so field 26 is the 24th and field 50 the 48th.
-  local snap='BEGIN {
-  for (i = 1; i < ARGC; i++) {
-    if (ARGV[i] == "-e") { i++; continue }
-    s = ARGV[i]; sub(/environ$/, "stat", s); line = ""
-    if ((getline line < s) > 0) { sub(/^.*\) /, "", line); n = split(line, v, " "); print ARGV[i] "\t" (n >= 48 && v[24] != 0 ? v[48] : 0) }
-    close(s)
-  }
-  exit
-}'
-  local moved='!past { if ($0 == "--") { past = 1; next } start[$1] = $2; next }
-($1 in start) && (start[$1] != $2 || start[$1] == 0 || $2 == 0) { print $1 }'
-  # Where the kernel shows no bounds (bounds_shown), every entry would read 0: no entry is flagged,
-  # and only grep's matches are read whole.
-  bounds_shown shown
-  walk_snap=$snap
-  [ -n "$shown" ] || walk_snap='BEGIN { exit }'
-  local -a names=("${@:2}") naming_patterns=() naming_files=() empty_files=() listed=() entries=() unread_pids=() ancestors=()
-  local -A unread_seen=() named_pids=() grepped=()
+  local dir=$1 proc=${proc_root:-/proc} p pid before status=0 name
+  local -a names=("${@:2}") naming_patterns=() naming_files=() entries=()
   # An empty DIR would match `NAME=` followed by any absolute path (names_dir).
   [ -n "$dir" ] || {
     echo "procs_naming: no run directory given, so no process was named" >&2
     return 2
   }
-  local own_nspid
-  proc_nspid self own_nspid
-  [ "${own_nspid% *}" = "$own_nspid" ] || {
-    echo "procs_naming: this shell is pid $$ in a pid namespace below the one /proc shows (NSpid $own_nspid), so its reads of /proc are of other processes and the processes naming $dir were not read" >&2
-    return 2
-  }
-  listed=("$proc"/[0-9]*/environ)
-  [ -e "${listed[0]}" ] || {
+  entries=("$proc"/[0-9]*/environ)
+  [ -e "${entries[0]}" ] || {
     echo "procs_naming: $proc lists no process's environ, so the processes naming $dir were not read" >&2
     return 2
   }
-  for p in "${listed[@]}"; do
-    if [ -r "$p" ]; then
-      entries+=("$p")
-    elif [ -O "${p%/environ}" ]; then
-      pid=${p%/environ}
-      pid=${pid##*/}
-      unread_seen[$pid]=1
-      unread_pids+=("$pid")
-    fi
-  done
-  # This shell's own environment is always one of them on a /proc: none read is no answer.
-  [ "${#entries[@]}" -gt 0 ] || {
-    echo "procs_naming: $proc lists no environ this user may read, so the processes naming $dir were not read" >&2
-    return 2
-  }
   for name in "${names[@]}"; do naming_patterns+=(-e "$name=$dir"); done
-  err=$(mktemp -d "${TMPDIR:-/tmp}/procs-naming.XXXXXX") || {
-    echo "procs_naming: no directory to keep grep's complaints in, so the processes naming $dir were not read" >&2
-    return 2
-  }
-  empties=$err/empty err=$err/said
-  # `|| exit "$?"` keeps xargs's status for the wait below, and keeps a caller's ERR trap (`set -E`)
-  # from firing inside the substitution for an entry whose process ended during the walk. The status
-  # is passed out by value: a bare `exit` in a process or command substitution that a trap runs exits
-  # with the status from before the trap (bash 5.2; a `( … )` subshell keeps its own), so inside a
-  # teardown's EXIT trap a failed xargs read 0 after a run that passed (the walk took a batch it lost
-  # for one that matched nothing) and 1 after one that failed (the teardown failed on a benign 123:
-  # Tester4784-3's `xargs exited 1 … xargs printed nothing`).
-  # The C locale keeps grep's complaints in the words proc_walk_complaint reads.
-  mapfile -t naming_files < <(printf '%s\0' "${entries[@]}" |
-    NAMING_SNAP=$walk_snap NAMING_MOVED=$moved LC_ALL=C xargs -0 sh -c "$batch" procs_naming "${naming_patterns[@]}" 3>&1 2>"$err" 4>"$empties" || exit "$?")
+  # `|| exit` keeps xargs's status for the wait below, and keeps a caller's ERR trap (`set -E`) from
+  # firing inside the substitution for the batches every walk has with no match.
+  mapfile -t naming_files < <(printf '%s\0' "${entries[@]}" | xargs -0 grep -lzsF "${naming_patterns[@]}" || exit)
   wait "$!" || status=$?
-  mapfile -t empty_files <"$empties"
-  complaint=
-  if [ "$status" != 0 ]; then
-    complaint=$(proc_walk_complaint "$err" "$proc") || complaint=
-    # A 123 whose every line is an entry each walk of a busy machine meets is an answer. Each failed
-    # batch printed a line, so a 123 with none lost its complaints, and any other status is none.
-    [ -n "$complaint" ] || [ "$status" != 123 ] || [ -s "$err" ] || complaint="its complaints were lost"
-    [ -n "$complaint" ] || [ "$status" = 123 ] || complaint="xargs printed nothing"
-    # An environment of this user's that the test passed and grep could not read is judged below.
-    while IFS= read -r line; do
-      rest=${line#*grep: "$proc"/}
-      [[ $rest =~ ^([0-9]+)/environ:\ Permission\ denied$ ]] || continue
-      [ ! -O "$proc/${BASH_REMATCH[1]}" ] || [ -n "${unread_seen[${BASH_REMATCH[1]}]:-}" ] || {
-        unread_seen[${BASH_REMATCH[1]}]=1
-        unread_pids+=("${BASH_REMATCH[1]}")
-      }
-    done <"$err"
-  fi
-  rm -rf -- "${err%/said}"
-  if [ -n "$complaint" ]; then
-    echo "procs_naming: xargs exited $status reading $proc/<pid>/environ: $complaint, so the processes naming $dir were not read" >&2
-    return 2
-  fi
-  # A process grep matched, and one whose read by grep may have fallen inside an exec (its
-  # environment's bound read 0 or moved around grep), is read whole (names_dir) between two reads
-  # of its bounds (exec_state), and the read decides only when both say `set` and the same: a read
-  # of /proc/<pid>/environ reads the memory the process had at the open, and an exec gives it new
-  # memory before the bounds of its arguments and environment, so a read across one comes back
-  # empty, or cut short at a page where the mark sits further on, and the walk named nothing of a
-  # marked process in its exec (34 of 385 reads of a process re-exec'ing itself came back empty;
-  # the tester of b285526b59 had 4 of 1,000 cut short). While it is inside one exec (`exec`, its
-  # bounds 0 or its start_code not yet set: an exec sets the bounds equal for a moment, and a walk
-  # that took that for an environment of no variable missed a process re-exec'ing itself in 3 of
-  # 1,000 walks, and a process held there every time) it is waited for, every 10 ms, whatever the
-  # walk's bound and whatever its lineage: every exec ends, and a process a loaded machine holds
-  # inside one (10.8 s under the exec-window forcing) is no process that cannot be read. Only one
-  # held inside one exec for procs_naming_hold_seconds (300) makes the walk print why and fail with
-  # 2, never pass. Bounds set and equal after that (`empty`) end the reads: no mark is in an
-  # environment of no variable. Where the kernel shows no bounds (bounds_shown), each read decides
-  # as it comes. A process whose execs come faster than a read (its bounds moved during each) is
-  # read again up to procs_naming_exec_seconds (10) for every such process together. Past it, one
-  # grep did not match is judged as an unreadable environment is (naming_may_carry), and one that
-  # cannot carry the run's mark is passed; for any other the walk prints why and fails with 2. One
-  # the kernel keeps from this user (it cannot be opened, as a process of this user in another user
-  # namespace's environment cannot; its stat then shows the bounds as 0 as well) is no exec: it goes
-  # to the judgment of this user's unreadable environments below, once. A process listed twice is
-  # printed once.
+  case $status in
+    0 | 123) ;;
+    *)
+      echo "procs_naming: xargs exited $status reading $proc/<pid>/environ, so the processes naming $dir were not read" >&2
+      return 2
+      ;;
+  esac
   for p in ${naming_files[@]+"${naming_files[@]}"}; do
     pid=${p%/environ}
-    grepped[${pid##*/}]=1
-  done
-  for p in ${naming_files[@]+"${naming_files[@]}"} ${empty_files[@]+"${empty_files[@]}"}; do
-    pid=${p%/environ}
     pid=${pid##*/}
-    [ "$pid" != "$$" ] && [ "$pid" != "$BASHPID" ] && [ -z "${named_pids[$pid]:-}" ] || continue
+    [ "$pid" != "$$" ] && [ "$pid" != "$BASHPID" ] || continue
     before=$(proc_start "$pid")
     [ -n "$before" ] || continue
-    hold=
-    while :; do
-      { : <"/proc/$pid/environ"; } 2>/dev/null || {
-        [ ! -O "/proc/$pid" ] || [ -n "${unread_seen[$pid]:-}" ] || {
-          unread_seen[$pid]=1
-          unread_pids+=("$pid")
-        }
-        break
-      }
-      exec_state "$pid" "$before" held "$shown"
-      case $held in
-        gone) break ;;
-        exec)
-          hold=${hold:-$((SECONDS + ${procs_naming_hold_seconds:-300}))}
-          [ "$SECONDS" -lt "$hold" ] || {
-            echo "procs_naming: process $pid stayed inside one exec for ${procs_naming_hold_seconds:-300} s, so whether it carries the run's mark was not checked and the processes naming $dir were not read" >&2
-            return 2
-          }
-          sleep 0.01
-          continue
-          ;;
-        empty*) break ;;
-        *)
-          found=0
-          names_dir "$dir" "${names[@]}" "$pid" || found=$?
-          exec_state "$pid" "$before" again "$shown"
-          if [ "$again" = "$held" ] && [ "$found" != 2 ]; then
-            [ "$found" != 0 ] || {
-              named_pids[$pid]=1
-              printf '%s %s\n' "$pid" "$before"
-            }
-            break
-          fi
-          ;;
-      esac
-      deadline=${deadline:-$((SECONDS + ${procs_naming_exec_seconds:-10}))}
-      [ "$SECONDS" -lt "$deadline" ] || {
-        if [ -z "${grepped[$pid]:-}" ]; then
-          naming_lineage || return 2
-          naming_may_carry "$pid" || break
-        fi
-        echo "procs_naming: process $pid gave no read of its environment within one exec for ${procs_naming_exec_seconds:-10} s, so whether it carries the run's mark was not checked and the processes naming $dir were not read" >&2
-        return 2
-      }
-      sleep 0.01
-    done
+    names_dir "$dir" "${names[@]}" "$pid" || continue
+    [ "$(proc_start "$pid")" = "$before" ] || continue
+    printf '%s %s\n' "$pid" "$before"
   done
-  if [ "${#unread_pids[@]}" -gt 0 ]; then
-    naming_lineage || return 2
-    for pid in "${unread_pids[@]}"; do
-      naming_may_carry "$pid" || continue
-      comm=
-      { read -r comm <"/proc/$pid/comm"; } 2>/dev/null || :
-      echo "procs_naming: process $pid (${comm//[[:cntrl:]]/ }) is this user's, started after this shell, and its environment cannot be read, so it may carry the run's mark and the processes naming $dir were not checked" >&2
-      unread=1
-    done
-    [ -z "$unread" ] || return 2
-  fi
-}
-
-# naming_lineage, run inside procs_naming with its locals, reads once what the judgment of whether
-# a process of this user may carry the run's mark needs (naming_may_carry): this shell's start
-# (shell), and, unless this shell is a child subreaper (lib/subreaper.py names it in
-# LEGION_E2E_SUBREAPER as `PID START`, which a child process with a pid of its own, a process that
-# took this pid later, and a refused mark, `PID START refused`, do not match; run_descendant needs
-# nothing more), its whole line of parents to its top (a parent of 0) as PID:START
-# (ancestors), each parent held to a start no later than its child's: a line cut short, by a parent
-# that ended and was reaped during the read or whose pid another process took, would take a reaper
-# above the cut for a stranger and pass a process of the run (unread_may_carry). Such a line, like a
-# shell whose start it cannot read, makes it print why and fail, so the walk is then no answer.
-naming_lineage() {
-  [ -z "$lineage" ] || return 0
-  lineage=1
-  shell=$(proc_start "$$")
-  [ -n "$shell" ] || lost="this shell $$"
-  if [ "${LEGION_E2E_SUBREAPER:-}" != "$$ $shell" ]; then
-    child=$$ child_start=$shell
-    while [ -z "$lost" ]; do
-      p=$(proc_parent "$child")
-      [ "$p" != 0 ] || break
-      at=
-      [ -z "$p" ] || at=$(proc_start "$p")
-      if [ -z "$at" ] || [ "$at" -gt "$child_start" ] || [ "${#ancestors[@]}" -ge 4096 ]; then
-        lost="the parent ${p:-(none)} of $child"
-        break
-      fi
-      ancestors+=("$p:$at")
-      child=$p child_start=$at
-    done
-  fi
-  [ -z "$lost" ] || {
-    echo "procs_naming: this shell's line of parents could not be read to its end, at $lost, which ended or whose pid another process took, so this user's processes whose environment could not be read were not checked and the processes naming $dir were not read" >&2
-    return 2
-  }
-}
-
-# naming_may_carry PID, run inside procs_naming once naming_lineage has read, succeeds when PID, a
-# process of this user whose environment the walk could not read, may carry the run's mark:
-# run_descendant from a shell that is a child subreaper, unread_may_carry from any other.
-naming_may_carry() {
-  if [ "${LEGION_E2E_SUBREAPER:-}" = "$$ $shell" ]; then
-    run_descendant "$1" "$shell"
-  else
-    unread_may_carry "$1" "$shell" ${ancestors[@]+"${ancestors[@]}"}
-  fi
 }
 
 # run_marks are the variables that mark a process as one of a stage proof's run, each naming the
@@ -1118,12 +590,10 @@ marked_processes() {
 # start (proc_descendants), so a child it leaves behind when it exits is still ended, by its own
 # start time, and a stranger that took a reaped pid below is not. A process still alive after
 # GRACE, or every one with no GRACE, is ended with its tree. It prints why and fails with 2 when the
-# run's processes could not be read, having signalled nothing, fails with 2 after its signals when
-# a process's tree below it could not be read (proc_children), and fails with 2, naming it and
-# leaving it running, when a process's check could not read its mark (held_names_dir, a read within
-# one exec, as kill_held's).
+# run's processes could not be read, having signalled nothing, and fails with 2 after its signals
+# when a process's tree below it could not be read (proc_children).
 stop_marked_processes() {
-  local dir=$1 grace=${2:-0} pairs pid start i entry status=0 found held
+  local dir=$1 grace=${2:-0} pairs pid start i entry status=0 found
   local -a sent=() alive=() below=()
   pairs=$(marked_processes "$dir") || {
     echo "stop_marked_processes: stopped no process of the run under $dir, since none could be named" >&2
@@ -1132,14 +602,7 @@ stop_marked_processes() {
   [ -n "$pairs" ] || return 0
   if [ "$grace" -gt 0 ]; then
     while read -r pid start; do
-      held=0
-      freeze_if "$pid" "$start" STOP held_names_dir "$dir" "${run_marks[@]}" || held=$?
-      if [ "$held" = 2 ]; then
-        echo "stop_marked_processes: process $pid of the run under $dir could not be checked, so it was left running" >&2
-        status=2
-        continue
-      fi
-      [ "$held" = 0 ] || continue
+      freeze_if "$pid" "$start" STOP names_dir "$dir" "${run_marks[@]}" || continue
       found=$(proc_descendants "$pid" "$start") || status=2
       [ -z "$found" ] || mapfile -t -O "${#below[@]}" below <<<"$found"
       kill -TERM "$pid" 2>/dev/null || true
