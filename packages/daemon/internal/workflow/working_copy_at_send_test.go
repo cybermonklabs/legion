@@ -9,15 +9,13 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
-// A worker's task is composed from the record when its start is written and kept as composed until
-// a send, and every send writes its working copy line again from the record as the send reads it
-// (Engine.WorkingCopyAtSend). So a task composed while the issue was on acme/widgets and sent after
-// a correction moved it onto zeta/tools names the directory of zeta/tools, in a start's task and in
-// a resume, with every other byte of the task as it was composed. The owner's text of a step's task
-// stands after every line of the daemon's, inside a fence, so a line of it shaped like the daemon's
-// is the owner's and is sent as the owner wrote it. A kept text that holds no working copy line, as
-// one an earlier release composed holds none, is sent as it is, a line shaped like one inside its
-// owner's fence included.
+// A worker's task is kept as composed until send, when WorkingCopyAtSend replaces the working
+// copy line with the workspace of the receiving process. For a task composed on acme/widgets and
+// sent to a process launched on zeta/tools, only the daemon's working copy line changes. The
+// owner's fenced text and the Dispatch title are sent as written. Neither a working copy
+// line of this branch nor the words that open the owner's part in the title can hide the
+// daemon's line. A task from an earlier release that holds no working copy line is sent as
+// composed, including any similar text inside the owner's fence.
 func TestATaskSentAfterACorrectionNamesTheWorkingCopyOfTheRepositoryTheRecordHoldsThen(t *testing.T) {
 	engine := stepEngine(nil)
 	engine.cfg.WorkspaceDir = func(issue record.Issue) string { return "/work/" + issue.Repo + "/" + issue.Key }
@@ -43,6 +41,13 @@ func TestATaskSentAfterACorrectionNamesTheWorkingCopyOfTheRepositoryTheRecordHol
 		return at
 	}
 	step, today := standing(stepWalk), standing(todaysWalk())
+	// titled is the issue as composed under a Dispatch title, which the continue line opens the task
+	// with: the person's words before every line of the daemon's.
+	titled := func(title string) record.Issue {
+		issue := composed
+		issue.Title = title
+		return issue
+	}
 	for _, tc := range []struct {
 		name string
 		kept string
@@ -55,6 +60,9 @@ func TestATaskSentAfterACorrectionNamesTheWorkingCopyOfTheRepositoryTheRecordHol
 		{name: "a step's start", kept: namingTheReviewRound(task(composed, step, handoff, nil, "the reviewer asked again"),
 			claim.RoleReviewer, phase.Reviewing, reviewer), owners: true},
 		{name: "a step's resume", kept: resumeText(composed, step), owners: true},
+		{name: "a rework whose title holds a working copy line of the issue's branch", kept: task(titled("Name the"+
+			" Working copy: branch legion/LEGION-208, directory /work/elsewhere/LEGION-208."+" in the prompt"), today, record.PhaseRow{}, nil, "the reviewer asked again")},
+		{name: "a step's resume whose title holds the opening of the owner's part", kept: resumeText(titled("Quote"+ownersOpening+" in the prompt"), step), owners: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if strings.Count(tc.kept, old) != 1 || tc.owners != strings.Contains(tc.kept, planted) {

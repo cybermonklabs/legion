@@ -479,32 +479,21 @@ const HoldForChildren HoldReason = "children"
 // (Ask, the ask's id), or the closed design gate at a spec version (GateVersion) on the document
 // it registered (Artifact); when a person answered it (AnsweredAt, nil until then), with what
 // (AnsweredBy) and that act's own detail (AnsweredDetail: the ask acted on, who closed it, or the
-// version and reason of the review); for a person's review, the version it was of
-// (AnsweredVersion: the version a changes request reviewed or an approval approved), written
-// beside the detail by the same answer, so a reader that asks whether that review is still the
-// person's word reads a number and never parses the detail, which is display text; for a review
-// or a newer version of a document, the Dispatch artifact id of the document it was of
-// (AnsweredArtifact) and the step whose gate row held that document at the answer
-// (AnsweredStep), written by the same answer, so the resume asks the review of the gate of that
-// step and names that document, which under a deployment that gates more than one step need not
-// be the step it speaks of, and a wait on a question records no document of its own; the step is
-// recorded because the document need not stay on any row: a registration of another document on
-// that step starts a fresh row in its place (workflow's answeredStep); and where on Dispatch the
-// wait began (Since): the newest hand-back the architect made since it was last given work
-// (Issue.DeclaredSeq). It is a snapshot of the wait's subject; what else is still with the person
-// is the root's asks (RootAsk). A person's act Dispatch recorded at or before Since never answers
-// the wait. An answered root stands in the line's returned part (Waiting) and resumes on the slot
-// it holds.
+// version and reason of the review); for an act of a document, a person's review or a newer
+// version, that document (AnsweredDocument), written beside the detail by the same answer; and
+// where on Dispatch the wait began (Since): the newest hand-back the architect made since it was
+// last given work (Issue.DeclaredSeq). It is a snapshot of the wait's subject; what else is still
+// with the person is the root's asks (RootAsk). A person's act Dispatch recorded at or before
+// Since never answers the wait. An answered root stands in the line's returned part (Waiting) and
+// resumes on the slot it holds.
 //
-// AnsweredVersion is 0 for every other answer, for a changes request a daemon of an earlier
-// release answered after this release's migration gave every older changes request its version
-// (20261112215432_delivery_resume), and for an approval an earlier release answered, which that
-// migration gives none: such a review is asked as a sender that knows no version asks, at the
-// version the gate holds approved (workflow.SupersedingApproval). AnsweredArtifact and
-// AnsweredStep are "" for every other answer and for every answer an earlier release wrote, which
-// the migration gives neither: such an act is read as of the document the wait records
-// (Artifact) and the step of the row that holds it, and where that is none too, as of the step the
-// resume speaks of. AnsweredStep is "" as well where no row held the document at the answer.
+// AnsweredDocument is nil for every other answer and for every answer an earlier release wrote,
+// but a changes request one wrote before this release's migration (20261112215432_delivery_resume),
+// which that migration gives the version it read from the detail and no document or step. An
+// answer that records no document is read as of the document the wait records (Artifact) and the
+// step of the row that holds it, and where that is none too, as of the step the resume speaks of;
+// a review that records no version is asked as a sender that knows no version asks, at the version
+// the gate holds approved (workflow.SupersedingApproval).
 type Awaiting struct {
 	Ask              string
 	GateVersion      int
@@ -512,10 +501,30 @@ type Awaiting struct {
 	AnsweredAt       *time.Time
 	AnsweredBy       Answer
 	AnsweredDetail   string
-	AnsweredVersion  int        `json:",omitempty"`
-	AnsweredArtifact string     `json:",omitempty"`
-	AnsweredStep     DesignStep `json:",omitempty"`
+	AnsweredDocument *AnsweredDocument `json:",omitempty"`
 	Since            EventMark
+}
+
+// AnsweredDocument is what the act that answered a root's wait was of, where that act is a
+// person's review or a newer version of a document: the Dispatch artifact id of the document
+// (Artifact), the step whose gate row held it at the answer (Step), and for a review the version
+// it was of (Version: the version a changes request reviewed or an approval approved). The answer
+// writes the three together (workflow's answerWait), so the resume asks whether that review is
+// still the person's word (workflow.SupersedingApproval) of a number, never of the detail, which is
+// display text, and of the gate of that step, and names that document, which under a deployment
+// that gates more than one step need not be the step it speaks of, while a wait on a question
+// records no document of its own. The step is recorded because the document need not stay on any
+// row: a registration of another document on that step starts a fresh row in its place
+// (workflow's answeredStep).
+//
+// Version is 0 for a newer version, which is no review, and for an approval the gates.design: off
+// rule gave (workflow's leaveGateOff). Artifact and Step are "" for a changes request the migration
+// gave its version alone, Artifact also where the wait the act answered names no document, and Step
+// also where no row held the document at the answer.
+type AnsweredDocument struct {
+	Version  int        `json:",omitempty"`
+	Artifact string     `json:",omitempty"`
+	Step     DesignStep `json:",omitempty"`
 }
 
 // Answer is the act that answered a root's wait, which the task resuming its architect names.

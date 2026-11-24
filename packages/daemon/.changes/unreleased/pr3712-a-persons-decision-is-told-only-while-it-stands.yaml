@@ -22,12 +22,12 @@ body: |-
   ended it, or the other document registered on its step since. The changes request that answered
   the wait is asked of the document it reviewed too, so an approval of a document registered on
   its step since does not answer it, and the resume says that the step holds that other document
-  now. The answer to a root's wait records the document the review or the newer version
-  that answered it was of and the step that held that document (store migration 20261112215432
-  adds `issues.awaiting_answered_artifact` and `issues.awaiting_answered_step`), and the resume
-  names, and asks about, that document on that step, which need not be the step it speaks of next
-  (a wait on a question, or a deployment that gates more than one step), even once another document
-  is registered on that step. An answer an earlier release wrote is asked as before. The kept
+  now. The answer to a root's wait records the document, its step and any reviewed version as one
+  value. Store migration 20261112215432 adds `issues.awaiting_answered_artifact`,
+  `issues.awaiting_answered_step`, `issues.awaiting_answered_version` and
+  `issues.awaiting_answered_document_at`, which ties that value to its answer. The resume names
+  the answering document even if the step the resume speaks of is different or later holds
+  another document. An answer an earlier release wrote is asked as before. The kept
   approval now records the document approved (store migration 20261122212816 adds
   `readmitted_approvals.artifact`); a rollback takes the steps docs/kubernetes.md gives under
   contract 240.

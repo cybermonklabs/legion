@@ -46,7 +46,7 @@ const olderReleasesNewestMigration = 20261112180548
 // deliveryResumeMigration is 20261112215432_delivery_resume, a migration above that release's
 // newest which the fixture applies all the same: this release's record.Store.PutIssue, which the
 // fixture records the tree with, writes the four issues columns it adds
-// (awaiting_answered_version, awaiting_answered_version_at, awaiting_answered_artifact and
+// (awaiting_answered_version, awaiting_answered_document_at, awaiting_answered_artifact and
 // awaiting_answered_step), and none of the columns it adds, which its header names, is one the
 // phase entry reads or writes. So applying it first changes nothing the upgrade decides.
 const deliveryResumeMigration = 20261112215432

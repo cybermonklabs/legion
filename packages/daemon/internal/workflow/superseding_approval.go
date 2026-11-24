@@ -175,9 +175,9 @@ func RefSuperseded(gates map[record.DesignStep]record.DesignGate, steps []record
 // NoticeSuperseded is RefSuperseded of the decision of kind a queued notice carries on issue, a
 // design decision's notice or the parked-decision relay of one read as the Notice it is: its
 // reference, its version, Dispatch's mark of the review (record.Notice.Review) and the document
-// reviewed (record.Notice.Artifact). Every reader of a queued notice asks through it, the daemon's
-// delivery and publish (its decisionSuperseded) and the clear of a generation
-// (Engine.ClearGeneration), so each asks the same question of the same notice.
+// reviewed (record.Notice.Artifact). Readers ask through it at the daemon's relay (parkDecision),
+// delivery and publish (stillOwed) and at the clear of a generation (Engine.ClearGeneration),
+// so each asks the same question of the same notice.
 func NoticeSuperseded(gates map[record.DesignStep]record.DesignGate, steps []record.DesignStep,
 	issue string, notice record.Notice, kind record.DecisionKind) *Supersession {
 	return RefSuperseded(gates, steps, issue, notice.Ref, Decision{Kind: kind,

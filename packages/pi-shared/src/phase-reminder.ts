@@ -319,9 +319,10 @@ export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
    * daemon failed runs no further turn in this process — its retry relaunches this session in a
    * new process, or starts a new session once the daemon's `forgetSession` (its supervise package)
    * has dropped this one — and a reminder written now reaches nobody who can act on it. That is
-   * what ends the reminding of a session whose provider refuses every turn, on either host. An
-   * answer that could not be read is `UNREAD_CHECK`, logged at debug: it reminds, and the reminder
-   * it sends names no work.
+   * what ends the reminding of a session whose provider refuses a turn with a status that cannot
+   * clear (dispatch://INFRA-4508); a refusal that can clear fails no claim, so its reminders keep
+   * their pace. An answer that could not be read is `UNREAD_CHECK`, logged at debug: it reminds,
+   * and the reminder it sends names no work.
    */
   const owedCheck = async (): Promise<OwedCheck> => {
     const claim = deps.claim();

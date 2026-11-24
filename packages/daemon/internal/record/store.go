@@ -65,15 +65,15 @@ func (s *Postgres) Processed(ctx context.Context, tx pgx.Tx, source, eventID str
 }
 
 // issueColumns reads an empty ancestry as NULL, so a record with none scans as a nil Ancestry, as
-// it was written. It reads what it records of the act that answered a wait, the version of a
-// review (awaiting_answered_version), the document the act was of (awaiting_answered_artifact)
-// and the step whose row held that document (awaiting_answered_step), only beside the answer they
-// were written with: a daemon of an earlier release writes a later answer and leaves all three as
-// they were, and that answer then reads as one with none of them (PutIssue). The four
-// issues.memory_* columns are no part of it: what a unit was drawn is an assignment row of its own
-// (AssignmentsOf, AssignmentsFor), and nothing this release's daemon runs reads the columns but
-// the back-fill of 20261111045636_experiment_assignments.
-const issueColumns = `key, tree, project, title, parent, phase, generation, status, rank, handed_over, taken_back, linger_until, held_from, last_dispatch_seq, coalesce(hold_reason, ''), dispatch_status, repo, default_branch, github_repo, repo_before, repo_corrected_at, repo_change_pending, repo_change_reason, awaiting_ask, awaiting_gate_version, coalesce(awaiting_artifact, ''), awaiting_answered_at, coalesce(awaiting_answered_by, ''), coalesce(awaiting_answered_detail, ''), case when awaiting_answered_version_at = awaiting_answered_at then coalesce(awaiting_answered_version, 0) else 0 end, case when awaiting_answered_version_at = awaiting_answered_at then coalesce(awaiting_answered_artifact, '') else '' end, case when awaiting_answered_version_at = awaiting_answered_at then coalesce(awaiting_answered_step, '') else '' end, awaiting_since_seq, awaiting_since, handout_seq, coalesce(declared_seq, 0), declared_at, nullif(ancestry, '{}'), handed_over_from, coalesce(told_parent, ''), moved_at, tree_stalled_told_at, released_for_wait_at`
+// it was written. It reads what it records of the document the act that answered a wait was of
+// (Awaiting.AnsweredDocument: awaiting_answered_version, awaiting_answered_artifact and
+// awaiting_answered_step) only beside the answer it was written with, the one fence
+// awaiting_answered_document_at = awaiting_answered_at: a daemon of an earlier release writes a
+// later answer and leaves the four columns as they were, and that answer then reads as one with no
+// document (PutIssue). The four issues.memory_* columns are no part of it: what a unit was drawn
+// is an assignment row of its own (AssignmentsOf, AssignmentsFor), and nothing this release's
+// daemon runs reads the columns but the back-fill of 20261111045636_experiment_assignments.
+const issueColumns = `key, tree, project, title, parent, phase, generation, status, rank, handed_over, taken_back, linger_until, held_from, last_dispatch_seq, coalesce(hold_reason, ''), dispatch_status, repo, default_branch, github_repo, repo_before, repo_corrected_at, repo_change_pending, repo_change_reason, awaiting_ask, awaiting_gate_version, coalesce(awaiting_artifact, ''), awaiting_answered_at, coalesce(awaiting_answered_by, ''), coalesce(awaiting_answered_detail, ''), coalesce(awaiting_answered_document_at = awaiting_answered_at, false), coalesce(awaiting_answered_version, 0), coalesce(awaiting_answered_artifact, ''), coalesce(awaiting_answered_step, ''), awaiting_since_seq, awaiting_since, handout_seq, coalesce(declared_seq, 0), declared_at, nullif(ancestry, '{}'), handed_over_from, coalesce(told_parent, ''), moved_at, tree_stalled_told_at, released_for_wait_at`
 
 func (s *Postgres) Issue(ctx context.Context, tx pgx.Tx, key string) (*Issue, error) {
 	issue, err := scanIssue(tx.QueryRow(ctx, "select "+issueColumns+" from issues where key = $1", key))
@@ -227,9 +227,10 @@ func (s *Postgres) PutIssue(ctx context.Context, tx pgx.Tx, issue Issue) error {
 	if issue.Hold != nil {
 		heldFrom, holdReason = string(issue.Hold.From), issue.Hold.Reason
 	}
-	var awaitingAsk, awaitingGate, awaitingArtifact, answeredAt, answeredVersion, answeredArtifact, answeredStep, sinceSeq, since any
+	var awaitingAsk, awaitingGate, awaitingArtifact, answeredAt, answeredDocumentAt, sinceSeq, since any
 	var answeredBy Answer
 	var answeredDetail string
+	var answeredDocument AnsweredDocument
 	if issue.Awaiting != nil {
 		if issue.Awaiting.Ask != "" {
 			awaitingAsk = issue.Awaiting.Ask
@@ -242,14 +243,8 @@ func (s *Postgres) PutIssue(ctx context.Context, tx pgx.Tx, issue Issue) error {
 		}
 		if issue.Awaiting.AnsweredAt != nil {
 			answeredAt = *issue.Awaiting.AnsweredAt
-			if issue.Awaiting.AnsweredVersion > 0 {
-				answeredVersion = issue.Awaiting.AnsweredVersion
-			}
-			if issue.Awaiting.AnsweredArtifact != "" {
-				answeredArtifact = issue.Awaiting.AnsweredArtifact
-			}
-			if issue.Awaiting.AnsweredStep != "" {
-				answeredStep = string(issue.Awaiting.AnsweredStep)
+			if issue.Awaiting.AnsweredDocument != nil {
+				answeredDocument, answeredDocumentAt = *issue.Awaiting.AnsweredDocument, answeredAt
 			}
 		}
 		answeredBy, answeredDetail = issue.Awaiting.AnsweredBy, issue.Awaiting.AnsweredDetail
@@ -281,20 +276,17 @@ func (s *Postgres) PutIssue(ctx context.Context, tx pgx.Tx, issue Issue) error {
 	// them finds its data. awaiting_slot_notice_at is named nowhere because the column is gone
 	// with the notice it marked (20261109060737_drop_awaiting_slot_notice): a root keeps its row
 	// through its wait, so no architect is ever told a slot has freed under it.
-	// awaiting_answered_version, awaiting_answered_artifact and awaiting_answered_step are written
-	// with the answer's own moment beside them (awaiting_answered_version_at), because a daemon of
-	// an earlier release names none of the four columns: its write of a later answer leaves them as
-	// they were, and the read (issueColumns) takes the three only while that moment is the answer's
-	// now standing.
-	var answeredVersionAt any
-	if answeredVersion != nil || answeredArtifact != nil || answeredStep != nil {
-		answeredVersionAt = answeredAt
-	}
+	// The answered document's three columns (awaiting_answered_version, awaiting_answered_artifact
+	// and awaiting_answered_step) are written with the answer's own moment beside them
+	// (awaiting_answered_document_at), because a daemon of an earlier release names none of the
+	// four columns: its write of a later answer leaves them as they were, and the read
+	// (issueColumns) takes the document only while that moment is the answer's now standing. A
+	// zero version and an empty document or step are written as null, as the migration leaves them.
 	_, err := tx.Exec(ctx, `insert into issues (key, tree, project, title, parent, phase, generation, status, rank, handed_over, taken_back, linger_until, held_from, last_dispatch_seq, hold_reason, dispatch_status, repo, default_branch, github_repo,
 		awaiting_ask, awaiting_gate_version, awaiting_artifact, awaiting_answered_at, awaiting_answered_by, awaiting_answered_detail, awaiting_since_seq, awaiting_since,
-		ancestry, handed_over_from, told_parent, awaiting_answered_version, awaiting_answered_version_at, awaiting_answered_artifact, awaiting_answered_step)
+		ancestry, handed_over_from, told_parent, awaiting_answered_version, awaiting_answered_document_at, awaiting_answered_artifact, awaiting_answered_step)
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, nullif($15::text, ''), $16, $17, $18, $19, $20, $21, $22, $23, nullif($24::text, ''), nullif($25::text, ''), $26, $27,
-		coalesce($28::text[], '{}'), $29, nullif($30::text, ''), $31, $32, $33, $34)
+		coalesce($28::text[], '{}'), $29, nullif($30::text, ''), nullif($31::integer, 0), $32, nullif($33::text, ''), nullif($34::text, ''))
 		on conflict (key) do update set tree = excluded.tree, project = excluded.project, title = excluded.title,
 		parent = excluded.parent, phase = excluded.phase, generation = excluded.generation,
 		status = excluded.status, rank = excluded.rank, handed_over = excluded.handed_over, taken_back = excluded.taken_back,
@@ -305,14 +297,15 @@ func (s *Postgres) PutIssue(ctx context.Context, tx pgx.Tx, issue Issue) error {
 		awaiting_artifact = excluded.awaiting_artifact,
 		awaiting_answered_at = excluded.awaiting_answered_at, awaiting_answered_by = excluded.awaiting_answered_by,
 		awaiting_answered_detail = excluded.awaiting_answered_detail,
-		awaiting_answered_version = excluded.awaiting_answered_version, awaiting_answered_version_at = excluded.awaiting_answered_version_at,
+		awaiting_answered_version = excluded.awaiting_answered_version, awaiting_answered_document_at = excluded.awaiting_answered_document_at,
 		awaiting_answered_artifact = excluded.awaiting_answered_artifact, awaiting_answered_step = excluded.awaiting_answered_step,
 		awaiting_since_seq = excluded.awaiting_since_seq, awaiting_since = excluded.awaiting_since,
 		ancestry = excluded.ancestry, handed_over_from = excluded.handed_over_from, told_parent = excluded.told_parent`,
 		issue.Key, issue.Tree, issue.Project, issue.Title, issue.Parent, string(issue.Phase), int64(issue.Generation), issue.Status,
 		issue.Rank, issue.HandedOver, issue.TakenBack, issue.LingerUntil, heldFrom, issue.LastDispatchSeq, string(holdReason), issue.DispatchStatus,
 		issue.Repo, issue.DefaultBranch, issue.GitHubRepo, awaitingAsk, awaitingGate, awaitingArtifact, answeredAt, string(answeredBy), answeredDetail,
-		sinceSeq, since, issue.Ancestry, issue.HandedOverFrom, issue.ToldParent, answeredVersion, answeredVersionAt, answeredArtifact, answeredStep,
+		sinceSeq, since, issue.Ancestry, issue.HandedOverFrom, issue.ToldParent, answeredDocument.Version, answeredDocumentAt,
+		answeredDocument.Artifact, string(answeredDocument.Step),
 	)
 	if err != nil {
 		return fmt.Errorf("put issue %s: %w", issue.Key, err)
@@ -547,15 +540,17 @@ func scanIssue(row scanner) (*Issue, error) {
 	var awaitingArtifact string
 	var answeredAt *time.Time
 	var answeredBy, answeredDetail string
-	var answeredVersion int
-	var answeredArtifact, answeredStep string
+	var answeredFenced bool
+	var answeredDocument AnsweredDocument
+	var answeredStep string
 	var repoBefore, repoChangePending, repoChangeReason string
 	var sinceSeq *int64
 	var since, declaredAt, repoCorrectedAt, treeStalledToldAt, releasedForWaitAt *time.Time
 	if err := row.Scan(&issue.Key, &issue.Tree, &issue.Project, &issue.Title, &issue.Parent, &phaseValue, &generation, &issue.Status,
 		&issue.Rank, &issue.HandedOver, &issue.TakenBack, &issue.LingerUntil, &heldFrom, &issue.LastDispatchSeq, &holdReason, &issue.DispatchStatus,
 		&issue.Repo, &issue.DefaultBranch, &issue.GitHubRepo, &repoBefore, &repoCorrectedAt, &repoChangePending, &repoChangeReason,
-		&awaitingAsk, &awaitingGate, &awaitingArtifact, &answeredAt, &answeredBy, &answeredDetail, &answeredVersion, &answeredArtifact, &answeredStep,
+		&awaitingAsk, &awaitingGate, &awaitingArtifact, &answeredAt, &answeredBy, &answeredDetail,
+		&answeredFenced, &answeredDocument.Version, &answeredDocument.Artifact, &answeredStep,
 		&sinceSeq, &since, &issue.HandoutSeq, &issue.DeclaredSeq, &declaredAt, &issue.Ancestry, &issue.HandedOverFrom,
 		&issue.ToldParent, &issue.MovedAt, &treeStalledToldAt, &releasedForWaitAt); err != nil {
 		return nil, err
@@ -595,8 +590,11 @@ func scanIssue(row scanner) (*Issue, error) {
 			answeredAt = &utc
 		}
 		issue.Awaiting = &Awaiting{Artifact: awaitingArtifact, AnsweredAt: answeredAt, AnsweredBy: Answer(answeredBy),
-			AnsweredDetail: answeredDetail, AnsweredVersion: answeredVersion, AnsweredArtifact: answeredArtifact,
-			AnsweredStep: DesignStep(answeredStep), Since: scannedMark(sinceSeq, since)}
+			AnsweredDetail: answeredDetail, Since: scannedMark(sinceSeq, since)}
+		if answeredFenced {
+			answeredDocument.Step = DesignStep(answeredStep)
+			issue.Awaiting.AnsweredDocument = new(answeredDocument)
+		}
 		if awaitingAsk != nil {
 			issue.Awaiting.Ask = *awaitingAsk
 		}

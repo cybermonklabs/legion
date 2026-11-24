@@ -1201,7 +1201,8 @@ func TestAReviewARegistrationCarriesAnswersTheRootItWaitsFor(t *testing.T) {
 			assertResumed(t, pool)
 			// The wait the resume answered records the version the review was of, which its task
 			// asks the person's word at each send (workflow.SupersedingApproval).
-			if row := architectRow(t, pool, "LEGION-100"); row.EntryAwaiting == nil || row.EntryAwaiting.AnsweredVersion != 4 {
+			if row := architectRow(t, pool, "LEGION-100"); row.EntryAwaiting == nil || row.EntryAwaiting.AnsweredDocument == nil ||
+				row.EntryAwaiting.AnsweredDocument.Version != 4 {
 				t.Fatalf("the wait the resume answered = %+v, want it to record version 4, the version the review was of", row.EntryAwaiting)
 			}
 			applyFact(t, pool, admission, "live-review", tc.live)

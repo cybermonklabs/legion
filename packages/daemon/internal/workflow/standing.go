@@ -87,23 +87,26 @@ func (e *Engine) WorkingCopyAtSend(task string, issue record.Issue) string {
 	return task[:start] + line + task[end:]
 }
 
-// workingCopyLine is where task holds the working copy line WorkingCopy writes for the issue key:
-// the byte it starts at and the byte after its full stop. It is the first line of that branch the
-// daemon's part of task holds, which is the part before the owner's text (ownersOpening): a task
-// places its standing's lines right after its continue line and the owner's text last of all
-// (task, resumeText), so a line shaped like it inside the owner's fence is the owner's and is
-// never this one. The directory ends at the first full stop of the daemon's part followed by a
-// space, a line end or the end of task, which is what follows the line in every task: the task's
-// next sentence, the owner's part, the blank line before the news a send renders after it, or
-// nothing. A line that reads otherwise is no line of this package's, and ok is false.
+// workingCopyLine returns the byte range of the working copy line, including its full stop.
+// Both task and resumeText put it immediately after the continue line, before any reason,
+// owner's text or appended news. Start at the first occurrence of the continue line's
+// issue-and-phase suffix, not at a working-copy or owner's label in the title. An older task
+// with no working copy at that position stays as it was. The directory ends at a full stop
+// followed by a space, a line end or the end of the task.
 func workingCopyLine(task, key string) (start, end int, ok bool) {
-	opening := workingCopyOpening(key)
-	daemons := task
-	if owners := strings.Index(task, ownersOpening); owners >= 0 {
-		daemons = task[:owners]
+	ending := continueEnding(key)
+	phaseAt := strings.Index(task, ending)
+	if phaseAt < 0 {
+		return 0, 0, false
 	}
-	start = strings.Index(daemons, opening)
-	if start < 0 {
+	phaseAt += len(ending)
+	stop := strings.IndexByte(task[phaseAt:], '.')
+	if stop < 0 {
+		return 0, 0, false
+	}
+	start = phaseAt + stop + 1
+	opening := workingCopyOpening(key)
+	if !strings.HasPrefix(task[start:], opening) {
 		return 0, 0, false
 	}
 	rest := start + len(opening)
@@ -113,7 +116,7 @@ func workingCopyLine(task, key string) (start, end int, ok bool) {
 	if !strings.HasPrefix(task[rest:], workingCopyDirectory) {
 		return 0, 0, false
 	}
-	for at := rest + len(workingCopyDirectory); at < len(daemons); at++ {
+	for at := rest + len(workingCopyDirectory); at < len(task); at++ {
 		if task[at] == '.' && (at+1 == len(task) || task[at+1] == ' ' || task[at+1] == '\n') {
 			return start, at + 1, true
 		}
@@ -121,8 +124,7 @@ func workingCopyLine(task, key string) (start, end int, ok bool) {
 	return 0, 0, false
 }
 
-// ownersOpening is how the owner's part of a step's task begins (ownersText), which ends the
-// daemon's part of the task (workingCopyLine).
+// ownersOpening is how the owner's part of a step's task begins (ownersText).
 const ownersOpening = " " + taskTextLabel + ": the text of the task's block, which the owner of the issue wrote in its plan"
 
 // ownersText is the owners part of a step's standing (Standing), the text of its task's block as

@@ -6,3 +6,5 @@ body: |-
   claim, the one the daemon's own notices of its issue go to, and the worker's notices of a stalled
   run or a stuck tool call go there. A record the daemon cannot read is answered with a failure, so
   the worker still nudges. The daemon API contract is 240.
+  A refusal with a status that cannot clear stops reminders when the daemon fails the claim.
+  A refusal that can clear does not fail the claim or change the reminder pace.

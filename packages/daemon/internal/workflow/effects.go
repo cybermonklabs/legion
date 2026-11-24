@@ -1159,8 +1159,17 @@ func sentence(s string) string {
 	return s + "."
 }
 
+// continueLine is how every task of a phase worker opens (task, resumeText): the issue's Dispatch
+// title, then its key and the phase the worker starts in (continueEnding).
 func continueLine(issue record.Issue) string {
-	return fmt.Sprintf("Continue %s. Issue: %s. %s: %s.", issue.Title, issue.Key, phaseLabel, issue.Phase)
+	return "Continue " + issue.Title + continueEnding(issue.Key) + string(issue.Phase) + "."
+}
+
+// continueEnding is what the continue line of the issue key holds between its title and its
+// phase. The title is the one part of that line a person wrote, so the first place these words
+// stand in a task is where its title ends, unless the title holds them too (workingCopyLine).
+func continueEnding(key string) string {
+	return ". Issue: " + key + ". " + phaseLabel + ": "
 }
 
 // handoffWord is the word of the Dispatch handoff record role writes (phase.Handoff's writer), ""

@@ -30,3 +30,4 @@ body: |-
   the old repository's workspace until it is launched again, and a pod's roles until the update
   round's relaunch, so the line names the old workspace until that launch and the new one after
   it, and a role launched into a live pod is told that pod's workspace.
+  The send rewrites the line after the task's phase heading, not a similar phrase in its title.

@@ -2453,7 +2453,7 @@ func TestRecordMigrationCreatesTheRequiredColumns(t *testing.T) {
 			"linger_until", "held_from", "last_dispatch_seq", "ready_pending_version", "ready_pending_step", "hold_reason", "dispatch_status", "repo",
 			"default_branch", "github_repo", "repo_before", "repo_corrected_at", "repo_change_pending", "repo_change_reason",
 			"awaiting_ask", "awaiting_gate_version", "awaiting_artifact", "awaiting_answered_at", "awaiting_answered_by",
-			"awaiting_answered_detail", "awaiting_answered_version", "awaiting_answered_version_at", "awaiting_answered_artifact",
+			"awaiting_answered_detail", "awaiting_answered_version", "awaiting_answered_document_at", "awaiting_answered_artifact",
 			"awaiting_answered_step", "awaiting_since_seq", "awaiting_since",
 			"handout_seq", "declared_seq", "declared_at", "caught_up_seq",
 			"ancestry", "handed_over_from", "told_parent", "memory_group", "memory_draw_mode", "memory_drawn_at", "memory_carried",

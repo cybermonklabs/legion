@@ -158,8 +158,10 @@ func (m *Machine) relaunchAfterFailure(ctx context.Context, o runtime.Outcome, e
 	cause := failureCause(o)
 	// A death an earlier raise of this relaunch charged is in the count already: this raise counts
 	// nothing, and fails the claim only where that count spent the budget.
-	spent := m.claim.Budgets.LaunchFailures >= m.deps.Limits.LaunchFailures
-	if !m.deathLaunchFailureCharged(cause) {
+	var spent bool
+	if m.deathLaunchFailureCharged(cause) {
+		spent = m.launchBudgetSpent()
+	} else {
 		m.claim.PendingCause = cause
 		spent = m.chargeLaunch(o)
 	}
@@ -193,6 +195,10 @@ func (m *Machine) chargeLaunch(o runtime.Outcome) bool {
 		return false
 	}
 	m.claim.Budgets.LaunchFailures++
+	return m.launchBudgetSpent()
+}
+
+func (m *Machine) launchBudgetSpent() bool {
 	return m.claim.Budgets.LaunchFailures >= m.deps.Limits.LaunchFailures
 }
 

@@ -419,7 +419,8 @@ func (e *Engine) answerAwaitedGate(ctx context.Context, tx pgx.Tx, gate record.D
 	}
 	e.logOnCommit(ctx, "workflow: a person's review or a newer spec version answered a root's wait", "issue", issue.Key,
 		"version", fact.Version, "event", fact.Kind, "ask", waiting.Ask, "waited_version", waiting.GateVersion)
-	return true, e.answerWait(ctx, tx, *issue, waitAnswer{by: by, detail: detail, document: fact.ArtifactID, step: gate.Step, reviewed: reviewed})
+	return true, e.answerWait(ctx, tx, *issue, waitAnswer{by: by, detail: detail,
+		document: record.AnsweredDocument{Artifact: fact.ArtifactID, Step: gate.Step, Version: reviewed}})
 }
 
 // answerRegisteredGate answers a root waiting on a person with what the registration's read of
@@ -496,12 +497,13 @@ func (e *Engine) answerRegisteredGate(ctx context.Context, tx pgx.Tx, fact intak
 	}
 	e.logOnCommit(ctx, "workflow: a registration answered a root's wait", "issue", issue.Key, "version", version, "event", by, "ask", waiting.Ask)
 	// Every act a registration answers with is of the document it registered.
-	return true, e.answerWait(ctx, tx, *issue, waitAnswer{by: by, detail: detail, document: fact.ArtifactID, step: gate.Step, reviewed: reviewed})
+	return true, e.answerWait(ctx, tx, *issue, waitAnswer{by: by, detail: detail,
+		document: record.AnsweredDocument{Artifact: fact.ArtifactID, Step: gate.Step, Version: reviewed}})
 }
 
 // changesDetail is how a changes request is named to the architect it resumes: its version and the
 // reason the person gave. It is display text only: the version is recorded beside it
-// (record.Awaiting.AnsweredVersion), and nothing reads it back out of the text.
+// (record.AnsweredDocument.Version), and nothing reads it back out of the text.
 func changesDetail(version int, reason string) string {
 	return fmt.Sprintf("version %d: %q", version, reason)
 }

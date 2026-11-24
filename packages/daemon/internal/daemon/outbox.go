@@ -1905,7 +1905,7 @@ func (r *outbox) wakeRan(row record.OutboxRow, notice record.Notice) {
 // released pod is not woken for it (wakeForDelivery), a later notice of the same architect, the
 // approval's own design-approved notice among them, is not held behind it (earlierNoticeFor),
 // and a tree whose architect stopped with it would not relay it to the controller either
-// (parkDecision asks the same decisionSuperseded). One window is left: an approval that commits
+// (parkDecision also asks workflow.NoticeSuperseded). One window is left: an approval that commits
 // between that read and the publish, which reaches the architect after the request it answered.
 //
 // A catch-up is published as the issues its architect owns stand at this delivery, not as they
