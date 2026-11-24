@@ -15,8 +15,10 @@ import (
 // calls Shutdown (server.go:4516, 4608). A committed entry held at stream.apply parks that
 // goroutine, so a hold the hook released only at Shutdown's server.shutdown would never be
 // released, and testnats.Server.LameDuck would give up after its 30 s connectTimeout, force a
-// Shutdown and return an error. The lame duck of a server with a hold parked must return, as its
-// Stop does.
+// Shutdown and return an error. v2.15.3's runLameDuckMode closes the clients first and leaves
+// JetStream to the Shutdown it ends with (server.go:4584, 4655), and its hooks report
+// server.shutdown at the same place, before the Raft leaders move. The lame duck of a server with
+// a hold parked must return on either, as its Stop does.
 //
 // The lame duck runs on a goroutine of its own and the test waits stopWithin for it. Without any
 // release (forced-order.sh -drop server.shutdown) the forced Shutdown waits for the parked

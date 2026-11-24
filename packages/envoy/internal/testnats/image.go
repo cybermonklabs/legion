@@ -57,11 +57,12 @@ func StartImageConfig(t testing.TB, image, config string, serverArgs []string, a
 // StartImageReady runs the container StartImageConfig runs, on config, and returns it with its
 // client URL once nats-server logs that it is ready, with no client's wait: for a configuration
 // that admits no probe from outside (an auth callout holds a client with no credential, and a
-// task's configuration may name no user the probe could be). nats-server 2.15.1 logs that line
-// once its client listener is open, and Docker publishes the port before the server starts. Such a
-// test starts the container on its final configuration rather than stop it and start it again on
-// another: Docker publishes the client port again at each start, and while the container is
-// stopped another process can take that port, so the start is refused, "address already in use".
+// task's configuration may name no user the probe could be). nats-server 2.15.1 and 2.15.3 log
+// that line once its client listener is open, and Docker publishes the port before the server
+// starts. Such a test starts the container on its final configuration rather than stop it and
+// start it again on another: Docker publishes the client port again at each start, and while the
+// container is stopped another process can take that port, so the start is refused, "address
+// already in use".
 // options go after the start's own (startImageAt): a volume mount, say, for a store a later
 // container of the same test reads again.
 func StartImageReady(t testing.TB, image, config string, serverArgs []string, options ...testcontainers.ContainerCustomizer) (*tcnats.NATSContainer, string) {

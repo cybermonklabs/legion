@@ -52,10 +52,19 @@ import (
 // a single-line string constant.
 const Image = "ghcr.io/cybermonklabs/legion/ci@sha256:5498ba57b9471840be3d15b033a4eec554d1c02fa6c2cc0ca2d888637f6c6e2f"
 
-// HubImage is the NATS server image the GCP hub runs: ghcr.io/cybermonklabs/legion/ci, the copy of
-// nats:2.15.1-alpine (.github/ci-images.yaml). The envoy-go and envoy-infra-go CI jobs read this
-// declaration and pull the image before their tests run; keep it a single-line string constant.
-const HubImage = "ghcr.io/cybermonklabs/legion/ci@sha256:2ae57dfba3063d5e25fecb75256118c0882a1a2d2cf7d0fba17a7c701df956f6"
+// HubImage is the NATS server image the clustered hub runs: ghcr.io/cybermonklabs/legion/ci, the
+// copy of nats:2.15.3-alpine (.github/ci-images.yaml). The envoy-go and envoy-infra-go CI jobs read
+// this declaration and pull the image before their tests run; keep it a single-line string
+// constant.
+const HubImage = "ghcr.io/cybermonklabs/legion/ci@sha256:558394a23dd3c36f2d3a64b51865fd09908010e80a542cea5e75c2af543ed62a"
+
+// VMHubImage is the NATS server image the VM hub runs: ghcr.io/cybermonklabs/legion/ci, the copy of
+// nats:2.15.1-alpine (.github/ci-images.yaml). That server answers a JetStream reply aimed at
+// $JS.API., which nats-server 2.15.3 refuses, so the natsgrant rows that pin those reaches run on
+// it as well as on HubImage; it and those rows go when the VM hub is removed. The envoy-go CI job
+// reads this declaration and pulls the image before its tests run; keep it a single-line string
+// constant.
+const VMHubImage = "ghcr.io/cybermonklabs/legion/ci@sha256:2ae57dfba3063d5e25fecb75256118c0882a1a2d2cf7d0fba17a7c701df956f6"
 
 // Images are the NATS server images the real-server tests run Envoy on, each with the short name
 // its subtest takes: the hub's alone, since Envoy requires a server whose scan of a consumer's

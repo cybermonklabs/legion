@@ -23,10 +23,10 @@ import (
 // connection it makes, nkey ones included, as it did at the merge base; this test's connection is
 // not a background one.
 //
-// Measured at 40c57f5ee5 on nats:2.15.1 (testnats.HubImage) with static nkey users only, the hub
-// restarted without the client's user for 12 s: the client built at the merge base logged two
-// authorization violations and "envoy nats connection closed"; the client built at the head logged
-// one authorization violation a second for 12 s and never closed.
+// Measured at 40c57f5ee5 on nats:2.15.1 (testnats.HubImage at that commit) with static nkey users
+// only, the hub restarted without the client's user for 12 s: the client built at the merge base
+// logged two authorization violations and "envoy nats connection closed"; the client built at the
+// head logged one authorization violation a second for 12 s and never closed.
 func TestANkeyConnectionRefusedTwiceClosesAsAtTheMergeBase(t *testing.T) {
 	seed, public := testnats.User(t)
 	_, other := testnats.User(t)

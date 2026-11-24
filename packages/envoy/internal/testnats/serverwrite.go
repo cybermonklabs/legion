@@ -13,8 +13,9 @@ import (
 // published to its subjects. A user who may send the request needs no grant to the bucket's
 // subjects to write one this way. These helpers make such a write for a test: a direct get's copy
 // of another key's record (ServerCopiesKey), a JetStream API answer, and a pull consumer's status
-// answer, which carries no data. Measured against the hub image, nats:2.15.1-alpine, whose server
-// is nats-server v2.15.1, the version packages/envoy/go.mod builds the embedded test server from.
+// answer, which carries no data. Measured against nats:2.15.1-alpine, the hub image when this was
+// written, whose server is nats-server v2.15.1, the version packages/envoy/go.mod builds the
+// embedded test server from.
 
 // KVSubject is the subject key's records are stored under in the bucket named bucket.
 func KVSubject(bucket, key string) string { return "$KV." + bucket + "." + key }

@@ -43,7 +43,8 @@ const (
 	liveHealthWindow = 60 * time.Second
 )
 
-// hubServerArgs are the arguments the GCP hub runs nats-server with.
+// hubServerArgs are the arguments the VM hub (gcp:NatsHub, gcp/cloudconfig.go) runs nats-server
+// with.
 var hubServerArgs = []string{"-js", "--store_dir", "/data", "-m", "8222"}
 
 // serverViolation matches a permissions violation nats-server logs, capturing its kind (Publish or
@@ -278,10 +279,10 @@ func TestListenerHostPermissionsOnRealServers(t *testing.T) {
 // its own relay subject, the subject the listener that owns the session publishes the session's
 // consumer messages on, and answers that frame on the inbox the listener named in it; the server
 // refuses it every notification topic beside that one, a subscribe to the reply inboxes and a
-// JetStream API request, on the 2.10 image and on the hub's. A session takes no message from a
-// notification subscription of its own: not notifications.>, not the agent subjects
-// (notifications.agent.*), not even its own agent subject. Request/reply from such a session is
-// refused by design, and it reads the stream through no call of its own.
+// JetStream API request, on the 2.10 image and on testnats.HubImage (2.15.3). A session takes no
+// message from a notification subscription of its own: not notifications.>, not the agent
+// subjects (notifications.agent.*), not even its own agent subject. Request/reply from such a
+// session is refused by design, and it reads the stream through no call of its own.
 //
 // The narrowing of this set is of the subscribe side alone: a session keeps every publish entry
 // it had, _INBOX.> among them, because every relay frame is answered on the listener's own inbox

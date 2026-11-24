@@ -16,8 +16,8 @@ import (
 // The daemon opens no consumer on a NATS server that can skip a message on a consumer filtering
 // on a wildcard and a literal at the same token: OpenConsumers answers an error naming the
 // server's version and the fixed releases (natsversion.Refusal), and the daemon's boot ends on it.
-// nats:2.10, v2.10.29, is such a server. The control is the package's own server, the hub's
-// v2.15.1, on which the same call opens the consumers.
+// nats:2.10, v2.10.29, is such a server. The control is the package's own server, the clustered
+// hub's v2.15.3, on which the same call opens the consumers.
 func TestOpenConsumersRefusesAServerThatSkipsAFilter(t *testing.T) {
 	pool := migratedPool(t)
 	ctx := context.Background()

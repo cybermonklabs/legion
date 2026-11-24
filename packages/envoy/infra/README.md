@@ -201,7 +201,7 @@ The StatefulSet carries `config.kubernetes.io/depends-on` naming the chart's Con
 | `namespace` | required | The existing namespace every child is created in, a DNS label. The component never creates it. |
 | `name` | required | The chart's release name and `fullnameOverride`, so the StatefulSet's name and every child's: a DNS-1035 label of at most 43 bytes, a letter first. The chart renders the Service `<n>-headless` and the component the Service `<n>-listener`, which Kubernetes holds to that shape, and `<n>-listener`, the longest name the hub derives, stays within the 52 bytes a StatefulSet's or Deployment's name may have. |
 | `serviceName` | required | The in-cluster client Service's name, a DNS-1035 label (a letter first, at most 63 characters). Clients in `clientNamespaces` reach the hub at `nats://<serviceName>.<namespace>.svc.cluster.local:4222`. |
-| `natsImage`, `reloaderImage`, `exporterImage` | required | nats-server, the chart's config reloader and its Prometheus exporter, each pinned by digest: `<name>@sha256:<64 lowercase hex digits>`. Chart 2.15.1 runs `nats:2.15.1-alpine`, `natsio/nats-server-config-reloader:0.24.0` and `natsio/prometheus-nats-exporter:0.20.2` by default, the versions the `natslive` tests run; pin those versions' digests. |
+| `natsImage`, `reloaderImage`, `exporterImage` | required | nats-server, the chart's config reloader and its Prometheus exporter, each pinned by digest: `<name>@sha256:<64 lowercase hex digits>`. Chart 2.15.1 runs `nats:2.15.1-alpine`, `natsio/nats-server-config-reloader:0.24.0` and `natsio/prometheus-nats-exporter:0.20.2` by default, the versions the `gcp` `natslive` tests run the chart's configuration on; the `core` `natslive` tests run the rendered authorization on `nats:2.15.3-alpine` (`testnats.HubImage`) as well. Pin each image's digest. |
 | `natsReplicas` | unset | Only with a session listener (`listener` or `tailnet.listener`): its `ENVOY_NATS_REPLICAS`, the copies JetStream keeps of every stream and bucket the listener creates, 1 to 3, since the hub runs three servers and JetStream refuses a stream with more copies than it has servers. Unset, the variable is unset and the listener keeps one copy. |
 | `streamMaxBytes` | unset | The byte limit of the listener's notification stream, at least 1, rendered as the session listener's `ENVOY_STREAM_MAX_BYTES`. With or without `tailnet` it sizes `maxFileStoreGb`, `diskSizeGb` and `natsMemory` (see [Sizing](#sizing)). Unset, the variable is unset and the listener sets no limit, so a deployed stream keeps the one it has. |
 | `maxFileStoreGb` | see [Sizing](#sizing) | JetStream's `max_file_store`, in whole GiB, below `diskSizeGb`. |
@@ -3849,7 +3849,7 @@ first PING after 2 s plus up to 20% (nats-server's server/client.go `setFirstPin
 while the client's CONNECT still waits for the callout, and a Go client (nats.go) reads anything
 but PONG there as an error, `nats: expected 'PONG', got 'PING'`, so it fails at about 2 s whatever
 the timeout. No nats-server 2.15.1 setting delays that first PING past 2 s (a `ping_interval`
-below 2 s moves it earlier). Measured on the hub's image (nats-server 2.15.1, nats.go v1.53.1):
+below 2 s moves it earlier). Measured on the hub's image of that time (nats-server 2.15.1, nats.go v1.53.1):
 under an authorization timeout of 5 s, an answer after 3.5 s failed the client at 2.1 s. The
 TypeScript client the plugins use (nats.js 2.29.3) waits that PING out: on nats-server 2.15.1 it
 was admitted on answers at 1.0 s and 1.8 s under the default timeout and at 3.5 s under 5 s, while
@@ -3880,7 +3880,8 @@ closes the connection as "Stale Connection" when one more PING would exceed `pin
 queue group 40 to 80 s after it hangs: after 2 to 3 intervals if it sent nothing in the interval
 before, after 3 to 4 if it sent data up to the hang. Under nats-server's defaults (`ping_interval`
 2 minutes, `ping_max` 2: `const.go:120-123`) it is 4 to 8 minutes. `core/nats_ping_live_test.go`
-measures it on the hub's image, with the control that under the defaults the hung replica keeps its
+measures it on `testnats.HubImage` (nats-server 2.15.3), with the control that under the defaults
+the hung replica keeps its
 place and clients are refused. The ping is the hub's backstop for a replica that stops reading its
 connection, because its process froze or its node lost its network. The auth service must give
 the auth service a liveness probe that restarts a replica whose process stops answering, which acts
@@ -4153,21 +4154,24 @@ is the shared listeners' role lane to refuse, which it does with the edge mode o
 bucket, so it can change no stream's subjects, limits or republish:
 
 - A republish to a `$JS.API.…` subject is a JetStream API request in the stream's account, with
-  the stored value as its body. On the hub's image an empty value republished to a stream delete
-  deletes the stream, and a non-empty one is refused as that request's body. That is why the edge
-  holds no stream update.
+  the stored value as its body. On nats-server 2.15.1 an empty value republished to a stream delete
+  deletes the stream, and a non-empty one is refused as that request's body; nats-server 2.15.3
+  suppresses a republish there. That is why the edge holds no stream update.
 - The stream itself answers a direct get, on whatever reply subject the request names and with the
-  stored value as its body, so a direct get aimed at `$JS.API.…` is such a request too: on the
-  hub's image a value written as a stream update changes that stream, and an empty one aimed at a
-  stream delete deletes it. So an edge listener reads its buckets with stream message gets
-  (`$JS.API.STREAM.MSG.GET.KV_<bucket>`). Their answer is the API's own, and aimed at the API it
-  takes no action there, nor does a stream info answer or a stored publish's acknowledgement.
-- It can, though, delete any stream of its account without changing it: a `no_wait` pull on a
-  consumer with nothing to deliver is answered a `404 No Messages` status, and a synchronous ack
-  an empty reply, each with no body on whatever reply subject it names and needing no other
-  client, so one aimed at `$JS.API.STREAM.DELETE.<s>` deletes stream `<s>` on the hub's nats-server
-  (2.15.1). That reach is availability only - no message of any project crosses it - accepted for
-  day one until the hub's nats-server is raised to 2.15.3, which refuses a reply into `$JS.API.`.
+  stored value as its body, so a direct get aimed at `$JS.API.…` is such a request too: on
+  nats-server 2.15.1 a value written as a stream update changes that stream, and an empty one aimed
+  at a stream delete deletes it; nats-server 2.15.3 refuses the request at its publish. So an edge
+  listener reads its buckets with stream message gets (`$JS.API.STREAM.MSG.GET.KV_<bucket>`).
+  Their answer is the API's own, and aimed at the API it takes no action there, nor does a stream
+  info answer or a stored publish's acknowledgement.
+- On nats-server 2.15.1 a holder of this set could, though, delete any stream of its account
+  without changing it: a `no_wait` pull on a consumer with nothing to deliver is answered a
+  `404 No Messages` status, and a synchronous ack an empty reply, each with no body on whatever
+  reply subject it names and needing no other client, so one aimed at `$JS.API.STREAM.DELETE.<s>`
+  deletes stream `<s>`. That reach is availability only - no message of any project crosses it -
+  and was accepted for day one until the hub that renders this set ran nats-server 2.15.3, which
+  refuses every publish whose reply is under `$JS.`. That is met: the deployment renders this set
+  on the clustered hub alone, which runs 2.15.3, so no deployed edge has the reach.
 
 An edge listener reads the stream and its start ends, naming the stream, on a server that has
 none. It finds each bucket it opens: the interest, role, session and DPoP-proof buckets end its
@@ -4245,8 +4249,9 @@ What the lists do not hold back:
   never as a key, and counts it toward that stream's limits. Both need some other client to
   subscribe the deliver subject. A consumer created with an idle heartbeat also sends heartbeats,
   empty status messages that carry no stored subject, to its deliver subject while a client
-  subscribes it; on the hub's image such a heartbeat aimed at a stream delete deletes the stream
-  (`TestAPushConsumersHeartbeatOnTheAPIDeletesAStreamWhileAClientSubscribesIt`). No Envoy client
+  subscribes it; on nats-server 2.15.1 such a heartbeat aimed at a stream delete deletes the stream,
+  and nats-server 2.15.3 refuses the create of a push consumer delivering under `$JS.API.`
+  (`TestAPushConsumersHeartbeatAimedAtAStreamDeleteWhileAClientSubscribesIt`). No Envoy client
   subscribes a `$JS.API.` subject, and the edge's own grant subscribes none.
 - nats-server 2.15.1 admits a subscription to `notifications.envoy.deliver.>` under the allow
   entry `notifications.envoy.deliver.*`, and delivers it a subject two tokens past the prefix. No
@@ -4268,29 +4273,41 @@ projects the entry lists, and the deployment repository's hub user for an edge l
 entry for entry from `packages/envoy/natsgrant/testdata/edge.golden.json`, rendered for machine `m`
 and project `PRIV`.
 
-Under the `natslive` tag, against the hub's image, `natsgrant/natsgrant_live_test.go` publishes on
-each subject of the list and on the kept lane, another project's role, a role that names no
-project, the Legion wake topic, a Slack topic and a GitHub exception lane, and the server refuses
-exactly the second group. `TestAnEdgeMachineAnswersAnotherMachinesFrameAndReadsOnlyItsOwnReceipts`
-there has one edge machine answer another machine's frame on that machine's receipt subject, and
-be refused a subscription to that machine's receipts.
-`TestTheEdgeGrantsConsumerCallsReachPastItsPublishList` pins the notification stream's consumer
-reach above: a push consumer of the edge's delivers on another project's role subject, a consumer
-of the edge's reads another project's stored Dispatch event, a deliver subject the stream carries
-is refused as a cycle, the edge updates and deletes another listener's durable, and a subscription
-under `deliver.>` is delivered a two-token subject.
-`TestTheEdgeGrantsPushConsumerReachesItsAccountsJetStreamAPI` pins the JetStream API and capture
-outcomes on scratch streams and buckets of the edge's account, and the stream subject a delivery
-is received under, and `TestAPushConsumersHeartbeatOnTheAPIDeletesAStreamWhileAClientSubscribesIt`
-the heartbeat's. `TestTheEdgeCannotSetABucketToRepublishIntoTheJetStreamAPI` has the server refuse
-the edge's update of a bucket's stream, and its control has an administrator's republish of an
-empty value delete a stream. `TestTheEdgeHoldsNoDirectGetWhoseAnswerReachesTheJetStreamAPI` has a
-listener's direct gets aimed at the API change one stream and delete another, the edge's refused,
-and its stream message get, stream info and key write aimed the same way take no action.
-`TestAPullStatusAndAnAckAnswerOnTheAPIDeleteAStream` has a `no_wait` pull's `404 No Messages`
-status and a synchronous ack's empty reply, each aimed at the stream-delete API, delete a scratch
-stream with no subscriber, the edge's own direct delete refused and the same pull and ack answered
-on its inbox as controls (nats-server 2.15.1; the deletes are refused once the hub runs 2.15.3).
+Under the `natslive` tag, against the clustered hub's image (`testnats.HubImage`, nats-server
+2.15.3), `natsgrant/natsgrant_live_test.go` publishes on each subject of the list and on the kept
+lane, another project's role, a role that names no project, the Legion wake topic, a Slack topic
+and a GitHub exception lane, and the server refuses exactly the second group.
+`TestAnEdgeMachineAnswersAnotherMachinesFrameAndReadsOnlyItsOwnReceipts` there has one edge
+machine answer another machine's frame on that machine's receipt subject, and be refused a
+subscription to that machine's receipts. `TestTheEdgeGrantsConsumerCallsReachPastItsPublishList`
+pins the notification stream's consumer reach above: a push consumer of the edge's delivers on
+another project's role subject, a consumer of the edge's reads another project's stored Dispatch
+event, a deliver subject the stream carries is refused as a cycle, the edge updates and deletes
+another listener's durable, and a subscription under `deliver.>` is delivered a two-token subject.
+
+`natsgrant/natsgrant_jsapi_live_test.go` holds five rows that aim a server's own answer at the
+JetStream API, each run on nats-server 2.15.1 (`testnats.VMHubImage`) and on 2.15.3
+(`testnats.HubImage`). `TestAnEdgePushConsumerDeliveringOnItsAccountsJetStreamAPI` pins the
+JetStream API and capture outcomes on scratch streams and buckets of the edge's account, and the
+stream subject a delivery is received under, and
+`TestAPushConsumersHeartbeatAimedAtAStreamDeleteWhileAClientSubscribesIt` the heartbeat's.
+`TestTheEdgeCannotSetABucketToRepublishIntoTheJetStreamAPI` has the server refuse the edge's update
+of a bucket's stream, and its control an administrator's republish of an empty value to a stream
+delete. `TestTheEdgeHoldsNoDirectGetWhoseAnswerReachesTheJetStreamAPI` has the edge's direct gets
+refused, a listener's direct gets aimed at the API as its control, and the edge's stream message
+get, stream info and key write aimed the same way. `TestAPullStatusAndAnAckAnswerAimedAtAStreamDelete`
+has a `no_wait` pull's `404 No Messages` status and a synchronous ack's empty reply aimed at the
+stream-delete API, the edge's own direct delete refused and the same pull and ack answered on its
+inbox as controls. On 2.15.1 each answer aimed at the API reaches it: the republish, the
+listener's direct gets, the heartbeat, the pull status and the ack reply each delete or change a
+scratch stream. On 2.15.3 each is refused: a publish whose reply is under `$JS.` at the publish, a
+push consumer delivering under `$JS.API.` at its create, and a republish there by suppressing it,
+each row with a control that the same route works to a plain subject. The deployment renders the
+edge set on the clustered hub alone, which runs 2.15.3, so no deployed edge has these reaches, and
+day one's acceptance of the edge's stream delete, until the hub that renders the set ran 2.15.3,
+is met. Of the users these rows run, only the listener's is one the VM hub renders, on 2.15.1: its
+direct get still reaches the API there. The rows keep their 2.15.1 half, and
+`testnats.VMHubImage`, until the VM hub is removed.
 `cmd/listener/edge_live_test.go` runs the listener under the set: it starts, relays a send, is
 reached by a role message through a shared listener, takes a role another session holds and is
 relayed a role message of a role another session holds, with no refusal, and its start ends,

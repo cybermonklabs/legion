@@ -715,7 +715,7 @@ func TestOwnedStreamRaisesTheConsumerCapWhereItBindsAndKeepsAHigherDeployedOne(t
 		version  string
 		want     int
 	}{
-		{"a stream with no cap, which the server answers as -1, on the hub's 2.15.1", -1, "2.15.1", streamMaxConsumers},
+		{"a stream with no cap, which the server answers as -1, on the VM hub's 2.15.1", -1, "2.15.1", streamMaxConsumers},
 		{"the same stream on 2.10.29, which caps no stream that sets none", -1, "2.10.29", -1},
 		{"a stream whose cap is 0, which the server reads as none too, on 2.15.1", 0, "2.15.1", streamMaxConsumers},
 		{"a stream whose cap is 0 on 2.10.29", 0, "2.10.29", 0},

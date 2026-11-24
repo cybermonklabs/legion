@@ -555,8 +555,8 @@ const streamGenerationKey = "dispatch.stream-generation"
 // that is refused its own (`maximum consumers limit reached`, code 10026) and falls back to core
 // delivery. Before 2.15 a stream with no cap has no limit at all: v2.10.29 normalises a deployed
 // 0 to -1 (server/stream.go:1227) and checks the cap only while it is positive
-// (server/consumer.go around 808). The hub runs 2.15.1, where the default of 1000 is the failure
-// this cap answers.
+// (server/consumer.go around 808). The hubs run 2.15 (the VM hub 2.15.1, the clustered hub
+// 2.15.3), where the default of 1000 is the failure this cap answers.
 //
 // That 1000 is what the version gate stands for: serverDefaultsAnUnsetCap reads "nats-server 2.15
 // or later" and this binary takes it to mean "a stream with no cap is capped at 1000". An

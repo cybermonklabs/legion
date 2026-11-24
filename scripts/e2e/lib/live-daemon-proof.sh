@@ -82,9 +82,9 @@ require_dispatch_cli() {
   export LEGION_E2E_REPO_ROOT="$root"
 }
 
-# The nats-server the run installs when the caller names none: the hub's v2.15.1, the version
-# packages/envoy/go.mod pins. The daemon refuses a nats-server below v2.11.12, v2.12.4 or v2.14.0
-# (packages/envoy/natsversion).
+# The nats-server the run installs when the caller names none: v2.15.1, the version
+# packages/envoy/go.mod pins and the VM hub runs. The daemon refuses a nats-server below v2.11.12,
+# v2.12.4 or v2.14.0 (packages/envoy/natsversion).
 nats_version=v2.15.1
 
 # The run's state, global rather than live_daemon_proof's own because cleanup reads it from the

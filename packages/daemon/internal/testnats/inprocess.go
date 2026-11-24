@@ -17,8 +17,9 @@ type InProcessServer = testnatsinprocess.Server
 // forced-order test of the daemon holds: packages/envoy/scripts/forced-order.sh -C packages/daemon
 // builds the test binary with a nats-server that carries the hold points
 // (testnatsinprocess.Hook), which no container can. It links the nats-server the module requires,
-// v2.15.1, the version the hub runs, and is the test's alone, so none of URL's reset, leak check or
-// one-test-at-a-time hold applies to it.
+// v2.15.1, the version the VM hub runs, or, under forced-order.sh -server 2.15.3, the clustered
+// hub's, and is the test's alone, so none of URL's reset, leak check or one-test-at-a-time hold
+// applies to it.
 func StartInProcess(t testing.TB) (*InProcessServer, string) {
 	t.Helper()
 	return testnatsinprocess.Start(t)

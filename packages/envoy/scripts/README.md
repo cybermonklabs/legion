@@ -584,8 +584,10 @@ and created again, a JetStream API request held while its server shuts down, rel
 
 ```bash
 packages/envoy/scripts/forced-order.sh ./internal/testnats/hooktest/
+packages/envoy/scripts/forced-order.sh -server 2.15.3 ./internal/testnats/hooktest/
 packages/envoy/scripts/forced-order.sh -server 2.10.29 ./internal/testnats/hooktest/
 packages/envoy/scripts/forced-order.sh -C packages/daemon ./internal/testnats/
+packages/envoy/scripts/forced-order.sh -C packages/daemon -server 2.15.3 ./internal/testnats/
 packages/envoy/scripts/forced-order.sh -drop write.preIO ./internal/testnats/hooktest/
 ```
 
@@ -595,24 +597,30 @@ It copies nats-server's module at the version it runs out of the module cache, a
 `zz_measure_write.go` (its consumer state writer). It then runs
 `go test -tags odatrace -race -v -run '^TestForcedOrder'` with
 nats-server replaced by the copy: for a module of the workspace, in a copy of `go.work` with
-absolute `use` paths, so every other module version is the one CI's own build links; for a module
-with no workspace, on a copy of the module's `go.mod`. A workspace that does not use the module,
+absolute `use` paths, so every other module version is the one CI's own build links, except a
+module the hooked version requires at a later release (2.10.29 adds `go.uber.org/automaxprocs`;
+2.15.3 raises `antithesis-sdk-go`, `klauspost/compress`, `nats-io/jwt` and `nats-io/nkeys` to the
+releases its `go.mod` requires); for a module with no workspace, on a copy of the module's `go.mod`.
+A workspace that does not use the module,
 or that holds a replace, is refused, and so is a module whose `go.mod` replaces nats-server, since
 the hooked copy would take the replacement's place. It reads go's JSON with `jq`. Nothing else of nats-server
 changes, the repository's own files are never written, and no other build sees a hook.
-The hold points are `write.preIO`, `write.preRename` (2.15.1 alone: 2.10.29 writes `o.dat` in
+The hold points are `write.preIO`, `write.preRename` (2.15.1 and 2.15.3: 2.10.29 writes `o.dat` in
 place), `flush.encoded`, `store.create`, `api.worker`, `client.publish`, `meta.apply` and `stream.apply`;
 `hooks.go` says where each one is. A server's shutdown, and its lame duck, report `server.shutdown`
 before they stop anything and `server.down` once the shutdown has waited for its goroutines: the
 hook releases every hold on that server at the first and parks none of its goroutines until the
 second, so a `Stop` or a `LameDuck` with an operation held returns, and the held operation lands
-or fails.
+or fails. 2.15.1's lame duck stops JetStream before it calls `Shutdown`; 2.15.3's closes its
+clients first and leaves JetStream to `Shutdown`; on both the report comes as the lame duck
+begins, before it moves its Raft leaders.
 
 `-C` names the module, relative to the caller's directory, as `go -C` does (`packages/envoy` by
 default), and the packages are relative to it; an empty `-C` is refused. `-server` is the
-nats-server version, by default the one the build links; 2.15.1 and 2.10.29 are hooked, and any
-other version is refused, so a module that moves to a new nats-server fails here until its hooks
-are ported; an empty value is refused too. `-drop <point>` removes the hook calls that pass that
+nats-server version, by default the one the build links; 2.15.1 (the VM hub's), 2.15.3 (the
+clustered hub's) and 2.10.29 are hooked, and any other version is refused, so a module that moves
+to a new nats-server fails here until its hooks are ported; an empty value is refused too.
+`-drop <point>` removes the hook calls that pass that
 point, exactly, before the build, which is each test's control: a test holding at a dropped point
 fails waiting for its hold, and with `-drop server.shutdown` the test that stops a held server
 fails at its own deadline, since the stop then waits for the parked goroutine. A name no hook of
@@ -625,10 +633,11 @@ those refusals (a package whose tests all skip, a `-drop` name that is no point,
 an empty `-C`, a module that replaces nats-server), with the fixture package
 `internal/testnats/hooktest/skiponly`.
 `ci.yaml`'s `envoy-go-race` job runs that test, then the script on `./internal/testnats/hooktest/`
-twice: with no `-server`, so on the version the workspace links, and with `-server 2.10.29`. Its
-`daemon-go` job runs it with `-C packages/daemon` and no `-server`. So when `go.mod` moves to a
-nats-server with no hooks, both unversioned steps fail until the hooks are ported. Each job counts
-the 10 minutes in its time budget.
+three times: with no `-server`, so on the version the workspace links, with `-server 2.15.3` and
+with `-server 2.10.29`. Its `daemon-go` job runs it with `-C packages/daemon`, with no `-server`
+and with `-server 2.15.3`; the daemon refuses 2.10.29 (`natsversion.Refusal`). So when `go.mod`
+moves to a nats-server with no hooks, both unversioned steps fail until the hooks are ported. Each
+job counts the 10 minutes of each step in its time budget.
 
 ## aws-moto-check.sh
 

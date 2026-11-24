@@ -783,7 +783,7 @@ func TestRestoredFieldsNamesTheConsumerCapTheKeeperRaised(t *testing.T) {
 		want     string
 	}{
 		{"a cap an operator lowered", 1000, "2.10.29", fmt.Sprintf("max_consumers 1000 -> %d", streamMaxConsumers)},
-		{"a stream with no cap on the hub's 2.15.1, which caps it at 1000", -1, "2.15.1", fmt.Sprintf("max_consumers -1 -> %d", streamMaxConsumers)},
+		{"a stream with no cap on the VM hub's 2.15.1, which caps it at 1000", -1, "2.15.1", fmt.Sprintf("max_consumers -1 -> %d", streamMaxConsumers)},
 		{"a stream with no cap on 2.10.29, which leaves it unlimited", -1, "2.10.29", ""},
 		{"a stream already at the cap", streamMaxConsumers, "2.15.1", ""},
 	} {

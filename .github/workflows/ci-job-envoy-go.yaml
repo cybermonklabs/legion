@@ -100,7 +100,8 @@ jobs:
         run: |
           docker exec "${{ job.services.postgres.id }}" psql -U postgres -Atc "select current_setting('server_version_num'), coalesce((select default_version from pg_available_extensions where name = 'vector'), 'no vector')"
       # Every image the tests here start: testnats.HubImage, which the natslive step below runs
-      # Envoy on, testnats.Image (nats:2.10), which only the tests of that server itself and of the
+      # Envoy on, testnats.VMHubImage, which only natsgrant's rows of the VM hub's $JS.API. reaches
+      # start, testnats.Image (nats:2.10), which only the tests of that server itself and of the
       # listener's refusal of it start, and tests3.Image, pulled first for the reason the action
       # gives.
       - name: Pull test container images
@@ -109,6 +110,7 @@ jobs:
           consts: |
             packages/envoy/internal/testnats/nats.go Image
             packages/envoy/internal/testnats/nats.go HubImage
+            packages/envoy/internal/testnats/nats.go VMHubImage
             packages/envoy/internal/tests3/seaweedfs.go Image
       # The tests the race detector makes impossible, which the race job of each of these packages
       # therefore cannot make, so envoy-go keeps a plain run of exactly them: internal/bus counts
@@ -234,29 +236,33 @@ jobs:
         run: go vet -tags moto ./cmd/cipher/
         working-directory: packages/envoy
       # internal/testnats runs its server in the test process, so the untagged step above starts
-      # no container. The real-server tests, a rendered authorization on the image the hub runs
-      # among them, are the one thing an in-process server cannot reproduce: they sit behind the
-      # natslive tag, and this step is where they run (INFRA-250). internal/bus has tests of its own
-      # there. One is the consumer cap: the module links nats-server v2.15.1 in process, which caps
-      # a stream that sets no cap at a default of its own and takes a change of MaxConsumers on a
+      # no container. The real-server tests, a rendered authorization on testnats.HubImage
+      # (nats-server 2.15.3, the clustered hub's) among them, are the one thing an in-process
+      # server cannot reproduce: they sit behind the natslive tag, and this step is where they run.
+      # internal/bus has tests of its own there. One is the consumer cap: the module links
+      # nats-server v2.15.1 in process, which caps a stream that sets no cap at a default of its
+      # own and takes a change of MaxConsumers on a
       # stream that already exists, so the raise of an uncapped ENVOY_NOTIFICATIONS to the consumer
       # cap this binary compiles and the keeper's restore of a cap an operator lowered or unset are
       # proved in process. What is left for a real image is the pair of 2.10 cases - the stream with
       # no cap the binary must leave alone, and the refusal of the raise of a lower cap, naming the
       # field, the cap and the first server taking the change - and the hub's own reconcile on the
-      # nats:2.15.1-alpine image the deployment runs (INFRA-1384). The others are a session
-      # consumer's own messages behind other sessions' traffic on the hub's image, the listener's
+      # nats:2.15.3-alpine image the clustered hub runs. The others are a session
+      # consumer's own messages behind other sessions' traffic on testnats.HubImage, the listener's
       # refusal of nats:2.10 (natsversion), and that refusal's control: on 2.10, stepped past, the
-      # consumer loses its old-form message. internal/cipher/natscallout has one too: that the
-      # image the hub runs lets a user with an empty publish allow list publish anywhere, the
-      # fail-open its guard refuses, so the guard is shown able to fail on the server production
-      # runs. natsgrant and cmd/listener have the edge listener's: the server refuses the edge's
-      # user a Dispatch event, and the edge listener starts, relays a send and is reached by a
-      # role message through a shared listener under its rendered grant, with no violation, and
-      # ends its start, naming its inbox prefix, under a grant without it; a role message of the
-      # edge reaches no holder of another project's role; and the relay socket's rows, most of the
-      # step's time, run two edge listeners and the real broker with 30 s tokens, and carry frames
-      # and receipts, refuse other sessions' subjects, and close the socket at a token's expiry,
+      # consumer loses its old-form message. internal/cipher/natscallout has one too: that
+      # testnats.HubImage (2.15.3) lets a user with an empty publish allow list publish anywhere,
+      # the fail-open its guard refuses, so the guard is shown able to fail on the server
+      # production runs. natsgrant and cmd/listener have the edge listener's: the server refuses
+      # the edge's user a Dispatch event, and the edge listener starts, relays a send and is
+      # reached by a role message through a shared listener under its rendered grant, with no
+      # violation, and
+      # ends its start, naming its inbox prefix, under a grant without it; natsgrant's rows of the
+      # $JS.API. reaches run on nats-server 2.15.1 (testnats.VMHubImage), which has them, and on
+      # 2.15.3, which refuses them; a role message of the edge reaches no holder of another
+      # project's role; and the relay socket's rows, most of the step's time, run two edge
+      # listeners and the real broker with 30 s tokens, and carry frames and receipts, refuse
+      # other sessions' subjects, and close the socket at a token's expiry,
       # a revoke, a Reset, a person's removal, a changed answer and an unreachable broker. Each
       # package runs only the tests its tag adds: `-tags natslive ./pkg` would re-run
       # the package's untagged tests, which already run elsewhere - internal/testnats in the unit

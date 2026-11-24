@@ -338,7 +338,8 @@ func TestForcedOrderAStopReleasesTheHoldOnItsServer(t *testing.T) {
 // must still park. The test delays the first report until the second call has returned, then
 // restarts the server on its store and holds a request on it. Before the harness kept its
 // shutdown state by run, the late report marked the store stopping for good and the request was
-// answered through the armed hold. On v2.15.1 Shutdown reports once, and the test checks that.
+// answered through the armed hold. On v2.15.1 and v2.15.3 Shutdown reports once, and the test
+// checks that.
 func TestForcedOrderALateShutdownOfAnEndedRunHoldsNothing(t *testing.T) {
 	store := t.TempDir()
 	start := func() *natsserver.Server {
@@ -723,7 +724,7 @@ func TestForcedOrderHoldsACommittedEntryBeforeItsLeaderStoresIt(t *testing.T) {
 }
 
 // A point no row above holds at is held to the same contract: msgget.timeSelected, the sequence a
-// message get by start_time chose (v2.15.1 alone: 2.10.29's message get takes no start_time).
+// message get by start_time chose (v2.15.1 and v2.15.3: 2.10.29's message get takes no start_time).
 // Its event names its server, its store and its stream, so OnServer and Stream take it and the
 // server's Stop releases the goroutine it parks. Before it carried its server and store, the
 // hold was never reached on the server, and without OnServer it parked an API worker that the

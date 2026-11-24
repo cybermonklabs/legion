@@ -50,10 +50,12 @@ func consumerCapFixture(t *testing.T) (string, nats.JetStreamContext) {
 	return uri, js
 }
 
-// The consumer cap against the server this binary links, nats-server v2.15.1 (go.mod): the
-// release the hub runs, which caps a stream that sets no cap at a default of its own and takes a
-// change of MaxConsumers on a stream that already exists. The three cases this release has to get
-// right on such a server are proved here, each on an account and a start of its own:
+// The consumer cap against the server this binary links, nats-server v2.15.1 (go.mod), the VM
+// hub's release (the clustered hub's 2.15.3 behaves the same way, which the hub half of
+// stream_max_consumers_live_test.go runs on testnats.HubImage): it caps a stream that sets no cap
+// at a default of its own and takes a change of MaxConsumers on a stream that already exists. The
+// three cases this release has to get right on such a server are proved here, each on an account
+// and a start of its own:
 //
 //   - a deployed stream carrying no cap is raised to streamMaxConsumers by the start, the
 //     transition the hub's own stream needed;

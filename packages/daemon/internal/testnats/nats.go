@@ -55,10 +55,10 @@ import (
 )
 
 // Image is the NATS server image the daemon's NATS tests use: ghcr.io/cybermonklabs/legion/ci, the
-// copy of nats:2.15.1-alpine (.github/ci-images.yaml), the server the hub runs. The daemon refuses
-// a server that can skip a message on a consumer filtering on a wildcard and a literal at the same
-// token (envoy's natsversion.Refusal, intake.OpenConsumers), which nats:2.10 is.
-const Image = "ghcr.io/cybermonklabs/legion/ci@sha256:2ae57dfba3063d5e25fecb75256118c0882a1a2d2cf7d0fba17a7c701df956f6"
+// copy of nats:2.15.3-alpine (.github/ci-images.yaml), the server the clustered hub runs. The
+// daemon refuses a server that can skip a message on a consumer filtering on a wildcard and a
+// literal at the same token (envoy's natsversion.Refusal, intake.OpenConsumers), which nats:2.10 is.
+const Image = "ghcr.io/cybermonklabs/legion/ci@sha256:558394a23dd3c36f2d3a64b51865fd09908010e80a542cea5e75c2af543ed62a"
 
 // SkippingImage is ghcr.io/cybermonklabs/legion/ci, the copy of nats:2.10 (.github/ci-images.yaml),
 // whose v2.10.29 is such a server: the one test that shows the daemon refusing it starts it.
@@ -233,7 +233,8 @@ func reset(t testing.TB) *server {
 		// every message the test published before creating it: the "1 messages of history
 		// pending, want 0" of intake's TestAFreshConsumerStartsAtTheNextMessage, run after a test
 		// that made the same durables. nats-server 2.10.29 does the same (consumer.go:962-965,
-		// 4945-4947, 5280-5281).
+		// 4945-4947, 5280-5281), and v2.15.3, which Image runs, holds each function cited here
+		// unchanged from v2.15.1, at other lines.
 		//
 		// A consumer delete removes the consumer's directory before it answers (jetstream_api.go:
 		// 5835 answers after obs.delete(), which reaches consumer.go:6887's store.Delete(),

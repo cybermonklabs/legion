@@ -45,13 +45,17 @@ import (
 
 // The tests in this file run what gcp:ClusteredNatsHub deploys on this machine, so they carry the
 // natslive tag. They need no container runtime: each installs the tools it runs with go install,
-// at the versions the hub runs, into its own temporary directory, and a tool that does not install
-// fails the test. The chart is the vendored archive, so no test reaches the chart repository.
+// at the versions chart 2.15.1 runs by default, into its own temporary directory, and a tool that
+// does not install fails the test. The chart is the vendored archive, so no test reaches the chart
+// repository.
 //
 // The tools are the helm pulumi-kubernetes v4.34.2's provider renders charts with (its
 // provider/go.mod), and the nats-server, config reloader and exporter chart 2.15.1 runs by default
 // (values.yaml: container.image.tag 2.15.1-alpine, reloader.image.tag 0.24.0,
-// promExporter.image.tag 0.20.2), the versions the hub's pinned images hold.
+// promExporter.image.tag 0.20.2). So these tests run nats-server 2.15.1, the chart's default and
+// the release packages/envoy/go.mod links; a deployment's natsImage may pin a later 2.15 release in
+// its place, and the clustered hub's 2.15.3 (testnats.HubImage) is run by the core natslive tests
+// of the rendered authorization, not by these.
 const (
 	helmTool       = "helm.sh/helm/v3/cmd/helm@v3.20.2"
 	natsServerTool = "github.com/nats-io/nats-server/v2@v2.15.1"

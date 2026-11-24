@@ -2,7 +2,7 @@
 
 // The cases of the consumer cap that no server in this process can show, each against a real
 // nats-server image. packages/envoy/go.mod links nats-server v2.15.1, the server every in-process
-// test of this package runs, and it is the release the hub runs: the raise of an uncapped stream,
+// test of this package runs, and a 2.15 release as the hubs run: the raise of an uncapped stream,
 // the keeper's restore of a cap an operator lowered or unset and the version read each pass makes
 // are therefore proved in process
 // (TestAStartRaisesAnUncappedStreamAndTheKeeperPutsBackACapAnOperatorLoweredOrUnset). What is
@@ -10,8 +10,8 @@
 // streamMaxConsumersFloor, so it refuses every update that changes MaxConsumers on a stream that
 // already exists (maxConsumersRefusal), and older than 2.15, so it caps no stream that sets no
 // cap and this binary leaves such a stream alone there (serverDefaultsAnUnsetCap), and both of
-// those cases are proved here. The other is the image the deployment itself runs,
-// nats:2.15.1-alpine, which the hub half below reconciles the stream on: only a real image is the
+// those cases are proved here. The other is the image the clustered hub itself runs,
+// nats:2.15.3-alpine, which the hub half below reconciles the stream on: only a real image is the
 // image the hub runs, and the issue's c-hub-reconcile check names it.
 //
 // A real image needs a container runtime, which Envoy's agents do not have, so the file sits
@@ -35,8 +35,9 @@ import (
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
-// liveServerArgs are the JetStream arguments the GCP hub runs nats-server with, without its
-// monitor port: the store the server keeps for the run lives at /data, as the hub's does.
+// liveServerArgs are the JetStream arguments the VM hub (gcp:NatsHub) runs nats-server with,
+// without its monitor port: the store the server keeps for the run lives at /data, as the hub's
+// does.
 var liveServerArgs = []string{"-js", "--store_dir", "/data"}
 
 // olderServerDeployedCap is the cap the stream carries where a subtest wants a start to raise one
@@ -78,8 +79,8 @@ func liveServerJetStream(t *testing.T, image string) (string, nats.JetStreamCont
 }
 
 // What a stream carrying no consumer cap means is the server's, and this test puts both answers
-// to a real server. On the image the hub runs, nats-server 2.15.1, such a stream is capped at the
-// server's own default of 1000, so this binary raises it to the cap it compiles
+// to a real server. On the image the clustered hub runs, nats-server 2.15.3, such a stream is
+// capped at the server's own default of 1000, so this binary raises it to the cap it compiles
 // (streamMaxConsumers); on the copy of nats:2.10 the same stream has no limit at all, so the
 // binary leaves it exactly as it is. The gate between the two is serverDefaultsAnUnsetCap, read
 // from the version the connected server answers, and each case below says which direction of
@@ -108,8 +109,8 @@ func liveServerJetStream(t *testing.T, image string) (string, nats.JetStreamCont
 // Only the "2.10" cases need a server this process cannot run: the module links nats-server
 // v2.15.1, so the "hub" cases above are each proved in process as well
 // (TestAStartRaisesAnUncappedStreamAndTheKeeperPutsBackACapAnOperatorLoweredOrUnset). They stay
-// here because the image the hub runs is the one the deployment reconciles its stream on, and
-// only a real image is that.
+// here because the image the clustered hub runs (testnats.HubImage, nats-server 2.15.3) is the one
+// the deployment reconciles its stream on, and only a real image is that.
 func TestAnUncappedStreamIsCappedOnTheHubsServerAndLeftAloneOnTheOlderOneWhereALowerCapIsRefused(t *testing.T) {
 	t.Run("hub", func(t *testing.T) {
 		uri, js := liveServerJetStream(t, testnats.HubImage)

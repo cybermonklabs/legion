@@ -534,8 +534,8 @@ func (w *window) request(subject string, item contracts.Envelope, opts RequestOp
 		// changes its answer; a full stream's reaches the caller as ErrStreamFull, which is how
 		// a window's PublishAsync hands that refusal over too. An acknowledgement at a sequence
 		// answers the request with the copy it asked for, a duplicate's included; one with no
-		// sequence settles nothing, and nats-server 2.15.1, the version the hub runs, gives
-		// none: it records no id for a message its stream refused.
+		// sequence settles nothing, and nats-server 2.15.1, the version the module links and the
+		// VM hub runs, gives none: it records no id for a message its stream refused.
 		outcome := func(reply *nats.Msg) (bool, error) {
 			ack, ok := acknowledgement(reply)
 			if !ok {

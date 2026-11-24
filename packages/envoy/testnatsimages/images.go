@@ -9,7 +9,7 @@ import internal "github.com/sjawhar/envoy/internal/testnats"
 // Image is internal/testnats.Image.
 const Image = internal.Image
 
-// HubImage is internal/testnats.HubImage, the image the GCP hub runs.
+// HubImage is internal/testnats.HubImage, the image the clustered hub runs.
 const HubImage = internal.HubImage
 
 // Images is internal/testnats.Images: each image with the short name its subtest takes.

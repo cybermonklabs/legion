@@ -96,9 +96,10 @@ type Launch struct {
 
 // monitorHost is the host the container's health check reads /healthz on: localhost, as before
 // private projects, or core.PrivateMonitorHost where the start script binds monitoring there. On
-// the hub's image (nats:2.15.1-alpine) busybox wget takes ::1 for localhost whenever the
-// container's loopback has IPv6, the Linux and Docker default, and nothing listens on [::1] then,
-// so the check names the address the server binds (core/nats_monitor_healthcheck_live_test.go).
+// the hub's image (nats:2.15.3-alpine, and nats:2.15.1-alpine before it) busybox wget takes ::1
+// for localhost whenever the container's loopback has IPv6, the Linux and Docker default, and
+// nothing listens on [::1] then, so the check names the address the server binds
+// (core/nats_monitor_healthcheck_live_test.go).
 func (l Launch) monitorHost() string {
 	if l.monitorOnLoopback {
 		return core.PrivateMonitorHost

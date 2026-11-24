@@ -59,9 +59,9 @@ anthropic_key=${ANTHROPIC_API_KEY:-}
 openai_key=${OPENAI_API_KEY:-}
 unset ANTHROPIC_API_KEY OPENAI_API_KEY
 
-# The nats-server the run installs when the caller names none: the hub's v2.15.1, the version
-# packages/envoy/go.mod pins, as child-adoption.sh installs it. The Envoy listener refuses a
-# nats-server below v2.11.12, v2.12.4 or v2.14.0 (packages/envoy/natsversion).
+# The nats-server the run installs when the caller names none: v2.15.1, the version
+# packages/envoy/go.mod pins and the VM hub runs, as child-adoption.sh installs it. The Envoy
+# listener refuses a nats-server below v2.11.12, v2.12.4 or v2.14.0 (packages/envoy/natsversion).
 nats_version=v2.15.1
 # The pi-envoy the older-plugin session runs: a release before the settings frame.
 older_pi_envoy=10.24.0

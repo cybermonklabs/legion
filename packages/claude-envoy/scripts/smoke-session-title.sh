@@ -47,7 +47,8 @@ fail() {
 }
 
 # nats-server is a `go install` away and lands in GOPATH's bin, which is often off PATH. The
-# listener refuses a nats-server below natsversion's floor, so install the hub's v2.15.1.
+# listener refuses a nats-server below natsversion's floor, so install v2.15.1, the version
+# packages/envoy/go.mod pins.
 if ! command -v nats-server >/dev/null 2>&1; then
   PATH="$(go env GOPATH 2>/dev/null)/bin:${PATH}"
   export PATH

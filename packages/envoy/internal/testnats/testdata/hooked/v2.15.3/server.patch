@@ -1,0 +1,206 @@
+diff --git a/server/client.go b/server/client.go
+index f205055..b5ac4a6 100644
+--- a/server/client.go
++++ b/server/client.go
+@@ -4655,6 +4655,8 @@ func (c *client) processInboundClientMsg(msg []byte) (bool, bool) {
+ 		return true, false
+ 	}
+ 
++	measurePublish(c, acc, "client.publish")
++
+ 	// Match the subscriptions. We will use our own L1 map if
+ 	// it's still valid, avoiding contention on the shared sublist.
+ 	var r *SublistResult
+diff --git a/server/filestore.go b/server/filestore.go
+index 956b8b5..377a953 100644
+--- a/server/filestore.go
++++ b/server/filestore.go
+@@ -13547,6 +13547,7 @@ type consumerFileStore struct {
+ 	writing bool
+ 	dirty   bool
+ 	closed  bool
++	mgen    uint64 // forced-order hooks (zz_measure.go): this consumer store's generation
+ }
+ 
+ func (fs *fileStore) ConsumerStore(name string, created time.Time, cfg *ConsumerConfig) (ConsumerStore, error) {
+@@ -13589,6 +13590,8 @@ func (fs *fileStore) ConsumerStore(name string, created time.Time, cfg *Consumer
+ 		return nil, fmt.Errorf("could not create hash: %v", err)
+ 	}
+ 	o.hh = hh
++	o.mgen = measureGen.Add(1)
++	measure(&MeasureEvent{Point: "store.create", Gen: o.mgen, Name: name, Store: fs.fcfg.StoreDir, Path: odir})
+ 
+ 	// Check for encryption.
+ 	if o.prf != nil {
+@@ -13675,6 +13678,7 @@ func (fs *fileStore) ConsumerStore(name string, created time.Time, cfg *Consumer
+ 	if err = o.loadState(); err != nil {
+ 		return nil, err
+ 	}
++	measure(o.mev("store.loaded", encodeConsumerState(&o.state), 0, nil))
+ 
+ 	// Assign to filestore.
+ 	if err = fs.AddConsumer(o); err != nil {
+@@ -13778,6 +13782,7 @@ func (o *consumerFileStore) inFlusher() bool {
+ // flushLoop watches for consumer updates and the quit channel.
+ func (o *consumerFileStore) flushLoop(fch, qch chan struct{}) {
+ 
++	defer func() { measure(o.mev("flusher.exit", nil, 0, nil)) }()
+ 	o.setInFlusher()
+ 	defer o.clearInFlusher()
+ 
+@@ -13818,6 +13823,7 @@ func (o *consumerFileStore) flushLoop(fch, qch chan struct{}) {
+ 			}
+ 			buf, err := o.encodeState()
+ 			o.mu.Unlock()
++			measure(o.mev("flush.encoded", buf, 0, err))
+ 			if err != nil {
+ 				return
+ 			}
+@@ -13838,6 +13844,7 @@ func (o *consumerFileStore) SetStarting(sseq uint64) error {
+ 	o.state.AckFloor.Stream = sseq
+ 	buf := encodeConsumerState(&o.state)
+ 	o.mu.Unlock()
++	measure(o.mev("setStarting", buf, sseq, nil))
+ 	return o.writeState(buf)
+ }
+ 
+@@ -13855,10 +13862,12 @@ func (o *consumerFileStore) UpdateStarting(sseq uint64) {
+ 	}
+ 	// Make sure we flush to disk.
+ 	o.kickFlusher()
++	measure(o.mev("updateStarting", nil, sseq, nil))
+ }
+ 
+ // Reset all values in the store, and reset the starting sequence.
+ func (o *consumerFileStore) Reset(sseq uint64) error {
++	measure(o.mev("reset", nil, sseq, nil))
+ 	o.mu.Lock()
+ 	o.state = ConsumerState{}
+ 	o.mu.Unlock()
+@@ -14220,11 +14229,13 @@ func (o *consumerFileStore) writeState(buf []byte) error {
+ 	// Don't write after being stopped or deleted, otherwise we could recreate the state file.
+ 	if o.closed {
+ 		o.mu.Unlock()
++		measure(o.mev("write.closed", buf, 0, ErrStoreClosed))
+ 		return ErrStoreClosed
+ 	}
+ 	// Check if we have the index file open.
+ 	if o.writing || len(buf) == 0 {
+ 		o.mu.Unlock()
++		measure(o.mev("write.skipBusy", buf, 0, nil))
+ 		return nil
+ 	}
+ 
+@@ -14241,9 +14252,11 @@ func (o *consumerFileStore) writeState(buf []byte) error {
+ 	o.dirty = false
+ 	ifn := o.ifn
+ 	o.mu.Unlock()
++	measure(o.mev("write.preIO", buf, 0, nil))
+ 
+ 	// Lock not held here but we do limit number of outstanding calls that could block OS threads.
+-	err := o.fs.writeFileWithOptionalSync(ifn, buf, defaultFilePerms)
++	err := o.measureWriteFile(ifn, buf, defaultFilePerms)
++	measure(o.mev("write.done", buf, 0, err))
+ 
+ 	o.mu.Lock()
+ 	if err != nil {
+@@ -14623,6 +14636,7 @@ func (o *consumerFileStore) Stop() error {
+ 	if len(buf) > 0 {
+ 		err = o.fs.writeFileWithOptionalSync(ifn, buf, defaultFilePerms)
+ 	}
++	measure(o.mev("stop.return", buf, 0, err))
+ 	return err
+ }
+ 
+@@ -14665,6 +14679,7 @@ func (o *consumerFileStore) delete(streamDeleted bool) error {
+ 	o.closed = true
+ 	fs := o.fs
+ 	o.mu.Unlock()
++	measure(&MeasureEvent{Point: "delete.closed", Gen: o.mgen, Name: o.name, Store: fs.fcfg.StoreDir, Path: odir})
+ 
+ 	// If our stream was not deleted this will remove the directories.
+ 	if odir != _EMPTY_ && !streamDeleted {
+@@ -14679,6 +14694,7 @@ func (o *consumerFileStore) delete(streamDeleted bool) error {
+ 		}
+ 	}
+ 
++	measure(&MeasureEvent{Point: "delete.return", Gen: o.mgen, Name: o.name, Store: fs.fcfg.StoreDir, Path: odir})
+ 	return nil
+ }
+ 
+diff --git a/server/jetstream_api.go b/server/jetstream_api.go
+index 63de25c..3975fa8 100644
+--- a/server/jetstream_api.go
++++ b/server/jetstream_api.go
+@@ -1066,6 +1066,7 @@ func (s *Server) processJSAPIRoutedRequests() {
+ 		// others will be starved of work.
+ 		if r, ok := ipq.popOne(); ok && r != nil {
+ 			client.pa = r.pa
++			measureAPI(s, client, r.msg, r.subject, "queued", "api.worker")
+ 			start := time.Now()
+ 			r.jsub.icb(r.sub, client, r.acc, r.subject, r.reply, r.msg)
+ 			if dur := time.Since(start); dur >= readLoopReportThreshold {
+@@ -4048,6 +4049,7 @@ func (s *Server) jsMsgGetRequest(sub *subscription, c *client, _ *Account, subje
+ 	var seq uint64
+ 	if req.StartTime != nil {
+ 		seq = mset.store.GetSeqFromTime(*req.StartTime)
++		measure(&MeasureEvent{Point: "msgget.timeSelected", Server: s.Name(), Store: s.getOpts().StoreDir, Stream: stream, Seq: seq, Path: req.NextFor})
+ 	} else {
+ 		seq = req.Seq
+ 	}
+diff --git a/server/jetstream_cluster.go b/server/jetstream_cluster.go
+index 2f58fa8..94035fb 100644
+--- a/server/jetstream_cluster.go
++++ b/server/jetstream_cluster.go
+@@ -3912,6 +3912,7 @@ func (js *jetStream) applyMetaEntries(entries []*Entry, ru *recoveryUpdates) (bo
+ 					js.srv.Errorf("JetStream cluster failed to decode consumer assignment: %q", buf[1:])
+ 					return isRecovering, didSnap, err
+ 				}
++				measureMeta(js.srv, ca, isRecovering, "meta.apply")
+ 				if isRecovering {
+ 					if isCatchup {
+ 						js.setConsumerAssignmentCatchup(ca)
+@@ -3928,6 +3929,7 @@ func (js *jetStream) applyMetaEntries(entries []*Entry, ru *recoveryUpdates) (bo
+ 					js.srv.Errorf("JetStream cluster failed to decode compressed consumer assignment: %q", buf[1:])
+ 					return isRecovering, didSnap, err
+ 				}
++				measureMeta(js.srv, ca, isRecovering, "meta.apply")
+ 				if isRecovering {
+ 					if isCatchup {
+ 						js.setConsumerAssignmentCatchup(ca)
+@@ -6234,6 +6236,7 @@ func (js *jetStream) applyStreamMsgOp(mset *stream, op entryOp, mbuf []byte, isR
+ 	if !isRecovering {
+ 		mt = mset.getAndDeleteMsgTrace(lseq)
+ 	}
++	measureApply(s, mset, subject, lseq+1-clfs, isRecovering, "stream.apply")
+ 	// Process the actual message here.
+ 	err = mset.processJetStreamMsg(subject, reply, hdr, msg, lseq, ts, mt, sourced, needIsolation)
+ 
+diff --git a/server/server.go b/server/server.go
+index e49281c..6cb2b4a 100644
+--- a/server/server.go
++++ b/server/server.go
+@@ -2620,6 +2620,7 @@ func (s *Server) Shutdown() {
+ 	if !s.shutdown.CompareAndSwap(false, true) {
+ 		return
+ 	}
++	measureServer(s, "server.shutdown")
+ 	// This is for JetStream R1 Pull Consumers to allow signaling
+ 	// that pending pull requests are invalid.
+ 	s.signalPullConsumers()
+@@ -2786,6 +2787,7 @@ func (s *Server) Shutdown() {
+ 
+ 	// Wait for go routines to be done.
+ 	s.grWG.Wait()
++	measureServer(s, "server.down")
+ 
+ 	if opts.PortsFileDir != _EMPTY_ {
+ 		s.deletePortsFile(opts.PortsFileDir)
+@@ -4557,6 +4559,7 @@ func (s *Server) runLameDuckMode(expected int) {
+ 	if gp < 0 {
+ 		gp *= -1
+ 	}
++	measureServer(s, "server.shutdown")
+ 
+ 	// If we are running any raftNodes transfer leaders.
+ 	if hadTransfers := s.transferRaftLeaders(); hadTransfers {

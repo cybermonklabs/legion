@@ -7,9 +7,10 @@ import { join } from "node:path";
 // holds (every 2.10 among them), so whatever starts a NATS server for them must start one the floor
 // takes, or its stack never comes up. A live proof that runs a container starts the image
 // lib/nats-image.sh names, which it reads from the one constant the Go tests run Envoy on,
-// testnats.HubImage (packages/envoy/internal/testnats/nats.go), the hub's nats:2.15.1-alpine. A
-// script or a page that installs a host nats-server with `go install` or `go run` pins a release
-// the floor takes. Both are scans of every tracked file, so a new driver or a new page is held too.
+// testnats.HubImage (packages/envoy/internal/testnats/nats.go), the clustered hub's
+// nats:2.15.3-alpine. A script or a page that installs a host nats-server with `go install` or
+// `go run` pins a release the floor takes. Both are scans of every tracked file, so a new driver or
+// a new page is held too.
 // What neither scan sees, and nothing in the tree uses: a `docker run` continued over lines, `podman`
 // or a launcher that is not a shell script; an `export name=` or `${name:-<version>}` assignment;
 // and a version set in another file the script sources.

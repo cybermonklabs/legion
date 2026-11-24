@@ -2,7 +2,8 @@
 # scripts/e2e/lib/nats-image.sh — sourced by every live proof that starts a NATS server of its own
 # (nats-image.test.ts finds each by a scan of the tracked scripts). Sets nats_image to
 # testnats.HubImage, the constant packages/envoy/internal/testnats/nats.go declares:
-# ghcr.io/cybermonklabs/legion/ci, the copy of the hub's nats:2.15.1-alpine (.github/ci-images.yaml).
+# ghcr.io/cybermonklabs/legion/ci, the copy of the clustered hub's nats:2.15.3-alpine
+# (.github/ci-images.yaml).
 # The Envoy listener and the Legion daemon refuse a nats-server below the floor
 # packages/envoy/natsversion holds, every 2.10 among them, so a proof on any other image would never
 # bring its stack up; reading the Go tests' own constant keeps the two from drifting. Needs $root,

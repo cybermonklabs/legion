@@ -10,9 +10,10 @@ import { natsConnectionOptions } from "../nats-connection";
 // auth service decides - the TypeScript broker credential is slice E2's - so this option changes
 // only these clients, and only on a hub with no auth service.
 //
-// Measured at 40c57f5ee5 on nats:2.15.1 (testnats.HubImage) with static nkey users only, the hub
-// restarted without the client's user for 12 s: natsConnectionOptions at the merge base closed
-// with 'Authorization Violation' after 2 refusals; at the head it took 6 refusals and never closed.
+// Measured at 40c57f5ee5 on nats:2.15.1 (testnats.HubImage at that commit) with static nkey users
+// only, the hub restarted without the client's user for 12 s: natsConnectionOptions at the merge
+// base closed with 'Authorization Violation' after 2 refusals; at the head it took 6 refusals and
+// never closed.
 const user = nkeys.createUser();
 const seed = { value: new TextDecoder().decode(user.getSeed()), source: "test" };
 

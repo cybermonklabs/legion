@@ -39,9 +39,9 @@ func renderedTimeout(t *testing.T, text string) int {
 // dispatch://INFRA-3884, cybermonklabs/legion#4118 at e7c174fa1b): a nats.go client is the client
 // every Go service of this repository connects with, and it is admitted only if the auth service's
 // answer reaches it inside the time the block lets the service take. Measured at e7c174fa1b, which
-// rendered `timeout: 5`, on testnats.HubImage (nats-server 2.15.1) with nats.go v1.53.1: an answer
-// after 3.5 s was inside that timeout, but the client had already failed at 2.1 s with
-// "nats: expected 'PONG', got 'PING'": the server sends a client its first PING after
+// rendered `timeout: 5`, on testnats.HubImage of that commit (nats-server 2.15.1) with nats.go
+// v1.53.1: an answer after 3.5 s was inside that timeout, but the client had already failed at
+// 2.1 s with "nats: expected 'PONG', got 'PING'": the server sends a client its first PING after
 // firstClientPingInterval (2 s, plus up to 20%: server/client.go setFirstPingTimer), also while
 // the client's CONNECT still waits for the callout, and nats.go's handshake reads anything but
 // PONG as an error. nats-server 2.15.1 reads no configuration key that lengthens that first ping

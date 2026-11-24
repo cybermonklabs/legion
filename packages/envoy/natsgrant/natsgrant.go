@@ -213,23 +213,28 @@ func EdgeRelayReplyPrefix(machineID string) string {
 // request. A message on a role lane of its own project that names a role of another project is
 // the shared listeners' role lane to refuse. It holds no create or update of the stream or of any
 // bucket's stream, and no direct get of any bucket, so it cannot change any stream's
-// configuration - its subjects, its limits, or a republish. It can, though, delete any stream of
-// its account, through two answers the server sends with no body on whatever reply subject a
-// client names, each needing no other client: a no_wait pull on a consumer with nothing to
-// deliver is answered a "404 No Messages" status, and a synchronous ack an empty reply, so either
-// aimed at $JS.API.STREAM.DELETE.<s> deletes stream <s> (the consumer calls below,
-// TestAPullStatusAndAnAckAnswerOnTheAPIDeleteAStream). That reach is availability only - no
-// message of any project crosses it - and is accepted for day one until the hub's nats-server is
-// raised from 2.15.1 to 2.15.3, which refuses a reply into $JS.API. The two routes that would
+// configuration - its subjects, its limits, or a republish. On nats-server 2.15.1 a holder of this
+// set could, though, delete any stream of its account, through two answers the server sends with
+// no body on whatever reply subject a client names, each needing no other client: a no_wait pull
+// on a consumer with nothing to deliver is answered a "404 No Messages" status, and a synchronous
+// ack an empty reply, so either aimed at $JS.API.STREAM.DELETE.<s> deletes stream <s> (the
+// consumer calls below, TestAPullStatusAndAnAckAnswerAimedAtAStreamDelete). That reach is
+// availability only - no message of any project crosses it - and was accepted for day one until
+// the hub that renders this set ran nats-server 2.15.3. That is met: nats-server 2.15.3, which the
+// clustered hub runs, refuses every publish whose reply is under $JS., and the clustered hub is the
+// only hub the deployment renders this set on, so no deployed edge has the reach. The row runs on
+// both servers and keeps its 2.15.1 half until the VM hub is removed. The two routes that would
 // change a stream's configuration are both held off:
 //   - A republish carries the stored value to its destination with that value as its body, and a
-//     destination under $JS.API. is a request of the account's: on the hub's image an empty value
-//     republished to a stream delete deletes the stream, and a non-empty one is refused as that
-//     request's body (TestTheEdgeCannotSetABucketToRepublishIntoTheJetStreamAPI).
+//     destination under $JS.API. is a request of the account's: on nats-server 2.15.1 an empty
+//     value republished to a stream delete deletes the stream, and a non-empty one is refused as
+//     that request's body; 2.15.3 suppresses a republish there
+//     (TestTheEdgeCannotSetABucketToRepublishIntoTheJetStreamAPI).
 //   - The stream itself answers a direct get, through the account's own JetStream client, on
 //     whatever reply subject the request names, with the stored value as the body. Aimed at
-//     $JS.API., the API takes that value as a request of the account's: a value written as a
-//     stream update changes that stream, and an empty one aimed at a delete deletes it
+//     $JS.API., nats-server 2.15.1's API takes that value as a request of the account's: a value
+//     written as a stream update changes that stream, and an empty one aimed at a delete deletes
+//     it; 2.15.3 refuses the request at its publish
 //     (TestTheEdgeHoldsNoDirectGetWhoseAnswerReachesTheJetStreamAPI). So the edge reads each
 //     bucket with a stream message get (bus.WithStreamMessageReads), whose answer the JetStream API
 //     publishes; that answer, a stream info answer and a stored publish's acknowledgement, aimed the
@@ -257,16 +262,17 @@ func EdgeRelayReplyPrefix(machineID string) string {
 // its frames over its relay socket. It subscribes no role lane, so it
 // takes no share of any project's role messages: a shared listener resolves a role's holder and
 // forwards the message to the holder's agent subject, which the holder's session consumer
-// delivers. Its lists name no agent stream subject. nats-server (2.15.1) admits a subscription to
-// notifications.envoy.deliver.> under the allow entry notifications.envoy.deliver.*, and delivers
-// it a subject of two tokens past the prefix: no Envoy program publishes one, since
-// bus.DeliverSubject names a session by one token.
+// delivers. Its lists name no agent stream subject. nats-server (2.15.1 and 2.15.3) admits a
+// subscription to notifications.envoy.deliver.> under the allow entry
+// notifications.envoy.deliver.*, and delivers it a subject of two tokens past the prefix: no Envoy
+// program publishes one, since bus.DeliverSubject names a session by one token.
 //
 // What the lists do not hold back. TestTheEdgeGrantsConsumerCallsReachPastItsPublishList,
-// TestTheEdgeGrantsPushConsumerReachesItsAccountsJetStreamAPI,
-// TestAPushConsumersHeartbeatOnTheAPIDeletesAStreamWhileAClientSubscribesIt and
-// TestAPullStatusAndAnAckAnswerOnTheAPIDeleteAStream pin these on the hub's image; the
-// bucket-stream consumer is read from the server's rule, not run:
+// TestAnEdgePushConsumerDeliveringOnItsAccountsJetStreamAPI,
+// TestAPushConsumersHeartbeatAimedAtAStreamDeleteWhileAClientSubscribesIt and
+// TestAPullStatusAndAnAckAnswerAimedAtAStreamDelete pin these on the clustered hub's image
+// (testnats.HubImage), the last three on nats-server 2.15.1 (testnats.VMHubImage) as well until the
+// VM hub is removed; the bucket-stream consumer is read from the server's rule, not run:
 //   - The session consumers' calls name the consumer by *, since each session's consumer is named
 //     for its session (bus.SessionConsumerName). A NATS wildcard matches a whole token and a
 //     consumer name is one token, so no permission can hold these calls to the edge's own
@@ -286,19 +292,20 @@ func EdgeRelayReplyPrefix(machineID string) string {
 //     stream of the account, a key-value bucket's stream among them - stores the delivery under
 //     its stream subject, as a message of that stream and never as a key, and counts it toward
 //     that stream's limits. A consumer created with an idle heartbeat also sends its heartbeats,
-//     empty status messages with no stored subject, to the deliver subject: a heartbeat aimed at a
-//     stream delete deletes that stream. Each of these push routes needs some other client to
-//     subscribe the deliver subject, since the edge subscribes none a stream takes and no $JS.API.
-//     subject, and no Envoy client subscribes one.
+//     empty status messages with no stored subject, to the deliver subject: on nats-server 2.15.1
+//     a heartbeat aimed at a stream delete deletes that stream. Each of these push routes needs
+//     some other client to subscribe the deliver subject, since the edge subscribes none a stream
+//     takes and no $JS.API. subject, and no Envoy client subscribes one. nats-server 2.15.3
+//     refuses the create of a push consumer delivering under $JS.API., so on the clustered hub,
+//     the only hub that renders this set, none of these routes reaches the API.
 //   - The consumer calls the edge keeps also answer two requests directly, needing no subscriber:
 //     a no_wait pull on a consumer with nothing to deliver
 //     (CONSUMER.MSG.NEXT.ENVOY_NOTIFICATIONS.*) is answered a "404 No Messages" status, and a
 //     synchronous ack ($JS.ACK.ENVOY_NOTIFICATIONS.*.>) an empty reply. The server sends each with
-//     no body on whatever reply subject the requester names, so one aimed at
-//     $JS.API.STREAM.DELETE.<s> deletes stream <s> on the hub's nats-server (2.15.1), with no
-//     other client (TestAPullStatusAndAnAckAnswerOnTheAPIDeleteAStream). nats-server 2.15.3, which
-//     the hub is to run, refuses a reply into $JS.API.; this is the availability reach accepted for
-//     day one.
+//     no body on whatever reply subject the requester names, so on nats-server 2.15.1 one aimed at
+//     $JS.API.STREAM.DELETE.<s> deletes stream <s>, with no other client
+//     (TestAPullStatusAndAnAckAnswerAimedAtAStreamDelete). nats-server 2.15.3, which the
+//     clustered hub runs, refuses that publish, naming its reply.
 //   - Its KV calls include a consumer on each bucket's stream (CONSUMER.CREATE.KV_<bucket>.>),
 //     and that stream does not carry the notification subjects, so such a consumer can deliver a
 //     bucket's message onto the Dispatch, GitHub, Slack, Legion, team, kept, resume and takeover

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# packages/envoy/scripts/forced-order.sh [-C <module dir>] [-server 2.15.1|2.10.29] [-drop <hold point>]... <package>...
+# packages/envoy/scripts/forced-order.sh [-C <module dir>] [-server 2.15.1|2.15.3|2.10.29] [-drop <hold point>]... <package>...
 #
 # Runs the forced-order tests of each package on the hooked nats-server: every test named
 # TestForcedOrder…, built with -tags odatrace and -race, against a nats-server whose own code
@@ -10,13 +10,15 @@
 # package, and builds the tests against the copy through
 # a replace directive (go refuses an -overlay of a file in the module cache). A module of the
 # workspace (go.work) builds in a copy of the workspace file, with absolute `use` paths and the
-# replace added, so every other module version is the one CI's own build of it links, on either
-# nats-server (2.10.29 adds go.uber.org/automaxprocs, which it requires, and changes no other
-# version). A workspace that does not use the module, or that holds a replace, is refused, since
-# the build would then link other module versions than CI's, and so is a module whose go.mod
-# replaces nats-server, whose hooked copy would take the replacement's place. A module with no
-# workspace builds on a copy of its go.mod with the replace added (go test -modfile, which go
-# refuses in a workspace).
+# replace added, so every other module version is the one CI's own build of it links, except
+# where the hooked version requires a later one: 2.10.29 adds go.uber.org/automaxprocs, and 2.15.3
+# raises github.com/antithesishq/antithesis-sdk-go, github.com/klauspost/compress,
+# github.com/nats-io/jwt/v2 and github.com/nats-io/nkeys to the releases its go.mod requires;
+# neither changes any other version. A workspace that does not use the module, or that holds a
+# replace, is refused, since the build would then link other module versions than CI's, and so is
+# a module whose go.mod replaces nats-server, whose hooked copy would take the replacement's place.
+# A module with no workspace builds on a copy of its go.mod with the replace added (go test
+# -modfile, which go refuses in a workspace).
 # The script reads go's JSON (go work edit -json, go mod download -json) with jq. Nothing else of
 # nats-server changes, and no
 # build without this script sees a hook.
@@ -24,7 +26,8 @@
 #   -C <module dir>  the Go module to test, as `go -C` takes it (relative to the caller's
 #                    directory); packages/envoy by default. The packages are relative to it.
 #   -server <v>      the nats-server the tests link; by default the version the build links
-#                    (2.15.1 today, the hub's), and 2.10.29 is the other hooked version. A version
+#                    (2.15.1 today, the VM hub's), and 2.15.3, the clustered hub's, and 2.10.29 are
+#                    the other hooked versions. A version
 #                    testdata/hooked has no directory for is refused, so a module that moves to a
 #                    new nats-server fails here until its hooks are ported, and so is an empty one,
 #                    so a step written `-server "$V"` with V unset does not test the default.
@@ -54,7 +57,7 @@ die() {
 }
 
 usage() {
-  echo "usage: forced-order.sh [-C <module dir>] [-server 2.15.1|2.10.29] [-drop <hold point>]... <package>..." >&2
+  echo "usage: forced-order.sh [-C <module dir>] [-server 2.15.1|2.15.3|2.10.29] [-drop <hold point>]... <package>..." >&2
   exit 2
 }
 
@@ -71,7 +74,7 @@ while [ $# -gt 0 ]; do
       ;;
     -server)
       [ $# -ge 2 ] || usage
-      [ -n "$2" ] || die "-server '' names no version: give 2.15.1 or 2.10.29, or leave -server out for the version the build links"
+      [ -n "$2" ] || die "-server '' names no version: give 2.15.1, 2.15.3 or 2.10.29, or leave -server out for the version the build links"
       server="$2"
       shift 2
       ;;

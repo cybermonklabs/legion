@@ -35,9 +35,9 @@ const otherSessionsTraffic = 24
 
 // The consumer a session gets from the listener is handed every message stored on its own agent
 // subject, in the old form and under a project, however much other sessions' traffic stands
-// between its position and that message, on the server the hub runs (nats-server v2.15.1). Each
-// case drives the calls cmd/listener makes, in its order: a registration's Ensure, the relay's
-// RestartAtFloor and Pull; a release's Delete; and a registration again.
+// between its position and that message, on the server the clustered hub runs (nats-server
+// v2.15.3). Each case drives the calls cmd/listener makes, in its order: a registration's Ensure,
+// the relay's RestartAtFloor and Pull; a release's Delete; and a registration again.
 //
 //   - "stored while the session was released" is the Legion daemon's idle release: the
 //     registration's create starts the consumer at the session's resume record, below the
@@ -76,7 +76,7 @@ func TestASessionConsumerHandsOverItsOwnMessagesInBothFormsBehindOtherSessionsTr
 // filtering on a wildcard and a literal at the same token: its start connects its session
 // consumers (cmd/listener connectSessionDelivery, ConnectSessionConsumers) and ends the process on
 // the error, which names the server's version and the fixed releases (natsversion.Refusal). The
-// control is the hub's v2.15.1, which it connects to.
+// control is the clustered hub's v2.15.3, which it connects to.
 func TestTheListenerRefusesAServerThatSkipsAFilter(t *testing.T) {
 	_, refused := testnats.StartImageConfig(t, testnats.Image, "jetstream {}\n", liveServerArgs, true)
 	consumers, err := ConnectSessionConsumers([]string{refused}, 0, nil, WithEnvironment(liveServerEnvironment))
