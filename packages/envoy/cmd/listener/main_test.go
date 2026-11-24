@@ -4512,7 +4512,7 @@ func TestRunSelfHealthMonitor_DoesNotTerminateOnSustainedConnectedTransientFailu
 		runSelfHealthMonitor(ctx, logging.New("test"), probe, isUnrecoverable, connected, nil,
 			func() { terminated <- struct{}{} }, time.Millisecond, 3)
 	}()
-	deadline := time.After(2 * time.Second)
+	deadline := time.After(testwait.Remaining(t, time.Second))
 	for probeCalls.Load() < disconnectedFailureThreshold*2 {
 		select {
 		case <-terminated:

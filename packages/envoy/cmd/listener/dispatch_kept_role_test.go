@@ -456,12 +456,12 @@ func TestTheOutboxHandsACopyOverPastTheCursorTheListenersDrainWrote(t *testing.T
 	// nothing, not part of what this test holds, so the handover's copy is selected by the event
 	// it carries and every assertion below is made of that frame.
 	var handed contracts.Envelope
-	deadline := time.After(30 * time.Second)
+	deadline := time.After(testwait.Remaining(t, time.Second))
 	for handed.EventID != secondKey {
 		select {
 		case handed = <-taken:
 		case <-deadline:
-			t.Fatalf("the holder was handed no forward of %s on its agent subject within 30s; the listener log says what the handover read:\n%s", secondKey, harness.logs.String())
+			t.Fatalf("the holder was handed no forward of %s on its agent subject; the listener log says what the handover read:\n%s", secondKey, harness.logs.String())
 		}
 	}
 	if handed.EventID != secondKey || handed.DedupeKey != roleForwardDedupePrefix+secondKey {

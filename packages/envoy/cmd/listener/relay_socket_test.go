@@ -904,7 +904,7 @@ func TestARelaySocketOfAPromptClientTakesABacklogPastItsPendingLimits(t *testing
 	awaitSessionConsumerStored(t, rig.owner.harness.client.Conn, session)
 	rig.owner.subscribe(t, consumerRegistration(session, "epoch-2"))
 	seen := map[string]bool{}
-	deadline := time.After(60 * time.Second)
+	deadline := time.After(testwait.Remaining(t, time.Second))
 	for len(seen) < backlog {
 		select {
 		case frame := <-client.frames:
@@ -920,7 +920,7 @@ func TestARelaySocketOfAPromptClientTakesABacklogPastItsPendingLimits(t *testing
 		case err := <-client.closed:
 			t.Fatalf("the socket of a prompt client closed after %d of %d frames: %v\n%s", len(seen), backlog, err, rig.logs.String())
 		case <-deadline:
-			t.Fatalf("the socket of a prompt client was sent %d of %d frames in 60s", len(seen), backlog)
+			t.Fatalf("the socket of a prompt client was sent %d of %d frames before the test binary's deadline", len(seen), backlog)
 		}
 	}
 	client.stillOpen(time.Second, "after the backlog")

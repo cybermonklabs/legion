@@ -528,7 +528,7 @@ func TestTheSweepHandsOverALaneNoHandoverIsDraining(t *testing.T) {
 	sweepOnce(ctx, cfg)
 
 	left := map[string]bool{keys[1]: true, keys[2]: true}
-	for deadline := time.After(30 * time.Second); len(left) > 0; {
+	for deadline := time.After(testwait.Remaining(t, time.Second)); len(left) > 0; {
 		select {
 		case key := <-forwards:
 			if key == keys[0] {
