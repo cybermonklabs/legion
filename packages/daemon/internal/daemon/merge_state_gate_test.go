@@ -118,16 +118,21 @@ func TestAShareOfAQuarterWaitsThreeTimesTheQuerysTime(t *testing.T) {
 
 	gate := newQueryGate(0.25)
 	ctx := context.Background()
+	// The query times itself, from its first statement to its last: the gate's own timing, which
+	// it paces by, begins before the first and ends after the last, so it is no shorter.
 	var end, start time.Time
-	took, err := gate.run(ctx, func() error {
+	var took time.Duration
+	err := gate.run(ctx, func() error {
+		began := time.Now()
 		time.Sleep(40 * time.Millisecond)
 		end = time.Now()
+		took = end.Sub(began)
 		return nil
 	})
 	if err != nil {
 		t.Fatalf("the first query: %v", err)
 	}
-	if _, err := gate.run(ctx, func() error { start = time.Now(); return nil }); err != nil {
+	if err := gate.run(ctx, func() error { start = time.Now(); return nil }); err != nil {
 		t.Fatalf("the second query: %v", err)
 	}
 	if gap := start.Sub(end); gap < 3*took || gap > 3*took+time.Second {
@@ -153,7 +158,7 @@ func TestAnEndedContextMakesNoQuery(t *testing.T) {
 	cancel()
 	for range 100 {
 		queried := false
-		if _, err := gate.run(ctx, func() error { queried = true; return nil }); queried || !errors.Is(err, context.Canceled) {
+		if err := gate.run(ctx, func() error { queried = true; return nil }); queried || !errors.Is(err, context.Canceled) {
 			t.Fatalf("with its ctx ended the gate queried %t and answered %v, want no query and the ctx's end", queried, err)
 		}
 	}

@@ -63,14 +63,6 @@ const (
 	mergeStateFollowWaits = 20
 )
 
-// The lines the reads after a climb log (followBase): one for each pull request each read answers
-// or fails for, with its wait, and one for each pull request whose reads end because the record no
-// longer holds it open at the head they read.
-const (
-	followReadLine = "github: a merge state read after the ladder"
-	followEndLine  = "github: the merge state reads after the ladder end: the pull request is no longer open at the head they read"
-)
-
 // queueMergeState is what the workflow asks for when a fact of one pull request owes a read of
 // GitHub's merge state for an issue's open pull request (workflow's askMergeState, the engine's
 // Config.ReadMergeState): a review round the fact leaves waiting on GitHub's answer for the head,
@@ -233,23 +225,32 @@ func (w *workflowRuntime) mergeStateEnds(ctx context.Context, issue string) bool
 // open pull request among them, is an answer, and the climb ends on it and answers nil. After the
 // last `unknown` it ends too, and answers the pull request that read was made of, as readMergeState
 // holds it, which the ladder then hands to its base's reads (followOnBase) with no read of the
-// record between the two. A failed read ends the climb with nothing to follow: the issue's next
-// event, its next handoff and the daemon's next start all read again.
+// record between the two. A read that fails - the record's read, or GitHub's, which answers 403
+// for up to an hour once the implement App's REST budget is spent - ends the climb as well. After
+// an `unknown` it answers the pull request the last `unknown` was read of, so the head goes to its
+// base's reads as after the last read, and they read it until GitHub answers it a state, as they
+// keep a pull request whose read fails owed (readBase): a failed read says nothing of the head, and
+// GitHub has already answered that it is still computing it (dispatch://INFRA-4374 R4). A read
+// that fails before any `unknown` answers nil, as a climb that read nothing has nothing to follow:
+// the issue's next event, its next handoff and the daemon's next start all read again.
 func (w *workflowRuntime) climbMergeState(ctx context.Context, issue string) *record.PullRequest {
+	var unknown *record.PullRequest
 	for read := 1; ; read++ {
 		state, pr, err := w.readMergeState(ctx, issue)
 		if err != nil {
-			if ctx.Err() == nil {
-				w.log.Warn("read GitHub's merge state for an issue whose read was asked for; the record stands as it was until the next read",
-					"issue", issue, "read", read, "error", err)
+			if ctx.Err() != nil {
+				return nil
 			}
-			return nil
+			w.log.Warn("read GitHub's merge state for an issue whose read was asked for; the record stands as it was until the next read",
+				"issue", issue, "read", read, "handedToBase", unknown != nil, "error", err)
+			return unknown
 		}
 		if state != record.MergeStateUnknown {
 			return nil
 		}
+		unknown = pr
 		if read >= mergeStateLadderReads {
-			return pr
+			return unknown
 		}
 		select {
 		case <-ctx.Done():

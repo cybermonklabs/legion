@@ -334,7 +334,7 @@ func TestAnUnknownAnswerReadsTheBaseBatchAgainOnTheLadder(t *testing.T) {
 	if pr := recordedPull(t, pool, "CAPTURE-2"); pr.MergeState != record.MergeStateClean || pr.Mergeability != record.MergeabilityMergeable {
 		t.Fatalf("87 holds %s/%s, want GitHub's MERGEABLE/clean from the second read", pr.Mergeability, pr.MergeState)
 	}
-	follows := loggedLines(t, rig.logs.String(), followRead)
+	follows := loggedLines(t, rig.logs.String(), followReadLine)
 	if len(follows) != 1 || follows[0]["issue"] != "CAPTURE-1" || follows[0]["attempt"] != float64(1) ||
 		follows[0]["wait"] != float64(2*readRigWait) || follows[0]["answered"] != string(record.MergeStateBlocked) || follows[0]["head"] != "head-86" {
 		t.Fatalf("the reads after the climb logged %v, want one for CAPTURE-1, after twice the ladder's wait, answering blocked", follows)
@@ -602,7 +602,7 @@ func TestARetargetedPullRequestDoesNotBounceBetweenBases(t *testing.T) {
 
 	pushOntoMain(t, pool, rig.w, "main-2")
 	testwait.Eventually(t, "three reads after the climb", func() bool {
-		return len(loggedLines(t, rig.logs.String(), followRead)) >= 3
+		return len(loggedLines(t, rig.logs.String(), followReadLine)) >= 3
 	})
 	if pr := recordedPull(t, pool, "CAPTURE-1"); pr.Base != "main" || pr.HeadSHA != "head-86" {
 		t.Fatalf("86 is recorded on %q at %q, want the record left on main at head-86: GitHub answered another head", pr.Base, pr.HeadSHA)
@@ -647,7 +647,7 @@ func TestAHeadHandedOverIsReadOnItsOwnLadder(t *testing.T) {
 	rig.w.mergeStateRetry = unit
 	repo := ghrepo.MustParse("acme/widgets")
 	followsOf := func(issue string) []map[string]any {
-		return slices.DeleteFunc(loggedLines(t, rig.logs.String(), followRead), func(line map[string]any) bool { return line["issue"] != issue })
+		return slices.DeleteFunc(loggedLines(t, rig.logs.String(), followReadLine), func(line map[string]any) bool { return line["issue"] != issue })
 	}
 
 	rig.w.queueBaseRead(repo, "main", map[string]string{"CAPTURE-1": "head-86"}, false)
@@ -1079,7 +1079,7 @@ func TestAFollowerIsReadNoSoonerThanItIsDue(t *testing.T) {
 	handed[87] = time.Now()
 	rig.w.queueBaseRead(repo, "main", map[string]string{"CAPTURE-2": "head-87"}, false)
 	followsOf := func(issue string) []map[string]any {
-		return slices.DeleteFunc(loggedLines(t, rig.logs.String(), followRead), func(line map[string]any) bool { return line["issue"] != issue })
+		return slices.DeleteFunc(loggedLines(t, rig.logs.String(), followReadLine), func(line map[string]any) bool { return line["issue"] != issue })
 	}
 	testwait.Eventually(t, "three reads of each", func() bool { return len(followsOf("CAPTURE-1")) >= 3 && len(followsOf("CAPTURE-2")) >= 3 })
 
@@ -1124,7 +1124,7 @@ func TestAClimbLeavesTheOtherFollowersOnTheirLadders(t *testing.T) {
 	rig.w.mergeStateRetry = unit
 	repo := ghrepo.MustParse("acme/widgets")
 	followsOf := func(issue string) []map[string]any {
-		return slices.DeleteFunc(loggedLines(t, rig.logs.String(), followRead), func(line map[string]any) bool { return line["issue"] != issue })
+		return slices.DeleteFunc(loggedLines(t, rig.logs.String(), followReadLine), func(line map[string]any) bool { return line["issue"] != issue })
 	}
 
 	rig.w.queueBaseRead(repo, "main", map[string]string{"CAPTURE-1": "head-86"}, false)

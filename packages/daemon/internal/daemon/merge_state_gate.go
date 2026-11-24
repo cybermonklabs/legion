@@ -11,9 +11,10 @@ import (
 )
 
 // queryGate is one installation's GraphQL queries, as every base's batch makes them with that
-// installation's token (workflowRuntime.queryGate, keyed by githubrest.Client.Scope): GitHub
-// budgets the installation, not the base, so its rate limit and the time its queries take are
-// shared by every base of every repository of that owner. turn lets one query run at a time;
+// installation's token (workflowRuntime.queryGate, keyed by the implement App's scope for the
+// repository's owner, implementScope, which names the installation before any token is minted):
+// GitHub budgets the installation, not the base, so its rate limit and the time its queries take
+// are shared by every base of every repository of that owner. turn lets one query run at a time;
 // share is the share of the time this process's queries may keep GitHub at work (the daemon's
 // `github_graphql_share`, config.Config.GitHubGraphQLShare); hold is the moment GitHub's rate
 // limit asked the installation's queries to wait until, held the length of that hold, which a
@@ -66,16 +67,16 @@ func (w *workflowRuntime) queryShare() float64 {
 // the longest pause after one query (pause).
 const queryHoldMost = 15 * time.Minute
 
-// run makes query once its turn comes and the gate's hold and pace have passed, and answers how
-// long it took, which the gate then paces the next query by and reads a rate limit from (settle).
-// A ctx that ends while it waits ends the wait, and one that has ended once the turn and the wait
-// are won makes no query: either can be won as ctx ends, since a select takes any case that is
-// ready.
-func (g *queryGate) run(ctx context.Context, query func() error) (time.Duration, error) {
+// run makes query once its turn comes and the gate's hold and pace have passed, and answers its
+// error. The gate times the query, paces the next one by that time and reads a rate limit from the
+// error (settle). A ctx that ends while it waits ends the wait, and one that has ended once the
+// turn and the wait are won makes no query: either can be won as ctx ends, since a select takes
+// any case that is ready.
+func (g *queryGate) run(ctx context.Context, query func() error) error {
 	select {
 	case g.turn <- struct{}{}:
 	case <-ctx.Done():
-		return 0, ctx.Err()
+		return ctx.Err()
 	}
 	defer func() { <-g.turn }()
 	g.mu.Lock()
@@ -89,12 +90,12 @@ func (g *queryGate) run(ctx context.Context, query func() error) (time.Duration,
 		select {
 		case <-ctx.Done():
 			timer.Stop()
-			return 0, ctx.Err()
+			return ctx.Err()
 		case <-timer.C:
 		}
 	}
 	if err := ctx.Err(); err != nil {
-		return 0, err
+		return err
 	}
 	start := time.Now()
 	err := query()
@@ -102,7 +103,7 @@ func (g *queryGate) run(ctx context.Context, query func() error) (time.Duration,
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.settle(err, took, time.Now())
-	return took, err
+	return err
 }
 
 // settle records a query that took took and ended at now with err, under mu. The next query waits

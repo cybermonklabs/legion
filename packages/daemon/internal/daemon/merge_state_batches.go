@@ -335,6 +335,14 @@ func (w *workflowRuntime) climbBase(ctx context.Context, key string) {
 	}
 }
 
+// The lines the reads after a climb log (followBase): one for each pull request each read answers
+// or fails for, with its wait (readChunk, missed), and one for each pull request whose reads end
+// because the record no longer holds it open at the head they read (readBase).
+const (
+	followReadLine = "github: a merge state read after the ladder"
+	followEndLine  = "github: the merge state reads after the ladder end: the pull request is no longer open at the head they read"
+)
+
 // followBase reads the pull requests key's batch owes again, each on its own ladder
 // (dispatch://INFRA-4374 R4): GitHub can go on answering `unknown` for an hour while it holds the
 // head CONFLICTING, and a ladder that stopped at its fifth read left the record reading `unknown`

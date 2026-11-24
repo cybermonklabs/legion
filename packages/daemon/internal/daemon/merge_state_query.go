@@ -130,11 +130,12 @@ type chunkAnswer struct {
 // the gate's hold and pace have passed: a hold can outlast what a lease is promised to have left
 // (appauth's refreshWindow), and a token minted before it could expire while the query waits,
 // which GitHub would answer 401, an answer of its own that ends the gate's backoff (settle). The
-// token cache makes a mint for each query cheap. It answers each pull request GitHub answered by
-// number, GitHub's word on each it did not (an error of the answer's for that pull request alone,
-// which names it by its alias and leaves the others answered), and the moment the answer was in
-// hand. A token that could not be minted, a query GitHub refused and one it answered with no
-// repository at all are errors.
+// token cache makes a mint for each query cheap, and the mint is bounded by issueRead as the query
+// is, so a cold mint that hangs holds the installation's other queries no longer than one query
+// can. It answers each pull request GitHub answered by number, GitHub's word on each it did not (an
+// error of the answer's for that pull request alone, which names it by its alias and leaves the
+// others answered), and the moment the answer was in hand. A token that could not be minted, a
+// query GitHub refused and one it answered with no repository at all are errors.
 func (w *workflowRuntime) queryChunk(ctx context.Context, repo ghrepo.Repository, numbers []int) (chunkAnswer, error) {
 	var got chunkAnswer
 	var minted error
@@ -142,8 +143,11 @@ func (w *workflowRuntime) queryChunk(ctx context.Context, repo ghrepo.Repository
 	var answer struct {
 		Repository map[string]*graphQLPull `json:"repository"`
 	}
-	_, err := w.queryGate(implementScope(repo)).run(ctx, func() error {
-		if got.github, minted = implementClient(ctx, w.tokens, w.githubAPI, repo); minted != nil {
+	err := w.queryGate(implementScope(repo)).run(ctx, func() error {
+		minting, cancelMint := context.WithTimeout(ctx, issueRead)
+		got.github, minted = implementClient(minting, w.tokens, w.githubAPI, repo)
+		cancelMint()
+		if minted != nil {
 			return minted
 		}
 		query := githubrest.Client{Token: got.github.Token, API: githubrest.GraphQLEndpoint(w.githubAPI)}

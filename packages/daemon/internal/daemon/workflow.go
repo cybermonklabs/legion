@@ -323,11 +323,11 @@ type workflowRuntime struct {
 	baseReads         map[string]*baseRead
 	baseReadOf        map[string]string
 	baseChunk         int
-	// gates is each installation's GraphQL queries, by the token scope they are made under
-	// (merge_state_gate.go's queryGate): one rate-limit hold, one pace and one query at a time,
-	// shared by every base's batch of that installation. gateMu guards the map. graphQLShare is
-	// the share of the time each gate's queries may keep GitHub at work, the configuration's
-	// `github_graphql_share` (queryShare).
+	// gates is each installation's GraphQL queries, by the implement App's scope for the owner
+	// (implementScope; merge_state_gate.go's queryGate): one rate-limit hold, one pace and one
+	// query at a time, shared by every base's batch of that installation. gateMu guards the map.
+	// graphQLShare is the share of the time each gate's queries may keep GitHub at work, the
+	// configuration's `github_graphql_share` (queryShare).
 	gateMu       sync.Mutex
 	gates        map[string]*queryGate
 	graphQLShare float64

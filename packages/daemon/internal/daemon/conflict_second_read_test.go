@@ -282,9 +282,11 @@ type readRig struct {
 	reads  atomic.Int32
 }
 
-// pullAnswer is GitHub's answer to one read of pull request 86: a status, and a body.
+// pullAnswer is GitHub's answer to one read of pull request 86: a status, the headers GitHub sends
+// with it beside the stand-in's own, and a body.
 type pullAnswer struct {
 	status int
+	header http.Header
 	body   string
 }
 
@@ -296,6 +298,9 @@ func newReadRig(t *testing.T, seed func(*testing.T, *store.Pool), answer func(re
 		switch r.URL.Path {
 		case "/repos/acme/widgets/pulls/86":
 			got := answer(rig.reads.Add(1))
+			for name, values := range got.header {
+				w.Header()[name] = values
+			}
 			if got.status != 0 {
 				w.WriteHeader(got.status)
 			}

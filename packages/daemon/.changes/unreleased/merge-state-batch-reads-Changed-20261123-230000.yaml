@@ -17,7 +17,9 @@ body: |-
   ladder as it is. A climb of one pull request, after a head push, a review round that waits on
   GitHub or a restart, still reads that pull request alone, and hands a head GitHub still answers
   `unknown` for to its base's reads with the pull request its last read held, with no second read
-  of the daemon's database between them; the base's reads keep a pull request whose record they
+  of the daemon's database between them. A read of the climb that fails after GitHub answered
+  `unknown` - the database's read, or GitHub's 403 once the implement App's REST budget is spent -
+  hands that head to its base's reads too. The base's reads keep a pull request whose record they
   fail to read, and read it at its next turn. Each answer is stamped with the time its own query
   was answered, so an answer older than one the record holds changes nothing. The query asks
   GitHub for each pull request's base too, so a pull request moved to another base is recorded and
@@ -31,9 +33,10 @@ body: |-
   those daemons: about 0.25 where four daemons share one installation of the implement App. A
   value below 0.01 (one daemon in a hundred) or above 1, and one that is not a finite number, is
   refused. Each query carries an installation token minted in its own turn, after the
-  installation's hold and pace, so no hold outlasts the token. A rate limit any of the queries
-  meets holds them all as long as GitHub asks (its Retry-After, its reset, or a minute for the
-  secondary limit named by its message alone), before any other query, including a 200 whose
+  installation's hold and pace, so no hold outlasts the token, and the mint is bounded as the query
+  is, at 30 seconds. A rate limit any of the queries meets holds them all as long as GitHub asks
+  (its Retry-After, its reset, or a minute for the secondary limit named by its message alone),
+  before any other query, including a 200 whose
   errors carry the secondary limit's Retry-After or message. A limit met again less than the last
   hold's length after that hold ended holds twice the longer of GitHub's wait and the last hold,
   up to 15 minutes and never less than GitHub asks. The first query GitHub answers without a limit
