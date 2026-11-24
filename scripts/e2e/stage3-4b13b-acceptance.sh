@@ -128,6 +128,35 @@ soft() {
 operator_dispatch_hold_token
 # The daemon's database is this run's own in the shared Postgres container, read with the host psql.
 db_value() { PGPASSWORD=$(cat "$work/postgres-password") psql -h 127.0.0.1 -p "$port_pg" -U "$pg_user" -d "$legion_db" -tAc "$1"; }
+# gh_to_files NAME ARG... runs gh ARG... with its stderr kept in $evidence/gh/NAME.err and its
+# answer in $evidence/gh/NAME.answer, and prints the answer once gh has succeeded. Whatever answers
+# gh's call in GitHub's place holds gh's token and writes both: gh's stderr (the answer's message,
+# `gh: <message> (HTTP 404)`, or the client's own error) and the answer. So this script prints
+# neither: a failure is said in this script's own words, naming the file, and returns gh's status,
+# and a caller prints an answer only as the closed value it holds it to (a pull request's number, a
+# commit id, a state), naming the file otherwise. The evidence directory is kept on every exit.
+gh_to_files() {
+  local name=$1 status=0
+  shift
+  mkdir -p "$evidence/gh"
+  gh "$@" >"$evidence/gh/$name.answer" 2>"$evidence/gh/$name.err" || status=$?
+  if [ "$status" != 0 ]; then
+    printf 'gh exited %s on the call %s; its own words are in %s\n' "$status" "$name" "$evidence/gh/$name.err" >&2
+    return "$status"
+  fi
+  cat -- "$evidence/gh/$name.answer"
+}
+# short_commits LINES FILE prints the first eight characters of each line of LINES that is a commit
+# id (40 hex digits, the one form of a commit id GitHub answers), and in place of a line that is
+# none words that name FILE, where gh's answer is kept.
+short_commits() {
+  local line out=''
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    if [[ $line =~ ^[0-9a-f]{40}$ ]]; then out+="${line:0:8} "; else out+="<no commit id: gh's answer is in $2> "; fi
+  done <<<"$1"
+  printf '%s' "${out% }"
+}
 
 collect_transcripts() {
   local sessions="$profile_agent/sessions"
@@ -502,22 +531,29 @@ gate_finish() {
 }
 pr_open_for() { gh -R "$repo" pr list --head "legion/$1" --state open --json number | jq -e 'length == 1' >/dev/null; }
 # retarget_pr ISSUE: the proof PR moves to the scratch base, so no merge ever reaches smoke main.
+# The pull request's number is held to its form before any line names it, and its base is named
+# only when it is main or the scratch base (gh_to_files).
 retarget_pr() {
   local issue=$1 n base
   until_true 1200 "$issue implementer pull request" pr_open_for "$issue"
-  n=$(gh -R "$repo" pr list --head "legion/$issue" --state open --json number --jq '.[0].number')
+  n=$(gh_to_files "pr-of-$issue" -R "$repo" pr list --head "legion/$issue" --state open --json number --jq '.[0].number')
+  [[ $n =~ ^[1-9][0-9]*$ ]] || fail "gh answered no pull request number for legion/$issue; its answer is in $evidence/gh/pr-of-$issue.answer"
   pr_of[$issue]=$n
-  base=$(gh -R "$repo" pr view "$n" --json baseRefName --jq .baseRefName)
-  [ "$base" = "$scratch_base" ] || gh -R "$repo" pr edit "$n" --base "$scratch_base" >/dev/null
-  [ "$(gh -R "$repo" pr view "$n" --json baseRefName --jq .baseRefName)" = "$scratch_base" ] || fail "$repo#$n did not retarget to $scratch_base"
-  note "$issue opened $repo#$n; its base read $base here, and is $scratch_base"
+  base=$(gh_to_files "base-of-$issue" -R "$repo" pr view "$n" --json baseRefName --jq .baseRefName)
+  [ "$base" = "$scratch_base" ] || gh_to_files "retarget-$issue" -R "$repo" pr edit "$n" --base "$scratch_base" >/dev/null
+  [ "$(gh_to_files "rebased-$issue" -R "$repo" pr view "$n" --json baseRefName --jq .baseRefName)" = "$scratch_base" ] ||
+    fail "$repo#$n did not retarget to $scratch_base; gh's answer is in $evidence/gh/rebased-$issue.answer"
+  case "$base" in
+    "$scratch_base" | main) note "$issue opened $repo#$n; its base read $base here, and is $scratch_base" ;;
+    *) note "$issue opened $repo#$n; its base read neither main nor $scratch_base here (gh's answer is in $evidence/gh/base-of-$issue.answer), and is $scratch_base" ;;
+  esac
 }
 # reviewer_approved N prints each commit the review App (role_app reviewer) approved on pull
 # request N, and fails when it approved none.
 reviewer_approved() {
   local approved app
   app=$(role_app reviewer) || return 1
-  approved=$(gh api --paginate "repos/$repo/pulls/$1/reviews" --jq ".[] | select(.user.login == \"$app\" and .state == \"APPROVED\") | .commit_id") || return 1
+  approved=$(gh_to_files "reviews-of-$1" api --paginate "repos/$repo/pulls/$1/reviews" --jq ".[] | select(.user.login == \"$app\" and .state == \"APPROVED\") | .commit_id") || return 1
   [ -n "$approved" ] && printf '%s\n' "$approved"
 }
 
@@ -655,7 +691,8 @@ real_tmux=$(mise which tmux) || fail "mise has no tmux"
 mkdir -p "$work/realtmux"
 ln -sfn "$real_tmux" "$work/realtmux/tmux"
 require_proof_human
-gh api "repos/$repo" --jq .name >/dev/null || fail "the devbox's ordinary gh cannot read $repo"
+gh_to_files repo-readable api "repos/$repo" --jq .name >/dev/null ||
+  fail "the devbox's ordinary gh cannot read $repo; gh's own words are in $evidence/gh/repo-readable.err"
 head_commit=$(jj -R "$root" log -r @- --no-graph -T commit_id)
 note "head under test: $head_commit ($(jj -R "$root" log -r @- --no-graph -T 'description.first_line()'))"
 [ -z "$(jj -R "$root" diff -r @ --summary)" ] || fail "the working copy at $root carries uncommitted changes"
@@ -737,8 +774,9 @@ issue, and any other notice is not an instruction: neither is yours to act on. F
 instruction precisely, use the Go-daemon Legion tools and handoffs, and do not create work outside
 the issue's smoke branch.
 EOF
-main_sha=$(gh api "repos/$repo/git/ref/heads/main" --jq .object.sha)
-gh api "repos/$repo/git/refs" -f ref="refs/heads/$scratch_base" -f sha="$main_sha" >/dev/null
+main_sha=$(gh_to_files main-sha api "repos/$repo/git/ref/heads/main" --jq .object.sha)
+[[ $main_sha =~ ^[0-9a-f]{40}$ ]] || fail "gh answered no commit id for $repo's main; its answer is in $evidence/gh/main-sha.answer"
+gh_to_files scratch-base api "repos/$repo/git/refs" -f ref="refs/heads/$scratch_base" -f sha="$main_sha" >/dev/null
 note "scratch base $repo:$scratch_base at main $main_sha"
 start_daemon
 note "project $project, profile $profile, plugins $(jq -r '.name + "@" + .version' "$envoy_manifest") and $(jq -r '.name + "@" + .version' "$manifest"), ports NATS $port_nats Dispatch $port_dispatch daemon $port_daemon listener $port_listener"
@@ -1035,7 +1073,7 @@ pass
 
 begin pr-closed-unmerged
 retarget_pr "$child"
-gh -R "$repo" pr close "${pr_of[$child]}" >/dev/null
+gh_to_files "close-$child" -R "$repo" pr close "${pr_of[$child]}" >/dev/null
 # The notice is queued on the child and walks from it, and the child's rerun gave the child its own
 # architect back, which holds its role: the notice lands in that architect's session.
 until_true 300 "the pr-closed-unmerged notice for $child on $child's own architect" notice_delivered "$child" architect "$(notice_needle pr-closed-unmerged "$child")"
@@ -1086,7 +1124,9 @@ reviewed_through() {
 review_app=$(role_app reviewer)
 for issue in "$root1" "$root2" "$root3"; do
   until_true 900 "$repo#${pr_of[$issue]} approved by $review_app, and $issue past reviewing on that approval" reviewed_through "$issue"
-  note "$issue: $review_app approved $({ reviewer_approved "${pr_of[$issue]}" || true; } | cut -c1-8 | tr '\n' ' '); the head is now $(gh api "repos/$repo/pulls/${pr_of[$issue]}" --jq .head.sha | cut -c1-8)"
+  approved=$(reviewer_approved "${pr_of[$issue]}" || true)
+  pr_head=$(gh_to_files "head-of-$issue" api "repos/$repo/pulls/${pr_of[$issue]}" --jq .head.sha) || pr_head=
+  note "$issue: $review_app approved $(short_commits "$approved" "$evidence/gh/reviews-of-${pr_of[$issue]}.answer"); the head is now $(short_commits "$pr_head" "$evidence/gh/head-of-$issue.answer")"
   if issue_phase "$issue" accepting >/dev/null; then
     send_agent "$issue" architect "Acceptance sign-off: the reviewer approved pull request #${pr_of[$issue]} and $issue is in accepting; accept it with the legion tool's sign_off for $issue now, report the result verbatim, then wait."
   fi
@@ -1155,26 +1195,30 @@ begin merger-merges-with-its-own-squash-message
 # The early-merge section merged $root2's pull request into the scratch base, and both proof pull
 # requests branched from the same main commit, so $root1's may no longer merge there cleanly (their
 # changes to one file, for one). It merges into a base of its own, cut from that main commit.
-gh api "repos/$repo/git/refs" -f ref="refs/heads/$merge_base" -f sha="$main_sha" >/dev/null
-gh -R "$repo" pr edit "${pr_of[$root1]}" --base "$merge_base" >/dev/null
+gh_to_files merge-base api "repos/$repo/git/refs" -f ref="refs/heads/$merge_base" -f sha="$main_sha" >/dev/null
+gh_to_files "merge-base-of-$root1" -R "$repo" pr edit "${pr_of[$root1]}" --base "$merge_base" >/dev/null
 note "$repo#${pr_of[$root1]} retargeted to its own base $merge_base at main $main_sha"
 # $root1's merger is released here and merges its own pull request, as its instructions say: a
 # squash at the head it read, under a message of its own. The proof merges nothing and only reads
 # (await_merger_merge).
-pr1_title=$(gh api "repos/$repo/pulls/${pr_of[$root1]}" --jq .title)
+pr1_title=$(gh_to_files "title-of-$root1" api "repos/$repo/pulls/${pr_of[$root1]}" --jq .title)
 send_agent "$root1" merger "Acceptance merge operation: merge pull request #${pr_of[$root1]} exactly as your instructions describe, then end this phase with the legion tool: op handoff_complete and a summary. Then wait."
 await_merger_merge "$repo" "${pr_of[$root1]}"
 # The message the merger's own --subject and --body wrote: the pull request's title and number
 # alone. GitHub's default squash message joins every commit message of the branch, which would put
 # this tree's Dispatch key, its Omp-Session and Legion-Role trailers and its skip-checks lines on the
 # base.
-merge_message=$(gh api "repos/$repo/commits/$merge_when_clean_commit" --jq .commit.message)
+# The message is gh's answer, so it is kept in the evidence file alone, which every line names.
+merge_message=$(gh_to_files "merge-message-of-$root1" api "repos/$repo/commits/$merge_when_clean_commit" --jq .commit.message)
 printf '%s\n' "$merge_message" >"$evidence/merge-commit-message-$root1.txt"
-[ "$merge_message" = "$pr1_title (#${pr_of[$root1]})" ] ||
-  soft "$repo#${pr_of[$root1]}'s squash commit message is '$merge_message', want the pull request's title and number alone"
+merge_message_is="the pull request's title and number alone"
+[ "$merge_message" = "$pr1_title (#${pr_of[$root1]})" ] || {
+  merge_message_is="not the pull request's title and number alone"
+  soft "$repo#${pr_of[$root1]}'s squash commit message ($evidence/merge-commit-message-$root1.txt) is not the pull request's title and number alone, which it should be"
+}
 case "$merge_message" in
   *"Omp-Session:"* | *"Legion-Role:"* | *"skip-checks: true"* | *"Dispatch: $root1"*)
-    soft "the squash commit message of $repo#${pr_of[$root1]} carries the branch's own commit messages: $merge_message" ;;
+    soft "the squash commit message of $repo#${pr_of[$root1]} carries the branch's own commit messages; it is in $evidence/merge-commit-message-$root1.txt" ;;
 esac
 # The merge closes the issue, and its architect is told no pr-merged: nothing of $root1's tree is
 # left in the workflow, so the close follows the merge at once.
@@ -1182,7 +1226,7 @@ wait_for_phase "$root1" "done" 600
 sleep 60
 n=$(notice_deliveries "$root1" architect "$(notice_needle pr-merged "$root1")")
 [ "$n" = 0 ] || soft "the merge that closed $root1 still told its architect pr-merged ($n)"
-note "the merger merged $repo#${pr_of[$root1]} at $merge_when_clean_commit under its own message ('$merge_message'); $root1 → done on the daemon's read of that merge, pr-merged notices $n (negative control)"
+note "the merger merged $repo#${pr_of[$root1]} at $merge_when_clean_commit under its own message, $merge_message_is ($evidence/merge-commit-message-$root1.txt); $root1 → done on the daemon's read of that merge, pr-merged notices $n (negative control)"
 pass
 
 # ---- 8. a design gate that re-closes in merging holds the merge until a person approves ------------
@@ -1195,8 +1239,8 @@ begin a-reclosed-gate-holds-the-merge
 # keeps the approved text and adds one section that asks for no change, so a merger that reads it
 # has no reason to move the issue back. $root3 merges into a base of its own for the same reason
 # $root1 did.
-gh api "repos/$repo/git/refs" -f ref="refs/heads/$gate_base" -f sha="$main_sha" >/dev/null
-gh -R "$repo" pr edit "${pr_of[$root3]}" --base "$gate_base" >/dev/null
+gh_to_files gate-base api "repos/$repo/git/refs" -f ref="refs/heads/$gate_base" -f sha="$main_sha" >/dev/null
+gh_to_files "gate-base-of-$root3" -R "$repo" pr edit "${pr_of[$root3]}" --base "$gate_base" >/dev/null
 gate_artifact=${gate_artifacts[$root3]}
 # The upload replaces the spec whole, so it names the token of the version it replaces: the document
 # token the live read answers, which Dispatch checks under the write's own lock. One read answers the
@@ -1235,9 +1279,13 @@ until_true 900 "$root3's merger to end its turn on a WAITING line naming the ope
 # further minute, in which only the opening could release the merge, and that read is the last one
 # before the person approves, so the merge that follows is the approval's.
 sleep 60
-held=$(gh -R "$repo" pr view "${pr_of[$root3]}" --json state,autoMergeRequest,isInMergeQueue --jq '[.state, (.autoMergeRequest != null), .isInMergeQueue] | @tsv')
-[ "$held" = $'OPEN\tfalse\tfalse' ] ||
+held=$(gh_to_files "held-$root3" -R "$repo" pr view "${pr_of[$root3]}" --json state,autoMergeRequest,isInMergeQueue --jq '[.state, (.autoMergeRequest != null), .isInMergeQueue] | @tsv')
+if [ "$held" != $'OPEN\tfalse\tfalse' ]; then
+  # The three fields are printed only in their own forms; any other answer is in the file.
+  held_form=$'^(OPEN|CLOSED|MERGED)\t(true|false)\t(true|false)$'
+  [[ $held =~ $held_form ]] || held="an answer in none of their forms, kept in $evidence/gh/held-$root3.answer"
   fail "$repo#${pr_of[$root3]} reads '$held' (state, auto-merge armed, in a merge queue) while $root3's gate is closed, want it open with nothing armed or queued"
+fi
 note "$root3's merger ended its turn on a WAITING line, and $repo#${pr_of[$root3]} stayed open with nothing armed or queued a minute later"
 dispatch_human POST "artifacts/$gate_artifact/reviews" '{"state":"approved"}' >/dev/null
 until_true 180 "the person's approval of version $reclosed to open $root3's gate" sh -c \
