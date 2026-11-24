@@ -104,8 +104,8 @@ func RequireNone(t testing.TB, capture, text string) {
 }
 
 // RequireNoPiece is redacttest.RequireNoPiece: RequireNone of text under capture that also fails
-// t, naming capture, for each of credentials, the values the request carried, that text holds a
-// run of 8 characters of.
+// t, naming capture, for each of credentials, the values the request carried, that text shows a
+// run of (redacttest.Piece): 8 characters as written, or the 16 hex digits of 8 bytes.
 func RequireNoPiece(t testing.TB, capture, text string, credentials ...string) {
 	t.Helper()
 	redacttest.RequireNoPiece(t, capture, text, credentials...)

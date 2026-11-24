@@ -87,7 +87,7 @@ func keptAnswer(t *testing.T, request func(base string) (*http.Request, error), 
 // struct's unexported field too (redacttest.KeptPrintTest). fmt reads an unexported field's
 // storage, and under a verb a pointer does not take it spells out at the top level what the
 // pointer points at: a box that kept them behind a pointer to a slice printed them there. The box
-// keeps them behind a func, which fmt prints as an address; an Answer, a hop's error and a scope
+// and an Answer keep them behind a func, which fmt prints as an address; a hop's error and a scope
 // keep them two pointers below themselves, and fmt spells out only the first. Captures
 // kept/<value>/<holding>/<verb>.
 func TestAKeptCredentialPrintsUnderNoVerbAtAnyHolding(t *testing.T) {

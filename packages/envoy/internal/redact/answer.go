@@ -35,16 +35,15 @@ type Answer struct {
 	a *answer
 }
 
-// answer is what an Answer holds: the status, the bytes read, and the record of the requests
-// that led to the answer, whose credentials are read once, when Decode or Words needs them. The
-// bytes and the credentials sit behind pointers of their own: a verb fmt cannot apply to an
-// Answer's pointer (%s, %q) prints the answer it points at, and a pointer inside it as an address.
+// answer is what an Answer holds: the status, the bytes read, and the credentials the requests
+// that led to the answer carried, read from their record once, when Decode, Words or Said needs
+// them. The bytes sit behind a pointer of their own and the credentials behind a func, as a
+// RemoteText keeps the ones it redacts: a verb fmt cannot apply to an Answer's pointer (%s, %q)
+// prints the answer it points at, and a pointer or a func inside it as an address.
 type answer struct {
-	status int
-	data   *[]byte
-	rec    *record
-	once   sync.Once
-	tokens *[]string
+	status  int
+	data    *[]byte
+	carried func() []string
 }
 
 // ErrAnswerTooLarge is the error ReadAnswer wraps when a body holds more than its limit. The
@@ -61,7 +60,7 @@ var ErrAnswerTooLarge = errors.New("redact: the answer's body is longer than its
 // unwrapping to it, since net/http's text of a body it could not read can quote a line the answer
 // wrote.
 func ReadAnswer(resp *http.Response, limit int64) (Answer, error) {
-	a := &answer{status: resp.StatusCode, rec: answerRecord(resp)}
+	a := &answer{status: resp.StatusCode, carried: sync.OnceValue(answerRecord(resp).tokens)}
 	if resp.Body == nil || resp.Body == http.NoBody {
 		return Answer{a}, nil
 	}
@@ -120,16 +119,12 @@ func (s *answerStream) Close() error {
 	return s.body.Close()
 }
 
-// carried is the credentials the answer's requests carried, read once.
-func (a *answer) carried() []string {
-	a.once.Do(func() {
-		var tokens []string
-		if a.rec != nil {
-			tokens = a.rec.tokens()
-		}
-		a.tokens = &tokens
-	})
-	return *a.tokens
+// carried is the credentials the answer's requests carried, and none for the zero Answer.
+func (a Answer) carried() []string {
+	if a.a == nil {
+		return nil
+	}
+	return a.a.carried()
 }
 
 // bytes is the answer's body, empty for the zero Answer.
@@ -152,10 +147,7 @@ func (a Answer) Status() int {
 // that prints only as the rule reads it, with every credential the answer's requests carried
 // redacted first, and compares as it came.
 func (a Answer) Words() RemoteText {
-	if a.a == nil {
-		return NewRemoteText("")
-	}
-	return NewRemoteText(strings.TrimSpace(string(a.bytes()))).WithoutTokens(a.a.carried()...)
+	return NewRemoteText(strings.TrimSpace(string(a.bytes()))).WithoutTokens(a.carried()...)
 }
 
 // Said is text a caller read from this answer's bytes (StreamTo) - a key or a value of a body it
@@ -164,10 +156,7 @@ func (a Answer) Words() RemoteText {
 // redacted first, and compares as it came. Text the answer does not hold is no answer's words, and
 // a caller hands Said none.
 func (a Answer) Said(text string) RemoteText {
-	if a.a == nil {
-		return NewRemoteText(text)
-	}
-	return NewRemoteText(text).WithoutTokens(a.a.carried()...)
+	return NewRemoteText(text).WithoutTokens(a.carried()...)
 }
 
 // StreamTo writes the body to w, for a body that is data and never prints: a file the answer
@@ -236,8 +225,8 @@ func (a Answer) Decode(v any) error {
 	}
 	data := a.bytes()
 	err := json.Unmarshal(data, v)
-	if a.a != nil && holdsBox(rv.Type(), map[reflect.Type]bool{}) {
-		recordBoxes(rv, a.a.carried())
+	if holdsBox(rv.Type(), map[reflect.Type]bool{}) {
+		recordBoxes(rv, a.carried())
 	}
 	if err != nil {
 		return errors.New(decodeText(err, data, rv.Type().Elem()))
