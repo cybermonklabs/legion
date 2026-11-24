@@ -1,0 +1,7 @@
+kind: Added
+body: |-
+    The secrets broker holds its agent secrets in a memory store for local runs and tests: `BROKER_SECRETS_STORE=memory` with `BROKER_MEMORY_SECRETS_FILE` naming a JSON file of `{"secrets": [{"name", "tags", "value"}]}`, read again on every call the broker makes of the store, so an edit to the file is a write. A secret marked `off_key: true` is one the policy refuses as off the agent-secrets key, and no secret carries a key of its own, since the memory store calls no cloud. A file that still carries the removed `kms_key_id` field is refused by name.
+    The memory store is the one development store. The settings only a local run may set — a `BROKER_PUBLIC_URL` whose port is 0, an `http` `BROKER_EDGE_URL` or `BROKER_EDGE_MACHINE_LOGIN_URL`, and the airlock's and the judge's test settings — are accepted with it and refused with every other store, each refusal naming the setting and the store. `packages/envoy/scripts/dev-broker.sh` and the other development scripts start their broker on it.
+time: 2026-11-24T21:36:36Z
+custom:
+    Issue: memory-store

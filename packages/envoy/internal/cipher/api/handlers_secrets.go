@@ -56,7 +56,7 @@ type settingsResponse struct {
 	ApproverFields bool `json:"approver_fields"`
 	// Fields are the store's own fields (Deps.SettingsFields), written after the ones above by
 	// MarshalJSON. Each store documents its fields in its SettingsFields struct.
-	Fields map[string]string `json:"-"`
+	Fields map[string]string `json:"-" refgen:"store-settings"`
 }
 
 // fixedSettingsFields are the JSON names of settingsResponse's own fields, which no store's field

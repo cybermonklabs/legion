@@ -19,9 +19,10 @@ The Envoy image (`packages/envoy/docker/Dockerfile`) ships it as `envoy-broker`.
 
 The broker takes no flags and reads its configuration from `BROKER_*` environment variables
 (`internal/cipher/config/config.go`). It needs Postgres and the agent secrets in its secret store
-(`BROKER_SECRETS_STORE`: AWS Secrets Manager, or Google Cloud Secret Manager under Application
-Default Credentials): every secret under `BROKER_SECRETS_PREFIX`, carrying `owner` and `tier` (AWS
-tags, or Secret Manager annotations) and encrypted with the agent-secrets key
+(`BROKER_SECRETS_STORE`, one package of `internal/cipher/secretstore` for each store: AWS Secrets
+Manager, Google Cloud Secret Manager under Application Default Credentials, or the memory store
+for local runs and tests): every secret under `BROKER_SECRETS_PREFIX`, carrying `owner` and `tier`
+(AWS tags, or Secret Manager annotations) and encrypted with the agent-secrets key
 (`BROKER_SECRETS_KMS_KEY_ARN`, or `BROKER_SECRETS_KMS_KEY_NAME`). On Secret Manager, a deployment
 that moves its secrets to another prefix sets `BROKER_SECRETS_SECOND_PREFIX` to the other prefix of
 the move while it runs: a grant whose request froze a source under that prefix, with the same
@@ -30,11 +31,11 @@ secret under `BROKER_SECRETS_PREFIX` alone. Nothing else of the broker reads the
 the broker refuses it under AWS Secrets Manager and when it equals or nests with
 `BROKER_SECRETS_PREFIX`. The deployment sets it before the move, swaps the two at the move, rewrites
 its live grants' frozen sources once no pod of the earlier setting serves, and removes it once none
-is left under the old prefix (the operate page's "Moving the store to another prefix"). It also
-needs its own OpenID Connect client, through which a person signs in to the approval page:
-`BROKER_SIGNIN_ISSUER`, `BROKER_SIGNIN_CLIENT_ID`, `BROKER_SIGNIN_CLIENT_SECRET_FILE` and
-`BROKER_SIGNIN_DOMAIN` are all required, and a broker missing any of them refuses to start, naming
-the missing ones.
+is left under the old prefix (the operate page's "Moving the store to another prefix"). The memory
+store reads it too, so that a local run or a test can rehearse a move. It also needs its own OpenID
+Connect client, through which a person signs in to the approval page: `BROKER_SIGNIN_ISSUER`,
+`BROKER_SIGNIN_CLIENT_ID`, `BROKER_SIGNIN_CLIENT_SECRET_FILE` and `BROKER_SIGNIN_DOMAIN` are all
+required, and a broker missing any of them refuses to start, naming the missing ones.
 `GET /signin/status` reports what that sign-in has done, for an operator or a production check.
 The one broker that starts without them is one with `BROKER_SIGNIN=off`, which signs nobody in:
 it serves no approval page and denies at once every request a person would have to approve,
@@ -127,8 +128,8 @@ without the flag each such profile gets one line saying its tie to the destinati
 `profiles check` reads no configuration, opens no database and binds nothing.
 The removed `envoy-broker airlock-check` exits 2 naming `profiles check`.
 
-For a local stack (Postgres in Docker, or one you run named by `DEV_BROKER_POSTGRES_URL`, a fake
-secrets file standing in for Secrets Manager, and the clients), run
+For a local stack (Postgres in Docker, or one you run named by `DEV_BROKER_POSTGRES_URL`, the
+memory store over a file the script writes, and the clients), run
 `packages/envoy/scripts/dev-broker.sh`.
 
 ## Google groups
