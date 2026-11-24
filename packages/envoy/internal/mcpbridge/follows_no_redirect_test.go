@@ -22,7 +22,7 @@ import (
 // twin shows a client that follows the 307 sends the stand-in the session id, so the rows can see
 // one sent on. Captures mcpbridge.redirect-followed/<case>, what the stand-in was sent.
 func TestAPostFollowsNoRedirectOffItsEndpointsOrigin(t *testing.T) {
-	const session = "sess-not-a-secret-7Qz4k"
+	const session = "sess-not-a-secret-token-7Qz4k"
 	target, sent := redirectstest.Sent(t)
 	serve := func(endpoint func(host string) string, credential func(r *http.Request) string) string {
 		mux := http.NewServeMux()

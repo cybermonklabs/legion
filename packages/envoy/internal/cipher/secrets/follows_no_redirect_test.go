@@ -6,10 +6,16 @@ import (
 	"sync"
 	"testing"
 
+	"golang.org/x/oauth2"
+
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 	"github.com/sjawhar/envoy/internal/redact/redacttest"
 	"github.com/sjawhar/envoy/redirects/redirectstest"
 )
+
+// followedBrokerToken is the broker's own bearer the service-account rows mint with, which holds
+// the gate's marker, so a row's captured text that holds a run of it is read as a leak.
+const followedBrokerToken = "broker-own-not-a-secret-token-4c91"
 
 // TestAMintCallFollowsNoRedirect: whatever answers at the upstream's address answers a mint's call,
 // which carries a credential in its Authorization (the broker's own bearer at IAM's
@@ -50,8 +56,8 @@ func TestAMintCallFollowsNoRedirect(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		request.Header.Set("Authorization", "Bearer "+brokerOwnToken)
-		redirectstest.RequireSentOn(t, request, brokerOwnToken, sent)
+		request.Header.Set("Authorization", "Bearer "+followedBrokerToken)
+		redirectstest.RequireSentOn(t, request, followedBrokerToken, sent)
 	})
 	key, err := testAppKey()
 	if err != nil {
@@ -61,7 +67,7 @@ func TestAMintCallFollowsNoRedirect(t *testing.T) {
 		return func(t *testing.T, base string) error {
 			retry, _, _ := testRetry(atTheBottom)
 			minter := &secrets.GoogleServiceAccount{
-				BaseURL: base, HTTP: client, Source: brokerSource(),
+				BaseURL: base, HTTP: client, Source: oauth2.StaticTokenSource(&oauth2.Token{AccessToken: followedBrokerToken, TokenType: "Bearer"}),
 				Accounts: map[string]string{"GCP_FLEET": serviceAccountEmail}, Retry: retry,
 			}
 			_, err := minter.Mint(t.Context(), secrets.MintRequest{Name: "GCP_FLEET", Source: "GCP_FLEET", Value: serviceAccountValue})
