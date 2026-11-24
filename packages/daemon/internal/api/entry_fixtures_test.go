@@ -910,16 +910,29 @@ func TestEntryFixtures(t *testing.T) {
 	served := servedShapes(t, callerKinds[0])
 	walked := walkedRequests(t)
 	requests := requestsOfEntries(t, entries)
+	if err := writeEntryFixtures(t, packageEntryFixtures, entries, registeredEntries, lastNumberedRecords(t), served, walked, requests, writes); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// writeEntryFixtures writes into dir the fixture of each entry of entries, in the build's order,
+// that writes says to write, composing each over base and the fixtures of the entries before it.
+// registered holds each entry's declaration, served and walked are what the daemon serves and what
+// its request types read, and requests the routes `-entry-requests` gives each entry it names. It
+// returns the error of an entry whose fixture cannot be written or composed, naming the entry.
+func writeEntryFixtures(t *testing.T, dir string, entries []NumberedEntry, registered []contractEntry, base contractRecords,
+	served map[shapeKey]answerShape, walked map[string][]string, requests map[int][]routeChange, writes func(NumberedEntry, bool) bool) error {
+	t.Helper()
 	byID := map[int]contractEntry{}
-	for _, entry := range registeredEntries {
+	for _, entry := range registered {
 		byID[entry.id] = entry
 	}
-	before := lastNumberedRecords(t)
+	before := base
 	var ahead []contractEntry
 	var ids []int
 	for _, entry := range entries {
 		name := fmt.Sprintf("%d_%s", entry.ID, entry.Slug)
-		path := entryFixturePath(packageEntryFixtures, entry)
+		path := entryFixturePath(dir, entry)
 		ahead, ids = append(ahead, byID[entry.ID]), append(ids, entry.ID)
 		fixture, _, present := readEntryFixture(t, path)
 		if writes(entry, present) {
@@ -928,7 +941,7 @@ func TestEntryFixtures(t *testing.T) {
 			// order, which numbers each of them as the build does.
 			upTo, err := buildContractRegistry(ahead, stampOf(ids...))
 			if err != nil {
-				t.Fatalf("build the registry of the entries up to %s: %v", name, err)
+				return fmt.Errorf("build the registry of the entries up to %s: %v", name, err)
 			}
 			at := servedRecordsAt(entry.Number, served, walked, upTo.answers, upTo.enumeratedFields)
 			if changes, given := requests[entry.ID]; given {
@@ -936,7 +949,7 @@ func TestEntryFixtures(t *testing.T) {
 			}
 			fixture, err = entryFixtureOf(before, at)
 			if err != nil {
-				t.Fatalf("entry %s: %v", name, err)
+				return fmt.Errorf("entry %s: %v", name, err)
 			}
 			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 				t.Fatalf("create the directory of entry fixtures: %v", err)
@@ -945,14 +958,15 @@ func TestEntryFixtures(t *testing.T) {
 				t.Fatalf("write %s: %v", path, err)
 			}
 		} else if !present {
-			t.Fatalf("entry %s has no fixture %s, and -update-entry writes one entry after it: run `go test ./internal/api -update` first", name, path)
+			return fmt.Errorf("entry %s has no fixture %s, and -update-entry writes one entry after it: run `go test ./internal/api -update` first", name, path)
 		}
 		composed, err := composeEntries(before, []numberedFixture{{name: name, number: entry.Number, fixture: fixture}})
 		if err != nil {
-			t.Fatal(err)
+			return err
 		}
 		before = composed[0]
 	}
+	return nil
 }
 
 // requestsOfEntries is the routes of each entry, by id, of the file `-entry-requests` names
@@ -1258,4 +1272,79 @@ func comparableJSON(t *testing.T, value any) any {
 		t.Fatalf("decode %T: %v", value, err)
 	}
 	return plain
+}
+
+// requestsEarlierTestContract and requestsLaterTestContract are the ids of two test entries, the
+// later of which adds a field to a request (requestsTestRoute, requestsLaterField). Each is an id
+// of the form an entry's id takes, later than any entry of this tree can be, and no other test
+// registry registers either.
+const (
+	requestsEarlierTestContract = 20990505050505
+	requestsLaterTestContract   = 20990606060606
+)
+
+// requestsTestRoute is the route whose request the later entry of the two adds requestsLaterField
+// to.
+const (
+	requestsTestRoute  = "POST /test/requests"
+	requestsLaterField = "laterNote"
+)
+
+// One build's request types read every field at every number, so they give the requests of the
+// last entry of the build's order alone: an earlier entry's requests read from them would take
+// the fields of every entry after it. Written in one run, the earlier of two entries, the later
+// of which adds a field to a request, is refused, naming it, and no fixture of it is written;
+// given its routes with `-entry-requests`, it holds none of the later entry's field, which the
+// later entry's fixture adds.
+func TestAnEarlierEntrysFixtureTakesNoRequestFieldOfALaterEntry(t *testing.T) {
+	base := lastNumberedRecords(t)
+	base.Records = []contractShape{}
+	base.Requests = []requestShape{{Contract: LastNumberedContract, Route: requestsTestRoute, FieldPaths: []string{"title"}}}
+	walked := map[string][]string{requestsTestRoute: {requestsLaterField, "title"}}
+	entries := []contractEntry{{id: requestsEarlierTestContract, slug: "requests-earlier"}, {id: requestsLaterTestContract, slug: "requests-later"}}
+	installContractRegistry(t, testRegistry(t, stampOf(requestsEarlierTestContract, requestsLaterTestContract), entries...))
+	missing := func(_ NumberedEntry, present bool) bool { return !present }
+	addsTheLaterField := func(t *testing.T, path string) bool {
+		t.Helper()
+		fixture, _, present := readEntryFixture(t, path)
+		if !present {
+			t.Fatalf("%s is not written", path)
+		}
+		return slices.ContainsFunc(fixture.Routes, func(change routeChange) bool {
+			return change.Route == requestsTestRoute && slices.Contains(change.AddFieldPaths, requestsLaterField)
+		})
+	}
+	earlier, later := NumberedEntries()[0], NumberedEntries()[1]
+
+	t.Run("read from the request types", func(t *testing.T) {
+		dir := t.TempDir()
+		err := writeEntryFixtures(t, dir, NumberedEntries(), entries, base, map[shapeKey]answerShape{}, walked, nil, missing)
+		if err == nil {
+			if addsTheLaterField(t, entryFixturePath(dir, earlier)) {
+				t.Fatalf("the fixture of entry %d_requests-earlier adds %s to %s, which only the later entry adds", earlier.ID, requestsLaterField, requestsTestRoute)
+			}
+			t.Fatalf("the earlier entry's requests were read from the request types, want a refusal naming entry %d_requests-earlier", earlier.ID)
+		}
+		want := fmt.Sprintf("entry %d_requests-earlier is not last in the build's order", earlier.ID)
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("the write was refused with %v, want the refusal %q", err, want)
+		}
+		if _, _, present := readEntryFixture(t, entryFixturePath(dir, earlier)); present {
+			t.Errorf("the refused write left a fixture of entry %d_requests-earlier", earlier.ID)
+		}
+		t.Logf("the earlier entry is refused: %v", err)
+	})
+	t.Run("given with -entry-requests", func(t *testing.T) {
+		dir := t.TempDir()
+		requests := map[int][]routeChange{earlier.ID: {}}
+		if err := writeEntryFixtures(t, dir, NumberedEntries(), entries, base, map[shapeKey]answerShape{}, walked, requests, missing); err != nil {
+			t.Fatalf("write the two fixtures: %v", err)
+		}
+		if addsTheLaterField(t, entryFixturePath(dir, earlier)) {
+			t.Errorf("the fixture of entry %d_requests-earlier adds %s to %s, which only the later entry adds", earlier.ID, requestsLaterField, requestsTestRoute)
+		}
+		if !addsTheLaterField(t, entryFixturePath(dir, later)) {
+			t.Errorf("the fixture of entry %d_requests-later does not add %s to %s", later.ID, requestsLaterField, requestsTestRoute)
+		}
+	})
 }
