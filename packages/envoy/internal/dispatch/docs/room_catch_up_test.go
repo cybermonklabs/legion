@@ -930,6 +930,7 @@ func TestARebuildAnnouncesTheDocumentsChange(t *testing.T) {
 // that pool carries none, on the very connection the confirmation ran on once it has ended. With
 // no bound, a confirmation orphaned with its connection held the lock until Postgres noticed.
 func TestACatchUpsConfirmationBoundsItsOwnTransactionsIdleTime(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "# First")
 	service, _ := newTestServiceInstance(t, database)

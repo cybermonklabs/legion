@@ -229,6 +229,7 @@ func TestConditionalEditAdmissionsOfADocumentWaitOnItsQueueLockThroughOneConnect
 // the queue, and an admission once the holder lets go is admitted. The bound is the test's
 // (store.WithLockWaitForTest) rather than production's ten seconds.
 func TestAConditionalEditAdmissionQueuedOnAHeldQueueLockIsRefusedBusyAtItsBound(t *testing.T) {
+	t.Parallel()
 	const bound = 300 * time.Millisecond
 	ctx := context.Background()
 	database := storetest.Open(t)
@@ -258,7 +259,7 @@ func TestAConditionalEditAdmissionQueuedOnAHeldQueueLockIsRefusedBusyAtItsBound(
 	var refused error
 	select {
 	case refused = <-admitted:
-	case <-time.After(10 * time.Second):
+	case <-time.After(roomWait(t)):
 		waited := time.Since(started)
 		_ = holder.Rollback(ctx)
 		<-admitted

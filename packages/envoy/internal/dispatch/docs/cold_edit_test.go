@@ -262,6 +262,7 @@ func documentToken(t *testing.T, service *Service, artifactID string) string {
 // write Postgres refuses inside one, so a step left on the fold failed the commit, failed the
 // room, and answered the write 503 DOC_SERVICE_UNAVAILABLE.
 func TestAColdReadsFoldTakesNoRequestCommitStep(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "Alpha paragraph.\n\nBravo paragraph.\n")

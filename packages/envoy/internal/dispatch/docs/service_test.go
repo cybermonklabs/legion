@@ -5997,7 +5997,7 @@ func gatedContext(t testing.TB, service *Service, ctx context.Context, artifactI
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(release)
+	testcleanup.Add(t, release)
 	return gated, release
 }
 

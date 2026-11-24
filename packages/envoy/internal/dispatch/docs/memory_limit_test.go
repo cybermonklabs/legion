@@ -12,6 +12,7 @@ import (
 // math.MaxInt64 and an absent file each say there is no limit. The files are read through the
 // function the test hands in, so each row is a box of its own.
 func TestTheMemoryLimitIsGOMEMLIMITElseTheContainersCgroupElseNone(t *testing.T) {
+	t.Parallel()
 	const twentyGiB = "21474836480\n"
 	for _, test := range []struct {
 		name    string
@@ -46,6 +47,7 @@ func TestTheMemoryLimitIsGOMEMLIMITElseTheContainersCgroupElseNone(t *testing.T)
 // 256 MiB and at most 8 GiB, and 256 MiB when no limit is known (math.MaxInt64). The rows between
 // the floor and the cap are the fraction's own (roomBudgetDivisor), and change with it.
 func TestTheRoomBudgetFollowsTheMemoryLimit(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name  string
 		limit int64

@@ -5,6 +5,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // The compaction queue folds nothing while the request admission is under pressure, and folds as
@@ -13,6 +15,7 @@ import (
 // rows passed compactTail - answer requests at a 1.0 to 2.1 s p99 for the minute after the load had
 // dropped (INFRA-592).
 func TestTheCompactionQueueWaitsWhileTheRequestsPressAndFoldsWhenTheyEase(t *testing.T) {
+	t.Parallel()
 	load := &pressingRequests{}
 	load.press(true)
 	folds, queue := yieldingCompactionQueue(t, load, time.Now)
@@ -43,6 +46,7 @@ func TestTheCompactionQueueWaitsWhileTheRequestsPressAndFoldsWhenTheyEase(t *tes
 // reads is a test's here, a whole deferral ahead of the queue's own, so the document this notes is
 // already past its bound when the worker weighs the requests against it.
 func TestTheCompactionQueueFoldsAtTheDeferralBoundHoweverTheRequestsStand(t *testing.T) {
+	t.Parallel()
 	load := &pressingRequests{}
 	load.press(true)
 	ahead := func() time.Time { return time.Now().Add(compactionMaxDeferral + time.Second) }
@@ -89,7 +93,7 @@ func yieldingCompactionQueue(t *testing.T, load RequestLoad, now func() time.Tim
 	queue.mu.Lock()
 	queue.timing = compactionTiming{backoff: time.Millisecond, backoffCap: time.Millisecond}
 	queue.mu.Unlock()
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		queue.shutDown()
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()

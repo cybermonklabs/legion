@@ -739,7 +739,7 @@ func TestARefusedSocketAdmissionLogsTheRoomAndThePool(t *testing.T) {
 	logs := &storetest.LockedLog{}
 	previous := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelWarn})))
-	t.Cleanup(func() { slog.SetDefault(previous) })
+	testcleanup.Add(t, func() { slog.SetDefault(previous) })
 
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before")
@@ -749,9 +749,9 @@ func TestARefusedSocketAdmissionLogsTheRoomAndThePool(t *testing.T) {
 		Events:      events.NewBroker(),
 		Identity:    headerIdentity(database),
 	})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	testcleanup.Add(t, func() { _ = service.Shutdown(context.Background()) })
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
-	t.Cleanup(httpServer.Close)
+	testcleanup.Add(t, httpServer.Close)
 
 	refuseSocket(t, httpServer.URL, artifactID, "a socket whose document's first load fails")
 
@@ -786,7 +786,7 @@ func TestASocketWhoseClientLeavesDuringTheLoadIsAGoneClientAndNoRefusal(t *testi
 	logs := &storetest.LockedLog{}
 	previous := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelInfo})))
-	t.Cleanup(func() { slog.SetDefault(previous) })
+	testcleanup.Add(t, func() { slog.SetDefault(previous) })
 
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before")
@@ -797,14 +797,14 @@ func TestASocketWhoseClientLeavesDuringTheLoadIsAGoneClientAndNoRefusal(t *testi
 		Events:      events.NewBroker(),
 		Identity:    headerIdentity(database),
 	})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	testcleanup.Add(t, func() { _ = service.Shutdown(context.Background()) })
 	served := make(chan struct{})
 	logged := accesslog.Handler("/ws/doc/{room}", http.HandlerFunc(service.ServeHTTP))
 	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer close(served)
 		logged.ServeHTTP(w, r)
 	}))
-	t.Cleanup(httpServer.Close)
+	testcleanup.Add(t, httpServer.Close)
 
 	browser, leave := context.WithCancel(context.Background())
 	defer leave()

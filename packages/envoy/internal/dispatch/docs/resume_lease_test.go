@@ -73,6 +73,7 @@ func TestTwoResumptionRunnersResumeAnOwedSettlementOncePerPeriod(t *testing.T) {
 // connection of the request pool, which admission counts for requests. Pointed back at the request
 // pool, as main's statement was written, it moves that pool's acquires and this fails.
 func TestAResumptionPassTakesNoRequestPoolConnection(t *testing.T) {
+	t.Parallel()
 	service, _ := newTestService(t)
 	background, err := service.store.Pool.Background()
 	if err != nil {

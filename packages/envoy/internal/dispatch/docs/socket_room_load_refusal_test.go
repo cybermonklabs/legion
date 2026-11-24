@@ -28,6 +28,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -44,12 +45,12 @@ import (
 
 // A cold socket whose room's load finds the rooms pool busy is refused as the socket's other
 // refusals are, 503 with Retry-After and a WARN line naming the room, the pool and the busy pool's
-// class, and within one of that pool's acquire bounds of the moment the pool filled: the load reads
-// the store once, the head its preload is checked against and the document's pending settlement in
-// one statement (takePreload), and a failure of that read is the load's, where a busy pool once ran
-// its bound out twice - once for the head and once more for the whole history read again on the
-// same pool - before ygo answered 500. The load renders nothing either: the admission's rendering
-// is the only one a cold socket makes, refused or not.
+// class, having run that pool's acquire bound out once (store.AcquireStats.Timeouts): the load
+// reads the store once, the head its preload is checked against and the document's pending
+// settlement in one statement (takePreload), and a failure of that read is the load's, where a busy
+// pool once ran its bound out twice - once for the head and once more for the whole history read
+// again on the same pool - before ygo answered 500. The load renders nothing either: the
+// admission's rendering is the only one a cold socket makes, refused or not.
 func TestARoomLoadThatFindsThePoolBusyRefusesItsSocketWithinOneBound(t *testing.T) {
 	logs := captureWarnings(t)
 	database := storetest.Open(t)
@@ -66,7 +67,9 @@ func TestARoomLoadThatFindsThePoolBusyRefusesItsSocketWithinOneBound(t *testing.
 		holds <- takeTheRoomsPool(t, service)
 	}
 
+	busyBefore := poolAcquireStats(service, store.RoomsPool).Timeouts
 	answer := <-answerSocketAsync(server.URL, artifactID)
+	busy := poolAcquireStats(service, store.RoomsPool).Timeouts - busyBefore
 	if answer.err != nil {
 		t.Fatal(answer.err)
 	}
@@ -85,8 +88,8 @@ func TestARoomLoadThatFindsThePoolBusyRefusesItsSocketWithinOneBound(t *testing.
 	if answer.retryAfter != admission.RetryAfter {
 		t.Errorf("the refused socket's Retry-After = %q, want %q, as every other 503 of the server carries", answer.retryAfter, admission.RetryAfter)
 	}
-	if limit := bound + bound/2; took >= limit {
-		t.Errorf("the refusal came %s after the rooms pool filled, want within one acquire bound (%s, so under %s): the load read the busy pool more than once", took.Round(time.Millisecond), bound, limit)
+	if busy != 1 {
+		t.Errorf("the rooms pool's acquire bound ran out %d times before the refused socket was answered, want once: the load's one read of the busy pool", busy)
 	}
 	if got := renders.Load(); got != 1 {
 		t.Errorf("the cold socket rendered its document %d times, want once: the admission's rendering", got)
@@ -109,6 +112,7 @@ func TestARoomLoadThatFindsThePoolBusyRefusesItsSocketWithinOneBound(t *testing.
 // the load took was one more wait on a pool of four under load, and one more bound a busy pool
 // could run out before the socket was answered.
 func TestAnAdmittedRoomLoadTakesOneRoomsPoolConnection(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	service, server := newTestServiceInstance(t, database)
 	artifactID := createDocuments(t, database, 1)[0]
@@ -138,6 +142,7 @@ func TestAnAdmittedRoomLoadTakesOneRoomsPoolConnection(t *testing.T) {
 // on the room's record the socket's admission holds (noteLoadFailed). The warm-up itself fails as
 // it always did, with the busy pool's error.
 func TestASocketWaitingOnALoadThatFindsThePoolBusyIsRefused503(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	service, server := newTestServiceInstance(t, database)
 	const bound = 2 * time.Second
@@ -199,7 +204,7 @@ func TestASocketWhoseRequestTheServerEndsWhileItsRoomLoadsIsRefused503(t *testin
 		endRequest.Store(&cancel)
 		service.ServeHTTP(w, r.WithContext(ctx))
 	}))
-	t.Cleanup(server.Close)
+	testcleanup.Add(t, server.Close)
 	loadBegun := waitForRoomLoad(service, artifactID, roomWait(t))
 	var once atomic.Bool
 	service.admissionRendered = func(room string) {
@@ -248,11 +253,14 @@ func TestASocketWhoseRequestTheServerEndsWhileItsRoomLoadsIsRefused503(t *testin
 
 // A load no socket's admission holds - a settlement's warm-up, here, and a committed write's
 // publish, which loads the room the same way - reads the rooms pool as it always did: under a pool
-// that stays full it fails with the busy pool's error after one acquire bound, the bound of its read
-// of the stored history, and leaves no room; once a connection comes free within that bound it
-// loads. Neither the merged read of a preload's check nor the socket's refusal is any of its
-// concern: it has no preload to check and no socket to answer.
+// that stays full it fails with the busy pool's error once it has run one acquire bound out, the
+// bound of its read of the stored history, and leaves no room; once a connection comes free while
+// it waits for one within that bound it loads. Neither the merged read of a preload's check nor the
+// socket's refusal is any of its concern: it has no preload to check and no socket to answer. The
+// bounds it ran out are the pool's own count of them (store.AcquireStats.Timeouts), and the
+// connection is freed once the pool counts the load waiting for one, not at a moment of the clock.
 func TestALoadNoAdmissionHoldsFailsAfterOneBoundOrLoadsOnceAConnectionFrees(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	service, _ := newTestServiceInstance(t, database)
 	const bound = time.Second
@@ -260,16 +268,21 @@ func TestALoadNoAdmissionHoldsFailsAfterOneBoundOrLoadsOnceAConnectionFrees(t *t
 	artifactID := createDocuments(t, database, 1)[0]
 
 	release := holdTheRoomsPool(t, service)
+	busyBefore := poolAcquireStats(service, store.RoomsPool).Timeouts
 	start := time.Now()
 	err := warmUpAsASettlementDoes(service, artifactID)
 	took := time.Since(start)
+	busy := poolAcquireStats(service, store.RoomsPool).Timeouts - busyBefore
 	release()
 	t.Logf("the warm-up under a full rooms pool ended after %s: %v", took.Round(time.Millisecond), err)
 	if !store.IsPoolBusy(err) {
 		t.Fatalf("the warm-up under a full rooms pool ended %v, want the busy pool's error", err)
 	}
-	if took < bound || took >= 2*bound {
-		t.Errorf("the warm-up under a full rooms pool failed after %s, want after one acquire bound (%s)", took.Round(time.Millisecond), bound)
+	if took < bound {
+		t.Errorf("the warm-up under a full rooms pool failed after %s, want after its acquire bound (%s)", took.Round(time.Millisecond), bound)
+	}
+	if busy != 1 {
+		t.Errorf("the warm-up under a full rooms pool ran the pool's acquire bound out %d times, want once: its one read of the stored history", busy)
 	}
 	if service.srv.GetDoc(artifactID) != nil {
 		t.Fatal("the failed warm-up left its room resident")
@@ -280,12 +293,14 @@ func TestALoadNoAdmissionHoldsFailsAfterOneBoundOrLoadsOnceAConnectionFrees(t *t
 		t.Fatalf("open the rooms pool: %v", err)
 	}
 	held := holdPool(t, rooms, store.RoomsPool, service.store.Pool)
-	freed := time.AfterFunc(bound/2, held.releaseOne)
-	defer func() {
-		freed.Stop()
-		held.release()
-	}()
-	if err := warmUpAsASettlementDoes(service, artifactID); err != nil {
+	defer held.release()
+	warmed := make(chan error, 1)
+	go func() { warmed <- warmUpAsASettlementDoes(service, artifactID) }()
+	waitFor(t, roomWait(t), "the warm-up to wait for a connection of the full rooms pool", func() bool {
+		return poolAcquireStats(service, store.RoomsPool).Waiting > 0
+	})
+	held.releaseOne()
+	if err := testwait.Receive(t, "the warm-up once a rooms connection came free", warmed); err != nil {
 		t.Fatalf("the warm-up with a rooms connection freed within the bound: %v, want the room loaded", err)
 	}
 	if service.srv.GetDoc(artifactID) == nil {
@@ -345,6 +360,7 @@ func TestASocketWhoseFleetReadFindsTheRequestPoolBusyIsRefused503(t *testing.T) 
 // admission has offered what it read, and its eviction is held off until the test ends, so the
 // socket's authorization meets it failed.
 func TestASocketToARoomABusyPoolFailedIsRefused503(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name   string
 		cause  error
@@ -358,7 +374,7 @@ func TestASocketToARoomABusyPoolFailedIsRefused503(t *testing.T) {
 			service, server := newTestServiceInstance(t, database)
 			artifactID := createDocuments(t, database, 1)[0]
 			evict := make(chan struct{})
-			t.Cleanup(func() { close(evict) })
+			testcleanup.Add(t, func() { close(evict) })
 			service.beforeFailedEviction = func(string) { <-evict }
 			var once atomic.Bool
 			service.afterSocketPreload = func(room string, _ *persistence.LoadResult) {
@@ -391,6 +407,7 @@ func TestASocketToARoomABusyPoolFailedIsRefused503(t *testing.T) {
 // found the room resident and whose join found it gone does; the load is held as it decodes the
 // history until the second socket waits on it, and the first socket's request is ended then.
 func TestAJoinWaitingOnALoadIsServedWhenTheRequestThatBeganTheLoadEnds(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	service, _ := newTestServiceInstance(t, database)
 	artifactID := createDocuments(t, database, 1)[0]
@@ -404,7 +421,7 @@ func TestAJoinWaitingOnALoadIsServedWhenTheRequestThatBeganTheLoadEnds(t *testin
 		}
 		service.ServeHTTP(w, r.WithContext(ctx))
 	}))
-	t.Cleanup(server.Close)
+	testcleanup.Add(t, server.Close)
 	var offered atomic.Bool
 	service.afterSocketPreload = func(room string, _ *persistence.LoadResult) {
 		if room == artifactID && !offered.Swap(true) {
@@ -419,7 +436,7 @@ func TestAJoinWaitingOnALoadIsServedWhenTheRequestThatBeganTheLoadEnds(t *testin
 			close(proceed)
 		}
 	}
-	t.Cleanup(release)
+	testcleanup.Add(t, release)
 	var decoding atomic.Bool
 	service.bootstrapping = func(room string, _ []byte) {
 		if room != artifactID || decoding.Swap(true) {
@@ -449,7 +466,7 @@ func TestAJoinWaitingOnALoadIsServedWhenTheRequestThatBeganTheLoadEnds(t *testin
 	if opened.err != nil {
 		t.Fatalf("the socket waiting on the load the first socket's request began was refused (%v), want it admitted: that request's end is no failure of the room's load", opened.err)
 	}
-	t.Cleanup(func() { _ = opened.connection.Close() })
+	testcleanup.Add(t, func() { _ = opened.connection.Close() })
 	_ = opened.connection.SetReadDeadline(time.Now().Add(roomWait(t)))
 	if _, message, err := opened.connection.ReadMessage(); err != nil {
 		t.Fatalf("the waiting socket's first frame = %q (%v), want the room's sync", message, err)
@@ -466,6 +483,7 @@ func TestAJoinWaitingOnALoadIsServedWhenTheRequestThatBeganTheLoadEnds(t *testin
 // browser connected so the record has a successor; a settlement's warm-up then begins the load
 // the socket's join waits on, with the rooms pool full.
 func TestASocketWaitingOnALoadAfterItsRoomRecordWasHandedOverIsRefused503(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	service, server := newTestServiceInstance(t, database)
 	const bound = 2 * time.Second
@@ -523,7 +541,7 @@ func TestASocketWhoseRoomLoadRunsPastItsReadsBoundIsRefused503(t *testing.T) {
 	service.store.Pool.SetAcquireBoundForTest(store.RoomsPool, time.Minute)
 	previous := coldReadTimeout
 	coldReadTimeout = time.Second
-	t.Cleanup(func() { coldReadTimeout = previous })
+	testcleanup.Add(t, func() { coldReadTimeout = previous })
 	artifactID := createDocuments(t, database, 1)[0]
 	var offered atomic.Bool
 	service.afterSocketPreload = func(room string, _ *persistence.LoadResult) {
@@ -580,7 +598,7 @@ func TestASocketWhoseIssueReadFindsTheRequestPoolBusyIsRefused503(t *testing.T) 
 		ServerURL: "https://dispatch.example",
 		Settle:    time.Hour,
 	})
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		if err := service.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
@@ -631,7 +649,7 @@ func TestASocketWhoseRequestTheServerEndsWhileItsFailedRoomRecoversIsRefused503(
 	service, _ := newTestServiceInstance(t, database)
 	artifactID := createDocuments(t, database, 1)[0]
 	evict := make(chan struct{})
-	t.Cleanup(func() { close(evict) })
+	testcleanup.Add(t, func() { close(evict) })
 	service.beforeFailedEviction = func(string) { <-evict }
 	service.failRoom(artifactID, errors.New("a test's failure of the room"))
 	cause := fmt.Errorf("re-resolve the socket's caller: %w", store.ErrPoolBusy)
@@ -640,7 +658,7 @@ func TestASocketWhoseRequestTheServerEndsWhileItsFailedRoomRecoversIsRefused503(
 		defer cancel()
 		service.ServeHTTP(w, r.WithContext(ctx))
 	}))
-	t.Cleanup(server.Close)
+	testcleanup.Add(t, server.Close)
 
 	answer := <-answerSocketAsync(server.URL, artifactID)
 	if answer.err != nil {
@@ -685,7 +703,7 @@ func TestASocketsAdmissionReadsHoldAPlaceOutsideAdmission(t *testing.T) {
 	deps.Settle = time.Hour
 	deps.Outside = outside
 	service := New(deps)
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		if err := service.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
@@ -803,6 +821,7 @@ func TestASocketsAdmissionReadsHoldAPlaceOutsideAdmission(t *testing.T) {
 // it. Every place is held as it arrives, so a socket that asked for one would wait its second and
 // be refused 503 for want of a place, as such a socket was before its cookie was checked first.
 func TestASocketPresentingNoSignInIsRefused401BeforeItTakesAPlace(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	outside := admission.New(admission.DefaultLimits()).Outside()
 	deps := testServiceDeps(database)
@@ -810,7 +829,7 @@ func TestASocketPresentingNoSignInIsRefused401BeforeItTakesAPlace(t *testing.T) 
 	deps.Outside = outside
 	deps.Identity = identity.CookieIdentity{SigningKey: testSigningKey, Sessions: store.NewPgSessionStore(database.Pool)}
 	service := New(deps)
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		if err := service.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
@@ -822,7 +841,7 @@ func TestASocketPresentingNoSignInIsRefused401BeforeItTakesAPlace(t *testing.T) 
 			t.Fatalf("take a place outside admission: %v", err)
 		}
 	}
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		for range admission.OutsideLimit {
 			outside.Release()
 		}
@@ -918,7 +937,7 @@ func TestASocketWhoseSessionReadLosesItsConnectionIsRefused503(t *testing.T) {
 	deps.Settle = time.Hour
 	deps.Identity = lostSessionIdentity{}
 	service := New(deps)
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		if err := service.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
@@ -965,7 +984,7 @@ func TestARefusedSocketsWarnLineNamesNoPerson(t *testing.T) {
 		ServerURL: "https://dispatch.example",
 		Settle:    time.Hour,
 	})
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		if err := service.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
@@ -1025,12 +1044,19 @@ func takeTheRoomsPool(t *testing.T, service *Service) *heldPool {
 // 0 for a pool not open. It fails no test, so a hook on the server's goroutine may read it too;
 // roomsAcquires is the test goroutine's, which fails the test for a rooms pool not open.
 func poolAcquires(service *Service, name string) uint64 {
+	return poolAcquireStats(service, name).Count
+}
+
+// poolAcquireStats is what the acquire tracer of service's pool named name has counted since the
+// pool opened (store.AcquireStats), nothing for a pool not open: the acquires waiting for a
+// connection now, and the ones that ran out the pool's acquire bound.
+func poolAcquireStats(service *Service, name string) store.AcquireStats {
 	for _, pool := range service.store.Pool.Stats() {
 		if pool.Name == name {
-			return pool.Acquire.Count
+			return pool.Acquire
 		}
 	}
-	return 0
+	return store.AcquireStats{}
 }
 
 // waitForRoomLoad returns a wait, for a hook on the server's goroutine, that returns once a load of

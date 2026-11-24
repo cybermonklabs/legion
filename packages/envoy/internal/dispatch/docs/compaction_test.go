@@ -546,6 +546,7 @@ func TestACompactionHoldsNoSharedOrRoomsConnection(t *testing.T) {
 // compaction pool's: a fold's read-only transaction on that pool, as a compaction's read folds in
 // (readCompaction), carries none, on the very connection the write ran on once it has ended.
 func TestACompactionsWriteBoundsItsOwnTransactionsIdleTime(t *testing.T) {
+	t.Parallel()
 	database, versioned, artifactID := newHeldCompactionDocument(t)
 	pool, err := database.Pool.Compaction()
 	if err != nil {

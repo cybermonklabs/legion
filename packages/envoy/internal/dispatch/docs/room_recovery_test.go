@@ -862,11 +862,12 @@ func TestAWriteWhoseRoomFailsBeforeItsFirstAppendFailsFast(t *testing.T) {
 // eviction's acquire runs out its bound and the readers run out their deadlines on a room nobody
 // compacted.
 func TestAPinnedReadOfAFailedRoomDoesNotWaitForItsEviction(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	hold := make(chan struct{})
 	release := sync.OnceFunc(func() { close(hold) })
-	t.Cleanup(release)
+	testcleanup.Add(t, release)
 	service.beforeFailedEviction = func(room string) {
 		if room == artifactID {
 			<-hold

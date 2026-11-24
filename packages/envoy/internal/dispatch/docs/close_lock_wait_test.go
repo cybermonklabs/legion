@@ -9,6 +9,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // pastTheWriteLockBound is how long the row below holds a document's lock: a second past the
@@ -33,6 +34,7 @@ const pastTheWriteLockBound = 11 * time.Second
 // The service's settlements are held from the close on (holdSettlementsOnceArmed), since one
 // could take the row before the read below gets to it.
 func TestAClosesWriteOfTheLatestEditSourceWaitsForTheDocumentsLockPastTheWriteLockBound(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before")
@@ -54,7 +56,7 @@ func TestAClosesWriteOfTheLatestEditSourceWaitsForTheDocumentsLockPastTheWriteLo
 	if err != nil {
 		t.Fatalf("connect the session that holds the document's lock: %v", err)
 	}
-	t.Cleanup(func() { _ = plain.Close(context.Background()) })
+	testcleanup.Add(t, func() { _ = plain.Close(context.Background()) })
 	holder, err := plain.Begin(ctx)
 	if err != nil {
 		t.Fatalf("begin the transaction that holds the document's lock: %v", err)

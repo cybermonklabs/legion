@@ -21,6 +21,7 @@ import (
 // paragraph and commits that stamp in its first pass; its next pass finds the text the latest
 // version holds, credits SettlementActor and lists no one.
 func TestAClosedIssuesSettlementWhoseFirstPassStampedForgetsTheKeptEditor(t *testing.T) {
+	t.Parallel()
 	service, artifactID, alice := settleEditWhileClosed(t)
 	ctx := context.Background()
 	version, _, _ := latestDocumentVersion(t, service.store, artifactID)

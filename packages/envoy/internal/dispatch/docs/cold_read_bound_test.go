@@ -18,6 +18,7 @@ import (
 // raising it raises the pool's bound with it, and a change that broke that tie - a coldReadTimeout
 // of its own - fails here instead of silently undercutting the pool.
 func TestTheRequestPoolsIdleBoundOutlastsAColdRead(t *testing.T) {
+	t.Parallel()
 	if coldReadTimeout != store.ColdReadBound {
 		t.Fatalf("coldReadTimeout = %v, want store.ColdReadBound (%v): the request pool's idle bound is computed from that constant",
 			coldReadTimeout, store.ColdReadBound)

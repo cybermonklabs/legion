@@ -490,6 +490,7 @@ func TestAdmissionRecheckClosesANewerPageOnceNoLiveProcessCreatesWhatItCreates(t
 // background pool and takes no connection of the request pool, which admission counts for
 // requests. Pointed back at the request pool, its read moves that pool's acquires and this fails.
 func TestASchemaAdmissionRecheckTakesNoRequestPoolConnection(t *testing.T) {
+	t.Parallel()
 	service, _ := newTestService(t)
 	background, err := service.store.Pool.Background()
 	if err != nil {

@@ -255,6 +255,7 @@ func TestTheCompactionSweepForgetsADocumentWithNoRowAfterItsFirst(t *testing.T) 
 // read-only transaction on that pool, on the connection the delete ran on, carries none once the
 // delete has committed.
 func TestForgettingACompactionCandidateBoundsItsOwnTransactionsIdleTime(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database := storetest.Open(t)
 	emptied := storeAgedRows(t, database, 2, time.Hour)

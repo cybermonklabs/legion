@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // A read of a document takes no connection of the rooms pool, whether a room holds the document or
@@ -28,6 +29,7 @@ import (
 // production's three seconds, and with the pool's acquires counted before and after, so a read
 // that took one is caught even where the pool has a connection free.
 func TestADocumentIsReadWhileTheRoomsPoolIsFull(t *testing.T) {
+	t.Parallel()
 	t.Run("the room is resident", func(t *testing.T) {
 		service, artifactID := newTestService(t)
 		service.settle = time.Hour
@@ -71,7 +73,7 @@ func TestADocumentIsReadWhileTheRoomsPoolIsFull(t *testing.T) {
 			ServerURL:   "https://dispatch.example",
 			Settle:      time.Hour,
 		})
-		t.Cleanup(func() {
+		testcleanup.Add(t, func() {
 			if err := service.Shutdown(context.Background()); err != nil {
 				t.Errorf("shutdown document service: %v", err)
 			}
@@ -231,7 +233,7 @@ const holdLimit = 30 * time.Second
 // connections to read them on.
 func takePool(t *testing.T, pool pooledConnections, name string, requests *store.Pool) (*heldPool, error) {
 	held := &heldPool{}
-	t.Cleanup(held.release)
+	testcleanup.Add(t, held.release)
 	size := int(pool.Stat().MaxConns())
 	until := time.Now().Add(holdLimit)
 	for taken := 0; taken < size; {

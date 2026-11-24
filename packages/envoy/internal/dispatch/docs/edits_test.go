@@ -246,6 +246,7 @@ func TestCheckTableAnchorRowsRejectsCommentReopenedAfterPrevalidation(t *testing
 // A document's writer gate queues at most maxQueuedDocumentWriters writers behind its holder, and
 // refuses the next with ErrPreconditionBusy before it holds anything. A queued writer whose context
 // ends leaves the queue, and the gate keeps nothing for a document once its last writer releases.
+// Each queued writer's wait is an hour (patientWriter), so what ends it is its context.
 func TestDocumentWriterGateBoundsItsQueue(t *testing.T) {
 	t.Parallel()
 	service, artifactID := newTestService(t)
@@ -258,8 +259,9 @@ func TestDocumentWriterGateBoundsItsQueue(t *testing.T) {
 	defer cancel()
 	queuedErrors := make(chan error, maxQueuedDocumentWriters)
 	for range maxQueuedDocumentWriters {
+		patient := patientWriter(t, ctx)
 		go func() {
-			_, _, err := service.AcquireDocumentWriter(ctx, artifactID)
+			_, _, err := service.AcquireDocumentWriter(patient, artifactID)
 			queuedErrors <- err
 		}()
 	}

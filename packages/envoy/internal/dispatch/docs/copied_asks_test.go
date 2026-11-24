@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -1286,6 +1287,7 @@ func settleCopyBesideItsSourcesAnswer(t *testing.T, underWay bool) {
 // holder lets go, the same answer goes through. The bound is the test's
 // (store.WithLockWaitForTest) rather than production's ten seconds.
 func TestAnAnswerQueuedOnAHeldCopyLockIsRefusedBusyAtItsBound(t *testing.T) {
+	t.Parallel()
 	const bound = 300 * time.Millisecond
 	service, _ := newTestService(t)
 	service.settle = time.Hour
@@ -1316,7 +1318,7 @@ func TestAnAnswerQueuedOnAHeldCopyLockIsRefusedBusyAtItsBound(t *testing.T) {
 	var refused error
 	select {
 	case refused = <-answered:
-	case <-time.After(10 * time.Second):
+	case <-time.After(roomWait(t)):
 		waited := time.Since(started)
 		_ = holder.Rollback(context.Background())
 		<-answered
@@ -1747,7 +1749,7 @@ func holdUntilReleased(t *testing.T, room string) (hook func(string), held <-cha
 	holdingNow, released := make(chan struct{}), make(chan struct{})
 	var once sync.Once
 	release = func() { once.Do(func() { close(released) }) }
-	t.Cleanup(release)
+	testcleanup.Add(t, release)
 	return func(at string) {
 		if at == room && holding.CompareAndSwap(false, true) {
 			close(holdingNow)

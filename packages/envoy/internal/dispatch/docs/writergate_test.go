@@ -9,11 +9,30 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/admission"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
+
+// patientWriter is ctx carrying an admission ticket of a limiter of its own whose wait is an hour,
+// for a writer a test queues on a document's gate. A writer waits for a gate for what is left of
+// its ticket's wait (AcquireDocumentWriter), and one admission did not count for
+// admission.DefaultWriteWait: a product bound these rows do not mean to race, which a loaded
+// machine can run out while the test is still queueing the writers behind it. The ticket is
+// released when the test ends.
+func patientWriter(t *testing.T, ctx context.Context) context.Context {
+	t.Helper()
+	limiter := admission.New(admission.Limits{Read: 1, Write: 1, ReadWait: time.Hour, WriteWait: time.Hour})
+	ticket, err := limiter.Admit(context.Background(), admission.Write, 1)
+	if err != nil {
+		t.Fatalf("admit a patient writer: %v", err)
+	}
+	testcleanup.Add(t, ticket.Release)
+	return admission.WithTicket(ctx, ticket)
+}
 
 // A caller holding a pooled connection is refused a document's writer gate at once: the writer
 // holding the gate may be waiting for a connection, or for a lock that caller's transaction holds.
 func TestTheWriterGateRefusesACallerHoldingAConnection(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	ctx := store.WithTransactionTracking(context.Background())
 	tx, err := service.store.Pool.Begin(ctx)
@@ -38,6 +57,7 @@ func TestTheWriterGateRefusesACallerHoldingAConnection(t *testing.T) {
 // A live write joins a document only under that document's writer gate: not without one, not under
 // another document's, and not under one its holder has released.
 func TestJoinLiveWriteRefusesAnUngatedCaller(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	seedServiceText(t, service, artifactID, "First.\n")
 	other := createIssueDocument(t, service.store, 2, "# Other")
@@ -81,6 +101,7 @@ func TestJoinLiveWriteRefusesAnUngatedCaller(t *testing.T) {
 
 // Writers take a document's gate in the order they asked for it.
 func TestTheWriterGateAdmitsWritersInArrivalOrder(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	_, release, err := service.AcquireDocumentWriter(context.Background(), artifactID)
 	if err != nil {
@@ -90,8 +111,9 @@ func TestTheWriterGateAdmitsWritersInArrivalOrder(t *testing.T) {
 	order := make(chan int, writers)
 	done := make(chan struct{}, writers)
 	for index := range writers {
+		patient := patientWriter(t, context.Background())
 		go func() {
-			_, release, err := service.AcquireDocumentWriter(context.Background(), artifactID)
+			_, release, err := service.AcquireDocumentWriter(patient, artifactID)
 			if err != nil {
 				t.Errorf("writer %d: %v", index, err)
 				done <- struct{}{}
@@ -120,6 +142,7 @@ func TestTheWriterGateAdmitsWritersInArrivalOrder(t *testing.T) {
 // Writes to overlapping documents, named in opposite orders, never each hold a gate the other
 // waits for: the gates are taken sorted.
 func TestOverlappingMultiDocumentWritersDoNotDeadlock(t *testing.T) {
+	t.Parallel()
 	service, first := newTestService(t)
 	second := createIssueDocument(t, service.store, 2, "# Second")
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -147,11 +170,13 @@ func TestOverlappingMultiDocumentWritersDoNotDeadlock(t *testing.T) {
 
 // A writer that has to wait for a document's gate gives its request's admission units back while
 // it waits, so a write to another document finds room; once the gate passes to it, it takes its
-// units back.
+// units back. The limiter's wait is an hour, so the queued writer waits for the gate for as long
+// as the test holds it, and what the row reads is where the units are, not how long a wait took.
 func TestAWriterQueuedForADocumentGivesItsAdmissionBack(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	limiter := admission.New(admission.Limits{
-		Read: 1, Write: 1, ReadWait: 50 * time.Millisecond, WriteWait: 50 * time.Millisecond,
+		Read: 1, Write: 1, ReadWait: time.Hour, WriteWait: time.Hour,
 	})
 	_, release, err := service.AcquireDocumentWriter(context.Background(), artifactID)
 	if err != nil {
@@ -171,6 +196,10 @@ func TestAWriterQueuedForADocumentGivesItsAdmissionBack(t *testing.T) {
 		queued <- err
 	}()
 	waitForQueuedWriters(t, service, 1)
+	// The writer counts itself queued before it parks its units (documentWriterGate.acquire).
+	waitFor(t, roomWait(t), "the queued writer to give its write unit back", func() bool {
+		return limiter.Totals().InFlight == 0
+	})
 	other, err := limiter.Admit(context.Background(), admission.Write, 1)
 	if err != nil {
 		t.Fatalf("a write admitted while the only write unit's holder queues for a document = %v, want it admitted", err)
@@ -180,17 +209,21 @@ func TestAWriterQueuedForADocumentGivesItsAdmissionBack(t *testing.T) {
 	if err := <-queued; err != nil {
 		t.Fatalf("the queued writer, once the gate passed to it = %v", err)
 	}
-	if _, err := limiter.Admit(context.Background(), admission.Write, 1); err == nil {
-		t.Fatal("a write was admitted while the resumed writer holds the only write unit")
+	if held := limiter.Totals().InFlight; held != 1 {
+		t.Fatalf("%d write units held once the queued writer took the gate, want the one it took back", held)
 	}
 }
 
 // A writer whose admission units cannot be taken back once the gate passes to it is refused as
-// admission refuses a request, and hands the gate on.
+// admission refuses a request, and hands the gate on. The limiter's wait is an hour, so the queued
+// writer waits for the gate for as long as the test holds it; its take-back is refused because the
+// write class's queue is full behind the write that keeps its unit (fillWriteQueue), which
+// admission refuses at once, and not because a wait ran out before or after the gate passed.
 func TestAWriterThatCannotResumeItsAdmissionReleasesTheGate(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	limiter := admission.New(admission.Limits{
-		Read: 1, Write: 1, ReadWait: 20 * time.Millisecond, WriteWait: 20 * time.Millisecond,
+		Read: 1, Write: 1, ReadWait: time.Hour, WriteWait: time.Hour,
 	})
 	_, release, err := service.AcquireDocumentWriter(context.Background(), artifactID)
 	if err != nil {
@@ -210,15 +243,20 @@ func TestAWriterThatCannotResumeItsAdmissionReleasesTheGate(t *testing.T) {
 		queued <- err
 	}()
 	waitForQueuedWriters(t, service, 1)
+	// The writer counts itself queued before it parks its units (documentWriterGate.acquire).
+	waitFor(t, roomWait(t), "the queued writer to give its write unit back", func() bool {
+		return limiter.Totals().InFlight == 0
+	})
 	other, err := limiter.Admit(context.Background(), admission.Write, 1)
 	if err != nil {
 		t.Fatalf("admit the write that keeps the unit: %v", err)
 	}
 	defer other.Release()
+	fillWriteQueue(t, limiter)
 	release()
 	var refusal *admission.Refusal
-	if err := <-queued; !errors.As(err, &refusal) {
-		t.Fatalf("a writer that cannot take its unit back = %v, want admission's refusal", err)
+	if err := <-queued; !errors.As(err, &refusal) || refusal.Reason != admission.QueueFull {
+		t.Fatalf("a writer that cannot take its unit back = %v, want admission's refusal of a full queue", err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -227,4 +265,51 @@ func TestAWriterThatCannotResumeItsAdmissionReleasesTheGate(t *testing.T) {
 		t.Fatalf("the gate after the refused writer = %v, want it free", err)
 	}
 	next()
+}
+
+// fillWriteQueue queues writes on limiter's write class, each waiting on a goroutine of its own
+// until the test ends, until admission refuses the next at once because the queue is full
+// (admission.QueueFull): a take-back of a write unit after it is refused at once as well.
+func fillWriteQueue(t *testing.T, limiter *admission.Limiter) {
+	t.Helper()
+	queuing, stop := context.WithCancel(context.Background())
+	testcleanup.Add(t, stop)
+	writesQueued := func() int {
+		for _, class := range limiter.Stats() {
+			if class.Class == admission.Write {
+				return class.Queued
+			}
+		}
+		return 0
+	}
+	for {
+		before := writesQueued()
+		answered := make(chan error, 1)
+		go func() {
+			ticket, err := limiter.Admit(queuing, admission.Write, 1)
+			if err == nil {
+				ticket.Release()
+			}
+			answered <- err
+		}()
+		var answer error
+		refused := false
+		waitFor(t, roomWait(t), "a write to queue, or to be refused by the full write queue", func() bool {
+			select {
+			case answer = <-answered:
+				refused = true
+				return true
+			default:
+				return writesQueued() > before
+			}
+		})
+		if !refused {
+			continue
+		}
+		var refusal *admission.Refusal
+		if !errors.As(answer, &refusal) || refusal.Reason != admission.QueueFull {
+			t.Fatalf("a write on the filling write queue answered %v, want it queued or refused by the full queue", answer)
+		}
+		return
+	}
 }

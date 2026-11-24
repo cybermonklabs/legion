@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // Writes through the API to more documents than the budget of resident peerless rooms leave at
@@ -37,6 +38,7 @@ import (
 // moment the browser is authorized). Here that document is the one written first, so an eviction
 // by age alone would take it before any other.
 func TestTheRoomBudgetClosesTheLeastRecentlyUsedPeerlessRooms(t *testing.T) {
+	t.Parallel()
 	const budget = 8
 	// Wide enough that nothing is closed while the writes run, so the rooms the trim below
 	// weighs are every document written and the order it closes them in is the write order. A
@@ -46,7 +48,7 @@ func TestTheRoomBudgetClosesTheLeastRecentlyUsedPeerlessRooms(t *testing.T) {
 	advance := roomBudgetClock(service)
 	ids := createDocuments(t, database, 3*budget)
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
-	t.Cleanup(httpServer.Close)
+	testcleanup.Add(t, httpServer.Close)
 
 	// The browser's document is written first, so it is the oldest room of all.
 	browsers := ids[0]
@@ -99,6 +101,7 @@ func TestTheRoomBudgetClosesTheLeastRecentlyUsedPeerlessRooms(t *testing.T) {
 // the write appends to what was there, and the settlement the write arms commits a version of the
 // whole document. So the budget costs a reload and loses nothing.
 func TestAWriteToARoomTheBudgetClosedLandsAndSettles(t *testing.T) {
+	t.Parallel()
 	const budget = 1
 	service, database := newRoomBudgetService(t, budget)
 	service.settle = 20 * time.Millisecond
@@ -145,6 +148,7 @@ func TestAWriteToARoomTheBudgetClosedLandsAndSettles(t *testing.T) {
 // is one it is about to use again, and closing it costs four reads of the store to load it back
 // where keeping it costs one.
 func TestTheRoomBudgetKeepsARoomUsedInsideItsWindow(t *testing.T) {
+	t.Parallel()
 	const budget = 1
 	// Wide while the rooms load, so the order below is the order this test set and not what a
 	// trim between two loads left.
@@ -177,6 +181,7 @@ func TestTheRoomBudgetKeepsARoomUsedInsideItsWindow(t *testing.T) {
 // ago that room was used: the settlement loads the document again the moment the close retires
 // its room, so closing it buys the heap nothing and costs the settlement a reload.
 func TestTheRoomBudgetKeepsARoomThatOwesASettlement(t *testing.T) {
+	t.Parallel()
 	const budget = 2
 	service, database := newRoomBudgetService(t, 100*budget)
 	advance := roomBudgetClock(service)
@@ -207,6 +212,7 @@ func TestTheRoomBudgetKeepsARoomThatOwesASettlement(t *testing.T) {
 // first closed, and the rooms held back are the newest. The window only holds a room back until
 // it is old enough to close.
 func TestTheRoomBudgetClosesTheLeastRecentlyUsedRoomPastItsWindow(t *testing.T) {
+	t.Parallel()
 	const budget = 2
 	service, database := newRoomBudgetService(t, 100*budget)
 	advance := roomBudgetClock(service)
@@ -243,13 +249,14 @@ func TestTheRoomBudgetClosesTheLeastRecentlyUsedRoomPastItsWindow(t *testing.T) 
 // of peerless rooms ahead of any socket instead, and a socket that found the cap full was refused
 // at once.
 func TestABrowserAtAFullRoomCapIsAdmittedInTheLeastRecentlyUsedClosableRoomsPlace(t *testing.T) {
+	t.Parallel()
 	const roomCap = 10
 	service, database := newRoomBudgetServiceWithCap(t, 100*roomCap, roomCap)
 	advance := roomBudgetClock(service)
 	ids := createDocuments(t, database, roomCap+1)
 	rooms, browsers := ids[:roomCap], ids[roomCap]
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
-	t.Cleanup(httpServer.Close)
+	testcleanup.Add(t, httpServer.Close)
 
 	// A tenth of a second apart, so the order the trim reads is the order loaded, and then all of
 	// them past the window.
@@ -303,6 +310,7 @@ func TestABrowserAtAFullRoomCapIsAdmittedInTheLeastRecentlyUsedClosableRoomsPlac
 // rooms past nine of these ten places, and on the load test's 10x step (INFRA-592) that closed 2.6
 // rooms a second, each reloaded by its next write or read.
 func TestTheTrimClosesNoRoomForAPlaceNoSocketWaitsFor(t *testing.T) {
+	t.Parallel()
 	const roomCap = 10
 	service, database := newRoomBudgetServiceWithCap(t, 100*roomCap, roomCap)
 	advance := roomBudgetClock(service)
@@ -332,6 +340,7 @@ func TestTheTrimClosesNoRoomForAPlaceNoSocketWaitsFor(t *testing.T) {
 // much more, and is then refused 503 with Retry-After, as a socket at a full cap was refused before.
 // Its wait closed nothing, and it counts as waiting no longer.
 func TestABrowserAtARoomCapNoCloseCanFreeIsRefusedAfterItsWait(t *testing.T) {
+	t.Parallel()
 	const roomCap = 4
 	service, database := newRoomBudgetServiceWithCap(t, 100*roomCap, roomCap)
 	// The clock stands still, so every room stays inside its window.
@@ -339,7 +348,7 @@ func TestABrowserAtARoomCapNoCloseCanFreeIsRefusedAfterItsWait(t *testing.T) {
 	ids := createDocuments(t, database, roomCap+1)
 	rooms, browsers := ids[:roomCap], ids[roomCap]
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
-	t.Cleanup(httpServer.Close)
+	testcleanup.Add(t, httpServer.Close)
 	for _, id := range rooms {
 		warmRoom(t, service, id)
 	}
@@ -370,13 +379,14 @@ func TestABrowserAtARoomCapNoCloseCanFreeIsRefusedAfterItsWait(t *testing.T) {
 // one after another, each kept open, so each finds the cap full and takes the place of one closed
 // room. The test logs the median, p99 and longest time from dial to admission.
 func TestEveryBrowserAtAFullRoomCapGetsAPlaceInMilliseconds(t *testing.T) {
+	t.Parallel()
 	const roomCap = 100
 	service, database := newRoomBudgetServiceWithCap(t, 10*roomCap, roomCap)
 	advance := roomBudgetClock(service)
 	ids := createDocuments(t, database, 2*roomCap)
 	rooms, browsers := ids[:roomCap], ids[roomCap:]
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
-	t.Cleanup(httpServer.Close)
+	testcleanup.Add(t, httpServer.Close)
 	warmRooms(t, service, rooms)
 	advance(roomBudgetMinIdle)
 	if places := service.roomPlaces(); places != roomCap {
@@ -391,7 +401,7 @@ func TestEveryBrowserAtAFullRoomCapGetsAPlaceInMilliseconds(t *testing.T) {
 		if opened.err != nil {
 			t.Fatalf("browser %d of %d: the socket on %s was refused (%v), want it admitted in a closed room's place", i+1, len(browsers), id, opened.err)
 		}
-		t.Cleanup(func() { _ = opened.connection.Close() })
+		testcleanup.Add(t, func() { _ = opened.connection.Close() })
 		// The room's first frame, so its room holds its place before the next browser dials.
 		_ = opened.connection.SetReadDeadline(time.Now().Add(10 * time.Second))
 		if _, _, err := opened.connection.ReadMessage(); err != nil {
@@ -428,9 +438,10 @@ func TestEveryBrowserAtAFullRoomCapGetsAPlaceInMilliseconds(t *testing.T) {
 // writes grow the documents past the weight floor, so the rooms do not all weigh alike. A failure
 // logs the run's seed.
 func TestTheResidentWeightIsTheResidentRoomsWeightAfterEveryStep(t *testing.T) {
+	t.Parallel()
 	const steps = 240
 	seed := uint64(time.Now().UnixNano())
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		if t.Failed() {
 			t.Logf("the run's seed: %d", seed)
 		}
@@ -549,6 +560,7 @@ func TestTheResidentWeightIsTheResidentRoomsWeightAfterEveryStep(t *testing.T) {
 // (RoomCounters.RoomCloses) each count that close once and nothing for the room the sweep unloaded
 // meanwhile, which a close made after it finds gone.
 func TestTheBudgetCountsOnlyTheRoomsItsOwnCloseUnloaded(t *testing.T) {
+	t.Parallel()
 	service, database := newIdleSweptRoomBudgetService(t, nil)
 	unloads := countUnloads(service)
 	ids := createDocuments(t, database, 2)
@@ -600,6 +612,7 @@ func TestTheBudgetCountsOnlyTheRoomsItsOwnCloseUnloaded(t *testing.T) {
 // share full a place taken on either way could not be held, so it would show as work that waited
 // behind the test's holds (MaxQueued) and was refused at the share's wait (Refused).
 func TestNoUnloadOfAPeerlessRoomTakesAPlaceOutsideAdmission(t *testing.T) {
+	t.Parallel()
 	outside := admission.New(admission.DefaultLimits()).Outside()
 	service, database := newIdleSweptRoomBudgetService(t, outside)
 	ids := createDocuments(t, database, 2)
@@ -695,7 +708,7 @@ func newRoomBudgetServiceWithCap(t *testing.T, rooms, roomCap int) (*Service, *s
 		MaxLiveRooms: roomCap,
 	})
 	service.peerlessRoomBytes.Store(int64(rooms) * roomHeapFloor)
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		if err := service.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
@@ -793,7 +806,7 @@ func newIdleSweptRoomBudgetService(t *testing.T, outside *admission.Outside) (*S
 	deps.Outside = outside
 	service := New(deps)
 	service.peerlessRoomBytes.Store(0)
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		if err := service.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}

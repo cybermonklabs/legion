@@ -22,12 +22,12 @@ import (
 // not, and a block of the approved version that no longer stands refuses the carry (carryVerdict);
 // askNodes, which both versions are read through, refuses a repeat as well, but the read-back
 // leaves it none to refuse. TestAVersionHoldingARepeatedBlockIDCarriesNothing's run without the
-// repeat is the control that carries. The service settles a second after a live write, wide
-// enough that settlement does not run between the steps and repair or version the repeat on its
-// own.
+// repeat is the control that carries. The service's settle window is an hour, so no settlement runs
+// between the steps to repair or version the repeat on its own: a window of a second let one run
+// there among the parallel tests, and the edit that drops the repeat found it gone.
 func TestAnApprovedVersionHoldingARepeatedBlockIDCarriesNothing(t *testing.T) {
 	t.Parallel()
-	database, service, artifactID := seededRegionDocument(t, time.Second)
+	database, service, artifactID := seededRegionDocument(t, time.Hour)
 	agent := model.Actor{Kind: "session", ID: "session-0123456789abcdef"}
 
 	editLiveTree(t, service, artifactID, appendSecondRegionAsk(t))

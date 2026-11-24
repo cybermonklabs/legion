@@ -19,6 +19,7 @@ import (
 // The test's own bound on the context stands for the write lock bound, so the row runs in a
 // second rather than in ten.
 func TestACatchUpsConfirmationUnderTheDocumentLockWaitsForTheHolder(t *testing.T) {
+	t.Parallel()
 	const bound = 300 * time.Millisecond
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "# First")

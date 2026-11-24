@@ -147,12 +147,13 @@ func TestStoredOrderBackfillDoesNotStoreTheRoomsCommittedEditTwice(t *testing.T)
 // names the connection's pool. With no bound, a backfill orphaned with its connection held the
 // document's lock until Postgres noticed, refusing every request that wrote the document.
 func TestTheBackfillsStoreRunsUnderTheSettlementsPoolsIdleBound(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before")
 	seedUnidentifiedProofDocument(t, database, artifactID, "before")
 	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour})
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		if err := service.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}

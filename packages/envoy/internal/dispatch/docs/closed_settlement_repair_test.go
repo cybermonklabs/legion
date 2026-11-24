@@ -25,6 +25,7 @@ import (
 // its first pass; its next pass finds the text the latest version holds, credits SettlementActor
 // and lists no one.
 func TestAClosedIssuesSettlementWhoseFirstPassCommittedARepairForgetsTheKeptEditor(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	ctx := context.Background()

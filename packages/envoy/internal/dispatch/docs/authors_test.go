@@ -364,6 +364,7 @@ func TestAnAskInTheRoomBeforeASettlementsTakeKeepsItsAuthor(t *testing.T) {
 // (afterSettleRepairCommit, which only commitRepairs runs) and again as the pass after it starts
 // (beforeSettleTake) (INFRA-592).
 func TestARepairCommitThatIndexesAnAskForgetsItsAuthorInsideItsHold(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")

@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // leasePeriod is the resumption period these rows run at, a second in place of the server's
@@ -51,7 +52,7 @@ func newSlowSettlement(t *testing.T, hold time.Duration, configure func(*Deps)) 
 		configure(&deps)
 	}
 	service := New(deps)
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		if err := service.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
@@ -94,7 +95,7 @@ func newSlowSettlement(t *testing.T, hold time.Duration, configure func(*Deps)) 
 		}
 	}
 	// Runs before the shutdown above: a settlement still held lets go at once.
-	t.Cleanup(func() { close(release) })
+	testcleanup.Add(t, func() { close(release) })
 	service.settle = 100 * time.Millisecond
 	return f
 }
@@ -123,7 +124,7 @@ func (f *slowSettlement) resumeEvery(t *testing.T, period time.Duration) func() 
 			}
 		}
 	}()
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		stop()
 		<-resumed
 	})
@@ -213,6 +214,7 @@ func passArms(t *testing.T, service *Service, room string) bool {
 // The control: the same slow settlement, armed once with no resumption running, commits. What
 // the rows below meet is the resumption, not the hold.
 func TestASlowSettlementArmedOnceCommits(t *testing.T) {
+	t.Parallel()
 	f := newSlowSettlement(t, leaseHold, nil)
 	f.service.scheduleSettle(f.artifactID)
 	f.requireCommits(t, 6*leaseHold, func() int32 { return 0 })
@@ -227,6 +229,7 @@ func TestASlowSettlementArmedOnceCommits(t *testing.T) {
 // generation under the settlement still working: every settlement ended at applyStamp writing
 // nothing, and the document never committed (INFRA-592, round 66).
 func TestASettlementThatOutlastsAResumptionPeriodCommits(t *testing.T) {
+	t.Parallel()
 	f := newSlowSettlement(t, leaseHold, nil)
 	passes := f.resumeEvery(t, leasePeriod)
 	f.requireCommits(t, 6*leaseHold, passes)
@@ -235,6 +238,7 @@ func TestASettlementThatOutlastsAResumptionPeriodCommits(t *testing.T) {
 // The row above with the resumption run as the server runs it, RunSettlementResumption under its
 // lease (duty.RunLeased), its period shortened to a second through Deps.SettlementResume.
 func TestASettlementThatOutlastsALeasedResumptionPeriodCommits(t *testing.T) {
+	t.Parallel()
 	f := newSlowSettlement(t, leaseHold, func(deps *Deps) { deps.SettlementResume = leasePeriod })
 	leases := excerptLeases(t, f.service.store)
 	resumption, stop := context.WithCancel(context.Background())
@@ -243,7 +247,7 @@ func TestASettlementThatOutlastsALeasedResumptionPeriodCommits(t *testing.T) {
 		defer close(resumed)
 		f.service.RunSettlementResumption(resumption, leases)
 	}()
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		stop()
 		<-resumed
 	})
@@ -255,6 +259,7 @@ func TestASettlementThatOutlastsALeasedResumptionPeriodCommits(t *testing.T) {
 // the second left is the settlement's own work around the hold, its read before and its commit
 // after. The passes run every 200 ms, so a pass meets the row about every fifth of the hold.
 func TestASettlementHeldJustUnderItsLeaseIsArmedByNoOtherPassAndCommits(t *testing.T) {
+	t.Parallel()
 	const lease = 4 * time.Second
 	f := newSlowSettlement(t, lease-time.Second, nil)
 	f.service.settleLease = lease
@@ -269,14 +274,16 @@ func TestASettlementHeldJustUnderItsLeaseIsArmedByNoOtherPassAndCommits(t *testi
 // arming moves the room's generation under it. That is what every settlement slower than a period
 // met before the lease, so the lease (settlementLease) has to outlast the longest a settlement
 // runs, and a document whose settlement's process died with the lease held is armed by the first
-// pass after it. The lease is a second here and each settlement is held three, so a second
-// settlement reads the tree while the first is still held.
+// pass after it. The lease is a second here and each settlement is held at its tree read until the
+// test ends (newSlowSettlement's cleanup lets it go), so the second settlement reads the tree while
+// the first is still held, however long the pass that arms it takes to come.
 func TestAPassArmsTheDocumentAgainOnceItsSettlementsLeaseHasRunOut(t *testing.T) {
+	t.Parallel()
 	const lease = time.Second
-	f := newSlowSettlement(t, 3*lease, nil)
+	f := newSlowSettlement(t, time.Hour, nil)
 	f.service.settleLease = lease
 	passes := f.resumeEvery(t, 200*time.Millisecond)
-	waitFor(t, 3*lease, "a pass to arm the document again once the first settlement's lease ran out, while it was still held", func() bool {
+	waitFor(t, roomWait(t), "a pass to arm the document again once the first settlement's lease ran out, while it was still held", func() bool {
 		return f.reads.Load() >= 2
 	})
 	if reconciled := f.reconciles.Load(); reconciled != 0 {
@@ -290,6 +297,7 @@ func TestAPassArmsTheDocumentAgainOnceItsSettlementsLeaseHasRunOut(t *testing.T)
 // pass arms the document at once, not once the lease has run out (settlementLease), and the
 // settlement that pass arms commits.
 func TestASettlementPastItsDeadlineIsRetriedAtTheNextPass(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "before")
@@ -333,6 +341,7 @@ func TestASettlementPastItsDeadlineIsRetriedAtTheNextPass(t *testing.T) {
 // document while the newer settlement runs. Both settlements are held at their tree read: the
 // older until the newer has taken its lease, the newer until the older has ended.
 func TestASupersededSettlementsGiveBackLeavesTheNewerLeaseStanding(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "before")
@@ -344,7 +353,7 @@ func TestASupersededSettlementsGiveBackLeavesTheNewerLeaseStanding(t *testing.T)
 	holds := [2]chan struct{}{make(chan struct{}), make(chan struct{})}
 	var lets [2]sync.Once
 	let := func(index int) { lets[index].Do(func() { close(holds[index]) }) }
-	t.Cleanup(func() { let(0); let(1) })
+	testcleanup.Add(t, func() { let(0); let(1) })
 	var reads atomic.Int32
 	service.afterSettleTreeRead = func(room string, _ *pmdoc.Node) {
 		if room != artifactID {

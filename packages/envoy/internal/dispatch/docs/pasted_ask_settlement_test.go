@@ -43,6 +43,7 @@ var browserAskServerAttributes = map[string]any{
 // commit, and a settlement that read the missing update as a move planned the same repairs again
 // until its pass bound, leaving the ask unrecorded (INFRA-592).
 func TestAPastedAskBlockWhoseServerAttributesAreNullOpensItsAsk(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	// Its peer lives across the settlements below, so the room must outlast ygo's idle sweep
 	// (newRoomPeer refuses a service whose rooms are not held, main's #5259).

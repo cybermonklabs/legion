@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -51,6 +52,7 @@ func movableClock(service *Service) func(by time.Duration) {
 // columns, whose row counts as reading version 0, so no page is writable while it lives; this
 // process's own current page is writable without it.
 func TestASocketsAdmissionSeesAFleetChangeOnceTheSharedReadIsASecondOld(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	service, server := newTestServiceInstance(t, database)
 	artifactID := createDocuments(t, database, 1)[0]
@@ -88,6 +90,7 @@ func TestASocketsAdmissionSeesAFleetChangeOnceTheSharedReadIsASecondOld(t *testi
 // own. The first read is held until the others have had half a second to make theirs, which none
 // of them may; the clock stands still, so the read the first makes is fresh for all of them.
 func TestConcurrentColdSocketsShareOneFleetRead(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	service, server := newTestServiceInstance(t, database)
 	artifactID := createDocuments(t, database, 1)[0]
@@ -101,7 +104,7 @@ func TestConcurrentColdSocketsShareOneFleetRead(t *testing.T) {
 			close(release)
 		}
 	}
-	t.Cleanup(letRead)
+	testcleanup.Add(t, letRead)
 	service.beforeSocketFleetRead = func(string) {
 		if reads.Add(1) == 1 {
 			close(reading)
@@ -129,7 +132,7 @@ func TestConcurrentColdSocketsShareOneFleetRead(t *testing.T) {
 			t.Errorf("socket %d was refused (%v), want it admitted", i+1, socket.err)
 			continue
 		}
-		t.Cleanup(func() { _ = socket.connection.Close() })
+		testcleanup.Add(t, func() { _ = socket.connection.Close() })
 	}
 	if got := reads.Load(); got != 1 {
 		t.Errorf("%d cold sockets opened at once read the live server processes %d times, want once", sockets, got)
@@ -141,6 +144,7 @@ func TestConcurrentColdSocketsShareOneFleetRead(t *testing.T) {
 // and is admitted as the fleet admits it. The first read finds every request-pool connection held,
 // and the clock stands still, so a failure kept as an answer would be the second socket's too.
 func TestAFailedFleetReadIsNotKept(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	service, server := newTestServiceInstance(t, database)
 	artifactID := createDocuments(t, database, 1)[0]

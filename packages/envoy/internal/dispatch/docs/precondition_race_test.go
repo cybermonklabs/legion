@@ -49,10 +49,11 @@ func TestConditionalDocumentEditDoesNotOverwriteWriterDuringTableAnchorCheck(t *
 			})
 			artifactID := createDocument(t, database, "")
 			service := New(Deps{Store: database, Settle: time.Hour})
+			// The shutdown runs to its own drain budget, as every other service of these tests
+			// does: a second of the test's own failed it among the parallel tests, its read-back
+			// of the settlement the edit owed cut short (settlementsUnconfirmed).
 			testcleanup.Add(t, func() {
-				shutdown, cancel := context.WithTimeout(context.Background(), time.Second)
-				defer cancel()
-				if err := service.Shutdown(shutdown); err != nil {
+				if err := service.Shutdown(context.Background()); err != nil {
 					t.Errorf("shutdown service: %v", err)
 				}
 			})

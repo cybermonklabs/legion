@@ -885,7 +885,7 @@ func TestEditNoticeSweepEndsAnOwnerLockWaitAtItsBoundAndALaterSweepSendsTheNotic
 	var result sweepResult
 	select {
 	case result = <-swept:
-	case <-time.After(10 * time.Second):
+	case <-time.After(roomWait(t)):
 		waited := time.Since(started)
 		_ = holder.Rollback(ctx)
 		<-swept

@@ -482,6 +482,7 @@ func TestALiveWriteAndAKeystrokeQueueOnTheRoomsLockAndNeitherIsLost(t *testing.T
 // boot's ask repair, a catch-up's confirmation and the block-id backfill each take their
 // transaction off that pool for the same reason (INFRA-592).
 func TestOnlyARequestsWaitOnTheDocumentLockIsBounded(t *testing.T) {
+	t.Parallel()
 	const bound = 300 * time.Millisecond
 	service, artifactID, _ := tracedRoomService(t)
 	head := storedHead(t, service.store, artifactID)
@@ -537,7 +538,7 @@ func TestOnlyARequestsWaitOnTheDocumentLockIsBounded(t *testing.T) {
 	var refused error
 	select {
 	case refused = <-request:
-	case <-time.After(10 * time.Second):
+	case <-time.After(roomWait(t)):
 		waited := time.Since(started)
 		_ = holder.Rollback(ctx)
 		<-request

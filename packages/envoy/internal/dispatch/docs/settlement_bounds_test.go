@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/reearth/ygo/crdt"
 
@@ -21,12 +22,14 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/texttrees"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // A settlement holding one of the settlementWorkers slots takes its transaction's connection from
 // the settlements pool, which has one connection for each slot, so no settlement holding a slot waits
 // for a connection behind another settlement.
 func TestSettlementSlotsMatchTheSettlementsPool(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	settlements, err := database.Pool.Settlements()
 	if err != nil {
@@ -39,8 +42,11 @@ func TestSettlementSlotsMatchTheSettlementsPool(t *testing.T) {
 
 // Twelve documents owing a settlement, all armed at once by the resumption, never run more than
 // settlementWorkers settlements at a time; the rest wait for a slot, counted as waiting, and every
-// one of them settles.
+// one of them settles. Each settlement is held as it warms its room until settlementWorkers of them
+// hold a slot and one more waits for one, so every slot is taken while the first hold theirs by
+// the order of those events and not by how long a hold lasts.
 func TestOwedDocumentsNeverRunMoreSettlementsAtOnceThanThereAreSlots(t *testing.T) {
+	t.Parallel()
 	service, first := newTestService(t)
 	service.settle = time.Hour
 	const documents = 12
@@ -58,22 +64,28 @@ func TestOwedDocumentsNeverRunMoreSettlementsAtOnceThanThereAreSlots(t *testing.
 	}
 
 	var running, highest, waited, entered atomic.Int64
+	full := make(chan struct{})
+	letGo := sync.OnceFunc(func() { close(full) })
+	testcleanup.Add(t, letGo)
 	service.afterSettleWarm = func(string) {
 		now := running.Add(1)
 		for seen := highest.Load(); now > seen && !highest.CompareAndSwap(seen, now); seen = highest.Load() {
 		}
-		if load := service.SettlementLoad(); load.Waiting > waited.Load() {
-			waited.Store(load.Waiting)
-		}
 		entered.Add(1)
-		// Long enough that every slot is taken while the first settlements hold theirs.
-		time.Sleep(200 * time.Millisecond)
+		<-full
 		running.Add(-1)
 	}
 	service.settle = 10 * time.Millisecond
 	if err := service.resumeOwedSettlements(context.Background(), 0); err != nil {
 		t.Fatalf("resume the owed settlements: %v", err)
 	}
+	// A settlement past the slots would come in here as well, and the count after says so.
+	waitFor(t, roomWait(t), "every settlement slot to be held and another settlement to wait for one", func() bool {
+		holding := running.Load()
+		return holding > settlementWorkers || (holding == settlementWorkers && service.SettlementLoad().Waiting > 0)
+	})
+	waited.Store(service.SettlementLoad().Waiting)
+	letGo()
 	waitFor(t, 60*time.Second, "every owed document to settle", func() bool {
 		return pendingSettlements(t, service) == 0
 	})
@@ -96,8 +108,11 @@ func TestOwedDocumentsNeverRunMoreSettlementsAtOnceThanThereAreSlots(t *testing.
 // A settlement that cannot finish by its deadline - here another transaction holds the document's
 // owner row past it - rolls back: the document stays owed, its room stays resident, and the
 // deadline counts as no settlement failure however often it recurs, so overload fails no room. The
-// resumption then settles the document.
+// resumption then settles the document. Each attempt returns while the holder still holds the row
+// (requireStillHolding), which is what shows it ended at its deadline: one held to no deadline
+// returns only once the row is let go.
 func TestASettlementPastItsDeadlineRollsBackStaysOwedAndCountsNoFailure(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "before")
@@ -117,11 +132,8 @@ func TestASettlementPastItsDeadlineRollsBackStaysOwedAndCountsNoFailure(t *testi
 	const deadline = 300 * time.Millisecond
 	service.settleTimeout = deadline
 	for attempt := range maxSettleFailures + 1 {
-		started := time.Now()
 		settleCurrentGeneration(t, service, artifactID)
-		if took := time.Since(started); took > deadline+5*time.Second {
-			t.Fatalf("attempt %d: the settlement returned after %v, want soon after its %v deadline", attempt, took, deadline)
-		}
+		requireStillHolding(t, hold, fmt.Sprintf("attempt %d: the settlement returned", attempt))
 		owes, err := settlementPending(ctx, service.store.Pool, artifactID)
 		if err != nil {
 			t.Fatalf("read the document's pending settlement: %v", err)
@@ -161,8 +173,9 @@ func TestASettlementPastItsDeadlineRollsBackStaysOwedAndCountsNoFailure(t *testi
 // its warm-up loads is known by (withSettlementLoad). Here another transaction holds the document's
 // owner row past that deadline: the settlement rolls back at it, leaving the document owed and
 // counting no failure, and the departing browser's socket, which ends only once that settlement
-// has returned, ends then rather than once the owner row is let go.
+// has returned, ends while the owner row is still held rather than once it is let go.
 func TestTheSettlementALastBrowserLeavingRunsIsHeldToItsDeadline(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "before")
@@ -179,7 +192,7 @@ func TestTheSettlementALastBrowserLeavingRunsIsHeldToItsDeadline(t *testing.T) {
 			ended <- struct{}{}
 		}
 	}))
-	t.Cleanup(httpServer.Close)
+	testcleanup.Add(t, httpServer.Close)
 	browser := connectPeer(t, httpServer.URL, artifactID, "alice")
 	if err := browser.WaitForText(peerMarkdown, "before\n", roomWait(t)); err != nil {
 		t.Fatal(err)
@@ -204,15 +217,15 @@ func TestTheSettlementALastBrowserLeavingRunsIsHeldToItsDeadline(t *testing.T) {
 	}
 	closed := time.Now()
 	browser.Close()
-	// The socket ends within the bound a timer's settlement past its deadline returns within
-	// (TestASettlementPastItsDeadlineRollsBackStaysOwedAndCountsNoFailure), far inside the idle
-	// bound that ends the holder's transaction (store.RequestIdleInTransactionTimeout), after which
-	// a settlement held to no deadline takes the owner row and commits.
+	// The socket ends while the holder still holds the owner row (requireStillHolding below): a
+	// settlement held to no deadline waits for the row until the idle bound that ends the holder's
+	// transaction (store.RequestIdleInTransactionTimeout), and then takes it and commits.
 	select {
 	case <-ended:
-	case <-time.After(deadline + 5*time.Second):
+	case <-time.After(roomWait(t)):
 		t.Fatalf("the departing browser's socket had not ended %v after it left, with the document's owner row held: the settlement its leaving ran is held to no deadline", time.Since(closed).Round(time.Millisecond))
 	}
+	requireStillHolding(t, hold, "the departing browser's socket ended")
 	if took := time.Since(closed); took < deadline {
 		t.Fatalf("the departing browser's socket ended %v after it left, before the settlement's %v deadline: that settlement never waited on the held owner row, so nothing here is tested", took, deadline)
 	}
@@ -251,6 +264,7 @@ func TestTheSettlementALastBrowserLeavingRunsIsHeldToItsDeadline(t *testing.T) {
 // the sweep comes first, and nothing else closes a room (the default budget holds thousands of
 // these); the settlement is then run as its timer runs it (SettleNow).
 func TestAnOwedSettlementLoadsTheRoomTheIdleSweepUnloadedAndSettles(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "# First")
 	deps := testServiceDeps(database)
@@ -258,7 +272,7 @@ func TestAnOwedSettlementLoadsTheRoomTheIdleSweepUnloadedAndSettles(t *testing.T
 	// ygo sweeps every second at this timeout; no room is loaded yet.
 	deps.RoomIdleTimeout = time.Second
 	service := New(deps)
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		if err := service.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
@@ -406,13 +420,13 @@ func TestAnOwedSettlementWhoseWarmUpLoadRunsOutItsReadsBoundStaysOwedForTheResum
 	database.Pool.SetAcquireBoundForTest(store.RoomsPool, time.Minute)
 	previous := coldReadTimeout
 	coldReadTimeout = time.Second
-	t.Cleanup(func() { coldReadTimeout = previous })
+	testcleanup.Add(t, func() { coldReadTimeout = previous })
 	artifactID := createDocument(t, database, "# First")
 	deps := testServiceDeps(database)
 	deps.Settle = time.Hour
 	deps.SettlementResume = time.Second
 	service := New(deps)
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		if err := service.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
@@ -424,7 +438,7 @@ func TestAnOwedSettlementWhoseWarmUpLoadRunsOutItsReadsBoundStaysOwedForTheResum
 		defer close(resumed)
 		service.RunSettlementResumption(resumption, leases)
 	}()
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		stop()
 		<-resumed
 	})
@@ -545,7 +559,7 @@ func TestARoomLoadWhoseHistoryReadWaitsPastItsBoundEndsAtIt(t *testing.T) {
 	logs := captureWarnings(t)
 	previous := coldReadTimeout
 	coldReadTimeout = time.Second
-	t.Cleanup(func() { coldReadTimeout = previous })
+	testcleanup.Add(t, func() { coldReadTimeout = previous })
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "before")
@@ -612,9 +626,10 @@ func TestARoomLoadWhoseHistoryReadWaitsPastItsBoundEndsAtIt(t *testing.T) {
 // settleTimeout), not under its caller's context alone, which an unkeyed close's request leaves
 // with no deadline at all (api's outlivingTheClient). Here another transaction holds the document's
 // owner row past that deadline: each attempt rolls back at it, and SettleIssueDocuments returns
-// with the document still owed while the row is still held. Unbounded, it waited for as long as
-// the row was held, and the close with it.
+// with the document still owed while the row is still held (requireStillHolding). Unbounded, it
+// waited for as long as the row was held, and the close with it.
 func TestTheSettlementAnIssuesCloseRunsFirstEndsAtItsDeadline(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "before")
@@ -634,23 +649,23 @@ func TestTheSettlementAnIssuesCloseRunsFirstEndsAtItsDeadline(t *testing.T) {
 	}
 	const deadline = 300 * time.Millisecond
 	service.settleTimeout = deadline
-	t.Cleanup(func() { service.settleTimeout = settlementTimeout })
+	testcleanup.Add(t, func() { service.settleTimeout = settlementTimeout })
 	returned := make(chan error, 1)
 	started := time.Now()
 	go func() { returned <- service.SettleIssueDocuments(ctx, "DOC-1") }()
 	// issueSettleAttempts attempts, each ending at the deadline, inside issueSettleBudget.
-	const within = issueSettleBudget + 10*time.Second
 	select {
 	case err := <-returned:
 		if err == nil {
 			t.Fatal("SettleIssueDocuments returned no error, want the settlement that ran past its deadline reported")
 		}
 		t.Logf("SettleIssueDocuments returned after %v with the owner row held: %v", time.Since(started).Round(time.Millisecond), err)
-	case <-time.After(within):
+	case <-time.After(roomWait(t)):
 		_ = hold.Rollback(ctx)
 		<-returned
-		t.Fatalf("SettleIssueDocuments was still settling %v on with the owner row held, want each attempt ended at its %v deadline", within, deadline)
+		t.Fatalf("SettleIssueDocuments was still settling %v on with the owner row held, want each attempt ended at its %v deadline", time.Since(started).Round(time.Millisecond), deadline)
 	}
+	requireStillHolding(t, hold, "SettleIssueDocuments returned")
 	owes, err := settlementPending(ctx, service.store.Pool, artifactID)
 	if err != nil {
 		t.Fatalf("read the document's pending settlement: %v", err)
@@ -670,6 +685,7 @@ func TestTheSettlementAnIssuesCloseRunsFirstEndsAtItsDeadline(t *testing.T) {
 // however often it recurs, so overload fails no room. It took no lease, so once a connection is
 // free the resumption settles it.
 func TestASettlementRefusedAConnectionStaysOwedAndCountsNoFailure(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	service.store.Pool.SetAcquireBoundForTest(store.SettlementsPool, 200*time.Millisecond)
@@ -705,7 +721,7 @@ func TestASettlementRefusedAConnectionStaysOwedAndCountsNoFailure(t *testing.T) 
 			t.Fatalf("attempt %d: settlement failures = %d, room failure = %v; want none for a busy pool", attempt, failures, failed)
 		}
 	}
-	if timeouts := settlementTimeouts(service); timeouts < maxSettleFailures+1 {
+	if timeouts := poolAcquireStats(service, store.SettlementsPool).Timeouts; timeouts < maxSettleFailures+1 {
 		t.Fatalf("the settlements pool refused %d acquires, want one for each of the %d settlements", timeouts, maxSettleFailures+1)
 	}
 	if latest := latestVersionNumber(t, service, artifactID); latest != versions {
@@ -733,6 +749,7 @@ func TestASettlementRefusedAConnectionStaysOwedAndCountsNoFailure(t *testing.T) 
 // the settlement, which never read the lease's end, cannot give back a lease it cannot name, so
 // the lease runs out as a dead process's does; the test runs it out before the resumption's pass.
 func TestASettlementWhoseStatementStallsStaysOwedAndCountsNoFailure(t *testing.T) {
+	t.Parallel()
 	socket := storetest.NewStalledSocket(store.SettlementsPool)
 	database := storetest.Reopened(t, storetest.Open(t), func(config *pgxpool.Config) {
 		config.ConnConfig.DialFunc = socket.Dial
@@ -781,14 +798,15 @@ func TestASettlementWhoseStatementStallsStaysOwedAndCountsNoFailure(t *testing.T
 	requireLatestVersionMarkdown(t, service, artifactID, "after\n")
 }
 
-// settlementTimeouts is how many acquires the settlements pool has refused at its bound.
-func settlementTimeouts(service *Service) uint64 {
-	for _, pool := range service.store.Pool.Stats() {
-		if pool.Name == store.SettlementsPool {
-			return pool.Acquire.Timeouts
-		}
+// requireStillHolding fails the test unless hold, a transaction of the test's own that locked a row
+// the code under test waits on, still stands once what is described has happened: the database ends
+// an idle transaction at its idle bound (store.RequestIdleInTransactionTimeout), which lets the row
+// go, so a transaction still standing is a row still held.
+func requireStillHolding(t *testing.T, hold pgx.Tx, what string) {
+	t.Helper()
+	if _, err := hold.Exec(context.Background(), `select 1`); err != nil {
+		t.Fatalf("%s once the transaction holding the row had ended (%v), want while it still held it", what, err)
 	}
-	return 0
 }
 
 // A settlement that cannot open the settlements pool stops short before it warms its cold room.
@@ -796,6 +814,7 @@ func settlementTimeouts(service *Service) uint64 {
 // connection admission counts for requests - so a settlement that has no settlements pool warms
 // nothing, takes no request connection, and reports the pool's error with the document left owed.
 func TestASettlementWithoutItsPoolWarmsNoColdRoomThroughTheRequestPool(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	ctx := context.Background()
@@ -850,6 +869,7 @@ func TestASettlementWithoutItsPoolWarmsNoColdRoomThroughTheRequestPool(t *testin
 // it takes that pool's connection again and none admission counts for requests. The tree is
 // stored all the same, so the next reader of the version copies it.
 func TestAVersioningSettlementTakesNoRequestPoolConnection(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "before")
@@ -902,11 +922,12 @@ func TestAVersioningSettlementTakesNoRequestPoolConnection(t *testing.T) {
 // resident with its editor connected and counts no failure, the document stays owed rather than
 // failed, and the settlement after it writes the version.
 func TestASettlementPastItsDeadlineAfterWritingIntoTheRoomKeepsTheRoomResident(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, ":::ask{#ask-block urgency=\"med\" multiple=\"false\" state=\"open\"}\nShip it?\n:::\n\nContext before.\n")
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
-	t.Cleanup(httpServer.Close)
+	testcleanup.Add(t, httpServer.Close)
 	editor := connectPeer(t, httpServer.URL, artifactID, "alice")
 	settleCurrentGeneration(t, service, artifactID)
 	answer := answerBlockAsk(t, service, artifactID)
@@ -990,8 +1011,9 @@ func TestASettlementPastItsDeadlineAfterWritingIntoTheRoomKeepsTheRoomResident(t
 }
 
 // A settlement renders its document before it locks the document's owner row: while its render is
-// held for a second, another connection takes that row at once.
+// held, until another connection has asked for that row, the row is that connection's at once.
 func TestASettlementRendersWithoutHoldingItsDocumentsOwnerRow(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "before")
@@ -1000,12 +1022,15 @@ func TestASettlementRendersWithoutHoldingItsDocumentsOwnerRow(t *testing.T) {
 	versions := latestVersionNumber(t, service, artifactID)
 
 	rendering := make(chan struct{})
+	asked := make(chan struct{})
+	letRender := sync.OnceFunc(func() { close(asked) })
+	testcleanup.Add(t, letRender)
 	var once sync.Once
 	service.beforeSettleRender = func(room string) {
 		if room == artifactID {
 			once.Do(func() {
 				close(rendering)
-				time.Sleep(time.Second)
+				<-asked
 			})
 		}
 	}
@@ -1028,6 +1053,7 @@ func TestASettlementRendersWithoutHoldingItsDocumentsOwnerRow(t *testing.T) {
 	var key string
 	err = tx.QueryRow(ctx, `select key from issues where key = 'DOC-1' for no key update nowait`).Scan(&key)
 	_ = tx.Rollback(ctx)
+	letRender()
 	if err != nil {
 		t.Fatalf("lock the owner row while the settlement renders: %v, want it free", err)
 	}
@@ -1048,6 +1074,7 @@ func TestASettlementRendersWithoutHoldingItsDocumentsOwnerRow(t *testing.T) {
 // is held for a moment, another connection takes that row at once. The document still gets its
 // stamp, its repair and its version.
 func TestARepairingSettlementRendersNothingUnderItsDocumentsOwnerRow(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, ":::ask{#ask-block urgency=\"med\" multiple=\"false\" state=\"open\"}\nShip it?\n:::\n\nContext before.\n")
@@ -1097,6 +1124,7 @@ func TestARepairingSettlementRendersNothingUnderItsDocumentsOwnerRow(t *testing.
 // locks it finds the room past where it stood when it copied the tree, rolls back, and versions the
 // document read again, the update included.
 func TestAnUpdateLandingDuringTheRenderProducesNoVersionOfTheStaleTree(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
@@ -1148,6 +1176,7 @@ func TestAnUpdateLandingDuringTheRenderProducesNoVersionOfTheStaleTree(t *testin
 // repair and the edit that owed it, records the repair's update in its cursor, and the repair's
 // event names that version.
 func TestADocumentNeedingRepairsGetsThemInOneCommitAndItsVersionInTheNext(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, ":::ask{#ask-block urgency=\"med\" multiple=\"false\" state=\"open\"}\nShip it?\n:::\n\nContext before.\n")

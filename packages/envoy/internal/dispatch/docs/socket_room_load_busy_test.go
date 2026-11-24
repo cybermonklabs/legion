@@ -21,6 +21,7 @@ import (
 // (readOwedSettlement, on the rooms pool) ran out of its acquire bound after the admission had
 // already read the document.
 func TestASocketWhoseRoomLoadFindsTheRoomsPoolBusyIsRefused503(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	service, server := newTestServiceInstance(t, database)
 	artifactID := createDocuments(t, database, 1)[0]
