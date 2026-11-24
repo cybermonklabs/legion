@@ -821,19 +821,21 @@ test("the start and the poll agree on which code a poll reaches, to the millisec
   }
 });
 
-// The poll waits the interval in the same whole milliseconds its test reads, so the wait is the
-// count the test made: 1.001 s is 1001 ms, where the product is 1000.9999999999999, and
-// 1.0999999999999999 s is 1099 ms, where a shifted string rounds to 1100.
-test("the poll waits the interval's whole milliseconds as its digits name them", async () => {
+// The poll waits at least the interval the broker named (RFC 8628 Section 3.5), in whole
+// milliseconds rounded up: 4.9997 s waits 5000 ms, not the 4999 its test counts it by, and 1.001 s
+// 1001 ms, where the product is 1000.9999999999999. An interval of whole seconds waits exactly
+// that. The refusal's cut (the agreement test above) is another question.
+test("the poll waits at least the interval, to a whole millisecond", async () => {
   const base = await startDeviceLogin({ brokerUrl: broker().url, person: PERSON, host: HOST });
   const now = Date.now();
   const still = spyOn(Date, "now").mockReturnValue(now);
   try {
     for (const [intervalSeconds, wait] of [
       [5, 5_000],
-      [4.9997, 4_999],
+      [4.9997, 5_000],
       [1.001, 1_001],
-      [1.0999999999999999, 1_099],
+      [1.0005, 1_001],
+      [1.0999999999999999, 1_100],
     ] as const) {
       const waits: number[] = [];
       await finishDeviceLogin(
@@ -847,6 +849,9 @@ test("the poll waits the interval's whole milliseconds as its digits name them",
         }
       ).catch(() => undefined);
       expect(waits, `${intervalSeconds} s`).toEqual([wait]);
+      expect(waits[0] ?? 0, `${intervalSeconds} s is waited whole`).toBeGreaterThanOrEqual(
+        intervalSeconds * 1000
+      );
     }
   } finally {
     still.mockRestore();

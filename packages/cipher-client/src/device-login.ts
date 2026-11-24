@@ -168,13 +168,28 @@ function seconds(value: number): string {
  * 1001 ms on and {@link unpollableRemedy} would read that interval as the 1 s floor; a shifted
  * string can round up to the next millisecond, as 1.0999999999999999 gives 1100 where its digits
  * name 1099.9999999999999 ms, so the test would refuse a code its interval's own digits reach.
- * Every reader of a count of milliseconds here ({@link codeLeft}'s test, the floor's test in
- * {@link unpollableRemedy}, a code's end, the poll's wait) takes this one, so they agree.
- * Exported for the tests, which hand a refused code to the poll the way the start would have.
+ * Every reader of the poll's test here ({@link codeLeft}'s test, the floor's test in
+ * {@link unpollableRemedy}, a code's end) takes this one, so they agree. The poll's wait is not
+ * one of them ({@link waitMillisecondsOf}). Exported for the tests, which hand a refused code to
+ * the poll the way the start would have.
  */
 export function wholeMillisecondsOf(value: number): number {
   const [whole = "", fraction = ""] = seconds(value).split(".");
   return Number(`${whole}${fraction.slice(0, 3).padEnd(3, "0")}`);
+}
+
+/**
+ * How long the poll waits an interval of `value` seconds, in milliseconds: its digits' whole
+ * milliseconds, and one more where any digit past the third is not 0, so the wait is never shorter
+ * than the interval (RFC 8628 Section 3.5: "at least the number of seconds specified by the
+ * 'interval' parameter"): 4.9997 s waits 5000 ms, 1.001 s 1001 ms, 5 s 5000 ms. No product here
+ * either: 2.007 gives 2007.0000000000002, which `Math.ceil` would wait a millisecond long. It is
+ * not {@link wholeMillisecondsOf}, which the refusal reads: that cuts the interval down, as it
+ * cuts the code's end, so the start and the poll refuse the same codes; this rounds it up. They
+ * answer different questions, so do not fold the two into one.
+ */
+function waitMillisecondsOf(value: number): number {
+  return wholeMillisecondsOf(value) + (/\.\d{3}\d*[1-9]/.test(seconds(value)) ? 1 : 0);
 }
 
 /** A host an http broker may be on: this machine's loopback, as a dev stack's broker is. */
@@ -705,9 +720,10 @@ export async function finishDeviceLogin(
   let interval = started.intervalSeconds;
   // The polls in a row the broker did not answer or answered with an outage.
   let outages = 0;
-  // The wait before the next poll: the interval in the whole milliseconds the code's test reads
-  // (wholeMillisecondsOf), or an outage's longer `Retry-After`.
-  let waitMs = wholeMillisecondsOf(interval);
+  // The wait before the next poll: the interval rounded up to a whole millisecond, never shorter
+  // than the broker asked (waitMillisecondsOf, which is not the cut the code's test reads), or an
+  // outage's longer `Retry-After`.
+  let waitMs = waitMillisecondsOf(interval);
   // What is left of the code, read once from the wall clock, and the hour at most, which a step
   // back of that clock since `startDeviceLogin`, or a `started` a caller made, could otherwise
   // pass, and with it a timer's range; its end is kept on the monotonic clock.
@@ -765,7 +781,7 @@ export async function finishDeviceLogin(
       }
       const asked = unanswered ? retryAfterMs(error) : 0;
       // The wait before the next poll is capped at the code's lifetime where it is waited.
-      waitMs = Math.max(wholeMillisecondsOf(interval), asked);
+      waitMs = Math.max(waitMillisecondsOf(interval), asked);
       continue;
     }
     const login = loginOf(started.key, started.brokerUrl, answered, Date.now());
