@@ -1,4 +1,4 @@
--- 20261122071001_pull_request_former_heads.up.sql
+-- 20261124122830_pull_request_former_heads.up.sql
 --
 -- The former heads of each open pull request: each head the pull request had while it was open
 -- and has since left, which the check states settler computes a state at as it does at an open
@@ -926,7 +926,7 @@ create trigger pull_request_former_heads_of_ci_check_results after insert on ci_
 -- The end is where the pull request's last closed period began, as Dispatch's record of each
 -- write that opened or closed a row of it shows (pull_request_heads_lifecycle, migration
 -- 20261122070959), which this install is the one reader of: the migration after it,
--- 20261122071002, drops the record, its triggers and its function. The writes are those of every
+-- 20261124122831, drops the record, its triggers and its function. The writes are those of every
 -- name the rename rule maps to the pull request at its canonical name, in the order of their
 -- times. Each write that opened a row starts a new period; the last closed period is the closes
 -- after the last such write before the last close. It begins at its first close, or, where a later

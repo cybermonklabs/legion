@@ -16,8 +16,8 @@
 -- on GitHub's clock, which each later edit of the closed pull request moves, and a write that
 -- names none keeps an earlier one.
 --
--- The former heads install (migration 20261122071001) is the record's one reader, and the
--- migration after it (20261122071002) drops the table, its triggers and its function, so no write
+-- The former heads install (migration 20261124122830) is the record's one reader, and the
+-- migration after it (20261124122831) drops the table, its triggers and its function, so no write
 -- appends to it once the install has read it. The install commits in a transaction of its own
 -- after this one, and a writer of the release before it can close a pull request and reopen it
 -- between the two, which leaves its row open. So the install reads this record, not the rows'
@@ -63,7 +63,7 @@ create table pull_request_heads_lifecycle (
 create index pull_request_heads_lifecycle_number on pull_request_heads_lifecycle (number, repo);
 
 -- The canonical name of a repository's name: the expression of refs.CanonicalRepoSQL, over
--- repo_projects.renamed_to. The install (20261122071001) and the settler read it too.
+-- repo_projects.renamed_to. The install (20261124122830) and the settler read it too.
 create function pull_request_canonical_repo(text) returns text language sql stable as $$
   select coalesce((select max(renamed.renamed_to) from repo_projects renamed
     where renamed.renamed_to is not null and lower(renamed.repo) = lower($1)), $1)

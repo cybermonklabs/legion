@@ -1,9 +1,9 @@
--- 20261122071002_drop_pull_request_heads_lifecycle.up.sql
+-- 20261124122831_drop_pull_request_heads_lifecycle.up.sql
 --
 -- The record of each write that opens or closes a row of pull_request_heads
 -- (pull_request_heads_lifecycle, migration 20261122070959), its two triggers on
 -- pull_request_heads and their function pull_request_heads_lifecycle_keep have one reader: the
--- former heads install (20261122071001), which reads the record once, in its own transaction, to
+-- former heads install (20261124122830), which reads the record once, in its own transaction, to
 -- find where each pull request's last closed period began. Nothing reads it after that transaction
 -- commits, and its triggers would otherwise append a row on every write that opens or closes a row
 -- of pull_request_heads for good. So this migration, the next after the install, drops the

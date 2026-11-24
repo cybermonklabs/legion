@@ -6,7 +6,7 @@
 -- (delivery.UpsertPullRequestHead). base_ref names the branch, which can move with no change of
 -- its name; base_sha names the revision. The check states settler's read of which commits are a
 -- pull request's own is GitHub's comparison of the head and the base revision the row stores
--- (migration 20261122071001, pull_request_former_heads_claim), so its answer is about those two
+-- (migration 20261124122830, pull_request_former_heads_claim), so its answer is about those two
 -- commits; the claim's snapshot names the stored revisions, and the answer applies only where they
 -- are unchanged.
 --

@@ -10,7 +10,7 @@ body: |-
     `pull_request_former_heads` keeps each head an open pull request left. Each write of
     `pull_request_heads` that can move a pull request's history appends a record of it, by a
     trigger, in the transaction of the write, whichever build wrote it
-    (`pull_request_former_heads_moves`, migration `20261122071001`, one transaction with the tables
+    (`pull_request_former_heads_moves`, migration `20261124122830`, one transaction with the tables
     and the seed), and the settler applies a pull request's records, under that pull request's lock,
     before it reads its former heads (`pull_request_former_heads_fold`), and each pass applies the
     records no settle reached, so a head is kept whether or not a settle ran while the pull request
@@ -116,7 +116,7 @@ body: |-
     re-key or delete of the row removes, which migration `20261122070959` seeds, undated, with
     each pull request closed when it runs, by its canonical name's row, so an open pull request
     whose old name's row reads closed from before keeps its results, and which the install alone
-    reads, so migration `20261122071002` drops it, its triggers and its function after the install)
+    reads, so migration `20261124122831` drops it, its triggers and its function after the install)
     shows the period begin at the first close after the last write that opened a row of any name of
     it, or at a later close in it of a row that was open, the latest such, so a second closed row of
     the closed pull request, as the canonical-name writer writes, and a write that leaves a closed
