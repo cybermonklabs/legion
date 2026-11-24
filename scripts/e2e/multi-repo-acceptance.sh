@@ -232,9 +232,10 @@ arm_signal_traps
 # reader mid-read of a truncated or interleaved file. A nonzero exit (the command's, or a failed
 # rename — checked explicitly, since errexit alone does not catch it inside every caller's own
 # $(...)) fails the whole observation, naming only <label> — never the command's own argv, which
-# for a Dispatch read would otherwise print the bearer `-H` carries; curl's own
-# stderr (a URL and a status, no credential) still reaches the terminal. The caller then reads
-# <evidence file> itself, with jq's own filename argument, never a second `cat`/`$(...)` round trip.
+# for a Dispatch read would otherwise print the bearer `-H` carries; curl's own stderr (a URL and
+# a status, no credential) still reaches the terminal, and gh's never does (gh_said). The caller
+# then reads <evidence file> itself, with jq's own filename argument, or `$(<file)` for a one-line
+# `--jq` answer, never a second fetch.
 #
 # Most callers run inside a command-substitution subshell (`file=$(state_raw ...)`): a signal that
 # reaches that subshell directly (a foreground Ctrl-C delivered to the whole process group) would
@@ -273,6 +274,26 @@ raw_fetch() {
       fail "$label: failed"
       ;;
   esac
+}
+
+# gh_said <file> <gh argument...> runs gh with its stderr kept in <file>, never on the terminal.
+# Whatever answers gh's call in GitHub's place holds gh's token, and gh's stderr is that party's
+# words (gh prints the answer's message, `gh: <message> (HTTP 404)`, or on a transport failure the
+# client's error), so a failure names <file> and never quotes it.
+gh_said() {
+  local said=$1
+  shift
+  gh "$@" 2>"$said"
+}
+
+# gh_fetch <evidence file> <label> <gh argument...> is raw_fetch of one gh read: GitHub's answer
+# goes to <evidence file> byte for byte, and gh's own words to <evidence file>.gh-stderr (gh_said),
+# which a failure names. The answer is that party's words too, so a message prints it only once the
+# caller has held it to a closed grammar (a full commit id); otherwise it names <evidence file>.
+gh_fetch() {
+  local file=$1 label=$2
+  shift 2
+  raw_fetch "$file" "$label (gh's own words are in $file.gh-stderr)" gh_said "$file.gh-stderr" "$@"
 }
 
 # state_raw <observation> refreshes $MULTIREPO_EVIDENCE_DIR/<observation>-state.raw from
@@ -347,10 +368,13 @@ urlpath() {
   jq -rn --arg v "$1" '$v | @uri | gsub("%2F"; "/")'
 }
 
-# default_branch <owner/repo> is GitHub's own default branch name for it, required nonempty.
+# default_branch <observation> <owner/repo> is GitHub's own default branch name for it, required
+# nonempty, kept in <observation>-default-branch.raw. A branch name is GitHub's answer, and the
+# names git allows hold any word a token holds, so no message prints it.
 default_branch() {
-  local repo=$1 branch
-  branch=$(gh api "repos/$repo" --jq .default_branch) || fail "gh api repos/$repo failed"
+  local repo=$2 file="$MULTIREPO_EVIDENCE_DIR/$1-default-branch.raw" branch
+  gh_fetch "$file" "gh api repos/$repo" api "repos/$repo" --jq .default_branch
+  branch=$(<"$file")
   [ -n "$branch" ] || fail "repos/$repo reports an empty default_branch"
   printf '%s' "$branch"
 }
@@ -358,10 +382,12 @@ default_branch() {
 # record-head <T>: the commit at T's default branch head, read now (run when T's child is
 # recorded), stored for branch-base to compare the child branch's first commit's parent against.
 record_head() {
-  local repo=$1 default sha ok=1
+  local repo=$1 default sha ok=1 head_file="$MULTIREPO_EVIDENCE_DIR/record-head-branch.raw"
   [ "$(lower "$repo")" = "$repo_t" ] || fail "record-head's repository argument $repo is not LEGION_E2E_REPO_T ($LEGION_E2E_REPO_T)"
-  default=$(default_branch "$repo")
-  sha=$(gh api "repos/$repo/branches/$(urlpath "$default")" --jq .commit.sha) || fail "gh api repos/$repo/branches/$default failed"
+  default=$(default_branch record-head "$repo")
+  gh_fetch "$head_file" "gh api repos/$repo/branches/<its default branch>" \
+    api "repos/$repo/branches/$(urlpath "$default")" --jq .commit.sha
+  sha=$(<"$head_file")
   [[ $sha =~ $sha_re ]] || { ok=0; sha=""; }
   summary record-head "repo: $repo
 default branch: $default
@@ -404,15 +430,19 @@ children() {
 # stored record-head, exactly (both required to be full commit ids).
 branch_base() {
   local child=$1 default stored_head first_commit parent_sha ok=0
+  local compare_file="$MULTIREPO_EVIDENCE_DIR/branch-base-compare.raw" commit_file="$MULTIREPO_EVIDENCE_DIR/branch-base-commit.raw"
   [ -s "$MULTIREPO_EVIDENCE_DIR/record-head.txt" ] || fail "branch-base: run record-head first"
   stored_head=$(grep '^head: ' "$MULTIREPO_EVIDENCE_DIR/record-head.txt" | cut -d' ' -f2)
   [[ $stored_head =~ $sha_re ]] || fail "branch-base: the stored record-head is not a full commit id ($stored_head); record-head must have failed"
-  default=$(default_branch "$LEGION_E2E_REPO_T")
-  first_commit=$(gh api "repos/$LEGION_E2E_REPO_T/compare/$(urlpath "$default")...legion/$child" --jq '.commits[0].sha') ||
-    fail "gh api repos/$LEGION_E2E_REPO_T/compare/$default...legion/$child failed"
-  [[ $first_commit =~ $sha_re ]] || fail "branch-base: legion/$child's first commit on top of $default is not a full commit id ($first_commit)"
-  parent_sha=$(gh api "repos/$LEGION_E2E_REPO_T/commits/$first_commit" --jq '.parents[0].sha') ||
-    fail "gh api repos/$LEGION_E2E_REPO_T/commits/$first_commit failed"
+  default=$(default_branch branch-base "$LEGION_E2E_REPO_T")
+  gh_fetch "$compare_file" "gh api repos/$LEGION_E2E_REPO_T/compare/<its default branch>...legion/$child" \
+    api "repos/$LEGION_E2E_REPO_T/compare/$(urlpath "$default")...legion/$child" --jq '.commits[0].sha'
+  first_commit=$(<"$compare_file")
+  [[ $first_commit =~ $sha_re ]] ||
+    fail "branch-base: legion/$child's first commit on top of the default branch is not a full commit id; GitHub's answer is in $compare_file"
+  gh_fetch "$commit_file" "gh api repos/$LEGION_E2E_REPO_T/commits/$first_commit" \
+    api "repos/$LEGION_E2E_REPO_T/commits/$first_commit" --jq '.parents[0].sha'
+  parent_sha=$(<"$commit_file")
   [[ $parent_sha =~ $sha_re ]] && [ "$parent_sha" = "$stored_head" ] && ok=1
   summary branch-base "child: $child
 first commit: $first_commit
@@ -427,17 +457,19 @@ record-head: $stored_head
 # a "previous" line) beside a pin that names another commit, or a longer hex string the sha is only
 # part of, never passes. Both arguments are validated before anything is fetched, and the file's own
 # bytes go straight to evidence/pin.txt by redirection, never through a $(...) capture that would
-# strip its trailing bytes.
+# strip its trailing bytes. Those bytes are GitHub's answer, so the observation names that file and
+# never prints them.
 pin() {
   local repo=$1 sha=$2 default content_file="$MULTIREPO_EVIDENCE_DIR/pin.txt" ok=0 pinned
   [ "$(lower "$repo")" = "$repo_c" ] || fail "pin's repository argument $repo is not LEGION_E2E_REPO_C ($LEGION_E2E_REPO_C)"
   [[ $sha =~ $sha_re ]] || fail "pin's merge-sha argument $(printf '%q' "$sha") is not a full 40-character commit id"
-  default=$(default_branch "$repo")
-  raw_fetch "$content_file.b64" "GET repos/$repo/contents/$LEGION_E2E_PIN_FILE" gh api "repos/$repo/contents/$LEGION_E2E_PIN_FILE?ref=$(urlpath "$default")" --jq .content
+  default=$(default_branch pin "$repo")
+  gh_fetch "$content_file.b64" "GET repos/$repo/contents/$LEGION_E2E_PIN_FILE" \
+    api "repos/$repo/contents/$LEGION_E2E_PIN_FILE?ref=$(urlpath "$default")" --jq .content
   base64 -d <"$content_file.b64" >"$content_file" || fail "pin: $LEGION_E2E_PIN_FILE's content is not valid base64"
   rm -f "$content_file.b64"
-  [ -s "$content_file" ] || fail "pin: $LEGION_E2E_PIN_FILE on $repo@$default is empty"
-  cat "$content_file"
+  [ -s "$content_file" ] || fail "pin: $LEGION_E2E_PIN_FILE on $repo's default branch is empty"
+  echo "pin: $LEGION_E2E_PIN_FILE on $repo's default branch, as GitHub answered it, is in $content_file"
   pinned=$(grep -oiE '[0-9a-f]{40,}' "$content_file" | tr 'A-F' 'a-f' | sort -u || true)
   [ "$pinned" = "$sha" ] && ok=1
   check pin "$ok"
@@ -583,9 +615,13 @@ second_owner() {
     done) ;;
     *) ok=0 ;;
   esac
+  local merged_said="$MULTIREPO_EVIDENCE_DIR/second-owner-merged.gh-stderr"
   merged=false
   if [ -n "$pr_number" ]; then
-    merged=$(gh api "repos/$LEGION_E2E_REPO_O/pulls/$pr_number" --jq .merged) || merged=false
+    merged=$(gh_said "$merged_said" api "repos/$LEGION_E2E_REPO_O/pulls/$pr_number" --jq .merged) || {
+      merged=false
+      echo "$self: second-owner: gh api repos/$LEGION_E2E_REPO_O/pulls/$pr_number failed, so its merge is not confirmed; gh's own words are in $merged_said" >&2
+    }
   fi
   [ "$merged" = true ] || ok=0
 
@@ -800,9 +836,10 @@ negative_pr_in_x() {
     local record generation
     record=$(jq --arg k "$child" '.issues[$k] // null' "$state_file")
     generation=$(jq -r --arg k "$child" '.issues[$k].generation // -1' "$state_file")
-    local highest_pr
-    highest_pr=$(gh api "repos/$LEGION_E2E_REPO_X/pulls?state=all&per_page=100" --jq '[.[].number] | max // 0') ||
-      fail "gh api repos/$LEGION_E2E_REPO_X/pulls failed"
+    local highest_pr highest_file="$MULTIREPO_EVIDENCE_DIR/negative-pr-in-x-before-$child-highest-pr.raw"
+    gh_fetch "$highest_file" "gh api repos/$LEGION_E2E_REPO_X/pulls" \
+      api "repos/$LEGION_E2E_REPO_X/pulls?state=all&per_page=100" --jq '[.[].number] | max // 0'
+    highest_pr=$(<"$highest_file")
     local extra
     extra=$(jq -n --argjson record "$record" --argjson generation "$generation" --argjson highest "$highest_pr" \
       '{record: $record, generation: $generation, highest_pr: $highest}')
@@ -817,9 +854,12 @@ negative_pr_in_x() {
 
   local prs_file found_number
   prs_file="$MULTIREPO_EVIDENCE_DIR/negative-pr-in-x-after-$child-$run_id-pulls.raw"
-  raw_fetch "$prs_file" "GET repos/$LEGION_E2E_REPO_X/pulls" gh api "repos/$LEGION_E2E_REPO_X/pulls?state=all&per_page=100"
+  gh_fetch "$prs_file" "GET repos/$LEGION_E2E_REPO_X/pulls" api "repos/$LEGION_E2E_REPO_X/pulls?state=all&per_page=100"
+  # jq quotes a value it cannot read ("Cannot iterate over string (...)"), and the listing is
+  # GitHub's answer, so jq's own words are kept beside it, never printed.
   found_number=$(jq --arg ref "legion/$child" --argjson since "$b_highest" \
-    '[.[] | select(.head.ref == $ref and .state == "closed" and .number > $since)] | length' "$prs_file")
+    '[.[] | select(.head.ref == $ref and .state == "closed" and .number > $since)] | length' "$prs_file" 2>"$prs_file.jq-stderr") ||
+    fail "negative pr-in-x: jq could not count the closed pull requests in GitHub's listing of X, kept in $prs_file; jq's own words are in $prs_file.jq-stderr"
 
   local state_file now_repo now_pr_repo ok=1
   state_file=$(state_raw negative-pr-in-x-after)
