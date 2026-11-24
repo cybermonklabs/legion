@@ -256,6 +256,39 @@ test("a long label shortens to an ellipsis inside its pill, with the whole label
   expect(words.className).toContain("truncate");
 });
 
+// INFRA-5200's rule, point 3: a row's labels are a list as long as the issue's data, so the cell
+// shows ten and one "+N" that shows the rest in place. A row the search hides and shows again is
+// drawn from nothing, and the labels the reader opened are still open.
+test("a row shows ten of its labels and a +N, and its opened labels stay open when the row is drawn again", async () => {
+  const user = userEvent.setup();
+  const labels = Array.from({ length: 13 }, (_, index) => `label-${index + 1}`);
+  table([
+    issue("CORE-1", { labels, title: "Work with many labels" }),
+    issue("CORE-2", { title: "Sextant" }),
+  ]);
+  const labelsOf = async () => {
+    const row = await screen.findByRole("row", { name: "CORE-1 Work with many labels" });
+    const group = row.querySelector<HTMLElement>('[data-layout-group="labels"]');
+    if (group === null) throw new Error("the row's labels are not a group");
+    return group;
+  };
+  const drawn = (group: HTMLElement) =>
+    labels.filter((label) => within(group).queryByText(label) !== null);
+
+  expect(drawn(await labelsOf())).toEqual(labels.slice(0, 10));
+  await user.click(within(await labelsOf()).getByRole("button", { name: "Show 3 more labels" }));
+  expect(drawn(await labelsOf())).toEqual(labels);
+
+  const search = screen.getByRole("searchbox", { name: "Search issues" });
+  await user.type(search, "sextant");
+  await waitFor(() =>
+    expect(screen.queryByRole("row", { name: "CORE-1 Work with many labels" })).toBeNull()
+  );
+  await user.clear(search);
+  expect(drawn(await labelsOf())).toEqual(labels);
+  expect(within(await labelsOf()).getByRole("button", { name: "Show fewer labels" })).toBeDefined();
+});
+
 test("Created sorts RFC3339 fractional timestamps by instant, not by text", async () => {
   table(
     [

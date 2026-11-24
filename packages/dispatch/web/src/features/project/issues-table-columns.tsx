@@ -1,8 +1,9 @@
 import type { ColumnDef, FilterFn, RowData } from "@tanstack/react-table";
-import { useMemo } from "react";
+import { createContext, type ReactNode, useContext, useMemo } from "react";
 import { Link } from "react-router-dom";
 import type { UserState } from "../../api/types";
 import { AttentionBadge } from "../../components/Badge";
+import { CappedGroup, type CappedGroupOpenState } from "../../components/CappedGroup";
 import { LabelPill, StatusPill } from "../../components/Pill";
 import { TruncatedText } from "../../components/TruncatedText";
 import { issueProject } from "../../lib/issue-key";
@@ -63,6 +64,46 @@ declare module "@tanstack/react-table" {
 }
 const inPicks: FilterFn<Item> = (row, id, value: string[]) =>
   matchesFilters(row.original, [{ id, value }]);
+
+/** The rows whose labels the reader opened past their "+N", by issue key. The table holds it,
+ *  not the cell: the table draws only the rows in its window, so a row that scrolls out unmounts
+ *  its cell, and the labels a reader opened would fold again when it scrolls back. */
+export interface OpenedLabels {
+  readonly opened: ReadonlySet<string>;
+  readonly setOpened: (key: string, open: boolean) => void;
+}
+export const OpenedLabelsContext = createContext<OpenedLabels | undefined>(undefined);
+
+/** A row's labels: a list as long as the issue's data, so the first ten, then "+N". A label with
+ *  no break in it shortens to an ellipsis inside its own pill, with the whole label as its title. */
+function LabelsCell({ issue }: { issue: Item["issue"] }): ReactNode {
+  const held = useContext(OpenedLabelsContext);
+  const labels = issue.labels ?? [];
+  if (labels.length === 0) return null;
+  const openState: CappedGroupOpenState =
+    held === undefined
+      ? {}
+      : {
+          onOpenChange: (open) => held.setOpened(issue.key, open),
+          open: held.opened.has(issue.key),
+        };
+  return (
+    <CappedGroup
+      className="flex min-w-0 flex-wrap gap-1 [&>span]:min-w-0 [&>span]:max-w-full"
+      label="labels"
+      name="labels"
+      {...openState}
+    >
+      {labels.map((label) => (
+        <LabelPill key={label}>
+          <TruncatedText className="min-w-0" title={label}>
+            {label}
+          </TruncatedText>
+        </LabelPill>
+      ))}
+    </CappedGroup>
+  );
+}
 
 /** How each column renders and sorts, for the reader `userState` describes, with each title
  *  in eight lines at most where the table wraps its titles (`wrapTitles`), ending in '…' with the
@@ -238,17 +279,7 @@ const renderings = (
   labels: {
     header: "Labels",
     accessorFn: (item) => (item.issue.labels ?? []).join(", "),
-    cell: ({ row }) => (
-      <span className="flex min-w-0 flex-wrap gap-1 [&>span]:min-w-0 [&>span]:max-w-full">
-        {(row.original.issue.labels ?? []).map((label) => (
-          <LabelPill key={label}>
-            <TruncatedText className="min-w-0" title={label}>
-              {label}
-            </TruncatedText>
-          </LabelPill>
-        ))}
-      </span>
-    ),
+    cell: ({ row }) => <LabelsCell issue={row.original.issue} />,
   },
   claim: {
     header: "Claimed by",

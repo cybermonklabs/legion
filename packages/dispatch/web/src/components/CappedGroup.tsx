@@ -12,7 +12,7 @@ export const LAYOUT_GROUP_MAX = 10;
 
 /** Who keeps whether the group is open: its host, which passes both props, or the group itself,
  *  given neither. A host that passed only `open` would draw a "+N" that nothing could open. */
-type CappedGroupOpenState =
+export type CappedGroupOpenState =
   | { open: boolean; onOpenChange: (open: boolean) => void }
   | { open?: never; onOpenChange?: never };
 
