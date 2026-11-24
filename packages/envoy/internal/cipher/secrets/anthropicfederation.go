@@ -10,8 +10,6 @@ import (
 	"net/http"
 	"strings"
 	"time"
-
-	"github.com/sjawhar/envoy/redirects"
 )
 
 // anthropicTokenURL is Anthropic's token exchange, which takes a jwt-bearer grant of a federation
@@ -51,7 +49,7 @@ const anthropicTokenPrefix = "sk-ant-oat01-"
 //
 // TokenURL is Anthropic's exchange, anthropicTokenURL when empty; HTTP is the client it is called
 // on, ownClient when nil, and follows no redirect either way, since the request carries the
-// identity token (redirects.Refused); Retry counts each exchange's one attempt in
+// identity token (mintCall); Retry counts each exchange's one attempt in
 // broker_mint_attempts_total, and a nil Retry counts none; Now is the clock the minted token's
 // expiry is read against, time.Now when nil. A test names its stand-ins in all of them.
 //
@@ -144,7 +142,7 @@ func (m *AnthropicFederation) Mint(ctx context.Context, req MintRequest) (Minted
 	}
 	// The token's life is read from before the exchange, so a slow answer never lengthens it.
 	asked := now()
-	payload, err := mintCall(m.Retry.startOnce(req.Type), redirects.Refused(cmp.Or(m.HTTP, ownClient)), request, what, "Anthropic", http.StatusOK, mintResponseLimit, false, nil)
+	payload, err := mintCall(m.Retry.startOnce(req.Type), m.HTTP, request, what, "Anthropic", http.StatusOK, mintResponseLimit, false, nil)
 	if err != nil {
 		return Minted{}, err
 	}

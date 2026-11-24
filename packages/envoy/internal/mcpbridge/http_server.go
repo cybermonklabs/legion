@@ -100,16 +100,25 @@ func (s *HTTPServer) Start() error {
 	// names it as the rule reads it (redact.Field), with no user information and no query value.
 	// net/http's error for a POST that failed quotes the endpoint again, so it prints through
 	// redact.Cause: the failure alone beside an endpoint the allow-list passes, and its class beside
-	// any other.
+	// any other. The endpoint can carry the session in its query and a credential in its user
+	// information (the POST's Basic Authorization), which whatever answers can quote in a Location;
+	// a followed redirect also sends the endpoint, query included, as the next request's Referer,
+	// and a followed 307 or 308 sends the message again. So the POST follows a redirect only on the
+	// endpoint's own origin (redirects.SameOrigin), as the connect does; any other is the server's
+	// answer, which took no message: an error naming its status, and nothing of its Location or body.
 	s.session = newSession(s.cfg.Name, func(data []byte) error {
-		postResp, postErr := http.Post(s.messageURL, "application/json", bytes.NewReader(data))
+		postResp, postErr := redirects.SameOrigin(http.DefaultClient).Post(s.messageURL, "application/json", bytes.NewReader(data))
 		if postErr != nil {
 			return fmt.Errorf("POST to %s: %w", redact.Field(s.messageURL), redact.Cause(postErr, s.messageURL))
 		}
 		defer postResp.Body.Close()
-		if postResp.StatusCode >= 400 {
-			refused, _ := redact.ReadAnswer(postResp, 64<<10)
-			return fmt.Errorf("POST to %s: status %d: %s", redact.Field(s.messageURL), postResp.StatusCode, refused.Words())
+		if postResp.StatusCode >= http.StatusMultipleChoices {
+			said := redirectNotFollowed
+			if !redirects.Status(postResp.StatusCode) {
+				refused, _ := redact.ReadAnswer(postResp, 64<<10)
+				said = refused.Words()
+			}
+			return fmt.Errorf("POST to %s: status %d: %s", redact.Field(s.messageURL), postResp.StatusCode, said)
 		}
 		return nil
 	}, s.onNotify, s.stopCh)
@@ -135,6 +144,10 @@ func (s *HTTPServer) Start() error {
 	log.Printf("mcp-bridge: server %s ready (http)", s.cfg.Name)
 	return nil
 }
+
+// redirectNotFollowed is what the error for a POST answered with a redirect the bridge does not
+// follow says: the bridge's own words, which the rule for remote text prints as they are.
+var redirectNotFollowed = redact.NewRemoteText("a redirect, which the bridge does not follow")
 
 // Stop gracefully shuts down the SSE connection.
 func (s *HTTPServer) Stop() {
