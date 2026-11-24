@@ -59,6 +59,14 @@ func mapOf(v any) any {
 // plain string that holds a secret or one of credentials, printed under the same verb in a
 // struct's field at the same holding, prints none, since such a row could not see one. It logs
 // one `REDACT-KEPT <name> rows=<n> blind=<n>` line.
+//
+// It establishes nothing past those verbs, holdings and forms. It reads no other form of a
+// credential: base64, standard or URL-safe; percent-encoding; a run of fewer than 8 characters;
+// hex under a verb or flag outside keptVerbs, such as % x, which puts a space between bytes; and a
+// run of a secret that is not one of credentials, since Leaks reads each secret whole. It calls no
+// printer but fmt: not encoding/json or encoding/xml, which read exported fields and a type's own
+// marshaler, not slog's handlers, which call LogValue, and not a template. A value one of those
+// reaches needs a row of its own.
 func KeptPrintTest(t *testing.T, name string, v any, twin string, credentials ...string) {
 	t.Helper()
 	type plain struct{ s string }
