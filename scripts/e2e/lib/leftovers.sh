@@ -89,10 +89,12 @@ refuse_leftovers() {
       return 2
     }
     # shellcheck disable=SC2185 # find reads its paths from stdin (-files0-from -), not from argv
-    # `|| exit` keeps find's status for the wait below, and keeps a caller's ERR trap (`set -E`) from
-    # firing inside the substitution for the unreadable entries every walk meets.
+    # `|| exit "$?"` keeps find's status for the wait below, by value (a bare `exit` in a process or
+    # command substitution that a trap runs exits with the status from before the trap), and keeps a
+    # caller's ERR trap (`set -E`) from firing inside the substitution for the unreadable entries
+    # every walk meets.
     mapfile -d '' -t cwd_links < <(printf '%s\0' "${undecided[@]}" |
-      LC_ALL=C find -files0-from - -maxdepth 0 -printf '%p\0%l/\0' 2>"$err" || exit)
+      LC_ALL=C find -files0-from - -maxdepth 0 -printf '%p\0%l/\0' 2>"$err" || exit "$?")
     wait "$!" || status=$?
     complaint=
     [ "$status" = 0 ] || complaint=$(proc_walk_complaint "$err" "$proc") || complaint=

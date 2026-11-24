@@ -69,6 +69,8 @@ stagings.push(() => {
     "loopback-dsn.py",
     "port-file.sh",
     "held-port.py",
+    "subreaper.sh",
+    "subreaper.py",
   ]) {
     mkdirSync(path.join(co, "scripts/e2e/lib"), { recursive: true });
     copyFileSync(path.join(root, "scripts/e2e/lib", lib), path.join(co, "scripts/e2e/lib", lib));

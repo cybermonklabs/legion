@@ -32,8 +32,9 @@ afterEach(() => {
 });
 
 // The probe runs each walk in a shell with the rigs' helpers sourced, the skill-scenario rig's two
-// and parked-decision-devbox.sh's stop_agent_daemons taken from their scripts, and prints one line a
-// walk: its name, its exit status, and the first line it wrote on stderr. `fail` is a driver's, here
+// (run_env_pids and stop_env_processes, the sweep its exit handlers run) and
+// parked-decision-devbox.sh's stop_agent_daemons taken from their scripts, and prints one line a
+// walk: its name, its exit status, and the last line it wrote on stderr. `fail` is a driver's, here
 // one that prints and returns, so refuse_leftovers' report reaches the line. The two port walks ask
 // for PORT, a port this test listens on (heldPort), so the socket is found in /proc/net/tcp and
 // each walk goes on to the processes it must read; a port nothing listens on ends them earlier, with
@@ -64,6 +65,7 @@ walk run_processes run_processes
 walk listening_holders listening_holders "$PORT"
 walk held_only_by held_only_by "$PORT" 4242
 walk run_env_pids run_env_pids "$work/runs"
+walk stop_env_processes stop_env_processes "$work/runs"
 walk refuse_leftovers refuse_leftovers legion-e2e-unread
 walk stop_agent_daemons stop_agent_daemons
 `;
@@ -111,6 +113,7 @@ perlAndJq.test(
       "listening_holders",
       "held_only_by",
       "run_env_pids",
+      "stop_env_processes",
       "refuse_leftovers",
       "stop_agent_daemons",
     ]);
@@ -128,6 +131,9 @@ perlAndJq.test(
     }
     expect(got.find((walk) => walk.name === "stop_agent_daemons")?.said).toMatch(
       /could not be read \(run_processes\)/
+    );
+    expect(got.find((walk) => walk.name === "stop_env_processes")?.said).toMatch(
+      /stopped no process of the run under \S+, since none could be named/
     );
   }
 );
@@ -191,7 +197,7 @@ walk stop_tree stop_tree 4242`,
     );
     expect(ran.stderr.toString()).toBe("");
     const got = walks(ran.stdout.toString());
-    expect(got).toHaveLength(12);
+    expect(got).toHaveLength(13);
     for (const { name, status, said } of got) {
       expect({ name, status, said: said !== "" }).toEqual({ name, status: 2, said: true });
     }

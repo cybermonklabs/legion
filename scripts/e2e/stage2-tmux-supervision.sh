@@ -35,6 +35,10 @@
 # YubiKey touch), which the daemon itself resolves at boot and hands every pane's shim as a
 # daemon-held file (`provider_keys`); the run never reads it.
 set -euo pipefail
+# The run's shell is a child subreaper, so every process the run starts stays below it
+# (lib/subreaper.sh).
+# shellcheck source-path=SCRIPTDIR source=lib/subreaper.sh
+. "$(dirname "$0")/lib/subreaper.sh"
 # This rig's NATS is a throwaway server with no users. nats.go refuses an nkey when the server sends
 # no nonce ("nats: nkeys not supported by the server"), so no process here inherits an operator's
 # pane seed (NATS_NKEY_SEED, NATS_NKEY_SEED_FILE) or daemon seed (NATS_DAEMON_NKEY_SEED,
@@ -137,7 +141,7 @@ until_true() {
 # ---- cleanup: never fails, leaves nothing of the run behind ---------------------------------------
 
 cleanup() {
-  local status=$? p
+  local status=$? p swept=0
   # A second Ctrl-C, TERM or HUP must not end the teardown part way: its own signal traps would
   # exit from inside this one, leaving panes running and, under box-login, the profile's link to
   # the operator's login in a kept workspace. Every wait below is bounded, so ignoring them costs
@@ -156,14 +160,22 @@ cleanup() {
   # profile's link to that database goes (the link alone) once they are gone, so a kept workspace
   # holds no live path to the login (lib/box-login.sh). The other routes keep the SIGKILL below.
   if [ "$model_route" = box-login ]; then
-    stop_marked_processes "$work" "$box_login_stop_grace" || true
+    stop_marked_processes "$work" "$box_login_stop_grace" || {
+      swept=$?
+      echo "the run's sweep of its own processes failed (stop_marked_processes exited $swept), so a process of the run may still be running" >&2
+    }
     unlink_box_login_db "$profile_agent"
   fi
   for p in "$ptoken" "$deadline_ptoken"; do
     TMUX_TMPDIR=$work/tmux tmux -L "legion-$p" kill-server >/dev/null 2>&1 || true
   done
   stop_pid "$listener_pid"
-  stop_marked_processes "$work" || true
+  # The sweep's 2 (a walk that could not read the machine, or a process of the run it could not
+  # check, left running) is no clean teardown: the run exits non-zero at the end of this trap.
+  stop_marked_processes "$work" || {
+    swept=$?
+    echo "the run's sweep of its own processes failed (stop_marked_processes exited $swept), so a process of the run may still be running" >&2
+  }
   docker rm -f -v "$nats_container" "$pg_container" >/dev/null 2>&1 || true
   rm -rf "$work/model-gateway-cache" || true
   if [ -n "${ok:-}" ]; then
@@ -174,6 +186,11 @@ cleanup() {
     # a termination (129, 130, 143, as trapped below) stopped the run and gets none; a child a signal
     # killed, which is a failure, still does.
     [[ $status =~ ^(129|130|143)$ ]] || bash "$root/scripts/e2e/lib/model-gateway-unserved.sh" --notes "$work/model-gateway" "$check_started" "$check" >&2 || true
+  fi
+  # A run that passed and whose sweep failed ends on a FAIL line naming the sweep, not on its PASS.
+  if [ "$swept" != 0 ]; then
+    [ -z "${ok:-}" ] || echo "stage 2 e2e: FAIL (check process-sweep)" >&2
+    exit "$((status == 0 ? 1 : status))"
   fi
   return 0
 }

@@ -213,6 +213,16 @@ done
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
 root=$(cd "$here/../../../.." && pwd -P)
+# Each `rig.sh run`, `rig.sh batch` and `rig.sh live-read` shell walks its processes at its exit
+# (stop_run, stop_batch), so each is a child subreaper, and every process it starts stays below it
+# (scripts/e2e/lib/subreaper.sh); `profile`, `score`, `judge` and `judge-omp` walk no run's
+# processes, and run as they are.
+case ${1:-} in
+  run | batch | live-read)
+    # shellcheck source-path=SCRIPTDIR/../../../.. source=scripts/e2e/lib/subreaper.sh
+    . "$root/scripts/e2e/lib/subreaper.sh"
+    ;;
+esac
 work=${SKILL_SCENARIOS_WORK:-${TMPDIR:-/tmp}/skill-scenarios}
 work=$(realpath -m -- "$work")
 
@@ -649,17 +659,20 @@ run_env_pids() { procs_naming "$1" SKILL_SCENARIO_RUN; }
 # run's sweep's own loop: each is frozen and read again, ended only while it is still the process
 # the walk read (its start time) and still names the run, and then ended with its tree, its own
 # parent not read again. When run_env_pids could not read the machine's environments, or a tree's
-# processes could not all be read (kill_held), it says so, and this returns, so the exit handler
-# that runs it goes on with the rest of its cleanup.
+# processes could not all be read (kill_held), it says so and returns 2: a process of the run may
+# still be running. The exit handler that runs it goes on with the rest of its cleanup and then
+# exits non-zero (stop_run, stop_batch), so no command reads a sweep that could not see as clean.
 # shellcheck disable=SC2329 # the exit traps run it
 stop_env_processes() {
   local pairs
   pairs=$(run_env_pids "$1") || {
     echo "stop_env_processes: stopped no process of the run under $1, since none could be named" >&2
-    return 0
+    return 2
   }
-  kill_held "$1" SKILL_SCENARIO_RUN <<<"$pairs" ||
+  kill_held "$1" SKILL_SCENARIO_RUN <<<"$pairs" || {
     echo "stop_env_processes: the processes under some process of the run under $1 could not be read" >&2
+    return 2
+  }
 }
 
 # stop_panes SESSION stops, with stop_tree, each pane process of SESSION on the work directory's
@@ -675,15 +688,17 @@ stop_panes() {
 # and every process that carries its SKILL_SCENARIO_RUN. The run's database stays in the batch's
 # Postgres container, which services_down removes. The two services are this shell's own jobs, so
 # each is waited for once it is killed: bash otherwise prints a `Killed` notice for it on stderr.
+# A sweep that failed (stop_env_processes) ends the command non-zero once the rest is done.
 # shellcheck disable=SC2329 # on_exit's trap runs it
 stop_run() {
-  local pid
+  local status=$? pid swept=0
   for pid in "$daemon_pid" "$dispatch_pid"; do
     [ -z "$pid" ] || { stop_tree "$pid" && wait "$pid" 2>/dev/null || true; }
   done
   [ -z "$session" ] || stop_panes "$session"
-  [ -z "$R" ] || stop_env_processes "$R"
+  [ -z "$R" ] || stop_env_processes "$R" || swept=$?
   [ -z "$session" ] || tmux kill-session -t "=$session" 2>/dev/null || true
+  [ "$swept" = 0 ] || exit "$((status == 0 ? 1 : status))"
 }
 
 # on_exit HANDLER runs HANDLER at the command's exit, INT, TERM and HUP included.
@@ -1542,17 +1557,19 @@ cmd_run() {
 }
 
 # A batch's exit: its runs (each run's shell, daemon stand-in and fixture commands), the agents they
-# started, every process that carries a run's SKILL_SCENARIO_RUN, and the services.
+# started, every process that carries a run's SKILL_SCENARIO_RUN, and the services. A sweep that
+# failed (stop_env_processes) ends the batch non-zero once the services are down.
 # shellcheck disable=SC2329 # on_exit's trap runs it
 stop_batch() {
-  local s sessions=()
+  local status=$? s sessions=() swept=0
   stop_tree "${runs_pid:-}"
   for s in $(tmux list-sessions -F '#{session_name}' 2>/dev/null || true); do
     case $s in "$tag-$batch_scenario"-*) sessions+=("$s") ;; esac
   done
   for s in "${sessions[@]}"; do stop_panes "$s"; done
-  stop_env_processes "$work/runs"
+  stop_env_processes "$work/runs" || swept=$?
   services_down
+  [ "$swept" = 0 ] || exit "$((status == 0 ? 1 : status))"
 }
 
 cmd_batch() {

@@ -96,7 +96,8 @@ images:
     tag: seaweedfs-3.97-bb05d66d
     digest: sha256:bb05d66d2963b1cc48073190781c3dd29e2c4c88a2ae2986bf58e38c86d89c6e
 
-  # The judge container of pi-legion's skill scenarios: rig.sh's judge_image.
+  # The judge container of pi-legion's skill scenarios (rig.sh's judge_image), and the container of
+  # scripts/e2e/lib/run-processes.test.ts's docker-init row (dockerImage), whose perl it carries.
   - upstream: docker.io/library/ubuntu@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55
     tag: ubuntu-534baea6
     digest: sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55

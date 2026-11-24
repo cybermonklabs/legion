@@ -102,6 +102,10 @@
 # inherits no DISPATCH_*, ENVOY_*, NATS_*, OMP*, PI_*, ANTHROPIC_*, CLAUDE_*, PGHOSTADDR,
 # PGSERVICE or PGSERVICEFILE variable of the caller's.
 set -Eeuo pipefail
+# The run's shell is a child subreaper, so every process the run starts stays below it
+# (lib/subreaper.sh).
+# shellcheck source-path=SCRIPTDIR source=lib/subreaper.sh
+. "$(dirname "$0")/lib/subreaper.sh"
 
 # This script's own three ENVOY_SESSION_STATES_* inputs are read first: the sweep below drops every
 # ENVOY_* variable of the caller's, so that nothing the run starts inherits a Legion pane's real
@@ -380,7 +384,13 @@ cleanup() {
   stop_pid "$natsd_pid"
   # What outlived its stop, a member of an agent's group that outlived the TERM among them: every
   # process the run marked (both agents carry LEGION_E2E_RUN).
-  stop_marked_processes "$work" || true
+  # The sweep's 2 (a walk that could not read the machine, or a process of the run it could not
+  # check, left running) is no clean teardown: it costs the run its status, 1 where it had passed,
+  # and the FAIL line below then names the sweep.
+  stop_marked_processes "$work" || {
+    echo "the run's sweep of its own processes failed (stop_marked_processes exited $?), so a process of the run may still be running" >&2
+    [ "$status" -ne 0 ] || { status=1 check=process-sweep; }
+  }
   if [ -n "$database" ]; then
     psql "$pg_dsn" -X -q -v ON_ERROR_STOP=1 -c "drop database if exists \"$database\"" >/dev/null 2>&1 ||
       echo "could not drop database $database; drop it by hand" >&2

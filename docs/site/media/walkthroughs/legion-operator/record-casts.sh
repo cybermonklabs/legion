@@ -16,6 +16,11 @@
 # its scratch directory, its tmux servers and both containers. The daemon, listener and model logs
 # go to an evidence directory outside it, a fresh /tmp directory the run keeps and names on exit.
 set -euo pipefail
+# The run's shell is a child subreaper, so every process the run starts stays below it, and the
+# sweep at its exit judges an environment it cannot read by its line of parents
+# (scripts/e2e/lib/subreaper.sh).
+# shellcheck source-path=SCRIPTDIR source=../../../../../scripts/e2e/lib/subreaper.sh
+. "$(dirname "$0")/../../../../../scripts/e2e/lib/subreaper.sh"
 unset NATS_NKEY_SEED NATS_NKEY_SEED_FILE NATS_DAEMON_NKEY_SEED NATS_DAEMON_NKEY_SEED_FILE
 
 check=setup
@@ -85,6 +90,7 @@ model_port=
 
 # Unconditional: every run removes what it made, whatever it ended on, and keeps its evidence.
 cleanup() {
+  local status=$? swept=0
   set +e
   TMUX_TMPDIR=$work/tmux tmux -L cast kill-server >/dev/null 2>&1
   stop_pid "$daemon_pid"
@@ -92,10 +98,16 @@ cleanup() {
   stop_pid "$listener_pid"
   stop_pid "$model_pid"
   stop_pid "$daemon_keeper_pid"
-  stop_marked_processes "$work"
+  # The sweep's 2 (a walk that could not read the machine, or a process of the run it could not
+  # check, left running) is no clean teardown: the run exits non-zero at the end of this trap.
+  stop_marked_processes "$work" || {
+    swept=$?
+    echo "FAIL process-sweep: stop_marked_processes exited $swept, so a process of the run may still be running" >&2
+  }
   docker rm -f "$pg_container" "$nats_container" >/dev/null 2>&1
   rm -rf "$work"
   echo "evidence: $evidence (logs/daemon.log, logs/listener.log, logs/model.log)"
+  [ "$swept" = 0 ] || exit "$((status == 0 ? 1 : status))"
   return 0
 }
 trap cleanup EXIT

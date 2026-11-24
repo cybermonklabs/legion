@@ -17,6 +17,16 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+/**
+ * The timeout each hook of this fixture passes to `bun:test`, in milliseconds. Bun gives a hook
+ * 5 s unless the hook names its own, or `bun test --timeout` names one for the run, and making or
+ * removing a tree is no bounded work: on a dev box at load 1,751 on 288 CPUs the `afterAll` of
+ * {@link temporaryDirectory} took 5.65 s to remove one, and Bun failed the file on it after every
+ * row had passed (`scripts/e2e/lib/run-processes.test.ts`). The hook decides its own verdict, so a
+ * file is the same under a bare `bun test` and under a run with a longer `--timeout`.
+ */
+const HOOK_TIMEOUT_MS = 120_000;
+
 /** What {@link temporaryDirectories} takes. */
 export type TemporaryDirectoriesOptions = {
   /**
@@ -140,7 +150,7 @@ export function temporaryDirectories(
   const made: string[] = [];
   afterEach(() => {
     removeEvery(made.splice(0));
-  });
+  }, HOOK_TIMEOUT_MS);
   return (suffix) => {
     const directory = mkdtempSync(join(root, nameTemplate(prefix, suffix)));
     made.push(directory);
@@ -185,10 +195,10 @@ export function temporaryDirectory(
   );
   beforeAll(() => {
     mkdirSync(directory, { mode: 0o700 });
-  });
+  }, HOOK_TIMEOUT_MS);
   afterAll(() => {
     removeTree(directory);
-  });
+  }, HOOK_TIMEOUT_MS);
   return directory;
 }
 

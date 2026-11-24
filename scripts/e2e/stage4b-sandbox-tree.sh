@@ -158,6 +158,10 @@
 # while another run of the same identity holds it, or while that identity's project has pods,
 # Sandboxes or claims it did not create.
 set -Eeuo pipefail
+# The run's shell is a child subreaper, so every process the run starts stays below it
+# (lib/subreaper.sh).
+# shellcheck source-path=SCRIPTDIR source=lib/subreaper.sh
+. "$(dirname "$0")/lib/subreaper.sh"
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
 work=$(mktemp -d "/tmp/legion-e2e4b.$$.XXXXXXXX")
@@ -2935,7 +2939,12 @@ cleanup() {
       echo "CHECK production-audit: FAIL: $(audit_failure)"
     fi
   fi
-  stop_marked_processes "$work" || true
+  # The sweep's 2 (a walk that could not read the machine, or a process of the run it could not
+  # check, left running) is a failed teardown check, as the ones above.
+  stop_marked_processes "$work" || {
+    echo "CHECK process-sweep: FAIL: stop_marked_processes exited $?, so a process of the run may still be running"
+    teardown_failed+="${teardown_failed:+, }process-sweep"
+  }
   remove_run_container "$pg_container"
   remove_run_container "$session_db_container"
   rm -rf "$work"

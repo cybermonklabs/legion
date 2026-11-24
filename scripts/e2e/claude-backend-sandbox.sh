@@ -187,6 +187,10 @@
 # own pod, Service and auth Secret (bridge mode only) carry the same label and are torn down by
 # lib/bridge-tunnel.sh before that comparison runs. Nothing outside `legion` is touched.
 set -Eeuo pipefail
+# The run's shell is a child subreaper, so every process the run starts stays below it
+# (lib/subreaper.sh).
+# shellcheck source-path=SCRIPTDIR source=lib/subreaper.sh
+. "$(dirname "$0")/lib/subreaper.sh"
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
 work=$(mktemp -d "${TMPDIR:-/tmp}/legion-e2eccs.$$.XXXXXXXX")
@@ -1098,7 +1102,7 @@ remove_app_tokens() {
 }
 
 cleanup() {
-  local status=$?
+  local status=$? swept=0
   # A second signal must not cut the teardown short, and a closed output must not end it.
   trap '' HUP INT TERM PIPE
   exec >&7 2>&7
@@ -1130,7 +1134,13 @@ cleanup() {
   stop_pid "$dispatch_pid"
   stop_pid "$listener_pid"
   stop_pid "$dispatch_identity_issuer_pid"
-  stop_marked_processes "$work" || true
+  # The sweep's 2 (a walk that could not read the machine, or a process of the run it could not
+  # check, left running) is no clean teardown: it costs the run its status, 1 where it had passed.
+  stop_marked_processes "$work" || {
+    swept=$?
+    echo "the run's sweep of its own processes failed (stop_marked_processes exited $swept), so a process of the run may still be running" >&2
+    [ "$status" -ne 0 ] || status=1
+  }
   docker rm -f "$pg_container" "$nats_container" "$session_db_container" >/dev/null 2>&1 || true
   [ -z "$snapshotted" ] || teardown
   remove_run_branch
@@ -1154,6 +1164,8 @@ cleanup() {
   # of the directory the removal at the head of this trap was to take (lib/github-apps.sh,
   # app_key_left). It costs this run its status rather than its remaining cleanup.
   app_key_left "$work/app-key" || status=1
+  # A run that passed and whose sweep failed ends on a FAIL line naming the sweep, not on its PASS.
+  [ "$swept" = 0 ] || [ -z "$ok" ] || printf 'claude backend sandbox e2e: FAIL (check process-sweep)\n' >&2
   exit "$status"
 }
 trap cleanup EXIT

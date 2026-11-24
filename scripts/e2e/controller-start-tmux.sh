@@ -15,6 +15,10 @@
 # the tmux servers, and its Postgres and NATS containers. CONTROLLER_START_EVIDENCE_DIR (default a
 # fresh /tmp directory, kept and printed) keeps the transcript and the daemon and listener logs.
 set -euo pipefail
+# The run's shell is a child subreaper, so every process the run starts stays below it
+# (lib/subreaper.sh).
+# shellcheck source-path=SCRIPTDIR source=lib/subreaper.sh
+. "$(dirname "$0")/lib/subreaper.sh"
 # This rig's NATS is a throwaway server with no users. nats.go refuses an nkey when the server sends
 # no nonce ("nats: nkeys not supported by the server"), so no process here inherits an operator's
 # pane seed (NATS_NKEY_SEED, NATS_NKEY_SEED_FILE) or daemon seed (NATS_DAEMON_NKEY_SEED,
@@ -70,7 +74,7 @@ fail() { echo "FAIL $check: $*" >&2; exit 1; }
 
 # Unconditional: every run removes what it made, whatever it ended on.
 cleanup() {
-  local p
+  local status=$? p swept=0
   set +e
   for p in ctl1 ctl2; do TMUX_TMPDIR=$work/tmux tmux -L accept capture-pane -p -t "$p" >"$evidence/checks/$p.pane" 2>/dev/null; done
   TMUX_TMPDIR=$work/tmux tmux -L accept kill-server >/dev/null 2>&1
@@ -78,11 +82,21 @@ cleanup() {
   TMUX_TMPDIR=$work/tmux tmux -L "legion-$ptoken" kill-server >/dev/null 2>&1
   stop_pid "$listener_pid"
   stop_pid "$daemon_keeper_pid"
-  stop_marked_processes "$work"
+  # The sweep's 2 (a walk that could not read the machine, or a process of the run it could not
+  # check, left running) is no clean teardown: the run exits non-zero at the end of this trap.
+  stop_marked_processes "$work" || {
+    swept=$?
+    echo "the run's sweep of its own processes failed (stop_marked_processes exited $swept), so a process of the run may still be running" >&2
+  }
   docker rm -f -v "$nats_container" "$pg_container" >/dev/null 2>&1
   rm -rf "$work"
   [ -n "$ok" ] || echo "controller start e2e: FAIL (check $check)"
   echo "evidence: $evidence (transcript.log, logs/daemon.log, logs/listener.log, and checks/: each check's own output and the controller panes)"
+  # A run that passed and whose sweep failed ends on a FAIL line naming the sweep, not on its PASS.
+  if [ "$swept" != 0 ]; then
+    [ -z "$ok" ] || echo "controller start e2e: FAIL (check process-sweep)"
+    exit "$((status == 0 ? 1 : status))"
+  fi
   return 0
 }
 trap cleanup EXIT

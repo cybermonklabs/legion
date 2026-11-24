@@ -125,6 +125,10 @@
 # once leave the checkout with divergent working-copy commits for someone to abandon by hand.
 # Commit the tree before the runs and expect to check `jj log` after them.
 set -Eeuo pipefail
+# The run's shell is a child subreaper, so every process the run starts stays below it
+# (lib/subreaper.sh).
+# shellcheck source-path=SCRIPTDIR source=lib/subreaper.sh
+. "$(dirname "$0")/lib/subreaper.sh"
 
 # This script's own inputs are read first: the sweep below drops every variable of those families
 # from the caller's environment, so that nothing the run starts inherits a Legion pane's real
@@ -346,8 +350,13 @@ cleanup() {
   stop_pid "$daemon_keeper_pid"
   stop_pid "$listener_keeper_pid"
   # Any process of the run's the daemon's tmux server left: each carries the run's mark, and nothing
-  # of this user's else does.
-  stop_marked_processes "$work"
+  # of this user's else does. The sweep's 2 (a walk that could not read the machine, or a process of
+  # the run it could not check, left running) is no clean teardown: it costs the run its status, 1
+  # where it had passed, and the FAIL line below then names the sweep.
+  stop_marked_processes "$work" || {
+    echo "the run's sweep of its own processes failed (stop_marked_processes exited $?), so a process of the run may still be running" >&2
+    [ "$status" -ne 0 ] || { status=1 check=process-sweep; }
+  }
   if [ -n "$database" ]; then
     psql "$pg_dsn" -X -q -v ON_ERROR_STOP=1 -c "drop database if exists \"$database\"" >/dev/null 2>&1 ||
       echo "could not drop database $database; drop it by hand" >&2

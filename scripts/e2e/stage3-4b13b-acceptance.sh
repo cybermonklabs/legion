@@ -38,6 +38,10 @@
 # are instructed by a background watcher the moment each assignment arrives, and the script asserts
 # what the daemon did rather than the order it expected.
 set -Eeuo pipefail
+# The run's shell is a child subreaper, so every process the run starts stays below it
+# (lib/subreaper.sh, this script's own, whatever ACCEPT_ROOT names).
+# shellcheck source-path=SCRIPTDIR source=lib/subreaper.sh
+. "$(dirname "$0")/lib/subreaper.sh"
 
 root=${ACCEPT_ROOT:-$(cd "$(dirname "$0")/../.." && pwd)}
 # The key command's record is read with this script's own reader, and an agent's tool calls with this
@@ -136,7 +140,7 @@ collect_transcripts() {
 }
 
 cleanup() {
-  local status=$?
+  local status=$? swept=0
   set +e
   # Teardown is best effort, and errexit off does not turn the ERR trap off: a command that fails
   # here is a warning about the teardown, never a check's FAIL line, and the run's exit status is
@@ -168,7 +172,14 @@ cleanup() {
   TMUX_TMPDIR="$work/tmux" tmux -L "legion-$ptoken" kill-server >/dev/null 2>&1 || true
   # A lib older than lib/process-tree.sh has no sweep; require_process_tree then failed the run
   # before it started anything, so there is nothing to sweep.
-  ! declare -F stop_marked_processes >/dev/null || stop_marked_processes "$work" || true
+  # The sweep's 2 (a walk that could not read the machine, or a process of the run it could not
+  # check, left running) is no clean teardown: the run exits non-zero at the end of this trap.
+  if declare -F stop_marked_processes >/dev/null; then
+    stop_marked_processes "$work" || {
+      swept=$?
+      echo "the run's sweep of its own processes failed (stop_marked_processes exited $swept), so a process of the run may still be running" >&2
+    }
+  fi
   collect_transcripts
   rm -rf "$work/model-gateway-cache" || true
   github_cleanup
@@ -189,6 +200,11 @@ cleanup() {
   # $work: the lib's own check of the directory the removal above was to take (lib/github-apps.sh,
   # app_key_left).
   app_key_left "$work/app-key" || exit 1
+  # A run that passed and whose sweep failed ends on a FAIL line naming the sweep, not on its PASS.
+  if [ "$swept" != 0 ]; then
+    [ -z "${ok:-}" ] || echo "acceptance 4b.13b: FAIL (check process-sweep)" >&2
+    exit "$((status == 0 ? 1 : status))"
+  fi
   return 0
 }
 # github_cleanup closes every proof PR still open, deletes every proof head branch, and deletes the

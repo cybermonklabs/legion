@@ -589,6 +589,17 @@ jobs:
           token: ''
           cache: false
 
+      # run-processes.test.ts's pid-namespace row makes an unprivileged user and pid namespace and
+      # walks from a shell it enters with nsenter, and fails rather than skips under
+      # GITHUB_ACTIONS. Ubuntu 24.04 restricts unprivileged user namespaces with an AppArmor
+      # sysctl, so the job turns it off on its throwaway runner, as ci-job-daemon-go.yaml does
+      # (`|| true`: a runner image without the key restricts nothing), and the unshare after it is
+      # the verdict that the restriction is gone.
+      - name: Allow unprivileged user namespaces (the run-processes walk's pid-namespace row)
+        run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          unshare --user --map-current-user --pid --fork --mount-proc true
+
       # After setup-go: held-port.test.ts builds the real envoy-listener and hands it a held socket.
       - name: Test the live proofs' libraries (the GitHub ingress bridge, the proof human's check, the model gateway key command, the design-gate verdict, the held-port helper)
         run: bun test scripts/e2e/lib

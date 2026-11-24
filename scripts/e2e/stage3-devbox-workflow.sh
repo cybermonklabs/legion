@@ -46,6 +46,10 @@
 # (read_app_logins, lib/workflow.sh). No token and no key enters this shell, a pane, an argv, or
 # this transcript.
 set -Eeuo pipefail
+# The run's shell is a child subreaper, so every process the run starts stays below it
+# (lib/subreaper.sh).
+# shellcheck source-path=SCRIPTDIR source=lib/subreaper.sh
+. "$(dirname "$0")/lib/subreaper.sh"
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
 # The model route first, and under box-login the one-at-a-time lock (lib/box-login.sh), before the
@@ -171,7 +175,7 @@ collect_transcripts() {
 }
 
 cleanup() {
-  local status=$? p audit_failed=
+  local status=$? p swept=0 audit_failed=
   # A second Ctrl-C, TERM or HUP must not end the teardown part way: its own signal traps would
   # exit from inside this one, leaving panes running and, under box-login, the profile's link to
   # the operator's login in a kept workspace. Every wait below is bounded, so ignoring them costs
@@ -210,11 +214,19 @@ cleanup() {
   # stay up through the production audit above, which reads their sessions on production Envoy.
   # The other routes keep the SIGKILL below.
   if [ "$model_route" = box-login ]; then
-    stop_marked_processes "$work" "$box_login_stop_grace"
+    stop_marked_processes "$work" "$box_login_stop_grace" || {
+      swept=$?
+      echo "the run's sweep of its own processes failed (stop_marked_processes exited $swept), so a process of the run may still be running" >&2
+    }
     unlink_box_login_db "$profile_agent"
   fi
   TMUX_TMPDIR="$work/tmux" tmux -L "legion-$ptoken" kill-server >/dev/null 2>&1 || true
-  stop_marked_processes "$work"
+  # The sweep's 2 (a walk that could not read the machine, or a process of the run it could not
+  # check, left running) is no clean teardown: the run exits non-zero at the end of this trap.
+  stop_marked_processes "$work" || {
+    swept=$?
+    echo "the run's sweep of its own processes failed (stop_marked_processes exited $swept), so a process of the run may still be running" >&2
+  }
   docker rm -f -v "$pg_container" "$nats_container" >/dev/null 2>&1 || true
   collect_transcripts
   close_unpassed_run_pull_requests
@@ -241,6 +253,11 @@ cleanup() {
   # The review App's private key must be gone, whatever else the teardown did: the lib's own check
   # of the directory the removals above were to take (lib/github-apps.sh, app_key_left).
   app_key_left "$work/app-key" || exit 1
+  # A run that passed and whose sweep failed ends on a FAIL line naming the sweep, not on its PASS.
+  if [ "$swept" != 0 ]; then
+    [ -z "${ok:-}" ] || echo "stage 3 e2e: FAIL (check process-sweep)" >&2
+    exit "$((status == 0 ? 1 : status))"
+  fi
   return 0
 }
 trap cleanup EXIT
