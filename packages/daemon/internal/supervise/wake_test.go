@@ -1155,8 +1155,8 @@ func TestARecordedDeathWhoseReportCameFirstTakesNoSecondWake(t *testing.T) {
 // the death a second launch failure: that walks a claim to the launch budget for a process that
 // failed once, and fails it with no launch tried.
 //
-// The negative control is the charge made at every raise of the relaunch (relaunchAfterDeath
-// without its check of the cause pending): the restart reads the stored count with the first
+// The negative control is the charge made at every raise of the relaunch (relaunchAfterFailure
+// without its deathLaunchFailureCharged guard): the restart reads the stored count with the first
 // charge in it and adds a second.
 func TestARestartChargesADeathWhoseRelaunchWaitedNoSecondLaunchFailure(t *testing.T) {
 	for _, row := range []struct {
@@ -1239,6 +1239,79 @@ func TestTheBootsReplayOfADeathTheRuntimeSinceFoundRunningRelaunchesNothing(t *t
 	h.wantStarts(h.token, 1)
 	h.wantBudgets(charged)
 	h.wantState(StateReady)
+}
+
+// A suspension held over a restored dead claim keeps the boot's replay of the death from
+// relaunching it: the claim reads working, its process unreported since the restart, so an
+// operator's suspension is held for a turn that will not end, and the death's own report ends that
+// hold as a suspension (died, endHeld). A replay that launched instead — at once, where the pacing
+// does not hold it — would let the process go with the hold (letGo), and the claim would run where
+// the operator suspended it, with no request left to suspend it again.
+//
+// The death's relaunch is refused before the restart, so the claim is stored working over its dead
+// process with the death charged, which is what the replay reads (relaunchRecordedDeath).
+func TestTheBootsReplayLeavesARecordedDeathWithAHeldSuspensionToItsReport(t *testing.T) {
+	h := newHarness(t)
+	h.reach(StateReady)
+	h.must(RequestDeliver{Claim: testToken, Task: "the task"})
+	h.must(StreamTurnStart{Claim: testToken})
+	dead := h.locator()
+	h.m.deps.Store = &unansweredCheckLaunchStore{memStore: h.store, failing: true}
+	gone := RuntimeObservation{Observation: runtime.Observation{Locator: dead, Kind: runtime.Gone, At: h.clock.Now()}}
+	if err := h.handle(gone); err == nil {
+		t.Fatal("the relaunch the death raised was taken, want the lifecycle recheck's refusal of it")
+	}
+	h.restart()
+	if err := h.handle(RequestSuspend{Claim: testToken, By: SuspendedByOperator}); err != nil && !errors.Is(err, ErrSuspendHeld) {
+		t.Fatal(err)
+	}
+	if !h.claim().SuspensionHeld {
+		t.Fatalf("the operator's suspension of the restored working claim is not held, state %s", h.state())
+	}
+
+	h.must(RecordedDeath{Claim: testToken, Generation: h.claim().Generation})
+
+	h.wantStarts(testToken, 1)
+	if !h.claim().SuspensionHeld {
+		t.Fatal("the replay dropped the held suspension, want it kept for the death's report to end")
+	}
+	h.must(gone)
+	h.wantState(StateSuspended)
+	h.wantStarts(testToken, 1)
+}
+
+// The boot's replay names the generation it read, and a claim a launch has moved past it raises
+// nothing, even where a death of that later process is charged and its relaunch was refused: that
+// relaunch is the later death's, which its own report raises, and the death the replay names was
+// relaunched already.
+func TestTheBootsReplayOfAnEarlierGenerationRelaunchesNothing(t *testing.T) {
+	h := newHarness(t)
+	h.reach(StateReady)
+	refusing := &unansweredCheckLaunchStore{memStore: h.store, failing: true}
+	first := RuntimeObservation{Observation: runtime.Observation{Locator: h.locator(), Kind: runtime.Gone, At: h.clock.Now()}}
+	h.m.deps.Store = refusing
+	if err := h.handle(first); err == nil {
+		t.Fatal("the relaunch the first death raised was taken, want the lifecycle recheck's refusal of it")
+	}
+	h.restart()
+	read := h.claim().Generation
+	// The sweep's report of the first death raises its relaunch, which runs at once.
+	h.must(first)
+	h.wantStarts(h.token, 2)
+	// That process dies too, and the lifecycle refuses its relaunch, so the claim stands charged
+	// over its dead process at the later generation with no launch raised.
+	h.m.deps.Store = refusing
+	if err := h.handle(RuntimeObservation{Observation: runtime.Observation{Locator: h.locator(), Kind: runtime.Gone, At: h.clock.Now()}}); err == nil {
+		t.Fatal("the relaunch the second death raised was taken, want the lifecycle recheck's refusal of it")
+	}
+	h.m.deps.Store = h.store
+	if c := h.claim(); c.Generation == read || !c.DeathCharged {
+		t.Fatalf("the claim is at generation %d with DeathCharged %v, want past %d with the later death charged", c.Generation, c.DeathCharged, read)
+	}
+
+	h.must(RecordedDeath{Claim: h.token, Generation: read})
+
+	h.wantStarts(h.token, 2)
 }
 
 // Nothing probes the process a waiting launch replaces, so no probe interval ever falls inside

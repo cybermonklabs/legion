@@ -368,16 +368,24 @@ func suspendRequest(m *Machine, ev Event) (RequestSuspend, error) {
 // that a replacement or a wake's turn ends stops through endHeld and letProcessGoFor, and a
 // root's exit stops through exit. It sends the clean stop of the process's Envoy session once the
 // runtime's stop has returned, and none for a stop the runtime refused (stopForSuspension).
-// launch is whether the stop meets a launch its caller knows of (suspendedFor); a launch still
-// waiting on the machine is read here, before the stop lets it go (launchMet). A pause's stop
-// also owes the relaunch of a recorded death (Claim.DeathCharged with a locator), whose wake a
-// restart forgot: the boot's stop can run before replayRecordedDeaths raises it again.
+// launch is whether the stop meets a launch its caller knows of (suspendedFor); the launch the
+// claim itself owes is read here, before the stop lets its process go (stopOwesLaunch).
 func (m *Machine) suspendNow(ctx context.Context, request RequestSuspend, launch bool) error {
-	launch = launch || m.launchMet() || (request.Pause != 0 && m.claim.DeathCharged && m.claim.Locator != nil)
+	launch = launch || m.stopOwesLaunch()
 	if err := m.stopForSuspension(ctx, request.By, stopOwed); err != nil {
 		return fmt.Errorf("suspend %s: %w", m.claim.Token, err)
 	}
 	return m.suspendedFor(ctx, request, launch)
+}
+
+// stopOwesLaunch is whether a stop of the claim's process owes the role a launch, which a project
+// pause's stop records for the resume (suspendedFor, PauseStop.LaunchOwed): a launch still waiting
+// on the machine (launchMet), or the relaunch of the death the claim's record charges
+// (Claim.DeathCharged). A restart forgets the wake that death parked, and the boot's stop of a
+// paused project can reach the claim before the boot replays the death (RecordedDeath), so the
+// record is what says the launch is owed.
+func (m *Machine) stopOwesLaunch() bool {
+	return m.launchMet() || m.claim.DeathCharged
 }
 
 // stopForSuspension asks the runtime to stop the claim's process for a suspension by by, and
@@ -575,11 +583,10 @@ func (m *Machine) suspendOverADeadProcess(ctx context.Context, request RequestSu
 //
 // Between the two it sends the clean stop of the process's Envoy session once the runtime's stop
 // has returned, unless cleanStopSent says this decision sent it already (stopForSuspension).
-// launch is suspendNow's: a launch the caller knows the stop meets, beside the one waiting on the
-// machine or the recorded death whose relaunch a pause's stop owes, read before the stop lets the
-// process go (launchMet, Claim.DeathCharged).
+// launch is suspendNow's: a launch the caller knows the stop meets, beside the launch the claim
+// itself owes, read before the stop lets the process go (stopOwesLaunch).
 func (m *Machine) letProcessGoFor(ctx context.Context, request RequestSuspend, launch, cleanStopSent bool) error {
-	launch = launch || m.launchMet() || (request.Pause != 0 && m.claim.DeathCharged && m.claim.Locator != nil)
+	launch = launch || m.stopOwesLaunch()
 	incarnation := m.claim.Locator.Incarnation
 	if err := m.stopForSuspension(ctx, request.By, cleanStopSent); err != nil {
 		m.stopUnconfirmed = true

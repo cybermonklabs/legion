@@ -625,11 +625,14 @@ func (m *Machine) adoptPodLoad() {
 // with the daemon, and a grant that reaches the machine after that stop starts nothing
 // (podStartDue).
 //
-// The wake's run is the launch from that grant on while the wake carries the hold, and the same
-// try asked of the gate anew once it carries none: the pause's gate holds the wake in the park's
-// place where the project is paused at the grant (podStartDue), and its let-out after the pause
-// runs it (letOutHeldLaunch, runWake). Its again is the launch raised anew from the top, which
-// only that let-out's lifecycle recheck reads (relaunchRefused), as relaunchAtProbe raises it.
+// The wake's run is the launch from that grant on while the wake carries the hold, and a fresh try
+// of the same launch, asked of the gate anew, once it carries none: the pause's gate holds the
+// wake in the park's place where the project is paused at the grant (podStartDue), and its let-out
+// after the pause runs it (letOutHeldLaunch, runWake), without a second token or wake line, since
+// the launch passed the wake gate before it parked (wake.ran). Its again is the launch raised anew
+// from the top, which only that let-out's lifecycle recheck reads (relaunchRefused), as
+// relaunchAtProbe raises it. Its state is the claim's as the park leaves it, launching, which a
+// request that does not wait restores once the pause's gate holds the wake (dropWakeFor).
 //
 // A restart finds a claim whose launch was parked here stored launching with no process, as it
 // finds one the wake pacing parked over no process: internal/daemon's supervisor.restore writes
@@ -654,7 +657,7 @@ func (m *Machine) askPod(ctx context.Context, l launchTry, token string) (*podHo
 	}
 	stopped := m.stopPrevious(ctx)
 	m.timers[TimerPodStart] = armed{seq: granted.Seq}
-	parked := &wake{kind: WakeLaunch, park: hold, again: m.launchFromTop(l)}
+	parked := &wake{kind: WakeLaunch, state: m.claim.State, ran: true, park: hold, again: m.launchFromTop(l)}
 	parked.run = func(ctx context.Context) error {
 		if parked.park == nil {
 			return m.launchTries(ctx, l, nil)
@@ -694,18 +697,26 @@ func (m *Machine) endPodPark() {
 	}
 	m.podPark = nil
 	m.disarm(TimerPodStart)
-	why := podFailedLaunch
-	switch m.claim.State {
-	case StateSuspended:
-		why = podSuspension
-	case StateRetired:
-		why = podRetirement
-	case StateFailed:
-		why = podProcessEnded
-	}
+	why := podEndFor(m.claim.State, podFailedLaunch)
 	if m.deps.PodStarts.cancel(park, why) {
 		m.log.Info(podLaunchCutShortLine, "generation", park.generation, "by", string(why))
 	}
+}
+
+// podEndFor is the end a hold of a claim in state passes when its machine ends it (endPodPark,
+// endPodLoad): a suspension, a retirement, or an end of its process for a claim that failed; and
+// live, the caller's own end, for a claim still live — a failed launch for a parked start, an end
+// of its process for a load.
+func podEndFor(state ClaimState, live podHoldEnd) podHoldEnd {
+	switch state {
+	case StateSuspended:
+		return podSuspension
+	case StateRetired:
+		return podRetirement
+	case StateFailed:
+		return podProcessEnded
+	}
+	return live
 }
 
 // podStartDue is the grant of the pod's start to the launch parked at its gate (TimerPodStart,
@@ -721,12 +732,11 @@ func (m *Machine) endPodPark() {
 // (endPodPark), as a start that stop cut short in the runtime ends (launchTries, podStartFailed).
 //
 // A grant that reaches a machine whose project is paused starts nothing either (decision 7 of
-// dispatch://INFRA-3759): the park can hold a launch for minutes after the pause check its launch
-// made (reserveWake), so the grant checks again, as a wake's turn does (wakeNow). The wake gives
+// dispatch://INFRA-3759): the park can hold a launch for minutes after the pause check its try
+// made (launchTries), so the grant checks again, as a wake's turn does (wakeNow). The wake gives
 // up its hold, which leaves the gate as a failed launch at the end of this decision (endPodPark),
 // and the pause's gate holds it in the park's place and stops the claim for the pause in its next
-// decision, a launch owed (pauseGate, pauseStopDue). The wake holds the claim's state as the
-// pause's gate found it, launching, for a request that does not wait to restore (dropWakeFor).
+// decision, a launch owed (pauseGate, pauseStopDue).
 func podStartDue(m *Machine, ctx context.Context, _ Event) error {
 	waiting := m.wake
 	if waiting == nil || waiting.park == nil {
@@ -737,7 +747,7 @@ func podStartDue(m *Machine, ctx context.Context, _ Event) error {
 		return err
 	}
 	if pause, holds := m.pauseHolds(); holds {
-		waiting.park, waiting.state = nil, m.claim.State
+		waiting.park = nil
 		return m.pauseGate(ctx, waiting, pause)
 	}
 	m.wake, m.podPark = nil, nil
@@ -818,14 +828,7 @@ func (m *Machine) endPodLoad() {
 			return
 		}
 	}
-	why := podProcessEnded
-	switch c.State {
-	case StateSuspended:
-		why = podSuspension
-	case StateRetired:
-		why = podRetirement
-	}
-	m.endLoad(why)
+	m.endLoad(podEndFor(c.State, podProcessEnded))
 }
 
 // endLoad ends the load this machine records, for why, and drops the record: the gate grants the

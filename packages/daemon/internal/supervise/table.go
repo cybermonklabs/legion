@@ -234,8 +234,8 @@ type StalePlugin struct {
 
 // RecordedDeath is a restored claim whose stored record says the process it records died: the
 // daemon before this one judged that process gone and charged its death (Claim.DeathCharged),
-// and the relaunch that death raised lived in that daemon's memory alone — a wake the pacing
-// parked, or a retry relaunchLater held — so a restart lost it. It is posted once at boot for
+// and the relaunch that death raised lived in that daemon's memory alone, a wake the pacing
+// parked, so a restart lost it. It is posted once at boot for
 // every such claim (internal/daemon's replayRecordedDeaths), beside the unfinished launches the
 // boot relaunches, so that relaunch enters the restart's own wave at once rather than waiting for
 // the runtime to report the death again (dispatch://INFRA-5472). That report needs the pod's

@@ -453,14 +453,15 @@ func routedTo(h *stagedHub, ip, id string) (bool, error) {
 	return false, nil
 }
 
-// routedBy is whether s's /routez lists a route with ip or remote_id.
+// routedBy is whether s's /routez lists a route with ip or remote_id. An empty ip matches no
+// route: a route nats-server is closing has none (routes.go's closedRoute).
 func routedBy(s *stagedServer, ip, id string) (bool, error) {
 	routez, err := routezOf(s.host, s.monitor)
 	if err != nil {
 		return false, err
 	}
 	for _, route := range routez.Routes {
-		if route.IP == ip || (id != "" && route.RemoteID == id) {
+		if (ip != "" && route.IP == ip) || (id != "" && route.RemoteID == id) {
 			return true, nil
 		}
 	}

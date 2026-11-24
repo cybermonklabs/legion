@@ -871,7 +871,8 @@ type Issue struct {
 
 // AssignmentView is one experiment's answer for an issue as the state shows it
 // (record.Assignment): the name the project declares the experiment under, the arm the draw gave
-// the unit, the mode in force at that draw and the instant of it.
+// the unit, the mode in force at that draw, the instant of it, and the group the arm set (Plan,
+// `owner` or `default`), as the draw recorded it.
 //
 // Variant and Mode ride the wire whatever they hold, the empty string included, and DrawnAt is
 // absent where the row holds none: a hand-over settles a child at no arm for an experiment the
@@ -879,11 +880,15 @@ type Issue struct {
 // is how a reader tells a unit settled at no arm from a unit never drawn, which is no row at all.
 // Carried, the record's mark of such a row, is no part of the view: what a reader of the state
 // measures is the arm the unit ran under, and a carried row names the arm as a drawn one does.
+// Plan is absent where the arm named none. It is the group the issue runs on for its whole life,
+// read from the record rather than from the settings, which can change an arm's plan or rename
+// the arm after the draw.
 type AssignmentView struct {
 	Experiment string     `json:"experiment"`
 	Variant    string     `json:"variant"`
 	Mode       string     `json:"mode"`
 	DrawnAt    *time.Time `json:"drawnAt,omitempty"`
+	Plan       string     `json:"plan,omitempty"`
 }
 
 // WaitingOnView is what a root in awaiting_person waits on from a person (record.Awaiting). Kind

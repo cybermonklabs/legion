@@ -346,11 +346,12 @@ func TestArchitectOfTreeIsTheRootsOrAMembersArchitect(t *testing.T) {
 	})
 }
 
-// The plans a first step passes over are each plan of the issue in force whose giver is no
-// architect of the issue's tree now (ArchitectOfTree), with its version and its giver, in the order
-// they were given: a plan of the tree root's architect is not among them, nor a plan of a
-// sub-architect, nor a plan of the default steps, which nobody gave. Once the issue stands in a
-// tree of its own, each of those owners' plans is an earlier owner's.
+// The plans of earlier owners a first step passes over are each plan of the issue in force whose
+// giver is no architect of the issue's tree now (ArchitectOfTree), with its version and its giver,
+// in the order they were given: a plan of the tree root's architect is not among them, nor a plan
+// of a sub-architect, nor a plan of the default steps, which nobody gave. Once the issue stands in
+// a tree of its own, each of those owners' plans is an earlier owner's. (A first step in a group
+// that takes no plan passes its owner's plans over too, which workflow's passOverOwners reads.)
 func TestPlansOfEarlierOwnersLeaveOutEachArchitectOfTheTree(t *testing.T) {
 	st := migratedStore(t)
 	ctx := context.Background()

@@ -333,7 +333,7 @@ type Claim struct {
 	// charges that death its launch failure and records died here as it does: so died here, on a
 	// claim whose death is charged, says this death's launch failure is in the count beside it,
 	// which is what keeps a raise of that relaunch after a restart from charging it again
-	// (relaunchAfterDeath).
+	// (deathLaunchFailureCharged).
 	PendingCause FailureCause
 	Pending      *Delivery
 	// LastTurnStart and LastTurnEnd are when the agent last began a turn and when it last ended
@@ -1660,8 +1660,10 @@ type Machine struct {
 	// and it is memory only, as relaunch and staleRelaunch are: a restart loses no wake. A
 	// process-less one parked the claim launching with no process, which the boot repairs to
 	// launch_uncertain and relaunches; one over a process still running is posted again by the
-	// boot's own stale-plugin pass, or raised again by the runtime's next observation of a
-	// process that has died. Each is paced again from an empty bucket, and no wake runs twice. A
+	// boot's own stale-plugin pass, and one over a process whose death the claim's record charges
+	// is raised again by the boot's replay of that death (RecordedDeath), and otherwise by the
+	// runtime's next observation of the dead process. Each is paced again from an empty bucket,
+	// and no wake runs twice. A
 	// launch waiting for its issue pod's start is held here too, until the gate's grant fires
 	// TimerPodStart (askPod, wake.park, podStartDue), and a restart finds it as it finds a
 	// process-less wake.
@@ -2371,12 +2373,6 @@ func serving[T comparable](pending *Delivery, carried func(Delivery) T, retired 
 
 // Claim is a copy of the claim as the machine holds it now. It waits for the decision in flight,
 // so what it reports is what that decision left: a check a decision must not race reads it here.
-// A read that decides whether to stop a claim at all is such a check. The published view (View)
-// reads a claim failed until a retry decision's first write publishes its launch (putClaim), so a
-// stop that found the view failed or retired and gave up there would let that retry launch the
-// claim the stop was for; such a stop reads Claim before it gives up (internal/daemon's stop rows).
-// That read waits for the decision in flight, as every read of Claim does, and is made only where
-// the view reads failed or retired, so a stop of a claim the view shows live never waits on it.
 func (m *Machine) Claim() Claim {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -2987,11 +2983,18 @@ type podGrant struct {
 // launchTries is the tries of one launch, from its first (launchNow), or from the start in the
 // runtime of a try the pod's gate parked and then granted (granted): that try was written and
 // waited its backoff before it parked, so it goes on where it stopped, at the generation and with
-// the boot token it was written with. Every other try is written (writeTry) and then asks its
-// issue pod's gate (askPod), which lets it start or parks it. A try whose start fails and that is
-// tried again asks the gate again, and may park again. A try the gate parks ends the launch's
-// decision with no error, whatever the stop of the process the launch let go answered there; askPod
-// says why.
+// the boot token it was written with. Every other try is written (writeTry), checks the project's
+// pause, and then asks its issue pod's gate (askPod), which lets it start or parks it. A try whose
+// start fails and that is tried again is written, checks the pause and asks the gate again, and may
+// park again. A try the gate parks ends the launch's decision with no error, whatever the stop of
+// the process the launch let go answered there; askPod says why.
+//
+// The pause is checked after the write because the wake gate's check came before it (reserveWake),
+// and a pause can begin between the two: its catch-up reads the claim's published view
+// (internal/daemon's Paused), which shows the claim as it stood before this launch until the write
+// publishes it launching. A try that finds the project paused here starts nothing; the pause's
+// gate holds it (pauseHeldTry). A pause that begins after this check finds the claim published
+// launching, and its catch-up asks the claim's stop.
 //
 // Every try runs on a context of the machine's own (startable), which a suspension cancels; the
 // decision a grant starts makes its own, so a suspension cuts short the start a grant began as it
@@ -3008,6 +3011,9 @@ func (m *Machine) launchTries(ctx context.Context, l launchTry, granted *podGran
 			var err error
 			if token, err = m.writeTry(starting, l); err != nil {
 				return err
+			}
+			if pause, holds := m.pauseHolds(); holds {
+				return m.pauseHeldTry(starting, l, pause)
 			}
 			var parked bool
 			if hold, parked = m.askPod(starting, l, token); parked {
@@ -3080,6 +3086,23 @@ func (m *Machine) launchTries(ctx context.Context, l launchTry, granted *podGran
 		}
 		l.charged = true
 	}
+}
+
+// pauseHeldTry is a try the project's pause meets after its write (launchTries): it stops the
+// process its launch let go, as a try that parks at its issue pod's gate does (askPod), and the
+// pause's gate holds the launch, which stops the claim for the pause in its next decision, a launch
+// owed (pauseGate, pauseStopDue). The held wake's run is a fresh try of the same launch, for a
+// let-out after a pause that ends before that stop (letOutHeldLaunch), and its again the launch
+// raised anew from the top, for that let-out's lifecycle recheck (launchFromTop). The launch passed
+// the wake gate before it reached here, its token taken and its line written (wake.ran).
+func (m *Machine) pauseHeldTry(ctx context.Context, l launchTry, pause int64) error {
+	if stopped := m.stopPrevious(ctx); stopped != nil {
+		m.log.Warn("supervise: the runtime did not confirm the stop of the process this launch let go; the pause's gate holds the launch all the same",
+			"generation", m.claim.Generation, "error", stopped)
+	}
+	return m.pauseGate(ctx, &wake{reserved: m.deps.Clock.Now(), kind: WakeLaunch, state: m.claim.State, ran: true,
+		run:   func(ctx context.Context) error { return m.launchTries(ctx, l, nil) },
+		again: m.launchFromTop(l)}, pause)
 }
 
 // writeTry is a fresh try of the launch (launchTries): the claim at the next generation with a
@@ -3669,19 +3692,18 @@ func (m *Machine) died(ctx context.Context, observation runtime.Observation) err
 		return m.endHeld(ctx, false, stopSent)
 	}
 	uncharged := m.endUncharged("died")
-	relaunch := m.deathRelaunch(ended, uncharged)
 	if m.claim.DeathCharged {
-		return relaunch(ctx)
+		return m.relaunchDeath(ctx, ended, uncharged)
 	}
 	m.claim.DeathCharged = true
 	if m.chargeDeath() {
 		return m.fail(ctx, CauseDied, "deaths with work outstanding ran out")
 	}
 	// This death's launch failure is charged by the first raise of its relaunch that passes the
-	// lifecycle check, and that charge records died as the cause pending (relaunchAfterDeath):
-	// cleared here, with the decision, it says no raise has charged this death yet, so a later
-	// raise — the next report of the death, or the boot's replay of it after a restart — charges
-	// it only where none did.
+	// lifecycle check, and that charge records died as the cause pending (relaunchAfterFailure,
+	// deathLaunchFailureCharged). Cleared here, with the decision, the cause says no raise has
+	// charged this death yet, so a later raise — the next report of the death, or the boot's
+	// replay of it after a restart — charges it only where none did.
 	if !uncharged {
 		m.claim.PendingCause = ""
 	}
@@ -3694,20 +3716,20 @@ func (m *Machine) died(ctx context.Context, observation runtime.Observation) err
 	// a death that left the claim standing for want of a write would be a worse answer to an
 	// outage than a charge written late — and a launch that does run clears the charge with
 	// the process it replaces anyway (letGo).
-	return errors.Join(m.persist(ctx), relaunch(ctx))
+	return errors.Join(m.persist(ctx), m.relaunchDeath(ctx, ended, uncharged))
 }
 
-// deathRelaunch is the relaunch a death of the claim's process raises, ended being how that
+// relaunchDeath is the relaunch a death of the claim's process raises, ended being how that
 // process ended (endDied): the same session after the death's one launch failure
-// (relaunchAfterDeath), or, for an end endUncharged charges nothing (uncharged), through launch,
+// (relaunchAfterFailure), or, for an end endUncharged charges nothing (uncharged), through launch,
 // which charges no launch failure and waits no backoff. died raises it at every report of the
 // death, and relaunchRecordedDeath at the boot that finds the death recorded, so the two raise
 // one relaunch the same way.
-func (m *Machine) deathRelaunch(ended string, uncharged bool) func(context.Context) error {
+func (m *Machine) relaunchDeath(ctx context.Context, ended string, uncharged bool) error {
 	if uncharged {
-		return func(ctx context.Context) error { return m.launch(ctx, ended) }
+		return m.launch(ctx, ended)
 	}
-	return func(ctx context.Context) error { return m.relaunchAfterDeath(ctx, ended) }
+	return m.relaunchAfterFailure(ctx, CauseDied, ended)
 }
 
 // relaunchRecordedDeath is the RecordedDeath row: a boot finds the claim's record saying the
@@ -3721,9 +3743,10 @@ func (m *Machine) deathRelaunch(ended string, uncharged bool) func(context.Conte
 //
 // It raises nothing over a claim whose record moved since the boot read it: a launch started the
 // next generation, or a report found the process running, which clears the charge
-// (reportedProcess). Nor over one that already holds a launch (launchMet: a wake, or the retry
-// relaunchLater holds), which is a report of the death decided first, nor over a suspension held
-// for the claim, which the report of the death ends where it lands (died, endHeld).
+// (reportedProcess). Nor over one that already holds a launch (launchMet), which is a report of
+// the death decided first, nor over a suspension held for the claim, which the report of the
+// death ends where it lands (died, endHeld): run here, a launch the burst lets straight out would
+// let the process go with the hold (letGo), and the claim would run where it should be suspended.
 func relaunchRecordedDeath(m *Machine, ctx context.Context, ev Event) error {
 	recorded := ev.(RecordedDeath)
 	switch {
@@ -3738,7 +3761,7 @@ func relaunchRecordedDeath(m *Machine, ctx context.Context, ev Event) error {
 	}
 	m.log.Warn("supervise: relaunching a process the previous daemon found dead; its relaunch did not survive the restart",
 		"incarnation", m.claim.Locator.Incarnation, "generation", m.claim.Generation, "lastDeathCause", m.claim.LastDeathCause)
-	return m.deathRelaunch(endDied(m.claim.LastDeathCause), m.endUncharged("died"))(ctx)
+	return m.relaunchDeath(ctx, endDied(m.claim.LastDeathCause), m.endUncharged("died"))
 }
 
 // endUncharged is whether the end of the claim's process is charged nothing, and it logs why

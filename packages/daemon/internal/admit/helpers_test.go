@@ -107,8 +107,16 @@ func newAdmissionWithSteps(t *testing.T, cap int, steps []record.DesignStep, log
 // under, and a test of two keys proves a behaviour reads none of it.
 func newAdmissionForProject(t *testing.T, project string, cap int, steps []record.DesignStep, log *slog.Logger) *Admission {
 	t.Helper()
+	return newAdmissionDrawing(t, project, cap, steps, log, nil)
+}
+
+// newAdmissionDrawing is newAdmissionForProject whose engine draws every `random` experiment from
+// source, the one source admission draws with too (workflow.Engine's ExperimentSource); nil is the
+// engine's own, experiment.CryptoSource.
+func newAdmissionDrawing(t *testing.T, project string, cap int, steps []record.DesignStep, log *slog.Logger, source func(uint64) (uint64, error)) *Admission {
+	t.Helper()
 	engine := workflow.New(record.NewStore(), workflow.Config{Project: project, Repositories: testRepositories, Steps: steps,
-		Clock: func() time.Time { return fixedNow }}, log)
+		ExperimentSource: source, Clock: func() time.Time { return fixedNow }}, log)
 	admission := New(record.NewStore(), engine, cap, project, log)
 	admission.now = func() time.Time { return fixedNow }
 	return admission

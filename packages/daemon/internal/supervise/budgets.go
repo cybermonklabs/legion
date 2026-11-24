@@ -105,7 +105,8 @@ var FailureCauses = []FailureCause{
 // passed (backOff) and its turn in the wake pacing has come (reserveWake) — or fails the claim
 // when the budget is spent. A relaunch the tree lifecycle refuses (its cleanup reserved) is
 // checked before the charge, so it costs none; one whose process is already stopped is
-// relaunchRefused's.
+// relaunchRefused's. A death is charged once however often its relaunch is raised
+// (deathLaunchFailureCharged).
 //
 // cause is what failed the process this relaunch replaces, from the caller that saw it, and it is
 // recorded on the claim before the charge: it is what the claim fails under when this budget runs
@@ -122,48 +123,28 @@ func (m *Machine) relaunchAfterFailure(ctx context.Context, cause FailureCause, 
 			return m.relaunchAfterFailure(ctx, cause, ending)
 		}, err)
 	}
-	m.chargeLaunchFailure(cause)
-	return m.launchUnlessSpent(ctx, cause, ending)
-}
-
-// chargeLaunchFailure charges the claim one launch failure for cause, which it records first as
-// what the claim fails under when the budget runs out (Claim.PendingCause).
-func (m *Machine) chargeLaunchFailure(cause FailureCause) {
-	m.claim.PendingCause = cause
-	m.claim.Budgets.LaunchFailures++
-}
-
-// relaunchAfterDeath is relaunchAfterFailure for a death of the claim's process, raised as often
-// as that one death is: by the report that decided it (died), by the retry of a relaunch the
-// lifecycle check refused, by the sweep's next report of the same death, and by the boot's replay
-// of the death after a restart (relaunchRecordedDeath). It charges the death its one launch failure
-// at the first of them that passes the lifecycle check, as relaunchAfterFailure charges any
-// failure, and none at the others. What says the charge was made is the cause it records
-// (Claim.PendingCause): died clears it in the decision that charges the death (DeathCharged), and
-// the charge sets it to died in the same claim write as the count, so a write the claim makes
-// while the relaunch waits — the task a start queues meanwhile — stores the two together, and a
-// restart reads either both or neither. Charged at every raise instead, such a death was charged
-// again after every restart, and walked to the budget for a process that failed once.
-func (m *Machine) relaunchAfterDeath(ctx context.Context, ending string) error {
-	if err := m.checkLaunch(ctx); err != nil {
-		return m.relaunchRefused(ctx, func(ctx context.Context) error {
-			return m.relaunchAfterDeath(ctx, ending)
-		}, err)
+	if !m.deathLaunchFailureCharged(cause) {
+		m.claim.PendingCause = cause
+		m.claim.Budgets.LaunchFailures++
 	}
-	if m.claim.PendingCause != CauseDied {
-		m.chargeLaunchFailure(CauseDied)
-	}
-	return m.launchUnlessSpent(ctx, CauseDied, ending)
-}
-
-// launchUnlessSpent is the launch after a charged failure, once the lifecycle check has passed
-// (relaunchAfterFailure, relaunchAfterDeath): the claim fails under cause when the launch budget
-// is spent, and the same session is relaunched otherwise.
-func (m *Machine) launchUnlessSpent(ctx context.Context, cause FailureCause, ending string) error {
 	if m.claim.Budgets.LaunchFailures >= m.deps.Limits.LaunchFailures {
 		return m.fail(ctx, cause, "launch failures ran out")
 	}
 	return m.launchAfter(ctx, true, false, false, ending)
+}
+
+// deathLaunchFailureCharged is whether cause is a death whose launch failure an earlier raise of
+// the same relaunch has already charged. A death's relaunch is raised as often as that one death
+// is: by the report that decided it (died), by the retry of a relaunch the lifecycle check
+// refused, by the sweep's next report of the same death, and by the boot's replay of the death
+// after a restart (relaunchRecordedDeath). The first of them that passes the lifecycle check
+// charges the launch failure, and the others charge none. What says the charge was made is the
+// cause it records (Claim.PendingCause): died clears it in the decision that charges the death
+// (DeathCharged), and the charge sets it to died in the same claim write as the count. So a write
+// the claim makes while the relaunch waits — a task a start queues meanwhile — stores the two
+// together, and a restart reads either both or neither.
+func (m *Machine) deathLaunchFailureCharged(cause FailureCause) bool {
+	return cause == CauseDied && m.claim.DeathCharged && m.claim.PendingCause == CauseDied
 }
 
 // chargeDeath counts a process that died after its agent was ready with work outstanding, and

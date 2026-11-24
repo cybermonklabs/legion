@@ -165,11 +165,19 @@ type wake struct {
 	// replaced anything.
 	pluginMark *pluginIntent
 	// pause is the project pause whose gate holds this launch (pauseGate), 0 for a wake the
-	// pacing holds. A held launch has no moment to run and took no token: it waits on the machine
-	// with no timer, is published as no waiting wake (publish), and leaves only by the claim's
-	// stop for the pause (pauseStopDue) or by its let-out into the pacing once that pause has
-	// ended (letOutHeldLaunch), which gives it at and reserved.
+	// pacing holds. A held launch has no moment to run: it waits on the machine with no timer, is
+	// published as no waiting wake (publish), and leaves only by the claim's stop for the pause
+	// (pauseStopDue) or by its let-out once that pause has ended (letOutHeldLaunch), which gives it
+	// at and reserved. It took no token, unless it passed the wake gate before the pause's gate
+	// held it (ran).
 	pause int64
+	// ran is whether this launch has passed the wake gate already: its token taken, where the
+	// pacing holds it to one, and its wake line written (reserveWake, wakeRan). It is true of a
+	// launch the pause's gate holds after that gate — a try the pause met after its write
+	// (pauseHeldTry), a start parked at its issue pod's gate (askPod) whose grant the pause met
+	// (podStartDue) — so its let-out takes no second token and writes no second line
+	// (letOutHeldLaunch, runWake).
+	ran bool
 	// park is the hold of the start this launch waits for at its issue pod's gate (askPod), nil for
 	// a wake the pacing or the pause's gate holds. Such a launch has let its process go, stopped it
 	// and written its claim launching already (launchNow, launchTries, askPod), took no token and
@@ -412,7 +420,8 @@ func wakeNow(m *Machine, ctx context.Context, _ Event) error {
 }
 
 // runWake is everything a wake does once it is off the machine: the lifecycle recheck and the
-// take-back a launch makes first, the one line the wake writes, and the work itself. Its two
+// take-back a launch makes first, the one line the wake writes (none for a launch that wrote it at
+// the wake gate already, wake.ran), and the work itself. Its two
 // callers are the turn the pacing gave (wakeNow) and an operator's delivery, which runs a parked
 // launch where it arrives rather than let a person wait for that turn (runParkedLaunchNow); both
 // go through here so that the launch an operator's task starts is the same launch in every
@@ -509,7 +518,9 @@ func (m *Machine) runWake(ctx context.Context, waiting *wake, paced bool) error 
 	// wake is spent: what it was counting is a refresh waiting in the pacing, and this one is
 	// waiting no longer (endRefreshLane).
 	m.holdPluginRelaunch(waiting.pluginMark)
-	m.wakeRan(waiting.kind, paced, m.deps.Clock.Now().Sub(waiting.reserved))
+	if !waiting.ran {
+		m.wakeRan(waiting.kind, paced, m.deps.Clock.Now().Sub(waiting.reserved))
+	}
 	return waiting.run(ctx)
 }
 
