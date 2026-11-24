@@ -45,6 +45,7 @@ mkdir "$work/bin"
 cat > "$work/bin/gh" <<GH
 #!/usr/bin/env bash
 set -euo pipefail
+echo "\$*" >> "$work/calls"
 case "\$*" in
   *"/commits/abc123/check-runs"*)
     if [ ! -e "$work/check-runs" ]; then echo "HTTP 502" >&2; exit 1; fi
@@ -147,7 +148,7 @@ unmatched_selects=$(with_verdicts "$selects" \
 run_ci_ok() {
   : > "$work/step-summary"
   set +e
-  out=$(PATH="$work/bin:$PATH" GH_TOKEN=t GITHUB_REPOSITORY=o/r GITHUB_RUN_ID=41 \
+  out=$(PATH="$work/bin:$PATH" GH_TOKEN=t GITHUB_REPOSITORY=o/r GITHUB_RUN_ID=41 RUNNER_TEMP="$work/temp" \
     GH_RETRY_SECONDS=0 HEAD_SHA=abc123 NEEDS=$1 EVENT=${2:-pull_request} SELECTED_BY=$selected_by \
     PULL_REQUEST_ONLY=$pull_request_only ALWAYS_RUN=${3:-$always_run} \
     GITHUB_STEP_SUMMARY="$work/step-summary" "$script_dir/ci-ok.sh" 2>&1)
@@ -155,6 +156,7 @@ run_ci_ok() {
   set -e
   step_summary=$(cat "$work/step-summary")
 }
+mkdir "$work/temp"
 
 echo "case: a job changes selected ended skipped"
 run_ci_ok "$(needs success "$selects" success typecheck=skipped envoy-client=skipped worker-image=success docs=skipped)"
@@ -505,5 +507,39 @@ check "keeps it a failure" \
   "$(contains "$out" '^typecheck: failure (selected: needs.changes.outputs.typecheck is true)$')"
 check "warns that it could not tell a shutdown from a failure" \
   "$(contains "$out" '::warning::GitHub refused the check runs on abc123 at every attempt gh-read.sh made')"
+
+echo "case: a check run whose details_url is no string, holding the marker"
+# Whatever answers the check-runs read in GitHub's place holds gh's token and writes the answer,
+# and jq's error over a details_url that is no string quotes that field, which ci-ok.sh printed.
+# The marker not-a-secret-token stands for the token: no run of eight of its characters
+# (redacttest.Piece's run) may be printed. The list is no list jq can read, so nothing of it is a
+# runner shutdown and the failure stands, as for a refused read.
+marker=not-a-secret-token
+# holds_marker <text>: true when the text holds a run of eight characters of the marker.
+holds_marker() {
+  local at
+  for ((at = 0; at + 8 <= ${#marker}; at++)); do
+    [[ $1 != *"${marker:at:8}"* ]] || return 0
+  done
+  return 1
+}
+check_runs changes lint envoy-client worker-image docs typecheck
+jq -nc --arg marker "$marker" \
+  '{name: "typecheck", url: "https://api.github.com/repos/o/r/check-runs/9", details_url: [$marker]}' \
+  >> "$work/check-runs"
+rm -f "$work/calls"
+run_ci_ok "$(needs success "$selects" success typecheck=failure envoy-client=skipped worker-image=success docs=skipped)"
+while IFS= read -r line; do printf '    printed: %s\n' "$line"; done <<<"$out"
+check "the stand-in gh is the one called, for the check runs (control)" \
+  "$(is "$(grep -c 'commits/abc123/check-runs' "$work/calls")" 1)"
+check "twin: the stand-in's answer holds the marker" "$(is "$(grep -cF -- "$marker" "$work/check-runs")" 1)"
+check "fails, keeping it a failure" \
+  "$(is "$status $(contains "$out" '^typecheck: failure (selected: needs.changes.outputs.typecheck is true)$')" '1 true')"
+check "prints no run of the marker the answer holds" "$(if holds_marker "$out"; then echo false; else echo true; fi)"
+kept=$(sed -n 's/.*are kept in \([^ ]*\)$/\1/p' <<<"$out" | sed -n 1p)
+check "warns that the answer is no list it can read, naming the file that keeps jq's words" \
+  "$(contains "$out" "^::warning::GitHub's answer for the check runs on abc123 is no list of check runs jq can read, .* are kept in $work/temp/runner-shutdown-check-runs\.")"
+check "twin: jq's own words in that file quote the marker" \
+  "$(if [ -n "$kept" ] && holds_marker "$(cat "$kept")"; then echo true; else echo false; fi)"
 
 summary "ci-ok.sh fails unless every job changes selected succeeded"
