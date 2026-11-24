@@ -2,9 +2,9 @@
 
 // The live proof's driver of an owner's plan: the owner of an issue writes its plan.md through the
 // real `dispatch` CLI and gives it to Legion with register_plan, and the whole daemon runs the steps
-// that plan names and no other, then the retro and the merge, while an issue whose owner gives no
-// plan runs the project's default steps. scripts/e2e/owner-steps.sh builds this driver with
-// `-tags e2e` and owns the nats-server and the PostgreSQL it runs against.
+// that plan names, in the order it names them and no other, then the retro and the merge, while an
+// issue whose owner gives no plan runs the project's default steps. scripts/e2e/owner-steps.sh
+// builds this driver with `-tags e2e` and owns the nats-server and the PostgreSQL it runs against.
 //
 // Nothing of the plan's path is stood in for. Dispatch is the real server this checkout builds
 // (startHandoffDispatch), on a database of its own on LEGION_TEST_PG_DSN's server. The daemon is the
@@ -44,7 +44,11 @@ import (
 // are the implementer and then the reviewer.
 var ownerStepsPlan = []string{"implementer", "reviewer"}
 
-// ownerStepsLive is one run of the proof: the rig over four issues of one project, and the
+// ownerStepsAnyOrder is the plan the owner of the driver's fifth issue gives: one task a whose
+// tester runs after its reviewer, in another order than the default steps'.
+var ownerStepsAnyOrder = []string{"implementer", "reviewer", "tester"}
+
+// ownerStepsLive is one run of the proof: the rig over five issues of one project, and the
 // person's CLI over the same rig (reads).
 type ownerStepsLive struct {
 	*ownerStepsRig
@@ -52,15 +56,16 @@ type ownerStepsLive struct {
 }
 
 // TestOwnerStepsLive drives the proof's checks against one booted daemon and one Dispatch, over
-// four issues of one project: the first walks its owner's plan `implementer reviewer`, the second
+// five issues of one project: the first walks its owner's plan `implementer reviewer`, the second
 // the default steps, the third the default steps with its plan rows deleted while its planner works,
-// and the fourth is given a plan Legion refuses and then a plan whose rows are deleted before its
-// gate opens.
+// the fourth is given a plan Legion refuses and then a plan whose rows are deleted before its
+// gate opens, and the fifth is refused the plan `tester implementer` and then walks its owner's
+// plan `implementer reviewer tester`.
 func TestOwnerStepsLive(t *testing.T) {
-	l := newOwnerStepsLive(t, "scripts/e2e/owner-steps.sh", 4)
-	planned, byDefault, rowsDeleted, unplanned := l.issues[0].key, l.issues[1].key, l.issues[2].key, l.issues[3].key
-	l.note("Dispatch %s (database of its own), project %s mapped to %s, issues %s, %s, %s and %s; daemon at dispatch_url %s",
-		l.dispatch.base, l.cfg.Project, liveRepo, planned, byDefault, rowsDeleted, unplanned, l.cfg.DispatchURL)
+	l := newOwnerStepsLive(t, "scripts/e2e/owner-steps.sh", 5)
+	planned, byDefault, rowsDeleted, unplanned, anyOrder := l.issues[0].key, l.issues[1].key, l.issues[2].key, l.issues[3].key, l.issues[4].key
+	l.note("Dispatch %s (database of its own), project %s mapped to %s, issues %s, %s, %s, %s and %s; daemon at dispatch_url %s",
+		l.dispatch.base, l.cfg.Project, liveRepo, planned, byDefault, rowsDeleted, unplanned, anyOrder, l.cfg.DispatchURL)
 	var plan string
 	l.check("plan-written", func() {
 		l.on(planned)
@@ -97,6 +102,21 @@ func TestOwnerStepsLive(t *testing.T) {
 	l.check("control-no-plan-rows", func() {
 		l.on(unplanned)
 		l.noPlanRows()
+	})
+	l.check("control-tester-first", func() {
+		l.on(anyOrder)
+		l.note("register_plan of `tester implementer` on %s: 409 %s; %s holds no plan rows", anyOrder, strings.TrimSpace(l.testerFirstRefused()), anyOrder)
+	})
+	l.check("walk-any-order", func() {
+		l.on(anyOrder)
+		l.givePlan(ownerStepsAnyOrder...)
+		l.openGate(phase.Implementing)
+		l.walkSteps(ownerStepsAnyOrder)
+		if err := l.launchedInOrder([]claim.Role{claim.RoleImplementer, claim.RoleReviewer, claim.RoleTester}); err != nil {
+			l.t.Fatal(err)
+		}
+		l.note("%s walked implementing, reviewing, testing, retro and merging to done, launching its implementer, its reviewer and its tester in that order", anyOrder)
+		l.stepsRead(anyOrder, "a", ownerStepsAnyOrder)
 	})
 }
 

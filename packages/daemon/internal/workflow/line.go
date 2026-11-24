@@ -121,6 +121,19 @@ func (w Walk) steps() []phase.Phase {
 	return w.Line[:len(w.Line)-2]
 }
 
+// MovesBack says whether a move of w's task from the phase from to the phase to goes back by the
+// task's own order: to stands before from on w's line, its steps in the task's order, then the
+// retro, then the merge. Each role runs at most one step of a task, so each phase stands at one
+// place of the line. A phase the line does not hold goes back nowhere, and nothing goes back into
+// it. A run with no plan rows walks today's line, phase.Order, so this is phase.MovesBack for it.
+// A task in another order than today's so counts its move back from testing to reviewing (the
+// steps `implementer reviewer tester`), and not the review's approval from reviewing to testing,
+// which moves it on.
+func (w Walk) MovesBack(from, to phase.Phase) bool {
+	back := slices.Index(w.Line, to)
+	return back >= 0 && back < slices.Index(w.Line, from)
+}
+
 // issuePhaseOf is the phase an issue whose one task stands at place in state stands in: done
 // for a task that is done or left the workflow before it was done (record.TaskLeft), whatever its
 // place, which is the phase of an issue out of the workflow; the phase of the step at place, retro

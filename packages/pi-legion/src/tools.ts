@@ -513,7 +513,8 @@ export function createLegionTool(deps: {
         "daemon's own log line for the release, and an escalation sends it to the controller with the hold. " +
         "register_plan (issue, artifactId, version) gives Legion the plan of an issue you own: a document on that issue, by its id, slug " +
         "or filename as a dispatch command's --artifact takes it, at a version Dispatch has. Its one `plan_task` block names in `steps` the " +
-        "steps its task runs, a subset of `planner implementer tester reviewer acceptance:owner` in that order with `implementer` in it; a " +
+        "steps its task runs, in the order they run: some of `planner implementer tester reviewer acceptance:owner`, with `implementer` " +
+        "in it and before each `tester`, `reviewer` or `acceptance:owner` step; a " +
         "task that names none runs the project's default steps, and Legion runs the retro and the merge itself. Give it before the issue's " +
         "work starts: a root's before its design gate opens, a child's before release_children releases it. The answer is the plan Legion " +
         "took, each task with its steps. Legion records nothing when it refuses a plan it does not carry out, with one reason for each cause " +
@@ -524,6 +525,8 @@ export function createLegionTool(deps: {
         "(ISSUE_OUTSIDE_TREE), an issue the daemon has not recorded whose Dispatch status is not triage, backlog, icebox or todo " +
         "(ISSUE_ALREADY_RELEASED), a version that changes a task that is done (TASK_DONE), and a plan given for a run of the issue " +
         "that ended before Legion applied it: give it again (PLAN_STALE_GENERATION). " +
+        "Legion takes no plan for a recorded issue whose experiment's group runs the project's default steps (PLAN_NOT_TAKEN, naming " +
+        "the group): it records nothing, and the same plan given again gets the same answer. " +
         "stop_task (issue, task) stops one task of the plan Legion runs for a recorded issue: its running step stops, and the issue is " +
         "held, `holdReason` task-stopped, until a later version of the plan, given with register_plan, changes or replaces that task, " +
         "or, on a root, a person sets the root todo; the task then starts at its first step (a task that never started waits for its " +
@@ -531,11 +534,13 @@ export function createLegionTool(deps: {
         "issue whose first step has not run, the stop first settles the plan that step would walk, the newest plan you gave or the " +
         "project's default steps (task default), and then stops its task. The daemon refuses a task the plan does not hold " +
         "(TASK_NOT_FOUND, naming the plan's tasks), one that is done (TASK_DONE), a stop in a tree that lingers after it left the " +
-        "workflow (TREE_LINGERING) and a stop of a root that waits on a person before its first step (TASK_AWAITING_PERSON: change its " +
-        "task with a later version of the plan, or stop it once the person has answered). It also refuses, changing nothing, a stop of " +
-        "an issue outside your tree or one that left it (ISSUE_OUTSIDE_TREE), and a stop of a run of the issue that ended before Legion " +
-        "applied it: read the issue again (TASK_STALE_GENERATION). " +
-        "sign_off is the architect's acceptance of an issue in accepting, moving it to retro. The daemon refuses, changing nothing, a " +
+        "workflow (TREE_LINGERING), every task of an issue whose experiment's group runs the project's default steps, since Legion " +
+        "takes no plan from its owner (PLAN_NOT_TAKEN), and a stop of a root that waits on a person before its first step " +
+        "(TASK_AWAITING_PERSON: change its task with a later version of the plan, or stop it once the person has answered). It also " +
+        "refuses, changing nothing, a stop of an issue outside your tree or one that left it (ISSUE_OUTSIDE_TREE), and a stop of a run " +
+        "of the issue that ended before Legion applied it: read the issue again (TASK_STALE_GENERATION). " +
+        "sign_off is the architect's acceptance of an issue in accepting, moving its task to its next step, or to retro where the " +
+        "acceptance is the task's last step. The daemon refuses, changing nothing, a " +
         "sign-off of an issue you no longer own (ISSUE_NOT_OWNED, or ISSUE_OUTSIDE_TREE once it left your tree), one of a run of the " +
         "issue or of accepting that ended before Legion applied it (SIGNOFF_STALE_GENERATION, SIGNOFF_STALE_ENTRY: read the issue and " +
         "its evidence again) and one in every other phase (SIGNOFF_OUTSIDE_ACCEPTING); it also refuses it while an issue beneath it " +
@@ -565,7 +570,7 @@ export function createLegionTool(deps: {
         "close_root is refused the same way and with the same code while an issue beneath the root is still in the workflow, " +
         "because closing it would stop that work mid-turn. Answer that refusal the same way. " +
         "release_children and rerun_child are refused for a child whose ancestor is in retro or merging " +
-        "(CHILD_UNDER_ACCEPTED_PARENT, naming the ancestor), since that ancestor's approved head cannot carry work released " +
+        "(CHILD_UNDER_ACCEPTED_PARENT, naming the ancestor), since the head that ancestor's last step passed cannot carry work released " +
         "under it now: wait for the ancestor to close, then release it, where that ancestor is not the tree's root. " +
         "The controller's read_state with no field returns a summary of the daemon's whole state — the project, the pause " +
         "that stands or the last one ended, admission, how many wakes the daemon's pacing holds and when the next is due, each " +
@@ -838,7 +843,8 @@ export function createLegionTool(deps: {
             return jsonSuccess({});
           }
           case "sign_off": {
-            // A repeat after a sign-off that landed finds the issue in retro and changes nothing.
+            // A repeat after a sign-off that landed finds the issue out of accepting, at its task's next
+            // step or in retro, and changes nothing.
             const issue = requiredString(parameters, operation, "issue");
             await retryWhileDaemonRestarts(
               "sign_off",

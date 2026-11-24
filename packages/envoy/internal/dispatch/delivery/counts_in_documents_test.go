@@ -18,6 +18,7 @@ import (
 // are internal/docnumbers' own documentation; what is here is the registration, one entry per
 // sentence, each duration registered as the number its sentence writes, in seconds.
 func TestTheServerReadmeStatesTheBoundsThisPackageHolds(t *testing.T) {
+	t.Parallel()
 	const readme = "packages/envoy/cmd/dispatch/README.md"
 	docnumbers.Check(t, filepath.Join("..", "..", "..", "..", ".."), []docnumbers.Stated{
 		{File: readme, Pattern: `best ` + docnumbers.Number + ` candidates are the ones read`,

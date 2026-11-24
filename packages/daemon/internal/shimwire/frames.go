@@ -180,8 +180,10 @@ type AgentSecretsTokenResult struct {
 }
 
 // LauncherHello authenticates a role launcher independently from its child shim. The daemon
-// minted Token belongs to exactly this pod UID, role and Secret epoch; LauncherID changes each
-// time Kubernetes restarts the launcher container.
+// minted Token for one role and Secret epoch, and accepts it only from the pod UID its Secret
+// binds: the pod a launch made, or a pod Agent Sandbox made again from the same Sandbox outside a
+// launch, which the daemon binds at its launchers' first hello. LauncherID changes each time
+// Kubernetes restarts the launcher container.
 //
 // LeakCheckTag is the launcher's own pin of the shared public leak check (its environment's
 // LEGION_LEAK_CHECK_TAG), empty when its environment names none: a hello that names a tag is a

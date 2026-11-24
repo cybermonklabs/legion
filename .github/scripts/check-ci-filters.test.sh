@@ -36,8 +36,9 @@
 # hand the action exactly .github/ci-filters.yaml as its `filters` input, every output of the
 # changes job must name that step and a filter that file holds, that file must be there and open,
 # and a listed block's patterns are passed over by rule 9 only while its marker names a check a
-# job of CI runs. A script's go command is read under every step of each job that may run it, and
-# the header's run recipe runs the check, or says why it stops.
+# job of CI runs. A script's go command is read under every step of each job that may run it, a
+# workflow several jobs of ci.yaml call runs each job of it named for a caller under that caller
+# alone, and the header's run recipe runs the check, or says why it stops.
 #
 # Each case builds a miniature repository under a temporary directory - a go.work binding one
 # module, a ci.yaml whose `changes` job gates one job, a .github/ci-filters.yaml holding the
@@ -827,18 +828,18 @@ check "with the gate's own refusal, not the with: value's" \
 check "and says nothing about resolving the value" \
   "$(is "$(contains "$out" 'a value naming the changes job must be')" false)"
 
-# The `lane` shape: a job of the called file gated on an input the caller builds from the event,
-# with no gate declared on it. The suite runs behind the caller job's own `if:`, and the lane
-# input only chooses what it runs, so this rule reads it as no gate and nothing else fires.
+# A job of the called file gated on an input the caller builds from the event, with no gate
+# declared on it. The suite runs behind the caller job's own `if:`, and the input only chooses
+# what it runs, so this rule reads it as no gate and nothing else fires.
 echo "case: a called job gated on an input the caller builds from the event"
 root=$(fixture called-input-event)
 called_input_gate "$root"
 replace "$root/.github/workflows/called.yaml" "      ci-ok-changes:" \
-  $'      lane:\n        type: string\n        required: false\n        default: ""\n      ci-ok-changes:'
+  $'      mode:\n        type: string\n        required: false\n        default: ""\n      ci-ok-changes:'
 replace "$root/.github/workflows/called.yaml" "  called:" \
-  $'  lane-only:\n    if: inputs.lane == \'full\'\n    runs-on: ubuntu-24.04\n    steps:\n      - run: echo the full lane\n  called:'
+  $'  mode-only:\n    if: inputs.mode == \'full\'\n    runs-on: ubuntu-24.04\n    steps:\n      - run: echo the full mode\n  called:'
 replace "$root/.github/workflows/ci.yaml" "      app: \${{ needs.changes.outputs.app }}" \
-  $'      app: ${{ needs.changes.outputs.app }}\n      lane: ${{ github.event_name == \'pull_request\' && \'pull-request\' || \'full\' }}'
+  $'      app: ${{ needs.changes.outputs.app }}\n      mode: ${{ github.event_name == \'pull_request\' && \'pull-request\' || \'full\' }}'
 run_check "$root"
 check "passes" "$(is "$status" 0)"
 
@@ -1721,6 +1722,226 @@ replace "$root/.github/workflows/suite.yaml" "        run: go build ./cmd/app" \
 run_check "$root"
 check "exits 0" "$(is "$status" 0)"
 
+# A workflow two jobs of ci.yaml call holds a job named for each (ci-job-test.yaml holds test and
+# tooling-checks), and the check reads each such job as its own caller's alone, holding its go
+# commands, its env and its gated steps to that caller's filter. That reading holds only while the
+# job runs under that caller alone: each caller has a job of the file named for it, that job's
+# `if:` is exactly `inputs.job == '<its id>'`, and the caller passes `job: <its own id>`.
+# check_called_jobs holds all three, and each case below up to the report steps' one breaks one.
+
+# shared_file <root> <slow> <fast>: jobs <slow> and <fast> of ci.yaml both call
+# .github/workflows/shared.yaml, as test and tooling-checks call ci-job-test.yaml, each passing its
+# own id as `job`. The file holds a job of each id, whose `if:` admits that id alone and whose last
+# step reports ci-ok under it. Both callers are gated on the app filter and no step runs a go
+# command, so the split is all a case can break.
+shared_file() {
+  local root=$1 slow=$2 fast=$3 job
+  {
+    cat <<'YAML'
+name: Shared
+on:
+  workflow_call:
+    inputs:
+      job:
+        type: string
+        required: true
+      ci-ok-changes:
+        type: string
+        required: false
+        default: ""
+jobs:
+YAML
+    for job in "$slow" "$fast"; do
+      cat <<YAML
+  $job:
+    if: inputs.job == '$job'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Run the $job steps
+        run: echo $job
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: $job
+          changes: \${{ inputs.ci-ok-changes }}
+          job-status: \${{ job.status }}
+YAML
+    done
+  } > "$root/.github/workflows/shared.yaml"
+  for job in "$slow" "$fast"; do
+    cat >> "$root/.github/workflows/ci.yaml" <<YAML
+  $job:
+    needs: changes
+    if: needs.changes.outputs.app == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
+    uses: ./.github/workflows/shared.yaml
+    with:
+      job: $job
+      ci-ok-changes: \${{ toJSON(needs.changes) }}
+YAML
+  done
+  replace "$root/.github/workflows/ci.yaml" '{"app": "app", "image": "image"}' \
+    "{\"app\": \"app\", \"image\": \"image\", \"$slow\": \"app\", \"$fast\": \"app\"}"
+  replace "$root/.github/workflows/ci.yaml" "    needs: [changes, app, image, lint]" \
+    "    needs: [changes, app, image, lint, $slow, $fast]"
+}
+
+echo "case: a workflow two jobs call, each running the job of it named for itself"
+root=$(fixture shared-file-green)
+shared_file "$root" test tooling-checks
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+
+echo "case: a job of a shared workflow whose if: admits another caller"
+root=$(fixture shared-file-other-if)
+shared_file "$root" test tooling-checks
+replace "$root/.github/workflows/shared.yaml" "    if: inputs.job == 'tooling-checks'" "    if: inputs.job == 'test'"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the job, the if: it carries and the one it must carry" \
+  "$(has "$out" "::error file=.github/workflows/shared.yaml::job tooling-checks of .github/workflows/shared.yaml, which jobs test, tooling-checks of .github/workflows/ci.yaml all call, carries \`if: inputs.job == 'test'\`: give it \`if: inputs.job == 'tooling-checks'\`")"
+
+echo "case: a caller of a shared workflow that passes another caller's id"
+root=$(fixture shared-file-other-id)
+shared_file "$root" test tooling-checks
+replace "$root/.github/workflows/ci.yaml" "      job: tooling-checks" "      job: test"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the caller, the id it passes and its own" \
+  "$(has "$out" "::error file=.github/workflows/ci.yaml::job tooling-checks calls .github/workflows/shared.yaml, which other jobs of this file call too, and passes \`job: test\`: pass \`job: tooling-checks\`")"
+
+echo "case: a caller of a shared workflow that passes no id"
+root=$(fixture shared-file-no-id)
+shared_file "$root" pi-legion pi-legion-build
+replace "$root/.github/workflows/ci.yaml" $'      job: pi-legion-build\n' ""
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the caller and the id it must pass" \
+  "$(has "$out" "::error file=.github/workflows/ci.yaml::job pi-legion-build calls .github/workflows/shared.yaml, which other jobs of this file call too, and passes \`job: \`: pass \`job: pi-legion-build\`")"
+
+# A caller with no job of its own in the file runs none of the jobs named for the others, whose
+# `if:` admits only their own ids, so no step of the file is held to its gate: the check names
+# that caller rather than reading the file as if it ran something.
+echo "case: a workflow two jobs call that holds a job named for one of them and none for the other"
+root=$(fixture shared-file-none-named)
+shared_file "$root" test tooling-checks
+replace "$root/.github/workflows/shared.yaml" $'  tooling-checks:\n    if:' $'  tooling:\n    if:'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the caller with no job of its own there, and the job it must have" \
+  "$(has "$out" "::error file=.github/workflows/ci.yaml::job tooling-checks calls .github/workflows/shared.yaml, which holds jobs named for its other callers (test) and none named tooling-checks, so no job of it runs under tooling-checks that this check can hold to tooling-checks's gate; give the file a job named tooling-checks, or call another file")"
+
+# GitHub reads `${{ inputs.job == 'x' }}` as the bare comparison, and `&& true` adds nothing, yet
+# the check proves the one form and refuses every other rather than reasoning about it: a term
+# beside the comparison, such as an `||`, could admit another caller.
+for written in "expression:\${{ inputs.job == 'tooling-checks' }}" "conjunction:inputs.job == 'tooling-checks' && true"; do
+  echo "case: a job of a shared workflow whose if: is ${written#*:}, not the bare comparison"
+  root=$(fixture "shared-file-if-${written%%:*}")
+  shared_file "$root" test tooling-checks
+  replace "$root/.github/workflows/shared.yaml" "    if: inputs.job == 'tooling-checks'" "    if: ${written#*:}"
+  run_check "$root"
+  check "fails" "$(is "$status" 1)"
+  check "names the job, the if: it carries and the one it must carry" \
+    "$(has "$out" "::error file=.github/workflows/shared.yaml::job tooling-checks of .github/workflows/shared.yaml, which jobs test, tooling-checks of .github/workflows/ci.yaml all call, carries \`if: ${written#*:}\`: give it \`if: inputs.job == 'tooling-checks'\`")"
+done
+
+# dispatch-browser.yaml's merge job reports under whichever of its two callers ran it by reading
+# `job:` from the input, and a shared file's jobs may do the same, since each caller passes its
+# own id there.
+echo "case: a shared workflow's report steps that read the caller's id from the input"
+root=$(fixture shared-file-report-input)
+shared_file "$root" test tooling-checks
+replace "$root/.github/workflows/shared.yaml" "          job: test" "          job: \${{ inputs.job }}"
+replace "$root/.github/workflows/shared.yaml" "          job: tooling-checks" "          job: \${{ inputs.job }}"
+run_check "$root"
+check "passes while each caller passes its own id" "$(is "$status" 0)"
+replace "$root/.github/workflows/ci.yaml" "      job: tooling-checks" "      job: test"
+run_check "$root"
+check "fails once a caller passes another's" "$(is "$status" 1)"
+check "names the caller and the id it passes" \
+  "$(has "$out" "::error file=.github/workflows/ci.yaml::job tooling-checks calls .github/workflows/shared.yaml, which other jobs of this file call too, and passes \`job: test\`: pass \`job: tooling-checks\`")"
+check "and says no report goes out under the caller's own id" \
+  "$(has "$out" "::error file=.github/workflows/ci.yaml::./.github/workflows/shared.yaml, which job tooling-checks calls, has no job whose last step is")"
+
+# The fixture above puts both callers on one filter, so it cannot tell a job held to its own
+# caller's filter from one held to the other's. split_callers <root> puts shared_file's two
+# callers on two filters, as test and tooling-checks are in ci.yaml: the slow caller stays on app,
+# which names fixtures/**, and the fast one gets a filter of its own, fast, which does not. The
+# fast caller's job of shared.yaml runs `go test ./cmd/app ./lib`, whose test reads
+# fixtures/data.json (RULES), and its gate pins that step there.
+split_callers() {
+  local root=$1
+  replace "$root/.github/workflows/ci.yaml" '      image: ${{ steps.filter.outputs.image }}' \
+    $'      image: ${{ steps.filter.outputs.image }}\n      fast: ${{ steps.filter.outputs.fast }}'
+  replace "$root/.github/workflows/ci.yaml" $'  tooling-checks:\n    needs: changes\n    if: needs.changes.outputs.app ' \
+    $'  tooling-checks:\n    needs: changes\n    if: needs.changes.outputs.fast '
+  replace "$root/.github/workflows/ci.yaml" '"tooling-checks": "app"' '"tooling-checks": "fast"'
+  replace "$root/.github/ci-filters.yaml" $'\nimage:' \
+    $'\nfast:\n  - \'.github/workflows/shared.yaml\'\n  - *workspace\n  - \'mod/cmd/app/*\'\n  - \'mod/lib/*\'\nimage:'
+  replace "$root/.github/workflows/shared.yaml" "        run: echo tooling-checks" \
+    $'        run: go test ./cmd/app ./lib\n        working-directory: mod'
+  cat >> "$root/.github/scripts/ci_job_reads.py" <<'PY'
+GATES.append(gate("fast", "tooling-checks", runs=[
+    run("mod", ["./cmd/app", "./lib"],
+        at("tooling-checks", "Run the tooling-checks steps", ".github/workflows/shared.yaml") + ": go test ./cmd/app ./lib",
+        step="Run the tooling-checks steps", text="go test ./cmd/app ./lib"),
+], reads=[Read(".github/workflows/shared.yaml", "the job reads the definition of the steps it runs")],
+    workflow=".github/workflows/shared.yaml"))
+PY
+}
+
+# fast_names_fixtures <root>: the fast filter names fixtures/** too, so it covers what its job reads.
+fast_names_fixtures() {
+  replace "$1/.github/ci-filters.yaml" $'  - \'mod/lib/*\'\nimage:' $'  - \'mod/lib/*\'\n  - \'fixtures/**\'\nimage:'
+}
+
+echo "case: a job of a shared workflow is held to its own caller's filter, not the other caller's"
+root=$(fixture shared-file-two-filters)
+shared_file "$root" test tooling-checks
+split_callers "$root"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "refuses the file the fast job reads under the fast job's gate" \
+  "$(has "$out" "::error file=fixtures/data.json::tooling-checks reads fixtures/data.json, which its filter fast does not match, so a change to it skips the job: lib_test.go reads ../../fixtures/data.json")"
+check "and is that one problem: no gate of the slow caller's is held to the fast job's step" \
+  "$(contains "$out" '^::error::1 CI filter problem(s)$')"
+fast_names_fixtures "$root"
+run_check "$root"
+check "passes once the fast job's own filter names it" "$(is "$status" 0)"
+check "and counts the step's files under the fast filter" \
+  "$(contains "$out" '^report: tooling-checks: [0-9][0-9]* files, 0 uncovered (filter fast)$')"
+
+# A step of a shared workflow gated on an input is read through the value the caller that runs
+# its job passes. Both callers pass `tests` here, each its own filter's output, so a reading
+# through the other caller's value would find the other filter.
+echo "case: a step of a shared workflow gated on an input both callers pass, read through its own caller's value"
+root=$(fixture shared-file-step-input)
+shared_file "$root" test tooling-checks
+split_callers "$root"
+fast_names_fixtures "$root"
+replace "$root/.github/workflows/shared.yaml" $'      ci-ok-changes:\n' \
+  $'      tests:\n        type: string\n        required: false\n        default: ""\n      ci-ok-changes:\n'
+replace "$root/.github/workflows/shared.yaml" $'      - name: Run the tooling-checks steps\n' \
+  $'      - name: Run the tooling-checks steps\n        if: inputs.tests == \'true\'\n'
+replace "$root/.github/workflows/ci.yaml" $'      job: test\n' $'      job: test\n      tests: ${{ needs.changes.outputs.app }}\n'
+replace "$root/.github/workflows/ci.yaml" $'      job: tooling-checks\n' \
+  $'      job: tooling-checks\n      tests: ${{ needs.changes.outputs.fast }}\n'
+replace "$root/.github/scripts/ci_job_reads.py" '    workflow=".github/workflows/shared.yaml"))' \
+  '    step="Run the tooling-checks steps", workflow=".github/workflows/shared.yaml"))'
+run_check "$root"
+check "passes while the fast caller passes the fast output" "$(is "$status" 0)"
+check "and reads the step as the gate on fast" \
+  "$(contains "$out" '^report: tooling-checks step "Run the tooling-checks steps": [0-9][0-9]* files, 0 uncovered (filter fast)$')"
+replace "$root/.github/workflows/ci.yaml" $'      job: tooling-checks\n      tests: ${{ needs.changes.outputs.fast }}' \
+  $'      job: tooling-checks\n      tests: ${{ needs.changes.outputs.app }}'
+replace "$root/.github/workflows/ci.yaml" $'      job: test\n      tests: ${{ needs.changes.outputs.app }}' \
+  $'      job: test\n      tests: ${{ needs.changes.outputs.fast }}'
+run_check "$root"
+check "fails once only the slow caller passes the fast output" "$(is "$status" 1)"
+check "names the gate and the step" \
+  "$(has "$out" "::error file=.github/workflows/shared.yaml::gate fast names step \"Run the tooling-checks steps\" of tooling-checks, but no single step of that name has an if: on needs.changes.outputs.fast")"
+check "and is that one problem" "$(contains "$out" '^::error::1 CI filter problem(s)$')"
+
 echo "case: a package added to a go command the table claims, outside the job's filter"
 root=$(fixture appended-package)
 replace "$root/.github/workflows/ci.yaml" "run: go test ./cmd/app ./lib" "run: go test ./cmd/app ./lib ./other"
@@ -1971,7 +2192,7 @@ check "passes, the command reduced to the Run's closure" "$(is "$status" 0)"
 check "counts the job's files" "$(contains "$out" '^report: app: 7 files, 0 uncovered (filter app)$')"
 
 # GOCACHE names where go keeps what it compiled, keyed on the inputs, so a step that sets it in
-# its env - as envoy-go-checks' darwin vet does, for a build cache of its own - still compiles
+# its env - as envoy-go-build's darwin vet does, for a build cache of its own - still compiles
 # what the bare command compiles.
 echo "case: a GOCACHE in a claimed simple go command's step env"
 root=$(fixture gocache-env)

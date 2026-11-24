@@ -57,7 +57,7 @@ Your role prompt gives the workspace, the push, the handoff, `handoff_complete`,
 - No surface reaches the changed path: report it to the architect, never complete (`skill://legion-worker/references/results.md`).
 
 - A released pod is not a stop.
-  Your session, phase and task are kept, and the next pod restores your unpushed tracked work; nothing else of the disk survives, except on a volume the deployment keeps.
+  Your session, phase and task are kept, and the next pod restores your unpushed tracked work; nothing else of the disk survives but a volume the deployment keeps.
 
 - When another role's topic answers 404, read its handoff with `dispatch handoff-read`.
 
@@ -81,7 +81,7 @@ Your role prompt gives the workspace, the push, the handoff, `handoff_complete`,
 
 - No deferrals.
   A finding that changes behaviour, hides an error, or breaks a gate is fixed in this pull request.
-  So is a wording nit or any clear fix in a file it touches: a later round costs a CI pass and a review.
+  So is a wording nit or any clear fix in a file it touches: a later round costs a CI pass and a review, if any.
   `Fast-follow:` reads `none` or names cleanup in files the pull request does not touch.
 
 - The merge gate follows the task's `Steps:` line: each named step runs in order, then retro and the merger.

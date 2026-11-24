@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -119,7 +120,7 @@ func TestOpenWorkflowRefusesAReviewLoginItCannotTellFromTheImplementers(t *testi
 		"no review login":        {appauth.Implement: "legion-implementer[bot]"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, err := openWorkflow(context.Background(), cfg, nil, "project-id", "dispatch-token", nil, newRepositories(cfg.Project, cfg.RepositoryRenames), appauth.NewInstalled(), log, tokens, github, nil, time.Now)
+			_, err := openWorkflow(context.Background(), cfg, nil, "project-id", "dispatch-token", nil, newRepositories(cfg.Project, cfg.RepositoryRenames), appauth.NewInstalled(), log, tokens, github, nil, time.Now, nil)
 			if err == nil || !strings.Contains(err.Error(), "the workflow needs two different Apps") {
 				t.Fatalf("openWorkflow = %v, want the two-Apps refusal", err)
 			}
@@ -138,6 +139,35 @@ func TestAppLoginsAtBootReturnsTheReviewAppLogin(t *testing.T) {
 	}
 	if login != "legion-reviewer[bot]" {
 		t.Fatalf("appLoginsAtBoot = %q, want the review App's login %q", login, "legion-reviewer[bot]")
+	}
+}
+
+// countedLogins answers each App's login with the bot login named for it and counts each App's
+// reads; the review App's first read fails as GitHub's own trouble, as a viewer read GitHub
+// answered 502 does.
+type countedLogins map[appauth.AppRole]int
+
+func (c countedLogins) AppLogin(_ context.Context, role appauth.AppRole) (string, error) {
+	c[role]++
+	if role == appauth.Review && c[role] == 1 {
+		return "", &appauth.TransientError{Err: errors.New("read the review App's bot login (GraphQL viewer) failed (502)")}
+	}
+	return "legion-" + string(role) + "[bot]", nil
+}
+
+// An attempt of the logins read after one that failed on the review App reads the review App
+// alone, as the key proof skips an App it proved: the implement App's login was read, and in
+// token mode each read of an App runs its token_command, whose grant may wait on a person's
+// approval.
+func TestTheLoginsReadReadsNoAppAgainOnceItReadItsLogin(t *testing.T) {
+	quickAppMints(t)
+	reads := countedLogins{}
+	login, err := appLoginsAtBoot(context.Background(), reads, newStartWaits(startRateLimits, time.Now), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if want := "legion-" + string(appauth.Review) + "[bot]"; err != nil || login != want {
+		t.Fatalf("appLoginsAtBoot = %q, %v; want %q, the review App's login, after one transient failure", login, err, want)
+	}
+	if reads[appauth.Implement] != 1 || reads[appauth.Review] != 2 {
+		t.Errorf("the logins read read the implement App %d times and the review App %d times, want 1 and 2: an attempt read an App whose login an attempt before it had read", reads[appauth.Implement], reads[appauth.Review])
 	}
 }
 

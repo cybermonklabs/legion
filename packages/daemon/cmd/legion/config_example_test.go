@@ -135,6 +135,38 @@ func TestShippedLegionYAMLExamplesExperimentsPassCheckConfig(t *testing.T) {
 	}
 }
 
+// The example's commented experiment that sets how each issue is done, uncommented alone, passes
+// the same check, and names its two arms with the group each sets: `owner`, whose issues take the
+// plan their owner gives, and `default`, whose issues run the project's default steps. It needs no
+// volume and no mount: neither arm names a file.
+func TestShippedLegionYAMLExamplesPlanningExperimentPassesCheckConfig(t *testing.T) {
+	config := checkShippedExample(t, func(example string) string {
+		example = uncommentExample(t, example,
+			"  # WIDGETS:",
+			"  #   experiments:",
+			"  #     planning: {mode: random, unit: issue, variants: [{name: owner, plan: owner}, {name: default, plan: default}]}",
+		)
+		return strings.Replace(example, "\n  WIDGETS: {}", "\n  # WIDGETS: {}", 1)
+	})
+	cfg, err := configpkg.LoadForValidation(config, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	declared := cfg.Projects["WIDGETS"].Experiments
+	if len(declared) != 1 || declared[0].Name != "planning" || declared[0].Mode != configpkg.ExperimentRandom || declared[0].Unit != configpkg.ExperimentIssue {
+		t.Fatalf("the WIDGETS experiments = %+v, want the planning experiment alone, at mode random over the issue", declared)
+	}
+	want := []configpkg.Variant{
+		{Name: "owner", Weight: 1, Plan: configpkg.PlanGroupOwner},
+		{Name: "default", Weight: 1, Plan: configpkg.PlanGroupDefault},
+	}
+	if !slices.EqualFunc(declared[0].Variants, want, func(got, want configpkg.Variant) bool {
+		return got.Name == want.Name && got.Weight == want.Weight && got.Plan == want.Plan && len(got.ConfigFiles) == 0
+	}) {
+		t.Errorf("the planning variants = %+v, want %+v", declared[0].Variants, want)
+	}
+}
+
 // The example's commented commit_issue_trailer_repos, uncommented, passes the same check and
 // names the one repository whose commits a pane of the project stamps with its issue key. It
 // needs no volume and no mount: the key names repositories, not files.

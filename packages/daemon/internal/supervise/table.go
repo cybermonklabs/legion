@@ -190,6 +190,13 @@ const (
 	// no process of its own waits launching until it fires; one whose process runs waits as the
 	// gate found it.
 	TimerPause TimerKind = "pause"
+	// TimerPodStart is the grant of its issue pod's start to a launch parked at the pod's gate
+	// (askPod): no wait of the clock's, but the gate's grant, posted to the machine as a timer's
+	// firing is (podHold.notify, fire). The launch asks the runtime for its process when it fires
+	// (podStartDue). The claim waits launching with no process until then, and whatever drops the
+	// parked launch's wake takes its start out of the gate at the end of that decision, naming
+	// that end, and disarms it (endPodPark).
+	TimerPodStart TimerKind = "pod_start"
 )
 
 // Timer is a timer the machine armed, firing.
@@ -223,6 +230,28 @@ type StalePlugin struct {
 	// machine takes goes back at the end of the decision that ends with no refresh wake of this
 	// claim's waiting (endRefreshLane), and so at once where its decision raises none.
 	Credit *RefreshCredit
+}
+
+// RecordedDeath is a restored claim whose stored record says the process it records died: the
+// daemon before this one judged that process gone and charged its death (Claim.DeathCharged),
+// and the relaunch that death raised lived in that daemon's memory alone, a wake the pacing
+// parked, so a restart lost it. The boot raises it once for every such claim, beside the
+// unfinished launches it relaunches (internal/daemon's launchUnfinished), so that relaunch enters
+// the restart's own wave rather than waiting for the runtime to report the death again
+// (dispatch://INFRA-5472). That report needs the pod's launcher to reconnect when the pod lives
+// on — a roles container that restarted — which is a probe interval after boot, by which time the
+// boot's wave holds the pacing and a relaunch raised then goes in behind all of it. Generation is
+// the claim's generation as the boot read it, so a claim a launch has moved on since is decided
+// nothing (relaunchRecordedDeath).
+//
+// Turn is the moment the boot reserved for that relaunch in the wake pacing, as RequestSpawn.Turn
+// is for an unfinished launch: the boot reserves the turns of both in one pass, in the order their
+// claims' work was owed, so a recorded death waits behind a launch whose work has waited longer.
+// The zero time is a replay the gate reserves a turn for itself.
+type RecordedDeath struct {
+	Claim      claim.Token
+	Generation uint64
+	Turn       time.Time
 }
 
 // StallBackstop is the daemon's stall backstop reaching this claim: the orphan sweep found it in
@@ -296,7 +325,9 @@ type PodUpdateOpen struct {
 // that outlives endsAt never keeps a role from pushing its own commits. The answer comes after the
 // work, so a role that follows the steps answers with nothing of its own running. A role whose
 // work finishes after its answer pushes what that work made and answers again with the same
-// round, which podUpdateSignalled records in place of the first answer.
+// round, which podUpdateSignalled records in place of the first answer. The text goes to role, and
+// the reviewer creates no commit and pushes nothing (its role part), so its text says so in step 1
+// and asks no commit or push of what its work made (createsNoCommit).
 //
 // The step to answer is the one step a role can be unable to do: the op list its `legion` tool
 // holds is a closed enum compiled into its plugin, and a plugin below PodUpdateContract has no
@@ -315,8 +346,16 @@ type PodUpdateOpen struct {
 //
 // Another agent reads it, so it follows ASD-STE100: one instruction per sentence, active voice,
 // and no word that has a second reading.
-func UpdateTask(round, reasons string, endsAt time.Time) string {
+func UpdateTask(role claim.Role, round, reasons string, endsAt time.Time) string {
 	ends := endsAt.UTC().Format(time.RFC3339)
+	push := "1. Push every commit that you want to keep to this issue's branch."
+	made := " Then commit and push what it made."
+	after := "If a subagent or a background job finishes after you answer, commit and push what it made. Then call `ready_for_update` again"
+	if createsNoCommit(role) {
+		push = "1. You create no commit, so you push nothing."
+		made = ""
+		after = "If a subagent or a background job finishes after you answer, call `ready_for_update` again"
+	}
 	return "The daemon must replace the pod that runs this issue's roles. " +
 		fmt.Sprintf("The reasons are: %s.", reasons) +
 		fmt.Sprintf(`
@@ -327,13 +366,13 @@ If every role answers, the round can end before that moment. It then ends once e
 
 This message can arrive while you are in a turn. Do these five steps, in this order:
 
-1. Push every commit that you want to keep to this issue's branch.
-2. Let each subagent and each background job that you started finish. Stop one that cannot finish before %[2]s. Then commit and push what it made.
+%[3]s
+2. Let each subagent and each background job that you started finish. Stop one that cannot finish before %[2]s.%[4]s
 3. If you need a scratch file as evidence, put it on Dispatch.
 4. Call the `+"`legion`"+` tool with op: "ready_for_update" and round: "%[1]s".
 5. End your turn.
 
-If a subagent or a background job finishes after you answer, commit and push what it made. Then call `+"`ready_for_update`"+` again with round: "%[1]s" before you end that turn.
+%[5]s with round: "%[1]s" before you end that turn.
 
 A service that you started with a name is not in the report. It does not delay the round, and it goes with the pod.
 
@@ -347,7 +386,16 @@ These things go with the pod when the round ends:
 - The pod's test database.
 - The pod's caches.
 
-The daemon starts your process again on the new pod, in this same session. The daemon holds your next task until your process runs again. Do not start new work now.`, round, ends)
+The daemon starts your process again on the new pod, in this same session. The daemon holds your next task until your process runs again. Do not start new work now.`, round, ends, push, made, after)
+}
+
+// createsNoCommit says whether role creates no commit and pushes nothing: the reviewer, whose
+// handoff is a record on the Dispatch issue (roles/reviewer.md). The update task asks no commit or
+// push of it. The merger is not one: it makes and pushes the merge of the base forward in merging
+// (roles/merger.md, workflow's mergeForward), and a merge commit it has not pushed when the pod is
+// replaced is lost with the pod.
+func createsNoCommit(role claim.Role) bool {
+	return role == claim.RoleReviewer
 }
 
 // PodUpdateEnded is the update round over for this claim: every update_* field goes, the task the
@@ -375,9 +423,9 @@ type PodUpdateEnded struct {
 // Round is the round the worker answers for, which the ask it read named (UpdateTask): an answer
 // counts only for the round the claim stands in, and one naming any other round is refused
 // (podUpdateSignalled). Head is the commit it reports as the head of its issue branch at origin,
-// "" when the branch is not there — a planner before its first push — and is the worker's word,
-// which nothing verifies. Generation and Session are the claim it says it holds, as every agent
-// request carries them.
+// "" when the branch is not there — a planner step that runs before the branch's first push — and
+// is the worker's word, which nothing verifies. Generation and Session are the claim it says it
+// holds, as every agent request carries them.
 type PodUpdateSignalled struct {
 	Claim      claim.Token
 	Generation uint64
@@ -395,6 +443,15 @@ type RequestSpawn struct {
 	// launches is the fault the pacing exists to fix, and a wake let through by default would
 	// put it back one caller at a time.
 	Exempt bool
+	// Turn is a moment the caller has already reserved for this launch in the wake pacing, which
+	// the gate takes in place of reserving one of its own (revive, launchAfter, reserveWake), and
+	// the zero time for every caller but one: the boot's relaunch of the launches the previous
+	// daemon left waiting (internal/daemon's launchUnfinished), which reserves their turns one by
+	// one in the order their claims' work was owed before it posts them all at once, so the queue
+	// a restart rebuilds keeps the order the previous daemon was draining (dispatch://INFRA-5482).
+	// A launch the gate does not reach — refused, or held by a project pause — leaves that moment
+	// spent, as a dropped wake leaves its token spent (wakepace.Limiter.Reserve).
+	Turn time.Time
 }
 
 // RequestRegister is the agent's registration, already authenticated by its boot token: the
@@ -688,6 +745,7 @@ func (PromptAcked) isEvent()          {}
 func (PromptRefused) isEvent()        {}
 func (Timer) isEvent()                {}
 func (StalePlugin) isEvent()          {}
+func (RecordedDeath) isEvent()        {}
 func (StallBackstop) isEvent()        {}
 func (PodUpdateOpen) isEvent()        {}
 func (PodUpdateEnded) isEvent()       {}
@@ -740,6 +798,8 @@ const (
 	onPromptRetryTimer eventKind = timerPrefix + eventKind(TimerPromptRetry)
 	// The gate's own stop of a launch it held while the project is paused (pauseGate).
 	onPauseTimer eventKind = timerPrefix + eventKind(TimerPause)
+	// The grant of its issue pod's start to a launch parked at the pod's gate (askPod).
+	onPodStartTimer eventKind = timerPrefix + eventKind(TimerPodStart)
 
 	onSpawn         eventKind = "request_spawn"
 	onRegister      eventKind = "request_register"
@@ -762,6 +822,7 @@ const (
 	onCompactEnded eventKind = "compact_ended"
 
 	onStalePlugin   eventKind = "stale_plugin"
+	onRecordedDeath eventKind = "recorded_death"
 	onStallBackstop eventKind = "stall_backstop"
 
 	onPodUpdateOpen      eventKind = "pod_update_open"
@@ -803,6 +864,8 @@ func kindOf(ev Event) eventKind {
 		return timerPrefix + eventKind(ev.Kind)
 	case StalePlugin:
 		return onStalePlugin
+	case RecordedDeath:
+		return onRecordedDeath
 	case StallBackstop:
 		return onStallBackstop
 	case PodUpdateOpen:
@@ -1104,11 +1167,30 @@ func fillTable(t *builder) {
 	t.ignore(onPauseTimer, "no launch is held by the pause's gate: a claim with no process it holds is written launching, and a suspension, a failure, a retirement and an undecided pane each leave the claim without one",
 		processless...)
 
+	// The grant of its issue pod's start to a launch parked at the pod's gate (askPod). The park
+	// keeps the claim launching with no process, and every decision that moves the claim out of
+	// launching drops the parked launch's wake, and its end takes the start out of the gate for
+	// what it left of the claim and disarms this timer (endPodPark, after suspended, retire, and
+	// letGo, which a failure makes), so the grant reaches a launching claim alone. Its launch ends
+	// as any launch does: started and launching, failed, or launching again for a retry; or held
+	// by the pause's gate, where the project is paused at the grant (pauseGate).
+	t.row(onPodStartTimer, "the issue pod's gate granted this claim's parked launch its start: ask the runtime for its process now", podStartDue,
+		[]ClaimState{StateLaunching, StateFailed}, StateLaunching)
+	t.ignore(onPodStartTimer, "no launch waits at the issue pod's gate: a parked launch keeps its claim launching, and every decision that moves the claim out of launching lets that launch go with its park",
+		StateQueued, StateLaunchUncertain, StateShimConnected, StateRegistered, StateReady, StateWorking, StateIdle,
+		StateSuspended, StateFailed, StateRetired)
+
 	// A re-adopted claim found still speaking another plugin contract, at boot or at a later sweep.
 	t.row(onStalePlugin, "the process speaks another plugin contract: relaunch it onto the current one", refreshStalePlugin,
 		[]ClaimState{StateLaunching, StateFailed}, StateRegistered, StateReady, StateWorking, StateIdle)
 	t.ignore(onStalePlugin, "a claim still launching is left to its registration, which decides it the moment it arrives",
 		StateQueued, StateLaunchUncertain, StateLaunching, StateShimConnected, StateSuspended, StateFailed, StateRetired)
+
+	// A restored claim whose stored record says its process died, at boot (RecordedDeath): the
+	// relaunch that death raised is raised again now, through the pacing.
+	t.row(onRecordedDeath, "the record says the process died: raise again the relaunch the death raised", relaunchRecordedDeath,
+		[]ClaimState{StateLaunching, StateFailed}, live...)
+	t.ignore(onRecordedDeath, "no process is recorded, so no death of one is", processless...)
 
 	// The daemon's stall backstop over a claim whose agent stopped stepping mid-turn. It is a
 	// row of the one state a turn runs in; the machine re-reads the claim's record before it
@@ -2495,7 +2577,7 @@ func registrationDeadline(m *Machine, ctx context.Context, _ Event) error {
 		// log as that, attempt by attempt.
 		m.log.Warn("supervise: the agent "+never+"; retired its process", "incarnation", incarnation,
 			"launchFailure", m.claim.Budgets.LaunchFailures+1, "limit", m.deps.Limits.LaunchFailures)
-		return m.relaunchAfterFailure(ctx, CauseNeverRegistered, noEnd)
+		return m.relaunchAfterFailure(ctx, CauseNeverRegistered, noEnd, time.Time{})
 	}, TimerRegistration, m.deps.Timeouts.Probe)
 }
 
@@ -2510,8 +2592,10 @@ func noTurn(m *Machine, ctx context.Context, _ Event) error {
 	return m.promptFailed(ctx, fmt.Sprintf("acknowledged, and no turn started within %s", m.deps.Timeouts.RPC), taskRead)
 }
 
+// spawn launches a queued claim, at the turn its caller reserved when it carries one
+// (RequestSpawn.Turn), and otherwise at the turn the gate reserves.
 func spawn(m *Machine, ctx context.Context, ev Event) error {
-	return m.revive(ctx, exemptWake(ev), nil)
+	return m.revive(ctx, exemptWake(ev), ev.(RequestSpawn).Turn, nil)
 }
 
 // register records the session the agent became, once every name of it is held to this claim
@@ -2587,17 +2671,19 @@ func reregister(m *Machine, ctx context.Context, ev Event) error {
 }
 
 // ready is the agent saying it can be prompted. The time is kept on the claim (Claim.LastReady),
-// since it is what dates the two causes beside it — a death and a failed start are both older
-// than the agent that is running now (machine.go's Claim).
+// since it is what dates the death's cause beside it — a death older than this ready is one the
+// agent running now has survived (machine.go's Claim).
 func ready(m *Machine, ctx context.Context, _ Event) error {
 	m.claim.State = StateReady
 	// The cause of a forget is kept for the launches of the fresh agent until it comes up
 	// (Machine.lostCause): the first launch after this ready continues a session of its own.
 	m.lostCause = ""
 	m.claim.LastReady = m.deps.Clock.Now()
-	// The pending cause goes with the launch failures it names: the episode they measure ended
-	// when this agent came up (Claim.PendingCause).
-	m.claim.Budgets.LaunchFailures, m.claim.PendingCause = 0, ""
+	// The pending cause and the last start failure go with the launch failures they name: the
+	// episode they measure ended when this agent came up (Claim.PendingCause,
+	// Claim.LastStartFailure). A start failure kept past it would read, on a claim launching
+	// again later, as the reason it is not running now (dispatch://INFRA-5463).
+	m.claim.Budgets.LaunchFailures, m.claim.PendingCause, m.claim.LastStartFailure = 0, "", ""
 	m.disarm(TimerRegistration)
 	if m.held != nil {
 		return m.suspendHeld(ctx)
@@ -2642,7 +2728,7 @@ func resume(m *Machine, ctx context.Context, ev Event) error {
 	if err := m.resumeRefusal(ctx, "resume"); err != nil {
 		return err
 	}
-	return m.revive(ctx, exemptWake(ev), nil)
+	return m.revive(ctx, exemptWake(ev), time.Time{}, nil)
 }
 
 // resumeRefusal is a RefusedError when a suspended claim's recorded session is one it does not
@@ -2696,7 +2782,7 @@ func resumeByRule(m *Machine, ctx context.Context, ev Event) error {
 		return nil
 	}
 	m.log.Info("supervise: resuming by rule", "rule", rule, "suspendedBy", m.claim.SuspendedBy)
-	return m.revive(ctx, exemptWake(ev), nil)
+	return m.revive(ctx, exemptWake(ev), time.Time{}, nil)
 }
 
 // retry is a failed or retired claim given another run: its budgets start over, and its session,
@@ -2716,7 +2802,7 @@ func resumeByRule(m *Machine, ctx context.Context, ev Event) error {
 // failure refuses to carry (workflow.noticeFailure) — for as long as this run has not reached
 // its launch, which the wake pacing may park and a refused lifecycle recheck may leave
 // unwritten. The claim being run again is what clears the record; the launch clearing it a
-// second time (launchNow) costs nothing.
+// second time (launchTries) costs nothing.
 //
 // Nothing is cleared before Store.AdmitClaim admits the claim, because the admission can refuse
 // — the tree's cleanup is reserved — and a refused admission runs the claim no more than a
@@ -2745,7 +2831,7 @@ func retry(m *Machine, ctx context.Context, ev Event) error {
 		// (resumeRefusal), before the budgets start over.
 		return err
 	}
-	return m.revive(ctx, exemptWake(ev), func() {
+	return m.revive(ctx, exemptWake(ev), time.Time{}, func() {
 		m.claim.Budgets, m.claim.PendingCause = Budgets{}, ""
 		m.claim.Failure, m.claim.FailureCause, m.claim.FailedAt = "", "", time.Time{}
 		m.claim.LeakCheckCause = ""
@@ -2971,7 +3057,7 @@ func deliverResuming(m *Machine, ctx context.Context, ev Event) error {
 	if err := m.queue(ctx, d); err != nil {
 		return err
 	}
-	return m.revive(ctx, d.ID == "", nil)
+	return m.revive(ctx, d.ID == "", time.Time{}, nil)
 }
 
 // exit is the agent reporting its own end. A worker's or sub-architect's claim ends with it and is

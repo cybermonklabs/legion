@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // edgeProcessCall sends a /v1 request to the listener process edge under token, signed by caller
@@ -112,4 +113,56 @@ func TestARoleClaimOnAnotherEdgeReplicaKeepsDelivery(t *testing.T) {
 	if forwarded.PayloadSummary != summary || forwarded.Topic != contracts.RoleTopicPrefix+role {
 		t.Fatalf("the session was relayed %q on %s, want %q on %s", forwarded.PayloadSummary, forwarded.Topic, summary, contracts.RoleTopicPrefix+role)
 	}
+}
+
+// M4: a role claim through a replica whose relay run for the session had ended for want of an
+// admission. The claim records the admission and renews the entry, but the entry's change is a
+// relayCheck, which starts no ended run (sessionRelays.apply), so without a resume the session's
+// messages wait until its next registration. The run is made to end as a replica's restart ends
+// it: the admission is forgotten and the relays lose and regain the durable binding, so the run
+// started again finds no admission. The refresh then sends the resume a registration sends
+// (api.go, the roleSetHandler write), which starts the ended run. Controls: the relay delivers the
+// session's first message before the admission is lost, and, when the resume is missing, a
+// registration after the probe's window delivers the message the probe waited for.
+func TestAnEdgeRoleClaimResumesARelayRunThatEndedForWantOfAnAdmission(t *testing.T) {
+	rig := newEdgeRigServing(t, []string{"PRIV"})
+	const sessionID, role = "ses_claim_resume", "legion-priv-priv-31-tester"
+	const held = "edge relay holds the session's messages in its consumer until the session registers or claims a role through this listener"
+	const stopped = "session relay stopped"
+	token := rig.personToken(sessionID, "PRIV")
+	standIn := startSessionStandIn(t, rig.url, sessionID, answerDone)
+	requireStatus(t, rig.subscribe(t, token, sessionID), http.StatusOK, "the session's registration")
+	first, _ := rig.storeEvent(t, contracts.LegacyAgentSubject(sessionID))
+	requireFrames(t, standIn.collect(t, 1, 30*time.Second), first)
+
+	count := func(level, prefix string) int {
+		n := 0
+		for _, line := range edgeLogLines(rig.harness.logs.String(), level, prefix) {
+			if line["session_id"] == sessionID {
+				n++
+			}
+		}
+		return n
+	}
+
+	rig.deps.consumers.admissions.prune(time.Now().Add(time.Hour), func(string) bool { return true })
+	rig.relays.setOwned(false)
+	testwait.Eventually(t, "the session's relay to stop", func() bool { return count("INFO", stopped)+count("WARN", stopped) > 0 })
+	rig.relays.setOwned(true)
+	testwait.Eventually(t, "the session's relay to end for want of an admission", func() bool { return count("INFO", held) > 0 })
+
+	claim := rig.call(t, http.MethodPost, token, "/v1/roles/set", fmt.Sprintf(`{"session_id":%q,"role":%q}`, sessionID, role))
+	requireStatus(t, claim, http.StatusOK, "the claim of "+role)
+	if _, admitted := rig.deps.consumers.admissions.of(sessionID); !admitted {
+		t.Fatalf("UNKNOWN: the claim recorded no admission, so the test does not reach the ended run")
+	}
+	second, _ := rig.storeEvent(t, contracts.LegacyAgentSubject(sessionID))
+	if relayFrameArrives(standIn, second, 30*time.Second) {
+		t.Logf("after the claim: the session's message %s reached it", second.EventID)
+		return
+	}
+	t.Errorf("after a role claim through the replica, the session's message %s reached it in no 30 s: the ended run was not resumed", second.EventID)
+	requireStatus(t, rig.subscribe(t, token, sessionID), http.StatusOK, "the control registration")
+	requireFrames(t, standIn.collect(t, 1, 30*time.Second), second)
+	t.Logf("CONTROL: the registration after the window delivered %s", second.EventID)
 }

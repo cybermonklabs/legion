@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# The live proof that the plan the owner of an issue gives picks which of today's steps run: the
-# owner writes plan.md with the real `dispatch` CLI and gives it to Legion with register_plan
-# before the issue's gate opens, and the whole daemon runs the steps that plan names and no other,
-# then the retro and the merge, while an issue whose owner gives no plan runs the project's default
-# steps. The driver (packages/daemon/internal/daemon/owner_steps_live_test.go, which this script
-# builds with `-tags e2e`) builds and starts the real Dispatch server from this checkout's
-# packages/envoy on a database of its own, boots the whole daemon with dispatch_url at it over four
+# The live proof that the plan the owner of an issue gives picks which of today's steps run and in
+# which order: the owner writes plan.md with the real `dispatch` CLI and gives it to Legion with
+# register_plan before the issue's gate opens, and the whole daemon runs the steps that plan names,
+# in its order and no other, then the retro and the merge, while an issue whose owner gives no plan
+# runs the project's default steps. The driver
+# (packages/daemon/internal/daemon/owner_steps_live_test.go, which this script builds with
+# `-tags e2e`) builds and starts the real Dispatch server from this checkout's
+# packages/envoy on a database of its own, boots the whole daemon with dispatch_url at it over five
 # issues of one project, drives the real `dispatch` CLI (packages/envoy-client/bin/dispatch.ts under
 # bun) as the owner's session and as a person of the project, and the daemon's API as each claim.
 # GitHub is a fake API the daemon reads on its own: the pull request it lists from the
@@ -32,7 +33,15 @@
 #     with the reason that no deployment and no plan defines the role checker, naming task a;
 #   - control-no-plan-rows: the fourth issue is given the plan `implementer reviewer`, and its rows
 #     are deleted before its gate opens; it starts a planner, and the check of
-#     walk-implementer-reviewer fails on it.
+#     walk-implementer-reviewer fails on it;
+#   - control-tester-first: register_plan of `tester implementer` on the fifth issue is refused 409
+#     PLAN_REFUSED with the one reason that step 1 names the tester and no step before it the
+#     implementer whose pull request it reads, naming task a, and records nothing;
+#   - walk-any-order: the fifth issue is given the plan `implementer reviewer tester`; it walks
+#     implementing, reviewing, testing, retro and merging to done, its implementer, its reviewer and
+#     its tester first launched in that order, and `dispatch steps --issue <KEY>` as the person
+#     prints task a's step 1 implementer, step 2 reviewer and step 3 tester, then the retro and the
+#     merge, each ended passed, and nothing else.
 #
 # Run it from a checkout on a Linux host with go, git, jj 0.38 or later (the daemon's boot refuses
 # to start without them), bun (after `bun install` at the checkout's root), awk and python3, as
