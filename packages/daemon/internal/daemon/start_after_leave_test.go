@@ -119,6 +119,7 @@ func (s admittedHook) AdmitClaim(ctx context.Context, c supervise.Claim) (superv
 // that made the claim, the retry finished at its fences without acting, and the claim, which no
 // close names, held the tree's cleanup.
 func TestAStartWhoseReadAfterItsCreateFailsRetiresItsClaimOnItsRetry(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
