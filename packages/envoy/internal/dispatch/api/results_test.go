@@ -926,14 +926,14 @@ func TestResultOfAnIssueUnderARepositorysOldNameIsRefusedAtTheCanonicalName(t *t
 // TestABranchChecksResultAtALinkedPullRequestsMergeCommitIsComparedInThatRepository and the
 // tests of results_linked_test.go). It is resultsGitHubHolding's fixture with five differences:
 // each repository holds commits of its own, each pull request an issue links answers its state,
-// the read-through of a commit names the pull request heads says that commit is the head of,
-// each repository's compare read answers from the commits each of its branches carries, and
-// each read of a pull request's state, each ask of the read-through and each compare read is
-// counted by repository. Eight lists take a repository out of the App's reach: one the App is not
-// installed on, one whose installation token GitHub will not mint, one whose commit reads GitHub
-// fails, one whose commits the App's token is refused, one whose pull requests the App's token is
-// refused, one whose pull requests GitHub rate-limits, one whose pull request reads answer a 500,
-// and one whose own read GitHub hides.
+// its head and its base, the read-through of a commit names the pull request heads says that
+// commit is the head of, each repository's compare read answers from the commits each of its
+// branches carries, and each read of a pull request's state, each ask of the read-through and
+// each compare read is counted by repository. Eight lists take a repository out of the App's
+// reach: one the App is not installed on, one whose installation token GitHub will not mint, one
+// whose commit reads GitHub fails, one whose commits the App's token is refused, one whose pull
+// requests the App's token is refused, one whose pull requests GitHub rate-limits, one whose pull
+// request reads answer a 500, and one whose own read GitHub hides.
 type linkedGitHub struct {
 	mu sync.Mutex
 	// held is the commits each repository holds: GET /repos/{owner}/{repo}/commits/{sha}
@@ -941,12 +941,19 @@ type linkedGitHub struct {
 	held map[string][]string
 	// pulls is the state GET /repos/{owner}/{repo}/pulls/{number} answers for each pull request,
 	// keyed `owner/repo#n`: open, merged, or closed, which is closed without a merge. A pull
-	// request it does not name is GitHub's 404.
+	// request it does not name is GitHub's 404. The answer names the head and the base as well
+	// (pullHeadOf), as GitHub's always does.
 	pulls map[string]string
 	// heads is the open pull request whose head each commit is, keyed `owner/repo@sha`, which
 	// GET /repos/{owner}/{repo}/commits/{sha}/pulls names. A commit it does not name heads no
 	// pull request.
 	heads map[string]int
+	// pullHeads is the head and the base GET /repos/{owner}/{repo}/pulls/{number} answers for a
+	// pull request pulls names, keyed as pulls is, where heads names no commit as its head: a
+	// closed or merged pull request, or one whose row the test stores. A results read stores what
+	// that read answers (server.readLinkedHeads), so a test that stores a row of a linked pull
+	// request gives GitHub the same head and base here.
+	pullHeads map[string]linkedPullHead
 	// branches is the commits each branch carries, keyed `owner/repo:branch`, which
 	// GET /repos/{owner}/{repo}/compare/{base}...{head} answers from: `behind` for a commit the
 	// branch carries, `diverged` for every other commit the repository holds, and GitHub's 404
@@ -995,6 +1002,29 @@ func (g *linkedGitHub) counts(repo string) (stateReads, readThroughs int) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	return g.stateReads[repo], g.readThroughs[repo]
+}
+
+// linkedPullHead is the head commit and the base branch a pull request of linkedGitHub has.
+type linkedPullHead struct{ sha, base string }
+
+// unnamedPullHead is the head of a pull request linkedGitHub names no head for: a commit no
+// repository of any test holds and no result is recorded at. GitHub names a head in every answer
+// about a pull request, and an answer with none would store a row at no commit.
+const unnamedPullHead = "5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f"
+
+// pullHeadOf is the head and the base GET /repos/{owner}/{repo}/pulls/{number} answers for
+// repo's pull request number: its entry in pullHeads, else the commit heads names it the head of,
+// on main, else unnamedPullHead on main. The caller holds g.mu.
+func (g *linkedGitHub) pullHeadOf(repo, number string) linkedPullHead {
+	if head, ok := g.pullHeads[repo+"#"+number]; ok {
+		return head
+	}
+	for key, headOf := range g.heads {
+		if owner, sha, _ := strings.Cut(key, "@"); owner == repo && strconv.Itoa(headOf) == number {
+			return linkedPullHead{sha: sha, base: "main"}
+		}
+	}
+	return linkedPullHead{sha: unnamedPullHead, base: "main"}
 }
 
 // compareReads is how often a compare read asked repo about any branch and commit, so far.
@@ -1101,17 +1131,31 @@ func linkedRepositoriesOptions(t *testing.T, linked *linkedGitHub) testServerOpt
 			fmt.Fprint(w, `{"message":"Server Error"}`)
 			return
 		}
-		switch linked.pulls[repo+"#"+number] {
+		linked.mu.Lock()
+		state, head := linked.pulls[repo+"#"+number], linked.pullHeadOf(repo, number)
+		linked.mu.Unlock()
+		var facts string
+		switch state {
 		case "open":
-			fmt.Fprintf(w, `{"number":%s,"state":"open","merged":false,"merged_at":null}`, number)
+			facts = `"state":"open","merged":false,"merged_at":null`
 		case "merged":
-			fmt.Fprintf(w, `{"number":%s,"state":"closed","merged":true,"merged_at":"2026-11-14T00:00:00Z"}`, number)
+			facts = `"state":"closed","merged":true,"merged_at":"2026-11-14T00:00:00Z"`
 		case "closed":
-			fmt.Fprintf(w, `{"number":%s,"state":"closed","merged":false,"merged_at":null}`, number)
+			facts = `"state":"closed","merged":false,"merged_at":null`
 		default:
 			w.WriteHeader(http.StatusNotFound)
 			fmt.Fprint(w, `{"message":"Not Found"}`)
+			return
 		}
+		// The read-through's texts for the same pull request, which name no issue. It names no
+		// updated_at, as the answer of the state alone named none: the rows the tests store carry
+		// times of their own, which an answer of a fixed time could stand older than, and an older
+		// read of GitHub owes the row a read again (pull_request_heads_older_read), which no test
+		// here is about.
+		fmt.Fprintf(w, `{"number":%s,%s,"title":"The second half of the work","body":"","draft":false,
+			"html_url":"https://github.com/%s/pull/%s",
+			"head":{"ref":"work","sha":%q,"repo":{"full_name":%q}},"base":{"ref":%q}}`,
+			number, facts, repo, number, head.sha, repo, head.base)
 	})
 	mux.HandleFunc("GET /repos/{owner}/{repo}/commits/{sha}/pulls", func(w http.ResponseWriter, r *http.Request) {
 		repo := r.PathValue("owner") + "/" + r.PathValue("repo")
@@ -1423,8 +1467,9 @@ func TestAResultAtTheHeadOfALinkedPullRequestFollowsThatHead(t *testing.T) {
 			"acme/widgets": {ownCommit},
 			"acme/tools":   {linkedCommit, movedCommit, closedCommit},
 		},
-		pulls: map[string]string{"acme/tools#7": "open", "acme/tools#8": "closed"},
-		heads: map[string]int{"acme/tools@" + linkedCommit: 7},
+		pulls:     map[string]string{"acme/tools#7": "open", "acme/tools#8": "closed"},
+		heads:     map[string]int{"acme/tools@" + linkedCommit: 7},
+		pullHeads: map[string]linkedPullHead{"acme/tools#8": {sha: closedCommit, base: "main"}},
 	}
 	handler, database := linkedRepositoriesGitHub(t, linked)
 	issue := issueInRepository(t, handler, "RELH", "acme/widgets", "Heads in two repositories")
@@ -1512,6 +1557,11 @@ func TestABranchChecksResultAtALinkedPullRequestsMergeCommitIsComparedInThatRepo
 			"acme/tools":   {toolsMerge, integrationMerge},
 		},
 		pulls: map[string]string{"acme/tools#9": "merged", "acme/tools#10": "merged"},
+		// The heads and bases of the two rows the test stores below (storeLinkedHeadOn).
+		pullHeads: map[string]linkedPullHead{
+			"acme/tools#9":  {sha: headCommit, base: "main"},
+			"acme/tools#10": {sha: newHeadCommit, base: "integration/x"},
+		},
 		branches: map[string][]string{
 			"acme/widgets:main":        {ownMerge},
 			"acme/tools:main":          {toolsMerge},
@@ -5079,8 +5129,9 @@ func TestALinkedResultsAnswerNamesItsRepository(t *testing.T) {
 				"acme/widgets": {ownCommit},
 				"acme/tools":   {oldCommit, offBranch, headCommit},
 			},
-			pulls: map[string]string{"acme/tools#7": "open"},
-			heads: map[string]int{},
+			pulls:     map[string]string{"acme/tools#7": "open"},
+			heads:     map[string]int{},
+			pullHeads: map[string]linkedPullHead{"acme/tools#7": {sha: headCommit, base: "main"}},
 		}
 		handler, database := linkedRepositoriesGitHub(t, linked)
 		issue := issueInRepository(t, handler, "RELS", "acme/widgets", "Answers that name the linked repository").Key
@@ -5107,10 +5158,11 @@ func TestALinkedResultsAnswerNamesItsRepository(t *testing.T) {
 	})
 	t.Run("GitHub hides the linked repository from the App", func(t *testing.T) {
 		linked := &linkedGitHub{
-			held:   map[string][]string{"acme/tools": {oldCommit, headCommit}},
-			pulls:  map[string]string{"acme/tools#7": "open"},
-			heads:  map[string]int{},
-			hidden: []string{"acme/tools"},
+			held:      map[string][]string{"acme/tools": {oldCommit, headCommit}},
+			pulls:     map[string]string{"acme/tools#7": "open"},
+			heads:     map[string]int{},
+			pullHeads: map[string]linkedPullHead{"acme/tools#7": {sha: headCommit, base: "main"}},
+			hidden:    []string{"acme/tools"},
 		}
 		handler, database := linkedRepositoriesGitHub(t, linked)
 		issue := issueInRepository(t, handler, "RELH", "acme/widgets", "An unknown answer that names the linked repository").Key

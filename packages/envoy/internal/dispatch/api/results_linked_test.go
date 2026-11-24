@@ -70,10 +70,11 @@ func TestAFailedReadOfTheIssuesOwnRepositoryStillReadsTheLinks(t *testing.T) {
 		unheldCommit = "9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b"
 	)
 	linked := &linkedGitHub{
-		held:     map[string][]string{"acme/tools": {toolsMerge}},
-		pulls:    map[string]string{"acme/tools#9": "merged"},
-		branches: map[string][]string{"acme/tools:main": {toolsMerge}},
-		failing:  []string{"acme/widgets"},
+		held:      map[string][]string{"acme/tools": {toolsMerge}},
+		pulls:     map[string]string{"acme/tools#9": "merged"},
+		pullHeads: map[string]linkedPullHead{"acme/tools#9": {sha: headCommit, base: "main"}},
+		branches:  map[string][]string{"acme/tools:main": {toolsMerge}},
+		failing:   []string{"acme/widgets"},
 	}
 	handler, database := linkedRepositoriesGitHub(t, linked)
 	issue := issueInRepository(t, handler, "RELF", "acme/widgets", "Own repository unread").Key
@@ -115,19 +116,26 @@ func TestAFailedReadOfTheIssuesOwnRepositoryStillReadsTheLinks(t *testing.T) {
 
 // A `before_merge` result whose commit only a linked repository holds is read through that
 // repository when the results are read, as the record reads it through. A pull request the
-// issue links there that opens at that commit after the record, with no event reaching Dispatch
-// for it, is learned at the next read, and the result stands at its head, which names the linked
-// repository; the issue's own pull request names none. Asked of the issue's own repository, the
-// read would name no pull request for such a commit on any read, and the result would stand at
-// another commit for good.
+// issue links there whose head moves to that commit after the record, with no event reaching
+// Dispatch for it, is learned at the next read, and the result stands at its head, which names
+// the linked repository; the issue's own pull request names none. Asked of the issue's own
+// repository, the read would name no pull request for such a commit on any read, and the result
+// would stand at another commit for good. A first read of the results, before the record, reads
+// the linked pull request at its head then (server.readLinkedHeads), so the read after the move
+// holds a row of it that owes no read, and only the read-through of the result's commit can
+// learn the move.
 func TestABeforeMergeResultAtALinkedCommitIsReadThroughThatRepository(t *testing.T) {
 	t.Parallel()
-	// pushedCommit is a commit acme/tools holds and acme/widgets does not.
-	const pushedCommit = "9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c"
+	const (
+		// pushedCommit is a commit acme/tools holds and acme/widgets does not, and earlierCommit
+		// the head of acme/tools#7 before the push.
+		pushedCommit  = "9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c"
+		earlierCommit = "9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d"
+	)
 	linked := &linkedGitHub{
-		held:  map[string][]string{"acme/widgets": {headCommit}, "acme/tools": {pushedCommit}},
+		held:  map[string][]string{"acme/widgets": {headCommit}, "acme/tools": {pushedCommit, earlierCommit}},
 		pulls: map[string]string{"acme/tools#7": "open"},
-		heads: map[string]int{},
+		heads: map[string]int{"acme/tools@" + earlierCommit: 7},
 	}
 	handler, database := linkedRepositoriesGitHub(t, linked)
 	issue := issueInRepository(t, handler, "RELR", "acme/widgets", "Read through the linked repository").Key
@@ -135,14 +143,26 @@ func TestABeforeMergeResultAtALinkedCommitIsReadThroughThatRepository(t *testing
 	linkPullRequests(t, handler, issue, "https://github.com/acme/tools/pull/7")
 	// Dispatch holds the issue's own pull request, and nothing of the linked one yet.
 	writeHead(t, database, "acme/widgets", 5, headCommit, "open", issue)
+	readResults(t, handler, issue)
+	var heldAtEarlier int
+	if err := database.Pool.QueryRow(context.Background(),
+		`select count(*) from pull_request_heads where repo = 'acme/tools' and number = 7 and head_sha = $1`,
+		earlierCommit).Scan(&heldAtEarlier); err != nil {
+		t.Fatalf("read the rows of acme/tools#7: %v", err)
+	}
+	if owed := owedReadsOf(t, database, "acme/tools", 7); heldAtEarlier != 1 || owed != 0 {
+		t.Fatalf("after the first read Dispatch holds %d rows of acme/tools#7 at %s owing %d reads, want one owing none",
+			heldAtEarlier, earlierCommit, owed)
+	}
 
 	result := recordStored(t, handler, issue, "k1", pushedCommit)
 	if repo := storedCommitRepo(t, database, result); repo == nil || *repo != "acme/tools" {
 		t.Fatalf("the result at a commit only acme/tools holds stored commit_repo %v, want acme/tools", repo)
 	}
 
-	// acme/tools#7 opens at the result's commit, and no event tells Dispatch of it.
+	// acme/tools#7's head moves to the result's commit, and no event tells Dispatch of it.
 	linked.mu.Lock()
+	delete(linked.heads, "acme/tools@"+earlierCommit)
 	linked.heads["acme/tools@"+pushedCommit] = 7
 	linked.mu.Unlock()
 	_, toolsAsksBefore := linked.counts("acme/tools")
@@ -183,6 +203,7 @@ func TestABeforeMergeResultAtALinkedCommitIsDecidedByThatRepository(t *testing.T
 		held:        map[string][]string{"acme/tools": {oldCommit, headCommit}},
 		pulls:       map[string]string{"acme/tools#7": "open"},
 		heads:       map[string]int{},
+		pullHeads:   map[string]linkedPullHead{"acme/tools#7": {sha: headCommit, base: "main"}},
 		uninstalled: []string{"acme/widgets"},
 	}
 	handler, database := linkedRepositoriesGitHub(t, linked)
