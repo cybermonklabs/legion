@@ -2311,7 +2311,7 @@
       },
       {
         "row": "wake-redirect-unparsed",
-        "base": "df9ce51fa06750ecad27613e12fc216103f0f2f7",
+        "base": "326f8dd453c96505a00c3103d7d32a3f1e2a50ff",
         "files": [
           "packages/envoy/internal/cipher/wake/redirect_location_test.go",
           "packages/envoy/redirects/redirectstest/redirectstest.go"
@@ -2320,7 +2320,7 @@
       },
       {
         "row": "wake-redirect-elsewhere",
-        "base": "df9ce51fa06750ecad27613e12fc216103f0f2f7",
+        "base": "326f8dd453c96505a00c3103d7d32a3f1e2a50ff",
         "files": [
           "packages/envoy/internal/cipher/wake/redirect_location_test.go",
           "packages/envoy/redirects/redirectstest/redirectstest.go"
@@ -2329,7 +2329,7 @@
       },
       {
         "row": "judge-redirect-unparsed",
-        "base": "df9ce51fa06750ecad27613e12fc216103f0f2f7",
+        "base": "326f8dd453c96505a00c3103d7d32a3f1e2a50ff",
         "files": [
           "packages/envoy/internal/cipher/judge/redirect_location_test.go",
           "packages/envoy/redirects/redirectstest/redirectstest.go"
@@ -2338,7 +2338,7 @@
       },
       {
         "row": "judge-redirect-elsewhere",
-        "base": "df9ce51fa06750ecad27613e12fc216103f0f2f7",
+        "base": "326f8dd453c96505a00c3103d7d32a3f1e2a50ff",
         "files": [
           "packages/envoy/internal/cipher/judge/redirect_location_test.go",
           "packages/envoy/redirects/redirectstest/redirectstest.go"
@@ -2410,7 +2410,7 @@
       },
       {
         "row": "wake-redirect-followed-given",
-        "base": "cbebaf9543f50106a726ad67ed8f915c16c8321e",
+        "base": "3762771376a773c855317f674660e5ce50e0c1ba",
         "files": [
           "packages/envoy/internal/cipher/wake/follows_no_redirect_test.go",
           "packages/envoy/redirects/redirectstest/redirectstest.go"
@@ -2419,7 +2419,7 @@
       },
       {
         "row": "judge-redirect-followed-default",
-        "base": "cbebaf9543f50106a726ad67ed8f915c16c8321e",
+        "base": "3762771376a773c855317f674660e5ce50e0c1ba",
         "files": [
           "packages/envoy/internal/cipher/judge/follows_no_redirect_test.go",
           "packages/envoy/redirects/redirectstest/redirectstest.go"
@@ -2428,7 +2428,7 @@
       },
       {
         "row": "judge-redirect-followed-given",
-        "base": "cbebaf9543f50106a726ad67ed8f915c16c8321e",
+        "base": "3762771376a773c855317f674660e5ce50e0c1ba",
         "files": [
           "packages/envoy/internal/cipher/judge/follows_no_redirect_test.go",
           "packages/envoy/redirects/redirectstest/redirectstest.go"
@@ -10159,7 +10159,7 @@
       "capture": "wake.redirect/unparsed",
       "mutation": {
         "file": "packages/envoy/internal/cipher/wake/envoy.go",
-        "preimage": "redact.Cause(err, e.URL)",
+        "preimage": "redact.Cause(err, e.url)",
         "replacement": "func() error { _ = redact.Cause; return err }()"
       }
     },
@@ -10294,13 +10294,13 @@
       "requirement": "r3-each-site",
       "package": "./internal/cipher/wake",
       "test": "TestANoticeFollowsNoRedirect/given",
-      "production": "wake Envoy.Notify: the notice goes out on a copy of its client that follows no redirect (redirects.Refused), so a 302 to another host is logged by its status and that host is sent nothing, neither the Location's query nor the Authorization",
-      "function": "(github.com/sjawhar/envoy/internal/cipher/wake.Envoy).Notify",
+      "production": "wake NewEnvoy: the notice goes out on the copy of its client that follows no redirect (redirects.Refused), made once, so a 302 to another host is logged by its status and that host is sent nothing, neither the Location's query nor the Authorization",
+      "function": "github.com/sjawhar/envoy/internal/cipher/wake.NewEnvoy",
       "capture": "wake.redirect-followed/given",
       "mutation": {
         "file": "packages/envoy/internal/cipher/wake/envoy.go",
-        "preimage": "redirects.Refused(e.HTTP)",
-        "replacement": "func() *http.Client { _ = redirects.Refused; return e.HTTP }()"
+        "preimage": "redirects.Refused(client)",
+        "replacement": "func() *http.Client { _ = redirects.Refused; return client }()"
       }
     },
     {
@@ -10315,13 +10315,13 @@
       "requirement": "r3-each-site",
       "package": "./internal/cipher/judge",
       "test": "TestAJudgeReadFollowsNoRedirect/default",
-      "production": "judge Dispatch.get: with a nil HTTP, the read goes out on a copy of http.DefaultClient that follows no redirect (redirects.Refused), so a 302 to another host is the read's failure by its status and that host is sent nothing",
-      "function": "(github.com/sjawhar/envoy/internal/cipher/judge.Dispatch).get",
+      "production": "judge NewDispatch: with a nil client, the read keeps a copy of http.DefaultClient that follows no redirect (redirects.Refused), made once, so a 302 to another host is the read's failure by its status and that host is sent nothing",
+      "function": "github.com/sjawhar/envoy/internal/cipher/judge.NewDispatch",
       "capture": "judge.redirect-followed/default",
       "mutation": {
         "file": "packages/envoy/internal/cipher/judge/dispatch.go",
-        "preimage": "redirects.Refused(cmp.Or(d.HTTP, http.DefaultClient))",
-        "replacement": "func() *http.Client { _ = redirects.Refused; return cmp.Or(d.HTTP, http.DefaultClient) }()"
+        "preimage": "redirects.Refused(cmp.Or(client, http.DefaultClient))",
+        "replacement": "func() *http.Client { _ = redirects.Refused; return cmp.Or(client, http.DefaultClient) }()"
       }
     },
     {
@@ -10329,13 +10329,13 @@
       "requirement": "r3-each-site",
       "package": "./internal/cipher/judge",
       "test": "TestAJudgeReadFollowsNoRedirect/given",
-      "production": "judge Dispatch.get: the read goes out on a copy of the client cmd/cipherd gives that follows no redirect (redirects.Refused), so a 302 to another host is the read's failure by its status and that host is sent nothing",
-      "function": "(github.com/sjawhar/envoy/internal/cipher/judge.Dispatch).get",
+      "production": "judge NewDispatch: the read keeps a copy of the client cmd/cipherd gives that follows no redirect (redirects.Refused), made once, so a 302 to another host is the read's failure by its status and that host is sent nothing",
+      "function": "github.com/sjawhar/envoy/internal/cipher/judge.NewDispatch",
       "capture": "judge.redirect-followed/given",
       "mutation": {
         "file": "packages/envoy/internal/cipher/judge/dispatch.go",
-        "preimage": "redirects.Refused(cmp.Or(d.HTTP, http.DefaultClient))",
-        "replacement": "func() *http.Client { _ = redirects.Refused; return cmp.Or(d.HTTP, http.DefaultClient) }()"
+        "preimage": "redirects.Refused(cmp.Or(client, http.DefaultClient))",
+        "replacement": "func() *http.Client { _ = redirects.Refused; return cmp.Or(client, http.DefaultClient) }()"
       }
     },
     {
@@ -13064,6 +13064,258 @@
       "package": "./internal/mcpbridge",
       "test": "TestAnSSEURLThatDoesNotParseAgainPrintsNoneOfIt/twin",
       "production": "the probe of the sse-url-reparsed row: the configured URL passes ServerConfig.validate, and http.NewRequest's error for its SSE URL quotes its user information and its access token, so the row can see them printed"
+    },
+    {
+      "id": "wake-redirect-followed-twin-307",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/wake",
+      "test": "TestANoticeFollowsNoRedirect/twin-307",
+      "production": "the stand-in of the notice's 307 row: a client that follows its 307 sends the notice again, with the broker's account token, to the host the Location names (redirectstest.Sent), so the row can see a token sent on"
+    },
+    {
+      "id": "wake-redirect-followed-twin-308",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/wake",
+      "test": "TestANoticeFollowsNoRedirect/twin-308",
+      "production": "the stand-in of the notice's 308 row: a client that follows its 308 sends the notice again, with the broker's account token, to the host the Location names (redirectstest.Sent), so the row can see a token sent on"
+    },
+    {
+      "id": "wake-redirect-followed-given-307",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/wake",
+      "test": "TestANoticeFollowsNoRedirect/given-307",
+      "production": "wake NewEnvoy: the notice goes out on the copy of its client that follows no redirect (redirects.Refused), made once, so a 307 to another host is logged by its status and that host is sent nothing, neither the notice again nor the Location's query nor the Authorization",
+      "function": "github.com/sjawhar/envoy/internal/cipher/wake.NewEnvoy",
+      "capture": "wake.redirect-followed/given-307",
+      "mutation": {
+        "file": "packages/envoy/internal/cipher/wake/envoy.go",
+        "preimage": "redirects.Refused(client)",
+        "replacement": "func() *http.Client { _ = redirects.Refused; return client }()"
+      }
+    },
+    {
+      "id": "wake-redirect-followed-given-308",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/wake",
+      "test": "TestANoticeFollowsNoRedirect/given-308",
+      "production": "wake NewEnvoy: the notice goes out on the copy of its client that follows no redirect (redirects.Refused), made once, so a 308 to another host is logged by its status and that host is sent nothing, neither the notice again nor the Location's query nor the Authorization",
+      "function": "github.com/sjawhar/envoy/internal/cipher/wake.NewEnvoy",
+      "capture": "wake.redirect-followed/given-308",
+      "mutation": {
+        "file": "packages/envoy/internal/cipher/wake/envoy.go",
+        "preimage": "redirects.Refused(client)",
+        "replacement": "func() *http.Client { _ = redirects.Refused; return client }()"
+      }
+    },
+    {
+      "id": "judge-redirect-followed-twin-307",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/judge",
+      "test": "TestAJudgeReadFollowsNoRedirect/twin-307",
+      "production": "the stand-in of the judge's 307 rows: a client that follows its 307 sends the read again, with the broker's account token, to the host the Location names (redirectstest.Sent), so the rows can see a token sent on"
+    },
+    {
+      "id": "judge-redirect-followed-twin-308",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/judge",
+      "test": "TestAJudgeReadFollowsNoRedirect/twin-308",
+      "production": "the stand-in of the judge's 308 rows: a client that follows its 308 sends the read again, with the broker's account token, to the host the Location names (redirectstest.Sent), so the rows can see a token sent on"
+    },
+    {
+      "id": "judge-redirect-followed-default-307",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/judge",
+      "test": "TestAJudgeReadFollowsNoRedirect/default-307",
+      "production": "judge NewDispatch: with a nil client, the read keeps a copy of http.DefaultClient that follows no redirect (redirects.Refused), made once, so a 307 to another host is the read's failure by its status and that host is sent nothing",
+      "function": "github.com/sjawhar/envoy/internal/cipher/judge.NewDispatch",
+      "capture": "judge.redirect-followed/default-307",
+      "mutation": {
+        "file": "packages/envoy/internal/cipher/judge/dispatch.go",
+        "preimage": "redirects.Refused(cmp.Or(client, http.DefaultClient))",
+        "replacement": "func() *http.Client { _ = redirects.Refused; return cmp.Or(client, http.DefaultClient) }()"
+      }
+    },
+    {
+      "id": "judge-redirect-followed-given-307",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/judge",
+      "test": "TestAJudgeReadFollowsNoRedirect/given-307",
+      "production": "judge NewDispatch: the read keeps a copy of the client cmd/cipherd gives that follows no redirect (redirects.Refused), made once, so a 307 to another host is the read's failure by its status and that host is sent nothing",
+      "function": "github.com/sjawhar/envoy/internal/cipher/judge.NewDispatch",
+      "capture": "judge.redirect-followed/given-307",
+      "mutation": {
+        "file": "packages/envoy/internal/cipher/judge/dispatch.go",
+        "preimage": "redirects.Refused(cmp.Or(client, http.DefaultClient))",
+        "replacement": "func() *http.Client { _ = redirects.Refused; return cmp.Or(client, http.DefaultClient) }()"
+      }
+    },
+    {
+      "id": "judge-redirect-followed-default-308",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/judge",
+      "test": "TestAJudgeReadFollowsNoRedirect/default-308",
+      "production": "judge NewDispatch: with a nil client, the read keeps a copy of http.DefaultClient that follows no redirect (redirects.Refused), made once, so a 308 to another host is the read's failure by its status and that host is sent nothing",
+      "function": "github.com/sjawhar/envoy/internal/cipher/judge.NewDispatch",
+      "capture": "judge.redirect-followed/default-308",
+      "mutation": {
+        "file": "packages/envoy/internal/cipher/judge/dispatch.go",
+        "preimage": "redirects.Refused(cmp.Or(client, http.DefaultClient))",
+        "replacement": "func() *http.Client { _ = redirects.Refused; return cmp.Or(client, http.DefaultClient) }()"
+      }
+    },
+    {
+      "id": "judge-redirect-followed-given-308",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/judge",
+      "test": "TestAJudgeReadFollowsNoRedirect/given-308",
+      "production": "judge NewDispatch: the read keeps a copy of the client cmd/cipherd gives that follows no redirect (redirects.Refused), made once, so a 308 to another host is the read's failure by its status and that host is sent nothing",
+      "function": "github.com/sjawhar/envoy/internal/cipher/judge.NewDispatch",
+      "capture": "judge.redirect-followed/given-308",
+      "mutation": {
+        "file": "packages/envoy/internal/cipher/judge/dispatch.go",
+        "preimage": "redirects.Refused(cmp.Or(client, http.DefaultClient))",
+        "replacement": "func() *http.Client { _ = redirects.Refused; return cmp.Or(client, http.DefaultClient) }()"
+      }
+    },
+    {
+      "id": "dispatchread-redirect-followed-twin-307",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/dispatchread",
+      "test": "TestADispatchReadFollowsNoRedirect/twin-307",
+      "production": "the stand-in of the project-access read's 307 rows: a client that follows its 307 sends the read again, with the broker's project-access token, to the host the Location names (redirectstest.Sent), so the rows can see a token sent on"
+    },
+    {
+      "id": "dispatchread-redirect-followed-twin-308",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/dispatchread",
+      "test": "TestADispatchReadFollowsNoRedirect/twin-308",
+      "production": "the stand-in of the project-access read's 308 rows: a client that follows its 308 sends the read again, with the broker's project-access token, to the host the Location names (redirectstest.Sent), so the rows can see a token sent on"
+    },
+    {
+      "id": "dispatchread-redirect-followed-default-307",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/dispatchread",
+      "test": "TestADispatchReadFollowsNoRedirect/default-307",
+      "production": "dispatchread New: with a nil client (cmd/cipherd's repository read), the reader keeps a copy of http.DefaultClient that follows no redirect (redirects.Refused), so a 307 to another host is handed back by its status, which projectrepos and projectaccess refuse, and that host is sent nothing",
+      "function": "github.com/sjawhar/envoy/internal/cipher/dispatchread.New",
+      "capture": "dispatchread.redirect-followed/default-307",
+      "mutation": {
+        "file": "packages/envoy/internal/cipher/dispatchread/dispatchread.go",
+        "preimage": "redirects.Refused(httpClient)",
+        "replacement": "func() *http.Client { _ = redirects.Refused; return httpClient }()"
+      }
+    },
+    {
+      "id": "dispatchread-redirect-followed-given-307",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/dispatchread",
+      "test": "TestADispatchReadFollowsNoRedirect/given-307",
+      "production": "dispatchread New: with a given client (cmd/cipherd's project access read), the reader keeps a copy that follows no redirect (redirects.Refused), so a 307 to another host is handed back by its status, which projectrepos and projectaccess refuse, and that host is sent nothing",
+      "function": "github.com/sjawhar/envoy/internal/cipher/dispatchread.New",
+      "capture": "dispatchread.redirect-followed/given-307",
+      "mutation": {
+        "file": "packages/envoy/internal/cipher/dispatchread/dispatchread.go",
+        "preimage": "redirects.Refused(httpClient)",
+        "replacement": "func() *http.Client { _ = redirects.Refused; return httpClient }()"
+      }
+    },
+    {
+      "id": "dispatchread-redirect-followed-default-308",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/dispatchread",
+      "test": "TestADispatchReadFollowsNoRedirect/default-308",
+      "production": "dispatchread New: with a nil client (cmd/cipherd's repository read), the reader keeps a copy of http.DefaultClient that follows no redirect (redirects.Refused), so a 308 to another host is handed back by its status, which projectrepos and projectaccess refuse, and that host is sent nothing",
+      "function": "github.com/sjawhar/envoy/internal/cipher/dispatchread.New",
+      "capture": "dispatchread.redirect-followed/default-308",
+      "mutation": {
+        "file": "packages/envoy/internal/cipher/dispatchread/dispatchread.go",
+        "preimage": "redirects.Refused(httpClient)",
+        "replacement": "func() *http.Client { _ = redirects.Refused; return httpClient }()"
+      }
+    },
+    {
+      "id": "dispatchread-redirect-followed-given-308",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/dispatchread",
+      "test": "TestADispatchReadFollowsNoRedirect/given-308",
+      "production": "dispatchread New: with a given client (cmd/cipherd's project access read), the reader keeps a copy that follows no redirect (redirects.Refused), so a 308 to another host is handed back by its status, which projectrepos and projectaccess refuse, and that host is sent nothing",
+      "function": "github.com/sjawhar/envoy/internal/cipher/dispatchread.New",
+      "capture": "dispatchread.redirect-followed/given-308",
+      "mutation": {
+        "file": "packages/envoy/internal/cipher/dispatchread/dispatchread.go",
+        "preimage": "redirects.Refused(httpClient)",
+        "replacement": "func() *http.Client { _ = redirects.Refused; return httpClient }()"
+      }
+    },
+    {
+      "id": "brokertoken-introspect-followed-twin-307",
+      "requirement": "r3-each-site",
+      "package": "./internal/ciphertoken",
+      "test": "TestAnIntrospectionFollowsNoRedirect/twin-307",
+      "production": "the stand-in of the introspection's 307 rows: a client that follows its 307 sends the introspection's form again, the presented token in it, with the caller's account token, to the host the Location names (formSent, which keeps each body), so the rows can see either token sent on"
+    },
+    {
+      "id": "brokertoken-introspect-followed-twin-308",
+      "requirement": "r3-each-site",
+      "package": "./internal/ciphertoken",
+      "test": "TestAnIntrospectionFollowsNoRedirect/twin-308",
+      "production": "the stand-in of the introspection's 308 rows: a client that follows its 308 sends the introspection's form again, the presented token in it, with the caller's account token, to the host the Location names (formSent, which keeps each body), so the rows can see either token sent on"
+    },
+    {
+      "id": "brokertoken-introspect-followed-default-307",
+      "requirement": "r3-each-site",
+      "package": "./internal/ciphertoken",
+      "test": "TestAnIntrospectionFollowsNoRedirect/default-307",
+      "production": "ciphertoken New: with a nil Options.HTTP, the Verifier keeps a copy of its own bounded client that follows no redirect (redirects.Refused), so an introspection's 307 to another host is ErrBrokerUnreachable by its status and that host is sent nothing, neither the form with the presented token nor the account token",
+      "function": "github.com/sjawhar/envoy/internal/ciphertoken.New",
+      "capture": "brokertoken.introspect-followed/default-307",
+      "mutation": {
+        "file": "packages/envoy/internal/ciphertoken/brokertoken.go",
+        "preimage": "redirects.Refused(client)",
+        "replacement": "func() *http.Client { _ = redirects.Refused; return client }()"
+      }
+    },
+    {
+      "id": "brokertoken-introspect-followed-given-307",
+      "requirement": "r3-each-site",
+      "package": "./internal/ciphertoken",
+      "test": "TestAnIntrospectionFollowsNoRedirect/given-307",
+      "production": "ciphertoken New: with a given Options.HTTP, the Verifier keeps a copy that follows no redirect (redirects.Refused), so an introspection's 307 to another host is ErrBrokerUnreachable by its status and that host is sent nothing, neither the form with the presented token nor the account token",
+      "function": "github.com/sjawhar/envoy/internal/ciphertoken.New",
+      "capture": "brokertoken.introspect-followed/given-307",
+      "mutation": {
+        "file": "packages/envoy/internal/ciphertoken/brokertoken.go",
+        "preimage": "redirects.Refused(client)",
+        "replacement": "func() *http.Client { _ = redirects.Refused; return client }()"
+      }
+    },
+    {
+      "id": "brokertoken-introspect-followed-default-308",
+      "requirement": "r3-each-site",
+      "package": "./internal/ciphertoken",
+      "test": "TestAnIntrospectionFollowsNoRedirect/default-308",
+      "production": "ciphertoken New: with a nil Options.HTTP, the Verifier keeps a copy of its own bounded client that follows no redirect (redirects.Refused), so an introspection's 308 to another host is ErrBrokerUnreachable by its status and that host is sent nothing, neither the form with the presented token nor the account token",
+      "function": "github.com/sjawhar/envoy/internal/ciphertoken.New",
+      "capture": "brokertoken.introspect-followed/default-308",
+      "mutation": {
+        "file": "packages/envoy/internal/ciphertoken/brokertoken.go",
+        "preimage": "redirects.Refused(client)",
+        "replacement": "func() *http.Client { _ = redirects.Refused; return client }()"
+      }
+    },
+    {
+      "id": "brokertoken-introspect-followed-given-308",
+      "requirement": "r3-each-site",
+      "package": "./internal/ciphertoken",
+      "test": "TestAnIntrospectionFollowsNoRedirect/given-308",
+      "production": "ciphertoken New: with a given Options.HTTP, the Verifier keeps a copy that follows no redirect (redirects.Refused), so an introspection's 308 to another host is ErrBrokerUnreachable by its status and that host is sent nothing, neither the form with the presented token nor the account token",
+      "function": "github.com/sjawhar/envoy/internal/ciphertoken.New",
+      "capture": "brokertoken.introspect-followed/given-308",
+      "mutation": {
+        "file": "packages/envoy/internal/ciphertoken/brokertoken.go",
+        "preimage": "redirects.Refused(client)",
+        "replacement": "func() *http.Client { _ = redirects.Refused; return client }()"
+      }
     }
   ],
   "bun": [
@@ -15676,6 +15928,42 @@
       "site": "mcpbridge HTTPServer.Start: a configured URL whose SSE URL does not parse again printed http.NewRequest's error, which quotes it whole, user information and query included (the tools slice's create-SSE-request item)",
       "source": "the round-9 decisions of #4368",
       "guard": "mcpbridge-sse-url-reparsed"
+    },
+    {
+      "site": "wake Envoy.Notify: the notice's followed-redirect row answered only a 302, while a 307 or a 308 keeps the method and would send the notice on again with the broker's account token",
+      "source": "the round-9 decisions of #4368",
+      "guard": "wake-redirect-followed-given-307",
+      "note": "not a leak: the notice's client refused every 3xx at the base too, so the 307 and 308 rows pass there; they guard the refusal the 302 row alone held"
+    },
+    {
+      "site": "judge Dispatch.get: the judge's followed-redirect rows answered only a 302, while a 307 or a 308 keeps the method and would send the read on again with the broker's account token",
+      "source": "the round-9 decisions of #4368",
+      "guard": "judge-redirect-followed-default-307",
+      "note": "not a leak: the read's client refused every 3xx at the base too, so the 307 and 308 rows pass there; they guard the refusal the 302 rows alone held"
+    },
+    {
+      "site": "dispatchread New: the project-access read's followed-redirect rows answered only a 302, while a 307 or a 308 keeps the method and would send the read on again with the broker's project-access token",
+      "source": "the round-9 decisions of #4368",
+      "guard": "dispatchread-redirect-followed-default-307",
+      "note": "not a leak: the reader's client refused every 3xx at the base too, so the 307 and 308 rows pass there; they guard the refusal the 302 rows alone held"
+    },
+    {
+      "site": "ciphertoken New: the introspection's followed-redirect rows answered only a 302, while a 307 or a 308 would send the introspection's form on again, the presented token in it, with the caller's account token",
+      "source": "the round-9 decisions of #4368",
+      "guard": "brokertoken-introspect-followed-default-307",
+      "note": "not a leak: the Verifier's client refused every 3xx at the base too, so the 307 and 308 rows pass there; they guard the refusal the 302 rows alone held, and see the form's token as well as the account token"
+    },
+    {
+      "site": "wake Envoy.Notify made the copy of its client that follows no redirect again for each notice (redirects.Refused per call), since Envoy was a struct literal with no constructor",
+      "source": "the round-9 decisions of #4368",
+      "guard": "wake-redirect-followed-given",
+      "note": "not a leak: a client copy per call; NewEnvoy now makes it once, and the row's mutation names that call"
+    },
+    {
+      "site": "judge Dispatch.get made the copy of its client that follows no redirect again for each read (redirects.Refused per call), since Dispatch was a struct literal with no constructor",
+      "source": "the round-9 decisions of #4368",
+      "guard": "judge-redirect-followed-default",
+      "note": "not a leak: a client copy per call; NewDispatch now makes it once, and the row's mutation names that call"
     }
   ]
 }
