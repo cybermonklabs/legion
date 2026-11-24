@@ -59,10 +59,11 @@
 # A package's own needs stay its own: a row's test that needs a database reads the variable its
 # suite reads - DISPATCH_TEST_DATABASE_URL in the envoy module (internal/dispatch/api among them),
 # BROKER_TEST_DATABASE_URL for the secrets broker's rigs, and LEGION_TEST_PG_DSN in the daemon
-# module, daemon/internal/daemon among them - and a row whose test skips for want of one fails
-# ("test skip"), so set all three, to one database. No line this script prints is a real
-# credential: the tests' credentials are made up (not-a-secret-...), and a failure line it prints
-# may quote one.
+# module (daemon/internal/daemon among them) and in the envoy module's loadtest, whose row
+# TestABundlesMembersOfNoShapePrintNowhere writes to the loop seed's Postgres - and a row whose
+# test skips for want of one fails ("test skip"), so set all three, to one database. No line this
+# script prints is a real credential: the tests' credentials are made up (not-a-secret-...), and a
+# failure line it prints may quote one.
 #
 # GO names the go binary every step and the gate run (default: the go on PATH). The script puts
 # its directory first on PATH and sets GOROOT to the root that go names for itself (a GOROOT the
