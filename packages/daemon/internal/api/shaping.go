@@ -1106,7 +1106,7 @@ func withoutPriority(issue Issue) (Issue, bool) {
 	return issue, moved
 }
 
-// projectReleaseContract is the daemon contract that added the project release (version.go's 258,
+// projectReleaseContract is the daemon contract that added the project release (version.go's 272,
 // dispatch://INFRA-3583). It added keys to two answers a plugin parses: `projectRelease`, the
 // project's newest project release and its result, to the state, and `heldPods`, each pod a pause
 // still holds, to a refusal (api.PauseFailure, which the release's own route answers while a pause
@@ -1122,7 +1122,7 @@ func withoutPriority(issue Issue) (Issue, bool) {
 // 228, podHoldContract's, which takes each issue's `podHold` off below 246, priorityContract's,
 // which takes each issue's `priority` and its waiting line's `priority` off below 250, and
 // causeTimesContract's, which takes each claim view's `lastDeathAt` and `lastStartFailureAt` off
-// below 256, so a caller at or above repositoriesLiveContract and below this contract, 202 to 257,
+// below 256, so a caller at or above repositoriesLiveContract and below this contract, 202 to 271,
 // is served the `live` block and not `projectRelease`. The release's six enumerated fields
 // (answers.go's releaseOutcomes and the rows beside it) arrived with the key at this contract and
 // ride its band, so no value strip is owed. The release's own two routes answer the `legion`
@@ -1134,7 +1134,7 @@ func withoutPriority(issue Issue) (Issue, bool) {
 // number version.go's dispatch://INFRA-3583 entry declares, and it is the last number of
 // answers.go's SupportedContracts, which names the constant rather than its number for that reason,
 // as it names cachesSourceContract.
-const projectReleaseContract = 258
+const projectReleaseContract = 272
 
 // causeTimesContract is the daemon contract that added each claim view's `lastDeathAt` and
 // `lastStartFailureAt`, the time the daemon recorded the claim's `lastDeathCause` and its

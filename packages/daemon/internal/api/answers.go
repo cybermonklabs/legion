@@ -49,7 +49,7 @@ const ServingFloor = 46
 // TestSupportedContractsAreTheNumberedEntriesFromTheFloorUp (`version_test.go`) reads the entry
 // headers out of version.go and holds this list to them in both directions.
 //
-// 193, 202, 205, 213, 219, 220, 228, 246, 250, 256 and 258 are constants rather than their numbers,
+// 193, 202, 205, 213, 219, 220, 228, 246, 250, 256 and 272 are constants rather than their numbers,
 // because the entries that added them name them (shapedAnswersContract, the shaped answers' entry;
 // repositoriesLiveContract, dispatch://INFRA-4401's; childRouteRemovedContract,
 // dispatch://INFRA-3178's; cachesSourceContract, dispatch://INFRA-4036's; OwnerPlanContract, the
@@ -463,7 +463,7 @@ var stateEnumeratedFields = []EnumeratedField{
 	// The project's newest project release (api.ProjectReleaseResponse): who ended it, and on
 	// each line of its result a Sandbox's `kind` and `outcome` and each asked role's `role`, and a
 	// stopped claim's `role` and `ended`. All six arrived with `projectRelease`, which is served
-	// down below that contract whole (shaping.go's withoutProjectRelease), so no body below 258
+	// down below that contract whole (shaping.go's withoutProjectRelease), so no body below 272
 	// carries a value of any of them. A claim line's role takes `controller` beside the claim
 	// roles, since the release stops the controller's claim too; an asked role never does, since
 	// the release asks the roles of an issue pod alone.

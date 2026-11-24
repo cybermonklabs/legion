@@ -190,7 +190,7 @@ const schemas: Record<string, z.ZodType> = {
   // the others name something beside the sentence: the setting that turns the pause off (none
   // from a daemon that runs no workflow), the pause that stands for a second pause and for a turn
   // refused while the project is paused, and the last pause for a resume of a project that runs.
-  // Contract 258 adds the two refusals between the pause and the project release: a pause while a
+  // Contract 272 adds the two refusals between the pause and the project release: a pause while a
   // release runs (`PROJECT_RELEASING`, which names nothing beside its sentence) and a release while
   // a pause holds the project (`PROJECT_PAUSED`, naming the pause and each pod a pause holds).
   "project-pause.json": LegionProjectPauseResponse,
@@ -2851,7 +2851,7 @@ test("a reader at contract 152 parses the repositories block served below 202", 
   // leaves `intakeGiveUps` off; the pod hold's at 246, which leaves `podHold` off every issue
   // (`withoutPodHold`); contract 250's, which takes `priority` off each issue and off its
   // `waitingLine`; contract 256's, which takes `lastDeathAt` and `lastStartFailureAt` off each
-  // claim view; and the project release's at 258, which takes the state's `projectRelease` off for
+  // claim view; and the project release's at 272, which takes the state's `projectRelease` off for
   // every caller below it (`withoutProjectRelease`); so the golden's issues, rows and claim views
   // are compared without them. One value strip stands above 199 as well: `caches`, the source of
   // the repository-cache-room row, arrived at contract 213, so that row is served here without its
@@ -3270,7 +3270,7 @@ test("the state goldens carry the pause that stands and the last pause, and both
 // session the read set names at every path that reaches it. Each refusal names what its code
 // names beside its sentence, and nothing else: the setting that turns the pause off, the pause
 // that stands, or the last pause. The daemon client reads a refusal through the plain refusal
-// shape, which keeps the code and the sentence of every one of them. Contract 258's two refusals
+// shape, which keeps the code and the sentence of every one of them. Contract 272's two refusals
 // between the pause and the project release are among them: a pause while a release runs names
 // nothing beside its sentence, and a release while a pause holds the project names the pause that
 // stands and each pod a pause still holds, with the claims of it stored suspended by `released`;

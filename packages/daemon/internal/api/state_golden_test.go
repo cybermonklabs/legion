@@ -1237,7 +1237,7 @@ func goldenProjectRelease() ProjectReleaseResponse {
 }
 
 // The project release's own route answers the release as the state carries it
-// (dispatch://INFRA-3583, contract 258).
+// (dispatch://INFRA-3583, contract 272).
 func TestProjectReleaseResponseGolden(t *testing.T) {
 	golden(t, "project-release.json", goldenProjectRelease())
 }

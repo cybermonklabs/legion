@@ -1003,7 +1003,7 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			// the `paused` contract 178 added (withoutPause), with the repository caches'
 			// capability row without its `source`, the value cachesSourceContract added
 			// (withoutUnadmittedCapabilitySources, stripCachesSources above), and with the
-			// project's newest project release gone, the `projectRelease` contract 258 added
+			// project's newest project release gone, the `projectRelease` contract 272 added
 			// (withoutProjectRelease).
 			// Every row that reaches here is below all of them, so every one of them goes whatever
 			// the row is; contract 132's strip takes a word of the line's `kind` and no key, and

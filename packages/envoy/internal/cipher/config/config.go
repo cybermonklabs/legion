@@ -913,27 +913,26 @@ type Config struct {
 	// system:serviceaccount:example-ns:example-reader=example-reader=example-reader-session=first,second.
 	// The token minted for a pod of the account holds only the OAuth scope read, the project scope
 	// none, the service and the session, and names no person and no project: Dispatch serves it
-	// on the routes its read list names and refuses it everywhere else, and every other service
-	// that reads the broker's tokens, the Envoy listener among them, refuses it. That token reads the
-	// whole answer of GET /api/v1/projects/{key}/architecture for every project that has an
-	// architecture source: each source, each component, and every issue of the project, closed and
-	// iceboxed ones included. No setting holds a read entry to some projects. An entry names its
-	// issuers, by their names in BROKER_K8S_OIDC_ISSUER, in a fourth "="-separated field, after
-	// its session. A session may hold "=", so the broker reads everything after an entry's second
-	// "=" as its session where that holds no "=", and otherwise as the session up to its last "="
-	// and the issuer field after it. So an entry written as three fields whose session holds "="
-	// is read as four, and a session that holds "=" is kept only where BROKER_K8S_OIDC_ISSUER
-	// names its issuers, with the issuer field written after it. The exchange mints the account's
-	// read-only token only for a token of an issuer its entry names, and an entry that names none
-	// takes the first issuer of BROKER_K8S_OIDC_ISSUER alone, as a BROKER_EXCHANGE_ACCOUNTS entry
-	// that names none does, so an entry written for one cluster keeps its meaning while that
-	// cluster stays first in the list. The same account name in another cluster is another
-	// ServiceAccount, so a token of an issuer its entry does not name is refused with 400
-	// invalid_request. A namespace's default account is refused, as is a service that is not
-	// lowercase letters, digits and hyphens, at most 64, or is shared, an account listed twice, and
-	// an account BROKER_EXCHANGE_ACCOUNTS lists too. The broker refuses to boot, naming this
-	// setting, the entry and BROKER_EXCHANGE_K8S_ISSUER, for an entry that names an issuer
-	// BROKER_EXCHANGE_K8S_ISSUER does not name, names one issuer twice, or names none while
+	// on every GET route it classes as a read and refuses it everywhere else, and every other
+	// service that reads the broker's tokens, the Envoy listener among them, refuses it. So that
+	// token reads everything a read route answers, across every project: issues, documents, asks,
+	// comments and the rest, closed and iceboxed ones included. No setting holds a read entry to
+	// some projects. An entry names its issuers, by their names in BROKER_K8S_OIDC_ISSUER, in a
+	// fourth "="-separated field, after its session. A session may hold "=", so the broker reads
+	// everything after an entry's second "=" as its session where that holds no "=", and otherwise
+	// as the session up to its last "=" and the issuer field after it. So an entry written as three
+	// fields whose session holds "=" is read as four, and a session that holds "=" is kept only
+	// where BROKER_K8S_OIDC_ISSUER names its issuers, with the issuer field written after it. The
+	// exchange mints the account's read-only token only for a token of an issuer its entry names,
+	// and an entry that names none takes the first issuer of BROKER_K8S_OIDC_ISSUER alone, as a
+	// BROKER_EXCHANGE_ACCOUNTS entry that names none does, so an entry written for one cluster
+	// keeps its meaning while that cluster stays first in the list. The same account name in
+	// another cluster is another ServiceAccount, so a token of an issuer its entry does not name is
+	// refused with 400 invalid_request. A namespace's default account is refused, as is a service
+	// that is not lowercase letters, digits and hyphens, at most 64, or is shared, an account
+	// listed twice, and an account BROKER_EXCHANGE_ACCOUNTS lists too. The broker refuses to boot,
+	// naming this setting, the entry and BROKER_EXCHANGE_K8S_ISSUER, for an entry that names an
+	// issuer BROKER_EXCHANGE_K8S_ISSUER does not name, names one issuer twice, or names none while
 	// BROKER_EXCHANGE_K8S_ISSUER leaves out the list's first issuer; and, naming this setting, the
 	// entry and BROKER_K8S_OIDC_ISSUER, for any issuer name while BROKER_K8S_OIDC_ISSUER is one
 	// bare URL. Needs BROKER_K8S_OIDC_ISSUER and BROKER_EXCHANGE_K8S_AUDIENCE, whose tokens its
