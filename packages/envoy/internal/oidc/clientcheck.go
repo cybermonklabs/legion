@@ -54,7 +54,10 @@ const (
 //
 // The error is nil only for ClientCheckReady. For the other two it says what happened, for the
 // caller's log; it never carries the client secret, and a caller publishing the check publishes
-// the word alone.
+// the word alone. The OAuth error it names is the closed set's reading of the code as it came
+// (redact.RefusalCode), as every reader of a token endpoint's answer reads one (oauthrefusal) and
+// never from the answer's ErrorCode: a code the set does not name, and an answer that names
+// none, print as the set's own words for that case, so the text holds no word the issuer wrote.
 func CheckClient(ctx context.Context, issuer, clientID, clientSecret string) (ClientCheck, error) {
 	// One bounded client for both requests: the issuer's discovery read and the token request.
 	client := tokenClient()
@@ -76,11 +79,11 @@ func CheckClient(ctx context.Context, issuer, clientID, clientSecret string) (Cl
 	case oauthrefusal.Refusal(err) == redact.InvalidGrant:
 		return ClientCheckReady, nil
 	case oauthrefusal.Refuses(retrieve.Response.StatusCode):
-		return ClientCheckRejected, fmt.Errorf("oidc: issuer %s refused the client %s: HTTP %d with the OAuth error %q",
-			issuer, clientID, retrieve.Response.StatusCode, redact.NewRemoteText(retrieve.ErrorCode))
+		return ClientCheckRejected, fmt.Errorf("oidc: issuer %s refused the client %s: HTTP %d with the OAuth error %s",
+			issuer, clientID, retrieve.Response.StatusCode, redact.RefusalCode(err))
 	case oauthrefusal.Outage(retrieve.Response.StatusCode):
 		return ClientCheckIssuerUnreachable, fmt.Errorf("oidc: issuer %s could not answer the client check: HTTP %d: %w", issuer, retrieve.Response.StatusCode, err)
 	}
-	return ClientCheckIssuerUnreachable, fmt.Errorf("oidc: issuer %s answered the client check HTTP %d with the OAuth error %q and no refusal, which says nothing about the client: %w",
-		issuer, retrieve.Response.StatusCode, redact.NewRemoteText(retrieve.ErrorCode), err)
+	return ClientCheckIssuerUnreachable, fmt.Errorf("oidc: issuer %s answered the client check HTTP %d with the OAuth error %s and no refusal, which says nothing about the client: %w",
+		issuer, retrieve.Response.StatusCode, redact.RefusalCode(err), err)
 }

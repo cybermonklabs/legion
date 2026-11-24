@@ -22,7 +22,6 @@ import (
 	"path"
 	"strings"
 
-	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
@@ -178,8 +177,7 @@ func (e *ExternalAccountIdentity) Token(ctx context.Context) (string, string, er
 	ctx, cancel := context.WithTimeout(ctx, 2*poolTimeout)
 	defer cancel()
 	answered := &oauthrefusal.Recorder{}
-	identity := context.WithValue(ctx, oauth2.HTTPClient, redact.RefusalClient(clientOf(ctx, e.HTTP)))
-	s := redact.Scope[*google.Credentials](oauthrefusal.Record(identity, answered))
+	s := redact.Scope[*google.Credentials](oauthrefusal.Record(ctx, clientOf(ctx, e.HTTP), answered))
 	creds, err := redact.OAuth2(s.Read(google.CredentialsFromJSONWithType(s.Context(), e.CredentialsJSON, google.ExternalAccount, poolScope)))
 	if err != nil {
 		return "", "", fmt.Errorf("the external_account credential %s names is not one this client reads", credentialsFileVar)

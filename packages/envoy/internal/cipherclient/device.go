@@ -88,7 +88,7 @@ func (d *DeviceFlow) discover(ctx context.Context) (*oauth2.Config, error) {
 		return d.config, nil
 	}
 	answered := &oauthrefusal.Recorder{}
-	s := redact.Scope[*gooidc.Provider](oauthrefusal.Record(d.context(ctx), answered))
+	s := redact.Scope[*gooidc.Provider](oauthrefusal.Record(ctx, d.client(ctx), answered))
 	provider, err := redact.OAuth2(s.Read(gooidc.NewProvider(s.Context(), d.Issuer)))
 	readErr := answered.ReadErr()
 	switch {
