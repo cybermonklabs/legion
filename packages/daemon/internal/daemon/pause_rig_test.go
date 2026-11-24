@@ -695,6 +695,19 @@ func (r *pauseDaemonRig) awaitPasses() {
 	time.Sleep(2 * pauseRigTick)
 }
 
+// awaitFullSweep waits until one whole pass of the daemon's sweep has run since the call
+// (supervision.reconcileOrphans, which decides the update rounds): two more passes have begun,
+// each with its runtime's ReconcileOrphans, and passes run one after another, so the first of them
+// read the clock and the claims after the call and has ended. A check that the sweep replaced
+// nothing reads what that pass did not do.
+func (r *pauseDaemonRig) awaitFullSweep() {
+	r.t.Helper()
+	before := len(r.rt.CallsOf("ReconcileOrphans"))
+	testwait.Eventually(r.t, "a whole pass of the daemon's sweep after this moment", func() bool {
+		return len(r.rt.CallsOf("ReconcileOrphans")) >= before+2
+	})
+}
+
 // lines is every line of the daemon's log whose message is msg, decoded.
 func (r *pauseDaemonRig) lines(msg string) []map[string]any {
 	var found []map[string]any

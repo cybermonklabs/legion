@@ -371,7 +371,7 @@ func TestARoundsBoundCountsTheHeldPodOnToTheLetOutOfItsLastHeldLaunch(t *testing
 				if launch.claim == worker(P) {
 					letOut = launch.at
 					// Every sweep that read the clock before this turn has run.
-					time.Sleep(5 * r.o.orphanSweep)
+					r.awaitFullSweep()
 				}
 				if replaced := r.replacedPods(P); replaced != 0 {
 					t.Fatalf("P's pod was replaced %d times by %s after the resume, at the launch of %s, while P's worker had not yet been let out of the pacing",
@@ -391,7 +391,7 @@ func TestARoundsBoundCountsTheHeldPodOnToTheLetOutOfItsLastHeldLaunch(t *testing
 
 			// The roles get what was left of their grace once the pacing let P's worker out.
 			r.clock.advanceTo(letOut.Add(left - time.Minute))
-			time.Sleep(5 * r.o.orphanSweep)
+			r.awaitFullSweep()
 			if replaced := r.replacedPods(P); replaced != 0 {
 				t.Fatalf("P's pod was replaced %d times a minute before the bound moved to the let-out, want none", replaced)
 			}
