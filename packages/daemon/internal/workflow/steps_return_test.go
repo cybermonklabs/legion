@@ -408,11 +408,13 @@ func assertRefusedReturnTo(t *testing.T, pool *pgxpool.Pool, engine *Engine, key
 // A failed step's report can name the step of its task that the task returns to (returnTo):
 // any earlier step of the same task, not only the step of the type implementation that the
 // steps' types give, and the agent of that step is started again in its own session, the
-// tester's notice naming as fields the head it tested and the check that does not pass there. A
-// report that names the failed step itself or a later one, or a place no step of the task holds,
-// is refused and changes nothing, so the agent reports again (RETURN_REFUSED), as a backward move
-// that no row serves is refused today. An issue with no plan rows has no step to name: a report
-// naming one is refused, and the same report naming none returns to implementing as today.
+// tester's notice naming as fields the head it tested and the check that does not pass there,
+// and the agent's task carrying the reason that notice gives, read from the notice and not written
+// here. A report that names the failed step itself or a later one, or a place no step of the task
+// holds, is refused and changes nothing, so the agent reports again (RETURN_REFUSED), as a
+// backward move that no row serves is refused today. An issue with no plan rows has no step to
+// name: a report naming one is refused, and the same report naming none returns to implementing
+// as today.
 func TestReturnToNamesAnEarlierStep(t *testing.T) {
 	// planned is LEGION-208 walking the steps planner implementer tester, standing in testing at
 	// step 3, its implementer started once, with its check failed at headOne, the head the
@@ -443,7 +445,8 @@ func TestReturnToNamesAnEarlierStep(t *testing.T) {
 		if len(starts) != planners+1 {
 			t.Fatalf("the return wrote %d starts of the planner, want one", len(starts)-planners)
 		}
-		if start := starts[len(starts)-1]; start.FreshSession || start.Phase != phase.Planning {
+		start := starts[len(starts)-1]
+		if start.FreshSession || start.Phase != phase.Planning {
 			t.Fatalf("the planner's start = %+v, want a start of planning in its own session", start)
 		}
 		var back []record.Notice
@@ -455,6 +458,11 @@ func TestReturnToNamesAnEarlierStep(t *testing.T) {
 		if want := []record.FailingCheck{failingOf("k1", "no", "fail")}; len(back) != 1 || back[0].Phase != phase.Testing ||
 			back[0].Head != headOne || !reflect.DeepEqual(back[0].Failing, want) || back[0].WaitsFor != "" || len(back[0].Waiting) != 0 {
 			t.Fatalf("the tester's phase-finished notices = %+v, want one of the move back, with the head %s and failing %+v", back, headOne, want)
+		}
+		// The move writes the planner's task and the notice's reason from one value, so the task
+		// must carry the reason the notice gives; no word of either is compared with a literal.
+		if back[0].Reason == "" || !strings.Contains(start.Task, back[0].Reason) {
+			t.Fatalf("the planner's task %q does not carry the reason %q the tester's notice of the move back gives", start.Task, back[0].Reason)
 		}
 		if got := len(roleStartsOf(t, pool, root.Key, claim.RoleImplementer)); got > implementers {
 			t.Fatalf("the return wrote %d starts of the implementer, want none: the report named the planner", got-implementers)

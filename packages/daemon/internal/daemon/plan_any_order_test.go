@@ -31,11 +31,13 @@ import (
 // A plan in another order than the default steps' runs to done: the issue whose plan is
 // `implementer reviewer tester` launches its implementer, its reviewer and its tester in that order.
 // The tester's step fails on its check's state at the head it tested and its completion through
-// the completion route, the tester's row keeping the handoff record and that head, and the
-// implementer takes the task again in the session it registered, with no launch of its own. The
-// reviewer and the tester then run again, the retro rates the plan, and the merge ends
-// the walk at done. The control is a second issue given the same steps as `implementer tester
-// reviewer`: it launches its tester before its reviewer, and the same check of the order must fail.
+// the completion route, the tester's row keeping the handoff record and that head, the tester's
+// notice of the move back naming that head and the check as fields, and the implementer takes the
+// task again in the session it registered, with no launch of its own, the task carrying the reason
+// that notice gives. The reviewer and the tester then run again, the retro rates the plan, and the
+// merge ends the walk at done. The control is a second issue given the same steps as `implementer
+// tester reviewer`: it launches its tester before its reviewer, and the same check of the order
+// must fail.
 func TestAPlanInAnyOrderRunsToDone(t *testing.T) {
 	t.Parallel()
 	r := newOwnerStepsRig(t, newLiveProofOn(t, workflowNATS(t)), startScratchDispatchOn(t, scratchDispatchOptions{}), 2, config.Project{})
@@ -67,9 +69,13 @@ func TestAPlanInAnyOrderRunsToDone(t *testing.T) {
 }
 
 // implementAfterTheTestersFail is the walk's implementer taking the task the tester's failed step
-// returned to it: the tester's row holds its handoff record and the head it tested, and the claim
-// that implemented the task takes the task in the session it registered, with no launch after its
-// first. It implements again, and the task moves on to its reviewer.
+// returned to it: the tester's row holds its handoff record and the head it tested, and the
+// tester's one phase-finished notice of the move back, as the architect's topic received it, names
+// as fields that head and k1, the check that does not pass there, with its state and reason. The
+// claim that implemented the task takes the task in the session it registered, with no launch
+// after its first, and the task it takes carries the reason that notice gives: the move writes the
+// two from one value, so the reason is read from the notice and not written here, and no word of
+// either is compared with a literal. It implements again, and the task moves on to its reviewer.
 func (r *ownerStepsRig) implementAfterTheTestersFail() {
 	t := r.t
 	t.Helper()
@@ -78,8 +84,24 @@ func (r *ownerStepsRig) implementAfterTheTestersFail() {
 		t.Fatalf("%s's tester row holds the handoff record %q and the head %q after its step failed, want a record and %s: this check proves nothing",
 			r.key, tested.HandoffRecord, tested.HandoffCommit, stepRecordsHead)
 	}
+	var back []record.Notice
+	testwait.Eventually(t, r.key+"'s tester's phase-finished notice of the move back on its architect's topic", func() bool {
+		back = nil
+		for _, notice := range r.testerNotices(r.key) {
+			if notice.WaitsFor == "" {
+				back = append(back, notice)
+			}
+		}
+		return len(back) > 0
+	})
+	if want := []record.FailingCheck{{Check: "k1", State: "no", Reason: "fail"}}; len(back) != 1 || back[0].Phase != phase.Testing ||
+		back[0].Head != stepRecordsHead || !slices.Equal(back[0].Failing, want) || len(back[0].Waiting) != 0 {
+		t.Fatalf("%s's tester's phase-finished notices of the move back = %+v, want one with the head %s and failing %+v", r.key, back, stepRecordsHead, want)
+	}
 	implementer := r.worker(claim.RoleImplementer)
-	implementer.take()
+	if task := implementer.take().Message; back[0].Reason == "" || !strings.Contains(task, back[0].Reason) {
+		t.Fatalf("%s's implementer took the task %q, which does not carry the reason %q its tester's notice of the move back gives", r.key, task, back[0].Reason)
+	}
 	if launches := r.launchesOfRole(claim.RoleImplementer); len(launches) != 1 {
 		t.Fatalf("%s's implementer was launched %v by the time it took the task again, want its first launch alone: it starts again in its session", r.key, launches)
 	}

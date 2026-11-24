@@ -3,14 +3,11 @@
 package daemon
 
 import (
-	"encoding/json"
 	"slices"
 	"strings"
 	"time"
 
-	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
-	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
@@ -197,31 +194,6 @@ func (r *statesProof) sentBack(issue *statesIssue, results []statesResult, asser
 	}
 	r.note("the tester's notice carries the head %s and failing %+v, and the implementer's task carries its reason", told[0].Head, told[0].Failing)
 	r.resultsHeld(issue)
-}
-
-// testerNotices is every phase-finished notice of the tester that the daemon has published to the
-// role topic of key's architect, each decoded whole as the architect receives it (record.Notice).
-// A payload that is no object, the sentence a CI settlement sends that topic, is passed over.
-func (r *statesProof) testerNotices(key string) []record.Notice {
-	r.t.Helper()
-	architect, err := claim.NewToken(r.project, key, claim.RoleArchitect)
-	if err != nil {
-		r.t.Fatal(err)
-	}
-	var notices []record.Notice
-	for _, published := range r.notices.acceptedOn(notify.RoleTopicPrefix + string(architect)) {
-		if !strings.HasPrefix(strings.TrimSpace(published.Payload), "{") {
-			continue
-		}
-		var notice record.Notice
-		if err := json.Unmarshal([]byte(published.Payload), &notice); err != nil {
-			r.t.Fatalf("decode the notice payload %q: %v", published.Payload, err)
-		}
-		if notice.Kind == "phase-finished" && notice.Role == claim.RoleTester {
-			notices = append(notices, notice)
-		}
-	}
-	return notices
 }
 
 // completion-before-event: with the states from before the results held, the run's own
