@@ -18,8 +18,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/cipher/enroll"
 	cipheridentity "github.com/sjawhar/envoy/internal/cipher/identity"
+	"github.com/sjawhar/envoy/internal/cipher/identity/kubernetes"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/oidc"
@@ -79,10 +79,16 @@ func TestTheTokenFileVerifiesAgainstTheIssuerAndIsRewrittenBeforeItLapses(t *tes
 	})
 
 	issuerURL := awaitListening(t, &stderr)
-	verifier, err := oidc.New(context.Background(), issuerURL, testAudience)
+	keys, err := oidc.NewKeys(context.Background(), issuerURL)
 	if err != nil {
-		t.Fatalf("oidc.New(%s): %v", issuerURL, err)
+		t.Fatalf("oidc.NewKeys(%s): %v", issuerURL, err)
 	}
+	// The broker's own verifier of a projected token, the kubernetes identity provider's.
+	pods, err := kubernetes.New(kubernetes.Config{Issuer: issuerURL, Keys: keys})
+	if err != nil {
+		t.Fatalf("kubernetes.New: %v", err)
+	}
+	verifier := pods.PodVerifier(testAudience)
 	readRaw := func() string {
 		t.Helper()
 		raw, err := os.ReadFile(file)
@@ -93,7 +99,7 @@ func TestTheTokenFileVerifiesAgainstTheIssuerAndIsRewrittenBeforeItLapses(t *tes
 	}
 	verify := func(token string) cipheridentity.AccountClaims {
 		t.Helper()
-		claims, err := enroll.K8sPodVerifier{Verifier: verifier}.VerifyAccount(context.Background(), token)
+		claims, err := verifier.VerifyAccount(context.Background(), token)
 		if err != nil {
 			t.Fatalf("the token in %s does not verify against the issuer it names: %v", file, err)
 		}

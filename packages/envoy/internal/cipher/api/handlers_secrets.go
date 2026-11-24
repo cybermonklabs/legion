@@ -35,13 +35,6 @@ type settingsResponse struct {
 	// it seconds, and its person decides it all the same (policy.Secret.PersonApprovesEveryRelease);
 	// `secret show` reads its tags.
 	JudgeKeys map[string]judgeKey `json:"judge_keys,omitempty"`
-	// The audience a machine's Google identity token must carry at the token exchange
-	// (BROKER_GOOGLE_OIDC_AUDIENCE), on either store; absent where no machine can trade one, which
-	// is a broker that lists no VM service (cmd/cipherd's googleExchangeAudience). A machine's
-	// `agent-secrets` mints its identity token for this audience with no setting. No Kubernetes
-	// exchange audience is named beside it: a pod's trade mints no launcher credential, so no
-	// machine could register a session under it.
-	GoogleExchangeAudience string `json:"google_exchange_audience,omitempty"`
 	// Always true: this broker reads a secret's type from the type tag (policy.TagType), and the
 	// old kind tag only where type is absent. A broker from before the type tag sends no such
 	// field and reads no type tag, so it serves a secret that carries type alone as a stored
@@ -54,14 +47,15 @@ type settingsResponse struct {
 	// to a broker that says this, since a broker from before them refuses a decision body carrying
 	// any of them 400 INVALID_DECISION. Dispatch in this tree sends none of them.
 	ApproverFields bool `json:"approver_fields"`
-	// Fields are the store's own fields (Deps.SettingsFields), written after the ones above by
-	// MarshalJSON. Each store documents its fields in its SettingsFields struct.
+	// Fields are the contributors' own fields (Deps.SettingsFields), written after the ones above
+	// by MarshalJSON: the store's and the identity providers', each documented in its own
+	// SettingsFields struct.
 	Fields map[string]string `json:"-" refgen:"store-settings"`
 }
 
 // fixedSettingsFields are the JSON names of settingsResponse's own fields, which no store's field
 // may take (Register refuses one that does).
-var fixedSettingsFields = []string{"store", "secrets_prefix", "judge_keys", "google_exchange_audience", "secret_type_tag", "approver_fields"}
+var fixedSettingsFields = []string{"store", "secrets_prefix", "judge_keys", "secret_type_tag", "approver_fields"}
 
 // MarshalJSON writes r's fields, and then the store's own Fields, as one object.
 func (r settingsResponse) MarshalJSON() ([]byte, error) {
@@ -92,12 +86,13 @@ type judgeKey struct {
 // readSettings is GET /v1/settings: public, since it answers only the broker's own configuration —
 // where the secrets live, and which names the judge decides and on what guidance — and no secret's
 // value, and since two of its callers hold no credential of the broker's when they read it: a
-// machine's `agent-secrets` reads google_exchange_audience to mint the identity token it trades
-// for its first credential (machineSource), and the secret forms read the store, the prefix and
-// the key under the cloud credential alone, with no identity at the broker at all.
+// machine's `agent-secrets` reads google_exchange_audience (a field of the google identity
+// provider's) to mint the identity token it trades for its first credential (machineSource), and
+// the secret forms read the store, the prefix and the key under the cloud credential alone, with
+// no identity at the broker at all.
 func (s *server) readSettings(w http.ResponseWriter, r *http.Request) {
 	resp := settingsResponse{Store: s.deps.SecretsStore, SecretsPrefix: s.deps.SecretsPrefix,
-		GoogleExchangeAudience: s.deps.GoogleExchangeAudience, SecretTypeTag: true, ApproverFields: true, Fields: s.deps.SettingsFields}
+		SecretTypeTag: true, ApproverFields: true, Fields: s.deps.SettingsFields}
 	if m := s.deps.Machine; m != nil && m.Policy != nil {
 		set := m.Policy.Get()
 		for name, secret := range set.Secrets {

@@ -422,7 +422,7 @@ func TestAPanicInARereadsPeerNoticeNamesTheStep(t *testing.T) {
 // secret forms read the store, the prefix and the key under a cloud credential alone. So a caller
 // with no credential is answered 200 with all of it, the very answer a session and Dispatch get.
 func TestSettingsStayOpenToACallerWithNoCredential(t *testing.T) {
-	ts := newTestServerWith(t, func(d *api.Deps) { d.GoogleExchangeAudience = "agent-secrets-vm" })
+	ts := newTestServerWith(t, func(d *api.Deps) { d.SettingsFields["google_exchange_audience"] = "agent-secrets-vm" })
 	enrollmentID, key := ts.newSessionEnrollment(t, "session-"+t.Name(), testApprover)
 	status, open := ts.req(t, http.MethodGet, "/v1/settings", nil, nil)
 	settings := decode[map[string]any](t, open)

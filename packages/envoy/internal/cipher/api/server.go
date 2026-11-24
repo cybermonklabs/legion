@@ -100,16 +100,13 @@ type Deps struct {
 	// SecretsStore is BROKER_SECRETS_STORE, the store GET /v1/settings names (its registry
 	// entry's Name).
 	SecretsStore string
-	// SettingsFields are the store's own fields of GET /v1/settings, by JSON name, written after
-	// the fixed fields: the AWS store's key ARN with its account and region, the GCP store's key
-	// name and project, the memory store's file (secretstore.Config.Settings). A key equal to a
-	// fixed field's name panics Register.
+	// SettingsFields are the contributors' own fields of GET /v1/settings, by JSON name, written
+	// after the fixed fields: the store's (secretstore.Config.Settings: the AWS store's key ARN
+	// with its account and region, the GCP store's key name and project, the memory store's file)
+	// and the identity providers' (identity/boot's Boot.SettingsFields: the google provider's
+	// google_exchange_audience, the audience a machine's `agent-secrets` mints its identity token
+	// for). A key equal to a fixed field's name panics Register.
 	SettingsFields map[string]string
-	// GoogleExchangeAudience is BROKER_GOOGLE_OIDC_AUDIENCE where BROKER_VM_SERVICES lists a
-	// machine that may trade a Google identity token at the token exchange, and empty otherwise.
-	// GET /v1/settings answers it, so a machine's `agent-secrets` mints a token for the right
-	// audience with no setting of its own.
-	GoogleExchangeAudience string
 	// LauncherLimits bounds POST /v1/oauth/device_authorization and POST
 	// /v1/launcher-credentials/token; nil means DefaultLauncherLimits.
 	LauncherLimits *LauncherLimits

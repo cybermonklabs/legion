@@ -1,0 +1,10 @@
+kind: Changed
+body: |-
+  cipherd verifies every caller token — a pod's, a workflow run's, a machine's, a person's sign-in
+  and an API or NATS caller's — through one registry of identity providers, one package each for
+  Kubernetes, Google and GitHub. Nothing a deployment sets changes; every stored session name,
+  launcher credential and enrollment stays valid; `GET /v1/settings` answers
+  `google_exchange_audience` as before.
+time: 2026-11-24T17:28:51Z
+custom:
+    Issue: identity-providers

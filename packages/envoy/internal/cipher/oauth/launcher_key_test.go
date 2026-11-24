@@ -31,7 +31,6 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/requests"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/memory"
 	"github.com/sjawhar/envoy/internal/cipher/store"
-	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 	"github.com/sjawhar/envoy/internal/ratelimit"
 )
@@ -210,11 +209,7 @@ func newLauncherAPI(t *testing.T, pool *pgxpool.Pool) *launcherAPI {
 	t.Cleanup(srv.Close)
 	issuer := oidctest.New(t)
 	key := issuer.PublishKey(t, "launcher-api-key")
-	keys, err := oidc.NewKeys(context.Background(), issuer.URL())
-	if err != nil {
-		t.Fatalf("oidc.NewKeys: %v", err)
-	}
-	accounts := enroll.K8sPodVerifier{Verifier: oidc.NewWithKeys(issuer.URL(), launcherAPIAudience, keys)}
+	accounts := ciphertest.ClusterPods(t, issuer.URL(), launcherAPIAudience)
 	enr := &enroll.Service{Store: st, Lease: time.Hour, Pod: accounts, ServiceLogins: map[string]string{ciphertest.DaemonAccount: "legion-daemon"}}
 	rules := policytest.Current(t, memory.New())
 	provider := ciphertest.NewOAuthProvider(t, st, issuer)

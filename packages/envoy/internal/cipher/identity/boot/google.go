@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/config"
 	"github.com/sjawhar/envoy/internal/cipher/identity"
 	"github.com/sjawhar/envoy/internal/cipher/identity/google"
+	"github.com/sjawhar/envoy/internal/cipher/settingsfields"
 	"github.com/sjawhar/envoy/internal/oidc"
 )
 
@@ -37,7 +38,9 @@ func openGoogle(cfg config.Config, keys func(string) (*oidc.Keys, error), _ *Boo
 	if err != nil {
 		return opened{}, err
 	}
-	built := opened{provider: p, callers: map[identity.Use]identity.CallerVerifier{}}
+	// The provider's own field of GET /v1/settings, google_exchange_audience, documented on its
+	// SettingsFields struct, which cipher-refgen reads.
+	built := opened{provider: p, callers: map[identity.Use]identity.CallerVerifier{}, settings: settingsfields.Of(p.Settings())}
 	if cfg.GoogleOIDCAudience != "" {
 		// A caller on a VM, the Envoy listener, authenticates on the routes BROKER_API_ACCOUNTS
 		// names it for with the token its metadata server already hands it, for the audience

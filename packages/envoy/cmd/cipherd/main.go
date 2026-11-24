@@ -68,6 +68,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/backends"
+	"github.com/sjawhar/envoy/internal/cipher/settingsfields"
 	"github.com/sjawhar/envoy/internal/cipher/store"
 	"github.com/sjawhar/envoy/internal/cipher/wake"
 	"github.com/sjawhar/envoy/internal/cipher/wire"
@@ -405,18 +406,21 @@ func main() {
 	groupReader := newGroupReader(cfg, "", &secrets.OwnGoogleCredential{})
 	loader := policyLoader(cfg, secretStore, profiles, registry, groupReader)
 	loader.ProjectChecks = projectAccess != nil
-	// One key source per issuer, read by everything that needs that issuer's keys: the verifiers
-	// discoverVerifiers builds and, for the cluster's issuer and Google's, the RFC 8693 exchange
-	// below, which resolves a subject token's own key through the same *oidc.Keys. So the boot
-	// makes one discovery read per issuer rather than two, one set is held in memory, and a
-	// rotation becomes visible to both at the same moment.
+	// The broker's identity providers (internal/cipher/identity/boot), one registry built from the
+	// settings each provider reads: the issuers whose key sets it reads, once each, the pod
+	// verifiers, the API's and the NATS auth service's caller verifiers, the RFC 8693 exchange's
+	// token types and decisions, the readers of the subjects and principals enrollment and
+	// requests act on, and the listed identities the request machine reads the project an
+	// operator's entry maps a pod's or a machine's account to from, the same entries the exchange
+	// mints from (exchange.Set.MappedProjects), so a token and a release cannot disagree on a
+	// credential's project. Every issuer it trusts is read here, before the bind, so an issuer
+	// that cannot be discovered refuses the boot before a socket is bound.
 	//
 	// Discovery is bounded: an issuer that accepts the connection and never answers refuses the
 	// boot instead of hanging it with no health endpoint serving.
-	keys := memoizedKeys(issuerKeys)
-	discovered, err := discoverVerifiers(ctx, cfg, keys)
+	identities, err := identityboot.Open(ctx, cfg, issuerKeys)
 	fatal(err)
-	pod := discovered.Pod
+	pod := identities.Pods
 	// config.Load parsed BROKER_NATS_SERVICES (cfg.NATS.Services); a broker that runs no NATS auth
 	// service still answers its edge listeners' entries at GET /v1/project-repositories.
 	edgeListeners := cfg.NATS.EdgeListeners()
@@ -515,16 +519,6 @@ func main() {
 	slog.Info("broker metrics listening", "addr", started.MetricsListener.Addr().String())
 
 	lease, sweep := time.Duration(cfg.LeaseSeconds)*time.Second, time.Duration(cfg.SweepSeconds)*time.Second
-	// The broker's identity providers, built from the same key sources discoverVerifiers read: the
-	// RFC 8693 exchange's token types and decisions, the readers of the subjects and principals
-	// enrollment and requests act on, and the listed identities the request machine reads the
-	// project an operator's entry maps a pod's or a machine's account to from, the same entries
-	// the exchange mints from (exchange.Set.MappedProjects), so a token and a release cannot
-	// disagree on a credential's project. It is opened after the bind, as the exchange's own
-	// issuers were read before: an exchange issuer that fails its discovery exits a broker that
-	// was listening and never served.
-	identities, err := identityboot.Open(ctx, cfg, identityboot.KeysFunc(keys))
-	fatal(err)
 	exchangePolicy := identities.Registry.Policy()
 	enr := &enroll.Service{
 		Store: st, Lease: lease, Carry: time.Duration(cfg.SessionCarrySeconds) * time.Second, Pod: pod,
@@ -699,6 +693,11 @@ func main() {
 	// their own next five-minute reload (policyRefresh) anyway. Neither the caller's answer nor the
 	// process is worth failing over a notification Postgres would not take.
 	notify := reread.Notifier(st.Pool, senderID)
+	// GET /v1/settings writes the store's own fields and the identity providers' after its fixed
+	// ones, each documented on its contributor's SettingsFields struct; a field both would answer
+	// is a build that cannot say which, so it refuses the boot.
+	settingsFields := cfg.Secrets.Settings()
+	fatal(settingsfields.Merge(settingsFields, identities.SettingsFields))
 	// detached counts the rereads the API runs after answering 202, which srv.Shutdown does not
 	// wait for; the stop sequence waits for them (brokerStop.WaitDetached).
 	detached := &api.Detached{}
@@ -709,18 +708,17 @@ func main() {
 	natsTokens := natscallout.PlatformTokens{Verifiers: identities.Registry.Callers(identity.UseNATS)}
 	deps := api.Deps{PublicURL: cfg.PublicURL, RereadRate: rereadRate, Detached: detached,
 		APIAccounts: cfg.APIAccounts, Callers: identities.Registry.Callers(identity.UseAPI),
-		PodRegistrars: cfg.PodRegistrars, PodRegistrationTokens: discovered.PodRegistration,
+		PodRegistrars: cfg.PodRegistrars, PodRegistrationTokens: identities.PodRegistration,
 		EdgeListeners: edgeListeners, ProjectRepositories: projectRepositories,
 		Enroll: enr, Machine: reqMachine, MachineLogin: mach,
 		OAuth: provider, DeviceLogin: mach.LoginDevice, TokenHooks: mach.TokenHooks(),
 		Proof:  &proof.Verifier{Skew: time.Duration(cfg.ProofSkewSeconds) * time.Second, Lookup: enr.Lookup, LookupLauncher: enr.AuthenticateLauncher, Replay: enr.Replay},
 		Policy: current, SecretsStore: storeBackend.Name(), SecretsPrefix: cfg.Secrets.Prefix(),
-		SettingsFields:         cfg.Secrets.Settings(),
-		GoogleExchangeAudience: googleExchangeAudience(cfg),
-		TrustedProxyHeader:     cfg.TrustedProxyHeader,
-		Approval:               page,
-		Hold:                   holdGate,
-		Draining:               draining.Load,
+		SettingsFields:     settingsFields,
+		TrustedProxyHeader: cfg.TrustedProxyHeader,
+		Approval:           page,
+		Hold:               holdGate,
+		Draining:           draining.Load,
 		NotifyReread: func(ctx context.Context, name string, moved []string) {
 			// This pod reread the name itself and merged what it read (the reread route's
 			// notifyPeers), so the value behind the name may be a new version: what the reread
@@ -1694,18 +1692,6 @@ func logPodRegistrars(cfg config.Config) {
 	}
 }
 
-// googleExchangeAudience is the Google audience GET /v1/settings publishes: BROKER_GOOGLE_OIDC_AUDIENCE
-// where BROKER_VM_SERVICES lists a machine the exchange may mint a launcher credential for, and ""
-// where the audience is set for an API caller alone (a google: entry in BROKER_API_ACCOUNTS). The
-// exchange refuses every machine then, and a client that read the audience would mint a token, be
-// refused and stop on every command, where with none published it skips the machine source.
-func googleExchangeAudience(cfg config.Config) string {
-	if len(cfg.ExchangeGoogleAccounts) == 0 {
-		return ""
-	}
-	return cfg.GoogleOIDCAudience
-}
-
 // serviceNames is every registered service, sorted and each once: BROKER_SERVICES' and
 // BROKER_VM_SERVICES'. The policy loader serves a secret whose owner tag names one of them as that
 // service's, and refuses any other owner that is not a person.
@@ -1713,94 +1699,6 @@ func serviceNames(cfg config.Config) []string {
 	names := slices.AppendSeq(slices.Collect(maps.Values(cfg.ServicesByAccount)), maps.Values(cfg.VMServicesByAccount))
 	slices.Sort(names)
 	return slices.Compact(names)
-}
-
-// keysFunc is issuerKeys' shape, a seam for a test that must not reach a real issuer.
-type keysFunc func(ctx context.Context, issuer string) (*oidc.Keys, error)
-
-// memoizedKeys is keysFor reading each issuer's keys once, however many readers ask: the
-// verifiers discoverVerifiers builds, the identity registry boot.Open builds, and the NATS auth
-// service's verifiers share one *oidc.Keys per issuer, so a rotation becomes visible to all of
-// them at the same moment. A failed read is not kept, so it fails the boot as it always has.
-func memoizedKeys(keysFor keysFunc) keysFunc {
-	read := map[string]*oidc.Keys{}
-	return func(ctx context.Context, issuer string) (*oidc.Keys, error) {
-		if keys, ok := read[issuer]; ok {
-			return keys, nil
-		}
-		keys, err := keysFor(ctx, issuer)
-		if err != nil {
-			return nil, err
-		}
-		read[issuer] = keys
-		return keys, nil
-	}
-}
-
-// verifiers are what one boot's discovery of the token issuers the broker trusts produced: a
-// verifier per issuer and the key set behind each, since the RFC 8693 exchange resolves a subject
-// token's own key itself and must read the very set its verifier reads.
-type verifiers struct {
-	// Pod verifies a pod's enrollment token and a service's login token, nil on a broker told
-	// about no cluster.
-	Pod identity.PodVerifier
-	// K8sKeys is the cluster issuer's published keys, nil where Pod is.
-	K8sKeys *oidc.Keys
-	// PodRegistration verifies a registration's pod token at BROKER_POD_REGISTRATION_AUDIENCE, on
-	// the cluster's key set Pod verifies with, nil on a broker with no such audience. Only the
-	// registration route reads it (api.Deps.PodRegistrationTokens).
-	PodRegistration identity.PodVerifier
-	// GoogleKeys is the Google issuer's published keys, nil on a broker with no Google audience,
-	// which registers no Google subject token type.
-	GoogleKeys *oidc.Keys
-	// GoogleIdentities verifies a listed caller's own Google identity token, against the same
-	// issuer and audience as those keys, nil where GoogleKeys is. It is how a caller on a VM —
-	// the Envoy listener — authenticates on the routes BROKER_API_ACCOUNTS names it for,
-	// holding no Kubernetes token at all.
-	GoogleIdentities *oidc.Verifier
-}
-
-// discoverVerifiers reads the key sets of the token issuers the broker trusts (keysFor, issuerKeys
-// in production) and builds a verifier on each: the cluster's (BROKER_K8S_OIDC_ISSUER and
-// BROKER_K8S_OIDC_AUDIENCE), one verifier for both a pod's enrollment token and a service's login
-// token, which are the same cluster's projected tokens for the same audience, whose key set it
-// also answers for the RFC 8693 exchange, and on that key set a second where
-// BROKER_POD_REGISTRATION_AUDIENCE is set, for a registration's pod token of that audience; and
-// Google's (BROKER_GOOGLE_OIDC_ISSUER), for a machine's identity token, only when
-// BROKER_GOOGLE_OIDC_AUDIENCE is set, whose key set the exchange resolves a machine's subject
-// token against, logging one line that names the issuer, the audience, the machine services and
-// how many machine entries the exchange holds. With no Google audience it reads and logs nothing
-// about Google, and answers no Google keys, so the broker registers no Google subject token type.
-func discoverVerifiers(ctx context.Context, cfg config.Config, keysFor keysFunc) (verifiers, error) {
-	var found verifiers
-	if cfg.K8sOIDCIssuer != "" {
-		keys, err := keysFor(ctx, cfg.K8sOIDCIssuer)
-		if err != nil {
-			return verifiers{}, err
-		}
-		found.K8sKeys = keys
-		found.Pod = enroll.K8sPodVerifier{Verifier: oidc.NewWithKeys(cfg.K8sOIDCIssuer, cfg.K8sOIDCAudience, keys)}
-		if cfg.PodRegistrationAudience != "" {
-			found.PodRegistration = enroll.K8sPodVerifier{Verifier: oidc.NewWithKeys(cfg.K8sOIDCIssuer, cfg.PodRegistrationAudience, keys)}
-		}
-	}
-	if cfg.GoogleOIDCAudience == "" {
-		return found, nil
-	}
-	googleKeys, err := keysFor(ctx, cfg.GoogleOIDCIssuer)
-	if err != nil {
-		return verifiers{}, err
-	}
-	services := slices.Sorted(maps.Values(cfg.VMServicesByAccount))
-	slog.Info("google machine identity", "issuer", cfg.GoogleOIDCIssuer, "audience", cfg.GoogleOIDCAudience,
-		"services", strings.Join(slices.Compact(services), ","), "fleets", len(cfg.ExchangeGoogleAccounts))
-	found.GoogleKeys = googleKeys
-	// One verifier on that key set, for a listed caller that holds a Google identity rather
-	// than a Kubernetes one: the audience is BROKER_GOOGLE_OIDC_AUDIENCE, the one every machine
-	// of the deployment already holds a token for, so such a caller presents the token its
-	// metadata server already hands it.
-	found.GoogleIdentities = oidc.NewWithKeys(cfg.GoogleOIDCIssuer, cfg.GoogleOIDCAudience, googleKeys)
-	return found, nil
 }
 
 // issuerKeys reads issuer's published signing keys: the source a token's own key is resolved

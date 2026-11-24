@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/config"
 	"github.com/sjawhar/envoy/internal/cipher/exchange"
 	"github.com/sjawhar/envoy/internal/cipher/identity"
+	"github.com/sjawhar/envoy/internal/cipher/settingsfields"
 	"github.com/sjawhar/envoy/internal/oidc"
 )
 
@@ -23,8 +24,8 @@ import (
 // that must not reach a real issuer.
 type KeysFunc func(ctx context.Context, issuer string) (*oidc.Keys, error)
 
-// Boot is what Open built: the registry, and the pod verifiers enrollment and the pod-session
-// registration route read.
+// Boot is what Open built: the registry, the pod verifiers enrollment and the pod-session
+// registration route read, and the providers' fields of GET /v1/settings.
 type Boot struct {
 	Registry *identity.Registry
 	// Pods verifies a pod's enrollment token and a service's login token at
@@ -33,13 +34,18 @@ type Boot struct {
 	// PodRegistration verifies a registration's pod token at BROKER_POD_REGISTRATION_AUDIENCE, on
 	// the cluster's key set; nil on a broker with no such audience.
 	PodRegistration identity.PodVerifier
+	// SettingsFields are the providers' own fields of GET /v1/settings, by JSON name, which the
+	// broker merges with its store's (settingsfields.Merge); never nil.
+	SettingsFields map[string]string
 }
 
-// opened is what one provider's registry file built from the configuration: the provider, and
-// its caller verifier for each use the configuration gives it an audience for.
+// opened is what one provider's registry file built from the configuration: the provider, its
+// caller verifier for each use the configuration gives it an audience for, and the fields it adds
+// to GET /v1/settings (settingsfields.Of of its own SettingsFields struct; nil for none).
 type opened struct {
 	provider identity.Provider
 	callers  map[identity.Use]identity.CallerVerifier
+	settings map[string]string
 }
 
 // entry is one provider's registration: its kind, its rank (the order the registry asks the
@@ -94,6 +100,7 @@ func Open(ctx context.Context, cfg config.Config, keysFor KeysFunc) (Boot, error
 	if err := servedKinds(cfg); err != nil {
 		return Boot{}, err
 	}
+	settings := map[string]string{}
 	for _, e := range entries {
 		built, err := e.open(cfg, keys, &b)
 		if err != nil {
@@ -105,6 +112,9 @@ func Open(ctx context.Context, cfg config.Config, keysFor KeysFunc) (Boot, error
 				callers[use] = append(callers[use], verifier)
 			}
 		}
+		if err := settingsfields.Merge(settings, built.settings); err != nil {
+			return Boot{}, fmt.Errorf("identity: the %s provider's settings fields: %w", e.kind, err)
+		}
 	}
 	if err := natsAudiences(cfg, callers[identity.UseNATS]); err != nil {
 		return Boot{}, err
@@ -114,6 +124,7 @@ func Open(ctx context.Context, cfg config.Config, keysFor KeysFunc) (Boot, error
 		return Boot{}, err
 	}
 	b.Registry = registry
+	b.SettingsFields = settings
 	logExchange(cfg)
 	return b, nil
 }

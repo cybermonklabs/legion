@@ -48,7 +48,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
-	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 )
 
@@ -105,13 +104,11 @@ func newContractRig(t *testing.T) *contractRig {
 
 	issuer := oidctest.New(t)
 	issuerKey := issuer.PublishKey(t, "signing-key")
-	tokenVerifier, err := oidc.New(context.Background(), issuer.URL(), contractTokenAudience)
-	if err != nil {
-		t.Fatalf("oidc.New: %v", err)
-	}
+	subjects := ciphertest.Identities(t)
 	enr := &enroll.Service{
-		Store: brokerStore, Lease: time.Hour, Pod: enroll.K8sPodVerifier{Verifier: tokenVerifier},
+		Store: brokerStore, Lease: time.Hour, Pod: ciphertest.ClusterPods(t, issuer.URL(), contractTokenAudience),
 		ServiceLogins: map[string]string{contractDaemonAccount: "legion-daemon"},
+		Subjects:      subjects, Policy: subjects.Policy(),
 	}
 	enr.Chain = enroll.NewChainVerifier(brokerStore, brokerServer.URL, time.Minute)
 	reqMachine := &requests.Machine{

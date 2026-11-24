@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/backends"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/gcp"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/memory"
+	"github.com/sjawhar/envoy/internal/cipher/settingsfields"
 	"github.com/sjawhar/envoy/internal/ratelimit"
 )
 
@@ -109,10 +110,10 @@ func TestSettingsAnswersTheGCPStore(t *testing.T) {
 
 // TestSettingsNameTheGoogleExchangeAudienceOnEitherStore pins the exchange audience GET
 // /v1/settings answers beside the store, on each store the registry holds: the audience a
-// machine's Google identity token must carry (BROKER_GOOGLE_OIDC_AUDIENCE), so a machine's
-// `agent-secrets` finds the identity it can trade with no setting of its own, beside that store's
-// own key field. A broker that accepts no machine identity names no audience at all, and none ever
-// names a Kubernetes one.
+// machine's Google identity token must carry (BROKER_GOOGLE_OIDC_AUDIENCE, the google identity
+// provider's settings field), so a machine's `agent-secrets` finds the identity it can trade with
+// no setting of its own, beside that store's own key field. A broker that accepts no machine
+// identity names no audience at all, and none ever names a Kubernetes one.
 func TestSettingsNameTheGoogleExchangeAudienceOnEitherStore(t *testing.T) {
 	for _, b := range backends.All() {
 		t.Run(b.ID(), func(t *testing.T) {
@@ -125,7 +126,14 @@ func TestSettingsNameTheGoogleExchangeAudienceOnEitherStore(t *testing.T) {
 				}
 				mux := http.NewServeMux()
 				deps := storeDeps(t, b.ID())
-				deps.Policy, deps.GoogleExchangeAudience = cur, google
+				deps.Policy = cur
+				// The google identity provider's own field, merged beside the store's as
+				// cmd/cipherd merges identity/boot's Boot.SettingsFields.
+				if google != "" {
+					if err := settingsfields.Merge(deps.SettingsFields, map[string]string{"google_exchange_audience": google}); err != nil {
+						t.Fatal(err)
+					}
+				}
 				api.Register(mux, deps)
 				srv := httptest.NewServer(mux)
 				t.Cleanup(srv.Close)

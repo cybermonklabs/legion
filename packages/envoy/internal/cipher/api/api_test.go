@@ -32,6 +32,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/ciphertest"
 	"github.com/sjawhar/envoy/internal/cipher/enroll"
 	"github.com/sjawhar/envoy/internal/cipher/identity"
+	"github.com/sjawhar/envoy/internal/cipher/identity/kubernetes"
 	"github.com/sjawhar/envoy/internal/cipher/machine"
 	"github.com/sjawhar/envoy/internal/cipher/oauthstore"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
@@ -163,15 +164,19 @@ func newProfiledTestServer(t *testing.T, file string, adjust func(*api.Deps)) *t
 	if err != nil {
 		t.Fatalf("oidc.NewKeys: %v", err)
 	}
-	podVerifier := oidc.NewWithKeys(issuer.URL(), podAudience, keys)
-	registrationVerifier := oidc.NewWithKeys(issuer.URL(), registrationAudience, keys)
+	// The kubernetes identity provider over the issuer's one key set, as cmd/cipherd's registry
+	// holds it: its pod verifiers at the enrolment and the registration audiences.
+	pods, err := kubernetes.New(kubernetes.Config{Issuer: issuer.URL(), Keys: keys})
+	if err != nil {
+		t.Fatalf("kubernetes.New: %v", err)
+	}
 	serviceLogins := map[string]string{daemonAccount: "legion-daemon", otherDaemonAccount: "legion-daemon"}
 	// BROKER_SERVICES: both accounts the pods these tests enrol run as, bound to the service both
 	// daemon accounts log in as, which is what lets their logins enrol those pods. An account
 	// outside it is a pod no login here launches (POD_NOT_LAUNCHED).
 	servicesByAccount := map[string]string{workerAccount: "legion-daemon", otherAccount: "legion-daemon"}
 	subjects := identities(t)
-	enr := &enroll.Service{Store: st, Lease: time.Hour, Pod: enroll.K8sPodVerifier{Verifier: podVerifier}, ServiceLogins: serviceLogins, ServicesByAccount: servicesByAccount,
+	enr := &enroll.Service{Store: st, Lease: time.Hour, Pod: pods.PodVerifier(podAudience), ServiceLogins: serviceLogins, ServicesByAccount: servicesByAccount,
 		Subjects: subjects, Policy: subjects.Policy()}
 	enr.Chain = enroll.NewChainVerifier(st, srv.URL, time.Minute)
 	// Wired as cmd/cipherd/main.go wires the enrollment route, so the route refuses a name another
@@ -215,7 +220,7 @@ func newProfiledTestServer(t *testing.T, file string, adjust func(*api.Deps)) *t
 		APIAccounts: map[identity.Account]api.Account{inCluster(dispatchAccount): ciphertest.Caller(t, dispatchCaller)},
 		Callers:     []identity.CallerVerifier{kubernetesCaller(t, issuer.URL(), keys, podAudience)},
 		Enroll:      enr, Machine: reqMachine, MachineLogin: mach,
-		PodRegistrars: podRegistrars, PodRegistrationTokens: enroll.K8sPodVerifier{Verifier: registrationVerifier},
+		PodRegistrars: podRegistrars, PodRegistrationTokens: pods.PodVerifier(registrationAudience),
 		OAuth: provider, DeviceLogin: mach.LoginDevice, TokenHooks: mach.TokenHooks(),
 		Proof:  &proof.Verifier{Skew: time.Minute, Lookup: enr.Lookup, LookupLauncher: enr.AuthenticateLauncher, Replay: enr.Replay},
 		Policy: cur, SecretsStore: aws.Name, SecretsPrefix: policytest.Prefix, SettingsFields: awsSettings(t),

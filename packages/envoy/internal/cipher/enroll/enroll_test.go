@@ -12,6 +12,7 @@ import (
 	"github.com/go-jose/go-jose/v4"
 	"github.com/google/uuid"
 
+	"github.com/sjawhar/envoy/internal/cipher/identity/kubernetes"
 	"github.com/sjawhar/envoy/internal/cipher/oauthstore"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipher/record"
@@ -41,22 +42,27 @@ func serviceOn(st *store.Store) *Service {
 	return &Service{Store: st, Lease: time.Hour, Sessions: oauthstore.New(st.Pool), Subjects: registry, Policy: registry.Policy()}
 }
 
-// withPodVerifier wires svc to a real K8sPodVerifier backed by a fresh local OIDC issuer, and
-// returns the issuer and its published signing key so a test can mint pod tokens.
+// withPodVerifier wires svc to the kubernetes identity provider's pod verifier, backed by a fresh
+// local OIDC issuer, and returns the issuer and its published signing key so a test can mint pod
+// tokens.
 func withPodVerifier(t *testing.T, svc *Service) (*oidctest.Issuer, *oidctest.Key) {
 	t.Helper()
 	issuer := oidctest.New(t)
 	key := issuer.PublishKey(t, "signing-key")
-	verifier, err := oidc.New(context.Background(), issuer.URL(), testAudience)
+	keys, err := oidc.NewKeys(context.Background(), issuer.URL())
 	if err != nil {
-		t.Fatalf("oidc.New: %v", err)
+		t.Fatalf("oidc.NewKeys: %v", err)
 	}
-	svc.Pod = K8sPodVerifier{Verifier: verifier}
+	pods, err := kubernetes.New(kubernetes.Config{Issuer: issuer.URL(), Keys: keys})
+	if err != nil {
+		t.Fatalf("kubernetes.New: %v", err)
+	}
+	svc.Pod = pods.PodVerifier(testAudience)
 	return issuer, key
 }
 
-// mintPodToken mints a projected service-account token bound to podUID, the shape
-// K8sPodVerifier.Verify reads.
+// mintPodToken mints a projected service-account token bound to podUID, the shape the pod
+// provider's verifier reads.
 func mintPodToken(t *testing.T, issuer *oidctest.Issuer, key *oidctest.Key, subject, podUID string) string {
 	t.Helper()
 	claims := issuer.Claims(subject, testAudience)
