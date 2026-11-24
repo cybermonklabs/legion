@@ -105,12 +105,13 @@ type Deps struct {
 	// again or the claim route's refresh that does, or the sweep (handOverKept) - which is what
 	// this package's tests that publish through a stand-in with no stream behind it leave it to.
 	KeptLanes KeptLaneReader
-	// PostIssueMessage posts a message on an issue as actor, a system actor, and answers its id:
-	// the message that tells the issue's people which events a role did not take within an hour's
-	// window, once each had ended undelivered (postUndeliveredNotes). cmd/dispatch passes the API
-	// server's own writer of an issue message (api.Background.PostSystemMessage). A nil one posts
-	// nothing, and the windows wait.
-	PostIssueMessage func(ctx context.Context, actor model.Actor, issueKey, body string) (string, error)
+	// PostIssueMessage posts a message on an issue as actor, a system actor, under the id
+	// messageID, and answers its id: the message that tells the issue's people which events a
+	// role did not take within an hour's window, once each had ended undelivered
+	// (postUndeliveredNotes). A post made again under one id writes no second message.
+	// cmd/dispatch passes the API server's own writer of an issue message
+	// (api.Background.PostSystemMessage). A nil one posts nothing, and the windows wait.
+	PostIssueMessage func(ctx context.Context, actor model.Actor, messageID, issueKey, body string) (string, error)
 	// forwardAckWait is how long a role forward waits for the stream's acknowledgement of its
 	// stored copy, which is what counts the forward as reached, and zero is roleForwardAckTimeout,
 	// which is what cmd/dispatch runs. A test sets it longer than its own run so that a forward

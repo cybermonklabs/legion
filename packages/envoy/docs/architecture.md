@@ -704,9 +704,15 @@ an expiry notice on `notifications.envoy.kept.expired.<role>` instead (`bus.Kept
 event id, the role, the attempt the copy was kept for, its dedupe key, its stream sequence, and when
 it was kept and dropped), one per copy under the message id `envoy.kept-expired.<role>.<sequence>`,
 counted on `envoy_role_kept_expiry_notices_total`. The subject lies under the listener's own kept
-lane, so only a NATS user whose grant publishes every notification topic writes it, no consumer
-filter takes it, no session may register an interest reaching it and the publish route refuses
-it. Dispatch's outbox reads the notices from the stream every 30 seconds, and after every scan,
+lane. So only a NATS user whose grant publishes every notification topic writes it: `Listener`,
+`Dispatch` (its envoy-listener runs beside envoy-dispatch), and the legacy `ListenerHost` and
+`Host` sets built on the listener's (`natsgrant/natsgrant.go`). Dispatch reads it with the
+stream's stored-message read its grant holds; `ListenerHost` and `Host` also subscribe every
+notification topic, so they receive it. No session's own set (`Session`, `SessionPattern`) can
+read it: no consumer filter takes it, no session may register an interest reaching it, those sets
+hold no stream read, and the publish route refuses it. A legacy host's sessions that share its
+`Host` user share that user's reach. Dispatch's outbox reads the notices from the stream every
+30 seconds, and after every scan,
 with the stored-message read it already holds (`readKeptExpiries`), and records each one in
 `outbox_role_copy_expiries`, keyed by the event, the role and the attempt, so a repeated notice
 reopens the event's delivery to that role once. It then keeps the event's copy again, read back
@@ -720,7 +726,13 @@ the document a document event is about: the first such note of a role on an issu
 one-hour window, every later note of that role there joins it, and once the hour has ended the
 outbox posts one message naming every event of the window, through the issue message route's own
 writer (`api.Background.PostSystemMessage`) under the same system actor, so it wakes no route
-either. The window is kept in Postgres, so a restart does not lose it. An event of no issue and
+either. The window is kept in Postgres, and its message is written under an id derived from the
+issue, the role and the moment the window opened, so a restart does not lose it and a post made
+again (after a crash between the post and its mark) writes no second message. A long window's
+events are listed 50 to a list, so no block of the message passes the writer's block bound. The
+expiry that records an event undelivered also settles every earlier expiry of it still owed a
+keep, so nothing keeps it again. Only the publisher hold's holder records a notice or claims an
+expiry. An event of no issue and
 of no issue's document never has a copy kept for a role, since the route is read from the issue
 alone (`readBatchSQL`, `coalesce(i.route, ai.route)`), and such an expiry logs one Error line. An
 `unresponsive` holder's event stays pending and is retried, as a read that failed is, until that

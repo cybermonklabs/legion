@@ -33,6 +33,10 @@ type createMessageInput struct {
 	Delivery       *string      `json:"delivery"`
 	Urgency        *string      `json:"urgency"`
 	Actor          *model.Actor `json:"actor"`
+	// id is the id the message is stored under, chosen by a caller inside this process
+	// (postSystemMessage), so a repeat of that post finds the message it already wrote; empty
+	// for every request, whose message takes a fresh id. No request body sets it.
+	id string
 }
 
 // messageRead is one conversation as a route answers it: its root message and every message
@@ -394,7 +398,7 @@ func (s *server) createStoredMessage(
 	// (writeAdvice).
 	var messageID string
 	var createdAt time.Time
-	if err := tx.QueryRow(ctx, `select gen_random_uuid()::text, now()`).Scan(&messageID, &createdAt); err != nil {
+	if err := tx.QueryRow(ctx, `select coalesce(nullif($1, ''), gen_random_uuid()::text), now()`, input.id).Scan(&messageID, &createdAt); err != nil {
 		return model.Message{}, nil, err
 	}
 	eventType := "message.created"
