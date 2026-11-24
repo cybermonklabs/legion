@@ -2406,17 +2406,22 @@ describe("cmd_batch", () => {
 
   // Catches: a writer of a task that reads the task words inside another command's argument, where
   // a failure of that read ends only its own subshell, so the run writes the task without the words
-  // and launches its role as if the label had none; and a reader that takes a words file it cannot
-  // read, or one that holds no words, for a label with none. The label's checkout holds the file
-  // (task-words.txt) only where the label's patch adds it: a link to nothing and a file of blanks
-  // each fail both writers, naming the label, with no task written; a checkout with no file and
-  // one whose file holds words each give a task, and the test reads none of its words.
+  // and launches its role as if the label had none; a reader that takes a words file it cannot
+  // read, or one that holds no words, for a label with none; and a writer that answers success with
+  // a task no agent could work from, an empty file or one naming no issue, or with the label's
+  // words left out. The label's checkout holds the file (task-words.txt) only where the label's
+  // patch adds it: a link to nothing and a file of blanks each fail both writers, naming the label,
+  // with no task written; a checkout with no file and one whose file holds words each give a task
+  // that carries the issue key the run passes in, a value of this run's own, and the task given the
+  // words is longer than the one given none. The test reads none of the task's words.
   test("a label's task words that cannot be read fail the reviewer's and the architect's task writers", () => {
     const run = freshDir("task-words-fail-run");
     writeFileSync(
       path.join(run, "fixture.json"),
       JSON.stringify({ title: "A usage page", test: { version: 3 }, review: { version: 4 } })
     );
+    const key = `LWEVAL-${process.pid}`;
+    const prompt = path.join(run, "prompt.txt");
     const checkout = (name: string, words?: (file: string) => void) => {
       const co = freshDir(`task-words-${name}`);
       const dir = path.join(co, "packages/pi-legion/scripts/skill-scenarios");
@@ -2425,37 +2430,45 @@ describe("cmd_batch", () => {
       return co;
     };
     const write = (fnName: string, co: string) => {
-      rmSync(path.join(run, "prompt.txt"), { force: true });
+      rmSync(prompt, { force: true });
       return bash(
         [
           fn("fail"),
           fn("task_words"),
           fn(fnName),
-          `R=$1 co=$2 worker_key=LWEVAL-9 label=ablate-states-read`,
+          `R=$1 co=$2 worker_key=$3 label=ablate-states-read`,
           fnName,
           `echo "${fnName} returned"`,
         ].join("\n"),
-        [run, co]
+        [run, co, key]
       );
+    };
+    // written is the task fnName writes for co, which must answer success and leave a task that
+    // carries the issue key this run passed in.
+    const written = (fnName: string, co: string) => {
+      expect(write(fnName, co)).toMatchObject({ code: 0, stderr: "" });
+      const task = readFileSync(prompt, "utf8");
+      expect(task).toContain(key);
+      return task;
     };
     const unreadable = [
       checkout("dangling", (file) => symlinkSync(path.join(path.dirname(file), "gone.txt"), file)),
       checkout("blank", (file) => writeFileSync(file, " \n\t\n")),
     ];
     const none = checkout("none");
-    const worded = checkout("worded", (file) => writeFileSync(file, "Tester's verdict:\n  pass.\n"));
+    const worded = checkout("worded", (file) =>
+      writeFileSync(file, "Tester's verdict:\n  pass.\n")
+    );
     for (const fnName of ["reviewer_prompt", "architect_prompt"]) {
       for (const co of unreadable) {
         const result = write(fnName, co);
         expect(result.code).toBe(1);
         expect(result.stdout).not.toContain(`${fnName} returned`);
         expect(result.stderr).toContain("ablate-states-read");
-        expect(existsSync(path.join(run, "prompt.txt"))).toBe(false);
+        expect(existsSync(prompt)).toBe(false);
       }
-      expect(write(fnName, none)).toMatchObject({ code: 0, stderr: "" });
-      expect(existsSync(path.join(run, "prompt.txt"))).toBe(true);
-      expect(write(fnName, worded)).toMatchObject({ code: 0, stderr: "" });
-      expect(existsSync(path.join(run, "prompt.txt"))).toBe(true);
+      const bare = written(fnName, none);
+      expect(written(fnName, worded).length).toBeGreaterThan(bare.length);
     }
   });
 
