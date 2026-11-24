@@ -126,11 +126,13 @@ func TestABoundedTransactionOnADatabaseThatStopsAnsweringEndsAtItsWriteBound(t *
 		// second try is a fresh dial.
 		pool := poolOn(t, withMaxConns(t, testDSN(t), 1))
 		first := backendOf(t, pool)
-		closer, err := pgx.Connect(ctx, testDSN(t))
+		// A pgx pool and not pgx.Connect: the test DSN carries pool_max_conns (testdb.PoolBounded),
+		// which a plain connection sends the server as a setting it refuses.
+		closer, err := pgxpool.New(ctx, testDSN(t))
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer func() { _ = closer.Close(ctx) }()
+		defer closer.Close()
 		var terminated bool
 		if err := closer.QueryRow(ctx, "select pg_terminate_backend($1, 5000)", first).Scan(&terminated); err != nil || !terminated {
 			t.Fatalf("terminate the pool's connection (backend %d) = %t (%v), want it ended", first, terminated, err)
