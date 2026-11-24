@@ -443,8 +443,6 @@ func (g *gate) stop(stage int, name string) int {
 	return 1
 }
 
-// stopUnknown stops a stage none of whose runs failed but some went past their bound or skipped a
-// test: their verdict is UNKNOWN, so the gate's is too.
 func (g *gate) stopUnknown(stage int, name string) int {
 	fmt.Fprintf(g.out, "gate: stopped at stage %d (%s), UNKNOWN: %d runs went past their bound or skipped a test and none failed; run it again\n", stage, name, g.unknowns)
 	return 3
@@ -455,8 +453,6 @@ func (g *gate) fail(format string, args ...any) {
 	fmt.Fprintf(g.out, "FAIL "+format+"\n", args...)
 }
 
-// unknown reports a run past its bound or that skipped a test, which is neither a pass nor a
-// failure.
 func (g *gate) unknown(format string, args ...any) {
 	g.unknowns++
 	fmt.Fprintf(g.out, "UNKNOWN "+format+"\n", args...)
