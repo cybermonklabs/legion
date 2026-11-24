@@ -484,6 +484,20 @@ export function SpecFilterBody({
     if (reveal === undefined || taken.current === reveal || statements.length === 0) return;
     if (goTo(reveal)) taken.current = reveal;
   }, [goTo, reveal, statements]);
+  // The statement the body holds focused keeps the focus when its row is drawn anew. A statement
+  // that moves to another run - as each one a decision shaped does once the decisions are read -
+  // is drawn there as a new row: the row that held the focus leaves the page and the focus falls
+  // to the document, while the body still holds that statement as the focused one. So each time
+  // the columns are drawn again, before the page is painted, where the focus is on no element -
+  // the document's body, or an element no longer on the page - it goes back to that statement's
+  // row as an address puts it there (`goTo`), which brings the row on screen. A focus on any
+  // other element is where the reader put it, and stays there.
+  useLayoutEffect(() => {
+    if (focused === undefined || !statements.some((node) => node.id === focused)) return;
+    const active = document.activeElement;
+    if (active !== null && active !== document.body && active.isConnected) return;
+    goTo(focused);
+  }, [focused, goTo, statements]);
 
   useTreeKeymap({
     container: tree,

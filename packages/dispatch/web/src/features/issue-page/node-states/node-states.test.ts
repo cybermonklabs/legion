@@ -1228,7 +1228,8 @@ function NavigateProbe({ take }: { take: (navigate: (to: string) => void) => voi
 /** The Spec view over `root`, its reads answered with no decision, no question, no result and no
  *  block, drawn under the providers the page draws it under (`SpecFilterBody.drawn.test.tsx`'s
  *  `drawBody`), on an address that carries the words `query`; with `asksOut`, the asks read not
- *  answered yet. `go` moves the address, and `unmount` puts the reads back as well. */
+ *  answered yet. `go` moves the address, `again` draws the view over another tree, as the page
+ *  does once a read it holds on the tree answers, and `unmount` puts the reads back as well. */
 function drawSpec(
   root: TreeNode,
   {
@@ -1237,7 +1238,12 @@ function drawSpec(
     request,
     reveal,
   }: { asksOut?: boolean; query?: string; request?: OutlineRequest; reveal?: string } = {}
-): { container: HTMLElement; go: (to: string) => void; unmount: () => void } {
+): {
+  again: (root: TreeNode) => void;
+  container: HTMLElement;
+  go: (to: string) => void;
+  unmount: () => void;
+} {
   const issue = issueDetails();
   const results: IssueCheckResults = { checks: [], issue: KEY, verification_artifact_id: "" };
   const client = new QueryClient({
@@ -1261,7 +1267,8 @@ function drawSpec(
   ];
   // The page's `navigate`, once the address is drawn.
   let moveTo: (to: string) => void = () => {};
-  const view = render(
+  // The view over `over`, under the providers the page draws it under.
+  const page = (over: TreeNode): ReactNode =>
     createElement(
       QueryClientProvider,
       { client },
@@ -1294,7 +1301,7 @@ function drawSpec(
                     issue,
                     ...(request === undefined ? {} : { request }),
                     ...(reveal === undefined ? {} : { reveal }),
-                    root,
+                    root: over,
                   })
                 )
               )
@@ -1302,9 +1309,10 @@ function drawSpec(
           )
         )
       )
-    )
-  );
+    );
+  const view = render(page(root));
   return {
+    again: (over) => view.rerender(page(over)),
     container: view.container,
     go: (to) => act(() => moveTo(to)),
     unmount: () => {
@@ -1570,6 +1578,73 @@ test("a Spec decision cell naming an overtaken decision draws it marked", () => 
     ).toEqual([]);
   } finally {
     live.unmount();
+  }
+});
+
+/** Three statements under the issue, before and after the Spec view read is held on it
+ *  (`TreeNode.views`): `tree` holds no view read, so the view is read off the tree, no decision
+ *  is held and the three stand in one run; `decided` holds the read, which takes the three and
+ *  an agent's decision that shaped the second, which then stands in a run of its own between the
+ *  other two. Each node is read by its own id, as the read names it. */
+function secondShaped(): { decided: TreeNode; tree: TreeNode } {
+  const blocks = ["r1", "r2", "r3"];
+  const statements = blocks.map((block) => statement(block));
+  const tree = readAsIds(specIssueTree([...statements, specDecisionNode("d1")]));
+  return {
+    decided: {
+      ...tree,
+      views: {
+        spec: specViewAnswer([
+          ...blocks.map((block) => answerNode(`spec#b-${block}`, "requirement", { role: "query" })),
+          specDecision("d1", { decision: { links: [specShaped(specStatementRef("r2"))] } }),
+        ]),
+      },
+    },
+    tree,
+  };
+}
+
+/** The ids of the statements of each run the Spec view draws, run by run. */
+function runsIn(container: HTMLElement): (string | undefined)[][] {
+  return [...container.querySelectorAll<HTMLElement>("[data-spec-run]")].map((run) => rowIds(run));
+}
+
+// An address naming a statement puts the focus on its row while the Spec view read is not held
+// yet, and every statement stands in one run. The decisions arriving split that run, and the
+// statement a decision shaped is drawn anew in a run of its own: the focus the address put on it
+// stays on its row there, since the reader did not move it.
+test("the focus an address put on a statement stays on its row when a decision moves it to a run of its own", async () => {
+  const { decided, tree } = secondShaped();
+  const view = drawSpec(tree, { reveal: "spec#b-r2" });
+  try {
+    await waitFor(() => expect(document.activeElement).toBe(rowOf(view.container, "spec#b-r2")));
+    expect(runsIn(view.container)).toEqual([["spec#b-r1", "spec#b-r2", "spec#b-r3"]]);
+    const landed = rowOf(view.container, "spec#b-r2");
+    view.again(decided);
+    expect(runsIn(view.container)).toEqual([["spec#b-r1"], ["spec#b-r2"], ["spec#b-r3"]]);
+    expect(landed?.isConnected, "the statement's row was not drawn anew").toBe(false);
+    expect(document.activeElement).toBe(rowOf(view.container, "spec#b-r2"));
+  } finally {
+    view.unmount();
+  }
+});
+
+// A reader who moved the focus out of the Spec view keeps it where they put it when the
+// decisions arriving draw the statement they left anew in another run.
+test("a focus the reader moved out of the Spec view stays there when its runs regroup", async () => {
+  const { decided, tree } = secondShaped();
+  const elsewhere = document.createElement("button");
+  document.body.append(elsewhere);
+  const view = drawSpec(tree, { reveal: "spec#b-r2" });
+  try {
+    await waitFor(() => expect(document.activeElement).toBe(rowOf(view.container, "spec#b-r2")));
+    act(() => elsewhere.focus());
+    view.again(decided);
+    expect(runsIn(view.container)).toEqual([["spec#b-r1"], ["spec#b-r2"], ["spec#b-r3"]]);
+    expect(document.activeElement).toBe(elsewhere);
+  } finally {
+    view.unmount();
+    elsewhere.remove();
   }
 });
 
