@@ -152,6 +152,16 @@ remove_run_branch() {
   fi
 }
 
+# require_smoke_repo_read: the devbox's ordinary gh reads the smoke repository. Whatever answers gh
+# in GitHub's place holds gh's token and writes gh's stderr, so gh's own words are kept in
+# $evidence/gh/repo-view.err, which outlives the run, and a refusal names that file and never
+# quotes it.
+require_smoke_repo_read() {
+  mkdir -p "$evidence/gh"
+  gh repo view "$repo" --json name >/dev/null 2>"$evidence/gh/repo-view.err" ||
+    fail "the devbox's ordinary gh cannot read $repo; gh's own words are in $evidence/gh/repo-view.err"
+}
+
 cleanup() {
   local status=$? p
   set +e
@@ -664,7 +674,7 @@ claude_exe=$(native_program "$claude_bin") || claude_exe=$(first_native claude) 
 realbin=$(real_bin_path "$work/realbin" gh jj tmux bun)
 note "Claude Code: $claude_bin ($("$claude_bin" --version)); bun: $(readlink "$realbin/bun")"
 require_proof_human
-gh repo view "$repo" --json name >/dev/null || fail "the devbox's ordinary gh cannot read $repo"
+require_smoke_repo_read
 mkdir -p "$state" "$work/xdg" "$work/tmux"
 chmod 0700 "$state" "$work/xdg" "$work/tmux"
 make_omp_home "$omp_home"
