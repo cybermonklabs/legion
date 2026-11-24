@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/redirects"
 	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/tlsalert"
+	"github.com/sjawhar/legion/daemon/internal/urljoin"
 )
 
 const requestTimeout = 10 * time.Second
@@ -29,12 +30,13 @@ type HTTPClient struct {
 	httpClient *http.Client
 }
 
-// New creates a client for one Dispatch server. The token is sent only as a bearer header, and
-// the client follows no redirect (redirects.Refused): Dispatch answers none, and a followed one
-// would hand the bearer to the host the Location names. A 3xx is Dispatch's refusal by its status.
+// New creates a client for one Dispatch server at baseURL, each route joined onto its path
+// (answer). The token is sent only as a bearer header, and the client follows no redirect
+// (redirects.Refused): Dispatch answers none, and a followed one would hand the bearer to the host
+// the Location names. A 3xx is Dispatch's refusal by its status.
 func New(baseURL, token string) *HTTPClient {
 	return &HTTPClient{
-		baseURL:    strings.TrimRight(baseURL, "/"),
+		baseURL:    baseURL,
 		token:      token,
 		timeout:    requestTimeout,
 		httpClient: redirects.Refused(&http.Client{}),
@@ -763,11 +765,15 @@ func (c *HTTPClient) request(ctx context.Context, method, path string, body, int
 
 // answer sends one request to Dispatch with the daemon's bearer, body as its JSON where body is not
 // nil, bounded by the client's timeout, and answers Dispatch's 2xx answer, read whole
-// (oauth2call.ReadAnswer). A request that could not be made, or that got no answer, names its
-// failure through oauth2call.Unanswered, which still unwraps to it, so TransportRefusal reads the
-// failure's type. One that got no answer, or whose answer could not be read, is its transport's
-// failure (transportFailure), and an answer that is not a 2xx is Dispatch's refusal
-// (dispatchError), its status named by its code and the standard phrase.
+// (oauth2call.ReadAnswer). The request goes to path joined onto the base URL's path
+// (urljoin.Join), the base URL's query kept ahead of path's own, where path appended to the URL's
+// text would sit inside its query or its fragment and Dispatch would be asked another path. A base
+// URL that does not parse or names no host is refused in fixed words: url.Parse's error quotes the
+// URL whole, user information and query included. A request that could not be made, or that got no
+// answer, names its failure through oauth2call.Unanswered, which still unwraps to it, so
+// TransportRefusal reads the failure's type. One that got no answer, or whose answer could not be
+// read, is its transport's failure (transportFailure), and an answer that is not a 2xx is
+// Dispatch's refusal (dispatchError), its status named by its code and the standard phrase.
 func (c *HTTPClient) answer(ctx context.Context, method, path string, body any) (oauth2call.Answer, error) {
 	bounded, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
@@ -780,7 +786,11 @@ func (c *HTTPClient) answer(ctx context.Context, method, path string, body any) 
 			return oauth2call.Answer{}, fmt.Errorf("encode Dispatch %s %s: %w", method, path, err)
 		}
 	}
-	request, err := http.NewRequestWithContext(bounded, method, c.baseURL+path, bytes.NewReader(encoded))
+	call, err := urljoin.Join(c.baseURL, path)
+	if err != nil {
+		return oauth2call.Answer{}, fmt.Errorf("create Dispatch %s %s: the Dispatch URL is not an absolute URL with a host (it is not printed)", method, path)
+	}
+	request, err := http.NewRequestWithContext(bounded, method, call.String(), bytes.NewReader(encoded))
 	if err != nil {
 		return oauth2call.Answer{}, fmt.Errorf("create Dispatch %s %s: %w", method, path, oauth2call.Unanswered(err, nil, ""))
 	}
