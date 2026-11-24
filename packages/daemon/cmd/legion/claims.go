@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -19,6 +18,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/sjawhar/envoy/oauth2call"
 	"github.com/sjawhar/legion/daemon/internal/api"
 	legionclaim "github.com/sjawhar/legion/daemon/internal/claim" // main_test.go's `claim` helper holds the bare name
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -100,11 +100,12 @@ func writeAnswer(w io.Writer, answer []byte) error {
 }
 
 // decodeAnswer reads a 2xx answer into into, refusing a member the struct does not have: a daemon
-// whose wire this binary does not speak says so rather than printing half of it. Its error is
-// fixed text naming what into is and, where encoding/json names it, the member of into's own type
-// that did not decode and the JSON kind it held; never a value or a member name the answer wrote,
-// since encoding/json's errors quote a member into does not have, and the errors of the types it
-// decodes into (time.Time's among them) quote the value they could not read.
+// whose wire this binary does not speak says so rather than printing half of it. An answer that
+// decodes once that refusal is lifted held such a member and nothing else wrong, and the error says
+// so in a sentence of its own. Any other failure is oauth2call.DecodeError's fixed text: what into
+// is and, where it can, the member of into's own type that did not decode and the JSON kind it
+// held; never a value or a member name the answer wrote, which encoding/json's errors, and those
+// of the types it decodes into (time.Time's among them), quote.
 func decodeAnswer(answer []byte, into any) error {
 	decoder := json.NewDecoder(bytes.NewReader(answer))
 	decoder.DisallowUnknownFields()
@@ -112,23 +113,11 @@ func decodeAnswer(answer []byte, into any) error {
 	if err == nil {
 		return nil
 	}
-	what := reflect.TypeOf(into).Elem().String()
-	var syntax *json.SyntaxError
-	var typed *json.UnmarshalTypeError
-	switch {
-	case errors.As(err, &syntax):
-		return fmt.Errorf("it is not JSON (at byte %d), so it is no %s", syntax.Offset, what)
-	case errors.As(err, &typed):
-		member := "the whole of it"
-		if typed.Field != "" {
-			member = fmt.Sprintf("its %q", typed.Field)
-		}
-		kind, _, _ := strings.Cut(typed.Value, " ")
-		return fmt.Errorf("%s is a JSON %s where the %s this legion reads holds a %s", member, kind, what, typed.Type)
-	case strings.HasPrefix(err.Error(), "json: unknown field "):
+	what := reflect.TypeOf(into).Elem()
+	if json.Unmarshal(answer, reflect.New(what).Interface()) == nil {
 		return fmt.Errorf("it holds a member the %s this legion reads does not have: the daemon is of another release than this legion", what)
 	}
-	return fmt.Errorf("a value of it does not decode into the %s this legion reads", what)
+	return oauth2call.DecodeError(err, answer, into)
 }
 
 // claimTokenShape is a claim token's shape: claim.NewToken's `legion-<project>-<issue>-<role>` and
