@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -197,5 +198,50 @@ func TestACheckRoleFailureBetweenLooksIsRetriedAtTheNextLook(t *testing.T) {
 				t.Fatalf("look %d's failure after the failure between looks named its next look %s out, want %s: one more failed look in a row", look+1, got, 2*tc.wait)
 			}
 		})
+	}
+}
+
+// A check_wake row an earlier release queued carries no wakeAt, and checkWakeDue cannot fence one
+// by the wake it was queued for. A failure of the checking role's claim between looks that moves
+// the next look later queues its replacement and retires such a row of the check, so the row the
+// earlier release queued for the look bound's retry starts no look early: every queued check_wake
+// row is fired at its own time, oldest due first, as the outbox fires them, and the next look
+// starts at the moved wake, the time the worker-died notice and the check's record name. Before
+// the retirement the earlier release's row started look 2 at the look bound's retry, two hours
+// out, and the replacement then found the look advanced and started nothing.
+func TestAFailureBetweenLooksRetiresTheWakeAnEarlierReleaseQueued(t *testing.T) {
+	rig := childCheckRig(t)
+	bound := checkOpened.Add(CheckLookBound)
+	rig.clock.now = bound
+	rig.apply("look-bound-1", intake.CheckLookEnded{Issue: "LEGION-209", Look: 1, Cause: "look bound", OpenedAt: checkOpened})
+	if _, err := rig.pool.Exec(t.Context(), `update outbox set payload = payload - 'wakeAt' where kind = 'check_wake' and issue = 'LEGION-209'`); err != nil {
+		t.Fatalf("make the look bound's wake row one an earlier release queued: %v", err)
+	}
+	stood, legacy := lastWake(t, rig, "LEGION-209")
+	if !legacy.WakeAt.IsZero() || !stood.Equal(bound.Add(CheckLookBound)) {
+		t.Fatalf("the earlier release's wake row = %+v due %s, want no wakeAt, due a look bound after the bound", legacy, stood)
+	}
+
+	failedAt := bound.Add(10 * time.Minute)
+	rig.clock.now = failedAt
+	rig.apply("tester-failed-between", failedClaim("LEGION-209", claim.RoleTester))
+	due := failedAt.Add(CheckLookBound)
+	if check := productionCheck(t, rig.pool, "LEGION-209"); check.WakeAt == nil || !check.WakeAt.Equal(due) {
+		t.Fatalf("the check after its tester failed between looks = %+v, want its next look at %s", check, due)
+	}
+
+	rows := checkWakeRows(t, rig.pool, "LEGION-209")
+	slices.SortStableFunc(rows, func(a, b outboxRow) int { return a.nextAt.Compare(b.nextAt) })
+	for _, row := range rows {
+		wake := decodeWake(t, row)
+		rig.clock.now = row.nextAt
+		rig.apply(fmt.Sprintf("wake-row-%d", row.id), intake.CheckWakeOf("LEGION-209", wake))
+		check := productionCheck(t, rig.pool, "LEGION-209")
+		if row.nextAt.Before(due) && (check.LookOpen || check.Looks != 1) {
+			t.Fatalf("the check_wake row %d due %s (%+v) started look %d, want no look before the moved wake at %s", row.id, row.nextAt, wake, check.Looks, due)
+		}
+	}
+	if check := productionCheck(t, rig.pool, "LEGION-209"); !check.LookOpen || check.Looks != 2 || check.LookWakeAt == nil || !check.LookWakeAt.Equal(due) {
+		t.Fatalf("the check after every queued wake fired = %+v, want look 2 open, woken at the moved wake %s", check, due)
 	}
 }
