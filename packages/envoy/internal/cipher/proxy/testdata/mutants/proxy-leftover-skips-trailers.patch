@@ -6,7 +6,9 @@
 
 --- a/packages/envoy/internal/cipher/proxy/leftover.go
 +++ b/packages/envoy/internal/cipher/proxy/leftover.go
-@@ -39,7 +39,8 @@
+@@ -37,7 +37,8 @@ const placeholderLeft = "this request still carries a placeholder after the swap
+ // so they are not in the map and no scan before the forward could hold them (the comment at the
+ // call in serveBound says which paths those are).
  func leftoverPlaceholder(header, trailer http.Header, path, rawPath, rawQuery string) (string, bool) {
 -	for _, fields := range [...]http.Header{header, trailer} {
 +	// MUTANT: the trailers are not scanned, so a placeholder in one goes upstream.

@@ -1570,8 +1570,9 @@ The scan reads the headers, the trailers, the path and the query. A trailer is a
 request sends after its body, over HTTP/1.1 and HTTP/2 alike, so it has reached the broker by
 this point only where the broker has already read that body to its end: an AWS call it signs
 with the body's hash, and a `Limited` name's post it reads to find the channel. On every other
-request the body is streamed to the service, and a trailer that arrives after it reaches the
-service without passing this scan. Two more a command can give its own placeholder away in: the
+request the body is streamed to the service, and the proxy copies the trailer map before any
+value has arrived in it, so such a trailer reaches the service with its names and without its
+values. Two more a command can give its own placeholder away in: the
 body, which is never read, so a placeholder a command writes there goes as it wrote it; and the
 form of the Azure token exchange, which the exchange itself decides and refuses
 `TOKEN_ASSERTION` unless the assertion is this grant's own placeholder. In each of those a

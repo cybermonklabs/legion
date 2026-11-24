@@ -18,40 +18,19 @@ import (
 	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
 )
 
-// trailerBody is a request body that writes its trailers as the last byte is read, which is what
-// net/http's client requires of a request that declares them: the values must be in the map
-// before the body returns io.EOF, since the chunked writer sends them straight after the final
-// chunk.
-type trailerBody struct {
-	reader io.Reader
-	// set is run once, when the body has been read to its end.
-	set  func()
-	done bool
-}
-
-func (b *trailerBody) Read(p []byte) (int, error) {
-	n, err := b.reader.Read(p)
-	if err == io.EOF && !b.done {
-		b.done = true
-		b.set()
-	}
-	return n, err
-}
-
-func (b *trailerBody) Close() error { return nil }
-
 // chunkedWithTrailer is the request each row below sends: a PUT whose body is chunked, whose
-// length is unknown, and which declares one trailer that carries value. It names no
-// X-Amz-Content-Sha256, so the proxy reads the body to hash it (signAWS) and the trailer has
-// arrived by the time the request is about to go upstream.
+// length is unknown, and which declares one trailer carrying value. net/http sends a declared
+// trailer's final value after the last chunk, so a value set here reaches the proxy after the
+// body, as a trailer does on the wire. The request names no X-Amz-Content-Sha256, so the proxy
+// reads the body to hash it (signAWS) and the trailer has reached it by the time the request is
+// about to go upstream.
 func chunkedWithTrailer(t *testing.T, name, value, body string) *http.Request {
 	t.Helper()
-	request, err := http.NewRequest(http.MethodPut, "https://"+boundHost+"/v1/upload", nil)
+	request, err := http.NewRequest(http.MethodPut, "https://"+boundHost+"/v1/upload", io.NopCloser(strings.NewReader(body)))
 	if err != nil {
 		t.Fatal(err)
 	}
-	request.Trailer = http.Header{name: nil}
-	request.Body = &trailerBody{reader: strings.NewReader(body), set: func() { request.Trailer.Set(name, value) }}
+	request.Trailer = http.Header{name: []string{value}}
 	request.ContentLength = -1
 	request.TransferEncoding = []string{"chunked"}
 	credentials := aws.Credentials{AccessKeyID: awsKeyPlaceholder, SecretAccessKey: awsSecretPlaceholder, SessionToken: awsSessionPlaceholder}
