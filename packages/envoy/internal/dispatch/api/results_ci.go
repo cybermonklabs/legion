@@ -184,8 +184,7 @@ type provedCI struct {
 // into the paths as they are. That error names the class of the failure alone, never the name,
 // which a webhook's envelope gave before the rule held it and which ciUnreadDetail names as the
 // rule reads it. A deployment holding no App key, a token GitHub would not mint, an HTTP error, a
-// rate limit and the deadline are each the error, worded as GitHub answered it. The token never
-// reaches it: it is sent in a header, and no answer names it.
+// rate limit and the deadline are each the error, worded as GitHub answered it.
 func (s *server) readCIRuns(ctx context.Context, head delivery.NewestHead, names map[string]struct{}) (map[string]*ciRun, error) {
 	owner, repo, err := refs.SplitGitHubRepo(head.Repo)
 	if err != nil {

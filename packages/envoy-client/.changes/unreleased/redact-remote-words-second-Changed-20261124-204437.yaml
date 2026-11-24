@@ -2,9 +2,11 @@ kind: Changed
 body: |-
   The error classes hold the words another party wrote in the contracts `RemoteText` box rather
   than as strings, so printing one prints no credential those words carry. `EnvoyApiError`'s
-  `code`, `reason`, `holder`, `expected`, `refused`, `roleHeld` and `details.responseBody`, and
-  `DispatchServiceError`'s and `DispatchGatewayError`'s `code` and their `candidates`, `current`
-  and `mismatches`, are `RemoteText`. Code that tells answers apart compares through the box
+  `code`, `reason`, `holder` and `details.responseBody` are `RemoteText`; `expected` and `refused`
+  are arrays of `RemoteText`, and `roleHeld` holds a boxed `role` and `holder`.
+  `DispatchServiceError` and `DispatchGatewayError` hold `code` as `RemoteText` and box each
+  string of their `candidates`, `current` and `mismatches`. Code that tells answers apart
+  compares through the box
   (`code.equals("IDEMPOTENCY_KEY_REUSED")`, `reason?.equals("sender_rate_limited")`), and code
   that prints one gets the rule's reading, with each credential the request carried redacted, so
   an echoed bearer prints as `[redacted]`. A fallback body excerpt runs the same rule after its

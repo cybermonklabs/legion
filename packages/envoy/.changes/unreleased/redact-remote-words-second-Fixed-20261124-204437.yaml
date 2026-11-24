@@ -27,8 +27,9 @@ body: |-
   The OIDC code flow, client check and verifier print a configured issuer through the rule, and a
   rejected token's issuer, audience and claims as the rule reads them. The MCP bridge prints an
   RPC refusal, a notification's URI, a rendered topic, a decode failure, a read-loop failure and
-  each line of a child's standard error through the rule, carrying the record of the event stream
-  that delivered them (`mcp-bridge: <name>: stderr: <line>`).
+  each line of a managed child's standard error through the rule. Words that arrive over an HTTP
+  event stream carry the record of the request that stream answers; a stdio child's words and its
+  standard error answer no request and carry none (`mcp-bridge: <name>: stderr: <line>`).
 time: 2026-11-24T20:44:37.515474419Z
 custom:
     Issue: redact-remote-words-second
