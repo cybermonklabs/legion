@@ -1981,8 +1981,9 @@ describe("the bounds and words each tool states beside its arguments", () => {
 
   // POST /api/v1/issues imports the GitHub issue an external reference names into the project the
   // create names: one already imported into that project answers its issue and creates nothing,
-  // and one imported into another project is refused 400 EXTERNAL_PROJECT_MISMATCH (createIssue,
-  // which TestExternalIssueLinkedInAnotherProjectIsRefused in server_test.go holds).
+  // and one imported into another project is refused 400 EXTERNAL_PROJECT_MISMATCH (createIssue).
+  // TestDispatchIssuesExternalWordsAreWhatItsRouteAnswers in server_test.go holds the tool's
+  // generated words to each of those answers of the route.
   test("dispatch_issue's external says the form its route reads and the refusal it answers", () => {
     const external = argumentDescriptions("dispatch_issue").find((text) =>
       text.startsWith("Optional external issue reference")
