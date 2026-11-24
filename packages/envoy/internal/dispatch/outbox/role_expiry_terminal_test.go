@@ -7,10 +7,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/session"
 )
 
 // A window of events about a document whose reference is long - a document slug may run to
@@ -23,7 +26,7 @@ func TestAWindowOfLongDocumentReferencesMakesOneMessageTheBodyCheckTakes(t *test
 	for event := range 120 {
 		window.notes = append(window.notes, undeliveredNote{
 			eventID: int64(200000 + event), eventType: "artifact.version", keeps: maxRoleKeeps, reason: model.RoleUndeliveredExpired,
-			itemRef: "dispatch://T-1/artifact/" + slug, document: true,
+			itemRef: "dispatch://T-1/artifact/" + slug, documentID: uuid.NewString(),
 		})
 	}
 	body := undeliveredMessage(window)
@@ -34,6 +37,25 @@ func TestAWindowOfLongDocumentReferencesMakesOneMessageTheBodyCheckTakes(t *test
 		if !strings.Contains(body, fmt.Sprintf("event %d (", note.eventID)) {
 			t.Fatalf("the message does not name event %d", note.eventID)
 		}
+	}
+}
+
+// A document kept from before the creation bound on names can have a reference longer than one
+// block takes. Its event's item names the document by its id and the reference's length instead,
+// so the window's message is still one the body check takes. With the reference cap turned off,
+// the one item is a block over the bound.
+func TestADocumentWithAnOversizedReferenceIsNamedByItsID(t *testing.T) {
+	document := uuid.NewString()
+	window := undeliveredWindow{issueKey: "T-1", role: "legacy-document", openedAt: time.Now(), notes: []undeliveredNote{{
+		eventID: 300000, eventType: "artifact.version", keeps: maxRoleKeeps, reason: model.RoleUndeliveredExpired,
+		itemRef: "dispatch://T-1/artifact/" + strings.Repeat("a", 40000), documentID: document,
+	}}}
+	body := undeliveredMessage(window)
+	if err := itemblocks.Check("body", body); err != nil {
+		t.Fatalf("the message about a document with a 40,000-character reference is refused by the body check: %v", err)
+	}
+	if !strings.Contains(body, "event 300000 (artifact.version), on the document with id "+document) {
+		t.Fatalf("the message does not name the document by its id:\n%.400s", body)
 	}
 }
 
@@ -99,12 +121,13 @@ func undeliveredCount(t *testing.T, database *store.Store, eventID int64) int {
 	return count
 }
 
-// An event whose copy the stream no longer holds ends as an event recorded undelivered at the
-// bound does: one role.undelivered record, however many of its owed keeps find their copy gone in
-// one pass, and every other owed keep of it settled, so none is left owed and never claimed. At
-// the head before this rule each gone copy appends a record of its own, and an owed keep that was
-// not claimed in that pass stays owed for good.
-func TestAnEventWhoseCopiesAreGoneIsRecordedOnceAndKeepsNothingOwed(t *testing.T) {
+// An event whose copies are all gone - the stream no longer holds any copy its owed keeps name -
+// ends as an event recorded undelivered at the bound does: one role.undelivered record, however
+// many of its gone copies one pass finds, and none of its rows left owed. An event one of whose
+// copies is gone while another is still owed a keep is not ended: the gone row is passed over and
+// the other stays owed. With the fix turned off each gone copy appends a record of its own and
+// a gone copy ends an event another copy still carries.
+func TestAnEventWhoseCopiesAreAllGoneIsRecordedOnce(t *testing.T) {
 	ctx := context.Background()
 	rig := newRoleRig(t)
 	const role = "expiry-copies-gone"
@@ -129,17 +152,70 @@ func TestAnEventWhoseCopiesAreGoneIsRecordedOnceAndKeepsNothingOwed(t *testing.T
 	if records := undeliveredCount(t, rig.database, both.ID); records != 1 {
 		t.Fatalf("event %d, whose two owed copies are both gone, has %d role.undelivered records, want one", both.ID, records)
 	}
-	if records := undeliveredCount(t, rig.database, one.ID); records != 1 {
-		t.Fatalf("event %d, one of whose copies is gone, has %d role.undelivered records, want one", one.ID, records)
-	}
-	for _, eventID := range []int64{both.ID, one.ID} {
-		for _, row := range expiryRows(t, rig.database, eventID, role) {
-			if !row.settled {
-				t.Fatalf("event %d's expiry of attempt %d is still owed after the event was recorded undelivered: %+v", eventID, row.attempt, row)
-			}
+	for _, row := range expiryRows(t, rig.database, both.ID, role) {
+		if !row.settled {
+			t.Fatalf("event %d's expiry of attempt %d is still owed after the event was recorded undelivered: %+v", both.ID, row.attempt, row)
 		}
 	}
+	if records := undeliveredCount(t, rig.database, one.ID); records != 0 {
+		t.Fatalf("event %d, one of whose copies is still owed a keep, has %d role.undelivered records, want none", one.ID, records)
+	}
+	rows := expiryRows(t, rig.database, one.ID, role)
+	if len(rows) != 2 || rows[0].outcome == nil || *rows[0].outcome != expiryGone || rows[1].settled {
+		t.Fatalf("event %d's expiries are %+v, want attempt 1 passed over as gone and attempt 2 still owed", one.ID, rows)
+	}
 	if after := keptLane(t, rig.client, role); len(after) != 2 {
-		t.Fatalf("role %s's kept lane holds %d copies, want the scan's two and no keep after the records", role, len(after))
+		t.Fatalf("role %s's kept lane holds %d copies, want the scan's two", role, len(after))
+	}
+}
+
+// A gone copy does not end an event a sibling copy delivers in the same pass: with a session
+// holding the role, the sibling is forwarded to it, and with none, the sibling is kept again. In
+// both, the gone row is passed over and no role.undelivered record is appended. With the fix turned
+// off the gone row ends the event after its sibling reached the holder, or while its new copy still
+// has its hour.
+func TestAGoneCopyDoesNotEndAnEventItsSiblingDelivers(t *testing.T) {
+	for _, held := range []bool{true, false} {
+		t.Run(fmt.Sprintf("held %v", held), func(t *testing.T) {
+			ctx := context.Background()
+			rig := newRoleRig(t)
+			role := fmt.Sprintf("expiry-sibling-%v", held)
+			rig.silent(t, contracts.RoleTopicPrefix+role)
+			event := rig.routedEvent(t, "T-1", role, model.Actor{Kind: "user", ID: "alice"})
+			outbox := holding(t, rig.deps())
+			outbox.scan(ctx, unfenced{})
+			lane := keptLane(t, rig.client, role)
+			if len(lane) != 1 {
+				t.Fatalf("role %s's kept lane holds %d copies, want the scan's one", role, len(lane))
+			}
+			const holder = "ses_expiry_sibling_holder"
+			recv := rig.receiver(t, holder)
+			if held {
+				rig.claim(t, role, holder, session.SessionEntry{SelfSubscribed: true})
+			}
+			owedExpiry(t, rig.database, event.ID, role, 1, 999994, nil)
+			owedExpiry(t, rig.database, event.ID, role, 2, lane[0].Sequence, nil)
+
+			outbox.passKeptExpiries(ctx, unfenced{})
+
+			if records := undeliveredCount(t, rig.database, event.ID); records != 0 {
+				t.Fatalf("event %d has %d role.undelivered records though its sibling copy carried it on, want none", event.ID, records)
+			}
+			rows := expiryRows(t, rig.database, event.ID, role)
+			want := expiryKept
+			if held {
+				want = expiryForwarded
+			}
+			if len(rows) != 2 || rows[0].outcome == nil || *rows[0].outcome != expiryGone || rows[1].outcome == nil || *rows[1].outcome != want {
+				t.Fatalf("event %d's expiries are %+v, want attempt 1 passed over as gone and attempt 2 %s", event.ID, rows, want)
+			}
+			if held {
+				if forward := handedNow(t, recv, "the sibling's forward"); forward.EventID != fmt.Sprintf("dispatch-%d", event.ID) {
+					t.Fatalf("the holder took event %q, want dispatch-%d", forward.EventID, event.ID)
+				}
+			} else if after := keptLane(t, rig.client, role); len(after) != 2 {
+				t.Fatalf("role %s's kept lane holds %d copies, want the sibling kept again", role, len(after))
+			}
+		})
 	}
 }

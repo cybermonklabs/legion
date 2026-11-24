@@ -731,10 +731,15 @@ issue, the role, the moment the window opened and the events it names. So a rest
 lose the window, and a post made again after a crash between the post and its mark writes no
 second message. A note joins only a window whose message is not posted yet. A long window's events
 go in several lists, each at most 50 events and 16,000 UTF-16 units, so no block of the message
-passes the writer's 32,000-unit block bound, however long a document's reference is. An event's
-delivery to a role ends the same way whether its last keep expired or its copy is gone: every
-expiry of it still owed a keep is settled, and its one `role.undelivered` record is appended,
-so nothing keeps it again. Only the publisher hold's holder records a notice, claims an expiry or
+passes the writer's 32,000-unit block bound. A reference over 4,096 units, which only a document
+kept from before the name bound can have, is named by the document's id and the reference's
+length instead. An event's delivery to a role ends the same way whether its last keep expired or
+no copy of it is left to keep: every expiry of it still owed a keep is settled, and its one
+`role.undelivered` record is appended, so nothing keeps it again. A copy the stream no longer
+holds ends nothing while another copy of the event carries its delivery on, that is, while
+another expiry of it is still owed a keep or was kept, forwarded or skipped after the gone one
+was recorded. Such a row is settled `gone`. Only the publisher hold's holder records a notice,
+claims an expiry or
 posts a window. Each record transaction locks the hold's row for share, so a takeover of the hold
 waits for that transaction to commit, and the new holder reads every write it made. An event of
 no issue and

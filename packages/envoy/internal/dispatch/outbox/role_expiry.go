@@ -40,11 +40,14 @@ const keptExpiryReadEvery = 30 * time.Second
 
 // The outcomes an outbox_role_copy_expiries row is settled with: the copy kept again on the role's
 // kept lane, forwarded to the session that held the role by then, reached with nothing sent (the
-// holder is the event's own actor), or recorded undelivered (role.undelivered).
+// holder is the event's own actor), passed over because the stream no longer holds its copy while
+// another copy of the event still carries its delivery to the role (recordCopyGone), or recorded
+// undelivered (role.undelivered).
 const (
 	expiryKept        = "kept"
 	expiryForwarded   = "forwarded"
 	expirySkipped     = "skipped"
+	expiryGone        = "gone"
 	expiryUndelivered = "undelivered"
 )
 
@@ -266,16 +269,17 @@ func recordExpiry(ctx context.Context, deps Deps, tx pgx.Tx, eventID int64, noti
 }
 
 // endRoleDelivery is the one way an event's delivery to a role ends, in tx, for both reasons it
-// ends - its last keep expired (recordExpiry) or its copy is gone (recordCopyGone): every row of
-// the pair still owed a keep is settled undelivered, and the event's role.undelivered record is
-// appended (appendUndelivered) unless the pair had ended already, so the pair has one record
-// however many of its rows end, and no row of it is left owed. The caller has written its own row
-// settled undelivered; ended reads whether any other row of the pair was undelivered before it.
-func endRoleDelivery(ctx context.Context, deps Deps, tx pgx.Tx, eventID int64, role string, keeps int, keptAt, droppedAt time.Time, reason string) (*model.Event, error) {
+// ends - its last keep expired (recordExpiry) or no copy of it is left to keep (recordCopyGone):
+// every row of the pair still owed a keep is settled undelivered, and the event's role.undelivered
+// record is appended (appendUndelivered) unless the pair had ended already, so the pair has one
+// record however many of its rows end, and no row of it is left owed. The caller has written its
+// own row, the attempt'th, settled undelivered; ended reads whether any other row of the pair was
+// undelivered before it.
+func endRoleDelivery(ctx context.Context, deps Deps, tx pgx.Tx, eventID int64, role string, attempt int, keptAt, droppedAt time.Time, reason string) (*model.Event, error) {
 	var ended bool
 	if err := tx.QueryRow(ctx, `
-		select count(*) filter (where outcome = $3) > 1 from outbox_role_copy_expiries where event_id = $1 and role = $2
-	`, eventID, role, expiryUndelivered).Scan(&ended); err != nil {
+		select exists (select 1 from outbox_role_copy_expiries where event_id = $1 and role = $2 and outcome = $3 and keep_attempt <> $4)
+	`, eventID, role, expiryUndelivered, attempt).Scan(&ended); err != nil {
 		return nil, err
 	}
 	if _, err := tx.Exec(ctx, `
@@ -286,10 +290,10 @@ func endRoleDelivery(ctx context.Context, deps Deps, tx pgx.Tx, eventID int64, r
 	}
 	if ended {
 		slog.Info("dispatch outbox: an event already recorded undelivered to a role ended again; it keeps its one record",
-			"event_id", eventID, "role", role, "keeps", keeps, "reason", reason)
+			"event_id", eventID, "role", role, "keeps", attempt, "reason", reason)
 		return nil, nil
 	}
-	return appendUndelivered(ctx, deps, tx, eventID, role, keeps, keptAt, droppedAt, reason)
+	return appendUndelivered(ctx, deps, tx, eventID, role, attempt, keptAt, droppedAt, reason)
 }
 
 // appendUndelivered appends, in tx, the role.undelivered record of eventID's copy for role on that
@@ -735,13 +739,22 @@ func recordExpiredCopies(ctx context.Context, deps Deps, instance uuid.UUID, rec
 	return holds, nil
 }
 
-// recordCopyGone ends held's event's delivery to its role because the stream no longer holds the
-// copy to keep again: it settles held undelivered and ends the pair as the bound does
-// (endRoleDelivery, model.RoleUndeliveredCopyGone), so the pair's other owed rows are settled and
-// its role.undelivered record is appended once, in one transaction. The transaction locks the
-// publisher hold's row first (lockPublisherHold) and is fenced on the row's claim as the pass's
-// record is: a process the hold has left, or a row a later pass claimed, writes nothing. It
-// publishes the record once that has committed. The caller runs it under recordTimeout.
+// recordCopyGone settles held, whose copy the stream no longer holds to keep again, in one
+// transaction, and ends its event's delivery to its role only when no other copy of the event
+// carries that delivery on. Another copy carries it when another row of the pair is still owed a
+// keep - claimed in this pass or not, since its copy may still be read - or was settled kept,
+// forwarded or skipped after held's expiry was recorded, which made a new copy or reached a session
+// after held's copy had ended. Then held is settled gone and nothing else is written: the delivery
+// goes on through that copy, which ends in its own expiry or in a session. Otherwise held is settled
+// undelivered and the pair ends as the bound ends it (endRoleDelivery, model.RoleUndeliveredCopyGone):
+// its other owed rows are settled and its role.undelivered record is appended once. The pass
+// records its kept and forwarded rows before it records any gone one (keepExpiredCopiesAgain), so a
+// sibling this pass delivered is read here.
+//
+// The transaction locks the publisher hold's row first (lockPublisherHold) and is fenced on the
+// row's claim as the pass's record is: a process the hold has left, or a row a later pass claimed,
+// writes nothing. It publishes the record once that has committed. The caller runs it under
+// recordTimeout.
 func recordCopyGone(ctx context.Context, deps Deps, instance uuid.UUID, held expiredCopy) error {
 	tx, err := deps.Store.Pool.Begin(ctx)
 	if err != nil {
@@ -751,15 +764,36 @@ func recordCopyGone(ctx context.Context, deps Deps, instance uuid.UUID, held exp
 	if mine, err := lockPublisherHold(ctx, deps, tx, instance); err != nil || !mine {
 		return err
 	}
+	var carried bool
+	if err := tx.QueryRow(ctx, `
+		select exists (
+			select 1 from outbox_role_copy_expiries other, outbox_role_copy_expiries gone
+			where gone.event_id = $1 and gone.role = $2 and gone.keep_attempt = $3
+			  and other.event_id = $1 and other.role = $2 and other.keep_attempt <> $3
+			  and (other.settled_at is null
+			       or (other.outcome = any($4) and other.settled_at >= gone.received_at))
+		)
+	`, held.eventID, held.role, held.attempt, []string{expiryKept, expiryForwarded, expirySkipped}).Scan(&carried); err != nil {
+		return err
+	}
+	outcome := expiryUndelivered
+	if carried {
+		outcome = expiryGone
+	}
 	tag, err := tx.Exec(ctx, `
 		update outbox_role_copy_expiries set settled_at = now(), outcome = $5
 		where event_id = $1 and role = $2 and keep_attempt = $3 and settled_at is null and next_attempt_at = $4
-	`, held.eventID, held.role, held.attempt, held.claim, expiryUndelivered)
+	`, held.eventID, held.role, held.attempt, held.claim, outcome)
 	if err != nil {
 		return err
 	}
 	if tag.RowsAffected() == 0 {
 		return nil
+	}
+	if carried {
+		slog.Info("dispatch outbox: an expired copy the stream no longer holds is passed over; another copy of the event carries its delivery to the role",
+			"event_id", held.eventID, "role", held.role, "attempt", held.attempt, "sequence", held.sequence)
+		return tx.Commit(ctx)
 	}
 	appended, err := endRoleDelivery(ctx, deps, tx, held.eventID, held.role, held.attempt, held.keptAt, held.droppedAt, model.RoleUndeliveredCopyGone)
 	if err != nil {

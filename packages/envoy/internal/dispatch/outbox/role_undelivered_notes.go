@@ -35,7 +35,8 @@ type undeliveredNote struct {
 	keeps     int
 	reason    string
 	itemRef   string
-	document  bool
+	// documentID is the id of the document a document event is about, "" for any other event.
+	documentID string
 }
 
 // undeliveredWindowsQuery reads the windows due a message: unposted, an hour old by the database's
@@ -56,7 +57,7 @@ const undeliveredWindowsQuery = `
 		limit $2
 	)
 	select n.issue_key, n.role, n.window_opened_at, n.event_id, n.event_type, n.keeps, n.reason,
-	       coalesce(n.item_ref, ''), n.artifact_id is not null, n.attempt_count
+	       coalesce(n.item_ref, ''), coalesce(n.artifact_id::text, ''), n.attempt_count
 	from due d
 	join outbox_role_undelivered_notes n
 	  on n.issue_key = d.issue_key and n.role = d.role and n.window_opened_at = d.window_opened_at
@@ -152,7 +153,7 @@ func dueUndeliveredWindows(ctx context.Context, deps Deps, instance uuid.UUID) (
 	var note undeliveredNote
 	var failures int
 	if _, err := pgx.ForEachRow(rows, []any{&issueKey, &role, &openedAt, &note.eventID, &note.eventType, &note.keeps,
-		&note.reason, &note.itemRef, &note.document, &failures}, func() error {
+		&note.reason, &note.itemRef, &note.documentID, &failures}, func() error {
 		last := len(windows) - 1
 		if last < 0 || windows[last].issueKey != issueKey || windows[last].role != role || !windows[last].openedAt.Equal(openedAt) {
 			windows = append(windows, undeliveredWindow{issueKey: issueKey, role: role, openedAt: openedAt})
@@ -193,11 +194,19 @@ func markUndeliveredWindow(ctx context.Context, deps Deps, instance uuid.UUID, w
 // block however many items it holds, so the events of a long window go in several lists, each led
 // by a paragraph that ends the list before it. An item names one reference, and a document's can
 // run to a few thousand units (its slug is as long as its name), so a list is bounded by its
-// length as well as by its count: half the block bound leaves room for any one item, and an item
-// that alone passed the budget would still stand in a list of its own.
+// length as well as by its count.
+//
+// A reference over undeliveredReferenceUnits is not written whole: a document kept from before the
+// creation bound on names (api/artifacts.go keeps its longer key) can have a slug of any length,
+// and one such item alone would pass the block bound and keep its message from ever being posted.
+// The item names that document by its id instead, which GET /api/v1/artifacts/{id} reads, and
+// says how long the reference is. The cap is above every reference a document made today has, so
+// those are still linked, and an item stays far under the list budget, which stays far under the
+// block bound.
 const (
 	undeliveredMessageListItems = 50
 	undeliveredMessageListUnits = contracts.DispatchBlockUnits / 2
+	undeliveredReferenceUnits   = 4096
 )
 
 // undeliveredMessage is the body of window's message: the role, how many events of this issue it
@@ -241,12 +250,20 @@ func undeliveredMessage(window undeliveredWindow) string {
 	return body.String()
 }
 
-// undeliveredNoteLine is note as one list item of a window's message, with its line end.
+// undeliveredNoteLine is note as one list item of a window's message, with its line end. A
+// reference over undeliveredReferenceUnits is named by its document's id and its length, or, for
+// a reference that names no document, by its length alone.
 func undeliveredNoteLine(note undeliveredNote) string {
 	var line strings.Builder
 	fmt.Fprintf(&line, "- event %d (%s)", note.eventID, note.eventType)
+	long := itemblocks.Units16(note.itemRef) > undeliveredReferenceUnits
 	switch {
-	case note.itemRef != "" && note.document:
+	case long && note.documentID != "":
+		fmt.Fprintf(&line, ", on the document with id %s (its reference is %d characters long, too long to write here)",
+			note.documentID, len([]rune(note.itemRef)))
+	case long:
+		fmt.Fprintf(&line, " (its reference is %d characters long, too long to write here)", len([]rune(note.itemRef)))
+	case note.itemRef != "" && note.documentID != "":
 		fmt.Fprintf(&line, ", on the document %s", note.itemRef)
 	case note.itemRef != "":
 		fmt.Fprintf(&line, ", %s", note.itemRef)

@@ -11,7 +11,9 @@
 -- the row by: outcome kept (the copy is on the lane again), forwarded (a session held the role by
 -- then and was sent it) or skipped (the holder was the event's own actor); a row at the bound is
 -- written settled with outcome undelivered, in the transaction that appends the event's
--- role.undelivered record, and so is a row whose copy the stream no longer holds. next_attempt_at
+-- role.undelivered record. A row whose copy the stream no longer holds is settled gone while
+-- another copy of the event still carries its delivery to the role, and undelivered, with that
+-- record, when none does. next_attempt_at
 -- and attempt_count are the pass's claim and backoff, as comment_fallback_copies keeps them.
 --
 -- outbox_kept_expiry_cursor is its one row: the stream sequence of the last expiry notice the
@@ -46,7 +48,7 @@ create table outbox_role_copy_expiries (
     next_attempt_at timestamptz,
     attempt_count integer not null default 0,
     settled_at timestamptz,
-    outcome text check (outcome in ('kept', 'forwarded', 'skipped', 'undelivered')),
+    outcome text check (outcome in ('kept', 'forwarded', 'skipped', 'gone', 'undelivered')),
     primary key (event_id, role, keep_attempt),
     check ((settled_at is null) = (outcome is null))
 );
