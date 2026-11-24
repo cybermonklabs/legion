@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -194,8 +193,15 @@ func fetchPullRequestPayload(ctx context.Context, client *githubapp.Client, toke
 // A commit the repository does not have answers an empty list, as GitHub's own 422 for it
 // does. Every other answer is githubapp.CheckRepositoryResponse's, so a 403 or 404 is
 // githubapp.ErrRepositoryUnreadable, which the results read takes as unknown, never as a
-// commit it placed elsewhere.
+// commit it placed elsewhere. A sha that is no full sha is refused before any request with
+// githubapp.ErrNotASHA, as the App client's reads of a commit refuse one, and named by
+// redact.ShapedSHA's phrase alone: url.PathEscape keeps ':' and '@', so such a value would print
+// as written in every error and note of the request. Every caller passes a result's commit,
+// which its column holds to a full sha.
 func fetchCommitPullPayloads(ctx context.Context, client *githubapp.Client, token, owner, repo, sha string) ([]pullRequestPayload, error) {
+	if shown := redact.ShapedSHA("commit", sha); shown != sha {
+		return nil, fmt.Errorf("fetch the pull requests of %s/%s@%s: %w", owner, repo, shown, githubapp.ErrNotASHA)
+	}
 	pullsPath := fmt.Sprintf("/repos/%s/%s/commits/%s/pulls", url.PathEscape(owner), url.PathEscape(repo), url.PathEscape(sha))
 	body, status, header, err := readGitHubPage(ctx, client, token, pullsPath)
 	if err != nil {
@@ -245,7 +251,7 @@ func fetchAttributionFacts(ctx context.Context, client *githubapp.Client, owner,
 // commitDate reads one commit's authored time: commit.author.date, or commit.committer.date when
 // GitHub reports no author for the commit (an unlinked email still carries a committer date).
 // Neither present is a malformed answer, whose error names the commit by its sha only where the
-// sha is one, forty hex digits (commitSHA): the sha is GitHub's words, or a stand-in's.
+// sha is one (redact.ShapedSHA): the sha is GitHub's words, or a stand-in's.
 func commitDate(c commitPayload) (time.Time, error) {
 	if c.Commit.Author != nil {
 		return c.Commit.Author.Date, nil
@@ -253,15 +259,8 @@ func commitDate(c commitPayload) (time.Time, error) {
 	if c.Commit.Committer != nil {
 		return c.Commit.Committer.Date, nil
 	}
-	shown := "(a sha that is not a commit's)"
-	if commitSHA.MatchString(c.SHA) {
-		shown = c.SHA
-	}
-	return time.Time{}, fmt.Errorf("commit %s carries neither an author nor a committer date", shown)
+	return time.Time{}, fmt.Errorf("commit %s carries neither an author nor a committer date", redact.ShapedSHA("commit", c.SHA))
 }
-
-// commitSHA is a commit's sha as GitHub writes one: forty lowercase hex digits.
-var commitSHA = regexp.MustCompile(`^[0-9a-f]{40}$`)
 
 func labelNames(labels []githubLabel) []string {
 	names := make([]string, len(labels))
@@ -452,7 +451,7 @@ func SearchMergedPullRequestsAcrossInstallation(
 		windowStart, err := since(installation.ID)
 		if err != nil {
 			mu.Lock()
-			failures = append(failures, fmt.Sprintf("installation %d (%s): %s", installation.ID, installation.AccountLogin, err))
+			failures = append(failures, fmt.Sprintf("%s: %s", installationName(installation), err))
 			mu.Unlock()
 			return nil
 		}
@@ -465,7 +464,7 @@ func SearchMergedPullRequestsAcrossInstallation(
 				return limited
 			}
 			mu.Lock()
-			failures = append(failures, fmt.Sprintf("installation %d (%s): %s", installation.ID, installation.AccountLogin, err))
+			failures = append(failures, fmt.Sprintf("%s: %s", installationName(installation), err))
 			mu.Unlock()
 		}
 		return nil
@@ -477,6 +476,12 @@ func SearchMergedPullRequestsAcrossInstallation(
 		return fmt.Errorf("%d of %d installations failed: %s", len(failures), len(installations), strings.Join(failures, "; "))
 	}
 	return nil
+}
+
+// installationName is how a failure names installation: by its id, and by its account's login,
+// GitHub's words, where that is a login GitHub allows (redact.ShapedLogin).
+func installationName(installation githubapp.Installation) string {
+	return fmt.Sprintf("installation %d of %s", installation.ID, redact.ShapedLogin("installation login", installation.AccountLogin))
 }
 
 // searchOneInstallation is SearchMergedPullRequestsAcrossInstallation's per-installation body.

@@ -11,12 +11,13 @@ import (
 // TestACommitWithNoDateNamesItsSHAOnlyWhenItIsOne: GitHub, or whatever answers in its place,
 // lists a pull request's first commit with no author and no committer date, under a sha that
 // quotes a credential's URL (not-a-sha) and under a commit's own sha (sha). The fetch's error names
-// the sha only where it is a commit's sha, forty hex digits, and otherwise says it is none, so it
-// prints nothing else the answer wrote there. Captures delivery.answer-words/<case>.
+// the sha only where it is a commit's sha (redact.ShapedSHA), and otherwise by the phrase that
+// names the field, so it prints nothing else the answer wrote there. Captures
+// delivery.answer-words/<case>.
 func TestACommitWithNoDateNamesItsSHAOnlyWhenItIsOne(t *testing.T) {
 	const commit = "0123456789abcdef0123456789abcdef01234567"
 	for _, c := range []struct{ name, sha, want string }{
-		{"not-a-sha", redacttest.Code, "commit (a sha that is not a commit's) carries neither an author nor a committer date"},
+		{"not-a-sha", redacttest.Code, "commit (the commit is not a SHA) carries neither an author nor a committer date"},
 		{"sha", commit, "commit " + commit + " carries neither an author nor a committer date"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
