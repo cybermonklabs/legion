@@ -306,7 +306,7 @@ type workflowRuntime struct {
 	// shortens (overrides.mergeStateRetry).
 	//
 	// baseReads is each base of a repository whose owed pull requests the daemon reads in batches
-	// (merge_state_reads.go's baseRead): a push to that base owes them a read (queueBaseMergeStates,
+	// (merge_state_batches.go's baseRead): a push to that base owes them a read (queueBaseMergeStates,
 	// the engine's Config.ReadBaseMergeStates), or a ladder handed it a head GitHub still answers
 	// `unknown` for (followOnBase). baseReadOf is the base each owed issue is read under, and
 	// baseWake the bases readBaseMergeStates has not started a batch ladder for yet. All of it is
@@ -323,7 +323,7 @@ type workflowRuntime struct {
 	baseReadOf        map[string]string
 	baseChunk         int
 	// gates is each installation's GraphQL queries, by the token scope they are made under
-	// (merge_state_reads.go's queryGate): one rate-limit hold, one pace and one query at a time,
+	// (merge_state_gate.go's queryGate): one rate-limit hold, one pace and one query at a time,
 	// shared by every base's batch of that installation. gateMu guards the map. graphQLShare is
 	// the share of the time each gate's queries may keep GitHub at work, the configuration's
 	// `github_graphql_share` (queryShare).
