@@ -131,9 +131,10 @@ type Variant struct {
 	// the operator's own and the role's own (role_config_files), in the file's order; nil where
 	// the arm names none.
 	ConfigFiles []string
-	// InstructionsPath is `instructions`, the one markdown file the daemon reads at boot and
-	// appends to the system prompt of each role the experiment reaches of a unit drawn into this
-	// arm, after the deployment's own instructions; empty where the arm names none.
+	// InstructionsPath is `instructions`, the one markdown file the daemon reads at boot, and
+	// again at each launch, and appends to the system prompt of each role the experiment reaches
+	// of a unit drawn into this arm, after the deployment's own instructions; empty where the arm
+	// names none.
 	InstructionsPath string
 	// ConfigFilesField is the key the operator wrote ConfigFiles under, whole:
 	// `projects.<KEY>.memory.config_files` for the arm the `memory` block declares, and

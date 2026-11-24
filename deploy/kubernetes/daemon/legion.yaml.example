@@ -122,8 +122,9 @@ projects:
   #                                    # /etc/legion-memory
   #     instructions: /etc/legion-daemon/memory-instructions.md # optional: a markdown file on the
   #                                    # daemon's own disk, not a pod mount: the daemon reads it at
-  #                                    # boot and appends its text to every memory-group role's
-  #                                    # system prompt, after the deployment's own instructions.
+  #                                    # boot, and again before each launch, and appends its text
+  #                                    # to every memory-group role's system prompt, after the
+  #                                    # deployment's own instructions.
   #                                    # mode: on with no instructions appends nothing
   #   experiments:                     # optional: what this project draws its trees and its issues
   #                                    # into, by the name each draw records. The memory block above

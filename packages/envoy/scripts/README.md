@@ -500,8 +500,7 @@ cannot stand in for a new test's.
 `GO_TEST_TIMEOUT` replaces the 5-minute `-timeout`, which `ci.yaml`'s `envoy-go` job counts
 in its time budget; the job runs it as "Count the store-form rows on each backend", over
 `./cmd/cipher/` and `./internal/cipher/api/`, as those tests' one run: the job's unit
-step and its database-skips step skip them by name (`BACKEND_COUNT_TESTS` in
-`.github/scripts/ci_job_reads.py`).
+step skips them by name (`BACKEND_COUNT_TESTS` in `.github/scripts/ci_job_reads.py`).
 
 ## database-skips.sh
 
@@ -531,8 +530,11 @@ reads that report. `--var NAME` names a variable the packages need, and repeats;
 when `--timeout` is not given; it bounds each package's test binary and not the run, since
 the packages run several at a time, so one that starts late ends later. `--skip PATTERN` adds
 go test's `-skip`; go test reports nothing for a test it leaves out, so that test is neither
-run nor counted as a skip. `--report` reads a `go test -json` report instead and runs nothing,
-and refuses the four options that shape a run.
+run nor counted as a skip. `--module-except PATTERN` adds to that one go test every other
+package of the module that `go list ./... | grep -Ev PATTERN` keeps; their skips are not
+counted and they are not held to showing a run, but a failure of theirs fails go test and so the
+count. `--report` reads a `go test -json` report instead and runs nothing, and refuses the five
+options that shape a run.
 
 It names the packages as `go list` does under the run's own flags, so a pattern spelled
 `./cmd/./cipherd/` counts the package it runs. It prints `SKIP PACKAGE TEST` for each skip of a
@@ -552,21 +554,24 @@ under a test after that test's own `--- PASS` or `--- SKIP` (a timed-out binary'
 dump and a data race report among them), the build output and, for a run of its own, go test's
 stderr. A run of its own also prints each package's `pass|fail PACKAGE <seconds>s` on stderr.
 
-`ci.yaml`'s `envoy-go` job runs it as "Count the database broker suites' skips", with
-`--timeout 20m`, the unit step's own `-timeout`, `--skip` of the one test of
-`./internal/cipher/api/` that the job's "Count the store-form rows on each backend" runs
-(`backend-count.sh`, above), and a step limit of its own
-(`timeout-minutes: 30`) that its time budget counts, and `envoy-go-race-api` runs the
-Dispatch API through it as the second line above.
-`database-skips.test.sh` holds it to five controls, which `envoy-go` runs as "Test the database
+`ci.yaml`'s `envoy-go` job runs the module through it as "Unit test envoy Go package", with
+`--timeout 20m`, `--skip` of the web display fixture's two tests and of the five the job's
+"Count the store-form rows on each backend" runs (`backend-count.sh`, above), `--module-except`
+of the packages other jobs run, and a step limit of its own (`timeout-minutes: 45`) that its
+time budget counts; one go test lets the broker's packages share its `-p` slots with the rest
+of the module, where a step of their own after the unit step waited on `cmd/cipherd` alone.
+`envoy-go-race-api` runs the Dispatch API through it as the second line above.
+`database-skips.test.sh` holds it to six controls, which `envoy-go` runs as "Test the database
 skip counter": a skip planted through a Go overlay in `./internal/cipher/api/`, `./cmd/cipherd/`
 and `./internal/dispatch/api/` is counted; either variable unset or empty is UNKNOWN; a report
 that shows no run (no test ran, only expected skips ran, or one package ran none) is UNKNOWN,
 a failed test fails, a race report filed under a passed subtest is printed, and a skip in a
 package spelled other than canonically is counted;
-`--timeout 1s` ends a package's binary; and a copy with
-one `EXPECTED_SKIPS` line deleted, in a temporary checkout, counts that test's skip. It needs
-a scratch Postgres named by both `BROKER_TEST_DATABASE_URL` and `DISPATCH_TEST_DATABASE_URL`.
+`--timeout 1s` ends a package's binary; a copy with
+one `EXPECTED_SKIPS` line deleted, in a temporary checkout, counts that test's skip; and a skip
+planted in a package `--module-except` adds is not counted, where a failure planted there fails
+the count. It needs a scratch Postgres named by both `BROKER_TEST_DATABASE_URL` and
+`DISPATCH_TEST_DATABASE_URL`.
 
 ## forced-order.sh
 
