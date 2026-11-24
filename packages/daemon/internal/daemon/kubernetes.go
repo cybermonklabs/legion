@@ -266,17 +266,17 @@ func sandboxBootOf(cfg config.Config, reads sandboxReads) (sandboxBoot, error) {
 // setting), checks the image's capability rows and the roles' overlays, runs no lane, and exits.
 // Its 500m CPU was set while the command also ran a TLS check of the image's clients, the longest
 // part of its run, which it no longer makes, and every timing measured for the value came from a
-// probe that ran that check: five runs of `legion probe-image --skip-agent-models` at 1 CPU under
-// gVisor (2026-11-18) took 51.9–76.2 s, 19.40–35.99 s of it on CPU, and runs in the worker image
-// of 1c7c825367 in a CPU-quota scope on a development host took 121.9–147.3 s at 500m (eleven
-// runs) and 73.5–104.4 s at 1 CPU (sixteen runs), with a peak of 374 MiB, against the 240 s
-// command budget of the defaults. No run without the TLS check has been measured, so the value is
-// kept until the command's other checks are audited, and a measurement of the probe as it then
-// runs sizes it. A probe its deadline cuts exits 75, which the daemon reads as a transient
-// attempt.
-// Five fresh runs at 250m / 1Gi took 57.68–77.43 s, so 1Gi held the probe, and the reservation
-// still fits a pool that cannot place a controller or issue pod. It has a 5Gi bound on node disk
-// and a 1Gi disk request. The probe runs at every boot, before anything is served, and a probe that
+// probe that ran that check: five runs at 250m / 1Gi, before that check held gcloud, bq, az, mise,
+// wget, git, go, kubectl, redis-cli and socat, took 57.68–77.43 s, so 1Gi held the probe; five
+// runs of `legion probe-image --skip-agent-models` at 1 CPU under gVisor (2026-11-18) took
+// 51.9–76.2 s, 19.40–35.99 s of it on CPU; and runs in the worker image of 1c7c825367 in a
+// CPU-quota scope on a development host took 121.9–147.3 s at 500m (eleven runs) and
+// 73.5–104.4 s at 1 CPU (sixteen runs), with a peak of 374 MiB, against the 240 s command budget
+// of the defaults. No run without the TLS check has been measured, so the value is kept until the
+// command's other checks are audited, and a measurement of the probe as it then runs sizes it.
+// The reservation still fits a pool that cannot place a controller or issue pod. It has a 5Gi
+// bound on node disk and a 1Gi disk request. The probe runs at every boot, before anything is
+// served, and a probe that
 // reserved a pod's share — the controller's 1 CPU and 4Gi, or an issue pod's 3 CPU and 19Gi —
 // could leave the daemon unable to boot on a pool full enough to place nothing that large (stage
 // 4b's daemon-controller-liveness restart, whose controller reservation no node can hold, met

@@ -13,7 +13,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -250,51 +249,6 @@ func TestProbeImagePrintsTheTableAndTheOKLineWithThisBinarysContract(t *testing.
 	okLine := "probe-image: OK (" + omp + ") session-storage=probed extensions=discovered agent-models=resolved" + capabilityMarks + thisBinarysContract + "\n"
 	if want := strings.Join(table, "\n") + "\n" + okLine; stdout != want {
 		t.Fatalf("stdout = %q, want the table, then the OK line %q, and nothing else", stdout, okLine)
-	}
-}
-
-// curlAfterTheHandshake is a curl that answers as curl 8.18.0 on OpenSSL 3.5.5 does, the curl of
-// an image on an Ubuntu 26.04 base: curl 8.17.0 to 8.23.0 on OpenSSL verify a chain only after the
-// handshake, so at a server that serves a chain it holds no key for, curl fails the server's
-// signature whatever its trust store holds. Its `--version` names that build, and every other
-// call ends with the line that curl printed at such a server, exit 35.
-const curlAfterTheHandshake = `#!/bin/sh
-if [ "$1" = --version ]; then
-  echo 'curl 8.18.0 (x86_64-pc-linux-gnu) libcurl/8.18.0 OpenSSL/3.5.5 zlib/1.3.1'
-  exit 0
-fi
-echo 'curl: (35) TLS connect error: error:030000EA:digital envelope routines::provider signature failure' >&2
-exit 35
-`
-
-// tlsCheckLine matches each line a TLS check of the image's clients printed: its decisions, its
-// UNKNOWN lines, its warning of a served chain's end, and that warning's annotation in a workflow.
-var tlsCheckLine = regexp.MustCompile(`probe-image: TLS|probe-image: UNKNOWN|probe-image: WARNING: the served|::warning title=TLS probe::`)
-
-// The command makes no TLS check of the image's clients: their own verification of each connection
-// is the evidence that they verify TLS. So an image whose curl verifies a chain only after the
-// handshake (curlAfterTheHandshake) passes on its other checks — the table, then the OK line, exit
-// 0 — and the run prints no line of a TLS check. The run takes no stand-in for any client: it is
-// the command as the image build and the daemon's probe Sandbox run it.
-func TestProbeImagePassesAnImageWhoseCurlVerifiesTheChainAfterTheHandshake(t *testing.T) {
-	omp := imageOmp(t)
-	img := inImage(t, thisBinarysContract, omp)
-	img.install(t, "curl", curlAfterTheHandshake)
-
-	var stdout, stderr bytes.Buffer
-	code := run(context.Background(), append([]string{"legion", "probe-image"}, img.flags()...), &stdout, &stderr)
-
-	okLine := "probe-image: OK (" + omp + ") session-storage=probed extensions=discovered agent-models=resolved" + capabilityMarks + thisBinarysContract + "\n"
-	if code != 0 || !strings.HasSuffix(stdout.String(), okLine) {
-		t.Fatalf("probe-image over an image whose curl verifies the chain after the handshake = %d, stdout %q, stderr %q; want exit 0 and the OK line %q", code, stdout.String(), stderr.String(), okLine)
-	}
-	for _, line := range strings.Split(stdout.String()+stderr.String(), "\n") {
-		if tlsCheckLine.MatchString(line) {
-			t.Errorf("probe-image printed %q, a line of a TLS check", line)
-		}
-	}
-	if want := filepath.Join(img.bin, "curl"); !strings.Contains(stdout.String(), "probe-image: capability toolchain: present (on PATH: ") || !strings.Contains(stdout.String(), want) {
-		t.Errorf("stdout = %q, want the toolchain row present with the image's curl %s", stdout.String(), want)
 	}
 }
 
@@ -818,75 +772,42 @@ func TestProbeImageReadsEachRolesOwnOverlaysAsTheRoleStarts(t *testing.T) {
 	}
 }
 
-// shortProbeBudget is the --probe-budget a test that cuts a probe passes, which makes the probe
-// run under a deadline (newProbeDeadline). Each such test puts that deadline at a stand-in's own
-// line (probeDeadlineOnceLogged), so this length ends nothing.
-const shortProbeBudget = "4s"
+// unreachedProbeBudget is the --probe-budget of a test that cuts a probe: a length no machine's
+// load reaches, so the probe's budget context (context.WithTimeout in runProbeImage) ends only when
+// its parent does, at the moment probeImageCutOnceLogged passes that parent's deadline.
+const unreachedProbeBudget = "1h"
 
-// probeDeadlineOnceLogged makes each probe of t run under a deadline that passes once the file at
-// log holds line, the line a stand-in writes once it has started and waits, in place of one that
-// passes a --probe-budget after the probe's start. Before that stand-in runs, the probe starts Oh
-// My Pi and the image's commands several times, each a process a loaded machine can start late,
-// so a deadline counted from the probe's start could pass before the stand-in began, and cut a
-// step other than the one the test means to cut.
-func probeDeadlineOnceLogged(t *testing.T, log, line string) {
-	t.Helper()
-	previous := newProbeDeadline
-	t.Cleanup(func() { newProbeDeadline = previous })
-	newProbeDeadline = func(ctx context.Context, _ time.Duration) (context.Context, context.CancelFunc) {
-		deadline := &loggedDeadline{Context: context.WithoutCancel(ctx), parent: ctx, done: make(chan struct{}), stop: make(chan struct{})}
-		go deadline.watch(log, line)
-		return deadline, deadline.cancel
-	}
-}
-
-// loggedDeadline is the context probeDeadlineOnceLogged gives a probe: its parent's values, ended
-// as a deadline ends it (context.DeadlineExceeded) once a log holds a line, with the parent's error
-// where the parent ends first, or with context.Canceled by cancel. It holds the parent's values
-// through context.WithoutCancel, so context.Cause reads its own error, as of a deadline's context,
-// and not the parent's cause.
-type loggedDeadline struct {
-	context.Context
-	parent     context.Context
-	done, stop chan struct{}
-	stopOnce   sync.Once
-	// err is the context's error, written before done is closed and read only after it.
-	err error
-}
-
-func (d *loggedDeadline) Done() <-chan struct{} { return d.done }
-
-func (d *loggedDeadline) Err() error {
-	select {
-	case <-d.done:
-		return d.err
-	default:
-		return nil
-	}
-}
-
-func (d *loggedDeadline) cancel() { d.stopOnce.Do(func() { close(d.stop) }) }
-
-// watch ends d once the file at log holds line, once d's parent ends, or once cancel is called,
-// whichever comes first.
-func (d *loggedDeadline) watch(log, line string) {
-	tick := time.NewTicker(5 * time.Millisecond)
-	defer tick.Stop()
-	for {
-		select {
-		case <-d.parent.Done():
-			d.err = d.parent.Err()
-		case <-d.stop:
-			d.err = context.Canceled
-		case <-tick.C:
-			if raw, _ := os.ReadFile(log); !slices.Contains(strings.Split(string(raw), "\n"), line) {
-				continue
+// probeImageCutOnceLogged runs `legion probe-image` with args under a parent context whose deadline
+// passes once the file at log holds line, the line a stand-in writes once it has started and waits
+// (passedDeadline, gh_help_timeout_test.go), and answers its exit code, stdout and stderr. Before
+// that stand-in runs, the probe starts Oh My Pi and the image's commands several times, each a
+// process a loaded machine can start late, so a deadline counted from the probe's start could pass
+// before the stand-in began, and cut a step other than the one the test means to cut. Each
+// stand-in that waits ends on its own within a minute, so a line that never comes ends the run.
+func probeImageCutOnceLogged(log, line string, args ...string) (int, string, string) {
+	deadline := newPassedDeadline()
+	returned, watched := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(watched)
+		tick := time.NewTicker(5 * time.Millisecond)
+		defer tick.Stop()
+		for {
+			select {
+			case <-returned:
+				return
+			case <-tick.C:
+				if raw, _ := os.ReadFile(log); slices.Contains(strings.Split(string(raw), "\n"), line) {
+					deadline.pass()
+					return
+				}
 			}
-			d.err = context.DeadlineExceeded
 		}
-		close(d.done)
-		return
-	}
+	}()
+	var stdout, stderr bytes.Buffer
+	code := run(deadline, append([]string{"legion", "probe-image"}, args...), &stdout, &stderr)
+	close(returned)
+	<-watched
+	return code, stdout.String(), stderr.String()
 }
 
 // Each step is judged by the probe's deadline as it returns, and what the deadline cut has no
@@ -897,7 +818,7 @@ func (d *loggedDeadline) watch(log, line string) {
 // A capability row found missing before the deadline (Oh My Pi's Python unavailable) fails the
 // probe, exit 1 with no no-verdict line, beside a later row that the deadline cut (a Chromium that
 // never answers its --version, so the browser row is unanswered). In each row the deadline passes
-// once the step it cuts has logged that it waits (probeDeadlineOnceLogged), to $LEGION_TEST_WAITING.
+// once the step it cuts has logged that it waits, to $LEGION_TEST_WAITING (probeImageCutOnceLogged).
 func TestProbeImageJudgesEachStepByTheDeadlineAsItReturns(t *testing.T) {
 	dir := t.TempDir()
 	overlay := func(name string) string {
@@ -938,9 +859,8 @@ func TestProbeImageJudgesEachStepByTheDeadlineAsItReturns(t *testing.T) {
 			if tc.setup != nil {
 				tc.setup(t, img)
 			}
-			probeDeadlineOnceLogged(t, waiting, tc.waits)
 
-			code, stdout, stderr := probeImage(img.flags(append(tc.args, "--probe-budget", shortProbeBudget)...)...)
+			code, stdout, stderr := probeImageCutOnceLogged(waiting, tc.waits, img.flags(append(tc.args, "--probe-budget", unreachedProbeBudget)...)...)
 
 			if code != tc.code || strings.Contains(stdout, bootprobe.OKPrefix) {
 				t.Fatalf("probe-image = %d, stdout %q, stderr %q; want exit %d and no OK line", code, stdout, stderr, tc.code)

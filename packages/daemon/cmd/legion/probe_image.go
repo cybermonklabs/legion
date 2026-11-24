@@ -166,7 +166,7 @@ func runProbeImage(ctx context.Context, f *probeImageFlags, args []string, stdou
 	}
 	if f.probeBudget > 0 {
 		var cancel context.CancelFunc
-		ctx, cancel = newProbeDeadline(ctx, f.probeBudget)
+		ctx, cancel = context.WithTimeout(ctx, f.probeBudget)
 		defer cancel()
 	}
 	if f.roleNamespaces != "" {
@@ -434,11 +434,4 @@ func checkRoleOverlays(ctx context.Context, entries []roleOverlays, check func(v
 		}
 	}
 	return 0, noVerdict
-}
-
-// newProbeDeadline is the context a probe with a --probe-budget runs under: ctx, ended with
-// context.DeadlineExceeded once budget has passed. A test puts another in its place, one that ends
-// at a moment of a stand-in's run (probe_image_test.go, probeDeadlineOnceLogged).
-var newProbeDeadline = func(ctx context.Context, budget time.Duration) (context.Context, context.CancelFunc) {
-	return context.WithTimeout(ctx, budget)
 }

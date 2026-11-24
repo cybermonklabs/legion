@@ -1437,7 +1437,7 @@ COPY --from=go-modules --chown=1000:1000 /gomodcache/cache/download /home/legion
 # gets one version until the Node pin moves. It is image ENV, not a pod variable, for that reason.
 # AWS_CA_BUNDLE makes the AWS CLI use Debian's current system roots. Its vendored bundle has no
 # trust path for example.com's current chain after the compromised AAA root is removed, while the
-# system bundle validates that control and rejects both compromised test chains.
+# system bundle trusts that chain and holds neither the emSign nor the AAA root.
 # CGO_ENABLED=0 keeps cgo off by default now that gcc is on PATH (the apt line above says why gcc is
 # there), for every process that inherits the image's environment: the bash tool, subagents, and go
 # test's test binaries. The toolchain stage's go.env line alone would not reach two of them: a go/build

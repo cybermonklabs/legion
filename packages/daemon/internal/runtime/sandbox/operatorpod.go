@@ -20,7 +20,8 @@ import (
 
 // ImageEnv are the variables the worker image's final stage sets (packages/daemon/docker/
 // worker.Dockerfile, ENV), which every container inherits, and which a pod's env therefore may not
-// override: AWS_CA_BUNDLE holds the AWS CLI to the system root bundle the image probe verifies;
+// override: AWS_CA_BUNDLE points the AWS CLI at Debian's system root bundle (the Dockerfile's ENV
+// comment says why);
 // CGO_ENABLED=0 keeps cgo off by default in every process that inherits the image's environment,
 // the image's gcc on PATH notwithstanding, so a role opts in per command (`CGO_ENABLED=1 go test
 // -race …`) rather than a deployment for every build; COREPACK_DEFAULT_TO_LATEST=0 keeps the
