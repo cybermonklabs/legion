@@ -7,10 +7,12 @@ package workflow
 // whatever move started it, forward or back, and wherever its task's steps put its phase.
 
 import (
+	"context"
 	"reflect"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -294,6 +296,55 @@ func TestAWorkerRelaunchedWhileTheMergeIsOpenIsHeldAtItsReady(t *testing.T) {
 			}
 			if !reflect.DeepEqual(held, tc.want) {
 				t.Errorf("the ready of the %s's launch 2 queued the holds %v, want %v", tc.ready, held, tc.want)
+			}
+		})
+	}
+}
+
+// A worker the daemon sends its phase's work again while another role's merge forward of the head
+// is open is held with that work, by the rule that holds a worker a move starts: the silence
+// repair's send to a worker up between turns with no task, which a held worker that stopped as its
+// hold says is, and admission's send of the entry a worker is behind. Each is work that tells the
+// worker to go on in the workspace the merge writes. On the default steps, the implementer is
+// asked in testing and the tester is held; each send holds the tester once more.
+func TestAWorkerSentItsWorkAgainWhileTheMergeIsOpenIsHeld(t *testing.T) {
+	why := record.ConflictCheckNotGreen
+	for _, tc := range []struct {
+		name string
+		send func(ctx context.Context, tx pgx.Tx, e *Engine, issue record.Issue, row record.PhaseRow) error
+	}{
+		{name: "the silence repair", send: func(ctx context.Context, tx pgx.Tx, e *Engine, issue record.Issue, row record.PhaseRow) error {
+			return e.repairSilence(ctx, tx, issue, issue, record.RoleRun{Claim: &record.RoleClaim{GivenEntry: row.Entry}}, row,
+				intake.WorkerSilent{Issue: "LEGION-208", Role: claim.RoleTester, Generation: 1, LastStep: e.now().Add(-2 * time.Hour), Bound: time.Hour},
+				e.now())
+		}},
+		{name: "admission's send of an owed entry", send: func(ctx context.Context, tx pgx.Tx, e *Engine, issue record.Issue, row record.PhaseRow) error {
+			return e.SendOwedEntry(ctx, tx, issue, claim.RoleTester, row)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := seedConflictIssue(t, phase.Testing, "testing", settledGreen("lint"))
+			confirmsConflict(t, pool, &record.BaseRules{Required: []string{"ci"}})
+			if got, want := mergeForwardMessages(t, pool), []record.MergeForwardMessage{implementerAsked(phase.Testing, why),
+				heldIn(claim.RoleTester, phase.Testing, why)}; !reflect.DeepEqual(got, want) {
+				t.Fatalf("after the confirmed conflict the merge-forward messages are %+v, want %+v", got, want)
+			}
+			engine := readsAfter(3 * time.Minute)
+			applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
+				issue, err := engine.store.Issue(ctx, tx, "LEGION-208")
+				if err != nil {
+					return err
+				}
+				row, err := engine.phaseRow(ctx, tx, "LEGION-208", claim.RoleTester)
+				if err != nil {
+					return err
+				}
+				return tc.send(ctx, tx, engine, *issue, row)
+			})
+			want := []record.MergeForwardMessage{implementerAsked(phase.Testing, why), heldIn(claim.RoleTester, phase.Testing, why),
+				heldIn(claim.RoleTester, phase.Testing, why)}
+			if got := mergeForwardMessages(t, pool); !reflect.DeepEqual(got, want) {
+				t.Errorf("after %s the merge-forward messages are %+v, want %+v: the tester is sent work while the implementer merges", tc.name, got, want)
 			}
 		})
 	}
