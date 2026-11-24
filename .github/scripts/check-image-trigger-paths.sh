@@ -1979,14 +1979,26 @@ BUILD_PLUMBING_STEPS: list[tuple[str, str, str, tuple[str, ...], str]] = [
     (
         ".github/workflows/worker-image.yaml", "build", "contract_order",
         (
+            "if grep -Eq '^const DaemonAPIVersion = [0-9]+$' packages/daemon/internal/api/version.go; then",
+            'echo "stamp=" >> "$GITHUB_OUTPUT"',
+            'exit 0',
+            'fi',
             'git fetch --filter=blob:none --unshallow origin "$BUILT_SHA" refs/heads/main:refs/remotes/origin/main',
             'stamp=$(bash scripts/daemon-contract-order.sh --stamp "$BUILT_SHA")',
+            'if [ -z "$stamp" ]; then',
+            'echo "::error::scripts/daemon-contract-order.sh printed no stamp for $BUILT_SHA, whose Dockerfile requires one"',
+            'exit 1',
+            'fi',
             'echo "stamp=$stamp" >> "$GITHUB_OUTPUT"',
         ),
-        "fetches the built commit's history and main's, with no blob, and reads from them the "
-        "stamp of the built commit's contract entries, which it writes to $GITHUB_OUTPUT for the "
-        "build's LEGION_CONTRACT_ORDER argument; scripts/daemon-contract-order.sh is the one file "
-        "of the tree it reads, which COMPUTED_BUILD_INPUTS holds the trigger to",
+        "writes an empty stamp for a head from before the cutover to entry files, whose version.go "
+        "still declares `const DaemonAPIVersion = <n>` and whose Dockerfile takes no stamp; for any "
+        "other head it fetches the built commit's history and main's, with no blob, reads from "
+        "them the stamp of the built commit's contract entries, refuses an empty one, and writes "
+        "it to $GITHUB_OUTPUT for the build's LEGION_CONTRACT_ORDER argument. Beside "
+        "packages/daemon/internal/api/version.go, which the build's context holds, "
+        "scripts/daemon-contract-order.sh is the one file of the tree it reads, which "
+        "COMPUTED_BUILD_INPUTS holds the trigger to",
     ),
 ]
 

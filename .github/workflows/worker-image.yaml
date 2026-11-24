@@ -204,13 +204,27 @@ jobs:
       # reads commits and trees alone. On main the built commit is main's, so the stamp is the
       # order every later build of main extends; a pull request's head is stamped as the branch
       # holds it, and no production project runs such an image.
+      # On a pull request this workflow is the merge ref's while the checkout is the head's, so a
+      # head from before the cutover to entry files (dispatch://INFRA-1569) holds no order script.
+      # Such a head still declares `const DaemonAPIVersion = <n>` with one space in version.go, and
+      # its Dockerfile takes no stamp, so its stamp is empty. A later head declares no such line, and
+      # its build refuses an empty stamp here rather than link an unstamped `legion`.
+      # .github/scripts/worker-image-contract-order.test.sh runs this step's script.
       # .github/scripts/check-image-trigger-paths.sh pins this step as the image build's own
       # plumbing, and reads the script as an input computed into the build.
       - name: Read the contract entries' merge order
         id: contract_order
         run: |
+          if grep -Eq '^const DaemonAPIVersion = [0-9]+$' packages/daemon/internal/api/version.go; then
+            echo "stamp=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           git fetch --filter=blob:none --unshallow origin "$BUILT_SHA" refs/heads/main:refs/remotes/origin/main
           stamp=$(bash scripts/daemon-contract-order.sh --stamp "$BUILT_SHA")
+          if [ -z "$stamp" ]; then
+            echo "::error::scripts/daemon-contract-order.sh printed no stamp for $BUILT_SHA, whose Dockerfile requires one"
+            exit 1
+          fi
           echo "stamp=$stamp" >> "$GITHUB_OUTPUT"
 
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
