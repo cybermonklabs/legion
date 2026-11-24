@@ -1,83 +1,62 @@
 package main
 
-// Acceptance tests for the check c-redact-remote-text at c82c3a0d9f, round 5. Each fails at that
-// head for the defect it names and passes once the defect is fixed. Copy this file into
-// packages/envoy/cmd/redact-gate and run from packages/envoy:
-//
-//	go test -count=1 -run 'TestAcceptance' ./cmd/redact-gate
+// Tests that the check holds three things its verification names: the probe markers it prints as
+// part of its bound, the device sign-in's echo rows in its inventory, and its statement of what
+// its results do not establish.
 
 import (
+	"bytes"
 	"encoding/json"
-	"go/ast"
-	"go/parser"
-	"go/token"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
 
-// TestAcceptanceTheGatePrintsTheProbeMarkersItTested: "What the check prints as its bound" has the
-// check report "the probe markers it tested". The gate holds them (markers, main.go) and reads
-// each mutant's captured output for them (rows.go), but no print call of the gate names them: a
-// stage 5 line says only "its captured output naming a marker", and the script prints none.
-func TestAcceptanceTheGatePrintsTheProbeMarkersItTested(t *testing.T) {
-	set := token.NewFileSet()
-	packages, err := parser.ParseDir(set, ".", func(info os.FileInfo) bool { return !strings.HasSuffix(info.Name(), "_test.go") }, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	reads, prints := 0, 0
-	for _, pkg := range packages {
-		for _, file := range pkg.Files {
-			ast.Inspect(file, func(n ast.Node) bool {
-				call, ok := n.(*ast.CallExpr)
-				if !ok {
-					return true
-				}
-				selector, ok := call.Fun.(*ast.SelectorExpr)
-				if !ok {
-					return true
-				}
-				name := selector.Sel.Name
-				printer := strings.HasPrefix(name, "Fprint") || strings.HasPrefix(name, "Print")
-				for _, arg := range call.Args {
-					ast.Inspect(arg, func(m ast.Node) bool {
-						if id, ok := m.(*ast.Ident); ok && id.Name == "markers" && printer {
-							prints++
-						}
-						return true
-					})
-				}
-				return true
-			})
-			ast.Inspect(file, func(n ast.Node) bool {
-				if r, ok := n.(*ast.RangeStmt); ok {
-					if id, ok := r.X.(*ast.Ident); ok && id.Name == "markers" {
-						reads++
-					}
-				}
-				return true
-			})
+// TestTheGatesReportNamesEveryProbeMarkerItsEvidenceReads: the report, which the check prints as
+// part of its bound, holds one MARKERS line, and it names exactly the probe markers a mutant's
+// captured output is read for: each it names makes output that holds it alone evidence
+// (result.marked), and it names every one of them.
+func TestTheGatesReportNamesEveryProbeMarkerItsEvidenceReads(t *testing.T) {
+	var out bytes.Buffer
+	(&gate{out: &out}).report(census{})
+	var lines []string
+	for _, line := range strings.Split(out.String(), "\n") {
+		if strings.HasPrefix(line, "MARKERS ") {
+			lines = append(lines, line)
 		}
 	}
-	// Control: the gate does read the markers (its evidence loop ranges over them), so a print of
-	// them would be found the same way.
-	if reads == 0 {
-		t.Fatal("control: no range over markers in the gate's source, so this test reads the wrong package")
+	if len(lines) != 1 {
+		t.Fatalf("the report holds %d MARKERS lines, want one:\n%s", len(lines), out.String())
 	}
-	if prints == 0 {
-		t.Errorf("no print call of the gate names the probe markers it tested (markers is read in %d loops and printed by none)", reads)
+	_, list, ok := strings.Cut(lines[0], ": ")
+	if !ok {
+		t.Fatalf("the MARKERS line names no list: %q", lines[0])
+	}
+	printed := strings.Split(list, ", ")
+	// Control: output that holds no marker is not evidence, so a marker below that is is read for.
+	if (result{captures: map[string][]string{"probe": {"a captured line that names no marker"}}}).marked("probe") {
+		t.Fatal("control: output with no marker reads as evidence, so marked cannot tell a marker apart")
+	}
+	for _, m := range printed {
+		if !(result{captures: map[string][]string{"probe": {"captured " + m + " here"}}}).marked("probe") {
+			t.Errorf("the MARKERS line names %q, which a mutant's captured output is not read for", m)
+		}
+	}
+	for _, m := range markers {
+		if !slices.Contains(printed, m) {
+			t.Errorf("the MARKERS line leaves out %q, which a mutant's captured output is read for: %q", m, lines[0])
+		}
 	}
 }
 
-// TestAcceptanceTheInventoryHoldsTheDeviceSignInEchoRows: the verification's inventory list names,
-// among the rows for an answer that echoes its own request, "a device sign-in's wait and refresh"
-// beside "an external-account mint's token exchange and impersonation". The test that pins the
-// device flow's Wait and Refresh against an echoing page exists
-// (internal/cipherclient TestProxyEchoDeviceSignInPrintsTheClassAndNoCredential), but no inventory
-// row names it, so the check runs neither.
-func TestAcceptanceTheInventoryHoldsTheDeviceSignInEchoRows(t *testing.T) {
+// TestTheInventoryHoldsTheDeviceSignInEchoRows: the verification names, among the rows for an
+// answer that echoes its own request, "a device sign-in's wait and refresh" beside "an
+// external-account mint's token exchange and impersonation", and the inventory holds a row for
+// each: internal/cipherclient's TestProxyEchoDeviceSignInPrintsTheClassAndNoCredential, its Wait
+// and its Refresh.
+func TestTheInventoryHoldsTheDeviceSignInEchoRows(t *testing.T) {
 	raw, err := os.ReadFile(filepath.Join("..", "..", "internal", "redact", "testdata", "redact-check.json"))
 	if err != nil {
 		t.Fatal(err)
@@ -115,14 +94,14 @@ func TestAcceptanceTheInventoryHoldsTheDeviceSignInEchoRows(t *testing.T) {
 	}
 }
 
-// TestAcceptanceTheCheckStatesTheBoundTheVerificationNames: "What the check prints as its bound"
-// has the check state that its results do not establish, among others, errors of libraries other
-// than golang.org/x/oauth2, github.com/coreos/go-oidc and openid-client; a call into one of those
-// libraries made through reflection (reflect.Value.MethodByName(...).Call); and the forms the
-// fixture's residual rows pin as printing. The script's statement names neither go-oidc nor the
-// reflection call, and of the two known-residual rows at the head (split-user-info-bare and
-// split-user-info-json-key) it names only the bare one.
-func TestAcceptanceTheCheckStatesTheBoundTheVerificationNames(t *testing.T) {
+// TestTheChecksStatementNamesWhatItsResultsDoNotEstablish: the statement the check prints of what
+// its results do not establish names, among others, github.com/coreos/go-oidc among the libraries
+// whose errors the censuses hold; a call into one of those libraries made through reflection
+// (reflect.Value.MethodByName(...).Call), which no census lists; the JSON-key form of the
+// fixture's known residual (split-user-info-json-key) beside the bare one; a credential cut into
+// pieces shorter than redact.TokenPiece, which the rule does not redact; and a public name's
+// route match, which reads the request's whole escaped path.
+func TestTheChecksStatementNamesWhatItsResultsDoNotEstablish(t *testing.T) {
 	raw, err := os.ReadFile(filepath.Join("..", "..", "scripts", "check-redact-remote-text.sh"))
 	if err != nil {
 		t.Fatal(err)
@@ -145,6 +124,8 @@ func TestAcceptanceTheCheckStatesTheBoundTheVerificationNames(t *testing.T) {
 		{"github.com/coreos/go-oidc among the libraries whose errors the censuses hold", "go-oidc"},
 		{"a library call made through reflection, which no census lists", "MethodByName"},
 		{"the known-residual row split-user-info-json-key, the JSON-key form of a bare label: name@host", "JSON"},
+		{"a credential cut into pieces shorter than the rule's shortest redacted run", "pieces shorter than redact.TokenPiece"},
+		{"a public name's route match, which reads the request's whole escaped path", "whole escaped path"},
 	} {
 		if !strings.Contains(statement, want.text) {
 			t.Errorf("the statement of what the results do not establish leaves out %s (%q):\n%s", want.what, want.text, statement)
