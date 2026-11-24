@@ -5,11 +5,13 @@ body: |-
   candidate authority sent with it, a name an authority's constraint excludes. Whoever answers in
   the server's place chooses those names, and could put the request's credential there, whether
   the client trusted the certificate or not. `redact.Cause`, `redact.Error` and
-  `redact.Unanswered` now print a TLS record or certificate failure as fixed words for its type:
+  `redact.Unanswered` now print a TLS record or certificate failure as fixed words for its type,
+  and for an `x509.CertificateInvalidError` for its reason:
   `tls: failed to verify certificate: x509: certificate is not valid for the host asked (...)`,
   `... x509: certificate signed by unknown authority` (with no candidate authority named),
-  `... x509: certificate is not valid (...)`, and `tls: a record the server sent is not TLS this
-  client can read (...)`. The error still unwraps to the failure, so `errors.As` finds the
+  `... x509: certificate has expired or is not yet valid (...)` and one phrase for each other
+  reason x509 names, and `tls: a record the server sent is not TLS this client can read (...)`.
+  The error still unwraps to the failure, so `errors.As` finds the
   certificate failure and its x509 type. `oauth2call.Unanswered` is `redact.Unanswered` for a
   module outside this one: the daemon now prints every request that got no answer through it.
 time: 2026-11-24T05:47:51Z
