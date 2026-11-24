@@ -22,6 +22,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/redact"
+	"github.com/sjawhar/envoy/internal/urljoin"
 )
 
 const (
@@ -269,6 +270,12 @@ func (r *Reader) read(ctx context.Context, name string) {
 
 // list reads every page of name's members.list, derived members included, and answers the
 // people among them by their record.CanonicalLogin form. A failed page fails the whole read.
+// Each page's URL is BaseURL with the members route and the page's own parameters joined onto
+// its path and its query (urljoin.Join), its fragment, which no request sends, dropped: the
+// route appended to BaseURL's text would sit inside a query or a fragment, and the second "?"
+// of the parameters would be read as part of the first query's last value, so the Directory
+// would be asked another path. A BaseURL that does not parse is refused in fixed words, since
+// url.Parse's error quotes the URL whole, user information and query included.
 func (r *Reader) list(ctx context.Context, name string) (map[string]struct{}, error) {
 	token, err := redact.OAuth2(r.Source.Token())
 	if err != nil {
@@ -276,13 +283,17 @@ func (r *Reader) list(ctx context.Context, name string) (map[string]struct{}, er
 	}
 	// The calls go through call (token.go), which follows no redirect: they carry a token.
 	client := cmp.Or(r.HTTP, http.DefaultClient)
-	endpoint := cmp.Or(r.BaseURL, googleDirectoryURL) + "/admin/directory/v1/groups/" + url.PathEscape(name) + "/members"
+	route := "/admin/directory/v1/groups/" + url.PathEscape(name) + "/members"
 	members := map[string]struct{}{}
 	query := url.Values{"includeDerivedMembership": {"true"}, "maxResults": {pageSize}}
 	for {
-		request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint+"?"+query.Encode(), nil)
+		asked, err := urljoin.Join(cmp.Or(r.BaseURL, googleDirectoryURL), route+"?"+query.Encode())
 		if err != nil {
-			return nil, err
+			return nil, errors.New("the Directory URL does not parse")
+		}
+		request, err := http.NewRequestWithContext(ctx, http.MethodGet, asked.String(), nil)
+		if err != nil {
+			return nil, errors.New("the URL the Directory read joined does not parse")
 		}
 		token.SetAuthHeader(request)
 		answer, err := call(client, request, "the Directory")
