@@ -60,6 +60,7 @@ import type { MutationKey, QueryClient } from "@tanstack/react-query";
 import { act, screen, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 
+import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import {
   BODY,
   drawInboxColumn,
@@ -73,6 +74,7 @@ import {
   REFUSAL,
   signedInAsReader,
 } from "../../__tests__/draft-matrix-fixture";
+import { messageCorrectionFields } from "../../__tests__/message-fixture";
 import { sentRequest, stopSend } from "../../__tests__/stop-late-write";
 import { api } from "../../api/client";
 import type {
@@ -109,19 +111,15 @@ const bob = { id: "bob", kind: "user" } as const;
 
 function rootComment(id: string, issueKey: string): Comment {
   return {
+    ...commentDeliveryFields(),
     anchor: null,
-    answers: null,
-    artifact_id: null,
     ask_id: null,
     author: bob,
     body: "The retry budget is too small.",
     created_at: "2026-10-12T00:00:00Z",
-    deliveries: [],
     edited_at: null,
     id,
     issue_key: issueKey,
-    mentions: [],
-    reply_block: null,
     reply_to: null,
     resolved: false,
     resolved_at: null,
@@ -183,6 +181,7 @@ function plannerMessage(id: string, body: string, overrides: Partial<Message> = 
     broadcast_id: null,
     created_at: "2026-10-12T00:00:00Z",
     deliveries: [],
+    ...messageCorrectionFields(),
     id,
     in_reply_to: null,
     issue_key: null,

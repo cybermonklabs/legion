@@ -21,7 +21,9 @@ import {
 import { ApprovalChip } from "../doc/ApprovalChip";
 import { AgentName } from "../refs/AgentName";
 import { CopyRefButton } from "../refs/CopyRefButton";
+import { DeletedBody, EditedMark } from "../refs/PostMarks";
 import { PlainText } from "../refs/plain-text";
+import { type PostDeletion, postDeletion } from "../refs/post-marks";
 import {
   buildIssuePath,
   buildProjectPath,
@@ -152,13 +154,35 @@ function nameSource(node: ReferenceLink["node"]): TextSource | undefined {
     : undefined;
 }
 
-/** A references row's name, as the link to its node, or as words where the node opens no page. */
-function NodeName({ href, name }: { href: string | undefined; name: string }): ReactNode {
+/** A references row's name, as the link to its node, or as words where the node opens no page.
+ *  A comment or a message, or a block of one, carries its post's marks: a deleted one is named
+ *  by the deleted line (`DeletedBody`) and never by the words the read gave, and an edited one
+ *  says ` · edited` after its name (`EditedMark`). */
+function NodeName({
+  deleted,
+  edited,
+  href,
+  name,
+}: {
+  deleted: PostDeletion | null;
+  edited: string | null | undefined;
+  href: string | undefined;
+  name: string;
+}): ReactNode {
+  const drawn =
+    deleted === null ? (
+      <>
+        {name}
+        <EditedMark at={edited} className={`font-normal ${textMutedOnSurface}`} />
+      </>
+    ) : (
+      <DeletedBody deleted={deleted} />
+    );
   return href === undefined ? (
-    <span className="font-medium">{name}</span>
+    <span className="font-medium">{drawn}</span>
   ) : (
     <Link className={`font-medium underline ${linkText} ${linkHoverText}`} to={href}>
-      {name}
+      {drawn}
     </Link>
   );
 }
@@ -167,7 +191,8 @@ function NodeName({ href, name }: { href: string | undefined; name: string }): R
  *  named by the words the read gives for it, then the node's kind and the kind of the issue's node
  *  at the near end, which a row of `links` links from (`via`) and a row of `linked_from` links to
  *  (`to`). A document's row names its owner first, as a member's row does. A node with no
- *  reference (a session) has no page to open, so its row names it without a link.
+ *  reference (a session) has no page to open, so its row names it without a link. A comment or a
+ *  message, or a block of one, carries its post's marks (`NodeName`).
  *
  *  A name that is the head of a record's text - a comment's, an ask's or a message's
  *  (`nameSource`) - is drawn as its plain-text projection, the reading list's
@@ -178,7 +203,8 @@ function NodeName({ href, name }: { href: string | undefined; name: string }): R
  *  has answered, which is one pre-paint commit on a page whose engine is loaded. Any other name -
  *  a document's name, an issue's title, a component's - is drawn as the characters it is, as the
  *  reference graph's excerpts draw those (`api/display_trees.go`'s `graphExcerptRead`), so a
- *  document called `*draft*.md` keeps its asterisks. */
+ *  document called `*draft*.md` keeps its asterisks. A deleted post's name is its deleted line,
+ *  which holds none of the words the read gave. */
 function ReferenceLinkRow({
   alsoReferences,
   near,
@@ -194,10 +220,11 @@ function ReferenceLinkRow({
   // no reference, and a person, whom no page shows, open none.
   const href = route === undefined ? undefined : referenceHref(route);
   const source = nameSource(node);
+  const deleted = postDeletion(node);
   return (
     <li className={`rounded-lg border p-3 text-sm ${borderDefault}`}>
-      {source === undefined ? (
-        <NodeName href={href} name={row.name} />
+      {source === undefined || deleted !== null ? (
+        <NodeName deleted={deleted} edited={node.edited_at} href={href} name={row.name} />
       ) : (
         <PlainText
           markdown={row.name}
@@ -205,7 +232,9 @@ function ReferenceLinkRow({
           surface="artifacts-reference-name"
           tree={row.name_tree}
         >
-          {(name) => <NodeName href={href} name={name ?? ""} />}
+          {(name) => (
+            <NodeName deleted={null} edited={node.edited_at} href={href} name={name ?? ""} />
+          )}
         </PlainText>
       )}
       <p className={textMutedOnSurface}>

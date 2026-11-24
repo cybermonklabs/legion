@@ -1,5 +1,7 @@
 package daemon
 
+//ci:reads packages/daemon/internal/intake/testdata/dispatch/issue-updated.json TestAnIssueMovedWhileBootListsIsStillAdmitted reads the captured event through ../intake/testdata
+
 import (
 	"bufio"
 	"bytes"
@@ -1239,21 +1241,39 @@ func startDaemon(t *testing.T, cfg config.Config, o overrides) *daemon {
 	return startDaemonLogging(t, cfg, o, quietLogger())
 }
 
-// startDaemonLogging is startDaemon writing the daemon's log to log.
+// startDaemonLogging is startDaemon writing the daemon's log to log. Its wait for /healthz guards
+// against a boot that never serves, not its speed, so it is testwait's bound (a minute, or the test
+// binary's own deadline less a second): a fixed 10 s failed a test about the stranded report (1 of
+// 20 race-soak runs, TestABootWithOnlyIdleSuspendedClaimsReportsNothing) whose boot ran beside three
+// other daemon tests on four CPUs. A test of the boot's own time names its bound (startDaemonWithin).
 func startDaemonLogging(t *testing.T, cfg config.Config, o overrides, log *slog.Logger) *daemon {
 	t.Helper()
-	return startDaemonWithin(t, cfg, o, log, 10*time.Second)
+	return startDaemonWithin(t, cfg, o, log, testwait.Bounded(t, time.Minute, time.Second))
 }
 
 // startDaemonWithin is startDaemonLogging failing the test unless the daemon answers /healthz
 // within the given time. A test that points its workflow at no GitHub of its own gets
 // repositoriesGitHub, so every launch on a repository reads its default branch from a stand-in
 // rather than from github.com.
+//
+// The daemon's own log is kept beside log, and printed when the test fails, its stop included,
+// since a test's own logger is most often quietLogger. Once the daemon answers /healthz, the test
+// logs how long that took and when each boot stage began (bootStages), so a run's output says
+// what the boots of its tests spent their time on.
 func startDaemonWithin(t *testing.T, cfg config.Config, o overrides, log *slog.Logger, within time.Duration) *daemon {
 	t.Helper()
 	if o.githubAPI == "" {
 		o.githubAPI = repositoriesGitHub(t)
 	}
+	kept := &syncBuffer{}
+	log = slog.New(slog.NewMultiHandler(log.Handler(), slog.NewJSONHandler(kept, nil)))
+	// Registered before the stop, so it runs after it.
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("the daemon's log:\n%s", kept.String())
+		}
+	})
+	started := time.Now()
 	ctx, cancel := context.WithCancel(context.Background())
 	// One transport for every request, so the test can close its own connections before it asks
 	// the daemon to stop: net/http gives an idle connection five seconds before a Shutdown may
@@ -1289,7 +1309,26 @@ func startDaemonWithin(t *testing.T, cfg config.Config, o overrides, log *slog.L
 	}) {
 		t.Fatalf("the daemon did not answer /healthz on %s within %s: %v", d.base, within, err)
 	}
+	t.Logf("the daemon answered /healthz %s after it started; boot stages: %s", time.Since(started).Round(time.Millisecond), bootStages(kept.String(), started))
 	return d
+}
+
+// bootStages is when each boot stage (`legion workflow boot stage`) began in log, a JSON log, after
+// started: "store +0.12s, config +0.31s, ...", in the order the daemon logged them.
+func bootStages(log string, started time.Time) string {
+	var stages []string
+	for line := range strings.Lines(log) {
+		var entry struct {
+			Time  time.Time `json:"time"`
+			Msg   string    `json:"msg"`
+			Stage string    `json:"stage"`
+		}
+		if json.Unmarshal([]byte(line), &entry) != nil || entry.Msg != "legion workflow boot stage" {
+			continue
+		}
+		stages = append(stages, fmt.Sprintf("%s +%.2fs", entry.Stage, entry.Time.Sub(started).Seconds()))
+	}
+	return strings.Join(stages, ", ")
 }
 
 // repositoriesGitHub is GitHub's REST API answering a read of any repository,

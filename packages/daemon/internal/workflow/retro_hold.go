@@ -180,7 +180,7 @@ func (e *Engine) startHeldRetro(ctx context.Context, tx pgx.Tx, parent record.Is
 	if err != nil {
 		return err
 	}
-	pr, err := e.store.PullRequest(ctx, tx, parent.Key)
+	pr, err := e.store.PullRequestRow(ctx, tx, parent.Key)
 	if err != nil {
 		return err
 	}

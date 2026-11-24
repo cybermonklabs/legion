@@ -190,6 +190,7 @@ func TestDispatchPodWithoutOutsideInputsIsUnchanged(t *testing.T) {
 	}{
 		{"dispatch-pod.golden", dispatchArgs},
 		{"dispatch-pod-with-broker-and-app.golden", func() *gcp.DispatchArgs { return dispatchBrokerAndAppArgs(t) }},
+		{"dispatch-pod-with-verdict-app.golden", func() *gcp.DispatchArgs { return dispatchVerdictAppArgs(t) }},
 		{"dispatch-pod-with-azure-key.golden", dispatchArgsWith(setAzureKey)},
 		{"dispatch-pod-with-azure-federation.golden", dispatchArgsWith(setAzureFederation)},
 		{"dispatch-pod-with-azure-answerer.golden", dispatchArgsWith(setAzureChat)},

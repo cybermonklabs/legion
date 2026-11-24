@@ -335,6 +335,8 @@ test("a decision the reader asked to change leaves the review list and carries t
     author: READER_ACTOR,
     body: `Change ${block}, please.`,
     created_at: at,
+    deleted_at: null,
+    edited_at: null,
     id,
   });
   const parts = partsOf(
@@ -361,6 +363,7 @@ test("a decision the reader asked to change leaves the review list and carries t
       at: "2026-11-12T09:00:00Z",
       body: "Change asked, please.",
       by: READER_ACTOR,
+      editedAt: null,
       id: "c-new",
       path: `/issues/${KEY}/comments/c-new`,
     },
@@ -634,10 +637,20 @@ test("a parent's line and a statement's line are cut from the node's first block
 
   const parentLine = (block: string) => {
     const parent = entry(block)?.parent;
-    return parent === undefined ? undefined : { id: parent.id, line: parentLinkWords(parent) };
+    return parent === undefined
+      ? undefined
+      : { id: parent.id, line: parentLinkWords(parent), reference: parent.reference };
   };
-  expect(parentLine("headed")).toEqual({ id: "q1", line: "Where the box sits" });
-  expect(parentLine("wordless")).toEqual({ id: "q2", line: NODE_TYPE_NAMES.ask });
+  expect(parentLine("headed")).toEqual({
+    id: "q1",
+    line: "Where the box sits",
+    reference: `dispatch://${KEY}/ask/q1`,
+  });
+  expect(parentLine("wordless")).toEqual({
+    id: "q2",
+    line: NODE_TYPE_NAMES.ask,
+    reference: `dispatch://${KEY}/ask/q2`,
+  });
   expect(entry("headed")?.shapes.map((one) => parentLinkWords(one.node))).toEqual([
     "The page draws word1 word2 word3 word4 word5 word6 word7 word8 word9 word10 word11 word12 word13…",
     NODE_TYPE_NAMES.requirement,

@@ -188,7 +188,7 @@ func requireIndexedAt(t *testing.T, database *store.Store, artifactID string, ve
 	}
 }
 
-func latestVersion(t *testing.T, database *store.Store, artifactID string) model.Version {
+func latestVersion(t testing.TB, database *store.Store, artifactID string) model.Version {
 	t.Helper()
 	var version model.Version
 	if err := database.Pool.QueryRow(context.Background(), `

@@ -143,8 +143,9 @@ case "$lane" in
     # Chromium row of them, `@pr` or not, so no grep. Each is a Playwright file
     # filter, a regular expression matched against a spec's absolute path, and each
     # matches the one file of that name under e2e/ and no other. A file added to this
-    # list joins .github/ci-filters.yaml's `dispatch_references` filter, which names these
-    # files and what they test: .github/scripts/check-ci-filters.sh (rule 22) fails naming
+    # list joins the `dispatch_references` filter, kept by hand in
+    # .github/ci-gates/dispatch-references.py, which names these files and what they test:
+    # .github/scripts/check-ci-filters.sh (rule 23) fails naming
     # an entry here that filter does not match, read from the directory of the
     # dispatch-browser.yaml step that runs this script. A reading spec this list does not
     # name runs on no pull request, so the walk's gate reads this arm the same way and

@@ -977,7 +977,7 @@ Each round names one concrete correction the spec permits (a distinct line appen
 the correction counts only in that file's patch on the pull request) and reaches testing only on that round's own implementer handoff (the daemon's phase record must hold the implementer's handoff for that round when the issue reaches testing; each planner, implementer, tester and reviewer completion names a Dispatch handoff record written by that role's claim session, never a commit, and the pushed tip the implementer's completion reports is authored and committed by the implement App, read from the issue's workspace).
 It also proves `pr-blocked` and a held worker after its launch budget and the architect's retry relaunching it, a root whose human decides at the design gate that no change is needed (`architect-closes-a-no-change-root`:
 the root waits on the person keeping its slot, the human's changes request answers it and the root resumes at `admitted` with its architect's session resumed, which `close_root` requires;
-the architect then ends its tree with `close_root`, the daemon posts its reason on the issue before it writes `done`, every status write on the issue is the daemon's, the slot the close frees goes to the next root, and the journal has the root's wait, the gate's changes request, one slot release (the close) and one slot take (its admission), the close, the linger and the architect's suspension), restart during implementation, a pending status write while Dispatch is down, and the Go pane's credentials (`in-agent-credentials`):
+the architect then ends its tree with `close_root`, the daemon posts its reason on the issue before it writes `done` ([`lib/stage3-no-change-close.jq`](lib/stage3-no-change-close.jq), tested by `bun test scripts/e2e/lib`, a message its author deleted counting as not posted), every status write on the issue is the daemon's, the slot the close frees goes to the next root, and the journal has the root's wait, the gate's changes request, one slot release (the close) and one slot take (its admission), the close, the linger and the architect's suspension), restart during implementation, a pending status write while Dispatch is down, and the Go pane's credentials (`in-agent-credentials`):
 in one bash tool call of a real implementer pane, `gh` — the launcher directory's `legion gh` wrapper, over the daemon's PATH's real gh (`LEGION_GH_PATH`)
 — authenticates as the implement App's bot (`role_app implementer`) from the repository owner's directory of the claim's gh bundle, which the pane's `GH_CONFIG_DIR` names and which holds `config.yml` and `hosts.yml` alone;
 the bundle's root (`LEGION_GH_OWNERS_DIR`), as the pane's own `ls` lists it in that tool call's result, holds that owner's directory and nothing but other owners' directories and `renames.txt`, and as the host holds it, holds that owner's directory and the bundle's `renames.txt`, and beside them only other owners' directories, since a bundle holds one directory per owner account the App is installed on, which GitHub decides and the run does not, and no directory for a repository (INFRA-2543 R2);
@@ -1773,9 +1773,11 @@ Each item below names an input and its default, then what it means.
   `<namespace>/<name>` of a ServiceAccount of the proof's own that the production broker's `BROKER_SERVICE_LOGINS` lets log in as `legion-daemon` and that no pod runs as, never the production daemon's:
   each account holds one launcher credential, which every login moves to its own key, so a run logging in as a running daemon's account would take that daemon's credential, and the two would trade it for the whole run.
   The script refuses an account any pod in its namespace runs as, naming the pods.
-  It mints an hour-long token for the account with the operator context (`kubectl create token … --audience agent-secrets --duration 1h`;
+  It mints an hour-long token for the account with the operator context (`kubectl create token … --audience <audience> --duration 1h`;
   the broker refuses a longer one) into an owner-only file it never prints, and mints it again every half hour while the run lasts;
   the harness logs in with that token, reading the file afresh at each login, as a daemon off the cluster does; no person approves it.
+  The audience is the one the namespace's daemons enroll their pods for, read through the operator context from each ConfigMap's `legion.yaml` ([`lib/broker-audience.ts`](#libbroker-audiencets)), and the harness enrolls the run's pods for the same one:
+  so the run proves enrollment against the broker the deployment enrolls with.
   With this or any other `LEGION_E2E_AGENT_SECRETS_*` input unset, the harness starts no login and every `secrets-*` check reports `SKIPPED-BLOCKED`;
   a refused login blocks them with the broker's answer, never fails the stage
 
@@ -1948,7 +1950,7 @@ Each item below names a check, then what it does and what it requires.
 - `secrets-two-roles-enrolled`
 
   the root and worker share one actual pod UID but each hello enrolls under its own role-generation slot;
-  each role has a private 0600 `key.pem` and enrollment id and the two ids differ, while one projected `agent-secrets` audience token remains shared by the pod
+  each role has a private 0600 `key.pem` and enrollment id and the two ids differ, while one projected token for the broker's audience remains shared by the pod
 
 - `secrets-automatic-grant`
 
@@ -2971,7 +2973,7 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
 - `daily-report`
 
   the controller's daily report, which the proof's instructions exempt from their wait for a targeted message and fit to the run:
-  an issue titled `Legion daily report (<run directory>)` appears in LEGSMOKE, parked in icebox and without the `legion` label, holding the controller session's message, which names tree 1 and the free slots within 2,000 characters;
+  an issue titled `Legion daily report (<run directory>)` appears in LEGSMOKE, parked in icebox and without the `legion` label, holding the controller session's message, which names tree 1 and the free slots within 2,000 characters ([`lib/stage4b-report-posted.jq`](lib/stage4b-report-posted.jq), tested by `bun test scripts/e2e/lib`, a message its author deleted counting as not posted);
   in the controller's session, the call that posted it comes on a turn a `tick on LEGSMOKE` delivery started once the start turn had ended, never in its start turn.
   That call is the controller's first `dispatch message --issue <report>` run through bash, made any way Oh My Pi offers:
   the `bash` tool, a write to its `xd://bash` device, or `eval` code calling `tool.bash(...)` ([`lib/omp-tool-calls.jq`](lib/omp-tool-calls.jq), which `stage3-4b13b-acceptance.sh`'s merger check reads too; `lib/report-after-tick.test.ts`).
@@ -3357,6 +3359,7 @@ The transcript records the duration of each wait.
   On the pinned build each service runs in a session of its own and ends when its broker ends.
   For each `broker.pid` there, each process of that broker's session is stopped when it carries that runtime directory in `OMP_DAEMON_RUNTIME_DIR` or is one of the run's processes.
   No process is stopped for its working directory alone.
+  It reads each `broker.pid` with `jq`; on a PATH without `jq` it fails naming `jq` rather than stopping nothing (`lib/parked-decision-teardown.test.ts`).
   Every process of the run then ends within 600 s; a survivor fails the check, and the check first prints its `ps` line (pid, ppid, process group, session, start time and command line).
   The branch `legion/<tree>` of each tree is gone from `sjawhar/legion-smoke` (GitHub answers 404).
   The work directory is gone.
@@ -3899,6 +3902,7 @@ Each item below names an observation, then what it judges; an item that names no
   — `"Legion did not admit this issue: its repository resolves to none. Set its repository (the issue header's Repository picker, or dispatch issue-update --repo owner/name), or the default repository of project <PROJECT>, in Dispatch, and move it to todo again.\n\n<!-- legion-outbox:<id> -->"` (`packages/daemon/internal/workflow/repository.go:119-120`, `packages/daemon/internal/record/outbox.go:71-73,104-106`).
   Dispatch takes a bearer session's actor id from the request body (`packages/envoy/internal/dispatch/api/server.go`, `bearerSessionActor`), so the note shows what Dispatch holds, never who posted it;
   what shows the daemon declined the issue is its own state read.
+  A message its author deleted reads with `deleted_at` set and no body (dispatch://INFRA-1523), and is no note ([`lib/multi-repo-none-note.jq`](lib/multi-repo-none-note.jq), tested by `bun test scripts/e2e/lib`).
 
 - `negative repo-edit before|after <run id>? <child>`
 
@@ -3908,7 +3912,8 @@ Each item below names an observation, then what it judges; an item that names no
   Dispatch's own `.repo` for the issue now reading X;
   an `issue.updated` event whose `.seq` is above the baseline's own last-seen `.seq` with `.payload.repo` equal to X (Dispatch's own sequence cursor, never a wall-clock comparison, and never merely "any `issue.updated`", which the daemon's own routine status writes also emit);
   and the daemon's exact kept-repository message, word for word, with its claimed actor id and outbox marker (as for `negative no-repo`), built from Dispatch's own resolved spelling of X (`dispatch_repo_now`, read back from the API) rather than the operator's `LEGION_E2E_REPO_X` spelling, since the daemon's real message echoes whatever case Dispatch itself stored
-  — `"Legion keeps <repo> as this issue's repository; the change to <X> in Dispatch is not applied — an issue's repository is fixed when Legion records it. Create a new issue for <X> instead."` (`packages/daemon/internal/workflow/repository.go:94`)
+  — `"Legion keeps <repo> as this issue's repository; the change to <X> in Dispatch is not applied — an issue's repository is fixed when Legion records it. Create a new issue for <X> instead."` (`packages/daemon/internal/workflow/repository.go:94`).
+  A message its author deleted is no note ([`lib/multi-repo-kept-note.jq`](lib/multi-repo-kept-note.jq), tested by `bun test scripts/e2e/lib`).
 
 **The two-call baseline protocol** (`negative pr-in-x`, `negative repo-edit`):
 `before` mints a fresh run id, captures the baseline under `$MULTIREPO_EVIDENCE_DIR/runs/<run id>/baseline.json` (the directory made with a plain `mkdir`, the file written with `set -o noclobber` — both fail loudly rather than overwrite, so two overlapping `before` calls for the same issue can never collide), binds it to the project, the daemon URL and the issue's own generation, and prints `BASELINE <name>: captured` — never `PASS`, since capturing a baseline is not an acceptance judgment.
@@ -4569,7 +4574,8 @@ the push onto the base that asks the daemon to read every open pull request on i
 the daemon's own HTTP routes for each role's registration, readiness and grants, the architect's sign-off and the implementer's completion of `retro`, which rates the plan;
 and the daemon's worker stream for each role's turns, which the driver speaks as `legion worker-shim` does (`shimwire` frames).
 A goroutine reads `GET /legion/v1/state` ten times a second over the whole run and keeps each phase the issue shows.
-Those reads are samples, and a phase shorter than a tenth of a second can fall between two of them, as `retro` does here in about one run in four, so the order of the phases is read from the daemon's own `workflow: phase changed` lines, which it logs for every move once the move commits.
+Those reads are samples: a phase shorter than a tenth of a second can fall between two of them, as `retro` can here, since the driver completes it at once.
+So the order of the moves is read from the daemon's own `workflow: phase changed` lines, which it logs for each move of its transition table once the move commits.
 
 | step | driven by | read back as |
 | :--- | :--- | :--- |
@@ -6438,6 +6444,21 @@ pod_service_account=$(bash scripts/e2e/lib/pod-service-account.sh)
 A ServiceAccount's name is a DNS-1123 subdomain, so the helper exits 1 when the variable is unset or holds anything else: lowercase letters, digits, `-` and `.` alone, beginning and ending with a letter or a digit, at most 253 characters.
 Its refusal names the variable on stderr and never prints the value.
 
+## lib/broker-audience.ts
+
+Prints the broker audience Stage 4a mints its login token for, the one the namespace's own daemons enroll their pods for.
+It reads `kubectl get configmaps -o json` on stdin, and each ConfigMap with a `legion.yaml` key is a daemon's configuration.
+A daemon whose `runtime.kubernetes.agent_secrets` names no `audience` uses the daemon's default, which the script passes as the argument after reading it from `legion config reference --json`;
+with no `agent_secrets` block in any daemon, the run takes that default too.
+
+```sh
+agent_secrets_audience=$(op get configmaps -o json | bun scripts/e2e/lib/broker-audience.ts "$agent_secrets_default")
+```
+
+It exits 1 when a `legion.yaml` does not parse, naming its ConfigMap, or when the daemons use different audiences, naming each audience with its ConfigMaps: no one audience is then the deployment's.
+It exits 2 when the default is not one word.
+The harness reads the namespace's ConfigMaps for the pods it enrolls by the same rule (`deploymentBrokerAudience`, `packages/daemon/internal/runtime/sandbox/live_secrets_pure_test.go`).
+
 ## lib/install-model-gateway.sh
 
 Routes a named OMP profile's model turns to the Hawk model gateway (middleman) on the operator's own hawk login, the route a devbox's agent sessions use when it is configured for the gateway (`~/.omp/agent/models.yml`:
@@ -6986,7 +7007,8 @@ A session of its own (`setsid`, or `Bun.spawn`'s `detached`) is the wrong tool: 
 `untilRunning(pid, program)` resolves once `pid` runs `program` (its `/proc/<pid>/exe`), and fails naming both and what the pid ran instead when it does not within 10 s, the bound of `lib/claude-backend-guards.test.ts`'s `await_child`: a sweep row waits on it, since a sweep that stopped the perl before its `setpgrp` would stop a member of the runner's own group.
 `lib/own-group.test.ts` holds that a wrapped shell leads its own group under the runner and has the same traps, blocked and ignored signals and environment as a plain one, and that `untilRunning` fails at its bound naming the pid and the program.
 It reads the ignored signals through the shell's own `trap -p` of each signal, and the blocked set through a perl the shell starts (`sigprocmask`; perl itself ignores SIGFPE, so its `%SIG` could not tell one it was handed), not `/proc/<pid>/status`, which a Legion pod's kernel writes no `Sig*` line to, and it fails where either shell's read prints no line.
-`lib/run-processes.test.ts`, `lib/process-tree.test.ts`, `lib/leftovers.test.ts`, `lib/unread-proc.test.ts`, `lib/claude-backend-guards.test.ts`, `lib/controller-start-guards.test.ts`, the skill-scenario rig's sweep rows and `packages/pi-legion/scripts/skill-scenarios/rig-isolation.test.ts` use `ownGroup`, and skip by name where the host has no perl
+`lib/run-processes.test.ts`, `lib/process-tree.test.ts`, `lib/leftovers.test.ts`, `lib/unread-proc.test.ts`, `lib/claude-backend-guards.test.ts`, `lib/controller-start-guards.test.ts`, the skill-scenario rig's sweep rows and `packages/pi-legion/scripts/skill-scenarios/rig-isolation.test.ts` use `ownGroup`.
+The `lib/` files gate those rows on perl with `hostGate` (`@legion/test-fixtures/host-tools`): a host without perl skips them by name outside CI and fails them by name under `GITHUB_ACTIONS`; the skill-scenario rig's rows skip by name where the host has no perl
 
 ## lib/arg-max-force.sh
 
@@ -7042,9 +7064,9 @@ A walk or a read that cannot see the processes it reads says why and fails with 
   `stop_pid` sends TERM, then KILL after 10 s, and `signal_group` sends SIGNAL to the group PID leads, each through `freeze_if` held to that recorded start, so a pid whose process ended and passed to another since gets no signal; a pid with no recorded start is named and left alone, and one recorded `gone`, whose process ended before its start was read, is left alone with no word.
   A leader that has gone takes its group's signal with it: a `signal_group` after `stop_pid` of the same leader sends nothing.
   The Envoy session-states `stop_agent` reads its agent's descendants while the agent is held stopped and ends each that outlives the TERM by its start (`kill_held`), since Claude Code's mid-run stop is followed by a `--resume` of the same session id; otherwise a member that outlived its leader is the run's sweep's (`stop_marked_processes`), which the Envoy session-states and clean-session-stop cleanups run.
-  `lib/unread-proc.test.ts` holds `stop_pid` and `signal_group` with a start that is not the process's own where the host has perl, since `ownGroup`'s perl starts that process; a host without perl skips that row by name.
+  `lib/unread-proc.test.ts` holds `stop_pid` and `signal_group` with a start that is not the process's own where the host has perl, since `ownGroup`'s perl starts that process; a host without perl skips that row by name outside CI and fails it by name under `GITHUB_ACTIONS`.
   It also holds them with a pid recorded `gone`, `stop_agent` with a member that ignores TERM, and, where `sudo -n` can make a pid namespace whose `pid_max` is 2400, `stop_pid` with a daemon that ended and a stranger that took its pid.
-  That row runs only on Linux 6.14 or later, where a pid namespace's `pid_max` is its own: on an older kernel the write would set the host's, so there it is skipped by that name; and the row fails if the host's `pid_max` ever moves across it, naming the value it read, the restore's exit status and stderr, and the value it reads after the restore
+  That row runs only on Linux 6.14 or later, where a pid namespace's `pid_max` is its own: on an older kernel the write would set the host's, so there it is skipped by that name outside CI and failed by name under `GITHUB_ACTIONS`; and the row fails if the host's `pid_max` ever moves across it, naming the value it read, the restore's exit status and stderr, and the value it reads after the restore
 
 - `signalable PID`
 
@@ -7392,6 +7414,7 @@ Every wait for an issue to reach one phase is `wait_for_phase ISSUE PHASE [SECON
 `phase_seconds` (600 s, the proof's budget for an agent's turn), unless the phase's worker runs a whole loop and the caller passes its own bound:
 a correction round, the retro, and planning, whose planner runs its gap analyst and its plan-review rounds, which have no limit, before its handoff (Stage 4b's `plan_seconds`, 2700 s).
 `round_correction_pushed ROUND` accepts the round's line only as an addition in `smoke_file`'s patch, never in a notes file that quotes it.
+`review_cap_posted ISSUE`, Stage 3's wait for its third review round's `pr-blocked`, holds that a message on the issue names `review_round_cap=3`, a message its author deleted counting as not posted ([`lib/review-cap-posted.jq`](lib/review-cap-posted.jq), tested by `bun test scripts/e2e/lib`).
 
 With the design gate armed (`gates.design: root-issues`), a root whose architect registers a closed gate while no worker of its tree runs waits on a person:
 `drive_gate ISSUE LABEL [SECONDS]` runs `architect_registers_gate`, then `await_gate_wait` (the root in `awaiting_person` with `waitingOn.kind` `gate` and no `answeredAt`, holding its `.slot` and named by `admission.active`, while its architect stays live within `phase_seconds`), approves the registered version as the proof human, then `await_answered_resume`:
