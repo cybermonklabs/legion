@@ -615,12 +615,9 @@ func (m *Manager) viewerLogin(ctx context.Context, role AppRole, token string) (
 	}
 	tokenHeaders(request, token)
 	request.Header.Set("Content-Type", "application/json")
-	response, err := m.client.Do(request)
+	response, err := m.send(request, "read "+what, "")
 	if err != nil {
-		return "", &TransientError{Err: fmt.Errorf("read %s: %w", what, oauth2call.Unanswered(err, request, ""))}
-	}
-	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		return "", m.transient(request, response, refusalBody(response), fmt.Errorf("read %s failed (%d)", what, response.StatusCode))
+		return "", err
 	}
 	body, err := readBody(response, "read "+what, responseBound)
 	if err != nil {
@@ -643,8 +640,7 @@ func (m *Manager) viewerLogin(ctx context.Context, role AppRole, token string) (
 // GitHub answers are GitHub's words (verifyTokenApp): each is decided on as it came, the read asks
 // for the slug as it came, and what this prints of them is the slug as ShownLogin prints its bot
 // login, without "[bot]", and the id where it is a number (shownAppID). A failure names the read
-// by that slug: in GitHub's answer (transientAs) and in the error of a read that got no answer
-// (oauth2call.Unanswered).
+// by that slug (send).
 func (m *Manager) checkAppID(ctx context.Context, role AppRole, slug, appID, token string) error {
 	shown := strings.TrimSuffix(githubrest.ShownLogin(slug+"[bot]"), "[bot]")
 	what := fmt.Sprintf("the %s App %s (GET /apps/%s)", role, shown, shown)
@@ -653,12 +649,9 @@ func (m *Manager) checkAppID(ctx context.Context, role AppRole, slug, appID, tok
 		return err
 	}
 	tokenHeaders(request, token)
-	response, err := m.client.Do(request)
+	response, err := m.send(request, "read "+what, "/apps/"+shown)
 	if err != nil {
-		return &TransientError{Err: fmt.Errorf("read %s: %w", what, oauth2call.Unanswered(err, request, "/apps/"+shown))}
-	}
-	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		return m.transientAs(request, response, refusalBody(response), "/apps/"+shown, fmt.Errorf("read %s failed (%d)", what, response.StatusCode))
+		return err
 	}
 	body, err := readBody(response, "read "+what, responseBound)
 	if err != nil {
@@ -746,10 +739,10 @@ func (m *Manager) listInstallation(ctx context.Context, role AppRole, repo ghrep
 			return false, false, &TransientError{Err: fmt.Errorf("%s: %w", what, oauth2call.Unanswered(err, request, ""))}
 		}
 		if response.StatusCode == http.StatusUnauthorized {
-			return false, true, m.answered(request, response, refusalBody(response), fmt.Errorf("%s failed (401)", what))
+			return false, true, m.answered(request, response, refusalBody(response), "", fmt.Errorf("%s failed (401)", what))
 		}
 		if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-			return false, false, m.transient(request, response, refusalBody(response), fmt.Errorf("%s failed (%d)", what, response.StatusCode))
+			return false, false, m.transient(request, response, refusalBody(response), "", fmt.Errorf("%s failed (%d)", what, response.StatusCode))
 		}
 		body, err := readBody(response, what, responseBound)
 		if err != nil {
