@@ -1032,7 +1032,7 @@ test("an Agents row shows ten roles and a +N for the rest, and the composer ten 
     const shown = () =>
       [...group.children].filter((child) => !child.hasAttribute("data-layout-more"));
     expect(shown().map((entry) => entry.textContent)).toEqual(roles.slice(0, 10));
-    await user.click(within(group).getByRole("button", { name: "Show 4 more roles" }));
+    await user.click(within(group).getByRole("button", { name: "+4, show all 14 roles" }));
     expect(shown().map((entry) => entry.textContent)).toEqual(roles);
     await user.click(within(group).getByRole("button", { name: "Show fewer roles" }));
     expect(shown()).toHaveLength(10);
@@ -1042,7 +1042,7 @@ test("an Agents row shows ten roles and a +N for the rest, and the composer ten 
       name: "Selected agents",
     });
     expect(within(recipients).getAllByRole("button", { name: /^Crowd \d+ ✕$/ })).toHaveLength(10);
-    await user.click(within(recipients).getByRole("button", { name: "Show 2 more agents" }));
+    await user.click(within(recipients).getByRole("button", { name: "+2, show all 12 agents" }));
     expect(within(recipients).getAllByRole("button", { name: /^Crowd \d+ ✕$/ })).toHaveLength(12);
   } finally {
     page.view.unmount();
@@ -5383,7 +5383,7 @@ test("a row's opened roles are still open when the window scrolls past the row a
     const region = await screen.findByRole("region", { name: "Agents" });
     await within(region).findByText("Session 05", { exact: true });
     await user.click(
-      within(card(region, "Session 05")).getByRole("button", { name: "Show 4 more roles" })
+      within(card(region, "Session 05")).getByRole("button", { name: "+4, show all 14 roles" })
     );
     expect(rolesOf(region)).toHaveAttribute("data-layout-open");
     // The press left the focus in the row, and the window keeps the focused row drawn: the focus

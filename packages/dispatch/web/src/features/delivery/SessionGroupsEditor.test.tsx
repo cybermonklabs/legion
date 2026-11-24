@@ -285,7 +285,7 @@ test("a group shows ten of its sessions and a +N that shows the rest", async () 
     });
     const removable = () => within(members).getAllByRole("button", { name: /^Remove / });
     expect(removable()).toHaveLength(10);
-    await user.click(within(members).getByRole("button", { name: "Show 2 more sessions" }));
+    await user.click(within(members).getByRole("button", { name: "+2, show all 12 sessions" }));
     expect(removable()).toHaveLength(12);
   } finally {
     cleanup();
@@ -304,7 +304,7 @@ test("a group's opened sessions stay open after a member past the tenth is remov
       name: "Sessions in Release crew",
     });
   try {
-    await user.click(within(members()).getByRole("button", { name: "Show 2 more sessions" }));
+    await user.click(within(members()).getByRole("button", { name: "+2, show all 12 sessions" }));
     editor.regroup([
       { ...crew, sessions: sessions.slice(0, 11), updated_at: "2026-10-12T00:00:00Z" },
     ]);

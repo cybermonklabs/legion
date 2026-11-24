@@ -276,7 +276,9 @@ test("a row shows ten of its labels and a +N, and its opened labels stay open wh
     labels.filter((label) => within(group).queryByText(label) !== null);
 
   expect(drawn(await labelsOf())).toEqual(labels.slice(0, 10));
-  await user.click(within(await labelsOf()).getByRole("button", { name: "Show 3 more labels" }));
+  await user.click(
+    within(await labelsOf()).getByRole("button", { name: "+3, show all 13 labels" })
+  );
   expect(drawn(await labelsOf())).toEqual(labels);
 
   const search = screen.getByRole("searchbox", { name: "Search issues" });

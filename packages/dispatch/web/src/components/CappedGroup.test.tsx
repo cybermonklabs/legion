@@ -165,7 +165,7 @@ test("given open and onOpenChange, the group is opened by its host and comes bac
   const view = render(<Host />);
   const group = () => view.container.querySelector<HTMLElement>('[data-layout-group="labels"]');
   try {
-    await user.click(screen.getByRole("button", { name: "Show 2 more labels" }));
+    await user.click(screen.getByRole("button", { name: "+2, show all 12 labels" }));
     expect(presses).toEqual([true]);
     expect(drawn(group() as HTMLElement)).toEqual(labels(12));
 

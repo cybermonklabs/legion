@@ -1099,7 +1099,7 @@ test("on a phone the open composer keeps its height budget at forty recipients, 
     const chips = composer.getByRole("list", { name: "Selected agents" });
     const sideways = () => chips.evaluate((element) => element.scrollWidth > element.clientWidth);
     expect(await sideways()).toBe(false);
-    const more = chips.getByRole("button", { name: "Show 39 more agents" });
+    const more = chips.getByRole("button", { name: "+39, show all 40 agents" });
     const [moreBox, firstBox] = [
       await more.boundingBox(),
       await chips.getByRole("button", { name: /^Planner 01/ }).boundingBox(),
@@ -1355,7 +1355,7 @@ test("with half the recipients unable to take the mode, the compact composer kee
     // opens the recipients, and the last excluded chip shows its whole text, nothing cut, inside
     // the screen once it is in view.
     await page.setViewportSize({ height: 664, width: 390 });
-    await fixture.composer.getByRole("button", { name: "Show 39 more agents" }).click();
+    await fixture.composer.getByRole("button", { name: "+39, show all 40 agents" }).click();
     for (let index = 21; index <= 40; index += 1) {
       await expect(fixture.excludedChip(`Planner ${index}`)).toHaveCount(1);
     }
@@ -1432,7 +1432,7 @@ test.describe("the composer's notices share one slot, highest first, within budg
         await expect.soft(fixture.excludedLine, at).toHaveCount(0);
       });
       // The excluded chip is behind the recipients' "+N", which opens them where they are.
-      await fixture.composer.getByRole("button", { name: "Show 119 more agents" }).click();
+      await fixture.composer.getByRole("button", { name: "+119, show all 120 agents" }).click();
       await expect(fixture.excludedChip("Planner 111")).toHaveCount(1);
     } finally {
       await alice.close();
@@ -1457,7 +1457,7 @@ test.describe("the composer's notices share one slot, highest first, within budg
       // list is windowed, and the hundred-and-first row is not drawn at this scroll position. The
       // chip is behind the recipients' "+N", which opens them where they are and folds them
       // again, so the second budget reads the composer as the reader leaves it.
-      await fixture.composer.getByRole("button", { name: "Show 110 more agents" }).click();
+      await fixture.composer.getByRole("button", { name: "+110, show all 111 agents" }).click();
       await fixture.composer.getByTitle("Remove Planner 101 from this broadcast").click();
       await expect(
         fixture.composer.getByRole("heading", { name: "Broadcast to 100 of 110 selected" })
@@ -1800,7 +1800,7 @@ test("a selection over the broadcast limit says so and never asks the server", a
     // One fewer is within the limit: the reason goes and Send comes back. The row itself is not
     // drawn - the list is windowed and the hundred-and-first row is far below the window - so
     // the recipient comes off at the chip the composer shows for it, behind the recipients' "+N".
-    await composer.getByRole("button", { name: "Show 91 more agents" }).click();
+    await composer.getByRole("button", { name: "+91, show all 101 agents" }).click();
     await composer.getByTitle("Remove Planner 101 from this broadcast").click();
     await expect(composer.getByText(/^At most 100 recipients/)).toHaveCount(0);
     await expect(composer.getByRole("button", { name: "Send to 100" })).toBeEnabled();

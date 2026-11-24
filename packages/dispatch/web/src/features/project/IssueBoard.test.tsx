@@ -203,7 +203,7 @@ test("a board card shows ten of its labels and a +N that shows the rest", async 
     if (group === null) throw new Error("the card's labels are not a group");
     const drawn = () => labels.filter((label) => within(group).queryByText(label) !== null);
     expect(drawn()).toEqual(labels.slice(0, 10));
-    await user.click(within(group).getByRole("button", { name: "Show 2 more labels" }));
+    await user.click(within(group).getByRole("button", { name: "+2, show all 12 labels" }));
     expect(drawn()).toEqual(labels);
   } finally {
     cleanup();
