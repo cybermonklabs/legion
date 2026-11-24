@@ -159,9 +159,10 @@ func (w *walker) contains(t types.Type, seen map[types.Type]bool) bool {
 }
 
 // external reports whether t reaches one of the inventory's external error types, through every
-// edge holdsBox follows but a channel's.
+// edge holdsBox follows, a channel's among them: a channel holds what is sent on it, and a
+// reflection that reaches the channel's value reaches that.
 func (w *walker) external(t types.Type, seen map[types.Type]bool) bool {
-	return edges{}.reaches(t, func(t types.Type) bool {
+	return edges{chans: true}.reaches(t, func(t types.Type) bool {
 		n, ok := t.(*types.Named)
 		return ok && n.Obj().Pkg() != nil && slices.Contains(w.g.inv.Gate.External, n.Obj().Pkg().Path()+"."+n.Obj().Name())
 	}, seen)
