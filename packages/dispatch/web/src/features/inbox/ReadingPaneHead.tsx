@@ -37,9 +37,10 @@ export interface QuestionDocument {
   issueKey: string;
 }
 
-/** The page of an issue's document: its spec for the primary document, else the artifact. A
- *  primary document is always a `doc`, and the route of an issue document reads no project, so
- *  both fields are filled with what they always hold. */
+/** The page of an issue's document: its spec for the primary document, else the artifact.
+ *  `documentRoute` reads `kind` only for a primary document, which is always a `doc` (the
+ *  database's `artifacts_primary_is_doc`), and reads no project for an issue document, so
+ *  neither filled value changes the address. */
 function issueDocumentPath(issueKey: string, document: IssueDocument): string {
   return buildReferencePath(
     documentRoute({
@@ -133,8 +134,7 @@ export interface ReadingPaneHeadProps {
  * to me" while nobody holds the issue, Snooze and Copy ref. A question in a project document
  * carries the project key and the document name, "Open page", Snooze and Copy ref — a project
  * document has no assignee and no priority, so neither control applies to it. "Open page" opens
- * the question's document at the section the column is opened at, or the issue page for a
- * question in no document (`openPagePath`).
+ * the page `openPagePath` names.
  *
  * With the column on, `h`, `o` and `y` look inside the column rather than inside the selected
  * row (`hand()` returns the column in `Inbox.tsx`), and the short row beside it draws no Snooze

@@ -39,11 +39,7 @@ export const session = {
  *  question - which nobody holds, a document having no assignee - is listed beside the rest. */
 export const INBOX = "/?assignee=everyone";
 
-/** The address the Inbox writes for a selected row (`buildInboxPath`: the item, then the filter).
- *  A thread row's item carries a colon, which the Inbox's own address escapes. */
-export function inboxAt(item: string): string {
-  return `/?item=${encodeURIComponent(item)}&assignee=everyone`;
-}
+export { inboxAt } from "./inbox-pane-scroll";
 
 // ---------------------------------------------------------------------------
 // The first spec: one section of 36 lines above the decision block.
