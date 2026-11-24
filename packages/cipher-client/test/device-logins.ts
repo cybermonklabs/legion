@@ -12,6 +12,7 @@ import { chmod, mkdir, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { calculateJwkThumbprint, type JWK } from "jose";
+import { FORM_SCOPE, SCOPE_READ } from "../src/wire";
 
 /** One request the stand-in was sent: its form, and the DPoP proof's header and claims where it
  *  carried one, with the thumbprint of the key that header embeds. */
@@ -81,7 +82,8 @@ export interface DeviceLoginBrokerOptions {
    * process's refresh must come while the first one's trade is out, so no clock decides it.
    */
   readonly refreshesBeforeTrade?: number;
-  /** How long an access token the stand-in mints lasts. Default 900 s, the broker's own. */
+  /** How long an access token the stand-in mints lasts, the broker's `BROKER_ACCESS_TOKEN_SECONDS`:
+   *  {@link STAND_IN_ACCESS_SECONDS} unless a row names another. */
   readonly accessSeconds?: number;
   /** Answer every refresh `400 invalid_grant`, as the broker answers one whose login ended, or
    *  `401 invalid_client`, a refusal of the refresh that is no end of the login. */
@@ -103,6 +105,10 @@ export interface DeviceLoginBrokerOptions {
 
 /** The credential every device login of this stand-in holds. */
 export const STAND_IN_CREDENTIAL = "cred-device-1";
+
+/** How long an access token the stand-in mints lasts unless told otherwise: the broker's default
+ *  `BROKER_ACCESS_TOKEN_SECONDS`. */
+export const STAND_IN_ACCESS_SECONDS = 900;
 
 /** The user code every device authorization of this stand-in answers. */
 export const STAND_IN_USER_CODE = "WDJB-MJHT";
@@ -167,10 +173,17 @@ function oauthError(error: string, status = 400): Response {
  * exchange presenting any other after a refresh is refused `400 invalid_request`, with the
  * broker's own description of a token it no longer honours. Before the first refresh, any subject
  * token is taken, so a test may keep an access token of its own in the file.
+ *
+ * Every token lives {@link DeviceLoginBrokerOptions.accessSeconds} on the clock of the process,
+ * which a test may move (`setSystemTime`). An exchange presenting an access token this stand-in
+ * minted that has run out is refused as the broker refuses a token it no longer honours. A read
+ * trade's token (`scope=read`) of such a token lives no longer than that token has left,
+ * truncated to whole seconds, as the broker's `clampNarrowed` bounds it and writes `expires_in`;
+ * a plain trade's is not bound by its subject's, as the broker's is not.
  */
 export function stubDeviceLoginBroker(options: DeviceLoginBrokerOptions = {}): DeviceLoginBroker {
   const polls = options.polls ?? ["approve"];
-  const accessSeconds = options.accessSeconds ?? 900;
+  const accessSeconds = options.accessSeconds ?? STAND_IN_ACCESS_SECONDS;
   const authorizations: DeviceLoginRequest[] = [];
   const pollsSeen: DeviceLoginRequest[] = [];
   const refreshes: DeviceLoginRequest[] = [];
@@ -185,6 +198,8 @@ export function stubDeviceLoginBroker(options: DeviceLoginBrokerOptions = {}): D
   const trading: (() => void)[] = [];
   // The one access token the last refresh answered: every other is revoked from then on.
   let live: string | undefined;
+  // When each access token the device code and refresh grants minted lapses.
+  const lapses = new Map<string, number>();
   const hold = async (into: (() => void)[], ms: number): Promise<void> => {
     const { promise, resolve } = Promise.withResolvers<void>();
     into.push(resolve);
@@ -214,6 +229,7 @@ export function stubDeviceLoginBroker(options: DeviceLoginBrokerOptions = {}): D
   const loginAnswer = (): Response => {
     const access = fixtureSecret("login");
     loginTokens.push(access);
+    lapses.set(access, Date.now() + accessSeconds * 1000);
     return Response.json({
       access_token: access,
       token_type: "DPoP",
@@ -314,9 +330,9 @@ export function stubDeviceLoginBroker(options: DeviceLoginBrokerOptions = {}): D
           if (options.refreshesBeforeTrade !== undefined) {
             await untilRefreshes(awaitingRefreshedTrades, options.refreshesBeforeTrade);
           }
-          if (live !== undefined && seen.form.get("subject_token") !== live) {
-            revokedTrades.push(seen);
-            return Response.json(
+          const subject = seen.form.get("subject_token") ?? "";
+          const notHonoured = (): Response =>
+            Response.json(
               {
                 error: "invalid_request",
                 error_description:
@@ -324,14 +340,22 @@ export function stubDeviceLoginBroker(options: DeviceLoginBrokerOptions = {}): D
               },
               { status: 400 }
             );
+          if (live !== undefined && subject !== live) {
+            revokedTrades.push(seen);
+            return notHonoured();
           }
+          const lapse = lapses.get(subject);
+          const left =
+            lapse === undefined ? accessSeconds : Math.floor((lapse - Date.now()) / 1000);
+          if (left <= 0) return notHonoured();
+          const read = seen.form.get(FORM_SCOPE) === SCOPE_READ;
           const token = fixtureSecret("traded");
           tradeTokens.push(token);
           return Response.json({
             access_token: token,
             issued_token_type: "urn:ietf:params:oauth:token-type:access_token",
             token_type: "DPoP",
-            expires_in: accessSeconds,
+            expires_in: read ? Math.min(accessSeconds, left) : accessSeconds,
           });
         }
         default:
@@ -364,7 +388,10 @@ export interface WrittenDeviceLogin {
  * Writes a device login for `broker` at `path` as `dispatch login --device` leaves one: a fresh
  * P-256 key as base64 PKCS#8 DER, the stand-in's credential, a random refresh token, an expiry
  * 30 days on, and the broker, in a 0600 file whose directory is 0700. `fields` replaces or adds
- * any member of the JSON (an `access_token` the login holds, a `broker` of another).
+ * any member of the JSON (an `access_token` the login holds, a `broker` of another). Beside an
+ * `access_token` it writes the life the stand-in gives one, `access_life_seconds`
+ * ({@link STAND_IN_ACCESS_SECONDS}), as a login of this build keeps it; a row writing a file an
+ * older build left gives that member as `undefined`, which leaves it out.
  */
 export async function writeDeviceLoginFile(
   path: string,
@@ -381,6 +408,7 @@ export async function writeDeviceLoginFile(
     refresh_token: refreshToken,
     expires_at: new Date(Date.now() + 30 * 86_400_000).toISOString(),
     broker,
+    ...("access_token" in fields ? { access_life_seconds: STAND_IN_ACCESS_SECONDS } : {}),
     ...fields,
   };
   await writeFile(path, JSON.stringify(json), { mode });
