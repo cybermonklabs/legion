@@ -12,11 +12,12 @@ Each bullet says what the helper does not do, so a site that must keep its own b
   It is a mutex around a byte sink and nothing else: a type that needs a reader of its own embeds it and keeps that reader, and a writer that is no log sink — an `http.ResponseWriter`, a TCP relay, a writer that gates what it passes on — keeps its own body.
 
 - A bounded wait is the module's `internal/testwait`.
-  `Eventually` is the wait a test usually wants, a minute or the binary's own deadline less a second, at `Poll`, the package's own pace, failing with what it waited for; `WithinPolling` takes a bound and a pace of its own; `Holds` answers rather than fails, for a caller whose failure text is its own diagnostic dump or is built at give-up; and `Bounded` is that deadline clamp alone, for a wait that keeps a loop or a margin of its own, as the idle rig's do.
+  `Eventually` is the wait a test usually wants, at the package's own pace (`Poll`), failing with what it waited for: `packages/daemon`'s gives up 30 s before the binary's deadline and at no other moment, as `Until` and `Context` do (below), and `packages/envoy`'s after a minute or the binary's own deadline less a second; `WithinPolling` takes a bound and a pace of its own; `Holds` answers rather than fails, for a caller whose failure text is its own diagnostic dump or is built at give-up; and `Bounded` clamps a span of the caller's own to what is left of the binary's deadline less a spare of the caller's, for a wait that keeps a loop or a margin of its own, as the idle rig's do.
   `Remaining` is what is left of the binary's deadline less 30 s, for a hang guard that is not the test's subject, such as the acknowledgement window of a consumer whose window also bounds each store read a handling makes, and a wait for those acknowledgements (`packages/daemon/internal/intake`): a fixed bound there, a minute say, lets the machine decide whether a store read of 61 s is cut.
   `Receive`, in both modules, waits for one receive from a channel, such as the answer of a call the test started, and sets no span of its own: it gives up 30 s before the binary's deadline (the daemon module's, a quarter of a `-timeout` under 2 minutes, so its waits still wait under a short `-timeout`), writes why to stderr at once and then fails the test, so a call that waits for ever fails by name, even without `-v`, and a call that is merely slow passes; the launcher rig's waits for a role's connection and for its next frame are such waits.
   A row whose verdict is what a call answers, a refusal or a replaced file, waits for it with `Receive`.
-  In `packages/envoy`, `Until` waits until a reading holds and returns it, at `Poll`, `UntilPolling` is `Until` at a pace of the caller's, and `Context` is a context for a call that takes one, or for a socket's deadline. Like `Receive`, they end at the binary's own deadline less 30 s, the time the failing test's cleanups run in, and take no bound of their own, so a step that is only slow on a loaded machine fails nothing. Under a `-timeout` of 30 s or less that moment has passed before the test starts, so each of them fails at once.
+  In both modules, `Until` waits until a reading holds and returns it, at `Poll`, and `Context` is a context for a call that takes one, or for a socket's deadline; `packages/envoy`'s `UntilPolling` is `Until` at a pace of the caller's. Like `Receive`, they end at the binary's own deadline less 30 s, the time the failing test's cleanups run in, and take no bound of their own, so a step that is only slow on a loaded machine fails nothing. Under a `-timeout` of 30 s or less that moment has passed before the test starts, so each of them, and the daemon module's `Eventually`, fails at once.
+  The daemon module's `Eventually` and `Until` have no cap, and that has a cost: a wait whose fact never comes holds its test binary until 30 s before the deadline (in `daemon-go-race`, `-timeout 30m`, about 29.5 minutes), and every later `Eventually` or `Until` in that binary then begins past that moment, asks once and fails. Such a give-up line adds ", a moment that had passed before this wait began: the first give-up line in time order is the cause", so read a red package run from its first give-up line in time order: that one names the wait that never held, and the lines of tests that failed after it in 0.00 s are its side effects.
   A loop that is not a wait-for keeps its body: one that runs its check for a whole span rather than stopping at the first success, one that sends or serves on a tick, one that drives a stand-in process's own main loop, and one that retries a compare-and-set.
 
 - A fifo that the code under test must replace without opening it for writing is planted with the daemon module's `internal/testfifo`.
@@ -198,6 +199,24 @@ itself, whose tests import its sources by relative path.
   answer to the `test.skipIf` of each row that reads the mask or rests on what is read from it. On
   GitHub Actions on Linux it never skips: a runner there can read the mask, so one that cannot is
   broken, and the rows run and fail rather than pass in silence.
+
+- A Go test of `packages/daemon` that reads a process's `SigIgn` or `SigCgt` mask from
+  `/proc/<pid>/status` calls `testkernel.RequireSignalMasks(t, "SigIgn")` (or with `"SigCgt"`)
+  first (`packages/daemon/internal/testkernel`). The probe reads the status of a shell that ignores
+  SIGUSR1 and catches SIGUSR2, so it finds a line that is there but does not follow the process as
+  well as one that is missing: the build cluster's gVisor has no mask line at all. It prints one
+  `kernel probe:` line either way, as `requireKernel` in `packages/envoy/cmd/cipher` does, then
+  skips the row where the kernel lacks the masks, and fails it under `GITHUB_ACTIONS`. A row whose
+  claim a shell can show by behaviour makes that read in the test itself and the mask read in a
+  subtest, so the test still proves its claim on gVisor: a non-interactive shell can set no trap
+  for a signal it was started ignoring (`startsIgnoring` in
+  `packages/daemon/internal/daemon/foreground_test.go`), and a shell started ignoring SIGHUP
+  survives the hangup it sends itself (`ghHangupProbe` in `packages/daemon/cmd/legion/gh_test.go`).
+  A row that cannot run because the test process itself was started with its signal ignored is a
+  machine the row cannot run on too: it prints one `signal probe:` line either way, skips outside
+  CI and fails under `GITHUB_ACTIONS`, whose runner starts `go test` with every signal at its
+  default (`requireStartedAtDefault` in the same file). A skip there would leave `go test` green
+  with nothing proved, since CI runs it without `-v`.
 
 - Start a container with `docker run --rm` and register its removal the moment `docker run` returns,
   not once the whole start has succeeded: a start that throws half-way has already made the
@@ -435,9 +454,15 @@ and each command runs there.
   for it (`warmMarkdownRenderer()` from `web/src/features/refs/markdown-engine.ts`, or a `findBy*`
   query), because the earlier row that loaded it may run after it. A lazily loaded part is anything
   that renders from a module that `import()` or `lazy()` loads, not the Markdown engine alone. A
-  test file whose rows mount a lazily loaded part that no row reads, such as the shell's margin,
-  imports that module at its top: a load that a row starts can arrive between two of that row's
-  `act` scopes or in a later row, where React reports a suspended resource outside `act`
+  row whose wait can end before such a load does warms the module before it mounts: a `waitFor` or
+  `findBy*` on a held clock (`jest.useFakeTimers()`) spends its budget in fake time, and a load can
+  outlast a `timeout` a row sets below the suite's budget (`web/src/__tests__/setup.ts`). The
+  web-cold lane holds each lazy load 1 s, and the engine's loads come one after another, 2 to 3 s
+  in all: rows of `reference-titles.test.tsx` and `document-references.test.tsx` that waited 2 s,
+  and rows of `SearchPalette.test.tsx` on a held clock, failed there. A test file whose rows mount
+  a lazily loaded part that no row reads, such as the shell's margin, imports that module at its
+  top: a load that a row starts can arrive between two of that row's `act` scopes or in a later
+  row, where React reports a suspended resource outside `act`
   (`web/src/app-sign-out.test.tsx`, `web/src/app.test.tsx`,
   `web/src/__tests__/responsive-shell.test.tsx` and `web/src/features/agents/AgentsPage.test.tsx`
   do).
@@ -494,12 +519,13 @@ the limit, as on a dev box whose `TMPDIR` is on a data disk.
   TMPDIR="$L" GOTMPDIR="$L" go test ./<package>/... -count=1
   ```
 
-## A test in `internal/dispatch/api` runs beside the others
+## A test in `internal/dispatch/api` or `internal/dispatch/docs` runs beside the others
 
-Every top-level test of `packages/envoy/internal/dispatch/api` calls `t.Parallel()` as its first
-statement, and the package's `TestMain` runs 8 of them at once. Each test already has a database
-and a server of its own (`storetest.Open`), so run alone it spends most of its time waiting on
-Postgres while the machine's other cores sit idle.
+Every top-level test of `packages/envoy/internal/dispatch/api` and
+`packages/envoy/internal/dispatch/docs` calls `t.Parallel()` as its first statement, and each
+package's `TestMain` sets how many run at once: 8 in api, 6 in docs. Each test already has a
+database and a server or document service of its own (`storetest.Open`), so run alone it spends
+most of its time waiting on Postgres while the machine's other cores sit idle.
 
 A test stays serial when it, or a helper it calls, changes or measures something the whole test
 process shares: the default logger (`logtest.SetDefault`, `slog.SetDefault`), the environment
@@ -526,6 +552,20 @@ after its response. A product bound the test does not mean to race takes a value
 through a field of the server that only a test sets, as `server.mentionLookupBound` and
 `server.duplicateBound` do; a package variable would change it for the parallel tests beside it
 (`comment_delivery_sender_test.go`, `TestMentionLookupsOfOneCommentRunAtOnce`).
+
+A test in `internal/dispatch/docs`, and a helper it calls (`storetest`, `lockstep`, `docstest`),
+registers its cleanups with `testcleanup.Add(t, f)`, not `t.Cleanup(f)`. testing keeps a finished
+parallel test, and every closure its cleanups captured, until the package's last parallel test
+ends, so a document service, a room of a 400 KB document or a peer that a cleanup shuts down stays
+live for the rest of the run; `testcleanup.Add` lets go of it once the cleanup has run. Under the
+race detector every live byte costs about three (the heap and the detector's shadow of it), and
+envoy-go-race-docs fails its step when the binary passes 8 GB
+(`.github/workflows/ci-job-envoy-go-race-docs.yaml`).
+
+A docs test stays serial, and says so on its first line with what it measured, when run alone it
+adds far more memory than the others: a few hundred megabytes or more of live heap after a
+collection, about three times that under the race detector. Beside the package's other tests
+such a test would take the binary toward the step's limit.
 
 ## Go's package deadline
 
@@ -601,7 +641,7 @@ It is a slow suite: a pull request runs it only with the label `full-ci` (or `la
 
 That job runs the command with `-v` for a second check Go's detector does not make:
 the package's `TestMain` prints `docs: <built> services built, <alive> still alive after <duration>` once the tests have run, and the line after it names each test that built a service still alive at the end of the run.
-A test that builds a `*Service` gives it a `t.Cleanup` that shuts it down.
+A test that builds a `*Service` registers a cleanup that shuts it down, with `testcleanup.Add`.
 A service a test left running holds its rooms, and their documents, for the rest of the binary's run.
 A service that was shut down is still alive at the end of the run when a callback of one of its stopped timers holds it.
 `Timer.Stop` does not free the callback: the runtime keeps a stopped timer in the heap of the P that armed it until that P next clears its stopped timers or the timer's own time comes, and an idle P clears them only when it next runs, which depends on the machine's load.

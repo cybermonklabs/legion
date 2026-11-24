@@ -906,7 +906,7 @@ func experimentLine(name string, counts map[armDraw]int) string {
 // what act it was answered.
 //
 // The second count reads the published line rather than judging the wait a second time. An
-// answered root stands in that line, among the issues whose work came back, oldest first
+// answered root stands in that line, within its priority, among the issues whose work came back, oldest first
 // (record.Waiting carries every answered root there, whatever its design gate
 // says), until the pass that resumes it. Two answered roots are in no line this summary reads:
 // one of another Dispatch project, whose line this daemon does not build, and every one of them
