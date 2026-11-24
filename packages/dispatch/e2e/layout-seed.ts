@@ -36,12 +36,11 @@
  *  (`e2e/fake-github-helpers.ts`), the fake Envoy's sessions and interests (`e2e/agents.ts`). */
 
 import { expect } from "@playwright/test";
-import type { Actor, ArtifactUploadResponse } from "../web/src/api/types";
+import type { Actor } from "../web/src/api/types";
 
 import { type FakeSession, setInterests, setLiveSessions } from "./agents";
 import {
   answerAsk,
-  baseUrl,
   claimIssue,
   createAsk,
   createComment,
@@ -57,7 +56,7 @@ import {
   recordCheckResult,
   replyToCommentDelivery,
   syncArchitectureSource,
-  userHeaders,
+  uploadAgentFile,
 } from "./api";
 import { seedFakeGithub } from "./fake-github-helpers";
 import {
@@ -136,8 +135,9 @@ const MACHINE = workspaceSessions[0]?.machine_id ?? "";
 /** Twelve sessions on that machine, each in a tmux window of its own, with titles of the length
  *  a Legion lane writes. The first holds the claim, the next five subscribe to the issue, the
  *  seventh replies in the Inbox, and the eighth is the live session the agent pages open. The
- *  first also holds thirteen roles no other session holds, fourteen in all, past the Agents row's
- *  cap of ten, so the layout rows read that group folded behind its "+4" and opened. */
+ *  first also holds thirteen roles no other session holds, fourteen in all, past the cap of ten
+ *  a marked `roles` list holds while closed: the Agents row requires that mark, and main's page
+ *  draws the fourteen unmarked (a `group-missing` entry of `e2e/layout-breaches.ts`). */
 const stressSessions: FakeSession[] = Array.from({ length: 12 }, (_, index) => ({
   capabilities: ["aside", "btw", "steer"],
   dir: `/workspaces/legion/INFRA-5200-layout-rule-worktree-${index + 1}`,
@@ -181,21 +181,16 @@ function stressSession(index: number): FakeSession {
 }
 
 /** A picture uploaded to `sessionID`'s conversation as alice, as a paste on the Agents page
- *  does (`e2e/two-builds.multiprocess.e2e.ts` uploads one the same way); answers its slug. */
+ *  does; answers its slug. */
 async function uploadAgentPicture(sessionID: string): Promise<string> {
   const png =
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL0eAAAAABJRU5ErkJggg==";
-  const form = new FormData();
-  form.append("name", AGENT_PICTURE);
-  form.append("file", new Blob([Buffer.from(png, "base64")], { type: "image/png" }));
-  const response = await fetch(
-    new URL(`/api/v1/agents/${encodeURIComponent(sessionID)}/artifacts`, baseUrl),
-    { body: form, headers: await userHeaders("alice"), method: "POST" }
-  );
-  if (!response.ok) {
-    throw new Error(`agent picture upload: ${response.status} ${await response.text()}`);
-  }
-  return ((await response.json()) as ArtifactUploadResponse).artifact.slug;
+  const uploaded = await uploadAgentFile(sessionID, {
+    bytes: new Uint8Array(Buffer.from(png, "base64")),
+    contentType: "image/png",
+    name: AGENT_PICTURE,
+  });
+  return uploaded.artifact.slug;
 }
 
 /** The pull requests, their checks and the architecture model, in the fake GitHub's one seed:

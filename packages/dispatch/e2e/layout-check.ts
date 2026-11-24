@@ -189,7 +189,7 @@ export type LayoutFailure = { readonly message: string } & (
       readonly count: number;
     }
   | {
-      /** An entry at the place whose reading matched fewer or more breaches than its count. */
+      /** An entry at the place whose reading matched fewer breaches than its count. */
       readonly type: "entry-mismatch";
       readonly entry: KnownLayoutBreach;
       readonly matched: number;
@@ -213,7 +213,6 @@ export interface ReadingNeeds {
 interface Found {
   readonly kind: LayoutBreachKind;
   readonly locator: string;
-  readonly listed: readonly string[];
   readonly said: string;
 }
 
@@ -248,7 +247,6 @@ export function judgeReading(
   const found: Found[] = [
     ...reading.breaches.map((breach) => ({
       kind: breach.kind,
-      listed: breach.kind === "page-scroll" ? breach.listed : [],
       locator: breach.locator,
       said: `at ${breach.where}: ${breach.detail}; text "${breach.text}"`,
     })),
@@ -256,9 +254,8 @@ export function judgeReading(
       .filter((group) => !reading.groups.includes(group))
       .map((group) => ({
         kind: "group-missing" as const,
-        listed: [],
         locator: group,
-        said: `no element carries data-layout-group="${group}"`,
+        said: `no element shows an entry of a data-layout-group="${group}"`,
       })),
   ];
   const listed = entriesAt(place, entries);
@@ -269,10 +266,10 @@ export function judgeReading(
     { count: number; kind: LayoutBreachKind; element: string; said: string }
   >();
   for (const breach of found) {
-    const ofKind = listed.filter((candidate) => candidate.kind === breach.kind);
-    const entry =
-      ofKind.find((candidate) => candidate.element === breach.locator && room(candidate)) ??
-      ofKind.find((candidate) => breach.listed.includes(candidate.element) && room(candidate));
+    const entry = listed.find(
+      (candidate) =>
+        candidate.kind === breach.kind && candidate.element === breach.locator && room(candidate)
+    );
     if (entry !== undefined) {
       taken.set(entry, (taken.get(entry) ?? 0) + 1);
       continue;
@@ -326,32 +323,35 @@ export function judgeReading(
  *  agents row under load). Nothing was committed then, so loading again is the same load. */
 const NETWORK_CHANGE_RETRIES = 2;
 
-/** Loads `address` fresh and waits until `route` has settled. The layout sheet is already in
- *  every document the page loads (`installLayoutSheet`), so a document the page replaces on its
- *  own after the load has it too, and the settle wait follows the page to that document. */
-async function loadSettled(page: Page, route: LayoutRoute, address: string): Promise<void> {
+/** Runs `load` until it does not fail with `net::ERR_NETWORK_CHANGED`, at most
+ *  `NETWORK_CHANGE_RETRIES` times more; any other failure, or the last of those, is thrown. */
+export async function loadRetryingNetworkChange(load: () => Promise<unknown>): Promise<void> {
   for (let retries = 0; ; retries += 1) {
     try {
-      await page.goto(address);
-      break;
+      await load();
+      return;
     } catch (error) {
       const changed = error instanceof Error && error.message.includes("net::ERR_NETWORK_CHANGED");
       if (!changed || retries >= NETWORK_CHANGE_RETRIES) throw error;
     }
   }
+}
+
+/** Loads `address` fresh and waits until `route` has settled. The layout sheet is already in
+ *  every document the page loads (`installLayoutSheet`), so a document the page replaces on its
+ *  own after the load has it too, and the settle wait follows the page to that document. */
+async function loadSettled(page: Page, route: LayoutRoute, address: string): Promise<void> {
+  await loadRetryingNetworkChange(() => page.goto(address));
   await waitForRouteSettled(page, route);
 }
 
 /** Reads the settled page: the pinned faces loaded in the document that is current now, then
- *  `measureLayout` with the entries `place` may match. */
-async function measureSettledPage(page: Page, place: ReadingPlace): Promise<LayoutReading> {
+ *  `measureLayout`. */
+async function measureSettledPage(page: Page): Promise<LayoutReading> {
   // A web font that lands after the wait widens every line it sets.
   await page.evaluate(() => document.fonts.ready.then(() => undefined));
   await expectPinnedFacesLoaded(page);
-  return await page.evaluate(
-    measureLayout,
-    entriesAt(place, layoutBreaches).map((entry) => entry.element)
-  );
+  return await page.evaluate(measureLayout);
 }
 
 /** Reads `route` at every width of `LAYOUT_WIDTHS`: the page loaded fresh and settled, and then,
@@ -373,7 +373,7 @@ export async function checkLayout(page: Page, route: LayoutRoute, seed: LayoutSe
     await loadSettled(page, route, address);
     const plain = { route: route.name, width };
     failures.push(
-      ...judgeReading(plain, await measureSettledPage(page, plain), {
+      ...judgeReading(plain, await measureSettledPage(page), {
         groups: route.requiredGroups,
         minElements,
       })
@@ -384,7 +384,7 @@ export async function checkLayout(page: Page, route: LayoutRoute, seed: LayoutSe
       await waitForRouteSettled(page, route);
       const acted = { route: route.name, state: state.name, width };
       failures.push(
-        ...judgeReading(acted, await measureSettledPage(page, acted), {
+        ...judgeReading(acted, await measureSettledPage(page), {
           groups: state.requiredGroups,
           minElements,
         })

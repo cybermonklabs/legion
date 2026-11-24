@@ -81,17 +81,21 @@ function failureIdentities(failures: readonly LayoutFailure[]): unknown[] {
 
 /** Draws `body` as a page's own region at a phone's width, and reads it as a layout row reads a
  *  page. */
-async function measure(
-  page: Page,
-  body: string,
-  listed: readonly string[] = []
-): Promise<LayoutReading> {
+async function measure(page: Page, body: string): Promise<LayoutReading> {
   await page.setViewportSize({ height: 900, width: 360 });
   await page.setContent(
     `<!doctype html><html><body style="margin: 0"><main data-testid="main-content">${body}</main></body></html>`
   );
-  return await page.evaluate(measureLayout, listed);
+  return await page.evaluate(measureLayout);
 }
+
+/** A row of chips that scrolls sideways: the defect the judgement controls below list. */
+const chipStrip = {
+  body: `<div data-testid="strip" style="overflow-x: auto; white-space: nowrap; width: 200px">${entries(12)}</div>`,
+  kind: "box-scroll",
+  locator: '[data-testid="strip"]',
+  name: "a row of chips that scrolls sideways",
+} as const;
 
 /** Each defect the rule names, the page that draws it, and the breach it must be reported as. */
 const defects: readonly {
@@ -106,12 +110,7 @@ const defects: readonly {
     locator: '[data-testid="wide"]',
     name: "a page wider than the viewport",
   },
-  {
-    body: `<div data-testid="strip" style="overflow-x: auto; white-space: nowrap; width: 200px">${entries(12)}</div>`,
-    kind: "box-scroll",
-    locator: '[data-testid="strip"]',
-    name: "a row of chips that scrolls sideways",
-  },
+  chipStrip,
   {
     body:
       '<div data-testid="mixed" style="overflow-x: auto; width: 200px">' +
@@ -140,12 +139,14 @@ const defects: readonly {
     name: "a box that scrolls for an inline svg icon",
   },
   {
+    // The chip inside the cut block, through a span, is cut because the block is: one breach.
     body:
       '<div style="overflow: hidden; width: 200px">' +
-      '<div data-testid="cut" style="height: 20px; width: 400px">a block wider than its box</div></div>',
+      '<div data-testid="cut" style="height: 20px; width: 400px">a block wider than its box ' +
+      '<span><b style="display: inline-block; margin-left: 100px">and a chip</b></span></div></div>',
     kind: "clipped",
     locator: '[data-testid="cut"]',
-    name: "a block cut off by the box that clips it",
+    name: "a block cut off by the box that clips it, and the chip it holds",
   },
   {
     // A truncating block wider than the box that cuts it: its ellipsis is drawn at its own edge,
@@ -318,6 +319,80 @@ const defects: readonly {
     locator: '[data-layout-group="links"]',
     name: "a group with more than one child marked data-layout-more",
   },
+  {
+    // A code block may scroll its lines, not cut them.
+    body: `<pre data-testid="cut-pre" style="overflow: hidden; width: 100px">${"x".repeat(100)}</pre>`,
+    kind: "clipped",
+    locator: '[data-testid="cut-pre"]',
+    name: "a code block that cuts its text with no ellipsis",
+  },
+  {
+    // An ellipsis stands in for text: a picture its box cuts loses what it does not stand for.
+    body:
+      '<div style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap; width: 100px">' +
+      `<img alt="" data-testid="cut-picture" height="10" src="${PIXEL}" width="300"></div>`,
+    kind: "clipped",
+    locator: '[data-testid="cut-picture"]',
+    name: "a picture cut by a box whose ellipsis stands in for text",
+  },
+  {
+    // A picture pushed out of its row by the chip before it, in a row with no ellipsis.
+    body:
+      '<div style="display: flex; overflow: hidden; width: 200px">' +
+      '<span style="flex-shrink: 0; width: 150px">a chip</span>' +
+      `<img alt="" data-testid="pushed-picture-out" height="10" src="${PIXEL}" style="flex-shrink: 0" width="100"></div>`,
+    kind: "clipped",
+    locator: '[data-testid="pushed-picture-out"]',
+    name: "a picture pushed out of its row",
+  },
+  {
+    // The cross-family review's probe: a fixed 100 px box whose own unspaced text runs past the
+    // viewport, while the box itself fits.
+    body: `<div data-testid="fixed-text" style="left: 10px; position: fixed; top: 0; white-space: nowrap; width: 100px">${"x".repeat(100)}</div>`,
+    kind: "clipped",
+    locator: '[data-testid="fixed-text"]',
+    name: "a fixed box's own text that runs past the viewport",
+  },
+  {
+    // A strip of chips in a table's cell: the table may scroll in its own box, the strip may not.
+    body:
+      '<table><tr><td><div data-testid="cell-strip" style="overflow-x: auto; width: 100px">' +
+      '<span style="display: inline-block; width: 300px">a strip of chips</span></div></td></tr></table>',
+    kind: "box-scroll",
+    locator: '[data-testid="cell-strip"]',
+    name: "a strip of chips that scrolls in a table's cell",
+  },
+  {
+    // A strip of chips in a card of a board's lanes: the lanes may scroll, the card's strip may not.
+    body:
+      '<div data-layout-scroll="board" style="overflow-x: auto; width: 300px">' +
+      '<div data-testid="card-strip" style="overflow-x: auto; width: 100px">' +
+      '<span style="display: inline-block; width: 300px">a strip of chips</span></div></div>',
+    kind: "box-scroll",
+    locator: '[data-testid="card-strip"]',
+    name: "a strip of chips that scrolls in a board's card",
+  },
+  {
+    // A chip inside an inline span the box's ellipsis excuses: the span's text is the ellipsis's
+    // to stand in for, the chip is still pushed out of its row.
+    body:
+      '<span style="display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; width: 150px">' +
+      '<span>Reply from a long sender name <span data-testid="chip-in-span" style="display: inline-flex">' +
+      "Legion architect · INFRA-2969 replied</span></span></span>",
+    kind: "clipped",
+    locator: '[data-testid="chip-in-span"]',
+    name: "a chip inside an inline span a truncating box excuses",
+  },
+  {
+    // Text in a block child of a truncating box: the box's ellipsis stands in for its own inline
+    // text alone, so the block's line is cut bare.
+    body:
+      '<div style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap; width: 100px">' +
+      `<div data-testid="block-text">${"x".repeat(100)}</div></div>`,
+    kind: "clipped",
+    locator: '[data-testid="block-text"]',
+    name: "text in a block child of a truncating box",
+  },
 ];
 
 /** Every case the rule allows, on one page: none of them may be reported. */
@@ -342,9 +417,12 @@ const allowed = [
   // A clamp whose path, broken at its hyphens, runs onto a third line, which the clamp hides: it
   // draws its ellipsis on its last visible line, so the cut there is marked.
   `<p style="-webkit-box-orient: vertical; -webkit-line-clamp: 2; display: -webkit-box; overflow: hidden; width: 200px">The first line, then ${PATH}</p>`,
-  // A fixed layer inside the viewport, and one wholly left of it as a closed drawer is.
+  // A fixed layer inside the viewport, one wholly left of it as a closed drawer is, a fixed box
+  // whose own text wraps inside it, and one that ends its own text with an ellipsis.
   '<div style="left: 20px; position: fixed; top: 20px; width: 300px">A dialog inside the viewport</div>',
   '<div style="left: 0; position: fixed; top: 0; transform: translateX(-100%); width: 300px">A closed drawer</div>',
+  `<div style="left: 10px; position: fixed; top: 60px; width: 100px">${LONG}</div>`,
+  `<div style="left: 10px; overflow: hidden; position: fixed; text-overflow: ellipsis; top: 160px; white-space: nowrap; width: 100px">${"x".repeat(100)}</div>`,
   `<div style="display: flex; flex-wrap: wrap; gap: 4px; width: 200px">${entries(12)}</div>`,
   entries(120),
 ].join("");
@@ -354,7 +432,7 @@ test("the layout measure reports each defect the rule names, by kind and by loca
 }) => {
   const missed: string[] = [];
   for (const defect of defects) {
-    const reading = await measure(page, defect.body, [defect.locator]);
+    const reading = await measure(page, defect.body);
     const said = reading.breaches.map((breach) => `${breach.kind} ${breach.locator}`);
     if (said.join(" | ") !== `${defect.kind} ${defect.locator}`) {
       missed.push(`${defect.name}: read as [${said.join(" | ")}]`);
@@ -499,39 +577,29 @@ test("a window scrolled sideways reads as it does unscrolled @pr", async ({ page
   expect(said(unscrolled)).toEqual(expected);
   await page.evaluate(() => window.scrollTo(540, 0));
   expect(await page.evaluate(() => window.scrollX)).toBe(540);
-  expect(said(await page.evaluate(measureLayout, []))).toEqual(expected);
+  expect(said(await page.evaluate(measureLayout))).toEqual(expected);
 });
 
 // The rows require each pinned face to load (`pinFontFaces`, which any row that measures text may
 // call): it passes once the faces load, and again after the next load, and a face the route
-// answers with a 404 fails it, as a sheet that never reached the page would.
-test("a layout reading fails when a pinned face does not load @pr", async ({ page }) => {
+// answers with a 404 fails it, as a sheet that never reached the page would. And a page can
+// replace its document after `page.goto` returns: the app reloads when a lazy chunk fails to
+// download, which a loaded box provokes (`net::ERR_NETWORK_CHANGED`, seen in a trace of the
+// agents row). The layout sheet reaches the new document without another call, so the reading
+// taken there is still in the pinned faces and with no transitions.
+test("a pinned face that does not load fails a reading, and the layout sheet reaches a document the page replaces @pr", async ({
+  page,
+}) => {
   const origin = "http://layout-fonts.test";
   await page.route(`${origin}/`, (route) =>
-    route.fulfill({ body: "<!doctype html><p>words</p>", contentType: "text/html" })
+    route.fulfill({
+      body: '<!doctype html><p style="transition: opacity 2s">words</p>',
+      contentType: "text/html",
+    })
   );
   await page.goto(`${origin}/`);
   await pinFontFaces(page);
-  await page.goto(`${origin}/`);
-  await pinFontFaces(page);
-  await page.route("**/__layout-fonts/liberation/LiberationSans-Bold.ttf", (route) =>
-    route.fulfill({ body: "gone", status: 404 })
-  );
-  await page.goto(`${origin}/`);
-  await expect(pinFontFaces(page)).rejects.toThrow("Liberation Sans 700");
-});
 
-// A page can replace its document after `page.goto` returns: the app reloads when a lazy chunk
-// fails to download, which a loaded box provokes (`net::ERR_NETWORK_CHANGED`, seen in a trace of
-// the agents row). The layout sheet reaches the new document without another call, so the reading
-// taken there is still in the pinned faces and with no transitions.
-test("the layout sheet reaches a document the page replaces on its own @pr", async ({ page }) => {
-  const origin = "http://layout-reload.test";
-  await page.route(`${origin}/`, (route) =>
-    route.fulfill({ body: "<!doctype html><p>words</p>", contentType: "text/html" })
-  );
-  await page.goto(`${origin}/`);
-  await pinFontFaces(page);
   const firstDocument = await page.evaluate(() => performance.timeOrigin);
   await Promise.all([page.waitForEvent("load"), page.evaluate(() => window.location.reload())]);
   expect(await page.evaluate(() => performance.timeOrigin)).not.toBe(firstDocument);
@@ -544,6 +612,14 @@ test("the layout sheet reaches a document the page replaces on its own @pr", asy
     };
   });
   expect(sheet).toEqual({ fontFaces: 10, noTransitions: true, transition: "0s" });
+
+  await page.goto(`${origin}/`);
+  await pinFontFaces(page);
+  await page.route("**/__layout-fonts/liberation/LiberationSans-Bold.ttf", (route) =>
+    route.fulfill({ body: "gone", status: 404 })
+  );
+  await page.goto(`${origin}/`);
+  await expect(pinFontFaces(page)).rejects.toThrow("Liberation Sans 700");
 });
 
 test("a layout reading fails on a blank page and on an entry its reading did not match @pr", async ({
@@ -565,18 +641,16 @@ test("a layout reading fails on a blank page and on an entry its reading did not
       `<nav>${"<span>shell</span> ".repeat(200)}</nav>`
     );
   });
-  expect(failureIdentities(judgeReading(place, await page.evaluate(measureLayout, [])))).toEqual([
+  expect(failureIdentities(judgeReading(place, await page.evaluate(measureLayout)))).toEqual([
     { place, type: "too-few-elements" },
   ]);
 
   const drawn = await measure(page, entries(120));
   expect(judgeReading(place, drawn)).toEqual([]);
 
-  const strip = defects[1];
-  if (strip === undefined) throw new Error("the controls lost their box-scroll defect");
-  const scrolled = await measure(page, `${strip.body}${entries(120)}`, [strip.locator]);
+  const scrolled = await measure(page, `${chipStrip.body}${entries(120)}`);
   const entry: KnownLayoutBreach = {
-    element: strip.locator,
+    element: chipStrip.locator,
     kind: "box-scroll",
     reason: "D surfaces",
     route: "control",
@@ -628,7 +702,7 @@ test("a layout entry accepts its own count of breaches and no new one in its reg
   ]);
 });
 
-test("a layout entry names a required group no element marks, and a page-scroll breach takes its own entry first @pr", async ({
+test("a layout entry names a required group no shown entry marks, and a page-scroll breach matches only its own locator @pr", async ({
   page,
 }) => {
   const place = { route: "grouped", width: 360 } as const;
@@ -659,27 +733,46 @@ test("a layout entry names a required group no element marks, and a page-scroll 
       },
     ]
   );
+  // A marked copy the page does not show - hidden, or in a closed Details - marks nothing.
+  for (const hidden of [
+    `<div data-layout-group="labels" style="display: none">${entries(3)}</div>`,
+    `<details><summary>Labels</summary><div data-layout-group="labels">${entries(3)}</div></details>`,
+  ]) {
+    const copy = await measure(page, `${hidden}${entries(120)}`);
+    expect(failureIdentities(judgeReading(place, copy, { groups: ["labels"] }))).toEqual([
+      { count: 1, element: "labels", kind: "group-missing", place, type: "unaccepted" },
+    ]);
+  }
 
   // Two elements past the viewport inside one region: one named for itself, one named for the
-  // region. With the region's entry listed first, the named one must still take its own entry.
+  // region. Each breach matches the entry that names its own locator, and an entry that names the
+  // region does not take the breach of the element named for itself inside it.
   const deep = '[data-testid="deep"]';
-  const wide = '[data-testid="region"]';
+  const region = '[data-testid="region"]';
   const scrolled = await measure(
     page,
     `<div data-testid="region"><div data-testid="deep" style="height: 10px; width: 900px"></div>` +
-      `<div style="height: 10px; width: 900px"></div></div>${entries(120)}`,
-    [wide, deep]
+      `<div style="height: 10px; width: 900px"></div></div>${entries(120)}`
   );
-  const both = [wide, deep].map(
-    (element): KnownLayoutBreach => ({
-      element,
+  const pageScroll = (element: string, count?: number): KnownLayoutBreach => ({
+    count,
+    element,
+    kind: "page-scroll",
+    reason: "D surfaces",
+    route: "grouped",
+    width: 360,
+  });
+  expect(judgeReading(place, scrolled, {}, [pageScroll(region), pageScroll(deep)])).toEqual([]);
+  expect(failureIdentities(judgeReading(place, scrolled, {}, [pageScroll(region, 2)]))).toEqual([
+    { count: 1, element: deep, kind: "page-scroll", place, type: "unaccepted" },
+    {
+      element: region,
       kind: "page-scroll",
-      reason: "D surfaces",
-      route: "grouped",
-      width: 360,
-    })
-  );
-  expect(judgeReading(place, scrolled, {}, both)).toEqual([]);
+      matched: 1,
+      place: { route: "grouped", state: undefined, width: 360 },
+      type: "entry-mismatch",
+    },
+  ]);
 });
 
 /** `count` closed groups of eleven, each with a "+1" control as `CappedGroup` draws it: it reads

@@ -20,33 +20,20 @@
  *  `unchangedByTheMove` is what the map says of every other moved row, and it lives here
  *  beside the exceptions so that one file holds both halves of the claim: the generation
  *  writes it, and `e2e/__tests__/row-map.test.ts` holds a row with a note to carrying its note
- *  and not that sentence. */
-import { layoutRoutes } from "../layout-routes";
-
+ *  and not that sentence. `newInTheStubbedLayer` is what it says of every row of a spec file
+ *  written in the stubbed layer from the start, keyed by that file: such a row never moved, so
+ *  neither sentence about a move is true of it. */
 export const unchangedByTheMove =
   "unchanged - the move renames the file, lifts the shared seeding into the fixture and adds the lane tag to the title, and touches no line of what the row asserts";
 
 const NEW_IN_THE_STUBBED_LAYER =
   "new - written in the stubbed layer from the start (dispatch://INFRA-5200), with no real-stack copy that moved";
 
-const newInTheStubbedLayer: Record<string, string> = Object.fromEntries(
-  [
-    ...layoutRoutes.map(
-      (route) =>
-        `layout-rule.stub.e2e.ts › ${route.name} breaks no layout rule from 360 to 1920 px @pr`
-    ),
-    "layout-measure.stub.e2e.ts › the layout measure reports each defect the rule names, by kind and by locator @pr",
-    "layout-measure.stub.e2e.ts › the layout measure reports nothing of what the rule allows @pr",
-    "layout-measure.stub.e2e.ts › every font stack the app sets opens with a pinned face @pr",
-    "layout-measure.stub.e2e.ts › a window scrolled sideways reads as it does unscrolled @pr",
-    "layout-measure.stub.e2e.ts › a layout reading fails when a pinned face does not load @pr",
-    "layout-measure.stub.e2e.ts › the layout sheet reaches a document the page replaces on its own @pr",
-    "layout-measure.stub.e2e.ts › a layout reading fails on a blank page and on an entry its reading did not match @pr",
-    "layout-measure.stub.e2e.ts › a layout entry accepts its own count of breaches and no new one in its region @pr",
-    "layout-measure.stub.e2e.ts › a layout entry names a required group no element marks, and a page-scroll breach takes its own entry first @pr",
-    "layout-measure.stub.e2e.ts › openCappedGroups opens every closed group, one press each, and stops at its bound @pr",
-  ].map((key) => [key, NEW_IN_THE_STUBBED_LAYER])
-);
+/** The stubbed spec files whose rows were written there from the start, by file. */
+export const newInTheStubbedLayer: Readonly<Record<string, string>> = {
+  "layout-measure.stub.e2e.ts": NEW_IN_THE_STUBBED_LAYER,
+  "layout-rule.stub.e2e.ts": NEW_IN_THE_STUBBED_LAYER,
+};
 
 /** The rows the sentence above is false for, keyed by the spec file and the title the listing
  *  gives, joined by ` › `. */
@@ -75,5 +62,4 @@ export const movedRowNotes: Record<string, string> = {
     "the Issues tab draws the table rather than a collapsed filter strip, so the row waits for the table instead of opening the strip, and the Status option it measures carries its count in its name; the fit and every other touch target are main's",
   "keyboard-palette.stub.e2e.ts › g d opens the route's project Documents, from an issue key or a project path, and g p picks a project @pr":
     "changed in one assertion, and this is the one row of the move that changed at all: the count of rows the query leaves is the Projects group's rather than main's dialog-wide one. Measured in this issue's pod, the row runs in two modes and they differ: on replay the bar's search is aborted, because no recording answers `/api/v1/search`, and `Operations` is the only row; in a recording run against the real harness the bar also offers `Make a new issue from \"operations\"`. The Projects group holds one row in both. Everything else is main's, Enter included: `g d` reads the route's project before and after, the group is visible, and Enter on the highlighted row opens `/projects/OPS/issues`",
-  ...newInTheStubbedLayer,
 };

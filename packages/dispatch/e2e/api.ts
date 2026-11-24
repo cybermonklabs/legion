@@ -705,6 +705,29 @@ export async function uploadIssueFile(
   return (await response.json()) as Result<"/api/v1/issues/{key}/artifacts", "post">;
 }
 
+/** Uploads bytes to an agent session's conversation through the multipart form a paste on the
+ *  Agents page posts, as `uploadIssueFile` does for an issue; answers the server's upload answer. */
+export async function uploadAgentFile(
+  sessionID: string,
+  input: { bytes: Uint8Array<ArrayBuffer>; contentType: string; name: string },
+  login = "alice"
+): Promise<Result<"/api/v1/agents/{session_id}/artifacts", "post">> {
+  const form = new FormData();
+  form.append("name", input.name);
+  form.append("file", new Blob([input.bytes], { type: input.contentType }), input.name);
+  const response = await fetch(
+    new URL(routeUrl("/api/v1/agents/{session_id}/artifacts", { session_id: sessionID }), baseUrl),
+    { body: form, headers: await userHeaders(login), method: "POST" }
+  );
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(
+      `upload ${input.name} to agent ${sessionID} failed: ${response.status} ${text}`
+    );
+  }
+  return (await response.json()) as Result<"/api/v1/agents/{session_id}/artifacts", "post">;
+}
+
 /** `GET /api/v1/issues/{key}/artifacts`: every artifact the issue holds, as the Documents tab's
  *  own `["artifacts", key]` read lists them, each with its role and its versions. */
 export function listIssueArtifacts(issue: string, options: ApiOptions = {}) {

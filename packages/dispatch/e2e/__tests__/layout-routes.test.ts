@@ -1,19 +1,17 @@
 import { describe, expect, test } from "bun:test";
 
 import { type KnownLayoutBreach, layoutBreaches } from "../layout-breaches";
-import { LAYOUT_WIDTHS } from "../layout-measure";
-import { layoutRoutes, layoutUnread } from "../layout-routes";
+import { layoutRoutes, layoutRowTimeoutMs, layoutUnread } from "../layout-routes";
 import { reviewRoutes } from "../review-routes";
 
-/** The entries that name a place the layout rows never read: a route the list does not hold, a
- *  state that route does not have, or a width outside the five the rows read at. No reading can
- *  match such an entry, so nothing would ever report it either. */
+/** The entries that name a place the layout rows never read: a route the list does not hold, or
+ *  a state that route does not have. No reading can match such an entry, so nothing would ever
+ *  report it either. Its width is the type's to bound (`LayoutWidth`). */
 function unreadPlaces(entries: readonly KnownLayoutBreach[]): KnownLayoutBreach[] {
   const read = new Map(layoutRoutes.map((route) => [route.name, route]));
-  const widths: readonly number[] = LAYOUT_WIDTHS;
   return entries.filter((entry) => {
     const route = read.get(entry.route);
-    if (route === undefined || !widths.includes(entry.width)) return true;
+    if (route === undefined) return true;
     return entry.state !== undefined && !route.states?.some((state) => state.name === entry.state);
   });
 }
@@ -38,7 +36,7 @@ describe("the layout layer's route list", () => {
     expect(names.filter((name, index) => names.indexOf(name) !== index)).toEqual([]);
   });
 
-  test("names a read route, one of its states and one of the five widths in every breach list entry, once", () => {
+  test("names a read route, and one of its states, in every breach list entry, once", () => {
     expect(unreadPlaces(layoutBreaches)).toEqual([]);
     const keys = layoutBreaches.map(
       (entry) => `${entry.route}#${entry.state ?? ""} ${entry.width} ${entry.kind} ${entry.element}`
@@ -46,7 +44,7 @@ describe("the layout layer's route list", () => {
     expect(keys.filter((key, index) => keys.indexOf(key) !== index)).toEqual([]);
   });
 
-  test("refuses an entry whose route, state or width the layout rows never read", () => {
+  test("refuses an entry whose route or state the layout rows never read", () => {
     const read: KnownLayoutBreach = {
       element: '[data-testid="issue-metadata-rail"]',
       kind: "box-scroll",
@@ -58,8 +56,15 @@ describe("the layout layer's route list", () => {
     const invented: KnownLayoutBreach[] = [
       { ...read, route: "issue-specs" },
       { ...read, route: "agents", state: "peek-drawers" },
-      { ...read, width: 1024 as KnownLayoutBreach["width"] },
     ];
     expect(unreadPlaces(invented)).toEqual(invented);
+  });
+
+  test("gives a route row a budget that follows its readings, 6 s each, and never under 60 s", () => {
+    const state = { act: async () => undefined, name: "a state" };
+    // Five widths and three states: 20 readings, 120 s.
+    expect(layoutRowTimeoutMs({ states: [state, state, state] })).toBe(120_000);
+    // Five widths and no state: 5 readings, which keep Playwright's 60 s.
+    expect(layoutRowTimeoutMs({})).toBe(60_000);
   });
 });

@@ -17,10 +17,12 @@
  *  is demanded under the path that map keys it by.
  *
  *  The GitHub proxy (`/api/github/rest/...`) is no route of that document: it forwards GitHub's
- *  own answer. Its entries are held to the proxy's declaration instead, read out of
- *  `packages/envoy/internal/dispatch/githubapi/proxy.go` itself - its prefix, the paths it
- *  forwards and the query a workflow-runs read may carry - and to the shapes the dashboard reads
- *  of each answer (`web/src/features/issue/GitHubLink.tsx`, `web/src/features/refs/Unfurl.tsx`).
+ *  own answer. Its entries are held to the proxy's contract instead -
+ *  `packages/envoy/internal/dispatch/githubapi/testdata/proxy-contract.json`, which a Go test of
+ *  that package holds to the proxy's own declarations: its prefix, the paths it forwards, the
+ *  query a workflow-runs read may carry, its error codes and the fields it trims a workflow-runs
+ *  answer to - and to the shapes the dashboard reads of each other answer
+ *  (`web/src/features/issue/GitHubLink.tsx`, `web/src/features/refs/Unfurl.tsx`).
  *
  *  Those last ones are what keep the stubbed rows reading Go's tree. The dashboard asks for the
  *  trees on every request it makes, and draws one wherever it is given one; where it is given
@@ -203,40 +205,60 @@ withTrees.addSchema({ $id: "trees", ...demandedDocument });
 const ajv = new Ajv2020({ allErrors: false, strict: false, validateFormats: false });
 ajv.addSchema({ $id: "dispatch", ...document });
 
-/** The GitHub proxy's declaration, read out of its Go source as the contract is read out of its
- *  document: a copy here would go on passing a route the proxy stopped forwarding. */
-const proxySource = readFileSync(
-  fileURLToPath(new URL("../../../envoy/internal/dispatch/githubapi/proxy.go", import.meta.url)),
-  "utf8"
-);
-
-function proxyDeclares(name: string, line: RegExp): string {
-  const declared = line.exec(proxySource)?.[1];
-  if (declared === undefined)
-    throw new Error(`proxy.go declares no ${name} where this test reads it`);
-  return declared;
+/** The GitHub proxy's contract, which `contract_test.go` in its package holds to the proxy's own
+ *  declarations, as the OpenAPI document is held to the route table. */
+interface ProxyContract {
+  prefix: string;
+  readable: string;
+  workflowRunsGroup: string;
+  workflowRunsQuery: string;
+  workflowRunsCommit: string;
+  workflowRunsQueries: Record<string, boolean>;
+  errorCodes: string[];
+  workflowRuns: Record<string, unknown>;
 }
+const proxyContract = JSON.parse(
+  readFileSync(
+    fileURLToPath(
+      new URL(
+        "../../../envoy/internal/dispatch/githubapi/testdata/proxy-contract.json",
+        import.meta.url
+      )
+    ),
+    "utf8"
+  )
+) as ProxyContract;
 
-const githubPrefix = proxyDeclares("Prefix", /^const Prefix = "([^"]+)"$/m);
-/** `readable`: the GitHub paths the proxy forwards; group 3 is a workflow-runs read. Go's
- *  pattern is one JavaScript reads alike: anchors, classes, a bounded repeat and groups. */
-const githubReadable = new RegExp(
-  proxyDeclares("readable", /^var readable = regexp\.MustCompile\(`([^`]+)`\)$/m)
-);
-const workflowRunsParameter = new RegExp(
-  proxyDeclares("workflowRunsQuery", /^var workflowRunsQuery = regexp\.MustCompile\(`([^`]+)`\)$/m)
-);
+const githubPrefix = proxyContract.prefix;
+const githubReadable = new RegExp(proxyContract.readable);
+const workflowRunsParameter = new RegExp(proxyContract.workflowRunsQuery);
 
+/** `workflowRunsOfOneCommit` of proxy.go, on the contract's pattern and commit parameter; the
+ *  contract carries the proxy's own verdicts on a set of queries, which this is held to below. */
 function workflowRunsOfOneCommit(query: string): boolean {
   const seen = new Set<string>();
   for (const parameter of query.split("&")) {
     const match = workflowRunsParameter.exec(parameter);
     if (match === null) return false;
-    const name = `${match[1] ?? ""}${match[2] ?? ""}`;
+    const name = match.slice(1).find((group) => group !== undefined) ?? "";
     if (seen.has(name)) return false;
     seen.add(name);
   }
-  return seen.has("head_sha");
+  return seen.has(proxyContract.workflowRunsCommit);
+}
+
+/** A JSON schema of exactly the fields the contract lists: "integer" or "string" for a field, a
+ *  one-entry list holding an element's fields for a list. */
+function exactSchema(fields: unknown): Record<string, unknown> {
+  if (typeof fields === "string") return { type: fields };
+  if (Array.isArray(fields)) return { items: exactSchema(fields[0]), type: "array" };
+  const entries = Object.entries(fields as Record<string, unknown>);
+  return {
+    additionalProperties: false,
+    properties: Object.fromEntries(entries.map(([name, field]) => [name, exactSchema(field)])),
+    required: entries.map(([name]) => name),
+    type: "object",
+  };
 }
 
 /** What the dashboard reads of each answer the proxy forwards, as a schema of the members it
@@ -286,42 +308,11 @@ const githubShapes = {
     required: ["check_runs"],
     type: "object",
   },
-  workflowRuns: {
-    additionalProperties: false,
-    properties: {
-      total_count: { type: "integer" },
-      workflow_runs: {
-        items: {
-          additionalProperties: false,
-          properties: {
-            check_suite_id: { type: "integer" },
-            event: { type: "string" },
-            name: { type: "string" },
-          },
-          required: ["check_suite_id", "event", "name"],
-          type: "object",
-        },
-        type: "array",
-      },
-    },
-    required: ["total_count", "workflow_runs"],
-    type: "object",
-  },
+  workflowRuns: exactSchema(proxyContract.workflowRuns),
   error: {
     oneOf: [
       {
-        properties: {
-          code: {
-            enum: [
-              "GITHUB_PATH_REFUSED",
-              "GITHUB_RATE_LIMITED",
-              "GITHUB_TOKEN_UNAVAILABLE",
-              "GITHUB_UPSTREAM",
-              "METHOD_NOT_ALLOWED",
-            ],
-          },
-          error: { type: "string" },
-        },
+        properties: { code: { enum: proxyContract.errorCodes }, error: { type: "string" } },
         required: ["error", "code"],
         type: "object",
       },
@@ -339,7 +330,7 @@ function checkGithubRead(entry: Har["log"]["entries"][number], url: URL, where: 
   const match = githubReadable.exec(path);
   expect(match, `${where}: the GitHub proxy forwards no such path`).not.toBeNull();
   if (match === null) return;
-  const workflowRuns = match[3] !== undefined;
+  const workflowRuns = match.groups?.[proxyContract.workflowRunsGroup] !== undefined;
   if (workflowRuns) {
     expect(
       workflowRunsOfOneCommit(url.search.slice(1)),
@@ -535,11 +526,16 @@ describe("every committed recording answers what the generated contract declares
     ]) {
       expect(githubReadable.test(refused), refused).toBe(false);
     }
-    const sha = "a".repeat(40);
-    expect(workflowRunsOfOneCommit(`head_sha=${sha}&per_page=100&page=1`)).toBe(true);
-    expect(workflowRunsOfOneCommit("per_page=100&page=1")).toBe(false);
-    expect(workflowRunsOfOneCommit(`head_sha=${sha}&head_sha=${sha}`)).toBe(false);
-    expect(workflowRunsOfOneCommit(`head_sha=${sha}&branch=main`)).toBe(false);
+    // The port of `workflowRunsOfOneCommit` gives each verdict the proxy's own gives, as the Go
+    // test wrote them into the contract.
+    const verdicts = Object.entries(proxyContract.workflowRunsQueries);
+    expect(verdicts.length).toBeGreaterThan(0);
+    expect(
+      verdicts.filter(([query, verdict]) => workflowRunsOfOneCommit(query) !== verdict)
+    ).toEqual([]);
+    expect(githubReadable.exec("repos/acme/web/actions/runs")?.groups).toEqual({
+      [proxyContract.workflowRunsGroup]: "actions/runs",
+    });
     expect(githubValidators.reference({ state: "open", title: "Ship it" })).toBe(true);
     expect(githubValidators.reference({ state: "open" })).toBe(false);
     expect(

@@ -1153,16 +1153,19 @@ machine with no container.
 
 A third layer holds every page to the layout rule of `AGENTS.md` ("Layout"), and
 `bun run e2e:layout` runs all of it. It reads the routes of `e2e/layout-routes.ts` - every
-reviewed route, the excluded ones whose reason argues only against a shot or a scan, and pages a
-reader's choice in this browser draws another way (the new issue page, the project's board, a
-project with an architecture source) - over the review corpus and a stress layer that writes
+reviewed route, the excluded ones whose reason argues only against a shot or a scan, two pages a
+reader's choice in this browser draws another way (the new issue page, the project's board), and
+the project page and its Architecture tab, which a project with an architecture source draws -
+over the review corpus and a stress layer that writes
 production's lengths (`e2e/layout-seed.ts`), at 360, 900, 1280, 1440 and 1920 px, and again in
 each state a route names (the Peek drawer open, rows or agents selected). At each width
 `e2e/layout-check.ts` loads the page fresh, waits for `waitForRouteSettled`, and runs
 `measureLayout` (`e2e/layout-measure.ts`) in the page: a page that scrolls sideways, a box that
 does for anything but a code block, one picture wider than the box, a data table or a board's
-lanes, something cut off at a side with no ellipsis, a closed `data-layout-group` showing more
-entries than its cap, and a group the route must mark (`requiredGroups`) that no element marks.
+lanes, something cut off at a side with no ellipsis (a code block's text, a picture and a fixed
+layer's own text among them), a closed `data-layout-group` showing more entries than its cap, a
+group that declares a cap other than a whole number from 1 to 10 or marks more than one "+N"
+control, and a group the route must mark (`requiredGroups`) of which no shown entry is marked.
 Each direct child of a `data-layout-group` element is one entry, except the one "+N" control,
 which is marked `data-layout-more`; so each child must be one chip, since a child that draws
 several chips still counts as one and its group can show more chips than its cap and pass. The
@@ -1178,9 +1181,12 @@ in Liberation Mono and Liberation Sans, and the editor's `SF Mono` and the diagr
 in `en-US` and UTC, so a run on any machine measures the text CI measures.
 `e2e/layout-measure.stub.e2e.ts` draws each defect and each allowed
 case, and holds the instrument to reporting the one and not the other. A row fails on each breach
-no entry of `e2e/layout-breaches.ts` accepts - an entry accepts exactly its `count` - on a page
-whose own region drew fewer than 100 elements (or the route's own `minElements`), and on an entry
-whose route, state and width it measured and which its reading did not match exactly; and
+no entry of `e2e/layout-breaches.ts` accepts - an entry names the locator the row prints for its
+breach (for a page that scrolls sideways, that of the deepest element past the viewport), matches
+only a breach of that locator, and accepts exactly its `count` of them, so the count is the bound
+of what it lets through - on a page whose own region drew fewer than 100 elements (or the route's
+own `minElements`), and on an entry whose route, state and width it measured and which its
+reading did not match exactly; and
 `e2e/__tests__/layout-routes.test.ts` refuses an entry that names a route, a state or a width the
 rows never read. That list holds the breaches main still has, each naming the INFRA-5200 slice
 that removes it; a slice deletes its entries, and the list and its use go once it is empty.

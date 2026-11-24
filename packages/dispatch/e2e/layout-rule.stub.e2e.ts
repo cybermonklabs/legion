@@ -12,9 +12,9 @@
  *  `bun run e2e:stub:record -- layout-rule.stub`. */
 import { expectTimeout } from "./expect-timeout";
 import { checkLayout } from "./layout-check";
-import { layoutRoutes } from "./layout-routes";
+import { layoutRoutes, layoutRowTimeoutMs } from "./layout-routes";
 import { seedLayoutStress } from "./layout-seed";
-import { routeLayoutSockets } from "./layout-sockets";
+import { answerIssueReadMarks, routeLayoutSockets } from "./layout-sockets";
 import { stubbed } from "./stub/stub-test";
 
 // The seed runs in a recording run alone, against the harness; a replay hands each row the
@@ -33,7 +33,10 @@ for (const route of layoutRoutes) {
     page,
     scene,
   }, testInfo) => {
+    // The budget follows the row's readings (`layoutRowTimeoutMs`): twice a reading's cost on CI.
+    test.setTimeout(layoutRowTimeoutMs(route));
     const keep = await routeLayoutSockets(page, testInfo);
+    await answerIssueReadMarks(page);
     try {
       await checkLayout(page, route, scene);
     } finally {

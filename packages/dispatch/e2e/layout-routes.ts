@@ -1,19 +1,21 @@
 /** The pages the layout layer reads against the layout rule: every reviewed page of
  *  `e2e/review-routes.ts`, the pages that list excludes only because a pixel comparison or a scan
- *  would not read them the same twice, and three pages a reader's choice in this browser draws
- *  another way: the new issue page, the project's board, and the project page a project with an
- *  architecture source opens on. A route may also carry states - what the page draws once the
- *  reader has acted on it - each read at every width after the plain load.
+ *  would not read them the same twice, two pages a reader's choice in this browser draws another
+ *  way - the new issue page and the project's board - and the project page and its Architecture
+ *  tab, which draw from the architecture source the stress layer syncs on the server. A route may
+ *  also carry states - what the page draws once the reader has acted on it - each read at every
+ *  width after the plain load.
  *
  *  `e2e/layout-rule.stub.e2e.ts` reads them all, against a recording of their HTTP answers and of
  *  the document and live sockets they draw from (`e2e/layout-sockets.ts`), on every pull request.
  *
  *  Data and locators only, as `e2e/review-routes.ts` is, so `e2e/__tests__/layout-routes.test.ts`
  *  reads it without a browser or a harness: its imports are Playwright's types, the review
- *  table, and `./issue-page-option`, which imports a type alone. */
+ *  table, the measure's widths, and `./issue-page-option`, which imports a type alone. */
 import type { BrowserContext, Locator, Page } from "@playwright/test";
 
 import { withIssuePage } from "./issue-page-option";
+import { LAYOUT_WIDTHS } from "./layout-measure";
 import { type ReviewedRoute, type ReviewSeed, reviewRoutes } from "./review-routes";
 import type { WalkRoutePath } from "./two-builds-routes";
 
@@ -154,6 +156,7 @@ const twoRowsSelected: LayoutState = {
     await page.getByRole("toolbar").filter({ hasText: "2 selected" }).waitFor();
   },
   name: "two-rows-selected",
+  requiredGroups: ["labels"],
 };
 
 /** Every agent selected for a broadcast, which draws the composer and its list of chosen agents
@@ -167,7 +170,7 @@ const allAgentsSelected: LayoutState = {
   requiredGroups: ["chosen-agents"],
 };
 
-/** The lists of chips today's issue page draws from the stress issue's data: its 12 labels, its
+/** The lists of chips today's issue page draws from the stress issue's data: its 13 labels, its
  *  13 components, its 15 pull requests, and its links that are no pull request. Each is a list of
  *  R3, which `components/CappedGroup.tsx` marks with these names. */
 const ISSUE_GROUPS = ["labels", "components", "pull-requests", "links"];
@@ -197,7 +200,8 @@ const additions: Readonly<
   person: { minElements: shortPage(27) },
   "project-document": { minElements: shortPage(49) },
   "project-documents": { minElements: shortPage(40) },
-  "project-issues": { states: [twoRowsSelected] },
+  // The Labels cell of the stress issue's row: its 13 labels, a list of R3.
+  "project-issues": { requiredGroups: ["labels"], states: [twoRowsSelected] },
 };
 
 const reviewed: readonly LayoutRoute[] = reviewRoutes
@@ -234,7 +238,7 @@ export const layoutRoutes: readonly LayoutRoute[] = [
       page.getByTestId("issue-column"),
       // The stress issue's whole title, and its labels: one of them drawn, or - where the page
       // folds every one of them by width under INFRA-1196's R13, as at 360 px - its count of all
-      // twelve.
+      // thirteen.
       page
         .locator("[data-issue-page]")
         .getByRole("heading", { exact: true, level: 1, name: STRESS_TITLE }),
@@ -265,6 +269,8 @@ export const layoutRoutes: readonly LayoutRoute[] = [
       });
     },
     ready: (page) => [page.locator("[data-board-card]").first()],
+    // The stress issue's card draws its 13 labels, a list of R3.
+    requiredGroups: ["labels"],
   },
   {
     name: "project",
@@ -312,3 +318,12 @@ export const layoutRoutes: readonly LayoutRoute[] = [
     ],
   },
 ];
+
+/** A route row's time budget, which follows its readings: one per width as the page loads, and
+ *  one per width in each of its states. Six seconds a reading is twice what one cost on CI (2.9 s
+ *  on the agents row of D's branch, run 45301444362, whose 20 readings ran out of Playwright's
+ *  60 s); a route of few readings keeps that 60 s. */
+export function layoutRowTimeoutMs(route: Pick<LayoutRoute, "states">): number {
+  const readings = LAYOUT_WIDTHS.length * (1 + (route.states?.length ?? 0));
+  return Math.max(60_000, readings * 6_000);
+}
