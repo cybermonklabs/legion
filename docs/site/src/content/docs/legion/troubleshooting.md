@@ -1841,7 +1841,8 @@ notice comes once per handoff commit, from whichever read finds it first.
     names the settlement: `wake: a released pod is coming back`, kind `checks`, whose `detail`
     starts with the head's first 12 characters. That task is the worker's `CI settled` message.
     Each other released role's message ends `outbox role message finished undelivered: its role's
-    pod is released, and the message is not worth a wake`.
+    pod is released, and the message is not worth a wake`, unless a project pause holds it for the
+    role, when it waits for the role's launch.
   - In every other case, it was lost between the listener and the daemon.
 
   No line at all for a finished head means that no event of that head reached the listener's
