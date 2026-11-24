@@ -2357,6 +2357,114 @@
         "capture": "embed.redirect/entra"
       },
       {
+        "row": "agentloop-model-words-refusal",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": ["packages/envoy/agentloop/model_words_test.go"],
+        "capture": "agentloop.model-words/refusal"
+      },
+      {
+        "row": "agentloop-model-words-malformed",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": ["packages/envoy/agentloop/model_words_test.go"],
+        "capture": "agentloop.model-words/malformed"
+      },
+      {
+        "row": "agentloop-model-words-forbidden-key",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": ["packages/envoy/agentloop/model_words_test.go"],
+        "capture": "agentloop.model-words/forbidden-key"
+      },
+      {
+        "row": "agentloop-model-words-azure-key",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": ["packages/envoy/agentloop/model_words_test.go"],
+        "capture": "agentloop.model-words/azure-key"
+      },
+      {
+        "row": "agentloop-model-words-query-value",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": ["packages/envoy/agentloop/model_words_test.go"],
+        "capture": "agentloop.model-words/query-value"
+      },
+      {
+        "row": "agentloop-model-words-retried",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": ["packages/envoy/agentloop/model_words_test.go"],
+        "capture": "agentloop.model-words/retried"
+      },
+      {
+        "row": "agentloop-model-words-decide-unparsed",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": ["packages/envoy/agentloop/model_words_test.go"],
+        "capture": "agentloop.model-words/decide-unparsed"
+      },
+      {
+        "row": "going-model-words-unparsed",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": ["packages/envoy/going/model_words_test.go"],
+        "capture": "going.model-words/unparsed"
+      },
+      {
+        "row": "dispatch-answerer-endpoint-unparsed",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": ["packages/envoy/cmd/dispatch/answerer_words_test.go"],
+        "capture": "dispatch.answerer-endpoint/endpoint-unparsed"
+      },
+      {
+        "row": "dispatch-answerer-endpoint-azure-query",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": ["packages/envoy/cmd/dispatch/answerer_words_test.go"],
+        "capture": "dispatch.answerer-endpoint/azure-query"
+      },
+      {
+        "row": "judge-model-words-refusal",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": ["packages/envoy/internal/cipher/judge/model_words_test.go"],
+        "capture": "judge.model-words/refusal/error"
+      },
+      {
+        "row": "judge-model-words-malformed",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": ["packages/envoy/internal/cipher/judge/model_words_test.go"],
+        "capture": "judge.model-words/malformed/raw-answer"
+      },
+      {
+        "row": "judge-model-words-forbidden-key",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": ["packages/envoy/internal/cipher/judge/model_words_test.go"],
+        "capture": "judge.model-words/forbidden-key/error"
+      },
+      {
+        "row": "judge-model-words-deny",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": ["packages/envoy/internal/cipher/judge/model_words_test.go"],
+        "capture": "judge.model-words/deny/refusal"
+      },
+      {
+        "row": "judge-model-words-grant",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": ["packages/envoy/internal/cipher/judge/model_words_test.go"],
+        "capture": "judge.model-words/grant/reason"
+      },
+      {
+        "row": "api-judge-model-words-deny",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": ["packages/envoy/internal/cipher/api/judge_model_words_test.go"],
+        "capture": "api.judge-model-words/deny/status"
+      },
+      {
+        "row": "api-judge-model-words-grant",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": ["packages/envoy/internal/cipher/api/judge_model_words_test.go"],
+        "capture": "api.judge-model-words/grant/grant-log"
+      },
+      {
+        "row": "api-judge-model-words-malformed",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": ["packages/envoy/internal/cipher/api/judge_model_words_test.go"],
+        "capture": "api.judge-model-words/malformed/grant-log"
+      },
+      {
         "row": "oidc-revoke-redirect",
         "base": "df9ce51fa06750ecad27613e12fc216103f0f2f7",
         "files": ["packages/envoy/internal/oidc/redirect_location_test.go"],
@@ -6052,6 +6160,405 @@
         "file": "packages/envoy/going/chat.go",
         "preimage": "redact.StatusLine(response.StatusCode)",
         "replacement": "response.Status"
+      }
+    },
+    {
+      "id": "agentloop-model-words-refusal",
+      "requirement": "r3-each-site",
+      "package": "./agentloop",
+      "test": "TestAModelServicesWordsInADetailHoldNoCredential/refusal",
+      "production": "agentloop run.finish: a Chat refusal's words print as Result.Words reads them, the run's own credentials redacted (Result.WithoutTokens) and then the rule for remote text (redact.Field)",
+      "function": "(*github.com/sjawhar/envoy/agentloop.run).finish",
+      "capture": "agentloop.model-words/refusal",
+      "mutation": {
+        "file": "packages/envoy/agentloop/run.go",
+        "preimage": "result.Words(string(refusal))",
+        "replacement": "string(refusal)"
+      }
+    },
+    {
+      "id": "agentloop-model-words-malformed",
+      "requirement": "r3-each-site",
+      "package": "./agentloop",
+      "test": "TestAModelServicesWordsInADetailHoldNoCredential/malformed",
+      "production": "agentloop run.finish: a last reply that is no object of Request.Final prints as Result.Words reads it",
+      "function": "(*github.com/sjawhar/envoy/agentloop.run).finish",
+      "capture": "agentloop.model-words/malformed",
+      "mutation": {
+        "file": "packages/envoy/agentloop/run.go",
+        "preimage": "result.Words(err.Error()), result.Words(result.Text))",
+        "replacement": "result.Words(err.Error()), result.Text)"
+      }
+    },
+    {
+      "id": "agentloop-model-words-forbidden-key",
+      "requirement": "r3-each-site",
+      "package": "./agentloop",
+      "test": "TestAModelServicesWordsInADetailHoldNoCredential/forbidden-key",
+      "production": "agentloop run.finish: the SDK's output error, which quotes each property the schema forbids, prints as Result.Words reads it",
+      "function": "(*github.com/sjawhar/envoy/agentloop.run).finish",
+      "capture": "agentloop.model-words/forbidden-key",
+      "mutation": {
+        "file": "packages/envoy/agentloop/run.go",
+        "preimage": "result.Words(err.Error())",
+        "replacement": "err.Error()"
+      }
+    },
+    {
+      "id": "agentloop-model-words-azure-key",
+      "requirement": "r3-each-site",
+      "package": "./agentloop",
+      "test": "TestAModelServicesWordsInADetailHoldNoCredential/azure-key",
+      "production": "agentloop modelTransport.RoundTrip: the credential azure-anthropic's middleware signed a request with is one the run carried, which Result.Words redacts from a Detail",
+      "function": "(*github.com/sjawhar/envoy/agentloop.modelTransport).RoundTrip",
+      "capture": "agentloop.model-words/azure-key",
+      "mutation": {
+        "file": "packages/envoy/agentloop/transport.go",
+        "preimage": "t.keep(signed)",
+        "replacement": "_ = signed"
+      }
+    },
+    {
+      "id": "agentloop-model-words-query-value",
+      "requirement": "r3-each-site",
+      "package": "./agentloop",
+      "test": "TestAModelServicesWordsInADetailHoldNoCredential/query-value",
+      "production": "agentloop modelTransport.RoundTrip: a query value the endpoint adds under a name no contract declares public (redact.QueryTokens) is one the run carried, which Result.Words redacts from a Detail",
+      "function": "(*github.com/sjawhar/envoy/agentloop.modelTransport).RoundTrip",
+      "capture": "agentloop.model-words/query-value",
+      "mutation": {
+        "file": "packages/envoy/agentloop/transport.go",
+        "preimage": "t.keep(redact.QueryTokens(r, added)...)",
+        "replacement": "_ = added"
+      }
+    },
+    {
+      "id": "agentloop-model-words-retried",
+      "requirement": "r3-each-site",
+      "package": "./agentloop",
+      "test": "TestAModelServicesWordsInADetailHoldNoCredential/retried",
+      "production": "agentloop modelTransport.RoundTrip: the token read for each attempt, the one retry's included, is one the run carried, which Result.Words redacts from a Detail",
+      "function": "(*github.com/sjawhar/envoy/agentloop.modelTransport).RoundTrip",
+      "capture": "agentloop.model-words/retried",
+      "mutation": {
+        "file": "packages/envoy/agentloop/transport.go",
+        "preimage": "t.keep(key)",
+        "replacement": "_ = key"
+      }
+    },
+    {
+      "id": "agentloop-model-words-tokens",
+      "requirement": "r3-each-site",
+      "package": "./agentloop",
+      "test": "TestAModelServicesWordsInADetailHoldNoCredential/refusal",
+      "production": "agentloop Result.WithoutTokens: every run of a credential the run itself put on its requests is redacted (redact.Tokens)",
+      "function": "(github.com/sjawhar/envoy/agentloop.Result).WithoutTokens",
+      "capture": "agentloop.model-words/refusal",
+      "mutation": {
+        "file": "packages/envoy/agentloop/agentloop.go",
+        "preimage": "redact.Tokens(text, -1, carried...)",
+        "replacement": "text"
+      }
+    },
+    {
+      "id": "agentloop-model-words-field",
+      "requirement": "r3-each-site",
+      "package": "./agentloop",
+      "test": "TestAModelServicesWordsInADetailHoldNoCredential/refusal",
+      "production": "agentloop Result.Words: the model's words, the run's credentials redacted, are read by the rule for remote text (redact.Field)",
+      "function": "(github.com/sjawhar/envoy/agentloop.Result).Words",
+      "capture": "agentloop.model-words/refusal",
+      "mutation": {
+        "file": "packages/envoy/agentloop/agentloop.go",
+        "preimage": "redact.Field(r.WithoutTokens(text))",
+        "replacement": "r.WithoutTokens(text)"
+      }
+    },
+    {
+      "id": "agentloop-finish-reason-length",
+      "requirement": "r3-each-site",
+      "package": "./agentloop",
+      "test": "TestAFinishReasonNoSDKReportsPrintsAsTheModelsWords/length",
+      "production": "agentloop run.finish: a length finish reason none of the pinned SDKs reports prints as the model's words are read (Result.finishReason)",
+      "function": "(*github.com/sjawhar/envoy/agentloop.run).finish",
+      "capture": "agentloop.finish-reason/length",
+      "mutation": {
+        "file": "packages/envoy/agentloop/run.go",
+        "preimage": "result.finishReason(reason.Raw), r.req.Bounds.OutputTokens)",
+        "replacement": "reason.Raw, r.req.Bounds.OutputTokens)"
+      }
+    },
+    {
+      "id": "agentloop-finish-reason-content-filter",
+      "requirement": "r3-each-site",
+      "package": "./agentloop",
+      "test": "TestAFinishReasonNoSDKReportsPrintsAsTheModelsWords/content-filter",
+      "production": "agentloop run.finish: a content-filter finish reason none of the pinned SDKs reports prints as the model's words are read (Result.finishReason)",
+      "function": "(*github.com/sjawhar/envoy/agentloop.run).finish",
+      "capture": "agentloop.finish-reason/content-filter",
+      "mutation": {
+        "file": "packages/envoy/agentloop/run.go",
+        "preimage": "\"the provider stopped the last reply: %s\", result.finishReason(reason.Raw))",
+        "replacement": "\"the provider stopped the last reply: %s\", reason.Raw)"
+      }
+    },
+    {
+      "id": "agentloop-finish-reason-error",
+      "requirement": "r3-each-site",
+      "package": "./agentloop",
+      "test": "TestAFinishReasonNoSDKReportsPrintsAsTheModelsWords/error",
+      "production": "agentloop run.finish: an error finish reason none of the pinned SDKs reports prints as the model's words are read (Result.finishReason)",
+      "function": "(*github.com/sjawhar/envoy/agentloop.run).finish",
+      "capture": "agentloop.finish-reason/error",
+      "mutation": {
+        "file": "packages/envoy/agentloop/run.go",
+        "preimage": "\"the last reply ended in an error: %s\", result.finishReason(reason.Raw))",
+        "replacement": "\"the last reply ended in an error: %s\", reason.Raw)"
+      }
+    },
+    {
+      "id": "agentloop-finish-reason-unknown",
+      "requirement": "r3-each-site",
+      "package": "./agentloop",
+      "test": "TestAFinishReasonNoSDKReportsPrintsAsTheModelsWords/length",
+      "production": "agentloop Result.finishReason: a finish reason outside knownFinishReasons is read as the model's words (Result.Words)",
+      "function": "(github.com/sjawhar/envoy/agentloop.Result).finishReason",
+      "capture": "agentloop.finish-reason/length",
+      "mutation": {
+        "file": "packages/envoy/agentloop/run.go",
+        "preimage": "return r.Words(raw)",
+        "replacement": "return raw"
+      }
+    },
+    {
+      "id": "agentloop-model-words-decide-unparsed",
+      "requirement": "r3-each-site",
+      "package": "./agentloop",
+      "test": "TestADecisionsUnparsedEndpointNamesNoCredentialOfIt",
+      "production": "agentloop.Decide: a configured endpoint that does not parse is named only as redact.URL reads it, never in net/url's words",
+      "function": "github.com/sjawhar/envoy/agentloop.Decide",
+      "capture": "agentloop.model-words/decide-unparsed",
+      "mutation": {
+        "file": "packages/envoy/agentloop/decide.go",
+        "preimage": "redact.URL(req.Model.Endpoint.BaseURL)",
+        "replacement": "req.Model.Endpoint.BaseURL"
+      }
+    },
+    {
+      "id": "agentloop-model-words-decide-cause",
+      "requirement": "r3-each-site",
+      "package": "./agentloop",
+      "test": "TestADecisionsUnparsedEndpointNamesNoCredentialOfIt",
+      "production": "agentloop.Decide: the request-build failure of an endpoint that does not parse is named by its class (redact.Cause)",
+      "function": "github.com/sjawhar/envoy/agentloop.Decide",
+      "capture": "agentloop.model-words/decide-unparsed",
+      "mutation": {
+        "file": "packages/envoy/agentloop/decide.go",
+        "preimage": "redact.Cause(err, req.Model.Endpoint.BaseURL))",
+        "replacement": "err)"
+      }
+    },
+    {
+      "id": "agentloop-model-words-ordinary",
+      "requirement": "r4-unchanged",
+      "package": "./agentloop",
+      "test": "TestAModelServicesOrdinaryWordsPrintAsTheyCame",
+      "production": "agentloop.Run: an ordinary refusal, a finish reason the SDKs report, and a reply quoting the prompt, grant, deny and Azure's api-version print in the Detail as they came"
+    },
+    {
+      "id": "redact-query-tokens",
+      "requirement": "r4-unchanged",
+      "package": "./internal/redact",
+      "test": "TestAQueryValueIsACredentialUnlessItsNameIsPublicOnTheRoute",
+      "production": "redact.QueryTokens: a query value under a name no contract declares public on the route is a credential, and Azure's api-version on its chat completions routes is not"
+    },
+    {
+      "id": "going-model-words-unparsed",
+      "requirement": "r3-each-site",
+      "package": "./going",
+      "test": "TestAChatEndpointThatDoesNotParseNamesNoCredentialOfIt",
+      "production": "going.NewHTTPClient: a configured chat endpoint that does not parse is named only as redact.URL reads it, never in net/url's words",
+      "function": "github.com/sjawhar/envoy/going.NewHTTPClient",
+      "capture": "going.model-words/unparsed",
+      "mutation": {
+        "file": "packages/envoy/going/chat.go",
+        "preimage": "redact.URL(cfg.Endpoint)",
+        "replacement": "cfg.Endpoint"
+      }
+    },
+    {
+      "id": "going-model-words-unparsed-cause",
+      "requirement": "r3-each-site",
+      "package": "./going",
+      "test": "TestAChatEndpointThatDoesNotParseNamesNoCredentialOfIt",
+      "production": "going.NewHTTPClient: the parse failure of a chat endpoint is named by its class (redact.Cause)",
+      "function": "github.com/sjawhar/envoy/going.NewHTTPClient",
+      "capture": "going.model-words/unparsed",
+      "mutation": {
+        "file": "packages/envoy/going/chat.go",
+        "preimage": "redact.Cause(err, cfg.Endpoint)",
+        "replacement": "err"
+      }
+    },
+    {
+      "id": "going-model-words-code",
+      "requirement": "r2-held",
+      "package": "./going",
+      "test": "TestAChatRefusalsCodeHoldsNoBearerItEchoed",
+      "production": "going chatStatusError: a refusal's error code is a box decoded with the request's record (redact.Answer.Decode), so its %q prints the rule's reading with the call's bearer redacted",
+      "function": "github.com/sjawhar/envoy/going.chatStatusError",
+      "capture": "going.model-words/code",
+      "mutation": {
+        "file": "packages/envoy/going/chat.go",
+        "preimage": "_ = answer.Decode(&decoded)",
+        "replacement": "_ = json.Unmarshal(func() []byte { var b bytes.Buffer; _, _ = answer.StreamTo(&b); return b.Bytes() }(), &decoded)"
+      }
+    },
+    {
+      "id": "dispatch-answerer-endpoint-unparsed",
+      "requirement": "r3-each-site",
+      "package": "./cmd/dispatch",
+      "test": "TestTheBootNamesNoCredentialOfAChatEndpointItRefuses/endpoint-unparsed",
+      "production": "cmd/dispatch chatEndpoint: the boot's refusal of a DISPATCH_CHAT_ENDPOINT that does not parse names it only as redact.URL reads it",
+      "function": "github.com/sjawhar/envoy/cmd/dispatch.chatEndpoint",
+      "capture": "dispatch.answerer-endpoint/endpoint-unparsed",
+      "mutation": {
+        "file": "packages/envoy/cmd/dispatch/answerer.go",
+        "preimage": "redact.URL(endpoint))",
+        "replacement": "endpoint)"
+      }
+    },
+    {
+      "id": "dispatch-answerer-endpoint-azure-query",
+      "requirement": "r3-each-site",
+      "package": "./cmd/dispatch",
+      "test": "TestTheBootNamesNoCredentialOfAChatEndpointItRefuses/azure-query",
+      "production": "cmd/dispatch chatEndpoint: the boot's refusal of a DISPATCH_AZURE_CHAT_ENDPOINT that carries a query names it only as redact.URL reads it",
+      "function": "github.com/sjawhar/envoy/cmd/dispatch.chatEndpoint",
+      "capture": "dispatch.answerer-endpoint/azure-query",
+      "mutation": {
+        "file": "packages/envoy/cmd/dispatch/answerer.go",
+        "preimage": "redact.URL(endpoint))",
+        "replacement": "endpoint)"
+      }
+    },
+    {
+      "id": "judge-model-words-refusal",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/judge",
+      "test": "TestTheJudgeKeepsNoBearerItsModelEchoed/refusal",
+      "production": "judge Runner: a run that ended on a refusal echoing the judge's bearer records an error, in the request.judged row and the verdict's log line, that holds no secret (agentloop run.finish)",
+      "function": "(*github.com/sjawhar/envoy/agentloop.run).finish",
+      "capture": "judge.model-words/refusal/error",
+      "mutation": {
+        "file": "packages/envoy/agentloop/run.go",
+        "preimage": "result.Words(string(refusal))",
+        "replacement": "string(refusal)"
+      }
+    },
+    {
+      "id": "judge-model-words-malformed",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/judge",
+      "test": "TestTheJudgeKeepsNoBearerItsModelEchoed/malformed",
+      "production": "judge rawAnswer: the raw answer the request.judged row keeps holds no run of the bearer the judge presented (agentloop.Result.WithoutTokens)",
+      "function": "github.com/sjawhar/envoy/internal/cipher/judge.rawAnswer",
+      "capture": "judge.model-words/malformed/raw-answer",
+      "mutation": {
+        "file": "packages/envoy/internal/cipher/judge/model.go",
+        "preimage": "result.WithoutTokens(text)",
+        "replacement": "text"
+      }
+    },
+    {
+      "id": "judge-model-words-forbidden-key",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/judge",
+      "test": "TestTheJudgeKeepsNoBearerItsModelEchoed/forbidden-key",
+      "production": "judge Runner: a reply keyed by the judge's bearer, which the SDK's error quotes, records an error that holds no secret (agentloop run.finish)",
+      "function": "(*github.com/sjawhar/envoy/agentloop.run).finish",
+      "capture": "judge.model-words/forbidden-key/error",
+      "mutation": {
+        "file": "packages/envoy/agentloop/run.go",
+        "preimage": "result.Words(err.Error())",
+        "replacement": "err.Error()"
+      }
+    },
+    {
+      "id": "judge-model-words-deny",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/judge",
+      "test": "TestTheJudgeKeepsNoBearerItsModelEchoed/deny",
+      "production": "judge Model.Ask: a deny's reason echoing the judge's bearer is read as agentloop.Result.Words reads it, so the agent's refusal, the row and the log line hold no secret",
+      "function": "(github.com/sjawhar/envoy/internal/cipher/judge.Model).Ask",
+      "capture": "judge.model-words/deny/refusal",
+      "mutation": {
+        "file": "packages/envoy/internal/cipher/judge/model.go",
+        "preimage": "result.Words(answer.Reason)",
+        "replacement": "answer.Reason"
+      }
+    },
+    {
+      "id": "judge-model-words-grant",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/judge",
+      "test": "TestTheJudgeKeepsNoBearerItsModelEchoed/grant",
+      "production": "judge Model.Ask: a grant's reason echoing the judge's bearer is read as agentloop.Result.Words reads it, so the row and the log line hold no secret",
+      "function": "(github.com/sjawhar/envoy/internal/cipher/judge.Model).Ask",
+      "capture": "judge.model-words/grant/reason",
+      "mutation": {
+        "file": "packages/envoy/internal/cipher/judge/model.go",
+        "preimage": "result.Words(answer.Reason)",
+        "replacement": "answer.Reason"
+      }
+    },
+    {
+      "id": "judge-model-words-ordinary",
+      "requirement": "r4-unchanged",
+      "package": "./internal/cipher/judge",
+      "test": "TestTheJudgeKeepsTheModelsOrdinaryWords",
+      "production": "judge Model.Ask: a reason and a raw answer quoting the system prompt, the signed reason, grant, deny and Azure's api-version are kept as they came"
+    },
+    {
+      "id": "api-judge-model-words-deny",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/api",
+      "test": "TestTheGrantLogServesNoBearerTheJudgesModelEchoed/deny",
+      "production": "judge Model.Ask over the broker: the status the refused agent reads, and GET /v1/grant-log, hold no secret of a deny's reason that echoed the judge's bearer",
+      "function": "(github.com/sjawhar/envoy/internal/cipher/judge.Model).Ask",
+      "capture": "api.judge-model-words/deny/status",
+      "mutation": {
+        "file": "packages/envoy/internal/cipher/judge/model.go",
+        "preimage": "result.Words(answer.Reason)",
+        "replacement": "answer.Reason"
+      }
+    },
+    {
+      "id": "api-judge-model-words-grant",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/api",
+      "test": "TestTheGrantLogServesNoBearerTheJudgesModelEchoed/grant",
+      "production": "judge Model.Ask over the broker: GET /v1/grant-log serves no run of the bearer a grant's reason echoed",
+      "function": "(github.com/sjawhar/envoy/internal/cipher/judge.Model).Ask",
+      "capture": "api.judge-model-words/grant/grant-log",
+      "mutation": {
+        "file": "packages/envoy/internal/cipher/judge/model.go",
+        "preimage": "result.Words(answer.Reason)",
+        "replacement": "answer.Reason"
+      }
+    },
+    {
+      "id": "api-judge-model-words-malformed",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/api",
+      "test": "TestTheGrantLogServesNoBearerTheJudgesModelEchoed/malformed",
+      "production": "judge rawAnswer over the broker: GET /v1/grant-log serves no run of the bearer a malformed reply echoed in the raw answer",
+      "function": "github.com/sjawhar/envoy/internal/cipher/judge.rawAnswer",
+      "capture": "api.judge-model-words/malformed/grant-log",
+      "mutation": {
+        "file": "packages/envoy/internal/cipher/judge/model.go",
+        "preimage": "result.WithoutTokens(text)",
+        "replacement": "text"
       }
     },
     {
@@ -11226,6 +11733,41 @@
       "site": "leakguard Source.read: it follows GitHub's tarball redirect by design, and Cause printed net/http's error through the URL rule alone, which leaves a Location with no scheme and a followed target's host as they came",
       "source": "the class search of round 7's third must-fix",
       "guard": "daemon-redact-unanswered"
+    },
+    {
+      "site": "agentloop run.finish: the model service's own words of a 200 stream - a Chat refusal, a last reply that is no object of Request.Final - printed as they came in a run's Detail, which the judge records in its request.judged row and logs",
+      "source": "the round-9 report of the first pull request, its left item 5",
+      "guard": "agentloop-model-words-refusal"
+    },
+    {
+      "site": "agentloop run.finish: the SDK's output error quotes each property the judge's schema forbids, so a reply keyed by the bearer the run sent printed it in the Detail",
+      "source": "the plan review of the second pull request's agentloop task",
+      "guard": "agentloop-model-words-forbidden-key"
+    },
+    {
+      "site": "judge Model.Ask: a well-formed answer's reason was kept through record.Sanitize alone, so a reason echoing the bearer the judge presented reached the requesting agent's refusal, two log lines and the request.judged row GET /v1/grant-log serves",
+      "source": "the plan review of the second pull request's agentloop task",
+      "guard": "judge-model-words-deny"
+    },
+    {
+      "site": "judge Model.Ask: the raw answer the request.judged row keeps held the bearer a reply echoed",
+      "source": "the plan review of the second pull request's agentloop task",
+      "guard": "judge-model-words-malformed"
+    },
+    {
+      "site": "agentloop.Decide: a configured endpoint that does not parse printed in net/url's words, which quote it whole, user information and query included",
+      "source": "the round-9 report of the first pull request, its left item 6",
+      "guard": "agentloop-model-words-decide-unparsed"
+    },
+    {
+      "site": "going.NewHTTPClient: a configured chat endpoint that does not parse printed in net/url's words, which quote it whole",
+      "source": "the round-9 report of the first pull request, its left item 6",
+      "guard": "going-model-words-unparsed"
+    },
+    {
+      "site": "cmd/dispatch chatEndpoint: Dispatch's boot refused a chat endpoint that does not parse, or that carries a query or a fragment, quoting it as it came; this refusal, and not going.NewHTTPClient's, is what the boot prints for such an endpoint",
+      "source": "the agentloop task's reading of the boot path its plan named",
+      "guard": "dispatch-answerer-endpoint-unparsed"
     },
     {
       "site": "envoy's credential-carrying clients handed on net/http's error as it came, so a Location that did not parse (net/http quotes it before CheckRedirect is asked), or one a following client asked, put the request's credential into a log line or an error: the listener's broker read, Dispatch's agent-secrets client, the broker's wake notice, judge read and Dispatch read, the generateIdToken mint, Dispatch's introspection, the Azure embeddings call and Entra exchange, and the OIDC revocation",
