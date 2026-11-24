@@ -44,11 +44,90 @@ import (
 // for one process's worth.
 var dispatchProcessesRunning atomic.Int64
 
-// serverSlots holds one token for each Dispatch server running in this test binary, at most
+// serverSlots holds one slot for each Dispatch server running in this test binary, at most
 // testlimits.MaxProcessesAtOnce: the most the lane's Postgres is sized to serve at once, which
 // requireConnectionCeiling refuses a start past. A start past it waits here for a server to exit
 // instead, so tests that run at the same time share the servers the lane can serve.
-var serverSlots = make(chan struct{}, testlimits.MaxProcessesAtOnce)
+var serverSlots = &slotPool{size: testlimits.MaxProcessesAtOnce, free: testlimits.MaxProcessesAtOnce}
+
+// slotPool hands out slots first come, first served: a taker that must wait queues, and each freed
+// slot goes to the oldest taker, whole, once enough are free for it. A taker of two therefore waits
+// only for the takers ahead of it, where with a channel each freed slot went to whichever taker of
+// one won it, and a taker of two holding one of its two could wait out the whole run.
+//
+// paused counts the slots held by tests paused at t.Parallel with a process running
+// (parallelHoldingItsProcesses). Those come back only once the serial tests have all run and the
+// paused test has its turn among the parallel ones, so a take that could need one of them could
+// wait on a test that waits on it. The pool refuses such a take, and a pause that would leave a
+// queued take such a one, by name and at once (take, pause): every take it lets wait needs no
+// more than the slots no paused test holds, and each of those is free or held by a running test
+// that gives it back without waiting for another, so the oldest taker always gets its slots.
+type slotPool struct {
+	mu                 sync.Mutex
+	size, free, paused int
+	queue              []*slotTaker
+}
+
+// slotTaker is one queued take: how many slots it needs, and the channel closed once it has them.
+type slotTaker struct {
+	n     int
+	ready chan struct{}
+}
+
+// take waits until n slots are this caller's, behind every taker that queued before it, or answers
+// at once why it cannot: n is more than the slots no paused test holds.
+func (p *slotPool) take(n int) error {
+	p.mu.Lock()
+	if n > p.size-p.paused {
+		defer p.mu.Unlock()
+		return fmt.Errorf("it needs %d of the %d process slots while tests paused at t.Parallel hold %d until "+
+			"the serial tests have run, so it could wait on a test that waits on it", n, p.size, p.paused)
+	}
+	if len(p.queue) == 0 && p.free >= n {
+		p.free -= n
+		p.mu.Unlock()
+		return nil
+	}
+	taker := &slotTaker{n: n, ready: make(chan struct{})}
+	p.queue = append(p.queue, taker)
+	p.mu.Unlock()
+	<-taker.ready
+	return nil
+}
+
+// give hands n slots back, to the queued takers in turn.
+func (p *slotPool) give(n int) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.free += n
+	for len(p.queue) > 0 && p.free >= p.queue[0].n {
+		p.free -= p.queue[0].n
+		close(p.queue[0].ready)
+		p.queue = p.queue[1:]
+	}
+}
+
+// pause counts n held slots as held across a pause at t.Parallel, or answers why not: a queued
+// take would then need more than the slots no paused test holds.
+func (p *slotPool) pause(n int) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, taker := range p.queue {
+		if taker.n > p.size-p.paused-n {
+			return fmt.Errorf("a queued start needs %d of the %d process slots, and tests paused at t.Parallel "+
+				"would hold %d", taker.n, p.size, p.paused+n)
+		}
+	}
+	p.paused += n
+	return nil
+}
+
+// resume takes back pause's count of n slots, once the paused test runs again.
+func (p *slotPool) resume(n int) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.paused -= n
+}
 
 // takeServerSlot waits for a slot of serverSlots and answers the call that gives it back, which
 // the test's cleanup also runs, for a start that never ran a process; only the first call counts.
@@ -58,9 +137,11 @@ var serverSlots = make(chan struct{}, testlimits.MaxProcessesAtOnce)
 // every other test stops its server before it starts the next.
 func takeServerSlot(t *testing.T) (release func()) {
 	t.Helper()
-	serverSlots <- struct{}{}
+	if err := serverSlots.take(1); err != nil {
+		t.Fatalf("a Dispatch server cannot start: %v", err)
+	}
 	var once sync.Once
-	release = func() { once.Do(func() { <-serverSlots }) }
+	release = func() { once.Do(func() { serverSlots.give(1) }) }
 	t.Cleanup(release)
 	return release
 }
@@ -77,9 +158,6 @@ var slotsByRoot = struct {
 	byRoot map[string]*rootSlots
 }{byRoot: map[string]*rootSlots{}}
 
-// reserving lets one reserveProcessSlots at a time take its slots.
-var reserving sync.Mutex
-
 // slotsOf is root's rootSlots, made at its first use; the caller holds slotsByRoot.
 func slotsOf(root string) *rootSlots {
 	slots := slotsByRoot.byRoot[root]
@@ -91,13 +169,13 @@ func slotsOf(root string) *rootSlots {
 }
 
 // reserveProcessSlots takes n slots of serverSlots for the root test of t, all of them before it
-// returns, and holds them until that test ends. A test that runs n Dispatch processes at once calls
-// it before its first start, and each start then takes a reserved slot without waiting
-// (takeProcessSlot). One reservation at a time takes slots, and every other holder of a slot is a
-// test running one process, which gives it back when that process exits, so a reservation that
-// waits for its last slot waits on no test that waits on it. No count of tests or slots enters
-// that: any mix of parallel and serial tests, each needing up to MaxProcessesAtOnce processes,
-// runs without a deadlock.
+// returns, and holds them until that test ends (less any parallelHoldingItsProcesses gives back). A
+// test that runs n Dispatch processes at once calls it before its first start, and each start then
+// takes a reserved slot without waiting (takeProcessSlot). It takes the n at once, in its turn,
+// holding none while it waits, and the pool lets it wait only for slots that a running test will
+// give back without waiting for another (slotPool), so no mix of parallel and serial tests, each
+// needing up to MaxProcessesAtOnce processes, deadlocks: a take or a pause that could is refused
+// by name.
 func reserveProcessSlots(t *testing.T, n int) {
 	t.Helper()
 	if n > testlimits.MaxProcessesAtOnce {
@@ -112,22 +190,43 @@ func reserveProcessSlots(t *testing.T, n int) {
 	if holding > 0 {
 		t.Fatalf("%s reserves process slots while it holds %d: reserve them before its first Dispatch start", root, holding)
 	}
-	reserving.Lock()
-	for range n {
-		serverSlots <- struct{}{}
+	if err := serverSlots.take(n); err != nil {
+		t.Fatalf("%s cannot reserve %d process slots: %v", root, n, err)
 	}
-	reserving.Unlock()
 	slotsByRoot.Lock()
 	slots.reserved += n
 	slotsByRoot.Unlock()
 	t.Cleanup(func() {
+		// What the reservation still holds: parallelHoldingItsProcesses gives back a slot the test
+		// no longer uses before it pauses.
 		slotsByRoot.Lock()
-		slots.reserved -= n
+		held := slots.reserved
+		slots.reserved = 0
 		slotsByRoot.Unlock()
-		for range n {
-			<-serverSlots
-		}
+		serverSlots.give(held)
 	})
+}
+
+// parallelHoldingItsProcesses calls t.Parallel for a test whose Dispatch processes keep running
+// across the pause, so a product timer they wait out (a claim lapse, a sweep interval) passes
+// while the serial tests run rather than after. Before it pauses it gives back each reserved slot
+// no process uses, and counts the rest as held across the pause (slotPool.pause), which refuses
+// by name a pause that a queued start could then wait on. It fails by name when the pool would.
+func parallelHoldingItsProcesses(t *testing.T) {
+	t.Helper()
+	root, _, _ := strings.Cut(t.Name(), "/")
+	slotsByRoot.Lock()
+	slots := slotsOf(root)
+	idle := slots.reserved - slots.inUse
+	slots.reserved -= idle
+	holding := slots.held + slots.inUse
+	slotsByRoot.Unlock()
+	serverSlots.give(idle)
+	if err := serverSlots.pause(holding); err != nil {
+		t.Fatalf("%s cannot pause at t.Parallel holding %d process slots: %v", root, holding, err)
+	}
+	t.Parallel()
+	serverSlots.resume(holding)
 }
 
 // takeProcessSlot is the slot of serverSlots a Dispatch process of startDispatchProcessWith holds
@@ -166,7 +265,9 @@ func takeProcessSlot(t *testing.T) (release func()) {
 		return nil
 	}
 	slotsByRoot.Unlock()
-	serverSlots <- struct{}{}
+	if err := serverSlots.take(1); err != nil {
+		t.Fatalf("%s cannot start a Dispatch process: %v", root, err)
+	}
 	slotsByRoot.Lock()
 	slots.held++
 	slotsByRoot.Unlock()
@@ -176,7 +277,7 @@ func takeProcessSlot(t *testing.T) (release func()) {
 			slotsByRoot.Lock()
 			slots.held--
 			slotsByRoot.Unlock()
-			<-serverSlots
+			serverSlots.give(1)
 		})
 	}
 	t.Cleanup(release)
