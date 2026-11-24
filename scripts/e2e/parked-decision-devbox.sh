@@ -154,19 +154,45 @@ collect_transcripts() {
 # remove_run_branches closes the open pull request on legion/<tree> and deletes that branch on the
 # smoke repository, for each tree of the run (the daemon makes the branch at admission,
 # daemon/outbox.go). It makes no gh call unless require_proof_human passed: a refused run's gh acts
-# as someone else.
+# as someone else. A pull request's number is gh's answer, kept in run-branch-pull-request-<tree>
+# under $evidence/gh (lib/workflow.sh, gh_kept), and printed only as digits.
 remove_run_branches() {
-  local issue number
+  local issue number listed shown
   [ -n "$proof_human" ] || return 0
   for issue in $tree1 $tree2 $tree3 $tree4 $tree5; do
-    number=$(timeout 60 gh -R "$repo" pr list --head "legion/$issue" --state open --json number --jq '.[0].number // empty' 2>/dev/null) || number=
+    listed=$(gh_kept "run-branch-pull-request-$issue.answer") || continue
+    timeout 60 gh -R "$repo" pr list --head "legion/$issue" --state open --json number --jq '.[0].number // empty' >"$listed" 2>/dev/null || : >"$listed"
+    number=$(<"$listed")
     if [ -n "$number" ]; then
+      if [[ $number =~ ^[0-9]+$ ]]; then shown="$repo#$number"; else shown="on $repo that gh listed in another form (kept in $listed)"; fi
       timeout 60 gh -R "$repo" pr close "$number" --comment "Closed by the parked-decision run that opened it, at its teardown." >/dev/null 2>&1 &&
-        note "closed the run's open pull request $repo#$number (legion/$issue)"
+        note "closed the run's open pull request $shown (legion/$issue)"
     fi
     timeout 60 gh api -X DELETE "repos/$repo/git/refs/heads/legion/$issue" >/dev/null 2>&1 && note "deleted the run's branch legion/$issue from $repo"
   done
   return 0
+}
+# proof_human_reads_repo fails the check unless the devbox's ordinary gh, the proof human's, can
+# read the smoke repository. gh's stderr stays in repo-view.err under $evidence/gh, which the
+# refusal names: whatever answers gh in GitHub's place holds its token (lib/workflow.sh, gh_kept).
+proof_human_reads_repo() {
+  local said
+  said=$(gh_kept repo-view.err) || fail "could not make $evidence/gh, where the proof human's gh keeps its words"
+  gh repo view "$repo" --json name >/dev/null 2>"$said" || fail "the devbox's ordinary gh cannot read $repo; gh's own words are in $said"
+}
+# run_branches_gone fails the check while the smoke repository has the branch legion/<tree> of a
+# tree of the run, or when gh cannot tell: GitHub answers a branch that does not exist 404, and any
+# other failure is no answer. gh's answer and stderr stay in run-branch-<tree>.log under
+# $evidence/gh, which the 404 is read from and the refusal names (lib/workflow.sh, gh_kept).
+run_branches_gone() {
+  local issue said
+  for issue in $tree1 $tree2 $tree3 $tree4 $tree5; do
+    said=$(gh_kept "run-branch-$issue.log") || fail "could not make $evidence/gh, where the proof human's gh keeps its words"
+    if timeout 60 gh api "repos/$repo/branches/legion/$issue" >"$said" 2>&1; then
+      fail "$repo still has the branch legion/$issue"
+    fi
+    grep -qF 'HTTP 404' "$said" || fail "gh could not tell whether $repo has legion/$issue; gh's own words are in $said"
+  done
 }
 
 cleanup() {
@@ -681,7 +707,7 @@ case "$model_route" in
 esac
 refuse_leftovers legion-e2e-pd
 require_proof_human
-gh repo view "$repo" --json name >/dev/null || fail "the devbox's ordinary gh cannot read $repo"
+proof_human_reads_repo
 real_gh=$(mise which gh) || fail "mise has no gh"
 # No process of the run inherits an operator's endpoint or bearer (as packages/dispatch/e2e/run-server.sh).
 mapfile -t inherited < <(compgen -e)
@@ -1100,12 +1126,7 @@ for container in "$pg_container" "$nats_container"; do
 done
 wait_for_run_processes 600 10
 remove_run_branches
-for issue in $tree1 $tree2 $tree3 $tree4 $tree5; do
-  if out=$(timeout 60 gh api "repos/$repo/branches/legion/$issue" 2>&1); then
-    fail "$repo still has the branch legion/$issue"
-  fi
-  grep -qF 'HTTP 404' <<<"$out" || fail "gh could not tell whether $repo has legion/$issue: $out"
-done
+run_branches_gone
 collect_transcripts
 [ ! -e "$HOME/.omp/profiles/$profile" ] || fail "the run wrote the operator's profile root: $HOME/.omp/profiles/$profile exists"
 rm -rf "$work"
