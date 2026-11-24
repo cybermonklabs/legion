@@ -106,7 +106,7 @@ func launchTestDeleter(t *testing.T, follows bool) {
 		// A binary built with -race sleeps atexit_sleep_ms before it exits, which a deleter
 		// reaped inside the sweep's grace would spend on every sweep (roleInitHelperLaunch).
 		gorace := strings.TrimSpace(os.Getenv("GORACE") + " atexit_sleep_ms=0")
-		return []string{self, "-test.run=^TestVolumeTrimDeleteHelper$"},
+		return append([]string{self}, reentry(t, "TestVolumeTrimDeleteHelper")...),
 			[]string{volumeTrimDeleteEnv + "=" + string(body), "GORACE=" + gorace}, nil
 	}
 	t.Cleanup(func() { trimDeleteLaunch = previous })
@@ -168,7 +168,7 @@ func TestVolumeTrimDeleteHelper(t *testing.T) {
 		fmt.Fprintln(os.Stderr, "volume-trim-delete:", err)
 		os.Exit(2)
 	}
-	os.Exit(0)
+	exitHelper(t)
 }
 
 // baitFile is one file a sweep that escaped would delete, with what it held.
@@ -632,6 +632,8 @@ func raceSwaps(t *testing.T, victim, target string, enough, tries int, at time.T
 		trials++
 		buildRacedEntry(t, victim, sub, at)
 		swapped := make(chan bool, 1)
+		// The racer's 30 s is part of the claim, not a hang guard: it is how long the racer keeps
+		// swapping (beforeDeadline).
 		go raceTheSwap(sub, target, time.Now().Add(testwait.Bounded(t, 30*time.Second, time.Second)), swapped)
 		if trial(trials, swapped) {
 			landed++

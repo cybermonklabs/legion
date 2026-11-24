@@ -1,0 +1,36 @@
+kind: Fixed
+body: |-
+  The leak guard's private-name pass over a push no longer holds the push's whole diff and every
+  record of it before it scans them. It reads git's added paths and diff as git writes them and
+  scans each one as it arrives, so it holds a few records' worth and one commit's author,
+  committer and message, whatever the number and size of the push's files, where a push adding
+  25,000 files of 1.25 GB took 6.1 GiB before; what grows with the push is the list of its commit
+  ids, and with one long line that line's size, held whole a few times over (a 73 MB line took
+  416 MiB), since a split line could hide a match that crosses the split. The
+  report is the same, but a refusal now names at most 1000 lines and counts the rest in a last
+  line of its own, so a push of many lines at a path a rule refuses no longer prints one line for
+  each. A read of git's output ends with the push's bound, and one `WaitDelay` after git exits,
+  even when a process git started holds the pipe open or keeps writing to it, as exec's own copy
+  of a child's output does; a read that then finds fewer bytes than the pipe held refuses the
+  push.
+
+  A path that holds a space is now read as itself. git ends the `+++` line that names such a path
+  with a tab, and the guard read that line whole: its report named the path with the tab after
+  it, and where the path also held a control byte, a double quote or a backslash, which git
+  quotes, it named git's C-quoted form with the `b/` prefix inside the quotes. The path rules and
+  the path-scoped allowlist matched against those forms; they now match the real path, as for a
+  path with no space.
+
+  A refusal written to a log or a terminal now escapes each character of its lines that is not
+  printable, as the memory guard already escaped a process's name: a line break, tab or carriage
+  return as `\n`, `\t` or `\r`, another C0 control or DEL as `\x` and two hex digits, a C1
+  control or a format character such as U+202E as `\u` and four (`\U` and eight above U+FFFF),
+  and a byte that is not UTF-8 as `\x`. So a file name built with an escape sequence, a line break
+  or a direction override cannot act on the terminal that shows the refusal, start a line of its
+  own, or reverse how the path reads. The write's name, which can hold a remote's URL or path, is
+  escaped the same way in a refusal, a setup failure and a not-found answer, and so are a setup
+  failure's reason and the failure beneath it, which can quote what git wrote on its standard
+  error, each of its lines escaped and its line breaks kept.
+time: 2026-11-21T20:45:09Z
+custom:
+    Issue: leak-guard-streaming

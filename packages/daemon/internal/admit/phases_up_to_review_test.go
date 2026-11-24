@@ -52,12 +52,14 @@ func rowRuleRoot(t *testing.T, pool *pgxpool.Pool, row rowRuleCase, rank string)
 	}
 }
 
-// An issue holds one of the cap's rows from the moment the daemon starts it until its work is
-// past its review, save while it waits on another issue before then (releaseSlotsForWaits, which
-// no issue here does): the phases up to the review keep a row, and accepting, retro and merging
-// keep none (record.KeepsSlot). A hold keeps the row of the phase it came from,
-// because that is where the work stands (record.StandsAt), and a hold the record names no phase
-// for keeps one: the daemon knows only that the issue is held.
+// An issue holds one of the cap's rows from the moment the daemon starts it while it stands in a
+// phase that keeps one, save while it waits on another issue there (releaseSlotsForWaits, which
+// no issue here does): admitted, awaiting_person, planning, implementing, testing and reviewing
+// keep a row, and accepting, retro and merging keep none (record.KeepsSlot; in the default steps,
+// the phases after the review), so a step after accepting whose phase keeps a slot waits for one
+// again. A hold keeps the row of the phase it came from, because that is where the work stands
+// (record.StandsAt), and a hold the record names no phase for keeps one: the daemon knows only
+// that the issue is held.
 //
 // The first reading gives one started issue each phase and runs one admission pass over them.
 // Four of them carry a row the release before this one wrote, which is what this change finds
@@ -81,25 +83,25 @@ func TestOnlyPhasesUpToReviewHoldASlot(t *testing.T) {
 		{key: "LEGION-414", stands: phase.Testing, status: "testing", seeded: true, holds: true,
 			why: "a worker is writing the change"},
 		{key: "LEGION-415", stands: phase.Reviewing, status: "needs_review", seeded: true, holds: true,
-			why: "the review is the last phase the cap counts: its outcome can send the change back to be written again"},
+			why: "reviewing keeps a row: its outcome can send the change back to be written again"},
 		{key: "LEGION-416", stands: phase.Held, from: phase.Implementing, status: "in_progress", seeded: true, holds: true,
 			why: "a hold leaves the work where it stood, and implementing keeps a row"},
 		{key: "LEGION-417", stands: phase.Held, status: "in_progress", seeded: true, holds: true,
 			why: "a hold the record names no phase for keeps a row: the daemon knows only that the issue is held"},
 		{key: "LEGION-418", stands: phase.Held, from: phase.Merging, status: "in_progress",
-			why: "a hold from merging stands past the issue's review, so no pass grants it a row"},
+			why: "a hold from merging stands where merging does, which keeps no row, so no pass grants it one"},
 		{key: "LEGION-420", stands: phase.Accepting, status: "needs_review", seeded: true,
-			why: "the architect reads a reviewed head here: the change is written, so the pass takes the row back"},
+			why: "accepting keeps no row: the architect reads the head the step before its acceptance passed (in the default steps, a reviewed head), so the pass takes the row back"},
 		{key: "LEGION-421", stands: phase.Retro, status: "retro", seeded: true,
 			why: "the retro writes no more of the change, so the pass takes the row back"},
 		{key: "LEGION-422", stands: phase.Merging, status: "retro", seeded: true,
 			why: "the merger merges work already reviewed, so the pass takes the row back"},
 		{key: "LEGION-430", stands: phase.Accepting, status: "needs_review",
-			why: "an issue past its review that holds no row is offered none"},
+			why: "an issue in accepting, retro or merging that holds no row is offered none"},
 		{key: "LEGION-431", stands: phase.Retro, status: "retro",
-			why: "an issue past its review that holds no row is offered none"},
+			why: "an issue in accepting, retro or merging that holds no row is offered none"},
 		{key: "LEGION-432", stands: phase.Merging, status: "retro",
-			why: "an issue past its review that holds no row is offered none"},
+			why: "an issue in accepting, retro or merging that holds no row is offered none"},
 	}
 	var seeded, want []string
 	for index, row := range rows {
@@ -130,7 +132,7 @@ func TestOnlyPhasesUpToReviewHoldASlot(t *testing.T) {
 		}
 	}
 	if gone := []string{"LEGION-420", "LEGION-421", "LEGION-422"}; !slices.Equal(deleted, gone) {
-		t.Fatalf("the pass deleted the rows of %v, want %v: the three phases past an issue's review and no others", deleted, gone)
+		t.Fatalf("the pass deleted the rows of %v, want %v: accepting, retro and merging, the three phases that keep no row, and no others", deleted, gone)
 	}
 
 	// The work of two issues comes back to a phase that keeps a row, from accepting and from

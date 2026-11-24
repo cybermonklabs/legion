@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 
@@ -62,9 +63,9 @@ func TestATaskOfNewsAloneIsReadBackMarkedSoByBothReadersOfAClaimsTask(t *testing
 				t.Fatalf("the restored task holds work %t, want %t", holds, phaseTask)
 			}
 			var held map[claim.Token]*record.RoleClaim
-			if err := pgx.BeginFunc(r.ctx, r.store.Pool(), func(tx pgx.Tx) error {
+			if err := Transact(r.ctx, r.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 				var err error
-				held, err = record.NewStore().RoleClaims(r.ctx, tx, []claim.Token{r.reviewer.Token})
+				held, err = record.NewStore().RoleClaims(ctx, tx, []claim.Token{r.reviewer.Token})
 				return err
 			}); err != nil {
 				t.Fatalf("read the role claim: %v", err)

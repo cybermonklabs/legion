@@ -205,14 +205,16 @@ func (r *tailnetRig) events(t *testing.T) []tailnetEvent {
 }
 
 // run runs the advertiser until the clock has moved seconds on, and returns the calls it made and
-// what it printed.
+// what it printed. The fake sleep ends the script at that limit, which is the run's end: the shell
+// is bounded only by the test's deadline (shellCommandUntilTheTestDeadline), since the wall time
+// the fake clock's steps take is the machine's.
 func (r *tailnetRig) run(t *testing.T, seconds int) ([]tailnetEvent, string) {
 	t.Helper()
 	clock, err := os.ReadFile(filepath.Join(r.fake, "clock"))
 	require.NoError(t, err)
 	now, _ := strconv.Atoi(strings.TrimSpace(string(clock)))
 	r.set(t, "limit", strconv.Itoa(now+seconds))
-	cmd := shellCommand(t, "-c", tailnetAdvertiserScript(r.host))
+	cmd := shellCommandUntilTheTestDeadline(t, "-c", tailnetAdvertiserScript(r.host))
 	cmd.Env = r.env()
 	out, _ := cmd.CombinedOutput()
 	if killedBySignal(cmd) {

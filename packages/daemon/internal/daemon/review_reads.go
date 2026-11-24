@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -186,7 +187,7 @@ func (w *workflowRuntime) reviewToApply(ctx context.Context, github githubrest.C
 			continue
 		}
 		if !sessionRead {
-			if err := pgx.BeginTxFunc(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+			if err := store.TransactWith(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 				var err error
 				reviewerSession, err = w.engine.ReviewerSession(ctx, tx, pr.Issue)
 				return err

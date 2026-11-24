@@ -34,6 +34,7 @@ import (
 // hears nothing of the other; dispatch://INFRA-3532's own change deletes this test, with the
 // rename pass.
 func TestADaemonBootsAndServesForAProjectWithNoRepository(t *testing.T) {
+	t.Parallel()
 	t.Run("the real Dispatch, a project with no default and no repository row", func(t *testing.T) {
 		// The NATS server is taken first: testnats.URL empties it of every stream, and Dispatch
 		// reconciles ENVOY_NOTIFICATIONS on it on its first connection.

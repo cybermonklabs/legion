@@ -112,7 +112,7 @@ func pauseCount(t *testing.T, st *Store, sql string, args ...any) int {
 func openPauseStops(t *testing.T, st *Store, pause int64) []PauseStop {
 	t.Helper()
 	var open []PauseStop
-	if err := st.Tx(context.Background(), func(tx pgx.Tx) error {
+	if err := Transact(context.Background(), st.pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		open, err = OpenPauseStopsTx(context.Background(), tx, pause)
 		return err
@@ -128,7 +128,7 @@ func openPauseStops(t *testing.T, st *Store, pause int64) []PauseStop {
 func holdPod(st *Store, pause Pause, issue string, at time.Time) (bool, error) {
 	ctx := context.Background()
 	var opened bool
-	err := st.Tx(ctx, func(tx pgx.Tx) error {
+	err := Transact(ctx, st.pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := LockIssueForPause(ctx, tx, issue); err != nil {
 			return err
 		}
@@ -375,7 +375,7 @@ func TestAResumeEndsThePauseAndWhatItStillWaitedOn(t *testing.T) {
 
 	// The tester's stop ends after the resume: its stop row, which the resume cancelled, ends
 	// stopped, with the launch it was owed.
-	if err := st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := Transact(ctx, st.pool, func(ctx context.Context, tx pgx.Tx) error {
 		_, err := RecordPauseStoppedTx(ctx, tx, pause, tester, resumedAt.Add(time.Minute), true)
 		return err
 	}); err != nil {
@@ -474,7 +474,7 @@ func TestTheIssueLockSerializesTwoWritersOfOnePodsHold(t *testing.T) {
 	st := migratedStore(t)
 	pause, _ := pauseLegion(t, st, pausedAt)
 
-	first, err := st.BeginTx(ctx, pgx.TxOptions{})
+	first, err := st.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -686,7 +686,7 @@ func TestTheResumeNamesTheOperatorsSpawnsItsPauseStoppedOwingALaunch(t *testing.
 	suspended, released := supervise.StateSuspended, supervise.SuspendedByReleased
 	stopped := func(pause Pause, stop PauseStopClaim, at time.Time, owed bool) {
 		t.Helper()
-		if err := st.Tx(ctx, func(tx pgx.Tx) error {
+		if err := Transact(ctx, st.pool, func(ctx context.Context, tx pgx.Tx) error {
 			_, err := RecordPauseStoppedTx(ctx, tx, pause, stop, at, owed)
 			return err
 		}); err != nil {

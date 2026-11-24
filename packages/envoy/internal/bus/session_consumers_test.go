@@ -727,7 +727,6 @@ func TestAStartBelowTheStreamsFirstSequenceIsAGap(t *testing.T) {
 // Restarts made at once share their reads of the stream's state, and each still reports a gap
 // exactly when the consumer it kept goes on below the stream's first sequence.
 func TestRestartsAtOnceReportEachGap(t *testing.T) {
-	t.Parallel()
 	owner, consumers := sessionConsumersOnStream(t)
 	ctx := context.Background()
 	const sessions, gone = 24, 10
@@ -767,6 +766,7 @@ func TestRestartsAtOnceReportEachGap(t *testing.T) {
 // it expired, and an idle heartbeat keeps a pull that waits longer than two heartbeats alive, so it
 // delivers every message in stream order however many requests that takes.
 func TestAPullRequestsAgainAfterABatchAndAnExpiry(t *testing.T) {
+	t.Parallel()
 	owner, consumers := sessionConsumersOnStream(t)
 	ctx := context.Background()
 	const session = "ses_pull_requests"

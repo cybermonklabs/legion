@@ -115,7 +115,10 @@ type Ledger struct {
 	rooms map[string]*pendingRoom
 	// numbers is, per document this transaction has numbered a version of, the number it gave the
 	// last one (NextVersion), and latest that version as it will stand once written, which
-	// latestVersion answers for it; now is the transaction's start, read once (Now).
+	// latestVersion answers for it; now is the transaction's start, read once (Now). latest is read
+	// only while the ledger is unsealed (PendingVersionMarkdown, PendingVersionNumber,
+	// PendingMarkdown, queueFor), and Discard drops it: each entry holds its version's whole
+	// markdown.
 	numbers map[string]int
 	latest  map[string]pendingVersion
 	now     *time.Time
@@ -716,7 +719,7 @@ func (l *Ledger) QueueAskParts(
 	// The parts are the only text of the ask this call holds, so the reader is its own: a route
 	// that reconciles the question too builds one and reconciles through it
 	// (refs.NewReaderInScope).
-	reader := refs.NewReaderInScope(ctx, l.writer, "ask", ask.ID, serverURL, document)
+	reader := refs.NewReaderInScope(ctx, l.writer, ask.Author, "ask", ask.ID, serverURL, document)
 	changes, parts, err := planAskPartsCounted(ctx, l.writer, reader, ask, at, beside)
 	if err != nil {
 		return model.ReferenceChanges{}, err
@@ -1240,8 +1243,8 @@ func (s *Service) commitConsuming(ctx context.Context, tx pgx.Tx, captures []roo
 // Discard drops what a transaction that did not commit left behind: its queued writes, which
 // never ran, its live writes, which no room ever saw, and the rooms its rebuilds held. A version
 // it wrote marked nothing it read, so its authors stay where they were. After Commit only the
-// read-backs are left to drop. Every caller defers it, so it is where the request's use of the
-// ledger ends.
+// read-backs and the queued versions (latest) are left to drop. Every caller defers it, so it is
+// where the request's use of the ledger ends.
 func (l *Ledger) Discard() {
 	l.sealed = true
 	l.queue = nil
@@ -1258,6 +1261,10 @@ func (l *Ledger) Discard() {
 	// wrote whole stayed resident beside the document's room
 	// (TestAnUploadsReadBackTreeGoesWhenItsRequestEnds).
 	l.readBacks = nil
+	// The versions this transaction queued (queuedVersion) are read only until its write phase
+	// seals the ledger, when the table holds them, and each holds its version's whole markdown,
+	// which the same pooled context would keep.
+	l.latest = nil
 	l.endRebuilds()
 }
 

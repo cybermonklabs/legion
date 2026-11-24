@@ -208,8 +208,8 @@ func (c *Client) onDisconnect() {
 // runs each hook once, in the order they were added, after the delivery subscriptions have drained
 // or run out their share of the timeout, and before the connection's own drain, with ctx ending at
 // Drain's deadline, or as soon as the connection is lost, with ErrConnectionLost as its cause. A
-// drain of a connection that is reconnecting closes it at once and runs no hook, since nothing it
-// sent would reach the server.
+// drain of a connection that is reconnecting runs every hook on a context that has already ended
+// that way, then closes the connection at once, since nothing it sent would reach the server.
 //
 // The connection's own drain cannot end a KV watcher cleanly. nats.go deletes the ordered
 // consumer it created for the watcher once it has removed the watcher's subscription

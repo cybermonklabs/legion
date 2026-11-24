@@ -39,6 +39,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/files"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/ratelimit"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -254,7 +255,12 @@ type DepsInput struct {
 	// EnvoyTimeout replaces the listener client's window. Zero keeps the client's own default;
 	// a test exercising a receipt timeout sets a short one rather than waiting that out.
 	EnvoyTimeout time.Duration
-	Docs         docs.API
+	// Docs is the document service the API serves documents through, and NewDeps refuses an input
+	// without one. Its caller builds it (docs.New; cmd/dispatch's newDocumentService) and shuts it
+	// down (docs.Service.Shutdown) once the server is done with it. NewDeps builds none of its own:
+	// nothing would hold a service it built to shut it down, and that service's compaction worker
+	// (startCompactionQueue) would run for the rest of the process.
+	Docs docs.API
 	// Embedder embeds a search request's query for meaning search (LEGION-549); nil turns it off.
 	Embedder embed.Embedder
 	// Answerer answers a going request's question (INFRA-1279); nil means no model is
@@ -320,25 +326,21 @@ type DepsInput struct {
 	BuildCommit string
 }
 
-// NewDeps parses boot configuration once and returns API dependencies.
+// NewDeps parses boot configuration once and returns API dependencies. It refuses an input with
+// no document service (DepsInput.Docs).
 func NewDeps(input DepsInput) (Deps, error) {
 	newIssue, problem := newIssueSettingsFrom(input.NewIssueLabel, input.NewIssueSession)
 	switch problem {
 	case "label":
-		return Deps{}, fmt.Errorf("invalid DISPATCH_NEW_ISSUE_LABEL %q (at most %d characters)", newIssue.Label, maxIssueLabel16)
+		return Deps{}, fmt.Errorf("invalid DISPATCH_NEW_ISSUE_LABEL %q (at most %d characters)", newIssue.Label, contracts.IssueLabelMax)
 	case "session":
 		return Deps{}, fmt.Errorf("invalid DISPATCH_NEW_ISSUE_SESSION %q (expected a session id)", newIssue.Session)
 	}
+	if input.Docs == nil {
+		return Deps{}, errors.New("api.NewDeps: Docs is required: the caller builds the document service and shuts it down once its server is done with it")
+	}
 	if input.Events == nil {
 		input.Events = events.NewBroker()
-	}
-	if input.Docs == nil {
-		input.Docs = docs.New(docs.Deps{
-			Store:     input.Store,
-			Events:    input.Events,
-			Identity:  input.Identity,
-			ServerURL: input.ServerURL,
-		})
 	}
 	var envoyClient *envoy.Client
 	if envoyURL := strings.TrimSpace(input.EnvoyURL); envoyURL != "" {
@@ -446,6 +448,19 @@ type server struct {
 	// leg of the related-item check past its grace, or makes it fail, while every other leg runs
 	// as it runs in production.
 	beforeCrossProjectRead func(ctx context.Context) error
+	// beforeCommentCommit runs on a comment write's own request, once the comment, its node and
+	// every event it appended are written and before its transaction commits, with those events;
+	// its error stands in for the commit failing, so the route answers it and rolls the write
+	// back. Only a test sets it: it is how a case holds a write open after its events are
+	// appended, to read whether any of them reaches a subscriber before the commit, and how it
+	// ends one in a rollback.
+	beforeCommentCommit func(ctx context.Context, events []model.Event) error
+	// betweenPersonPageReads runs on a person page's request once the route has decided it
+	// answers 200 and before it lists the rows (listPersonNodes), inside the transaction both
+	// reads share; nil, which every server the deployment builds leaves it, runs nothing. Only a
+	// test sets it: it is how a case commits a write between the decision and the list, to read
+	// that the list answers the snapshot the decision read.
+	betweenPersonPageReads func()
 	// crossProjectWait overrides how long the related-item check waits for its cross-project leg
 	// once its meaning stage has answered (awaitCrossProject); zero, which every server the
 	// deployment builds leaves it, means crossProjectGrace. Only a test sets it, so a grace that
@@ -478,6 +493,15 @@ type server struct {
 	// Only a test sets it, so a budget that ends before every selected session is read is the
 	// test's choice rather than a race against five seconds of wall clock (INFRA-249).
 	broadcastResolveBudget time.Duration
+	// mentionLookupBound replaces mentionLookupTimeout, the bound on each try of each listener
+	// lookup a comment's creation makes, for the target that lookup is of (commentLookupBound);
+	// nil, which every server the deployment builds leaves it, keeps mentionLookupTimeout for every
+	// target. Only a test sets it, so which of a comment's lookups that bound ends and which the
+	// listener's answer ends is the test's choice rather than a race between a loaded machine and
+	// 250 ms of wall clock. It is called as each lookup try starts, on that try's own goroutine,
+	// just before the try's bound begins, so a test may block in it to hold the start of a lookup
+	// (TestAListenerThatAnswersNoLookupDelaysARoutedCommentByOneTimeoutAtMost does).
+	mentionLookupBound func(target string) time.Duration
 	// rosters is how this process reads and refreshes the stored listener answer every process's
 	// issue reads judge routes against and agents lists list (issue_route_status.go). Only
 	// register gives it non-zero TTLs.
@@ -544,11 +568,29 @@ type server struct {
 	// that. Only a test sets it, so a body that stalls is the test's choice rather than a minute of
 	// wall clock.
 	drainReadLimit time.Duration
+	// drainDeadlineSet is called with the moment a drain began and the read deadline it computed
+	// from that moment, before the drain sets the deadline on the connection (readFor); nil, which
+	// every server the deployment builds leaves it, calls nothing. Only a test sets it, to judge the
+	// deadline in effect when a stalled read ended against the bound the drain chose, which no
+	// clock the test reads afterwards can name.
+	drainDeadlineSet func(began, deadline time.Time)
 	// repeatFoundInFlight is called when the keyed layer finds a repeat's key held by a first
 	// request still running, before it reads a byte of the repeat's body; nil, which every server
 	// the deployment builds leaves it, calls nothing. Only a test sets it, to send the rest of a
 	// body it held back once the repeat is waiting on it.
 	repeatFoundInFlight func()
+	// afterMentionCopyRule is called inside a comment mention's send once its copy rule answered
+	// that the send waits for no earlier event, before the re-check of its claim
+	// (deliverResolvedCommentMention); nil, which every server the deployment builds leaves it,
+	// calls nothing. Only a test sets it, to commit a delete of the comment while the copy rule runs.
+	afterMentionCopyRule func()
+	// deleteLeavesSettlement has the delete of a comment whose pending insert suggestion it
+	// rejects leave the document's next version to the settlement the reject arms, as the delete
+	// did before it wrote that version itself (deleteComment, docs.SettleVersion); false, which
+	// every server the deployment builds leaves it, settles in the delete. Only a benchmark sets
+	// it, to time the delete without its settle beside the delete with it
+	// (BenchmarkDeleteOfAPendingInsertSettle).
+	deleteLeavesSettlement bool
 	// slowWrites is the slow-write test hook's delay for each keyed method and path it was armed
 	// for (POST /api/v1/writes/_test/slow), by "METHOD path"; it holds nothing on a server without
 	// TestHooksEnabled, which mounts no hook.
@@ -855,16 +897,18 @@ func (s *server) routeHandler(route apiRoute, replay keyedReplay) http.HandlerFu
 	}
 	if route.Method != http.MethodGet {
 		// Outside the keyed layer and the upload's spool, so a write to another project's
-		// object, into another session's own rows, or by a credential that names no person
-		// claims no idempotency key and costs no body (withinProjectScope,
+		// object, into another session's own rows, or by a machine's credential that names no
+		// person claims no idempotency key and costs no body (withinProjectScope,
 		// withinSessionScope, writeNeedsASignedInPerson).
 		handler = s.withinProjectScope(route, handler)
 		handler = s.withinSessionScope(route, handler)
-		// Outermost of the three, so a caller whose credential names a service and no person
+		// Outermost of the three, so a machine whose credential names a service and no person
 		// is told it may make no write at all rather than which session the write it tried
 		// belongs to. The project check has nothing to tell it: a token naming a service is
-		// held to no one project (broker_token.go). A read-only token names a service and no
-		// person too, and never reaches here: the read-only gate further out has answered it
+		// held to no one project (broker_token.go). An account entry's token naming no person
+		// passes it, recorded under its account, and meets the two checks behind it as any
+		// credential naming no project does. A read-only token names a service and no person
+		// too, and never reaches here: the read-only gate further out has answered it
 		// (refuseReadOnlyToken).
 		handler = s.writeNeedsASignedInPerson(handler)
 		handler = s.refuseChangedLogin(handler)
@@ -1054,9 +1098,9 @@ type apiError struct {
 	message string
 	// retryAfter is the Retry-After the answer carries, in whole seconds, and 0 for an answer
 	// that carries none. Only a refusal that knows when the caller may come back sets it:
-	// brokerTokenActor's 429, the results write's 409 CHECK_CONTENDED, and linkedReadRefusal's
-	// 502 for a linked repository's read GitHub rate-limited with a wait. writeHandlerError
-	// writes the header.
+	// brokerTokenActor's 429, the results write's 409 CHECK_CONTENDED, both deletes' 409
+	// DELETE_CONTENDED, and linkedReadRefusal's 502 for a linked repository's read GitHub
+	// rate-limited with a wait. writeHandlerError writes the header.
 	retryAfter int
 	// scope is the OAuth scope a missing-scope refusal names, and is empty for every other
 	// refusal. Only missingScopeError sets it; writeHandlerError writes the challenge header
@@ -1267,6 +1311,20 @@ func (s *server) actorFrom(r *http.Request, supplied *model.Actor) (model.Actor,
 	return actor.Recorded(), nil
 }
 
+// credentialProvesSession is whether the request's credential proved a session of its own - a
+// broker-issued token, which the broker binds to one session - rather than a caller that must
+// name its session in the body.
+func credentialProvesSession(authenticated model.Actor) bool {
+	return authenticated.Kind == "session" && authenticated.ID != ""
+}
+
+// actorNamesWriter is whether a request body names a writer at all: an actor carrying a kind or
+// an id, either of which is the caller saying who writes. A body that names neither leaves the
+// writer to the credential.
+func actorNamesWriter(supplied *model.Actor) bool {
+	return supplied != nil && (strings.TrimSpace(supplied.ID) != "" || strings.TrimSpace(supplied.Kind) != "")
+}
+
 // bearerSessionActor resolves the acting session for a bearer caller: the caller names its own
 // session in the request body, and what the token itself proved — a personal token's owner, a
 // service token's verified subject — stays attached for attribution. Neither is ever taken from
@@ -1281,10 +1339,10 @@ func (s *server) actorFrom(r *http.Request, supplied *model.Actor) (model.Actor,
 // session the caller merely asked for. Every credential that proves no session — a cookie, a
 // personal token, a Kubernetes service-account token — keeps the rule above exactly.
 func bearerSessionActor(r *http.Request, authenticated model.Actor, supplied *model.Actor) (model.Actor, error) {
-	if authenticated.Kind == "session" && authenticated.ID != "" {
+	if credentialProvesSession(authenticated) {
 		// A body that names no writer at all leaves the session to the credential; one that names
 		// anything else than that same session is the mismatch.
-		named := supplied != nil && (strings.TrimSpace(supplied.ID) != "" || strings.TrimSpace(supplied.Kind) != "")
+		named := actorNamesWriter(supplied)
 		if named && (supplied.Kind != "session" || strings.TrimSpace(supplied.ID) != authenticated.ID) {
 			return model.Actor{}, errorf(http.StatusForbidden, "ACTOR_SESSION_MISMATCH",
 				"this request's credential acts for session %s; its actor names another writer", authenticated.ID)
@@ -1295,6 +1353,28 @@ func bearerSessionActor(r *http.Request, authenticated model.Actor, supplied *mo
 		actor := authenticated.Recorded()
 		if supplied != nil {
 			actor.Origin = supplied.Origin
+		}
+		// The credential itself proved this session, and for a token the broker scoped to a
+		// person it proved whose session it is too (brokerTokenActor sets Owner from the token
+		// and never from a body). That pair is what R14 calls "a session the server itself
+		// proved theirs", and the store ties the two with an alias_of tuple on the next write
+		// (graphstore.aliases). The act names the session the credential proved, exactly as
+		// actingPerson names the agent that acted for a person, and says it was proved
+		// (SessionProven), as every act naming a session the credential proved does; the actor's
+		// kind and id are left as they were, so every stored author, every event and every reader
+		// keeps the shape it has.
+		//
+		// A session named in a request body earns none of this: the branch below, which every
+		// credential that proves no session of its own takes, records the session the caller
+		// asked for, no act and no Proven mark, because an actor that merely claims a session
+		// proves nothing about whose it is (R14).
+		if actor.Owner != nil && *actor.Owner != "" && authenticated.Credential != nil &&
+			authenticated.Credential.Session == authenticated.ID {
+			actor.Act = &model.ActorAct{
+				Session:       authenticated.ID,
+				SessionProven: true,
+				Scopes:        authenticated.Credential.Scopes,
+			}
 		}
 		accesslog.Note(r.Context(), accesslog.KindSession, actor.ID)
 		return actor, nil
@@ -1793,6 +1873,23 @@ func encodeJSON(value any) ([]byte, error) {
 
 func (s *server) appendEvent(ctx context.Context, tx pgx.Tx, event model.Event) (model.Event, error) {
 	return s.deps.Events.Append(ctx, tx, event)
+}
+
+// appendCausingEvent is appendEvent for an event that causes a write of the node and tuple store
+// made before it existed (graphstore.Uncaused): the event's append and the append of what that
+// write stated under it, in one batch, the second naming the event's id as the id sequence left it
+// (graphstore.LatestEvent). A route that writes as it goes pays one statement for the two, as
+// it paid for the event alone.
+func (s *server) appendCausingEvent(ctx context.Context, tx pgx.Tx, event model.Event, stated graphstore.Uncaused) (model.Event, error) {
+	var appended model.Event
+	err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		if err := s.deps.Events.QueueAppend(b, event, func(written model.Event) { appended = written }); err != nil {
+			return err
+		}
+		graphstore.QueueCaused(b, stated, graphstore.LatestEvent)
+		return nil
+	})
+	return appended, err
 }
 
 // publish hands each event to the broker and then stores the display trees of the stored texts

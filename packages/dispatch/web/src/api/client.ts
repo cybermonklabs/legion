@@ -3,6 +3,7 @@ import {
   answerNotKept,
   DISPATCH_LOGIN_HEADER,
   everyBuildReadsSearch,
+  ID_AMBIGUOUS,
   IDEMPOTENCY_ANSWER_NOT_KEPT,
   IDEMPOTENCY_KEY_COMMITTED,
   IDEMPOTENCY_KEY_HEADER,
@@ -113,6 +114,21 @@ export class ApiError extends Error {
     this.candidates = payload.candidates;
     this.retryAfterMs = retryAfterMs;
   }
+}
+
+/** The items an `ID_AMBIGUOUS` refusal listed, or undefined for any other failure and for a
+ *  refusal that listed none, which there is no list to show for. The code is what says the
+ *  entries are these and not a duplicate check's issues (`ErrorCandidate`). */
+export function ambiguousItems(error: unknown): readonly IDCandidate[] | undefined {
+  if (!(error instanceof ApiError) || error.code !== ID_AMBIGUOUS) {
+    return undefined;
+  }
+  const items = error.candidates?.filter(isIDCandidate) ?? [];
+  return items.length === 0 ? undefined : items;
+}
+
+function isIDCandidate(candidate: ErrorCandidate): candidate is IDCandidate {
+  return "id" in candidate && "kind" in candidate;
 }
 
 /** A request the browser could not get an answer to at all: the connection failed or dropped
@@ -243,11 +259,13 @@ export interface WriteBounds extends RequestBounds {
   readonly progress?: (loaded: number, total: number) => void;
 }
 
-/** A write Dispatch had already made, with no answer it can give for it (`code`): the first
- *  answer was too large for it to keep, so the repeat came back with the first one's status and
- *  no resource (`IDEMPOTENCY_ANSWER_NOT_KEPT`), or the answer was lost before Dispatch stored it,
- *  so the repeat came back `409 KEY_COMMITTED` (`isKeyCommitted`). The write landed; its caller
- *  reads what it wrote again, and shows no refusal. */
+/** A write Dispatch had already made, with no answer it can give for it (`code`): Dispatch gives
+ *  no copy of the first answer, which was too large for it to keep or holds a comment or an issue
+ *  message that was deleted, or a document version name a delete replaced, so the repeat came
+ *  back with the first one's status and no resource
+ *  (`IDEMPOTENCY_ANSWER_NOT_KEPT`), or the answer was lost before Dispatch stored it, so the repeat
+ *  came back `409 KEY_COMMITTED` (`isKeyCommitted`). The write landed; its caller reads what it
+ *  wrote again, and shows no refusal. */
 export class AnswerNotKeptError extends Error {
   readonly code: IdempotencyLandedCode;
   readonly status: number;
@@ -1350,6 +1368,12 @@ export class DispatchApiClient {
    *  one page at a time. Needs the `person` scope. */
   listMyAnswers(page: Query<"/api/v1/me/answers", "get">) {
     return this.read("/api/v1/me/answers", {}, page);
+  }
+
+  /** `GET /api/v1/people/{login}/nodes`: one person's page — what they wrote and what reached
+   *  them, newest first, one page at a time. Needs the `person` scope. */
+  listPersonNodes(login: string, page: Query<"/api/v1/people/{login}/nodes", "get">) {
+    return this.read("/api/v1/people/{login}/nodes", { login }, page);
   }
 
   /** `GET /api/v1/me/replies`: the threads the signed-in person is reading, newest write first.

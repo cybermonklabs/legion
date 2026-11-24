@@ -25,8 +25,9 @@
 #   5. a file calling more than 45 unique reusable workflows. GitHub allows 50 from a single
 #      workflow file, counting every tree of nested calls. This check follows only the calls to
 #      this repository's own workflows (`./.github/workflows/…`) and counts a call to another
-#      repository's workflow as one call. ci.yaml calls 43 today, so 45 leaves room for two more
-#      calls and none for a surprise;
+#      repository's workflow as one call. ci.yaml calls 45 today, the limit, which keeps five
+#      below GitHub's cap for a surprise; a job split in two calls the file it was split from
+#      (.github/ci-notes/ci.md#two-jobs-that-call-one-file);
 #   6. a job whose `env:`, or one of whose steps' `env:`, sets JOB_TIMEOUT_MINUTES to anything but
 #      the job's timeout-minutes (GitHub's default of 360 where the job sets none), and a step whose
 #      `env:` sets STEP_TIMEOUT_MINUTES to anything but that step's own timeout-minutes.
@@ -57,7 +58,7 @@
 set -euo pipefail
 
 # The repeated-key test is workflow_paths.repeated_keys, the same one the loader every filter
-# check reads .github/ci-filters.yaml with runs, imported from beside this script's own file: a
+# check reads the changes job's filters and the workflows with runs, imported from beside this script's own file: a
 # test fixture links only this script in, and the link leads back to the module CI runs. Resolved
 # before the cd, which would leave a relative $0 naming nothing. PYTHONDONTWRITEBYTECODE keeps the
 # import from leaving a __pycache__ in the tree.
@@ -400,8 +401,8 @@ for path in targets:
             f"{path} is {size:,} bytes, above GitHub's own cap of {GITHUB_CAP:,} bytes (500 KB): "
             f"GitHub starts no run at all for a workflow file this size, and signals it only as a "
             f"run with no jobs in it. It is above this check's limit of {LIMIT:,} bytes as well. "
-            f"Move the filter data into .github/ci-filters.yaml, each longer shell body into a script "
-            f"under .github/scripts/ and each derivation into the workflow's notes file, as {RULE} says.",
+            f"Move each longer shell body into a script under .github/scripts/ and each derivation "
+            f"into the workflow's notes file, as {RULE} says.",
         )
     elif size > LIMIT:
         problem(
@@ -409,9 +410,9 @@ for path in targets:
             f"{path} is {size:,} bytes, above this check's limit of {LIMIT:,} bytes. GitHub starts "
             f"no run at all for a workflow file above its own cap of {GITHUB_CAP:,} bytes (500 "
             f"KB), and signals it only as a run with no jobs in it, so this limit keeps every file "
-            f"far enough below the cap that no edit crosses it unseen. Move the filter data into "
-            f".github/ci-filters.yaml, each longer shell body into a script under .github/scripts/ "
-            f"and each derivation into the workflow's notes file, as {RULE} says.",
+            f"far enough below the cap that no edit crosses it unseen. Move each longer shell body "
+            f"into a script under .github/scripts/ and each derivation into the workflow's notes "
+            f"file, as {RULE} says.",
         )
 
     node, error = composed(path)

@@ -122,7 +122,7 @@ func TestTheLargestEnvelopeOfEachKindTheDaemonReadsIsStored(t *testing.T) {
 				req.Header.Set("X-GitHub-Event", tc.event)
 				req.Header.Set("X-Hub-Signature-256", "sha256="+hex.EncodeToString(mac.Sum(nil)))
 				rr := httptest.NewRecorder()
-				webhook.GitHubHandler(secret, "@legion", "", client, noCI{t}).ServeHTTP(rr, req)
+				webhook.GitHubHandler(secret, "@legion", "", "", client, noCI{t}, webhook.NewBodyBudget(webhook.DefaultBodyBudget, nil)).ServeHTTP(rr, req)
 				if rr.Code != http.StatusOK {
 					t.Fatalf("status = %d, want 200; body = %s", rr.Code, rr.Body.String())
 				}

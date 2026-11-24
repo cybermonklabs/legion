@@ -1,7 +1,7 @@
-import { beforeAll, describe, expect, test } from "bun:test";
+import { beforeAll, expect, test } from "bun:test";
 import { copyFileSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { hostTool, skipWithout } from "@legion/test-fixtures/host-tools";
+import { hostGate, hostTool } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { ownGroup } from "./own-group";
 import { scriptFunctions } from "./script-functions";
@@ -17,12 +17,12 @@ const rig = join(import.meta.dir, "rig.sh");
 const root = join(import.meta.dir, "..", "..", "..");
 const dir = temporaryDirectory("process-tree-test");
 // perl: run starts every harness through ownGroup (lib/own-group.ts).
-const skip = skipWithout("bash", "sleep", "sh", "perl");
+const host = hostGate({ programs: ["bash", "sleep", "sh", "perl"] });
 const program = join(dir, "program");
 const literalPattern = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const other = join(dir, "other");
 beforeAll(() => {
-  if (skip) return;
+  if (host.missing) return;
   const sleep = hostTool("sleep");
   if (sleep === null) throw new Error("sleep is not on PATH");
   copyFileSync(sleep, program);
@@ -64,6 +64,17 @@ ended_pid() {
   { wait "$pid" || true; } 2>/dev/null
   printf '%s\\n' "$pid"
 }
+# laid_out PROGRAM PID… holds once each PID runs PROGRAM by the kernel's record and its environment
+# is laid out (environ_laid_out, lib/process-tree.sh): the kernel names PROGRAM in /proc/<pid>/exe
+# before it lays out PROGRAM's environment, and a row that reads the environment in between reads
+# none.
+laid_out() {
+  local want=$1 pid
+  shift
+  for pid; do
+    [ "$(readlink "/proc/$pid/exe" 2>/dev/null || :)" = "$want" ] && environ_laid_out "$pid" || return 1
+  done
+}
 program=$PROGRAM other=$OTHER
 ${body}`;
   const result = Bun.spawnSync(ownGroup(["bash", "-c", script]), {
@@ -93,7 +104,7 @@ async function gone(pid: number): Promise<boolean> {
 
 const slow = 60_000;
 
-describe.skipIf(skip)("record_pid_sh and recorded_pid", () => {
+host.describe("record_pid_sh and recorded_pid", () => {
   test(
     "name the process the command execs into while it runs, and nothing once it has ended",
     () => {
@@ -148,7 +159,7 @@ if recorded_pid "$scratch/other" "$program" >/dev/null; then echo "other program
   );
 });
 
-describe.skipIf(skip)("launched", () => {
+host.describe("launched", () => {
   // A bash that runs `sh -c` of the program as its one child, as controller.go's exec.Command("sh",
   // "-c", …) runs Oh My Pi: bash is a line of one child, sh another, and the program the end of it.
   test(
@@ -253,13 +264,11 @@ echo "line: status $st: $why"
   );
 });
 
-describe.skipIf(skip)(
-  "child_of, child_running, native_program, first_native and omp_program",
-  () => {
-    test(
-      "child_of names the one child and refuses none; omp_program takes LEGION_OMP_PATH's real path when it is set",
-      () => {
-        const r = run(`
+host.describe("child_of, child_running, native_program, first_native and omp_program", () => {
+  test(
+    "child_of names the one child and refuses none; omp_program takes LEGION_OMP_PATH's real path when it is set",
+    () => {
+      const r = run(`
 bash -c '"$0" 600; :' "$program" </dev/null >/dev/null 2>&1 &
 one=$!
 started+=("$one")
@@ -272,17 +281,17 @@ echo "no child: status $st: \${why//"$kid"/KID}"
 ln -s "$program" "$scratch/omp-link"
 echo "omp_program: $(LEGION_OMP_PATH=$scratch/omp-link omp_program unused-pin)"
 `);
-        expect(r.err).toBe("");
-        expect(r.out).toBe(
-          `one child: the program\nno child: status 1: process KID has no child\nomp_program: ${program}\n`
-        );
-      },
-      slow
-    );
-    test(
-      "child_running takes the child of the pid itself that runs the program; a script and a mise shim are no program",
-      async () => {
-        const r = run(`
+      expect(r.err).toBe("");
+      expect(r.out).toBe(
+        `one child: the program\nno child: status 1: process KID has no child\nomp_program: ${program}\n`
+      );
+    },
+    slow
+  );
+  test(
+    "child_running takes the child of the pid itself that runs the program; a script and a mise shim are no program",
+    async () => {
+      const r = run(`
 bash -c '"$1" 600 & sh -c "\\"\\$0\\" 600; :" "$0" & wait' "$program" "$other" </dev/null >/dev/null 2>&1 &
 top=$!
 started+=("$top")
@@ -305,29 +314,29 @@ why=$(native_program "$scratch/omp") || st=$?
 echo "a mise shim: status $st"
 if native_program "$scratch/mise" >/dev/null; then echo "mise itself: named"; else echo "mise itself: refused"; fi
 `);
-        expect(r.err).toBe("");
-        const lines = r.out.trimEnd().split("\n");
-        expect(lines[0]).toMatch(
-          new RegExp(
-            `^not a child of it: status 1: 0 children of \\d+ run ${literalPattern(program)}$`
-          )
-        );
-        const kid = /^its child: the other program (\d+)$/.exec(lines[1] ?? "");
-        expect(kid).not.toBeNull();
-        expect(lines.slice(2)).toEqual([
-          "a script: status 1",
-          "a script as LEGION_OMP_PATH: status 1",
-          "a mise shim: status 1",
-          "mise itself: named",
-        ]);
-        expect(await gone(Number(kid?.[1]))).toBe(true);
-      },
-      slow
-    );
-    test(
-      "first_native takes the first program itself on PATH, in a directory whose name holds a space, past a script and a mise shim",
-      () => {
-        const r = run(`
+      expect(r.err).toBe("");
+      const lines = r.out.trimEnd().split("\n");
+      expect(lines[0]).toMatch(
+        new RegExp(
+          `^not a child of it: status 1: 0 children of \\d+ run ${literalPattern(program)}$`
+        )
+      );
+      const kid = /^its child: the other program (\d+)$/.exec(lines[1] ?? "");
+      expect(kid).not.toBeNull();
+      expect(lines.slice(2)).toEqual([
+        "a script: status 1",
+        "a script as LEGION_OMP_PATH: status 1",
+        "a mise shim: status 1",
+        "mise itself: named",
+      ]);
+      expect(await gone(Number(kid?.[1]))).toBe(true);
+    },
+    slow
+  );
+  test(
+    "first_native takes the first program itself on PATH, in a directory whose name holds a space, past a script and a mise shim",
+    () => {
+      const r = run(`
 mkdir -p "$scratch/a" "$scratch/b" "$scratch/c with space" "$scratch/d"
 printf '#!/bin/sh\\nexec sleep 600\\n' >"$scratch/a/tool" && chmod +x "$scratch/a/tool"
 cp "$program" "$scratch/b/mise" && ln -s "$scratch/b/mise" "$scratch/b/tool"
@@ -339,15 +348,14 @@ st=0
 why=$(PATH="$scratch/a:$scratch/b:$PATH" first_native tool) || st=$?
 echo "none: status $st: \${why%%:*}"
 `);
-        expect(r.err).toBe("");
-        expect(r.out).toBe(
-          "first: the one in the spaced directory\nnone: status 1: no tool on PATH is the program itself\n"
-        );
-      },
-      slow
-    );
-  }
-);
+      expect(r.err).toBe("");
+      expect(r.out).toBe(
+        "first: the one in the spaced directory\nnone: status 1: no tool on PATH is the program itself\n"
+      );
+    },
+    slow
+  );
+});
 
 // The rig helpers' process-scan rows: signalable and stop_tree (lib/process-tree.sh) and the proc_*
 // reads they use each read only the /proc entries of the processes they ask about (the failure note
@@ -357,7 +365,7 @@ echo "none: status $st: \${why%%:*}"
 // calls one is named in the log, and the row fails. The traced row, where strace is on the host,
 // also holds that the helpers list no directory but the task directory of a process they ask about
 // and open no other process's entry.
-const noStrace = skipWithout("strace");
+const strace = hostGate({ programs: ["strace"] });
 const logPsPgrepPkillCalls = `mkdir -p "$scratch/bin"
 for n in ps pgrep pkill; do printf '#!/bin/sh\\necho "$0 $*" >>%s/calls\\nexit 1\\n' "$scratch" >"$scratch/bin/$n"; chmod +x "$scratch/bin/$n"; done
 PATH="$scratch/bin:$PATH"`;
@@ -373,7 +381,7 @@ started+=("$g")
 until_true 10 "two children of $g" sh -c '[ "$(cat /proc/$1/task/*/children | wc -w)" = 2 ]' sh "$g"
 kids=$(cat /proc/"$g"/task/*/children)`;
 
-describe.skipIf(skip)("the rig helpers' process-scan rows", () => {
+host.describe("the rig helpers' process-scan rows", () => {
   test(
     "signalable refuses this shell and its group's leader, stop_tree refuses a wrong parent and then ends a tree, and none starts ps, pgrep or pkill",
     async () => {
@@ -420,7 +428,7 @@ echo "calls: [\${calls//$'\\n'/;}]"
     slow
   );
 
-  test.skipIf(noStrace)(
+  strace.test(
     "the helpers open no other process's /proc entry and list no directory but the task directories of the processes they ask about",
     async () => {
       // strace follows the traced shell and every process it starts. The traced shell records the
@@ -483,7 +491,7 @@ echo "scratch: $scratch"
   );
 });
 
-describe.skipIf(skip)("incarnation_pid, env_has and freeze_if", () => {
+host.describe("incarnation_pid, env_has and freeze_if", () => {
   test(
     "incarnation_pid names a pid only with its own start ticks, and refuses a reused, an ended and a malformed incarnation",
     () => {
@@ -518,7 +526,7 @@ pad=$(printf '%0100000d' 0)
 env -i LEGION_GRANT_FILE=/grant PADDING1="$pad" PADDING2="$pad" "$program" 600 </dev/null >/dev/null 2>&1 &
 pid=$!
 started+=("$pid")
-until_true 10 "the program's environment" sh -c '[ "$(readlink /proc/$1/exe)" = "$2" ]' sh "$pid" "$program"
+until_true 40 "the program's environment" laid_out "$program" "$pid"
 for name in LEGION_GRANT_FILE LEGION_GRANT; do st=0; env_has "$pid" "$name" || st=$?; echo "$name $st"; done
 echo "value $(env_of "$pid" LEGION_GRANT_FILE)"
 st=0; env_has "$(ended_pid)" HOME 2>/dev/null || st=$?; echo "unreadable $st"
@@ -587,7 +595,7 @@ echo "pid $pid"
 const requireProcessTree = scriptFunctions(
   join(import.meta.dir, "..", "stage3-4b13b-acceptance.sh")
 )("require_process_tree");
-describe.skipIf(skip)("require_process_tree", () => {
+host.describe("require_process_tree", () => {
   test("names each missing function and ACCEPT_ROOT for a lib from before lib/process-tree.sh, and passes this checkout's", () => {
     const older = Bun.spawnSync(
       [
@@ -616,7 +624,7 @@ describe.skipIf(skip)("require_process_tree", () => {
 const carriesNoGrant = scriptFunctions(join(import.meta.dir, "..", "stage3-4b13b-acceptance.sh"))(
   "carries_no_grant"
 );
-describe.skipIf(skip)("carries_no_grant", () => {
+host.describe("carries_no_grant", () => {
   test(
     "fails while a grant stands first in a 200 KB environment and when the environment cannot be read, and holds only for an environment without one",
     () => {
@@ -628,7 +636,7 @@ started+=("$granted")
 env -i PADDING1="$pad" PADDING2="$pad" "$program" 600 </dev/null >/dev/null 2>&1 &
 clean=$!
 started+=("$clean")
-until_true 10 "both programs to run" sh -c '[ "$(readlink /proc/$1/exe)" = "$3" ] && [ "$(readlink /proc/$2/exe)" = "$3" ]' sh "$granted" "$clean" "$program"
+until_true 40 "both programs' environments" laid_out "$program" "$granted" "$clean"
 for p in "$granted" "$clean" "$(ended_pid)"; do
   st=0
   why=$(carries_no_grant "$p") || st=$?
@@ -648,7 +656,7 @@ done
 // environment for the rig's endpoints (env_of) and then for the ANTHROPIC_API_KEY it must not carry
 // (env_has): the key's absence holds only on env_has's status 1, and an environment either read
 // could not read is a mismatch, never a clean one.
-describe.skipIf(skip)("endpoint_mismatch", () => {
+host.describe("endpoint_mismatch", () => {
   test.each(["stage3-4b13b-acceptance.sh", "stage3-devbox-workflow.sh"])(
     "%s's holds only for the rig's endpoints and no key, and fails closed on an environment either read could not read",
     (script) => {
@@ -669,7 +677,7 @@ keyed=$!
 env -i "\${rig[@]}" "$program" 600 </dev/null >/dev/null 2>&1 &
 ending=$!
 started+=("$clean" "$keyed" "$ending")
-until_true 10 "the three programs to run" sh -c 'p=$1; shift; for pid; do [ "$(readlink /proc/$pid/exe)" = "$p" ] || exit 1; done' sh "$program" "$clean" "$keyed" "$ending"
+until_true 40 "the three programs' environments" laid_out "$program" "$clean" "$keyed" "$ending"
 check() { local st=0; endpoint_mismatch "$2" >"$scratch/found" || st=$?; echo "$1: status $st: $(cat "$scratch/found")"; }
 check clean "$clean"
 check keyed "$keyed"
@@ -693,6 +701,77 @@ check "ended between the reads" "$ending"
   );
 });
 
+// stage3-4b13b-acceptance.sh's and stage3-devbox-workflow.sh's pane_watcher check each pane's Oh My
+// Pi once it runs and its environment is laid out (environ_laid_out): the kernel names the program
+// an exec starts before it lays out that program's environment, and a read in between finds none.
+// An Oh My Pi found there is read again at the next poll and never counted; a mismatch the watcher
+// reads is a violation. The stand-in for one inside that window is an Oh My Pi started with an empty
+// environment, which reads as one inside the window reads, and stays so: the row waits until it runs
+// the program, and counts the watcher's environ_laid_out calls on it (a wrapper around the lib's),
+// so a watcher that skipped it, or read it once and never again, does not pass. A pane is a bash
+// whose child runs the Oh My Pi, a copy of sleep; `legion claims list` is a stub that prints the
+// claims a row writes. The first watcher's evidence is the harness's own, so a violation it records
+// aborts the row's next wait (until_true), as it aborts the stage scripts' waits.
+// jq: the watcher reads the claims `legion claims list` prints with it.
+const paneWatcher = hostGate({ programs: ["bash", "sleep", "sh", "perl", "jq"] });
+paneWatcher.describe("pane_watcher", () => {
+  test.each(["stage3-4b13b-acceptance.sh", "stage3-devbox-workflow.sh"])(
+    "%s's reads an Oh My Pi whose environment is not laid out again at the next poll, and records a mismatch it reads",
+    (script) => {
+      const watcher = ["omp_descendant", "endpoint_mismatch", "pane_watcher"]
+        .map(scriptFunctions(join(import.meta.dir, "..", script)))
+        .join("\n");
+      const r = run(`${watcher}
+port_dispatch=1 port_listener=2 port_nats=3 state=/rig ptoken=row omp_exe=$program
+rig=(DISPATCH_URL=http://127.0.0.1:1 DISPATCH_TOKEN_FILE=/rig/secrets/dispatch-token ENVOY_URL=http://127.0.0.1:2 ENVOY_NATS_URL=nats://127.0.0.1:3)
+# pane VAR=VALUE… starts a pane whose Oh My Pi runs with exactly those variables, and sets pane_pid
+# to the pane's pid and inc to its incarnation.
+pane() {
+  bash -c 'env -i "$@" 600 & wait' pane "$@" "$program" </dev/null >/dev/null 2>&1 &
+  started+=("$!")
+  pane_pid=$!
+  inc=$!:$(start_of "$!")
+}
+# claims DIR ROLE INC… gives DIR's stub one claim on I-1 for each ROLE and incarnation.
+claims() {
+  local dir=$1 sep=
+  shift
+  printf '#!/bin/sh\\ncat "%s/claims.json"\\n' "$dir" >"$dir/legion"
+  chmod +x "$dir/legion"
+  { printf '{"claims":['; while [ "$#" -gt 0 ]; do printf '%s{"issue":"I-1","role":"%s","locator":{"incarnation":"%s"}}' "$sep" "$1" "$2"; sep=,; shift 2; done; printf ']}\\n'; } >"$dir/claims.json"
+}
+pane
+empty=$inc
+until_true 15 "the empty pane's Oh My Pi to run" launched "$pane_pid" "$program"
+empty_omp=$(launched "$pane_pid" "$program")
+eval "real_$(declare -f environ_laid_out)"
+environ_laid_out() { [ "$1" != "$empty_omp" ] || echo read >>"$scratch/empty-reads"; real_environ_laid_out "$@"; }
+pane "\${rig[@]}"
+clean=$inc
+claims "$work" empty "$empty" clean "$clean"
+pane_watcher &
+started+=("$!")
+until_true 15 "the clean pane checked and the empty one read at two polls" sh -c 'grep -qF "$1 " "$2" && [ -s "$3" ] && [ "$(wc -l <"$3")" -ge 2 ]' sh "$clean" "$work/pane-endpoints-checked.txt" "$scratch/empty-reads"
+echo "checked: $(cut -d' ' -f3 "$work/pane-endpoints-checked.txt" | paste -sd, -)"
+pane "\${rig[@]}" ANTHROPIC_API_KEY=k
+keyed=$inc
+mkdir "$scratch/keyed"
+claims "$scratch/keyed" keyed "$keyed"
+(work=$scratch/keyed evidence=$scratch/keyed; pane_watcher) &
+started+=("$!")
+until_true 15 "the keyed pane's violation" test -s "$scratch/keyed/pane-endpoint-violation.txt"
+sed -e "s/$keyed/INC/" -e 's/OMP pid [0-9]*/OMP pid PID/' "$scratch/keyed/pane-endpoint-violation.txt"
+`);
+      expect(r.err).toBe("");
+      expect(r.out).toBe(
+        "checked: clean\n" +
+          "keyed pane on I-1 (incarnation INC, OMP pid PID) has ANTHROPIC_API_KEY set, want unset\n"
+      );
+    },
+    slow
+  );
+});
+
 // clean-session-stop-tmux.sh's kill_the_agent SIGKILLs the agent under a claim's pane, the pane
 // read from the claim's locator incarnation `<pid>:<start ticks>`. A pane is a copy of bash running
 // a `worker-shim` script, as `legion worker-shim` runs its agent, whose agent is the run's Oh My Pi,
@@ -708,7 +787,7 @@ const killTheAgent = [
 ]
   .map(cleanStop)
   .join("\n");
-describe.skipIf(skip)("kill_the_agent", () => {
+host.describe("kill_the_agent", () => {
   test(
     "kills the agent below the pane its incarnation names, and nothing when the incarnation's start ticks are not the pane's own",
     async () => {
@@ -740,11 +819,14 @@ echo "agent $agent"
   );
 });
 
+// ps: the row of the block below that answers through ps where there is no /proc.
+const ps = hostGate({ programs: ["ps"] });
+
 // proc_start gives a zombie no start, since a zombie runs nothing any more and a signal held to its
 // start would reach no process; and the environment readers (env_of, env_has, env_length,
 // names_dir) answer 2 for an environment that is empty, a process that has gone or one with no
 // variable at all, never 1, the answer of an environment that lacks the name.
-describe.skipIf(skip)("proc_start and the environment readers", () => {
+host.describe("proc_start and the environment readers", () => {
   test(
     "proc_start gives a zombie no start and a live process its own",
     () => {
@@ -770,7 +852,7 @@ echo "live: [$(proc_start "$parent")] [$(start_of "$parent")]"
   // of an instance that may have exited already), and a failure ends that caller with no word of
   // why. The row makes the helper's own test of /proc/self read false, and the host's ps answers
   // through a wrapper that counts its calls, so the row shows the fallback was the path taken.
-  test.skipIf(hostTool("ps") === null)(
+  ps.test(
     "proc_parent, proc_group and proc_start answer through ps where there is no /proc: nothing, and success, for a process that is gone, and a live one's own",
     () => {
       const r = run(`mkdir -p "$scratch/bin"
@@ -812,7 +894,12 @@ empty=$!
 env -i NAME=value "$program" 600 </dev/null >/dev/null 2>&1 &
 full=$!
 started+=("$empty" "$full")
-until_true 10 "both to run" sh -c '[ "$(readlink /proc/$1/exe)" = "$3" ] && [ "$(readlink /proc/$2/exe)" = "$3" ]' sh "$empty" "$full" "$program"
+until_true 20 "the full one's environment" laid_out "$program" "$full"
+# The empty one has no variable to wait for. Its command line reads once its exec has laid out its
+# arguments and set where its environment starts and ends (fs/proc/base.c reads neither before),
+# which for an empty environment is all of it.
+args_laid_out() { local -a words; [ "$(readlink "/proc/$1/exe" 2>/dev/null || :)" = "$program" ] && process_args "$1" words; }
+until_true 20 "the empty one's arguments" args_laid_out "$empty"
 for pid in "$empty" "$full"; do
   st=0; v=$(env_of "$pid" NAME) || st=$?; printf 'env_of %s [%s]; ' "$st" "$v"
   st=0; env_has "$pid" OTHER || st=$?; printf 'env_has %s; ' "$st"
@@ -825,6 +912,28 @@ done
         "env_of 2 []; env_has 2; env_length 2 []; names_dir 2\n" +
           "env_of 0 [value]; env_has 1; env_length 0 [5]; names_dir 1\n"
       );
+    },
+    slow
+  );
+});
+
+// A row that fails in until_true (lib/rig.sh) exits inside it, through the harness's `fail`, so the
+// harness's EXIT trap runs where until_true's locals are in scope. One of them was named `started`,
+// and the trap then read that number in place of the row's `started` pids and stopped none of them.
+host.describe("the row harness", () => {
+  test(
+    "an EXIT trap that runs when until_true fails reads the row's own started pids",
+    () => {
+      const r = run(`
+"$program" 600 </dev/null >/dev/null 2>&1 &
+started+=("$!")
+(trap 'echo "the trap reads [\${started[*]}]"' EXIT; until_true 1 "nothing" false) 2>/dev/null || :
+echo "the row started [\${started[*]}]"
+`);
+      expect(r.err).toBe("");
+      const lines = r.out.trim().split("\n");
+      expect(lines).toHaveLength(2);
+      expect(lines[0].replace("the trap reads", "")).toBe(lines[1].replace("the row started", ""));
     },
     slow
   );

@@ -213,11 +213,11 @@ func TestCheckClientIsOneTokenRequest(t *testing.T) {
 func TestCheckClientSpendsNoCodeOfItsOwnIssuer(t *testing.T) {
 	issuer := oidctest.New(t)
 	key := issuer.PublishKey(t, "signing-key")
-	issuer.EnableCodeFlow(key, checkClientID, checkClientSecret)
+	redirectURL := "https://broker.example/signin/callback"
+	issuer.EnableCodeFlow(key, checkClientID, checkClientSecret, redirectURL)
 	flow := NewCodeFlow(issuer.URL(), checkClientID, checkClientSecret, "")
 	ctx := context.Background()
 	signIn := OnlineSignIn{State: "state", Nonce: "nonce", Verifier: "verifier-verifier-verifier-verifier-ve"}
-	redirectURL := "https://broker.example/signin/callback"
 	authURL, err := flow.OnlineAuthURL(ctx, redirectURL, signIn)
 	if err != nil {
 		t.Fatalf("OnlineAuthURL: %v", err)

@@ -9,6 +9,8 @@ package cipherclient
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"slices"
@@ -94,6 +96,49 @@ func TestASignInTheIssuerNoLongerHonoursNamesTheCommandThatMakesAnother(t *testi
 	_, err := flow.Refresh(context.Background(), "a-refresh-token-this-issuer-never-issued")
 	if err == nil || !strings.Contains(err.Error(), "agent-secrets login") {
 		t.Fatalf("Refresh with a retired refresh token = %v, want a refusal naming `agent-secrets login`", err)
+	}
+}
+
+// TestOnlyTheIssuersRefusalEndsASignIn: a refresh ends the sign-in (ErrSignInEnded) only when the
+// issuer's token endpoint answers 400 or 401 with the OAuth error invalid_grant (RFC 6749 section
+// 5.2), the rule oauthrefusal.EndsGrant states for every reader that ends a grant. A 429 or a 5xx
+// is the issuer being busy or down, whatever its body names, and a 403 is no end of a grant, and
+// none of them says the person's grant is over: reading one as the end of the sign-in would drop
+// the token in hand, stop the renewal loop and fall the box back to its machine over an outage.
+// Every row renews a refresh token the issuer issued.
+//
+// The named reverts: read invalid_grant at any status as ErrSignInEnded, as Refresh once did, and
+// the 403, 429, 500 and 503 rows fail; read it by oauthrefusal.Refusal, which takes a 403 as a
+// refusal's code, and the 403 row fails.
+func TestOnlyTheIssuersRefusalEndsASignIn(t *testing.T) {
+	for _, tc := range []struct {
+		status int
+		code   string
+		ended  bool
+	}{
+		{http.StatusBadRequest, "invalid_grant", true},
+		{http.StatusUnauthorized, "invalid_grant", true},
+		{http.StatusForbidden, "invalid_grant", false},
+		{http.StatusTooManyRequests, "invalid_grant", false},
+		{http.StatusInternalServerError, "invalid_grant", false},
+		{http.StatusServiceUnavailable, "invalid_grant", false},
+		{http.StatusBadRequest, "invalid_request", false},
+	} {
+		t.Run(fmt.Sprintf("%d %s", tc.status, tc.code), func(t *testing.T) {
+			rig := newSignInRig(t, nil)
+			record := rig.signIn(t, "ada@example.com")
+			rig.issuer.FailToken(tc.status, tc.code)
+			signIn, err := rig.flow.Refresh(context.Background(), record.RefreshToken)
+			if signIn != nil || err == nil {
+				t.Fatalf("Refresh answered %+v, %v; want the failure", signIn, err)
+			}
+			if ended := errors.Is(err, ErrSignInEnded); ended != tc.ended {
+				t.Errorf("Refresh = %v, ErrSignInEnded %t; want %t", err, ended, tc.ended)
+			}
+			if named := strings.Contains(err.Error(), SignInCommand); named != tc.ended {
+				t.Errorf("Refresh = %v, naming %s %t; want %t: only an ended sign-in names the command that makes another", err, SignInCommand, named, tc.ended)
+			}
+		})
 	}
 }
 

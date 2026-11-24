@@ -1129,7 +1129,7 @@ func TestAnActivityReportOfAnEarlierProcessIsNoReportToAnyReader(t *testing.T) {
 			read: func(t *testing.T) activityReport {
 				t.Helper()
 				var held *record.RoleClaim
-				if err := st.Tx(ctx, func(tx pgx.Tx) error {
+				if err := Transact(ctx, st.pool, func(ctx context.Context, tx pgx.Tx) error {
 					claims, err := record.NewStore().RoleClaims(ctx, tx, []claim.Token{token})
 					held = claims[token]
 					return err

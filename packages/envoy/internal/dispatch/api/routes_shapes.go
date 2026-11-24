@@ -315,6 +315,15 @@ type messageReplyQuery struct {
 	FollowUp bool `query:"follow_up"`
 }
 
+// postHistoryQuery is the query GET /api/v1/comments/{id}/history and
+// GET /api/v1/messages/{id}/history share: where the page after the first one starts.
+type postHistoryQuery struct {
+	// Before answers the rows written strictly before this RFC3339 time, which is how the
+	// caller reads the page after one of 200 rows: the oldest edited_at it was answered.
+	// Anything that is not an RFC3339 time is 400 INVALID_QUERY.
+	Before string `query:"before"`
+}
+
 // inboxQuery is GET /api/v1/inbox's query.
 type inboxQuery struct {
 	// Project keeps the open asks of one project.
@@ -324,7 +333,10 @@ type inboxQuery struct {
 	Assignee string `query:"assignee"`
 }
 
-// myAnswersQuery is GET /api/v1/me/answers's query: the offset page it always answers.
+// myAnswersQuery is the offset page GET /api/v1/me/answers and
+// GET /api/v1/people/{login}/nodes each answer: the page, and nothing else. Neither route
+// takes a kind, a filter or a traversal from its caller, so this struct is the whole of what
+// either reads (answers.go's parseMyAnswersPage, which both parse their page with).
 type myAnswersQuery struct {
 	// Limit is the page size, 1 to 200, default 50.
 	Limit int `query:"limit"`
@@ -483,6 +495,13 @@ type artifactVersionQuery struct {
 	// name, `Cache-Control: private, no-cache`, and a document as its Markdown rather than the
 	// JSON that wraps it. Any other value answers as without it.
 	Download bool `query:"download"`
+	// Blocks, `true`, carries a document version's typed blocks beside its markdown, each read
+	// from that version's own text under the id its opening line writes, with its attributes and
+	// its byte range in the markdown the answer carries: the version as this build renders it,
+	// which is the stored text unless an earlier renderer wrote it otherwise, with the sha256 and
+	// the size of that text. A block's references read zero and it carries no embedding state:
+	// both describe the live document, not a version. Any other value carries no blocks.
+	Blocks bool `query:"blocks"`
 }
 
 // openAsksQuery is GET /api/v1/asks/open's query: exactly one of the two scopes is required.
@@ -770,6 +789,7 @@ var routeShapes = map[string]routeShape{
 		Status: http.StatusOK, Response: issueRoleHolders{}, Request: issueRoleHoldersInput{},
 	},
 	"GET /api/v1/issues/{key}/role-holders": {Status: http.StatusOK, Response: issueRoleHolders{}},
+	"GET /api/v1/issues/{key}/legion":       {Status: http.StatusOK, Response: legionIssueResponse{}},
 	"PUT /api/v1/issues/{key}/steps/{id}": {
 		Status: http.StatusOK, Response: model.StepRecord{}, Request: stepRecordInput{},
 	},
@@ -786,6 +806,13 @@ var routeShapes = map[string]routeShape{
 	"GET /api/v1/handoffs/{id}":        {Status: http.StatusOK, Response: model.Handoff{}},
 	"GET /api/v1/messages/{id}":        {Status: http.StatusOK, Response: messageRead{}},
 	"GET /api/v1/messages/{id}/blocks": {Status: http.StatusOK, Response: model.ItemBlocks{}},
+	"GET /api/v1/messages/{id}/history": {
+		Status: http.StatusOK, Response: postHistoryRead{}, Params: postHistoryQuery{},
+	},
+	"PATCH /api/v1/messages/{id}": {Status: http.StatusOK, Response: model.Message{}, Request: editMessageInput{}},
+	"DELETE /api/v1/messages/{id}": {
+		Status: http.StatusOK, Response: model.Message{}, Request: actorInput{}, OptionalRequest: true,
+	},
 	"POST /api/v1/messages/{id}/deliveries": {
 		Status: http.StatusCreated, Response: model.MessageDelivery{}, Request: createDeliveryInput{},
 	},
@@ -803,6 +830,7 @@ var routeShapes = map[string]routeShape{
 	},
 	"GET /api/v1/inbox":                {Status: http.StatusOK, Response: []inboxAsk{}, Params: inboxQuery{}},
 	"GET /api/v1/me/answers":           {Status: http.StatusOK, Response: model.MyAnswersResponse{}, Params: myAnswersQuery{}},
+	"GET /api/v1/people/{login}/nodes": {Status: http.StatusOK, Response: personNodes{}, Params: myAnswersQuery{}},
 	"GET /api/v1/me/replies":           {Status: http.StatusOK, Response: model.MyRepliesResponse{}, Params: myRepliesQuery{}},
 	"PUT /api/v1/me/threads/{id}/read": {Status: http.StatusNoContent, Request: threadReadInput{}},
 	"POST /api/v1/me/inbox/read": {
@@ -884,6 +912,7 @@ var routeShapes = map[string]routeShape{
 	"POST /api/v1/comments/{id}/reopen":  {Status: http.StatusOK, Response: shapedComment{}},
 	"GET /api/v1/comments/{id}":          {Status: http.StatusOK, Response: commentRead{}},
 	"GET /api/v1/comments/{id}/blocks":   {Status: http.StatusOK, Response: model.ItemBlocks{}},
+	"GET /api/v1/comments/{id}/history":  {Status: http.StatusOK, Response: postHistoryRead{}, Params: postHistoryQuery{}},
 	"POST /api/v1/comments/{id}/deliveries": {
 		Status: http.StatusCreated, Response: model.CommentDelivery{}, Request: createCommentDeliveryInput{},
 	},
@@ -898,6 +927,9 @@ var routeShapes = map[string]routeShape{
 	},
 	"POST /api/v1/comments/{id}/accept": {Status: http.StatusOK, Response: acceptedComment{}, Request: actorInput{}, OptionalRequest: true},
 	"PATCH /api/v1/comments/{id}":       {Status: http.StatusOK, Response: shapedComment{}, Request: editCommentInput{}},
+	"DELETE /api/v1/comments/{id}": {
+		Status: http.StatusOK, Response: model.Comment{}, Request: actorInput{}, OptionalRequest: true,
+	},
 	"POST /api/v1/comments/{id}/reject": {Status: http.StatusOK, Response: shapedComment{}, Request: actorInput{}, OptionalRequest: true},
 	"GET /api/v1/artifacts/{id}/asks":   {Status: http.StatusOK, Response: []shapedAsk{}, Params: artifactAsksQuery{}},
 	"POST /api/v1/artifacts/{id}/asks": {

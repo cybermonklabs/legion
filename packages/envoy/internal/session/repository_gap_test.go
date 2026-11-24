@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sync/atomic"
 	"testing"
 
@@ -26,7 +27,9 @@ func (kv losingUpdateKV) Update(string, []byte, uint64) (uint64, error) {
 	if kv.updates.Add(1) >= kv.stop {
 		kv.cancel()
 	}
-	return 0, errors.New("nats: wrong last sequence: 1")
+	// What nats.go v1.55.0 answers an Update over a revision another write moved.
+	moved := &nats.APIError{Code: 400, ErrorCode: nats.JSErrCodeStreamWrongLastSequence, Description: "wrong last sequence: 1"}
+	return 0, fmt.Errorf("%w: %w", moved, nats.ErrKeyRevisionMismatch)
 }
 
 // A write of an entry ends once it has lost entryWriteLosses writes, whatever its context allows:

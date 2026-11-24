@@ -355,7 +355,7 @@ func roleOfTopic(topic string) (string, bool) {
 // the claim before it (Registry.markRoleClaimHandedBack). A claim with no grant id, which an
 // earlier build wrote, keeps none.
 //
-// A lost compare-and-swap (nats.ErrKeyExists for the wrong last sequence, nats.ErrKeyNotFound for
+// A lost compare-and-swap (bus.IsCASConflict for the wrong last sequence, nats.ErrKeyNotFound for
 // a claim deleted in between) means another claim landed after this call read the record. The
 // renewal is dropped and logged, never read again and retried: the record is now another
 // claimant's, and a renewal retried into it would stamp this process's heartbeat on a claim it

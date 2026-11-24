@@ -195,9 +195,10 @@ chmod 600 "$work/fake-secrets.json"
 # The same issuer is the provider the broker signs a person in at (BROKER_SIGNIN_*, required):
 # --code-flow serves the broker's own client, whose secret this run generates under umask 077 so
 # no one else can read it even for a moment and neither process takes it on a command line, and
-# --sign-in-as signs every authorization in as the operator with no page to fill in. The issuer
-# takes no domain: it puts a person's own email domain in their hd claim, so the domain the
-# broker holds them to is the operator's.
+# whose one callback is the approval page's on loopback, which the issuer takes at the port the
+# broker binds below; --sign-in-as signs every authorization in as the operator with no page to
+# fill in. The issuer takes no domain: it puts a person's own email domain in their hd claim, so
+# the domain the broker holds them to is the operator's.
 dispatch_account="system:serviceaccount:example-ns:example-dispatch"
 broker_audience="legion-broker-pod"
 signin_client="docs-broker"
@@ -207,7 +208,7 @@ signin_domain="${OPERATOR#*@}"
 note "starting dev-oidc-issuer"
 start_process issuer "$work/bin/dev-oidc-issuer" \
   --token "$broker_audience=$dispatch_account=$work/dispatch-account-token" \
-  --code-flow "$signin_client=$signin_secret_file" \
+  --code-flow "$signin_client=$signin_secret_file=http://127.0.0.1/signin/callback" \
   --sign-in-as "$OPERATOR"
 await_start issuer "$issuer_pid" 60 "dev-oidc-issuer to report its URL" \
   grep -q 'issuer listening url=' "$work/logs/issuer.log"

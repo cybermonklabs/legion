@@ -10,7 +10,7 @@ tags:
   - fast-follow
   - conflict-rebase
 date: 2026-09-13
-status: active
+status: superseded in part — Retro commits nothing and pushes nothing, and no role writes to docs/solutions/. An approval moves the issue to its task's next step (accepting in the default steps), and retro starts once the task's last step passes. An issue's steps now run in any order the plan validator allows, and a task may leave out any step but the implementer's, so a fixed order of steps here holds only for the default steps.
 module: legion
 related_issues:
   - "LEGION-44"
@@ -79,8 +79,11 @@ Round 2's review was clean pending the `.legion/` deletion and listed a docs-onl
 commits", and a runbook calling a load-bearing scrub "belt and braces"). Landing it before the
 deletion cost one tester bare-gate pass and one short reviewer re-check — the same price round
 1's fast-follow paid — and left the PR with no follow-up. The alternative, a follow-up LEGION
-issue for wording, is a deferral in disguise; Sami's rule is no deferrals. The order that works:
-fast-follow commit → push → `legion threads resolve` (every thread accepted so far resolves, and
+issue for wording, is a deferral in disguise. Sami's instructions put deferrals off the table by
+default, with exceptions when he says to defer, access is missing, or the task's direction would
+change (https://github.com/sjawhar/dotfiles/blob/b44037a470cfd1740c26f811dec98a7550598b49/.claude/CLAUDE.md#L42-L44).
+The order that works: fast-follow commit → push → `legion threads resolve` (every thread accepted
+so far resolves, and
 its output describes the pushed head) → tester bare gates → reviewer re-check → approval of
 that head → retro. Before sjawhar/legion#2354 a `.legion/` deletion push sat between the re-check and
 the approval, and the fast-follow had to land before it. (2026-09-25, LEGION-285: the tester and

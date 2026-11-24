@@ -21,6 +21,7 @@ import (
 	"github.com/reearth/ygo/persistence"
 	"github.com/reearth/ygo/provider/websocket"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -34,14 +35,16 @@ type versionWrite struct {
 	capture          *authorCapture
 	docUpdateVersion *int64
 	// closedIssue is set by a settlement of a closed issue's document (settlement.issueClosed),
+	// and by the version a joined transaction writes as that settlement would (SettleVersion),
 	// whose version moves no approval request and carries no approval (writeVersionTx): a move
 	// rewrites an open request and appends its ask.edited, a carry appends an artifact.approved in
 	// the reviewer's name, each an event that reaches a person, and such a settlement wakes nobody.
 	closedIssue bool
-	// settlement is set by a settlement's version alone (settlement.commitVersion), the one
-	// version write whose move of the open approval request may keep it waiting on the person
-	// (MoveApprovalAsk's bySettlement). A version a route writes - a named version, an edit, a
-	// summary edit - moves the request to its agent, whatever text it stores.
+	// settlement is set by a settlement's version alone (settlement.commitVersion, and
+	// SettleVersion, which writes the version that settlement would), the one version write whose
+	// move of the open approval request may keep it waiting on the person (MoveApprovalAsk's
+	// bySettlement). A version a route writes - a named version, an edit, a summary edit - moves
+	// the request to its agent, whatever text it stores.
 	settlement bool
 	// keptEditor is set by a settlement's version whose credit is only the editor a settlement on
 	// the document's closed issue kept (settlementVersionCredit.kept), to that editor; the
@@ -1295,6 +1298,30 @@ func documentBlocks(tree *pmdoc.Node) (string, []model.ArtifactBlock, error) {
 	return rendered.markdown, rendered.blocks, nil
 }
 
+// VersionBlocks is the typed blocks of a stored document version, read from that version's own
+// markdown rather than the live tree: the version parsed as a rendering (pmdoc.ParseRendering),
+// then rendered once into its markdown and its blocks (documentBlocks). The markdown it answers
+// is that rendering, which the blocks' byte ranges index; it is stored unless a renderer before
+// this build's wrote the version otherwise. Only typed blocks are listed, because only a typed
+// block's opening line writes its id into the stored text, so only a typed block has the same id
+// in every read of the version and in every later version that keeps it: the parse mints a new id
+// for each other block each time. A version holding an element this build does not know is a
+// NewerContentError, any other refusal an OutsideSchemaError (documentSchemaError).
+func VersionBlocks(stored string) (string, []model.ArtifactBlock, error) {
+	tree, err := pmdoc.ParseRendering(stored)
+	if err != nil {
+		return "", nil, documentSchemaError(err)
+	}
+	markdown, blocks, err := documentBlocks(tree)
+	if err != nil {
+		return "", nil, err
+	}
+	typed := slices.DeleteFunc(blocks, func(block model.ArtifactBlock) bool {
+		return !pmdoc.IsTypedBlock(block.Type)
+	})
+	return markdown, typed, nil
+}
+
 // renderDocumentTree validates tree once, refusing it as pmdoc.TableRows does, and reads it
 // thereafter without validating it again: its markdown, its blocks and its document token come
 // from that one reading.
@@ -1466,6 +1493,41 @@ func (s *Service) JoinWrite(ctx context.Context, artifactID string) error {
 // live content has changed since the previous one. The version a comment's anchor is pinned to
 // under WithCommentMarks is taken on a closed issue's document too.
 func (s *Service) SnapshotVersion(ctx context.Context, artifactID string, actor model.Actor) (VersionResult, error) {
+	return s.snapshotVersion(ctx, artifactID, actor, false)
+}
+
+// SettleVersion is SnapshotVersion written as the document's settlement writes its version
+// (settlement.commitVersion), inside the caller's joined transaction and under the owner lock it
+// holds: the version moves the open approval request as a settlement's does, keeping it with the
+// person where it stores byte for byte the text that person was asked about (MoveApprovalAsk's
+// bySettlement); on a closed issue it moves no request and carries no approval
+// (versionWrite.closedIssue); and it opens, moves or deletes the edit notice as a settlement's
+// version does (settledEditNotice). Under a context its caller marked as a comment's writes
+// (WithCommentMarks) it runs owner-verified, so a closed issue's document takes it. It writes the
+// version in the caller's transaction, after that transaction's own writes to the document, so
+// every store built from the latest version - the block index and its block texts, the mentions'
+// excerpts, and document_search and the issue's search vector, which the version's insert
+// triggers - holds the document as those writes leave it when the transaction commits, where the
+// settlement those writes arm would write the same version a settle delay later.
+//
+// It is that same version. The settlement versions the document when an update since the latest
+// version changed its content and the rendering differs from it; a snapshot when the rendering
+// differs and an update changed the content or the latest version does not read as it
+// (snapshotVersion). For a transaction that changed the content itself, both rules come to the
+// rendering differing. It names no version, and keeps no editor of a closed issue's
+// (versionWrite.keptEditor): the version credits this transaction's writer, whose change it holds,
+// so its credit is never only a kept editor (settlementVersionCredit.kept). Its approval move and
+// carry are the ones the settlement's version of the same text would make. The settlement
+// the transaction's writes armed still runs: it finds no content changed since this version
+// (contentChangedSinceVersion) and writes none, and it keeps what this leaves to it - the block-id
+// stamp, the ask blocks' repairs and the document's pending-settlement row, with the editor a
+// closed issue keeps past it (clearSettlementPending).
+func (s *Service) SettleVersion(ctx context.Context, artifactID string, actor model.Actor) (VersionResult, error) {
+	return s.snapshotVersion(ctx, artifactID, actor, true)
+}
+
+// snapshotVersion is SnapshotVersion, and SettleVersion where settles is set.
+func (s *Service) snapshotVersion(ctx context.Context, artifactID string, actor model.Actor, settles bool) (VersionResult, error) {
 	ctx = commentMarkOperation(ctx)
 	tx, joined := txFromContext(ctx)
 	if !joined {
@@ -1497,7 +1559,8 @@ func (s *Service) SnapshotVersion(ctx context.Context, artifactID string, actor 
 	mergeAuthor(capture.authors, actor)
 	// The owner's lock holds the issue's state under this write, and a closed issue refuses it -
 	// except the version a comment's anchor is pinned to, which a closed issue takes like the
-	// comment itself (WithCommentMarks, commentMarkOperation above).
+	// comment itself (WithCommentMarks, commentMarkOperation above), and the version a comment's
+	// delete settles, which a closed issue takes like the delete.
 	_, open, err := lockArtifactOwner(ctx, tx, artifactID)
 	if err != nil {
 		return VersionResult{}, err
@@ -1505,18 +1568,21 @@ func (s *Service) SnapshotVersion(ctx context.Context, artifactID string, actor 
 	if !open && !isOwnerVerified(ctx) {
 		return VersionResult{}, ErrIssueClosed
 	}
+	closedIssue := settles && !open
 	result, err := s.writeVersionTx(ctx, tx, artifactID, rendered, actor, &versionWrite{
 		authors:          actorSlice(capture.authors),
 		capture:          &capture,
 		docUpdateVersion: rendered.head,
+		closedIssue:      closedIssue,
+		settlement:       settles,
 	})
 	if err != nil {
 		return VersionResult{}, err
 	}
-	if err := s.recordEditNotice(ctx, tx, artifactID, result.version.Number, actorSlice(capture.authors), capture.latest); err != nil {
+	if err := s.settledEditNotice(ctx, tx, artifactID, closedIssue, result.version.Number, actorSlice(capture.authors), capture.latest); err != nil {
 		return VersionResult{}, err
 	}
-	return VersionResult{Version: result.version, Wrote: true, Changes: result.changes}, nil
+	return VersionResult{Version: result.version, Wrote: true, Changes: result.changes, Blocks: result.blocks}, nil
 }
 
 // readsAs reports whether stored, a version's markdown that any build may have rendered, reads as
@@ -2013,7 +2079,7 @@ func (s *Service) NamedVersion(ctx context.Context, artifactID, summary string, 
 	if err := s.recordEditNotice(ctx, tx, artifactID, result.version.Number, actorSlice(capture.authors), capture.latest); err != nil {
 		return VersionResult{}, err
 	}
-	return VersionResult{Version: result.version, Wrote: true, Changes: result.changes}, nil
+	return VersionResult{Version: result.version, Wrote: true, Changes: result.changes, Blocks: result.blocks}, nil
 }
 
 // serviceTransact wraps Server.Apply's transact so the room's update observer can tell the
@@ -2371,10 +2437,13 @@ func contentChangedSinceVersion(ctx context.Context, tx pgx.Tx, artifactID strin
 
 // versionWriteResult is a written version together with the counted reference targets its body
 // moved: the caller that appends the version event names them, so a reader holding those
-// nodes' batched backlink counts refreshes exactly their rows.
+// nodes' batched backlink counts refreshes exactly their rows. blocks is what the version's
+// block index stated in the node and tuple store, which that same caller appends under the
+// event it appends (graphstore.Caused).
 type versionWriteResult struct {
 	version model.Version
 	changes model.ReferenceChanges
+	blocks  graphstore.Uncaused
 }
 
 // renderedTree is a document tree with its canonical markdown and each identified block's byte
@@ -2443,7 +2512,7 @@ func (s *Service) writeVersionTx(ctx context.Context, tx pgx.Tx, artifactID stri
 	// The version's references, its mentions' excerpts and its blocks are indexed from the render
 	// this version's markdown came from, in its own transaction, so GET /api/v1/references serves
 	// them without rendering the document.
-	changes, err := s.indexDocument(ctx, tx, artifactID, version.Number, version.CreatedAt, markdown, rendered)
+	changes, blocks, err := s.indexDocument(ctx, tx, artifactID, version.Number, version.CreatedAt, markdown, rendered)
 	if err != nil {
 		return versionWriteResult{}, err
 	}
@@ -2484,7 +2553,7 @@ func (s *Service) writeVersionTx(ctx context.Context, tx pgx.Tx, artifactID stri
 			ledger.recordVersion(artifactID, version, *spec.capture)
 		}
 	}
-	return versionWriteResult{version: version, changes: changes}, nil
+	return versionWriteResult{version: version, changes: changes, blocks: blocks}, nil
 }
 
 // queueVersionInsert is how every document version is written: it numbers and dates the next
