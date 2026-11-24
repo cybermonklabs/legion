@@ -44,7 +44,9 @@ var errRoleLaneRefused = errors.New("bus: NATS refused the role-lane subscriptio
 // handler falls behind and drops none under any load the lane meets, while the buffer it may grow
 // to stays bounded. It connects as Connect does, as the NATS user, through the proxy and under the
 // remote-NATS rule the environment names, and it reconnects, re-subscribes and applies the limits
-// again on its own.
+// again on its own. options reach that connect: cmd/listener passes its start's credential wait
+// (WithCredentialWait), so the lane's connect waits out a refusal of the credential under the
+// listener's start bound, and each connect a refused queue group makes below takes it as well.
 //
 // It subscribes in the shared queue group RoleLaneQueue, so NATS hands each role message to one
 // listener of all of them. A server whose grant predates that group refuses the subscription,

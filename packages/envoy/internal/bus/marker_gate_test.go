@@ -3,6 +3,7 @@ package bus
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -254,6 +255,126 @@ func TestACreatePublishedWhileCutOffNeverReachesTheServerAfterTheReconnect(t *te
 			}
 			if !errors.Is(publishErr, natsgo.ErrReconnectBufExceeded) || held {
 				t.Fatalf("the publish while cut off answered %v and the server holds %s: %t; want it refused at once and never sent", publishErr, name, held)
+			}
+		})
+	}
+}
+
+// A restart whose delete the marker gate keeps unsent, the gate shut between the restart's info read
+// and its delete as a disconnect shuts it, returns ErrMarkerUnread as it is, as a refusal under the
+// grant is returned: nothing was sent, so nothing was deleted, no loss is reported, and the next
+// restart counts the narrowing from the consumer's own floor. Wrapped as a delete that brought no
+// answer (errDeleteUnanswered), the restart would read the consumer back through the same shut
+// gate, fail, and report the loss unconfirmed for a delete that never went out. The control is a
+// delete the server applied whose answer was lost as the gate shut: the read back fails on the
+// gate, so the loss is reported unconfirmed, the report the first row must not make.
+func TestARestartWhoseDeleteTheMarkerGateKeepsUnsentReportsNoLoss(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// answerLost has the server apply the delete and its answer lost, in place of the delete
+		// kept unsent.
+		answerLost bool
+	}{
+		{name: "the gate shuts before the delete is sent"},
+		{name: "control: the delete's answer is lost as the gate shuts", answerLost: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			owner, consumers := sessionConsumersOnStream(t)
+			ctx := context.Background()
+			const (
+				session = "ses_gate_shut_delete"
+				dropped = "notifications.team.gate-shut-delete-dropped"
+			)
+			agent := contracts.LegacyAgentSubject(session)
+			name := fixedName(t, session)
+			consumers.GateOnMarker(nil)
+			if err := consumers.ReadMarker(ctx); err != nil || consumers.client.MarkerUnread() != nil {
+				t.Fatalf("the start's read = %v, gate %v; want the gate open", err, consumers.client.MarkerUnread())
+			}
+			type report struct {
+				passedOver map[string]uint64
+				confirmed  bool
+			}
+			reports := make(chan report, 4)
+			consumers.SetNarrowed(func(sessionID string, passedOver map[string]uint64, confirmed bool) {
+				if sessionID == session {
+					reports <- report{passedOver: passedOver, confirmed: confirmed}
+				}
+			})
+			if _, err := consumers.Ensure(ctx, session, []string{agent, dropped}, 0); err != nil {
+				t.Fatalf("ensure: %v", err)
+			}
+			held := publishStored(t, owner, agent, "held")
+			pull := pullSession(t, consumers, session)
+			if msg := next(t, pull); msg.StreamSeq != held {
+				t.Fatalf("first message = %d, want %d", msg.StreamSeq, held)
+			}
+			pull.Stop()
+			publishStored(t, owner, dropped, "passed over")
+			waitForStoredState(t, owner, session)
+
+			shut := func() { consumers.client.marker.Load().shut() }
+			if tc.answerLost {
+				consumers.SetDeleteAnswerFault(func(consumer string) error {
+					if consumer != name {
+						return nil
+					}
+					shut()
+					return context.DeadlineExceeded
+				})
+			} else {
+				consumers.SetDeleteSendFault(func(consumer string) error {
+					if consumer == name {
+						shut()
+					}
+					return nil
+				})
+			}
+			_, err := consumers.RestartAtFloor(ctx, session, []string{agent})
+			consumers.SetDeleteAnswerFault(nil)
+			consumers.SetDeleteSendFault(nil)
+			var got []report
+			for len(reports) > 0 {
+				got = append(got, <-reports)
+			}
+			info, infoErr := owner.JS().ConsumerInfo(Stream, name)
+			if tc.answerLost {
+				if !errors.Is(err, errDeleteUnanswered) {
+					t.Fatalf("control: the restart whose delete answer was lost = %v, want errDeleteUnanswered", err)
+				}
+				if !errors.Is(infoErr, natsgo.ErrConsumerNotFound) {
+					t.Fatalf("control: the consumer reads %v (%v) after the delete the server applied, want it deleted", info, infoErr)
+				}
+				if len(got) != 1 || got[0].confirmed || got[0].passedOver[dropped] != 1 {
+					t.Fatalf("control: the narrowed hook heard %+v, want one unconfirmed loss of 1 message on %s", got, dropped)
+				}
+				return
+			}
+			if !errors.Is(err, ErrMarkerUnread) || errors.Is(err, errDeleteUnanswered) {
+				t.Fatalf("the restart whose delete the gate kept unsent = %v, want ErrMarkerUnread as it is, not a delete that brought no answer", err)
+			}
+			if len(got) != 0 {
+				t.Fatalf("the narrowed hook heard %+v for a delete that was never sent, want nothing", got)
+			}
+			if infoErr != nil || !slices.Contains(info.Config.FilterSubjects, dropped) {
+				t.Fatalf("the consumer reads %v (%v) after the delete the gate kept unsent, want it standing, filtering on %s", info, infoErr, dropped)
+			}
+
+			// The gate opens again, as the reconnect's read opens it, and the next restart counts the
+			// loss from the consumer's own floor once its delete lands.
+			if err := consumers.ReadMarker(ctx); err != nil {
+				t.Fatalf("the read that opens the gate again: %v", err)
+			}
+			if _, err := consumers.RestartAtFloor(ctx, session, []string{agent}); err != nil {
+				t.Fatalf("the next restart: %v", err)
+			}
+			select {
+			case again := <-reports:
+				if !again.confirmed || again.passedOver[dropped] != 1 {
+					t.Fatalf("the next restart's narrowed report = %+v, want a confirmed loss of 1 message on %s", again, dropped)
+				}
+			default:
+				t.Fatalf("the next restart reported no loss, want 1 message on %s", dropped)
 			}
 		})
 	}

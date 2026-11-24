@@ -97,12 +97,12 @@ func TestAnEdgeListenersClientRunsTheConsumerNamingMode(t *testing.T) {
 			if err != nil {
 				t.Fatalf("load the edge listener's settings: %v", err)
 			}
-			owning, err := connectListenerBus(cfg, nil)
+			owning, err := connectListenerBus(cfg, nil, newNATSStart(listenerCredentialWait))
 			if err != nil {
 				t.Fatalf("connect the listener that owns the stream: %v", err)
 			}
 			t.Cleanup(owning.Close)
-			edge, err := connectListenerBus(cfg, testEdgeGrant(t, metrics.New()))
+			edge, err := connectListenerBus(cfg, testEdgeGrant(t, metrics.New()), newNATSStart(listenerCredentialWait))
 			if err != nil {
 				t.Fatalf("connect the edge listener: %v", err)
 			}

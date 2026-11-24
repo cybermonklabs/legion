@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -229,6 +230,93 @@ func TestTheFreshModeCreatesAFreshNameAtEachCreation(t *testing.T) {
 	pull = pullSessionNamed(t, consumers, session, back.Name)
 	if msg := next(t, pull); msg.StreamSeq != second {
 		t.Fatalf("the consumer after the delete first delivered %d, want %d", msg.StreamSeq, second)
+	}
+}
+
+// A change of a consumer's filter that drops a subject with messages waiting on it names them to
+// the narrowed hook in the fresh mode as in the fixed one. An update counts them from the
+// consumer's next sequence and reports them once the server took it. A restart counts them from
+// the floor's next sequence before the change of consumer, and reports them once the change is
+// certain: in the fixed mode once the delete lands, in the fresh mode once the replacement at that
+// sequence, which carries the new filter, is published. The controls are the fixed mode's rows.
+func TestAFilterChangeNamesTheMessagesItsNarrowingPassesOverInEitherMode(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		fresh   bool
+		restart bool
+	}{
+		{name: "control: the fixed mode's restart", restart: true},
+		{name: "the fresh mode's restart", fresh: true, restart: true},
+		{name: "control: the fixed mode's update"},
+		{name: "the fresh mode's update", fresh: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var owner *Client
+			var consumers *SessionConsumers
+			if tc.fresh {
+				owner, consumers, _ = freshSessionConsumersOnStream(t)
+			} else {
+				owner, consumers = sessionConsumersOnStream(t)
+			}
+			ctx := context.Background()
+			const (
+				session = "ses_filter_change_narrowing"
+				dropped = "notifications.team.filter-change-narrowing-dropped"
+			)
+			agent := contracts.LegacyAgentSubject(session)
+			type report struct {
+				passedOver map[string]uint64
+				confirmed  bool
+			}
+			reports := make(chan report, 4)
+			consumers.SetNarrowed(func(sessionID string, passedOver map[string]uint64, confirmed bool) {
+				if sessionID == session {
+					reports <- report{passedOver: passedOver, confirmed: confirmed}
+				}
+			})
+			created, err := consumers.Ensure(ctx, session, []string{agent, dropped}, 0)
+			if err != nil {
+				t.Fatalf("ensure: %v", err)
+			}
+			name := created.Name
+			if tc.restart {
+				held := publishStored(t, owner, agent, "held")
+				pull := pullSessionNamed(t, consumers, session, created.Name)
+				if msg := next(t, pull); msg.StreamSeq != held {
+					t.Fatalf("first message = %d, want %d", msg.StreamSeq, held)
+				}
+				pull.Stop()
+				waitForAckPending(t, consumers, session, 1)
+				publishStored(t, owner, dropped, "passed over")
+				if !tc.fresh {
+					waitForStoredState(t, owner, session)
+				}
+				restarted, err := consumers.RestartAtFloor(ctx, session, []string{agent})
+				if err != nil {
+					t.Fatalf("restart at floor: %v", err)
+				}
+				if !restarted.Created || restarted.StartSeq != held {
+					t.Fatalf("RestartAtFloor = %+v, want the consumer created again at %d", restarted, held)
+				}
+				name = restarted.Name
+			} else {
+				publishStored(t, owner, dropped, "passed over")
+				if err := consumers.UpdateFilter(ctx, session, []string{agent}); err != nil {
+					t.Fatalf("update the filter: %v", err)
+				}
+			}
+			info, err := owner.JS().ConsumerInfo(Stream, name)
+			if err != nil || slices.Contains(info.Config.FilterSubjects, dropped) {
+				t.Fatalf("the consumer %s after the change reads %v (%v), want it without %s", name, info, err, dropped)
+			}
+			var got []report
+			for len(reports) > 0 {
+				got = append(got, <-reports)
+			}
+			if len(got) != 1 || !got[0].confirmed || got[0].passedOver[dropped] != 1 {
+				t.Fatalf("the narrowed hook heard %+v, want one confirmed loss of 1 message on %s", got, dropped)
+			}
+		})
 	}
 }
 

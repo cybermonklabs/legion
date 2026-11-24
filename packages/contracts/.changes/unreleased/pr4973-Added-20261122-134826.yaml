@@ -1,0 +1,10 @@
+kind: Added
+body: |-
+  `MESSAGE_NOT_SENT_PREFIX`, the start of the error of the Envoy listener's `503` for a send or a
+  publish the message bus refused before anything went out (`bus.ErrSubjectNotDeployed`), is
+  written once here and emitted into the listener's Go as `contracts.MessageNotSentPrefix` by
+  `scripts/gen-go.ts`, so the listener that writes it and `@legion/envoy-client`, which reads it,
+  cannot word it apart.
+time: 2026-11-22T13:48:26Z
+custom:
+    Issue: pr4973

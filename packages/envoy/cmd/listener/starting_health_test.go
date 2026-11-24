@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -17,6 +19,7 @@ import (
 
 	"github.com/sjawhar/envoy/consumernames"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/testnats"
@@ -115,6 +118,45 @@ func TestAFreshStartWhoseSelectionRefusesSaysSoOnHealthz(t *testing.T) {
 			if recorder.Code != http.StatusServiceUnavailable || body["status"] != "not_ready" || key != tc.key ||
 				body["bucket"] != consumernames.SessionBucket || body["reason"] != tc.reason {
 				t.Fatalf("/healthz = %d %v; want 503 not_ready naming %q of %s, %s", recorder.Code, body, tc.key, consumernames.SessionBucket, tc.reason)
+			}
+		})
+	}
+}
+
+// The listener binary gives that answer on the /healthz route main registers (registerProbeRoutes,
+// behind the start's own answer): its main client, once connected (startingClient), is the client
+// the answer reads, so a fresh listener over a server with no selection bucket answers 503
+// not_ready naming the missing bucket while its durable's bind retries. The control is the same
+// start in the fixed mode, which reads no selection bucket and goes healthy.
+func TestTheListenerBinaryAnswersAFreshStartsSelectionRefusalOnItsHealthzRoute(t *testing.T) {
+	binary := cmdtest.Build(t, "envoy-listener")
+	for _, mode := range []consumernames.Mode{consumernames.ModeFixed, consumernames.ModeFresh} {
+		t.Run(string(mode), func(t *testing.T) {
+			listener := startListenerProcess(t, binary, testnats.URL(t), "starting-route-"+string(mode), consumernames.ModeEnvVar+"="+string(mode))
+			if mode == consumernames.ModeFixed {
+				listener.waitHealthy(t)
+				return
+			}
+			client := &http.Client{Timeout: 5 * time.Second}
+			url := "http://127.0.0.1:" + strconv.Itoa(listener.port) + "/healthz"
+			var last string
+			for deadline := time.Now().Add(60 * time.Second); ; time.Sleep(100 * time.Millisecond) {
+				if time.Now().After(deadline) {
+					t.Fatalf("/healthz never answered 503 not_ready naming the missing %s bucket within 60 s; its last answer: %s\n%s", consumernames.SessionBucket, last, listener.Output.String())
+				}
+				response, err := client.Get(url)
+				if err != nil {
+					last = err.Error()
+					continue
+				}
+				var body map[string]any
+				err = json.NewDecoder(response.Body).Decode(&body)
+				_ = response.Body.Close()
+				last = strconv.Itoa(response.StatusCode) + " " + fmt.Sprint(body)
+				if err == nil && response.StatusCode == http.StatusServiceUnavailable && body["status"] == "not_ready" &&
+					body["bucket"] == consumernames.SessionBucket && body["reason"] == "missing" {
+					return
+				}
 			}
 		})
 	}

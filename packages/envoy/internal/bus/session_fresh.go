@@ -374,7 +374,7 @@ func (s *SessionConsumers) freshFirst(sessionID string, startSeq uint64, lowered
 // setting this call did not give it. Names adopted it only with its owner and start as the family
 // creates them, and every setting no update changes as the family's create gives it
 // (ConsumerAdoptable).
-func (s *SessionConsumers) published(ctx context.Context, sel consumernames.Selection, result SessionConsumerStart, filters []string) (SessionConsumerStart, error) {
+func (s *SessionConsumers) published(ctx context.Context, sessionID string, sel consumernames.Selection, result SessionConsumerStart, filters []string) (SessionConsumerStart, error) {
 	if result.Name == sel.Record.Current {
 		return result, nil
 	}
@@ -384,7 +384,7 @@ func (s *SessionConsumers) published(ctx context.Context, sel consumernames.Sele
 	}
 	start.StartSeq = sel.Info.Config.OptStartSeq
 	start.AckFloor = ackFloor(sel.Info)
-	changed, err := s.update(ctx, sel.Record.Current, sel.Info.Config, filters)
+	changed, err := s.update(ctx, sessionID, sel.Record.Current, sel.Info, filters)
 	start.Updated = changed
 	return start, err
 }
@@ -409,9 +409,9 @@ func (s *SessionConsumers) freshEnsure(ctx context.Context, sessionID string, su
 		return SessionConsumerStart{}, err
 	}
 	if created {
-		return s.published(ctx, sel, result, filters)
+		return s.published(ctx, sessionID, sel, result, filters)
 	}
-	changed, err := s.update(ctx, sel.Record.Current, sel.Info.Config, filters)
+	changed, err := s.update(ctx, sessionID, sel.Record.Current, sel.Info, filters)
 	return SessionConsumerStart{Name: sel.Record.Current, StartSeq: sel.Info.Config.OptStartSeq, AckFloor: ackFloor(sel.Info), Updated: changed}, err
 }
 
@@ -441,7 +441,7 @@ func (s *SessionConsumers) freshUpdateFilter(ctx context.Context, sessionID stri
 	if err != nil {
 		return err
 	}
-	_, err = s.update(ctx, sel.Record.Current, sel.Info.Config, filters)
+	_, err = s.update(ctx, sessionID, sel.Record.Current, sel.Info, filters)
 	return err
 }
 
@@ -457,7 +457,10 @@ func (s *SessionConsumers) freshInfo(ctx context.Context, sessionID string) (*je
 // freshRestartAtFloor is RestartAtFloor in the fresh mode. A current with nothing awaiting an ack
 // is kept as keepAtFloor keeps it; any other is replaced by a fresh consumer at the sequence after
 // its floor, which Names saves before anything is deleted, and the predecessor is deleted only
-// after the replacement is published. A session whose record selects no current is
+// after the replacement is published. The replacement holds nothing on a subject its filter drops,
+// so every message on it from that sequence on is passed over: counted before the replacement, as
+// the fixed mode counts before its delete (passedOverBy), and reported to the narrowed hook once
+// the replacement is published. A session whose record selects no current is
 // ErrSessionConsumerNotFound; a current the server no longer holds is created again at its safe
 // start.
 func (s *SessionConsumers) freshRestartAtFloor(ctx context.Context, sessionID string, subjects []string) (SessionConsumerStart, error) {
@@ -477,17 +480,19 @@ func (s *SessionConsumers) freshRestartAtFloor(ctx context.Context, sessionID st
 			return SessionConsumerStart{}, fmt.Errorf("%w: session %s", ErrSessionConsumerNotFound, sessionID)
 		}
 		if sel.Created {
-			return s.published(ctx, sel, result, filters)
+			return s.published(ctx, sessionID, sel, result, filters)
 		}
 		name, info := sel.Record.Current, sel.Info
 		if info.NumAckPending == 0 {
-			start, kept, err := s.keepAtFloor(ctx, name, info, filters, stream)
+			start, kept, err := s.keepAtFloor(ctx, sessionID, name, info, filters, stream)
 			if err != nil || kept {
 				start.Name = name
 				return start, err
 			}
 		}
-		replaced, err := s.fresh.names.Replace(ctx, sel, ackFloor(info)+1, create)
+		startSeq := ackFloor(info) + 1
+		passedOver := s.passedOverBy(ctx, name, info, filters, startSeq)
+		replaced, err := s.fresh.names.Replace(ctx, sel, startSeq, create)
 		if errors.Is(err, consumernames.ErrConflict) {
 			if conflicts++; conflicts <= consumernames.MaxConflicts {
 				continue
@@ -496,7 +501,11 @@ func (s *SessionConsumers) freshRestartAtFloor(ctx context.Context, sessionID st
 		if err := s.freshAnswer(sessionID, err); err != nil {
 			return SessionConsumerStart{}, err
 		}
-		return s.published(ctx, replaced, result, filters)
+		start, err := s.published(ctx, sessionID, replaced, result, filters)
+		if err == nil {
+			s.reportNarrowed(sessionID, passedOver)
+		}
+		return start, err
 	}
 }
 

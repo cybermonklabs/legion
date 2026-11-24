@@ -83,7 +83,7 @@ func TestARecordNamingAnotherSessionsConsumerNeverHandsItToItsKey(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := consumers.update(ctx, record.Current, info.Config, SessionConsumerFilters(forgerSubjects)); err != nil {
+	if _, err := consumers.update(ctx, forger, record.Current, info, SessionConsumerFilters(forgerSubjects)); err != nil {
 		t.Fatal(err)
 	}
 	if got := filters(); slices.Equal(got, victimFilters) {
