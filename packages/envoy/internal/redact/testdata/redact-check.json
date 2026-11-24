@@ -436,6 +436,14 @@
       {
         "holder": "github.com/sjawhar/envoy/internal/dispatch/githubapp.failedAnswer",
         "test": "print-githubapp.failedAnswer"
+      },
+      {
+        "holder": "github.com/sjawhar/envoy/internal/dispatch/delivery.searchPullRequestsPage",
+        "test": "print-delivery.searchPullRequestsPage"
+      },
+      {
+        "holder": "github.com/sjawhar/envoy/internal/dispatch/delivery.searchPage",
+        "test": "print-delivery.searchPage"
       }
     ],
     "reflection": [
@@ -2364,6 +2372,156 @@
         "base": "df9ce51fa06750ecad27613e12fc216103f0f2f7",
         "files": ["packages/envoy/internal/oidc/redirect_location_test.go"],
         "capture": "oidc.revoke-redirect"
+      },
+      {
+        "row": "delivery-search-cursor-hostile",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": ["packages/envoy/internal/dispatch/delivery/search_cursor_test.go"],
+        "capture": "delivery.search-cursor/hostile"
+      },
+      {
+        "row": "delivery-search-cursor-echoes-token",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": ["packages/envoy/internal/dispatch/delivery/search_cursor_test.go"],
+        "capture": "delivery.search-cursor/echoes-token"
+      },
+      {
+        "row": "delivery-branch-lines-read-failed",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": ["packages/envoy/internal/dispatch/delivery/branch_lines_test.go"],
+        "capture": "delivery.branch-lines/read-failed"
+      },
+      {
+        "row": "delivery-branch-lines-compare-failed",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": ["packages/envoy/internal/dispatch/delivery/branch_lines_test.go"],
+        "capture": "delivery.branch-lines/compare-failed"
+      },
+      {
+        "row": "delivery-branch-lines-write-failed",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": ["packages/envoy/internal/dispatch/delivery/branch_lines_test.go"],
+        "capture": "delivery.branch-lines/write-failed"
+      },
+      {
+        "row": "delivery-installation-login-window-start",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": ["packages/envoy/internal/dispatch/delivery/installation_login_test.go"],
+        "capture": "delivery.installation-login/window-start"
+      },
+      {
+        "row": "delivery-installation-login-repositories",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": ["packages/envoy/internal/dispatch/delivery/installation_login_test.go"],
+        "capture": "delivery.installation-login/repositories"
+      },
+      {
+        "row": "delivery-commit-pulls-not-a-sha",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": ["packages/envoy/internal/dispatch/delivery/commit_pulls_sha_test.go"],
+        "capture": "delivery.commit-pulls/not-a-sha"
+      },
+      {
+        "row": "cireconcile-run-id-not-an-id",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": ["packages/envoy/internal/dispatch/cireconcile/remote_fields_test.go"],
+        "capture": "cireconcile.run-id/not-an-id"
+      },
+      {
+        "row": "cireconcile-suite-id-verify-held",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": ["packages/envoy/internal/dispatch/cireconcile/remote_fields_test.go"],
+        "capture": "cireconcile.suite-id/verify-held"
+      },
+      {
+        "row": "cireconcile-suite-id-record-failed",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": ["packages/envoy/internal/dispatch/cireconcile/remote_fields_test.go"],
+        "capture": "cireconcile.suite-id/record-failed"
+      },
+      {
+        "row": "cireconcile-head-sha-read",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": ["packages/envoy/internal/dispatch/cireconcile/remote_fields_test.go"],
+        "capture": "cireconcile.head-sha/read"
+      },
+      {
+        "row": "cireconcile-head-sha-verify",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": ["packages/envoy/internal/dispatch/cireconcile/remote_fields_test.go"],
+        "capture": "cireconcile.head-sha/verify"
+      },
+      {
+        "row": "cireconcile-head-sha-verify-uninstalled",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": ["packages/envoy/internal/dispatch/cireconcile/remote_fields_test.go"],
+        "capture": "cireconcile.head-sha/verify-uninstalled"
+      },
+      {
+        "row": "cireconcile-head-lines-has-record",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": ["packages/envoy/internal/dispatch/cireconcile/remote_fields_test.go"],
+        "capture": "cireconcile.head-lines/has-record"
+      },
+      {
+        "row": "cireconcile-head-lines-runs",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": ["packages/envoy/internal/dispatch/cireconcile/remote_fields_test.go"],
+        "capture": "cireconcile.head-lines/runs"
+      },
+      {
+        "row": "cireconcile-head-lines-suite",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": ["packages/envoy/internal/dispatch/cireconcile/remote_fields_test.go"],
+        "capture": "cireconcile.head-lines/suite"
+      },
+      {
+        "row": "cireconcile-head-lines-status-context",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": ["packages/envoy/internal/dispatch/cireconcile/remote_fields_test.go"],
+        "capture": "cireconcile.head-lines/status"
+      },
+      {
+        "row": "cireconcile-head-lines-statuses-unread",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": ["packages/envoy/internal/dispatch/cireconcile/remote_fields_test.go"],
+        "capture": "cireconcile.head-lines/statuses-unread"
+      },
+      {
+        "row": "cireconcile-head-lines-too-large",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": ["packages/envoy/internal/dispatch/cireconcile/remote_fields_test.go"],
+        "capture": "cireconcile.head-lines/too-large"
+      },
+      {
+        "row": "cireconcile-head-lines-over-rest",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": ["packages/envoy/internal/dispatch/cireconcile/remote_fields_test.go"],
+        "capture": "cireconcile.head-lines/over-rest"
+      },
+      {
+        "row": "cireconcile-verdict-app-no-reviewer-app",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": ["packages/envoy/internal/dispatch/cireconcile/remote_fields_test.go"],
+        "capture": "cireconcile.verdict-app/no-reviewer-app"
+      },
+      {
+        "row": "cireconcile-verdict-app-untrusted",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": ["packages/envoy/internal/dispatch/cireconcile/remote_fields_test.go"],
+        "capture": "cireconcile.verdict-app/untrusted"
+      },
+      {
+        "row": "cireconcile-full-name-no-id",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": ["packages/envoy/internal/dispatch/cireconcile/remote_fields_test.go"],
+        "capture": "cireconcile.full-name/no-id"
+      },
+      {
+        "row": "cireconcile-full-name-not-owner-name",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": ["packages/envoy/internal/dispatch/cireconcile/remote_fields_test.go"],
+        "capture": "cireconcile.full-name/not-owner-name"
       }
     ],
     "boundary_fields": {
@@ -6972,13 +7130,13 @@
       "requirement": "r3-each-site",
       "package": "./internal/dispatch/delivery",
       "test": "TestACommitWithNoDateNamesItsSHAOnlyWhenItIsOne/not-a-sha",
-      "production": "delivery commitDate: a commit named by its sha only where it is forty hex digits",
+      "production": "delivery commitDate: a commit named by its sha only where redact.ShapedSHA reads it as one",
       "function": "github.com/sjawhar/envoy/internal/dispatch/delivery.commitDate",
       "capture": "delivery.answer-words/not-a-sha",
       "mutation": {
         "file": "packages/envoy/internal/dispatch/delivery/github_prs.go",
-        "preimage": "shown := \"(a sha that is not a commit's)\"",
-        "replacement": "shown := c.SHA"
+        "preimage": "redact.ShapedSHA(\"commit\", c.SHA)",
+        "replacement": "c.SHA"
       }
     },
     {
@@ -8989,6 +9147,412 @@
         "preimage": "\"oidc: revoke: %w\", redact.Class(err)",
         "replacement": "\"oidc: revoke: %w\", err"
       }
+    },
+    {
+      "id": "delivery-search-cursor-hostile",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/delivery",
+      "test": "TestASearchCursorTheRuleChangesEndsTheSearchUnsent/hostile",
+      "production": "delivery fetchSearchPage and searchMergedPullRequests: GitHub's endCursor held as redact.RemoteText, printed through it, sent back only through SendBack; a cursor the rule changes ends the search with an error naming the endCursor, unsent"
+    },
+    {
+      "id": "delivery-search-cursor-echoes-token",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/delivery",
+      "test": "TestASearchCursorTheRuleChangesEndsTheSearchUnsent/echoes-token",
+      "production": "delivery fetchSearchPage: a cursor that echoes the installation token the request carried is refused by SendBack and prints only as the rule reads it"
+    },
+    {
+      "id": "delivery-search-cursor-third-page",
+      "requirement": "r4-unchanged",
+      "package": "./internal/dispatch/delivery",
+      "test": "TestTheMergedPullRequestSearchReadsEachPageAfterGitHubsCursor",
+      "production": "delivery searchMergedPullRequests: cursors sharing GitHub's prefix Y3Vyc29y are sent back, since after is public on POST /graphql, and the third page is read"
+    },
+    {
+      "id": "redact-routes-github-graphql-cursor",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestASearchCursorIsPublicOnlyOnGraphQL",
+      "production": "redact publicRequestNames: after is public on POST /graphql alone"
+    },
+    {
+      "id": "print-delivery.searchPullRequestsPage",
+      "requirement": "r2-held",
+      "package": "./internal/dispatch/delivery",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/delivery.searchPullRequestsPage",
+      "production": "github.com/sjawhar/envoy/internal/dispatch/delivery.searchPullRequestsPage: every printer at every placement"
+    },
+    {
+      "id": "print-delivery.searchPage",
+      "requirement": "r2-held",
+      "package": "./internal/dispatch/delivery",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/delivery.searchPage",
+      "production": "github.com/sjawhar/envoy/internal/dispatch/delivery.searchPage: every printer at every placement"
+    },
+    {
+      "id": "delivery-branch-lines-read-failed",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/delivery",
+      "test": "TestADefaultBranchGitHubNamesPrintsThroughTheRuleInEveryBranchLine/read-failed",
+      "production": "delivery branchLine: the branch field of CommitOnBranch's three lines through redact.Field",
+      "function": "github.com/sjawhar/envoy/internal/dispatch/delivery.branchLine",
+      "capture": "delivery.branch-lines/read-failed",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/delivery/branch.go",
+        "preimage": "redact.Field(branch)",
+        "replacement": "branch"
+      }
+    },
+    {
+      "id": "delivery-branch-read-error",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/delivery",
+      "test": "TestADefaultBranchGitHubNamesPrintsThroughTheRuleInEveryBranchLine/read-failed",
+      "production": "delivery readBranchCommit: its error names the branch through redact.Field",
+      "function": "github.com/sjawhar/envoy/internal/dispatch/delivery.readBranchCommit",
+      "capture": "delivery.branch-lines/read-failed",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/delivery/branch.go",
+        "preimage": "redact.Field(branch)",
+        "replacement": "branch"
+      }
+    },
+    {
+      "id": "delivery-branch-lines-compare-failed",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/delivery",
+      "test": "TestADefaultBranchGitHubNamesPrintsThroughTheRuleInEveryBranchLine/compare-failed",
+      "production": "delivery CommitOnBranch: the line of a failed compare read, its branch and its error, which githubapp's compare target prints"
+    },
+    {
+      "id": "delivery-branch-lines-write-failed",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/delivery",
+      "test": "TestADefaultBranchGitHubNamesPrintsThroughTheRuleInEveryBranchLine/write-failed",
+      "production": "delivery writeBranchCommit: its error names the branch through redact.Field",
+      "function": "github.com/sjawhar/envoy/internal/dispatch/delivery.writeBranchCommit",
+      "capture": "delivery.branch-lines/write-failed",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/delivery/branch.go",
+        "preimage": "redact.Field(branch)",
+        "replacement": "branch"
+      }
+    },
+    {
+      "id": "delivery-installation-login-window-start",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/delivery",
+      "test": "TestAnInstallationLoginPrintsOnlyAsALogin/window-start",
+      "production": "delivery installationName: a failed installation named by its login through redact.ShapedLogin",
+      "function": "github.com/sjawhar/envoy/internal/dispatch/delivery.installationName",
+      "capture": "delivery.installation-login/window-start",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/delivery/github_prs.go",
+        "preimage": "redact.ShapedLogin(\"installation login\", installation.AccountLogin)",
+        "replacement": "installation.AccountLogin"
+      }
+    },
+    {
+      "id": "delivery-installation-login-repositories",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/delivery",
+      "test": "TestAnInstallationLoginPrintsOnlyAsALogin/repositories",
+      "production": "delivery SearchMergedPullRequestsAcrossInstallation: an installation whose repositories are unlisted is named by its login through redact.ShapedLogin"
+    },
+    {
+      "id": "delivery-installation-login-valid",
+      "requirement": "r4-unchanged",
+      "package": "./internal/dispatch/delivery",
+      "test": "TestAnInstallationLoginPrintsOnlyAsALogin/login",
+      "production": "delivery installationName: a login GitHub allows prints as it came"
+    },
+    {
+      "id": "delivery-commit-pulls-not-a-sha",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/delivery",
+      "test": "TestACommitsPullRequestsAreNotReadForAValueThatIsNoSHA",
+      "production": "delivery fetchCommitPullPayloads: a value that is no full sha is refused before any request and named by redact.ShapedSHA's phrase",
+      "function": "github.com/sjawhar/envoy/internal/dispatch/delivery.fetchCommitPullPayloads",
+      "capture": "delivery.commit-pulls/not-a-sha",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/delivery/github_prs.go",
+        "preimage": "redact.ShapedSHA(\"commit\", sha)",
+        "replacement": "sha"
+      }
+    },
+    {
+      "id": "delivery-commit-pulls-err-not-a-sha",
+      "requirement": "r4-unchanged",
+      "package": "./internal/dispatch/delivery",
+      "test": "TestACommitsPullRequestsReadRefusesAShortSHAAsTheAppClientDoes",
+      "production": "delivery fetchCommitPullPayloads: its refusal is githubapp.ErrNotASHA, which errors.Is finds"
+    },
+    {
+      "id": "cireconcile-run-id-not-an-id",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/cireconcile",
+      "test": "TestACheckRunWhoseIdIsNoIdPrintsItOnlyAsAnId",
+      "production": "contracts GithubCIObservation: the line of a check run with no positive id prints the id through redact.ShapedID",
+      "function": "github.com/sjawhar/envoy/internal/contracts.GithubCIObservation",
+      "capture": "cireconcile.run-id/not-an-id",
+      "mutation": {
+        "file": "packages/envoy/internal/contracts/normalize.go",
+        "preimage": "redact.ShapedID(\"check run id\", fmt.Sprint(object[\"id\"]))",
+        "replacement": "fmt.Sprint(object[\"id\"])"
+      }
+    },
+    {
+      "id": "cireconcile-suite-id-verify-held",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/cireconcile",
+      "test": "TestACheckSuiteWhoseIdIsNoIdPrintsItOnlyAsAnId/verify-held",
+      "production": "cireconcile Reconciler.verify: the held answer's line names the running suite through redact.ShapedID",
+      "function": "(*github.com/sjawhar/envoy/internal/dispatch/cireconcile.Reconciler).verify",
+      "capture": "cireconcile.suite-id/verify-held",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/cireconcile/verify.go",
+        "preimage": "redact.ShapedID(\"suite id\", suite)",
+        "replacement": "suite"
+      }
+    },
+    {
+      "id": "cireconcile-suite-id-record-failed",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/cireconcile",
+      "test": "TestACheckSuiteWhoseIdIsNoIdPrintsItOnlyAsAnId/record-failed",
+      "production": "cireconcile Reconciler.recordSuites: a failed suite write names the suite through redact.ShapedID",
+      "function": "(*github.com/sjawhar/envoy/internal/dispatch/cireconcile.Reconciler).recordSuites",
+      "capture": "cireconcile.suite-id/record-failed",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/cireconcile/heads.go",
+        "preimage": "redact.ShapedID(\"suite id\", observation.SuiteID)",
+        "replacement": "observation.SuiteID"
+      }
+    },
+    {
+      "id": "cireconcile-suite-id-stored",
+      "requirement": "r4-unchanged",
+      "package": "./internal/dispatch/cireconcile",
+      "test": "TestACheckSuiteIsStoredUnderTheIdGitHubGaveIt",
+      "production": "cireconcile Reconciler.recordSuites: a suite is stored under the id GitHub gave it, as it came"
+    },
+    {
+      "id": "cireconcile-suite-id-decimal",
+      "requirement": "r4-unchanged",
+      "package": "./internal/dispatch/cireconcile",
+      "test": "TestARunningSuitesIdPrintsInDecimalDigits",
+      "production": "cireconcile runningSuite and suiteID: a running suite's id prints in decimal digits"
+    },
+    {
+      "id": "cireconcile-head-sha-read",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/cireconcile",
+      "test": "TestAHeadWhoseShaIsNoShaPrintsNoCredential/read",
+      "production": "cireconcile Reconciler.headFailed: the line of a head whose read failed, its sha and its error"
+    },
+    {
+      "id": "cireconcile-head-sha-verify",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/cireconcile",
+      "test": "TestAHeadWhoseShaIsNoShaPrintsNoCredential/verify",
+      "production": "cireconcile Reconciler.verify and doneVerifying: the lines of a verify read whose head is no sha, their sha and their error"
+    },
+    {
+      "id": "cireconcile-head-sha-verify-uninstalled",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/cireconcile",
+      "test": "TestAHeadWhoseShaIsNoShaPrintsNoCredential/verify-uninstalled",
+      "production": "cireconcile Reconciler.verify: the verify lines name the head's sha through redact.ShapedSHA",
+      "function": "(*github.com/sjawhar/envoy/internal/dispatch/cireconcile.Reconciler).verify",
+      "capture": "cireconcile.head-sha/verify-uninstalled",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/cireconcile/verify.go",
+        "preimage": "redact.ShapedSHA(\"head\", head.SHA)",
+        "replacement": "head.SHA"
+      }
+    },
+    {
+      "id": "cireconcile-head-sha-done-verifying",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/cireconcile",
+      "test": "TestAHeadWhoseShaIsNoShaPrintsNoCredential/verify-uninstalled",
+      "production": "cireconcile Reconciler.doneVerifying: an undeleted request names the head's sha through redact.ShapedSHA",
+      "function": "(*github.com/sjawhar/envoy/internal/dispatch/cireconcile.Reconciler).doneVerifying",
+      "capture": "cireconcile.head-sha/verify-uninstalled",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/cireconcile/verify.go",
+        "preimage": "redact.ShapedSHA(\"head\", head.SHA)",
+        "replacement": "head.SHA"
+      }
+    },
+    {
+      "id": "cireconcile-head-sha-permanent",
+      "requirement": "r1-fail-closed",
+      "package": "./internal/dispatch/cireconcile",
+      "test": "TestAVerifyReadOfAHeadWhoseShaIsNoShaGivesItsEpisodeUp",
+      "production": "cireconcile permanentVerifyFailure: githubapp.ErrNotASHA gives the episode up at once"
+    },
+    {
+      "id": "cireconcile-head-lines-has-record",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/cireconcile",
+      "test": "TestAHeadsLinesNameItsShaOnlyWhereItIsOne/has-record",
+      "production": "cireconcile Reconciler.kept: the line of an unread record names the head's sha through redact.ShapedSHA",
+      "function": "(*github.com/sjawhar/envoy/internal/dispatch/cireconcile.Reconciler).kept",
+      "capture": "cireconcile.head-lines/has-record",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/cireconcile/heads.go",
+        "preimage": "redact.ShapedSHA(\"head\", head.sha)",
+        "replacement": "head.sha"
+      }
+    },
+    {
+      "id": "cireconcile-head-lines-runs",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/cireconcile",
+      "test": "TestAHeadsLinesNameItsShaOnlyWhereItIsOne/runs",
+      "production": "cireconcile Reconciler.recordRuns: a failed runs write names the head's sha through redact.ShapedSHA",
+      "function": "(*github.com/sjawhar/envoy/internal/dispatch/cireconcile.Reconciler).recordRuns",
+      "capture": "cireconcile.head-lines/runs",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/cireconcile/heads.go",
+        "preimage": "redact.ShapedSHA(\"head\", head.sha)",
+        "replacement": "head.sha"
+      }
+    },
+    {
+      "id": "cireconcile-head-lines-suite",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/cireconcile",
+      "test": "TestAHeadsLinesNameItsShaOnlyWhereItIsOne/suite",
+      "production": "cireconcile Reconciler.recordSuites: a failed suite write names the head's sha through redact.ShapedSHA",
+      "function": "(*github.com/sjawhar/envoy/internal/dispatch/cireconcile.Reconciler).recordSuites",
+      "capture": "cireconcile.head-lines/suite",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/cireconcile/heads.go",
+        "preimage": "redact.ShapedSHA(\"head\", head.sha)",
+        "replacement": "head.sha"
+      }
+    },
+    {
+      "id": "cireconcile-head-lines-status-context",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/cireconcile",
+      "test": "TestAHeadsLinesNameItsShaOnlyWhereItIsOne/status",
+      "production": "cireconcile Reconciler.recordStatuses: a failed status write names the status's context through redact.Field",
+      "function": "(*github.com/sjawhar/envoy/internal/dispatch/cireconcile.Reconciler).recordStatuses",
+      "capture": "cireconcile.head-lines/status",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/cireconcile/heads.go",
+        "preimage": "redact.Field(observation.Context)",
+        "replacement": "observation.Context"
+      }
+    },
+    {
+      "id": "cireconcile-head-lines-status-sha",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/cireconcile",
+      "test": "TestAHeadsLinesNameItsShaOnlyWhereItIsOne/status",
+      "production": "cireconcile Reconciler.recordStatuses: a failed status write names the head's sha through redact.ShapedSHA",
+      "function": "(*github.com/sjawhar/envoy/internal/dispatch/cireconcile.Reconciler).recordStatuses",
+      "capture": "cireconcile.head-lines/status",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/cireconcile/heads.go",
+        "preimage": "redact.ShapedSHA(\"head\", head.sha)",
+        "replacement": "head.sha"
+      }
+    },
+    {
+      "id": "cireconcile-head-lines-statuses-unread",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/cireconcile",
+      "test": "TestAHeadsLinesNameItsShaOnlyWhereItIsOne/statuses-unread",
+      "production": "cireconcile Reconciler.statusesUnread: the line and the attempt's note name the head's sha through redact.ShapedSHA",
+      "function": "(*github.com/sjawhar/envoy/internal/dispatch/cireconcile.Reconciler).statusesUnread",
+      "capture": "cireconcile.head-lines/statuses-unread",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/cireconcile/heads.go",
+        "preimage": "redact.ShapedSHA(\"head\", head.sha)",
+        "replacement": "head.sha"
+      }
+    },
+    {
+      "id": "cireconcile-head-lines-too-large",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/cireconcile",
+      "test": "TestAHeadsLinesNameItsShaOnlyWhereItIsOne/too-large",
+      "production": "cireconcile Reconciler.headFailed: both lines of a failed head read name the head's sha through redact.ShapedSHA",
+      "function": "(*github.com/sjawhar/envoy/internal/dispatch/cireconcile.Reconciler).headFailed",
+      "capture": "cireconcile.head-lines/too-large",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/cireconcile/heads.go",
+        "preimage": "redact.ShapedSHA(\"head\", head.sha)",
+        "replacement": "head.sha"
+      }
+    },
+    {
+      "id": "cireconcile-head-lines-over-rest",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/cireconcile",
+      "test": "TestAHeadsLinesNameItsShaOnlyWhereItIsOne/over-rest",
+      "production": "cireconcile walk.visitHeadOverREST: the line of a head read over REST names its sha through redact.ShapedSHA",
+      "function": "(*github.com/sjawhar/envoy/internal/dispatch/cireconcile.walk).visitHeadOverREST",
+      "capture": "cireconcile.head-lines/over-rest",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/cireconcile/pass.go",
+        "preimage": "redact.ShapedSHA(\"head\", pull.sha)",
+        "replacement": "pull.sha"
+      }
+    },
+    {
+      "id": "cireconcile-verdict-app-no-reviewer-app",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/cireconcile",
+      "test": "TestAVerdictChecksAppIdPrintsOnlyAsAnId/no-reviewer-app",
+      "production": "cireconcile verdictCheck: a dropped verdict check names its App's id through redact.ShapedID",
+      "function": "github.com/sjawhar/envoy/internal/dispatch/cireconcile.verdictCheck",
+      "capture": "cireconcile.verdict-app/no-reviewer-app",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/cireconcile/heads.go",
+        "preimage": "redact.ShapedID(\"app id\", observation.AppID)",
+        "replacement": "observation.AppID"
+      }
+    },
+    {
+      "id": "cireconcile-verdict-app-untrusted",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/cireconcile",
+      "test": "TestAVerdictChecksAppIdPrintsOnlyAsAnId/untrusted",
+      "production": "cireconcile Reconciler.recordVerdict: an untrusted verdict check names its App's id through verdictCheck"
+    },
+    {
+      "id": "cireconcile-full-name-no-id",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/cireconcile",
+      "test": "TestARepositorysFullNamePrintsThroughTheRule/no-id",
+      "production": "cireconcile Reconciler.identify: an identity with no id names its full name through redact.Field, in resolve's line and the attempt's note",
+      "function": "(*github.com/sjawhar/envoy/internal/dispatch/cireconcile.Reconciler).identify",
+      "capture": "cireconcile.full-name/no-id",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/cireconcile/repositories.go",
+        "preimage": "redact.Field(answer.FullName)",
+        "replacement": "answer.FullName"
+      }
+    },
+    {
+      "id": "cireconcile-full-name-not-owner-name",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/cireconcile",
+      "test": "TestARepositorysFullNamePrintsThroughTheRule/not-owner-name",
+      "production": "cireconcile Reconciler.resolve: a full name that is no owner/name prints through redact.Field in the line and the attempt's note",
+      "function": "(*github.com/sjawhar/envoy/internal/dispatch/cireconcile.Reconciler).resolve",
+      "capture": "cireconcile.full-name/not-owner-name",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/cireconcile/repositories.go",
+        "preimage": "redact.Field(state.fullName)",
+        "replacement": "state.fullName"
+      }
     }
   ],
   "bun": [
@@ -9796,6 +10360,13 @@
       "file": "packages/contracts/src/remote-text-print.test.ts",
       "test": "box print test: LibraryError prints no secret by any printer at any placement",
       "production": "packages/contracts/src/remote-text.ts#LibraryError: every printer at every placement"
+    },
+    {
+      "id": "public-routes-ts-github-graphql-cursor",
+      "requirement": "r3-each-site",
+      "file": "packages/contracts/src/public-request-routes.test.ts",
+      "test": "a search cursor is public only on GraphQL",
+      "production": "packages/contracts/src/public-request-names.ts#PUBLIC_REQUEST_NAMES: after on POST /graphql alone"
     }
   ],
   "recall": [
@@ -11276,6 +11847,76 @@
       "site": "envoy's credential-carrying clients handed on net/http's error as it came, so a Location that did not parse (net/http quotes it before CheckRedirect is asked), or one a following client asked, put the request's credential into a log line or an error: the listener's broker read, Dispatch's agent-secrets client, the broker's wake notice, judge read and Dispatch read, the generateIdToken mint, Dispatch's introspection, the Azure embeddings call and Entra exchange, and the OIDC revocation",
       "source": "the class search of round 7's third must-fix over the envoy module",
       "guard": "listener-edge-redirect-unparsed"
+    },
+    {
+      "site": "contracts GithubCIObservation: the line of a check run skipped for an invalid id printed the id GitHub listed with %v",
+      "source": "the second pull request's site census, item 3",
+      "guard": "cireconcile-run-id-not-an-id"
+    },
+    {
+      "site": "cireconcile verify: runningSuite and the held answer's line printed the running suite's id as GitHub listed it",
+      "source": "the second pull request's site census, item 3",
+      "guard": "cireconcile-suite-id-verify-held"
+    },
+    {
+      "site": "cireconcile recordSuites: a failed suite write logged the suite id GitHub listed",
+      "source": "the second pull request's site census, item 3",
+      "guard": "cireconcile-suite-id-record-failed"
+    },
+    {
+      "site": "cireconcile recordVerdict: a dropped verdict check logged the App id GitHub listed",
+      "source": "the second pull request's site census, item 3",
+      "guard": "cireconcile-verdict-app-no-reviewer-app"
+    },
+    {
+      "site": "cireconcile recordStatuses: a failed status write logged the status's context as GitHub listed it",
+      "source": "the second pull request's site census, item 3",
+      "guard": "cireconcile-head-lines-status-context"
+    },
+    {
+      "site": "cireconcile heads.go: every line and note about a head printed the head's sha as the query's commit oid gave it",
+      "source": "the second pull request's site census, item 3",
+      "guard": "cireconcile-head-lines-statuses-unread"
+    },
+    {
+      "site": "cireconcile verify.go: the verify loop's lines printed the head's sha as the request named it",
+      "source": "the second pull request's site census, item 3",
+      "guard": "cireconcile-head-sha-verify-uninstalled"
+    },
+    {
+      "site": "cireconcile visitHeadOverREST: the line of a head read over REST printed the head's sha as the query gave it",
+      "source": "the class search of the census's head-sha site over cireconcile",
+      "guard": "cireconcile-head-lines-over-rest"
+    },
+    {
+      "site": "cireconcile identify: an identity with no id was an error that quoted GitHub's full name, which resolve logged and noted",
+      "source": "the second pull request's site census, item 3",
+      "guard": "cireconcile-full-name-no-id"
+    },
+    {
+      "site": "cireconcile resolve: a full name that is no owner/name was logged and noted as GitHub gave it",
+      "source": "the second pull request's site census, item 3",
+      "guard": "cireconcile-full-name-not-owner-name"
+    },
+    {
+      "site": "delivery merged-PR search: the search cursor was sent back and printed with %q in every page error as GitHub gave it",
+      "source": "the second pull request's site census, item 4",
+      "guard": "delivery-search-cursor-hostile"
+    },
+    {
+      "site": "delivery merged-PR search: a failed installation was named by the account login GitHub listed",
+      "source": "the second pull request's site census, item 4",
+      "guard": "delivery-installation-login-window-start"
+    },
+    {
+      "site": "delivery fetchCommitPullPayloads: a sha that is no sha built the commit target and printed in each error",
+      "source": "the second pull request's plan, t-2b",
+      "guard": "delivery-commit-pulls-not-a-sha"
+    },
+    {
+      "site": "delivery CommitOnBranch: three lines and two errors printed the branch, which can be GitHub's default_branch, as it came",
+      "source": "the second pull request's plan, t-2b",
+      "guard": "delivery-branch-lines-read-failed"
     }
   ]
 }
