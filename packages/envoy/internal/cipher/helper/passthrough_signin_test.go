@@ -103,7 +103,8 @@ func signedInBox(t *testing.T, tokenURL string) *cipherclient.SignInAuthority {
 // The trade waits at a gate the row opens once it has read its answer, so the trade lasts as long
 // as the row needs and no longer. The row runs under a bound of 1 s rather than the real 20 s,
 // with brokerCall's timer timerSlack after it (slowTimer), so the op's own answer at the bound
-// cannot lose to the timer under load.
+// cannot lose to the timer under load. The answer must still come within answerMargin of the
+// bound: in production a later one loses to the 1 s timer.
 //
 // The named revert: put a sync.Mutex back as SignInAuthority.mu, as it was before ctxlock. The
 // op then waits out the trade with no context, and brokerCall's timer answers it
@@ -112,12 +113,8 @@ func signedInBox(t *testing.T, tokenURL string) *cipherclient.SignInAuthority {
 // nothing.
 func TestAPassThroughOpAnswersInsideItsBoundWhileTheBoxsSignInIsTrading(t *testing.T) {
 	t.Parallel()
-	// bound is the row's bound on the op, and timerAnswers when brokerCall's timer answers an op
-	// still running: the bound plus timerSlack.
-	const (
-		bound        = time.Second
-		timerAnswers = bound + timerSlack
-	)
+	// bound is the row's bound on the op.
+	const bound = time.Second
 	var trades atomic.Int64
 	tradeStarted := make(chan struct{})
 	tradeGate := make(chan struct{})
@@ -145,8 +142,7 @@ func TestAPassThroughOpAnswersInsideItsBoundWhileTheBoxsSignInIsTrading(t *testi
 
 	r := startRig(t, "")
 	r.srv.Broker.SignIns = signedInBox(t, tokens.URL)
-	r.srv.BrokerCallBound = bound
-	slowTimer(r.srv)
+	slowTimer(r.srv, bound)
 	// Registered after the rig and the token server, so the trade is let go before their Close.
 	t.Cleanup(releaseTrade)
 
@@ -190,8 +186,8 @@ func TestAPassThroughOpAnswersInsideItsBoundWhileTheBoxsSignInIsTrading(t *testi
 	if arrivals != 0 {
 		t.Errorf("the fake received %d POST /v1/enrollments while enroll-session-key waited for the sign-in; want none", arrivals)
 	}
-	if waited >= timerAnswers {
-		t.Errorf("enroll-session-key answered after %s, at or past brokerCall's timer (%s): the wait for the sign-in did not end with the op's context", waited, timerAnswers)
+	if waited >= bound+answerMargin {
+		t.Errorf("enroll-session-key answered after %s, past its %s bound plus %s: the wait for the sign-in did not end with the op's context", waited, bound, answerMargin)
 	}
 
 	// The trade the op stood behind goes on to its own answer, and the registered session enrols

@@ -227,7 +227,10 @@ func TestContractAnUnrefreshedLoginDropsAtItsExpiry(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// The watch reads its wait as time.Until the kept expiry when it starts the timer, which is
+	// after upper is read and before lower is: lower <= its wait <= upper, with no margin.
 	var timers *expiryTimers
+	upper := time.Until(kept.ExpiresAt)
 	second := startContractHelper(t, first.broker, first.machineFile, &http.Client{Transport: failingTokenTransport{}},
 		func(b *Broker) { timers = installExpiryTimers(b) })
 	cred := second.srv.Broker.cred.Load()
@@ -236,8 +239,8 @@ func TestContractAnUnrefreshedLoginDropsAtItsExpiry(t *testing.T) {
 	}
 	timers.fire(t, cred, 0) // the warning a day ahead, due at once for an expiry an hour away
 	expiry := timers.started(t, cred, 1)
-	if left := time.Until(kept.ExpiresAt); expiry.d > left+time.Second || expiry.d < left-time.Minute {
-		t.Fatalf("the restarted helper drops its login after %s; want at the expiry it kept, %s from now", expiry.d, left)
+	if lower := time.Until(kept.ExpiresAt); expiry.d < lower || expiry.d > upper {
+		t.Fatalf("the restarted helper drops its login after %s; want at the expiry it kept, between %s and %s from when it started the timer", expiry.d, lower, upper)
 	}
 	if !second.srv.Broker.HasCredential() {
 		t.Fatal("the restarted helper dropped its login before its expiry timer fired")

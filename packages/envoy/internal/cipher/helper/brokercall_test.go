@@ -52,10 +52,21 @@ func wantSettled(t *testing.T, what string, resp Response, code string, elapsed,
 // the timer answers first and the row fails for no fault of the helper. At 20 s no load does.
 const timerSlack = 20 * time.Second
 
-// slowTimer has srv's brokerCall timer answer timerSlack after the bound instead of 1 s after it
-// (Server.brokerCallSlackNS). The op's own answer at the bound is what such a row reads; the timer
-// is only the backstop it must beat, and the cause it gives ("did not end in") still tells it apart.
-func slowTimer(srv *Server) { srv.brokerCallSlackNS.Store(int64(timerSlack)) }
+// answerMargin is how long after an op's bound, counted from the op's start, its own answer may
+// come in the rows that read that answer. The op returns as soon as its context ends at the
+// bound, so its answer is due then; the margin is load's allowance and nothing more, and it holds
+// the answer to its bound on its own, apart from the slowed timer: an op that answered seconds
+// after its context ended would lose to production's 1 s timer, and fails here.
+const answerMargin = 2 * time.Second
+
+// slowTimer bounds srv's broker-call ops at bound, with brokerCall's timer answering timerSlack
+// after it instead of 1 s after it (Server.brokerCallSlack). The op's own answer at the bound is
+// what such a row reads, within answerMargin; the timer is only the backstop it must beat, and the
+// cause it gives ("did not end in") still tells it apart.
+func slowTimer(srv *Server, bound time.Duration) {
+	srv.BrokerCallBound = bound
+	srv.brokerCallSlack = timerSlack
+}
 
 // TestAFailedRequestIsKnownOrUnknownByWhetherTheBrokerGotIt: a broker request that failed after
 // the broker got it (a 503, which a front door can send after the broker acted, or a 2xx the
@@ -161,10 +172,15 @@ func TestAnOpHeldOnALockAnswersUnknownAtTheBoundAndSendsNothingAfter(t *testing.
 		t.Fatalf("enroll-session-key held on a lock answered after %s; want the timer's answer, at the %s bound plus 1 s", elapsed, bound)
 	}
 
+	// Once the lock is released the op ends at once: its context ended at the bound.
+	opened := time.Now()
 	open()
 	// The op logs its result once it ends; by then any request it made has reached the fake.
 	ended := `msg="a broker call answered as unknown has ended" op=enroll-session-key`
 	waitFor(t, func() bool { return strings.Contains(out.String(), ended) })
+	if late := time.Since(opened); late > answerMargin {
+		t.Fatalf("the op ended %s after the lock it waited on was released; want within %s, since its context had ended at the bound", late, answerMargin)
+	}
 	r.fake.mu.Lock()
 	arrivals := r.fake.enrollArrivals
 	r.fake.mu.Unlock()
@@ -187,8 +203,7 @@ func TestALoginPastTheBoundEndsItsDeviceAuthorizationAndAnswersUnknown(t *testin
 	r.fake.deviceAuthHold = true
 	r.fake.mu.Unlock()
 	const bound = time.Second
-	r.srv.BrokerCallBound = bound
-	slowTimer(r.srv)
+	slowTimer(r.srv, bound)
 
 	start := time.Now()
 	resp, err := Call(r.sock, Request{Op: "login"}, BrokerCallWait)
@@ -196,7 +211,7 @@ func TestALoginPastTheBoundEndsItsDeviceAuthorizationAndAnswersUnknown(t *testin
 	if err != nil {
 		t.Fatalf("login: %v", err)
 	}
-	wantSettled(t, "login past its bound", resp, CodeLoginFailed, elapsed, bound+timerSlack)
+	wantSettled(t, "login past its bound", resp, CodeLoginFailed, elapsed, bound+answerMargin)
 	if elapsed < bound {
 		t.Fatalf("login past its bound answered after %s; want about the %s bound", elapsed, bound)
 	}
@@ -238,11 +253,16 @@ func TestAStoppingHelperAnswersItsBrokerCallBeforeServeReturns(t *testing.T) {
 		return r.fake.enrollArrivals == 1
 	})
 
+	stopped := time.Now()
 	r.cancel()
 	select {
 	case <-r.served:
 	case <-time.After(10 * time.Second):
 		t.Fatal("Serve did not return within 10 s of its context ending")
+	}
+	// The op's context ended with Serve's, so the op answers at once and Serve returns then.
+	if late := time.Since(stopped); late > answerMargin {
+		t.Fatalf("Serve returned %s after its context ended; want within %s: the op it waits on must answer once its context ends", late, answerMargin)
 	}
 	// Serve has returned, so the answer must already be on the connection: read what is there now,
 	// without waiting for more. A Serve that returned before the answer was written leaves nothing.

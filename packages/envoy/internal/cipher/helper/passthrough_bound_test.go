@@ -33,8 +33,7 @@ func TestAnUnenrollPastItsBoundSaysItsOutcomeIsUnknown(t *testing.T) {
 	r.fake.mu.Lock()
 	r.fake.revokeGate = gate
 	r.fake.mu.Unlock()
-	r.srv.BrokerCallBound = overBound
-	slowTimer(r.srv)
+	slowTimer(r.srv, overBound)
 
 	started := time.Now()
 	resp, err := Call(r.sock, Request{Op: "unenroll-session-key", EnrollmentID: enrolled.EnrollmentID}, BrokerCallWait)
@@ -48,7 +47,7 @@ func TestAnUnenrollPastItsBoundSaysItsOutcomeIsUnknown(t *testing.T) {
 	if attempts != 1 {
 		t.Fatalf("the fake received %d DELETEs, want 1, held at its gate; answer %+v after %s", attempts, resp, waited)
 	}
-	wantSettled(t, "unenroll-session-key past its bound", resp, CodeUnenrollUnknown, waited, overBound+timerSlack)
+	wantSettled(t, "unenroll-session-key past its bound", resp, CodeUnenrollUnknown, waited, overBound+answerMargin)
 	if waited < overBound {
 		t.Fatalf("unenroll-session-key past its bound answered after %s; want about the %s bound", waited, overBound)
 	}

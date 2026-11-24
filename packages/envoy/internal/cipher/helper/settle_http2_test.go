@@ -94,8 +94,7 @@ func TestAnEnrollWhoseBodyIsStillBeingWrittenAtTheBoundIsUnknown(t *testing.T) {
 		_, _ = io.Copy(io.Discard, req.Body)
 	})
 	const bound = time.Second
-	r.srv.BrokerCallBound = bound
-	slowTimer(r.srv)
+	slowTimer(r.srv, bound)
 
 	start := time.Now()
 	resp, err := Call(r.sock, Request{Op: "enroll-session-key", RuntimeID: "box-1", Thumbprint: "tp-1"}, BrokerCallWait)
@@ -104,7 +103,7 @@ func TestAnEnrollWhoseBodyIsStillBeingWrittenAtTheBoundIsUnknown(t *testing.T) {
 		t.Fatalf("enroll-session-key: %v", err)
 	}
 	wantHTTP2(t, proto)
-	wantSettled(t, "enroll whose body is still being written at the bound", resp, CodeEnrollUnknown, elapsed, bound+timerSlack)
+	wantSettled(t, "enroll whose body is still being written at the bound", resp, CodeEnrollUnknown, elapsed, bound+answerMargin)
 }
 
 // TestAnEnrollWhoseAnswerBeginsBeforeItsBodyIsWrittenIsUnknown holds settle through

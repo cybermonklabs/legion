@@ -179,8 +179,7 @@ func TestContractAnEnrollPastTheBoundIsUnknownAndTheSameEnrollAgainAnswersItsRow
 	held := &holdingTransport{base: http.DefaultTransport, method: http.MethodPost, path: "/v1/enrollments", hold: 5 * time.Second}
 	cr := heldContractRig(t, held)
 	const bound = 2 * time.Second
-	cr.srv.BrokerCallBound = bound
-	slowTimer(cr.srv)
+	slowTimer(cr.srv, bound)
 	runtimeID := "past-bound-box-" + t.Name()
 	req := Request{Op: "enroll-session-key", RuntimeID: runtimeID, Thumbprint: sessionThumbprint(t)}
 
@@ -192,7 +191,7 @@ func TestContractAnEnrollPastTheBoundIsUnknownAndTheSameEnrollAgainAnswersItsRow
 	if n := held.held.Load(); n != 1 {
 		t.Fatalf("the transport held %d answers of POST /v1/enrollments, want 1; answer %+v, the broker's rows %+v", n, first, rows)
 	}
-	wantSettled(t, fmt.Sprintf("enroll-session-key past its bound (the broker's rows %+v)", rows), first, CodeEnrollUnknown, elapsed, bound+timerSlack)
+	wantSettled(t, fmt.Sprintf("enroll-session-key past its bound (the broker's rows %+v)", rows), first, CodeEnrollUnknown, elapsed, bound+answerMargin)
 	live := liveIDs(rows)
 	if len(live) != 1 {
 		t.Fatalf("the broker's rows for %s after the enroll past the bound: %+v; want the one live row it made", runtimeID, rows)
