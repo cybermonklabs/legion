@@ -257,8 +257,8 @@ export function itemReplyTo(
   return block === undefined ? { id: replyTo } : { id: block.item.id, block: block.block };
 }
 /**
- * An ask, comment or message link names an item inside its issue or document, a log or
- * children link names one of its issue's lists, and a block link names one block of a document
+ * An ask, comment or message link names an item inside its issue or document, a log, children
+ * or comments link names one of its issue's lists, and a block link names one block of a document
  * or of a comment or message, or one part of an ask. `dispatch read` reads each of them and
  * `dispatch ask` cites the link in its question; the other tools that take `ref` (comment,
  * suggest, doc-edit, doc-read) take it as the owner they act on, so they would act on the owner
@@ -276,6 +276,7 @@ export function innerRefProblem(
     ref.kind !== "message" &&
     ref.kind !== "log" &&
     ref.kind !== "children" &&
+    ref.kind !== "comments" &&
     ref.kind !== "block"
   ) {
     return undefined;
@@ -315,9 +316,11 @@ export function innerRefProblem(
         ? "the event log"
         : ref.kind === "children"
           ? "the children"
-          : ref.kind === "block"
-            ? `block ${ref.block}${ref.item === undefined ? "" : ` of ${article(ref.item.kind)}`}`
-            : `a ${ref.kind}`;
+          : ref.kind === "comments"
+            ? "the comments"
+            : ref.kind === "block"
+              ? `block ${ref.block}${ref.item === undefined ? "" : ` of ${article(ref.item.kind)}`}`
+              : `a ${ref.kind}`;
   return `ref ${refText} names ${item} on ${owner}; dispatch ${commandName(tool)} would act on ${owner} and drop the ${ref.kind}: ${fix}`;
 }
 

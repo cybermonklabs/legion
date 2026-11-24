@@ -4935,6 +4935,57 @@ describe("executeDispatchTool", () => {
     ]);
   });
 
+  // labels replaces every label the issue holds; labels_add adds to them inside Dispatch's write,
+  // so a label the call does not name stays. The command sends labels_add as given and prints the
+  // labels the issue holds after it, and refuses labels and labels_add together before any request.
+  test("dispatch_issue_update adds labels with labels_add and keeps the issue's others", async () => {
+    const requests: Array<{ method: string; pathname: string; body?: unknown }> = [];
+    const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const pathname = new URL(String(url)).pathname;
+      const method = init?.method ?? "GET";
+      requests.push({
+        method,
+        pathname,
+        ...(init?.body === undefined ? {} : { body: JSON.parse(String(init.body)) }),
+      });
+      const labels = method === "GET" ? ["board"] : ["board", "accessibility"];
+      return response({ key: "ACME-10", title: "Board", status: "triage", labels, route: null });
+    };
+    const run = (args: Record<string, unknown>) =>
+      executeDispatchTool({
+        tool: "dispatch_issue_update",
+        args,
+        cwd: "/workspace",
+        host: "omp",
+        sessionId: "session-42",
+        config,
+        env: {},
+        exec: repoExec("owner/repo"),
+        fetchImpl: fetchImpl as typeof fetch,
+      });
+
+    const result = await run({ issue: "ACME-10", labels_add: ["accessibility"] });
+
+    expect(result.text).toBe("ACME-10: labels board, accessibility");
+    expect(requests.at(-1)).toEqual({
+      method: "PATCH",
+      pathname: "/api/v1/issues/ACME-10",
+      body: {
+        labels_add: ["accessibility"],
+        actor: {
+          kind: "session",
+          id: "session-42",
+          origin: expect.objectContaining({ host: "omp", cwd: "/workspace" }),
+        },
+      },
+    });
+    const sent = requests.length;
+    await expect(
+      run({ issue: "ACME-10", labels: ["board"], labels_add: ["accessibility"] })
+    ).rejects.toThrow(/labels_add goes without labels/);
+    expect(requests).toHaveLength(sent);
+  });
+
   test("dispatch_issue_update clears external links instead of re-sending the existing set", async () => {
     const requests: Array<{ method: string; pathname: string; body?: unknown }> = [];
     const existingLink = { url: "https://ci.example/run/1", kind: "url" };

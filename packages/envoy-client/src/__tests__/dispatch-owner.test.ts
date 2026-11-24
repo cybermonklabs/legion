@@ -89,6 +89,17 @@ test.each([
   expect(parseDispatchRef(ref)).toBeNull();
 });
 
+// Each list of an issue that a read names after the issue's key: its log, which the Activity tab
+// spells `activity`, its children and its comments.
+test.each([
+  ["dispatch://CORE-1/log", "log", "log"],
+  ["dispatch://CORE-1/activity", "log", "activity"],
+  ["dispatch://CORE-1/children", "children", "children"],
+  ["dispatch://CORE-1/comments", "comments", "comments"],
+] as const)("%s names the issue's %s", (ref, kind, id) => {
+  expect(parseDispatchRef(ref)).toEqual({ owner: { kind: "issue", issue: "CORE-1" }, kind, id });
+});
+
 // A block of a comment or an issue message names the block and its item: an issue's comment and a
 // project document's, pinned to a revision of the comment or not, and an issue's message unpinned.
 test("a block of a comment or a message names the block and the item it is in", () => {

@@ -2,7 +2,13 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { z } from "zod";
-import { ISSUE_TITLE_MAX, MAX_ISSUE_ADVANCES, PROJECT_NAME_MAX } from "./dispatch-api";
+import {
+  ISSUE_TITLE_MAX,
+  MAX_ISSUE_ADVANCES,
+  MAX_ISSUE_BLOCKERS,
+  MAX_ISSUE_PAGE_LIMIT,
+  PROJECT_NAME_MAX,
+} from "./dispatch-api";
 import {
   ARTIFACT_STORED_TEXT_RULE,
   DISPATCH_HANDOFF_BODY_MAX,
@@ -223,7 +229,7 @@ function expectNotAProjectKey(schema: z.ZodType, inputs: readonly Record<string,
 }
 
 const ISSUE_UPDATE_FIELDS_RULE =
-  "Issue update requires at least one field besides issue: status, title, labels, priority, assignee, external_links, route, parent, blocked_by, advances, components, repo, before, or after.";
+  "Issue update requires at least one field besides issue: status, title, labels, labels_add, priority, assignee, external_links, route, parent, blocked_by, advances, components, repo, before, or after.";
 const ISSUE_UPDATE_DONE_RULE =
   "status done requires reason, a non-empty note saying why the issue is closing, posted on the issue before it closes so the close carries its note.";
 const reasonOnlyWithDone = (status: string): string =>
@@ -859,6 +865,7 @@ describe("dispatchToolSpecs", () => {
     for (const args of [
       { issue: "DSP-1", title: "Renamed" },
       { issue: "DSP-1", labels: [] },
+      { issue: "DSP-1", labels_add: ["accessibility"] },
       { issue: "DSP-1", priority: 0 },
       { issue: "DSP-1", priority: null },
       { issue: "DSP-1", assignee: "alice@example.com" },
@@ -1015,6 +1022,25 @@ describe("dispatchToolSpecs", () => {
     expect(
       schema.safeParse({ issue: "DSP-1", status: "done", reason: "x".repeat(32001) }).success
     ).toBe(true);
+  });
+
+  // The route refuses a write naming both labels and labels_add (400 LABELS_INPUT): labels
+  // replaces every label, and labels_add adds to the labels the issue holds. The tool refuses such
+  // a call before anything is sent, in words that say which to name; each alone is a field.
+  test("dispatch_issue_update takes labels_add, which adds labels, and never with labels", () => {
+    const schema = schemaFor("dispatch_issue_update");
+    const both = schema.safeParse({ issue: "DSP-1", labels: ["board"], labels_add: ["api"] });
+    expect(both.success).toBe(false);
+    expect(both.error?.issues.map((issue) => issue.message)).toEqual([
+      "labels_add goes without labels: labels replaces every label the issue holds and labels_add adds to them, so name the labels to add in labels_add alone, or the whole set in labels alone.",
+    ]);
+    expect(schema.safeParse({ issue: "DSP-1", labels_add: ["api"], priority: 2 }).success).toBe(
+      true
+    );
+    expect(schema.safeParse({ issue: "DSP-1", labels_add: ["x".repeat(41)] }).success).toBe(false);
+    const update: DispatchToolSpec = specFor("dispatch_issue_update");
+    expect(update.validation?.message).toContain("; labels_add goes without labels.");
+    expect(update.description).toContain("labels_add adds labels and keeps every label");
   });
 
   // The server owns the bound on an ask's question too, and names it in its refusal.
@@ -1777,5 +1803,212 @@ describe("dispatchToolSpecs", () => {
 
   test("no tool result subscribes the session to an issue; following an ask is the write's side effect", () => {
     expect(dispatchToolSpecs.every((spec) => !("subscribes" in spec))).toBe(true);
+  });
+});
+
+/** The Go the server's catalogue (GET /api/v1/going/catalogue) and every Go host read the tools
+ *  from, as `bun run gen:go` writes it. */
+const generatedTools = readFileSync(
+  resolve(import.meta.dir, "../../envoy/internal/contracts/dispatch_tools_generated.go"),
+  "utf8"
+);
+
+/** One tool's entry of the generated Go, from its name to the next tool's. */
+function generatedTool(name: string): string {
+  const start = generatedTools.search(new RegExp(`^\\t\\tName: +${JSON.stringify(name)},$`, "m"));
+  if (start < 0) throw new Error(`the generated Go holds no ${name}`);
+  const rest = generatedTools.slice(start + 1);
+  const next = rest.search(/^\t\tName: +"/m);
+  return next < 0 ? rest : rest.slice(0, next);
+}
+
+/** Each bound a stretch of the generated Go writes, in its order, as `Min:N` or `Max:N`. */
+function goBounds(text: string): string[] {
+  return [...text.matchAll(/\b(Min|Max): new\(float64\(([^()]+)\)\)/g)].map(
+    ([, side, value]) => `${side}:${value}`
+  );
+}
+
+/** The bounds one field's line of the generated Go writes: its own, and its list item's. */
+function goFieldBounds(tool: string, field: string): { own: string[]; item: string[] } {
+  const line = generatedTool(tool)
+    .split("\n")
+    .find((text) => text.trimStart().startsWith(`{Name: ${JSON.stringify(field)},`));
+  if (line === undefined) throw new Error(`${tool} has no field ${field} in the generated Go`);
+  const [own = "", item = ""] = line.split(" Item: &ToolField");
+  return { own: goBounds(own), item: goBounds(item) };
+}
+
+/** A schema node that keeps the bounds its builder states and those of the nodes it holds. */
+interface Bounded extends SchemaNode<Bounded> {
+  readonly bounds: readonly string[];
+}
+
+/**
+ * Every bound one spec's arguments state, as `Min:N` or `Max:N`, in the order gen-go writes a
+ * field's: its own, then its list item's, then those of its own fields. A text's length, a list's
+ * count of items and a number's value each count.
+ */
+function statedBounds(name: string): string[] {
+  const node = (bounds: readonly string[]): Bounded => ({
+    bounds,
+    optional: () => node(bounds),
+    nullable: () => node(bounds),
+    describe: () => node(bounds),
+  });
+  const own = (opts: { min?: number; max?: number } = {}) => [
+    ...(opts.min === undefined ? [] : [`Min:${opts.min}`]),
+    ...(opts.max === undefined ? [] : [`Max:${opts.max}`]),
+  ];
+  const held = (shape: Record<string, Bounded>) =>
+    Object.values(shape).flatMap((field) => field.bounds);
+  const api: SchemaApi<Bounded> = {
+    string: (opts) => node(own(opts)),
+    number: (opts) => node(own(opts)),
+    boolean: () => node([]),
+    enum: () => node([]),
+    literal: () => node([]),
+    array: (item, opts) => node([...own(opts), ...item.bounds]),
+    unknown: () => node([]),
+    object: (shape) => node(held(shape)),
+    refineObject: (shape) => node(held(shape)),
+  };
+  return held(specFor(name).arguments(api) as Record<string, Bounded>);
+}
+
+/** The value of an integer constant a file of the Dispatch server declares, `name = N`. */
+function serverConstant(path: string, name: string): number {
+  const source = readFileSync(
+    resolve(import.meta.dir, "../../envoy/internal/dispatch/api", path),
+    "utf8"
+  );
+  const value = source.match(new RegExp(`\\b${name}\\s*=\\s*(\\d+)\\b`))?.[1];
+  if (value === undefined) throw new Error(`${path} declares no ${name}`);
+  return Number(value);
+}
+
+/** The rule of a `components` argument's parts, as dispatch_issue and dispatch_issue_update
+ *  state it. */
+const COMPONENTS_RULE = "components mode explicit names ids, and mode none names a reason.";
+
+// The catalogue serves each tool's arguments with the bounds its spec states (ToolField's Min and
+// Max), and a client holds a call to them before it is sent, so a bound the Go loses or moves, or
+// one looser than the route's, promises an argument the route refuses.
+describe("the bounds and words each tool states beside its arguments", () => {
+  test("the generated Go carries every bound each tool's arguments state, on the field that states it", () => {
+    const stated = dispatchToolSpecs.flatMap((spec) => statedBounds(spec.name));
+    // A text's length, a list's count of items and a number's value are all among them.
+    expect(goFieldBounds("dispatch_issue_update", "title").own).toEqual([
+      "Min:1",
+      `Max:${ISSUE_TITLE_MAX}`,
+    ]);
+    expect(goFieldBounds("dispatch_issue_update", "labels_add")).toEqual({
+      own: ["Max:20"],
+      item: ["Min:1", "Max:40"],
+    });
+    expect(goFieldBounds("dispatch_issues", "limit").own).toEqual([
+      "Min:1",
+      `Max:${MAX_ISSUE_PAGE_LIMIT}`,
+    ]);
+    expect(stated.length).toBeGreaterThan(0);
+    for (const spec of dispatchToolSpecs) {
+      expect(goBounds(generatedTool(spec.name)), spec.name).toEqual(statedBounds(spec.name));
+    }
+  });
+
+  // Each row is the bounds a route holds a field to. An upper bound is a constant of
+  // dispatch-api-limits.ts, which gen-go writes into Go as the one the server enforces, or a
+  // constant the route's own Go declares; a lower bound is the route's refusal of an empty value
+  // (1) or of a one-character search (2). The field's generated Go states the same bounds, no
+  // looser and no tighter.
+  const labels = serverConstant("issue_queries.go", "maxIssueLabels");
+  const labelLength = serverConstant("issue_queries.go", "maxIssueLabel16");
+  const componentIds = serverConstant("issue_components.go", "maxIssueComponents");
+  test.each([
+    ["dispatch_issue", "title", [`Max:${ISSUE_TITLE_MAX}`], []],
+    ["dispatch_issue_update", "title", ["Min:1", `Max:${ISSUE_TITLE_MAX}`], []],
+    ["dispatch_issue", "advances", [`Max:${MAX_ISSUE_ADVANCES}`], ["Min:1"]],
+    ["dispatch_issue_update", "advances", [`Max:${MAX_ISSUE_ADVANCES}`], ["Min:1"]],
+    ["dispatch_issue", "blocked_by", [`Max:${MAX_ISSUE_BLOCKERS}`], ["Min:1"]],
+    ["dispatch_issue_update", "blocked_by", [`Max:${MAX_ISSUE_BLOCKERS}`], ["Min:1"]],
+    ["dispatch_issue", "labels", [`Max:${labels}`], ["Min:1", `Max:${labelLength}`]],
+    ["dispatch_issue_update", "labels", [`Max:${labels}`], ["Min:1", `Max:${labelLength}`]],
+    ["dispatch_issue_update", "labels_add", [`Max:${labels}`], ["Min:1", `Max:${labelLength}`]],
+    ["dispatch_issue", "ids", ["Min:1", `Max:${componentIds}`], ["Min:1"]],
+    ["dispatch_issue_update", "ids", ["Min:1", `Max:${componentIds}`], ["Min:1"]],
+    ["dispatch_issues", "limit", ["Min:1", `Max:${MAX_ISSUE_PAGE_LIMIT}`], []],
+    ["dispatch_project", "name", [`Max:${PROJECT_NAME_MAX}`], []],
+    ["dispatch_search", "query", ["Min:2", `Max:${SEARCH_QUERY_MAX}`], []],
+  ] as const)("%s's %s states the bounds its route holds it to", (tool, field, own, item) => {
+    expect(goFieldBounds(tool, field)).toEqual({ own: [...own], item: [...item] });
+  });
+
+  // The route refuses a components of mode explicit naming no ids, and of mode none naming no
+  // reason or a blank one, 400 COMPONENTS_INPUT (parseIssueComponents, issue_components.go). The
+  // tool refuses the same calls before anything is sent, in the rule its field states.
+  test.each([
+    "dispatch_issue",
+    "dispatch_issue_update",
+  ] as const)("%s refuses the components its route refuses, in the rule its field states", (name) => {
+    const schema = schemaFor(name);
+    for (const components of [
+      { mode: "explicit" },
+      { mode: "none" },
+      { mode: "none", reason: " \n" },
+    ]) {
+      const result = schema.safeParse({ ...validCalls[name], components });
+      expect(result.success, JSON.stringify(components)).toBe(false);
+      expect(
+        result.error?.issues.map((issue) => issue.message),
+        JSON.stringify(components)
+      ).toEqual([COMPONENTS_RULE]);
+    }
+    for (const components of [
+      { mode: "inherit" },
+      { mode: "explicit", ids: ["web"] },
+      { mode: "none", reason: "hiring" },
+    ]) {
+      const result = schema.safeParse({ ...validCalls[name], components });
+      expect(result.success, JSON.stringify(components)).toBe(true);
+    }
+    const words = argumentDescriptions(name).join(" ");
+    expect(words).toContain(COMPONENTS_RULE);
+    expect(words).toContain("Required for mode explicit");
+    expect(words).toContain("Required for mode none");
+  });
+
+  // POST /api/v1/issues imports the GitHub issue an external reference names into the project the
+  // create names: one already imported into that project answers its issue and creates nothing,
+  // and one imported into another project is refused 400 EXTERNAL_PROJECT_MISMATCH (createIssue).
+  test("dispatch_issue's external says the form its route reads and the refusal it answers", () => {
+    const external = argumentDescriptions("dispatch_issue").find((text) =>
+      text.startsWith("Optional external issue reference")
+    );
+    expect(external).toContain("owner/repo#n");
+    expect(external).toContain("answers its issue and creates nothing");
+    expect(external).toContain("400 EXTERNAL_PROJECT_MISMATCH");
+    const route = readFileSync(
+      resolve(import.meta.dir, "../../envoy/internal/dispatch/api/issue_create.go"),
+      "utf8"
+    );
+    expect(route).toContain(`"EXTERNAL_PROJECT_MISMATCH"`);
+  });
+
+  // A suggestion's replacement is markdown: text alone stays in the quoted text's block, and whole
+  // blocks stand where the quoted text stood, over a heading's whole text in the heading's place.
+  // block_edits_test.go's TestASuggestionsBlocksOverAHeadingsTextStandInItsPlace holds the route
+  // to it; the words promise no more than that, and no block in a table cell.
+  test("dispatch_suggest's replace_with says which blocks its route takes, and where", () => {
+    const replaceWith = argumentDescriptions("dispatch_suggest").find((text) =>
+      text.startsWith("Replacement markdown for the quoted text.")
+    );
+    for (const promise of [
+      "Text alone stays in the quoted text's block",
+      "whole blocks (paragraphs, lists, headings written with their #s) stand where the quoted text stood",
+      "over a heading's whole text they take the heading's place, so a heading that stays is written with its #s",
+      "A table cell takes text alone.",
+    ]) {
+      expect(replaceWith, promise).toContain(promise);
+    }
   });
 });
