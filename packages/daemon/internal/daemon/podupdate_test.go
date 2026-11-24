@@ -1925,8 +1925,8 @@ func TestPodUpdateRevivesNoSuspendedClaimForTheRound(t *testing.T) {
 // of a released pod records a process in it. Both readers of PodDrift ask it only through a
 // claim that records one (groupDrift, podProcess), so the branch that answers runtime.ErrPodGone
 // for a Sandbox suspended without this round's own displaced-pod mark is never reached for a
-// released pod: the sweep opens no round over it, writes nothing on the issue about work the
-// release's bundle is holding, and leaves the wake to bring the pod back.
+// released pod: the sweep opens no round over it, writes nothing on the issue about work a pod it
+// no longer has might have held, and leaves the wake to bring the pod back.
 func TestPodUpdateReadsAReleasedPodAsNoPodRatherThanAPodThatWent(t *testing.T) {
 	t.Parallel()
 	rig := newPodUpdateRig(t,

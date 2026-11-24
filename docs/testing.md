@@ -494,12 +494,13 @@ the limit, as on a dev box whose `TMPDIR` is on a data disk.
   TMPDIR="$L" GOTMPDIR="$L" go test ./<package>/... -count=1
   ```
 
-## A test in `internal/dispatch/api` runs beside the others
+## A test in `internal/dispatch/api` or `internal/dispatch/docs` runs beside the others
 
-Every top-level test of `packages/envoy/internal/dispatch/api` calls `t.Parallel()` as its first
-statement, and the package's `TestMain` runs 8 of them at once. Each test already has a database
-and a server of its own (`storetest.Open`), so run alone it spends most of its time waiting on
-Postgres while the machine's other cores sit idle.
+Every top-level test of `packages/envoy/internal/dispatch/api` and
+`packages/envoy/internal/dispatch/docs` calls `t.Parallel()` as its first statement, and each
+package's `TestMain` sets how many run at once: 8 in api, 6 in docs. Each test already has a
+database and a server or document service of its own (`storetest.Open`), so run alone it spends
+most of its time waiting on Postgres while the machine's other cores sit idle.
 
 A test stays serial when it, or a helper it calls, changes or measures something the whole test
 process shares: the default logger (`logtest.SetDefault`, `slog.SetDefault`), the environment
@@ -526,6 +527,20 @@ after its response. A product bound the test does not mean to race takes a value
 through a field of the server that only a test sets, as `server.mentionLookupBound` and
 `server.duplicateBound` do; a package variable would change it for the parallel tests beside it
 (`comment_delivery_sender_test.go`, `TestMentionLookupsOfOneCommentRunAtOnce`).
+
+A test in `internal/dispatch/docs`, and a helper it calls (`storetest`, `lockstep`, `docstest`),
+registers its cleanups with `testcleanup.Add(t, f)`, not `t.Cleanup(f)`. testing keeps a finished
+parallel test, and every closure its cleanups captured, until the package's last parallel test
+ends, so a document service, a room of a 400 KB document or a peer that a cleanup shuts down stays
+live for the rest of the run; `testcleanup.Add` lets go of it once the cleanup has run. Under the
+race detector every live byte costs about three (the heap and the detector's shadow of it), and
+envoy-go-race-docs fails its step when the binary passes 8 GB
+(`.github/workflows/ci-job-envoy-go-race-docs.yaml`).
+
+A docs test stays serial, and says so on its first line with what it measured, when run alone it
+adds far more memory than the others: a few hundred megabytes or more of live heap after a
+collection, about three times that under the race detector. Beside the package's other tests
+such a test would take the binary toward the step's limit.
 
 ## Go's package deadline
 
@@ -601,7 +616,7 @@ It is a slow suite: a pull request runs it only with the label `full-ci` (or `la
 
 That job runs the command with `-v` for a second check Go's detector does not make:
 the package's `TestMain` prints `docs: <built> services built, <alive> still alive after <duration>` once the tests have run, and the line after it names each test that built a service still alive at the end of the run.
-A test that builds a `*Service` gives it a `t.Cleanup` that shuts it down.
+A test that builds a `*Service` registers a cleanup that shuts it down, with `testcleanup.Add`.
 A service a test left running holds its rooms, and their documents, for the rest of the binary's run.
 A service that was shut down is still alive at the end of the run when a callback of one of its stopped timers holds it.
 `Timer.Stop` does not free the callback: the runtime keeps a stopped timer in the heap of the P that armed it until that P next clears its stopped timers or the timer's own time comes, and an idle P clears them only when it next runs, which depends on the machine's load.

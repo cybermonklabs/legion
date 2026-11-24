@@ -160,9 +160,11 @@ below lists them in the order of the default steps. A role keeps
 its session between its assignments until its issue leaves the workflow, so its next task reaches
 the same session. Under the Kubernetes runtime the pod is shorter-lived than the session: the
 daemon releases an issue's pod once no role of it has a turn in progress or a turn due for ten
-minutes, after saving the workspace's unpushed work, and the next wake for one of its roles — a
+minutes and no working copy or bookmark of its workspace holds a commit that origin does not hold,
+nor the working copy a change, and the next wake for one of its roles — a
 task, a notice, a message to the role or to its session, or a CI settlement on the pull request's
-head — brings the pod back and resumes the same sessions where they stopped.
+head — brings the pod back and resumes the same sessions where they stopped. A commit that no
+working copy and no bookmark reaches, such as a side head, is not kept.
 
 | Phase | Worker | What it does | GitHub identity |
 | --- | --- | --- | --- |
