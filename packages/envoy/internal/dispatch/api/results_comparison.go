@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
@@ -136,6 +137,9 @@ type comparisonReader struct {
 	// id and then by the head's repository and commit (deriveCIResults), which answer gives each
 	// subject of it.
 	headCI map[string]map[ciHeadKey]*model.CheckCI
+	// fills is the read's memo of the merge times it learned (fillMergeTimes), the one
+	// listCheckResults made before deriveCIResults, so the reader learns no merge time twice.
+	fills *mergeTimeFills
 }
 
 // noCommitNamed is the `at` of a read that named no commit, which is every read but the one a
@@ -152,17 +156,20 @@ const noCommitNamed = ""
 // subjects is set for a `before_merge` check compared with heads (headBases): the heads a pass
 // must stand at, each of them, for the gate's answer to be yes (passStandsOf). Every subject is a
 // basis; a merged pull request's head beside an open pull request, and a merged one older than
-// the newest, is a basis and no subject.
+// the newest, is a basis and no subject. unordered is set for a `before_merge` check of an issue
+// none of whose pull requests is open where Dispatch cannot tell which merged one merged last
+// (headBases): it names no subject, and passStandsOf answers unknown.
 //
 // ci is set on one check's copy alone (answer), for a check CI proves: its read at each head, by
 // the head's repository and commit, which the subject of that repository at that commit carries
 // (subjectState).
 type comparison struct {
-	bases    []model.CheckBasis
-	reason   string
-	unread   string
-	subjects []headSubject
-	ci       map[ciHeadKey]*model.CheckCI
+	bases     []model.CheckBasis
+	reason    string
+	unread    string
+	subjects  []headSubject
+	unordered bool
+	ci        map[ciHeadKey]*model.CheckCI
 }
 
 // headSubject is one subject of a check compared with heads (comparison.subjects): its basis, as
@@ -430,7 +437,7 @@ func (c *comparisonReader) learn(ctx context.Context, checks []model.CheckBlock)
 		}
 		compared := c.comparedWith(ctx, check)
 		for _, result := range check.Results {
-			if basisAt(compared.bases, result.CommitSHA) != nil {
+			if c.resultBasisAt(ctx, check.IssueKey, compared.bases, result) != nil {
 				continue
 			}
 			key := [2]string{result.CheckIssueKey, result.CommitSHA}
@@ -452,20 +459,23 @@ func (c *comparisonReader) learn(ctx context.Context, checks []model.CheckBlock)
 // another commit, or not known with the reason. It says nothing about the check's words, which
 // answer carries beside it.
 //
-// A commit one of the bases names is the whole answer, whatever Dispatch can read now. A result a
-// head's check run derived stands at that head's basis (derivedAt), so where two repositories are
-// open at one commit, each one's derived result names its own pull request. Where the check
-// named no basis, the reason it named none decides: nothing to compare with leaves the commit at
-// another commit, while a repository Dispatch could not read leaves it unknown.
-// Where the check named bases and none is this commit, a `before_merge` result turns on
-// whether the repository the commit is taken to be of can be read at all, and a branch check
-// walks the branches of that repository (onNamedBranch). Those two, beside learn's read-through
-// of a `before_merge` result's pull requests (readThroughHead), are the only places here the
-// repository a result's row takes its commit to be of is read, each through the one resolver
-// (commitRepositoryOf): a check that named no basis of its own leaves such a result where its
-// reason leaves every other, as passStandsOf leaves the check. An `other_commit` or `unknown`
-// answer a linked repository decided names it (model.ResultCommitStands.Repo), so a reader can
-// tell it from one about the issue's own repository.
+// A commit one of the bases of its own repository names (resultBasisAt) is the whole answer,
+// whatever Dispatch can read now: a result whose commit is taken to be of the issue's own
+// repository is never at the head of a pull request in a linked one, nor a linked result at one
+// of the issue's own, whatever commit the two heads share. A result a head's check run derived
+// stands at that head's basis (derivedAt), so where two repositories are open at one commit, each
+// one's derived result names its own pull request. Where the check named no basis, the reason it
+// named none decides: nothing to compare with leaves the commit at another commit, while a
+// repository Dispatch could not read leaves it unknown. Where the check named bases and none is
+// this commit, a `before_merge` result turns on whether the repository the commit is taken to be
+// of can be read at all, and a branch check walks the branches of that repository
+// (onNamedBranch). Those two and resultBasisAt, beside learn's read-through of a `before_merge`
+// result's pull requests (readThroughHead), are the only places here the repository a result's
+// row takes its commit to be of is read, each through the one resolver (commitRepositoryOf, and
+// its name alone, commitRepositoryName): a check that named no basis of its own leaves such a
+// result where its reason leaves every other, as passStandsOf leaves the check. An `other_commit`
+// or `unknown` answer a linked repository decided names it (model.ResultCommitStands.Repo), so a
+// reader can tell it from one about the issue's own repository.
 //
 // A `before_merge` result whose commit is taken to be of a linked repository
 // (commitRepositoryOf) is decided by that repository, as its record and its read-through are:
@@ -494,7 +504,7 @@ func (c *comparisonReader) commitStands(
 	if basis := compared.derivedAt(result); basis != nil {
 		return model.ResultCommitStands{Answer: model.CommitAtBasis, Basis: basis}
 	}
-	if basis := basisAt(compared.bases, result.CommitSHA); basis != nil {
+	if basis := c.resultBasisAt(ctx, check.IssueKey, compared.bases, result); basis != nil {
 		return model.ResultCommitStands{Answer: model.CommitAtBasis, Basis: basis}
 	}
 	switch compared.reason {
@@ -553,6 +563,31 @@ func basisAt(bases []model.CheckBasis, sha string) *model.CheckBasis {
 		if basis.Commit == sha {
 			found := basis
 			return &found
+		}
+	}
+	return nil
+}
+
+// resultBasisAt is the basis naming result's commit among bases that is of the repository the
+// commit is taken to be of (commitRepositoryName), and nil where none is: a basis naming no
+// repository is of the issue's own, and one naming a repository is of that one (headBasis). So a
+// result of the issue's own repository never stands at the head of a pull request of a linked
+// one, nor a linked result at a head of the issue's own, whatever commit the two heads share. A
+// commit no basis names reads nothing, and a basis a read names (`?at=`) is of every repository.
+// Where the issue resolves to no repository, or its resolve did not answer, no basis can be told
+// for the issue's own from a linked one, and the commit alone decides (basisAt).
+func (c *comparisonReader) resultBasisAt(ctx context.Context, issueKey string, bases []model.CheckBasis, result model.CheckResult) *model.CheckBasis {
+	found := basisAt(bases, result.CommitSHA)
+	if found == nil || found.Kind == model.CheckBasisNamed {
+		return found
+	}
+	if own, answered := c.repositoryOf(ctx, issueKey); !answered || own == nil {
+		return found
+	}
+	repo := c.commitRepositoryName(ctx, issueKey, result.CommitRepo)
+	for _, basis := range bases {
+		if basis.Commit == result.CommitSHA && strings.EqualFold(basis.Repo, repo) {
+			return &basis
 		}
 	}
 	return nil

@@ -575,7 +575,11 @@ func (s *server) listCheckResults(w http.ResponseWriter, r *http.Request) {
 		}
 		checks[index].Results = results
 	}
-	headCI, err := s.deriveCIResults(r.Context(), issueKey, checks)
+	// The read's memo of merge times is made before anything orders a merged pull request, so the
+	// CI read of each check and the comparison after it learn each merge time once
+	// (fillMergeTimes).
+	fills := &mergeTimeFills{}
+	headCI, err := s.deriveCIResults(r.Context(), issueKey, checks, fills)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -584,7 +588,7 @@ func (s *server) listCheckResults(w http.ResponseWriter, r *http.Request) {
 	// two `before_merge` checks of one issue name one list of bases and not two
 	// (comparisonReader.learn).
 	reader := newComparisonReader(s, at)
-	reader.headCI = headCI
+	reader.headCI, reader.fills = headCI, fills
 	reader.learn(r.Context(), checks)
 	for index := range checks {
 		reader.answer(r.Context(), &checks[index])
