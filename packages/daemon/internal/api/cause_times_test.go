@@ -218,13 +218,24 @@ func TestALastStartFailureCarriesItsTimeUntilReady(t *testing.T) {
 // the state route and on the record route, and one whose pod's claims record a contract a pod
 // still places (pauseContract). The causes themselves stay as their own contract serves them.
 // A caller at causeTimesContract, and one in no pod, are served both times of the fixture's
-// architect, whose view carries every key. The daemon's log names what the narrowed body lost.
+// architect, whose view carries every key, and the death time this test gives the issue's
+// implementer, so the band is read on a worker's view as well as the architect's (it narrows
+// each through withEachClaimView). The worker is given it here rather than in the golden state:
+// a worker's lastDeathCause there would be a key no record of a contract below this one holds.
+// The daemon's log names what the narrowed body lost.
 func TestAnOlderContractIsServedNoCauseTimes(t *testing.T) {
 	state := populatedState(t)
 	architect := state.Issues[recordGoldenIssue].Architect
 	if architect == nil || architect.LastDeathAt == nil || architect.LastStartFailureAt == nil {
 		t.Fatalf("the fixture's architect of %s carries no cause times; this test proves nothing", recordGoldenIssue)
 	}
+	implementer, held := state.Issues[recordGoldenIssue].Workers[claim.RoleImplementer]
+	if !held || implementer.Claim.LastDeathCause != "" {
+		t.Fatalf("the fixture's %s holds no implementer with no death of its own (%+v); this test gives it one", recordGoldenIssue, implementer.Claim)
+	}
+	workerDied := time.Date(2026, 9, 22, 9, 14, 5, 0, time.UTC)
+	implementer.Claim.LastDeathCause, implementer.Claim.LastDeathAt = "gone: the roles container's process was OOMKilled", &workerDied
+	state.Issues[recordGoldenIssue].Workers[claim.RoleImplementer] = implementer
 	causeKeys := []string{"lastDeathCause", "lastStartFailure"}
 	timeKeys := []string{"lastDeathAt", "lastStartFailureAt"}
 	handler := stateServer(t, state, podClaims(pauseContract))
@@ -246,8 +257,15 @@ func TestAnOlderContractIsServedNoCauseTimes(t *testing.T) {
 		{"the state asked from no pod", claimViews(t, stateAsked(t, handler, "192.0.2.1:41000")), true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			dated := 0
+			dated, workers := 0, 0
 			for _, view := range tc.views {
+				if view["lastDeathCause"] == implementer.Claim.LastDeathCause {
+					workers++
+					if tc.times {
+						wantTimeKey(t, "the implementer's view", view, "lastDeathAt", workerDied)
+						continue
+					}
+				}
 				if view["lastDeathCause"] == architect.LastDeathCause {
 					dated++
 					for _, key := range causeKeys {
@@ -265,8 +283,9 @@ func TestAnOlderContractIsServedNoCauseTimes(t *testing.T) {
 					wantNoKeys(t, "a claim view served below causeTimesContract", view, timeKeys...)
 				}
 			}
-			if dated != 1 {
-				t.Fatalf("%d claim views carry the architect's death cause %q, want the architect's one: %v", dated, architect.LastDeathCause, tc.views)
+			if dated != 1 || workers != 1 {
+				t.Fatalf("%d claim views carry the architect's death cause %q and %d the implementer's %q, want one each: %v",
+					dated, architect.LastDeathCause, workers, implementer.Claim.LastDeathCause, tc.views)
 			}
 		})
 	}
