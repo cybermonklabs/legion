@@ -1185,15 +1185,14 @@ type claimCall struct {
 }
 
 // openCalls is every working claim of the state whose agent is in a tool call the daemon has seen
-// the start of and no end of, by issue and then role. A call open is what claims.go's openCallWord
-// prints a word for and nothing else is, so that is the test here too: openCallsSummary names
-// each of these rows with that word. That is the shape a stalled turn leaves behind: the daemon
-// reads the same record to decide a turn has stopped moving, and this is where an operator reads
-// it. Only a claim in state `working` has a turn in flight (supervise.StateWorking): a retired or
-// suspended claim keeps the step it was last in on its record, on purpose, so a call open there is
-// no agent in a call, and counting it named 111 retired claims among 169 in a deployment's state
-// of 2026-11-22. A controller's claim is in none of these — internal/projection puts it on no
-// issue — and is read with `legion claims list` instead.
+// the start of and no end of, by issue and then role: a working claim whose openCallWord is
+// non-empty. openCallsSummary names each of these rows with that word. That is the shape a stalled
+// turn leaves behind: the daemon reads the same record to decide a turn has stopped moving, and
+// this is where an operator reads it. Only a claim in state `working` has a turn in flight
+// (supervise.StateWorking): a retired or suspended claim keeps the step it was last in on its
+// record, on purpose, so a call open there is no agent in a call. A controller's claim is in none
+// of these — internal/projection puts it on no issue — and is read with `legion claims list`
+// instead.
 func openCalls(issues map[string]api.Issue) []claimCall {
 	var calls []claimCall
 	open := func(issue, role string, view api.ClaimView) {
