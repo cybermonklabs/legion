@@ -60,8 +60,11 @@ const StepRecordsRollForward = 20261117064152
 // which holds it to the block docs/kubernetes.md gives under the migration's rollback. The
 // headers of 20261117023932_outbox_kinds_with_the_plan_record.up.sql, of
 // 20261117034837_issue_plans.up.sql, of 20261120012547_set_back_observed_seq.up.sql, of
-// 20261120144241_intake_failures.up.sql, of 20261124012813_launch_model_totals.up.sql and of
-// StepRecordsRollForward carry one. The header of
+// 20261120042902_claim_agent_resume_generation.up.sql, of 20261120144241_intake_failures.up.sql,
+// of 20261121170714_dispatch_issue_applied_seq.up.sql, of
+// 20261123050533_idle_release_keeps_no_workspace.up.sql, of 20261123224717_members_owed.up.sql,
+// of 20261124012813_launch_model_totals.up.sql and of StepRecordsRollForward carry one. The
+// header of
 // 20261120055717_dispatch_issue_value_sequences.up.sql carries another, one statement that
 // docs/kubernetes.md gives too: internal/store's
 // TestTheCopysRefillMarksComeFromTheMigrationAndTheWayBack runs it, and no textcheck holds its
