@@ -2039,6 +2039,96 @@
         "capture": "githubapp.answer-echo"
       },
       {
+        "row": "githubapp-limit-header",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": [
+          "packages/envoy/internal/dispatch/githubapp/target_words_test.go",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "githubapp.limit-header"
+      },
+      {
+        "row": "githubapp-next-link",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": [
+          "packages/envoy/internal/dispatch/githubapp/target_words_test.go",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "githubapp.next-link"
+      },
+      {
+        "row": "githubapp-next-target",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": [
+          "packages/envoy/internal/dispatch/githubapp/target_words_test.go",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "githubapp.next-target"
+      },
+      {
+        "row": "githubapp-head-sha",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": [
+          "packages/envoy/internal/dispatch/githubapp/target_words_test.go",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "githubapp.head-sha"
+      },
+      {
+        "row": "githubapp-tree-path",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": [
+          "packages/envoy/internal/dispatch/githubapp/target_words_test.go",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "githubapp.tree-entry"
+      },
+      {
+        "row": "githubapp-default-branch",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": [
+          "packages/envoy/internal/dispatch/githubapp/target_words_test.go",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "githubapp.default-branch"
+      },
+      {
+        "row": "api-ci-detail-head",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": [
+          "packages/envoy/internal/dispatch/api/ci_run_words_test.go",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "api.ci-detail-head"
+      },
+      {
+        "row": "api-ci-run-words",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": [
+          "packages/envoy/internal/dispatch/api/ci_run_words_test.go",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "api.ci-run-words"
+      },
+      {
+        "row": "githubapp-limit-header-echo",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": [
+          "packages/envoy/internal/dispatch/githubapp/target_words_test.go",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "githubapp.limit-header-echo"
+      },
+      {
+        "row": "api-ci-detail-repo",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": [
+          "packages/envoy/internal/dispatch/api/ci_run_words_test.go",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "api.ci-detail-repo"
+      },
+      {
         "row": "oidc-discovery-references",
         "base": "63bd1880951d45cdf0874ad5c722143e827c3528",
         "files": [
@@ -2780,6 +2870,90 @@
       "package": "./internal/dispatch/api",
       "test": "TestACheckRunsReadRefusalPrintsGitHubsMessageAsTheRuleReadsIt",
       "production": "github.com/sjawhar/envoy/internal/dispatch/api.ciUnreadDetail over github.com/sjawhar/envoy/internal/dispatch/githubapp.CheckResponse: its rule call is the box's own printer now"
+    },
+    {
+      "id": "api-ci-detail-head",
+      "requirement": "r4-unchanged",
+      "package": "./internal/dispatch/api",
+      "test": "TestAHeadThatIsNotASHAReachesTheCheckRunsDetailAsAPhrase",
+      "production": "github.com/sjawhar/envoy/internal/dispatch/api.ciUnreadDetail: the head a check's runs could not be read at prints as redact.ShapedSHA prints it",
+      "function": "github.com/sjawhar/envoy/internal/dispatch/api.ciUnreadDetail",
+      "capture": "api.ci-detail-head",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/api/results_ci.go",
+        "preimage": "redact.ShapedSHA(\"head\", head.HeadSHA)",
+        "replacement": "head.HeadSHA"
+      }
+    },
+    {
+      "id": "api-ci-detail-repo",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/api",
+      "test": "TestAStoredHeadsRepositoryReachesTheCheckRunsDetailAsTheRuleReadsIt",
+      "production": "github.com/sjawhar/envoy/internal/dispatch/api.ciUnreadDetail: the stored head's repository prints as the rule reads it",
+      "function": "github.com/sjawhar/envoy/internal/dispatch/api.ciUnreadDetail",
+      "capture": "api.ci-detail-repo",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/api/results_ci.go",
+        "preimage": "redact.Field(head.Repo)",
+        "replacement": "head.Repo"
+      }
+    },
+    {
+      "id": "api-ci-detail-repo-refusal",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/api",
+      "test": "TestAStoredHeadsRepositoryReachesTheCheckRunsDetailAsTheRuleReadsIt",
+      "production": "(*github.com/sjawhar/envoy/internal/dispatch/api.server).readCIRuns: the refusal of a stored name GitHub does not allow names its class alone",
+      "function": "(*github.com/sjawhar/envoy/internal/dispatch/api.server).readCIRuns",
+      "capture": "api.ci-detail-repo",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/api/results_ci.go",
+        "preimage": "redact.Masked(err, \"the pull request row's repository is not a name GitHub allows\")",
+        "replacement": "fmt.Errorf(\"the pull request row's %w\", err)"
+      }
+    },
+    {
+      "id": "api-ci-run-words",
+      "requirement": "r4-unchanged",
+      "package": "./internal/dispatch/api",
+      "test": "TestACheckRunsStatusAndConclusionPrintOnlyAsGitHubDocumentsThem",
+      "production": "github.com/sjawhar/envoy/internal/dispatch/api.ciWordShown: a check run's status and conclusion print only as GitHub documents them, else a fixed phrase",
+      "function": "github.com/sjawhar/envoy/internal/dispatch/api.ciWordShown",
+      "capture": "api.ci-run-words",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/api/results_ci.go",
+        "preimage": "return phrase",
+        "replacement": "return word"
+      }
+    },
+    {
+      "id": "api-ci-run-words-status",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/api",
+      "test": "TestACheckRunsStatusAndConclusionPrintOnlyAsGitHubDocumentsThem/status",
+      "production": "github.com/sjawhar/envoy/internal/dispatch/api.ciAnswerOf: a run not completed names its status as ciWordShown prints it",
+      "function": "github.com/sjawhar/envoy/internal/dispatch/api.ciAnswerOf",
+      "capture": "api.ci-run-words/status",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/api/results_ci.go",
+        "preimage": "status := ciWordShown(run.status, ciStatuses, ciStatusUndocumented)",
+        "replacement": "status := run.status"
+      }
+    },
+    {
+      "id": "api-ci-run-words-conclusion",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/api",
+      "test": "TestACheckRunsStatusAndConclusionPrintOnlyAsGitHubDocumentsThem/conclusion",
+      "production": "github.com/sjawhar/envoy/internal/dispatch/api.ciAnswerOf: a pass or a fail names its conclusion, in its case, its detail and its derived result's observed text, as ciWordShown prints it",
+      "function": "github.com/sjawhar/envoy/internal/dispatch/api.ciAnswerOf",
+      "capture": "api.ci-run-words/conclusion",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/api/results_ci.go",
+        "preimage": "conclusion := ciWordShown(run.conclusion, ciConclusions, ciConclusionUndocumented)",
+        "replacement": "conclusion := run.conclusion"
+      }
     },
     {
       "id": "answer-printed",
@@ -6998,9 +7172,296 @@
       "capture": "githubapp.answer-words/blob-encoding",
       "mutation": {
         "file": "packages/envoy/internal/dispatch/githubapp/client.go",
-        "preimage": "is in an encoding that is not base64\", ShownBody(sha), ShownBody(path))",
-        "replacement": "has encoding %q, want base64\", ShownBody(sha), ShownBody(path), payload.Encoding)"
+        "preimage": "is in an encoding that is not base64\", sha, shown)",
+        "replacement": "has encoding %q, want base64\", sha, shown, payload.Encoding)"
       }
+    },
+    {
+      "id": "githubapp-limit-header",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/githubapp",
+      "test": "TestARateLimitsHeaderPrintsAsTheRuleReadsIt",
+      "production": "github.com/sjawhar/envoy/internal/dispatch/githubapp.graphQLLimitWording: a limit worded by its headers names each value as the rule reads it, with the answer's record",
+      "function": "github.com/sjawhar/envoy/internal/dispatch/githubapp.graphQLLimitWording",
+      "capture": "githubapp.limit-header",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/githubapp/deliveries.go",
+        "preimage": "body.Said(value).String()",
+        "replacement": "value"
+      }
+    },
+    {
+      "id": "githubapp-limit-header-echo",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/githubapp",
+      "test": "TestARateLimitsHeaderPrintsNoTokenItsRequestCarried",
+      "production": "github.com/sjawhar/envoy/internal/dispatch/githubapp.graphQLLimitWording: a header that echoes the request's installation token prints without it",
+      "function": "github.com/sjawhar/envoy/internal/dispatch/githubapp.graphQLLimitWording",
+      "capture": "githubapp.limit-header-echo",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/githubapp/deliveries.go",
+        "preimage": "body.Said(value).String()",
+        "replacement": "value"
+      }
+    },
+    {
+      "id": "githubapp-next-link",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/githubapp",
+      "test": "TestACredentialedNextLinkIsRefusedAsTheRuleReadsIt",
+      "production": "github.com/sjawhar/envoy/internal/dispatch/githubapp.answeredTarget: a next page link prints as the rule reads it, then as ShownBody cuts it",
+      "function": "github.com/sjawhar/envoy/internal/dispatch/githubapp.answeredTarget",
+      "capture": "githubapp.next-link",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/githubapp/deliveries.go",
+        "preimage": "redact.Field(target)",
+        "replacement": "target"
+      }
+    },
+    {
+      "id": "githubapp-next-link-refusals",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/githubapp",
+      "test": "TestACredentialedNextLinkIsRefusedAsTheRuleReadsIt",
+      "production": "github.com/sjawhar/envoy/internal/dispatch/githubapp.nextLink: each refusal of a next page link names it as answeredTarget prints it",
+      "function": "github.com/sjawhar/envoy/internal/dispatch/githubapp.nextLink",
+      "capture": "githubapp.next-link",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/githubapp/deliveries.go",
+        "preimage": "shown := answeredTarget(target)",
+        "replacement": "shown := ShownBody(target)"
+      }
+    },
+    {
+      "id": "githubapp-next-target",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/githubapp",
+      "test": "TestANextPagesTargetPrintsItsQueryAsTheRuleReadsIt",
+      "production": "(*github.com/sjawhar/envoy/internal/dispatch/githubapp.Client).Deliveries: a next page's request is named as nextLink prints its link",
+      "function": "(*github.com/sjawhar/envoy/internal/dispatch/githubapp.Client).Deliveries",
+      "capture": "githubapp.next-target",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/githubapp/deliveries.go",
+        "preimage": "target, shown = next, nextShown",
+        "replacement": "target, shown = next, ShownBody(next)"
+      }
+    },
+    {
+      "id": "githubapp-send-past-the-bound",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/githubapp",
+      "test": "TestANextPagesTargetPrintsItsQueryAsTheRuleReadsIt/past-the-bound",
+      "production": "(*github.com/sjawhar/envoy/internal/dispatch/githubapp.Client).send: an answer past its limit names the request by the target its caller printed",
+      "function": "(*github.com/sjawhar/envoy/internal/dispatch/githubapp.Client).send",
+      "capture": "githubapp.next-target/past-the-bound",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/githubapp/client.go",
+        "preimage": "method, shown, &ResponseTooLargeError{Limit: limit})",
+        "replacement": "method, ShownBody(target), &ResponseTooLargeError{Limit: limit})"
+      }
+    },
+    {
+      "id": "githubapp-send-cut-short",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/githubapp",
+      "test": "TestANextPagesTargetPrintsItsQueryAsTheRuleReadsIt/cut-short",
+      "production": "(*github.com/sjawhar/envoy/internal/dispatch/githubapp.Client).send: an answer that could not be read names the request by the target its caller printed",
+      "function": "(*github.com/sjawhar/envoy/internal/dispatch/githubapp.Client).send",
+      "capture": "githubapp.next-target/cut-short",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/githubapp/client.go",
+        "preimage": "\"read %s %s response: %w\", method, shown, ShownErr(err))",
+        "replacement": "\"read %s %s response: %w\", method, ShownBody(target), ShownErr(err))"
+      }
+    },
+    {
+      "id": "githubapp-send-note",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/githubapp",
+      "test": "TestANextPagesTargetPrintsItsQueryAsTheRuleReadsIt/status-500",
+      "production": "(*github.com/sjawhar/envoy/internal/dispatch/githubapp.Client).send: the note of a 5xx names the request by the target its caller printed",
+      "function": "(*github.com/sjawhar/envoy/internal/dispatch/githubapp.Client).send",
+      "capture": "githubapp.next-target/status-500",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/githubapp/client.go",
+        "preimage": "&failedAnswer{method: method, shown: shown,",
+        "replacement": "&failedAnswer{method: method, shown: ShownBody(target),"
+      }
+    },
+    {
+      "id": "githubapp-head-sha",
+      "requirement": "r4-unchanged",
+      "package": "./internal/dispatch/githubapp",
+      "test": "TestAHeadThatIsNotASHAIsRefusedBeforeAnyRequest",
+      "production": "github.com/sjawhar/envoy/internal/dispatch/githubapp.notASHA: a read that takes a SHA refuses one that is not, naming it by redact.ShapedSHA's phrase",
+      "function": "github.com/sjawhar/envoy/internal/dispatch/githubapp.notASHA",
+      "capture": "githubapp.head-sha",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/githubapp/commits.go",
+        "preimage": "redact.ShapedSHA(field, sha)",
+        "replacement": "sha"
+      }
+    },
+    {
+      "id": "githubapp-head-sha-check-runs",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/githubapp",
+      "test": "TestAHeadThatIsNotASHAIsRefusedBeforeAnyRequest/check-runs",
+      "production": "(*github.com/sjawhar/envoy/internal/dispatch/githubapp.Client).CommitCheckRuns: a head that is not a SHA is refused before any target",
+      "function": "(*github.com/sjawhar/envoy/internal/dispatch/githubapp.Client).CommitCheckRuns",
+      "capture": "githubapp.head-sha/check-runs",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/githubapp/commits.go",
+        "preimage": "notASHA(\"read the check runs of \"+repoFull, \"head\", sha)",
+        "replacement": "error(nil)"
+      }
+    },
+    {
+      "id": "githubapp-head-sha-check-suites",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/githubapp",
+      "test": "TestAHeadThatIsNotASHAIsRefusedBeforeAnyRequest/check-suites",
+      "production": "(*github.com/sjawhar/envoy/internal/dispatch/githubapp.Client).CommitCheckSuites: a head that is not a SHA is refused before any target",
+      "function": "(*github.com/sjawhar/envoy/internal/dispatch/githubapp.Client).CommitCheckSuites",
+      "capture": "githubapp.head-sha/check-suites",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/githubapp/commits.go",
+        "preimage": "notASHA(\"read the check suites of \"+repoFull, \"head\", sha)",
+        "replacement": "error(nil)"
+      }
+    },
+    {
+      "id": "githubapp-head-sha-statuses",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/githubapp",
+      "test": "TestAHeadThatIsNotASHAIsRefusedBeforeAnyRequest/statuses",
+      "production": "(*github.com/sjawhar/envoy/internal/dispatch/githubapp.Client).CommitStatuses: a head that is not a SHA is refused before any target",
+      "function": "(*github.com/sjawhar/envoy/internal/dispatch/githubapp.Client).CommitStatuses",
+      "capture": "githubapp.head-sha/statuses",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/githubapp/commits.go",
+        "preimage": "notASHA(\"read the statuses of \"+repoFull, \"head\", sha)",
+        "replacement": "error(nil)"
+      }
+    },
+    {
+      "id": "githubapp-head-sha-has-commit",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/githubapp",
+      "test": "TestAHeadThatIsNotASHAIsRefusedBeforeAnyRequest/has-commit",
+      "production": "(*github.com/sjawhar/envoy/internal/dispatch/githubapp.Client).HasCommit: a commit that is not a SHA is refused before any target",
+      "function": "(*github.com/sjawhar/envoy/internal/dispatch/githubapp.Client).HasCommit",
+      "capture": "githubapp.head-sha/has-commit",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/githubapp/commits.go",
+        "preimage": "notASHA(\"read the commit of \"+owner+\"/\"+repo, \"commit\", sha)",
+        "replacement": "error(nil)"
+      }
+    },
+    {
+      "id": "githubapp-head-sha-commit-on-branch",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/githubapp",
+      "test": "TestAHeadThatIsNotASHAIsRefusedBeforeAnyRequest/commit-on-branch",
+      "production": "(*github.com/sjawhar/envoy/internal/dispatch/githubapp.Client).CommitOnBranch: a commit that is not a SHA is refused before any target",
+      "function": "(*github.com/sjawhar/envoy/internal/dispatch/githubapp.Client).CommitOnBranch",
+      "capture": "githubapp.head-sha/commit-on-branch",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/githubapp/commits.go",
+        "preimage": "notASHA(\"read the comparison of \"+owner+\"/\"+repo, \"commit\", sha)",
+        "replacement": "error(nil)"
+      }
+    },
+    {
+      "id": "githubapp-tree-path",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/githubapp",
+      "test": "TestATreeEntryPrintsAsTheRuleReadsIt",
+      "production": "github.com/sjawhar/envoy/internal/dispatch/githubapp.shownPath: a path a tree GitHub answered names prints as the rule reads it, then as ShownBody cuts it",
+      "function": "github.com/sjawhar/envoy/internal/dispatch/githubapp.shownPath",
+      "capture": "githubapp.tree-entry",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/githubapp/client.go",
+        "preimage": "redact.Field(path)",
+        "replacement": "path"
+      }
+    },
+    {
+      "id": "githubapp-tree-path-past-the-bound",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/githubapp",
+      "test": "TestATreeEntryPrintsAsTheRuleReadsIt/path-past-the-bound",
+      "production": "(*github.com/sjawhar/envoy/internal/dispatch/githubapp.Client).DirFiles: notes.CheckSize's refusal of a listed size names the path as shownPath prints it",
+      "function": "(*github.com/sjawhar/envoy/internal/dispatch/githubapp.Client).DirFiles",
+      "capture": "githubapp.tree-entry/path-past-the-bound",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/githubapp/client.go",
+        "preimage": "notes.CheckSize(shownPath(file.Path), file.Size)",
+        "replacement": "notes.CheckSize(ShownBody(file.Path), file.Size)"
+      }
+    },
+    {
+      "id": "githubapp-tree-path-of-a-failed-read",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/githubapp",
+      "test": "TestATreeEntryPrintsAsTheRuleReadsIt/path-of-a-failed-read",
+      "production": "(*github.com/sjawhar/envoy/internal/dispatch/githubapp.Client).blob: each error of a blob read names the path as shownPath prints it",
+      "function": "(*github.com/sjawhar/envoy/internal/dispatch/githubapp.Client).blob",
+      "capture": "githubapp.tree-entry/path-of-a-failed-read",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/githubapp/client.go",
+        "preimage": "shown := shownPath(path)",
+        "replacement": "shown := ShownBody(path)"
+      }
+    },
+    {
+      "id": "githubapp-tree-blob-not-a-sha",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/githubapp",
+      "test": "TestATreeEntryPrintsAsTheRuleReadsIt/blob-not-a-sha",
+      "production": "(*github.com/sjawhar/envoy/internal/dispatch/githubapp.Client).blob: a blob a tree names by a value that is not a SHA is refused before any target",
+      "function": "(*github.com/sjawhar/envoy/internal/dispatch/githubapp.Client).blob",
+      "capture": "githubapp.tree-entry/blob-not-a-sha",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/githubapp/client.go",
+        "preimage": "notASHA(\"read the blob of \"+shown, \"blob\", sha)",
+        "replacement": "error(nil)"
+      }
+    },
+    {
+      "id": "githubapp-default-branch",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/githubapp",
+      "test": "TestADefaultBranchGitHubAnsweredPrintsAsTheRuleReadsIt",
+      "production": "(*github.com/sjawhar/envoy/internal/dispatch/githubapp.Client).CommitOnBranch: the comparison's target and its decode's error name a branch GitHub answered as the rule reads it",
+      "function": "(*github.com/sjawhar/envoy/internal/dispatch/githubapp.Client).CommitOnBranch",
+      "capture": "githubapp.default-branch",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/githubapp/commits.go",
+        "preimage": "redact.Field(branch)",
+        "replacement": "branch"
+      }
+    },
+    {
+      "id": "githubapp-branch-slash-readable",
+      "requirement": "r4-unchanged",
+      "package": "./internal/dispatch/githubapp",
+      "test": "TestABranchHoldingASlashPrintsReadably",
+      "production": "githubapp Branch and CommitOnBranch: a branch holding / prints readably, path-escaped in a target the client built and as the rule reads it in a comparison against GitHub's default branch"
+    },
+    {
+      "id": "githubapp-not-a-sha-classified",
+      "requirement": "r4-unchanged",
+      "package": "./internal/dispatch/githubapp",
+      "test": "TestARefusedSHAIsErrNotASHA",
+      "production": "githubapp's reads that take a SHA: a value that is not one is githubapp.ErrNotASHA to errors.Is, named by redact.ShapedSHA's phrase alone"
+    },
+    {
+      "id": "api-ci-run-words-documented",
+      "requirement": "r4-unchanged",
+      "package": "./internal/dispatch/api",
+      "test": "TestACheckRunsDocumentedWordsPrintAsTheyCame",
+      "production": "api ciAnswerOf, ciObserved: a documented status and conclusion print as they came, and an undocumented conclusion is still a fail"
     },
     {
       "id": "dev-proxy-stands-answer-words-upgrade-header",
@@ -9818,6 +10279,66 @@
       "site": "githubapp.StatusError's body",
       "source": "the review of #4368 at f0d00b1c26",
       "holder": "github.com/sjawhar/envoy/internal/dispatch/githubapp.StatusError"
+    },
+    {
+      "site": "githubapp graphQLLimitWording's header fallback: each header's name and value as it came",
+      "source": "the second pull request's site census",
+      "guard": "githubapp-limit-header"
+    },
+    {
+      "site": "githubapp nextLink's three refusals: the link as ShownBody shows it, and url.Parse's error as ShownErr shows it",
+      "source": "the second pull request's site census",
+      "guard": "githubapp-next-link"
+    },
+    {
+      "site": "githubapp send's errors and failedAnswer's note: a next page's target as ShownBody shows it, its query value as it came",
+      "source": "the second pull request's site census",
+      "guard": "githubapp-next-target"
+    },
+    {
+      "site": "githubapp's reads that take a SHA: a head OID GitHub's GraphQL answer gave, path-escaped into the target, ':' and '@' kept",
+      "source": "the second pull request's site census",
+      "guard": "githubapp-head-sha"
+    },
+    {
+      "site": "githubapp DirFiles and blob: a tree entry's path and blob SHA as ShownBody shows them",
+      "source": "the second pull request's site census",
+      "guard": "githubapp-tree-path"
+    },
+    {
+      "site": "githubapp CommitOnBranch: GitHub's default_branch path-escaped into the comparison's target and named in its decode's error",
+      "source": "the second pull request's site census",
+      "guard": "githubapp-default-branch"
+    },
+    {
+      "site": "githubapp.RateLimitError's Body, a plain string",
+      "source": "the second pull request's site census",
+      "holder": "github.com/sjawhar/envoy/internal/dispatch/githubapp.RateLimitError"
+    },
+    {
+      "site": "githubapp failedAnswer's detail, a plain string",
+      "source": "the second pull request's site census",
+      "holder": "github.com/sjawhar/envoy/internal/dispatch/githubapp.failedAnswer"
+    },
+    {
+      "site": "api ciUnreadDetail: the head SHA Dispatch holds, as it came",
+      "source": "the second pull request's site census",
+      "guard": "api-ci-detail-head"
+    },
+    {
+      "site": "api ciAnswerOf and ciObserved: a check run's status and conclusion, and the case set from it, as GitHub wrote them",
+      "source": "the second pull request's site census",
+      "guard": "api-ci-run-words"
+    },
+    {
+      "site": "githubapp graphQLLimitWording's header fallback: a header that echoes the request's credential, read with no record of the request",
+      "source": "the review of the slice's report",
+      "guard": "githubapp-limit-header-echo"
+    },
+    {
+      "site": "api ciUnreadDetail and readCIRuns: the stored head's repository as it came, in the detail and in refs.SplitGitHubRepo's refusal",
+      "source": "the review of the slice's report",
+      "guard": "api-ci-detail-repo"
     },
     {
       "site": "githubapp/deliveries.go StatusError.Error",
