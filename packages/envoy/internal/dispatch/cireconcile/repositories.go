@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // rowState is what a pass learned of one reconciled repository from GitHub.
@@ -175,9 +176,12 @@ func (r *Reconciler) resolve(ctx context.Context, row string, byDefault bool, c 
 	// subject.
 	ownerOf, nameOf, ok := splitRepo(state.fullName)
 	if !ok {
+		// The name is GitHub's words, or a stand-in's, and no owner/name: it prints as the rule
+		// reads it.
+		shown := redact.Field(state.fullName)
 		c.defaultsSkipped++
-		r.Logger.Warn("ci reconcile skipped a repository GitHub named oddly", "repository", row, "full_name", state.fullName)
-		githubreads.NoteFailure(ctx, fmt.Errorf("ci reconcile skipped %s: GitHub named it %q, which is not owner/name", row, state.fullName))
+		r.Logger.Warn("ci reconcile skipped a repository GitHub named oddly", "repository", row, "full_name", shown)
+		githubreads.NoteFailure(ctx, fmt.Errorf("ci reconcile skipped %s: GitHub named it %q, which is not owner/name", row, shown))
 		return reconciled{}, nil
 	}
 	headScopes := scopes(scope)
@@ -358,7 +362,7 @@ func (r *Reconciler) identify(ctx context.Context, row, owner, name, token, scop
 		return kept, nil, nil
 	}
 	if answer.FullName == "" || answer.ID == 0 {
-		return rowState{}, nil, fmt.Errorf("GitHub named the repository %q with id %d", answer.FullName, answer.ID)
+		return rowState{}, nil, fmt.Errorf("GitHub named the repository %q with id %d", redact.Field(answer.FullName), answer.ID)
 	}
 	return rowState{etag: answer.ETag, fullName: answer.FullName, id: answer.ID}, nil, nil
 }

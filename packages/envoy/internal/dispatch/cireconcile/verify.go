@@ -5,13 +5,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 const (
@@ -171,7 +174,7 @@ func (r *Reconciler) verify(ctx context.Context, writer Writer, request contract
 		// answer was held (runningSuite) is read at once when its request is written again.
 		return true
 	}
-	fields := []any{"repository", head.Owner + "/" + head.Repo, "pr", head.Number, "sha", head.SHA, "request", request.Revision}
+	fields := []any{"repository", head.Owner + "/" + head.Repo, "pr", head.Number, "sha", redact.ShapedSHA("head", head.SHA), "request", request.Revision}
 	fail := func(what string, err error) {
 		failed.episode, failed.revision, failed.at = request.Episode, request.Revision, now
 		failed.failures++
@@ -268,7 +271,7 @@ func (r *Reconciler) verify(ctx context.Context, writer Writer, request contract
 		failed.failures = 0
 		failed.retryAt = now.Add(verifyRetry)
 		remember(&r.verifyFailed, key, failed)
-		r.Logger.Info("ci verify held its answer: GitHub still runs a check suite of the head", append(fields, "suite", suite)...)
+		r.Logger.Info("ci verify held its answer: GitHub still runs a check suite of the head", append(fields, "suite", redact.ShapedID("suite id", suite))...)
 		return true
 	}
 	if _, err := writer.MarkVerified(ctx, head, request.Revision, request.Stream); err != nil {
@@ -285,7 +288,7 @@ func (r *Reconciler) doneVerifying(ctx context.Context, writer Writer, request c
 	head := request.Head
 	if err := writer.DoneVerifying(ctx, head, request.Revision); err != nil {
 		r.Logger.Warn("ci verify did not delete a verify request",
-			"repository", head.Owner+"/"+head.Repo, "pr", head.Number, "sha", head.SHA, "request", request.Revision, "error", err)
+			"repository", head.Owner+"/"+head.Repo, "pr", head.Number, "sha", redact.ShapedSHA("head", head.SHA), "request", request.Revision, "error", err)
 	}
 }
 
@@ -303,18 +306,19 @@ func verifyRetryAfter(failures int) time.Duration {
 // meet again: the App is not installed on the repository (deleted, or left by the App, after its
 // webhooks), GitHub answers a read of the repository or the commit 404, or 403 with no rate limit
 // behind it (githubapp.ErrRepositoryUnreadable, which githubapp.CheckRepositoryResponse makes of
-// both, so no *githubapp.StatusError carries them), or 410, a page past githubapp's response
-// limit, a listing that does not end within maxPages, or the bound's refusal of the answer's own
-// write (bus.ErrTooLarge from MarkVerified, where the stamp alone would take the record past its
-// bound, and the store writes it marked Overflowed). A write of what GitHub answered past the
-// record's bound never reaches here: record takes it as written (refused), the store writes the
-// record marked Overflowed, and what ends that episode is the listener letting its claim go on an
-// Overflowed record (cistore's checkVerify).
+// both, so no *githubapp.StatusError carries them), or 410, the head's commit is named by a value
+// that is no full sha, which the App client refuses to read (githubapp.ErrNotASHA), a page past
+// githubapp's response limit, a listing that does not end within maxPages, or the bound's refusal
+// of the answer's own write (bus.ErrTooLarge from MarkVerified, where the stamp alone would take
+// the record past its bound, and the store writes it marked Overflowed). A write of what GitHub
+// answered past the record's bound never reaches here: record takes it as written (refused), the
+// store writes the record marked Overflowed, and what ends that episode is the listener letting
+// its claim go on an Overflowed record (cistore's checkVerify).
 func permanentVerifyFailure(err error) bool {
 	var tooLarge *githubapp.ResponseTooLargeError
 	var status *githubapp.StatusError
 	switch {
-	case errors.Is(err, githubapp.ErrNoInstallation), errors.Is(err, githubapp.ErrRepositoryUnreadable), errors.Is(err, errTooManyPages), errors.Is(err, bus.ErrTooLarge), errors.As(err, &tooLarge):
+	case errors.Is(err, githubapp.ErrNoInstallation), errors.Is(err, githubapp.ErrRepositoryUnreadable), errors.Is(err, githubapp.ErrNotASHA), errors.Is(err, errTooManyPages), errors.Is(err, bus.ErrTooLarge), errors.As(err, &tooLarge):
 		return true
 	case errors.As(err, &status):
 		return status.Status == http.StatusNotFound || status.Status == http.StatusGone
@@ -323,8 +327,9 @@ func permanentVerifyFailure(err error) bool {
 }
 
 // runningSuite names a check suite of pages that has not completed and has runs in it
-// (latest_check_runs_count above zero), and answers "" when there is none. A suite another App
-// leaves queued with no run of its own holds nothing, as it holds nothing in the walk.
+// (latest_check_runs_count above zero), by its id (suiteID), and answers "" when there is none. A
+// suite another App leaves queued with no run of its own holds nothing, as it holds nothing in
+// the walk.
 func runningSuite(pages []pageOf[object]) string {
 	for _, page := range pages {
 		for _, raw := range page.items {
@@ -332,11 +337,22 @@ func runningSuite(pages []pageOf[object]) string {
 				continue
 			}
 			if count, ok := jsonCount(raw["latest_check_runs_count"]); ok && count > 0 {
-				return fmt.Sprint(raw["id"])
+				return suiteID(raw["id"])
 			}
 		}
 	}
 	return ""
+}
+
+// suiteID is a check suite's id as its listing holds it, a JSON number a decoded object carries
+// as a float64: in decimal digits where it is a whole number, as contracts writes an id the CI
+// store records, rather than fmt's exponent form ("3.1234567e+10"), and as fmt prints it
+// otherwise. A line prints it through redact.ShapedID, which reads only digits as an id.
+func suiteID(id any) string {
+	if n, ok := id.(float64); ok && n == math.Trunc(n) && !math.IsInf(n, 0) {
+		return strconv.FormatFloat(n, 'f', -1, 64)
+	}
+	return fmt.Sprint(id)
 }
 
 // jsonCount is a JSON number as a decoded object carries it.
