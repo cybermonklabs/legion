@@ -2625,8 +2625,13 @@ test("read_state names the reached claim after a generation clears a second agen
           generation: 2,
           phase: "reviewing",
           status: "needs_review",
-          workers: reached === undefined ? {} : { implementer: { claim: { token: reached, state: "idle" } } },
-          otherClaims: [{ role: "implementer", claim: { token: second, state: "idle" } }],
+          workers:
+            reached === undefined
+              ? {}
+              : { implementer: { claim: { token: reached, state: "idle" } } },
+          otherClaims: [
+            { role: "implementer", claim: { token: reached === undefined ? own : second, state: "idle" } },
+          ],
         },
       },
       paused: {
@@ -2634,17 +2639,23 @@ test("read_state names the reached claim after a generation clears a second agen
         since: "2026-11-16T08:00:00Z",
         by: { kind: "operator" },
         reason: "a provider outage",
-        waitsOn: [own, second].map((claim) => ({
-          claim, issue: "LEGION-208", role: "implementer", askedAt: "2026-11-16T08:00:00Z",
+        waitsOn: (reached === undefined ? [own] : [own, second]).map((claim) => ({
+          claim,
+          issue: "LEGION-208",
+          role: "implementer",
+          askedAt: "2026-11-16T08:00:00Z",
         })),
         held: [],
       },
     });
-    const line = (await summaryLinesOf(recordingDaemon({ state }).daemon)).find((line) => line.startsWith("paused: "));
-    expect(/; waits on 2 claims — (.+); holds no row$/.exec(line ?? "")?.[1]?.split(", ")).toEqual([
-      reached === own ? "LEGION-208 implementer" : `LEGION-208 implementer (claim ${own})`,
-      `LEGION-208 implementer (claim ${second})`,
-    ]);
+    const line = (await summaryLinesOf(recordingDaemon({ state }).daemon)).find((line) =>
+      line.startsWith("paused: ")
+    );
+    expect(/; waits on [12] claims? — (.+); holds no row$/.exec(line ?? "")?.[1]?.split(", ")).toEqual(
+      reached === own
+        ? ["LEGION-208 implementer", `LEGION-208 implementer (claim ${second})`]
+        : [`LEGION-208 implementer (claim ${own})`]
+    );
   }
 });
 
@@ -2655,11 +2666,20 @@ test("read_state names a pause stop whose claim does not parse by issue and role
       since: "2026-11-16T08:00:00Z",
       by: { kind: "operator" },
       reason: "a provider outage",
-      waitsOn: [{ claim: "not-an-agent-token", issue: "LEGION-208", role: "implementer", askedAt: "2026-11-16T08:00:00Z" }],
+      waitsOn: [
+        {
+          claim: "not-an-agent-token",
+          issue: "LEGION-208",
+          role: "implementer",
+          askedAt: "2026-11-16T08:00:00Z",
+        },
+      ],
       held: [],
     },
   });
-  const line = (await summaryLinesOf(recordingDaemon({ state }).daemon)).find((line) => line.startsWith("paused: "));
+  const line = (await summaryLinesOf(recordingDaemon({ state }).daemon)).find((line) =>
+    line.startsWith("paused: ")
+  );
   expect(/; waits on 1 claim — (.+); holds no row$/.exec(line ?? "")?.[1]).toBe("LEGION-208 implementer");
 });
 
