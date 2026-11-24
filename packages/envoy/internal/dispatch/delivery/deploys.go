@@ -222,7 +222,11 @@ func RecordProductionDeploys(ctx context.Context, pool *store.Pool, settings Del
 			order by j.completed_at, j.name limit 1) job on true
 		left join deploys d on d.source = 'delivery_run' and d.run_id = r.run_id
 		where r.repo = $1 and r.kind = 'deploy' and r.head_branch = 'main'
-			and (d.id is null or (d.commit_sha, d.run_completed_at, d.run_attempt, d.url)
+			and (d.id is null or (d.commit_sha,
+				case when d.commit_sha = (select commit_sha from deploys current
+					where current.repo = r.repo and current.program = 'delivery'
+					order by current.deployed_at desc, current.id desc limit 1)
+				then job.completed_at else d.deployed_at end, d.run_attempt, d.url)
 				is distinct from (r.head_sha, job.completed_at, r.run_attempt, r.url))
 		order by job.completed_at, r.run_id`, settings.DeployRepo, production.JobNames, production.ApplyStep)
 	if err != nil {
