@@ -28,6 +28,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/sjawhar/envoy/internal/cipher/placeholder"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess/projectaccesstest"
@@ -57,9 +58,9 @@ const (
 
 // The placeholders of the fake grants, in the shape the broker mints them.
 var (
-	limitedPlaceholder   = requests.PlaceholderPrefix + "LimitedLimitedLimitedLimitedLim1"
-	unlimitedPlaceholder = requests.PlaceholderPrefix + "UnlimitedUnlimitedUnlimitedUnli1"
-	noListPlaceholder    = requests.PlaceholderPrefix + "NoListNoListNoListNoListNoListN1"
+	limitedPlaceholder   = placeholder.Prefix + "LimitedLimitedLimitedLimitedLim1"
+	unlimitedPlaceholder = placeholder.Prefix + "UnlimitedUnlimitedUnlimitedUnli1"
+	noListPlaceholder    = placeholder.Prefix + "NoListNoListNoListNoListNoListN1"
 )
 
 // slackRules is the deployment's entry for the token: bound to the host, swapped into

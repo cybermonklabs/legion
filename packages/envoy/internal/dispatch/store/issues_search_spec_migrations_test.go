@@ -76,6 +76,7 @@ func rankIssue(t *testing.T, ctx context.Context, store *Store, key, query strin
 // it, and the words of its key and title still outrank them, so the spec rides at a lower weight
 // rather than at the title's.
 func TestIssuesSearchSpecMigrationReindexesTheIssuesStoredBeforeIt(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := openMigratedTestStore(t, beforeIssuesSearchSpec)
 	const spec = "The rhumb lines of the Tyrrhenian portolan cross at Capo Testa.\n"
@@ -116,6 +117,7 @@ func TestIssuesSearchSpecMigrationReindexesTheIssuesStoredBeforeIt(t *testing.T)
 // 20261105145243's trigger re-indexes an issue when its primary document gains a version, which
 // is the only write that changes the issue's vector without touching the issue's own row.
 func TestTheIssuesSearchTriggerIndexesAVersionWrittenAfterIt(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := openMigratedTestStore(t, latestVersion)
 	seedCoreWithADefaultAssignee(t, store)
@@ -149,6 +151,7 @@ func TestTheIssuesSearchTriggerIndexesAVersionWrittenAfterIt(t *testing.T) {
 // file would cost the exemption and refuse every deploy carrying it. The limit is injected at one
 // byte so the test needs no gigabyte.
 func TestCensusExemptsTheIssuesSearchTriggerFromTheTableLimit(t *testing.T) {
+	t.Parallel()
 	store := openMigratedTestStore(t, issuesSearchSpec)
 	report, err := census(context.Background(), store.Pool.Config().ConnString(),
 		migrationsThrough(t, issuesSearchSpecTrig), pgmigrate.CensusOptions{TableLimit: 1})
@@ -172,6 +175,7 @@ func TestCensusExemptsTheIssuesSearchTriggerFromTheTableLimit(t *testing.T) {
 // issue_embedding_spec, under ACCESS SHARE, which the census leaves out of a migration's tables on
 // purpose, so no deploy is refused over the size of artifact_versions.
 func TestTheIssuesSearchSpecMigrationsTouchOnlyWhatTheyMustLock(t *testing.T) {
+	t.Parallel()
 	for _, migration := range []struct {
 		name string
 		file string

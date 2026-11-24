@@ -5,8 +5,11 @@
 // binary links, so a module that enters either is weighed before it ships. The decoder
 // (secrets.ParseValue) is the code each minter runs and the client calls, and the client links
 // every module the broker's secrets package needs. The broker's list is read from here, beside the
-// client's, so that one test run holds both (ci_job_reads.py names this listing).
+// client's, so that one test run holds both (the //ci:builds lines below name this listing).
 package main
+
+//ci:builds packages/envoy ./cmd/cipher CGO_ENABLED=0 GOOS=darwin TestTheAgentSecretsBinaryLinksItsListedModules requireModules' go list -deps . CGO_ENABLED=0 GOOS=darwin
+//ci:builds packages/envoy ./cmd/cipherd CGO_ENABLED=0 GOOS=linux TestTheBrokerBinaryLinksItsListedModules requireModules' go list -deps . in ../cipherd CGO_ENABLED=0 GOOS=linux
 
 import (
 	"fmt"
