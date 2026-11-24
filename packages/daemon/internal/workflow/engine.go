@@ -1507,14 +1507,11 @@ func (e *Engine) claimFailed(ctx context.Context, tx pgx.Tx, fact intake.ClaimFa
 }
 
 // heldTaskSummary is what the held notice of a failed claim of one task of a plan of several says
-// of the step it holds, so its owner reads which of its tasks is held: `task <id>, step <i>`, or
-// the task's retro or its merge.
+// of the place it holds, so its owner reads which of its tasks is held: `task <id>, step <i>`, or
+// the place of the task's act (actWords): its parts, its report, its retro or its merge.
 func heldTaskSummary(w Walk) string {
-	switch w.Place.Kind {
-	case record.PlaceRetro:
-		return fmt.Sprintf("task %s, its retro", w.Task)
-	case record.PlaceMerge:
-		return fmt.Sprintf("task %s, its merge", w.Task)
+	if words := actWords(w.Place.Kind); words != "" {
+		return fmt.Sprintf("task %s, %s", w.Task, words)
 	}
 	return fmt.Sprintf("task %s, step %d", w.Task, w.Place.Position)
 }

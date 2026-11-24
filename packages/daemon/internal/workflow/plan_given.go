@@ -545,11 +545,12 @@ func laterVersionRefusal(issue string, held record.PlanVersion, next plan.Plan) 
 	return nil
 }
 
-// taskPlaceWords is where task of stored stands, as a refusal names it (intake.HeldTaskChanged,
-// taskMergingAt): `step <i> (<role>)`, its parts, its report, its retro, its merge, or no act for a
-// task that has not started.
-func taskPlaceWords(stored *record.StoredPlan, task record.PlanTask) string {
-	switch task.Place.Kind {
+// actWords is where a task stands at kind, a place that is no step, as a text to an agent names it:
+// its parts or its report, where its sub-owner acts, its retro or its merge; "" for a step and for
+// no act. It is the one name of such a place in a refusal (taskPlaceWords) and in the held notice
+// of a failed claim (heldTaskSummary), so neither names a step a task does not stand at.
+func actWords(kind string) string {
+	switch kind {
 	case record.PlaceParts:
 		return "its parts"
 	case record.PlaceReported:
@@ -558,7 +559,18 @@ func taskPlaceWords(stored *record.StoredPlan, task record.PlanTask) string {
 		return "its retro"
 	case record.PlaceMerge:
 		return "its merge"
-	case "":
+	}
+	return ""
+}
+
+// taskPlaceWords is where task of stored stands, as a refusal names it (intake.HeldTaskChanged,
+// taskMergingAt): `step <i> (<role>)`, the place of an act (actWords), or no act for a task that has
+// not started.
+func taskPlaceWords(stored *record.StoredPlan, task record.PlanTask) string {
+	if words := actWords(task.Place.Kind); words != "" {
+		return words
+	}
+	if task.Place.Kind == "" {
 		return "no act"
 	}
 	role := ""

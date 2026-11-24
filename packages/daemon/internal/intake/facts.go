@@ -2089,16 +2089,17 @@ const (
 	ChangeOfParts
 )
 
-// words is what act does to a task, as the refusal says nothing of the task is left to do, the
-// call that changed nothing, and what the caller does instead, "" for nothing.
-func (act TaskAct) words(issue string) (does, call, instead string) {
+// words is what act does to a task, as the refusal says nothing of the task is left to do, and the
+// sentence after it: that the call changed nothing, or, for a version of the task's sub-owner, that
+// the owner of issue writes the missing work, the one next act a sub-owner of a finished task has.
+func (act TaskAct) words(issue string) (does, then string) {
 	switch act {
 	case StopOfTask:
-		return "stop", "stop", ""
+		return "stop", "This stop changed nothing."
 	case ChangeOfParts:
-		return "change", "version", fmt.Sprintf(" Ask the owner of %s for the missing work as a task of its own.", issue)
+		return "change", fmt.Sprintf("Ask the owner of %s for the missing work as a task of its own.", issue)
 	}
-	return "change", "plan", ""
+	return "change", "This plan changed nothing."
 }
 
 // FinishedTask is the 409 TASK_DONE refusal of act on task of issue, whose state is done or left
@@ -2119,9 +2120,9 @@ func FinishedTask(issue, task string, state record.TaskState, act TaskAct) *Refu
 	default:
 		return nil
 	}
-	does, call, instead := act.words(issue)
+	does, then := act.words(issue)
 	return &Refusal{Status: 409, Code: "TASK_DONE", Message: fmt.Sprintf(
-		"task %s of %s %s, so nothing of it is left to %s. This %s changed nothing.%s", task, issue, stands, does, call, instead)}
+		"task %s of %s %s, so nothing of it is left to %s. %s", task, issue, stands, does, then)}
 }
 
 // TaskAwaitsPerson is the 409 TASK_AWAITING_PERSON refusal of stop_task for task of issue, a root
