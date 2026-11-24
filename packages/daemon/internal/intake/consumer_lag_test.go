@@ -41,6 +41,7 @@ func TestConsumerLagCountsWhatWaitsAndCallsAConsumerStalledWhenNoneIsHandledFor6
 	for number := 1; number <= 3; number++ {
 		stored = append(stored, publishStored(t, js, stream, fmt.Sprintf("notifications.github.sjawhar.legion.pr.%d", number), pullRequestOpenedEnvelope(t, number)))
 	}
+	awaitWaiting(t, stream, github, 3)
 
 	lags := consumers.Lag(ctx)
 	if names := lagNames(lags); !slices.Equal(names, []string{dispatch, github, wakeConsumerName(spec.Project)}) {
@@ -121,6 +122,7 @@ func TestConsumerLagNamesWhatNATSDidNotAnswer(t *testing.T) {
 		t.Fatalf("OpenConsumers: %v", err)
 	}
 	publishStored(t, served, stream, "notifications.github.sjawhar.legion.pr.1", pullRequestOpenedEnvelope(t, 1))
+	awaitWaiting(t, stream, github, 1)
 	clock.advance(consumerStallAfter + time.Second)
 
 	t.Run("the consumer's info refused", func(t *testing.T) {
@@ -184,7 +186,8 @@ func TestConsumerLagCountsEveryConsumerWhileNATSRefusesTheOldestMessageRead(t *t
 		testnats.NkeyUser{Public: daemonPublic, Permissions: `{ publish: { deny: ["$JS.API.STREAM.MSG.GET.>"] } }`},
 		testnats.NkeyUser{Public: adminPublic})
 	admin := jetStreamAs(t, uri, adminSeed, "admin")
-	if _, err := admin.CreateStream(ctx, jetstream.StreamConfig{Name: notificationStream, Subjects: []string{"notifications.>"}}); err != nil {
+	stream, err := admin.CreateStream(ctx, jetstream.StreamConfig{Name: notificationStream, Subjects: []string{"notifications.>"}})
+	if err != nil {
 		t.Fatalf("create the notification stream: %v", err)
 	}
 	clock := &lagClock{now: time.Now()}
@@ -200,6 +203,9 @@ func TestConsumerLagCountsEveryConsumerWhileNATSRefusesTheOldestMessageRead(t *t
 	}
 	publish(t, admin, legionWakeSubject, envelopeJSON(t, "wake-1", "envoy",
 		fmt.Sprintf(`{"kind":"listener_ready","at":%d}`, clock.Now().UnixMilli())))
+	awaitWaiting(t, stream, dispatchConsumerName(spec.Project), 1)
+	awaitWaiting(t, stream, githubConsumerName(spec.Project), 3)
+	awaitWaiting(t, stream, wakeConsumerName(spec.Project), 1)
 	clock.advance(consumerStallAfter + time.Second)
 
 	started := time.Now()
@@ -320,6 +326,36 @@ func publishStored(t *testing.T, js jetstream.JetStream, stream jetstream.Stream
 		t.Fatalf("read message %d back: %v", ack.Sequence, err)
 	}
 	return message.Time
+}
+
+// awaitWaiting waits until the server counts n messages waiting for the consumer named name, read
+// as Lag reads it: NumPending and NumAckPending of the consumer's CONSUMER.INFO. A publish's ack
+// says the stream stored the message, and the server counts it for each consumer only afterwards,
+// in a goroutine of its own (drain_test.go's wait for its backlog says how), so a Lag read the
+// moment the publish returns can find nothing waiting yet: merge-group run 44087318326 and run
+// 45387283087 read the wake consumer Waiting 0. The wait, and each read in it, is bounded by the
+// row's hang guard alone (testwait.Remaining), never by a span of its own; its failure names the
+// last count read. A count past n is a message from outside the row, and fails at once.
+func awaitWaiting(t *testing.T, stream jetstream.Stream, name string, n uint64) {
+	t.Helper()
+	var waiting uint64
+	if testwait.Holds(testwait.Remaining(t), testwait.Poll, func() bool {
+		ctx, cancel := context.WithTimeout(context.Background(), testwait.Remaining(t))
+		defer cancel()
+		consumer, err := stream.Consumer(ctx, name)
+		if err != nil {
+			t.Fatalf("read the %s consumer's info: %v", name, err)
+		}
+		info := consumer.CachedInfo()
+		waiting = info.NumPending + uint64(info.NumAckPending)
+		if waiting > n {
+			t.Fatalf("the server counts %d messages waiting for %s, more than the %d the row published", waiting, name, n)
+		}
+		return waiting == n
+	}) {
+		return
+	}
+	t.Fatalf("the server counts %d message(s) waiting for %s at the row's hang guard, want %d", waiting, name, n)
 }
 
 func lagNames(lags []ConsumerLag) []string {

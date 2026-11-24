@@ -87,7 +87,26 @@ func TestDaemonPermissionsOnRealServers(t *testing.T) {
 					fmt.Sprintf(`{"kind":"listener_ready","at":%d}`, time.Now().UnixMilli()))
 				// Before the consumers run, each has its one event waiting, so the state's lag read
 				// makes every request it can under the grant: each consumer's info and its oldest
-				// waiting message's stored-message get.
+				// waiting message's stored-message get. A publish's ack says the stream stored the
+				// event, and nats-server counts it for each consumer only after that ack, so the read
+				// waits for the server to count each consumer's event first, bounded by the row's
+				// hang guard alone (testwait.Remaining), never by a span of its own.
+				for _, name := range []string{dispatchGrantConsumer, githubGrantConsumer, wakeGrantConsumer} {
+					var waiting uint64
+					if !testwait.Holds(testwait.Remaining(t), testwait.Poll, func() bool {
+						read, cancel := context.WithTimeout(t.Context(), testwait.Remaining(t))
+						defer cancel()
+						consumer, err := stream.Consumer(read, name)
+						if err != nil {
+							t.Fatalf("read the %s consumer's info: %v", name, err)
+						}
+						info := consumer.CachedInfo()
+						waiting = info.NumPending + uint64(info.NumAckPending)
+						return waiting == 1
+					}) {
+						t.Fatalf("the server counts %d events waiting for %s at the row's hang guard, want 1", waiting, name)
+					}
+				}
 				for _, lag := range restarted.consumers.Lag(t.Context()) {
 					if lag.Waiting != 1 || lag.OldestAt.IsZero() || lag.Unavailable != "" {
 						t.Fatalf("lag of %s under the daemon grant = %+v, want its one event waiting with its time and nothing unavailable", lag.Name, lag)
