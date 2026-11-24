@@ -17,8 +17,9 @@ const phaseVerdictGoneVersion = 20261121074614
 // the empty string for a default, which each row this release inserts takes, and adds
 // phases.states_serial at 0 on every row the release before wrote. The way back its header gives
 // (migrations.WayBack), run as an operator runs it through psql, empties every verdict, drops
-// states_serial and deletes the migration's own row; the roll-forward's Migrate then applies the
-// migration again, and only it.
+// states_serial, deletes the keys head, waits_for, waiting and failing from each queued notice,
+// which the release before has no field for, keeping the rest of what the notice says, and deletes
+// the migration's own row; the roll-forward's Migrate then applies the migration again, and only it.
 func TestThePhaseVerdictGoneMigrationAndItsWayBack(t *testing.T) {
 	ctx := context.Background()
 	store := emptyStore(t)
@@ -51,6 +52,13 @@ func TestThePhaseVerdictGoneMigrationAndItsWayBack(t *testing.T) {
 	if got, want := rowsAsText(t, store, `select row(role, verdict)::text from phases where role = 'reviewer'`), []string{"(reviewer,\"\")"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("the reviewer's row this release inserted = %v, want %v", got, want)
 	}
+	// This release's tester's notices of a move back and of a wait carry the testing move's head,
+	// wait and checks as fields, and a notice of another kind carries none of them.
+	exec(`insert into outbox (kind, issue, payload, attempts, next_at, last_error) values
+		('notice', 'ACME-1', '{"kind": "phase-finished", "role": "tester", "phase": "testing", "reason": "k2 does not pass", "head": "h1", "failing": [{"check": "k2", "state": "no", "reason": "fail"}]}', 0, now(), ''),
+		('notice', 'ACME-1', '{"kind": "phase-finished", "role": "tester", "phase": "testing", "reason": "the move waits for k1", "head": "h1", "waits_for": "checks", "waiting": ["k1"]}', 0, now(), ''),
+		('notice', 'ACME-1', '{"kind": "held", "role": "tester", "reason": "escalated"}', 0, now(), '')`)
+	const notices = `select payload::text from outbox where kind = 'notice' order by id`
 
 	wayBack, err := migrations.WayBack(phaseVerdictGoneVersion)
 	if err != nil {
@@ -62,6 +70,13 @@ func TestThePhaseVerdictGoneMigrationAndItsWayBack(t *testing.T) {
 	}
 	if got, want := rowsAsText(t, store, `select row(role, verdict)::text from phases order by role`), []string{"(reviewer,\"\")", "(tester,\"\")"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("the phase rows after the way back = %v, want %v: every verdict emptied", got, want)
+	}
+	if got, want := rowsAsText(t, store, notices), []string{
+		`{"kind": "phase-finished", "role": "tester", "phase": "testing", "reason": "k2 does not pass"}`,
+		`{"kind": "phase-finished", "role": "tester", "phase": "testing", "reason": "the move waits for k1"}`,
+		`{"kind": "held", "role": "tester", "reason": "escalated"}`,
+	}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("the queued notices after the way back = %v, want %v: head, waits_for, waiting and failing deleted, the rest kept", got, want)
 	}
 	// The release before's write after the way back takes, naming the verdict.
 	exec(`update phases set verdict = 'fail' where issue = 'ACME-1' and role = 'tester'`)

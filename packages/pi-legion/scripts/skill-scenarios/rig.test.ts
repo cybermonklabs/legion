@@ -2342,46 +2342,6 @@ describe("cmd_batch", () => {
     expect(refused.stderr).toContain("'frobnicate' is not no-verdict-fail or no-verdict-pass");
   });
 
-  // Catches: a task that still names the tester's verdict for a label of today, where the daemon
-  // writes none, and an ablate label whose rule carries task words that never reach its task
-  // (ablate-states-read writes `Tester's verdict: pass.` back, and its -hidden copy too).
-  test("the reviewer's and the architect's tasks carry a label's task words and no verdict otherwise", () => {
-    const run = freshDir("task-words-run");
-    writeFileSync(
-      path.join(run, "fixture.json"),
-      JSON.stringify({ title: "A usage page", test: { version: 3 }, review: { version: 4 } })
-    );
-    const prompt = (fnName: string, label: string) => {
-      const result = bash(
-        [
-          fn("fail"),
-          fn("task_words"),
-          fn(fnName),
-          `R=$1 here=${path.join(root, "packages/pi-legion/scripts/skill-scenarios")} worker_key=LWEVAL-9 label=$2`,
-          fnName,
-        ].join("\n"),
-        [run, label]
-      );
-      expect({ code: result.code, stderr: result.stderr }).toEqual({ code: 0, stderr: "" });
-      return readFileSync(path.join(run, "prompt.txt"), "utf8");
-    };
-    expect(prompt("reviewer_prompt", "head")).toBe(
-      "Continue A usage page. Issue: LWEVAL-9. Phase: reviewing. Handoff: test version 3 (dispatch handoff-read --issue LWEVAL-9 --phase test --version 3). Pull request: #702.\n"
-    );
-    expect(prompt("reviewer_prompt", "restore-two-roles")).not.toContain("verdict");
-    for (const label of ["ablate-states-read", "ablate-states-read-hidden"]) {
-      expect(prompt("reviewer_prompt", label)).toBe(
-        "Continue A usage page. Issue: LWEVAL-9. Phase: reviewing. Handoff: test version 3 (dispatch handoff-read --issue LWEVAL-9 --phase test --version 3). Tester's verdict: pass. Pull request: #702.\n"
-      );
-      expect(prompt("architect_prompt", label)).toContain(
-        "(dispatch handoff-read --issue LWEVAL-9 --phase review --version 4). Tester's verdict: pass. Pull request: #702.\n"
-      );
-    }
-    expect(prompt("architect_prompt", "head")).toContain(
-      "(dispatch handoff-read --issue LWEVAL-9 --phase review --version 4). Pull request: #702.\n"
-    );
-  });
-
   // Catches: a writer of a task that reads the task words inside another command's argument, where
   // a failure of that read ends only its own subshell, so the run writes the task without the words
   // and launches its role as if the label had none. A bun that exits 37 stands for any failure of

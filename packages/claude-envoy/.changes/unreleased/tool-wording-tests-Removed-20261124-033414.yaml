@@ -1,0 +1,8 @@
+kind: Removed
+body: |-
+  No test reads the words of the `legion` MCP tool's description that this change rewrote, or the
+  words of its refusal of a verdict on a phase completion. The refusal test keeps that the call
+  is refused after the record's read alone, with nothing minted or posted.
+time: 2026-11-24T03:34:14Z
+custom:
+    Issue: tool-wording-tests

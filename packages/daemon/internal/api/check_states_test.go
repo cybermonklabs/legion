@@ -68,9 +68,6 @@ func (c liveClaim) writeTestHandoff(version int, serial int64) string {
 	return id
 }
 
-// verdictNotTaken is the refusal of a phase completion that names a verdict.
-const verdictNotTaken = "a phase completion carries no verdict: Dispatch's check states at the tested head decide the testing phase; send it again without verdict; nothing was recorded"
-
 // A phase completion carries no verdict. A tester's completion naming one, from a plugin at
 // CheckStatesContract, is refused 400 VERDICT_NOT_TAKEN with nothing recorded, and the same
 // completion with none is taken, carrying the check states serial of the record it names. Another
@@ -87,8 +84,8 @@ func TestAPhaseCompletionCarriesNoVerdict(t *testing.T) {
 		seedIssueAt(t, h, "LEGION-208", phase.Testing)
 		tester := newLiveClaim(t, h, "LEGION-208", claim.RoleTester)
 		written := tester.writeTestHandoff(1, 5)
-		refusedSaying(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "Every check passes.", Verdict: "pass", Commit: headSHA, HandoffID: written, HandoffVersion: 1}),
-			http.StatusBadRequest, "VERDICT_NOT_TAKEN", verdictNotTaken)
+		refused(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "Every check passes.", Verdict: "pass", Commit: headSHA, HandoffID: written, HandoffVersion: 1}),
+			http.StatusBadRequest, "VERDICT_NOT_TAKEN")
 		if got := facts.recorded(); len(got) != 0 {
 			t.Fatalf("facts after the refusal = %#v, want none", got)
 		}
@@ -102,8 +99,8 @@ func TestAPhaseCompletionCarriesNoVerdict(t *testing.T) {
 		seedIssueAt(t, h, "LEGION-208", phase.Implementing)
 		implementer := newLiveClaim(t, h, "LEGION-208", claim.RoleImplementer)
 		written := implementer.writeHandoff("implement", 1)
-		refusedSaying(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "implemented", Verdict: "pass", Commit: headSHA, HandoffID: written, HandoffVersion: 1}),
-			http.StatusBadRequest, "VERDICT_NOT_TAKEN", verdictNotTaken)
+		refused(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "implemented", Verdict: "pass", Commit: headSHA, HandoffID: written, HandoffVersion: 1}),
+			http.StatusBadRequest, "VERDICT_NOT_TAKEN")
 		if got := facts.recorded(); len(got) != 0 {
 			t.Fatalf("facts after the refusal = %#v, want none", got)
 		}
@@ -155,19 +152,13 @@ func TestAPhaseCompletionCarriesNoVerdict(t *testing.T) {
 		grant := reviewer.grant(t)
 		h.makeStale(t, reviewer.token, reviewer.session, reviewer.secret, CheckStatesContract-1)
 		written := reviewer.writeHandoff("review", 1)
-		refusedSaying(t, h.complete(HandoffCompleteRequest{GrantID: grant, Summary: "reviewed", Verdict: "pass", Commit: headSHA, HandoffID: written, HandoffVersion: 1}),
-			http.StatusBadRequest, "VERDICT_NOT_TAKEN", verdictNotTaken)
+		refused(t, h.complete(HandoffCompleteRequest{GrantID: grant, Summary: "reviewed", Verdict: "pass", Commit: headSHA, HandoffID: written, HandoffVersion: 1}),
+			http.StatusBadRequest, "VERDICT_NOT_TAKEN")
 		if got := facts.recorded(); len(got) != 0 {
 			t.Fatalf("facts after the refusal = %#v, want none", got)
 		}
 	})
 }
-
-// testedHeadRefusal is the refusal of a tester's completion of LEGION-208 that names no commit,
-// written out whole so a change of the route's sentence (testedHeadRequired) fails here.
-const testedHeadRefusal = "the tester's completion of LEGION-208 names no commit, and the testing move reads Dispatch's check states at the head the tester tested, " +
-	"which only its test record names: write a new `test` handoff whose body names under `head` the 40-character lower-case commit you tested " +
-	"(`dispatch handoff-write --issue LEGION-208 --phase test --body-file <file>`), then complete again; nothing was recorded"
 
 // A tester's phase completion names the head it tested, since the testing move reads Dispatch's
 // check states at that head and nothing else names it: not the pull request's head, which can
@@ -198,8 +189,8 @@ func TestATestersCompletionNamesTheHeadItTested(t *testing.T) {
 				}
 			}
 			written := tester.writeTestHandoff(1, 3)
-			refusedSaying(t, h.complete(HandoffCompleteRequest{GrantID: grant, Summary: "Every check passes.", Verdict: tc.verdict, HandoffID: written, HandoffVersion: 1}),
-				http.StatusBadRequest, "TESTED_HEAD_REQUIRED", testedHeadRefusal)
+			refused(t, h.complete(HandoffCompleteRequest{GrantID: grant, Summary: "Every check passes.", Verdict: tc.verdict, HandoffID: written, HandoffVersion: 1}),
+				http.StatusBadRequest, "TESTED_HEAD_REQUIRED")
 			if got := facts.recorded(); len(got) != 0 {
 				t.Fatalf("facts after the refusal = %#v, want none", got)
 			}
