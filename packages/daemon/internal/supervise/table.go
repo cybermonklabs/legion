@@ -452,11 +452,11 @@ type RequestSpawn struct {
 	// The rule the gate holds a carried turn to (revive, launchAfter, reserveWake), stated here
 	// alone: a turn still to come is the launch's turn, and it parks for it; one the launch reached
 	// less than one interval late (WakePace.Interval) is its turn late, and it runs at once; one it
-	// reached later than that is reserved a turn afresh, and the spent turn stays charged, as a
-	// dropped wake's does (wakepace.Limiter.Reserve), since every launch the caller posted together
-	// that reached its gate that late would otherwise run in one instant, outside the rate and the
-	// burst. The gate logs the last case. A launch the gate does not reach — refused, or held by a
-	// project pause — leaves its turn spent the same way.
+	// reached one interval or more late is reserved a turn afresh, and the spent turn stays
+	// charged, as a dropped wake's does (wakepace.Limiter.Reserve), since every launch the caller
+	// posted together that reached its gate that late would otherwise run in one instant, outside
+	// the rate and the burst. The gate logs the last case. A launch the gate does not reach —
+	// refused, or held by a project pause — leaves its turn spent the same way.
 	Turn time.Time
 }
 

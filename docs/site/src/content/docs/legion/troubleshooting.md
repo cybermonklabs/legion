@@ -877,10 +877,10 @@ back into the pacing in one order, the order their tasks were queued, the oldest
 those a claim that waited before the restart goes ahead of work owed after it; the stale-plugin
 pass takes its turns as it reaches the gate, and while the project is paused the unfinished
 launches wait for the resume instead. A relaunch that reaches its gate an interval or more after
-the turn the boot gave it — its admission waits behind every other launch's — is paced again at
-the back of the queue, and the daemon logs `supervise: this launch reached the wake gate an
-interval or more after the turn its caller reserved`. Read what the pacing still holds before you
-act on anything below:
+the turn the boot gave it — its admission waits behind every other launch's — is reserved a turn
+afresh, at the back of the queue unless the pacing has drained, and the daemon logs `supervise:
+this launch reached the wake gate an interval or more after the turn its caller reserved` with the
+moment it is now `due`. Read what the pacing still holds before you act on anything below:
 
 ```sh
 legion state --config legion.yaml --json | jq '.wakesWaiting'

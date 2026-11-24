@@ -110,9 +110,10 @@ type WakePace struct {
 	// its Reserve here, and this package reads no configuration and knows no limiter
 	// (openSupervision in internal/daemon).
 	Reserve func(now time.Time) time.Time
-	// Interval is what one wake of that limiter costs (wakepace.Limiter.Interval): a launch whose
-	// caller reserved its turn and that reaches the gate less than this after it still runs at it
-	// (RequestSpawn.Turn). Zero with a Reserve is no launch late enough to run at a passed turn.
+	// Interval is what one wake of that limiter costs (wakepace.Limiter.Interval), taken from the
+	// same limiter as Reserve: a launch whose caller reserved its turn and that reaches the gate
+	// less than this after it still runs at it (RequestSpawn.Turn). Zero with a Reserve has no such
+	// grace: every carried turn not still to come is reserved afresh, even one reached at its moment.
 	Interval time.Duration
 	// Rate and Burst are the pace the operator set (worker_wakes_per_minute, worker_wake_burst),
 	// carried for the line a wake writes as it runs and read for nothing else.
@@ -288,7 +289,7 @@ func (m *Machine) reserveWake(ctx context.Context, exempt bool, turn time.Time, 
 		at = turn
 	case now.Sub(turn) >= m.deps.WakePace.Interval:
 		at = reserve(now)
-		m.log.Warn("supervise: this launch reached the wake gate an interval or more after the turn its caller reserved; it waits for a turn reserved afresh",
+		m.log.Warn("supervise: this launch reached the wake gate an interval or more after the turn its caller reserved; it is reserved a turn afresh",
 			"turn", turn, "late", now.Sub(turn), "due", at)
 	}
 	m.wakeLetOut(at)

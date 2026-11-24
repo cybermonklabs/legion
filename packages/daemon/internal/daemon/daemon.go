@@ -1736,8 +1736,9 @@ func pacedCatchUps(ctx context.Context, tx pgx.Tx, records record.Store, project
 // reserve is the daemon's one wake limiter as the machines reach it (run builds it, before the
 // workflow, which reserves from the same one): the moment each launch may run, and nil while the
 // operator paces nothing, which is the gate's reading of the pacing off (supervise's
-// reserveWake). The rate and the burst go with it for the line every wake writes, never for that
-// decision (supervise.WakePace).
+// reserveWake). interval is that limiter's Interval, and it must come from the same limiter: the
+// gate reads how late a launch whose turn the boot reserved may run by it (supervise.WakePace). The
+// rate and the burst go with them for the line every wake writes, never for that decision.
 //
 // refreshGate is the daemon's one stale-plugin refresh gate, threaded exactly as reserve is and
 // from the same place (run builds both, from the one rate): it goes on the machines' Deps, so
