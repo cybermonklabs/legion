@@ -101,6 +101,35 @@ if ! runs=$(gh_read gh api --paginate \
   echo "::warning::GitHub refused this head's ci-ok check runs at every attempt gh-read.sh made, so any ci-ok beside this job's own stands as it was; this job's own conclusion ($CONCLUSION) is this attempt's verdict"
   exit 0
 fi
+# Whatever answers the read in GitHub's place holds gh's token and writes the answer, so a field
+# of a line is printed only as a value GitHub gives it: the id as a number, the status and the
+# conclusion as words of GitHub's, an external_id as a UUID. Any other is named for what it is,
+# and the whole answer is kept in a file of its own, which outlives this script (RUNNER_TEMP's on
+# a runner, until the job ends), named in its stead. What the step decides on each line is as it
+# was.
+# keep <what> <text>: writes the text to a file of its own and prints the words that name it.
+keep() {
+  local kept
+  if kept=$(mktemp "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/ci-ok-reconcile-$1.XXXXXX") &&
+    printf '%s\n' "$2" > "$kept"; then
+    echo "it is kept in $kept"
+  else
+    echo "it could not be kept"
+  fi
+}
+# said <value> <grammar> <what>: the value when it matches the grammar, or words naming the field
+# and the file the answer is kept in.
+said() {
+  if [[ $1 =~ $2 ]]; then
+    echo "$1"
+  else
+    echo "$3 ($(keep check-runs "$runs"))"
+  fi
+}
+number='^[0-9]+$'
+statuses='^(queued|in_progress|completed|waiting|requested|pending)$'
+conclusions='^(success|failure|neutral|cancelled|skipped|timed_out|action_required|stale|startup_failure|null)$'
+uuid='^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
 
 body=$(mktemp)
 trap 'rm -f "$body"' EXIT
@@ -119,29 +148,31 @@ reconciled=0
 while read -r id status was marker; do
   [ -n "$id" ] || continue
   if [ "$id" = "$CHECK_RUN_ID" ]; then
-    echo "ci-ok check run $id is this job's own ($CONCLUSION)"
+    echo "ci-ok check run $CHECK_RUN_ID is this job's own ($CONCLUSION)"
     continue
   fi
+  shown=$(said "$id" "$number" "whose id GitHub's answer gave as no number")
   if [ "$status" != completed ]; then
-    echo "ci-ok check run $id is $status, so the run deciding it writes its conclusion"
+    echo "ci-ok check run $shown is $(said "$status" "$statuses" "in a status that is none of GitHub's"), so the run deciding it writes its conclusion"
     continue
   fi
   if [ "$was" = "$CONCLUSION" ]; then
-    echo "ci-ok check run $id already concluded $was"
+    echo "ci-ok check run $shown already concluded $CONCLUSION"
     continue
   fi
   case $marker in
     ci-ok-post:* | -) ;;
     *)
-      echo "ci-ok check run $id carries the external_id $marker, which is neither a ci-ok-post: marker nor absent, so it is a job's own ci-ok check run, which the run whose job it is concludes itself"
+      echo "ci-ok check run $shown carries the external_id $(said "$marker" "$uuid" "that is no UUID"), which is neither a ci-ok-post: marker nor absent, so it is a job's own ci-ok check run, which the run whose job it is concludes itself"
       continue
       ;;
   esac
+  was=$(said "$was" "$conclusions" "a conclusion that is none of GitHub's")
   if gh_read gh api --silent --method PATCH "repos/$GITHUB_REPOSITORY/check-runs/$id" --input "$body"; then
-    echo "set ci-ok check run $id from $was to $CONCLUSION"
+    echo "set ci-ok check run $shown from $was to $CONCLUSION"
     reconciled=$((reconciled + 1))
   else
-    echo "::warning::GitHub refused the PATCH of ci-ok check run $id at every attempt gh-read.sh made, so it stands at $was while this attempt's verdict is $CONCLUSION"
+    echo "::warning::GitHub refused the PATCH of ci-ok check run $shown at every attempt gh-read.sh made, so it stands at $was while this attempt's verdict is $CONCLUSION"
   fi
 done <<<"$runs"
 echo "ci-ok on $HEAD_SHA is $CONCLUSION; $reconciled other check run(s) of that name were set to it"

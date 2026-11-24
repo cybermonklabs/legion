@@ -74,11 +74,30 @@ check_runs() {
 run_reconcile() {
   set +e
   out=$(PATH="$work/bin:$PATH" GH_TOKEN=t GITHUB_REPOSITORY=o/r HEAD_SHA=abc123 \
-    GITHUB_SERVER_URL=https://github.com GITHUB_RUN_ID=41 GH_RETRY_SECONDS=0 \
+    GITHUB_SERVER_URL=https://github.com GITHUB_RUN_ID=41 GH_RETRY_SECONDS=0 RUNNER_TEMP="$work/temp" \
     CHECK_RUN_ID=${2:-900} CONCLUSION=$1 "$script_dir/ci-ok-reconcile.sh" 2>&1)
   status=$?
   set -e
 }
+mkdir "$work/temp"
+
+# The marker the rows on gh's words put in the read's answer, where GitHub's words would be.
+# Whatever answers the read in GitHub's place holds gh's token and writes those words, so no run
+# of eight of its characters (redacttest.Piece's run) may be in what the script prints.
+marker=not-a-secret-token
+# prints_no_marker <text>: true when the text holds no run of eight characters of the marker.
+prints_no_marker() {
+  local at
+  for ((at = 0; at + 8 <= ${#marker}; at++)); do
+    if [[ $1 == *"${marker:at:8}"* ]]; then
+      echo false
+      return
+    fi
+  done
+  echo true
+}
+# kept_files <text>: every file the text names as keeping the answer, one a line.
+kept_files() { { grep -o 'kept in [^ );,]*' <<<"$1" || true; } | sed 's/^kept in //; s/\.$//'; }
 
 patched() { [ -e "$work/patched-ids" ] && tr '\n' ' ' < "$work/patched-ids" || echo ""; }
 calls() { find "$work" -maxdepth 1 -name 'patched.*.json' | wc -l | tr -d ' '; }
@@ -224,5 +243,47 @@ status=$?
 set -e
 check "fails the step" "$(is "$status" 1)"
 check "names the input" "$(contains "$out" 'ci-ok-reconcile.sh needs CHECK_RUN_ID in its environment')"
+
+echo "case: the script prints no word of the read's answer but a value GitHub gives the field"
+# Whatever answers the read in GitHub's place holds gh's token and writes the answer, and the
+# script printed each line's id, status, conclusion and external_id as they came. Each check run
+# below holds the marker in one of them, and each is decided as it was: the two posts whose
+# conclusion is not this attempt's are patched, and the others are left alone.
+check_runs "900=in_progress/null" "$marker=completed/failure" "101=$marker/null" "102=completed/$marker" \
+  "103=completed/failure@$marker" "104=completed/failure@07c6d79e-718e-5fab-b991-ebb3c3a6833c"
+twin=$(grep -cF -- "$marker" "$work/check-runs")
+run_reconcile success
+while IFS= read -r line; do printf '    printed: %s\n' "$line"; done <<<"$out"
+check "exits 0, the stand-in gh having answered the read (control)" "$(is "$status" 0)"
+check "twin: the stand-in's answer holds the marker, on four lines" "$(is "$twin" 4)"
+check "decides each line as before: it patches the two posts" "$(is "$(patched)" "$marker 102 ")"
+check "prints no run of the marker the answer holds" "$(prints_no_marker "$out")"
+kept=$work/temp/ci-ok-reconcile-check-runs
+check "names a check run whose id is no number by the file that keeps the answer" \
+  "$(contains "$out" "^set ci-ok check run whose id GitHub's answer gave as no number (it is kept in $kept\.[^ )]*) from failure to success$")"
+check "a status that is none of GitHub's" \
+  "$(contains "$out" "^ci-ok check run 101 is in a status that is none of GitHub's (it is kept in $kept\.[^ )]*), so the run deciding it writes its conclusion$")"
+check "a conclusion that is none of GitHub's" \
+  "$(contains "$out" "^set ci-ok check run 102 from a conclusion that is none of GitHub's (it is kept in $kept\.[^ )]*) to success$")"
+check "an external_id that is no UUID" \
+  "$(contains "$out" "^ci-ok check run 103 carries the external_id that is no UUID (it is kept in $kept\.[^ )]*), which is neither")"
+check "and prints a UUID as it came (control)" \
+  "$(contains "$out" '^ci-ok check run 104 carries the external_id 07c6d79e-718e-5fab-b991-ebb3c3a6833c, which is neither')"
+files=0
+holding=0
+while IFS= read -r file; do
+  [ -n "$file" ] || continue
+  files=$((files + 1))
+  if grep -qF -- "$marker" "$file"; then holding=$((holding + 1)); fi
+done <<<"$(kept_files "$out")"
+check "the four files it names each hold the answer, marker and all" "$(is "$files $holding" '4 4')"
+check_runs "900=in_progress/null" "$marker=completed/$marker"
+touch "$work/patch-fails"
+run_reconcile success
+while IFS= read -r line; do printf '    printed: %s\n' "$line"; done <<<"$out"
+check "a refused PATCH: tried three times (control)" "$(is "$(calls)" 3)"
+check "  prints no run of the marker the answer holds" "$(prints_no_marker "$out")"
+check "  warns, naming the check run and its conclusion by the files that keep them" \
+  "$(contains "$out" "^::warning::GitHub refused the PATCH of ci-ok check run whose id GitHub's answer gave as no number (it is kept in $kept\.[^ )]*) at every attempt gh-read.sh made, so it stands at a conclusion that is none of GitHub's (it is kept in $kept\.[^ )]*) while")"
 
 summary "ci-ok-reconcile.sh leaves one ci-ok verdict on the head"
