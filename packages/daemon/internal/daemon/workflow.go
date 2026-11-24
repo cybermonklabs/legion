@@ -315,8 +315,10 @@ type workflowRuntime struct {
 	// `unknown` for (followOnBase). baseReadOf is the base each owed issue is read under, and
 	// baseWake the bases readBaseMergeStates has not started a batch ladder for yet. All of it is
 	// guarded by mergeStateMu, so a request moves an issue between a ladder of its own and its
-	// base's batch under one lock. baseChunk is how many pull requests one query of a batch asks
-	// for, baseReadChunk when zero, which a test shortens.
+	// base's batch under one lock. baseAsks is the number of the last request put in any batch
+	// (putLocked, baseOwed.asked): one count for the runtime, so a batch made again for a base
+	// whose last batch ended reuses no number a climb or a read still holds. baseChunk is how many
+	// pull requests one query of a batch asks for, baseReadChunk when zero, which a test shortens.
 	mergeStates       *wakeSet[string]
 	mergeStateMu      sync.Mutex
 	mergeStateQueued  map[string]*record.PullRequest
@@ -325,6 +327,7 @@ type workflowRuntime struct {
 	baseWake          *wakeSet[string]
 	baseReads         map[string]*baseRead
 	baseReadOf        map[string]string
+	baseAsks          uint64
 	baseChunk         int
 	// gates is each installation's GraphQL queries, by the implement App's scope for the owner
 	// (implementScope; merge_state_gate.go's queryGate): one rate-limit hold, one pace and one

@@ -366,10 +366,11 @@ func (rig *readRig) lines(t *testing.T, msg string) []map[string]any {
 }
 
 // GitHub answers for pull request 86 at head code: `mergeable` null (unknown), false (conflicting)
-// or true, with the merge state that goes with each.
+// or true (clean), with the merge state that goes with each.
 var (
 	unknownPull     = pullAnswer{body: `{"number":86,"state":"open","base":{"ref":"main"},"head":{"ref":"legion/CAPTURE-1","sha":"code"},"mergeable":null,"mergeable_state":"unknown"}`}
 	conflictingPull = pullAnswer{body: `{"number":86,"state":"open","base":{"ref":"main"},"head":{"ref":"legion/CAPTURE-1","sha":"code"},"mergeable":false,"mergeable_state":"dirty"}`}
+	cleanPull       = pullAnswer{body: `{"number":86,"state":"open","base":{"ref":"main"},"head":{"ref":"legion/CAPTURE-1","sha":"code"},"mergeable":true,"mergeable_state":"clean"}`}
 	unavailablePull = pullAnswer{status: http.StatusBadGateway, body: `{"message":"Server Error"}`}
 )
 

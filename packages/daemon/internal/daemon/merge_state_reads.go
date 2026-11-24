@@ -245,14 +245,7 @@ func (w *workflowRuntime) mergeStateEnds(ctx context.Context, issue string) bool
 // whose own read reads the head after that push, where the first read may have read it before -
 // stands.
 func (w *workflowRuntime) climbMergeState(ctx context.Context, issue string) *record.PullRequest {
-	// The batch that holds issue as the climb begins, and the request it holds it under.
-	w.mergeStateMu.Lock()
-	key := w.baseReadOf[issue]
-	var asked uint64
-	if read := w.baseReads[key]; read != nil {
-		asked = read.owed[issue].asked
-	}
-	w.mergeStateMu.Unlock()
+	key, asked := w.heldUnder(issue)
 	var unknown *record.PullRequest
 	for read := 1; ; read++ {
 		state, pr, err := w.readMergeState(ctx, issue)
@@ -269,10 +262,7 @@ func (w *workflowRuntime) climbMergeState(ctx context.Context, issue string) *re
 				"issue", issue, "read", read, "handedToBase", unknown != nil, "error", err)
 			return unknown
 		}
-		if read == 1 && key != "" {
-			// GitHub answered and the record took the answer, or the record held no open pull
-			// request: the climb reads the issue from here, and hands it back to its base at its
-			// end while GitHub answers `unknown` (followOnBase).
+		if read == 1 {
 			w.leaveBase(key, issue, asked)
 		}
 		if state != record.MergeStateUnknown {

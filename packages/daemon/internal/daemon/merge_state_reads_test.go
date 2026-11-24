@@ -547,53 +547,146 @@ func TestAClimbWhoseFirstReadFailsLeavesTheHeadWithItsBase(t *testing.T) {
 // A push to the base that commits while a climb's first read runs asks the base's reads for a read
 // of its own (queueBaseMergeStates), and that request stands: once its first read has read
 // GitHub, the climb takes the issue out of its base's reads only under the request that stood when
-// it began (climbMergeState, leaveBase), and here none stood. The climb's first read answers
-// MERGEABLE and clean, which ends the climb; GitHub's next answer, to the push's read, is
-// CONFLICTING, and the record holds it. The push's read waits until the climb has ended, so the
-// climb's choice is made before that read applies its answer. Had the climb taken the issue out
-// whatever request put it there, the push's read would have read nothing or applied nothing
-// (readChunk applies no answer for an issue its batch no longer holds), and the head would go
-// unread after the push until its next event.
+// it began (climbMergeState, leaveBase), and request numbers are never reused (putLocked,
+// workflowRuntime.baseAsks). The climb's first read answers MERGEABLE and clean, which ends the
+// climb; GitHub's answer to the push's read is CONFLICTING, and the record holds it. The push's
+// read waits until the climb has ended, so the climb's choice is made before that read applies its
+// answer. Each row holds the issue somewhere else as the climb begins:
+//
+//   - In no batch: the climb has nothing to take out.
+//   - In its base's batch, handed over as a climb hands a head over (followOnBase): the push's
+//     request replaces that one in the same batch, under a newer number, which the climb's
+//     leaveBase does not match. A climb that took the issue out whatever its number would take
+//     the push's request out.
+//   - In its base's batch, which ends during the climb's first read - the base's follow comes due,
+//     GitHub answers it clean, and the issue leaves - before the push makes the batch again: the
+//     push's request takes the next number of the runtime's one count, never the number the
+//     climb noted. A count of each batch's own would start again at the number the climb noted.
+//
+// Had the climb taken the push's request out, the push's read would have read nothing or applied
+// nothing (readChunk applies no answer for an issue its batch no longer holds), and the head would
+// go unread after the push until its next event.
 func TestABasePushDuringAClimbsFirstReadKeepsItsRead(t *testing.T) {
 	t.Parallel()
-	clean := pullAnswer{body: `{"number":86,"state":"open","base":{"ref":"main"},"head":{"ref":"legion/CAPTURE-1","sha":"code"},"mergeable":true,"mergeable_state":"clean"}`}
-	var current atomic.Pointer[readRig]
+	acme := ghrepo.MustParse("acme/widgets")
+	key := baseReadKey(acme, "main")
 	climbing := func(w *workflowRuntime) bool {
 		w.mergeStateMu.Lock()
 		defer w.mergeStateMu.Unlock()
 		_, running := w.mergeStateRunning["CAPTURE-1"]
 		return running
 	}
-	rig := newReadRig(t, captureInTesting, func(read int32) pullAnswer {
-		rig := current.Load()
-		switch read {
-		case 1:
-			// The push to main commits while the climb's first read runs.
-			rig.w.queueBaseMergeStates("acme/widgets", "main", []string{"CAPTURE-1"})
-			return clean
-		case 2:
-			for deadline := time.Now().Add(10 * time.Second); climbing(rig.w) && time.Now().Before(deadline); {
-				time.Sleep(time.Millisecond)
+	batched := func(w *workflowRuntime) bool {
+		w.mergeStateMu.Lock()
+		defer w.mergeStateMu.Unlock()
+		return w.baseReads[key] != nil
+	}
+	for _, tc := range []struct {
+		name string
+		// handed is whether the head is handed to its base before the climb, and ended whether
+		// that batch ends during the climb's first read, before the push.
+		handed, ended bool
+	}{
+		{name: "no batch holds the issue"},
+		{name: "its base's batch holds the issue", handed: true},
+		{name: "its base's batch holds the issue and ends during the first read", handed: true, ended: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// GitHub's reads: the climb's first, then the base's follow when it ends the batch,
+			// then the push's.
+			push := int32(2)
+			if tc.ended {
+				push = 3
 			}
-		}
-		return conflictingPull
-	})
-	current.Store(rig)
+			var current atomic.Pointer[readRig]
+			rig := newReadRig(t, captureInTesting, func(read int32) pullAnswer {
+				w := current.Load().w
+				switch {
+				case read == 1:
+					if tc.ended {
+						// The base's follow comes due now; GitHub answers it clean, and the
+						// batch, with nothing owed, ends.
+						w.mergeStateMu.Lock()
+						if batch := w.baseReads[key]; batch != nil {
+							place := batch.owed["CAPTURE-1"]
+							place.due = time.Now().UTC()
+							batch.owed["CAPTURE-1"] = place
+							nudge(batch.wake)
+						}
+						w.mergeStateMu.Unlock()
+						if !testwait.Holds(10*time.Second, time.Millisecond, func() bool { return !batched(w) }) {
+							t.Errorf("the base's batch did not end after its follow read the issue")
+						}
+					}
+					// The push to main commits while the climb's first read runs.
+					w.queueBaseMergeStates("acme/widgets", "main", []string{"CAPTURE-1"})
+					return cleanPull
+				case read < push:
+					return cleanPull
+				case read == push:
+					if !testwait.Holds(10*time.Second, time.Millisecond, func() bool { return !climbing(w) }) {
+						t.Errorf("the climb did not end before the push's read")
+					}
+				}
+				return conflictingPull
+			})
+			current.Store(rig)
+			// No wait of the ladder's comes due in the test: a follow falls due two hours on.
+			rig.w.mergeStateRetry = time.Hour
+			ctx, cancel := context.WithCancel(context.Background())
+			t.Cleanup(cancel)
+			go rig.w.readMergeStates(ctx)
+			if tc.handed {
+				rig.w.queueBaseRead(acme, "main", map[string]string{"CAPTURE-1": "code"}, false)
+				// The climb notes this batch and this request as it begins: nothing else puts the
+				// issue anywhere before it, and the follow's first read is two hours on.
+				if held, asked := rig.w.heldUnder("CAPTURE-1"); held != key || asked == 0 {
+					t.Fatalf("the base's batch holds CAPTURE-1 as %q under request %d, want main's batch under a request of its own", held, asked)
+				}
+			}
+			rig.w.queueMergeState("CAPTURE-1")
+
+			testwait.Eventually(t, "the push's read to record GitHub's CONFLICTING after the climb's first read", func() bool {
+				_, pr := capturePhase(t, rig.pool)
+				return pr.ConflictRead != nil
+			})
+			if got := rig.reads.Load(); got != push {
+				t.Fatalf("GitHub was read %d times, want %d: the climb's first read, the base's follow when it ended the batch, and the push's", got, push)
+			}
+			_, pr := capturePhase(t, rig.pool)
+			if pr.Mergeability != record.MergeabilityConflicting || pr.ConflictRead.Head != "code" || pr.ConflictRead.Base != "main" {
+				t.Fatalf("the record holds %s with first read %+v, want GitHub's CONFLICTING recorded as the first read of code on main", pr.Mergeability, pr.ConflictRead)
+			}
+		})
+	}
+}
+
+// A climb takes the issue out of its base's reads once its first read has read GitHub and the
+// record took the answer (climbMergeState): here the head was handed to its base, a climb is
+// asked, and GitHub answers its first read MERGEABLE and clean. The climb ends on that answer, and
+// the base's batch, which held the issue under the request the climb noted, is left with nothing
+// owed and ends, reading GitHub no more. A climb that left the issue in its base's reads would
+// leave that batch running, to read the head again at its follow's next step.
+func TestAClimbsFirstReadTakesTheIssueOutOfItsBase(t *testing.T) {
+	t.Parallel()
+	rig := newReadRig(t, captureInTesting, func(int32) pullAnswer { return cleanPull })
+	// No wait of the ladder's comes due in the test: the follow falls due two hours on.
+	rig.w.mergeStateRetry = time.Hour
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	go rig.w.readMergeStates(ctx)
+	rig.w.queueBaseRead(ghrepo.MustParse("acme/widgets"), "main", map[string]string{"CAPTURE-1": "code"}, false)
 	rig.w.queueMergeState("CAPTURE-1")
 
-	testwait.Eventually(t, "the push's read to record GitHub's CONFLICTING after the climb's first read", func() bool {
-		_, pr := capturePhase(t, rig.pool)
-		return pr.ConflictRead != nil
+	testwait.Eventually(t, "the climb's read, and the climb and the base's batch to end", func() bool {
+		running, waiting := ladders(rig.w)
+		return rig.reads.Load() == 1 && running == 0 && waiting == 0
 	})
-	if got := rig.reads.Load(); got != 2 {
-		t.Fatalf("GitHub was read %d times, want the climb's first read and the push's", got)
+	if got := rig.reads.Load(); got != 1 {
+		t.Fatalf("GitHub was read %d times, want the climb's one read", got)
 	}
-	_, pr := capturePhase(t, rig.pool)
-	if pr.Mergeability != record.MergeabilityConflicting || pr.ConflictRead.Head != "code" || pr.ConflictRead.Base != "main" {
-		t.Fatalf("the record holds %s with first read %+v, want GitHub's CONFLICTING recorded as the first read of code on main", pr.Mergeability, pr.ConflictRead)
+	if held, _ := rig.w.heldUnder("CAPTURE-1"); held != "" {
+		t.Fatalf("CAPTURE-1 is held by %q after the climb read it, want no batch", held)
 	}
 }
 
@@ -667,7 +760,6 @@ func mintTimedOut(role appauth.AppRole, owner string) error {
 func TestTheMergeStateFollowsGitHubAcrossARestart(t *testing.T) {
 	t.Parallel()
 	const pull = `{"number":86,"state":"open","base":{"ref":"main"},"head":{"ref":"legion/CAPTURE-1","sha":"code"},`
-	clean := pullAnswer{body: pull + `"mergeable":true,"mergeable_state":"clean"}`}
 	for _, tc := range []struct {
 		name   string
 		answer pullAnswer
@@ -675,7 +767,7 @@ func TestTheMergeStateFollowsGitHubAcrossARestart(t *testing.T) {
 	}{
 		{name: "unknown queues a ladder", answer: unknownPull, ladder: true},
 		{name: "mergeable null queues a ladder", answer: pullAnswer{body: pull + `"mergeable":null}`}, ladder: true},
-		{name: "clean queues none", answer: clean},
+		{name: "clean queues none", answer: cleanPull},
 		{name: "dirty queues none", answer: conflictingPull},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -683,7 +775,7 @@ func TestTheMergeStateFollowsGitHubAcrossARestart(t *testing.T) {
 				if read == 1 {
 					return tc.answer
 				}
-				return clean
+				return cleanPull
 			})
 			rig.w.readIssuesAtStart(context.Background())
 			if got := rig.reads.Load(); got != 1 {

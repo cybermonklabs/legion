@@ -689,10 +689,11 @@ func TestAWakeAloneEndsNoFollowWhileAPullRequestIsOwed(t *testing.T) {
 		w.mergeStateMu.Lock()
 		defer w.mergeStateMu.Unlock()
 		if w.baseReads == nil {
-			w.baseReads = map[string]*baseRead{key: {repo: repo, base: "main", asks: 1, wake: make(chan struct{}, 1), owed: map[string]baseOwed{}}}
+			w.baseReads = map[string]*baseRead{key: {repo: repo, base: "main", wake: make(chan struct{}, 1), owed: map[string]baseOwed{}}}
 			w.baseReadOf = map[string]string{}
 		}
-		w.baseReads[key].owed["CAPTURE-1"] = baseOwed{head: "head-86", asked: 1, wait: wait, due: time.Now().UTC().Add(wait)}
+		w.baseAsks++
+		w.baseReads[key].owed["CAPTURE-1"] = baseOwed{head: "head-86", asked: w.baseAsks, wait: wait, due: time.Now().UTC().Add(wait)}
 		w.baseReadOf["CAPTURE-1"] = key
 	}
 	waited := func() (bool, time.Duration) {
@@ -753,8 +754,9 @@ func TestAMoveDecidedOnAnOlderReadKeepsTheNewerHeadHandedOver(t *testing.T) {
 	owedOnMain := func() baseOwed {
 		w.mergeStateMu.Lock()
 		defer w.mergeStateMu.Unlock()
-		place := baseOwed{head: "old", asked: 1}
-		w.baseReads = map[string]*baseRead{from: {repo: repo, base: "main", asks: 1, wake: make(chan struct{}, 1),
+		w.baseAsks++
+		place := baseOwed{head: "old", asked: w.baseAsks}
+		w.baseReads = map[string]*baseRead{from: {repo: repo, base: "main", wake: make(chan struct{}, 1),
 			owed: map[string]baseOwed{"CAPTURE-1": place}}}
 		w.baseReadOf = map[string]string{"CAPTURE-1": from}
 		return place
