@@ -965,7 +965,9 @@ func (c *Client) request(ctx context.Context, scope, method, target, authorizati
 //
 // Each error send words itself names target as ShownBody shows it. A target holds names Dispatch
 // keeps and text GitHub gave (a blob's sha from a tree answer, a next page link), so none of them
-// passes the bound in send's errors.
+// passes the bound in send's words. A request that got no answer also names the URL it asked as
+// redact.Unanswered names it, whose path is not cut: a next page link's is at most
+// nextLinkMaxBytes.
 func (c *Client) send(ctx context.Context, scope, method, target, authorization, accept, ifNoneMatch string, body io.Reader, limit int64) (redact.Answer, int, http.Header, error) {
 	if c.limits != nil && scope != "" {
 		wait, recorded, err := c.limits.Wait(ctx, scope)
@@ -995,11 +997,8 @@ func (c *Client) send(ctx context.Context, scope, method, target, authorization,
 	githubreads.NoteSent(ctx)
 	response, err := c.http.Do(request)
 	if err != nil {
-		// net/http's error can quote the answering party's words - a Location that does not parse,
-		// read before any redirect policy, or a status or header line that does not parse - and
-		// /healthz serves it as a read's cause. It names the call by its target as ShownBody shows
-		// it and the failure by redact.Unanswered: a transport failure's own text, or its class.
-		err = fmt.Errorf("%s %s: %w", method, ShownBody(target), redact.Unanswered(err, request, ShownBody(target)))
+		// GET /healthz serves this error as a read's cause.
+		err = fmt.Errorf("%s %s: %w", method, ShownBody(target), redact.Unanswered(err, request, ""))
 		noteFailure(ctx, err)
 		return redact.Answer{}, 0, nil, err
 	}

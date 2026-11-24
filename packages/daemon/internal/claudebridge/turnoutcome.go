@@ -15,7 +15,6 @@ import (
 	"github.com/sjawhar/envoy/oauth2call"
 	"github.com/sjawhar/envoy/redirects"
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/redact"
 )
 
 // reportTimeout bounds one report's call. A turn's outcome is a few hundred bytes to a daemon on
@@ -149,12 +148,8 @@ func (r *turnReports) post(request claim.TurnOutcomeRequest) {
 	post.Header.Set("Content-Type", "application/json")
 	response, err := r.client.Do(post)
 	if err != nil {
-		// net/http's error can quote the answering party's words (a Location that does not parse,
-		// which it reads before any redirect policy, or the names its certificate holds), and that
-		// party can write the boot token there, so the line names the failure through
-		// oauth2call.Unanswered, and the daemon's URL through the URL rule, which keeps its host
-		// and path and drops the user information and query LEGION_DAEMON_URL can carry.
-		err = oauth2call.Unanswered(err, post, redact.URLCredentials(post.URL.String()))
+		// LEGION_DAEMON_URL can carry user information, a query or a fragment; Unanswered drops them.
+		err = oauth2call.Unanswered(err, post, "")
 		if cause := context.Cause(ctx); cause != nil {
 			err = fmt.Errorf("%w (%v)", cause, err)
 		}

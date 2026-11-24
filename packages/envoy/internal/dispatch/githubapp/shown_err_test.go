@@ -17,6 +17,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/architecture/notes"
 	"github.com/sjawhar/envoy/internal/githubtest"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // shownMost is the longest text ShownBody makes: shownBodyRunes runes of at most utf8.UTFMax bytes
@@ -272,13 +273,13 @@ func TestShownErrCutsOnlyAnErrorPastTheBound(t *testing.T) {
 
 // A transport error after a URL past the bound still names its cause. http.Client's Do answers a
 // url.Error, `Get "<URL>": <cause>`, and send names the call by its target as ShownBody shows it
-// and the cause by redact.Unanswered, a transport failure's own words: a cut of the whole error
-// would keep the URL's first 512 runes and push the cause out (review of
-// cybermonklabs/legion#4373 at e185c085). send's own words before the url.Error name the URL as
-// ShownBody shows it too, so the error names the whole URL nowhere. The branch here is 60
-// characters of three bytes, so its URL, each byte escaped as %XX, passes 512 runes. The context
-// has ended before the request, so the cause is context.DeadlineExceeded, and the error still
-// reaches it and still answers net.Error's Timeout.
+// and the url.Error by redact.Unanswered: the URL it asked by that one naming, and the cause by a
+// transport failure's own words. A cut of the whole error would keep the URL's first 512 runes and
+// push the cause out (review of cybermonklabs/legion#4373 at e185c085). The branch here is 60
+// characters of three bytes, so its URL, each byte escaped as %XX, passes 512 runes, and
+// Unanswered's name of it is redact.NotPrinted, since the URL rule prints no escape: the error
+// names the whole URL nowhere. The context has ended before the request, so the cause is
+// context.DeadlineExceeded, and the error still reaches it and still answers net.Error's Timeout.
 func TestATransportErrorAfterALongURLStillNamesItsCause(t *testing.T) {
 	client := branchServer(t, func(w http.ResponseWriter, r *http.Request) {
 		t.Errorf("GitHub saw %s %.80s…; want no request, since the context had ended", r.Method, r.URL.Path)
@@ -301,8 +302,8 @@ func TestATransportErrorAfterALongURLStillNamesItsCause(t *testing.T) {
 	if !strings.Contains(text, "context deadline exceeded") {
 		t.Errorf("the error names no cause: %.120q… ends %q; want it to name context deadline exceeded", text, text[max(0, len(text)-80):])
 	}
-	if end := fmt.Sprintf("Get %q: context deadline exceeded", shownURL); !strings.HasSuffix(text, end) {
-		t.Errorf("the error ends %q; want the URL as ShownBody shows it, then the cause: %q", text[max(0, len(text)-120):], end[max(0, len(end)-120):])
+	if end := fmt.Sprintf("Get %q: context deadline exceeded", redact.NotPrinted); !strings.HasSuffix(text, end) {
+		t.Errorf("the error ends %q; want the URL as redact.Unanswered names one with an escape, then the cause: %q", text[max(0, len(text)-120):], end)
 	}
 	if strings.Contains(text, whole) {
 		t.Errorf("the error names the %d-byte URL whole; want it only as ShownBody shows it", len(whole))
