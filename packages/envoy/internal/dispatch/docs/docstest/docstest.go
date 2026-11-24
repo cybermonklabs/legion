@@ -128,7 +128,9 @@ func DialContext(ctx context.Context, url string, header http.Header, artifactID
 			refused, _ := redact.ReadAnswer(response, 512)
 			return nil, fmt.Errorf("connect a peer to document %s: %s %q: %w", artifactID, redact.StatusLine(response.StatusCode), refused.Words(), err)
 		}
-		return nil, fmt.Errorf("connect a peer to document %s: %w", artifactID, err)
+		// Any other failure prints by its class (redact.Class): gorilla's text quotes a status line
+		// it cannot read, the answering party's words, and the rule prints no ws:// URL.
+		return nil, fmt.Errorf("connect a peer to document %s: %w", artifactID, redact.Class(err))
 	}
 	answers, awareness, ended := make(chan []byte, 16), make(chan []AwarenessEntry, 64), make(chan struct{})
 	peer := &Peer{
