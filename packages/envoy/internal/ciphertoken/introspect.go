@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/fold"
 	"github.com/sjawhar/envoy/internal/redact"
+	"github.com/sjawhar/envoy/internal/urljoin"
 )
 
 // IntrospectPath is the broker's RFC 7662 introspection route, which answers what the broker
@@ -96,15 +97,26 @@ func callerOf(answer Introspection, shape tokenShape) Caller {
 // answer a sound request with, a body that does not decode — is ErrBrokerUnreachable, never a
 // refusal: a caller told its token was refused would discard a token that may be perfectly live,
 // while 503 asks it to come back.
+//
+// The route is IntrospectPath joined onto the broker URL's path, the URL's query kept and its
+// fragment dropped (urljoin.Join): the path appended to the URL's text would sit inside a query or
+// a fragment the URL holds, and the broker would be asked another path. A broker URL that does
+// not parse or names no host is refused by its class, "not a valid URL" (redact.ClassNotAURL), and
+// so is a request net/http could not build from the joined URL: url.Parse's error, which
+// net/http's repeats, quotes the URL whole, its user information and query included.
 func (v *Verifier) introspect(ctx context.Context, token string) (Introspection, error) {
 	account, err := v.account.Read()
 	if err != nil {
 		return Introspection{}, fmt.Errorf("%w: %w", ErrBrokerUnreachable, err)
 	}
 	form := url.Values{"token": []string{token}}.Encode()
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, v.brokerURL+IntrospectPath, strings.NewReader(form))
+	endpoint, err := urljoin.Join(v.brokerURL, IntrospectPath)
 	if err != nil {
-		return Introspection{}, fmt.Errorf("%w: build the introspection request: %w", ErrBrokerUnreachable, err)
+		return Introspection{}, fmt.Errorf("%w: the broker URL: %w", ErrBrokerUnreachable, redact.Masked(err, redact.ClassNotAURL))
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint.String(), strings.NewReader(form))
+	if err != nil {
+		return Introspection{}, fmt.Errorf("%w: build the introspection request: %w", ErrBrokerUnreachable, redact.Masked(err, redact.ClassNotAURL))
 	}
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	request.Header.Set("Authorization", "Bearer "+account)
