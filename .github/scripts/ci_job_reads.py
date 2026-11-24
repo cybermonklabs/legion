@@ -439,6 +439,11 @@ BROKER_CLIENT_SRC = "packages/cipher-client/**"
 # The shared test fixtures every other Bun package's tests import.
 TEST_FIXTURES_SRC = "packages/test-fixtures/src/**"
 
+# The test job's run of the live proofs' libraries, cited by its whole run: text. It leaves out
+# scripts/e2e/lib/nats-image.test.ts, whose one run is lint's (no filter gates lint), so the
+# natsfloor build that file starts is no read of this job.
+E2E_LIB_TESTS = "bun test scripts/e2e/lib --path-ignore-patterns=scripts/e2e/lib/nats-image.test.ts"
+
 
 def envoy_client_dep(why):
     """The reads of a gate whose job compiles @legion/envoy-client: that package's sources, and
@@ -577,7 +582,7 @@ RULES = {
         Read(path, "internal/api/reachstates_test.go:50 lists ../supervise and :60 parses each .go file of it but the test files (:57)")
         for path in files_but_tests(f"{DAEMON}/internal/supervise")],
     f"{DAEMON}/internal/api/real_github_test.go": reads(("scripts/e2e/lib/github-apps.sh", "internal/api/real_github_test.go:115 runs it in bash, and :208,249 read it")),
-    f"{DAEMON}/internal/api/state_golden_test.go": reads((f"{FIX}/daemon-api/*", "internal/api/state_golden_test.go:1391 (path from goldenPath at :1380, declared :38)")),
+    f"{DAEMON}/internal/api/state_golden_test.go": reads((f"{FIX}/daemon-api/*", "internal/api/state_golden_test.go: func golden reads goldenPath(name), which joins ../../../contracts/fixtures/daemon-api")),
     f"{DAEMON}/internal/appauth/deployment_doc_test.go": reads(("docs/deployment.md", "internal/appauth/deployment_doc_test.go:30 (path from deploymentDoc at :20)")),
     f"{DAEMON}/internal/capabilities/capabilities_test.go": reads(
         (f"{FIX}/capability-redaction.json", "internal/capabilities/capabilities_test.go:236 readFixture"),
@@ -621,7 +626,7 @@ RULES = {
         run(ENVOY, ["./cmd/listener", "./cmd/dispatch"], "internal/intake/redelivered_test.go:298-299 testbuild.EnvoyBinary, which runs go build ./cmd/listener and ./cmd/dispatch in packages/envoy (internal/testbuild/testbuild.go:112)", mode="build")],
     f"{DAEMON}/internal/intake/checks_skipped_test.go": reads((f"{FIX}/checks-settlement/*", "internal/intake/checks_skipped_test.go:32")),
     f"{DAEMON}/internal/intake/checks_statuses_test.go": reads((f"{FIX}/checks-settlement/*", "internal/intake/checks_statuses_test.go:139")),
-    f"{DAEMON}/internal/intake/intake_test.go": reads((f"{FIX}/github-envelopes/*", "internal/intake/intake_test.go:856 globs it and reads each file; :960 reads one")),
+    f"{DAEMON}/internal/intake/intake_test.go": reads((f"{FIX}/github-envelopes/*", "internal/intake/intake_test.go: TestEnvoyGoldenSubjectsReachTheirRepositorysConsumer globs it and reads each file; TestAWorkflowRunEnvelopeIsNoFact reads workflow-run-completed.json")),
     f"{DAEMON}/internal/podsafety/podsafety_test.go": reads((f"{DAEMON}/docker/worker.Dockerfile", "internal/podsafety/podsafety_test.go:543")),
     f"{DAEMON}/internal/projection/state_golden_test.go": reads((f"{FIX}/daemon-api/*", "internal/projection/state_golden_test.go:209")),
     f"{DAEMON}/internal/prompts/roles_test.go": reads(
@@ -2365,6 +2370,9 @@ STALL_CLIENT = "Stall test of envoy-client's NATS connection options"
 LOADTEST_RUN_STEP = "One-run-at-a-time test for loadtest/run-step.sh and run-series.sh (fakes go and uv; no stack)"
 LOADTEST_LOCK = "Lock test for loadtest/common.sh (inherited lock, refusals, holders in another PID namespace; no stack)"
 LOADTEST_CLUSTER = "Test loadtest/cluster/cluster.sh (fakes kubectl, gh and curl; no cluster) and compare nats.yaml with a fresh render"
+# The step that waits for the script harnesses a job queued through .github/scripts/harness-pool.sh
+# and is the verdict on them; envoy-go-checks and the test job each end with one.
+HARNESS_POOL_WAIT_STEP = "Wait for the script harnesses and judge them"
 # The check that no migration a database may have run is edited without its replaces line: a
 # script that builds the command with `go build` and runs the binary, so pinned whole, and the Run
 # stands for the command it compiles. EDITED_MIGRATIONS_BASE, which the step runs first, picks the
@@ -2412,12 +2420,14 @@ SESSIONS_STEP = "Test the session message-wait script"
 
 # ------------------------------------------------- the test job's script harnesses, one gate each
 # Each `*.test.sh` step of the test job tests one script of this repository, and runs behind a
-# changes output of its own naming that harness and that script. Before this table one pattern,
-# `.github/scripts/*`, stood for all of them on the job's own filter, so a change to any one
-# script ran every harness - and, while the daemon's Go suite was in the same job, 1,083 s
-# (median) of Go tests with them (dispatch://INFRA-1413). The job's filter now names what these
-# gates name, through the anchors .github/ci-filters.yaml holds each of these lists under, so a
-# change to a harness or its subject selects the job and exactly that step's gate is true in it.
+# filter of its own naming that harness and that script, which the step reads out of the changes
+# job's one list of the filters that matched (.github/ci-notes/ci.md#one-list-for-the-test-jobs-step-gates).
+# Before this table one pattern, `.github/scripts/*`, stood for all of them on the job's own
+# filter, so a change to any one script ran every harness - and, while the daemon's Go suite was
+# in the same job, 1,083 s (median) of Go tests with them (dispatch://INFRA-1413). The job's
+# filter now names what these gates name, through the anchors .github/ci-filters.yaml holds each
+# of these lists under, so a change to a harness or its subject selects the job and exactly that
+# step's filter is in the list it reads.
 #
 # Every harness under .github/scripts sources test-lib.sh for its `check`, `is` and `summary`,
 # so each of those gates reads it and a change to it runs them all;
@@ -2429,8 +2439,8 @@ TEST_LIB = f"{SCRIPTS}/test-lib.sh"
 def harness(filter, step, harness_script, subjects, lib=True):
     """A gate for one harness step of the test job: the harness itself, test-lib.sh where the
     harness sources it, and `subjects`, the (path, why) pairs of what else that step reads - the
-    script it tests first among them. The gate is the step's, so its `if:` must test this
-    filter and no other (rule 2)."""
+    script it tests first among them. The gate is the step's, so its `if:` must read this filter
+    out of the list and no other (rule 2)."""
     entries = [(harness_script, at("test", step))]
     if lib:
         entries.append((TEST_LIB, f"{harness_script} sources it for check/is/summary"))
@@ -2605,6 +2615,8 @@ SCRIPT_TEST_GATES = [
     ]),
     harness("ci_router_outputs_test", "Test the router outputs' label terms", f"{SCRIPTS}/ci-router-outputs.test.sh", [
         (f"{SCRIPTS}/ci_router_outputs.py", "the script under test"),
+        (".github/workflows/ci-job-test.yaml", "ci_router_outputs.py --steps test reads its steps' if:, "
+                                               "which the harness holds to the list of matched filters"),
     ]),
     harness("ci_ok_test", "Test ci-ok's verdict", f"{SCRIPTS}/ci-ok.test.sh", [
         (f"{SCRIPTS}/ci-ok.sh", "the script under test"),
@@ -2681,6 +2693,10 @@ SCRIPT_TEST_GATES = [
     ]),
     harness("disk_watch_test", "Test the machine watch", f"{SCRIPTS}/disk_watch.test.sh", [
         (f"{SCRIPTS}/disk_watch.py", "the module under test"),
+    ]),
+    # The pool's own test runs as a step of its own, not through the pool it tests.
+    harness("harness_pool_test", "Test the harness pool", f"{SCRIPTS}/harness-pool.test.sh", [
+        (f"{SCRIPTS}/harness-pool.sh", "the script under test"),
     ]),
     # The one harness of the job that is not under .github/scripts and sources no test-lib.sh.
     harness("priorities_seed_check_test", "Test the priorities seed check (a stand-in Dispatch)",
@@ -3065,15 +3081,17 @@ GATES = [
     # What is left of the test job once the daemon's Go suite and the private-name port harness
     # have jobs of their own, and its builds, lints and typechecks are tooling-checks' (below):
     # the script harnesses - each behind a gate of its own (SCRIPT_TEST_GATES), whose reads this
-    # gate carries too, since the job must be selected for the step to run in it - and the Bun
-    # suites of scripts/. Two go commands are left, the builds Bun tests start: the listener's,
-    # and the natsfloor command the pin scanner asks the NATS floor through.
+    # gate carries too, since the job must be selected for the step to run in it, and all but
+    # three queued through the harness pool - and the Bun suites of scripts/. One go command is
+    # left, the build a Bun test starts: the listener's.
     gate("test", "test", runs=[
         script_run("scripts/e2e/lib/held-port.test.ts", 'const build = Bun.spawnSync(["go", "build", "-o", listener, "./cmd/listener"], {',
-                   at("test", "bun test scripts/e2e/lib"), ENVOY, ["./cmd/listener"], mode="build"),
-        script_run("scripts/e2e/lib/nats-image.test.ts", 'const build = Bun.spawnSync(["go", "build", "-o", floor, "./natsversion/cmd/natsfloor"], {',
-                   at("test", "bun test scripts/e2e/lib"), ENVOY, ["./natsversion/cmd/natsfloor"], mode="build"),
+                   at("test", E2E_LIB_TESTS), ENVOY, ["./cmd/listener"], mode="build"),
     ], reads=SCRIPT_TEST_READS + reads(
+        # Every harness step but three queues its harness through the pool, and the wait step is
+        # the verdict on them, so a change to the pool must start this job whatever gate it hits.
+        (".github/scripts/harness-pool.sh",
+         f"{at('test', HARNESS_POOL_WAIT_STEP)}, and each harness step above it but three queues its harness through it"),
         ("scripts/third-party-notices.test.ts", at("test", "Test third-party notices")),
         ("packages/dispatch/web/src/fonts/inter/**", "scripts/third-party-notices.test.ts:102-105 resolves the font "
                                                      "file's path, lists that directory and reads the package.json and "
@@ -3083,11 +3101,11 @@ GATES = [
         ("scripts/semantic-line-breaks.ts", "scripts/semantic-line-breaks.test.ts:6,28 spawns it"),
         ("scripts/priorities-seed.test.ts", at("test", "Test the priorities seed")),
         ("scripts/priorities-seed.ts", "scripts/priorities-seed.test.ts:4 imports it"),
-        ("scripts/e2e/**", f"{at('test', 'bun test scripts/e2e/lib')} (lib/script-functions.test.ts:105-108 scans scripts/e2e/*.sh and lib/*); "
+        ("scripts/e2e/**", f"{at('test', E2E_LIB_TESTS)} (lib/script-functions.test.ts:105-108 scans scripts/e2e/*.sh and lib/*); "
                            f"{at('test', 'Test the e2e proof selector')}: the selector reads scripts/e2e/*.sh"),
         (CONTRACTS_SRC, "scripts/e2e/lib/envoy-bridge.ts:9-10, session-settings-services.ts:6; scripts/dispatch/ask-census.ts:3-9, "
                         f"which {at('test', 'Test the Dispatch census script')} loads; scripts/priorities-seed.ts:29"),
-        (TEST_FIXTURES_SRC, f"{at('test', 'bun test scripts/e2e/lib')} and the other bun test steps import @legion/test-fixtures"),
+        (TEST_FIXTURES_SRC, f"{at('test', E2E_LIB_TESTS)} and the other bun test steps import @legion/test-fixtures"),
         # The envoy-client sources, and cipher-client's with them, are the shared read below:
         # scripts/e2e/lib/nats-stream.ts:16-18, operator-dispatch.ts:17-22, envoy-bridge.ts:11
         # and scripts/dispatch/ask-census.ts:10-18 import @legion/envoy-client/*.
@@ -3664,6 +3682,10 @@ GATES = [
         (".github/ci-tools.yaml", ".github/actions/install-helm/action.yml:30-31 installs the tarball of the helm row"),
         (".github/scripts/ci-tools.sh", ".github/actions/install-helm/action.yml:21 sources it, and ci_tools_fetch "
                                         "reads that row's two sources"),
+        # Every script harness step queues its harness through the pool, and the wait step is the
+        # verdict on them, so a change to the pool must start this job.
+        (".github/scripts/harness-pool.sh",
+         f"{at('envoy-go-checks', HARNESS_POOL_WAIT_STEP)}, and each harness step above it queues its harness through it"),
     ) + setup_go("envoy-go-checks", f"{ENVOY}/go.mod") + bun_job("envoy-go-checks")),
 
     # The envoy-infra module's live tests against nats-server and Postgres, the merge-queue half

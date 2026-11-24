@@ -34,7 +34,9 @@
 # filter must hold exactly the generated `!` patterns that keep it off the Go test files its job
 # does not read, which the write mode writes, every dorny/paths-filter step of every workflow must
 # hand the action exactly .github/ci-filters.yaml as its `filters` input, every output of the
-# changes job must name that step and a filter that file holds, that file must be there and open,
+# changes job must name that step and a filter that file holds (but for the list of matched
+# filters, held to its one value), a step reading its filter out of that list must read it in its
+# one shape and is the gate on that filter, that file must be there and open,
 # and a listed block's patterns are passed over by rule 9 only while its marker names a check a
 # job of CI runs. A script's go command is read under every step of each job that may run it, a
 # workflow several jobs of ci.yaml call runs each job of it named for a caller under that caller
@@ -858,6 +860,273 @@ run_check "$root"
 check "passes" "$(is "$status" 0)"
 check "reads the one gate on app" \
   "$(contains "$out" '^report: called step "Test the library": 5 files, 0 uncovered (filter app)$')"
+
+# list_gate <root>: the called step reads its filter out of the changes job's one list of the
+# filters that matched, as the test job's harness steps do: ci.yaml's changes job hands on the
+# paths filter's own `changes` output as matched_filters, `all` on a dispatched run, the calling
+# job passes it as one input, and the step reads `"app"` out of it beside the `all` term and the
+# changes result (.github/ci-notes/ci.md#one-list-for-the-test-jobs-step-gates).
+list_gate() {
+  called_input_gate "$1"
+  replace "$1/.github/workflows/called.yaml" "      ci-ok-changes:" \
+    $'      matched-filters:\n        type: string\n        required: true\n      ci-ok-changes:'
+  replace "$1/.github/workflows/called.yaml" "        if: inputs.app == 'true'" \
+    "        if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '\"app\"')"
+  replace "$1/.github/workflows/ci.yaml" "      ref_is_main: \${{ steps.ref.outputs.is_main }}" \
+    $'      matched_filters: ${{ github.event_name == \'workflow_dispatch\' && \'all\' || steps.filter.outputs.changes }}\n      ref_is_main: ${{ steps.ref.outputs.is_main }}'
+  replace "$1/.github/workflows/ci.yaml" "      app: \${{ needs.changes.outputs.app }}" \
+    $'      changes-result: ${{ needs.changes.result }}\n      matched-filters: ${{ needs.changes.outputs.matched_filters }}'
+}
+
+echo "case: a called step reading its filter out of the list of matched filters is the gate on that filter"
+root=$(fixture list-gate)
+list_gate "$root"
+run_check "$root"
+check "passes" "$(is "$status" 0)"
+check "reads the one gate on app" \
+  "$(contains "$out" '^report: called step "Test the library": 5 files, 0 uncovered (filter app)$')"
+
+echo "case: a step reading a filter the table does not know out of the list"
+root=$(fixture list-gate-unknown)
+list_gate "$root"
+replace "$root/.github/workflows/called.yaml" "'\"app\"'" "'\"apx\"'"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the filter it reads as the step's gate" \
+  "$(contains "$out" 'job called step "Test the library" is gated on filter apx, which ci_job_reads.py neither lists in GATES nor EXCLUDES')"
+check "and the gate the step no longer reads" \
+  "$(contains "$out" 'nor one reading app out of needs.changes.outputs.matched_filters')"
+
+# list_shape_refused <fixture> <old> <new>: the list gate with <old> replaced by <new> in the
+# called step's if:, and the check refusing that step by rule 22's shape sentence.
+list_shape_refused() {
+  root=$(fixture "$1")
+  list_gate "$root"
+  replace "$root/.github/workflows/called.yaml" "$2" "$3"
+  run_check "$root"
+  check "fails" "$(is "$status" 1)"
+  check "names the step and the one shape" \
+    "$(contains "$out" "job called step \"Test the library\" reads needs.changes.outputs.matched_filters outside its one shape")"
+}
+
+echo "case: a step reading the list without the quotes around its filter"
+list_shape_refused list-gate-unquoted "'\"app\"'" "'app'"
+
+echo "case: a step reading its filter out of the list without the all term"
+list_shape_refused list-gate-no-all "inputs.matched-filters == 'all' || " ""
+
+echo "case: a step reading its filter out of the list without the changes result term"
+list_shape_refused list-gate-no-result "inputs.changes-result != 'success' || " ""
+
+# A `!` before the `contains` runs the step when its filter did not match, and an `&& false` after
+# it never runs it; both name the filter in the right shape, which a search for that shape's
+# pieces passed.
+echo "case: a step reading its filter out of the list with a ! before the contains"
+list_shape_refused list-gate-negated "|| contains(inputs.matched-filters" "|| !contains(inputs.matched-filters"
+
+echo "case: a step reading its filter out of the list with a term after the contains"
+list_shape_refused list-gate-and-false "'\"app\"')" "'\"app\"') && false"
+
+echo "case: a step reading the list with contains spelt in capitals and spaced, as GitHub reads it"
+root=$(fixture list-gate-spelling)
+list_gate "$root"
+replace "$root/.github/workflows/called.yaml" "|| contains(inputs.matched-filters, '\"app\"')" \
+  "|| CONTAINS ( inputs.matched-filters , '\"app\"' )"
+run_check "$root"
+check "passes" "$(is "$status" 0)"
+check "and reads the one gate on app" \
+  "$(contains "$out" '^report: called step "Test the library": 5 files, 0 uncovered (filter app)$')"
+
+echo "case: a caller handing the list on under another spelling of the changes job"
+root=$(fixture list-gate-indexed)
+list_gate "$root"
+replace "$root/.github/workflows/ci.yaml" "      matched-filters: \${{ needs.changes.outputs.matched_filters }}" \
+  "      matched-filters: \${{ needs['changes'].outputs['matched_filters'] }}"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the with: value and the spelling" \
+  "$(contains "$out" "job called's with: matched-filters names the changes job as needs\['changes'\]")"
+
+echo "case: a step reading an input spelt in capitals"
+root=$(fixture list-gate-inputs-case)
+list_gate "$root"
+replace "$root/.github/workflows/called.yaml" "|| inputs.matched-filters == 'all'" "|| INPUTS.matched-filters == 'all'"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the step and the spelling" \
+  "$(contains "$out" "job called step \"Test the library\" reads an input as INPUTS.matched-filters")"
+
+# GitHub reads an input's name in any case, so `inputs.GATES` reads the input the caller passes as
+# gates: the check resolves it so, and a filter it reads out of the list is that step's gate. The
+# name holds no `matched`, so only that resolution finds the list in the condition.
+echo "case: a step reading the list through an input of another name, spelt in capitals"
+root=$(fixture list-gate-name-case)
+list_gate "$root"
+replace "$root/.github/workflows/called.yaml" $'      matched-filters:\n' $'      gates:\n'
+replace "$root/.github/workflows/ci.yaml" "      matched-filters: \${{ needs.changes.outputs.matched_filters }}" \
+  "      gates: \${{ needs.changes.outputs.matched_filters }}"
+replace "$root/.github/workflows/called.yaml" \
+  "|| inputs.matched-filters == 'all' || contains(inputs.matched-filters, '\"app\"')" \
+  "|| inputs.GATES == 'all' || contains(inputs.GATES, '\"apx\"')"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "resolves it and names the filter it reads as the step's gate" \
+  "$(contains "$out" 'job called step "Test the library" is gated on filter apx, which ci_job_reads.py neither lists in GATES nor EXCLUDES')"
+
+echo "case: a step reading an input with a space after the dot"
+root=$(fixture list-gate-dot-space)
+list_gate "$root"
+replace "$root/.github/workflows/called.yaml" "|| inputs.matched-filters == 'all'" "|| inputs. matched-filters == 'all'"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the step and the spelling" \
+  "$(contains "$out" "job called step \"Test the library\" reads an input as inputs. matched-filters")"
+
+echo "case: a list output that is not all on a dispatched run"
+root=$(fixture list-gate-no-dispatch)
+list_gate "$root"
+replace "$root/.github/workflows/ci.yaml" "\${{ github.event_name == 'workflow_dispatch' && 'all' || steps.filter.outputs.changes }}" \
+  "\${{ steps.filter.outputs.changes }}"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the output and the value it must have" \
+  "$(contains "$out" "the changes job's output matched_filters is \${{ steps.filter.outputs.changes }}, and it must be exactly \${{ github.event_name == 'workflow_dispatch' && 'all' || steps.filter.outputs.changes }}")"
+
+echo "case: a filter named changes, under which the paths filter writes no list"
+root=$(fixture list-gate-changes-filter)
+list_gate "$root"
+replace "$root/.github/ci-filters.yaml" $'\nimage:' $'\nchanges:\n  - \'docs/readme.md\'\nimage:'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "says the list would be that filter's verdict" \
+  "$(contains "$out" '.github/ci-filters.yaml holds a filter named changes, and dorny/paths-filter writes its list of the filters that matched under that name only while no filter has it')"
+
+echo "case: a job of ci.yaml gated on the list"
+root=$(fixture list-gate-job)
+list_gate "$root"
+replace "$root/.github/workflows/ci.yaml" \
+  "    if: needs.changes.outputs.app == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
+    uses: ./.github/workflows/called.yaml" \
+  "    if: (needs.changes.outputs.matched_filters == 'all' || contains(needs.changes.outputs.matched_filters, '\"app\"')) && (github.event_name != 'merge_group' || github.run_attempt == '1')
+    uses: ./.github/workflows/called.yaml"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "says a job is selected by an output of its own" \
+  "$(contains "$out" "job called's if: reads needs.changes.outputs.matched_filters, a list that gates steps")"
+
+# The ci-ok payload (toJSON(needs.changes)) and the list name every filter, so a step that reads
+# either for a filter anywhere but rule 22's one shape is gated on a filter no rule reads. These
+# cases add a step to the list gate's called file, before its report step.
+# add_called_step <root> <step>: <step>, a whole step's YAML at the steps' indent, in called.yaml.
+add_called_step() {
+  replace "$1/.github/workflows/called.yaml" "      - name: Report ci-ok when this job decides a merge-group run" \
+    "$2"$'\n'"      - name: Report ci-ok when this job decides a merge-group run"
+}
+
+echo "case: a step gated on the ci-ok payload for a filter"
+root=$(fixture carrier-payload-if)
+list_gate "$root"
+add_called_step "$root" $'      - name: Note apx\n        if: contains(inputs.ci-ok-changes, \'apx\')\n        run: echo apx'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the step and what it reads" \
+  "$(contains "$out" "job called step \"Note apx\" reads the changes job's verdicts other than as the list of matched filters in its one shape")"
+
+echo "case: a step testing only that the ci-ok payload is there passes"
+root=$(fixture carrier-payload-presence)
+list_gate "$root"
+add_called_step "$root" $'      - name: Note the caller\n        if: always() && inputs.ci-ok-changes != \'\'\n        run: echo ci.yaml called'
+run_check "$root"
+check "passes" "$(is "$status" 0)"
+
+echo "case: a step whose run: script reads the list"
+root=$(fixture carrier-list-run)
+list_gate "$root"
+add_called_step "$root" $'      - name: Note apx\n        run: case \'${{ inputs.matched-filters }}\' in *apx*) echo apx;; esac'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the step, its run and the read" \
+  "$(contains "$out" "job called step \"Note apx\"'s run reads \${{ inputs.matched-filters }}, which carries every filter's verdict")"
+
+echo "case: a step whose run: script reads the ci-ok payload"
+root=$(fixture carrier-payload-run)
+list_gate "$root"
+add_called_step "$root" $'      - name: Note apx\n        run: echo \'${{ inputs.ci-ok-changes }}\' | grep -q apx'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the step, its run and the read" \
+  "$(contains "$out" "job called step \"Note apx\"'s run reads \${{ inputs.ci-ok-changes }}, which carries every filter's verdict")"
+
+echo "case: a step of a job of ci.yaml whose run: script reads the list"
+root=$(fixture carrier-list-ci-run)
+list_gate "$root"
+replace "$root/.github/workflows/ci.yaml" "        run: echo lint" "        run: echo '\${{ needs.changes.outputs.matched_filters }}'"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the job, its step and the read" \
+  "$(contains "$out" "job lint step \"Lint everything\"'s run reads \${{ needs.changes.outputs.matched_filters }}")"
+
+# The same reads under the other spellings GitHub reads, each of which a check that knew one
+# spelling passed: rule 22's spelling half runs over every scanned expression, not only conditions.
+# spelled_read <fixture> <file> <text> <replacement> <refusal pattern>: the list gate with <text>
+# in <file> (ci.yaml or called.yaml) replaced, refused with a line matching the pattern.
+spelled_read() {
+  root=$(fixture "$1")
+  list_gate "$root"
+  if [ "$2" = called.yaml ]; then
+    add_called_step "$root" $'      - name: Note apx\n        run: echo \'apx\''
+  fi
+  replace "$root/.github/workflows/$2" "$3" "$4"
+  run_check "$root"
+  check "fails" "$(is "$status" 1)"
+  check "names the step and the read" "$(contains "$out" "$5")"
+}
+
+echo "case: a ci.yaml step's run: reading the list as outputs['matched_filters']"
+spelled_read spelt-outputs-index ci.yaml "        run: echo lint" \
+  "        run: echo '\${{ needs.changes.outputs['matched_filters'] }}'" \
+  "job lint step \"Lint everything\"'s run names the changes job as needs\.changes\.outputs\['matched_filters'\]"
+
+echo "case: a ci.yaml step's run: reading the list through needs['changes']"
+spelled_read spelt-needs-index ci.yaml "        run: echo lint" \
+  "        run: echo '\${{ needs['changes'].outputs.matched_filters }}'" \
+  "job lint step \"Lint everything\"'s run names the changes job as needs\['changes'\]\.outputs\.matched_filters"
+
+echo "case: a ci.yaml step's run: reading every job's list through needs.*"
+spelled_read spelt-needs-star ci.yaml "        run: echo lint" \
+  "        run: echo '\${{ join(needs.*.outputs.matched_filters, ',') }}'" \
+  "job lint step \"Lint everything\"'s run reads [$]{{ join(needs\.\*\.outputs\.matched_filters, ',') }}, which carries every filter's verdict"
+
+echo "case: a called step's run: reading the list as INPUTS."
+spelled_read spelt-inputs-case called.yaml "        run: echo 'apx'" \
+  "        run: echo '\${{ INPUTS.matched-filters }}'" \
+  "job called step \"Note apx\"'s run reads an input as INPUTS\.matched-filters"
+
+echo "case: a called step's run: reading the list as inputs['...']"
+spelled_read spelt-inputs-index called.yaml "        run: echo 'apx'" \
+  "        run: echo '\${{ inputs['matched-filters'] }}'" \
+  "job called step \"Note apx\"'s run reads an input as inputs\['matched-filters'\]"
+
+echo "case: a called step's run: reading every input at once"
+spelled_read spelt-inputs-whole called.yaml "        run: echo 'apx'" \
+  "        run: echo '\${{ toJSON(inputs) }}'" \
+  "job called step \"Note apx\"'s run reads an input as inputs: this check resolves an input spelt inputs\.<name> alone"
+
+echo "case: a ci.yaml step's run: reading every job's result through needs.* passes"
+root=$(fixture spelt-needs-star-result)
+list_gate "$root"
+replace "$root/.github/workflows/ci.yaml" "        run: echo lint" "        run: echo '\${{ join(needs.*.result, ',') }}'"
+run_check "$root"
+check "passes" "$(is "$status" 0)"
+
+echo "case: two filters whose names differ only in case, beside the list"
+root=$(fixture list-gate-name-cases)
+list_gate "$root"
+replace "$root/.github/ci-filters.yaml" $'\nimage:' $'\nAPP:\n  - \'docs/readme.md\'\nimage:'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names both filters" \
+  "$(contains "$out" ".github/ci-filters.yaml holds filters APP, app, one name in different cases")"
 
 # The two cases below read a `!` pattern, whose own semantics workflow_paths.test.sh now owns.
 # What they assert here is this checker's verdict on it: the file it names as read but excluded,

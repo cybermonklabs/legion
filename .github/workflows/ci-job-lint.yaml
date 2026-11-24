@@ -175,8 +175,8 @@ jobs:
       # The listener and the Legion daemon refuse a nats-server below packages/envoy/natsversion's
       # floor, so a live proof that starts one, and a script or page that installs one, must name
       # one the floor takes. The test scans every tracked shell script and every tracked text file
-      # for those, so it runs here, on every change: the test job runs it too, but only when its
-      # filter selects scripts/e2e, and a new driver or page can be anywhere.
+      # for those, so it runs here, on every change, and only here: the test job's bun test of
+      # scripts/e2e/lib leaves this file out.
       - name: Check every NATS server a script starts or installs is one the floor takes
         run: bun test scripts/e2e/lib/nats-image.test.ts
 
