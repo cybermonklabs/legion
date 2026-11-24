@@ -3354,8 +3354,8 @@ package api
 // and 219 by none, so this entry moved to 219: the lowest number above main's 205 that no open
 // pull request declares and no later part of this work, stacked on this branch, holds. The
 // forward merge of 2026-11-22 that brought in 51d1a21f brought main's 213 (the entry above),
-// below 219, so this entry kept 219. From this entry the last number of answers.go's
-// SupportedContracts is `api.OwnerPlanContract`, after `cachesSourceContract`, and
+// below 219, so this entry kept 219. From this entry answers.go's SupportedContracts names
+// `api.OwnerPlanContract`, after `cachesSourceContract`, and
 // `shapedAnswersContract` and `repositoriesLiveContract` stay 193 and 202. Read the base's own
 // number and every open pull request again at the next merge rather than from this line. The
 // forward merge of 2026-11-23 that brought in 054cd5ca brought main's 217 (the entry above), below
@@ -3395,9 +3395,9 @@ package api
 // that brought in 7923340d brought the base's 219 again, over main's 217, and a reading of all 507
 // open heads between 2026-11-23T16:08:36Z and 16:09:51Z found 220 declared only by this change's
 // pull request and #5014, which is stacked on it and carries this entry, so this entry kept 220.
-// From this entry the last number of answers.go's SupportedContracts is
-// `api.assignmentPlanContract`, after `OwnerPlanContract`. Read the base's own number and every
-// open pull request again at the next merge rather than from this line.)
+// From this entry answers.go's SupportedContracts names `api.assignmentPlanContract`, after
+// `OwnerPlanContract`. Read the base's own number and every open pull request again at the next
+// merge rather than from this line.)
 //
 // 228: INFRA-1575 -- the intake gives up on a message whose handling keeps failing, keeps it
 // whole, tells the controller, and lets the operator or the controller replay it or discard it.
