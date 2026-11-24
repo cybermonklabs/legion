@@ -502,6 +502,30 @@ func (s *roleSend) timedOut() {
 	s.settle(sendDeliveryFailed)
 }
 
+// storedTooLate answers a forward the stream acknowledged storing for its holder later than the
+// fence and this route's budget after the resolution that chose that holder, after being how long
+// after (roles.ForwardStoredTooLate): no delivery, since the holder may have lost the role
+// meanwhile and the takeover record that would copy the message to its next holder may have
+// ended, so the copy on the holder's subject can reach nobody. It is the 504 delivery_failed a send
+// whose window ended gets (timedOut), its error wrapping roles.ErrForwardStoredTooLate, so every
+// client that retries a 504 sends the message again, and the retry resolves the holder afresh. The
+// forward stored a copy, which marked the charge (sendToRole), and the route's record holds no
+// forward for it (confirm), so the retry is judged as a first send.
+func (s *roleSend) storedTooLate(after time.Duration) {
+	err := fmt.Errorf("role %s: event %s was stored for its holder %s %s after that holder was resolved: %w",
+		s.role, s.item.EventID, cmp.Or(s.shown.Holder, "(none)"), after.Round(time.Second), roles.ErrForwardStoredTooLate)
+	s.record.holder = s.holder
+	s.record.refuseWith(s.w, http.StatusGatewayTimeout, outcomeDeliveryFailed, listenerwire.RoleSendFailure{
+		Error:     err.Error(),
+		Reason:    string(sendDeliveryFailed),
+		EventID:   s.item.EventID,
+		DedupeKey: s.item.DedupeKey,
+		Holder:    s.shown.Holder,
+		Attempts:  s.attempts,
+	})
+	s.settle(sendDeliveryFailed)
+}
+
 // endedInProcess answers a send whose window ended after its last forward ended while an earlier
 // forward under the same Nats-Msg-Id was still in process (earlierAttemptInProcess, err): the
 // stream may yet store that earlier forward for the holder, so the send is not told nothing was
@@ -696,8 +720,15 @@ func sendToRole(ctx context.Context, w http.ResponseWriter, scope *edgeScope, re
 			// many attempts this send makes.
 			ack, err := d.delivery.forwardAndWait(subject, forwarded, bus.ForwardMsgID(forwarded.DedupeKey, subject), window)
 			if err == nil {
-				d.confirm(item, send.holder, ack.Sequence)
 				send.record.charge.stored()
+				// The fence above bounds when the forward starts, not when the stream stores
+				// it: a forward held between the two is no delivery once it is stored past the
+				// fence and this route's own budget after the resolution that chose its holder.
+				if stored := d.delivery.now(); roles.ForwardStoredTooLate(resolvedAt, stored, sendRequestBudget) {
+					send.storedTooLate(stored.Sub(resolvedAt))
+					return
+				}
+				d.confirm(item, send.holder, ack.Sequence)
 				if ack.Duplicate {
 					send.deliveredHeld(ctx, send.holder, ack.Sequence, sendDelivered)
 					return
