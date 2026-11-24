@@ -124,9 +124,10 @@ func TestEveryRowTheApproveListDoesNotNameRefusesAnApproveOnlyTokenBeforeItsHand
 	const token = "an-approve-only-token-walking-every-row"
 	rig.broker.Says(token, approveOnlyAnswer(caller.jkt))
 	walked, listed := 0, 0
+	walking := readOnlyWalkToken{name: "the approve-only token", token: token}
 	for _, route := range rig.served.routes() {
 		name := route.Method + " " + route.Pattern
-		response := rig.serve(caller.presentingProbe(t, route, token))
+		response := rig.serve(walking.probe(t, caller, route))
 		refusal := decodeBody[refusalAnswer](t, response)
 		refusedAsApproveOnly := response.Code == http.StatusForbidden && refusal.Code == contracts.DispatchApproveOnlyToken
 		switch {

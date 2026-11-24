@@ -178,7 +178,46 @@ func TestOnlyASignInIsTradedForTheApprovePlaceholder(t *testing.T) {
 	}
 }
 
-// TestAnApproveGrantEndsAtItsEndOrWithItsSignIn: the approve_grants table of migration 0042 as its
+// TestAPlaceholderTradeThatAsksForReadIsRefused: a trade narrowed to reading approves nothing, so
+// a sign-in's placeholder trade that asks for the scope read - with the DPoP-Holder proof a
+// person's read trade sends, with a cut or without one - is refused invalid_request naming the
+// scope, and writes no approve grant and no access token of either table. The sign-in takes a
+// grant of its own first, so it holds the credential a read trade names and the refusal is not
+// the one a sign-in holding none gets.
+func TestAPlaceholderTradeThatAsksForReadIsRefused(t *testing.T) {
+	f := newSignInFixtureWith(t, func(c *oauth.Config) { c.Approve = approveSettings() })
+	box := newKey(t)
+	if status, body := f.exchange(t, f.placeholderForm(t, "ada-box-read"), box); status != http.StatusOK {
+		t.Fatalf("the sign-in's first placeholder trade = %d %v; want 200", status, body)
+	}
+	grants := f.count(t, "approve_grants")
+	tokens := f.count(t, "oauth_access_tokens") + f.count(t, "oauth_narrowed_access_tokens")
+	for _, c := range []struct{ name, cut string }{
+		{"with no cut", ""},
+		{"with a cut", time.Now().Add(-time.Minute).UTC().Format(time.RFC3339)},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			form := url.Values(f.placeholderForm(t, "ada-box-read"))
+			form.Set("scope", oauthwire.ScopeRead)
+			if c.cut != "" {
+				form.Set(oauthwire.FormAsOf, c.cut)
+			}
+			status, body := f.postWithHeaders(t, form, http.Header{
+				"DPoP":                     {dpopProof(t, box, f.url+"/token")},
+				oauthwire.HeaderDPoPHolder: {dpopProof(t, newKey(t), f.url+"/token")},
+			})
+			refusedSaying(t, status, body, http.StatusBadRequest, "invalid_request", "asks for the scope read")
+			if after := f.count(t, "approve_grants"); after != grants {
+				t.Errorf("the refused trade left %d approve grants; want the %d there were", after, grants)
+			}
+			if after := f.count(t, "oauth_access_tokens") + f.count(t, "oauth_narrowed_access_tokens"); after != tokens {
+				t.Errorf("the refused trade left %d access tokens; want the %d there were", after, tokens)
+			}
+		})
+	}
+}
+
+// TestAnApproveGrantEndsAtItsEndOrWithItsSignIn: the approve_grants table of migration 0043 as its
 // two reads answer it. A grant is live by its placeholder's hash and by its id while it lasts. Past
 // its end it is live by neither, and so is a grant whose sign-in's credential has passed its own
 // expiry; an id that is no uuid is no grant. The row holds the placeholder's SHA-256 and never the

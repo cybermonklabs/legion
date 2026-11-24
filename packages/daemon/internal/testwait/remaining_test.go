@@ -12,9 +12,11 @@ import (
 // an ordinary run. The parent names the child it wants with -test.run.
 const remainingChildEnv = "TESTWAIT_REMAINING_CHILD"
 
-// remainingChildTimeout is the -test.timeout of the child that starts within the margin: 10 s,
-// less than giveUpMargin, so its first call of Remaining has less than the margin left.
-const remainingChildTimeout = "10s"
+// remainingChildLeft is how far off the deadline is that the child of
+// TestRemainingWithinTheMarginFailsTheTestByName plants where Remaining reads it (deadlineOf),
+// read at Remaining's call: 10 s, less than giveUpMargin, so that call has less than the margin
+// left however long the child took to reach it.
+const remainingChildLeft = 10 * time.Second
 
 // Remaining is the time until the test binary's deadline less giveUpMargin: read just before the
 // call that time is no less than Remaining's answer, and read just after it no more. The reads and
@@ -75,18 +77,22 @@ func TestUnboundedRemainingStaysPositiveTimesASmallFactor(t *testing.T) {
 }
 
 // Called with less than the margin left before the deadline, Remaining fails the test by name, on
-// one line naming the deadline and the margin, and returns nothing a wait could run on: the child
-// runs under -timeout 10s, and the line it logs after Remaining returns never comes.
+// one line naming the deadline and the margin, and returns nothing a wait could run on: the line
+// the child logs after Remaining returns never comes. The child plants a deadline
+// remainingChildLeft away where Remaining reads it, and runs under what is left of this binary's
+// own deadline, so its alarm is no end a slow child reaches before Remaining: a child that ran
+// into its alarm waited in Remaining rather than failing.
 func TestRemainingWithinTheMarginFailsTheTestByName(t *testing.T) {
-	child := exec.Command(os.Args[0], "-test.run=^TestRemainingWithinTheMarginChild$", "-test.timeout="+remainingChildTimeout, "-test.v")
+	timeout := Remaining(t)
+	child := exec.Command(os.Args[0], "-test.run=^TestRemainingWithinTheMarginChild$", "-test.timeout="+timeout.String(), "-test.v")
 	child.Env = append(os.Environ(), remainingChildEnv+"=1")
 	output, err := child.CombinedOutput()
 	text := string(output)
 	if err == nil || !strings.Contains(text, "--- FAIL: TestRemainingWithinTheMarginChild (") {
-		t.Fatalf("the child under -timeout %s was meant to fail; it did not (%v):\n%s", remainingChildTimeout, err, text)
+		t.Fatalf("the child, its deadline planted %s away, was meant to fail; it did not (%v):\n%s", remainingChildLeft, err, text)
 	}
 	if strings.Contains(text, "panic: test timed out") {
-		t.Fatalf("the child ran into the binary's deadline rather than failing at once:\n%s", text)
+		t.Fatalf("the child ran into its own alarm (-test.timeout %s) rather than failing at once:\n%s", timeout, text)
 	}
 	if strings.Contains(text, "Remaining returned") {
 		t.Fatalf("Remaining returned within the margin rather than failing the test:\n%s", text)
@@ -102,13 +108,14 @@ func TestRemainingWithinTheMarginFailsTheTestByName(t *testing.T) {
 	}
 }
 
-// TestRemainingWithinTheMarginChild is the child of TestRemainingWithinTheMarginFailsTheTestByName,
-// run under -timeout 10s, so less than the margin is left at once. It runs only when the parent
-// re-executes this binary.
+// TestRemainingWithinTheMarginChild is the child of TestRemainingWithinTheMarginFailsTheTestByName.
+// It plants a deadline remainingChildLeft away, so less than the margin is left when Remaining
+// reads it. It runs only when the parent re-executes this binary.
 func TestRemainingWithinTheMarginChild(t *testing.T) {
 	if os.Getenv(remainingChildEnv) == "" {
 		t.Skip(remainingChildEnv + " is not set: this test is the child of TestRemainingWithinTheMarginFailsTheTestByName")
 	}
+	deadlineOf = func(*testing.T) (time.Time, bool) { return time.Now().Add(remainingChildLeft), true }
 	got := Remaining(t)
 	t.Logf("Remaining returned %s", got)
 }
