@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testcleanup"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // Writes through a room and joined writes leave, once the queue has checked their document, the
@@ -288,12 +289,20 @@ func TestTheCompactionQueueComesBackToARetriedDocumentWhenItsYoungRowsComeDue(t 
 	artifactID := storeAgedRows(t, database, 4, 20*time.Minute)
 	unlock := holdDocumentLock(t, database, artifactID)
 
-	loadStored(t, service, artifactID)
-	steps.await(t, artifactID, 0, "a retry of the busy document", func(step compactionStepRecord) bool {
+	// The rows are made young only between two steps of the queue: a step checks the room
+	// (tryCompaction) and then reads its fold point (readCompaction) in a snapshot of its own, so
+	// rows made young between those two reads leave the read no fold point, and the step ends the
+	// room as done and drops it, which no later note undoes. The worker is held in afterStep, after
+	// the first retry and before the queue settles it, while the rows are changed.
+	held, release := steps.holdAfter(artifactID, func(step compactionStepRecord) bool {
 		return step.retry > 0 && step.next.kind == compactionRetry
 	})
+	testcleanup.Add(t, release)
+	loadStored(t, service, artifactID)
+	testwait.Receive(t, "the worker to stop after a retry of the busy document", held)
 	ageUpdatesThrough(t, database, artifactID, everyVersion, 0)
 	young := storedRows(t, database, artifactID)
+	release()
 	step := steps.await(t, artifactID, 0, "the retry that finds no old row to check the document again later", func(step compactionStepRecord) bool {
 		return step.retry > 0 && step.next.kind == compactionLater
 	})
@@ -664,6 +673,17 @@ type compactionStepRecord struct {
 type compactionSteps struct {
 	mu    sync.Mutex
 	steps []compactionStepRecord
+	// hold, when set, stops the worker in afterStep after the first step it accepts (holdAfter).
+	hold *stepHold
+}
+
+// stepHold stops the compaction queue's worker after one step: held is closed when the worker has
+// stopped, and the worker goes on once release is closed.
+type stepHold struct {
+	room    string
+	want    func(compactionStepRecord) bool
+	held    chan struct{}
+	release chan struct{}
 }
 
 // quickCompactionQueue makes the service's compaction queue check a noted room at once and retry
@@ -673,14 +693,37 @@ func quickCompactionQueue(service *Service, backoff time.Duration) *compactionSt
 	steps := &compactionSteps{}
 	q := service.compactions
 	q.afterStep = func(room string, retry time.Duration, next compactionNext) {
+		record := compactionStepRecord{room: room, retry: retry, next: next}
 		steps.mu.Lock()
-		defer steps.mu.Unlock()
-		steps.steps = append(steps.steps, compactionStepRecord{room: room, retry: retry, next: next})
+		steps.steps = append(steps.steps, record)
+		hold := steps.hold
+		if hold != nil && hold.room == room && hold.want(record) {
+			steps.hold = nil
+		} else {
+			hold = nil
+		}
+		steps.mu.Unlock()
+		// The worker calls afterStep before it settles the step and before it takes the next
+		// one (compactionQueue.run), so no step of any room runs while it waits here.
+		if hold != nil {
+			close(hold.held)
+			<-hold.release
+		}
 	}
 	q.mu.Lock()
 	q.timing = compactionTiming{backoff: backoff, backoffCap: 4 * backoff}
 	q.mu.Unlock()
 	return steps
+}
+
+// holdAfter stops the worker after the first step of room that want accepts, from now on: held is
+// closed once it has stopped, and release lets it go on. release may be called more than once.
+func (s *compactionSteps) holdAfter(room string, want func(compactionStepRecord) bool) (held <-chan struct{}, release func()) {
+	hold := &stepHold{room: room, want: want, held: make(chan struct{}), release: make(chan struct{})}
+	s.mu.Lock()
+	s.hold = hold
+	s.mu.Unlock()
+	return hold.held, sync.OnceFunc(func() { close(hold.release) })
 }
 
 func (s *compactionSteps) count() int {
@@ -707,8 +750,11 @@ func (s *compactionSteps) of(room string) []compactionStepRecord {
 // instead of only that it decided nothing wanted.
 func (s *compactionSteps) await(t *testing.T, room string, from int, description string, want func(compactionStepRecord) bool) compactionStepRecord {
 	t.Helper()
+	gaveUp := true
 	defer func() {
-		if t.Failed() {
+		// waitFor gives up with t.Fatalf, which runs this before the test ends; a wait that found
+		// its step clears gaveUp, so an earlier failure of the test logs nothing here.
+		if gaveUp {
 			for index, step := range s.of(room) {
 				t.Logf("the queue's step %d of the room: retry %s, next %+v", index, step.retry, step.next)
 			}
@@ -726,6 +772,7 @@ func (s *compactionSteps) await(t *testing.T, room string, from int, description
 		}
 		return false
 	})
+	gaveUp = false
 	return found
 }
 
