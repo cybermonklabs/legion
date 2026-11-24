@@ -16569,6 +16569,9 @@
           "learned_at": {
             "$ref": "#/components/schemas/BasisLearnedAt"
           },
+          "merge_commit": {
+            "type": "string"
+          },
           "merged": {
             "type": "boolean"
           },
@@ -16602,7 +16605,8 @@
             "enum": [
               "no_pull_request_or_branch",
               "repository_unreadable",
-              "read_failed"
+              "read_failed",
+              "not_merged"
             ],
             "type": "string"
           },
@@ -16749,9 +16753,15 @@
             ],
             "type": "string"
           },
+          "commit": {
+            "type": "string"
+          },
           "reason": {
             "enum": [
               "pass_and_fail",
+              "fail",
+              "no_result",
+              "not_placed",
               "read_failed"
             ],
             "type": "string"

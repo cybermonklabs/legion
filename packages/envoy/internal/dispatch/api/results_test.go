@@ -1576,10 +1576,10 @@ func TestABranchChecksResultAtALinkedPullRequestsMergeCommitIsComparedInThatRepo
 	if stood := checkOf(t, read, "k5").PassStands; stood.Answer != model.PassStandsYes {
 		t.Fatalf("the default_branch check answers pass_stands %+v, want yes", stood)
 	}
-	// The linked commit is compared once in acme/tools, shared by both checks. The issue has no
-	// own merge, so no compare read of acme/widgets can make its own result count.
-	if got := linked.compareReads("acme/tools") - toolsBefore; got != 1 {
-		t.Errorf("the read made %d compare reads of acme/tools, want 1", got)
+	// Refreshing the linked merge already seeded its permanent branch yes. Neither check
+	// makes a compare read there. With no own merge, neither makes an own-repository read.
+	if got := linked.compareReads("acme/tools") - toolsBefore; got != 0 {
+		t.Errorf("the refreshed merge already seeded its branch, but the read asked GitHub %d times", got)
 	}
 	if got := linked.compareReads("acme/widgets") - widgetsBefore; got != 0 {
 		t.Errorf("the read made %d compare reads of acme/widgets, want 0", got)
@@ -3625,10 +3625,12 @@ func ciRunURL(id int64) string {
 }
 
 // issueOfProject is a further issue of project with verification as its Verification document.
+// The route's force field permits deliberately similar fixtures. A POSSIBLE_DUPLICATE refusal
+// is correct for their shared wording, not evidence of a flaky create.
 func issueOfProject(t *testing.T, handler http.Handler, project, title, verification string) string {
 	t.Helper()
 	response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues",
-		map[string]any{"project": project, "title": title, "spec": "A spec\n"}, "alice")
+		map[string]any{"project": project, "title": title, "spec": "A spec\n", "force": true}, "alice")
 	if response.Code != http.StatusCreated {
 		t.Fatalf("create issue of %s: status=%d body=%s", project, response.Code, response.Body.String())
 	}
