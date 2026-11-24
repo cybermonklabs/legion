@@ -100,10 +100,9 @@ const PROVIDER_RETRY_AFTER_MS = 60_000;
 /** Below the final 429's sixty-second suppression, so an ignored wait is observable. */
 const FINAL_REQUEST_SECONDS = 10;
 
-/** How long the stand-in's `sleep` holds each request apart: a thirteenth of the span the pane is
- * driven for, which is about a minute at the proof's own numbers, so the model of each request
- * reads as the minute it came at. */
-const sleepSeconds = Math.max(1, Math.round(driveMs / 13_000));
+/** The existing panes' pacing stays at most 58 seconds when the driving span grows. Short
+ * diagnostic runs can still shorten it; only the final-429 pane has a ten-second override. */
+const sleepSeconds = Math.max(1, Math.min(58, Math.round(driveMs / 13_000)));
 
 /** How late after the cooldown's end the session may come back and still be its return: one
  * request's worth of cadence, twice over. The pane is in its long turn when the wait ends, and the

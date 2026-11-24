@@ -5079,6 +5079,7 @@ It runs on any Linux host with `bash`, `bun` (after `bun install` at the checkou
 It reaches no network:
 each pane's model gateway, the stand-in daemon and the stand-in Envoy listener are loopback servers of the driver's, and the NATS server the Envoy extension connects to is one the run builds and starts itself (`packages/envoy/internal/testnats/cmd/natsd`, on a port the kernel picks, logged to the evidence directory), since a session a listener can give no consumer receives nothing and its claim boot ends it.
 A pane that does not settle is bounded by the driving span and two allowances of 150 seconds for its last return and shutdown.
+The inventory allows thirty minutes, including setup, so the proof can report those failures itself.
 
 | check | what it holds |
 | :--- | :--- |
@@ -5089,7 +5090,7 @@ A pane that does not settle is bounded by the driving span and two allowances of
 Four Legion panes run together, each the root architect of its own issue, each one real `omp --mode rpc` child with this checkout's `@sjawhar/pi-envoy` and `@sjawhar/pi-legion` loaded and its own OpenAI-shaped stand-in.
 The profile walks from `standin/strong-model` to `standin/weak-model`, with `retry.fallbackRevertPolicy: never` and `retry.rateLimitWalksChain: true`.
 The stand-in answers each request with a `bash sleep`, which keeps the turn running and makes the next request another reading of the model.
-The final-429 pane sleeps ten seconds; the other panes retain their existing pacing.
+The final-429 pane sleeps ten seconds; the other panes keep their 58-second sleeps even when the driving span grows.
 The panes differ in the answer that refuses:
 
 - `filtered-clean`: `finish_reason: content_filter` with no content, which Oh My Pi may replay, so the host walks its own chain and the plugin arms the return from the host's own reason;
