@@ -17,10 +17,12 @@
 --
 -- Every row stored before this migration reads null, and no backfill writes it here: a census that
 -- rewrites a row refuses the deploy (cmd/dispatch/README.md, "Pre-deploy census"). A read of the
--- pull request through the App stores it: the results read, before it takes the newest of two or
--- more merged rows of an issue, reads once each of them that holds none and that the running rule
--- has not judged (api's fillMergeTimes, through delivery.Attributor.RefreshPullRequestHead). Where
--- a row of such a set still holds none, the read names no newest merged pull request of it.
+-- pull request through the App stores it: delivery.AttributionRuleVersion 6 has the reconcile's
+-- merged arm read each merged row once more, and the results read, before it takes the newest of
+-- two or more merged rows of an issue, reads once each of them that holds none and that the
+-- running rule has not judged (api's fillMergeTimes, through
+-- delivery.Attributor.RefreshPullRequestHead). Where a row of such a set still holds none, the
+-- read names no newest merged pull request of it.
 --
 -- Adding a nullable column with no default is a catalog change that rewrites no row. The ALTER takes
 -- ACCESS EXCLUSIVE on pull_request_heads, which every pull request event and every results read
