@@ -309,9 +309,10 @@ func xidGetPolicy(address unsafe.Pointer, flags uintptr) (p xidPolicy, errno uni
 // Linux 3.8 to 5.13 store MPOL_LOCAL as MPOL_PREFERRED and report it as that mode with no node
 // (mm/mempolicy.c: mpol_new at v3.8, get_policy_nodemask at v5.13); from 5.14 it is a mode of its
 // own (mpol_ops[MPOL_LOCAL] at v5.14); gVisor reports mode 4. So the test hard-codes neither. It
-// is read only where NUMA balancing runs, which Linux offers from 3.14 (kernel.numa_balancing,
-// kernel/sysctl.c at v3.14; v3.13 has no such setting), and every such kernel takes MPOL_LOCAL, a
-// mode since 3.8 (include/uapi/linux/mempolicy.h at v3.8). So any answer but a refusal fails the
+// is read only where the rig finds NUMA balancing on, which needs the setting kernel.numa_balancing
+// to exist and be on (xidNUMABalancing). Linux added that setting in 3.14 (kernel/sysctl.c at
+// v3.14; v3.13 has no such setting), so every such kernel takes MPOL_LOCAL, a mode since 3.8
+// (include/uapi/linux/mempolicy.h at v3.8). So any answer but a refusal fails the
 // test, EINVAL too; a refusal (EPERM, ENOSYS) stops it as the rig's self-tests do
 // (RequireXidGapJudgment). A thread whose policy it could not put back stays locked, so it ends
 // with the calling goroutine and serves no later test.
