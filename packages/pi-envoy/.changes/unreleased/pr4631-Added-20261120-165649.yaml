@@ -1,0 +1,5 @@
+kind: Added
+body: The bundled `dispatch` command takes `--include-children`, `--unlink-children` and `--include-parent` on `issue-update`, and `--json` on `issues`.
+time: 2026-11-20T16:56:49.920309772Z
+custom:
+    Issue: pr4631

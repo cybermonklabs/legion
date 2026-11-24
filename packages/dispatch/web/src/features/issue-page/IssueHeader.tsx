@@ -11,6 +11,7 @@ import {
   pageMutedText,
   pagePaperBg,
 } from "../../theme/classes";
+import { IssueStatusNotes } from "../issue/parent-status/IssueStatusNotes";
 import type { IssuePriorityWrite } from "../issue/useIssuePriority";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { stoppedNote } from "../writes/useKeyedWrite";
@@ -105,9 +106,9 @@ export function IssueHeader({
   const header = useRef<HTMLElement | null>(null);
   useFocusKeeper(header, HEADER_FOCUS_FALLBACKS);
   useIssuePalette({
-    drafts,
     isClosed,
     priorityWrite,
+    requestStatus: writes.requestStatus,
     saving: updateIssue.isPending,
   });
 
@@ -128,7 +129,7 @@ export function IssueHeader({
       ? {
           held: updateIssue.isPending,
           id: "reopen",
-          run: () => drafts.requestStatusSubmit("backlog"),
+          run: () => writes.requestStatus("backlog"),
           text:
             pendingStatus === "backlog"
               ? ANSWER_LINES.saving_reopen
@@ -137,7 +138,7 @@ export function IssueHeader({
       : {
           held: updateIssue.isPending,
           id: "close",
-          run: () => drafts.requestStatusSubmit("done"),
+          run: () => writes.requestStatus("done"),
           text: pendingStatus === "done" ? ANSWER_LINES.saving_close : CONTROL_LABELS.close_issue,
         },
     {
@@ -242,6 +243,11 @@ export function IssueHeader({
           }
           onRetry={drafts.retry}
           pending={updateIssue.isPending}
+        />
+        <IssueStatusNotes
+          issueKey={issue.key}
+          noteClassName={`text-sm ${pageFailedText}`}
+          statusMove={writes.statusMove}
         />
       </div>
     </header>

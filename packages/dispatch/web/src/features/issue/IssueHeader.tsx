@@ -91,6 +91,8 @@ import { IssueComponentsLine } from "./IssueComponentsLine";
 import { IssueLabels } from "./IssueLabels";
 import { PriorityEditor } from "./PriorityControl";
 import { ProgressChips } from "./ProgressChips";
+import { IssueStatusNotes } from "./parent-status/IssueStatusNotes";
+import { useIssueStatusMove } from "./parent-status/useIssueStatusMove";
 import { stateForIssue } from "./pins";
 import { RepoControl } from "./RepoControl";
 import {
@@ -204,6 +206,11 @@ export function IssueHeader({
     },
   });
   const releasing = releaseClaim.isPending && !releaseClaim.late;
+  // Every status write of the header - the status list, Close, Reopen and the palette's rows -
+  // goes through the rule's question (`useIssueStatusMove`): a dry run first for an issue with a
+  // parent or an open child, then the write below, or the question where Dispatch's rule would
+  // refuse it.
+  const statusMove = useIssueStatusMove(issue);
   // A title, route, parent or close the header shows refused itself, beside its draft; a status
   // pick is a control, so its refusal is the shell's (`PendingWritesIndicator`), and the pick
   // rolls back. Every field write goes in the issue's line (`issue:<key>`), so an older one still
@@ -214,6 +221,11 @@ export function IssueHeader({
     label: (input) => issueUpdateLabel(issue.key, input),
     target: () => `issue:${issue.key}`,
     request: (input: IssueUpdateInput) => issuePatchRequest(issue.key, input),
+    // A status the page took for one the rule could not refuse, which Dispatch refused under it
+    // all the same, asks as a refused dry run does (`statusMove.onError`).
+    onError: (error, input) => {
+      statusMove.onError(error, issue.key, input);
+    },
     onSettled: (_data, error) => {
       drafts.onIssueSettled(error);
     },
@@ -237,6 +249,12 @@ export function IssueHeader({
     },
   });
   const drafts = useIssueDrafts(issue, updateIssue);
+  const requestStatus = (status: string) => {
+    statusMove.move(status, () => drafts.requestStatusSubmit(status));
+  };
+  // A status write is out, or the rule's question is checking or asking about one: no second
+  // status write can start.
+  const statusBusy = updateIssue.isPending || statusMove.pending !== undefined;
   // No default key: closing and reopening an issue are too consequential for a single key, so
   // they are rows of `$mod+k` until a person gives them a key, through the same handlers and the
   // same guards as the Close and Reopen buttons below. The four Set priority rows have none
@@ -246,15 +264,15 @@ export function IssueHeader({
   useKeymap("issue", [
     {
       action: "issue.close",
-      run: () => drafts.requestStatusSubmit("done"),
-      // The button is held while `updateIssue` is pending, and `isClosed` decides whether it is
-      // rendered at all; a row offered while the write is in flight would submit a second one.
-      when: () => !isClosed && !updateIssue.isPending,
+      run: () => requestStatus("done"),
+      // The button is held while `statusBusy`, and `isClosed` decides whether it is rendered at
+      // all; a row offered while a status write is in flight would submit a second one.
+      when: () => !isClosed && !statusBusy,
     },
     {
       action: "issue.reopen",
-      run: () => drafts.requestStatusSubmit("backlog"),
-      when: () => isClosed && !updateIssue.isPending,
+      run: () => requestStatus("backlog"),
+      when: () => isClosed && !statusBusy,
     },
     ...([0, 1, 2, 3] as const).map((level) => ({
       action: `issue.set-p${level}` as const,
@@ -263,17 +281,25 @@ export function IssueHeader({
       when: () => !(isClosed || updateIssue.isPending),
     })),
   ]);
-  const statusSaving = updateIssue.isPending && updateIssue.variables?.status !== undefined;
-  const pendingStatus = statusSaving ? updateIssue.variables?.status : undefined;
-  // What the status list's trigger shows: the status a pick is saving, else the issue's.
+  // The status the status list and the closed line show while it is out: the one the rule's
+  // question is checking or asking about, else the one the write is saving.
+  const checkingStatus = statusMove.pending;
+  const statusSaving =
+    checkingStatus !== undefined ||
+    (updateIssue.isPending && updateIssue.variables?.status !== undefined);
+  const pendingStatus =
+    checkingStatus ?? (statusSaving ? updateIssue.variables?.status : undefined);
+  // What the status list's trigger shows: the status a pick is checking or saving, else the
+  // issue's.
   const statusValue = pendingStatus ?? issue.status;
   const statusShown = statusText(statusValue);
   const selectableStatuses = isClosed ? issueStatuses : openIssueStatuses;
   const [statusOpen, setStatusOpen] = useState(false);
-  // A closed issue's Status takes no pick, and while a write of the header's fields is out it
-  // takes no second one. Either way it is held (`aria-disabled`), never disabled: it keeps the
-  // focus the reader's pick handed back to it, and a press of it or `s` opens nothing.
-  const statusHeld = isClosed || updateIssue.isPending;
+  // A closed issue's Status takes no pick, and while a status write of the header is out or the
+  // rule's question is checking or asking about one (`statusBusy`) it takes no second one. Either
+  // way it is held (`aria-disabled`), never disabled: it keeps the focus the reader's pick handed
+  // back to it, and a press of it or `s` opens nothing.
+  const statusHeld = isClosed || statusBusy;
   const openAsks = (issue.open_asks ?? []).filter((ask) => ask.state === "open");
   // The detail carries waiting_on on every open ask; a response without it cannot say whose
   // turn it is, so the indicator stays off rather than shown wrong.
@@ -476,7 +502,7 @@ export function IssueHeader({
           <button
             aria-label="Reopen issue"
             className={`min-h-11 rounded-lg px-3 py-2 text-sm font-medium ${secondaryButtonBorder} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText}`}
-            {...heldPress(fieldHeld, () => drafts.requestStatusSubmit("backlog"))}
+            {...heldPress(statusBusy, () => requestStatus("backlog"))}
             title="Reopen into Backlog"
             type="button"
           >
@@ -572,9 +598,10 @@ export function IssueHeader({
               ring round it as `badge-select.ts`'s wrappers do. On an open issue it lists every
               open status, since Close issue is an open issue's one way into Done; on a closed
               issue every status, its own Done among them, and it takes no pick, since its way
-              back is Reopen. A pick writes through `updateIssueGuard` (`requestStatusSubmit`),
-              and a pick of the status it shows writes nothing, as a select set to the value it
-              holds fires nothing. Held on a closed issue and while a write is out
+              back is Reopen. A pick goes through the rule's question (`requestStatus`), then
+              writes through `updateIssueGuard` (`requestStatusSubmit`), and a pick of the status
+              it shows writes nothing, as a select set to the value it holds fires nothing. Held
+              on a closed issue and while a status write or the rule's question is out
               (`statusHeld`), so the focus a status pick hands back stays where it went, and a
               list that stood open as the hold began picks nothing. It takes D5's rules
               (`STATUS_MENU`): the issue page's `s` opens it on the status held, and every close
@@ -593,7 +620,7 @@ export function IssueHeader({
               onOpenChange={(next) => setStatusOpen(next && !statusHeld)}
               onPick={(picked) => {
                 if (statusHeld || picked === statusValue || !isIssueStatus(picked)) return;
-                drafts.requestStatusSubmit(picked);
+                requestStatus(picked);
               }}
               open={statusOpen}
               optionLabel={statusText}
@@ -687,7 +714,7 @@ export function IssueHeader({
             <button
               aria-label="Close issue"
               className={`min-h-11 shrink-0 rounded-lg px-2 py-2 text-sm font-medium sm:px-3 md:min-h-8 md:py-1 xl:px-2 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText}`}
-              {...heldPress(fieldHeld, () => drafts.requestStatusSubmit("done"))}
+              {...heldPress(statusBusy, () => requestStatus("done"))}
               type="button"
             >
               {pendingStatus === "done" ? (
@@ -959,6 +986,11 @@ export function IssueHeader({
               : "Saving…"}
         </span>
       ) : null}
+      <IssueStatusNotes
+        issueKey={issue.key}
+        noteClassName={`mt-1 text-sm ${dangerText}`}
+        statusMove={statusMove}
+      />
       {subscribersOpen ? (
         <SubscribedAgents
           onUnsubscribe={(sessionId) => unsubscribe.mutate(sessionId)}

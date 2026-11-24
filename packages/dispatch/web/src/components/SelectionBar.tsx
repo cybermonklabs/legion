@@ -9,7 +9,9 @@ import {
 } from "react";
 
 import { focusOnDocument } from "../features/shell/roving";
+import { useMediaQuery } from "../features/shell/useDialog";
 import { spaceTaken } from "../features/shell/ViewportAnchor";
+import { useFootInset } from "../hooks/useFootInset";
 import { card, dangerText, focusVisibleRing, textPrimaryOnCanvas } from "../theme/classes";
 import { CONTROL, type ControlSize } from "./control-names";
 import {
@@ -382,6 +384,12 @@ export function SelectionBar({ returnFocus, ...bar }: SelectionBarProps): ReactN
   return <DrawnBar {...bar} wentHolding={wentHolding} />;
 }
 
+/** Tailwind's `sm` itself: true exactly when the bar's `sm:` classes put it at the foot of the
+ *  screen rather than under the header. In `rem`, for `MD_VIEWPORT_QUERY`'s reason
+ *  (`features/shell/useDialog.ts`): Tailwind declares `sm` as `40rem`, so only a `rem` query
+ *  switches with those classes at any default font size. */
+const SM_VIEWPORT_QUERY = "(min-width: 40rem)";
+
 /** The bar's own box at each size. The comfortable size is the bar the Inbox draws. The compact
  *  size is the smaller box of a page whose controls are compact, in the padding the compact
  *  controls take (`controlPadding`). */
@@ -419,6 +427,13 @@ function DrawnBar({
 }): ReactNode {
   const ownRef = useRef<HTMLElement>(null);
   const ref = barRef ?? ownRef;
+  // From `sm` up the bar sits at the foot of the screen, in the foot's page layer
+  // (`hooks/useFootInset.ts` lists the foot's layers and the elements in each), so the hook holds
+  // its band, its box on the screen, and the floats keep clear of its controls. Below `sm` the
+  // bar sits under the header, at the top of the screen and not at its foot, so it counts nothing
+  // there. It counts only while it is drawn, which is while this component is mounted.
+  const atFoot = useMediaQuery(SM_VIEWPORT_QUERY);
+  useFootInset(ref, atFoot, "page");
   // What inside the bar took the focus last, the bar's own element included, until the reader
   // moves the focus off it: a focus event bubbles up to the bar from every control in it. Only a
   // control in the bar's own element counts. React also bubbles the focus of a list a control of

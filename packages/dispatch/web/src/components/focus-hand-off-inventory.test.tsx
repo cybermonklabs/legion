@@ -811,7 +811,8 @@ async function interruptedList(): Promise<HTMLElement> {
 }
 
 /** The List over CORE-1 with a New epic from it refused as a possible duplicate, so the List draws
- *  the duplicate's notice with Create anyway and Cancel new epic. */
+ *  the duplicate's notice with Create anyway and Cancel new epic. CORE-1 is on the backlog, out of
+ *  work, so the New epic asks no question of its move into work before its create (D12). */
 async function duplicateEpicList(user: UserEvent): Promise<HTMLElement> {
   answering(
     spyOn(api, "createIssue").mockImplementation(async (input) => {
@@ -825,7 +826,7 @@ async function duplicateEpicList(user: UserEvent): Promise<HTMLElement> {
     }),
     spyOn(api, "send").mockResolvedValue(savedIssue("CORE-1"))
   );
-  drawList([issue("CORE-1")]);
+  drawList([issue("CORE-1", { status: "backlog" })]);
   await user.click(await screen.findByRole("checkbox", { name: "Select CORE-1" }));
   await user.click(screen.getByRole("button", { name: "New epic from these" }));
   const dialog = await screen.findByRole("dialog", { name: /epic/i });

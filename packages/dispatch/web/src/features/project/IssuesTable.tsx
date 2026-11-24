@@ -561,7 +561,12 @@ export function IssuesTable({
                   type="button"
                   {...heldPress(
                     busy,
-                    () => void newEpic(duplicateEpic.keys, duplicateEpic.title, true)
+                    () =>
+                      void newEpic(duplicateEpic.keys, {
+                        force: true,
+                        intoWork: duplicateEpic.intoWork,
+                        title: duplicateEpic.title,
+                      })
                   )}
                 >
                   Create anyway
@@ -654,6 +659,7 @@ export function IssuesTable({
           {confirming === undefined ? null : (
             <ConfirmDialog
               body={confirming.body}
+              changes={confirming.changes}
               confirmLabel={confirming.confirmLabel}
               key={confirming.title}
               onCancel={cancelConfirming}
@@ -666,7 +672,7 @@ export function IssuesTable({
               <EpicNameDialog
                 key="new-epic"
                 onCancel={cancelNaming}
-                onSubmit={(name) => void newEpic(naming.keys, name)}
+                onSubmit={(name) => void newEpic(naming.keys, { title: name })}
                 submitLabel="Create epic"
                 title="Name the new epic"
               />
