@@ -64,9 +64,16 @@ export function isPhaseOp(op: string): op is PhaseOp {
 }
 
 /** The input gate effect of a successful call. A look's report leaves phase input open. */
-export function phaseInputAfter(op: string, args: { readonly check_opened_at?: unknown }): "phase-closed" | "update-answered" | undefined {
+export function phaseInputAfter(
+  op: string,
+  args: { readonly check_opened_at?: unknown }
+): "phase-closed" | "update-answered" | undefined {
   if (op === "ready_for_update") return "update-answered";
-  if (op === "request_backward_move" || (op === "handoff_complete" && args.check_opened_at === undefined)) return "phase-closed";
+  if (
+    op === "request_backward_move" ||
+    (op === "handoff_complete" && args.check_opened_at === undefined)
+  )
+    return "phase-closed";
   return undefined;
 }
 
@@ -106,7 +113,11 @@ const nextLook = rfc3339String(
 );
 
 /** The named production check, exactly the instant the look task supplies. */
-const checkOpening = rfc3339String("handoff_complete", "check_opened_at", "handoff_complete's check_opened_at is the RFC 3339 time, with seconds, its look task names");
+const checkOpening = rfc3339String(
+  "handoff_complete",
+  "check_opened_at",
+  "handoff_complete's check_opened_at is the RFC 3339 time, with seconds, its look task names"
+);
 
 /** The refusal of a `plan_rating` that is not one of the scale's whole numbers. */
 const PLAN_RATING_REFUSAL = `handoff_complete's plan_rating is a whole number from ${LEGION_PLAN_RATING_LEAST} to ${LEGION_PLAN_RATING_MOST}`;
@@ -879,13 +890,19 @@ async function completeHandoff(
   // handoff to it; the daemon checks the named check, its role and its last-look state.
   if (args.check_opened_at !== undefined) {
     if (args.verdict === undefined) {
-      throw new Error("handoff_complete with check_opened_at names a verdict of pass, pending or fail");
+      throw new Error(
+        "handoff_complete with check_opened_at names a verdict of pass, pending or fail"
+      );
     }
     if (args.return_to !== undefined) {
-      throw new Error("handoff_complete's return_to names the step a failed step's task returns to; a report with check_opened_at names none");
+      throw new Error(
+        "handoff_complete's return_to names the step a failed step's task returns to; a report with check_opened_at names none"
+      );
     }
     if (args.wake_at !== undefined && args.verdict !== "pending") {
-      throw new Error("handoff_complete names wake_at and no look follows a pass or fail; send it again without a time");
+      throw new Error(
+        "handoff_complete names wake_at and no look follows a pass or fail; send it again without a time"
+      );
     }
     return daemon.handoffComplete({
       grantId: await mintClaimGrant(daemon, claim),

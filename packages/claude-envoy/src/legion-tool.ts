@@ -87,11 +87,14 @@ export async function executeLegionTool(
 export async function answerLegionTool(
   runtime: LegionToolRuntime,
   args: Record<string, unknown>,
-  hooks: { readonly phaseClosed: () => void | Promise<void>; readonly updateAnswered: () => void | Promise<void> },
+  hooks: {
+    readonly phaseClosed: () => void | Promise<void>
+    readonly updateAnswered: () => void | Promise<void>
+  },
   signal?: AbortSignal,
 ): Promise<unknown> {
   const answer = await executeLegionTool(runtime, args, signal)
-  const effect = phaseInputAfter(String(args.op), args)
+  const effect = phaseInputAfter(String(args["op"]), args)
   if (effect === "phase-closed") await hooks.phaseClosed()
   else if (effect === "update-answered") await hooks.updateAnswered()
   return answer

@@ -2650,10 +2650,15 @@ export async function runEnvoyChannelServer(): Promise<void> {
       }
       // The request's signal aborts on the client's notifications/cancelled, which ends a wait
       // for a restarting daemon.
-      const answer = await answerLegionTool(legionRuntime, request.params.arguments ?? {}, {
-        phaseClosed: () => phaseHook?.phaseClosed(),
-        updateAnswered: () => phaseHook?.updateAnswered(),
-      }, extra.signal)
+      const answer = await answerLegionTool(
+        legionRuntime,
+        request.params.arguments ?? {},
+        {
+          phaseClosed: () => phaseHook?.phaseClosed(),
+          updateAnswered: () => phaseHook?.updateAnswered(),
+        },
+        extra.signal,
+      )
       return mcpResult(answer)
     }
     if (runtime === undefined)

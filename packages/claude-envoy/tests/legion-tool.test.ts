@@ -8,8 +8,8 @@ import { type ClaimCapability, PHASE_OP_SENTENCES } from "@legion/pi-shared/legi
 import { stateAtPhase } from "@legion/pi-shared/test/daemon-state"
 import { withImageManifest } from "@legion/pi-shared/test/image-manifest"
 import { legion, name, version } from "../package.json" with { type: "json" }
-import { executeLegionTool, legionToolDefinition } from "../src/legion-tool"
 import * as legionTool from "../src/legion-tool"
+import { executeLegionTool, legionToolDefinition } from "../src/legion-tool"
 
 /** A response the daemon's own golden test wrote (`packages/daemon/internal/api`). */
 async function daemonFixture(name: string): Promise<unknown> {
@@ -171,11 +171,36 @@ const grantRequest = {
 test("answerLegionTool closes only a step and answers an update without closing a look", async () => {
   const { client } = await daemon({ state: stateAtPhase("testing") })
   const calls: string[] = []
-  const runtime = { daemon: client, claim: () => implementer, handoffReport: async () => ({ commit: "c0ffee" }), branchHead: async () => "" }
-  const hook = { phaseClosed: () => { calls.push("closed") }, updateAnswered: () => { calls.push("update") } }
-  await legionTool.answerLegionTool(runtime, { op: "handoff_complete", summary: "looked", verdict: "pass", check_opened_at: "2026-10-19T06:00:00.123456Z" }, hook)
+  const runtime = {
+    daemon: client,
+    claim: () => implementer,
+    handoffReport: async () => ({ commit: "c0ffee" }),
+    branchHead: async () => "",
+  }
+  const hook = {
+    phaseClosed: () => {
+      calls.push("closed")
+    },
+    updateAnswered: () => {
+      calls.push("update")
+    },
+  }
+  await legionTool.answerLegionTool(
+    runtime,
+    {
+      op: "handoff_complete",
+      summary: "looked",
+      verdict: "pass",
+      check_opened_at: "2026-10-19T06:00:00.123456Z",
+    },
+    hook,
+  )
   expect(calls).toEqual([])
-  await legionTool.answerLegionTool(runtime, { op: "handoff_complete", summary: "tested", verdict: "pass" }, hook)
+  await legionTool.answerLegionTool(
+    runtime,
+    { op: "handoff_complete", summary: "tested", verdict: "pass" },
+    hook,
+  )
   expect(calls).toEqual(["closed"])
   await legionTool.answerLegionTool(runtime, { op: "ready_for_update", round: "update-1" }, hook)
   expect(calls).toEqual(["closed", "update"])
@@ -183,9 +208,27 @@ test("answerLegionTool closes only a step and answers an update without closing 
 
 test("a named look of a running issue reaches the daemon through executeLegionTool", async () => {
   const { client, requests } = await daemon({ state: stateAtPhase("implementing") })
-  const runtime = { daemon: client, claim: () => ({ ...implementer, role: "tester" as const }), handoffReport: async (): Promise<never> => { throw new Error("look reads no handoff") }, branchHead: noBranchHead }
-  await expect(executeLegionTool(runtime, { op: "handoff_complete", summary: "checking", verdict: "pending", wake_at: "2026-10-19T09:00:00Z", check_opened_at: "2026-10-19T06:00:00.123456Z" })).resolves.toEqual({})
-  expect(requests.map(({ path }) => path)).toEqual(["/legion/v1/grants", "/legion/v1/handoff/complete"])
+  const runtime = {
+    daemon: client,
+    claim: () => ({ ...implementer, role: "tester" as const }),
+    handoffReport: async (): Promise<never> => {
+      throw new Error("look reads no handoff")
+    },
+    branchHead: noBranchHead,
+  }
+  await expect(
+    executeLegionTool(runtime, {
+      op: "handoff_complete",
+      summary: "checking",
+      verdict: "pending",
+      wake_at: "2026-10-19T09:00:00Z",
+      check_opened_at: "2026-10-19T06:00:00.123456Z",
+    }),
+  ).resolves.toEqual({})
+  expect(requests.map(({ path }) => path)).toEqual([
+    "/legion/v1/grants",
+    "/legion/v1/handoff/complete",
+  ])
   expect(requests.at(-1)?.body).toMatchObject({ checkOpenedAt: "2026-10-19T06:00:00.123456Z" })
 })
 

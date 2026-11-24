@@ -298,6 +298,7 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
     summary: { type: "string" },
     verdict: { type: "string", enum: ["pass", "pending", "fail"] },
     wake_at: { type: "string" },
+    check_opened_at: { type: "string" },
     plan_rating: { type: "integer", minimum: 1, maximum: 5 },
     plan_reason: { type: "string" },
     // Zod renders a whole number with no stated bound above as the largest safe integer.
@@ -1090,15 +1091,49 @@ const stateAt = (phase: LegionPhase) => ({
 test("a named look's report leaves the phase open and a step's completion closes it", async () => {
   let completed = 0;
   const { calls, daemon } = recordingDaemon({ state: stateAt("testing") });
-  const tool = createLegionTool({ pi, daemon, controllerGrant: noControllerGrant,
-    onPhaseCompleted: () => { completed++; }, onUpdateAnswered: () => undefined,
+  const tool = createLegionTool({
+    pi,
+    daemon,
+    controllerGrant: noControllerGrant,
+    onPhaseCompleted: () => {
+      completed++;
+    },
+    onUpdateAnswered: () => undefined,
     handoffReport: async () => ({ commit: TIP, handoffId: RECORD.id, handoffVersion: 2 }),
-    branchHead: noBranchHead, resolveDocument: noDocumentLookup, session: () => claimSession("tester") });
-  const report = await tool.execute("", { op: "handoff_complete", summary: "looked", verdict: "pass", check_opened_at: "2026-10-19T06:00:00.123456Z" }, undefined, undefined, context());
+    branchHead: noBranchHead,
+    resolveDocument: noDocumentLookup,
+    session: () => claimSession("tester"),
+  });
+  const report = await tool.execute(
+    "",
+    {
+      op: "handoff_complete",
+      summary: "looked",
+      verdict: "pass",
+      check_opened_at: "2026-10-19T06:00:00.123456Z",
+    },
+    undefined,
+    undefined,
+    context()
+  );
   expect(report).not.toHaveProperty("isError", true);
   expect(completed).toBe(0);
-  expect(calls.at(-1)).toEqual(["handoffComplete", { grantId: "grant-208", summary: "looked", verdict: "pass", checkOpenedAt: "2026-10-19T06:00:00.123456Z" }]);
-  await tool.execute("", { op: "handoff_complete", summary: "tested", verdict: "pass" }, undefined, undefined, context());
+  expect(calls.at(-1)).toEqual([
+    "handoffComplete",
+    {
+      grantId: "grant-208",
+      summary: "looked",
+      verdict: "pass",
+      checkOpenedAt: "2026-10-19T06:00:00.123456Z",
+    },
+  ]);
+  await tool.execute(
+    "",
+    { op: "handoff_complete", summary: "tested", verdict: "pass" },
+    undefined,
+    undefined,
+    context()
+  );
   expect(completed).toBe(1);
 });
 
@@ -1656,7 +1691,13 @@ test("a report on its closed issue's production check carries a verdict and no c
     session: () => claimSession("tester"),
   }).execute(
     "",
-    { op: "handoff_complete", summary: "Looked.", verdict: "pending", wake_at: NEXT_LOOK, check_opened_at: openCheck.openedAt },
+    {
+      op: "handoff_complete",
+      summary: "Looked.",
+      verdict: "pending",
+      wake_at: NEXT_LOOK,
+      check_opened_at: openCheck.openedAt,
+    },
     undefined,
     undefined,
     context()
@@ -1687,11 +1728,27 @@ test("a report on its closed issue's production check carries a verdict and no c
     branchHead: noBranchHead,
     resolveDocument: noDocumentLookup,
     session: () => claimSession("implementer"),
-  }).execute("", { op: "handoff_complete", summary: "Looked.", verdict: "pass", check_opened_at: openCheck.openedAt }, undefined, undefined, context());
+  }).execute(
+    "",
+    {
+      op: "handoff_complete",
+      summary: "Looked.",
+      verdict: "pass",
+      check_opened_at: openCheck.openedAt,
+    },
+    undefined,
+    undefined,
+    context()
+  );
   expect(implementerAtDone.isError).toBeUndefined();
   expect(closedCalls.at(-1)).toEqual([
     "handoffComplete",
-    { grantId: "grant-208", summary: "Looked.", verdict: "pass", checkOpenedAt: openCheck.openedAt },
+    {
+      grantId: "grant-208",
+      summary: "Looked.",
+      verdict: "pass",
+      checkOpenedAt: openCheck.openedAt,
+    },
   ]);
 });
 

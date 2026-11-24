@@ -2227,10 +2227,16 @@ export const LegionHandoffCompleteRequest = z
   .refine((request) => request.returnTo === undefined || request.verdict === "fail", {
     message: "returnTo is carried only by a completion with the verdict fail",
   })
-  .refine((request) => request.checkOpenedAt === undefined ||
-    (request.commit === undefined && request.handoffId === undefined && request.handoffVersion === undefined), {
-    message: "a report naming checkOpenedAt carries no commit, handoffId or handoffVersion",
-  });
+  .refine(
+    (request) =>
+      request.checkOpenedAt === undefined ||
+      (request.commit === undefined &&
+        request.handoffId === undefined &&
+        request.handoffVersion === undefined),
+    {
+      message: "a report naming checkOpenedAt carries no commit, handoffId or handoffVersion",
+    }
+  );
 
 /** `api.IssueStatusRequest`, the controller's explicit board-status write. */
 export const LegionIssueStatusRequest = z.strictObject({
