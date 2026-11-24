@@ -81,13 +81,34 @@ func (c *fakeClock) AfterFunc(d time.Duration, f func()) Cancel {
 	return timer
 }
 
+// At arms f for at, or for the clock's own time when at has passed, as AfterFunc(0) would: Advance
+// sets the clock to each timer's moment as it fires it, so a timer left at a passed moment would
+// move the clock back (a held suspension's deadline that passed before it arrived, a dropped wake
+// re-parked after its turn).
 func (c *fakeClock) At(at time.Time, f func()) Cancel {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if at.Before(c.now) {
+		at = c.now
+	}
 	c.armed++
 	timer := &fakeTimer{clock: c, at: at, order: c.armed, f: f}
 	c.timers = append(c.timers, timer)
 	return timer
+}
+
+// A timer armed for a moment the clock has passed fires at the clock's next move, at the clock's
+// own time: the harness's clock never reads earlier than it already did.
+func TestTheFakeClockFiresAPassedMomentAtItsOwnTime(t *testing.T) {
+	c := newFakeClock()
+	c.Advance(time.Hour)
+	before := c.Now()
+	var read time.Time
+	c.At(before.Add(-time.Minute), func() { read = c.Now() })
+	c.Advance(time.Nanosecond)
+	if read.IsZero() || read.Before(before) {
+		t.Fatalf("the timer armed for a passed moment read the clock at %s, want no earlier than %s, the clock's time at the arm", read, before)
+	}
 }
 
 func (t *fakeTimer) Stop() bool {
