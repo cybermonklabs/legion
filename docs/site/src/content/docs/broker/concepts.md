@@ -1565,8 +1565,13 @@ request that still carries a placeholder after the swap is refused `403`
 that has ended, of another session, of a second grant beside the one the request is handled for,
 or one outside the headers its entry names, in another header, the path or the query. Its refusal
 line names the grant the placeholder was minted for, in `placeholder_grant`: a release's while
-the broker still holds its row, and a minted capability's while its grant lives. The body is not
-read, so a placeholder there goes as the command wrote it. A decrypted connection speaks HTTP/1.1
+the broker still holds its row, and a minted capability's while its grant lives. The scan reads
+the headers, the path and the query. It reads no body, so a placeholder a command writes there
+goes as it wrote it; no trailer, which a chunked request sends after its body, where no scan
+before the forward could read it; and not the form of the Azure token exchange, which is decided
+by the exchange itself and refused `TOKEN_ASSERTION` unless the assertion is this grant's own
+placeholder. In each of those three a command gives away its own placeholder, to a service its
+grant already lets it call. A decrypted connection speaks HTTP/1.1
 to a client that offers it, and HTTP/2 to a client that offers nothing else, which is how every
 gRPC client connects. Each HTTP/2 stream is decided on its own, as one request, with its
 `:authority` as its `Host`, so one connection carries no request for another host. A `CONNECT` or
