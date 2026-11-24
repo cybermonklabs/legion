@@ -541,6 +541,11 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 						delete(row.(map[string]any), "plan")
 					}
 				}
+				// The one key podHoldContract added, which rides only on an issue whose pod a
+				// hold stands on (withoutPodHold): every row below that contract loses it.
+				if tc.contract < podHoldContract {
+					delete(issue, "podHold")
+				}
 				if !tc.priority {
 					stripPriority(issue)
 				}

@@ -187,7 +187,7 @@ func readingOf(text string, standardConformingStrings bool) reading {
 		case sqlQuotedIdentifier:
 			r.names = append(r.names, token)
 		}
-	})
+	}, nil)
 	return r
 }
 
@@ -240,6 +240,7 @@ const corpusDepth = 4
 // on, survives it. Where the two readings agree and neither is refused it checks the other
 // direction too: a marker neither hides is shape, and shape is what the report keeps.
 func TestRedactionPrintsNoHiddenByte(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("reads a corpus of millions of texts twice over")
 	}
@@ -622,6 +623,7 @@ func probe(ctx context.Context, conn *pgconn.PgConn, text string, ours reading) 
 // from a carriage return inside E'\ud83d…\udc00' rather than refusing prints the marker that
 // follows the literal, with both clauses silent on it.
 func TestRedactionAgainstServerOutcomes(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("asks a server about thousands of statements")
 	}
