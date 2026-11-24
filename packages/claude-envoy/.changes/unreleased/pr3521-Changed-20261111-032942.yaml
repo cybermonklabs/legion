@@ -1,5 +1,0 @@
-kind: Changed
-body: 'Declares daemon API contract 64: every Legion launch carries the issue it serves as `legion.issue` and the role it runs as `legion.role` in `OTEL_RESOURCE_ATTRIBUTES`, after the attributes the operator sets in the pod or pane environment. The project controller serves no issue and carries the role alone. To group spend by issue, the spend collector must keep these keys.'
-time: 2026-11-11T03:29:42.447752321Z
-custom:
-    Issue: pr3521

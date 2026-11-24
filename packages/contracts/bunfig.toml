@@ -1,3 +1,0 @@
-[test]
-# Each test starts with no secret held (`@legion/contracts/held-secrets`).
-preload = ["./src/held-secrets-test-preload.ts"]

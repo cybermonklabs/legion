@@ -1,5 +1,0 @@
-:::callout{kind="warning"}
-[^h]:]
--|
-	=
-:::

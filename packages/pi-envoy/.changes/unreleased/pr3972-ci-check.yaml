@@ -1,4 +1,0 @@
-kind: Changed
-body: |-
-  The spec-writing skill names `ci_check` among a check's attributes: a check carrying it is CI's and
-  takes no `run`.
