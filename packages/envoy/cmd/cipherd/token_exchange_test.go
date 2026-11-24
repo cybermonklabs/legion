@@ -727,27 +727,13 @@ func TestTheBinaryExchangesAReadEntrysPodTokenForOneThatOnlyReads(t *testing.T) 
 		if token == "" {
 			t.Fatal("the exchange minted no access token, so there is nothing to read back")
 		}
-		status, body := live.introspect(t, token, apiToken)
-		if status != http.StatusOK {
-			t.Fatalf("introspection by the listed API account %s = %d %v, want 200", apiAccount, status, body)
-		}
 		// Read back through the one declaration both ends of the route share, so the answer is
 		// compared whole: a person, a project or a second scope would each be a field the
 		// literal does not carry.
-		raw, err := json.Marshal(body)
-		if err != nil {
-			t.Fatal(err)
-		}
-		var answer oauthwire.Introspection
-		if err := json.Unmarshal(raw, &answer); err != nil {
-			t.Fatalf("the introspection answer %s is not an introspection: %v", raw, err)
-		}
+		answer := live.introspected(t, token, apiToken)
 		want := oauthwire.Introspection{Active: true, Scope: "read", ClientID: oauthwire.ExchangeClientID, Thumbprint: jkt, Session: readerSession, Service: readerService, ProjectScope: "none", ExpiresAt: answer.ExpiresAt}
 		if !reflect.DeepEqual(answer, want) {
 			t.Errorf("introspection answered %+v, want %+v: a read entry's token holds the scope read and the project scope none, names its service and the session it fixes, and names no person and no project", answer, want)
-		}
-		if answer.ExpiresAt <= time.Now().Unix() {
-			t.Errorf("introspection answered exp %d, which is not in the future", answer.ExpiresAt)
 		}
 	})
 }
@@ -799,18 +785,7 @@ func TestTheBinaryNarrowsATradeOnRequest(t *testing.T) {
 			if status != http.StatusOK || token == "" || body["token_type"] != "DPoP" || body["scope"] != oauthwire.ScopeRead {
 				t.Fatalf("the read trade = %d %v, want 200 with a DPoP-bound access token holding the scope read", status, body)
 			}
-			status, body = live.introspect(t, token, apiToken)
-			if status != http.StatusOK {
-				t.Fatalf("introspection by the listed API account %s = %d %v, want 200", apiAccount, status, body)
-			}
-			raw, err := json.Marshal(body)
-			if err != nil {
-				t.Fatal(err)
-			}
-			var answer oauthwire.Introspection
-			if err := json.Unmarshal(raw, &answer); err != nil {
-				t.Fatalf("the introspection answer %s is not an introspection: %v", raw, err)
-			}
+			answer := live.introspected(t, token, apiToken)
 			want, ok := ciphertokentest.NarrowedAnswers(t, jkt, c.session, answer.ExpiresAt)[c.kind]
 			if !ok {
 				t.Fatalf("the narrowed answers hold no answer for %s", c.kind)
@@ -818,9 +793,6 @@ func TestTheBinaryNarrowsATradeOnRequest(t *testing.T) {
 			want.AsOf = c.cut
 			if !reflect.DeepEqual(answer, want) {
 				t.Errorf("introspection answered %+v, want %+v", answer, want)
-			}
-			if answer.ExpiresAt <= time.Now().Unix() {
-				t.Errorf("introspection answered exp %d, which is not in the future", answer.ExpiresAt)
 			}
 		})
 	}
@@ -875,24 +847,10 @@ func TestTheBinaryExchangesAPersonlessAccountEntrysPodToken(t *testing.T) {
 		if token == "" {
 			t.Fatal("the exchange minted no access token, so there is nothing to read back")
 		}
-		status, body := live.introspect(t, token, apiToken)
-		if status != http.StatusOK {
-			t.Fatalf("introspection by the listed API account %s = %d %v, want 200", apiAccount, status, body)
-		}
-		raw, err := json.Marshal(body)
-		if err != nil {
-			t.Fatal(err)
-		}
-		var answer oauthwire.Introspection
-		if err := json.Unmarshal(raw, &answer); err != nil {
-			t.Fatalf("the introspection answer %s is not an introspection: %v", raw, err)
-		}
+		answer := live.introspected(t, token, apiToken)
 		want := oauthwire.Introspection{Active: true, ClientID: oauthwire.ExchangeClientID, Thumbprint: jkt, Session: personlessSession, Service: personlessAccount, ProjectScope: oauthwire.ProjectScopeNamed, ExpiresAt: answer.ExpiresAt}
 		if !reflect.DeepEqual(answer, want) {
 			t.Errorf("introspection answered %+v, want %+v: an entry naming no person mints a named token that names the account as its service and the session it fixes, and names no person, no project and no scope", answer, want)
-		}
-		if answer.ExpiresAt <= time.Now().Unix() {
-			t.Errorf("introspection answered exp %d, which is not in the future", answer.ExpiresAt)
 		}
 		caller, err := ciphertoken.SessionCaller(answer)
 		wantCaller := ciphertoken.Caller{Session: personlessSession, Service: personlessAccount, ProjectScope: oauthwire.ProjectScopeNamed}
@@ -907,18 +865,7 @@ func TestTheBinaryExchangesAPersonlessAccountEntrysPodToken(t *testing.T) {
 		if status != http.StatusOK || read == "" || body["token_type"] != "DPoP" || body["scope"] != oauthwire.ScopeRead {
 			t.Fatalf("the read trade of %s's pod token = %d %v, want 200 with a DPoP-bound access token holding the scope read", personlessAccount, status, body)
 		}
-		status, body = live.introspect(t, read, apiToken)
-		if status != http.StatusOK {
-			t.Fatalf("introspection by the listed API account %s = %d %v, want 200", apiAccount, status, body)
-		}
-		raw, err := json.Marshal(body)
-		if err != nil {
-			t.Fatal(err)
-		}
-		var answer oauthwire.Introspection
-		if err := json.Unmarshal(raw, &answer); err != nil {
-			t.Fatalf("the introspection answer %s is not an introspection: %v", raw, err)
-		}
+		answer := live.introspected(t, read, apiToken)
 		want, ok := ciphertokentest.NarrowedAnswers(t, jkt, personlessSession, answer.ExpiresAt)["pod-entry-no-person"]
 		if !ok {
 			t.Fatal("the narrowed answers hold no answer for pod-entry-no-person")
@@ -1732,6 +1679,31 @@ func (l *liveBroker) exchange(t *testing.T, form url.Values) (int, map[string]an
 func (l *liveBroker) introspect(t *testing.T, token, bearer string) (int, map[string]any) {
 	t.Helper()
 	return l.post(t, l.plain, "/v1/oauth/introspect", url.Values{"token": {token}}, bearer)
+}
+
+// introspected is token's introspection answer as the listed account whose token bearer is reads
+// it, read back through the one declaration both ends of the route share (oauthwire.Introspection)
+// so a test compares it whole. It fails the test on any status but 200 and on an answer that is no
+// introspection, and holds the answer's exp to the future, which a comparison built from that same
+// exp cannot catch.
+func (l *liveBroker) introspected(t *testing.T, token, bearer string) oauthwire.Introspection {
+	t.Helper()
+	status, body := l.introspect(t, token, bearer)
+	if status != http.StatusOK {
+		t.Fatalf("introspection by the listed API account = %d %v, want 200", status, body)
+	}
+	raw, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var answer oauthwire.Introspection
+	if err := json.Unmarshal(raw, &answer); err != nil {
+		t.Fatalf("the introspection answer %s is not an introspection: %v", raw, err)
+	}
+	if answer.ExpiresAt <= time.Now().Unix() {
+		t.Errorf("introspection answered exp %d, which is not in the future", answer.ExpiresAt)
+	}
+	return answer
 }
 
 // registerPodSession records that the pod podToken names may exchange under session, the way a

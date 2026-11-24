@@ -1361,8 +1361,7 @@ func TestANarrowedTokenActsAsItsIdentityAndOnlyReads(t *testing.T) {
 	caller := newBrokerCaller(t)
 	const session = "ses_narrowed"
 	answers := ciphertokentest.NarrowedAnswers(t, caller.jkt, session, time.Now().Add(time.Hour).Unix())
-	ada, fleet, reader, acme := "ada@example.com", brokerTestService, brokerTestReader, "ACME"
-	account := "system:serviceaccount:example-ns:example-public"
+	ada, fleet, reader, account, acme := "ada@example.com", brokerTestService, brokerTestReader, brokerTestAccount, "ACME"
 	cut, err := time.Parse(time.RFC3339Nano, answers["machine-login-with-a-cut"].AsOf)
 	if err != nil {
 		t.Fatalf("the golden machine login's cut: %v", err)
