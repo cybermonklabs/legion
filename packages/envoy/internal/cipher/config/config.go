@@ -42,6 +42,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/rulehost"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/gcp"
 	"github.com/sjawhar/envoy/internal/fold"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/redact"
@@ -2941,13 +2942,13 @@ func Load(getenv func(string) string) (Config, error) {
 			return Config{}, fmt.Errorf("BROKER_AZURE_LOGIN_SECRET: %w", err)
 		}
 	}
-	if cfg.SecretsStore != aws.Name && cfg.SecretsStore != secrets.StoreGCP {
-		return Config{}, fmt.Errorf("BROKER_SECRETS_STORE must be %s or %s, got %q", aws.Name, secrets.StoreGCP, cfg.SecretsStore)
+	if cfg.SecretsStore != aws.Name && cfg.SecretsStore != gcp.Name {
+		return Config{}, fmt.Errorf("BROKER_SECRETS_STORE must be %s or %s, got %q", aws.Name, gcp.Name, cfg.SecretsStore)
 	}
 	// Each store takes its own key variable and refuses the other's, so a deployment moved
 	// between stores cannot keep the old key set and silently mean nothing by it.
 	keyVar, otherKeyVar := "BROKER_SECRETS_KMS_KEY_ARN", "BROKER_SECRETS_KMS_KEY_NAME"
-	if cfg.SecretsStore == secrets.StoreGCP {
+	if cfg.SecretsStore == gcp.Name {
 		keyVar, otherKeyVar = otherKeyVar, keyVar
 	}
 	if getenv(otherKeyVar) != "" {
@@ -3131,11 +3132,11 @@ func Load(getenv func(string) string) (Config, error) {
 		if !aws.ValidKeyARN(cfg.SecretsKMSKey) {
 			return Config{}, fmt.Errorf("BROKER_SECRETS_KMS_KEY_ARN must be a KMS key ARN, arn:aws:kms:<region>:<account>:key/<key id>, got %q", cfg.SecretsKMSKey)
 		}
-	case secrets.StoreGCP:
-		if err := secrets.ValidGCPPrefix(cfg.SecretsPrefix); err != nil {
+	case gcp.Name:
+		if err := gcp.ValidPrefix(cfg.SecretsPrefix); err != nil {
 			return Config{}, fmt.Errorf("BROKER_SECRETS_PREFIX: %w", err)
 		}
-		if err := secrets.ValidGCPKeyName(cfg.SecretsKMSKey); err != nil {
+		if err := gcp.ValidKeyName(cfg.SecretsKMSKey); err != nil {
 			return Config{}, fmt.Errorf("BROKER_SECRETS_KMS_KEY_NAME: %w", err)
 		}
 	}

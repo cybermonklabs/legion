@@ -19,9 +19,9 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/gcp"
 	"github.com/sjawhar/envoy/internal/ratelimit"
 )
 
@@ -81,7 +81,7 @@ func TestSettingsAnswersTheGCPStore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	api.Register(mux, api.Deps{Policy: cur, SecretsStore: secrets.StoreGCP, SecretsPrefix: prefix, SecretsKMSKey: key})
+	api.Register(mux, api.Deps{Policy: cur, SecretsStore: gcp.Name, SecretsPrefix: prefix, SecretsKMSKey: key})
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	resp, err := http.Get(srv.URL + "/v1/settings")
@@ -94,7 +94,7 @@ func TestSettingsAnswersTheGCPStore(t *testing.T) {
 		t.Fatalf("status %d: %s", resp.StatusCode, body)
 	}
 	got := decode[wireSettings](t, body)
-	want := wireSettings{Store: secrets.StoreGCP, SecretsPrefix: prefix, KMSKeyName: key, GCPProject: "000000000000", SecretTypeTag: true, ApproverFields: true}
+	want := wireSettings{Store: gcp.Name, SecretsPrefix: prefix, KMSKeyName: key, GCPProject: "000000000000", SecretTypeTag: true, ApproverFields: true}
 	if got != want {
 		t.Fatalf("settings = %+v, want %+v", got, want)
 	}
@@ -113,7 +113,7 @@ func TestSettingsAnswersTheGCPStore(t *testing.T) {
 func TestSettingsNameTheGoogleExchangeAudienceOnEitherStore(t *testing.T) {
 	for _, store := range []struct{ name, kind, prefix, key, keyField string }{
 		{"aws", aws.Name, policytest.Prefix, policytest.KeyARN, "kms_key_arn"},
-		{"gcp", secrets.StoreGCP, "projects/000000000000/secrets/agent-secrets-", "projects/example-project/locations/global/keyRings/agent-secrets/cryptoKeys/agent-secrets", "kms_key_name"},
+		{"gcp", gcp.Name, "projects/000000000000/secrets/agent-secrets-", "projects/example-project/locations/global/keyRings/agent-secrets/cryptoKeys/agent-secrets", "kms_key_name"},
 	} {
 		t.Run(store.name, func(t *testing.T) {
 			read := func(t *testing.T, google string) (map[string]any, string) {

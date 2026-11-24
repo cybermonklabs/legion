@@ -62,6 +62,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/api"
 	"github.com/sjawhar/envoy/internal/cipher/ciphertest"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/gcp"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/cipherclient"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
@@ -1157,8 +1158,8 @@ func TestABrokerFleetDerivesItsRereadRate(t *testing.T) {
 	// The budget it holds them to is the one the issue states: "two pods together cannot send
 	// more metadata traffic than one pod was allowed to". One pod was allowed four rereads a
 	// second against a store where a reread is one read (api.DefaultRereadFleetBudget, Every
-	// 250ms), and one a second against Google Secret Manager (api.GCPRereadFleetBudget), where
-	// api.GCPRereadOverallLimit's own comment turns that figure into the 120 metadata reads a
+	// 250ms), and one a second against Google Secret Manager (gcp.RereadBudget), where
+	// gcp.RereadBudget's own comment turns that figure into the 120 metadata reads a
 	// minute the public route may spend of the project's shared 600. Those two figures are the
 	// product budget — the share of someone else's quota this route is allowed — not an
 	// implementation detail, which is why they are written here rather than read from the
@@ -1221,7 +1222,7 @@ func TestABrokerFleetDerivesItsRereadRate(t *testing.T) {
 					// process, in internal/cipher/api's reread_replicas_test.go. What this row
 					// adds to that arithmetic is the one thing only real processes can measure:
 					// what a single accepted reread costs the fleet.
-					{"the Secret Manager bucket api.RereadOverallFor derives", api.RereadOverallFor(api.GCPRereadFleetBudget, replicas).Every, onePodGCPRereadsPerSecond},
+					{"the Secret Manager bucket api.RereadOverallFor derives", api.RereadOverallFor(gcp.RereadBudget, replicas).Every, onePodGCPRereadsPerSecond},
 				} {
 					perPod := float64(time.Second) / float64(bucket.every)
 					fleetReads := float64(replicas) * perPod * float64(reads)

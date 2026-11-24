@@ -83,6 +83,7 @@ import (
 	// Configuration deltas name none for it): 15 minutes comfortably covers the "look at the
 	// terminal, type the code" UX the confirmation-code flow is built around.
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/gcp"
 )
 
 const machineLoginPendingTTL = 15 * time.Minute
@@ -376,11 +377,11 @@ func main() {
 		// key name where it would hold an ARN: names follow Secrets Manager's rules and a source
 		// is a local ARN, which only a local run sees.
 		secretStore, credentials = awsstore.Store{Client: local, KMS: local, KeyARN: cfg.SecretsKMSKey}, "fake secrets file"
-	case cfg.SecretsStore == secrets.StoreGCP:
-		client, err := secrets.NewGCPClient(ctx)
+	case cfg.SecretsStore == gcp.Name:
+		client, err := gcp.NewClient(ctx)
 		fatal(err)
 		defer client.Close()
-		secretStore, credentials = secrets.NewGCP(client, cfg.SecretsKMSKey), "application-default"
+		secretStore, credentials = gcp.New(client, cfg.SecretsKMSKey), "application-default"
 	default:
 		sm := secretsmanager.NewFromConfig(awsCfg)
 		secretStore, credentials = awsstore.Store{Client: sm, KMS: kms.NewFromConfig(awsCfg), KeyARN: cfg.SecretsKMSKey}, "aws-sdk"
@@ -750,8 +751,8 @@ func main() {
 	// serving clock counts below, and moves this process's reread buckets whenever that count
 	// changes.
 	rereadBudget := api.DefaultRereadFleetBudget
-	if cfg.SecretsStore == secrets.StoreGCP {
-		rereadBudget = api.GCPRereadFleetBudget
+	if cfg.SecretsStore == gcp.Name {
+		rereadBudget = gcp.RereadBudget
 	}
 	rereadRate := api.NewRereadRate(rereadBudget, slog.Default())
 	// draining is set once, by the signal handler below, and read by every handler goroutine

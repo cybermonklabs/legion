@@ -41,7 +41,7 @@ import (
 
 	"github.com/sjawhar/envoy/cipheraddr"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/gcp"
 	"github.com/sjawhar/envoy/internal/googleidentity"
 )
 
@@ -57,7 +57,7 @@ const (
 // answered them (Settings.answeredBy), so a refusal a test calls directly names their fields.
 func gcpTestSettings() Settings {
 	return Settings{
-		Store: secrets.StoreGCP, SecretsPrefix: testGCPPrefix,
+		Store: gcp.Name, SecretsPrefix: testGCPPrefix,
 		KMSKeyName: testKMSKeyName, GCPProject: testGCPProject,
 		SecretTypeTag: true,
 		answeredBy:    cipheraddr.New("https://broker.example"),
@@ -1791,7 +1791,7 @@ func TestGCPSecretReadsRefuseBadSettings(t *testing.T) {
 	startFakeSecretManager(t, newFakeSecretManager())
 	useGCPIdentity(t, "authorized_user", "ada@example.com")
 	startSecretBrokerWith(t, Settings{
-		Store: secrets.StoreGCP, SecretsPrefix: testGCPPrefix, GCPProject: testGCPProject,
+		Store: gcp.Name, SecretsPrefix: testGCPPrefix, GCPProject: testGCPProject,
 		KMSKeyName: "not-a-key-name",
 	}, alwaysServed)
 

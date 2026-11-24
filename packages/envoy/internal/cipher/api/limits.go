@@ -126,9 +126,10 @@ const perAddressFactor = 2
 // times slower than the bucket this process actually mounts.
 //
 // It is a derivation rather than a constant because the two deployments do not mount the same
-// shared bucket: cmd/cipherd divides GCPRereadFleetBudget only under gcp-secret-manager and
-// DefaultRereadFleetBudget otherwise, and each pod divides whichever it has by the pods it
-// counts, so no single constant serves both. One derived from the
+// shared bucket: cmd/cipherd divides the fleet budget of the store it mounts (its registry entry's
+// RereadBudget: Secret Manager's own, and DefaultRereadFleetBudget for every other store), and each
+// pod divides whichever it has by the pods it counts, so no single constant serves both. One
+// derived from the
 // Google figure tightens every AWS deployment fourfold - at two pods, one write every eight
 // seconds against a shared bucket of its own that refills every second - for a Secret Manager
 // quota that deployment never touches. One derived from the default figure leaves a single
@@ -177,16 +178,13 @@ const MinReplicas = 2
 // (replicas² × burst store reads), which dividing the rate does not hold down.
 const MaxSupportedReplicas = 4
 
-// DefaultRereadFleetBudget and GCPRereadFleetBudget are the whole fleet's reread budget on each
-// store, written as the rate one pod alone could take: four rereads a second on the default
-// store and one a second on Google Secret Manager. RereadOverallFor divides a budget among the
-// pods, so at MinReplicas these are DefaultRereadOverallLimit and GCPRereadOverallLimit, the two
-// figures the comments below size. The burst is the fleet's and is divided by nothing, for the
-// reason DefaultRereadOverallLimit gives.
-var (
-	DefaultRereadFleetBudget = secretstore.DefaultRereadBudget
-	GCPRereadFleetBudget     = ratelimit.Limit{Every: time.Second, Burst: 10}
-)
+// DefaultRereadFleetBudget is the whole fleet's reread budget on a store that names none of its
+// own (secretstore.DefaultRereadBudget), written as the rate one pod alone could take: four
+// rereads a second. RereadOverallFor divides a budget among the pods, so at MinReplicas this is
+// DefaultRereadOverallLimit, the figure the comments below size; Google Secret Manager's budget
+// is its store's own (secretstore/gcp, RereadBudget), whose comment sizes it. The burst is the
+// fleet's and is divided by nothing, for the reason DefaultRereadOverallLimit gives.
+var DefaultRereadFleetBudget = secretstore.DefaultRereadBudget
 
 // RereadOverallFor is one pod's share of budget when replicas pods serve: the shared reread
 // bucket a process of that fleet mounts. Every reread a pod accepts costs a store read on every
@@ -251,8 +249,8 @@ func RereadOverallFor(budget ratelimit.Limit, replicas int) ratelimit.Limit {
 // fleet accept replicas × burst rereads, and each accepted reread costs a store read on every
 // pod, so the fleet's momentary store cost is replicas² × burst: at a burst of ten that is 20
 // accepted and 40 store reads at two pods, 30 and 90 at three, 40 and 160 at four. On Secret
-// Manager (GCPRereadOverallLimit) each store read is two metadata reads, so those store figures
-// double to 80, 180 and 320 metadata reads against the 600 a minute that comment cites - 8, 18
+// Manager (its store's RereadBudget) each store read is two metadata reads, so those store figures
+// double to 80, 180 and 320 metadata reads against the 600 a minute that budget's comment cites - 8, 18
 // and 32 seconds of that quota, which is the form to judge them in. The protection belongs
 // beside the cost rather than a paragraph away from it: 320 is a transient, spent once, and the
 // sustained rate re-bounds the traffic the instant the burst is gone, which is the half of the
@@ -277,31 +275,6 @@ func RereadOverallFor(budget ratelimit.Limit, replicas int) ratelimit.Limit {
 // with the count) - and its write stands in the store either way; only the narrowing of who may
 // read it waits for the next token.
 var DefaultRereadOverallLimit = RereadOverallFor(DefaultRereadFleetBudget, MinReplicas)
-
-// GCPRereadOverallLimit is DefaultRereadOverallLimit for the Google Secret Manager store, which
-// unlike the default store does bound this route by a provider's quota: Secret Manager serves
-// 600 read requests a minute per project (cloud.google.com/secret-manager/quotas, "Read
-// request"), the whole project shares them, and one reread spends two of them (the secret and
-// its version). The budget it divides is GCPRereadFleetBudget, a fifth of that quota - 120
-// metadata reads a minute, one reread a second - which is what one pod alone was allowed; the
-// other four fifths are what every pod's five-minute namespace reload, its miss-path rereads
-// and its releases spend. Those are multiplied by running more pods, not by the fan-out: each
-// pod spends its own, and none of them notifies - only this route's reread does, while a
-// miss-path reread, a reload and a release send nothing - so they too grow with the replica
-// count, and this route's share is not the place to find more room.
-// Its rate is divided by the replica count squared for the same reason as the default bucket's
-// - each accepted reread costs a store read on every pod, so the fleet spends replicas² × this
-// rate - which for two pods is 2 pods × 0.25 reread/s × 2 store reads × 2 metadata reads =
-// 2 metadata reads a second, the same 120 a minute. Three pods divide that budget by nine
-// rather than by four, one reread every 9 s each, and four by sixteen, one every 16 s.
-//
-// Its burst is the default bucket's ten, undivided by the replica count for the reason given
-// there: the depth a burst admits is one person's write burst, which the replica count does not
-// change, and what the depth guards is this pod's own writer lock rather than the project's
-// quota. The whole fleet's transient at that depth is 2 pods × 10 rereads × 2 store reads × 2
-// metadata reads = 80 metadata reads, eight seconds of the shared 600 a minute, after which the
-// rate above holds the traffic down again.
-var GCPRereadOverallLimit = RereadOverallFor(GCPRereadFleetBudget, MinReplicas)
 
 // RereadRate derives this process's two reread buckets from the replica count it can see, and
 // moves them whenever that count changes. The count comes from the serving clock, which counts
@@ -329,7 +302,7 @@ type RereadRate struct {
 }
 
 // NewRereadRate is the reread rate of a process whose store's whole fleet budget is budget
-// (DefaultRereadFleetBudget or GCPRereadFleetBudget). Its two buckets are built here at
+// (its store's registry entry's RereadBudget). Its two buckets are built here at
 // MinReplicas, which is the sizing the process serves at until its first beat counts the fleet.
 // It logs each rate it derives to log, which is required.
 func NewRereadRate(budget ratelimit.Limit, log *slog.Logger) *RereadRate {

@@ -20,8 +20,8 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/leasetime"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/gcp"
 	"github.com/sjawhar/envoy/internal/redact"
 )
 
@@ -1836,20 +1836,20 @@ func TestLoadReadsTheSecretStore(t *testing.T) {
 		t.Fatalf("Load(unset store) = %+v, %v; want %s", cfg, err, aws.Name)
 	}
 
-	gcp := func() map[string]string {
+	gcpEnv := func() map[string]string {
 		e := validEnv()
-		e["BROKER_SECRETS_STORE"] = secrets.StoreGCP
+		e["BROKER_SECRETS_STORE"] = gcp.Name
 		e["BROKER_SECRETS_PREFIX"] = "projects/000000000000/secrets/agent-secrets-"
 		delete(e, "BROKER_SECRETS_KMS_KEY_ARN")
 		e["BROKER_SECRETS_KMS_KEY_NAME"] = "projects/example-project/locations/global/keyRings/agent-secrets/cryptoKeys/agent-secrets"
 		return e
 	}
-	cfg, err = Load(env(gcp()))
-	if err != nil || cfg.SecretsStore != secrets.StoreGCP || cfg.SecretsPrefix != "projects/000000000000/secrets/agent-secrets-" || cfg.SecretsKMSKey != gcp()["BROKER_SECRETS_KMS_KEY_NAME"] {
+	cfg, err = Load(env(gcpEnv()))
+	if err != nil || cfg.SecretsStore != gcp.Name || cfg.SecretsPrefix != "projects/000000000000/secrets/agent-secrets-" || cfg.SecretsKMSKey != gcpEnv()["BROKER_SECRETS_KMS_KEY_NAME"] {
 		t.Fatalf("Load(gcp) = %+v, %v", cfg, err)
 	}
 
-	e := gcp()
+	e := gcpEnv()
 	e["BROKER_MINT_TARGETS"] = "ANY_OLD_VALUE"
 	if _, err := Load(env(e)); err == nil || !strings.HasPrefix(err.Error(), "BROKER_MINT_TARGETS is removed; ") {
 		t.Fatalf("Load(BROKER_MINT_TARGETS) = %v, want a refusal naming the removed setting", err)
@@ -1875,16 +1875,16 @@ func TestLoadReadsTheSecretStore(t *testing.T) {
 			e["BROKER_SECRETS_KMS_KEY_NAME"] = "projects/example-project/locations/us-west1/keyRings/r/cryptoKeys/k"
 		}, "BROKER_SECRETS_KMS_KEY_NAME: a Cloud KMS key name is projects/"},
 	} {
-		e := gcp()
+		e := gcpEnv()
 		tc.edit(e)
 		if _, err := Load(env(e)); err == nil || !strings.HasPrefix(err.Error(), tc.want) {
 			t.Fatalf("Load(%s) = %v, want a refusal opening %q", name, err, tc.want)
 		}
 	}
 
-	aws := validEnv()
-	aws["BROKER_SECRETS_KMS_KEY_NAME"] = gcp()["BROKER_SECRETS_KMS_KEY_NAME"]
-	if _, err := Load(env(aws)); err == nil || !strings.HasPrefix(err.Error(), "BROKER_SECRETS_KMS_KEY_NAME is not read with BROKER_SECRETS_STORE=aws-secrets-manager; set BROKER_SECRETS_KMS_KEY_ARN instead") {
+	awsEnv := validEnv()
+	awsEnv["BROKER_SECRETS_KMS_KEY_NAME"] = gcpEnv()["BROKER_SECRETS_KMS_KEY_NAME"]
+	if _, err := Load(env(awsEnv)); err == nil || !strings.HasPrefix(err.Error(), "BROKER_SECRETS_KMS_KEY_NAME is not read with BROKER_SECRETS_STORE=aws-secrets-manager; set BROKER_SECRETS_KMS_KEY_ARN instead") {
 		t.Fatalf("Load(aws with the key name set) = %v, want a refusal naming both", err)
 	}
 }

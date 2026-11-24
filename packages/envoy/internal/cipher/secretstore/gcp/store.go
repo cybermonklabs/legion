@@ -1,4 +1,7 @@
-package secrets
+// Package gcp is the secret store over Google Cloud Secret Manager, with the agent-secrets key in
+// Cloud KMS: Store, the broker's reads, and Backend, its registry entry. Its fake Secret Manager
+// is gcptest.FakeSecretManager.
+package gcp
 
 import (
 	"context"
@@ -21,9 +24,9 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/secretstore"
 )
 
-// StoreGCP is BROKER_SECRETS_STORE's value for Google Cloud Secret Manager, with the agent-secrets
+// Name is BROKER_SECRETS_STORE's value for Google Cloud Secret Manager, with the agent-secrets
 // key in Cloud KMS.
-const StoreGCP = "gcp-secret-manager"
+const Name = "gcp-secret-manager"
 
 // gcpLatest is the alias of the version Secret Manager reads by default: the newest one.
 const gcpLatest = "latest"
@@ -43,32 +46,32 @@ var (
 	gcpKeyVersionSuffix = regexp.MustCompile(`/cryptoKeyVersions/[0-9]+$`)
 )
 
-// ValidGCPPrefix refuses a BROKER_SECRETS_PREFIX the GCP store cannot list under:
+// ValidPrefix refuses a BROKER_SECRETS_PREFIX the GCP store cannot list under:
 // projects/<project number>/secrets/<secret-id prefix>-, the project by its number.
-func ValidGCPPrefix(prefix string) error {
+func ValidPrefix(prefix string) error {
 	if !gcpPrefixPattern.MatchString(prefix) {
 		return fmt.Errorf("a Google Secret Manager prefix is projects/<project number>/secrets/<secret-id prefix>-, such as projects/000000000000/secrets/agent-secrets-, got %q (a project id in place of the number is refused: Secret Manager answers every resource name with the number; gcloud projects describe <id> --format='value(projectNumber)' finds it)", prefix)
 	}
 	return nil
 }
 
-// GCPProject answers the project number a prefix ValidGCPPrefix accepts names.
-func GCPProject(prefix string) string {
+// Project answers the project number a prefix ValidPrefix accepts names.
+func Project(prefix string) string {
 	return gcpPrefixPattern.FindStringSubmatch(prefix)[1]
 }
 
-// ValidGCPKeyName refuses a BROKER_SECRETS_KMS_KEY_NAME that is not a Cloud KMS key's resource
+// ValidKeyName refuses a BROKER_SECRETS_KMS_KEY_NAME that is not a Cloud KMS key's resource
 // name in the global location: projects/<project>/locations/global/keyRings/<ring>/cryptoKeys/<key>.
 // A secret with automatic replication, the only replication the store serves, takes a global key.
-func ValidGCPKeyName(name string) error {
+func ValidKeyName(name string) error {
 	if !gcpKeyNamePattern.MatchString(name) {
 		return fmt.Errorf("a Cloud KMS key name is projects/<project>/locations/global/keyRings/<ring>/cryptoKeys/<key>, got %q", name)
 	}
 	return nil
 }
 
-// GCP is the Store over Google Cloud Secret Manager. Build it with NewGCP.
-type GCP struct {
+// Store is the store over Google Cloud Secret Manager. Build it with New.
+type Store struct {
 	// Client reads the secrets: Secret Manager's own client, which the tests dial to a fake
 	// Secret Manager over gRPC.
 	Client *secretmanager.Client
@@ -103,9 +106,9 @@ type heldEntry struct {
 	err   error
 }
 
-// NewGCP is the Store over client, on the agent-secrets key keyName.
-func NewGCP(client *secretmanager.Client, keyName string) GCP {
-	return GCP{Client: client, KeyName: keyName, held: &heldCache{entries: map[string]*heldEntry{}, now: time.Now}}
+// New is the Store over client, on the agent-secrets key keyName.
+func New(client *secretmanager.Client, keyName string) Store {
+	return Store{Client: client, KeyName: keyName, held: &heldCache{entries: map[string]*heldEntry{}, now: time.Now}}
 }
 
 // verdict answers source's metadata verdict, from the cache while it is younger than gcpHeldFor
@@ -142,12 +145,12 @@ func (h *heldCache) verdict(source string, look func() error) error {
 	return err
 }
 
-// NewGCPClient opens Secret Manager under Application Default Credentials: on GKE the metadata
+// NewClient opens Secret Manager under Application Default Credentials: on GKE the metadata
 // server and Workload Identity Federation for the pod's ServiceAccount, with no key file. The
 // client library's logging is off whatever GOOGLE_SDK_GO_LOGGING_LEVEL says: at debug it prints
 // every request and response, and a Read's response carries the value. opts are the tests' dial
 // to a fake Secret Manager.
-func NewGCPClient(ctx context.Context, opts ...option.ClientOption) (*secretmanager.Client, error) {
+func NewClient(ctx context.Context, opts ...option.ClientOption) (*secretmanager.Client, error) {
 	client, err := secretmanager.NewClient(ctx, append([]option.ClientOption{option.WithLogger(slog.New(slog.DiscardHandler))}, opts...)...)
 	if err != nil {
 		return nil, fmt.Errorf("open Secret Manager: %w", err)
@@ -195,11 +198,11 @@ func (b *boundedRetryer) Retry(err error) (time.Duration, bool) {
 const gcpListLag = 6 * time.Hour
 
 // ListLag is Secret Manager's documented convergence bound for its metadata, six hours.
-func (GCP) ListLag() time.Duration { return gcpListLag }
+func (Store) ListLag() time.Duration { return gcpListLag }
 
 // ValidName refuses a full name whose secret id (the segment after secrets/) is not 1 to 255 of
 // letters, digits, hyphens and underscores, the only ids Secret Manager gives a secret.
-func (g GCP) ValidName(id string) error {
+func (g Store) ValidName(id string) error {
 	_, secretID, ok := strings.Cut(id, "/secrets/")
 	if !ok || !gcpSecretIDPattern.MatchString(secretID) {
 		return fmt.Errorf("under the prefix it makes the secret id %q, not 1 to 255 letters, digits, hyphens and underscores as Secret Manager requires", secretID)
@@ -214,7 +217,7 @@ func (g GCP) ValidName(id string) error {
 // opts.IncludeDeleted asks for it. It reads every page, then each kept secret's latest version
 // with one GetSecretVersion for its state and key, and with opts.Versions its versions with one
 // ListSecretVersions. A failed call fails the whole List.
-func (g GCP) List(ctx context.Context, prefix string, opts secretstore.ReadOptions) ([]secretstore.Listing, error) {
+func (g Store) List(ctx context.Context, prefix string, opts secretstore.ReadOptions) ([]secretstore.Listing, error) {
 	parent, idPrefix, ok := strings.Cut(prefix, "/secrets/")
 	if !ok {
 		return nil, fmt.Errorf("list secrets under %s: not a Secret Manager prefix", prefix)
@@ -243,7 +246,7 @@ func (g GCP) List(ctx context.Context, prefix string, opts secretstore.ReadOptio
 // (Secret Manager deletes the secret, with every version, when that time comes), so a secret with
 // one is the counterpart of a Secrets Manager secret in its recovery window, which the broker stops
 // serving at once.
-func (g GCP) Describe(ctx context.Context, id string, opts secretstore.ReadOptions) (secretstore.Listing, error) {
+func (g Store) Describe(ctx context.Context, id string, opts secretstore.ReadOptions) (secretstore.Listing, error) {
 	secret, err := g.Client.GetSecret(ctx, &secretmanagerpb.GetSecretRequest{Name: id})
 	if status.Code(err) == codes.NotFound {
 		return secretstore.Listing{}, secretstore.ErrNotFound
@@ -262,7 +265,7 @@ func (g GCP) Describe(ctx context.Context, id string, opts secretstore.ReadOptio
 // which GetSecretVersion answers for the latest one), the Listing's Version. Its expire_time, the
 // moment Secret Manager deletes it, is its Deleted; with opts.Versions its versions are listed,
 // each number to its state.
-func (g GCP) listing(ctx context.Context, secret *secretmanagerpb.Secret, opts secretstore.ReadOptions) (secretstore.Listing, error) {
+func (g Store) listing(ctx context.Context, secret *secretmanagerpb.Secret, opts secretstore.ReadOptions) (secretstore.Listing, error) {
 	name := secret.GetName()
 	ls := secretstore.Listing{ID: name, Source: name, Tags: secret.GetAnnotations()}
 	if ls.Tags == nil {
@@ -312,7 +315,7 @@ func (g GCP) listing(ctx context.Context, secret *secretmanagerpb.Secret, opts s
 // onKey reports whether keyVersion, a version's kms_key_version_name
 // (<key name>/cryptoKeyVersions/<n>), names a version of the agent-secrets key. An empty one is
 // Google's default encryption.
-func (g GCP) onKey(keyVersion string) bool {
+func (g Store) onKey(keyVersion string) bool {
 	if keyVersion == "" {
 		return false
 	}
@@ -333,7 +336,7 @@ func (g GCP) onKey(keyVersion string) bool {
 // (FAILED_PRECONDITION), all the same answer to the caller: the secret is not readable. The value
 // must be non-empty UTF-8, since the broker injects it into an environment, and one that is not
 // wraps ErrValueNotText; an error names the secret and never the bytes.
-func (g GCP) Read(ctx context.Context, source string) (string, error) {
+func (g Store) Read(ctx context.Context, source string) (string, error) {
 	if err := g.held.verdict(source, func() error {
 		secret, err := g.Client.GetSecret(ctx, &secretmanagerpb.GetSecretRequest{Name: source})
 		switch status.Code(err) {

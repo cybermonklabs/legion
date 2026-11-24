@@ -32,8 +32,8 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/cipheraddr"
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/gcp"
 )
 
 // sourceSettingsTimeout bounds the settings read describe makes. It is short because naming the
@@ -109,7 +109,7 @@ func (s source) withSettings(settings Settings) source {
 		if settings.AWSRegion != "" {
 			s.store += " in " + settings.words(settings.AWSRegion)
 		}
-	case secrets.StoreGCP:
+	case gcp.Name:
 		s.kind = "GCP Secret Manager"
 		s.store = s.kind
 		if settings.GCPProject != "" {

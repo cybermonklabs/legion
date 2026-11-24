@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/api"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/gcp"
 	"github.com/sjawhar/envoy/internal/ratelimit"
 )
 
@@ -24,7 +25,7 @@ var rereadBudgets = []struct {
 	shared, address time.Duration
 }{
 	{"default", api.DefaultRereadFleetBudget, 2250 * time.Millisecond, 4500 * time.Millisecond},
-	{"gcp", api.GCPRereadFleetBudget, 9 * time.Second, 18 * time.Second},
+	{"gcp", gcp.RereadBudget, 9 * time.Second, 18 * time.Second},
 }
 
 // newRereadRate is a rate on budget, with the buffer its log lines are written to.
@@ -76,7 +77,7 @@ func TestTheMountedRereadLimitsAreTheBudgetAtTwoPods(t *testing.T) {
 		want ratelimit.Limit
 	}{
 		{"DefaultRereadOverallLimit", api.DefaultRereadOverallLimit, ratelimit.Limit{Every: time.Second, Burst: 10}},
-		{"GCPRereadOverallLimit", api.GCPRereadOverallLimit, ratelimit.Limit{Every: 4 * time.Second, Burst: 10}},
+		{"the GCP store's budget at MinReplicas", api.RereadOverallFor(gcp.RereadBudget, api.MinReplicas), ratelimit.Limit{Every: 4 * time.Second, Burst: 10}},
 	} {
 		if row.got != row.want {
 			t.Errorf("%s = %+v, want %+v unchanged", row.name, row.got, row.want)

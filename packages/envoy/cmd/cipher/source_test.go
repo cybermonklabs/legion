@@ -29,8 +29,8 @@ import (
 
 	"github.com/sjawhar/envoy/cipheraddr"
 	"github.com/sjawhar/envoy/internal/cipher/helper"
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/gcp"
 	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/tlsalert/tlsalerttest"
 )
@@ -49,7 +49,7 @@ func TestASourceNamesTheBrokerAndTheStoreItsSettingsDescribe(t *testing.T) {
 		source   string
 		store    string
 	}{
-		{"gcp", "https://secrets.internal.example/", Settings{Store: secrets.StoreGCP, GCPProject: "000000000000"},
+		{"gcp", "https://secrets.internal.example/", Settings{Store: gcp.Name, GCPProject: "000000000000"},
 			"the broker AGENT_SECRETS_URL names (GCP Secret Manager)", "GCP Secret Manager project 000000000000"},
 		{"aws", "http://127.0.0.1:13380", Settings{Store: aws.Name, AWSAccountID: "111122223333", AWSRegion: "us-east-1"},
 			"the broker AGENT_SECRETS_URL names (AWS Secrets Manager)", "AWS Secrets Manager account 111122223333 in us-east-1"},
