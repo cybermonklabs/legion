@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -20,6 +21,7 @@ import (
 
 	"github.com/sjawhar/envoy/redirects"
 	"github.com/sjawhar/legion/daemon/internal/redact"
+	"github.com/sjawhar/legion/daemon/internal/urljoin"
 )
 
 const requestTimeout = 10 * time.Second
@@ -189,13 +191,36 @@ type HTTPPublisher struct {
 	client  *http.Client
 }
 
-// New creates a publisher for one Envoy listener. token is the listener's bearer
-// (`envoy_token_file`), sent on every publish; "" sends none, for a listener that requires none.
-// It follows no redirect (redirects.Refused): the listener answers none, and a followed one would
-// hand the bearer to the host the Location names. A 3xx is the listener's answer, refused by its
-// status, and a request that got no answer names its failure through oauth2call.Unanswered.
+// New creates a publisher for one Envoy listener at baseURL, each route joined onto its path
+// (newRequest). token is the listener's bearer (`envoy_token_file`), sent on every call; "" sends
+// none, for a listener that requires none. It follows no redirect (redirects.Refused): the listener
+// answers none, and a followed one would hand the bearer to the host the Location names. A 3xx is
+// the listener's answer, refused by its status, and a request that got no answer names its failure
+// through oauth2call.Unanswered.
 func New(baseURL, token string) *HTTPPublisher {
-	return &HTTPPublisher{baseURL: strings.TrimRight(baseURL, "/"), token: token, client: redirects.Refused(&http.Client{Timeout: requestTimeout})}
+	return &HTTPPublisher{baseURL: baseURL, token: token, client: redirects.Refused(&http.Client{Timeout: requestTimeout})}
+}
+
+// newRequest is the request of method to ref, a route with or without its own query, carrying
+// body and the listener's bearer where the publisher has one. It goes to ref joined onto the
+// listener URL's path (urljoin.Join), the URL's query kept ahead of ref's own, where ref appended
+// to the URL's text would sit inside its query or its fragment and the listener would be asked
+// another path. A URL that does not parse or names no host is refused in fixed words: url.Parse's
+// error quotes the URL whole, user information and query included. A joined URL http.NewRequest
+// refuses (url.URL.String can write text url.Parse refuses) is named through oauth2call.Unanswered.
+func (p *HTTPPublisher) newRequest(ctx context.Context, method, ref string, body io.Reader) (*http.Request, error) {
+	call, err := urljoin.Join(p.baseURL, ref)
+	if err != nil {
+		return nil, errors.New("the Envoy listener's URL is not an absolute URL with a host (it is not printed)")
+	}
+	request, err := http.NewRequestWithContext(ctx, method, call.String(), body)
+	if err != nil {
+		return nil, oauth2call.Unanswered(err, nil, "")
+	}
+	if p.token != "" {
+		request.Header.Set("Authorization", "Bearer "+p.token)
+	}
+	return request, nil
 }
 
 // Publish posts the listener envelope that preserves the outbox row's idempotent delivery key.
@@ -252,14 +277,11 @@ func (p *HTTPPublisher) publish(ctx context.Context, topic, message string, payl
 	if err != nil {
 		return false, fmt.Errorf("encode notice for %s: %w", topic, err)
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/v1/messages/publish", bytes.NewReader(body))
+	request, err := p.newRequest(ctx, http.MethodPost, "/v1/messages/publish", bytes.NewReader(body))
 	if err != nil {
-		return false, fmt.Errorf("build notice publish request for %s: %w", topic, oauth2call.Unanswered(err, nil, ""))
+		return false, fmt.Errorf("build notice publish request for %s: %w", topic, err)
 	}
 	request.Header.Set("Content-Type", "application/json")
-	if p.token != "" {
-		request.Header.Set("Authorization", "Bearer "+p.token)
-	}
 	response, err := p.client.Do(request)
 	if err != nil {
 		return false, fmt.Errorf("publish notice to %s: %w", topic, oauth2call.Unanswered(err, request, ""))
@@ -395,13 +417,9 @@ const answerBodyLimit = 1 << 20
 // the listener said, as a refused delete is, and the caller then sends nothing (sessionStop.send
 // in packages/daemon/internal/daemon/daemon.go says why).
 func (p *HTTPPublisher) ReadSessionRegistration(ctx context.Context, session string) (SessionRegistration, error) {
-	target := fmt.Sprintf("%s/v1/registry/%s?include=unresponsive&view=registration", p.baseURL, url.PathEscape(session))
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	request, err := p.newRequest(ctx, http.MethodGet, "/v1/registry/"+url.PathEscape(session)+"?include=unresponsive&view=registration", nil)
 	if err != nil {
-		return SessionRegistration{}, fmt.Errorf("build the registration read for %s: %w", session, oauth2call.Unanswered(err, nil, ""))
-	}
-	if p.token != "" {
-		request.Header.Set("Authorization", "Bearer "+p.token)
+		return SessionRegistration{}, fmt.Errorf("build the registration read for %s: %w", session, err)
 	}
 	response, err := p.client.Do(request)
 	if err != nil {
@@ -454,13 +472,9 @@ func (p *HTTPPublisher) ReadSessionRegistration(ctx context.Context, session str
 // a forget made on such an answer is no worse than one made a moment earlier (review round 16 of
 // #4220, #64).
 func (p *HTTPPublisher) RoleHolder(ctx context.Context, role string) (holder oauth2call.RemoteText, state string, err error) {
-	target := fmt.Sprintf("%s/v1/roles/%s", p.baseURL, url.PathEscape(role))
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	request, err := p.newRequest(ctx, http.MethodGet, "/v1/roles/"+url.PathEscape(role), nil)
 	if err != nil {
-		return holder, "", fmt.Errorf("build the role lookup for %s: %w", role, oauth2call.Unanswered(err, nil, ""))
-	}
-	if p.token != "" {
-		request.Header.Set("Authorization", "Bearer "+p.token)
+		return holder, "", fmt.Errorf("build the role lookup for %s: %w", role, err)
 	}
 	response, err := p.client.Do(request)
 	if err != nil {
@@ -638,17 +652,13 @@ type DeleteConditions struct {
 //
 // The two conditions it carries, and why neither alone would do, are on DeleteConditions.
 func (p *HTTPPublisher) DeleteSession(ctx context.Context, session string, conditions DeleteConditions) (SessionDeleted, error) {
-	target := fmt.Sprintf("%s/v1/sessions/%s?if_not_registered_after=%d",
-		p.baseURL, url.PathEscape(session), conditions.NotRegisteredAfter.UnixMilli())
+	target := fmt.Sprintf("/v1/sessions/%s?if_not_registered_after=%d", url.PathEscape(session), conditions.NotRegisteredAfter.UnixMilli())
 	if id, named := conditions.ClientInstanceID.SendBack(); named {
 		target += "&client_instance_id=" + url.QueryEscape(id)
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodDelete, target, nil)
+	request, err := p.newRequest(ctx, http.MethodDelete, target, nil)
 	if err != nil {
-		return SessionDeleted{}, fmt.Errorf("build the session delete for %s: %w", session, oauth2call.Unanswered(err, nil, ""))
-	}
-	if p.token != "" {
-		request.Header.Set("Authorization", "Bearer "+p.token)
+		return SessionDeleted{}, fmt.Errorf("build the session delete for %s: %w", session, err)
 	}
 	response, err := p.client.Do(request)
 	if err != nil {
