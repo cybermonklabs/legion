@@ -142,9 +142,9 @@ func (m *Manager) exchange(ctx context.Context, jwt, installation string, permis
 		body := refusalBody(response)
 		failed := fmt.Errorf("GitHub App token exchange failed (%d): %s", response.StatusCode, body.Words())
 		if response.StatusCode == http.StatusNotFound {
-			return Lease{}, fmt.Errorf("%w: %w", errInstallationGone, m.answered(response, body, failed))
+			return Lease{}, fmt.Errorf("%w: %w", errInstallationGone, m.answered(request, response, body, failed))
 		}
-		refused := m.transient(response, body, failed)
+		refused := m.transient(request, response, body, failed)
 		if response.StatusCode == http.StatusUnprocessableEntity {
 			// GitHub documents its rate limits on a 429 and a 403 (githubrest's
 			// Answer.RateLimited), but the headers or the secondary-limit text of a limit on a

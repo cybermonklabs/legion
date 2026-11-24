@@ -585,7 +585,7 @@ func (m *Manager) viewerLogin(ctx context.Context, role AppRole, token string) (
 		return "", &TransientError{Err: fmt.Errorf("read %s: %w", what, redact.Unanswered(err, request, ""))}
 	}
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		return "", m.transient(response, refusalBody(response), fmt.Errorf("read %s failed (%d)", what, response.StatusCode))
+		return "", m.transient(request, response, refusalBody(response), fmt.Errorf("read %s failed (%d)", what, response.StatusCode))
 	}
 	body, err := readBody(response, "read "+what, responseBound)
 	if err != nil {
@@ -623,7 +623,7 @@ func (m *Manager) checkAppID(ctx context.Context, role AppRole, slug, appID, tok
 		return &TransientError{Err: fmt.Errorf("read %s: %w", what, redact.Unanswered(err, request, "/apps/"+shown))}
 	}
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		return m.transientAs(response, refusalBody(response), "/apps/"+shown, fmt.Errorf("read %s failed (%d)", what, response.StatusCode))
+		return m.transientAs(request, response, refusalBody(response), "/apps/"+shown, fmt.Errorf("read %s failed (%d)", what, response.StatusCode))
 	}
 	body, err := readBody(response, "read "+what, responseBound)
 	if err != nil {
@@ -711,10 +711,10 @@ func (m *Manager) listInstallation(ctx context.Context, role AppRole, repo ghrep
 			return false, false, &TransientError{Err: fmt.Errorf("%s: %w", what, redact.Unanswered(err, request, ""))}
 		}
 		if response.StatusCode == http.StatusUnauthorized {
-			return false, true, m.answered(response, refusalBody(response), fmt.Errorf("%s failed (401)", what))
+			return false, true, m.answered(request, response, refusalBody(response), fmt.Errorf("%s failed (401)", what))
 		}
 		if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-			return false, false, m.transient(response, refusalBody(response), fmt.Errorf("%s failed (%d)", what, response.StatusCode))
+			return false, false, m.transient(request, response, refusalBody(response), fmt.Errorf("%s failed (%d)", what, response.StatusCode))
 		}
 		body, err := readBody(response, what, responseBound)
 		if err != nil {
