@@ -119,7 +119,7 @@ func Open(ctx context.Context, dsn string) (*Store, error) {
 // is bounded by that transaction's write bound where it is shorter still: pgxpool dials on a
 // context that keeps the values of the acquiring one (puddle's constructor context), which
 // BeforeConnect reads. And it pings no connection a bounded transaction is handed: that
-// transaction's BEGIN, under its write bound, is the check (Pool.beginOnAcquired). Without these a
+// transaction's BEGIN, under its write bound, is the check (Pool.BeginTx). Without these a
 // database that stops answering in the middle of a dial or a ping held such a transaction for the
 // whole of its wait in the pool's queue, thirty seconds for a claim write, where the claim's
 // machine is promised five (supervise.Timeouts.ClaimWrite). A dial and the transaction that runs

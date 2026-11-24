@@ -57,8 +57,11 @@ type allowance struct {
 var allowances = []allowance{
 	// The boundary's own begin.
 	{"internal/store", "TransactWith", "R2", 1},
-	// The guarded pool's BeginTx, which TransactWith opens through, forwarding to pgx's pool.
-	{"internal/store", "(*Pool).BeginTx", "R2", 1},
+	// The guarded pool's BeginTx, which TransactWith opens through: the two steps of pgxpool's own
+	// BeginTx on pgx's pool, the take of a connection from the queue and the begin on it, so that
+	// a bounded transaction (store.BoundAfterAcquire) waits in the queue under its acquire bound
+	// and sends its BEGIN under its write bound.
+	{"internal/store", "(*Pool).BeginTx", "R2", 2},
 	// The connection a migration runs on and resets before it goes back.
 	{"internal/store", "(*Pool).acquire", "R2", 1},
 	// The guarded pool's forwarders of their caller's SQL to pgx's pool. No production code calls

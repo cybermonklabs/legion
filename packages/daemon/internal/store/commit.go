@@ -115,48 +115,53 @@ func (b *afterAcquire) writing(ctx context.Context) (context.Context, context.Ca
 	return context.WithTimeout(ctx, b.write)
 }
 
-// begin opens TransactWith's transaction on pool, and answers it with the context the
-// transaction runs on and that context's cancel. With no bound it is pool.BeginTx on ctx. With
-// one, the wait in the pool's queue ends acquire after it begins, and the BEGIN runs on the
-// connection the pool handed out, under the write bound counted from the moment it was handed out,
-// which the transaction then runs on (Pool.beginOnAcquired). A pool that hands out no connection
-// apart from its transaction, a test's pgx pool, begins under the acquire bound and runs under the
-// write bound from there. A wait that ended in the queue is errAcquireBound.
-func (b *afterAcquire) begin(ctx context.Context, pool TxPool, options pgx.TxOptions) (pgx.Tx, context.Context, context.CancelFunc, error) {
+// writingFrom is ctx under b's write bound counted from handedOut, the moment the pool handed the
+// transaction its connection, or ctx itself for no bound.
+func (b *afterAcquire) writingFrom(ctx context.Context, handedOut time.Time) (context.Context, context.CancelFunc) {
 	if b == nil {
-		tx, err := pool.BeginTx(ctx, options)
-		return tx, ctx, func() {}, err
+		return ctx, func() {}
 	}
-	acquiring, stopAcquiring := context.WithTimeout(ctx, b.acquire)
-	defer stopAcquiring()
-	var writing context.Context
-	stopWriting := context.CancelFunc(func() {})
-	held := func() context.Context {
-		writing, stopWriting = b.writing(ctx)
-		return writing
-	}
-	var tx pgx.Tx
-	var err error
-	if p, ok := pool.(acquiringPool); ok {
-		tx, err = p.beginOnAcquired(acquiring, held, options)
-	} else if tx, err = pool.BeginTx(acquiring, options); err == nil {
-		held()
-	}
-	if err != nil {
-		stopWriting()
-		if writing == nil && ctx.Err() == nil && acquiring.Err() != nil {
-			return nil, nil, nil, fmt.Errorf("%w (%s): %w", errAcquireBound, b.acquire, err)
-		}
-		return nil, nil, nil, err
-	}
-	return tx, writing, stopWriting, nil
+	return context.WithDeadline(ctx, handedOut.Add(b.write))
 }
 
-// acquiringPool is a TxPool that hands out a connection apart from the transaction begun on it, so
-// a bounded transaction's BEGIN runs under its write bound rather than its wait in the queue: the
-// daemon's pool (Pool.beginOnAcquired).
-type acquiringPool interface {
-	beginOnAcquired(acquiring context.Context, held func() context.Context, options pgx.TxOptions) (pgx.Tx, error)
+// acquiring is ctx under b's acquire bound, the wait in the pool's queue, or ctx itself for no
+// bound.
+func (b *afterAcquire) acquiring(ctx context.Context) (context.Context, context.CancelFunc) {
+	if b == nil {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, b.acquire)
+}
+
+// beginning is the context TransactWith begins its transaction on. The daemon's pool bounds the
+// two steps of its begin itself (Pool.BeginTx), the wait in its queue by the acquire bound and the
+// BEGIN by the write bound counted from the hand-out, so it is given ctx. A pool that hands out no
+// connection apart from its transaction, a test's pgx pool or a wrapper of the daemon's pool,
+// begins under the acquire bound and runs under the write bound from there (running).
+func (b *afterAcquire) beginning(ctx context.Context, pool TxPool) (context.Context, context.CancelFunc) {
+	if _, own := pool.(*Pool); own {
+		return ctx, func() {}
+	}
+	return b.acquiring(ctx)
+}
+
+// running is the context a begun transaction runs on: ctx under b's write bound, counted from the
+// moment the daemon's pool handed tx its connection (storeTx.handedOut), or from now for a
+// transaction of another pool; ctx itself for no bound.
+func (b *afterAcquire) running(ctx context.Context, tx pgx.Tx) (context.Context, context.CancelFunc) {
+	if own, ok := tx.(*storeTx); ok && !own.handedOut.IsZero() {
+		return b.writingFrom(ctx, own.handedOut)
+	}
+	return b.writing(ctx)
+}
+
+// notBegun is the error of a begin under b whose wait ran on waited: errAcquireBound for a wait
+// that ended at the acquire bound in the pool's queue while ctx still ran, err itself otherwise.
+func (b *afterAcquire) notBegun(ctx, waited context.Context, err error) error {
+	if b != nil && waited != ctx && ctx.Err() == nil && waited.Err() != nil {
+		return fmt.Errorf("%w (%s): %w", errAcquireBound, b.acquire, err)
+	}
+	return err
 }
 
 // errAcquireBound is a bounded transaction (BoundAfterAcquire) that waited its whole acquire bound
@@ -273,9 +278,11 @@ func ReadOnly[T any](ctx context.Context, pool TxPool, what string, read func(ct
 //     transaction's body then does with its error; one that succeeds releases it. Either
 //     statement that fails fails the whole transaction (below). Under a bound (BoundAfterAcquire)
 //     the join's write bound runs from the join, since the open transaction holds its connection.
-//   - The transaction begins (afterAcquire.begin). Under a bound the wait in the pool's queue ends
-//     at the acquire bound (errAcquireBound), and the BEGIN and everything after it run under the
-//     write bound counted from the moment the connection was handed out.
+//   - The transaction begins, through the pool's BeginTx, the boundary's one begin. Under a bound
+//     the daemon's pool ends the wait in its queue at the acquire bound (errAcquireBound) and runs
+//     the BEGIN, and the transaction after it, under the write bound counted from the moment it
+//     handed out the connection (Pool.BeginTx); another pool begins under the acquire bound
+//     (beginning) and its transaction runs under the write bound from there (running).
 //   - A rollback is deferred as soon as the transaction begins, so a panic in write, or any
 //     return below, gives the connection back to the pool and clears the caller's hold mark. It
 //     runs on the commit's context, below, so a rollback after the caller's cancel still reaches
@@ -313,10 +320,13 @@ func TransactWith(ctx context.Context, pool TxPool, options pgx.TxOptions, write
 		defer stop()
 		return open.join(joining, pool, options, write)
 	}
-	tx, ctx, stopBound, err := bound.begin(ctx, pool, options)
+	beginning, stopBeginning := bound.beginning(ctx, pool)
+	tx, err := pool.BeginTx(beginning, options)
+	stopBeginning()
 	if err != nil {
-		return err
+		return bound.notBegun(ctx, beginning, err)
 	}
+	ctx, stopBound := bound.running(ctx, tx)
 	defer stopBound()
 	committing, stop := commitContext(ctx)
 	defer stop()
