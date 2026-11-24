@@ -31,6 +31,14 @@ type legionListener struct {
 	mux  http.Handler
 }
 
+// newLegionAgentRegistry serves store, a registry whose bucket is open: the registry a test's
+// listener holds, where the listener itself opens its own (openLegionAgentRegistry).
+func newLegionAgentRegistry(store *legionagents.Store) *legionAgentRegistry {
+	r := &legionAgentRegistry{}
+	r.state.Store(&legionAgentState{store: store})
+	return r
+}
+
 func newLegionListener(t *testing.T, client *bus.Client) *legionListener {
 	t.Helper()
 	sessions, err := session.OpenSessionRegistry(t.Context(), client.Conn, session.WithSessionReplicas(1))
