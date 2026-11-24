@@ -381,31 +381,38 @@ func TestAReasonQuotesAWordOfThePlanWithinABound(t *testing.T) {
 	// 201 bytes whose byte at the bound falls inside a two-byte é.
 	wide := "a" + strings.Repeat("é", 100)
 	role := "r" + strings.Repeat("o", 300)
-	cut := func(word string) string { return fmt.Sprintf("%s… (cut from %d bytes)", word[:MostQuotedBytes], len(word)) }
+	cut := func(word string) string {
+		return fmt.Sprintf("%s… (cut from %d bytes)", word[:MostQuotedBytes], len(word))
+	}
 	for _, tc := range []struct {
-		name  string
-		got   []Refusal
-		at    int    // the reason that quotes the word, among the reasons the plan gets
-		task  string // that reason's task
-		quote string // the word as that reason quotes it
+		name   string
+		got    []Refusal
+		at     int    // the reason that quotes the word, among the reasons the plan gets
+		task   string // that reason's task
+		quote  string // the word as that reason quotes it
+		quotes int    // how many times the reason names that quote
 	}{
-		{"a need of 1 MiB", Validate(planOf(t, 1, taskNeeding("a", long)), d), 0, "a", cut(long) + ","},
-		{"a need at the bound", Validate(planOf(t, 1, taskNeeding("a", atBound)), d), 0, "a", "needs " + atBound + ","},
-		{"a need cut at the start of a character", Validate(planOf(t, 1, taskNeeding("a", wide)), d), 0, "a", wide[:127] + "… (cut from 201 bytes),"},
-		{"a role of 301 bytes", Validate(oneTask("a", "implementer "+role), d), 0, "a", cut(role) + ","},
-		{"a key of 301 bytes", Supported(oneTask("a", "implementer reviewer:"+role)), 0, "a", cut(role) + "."},
-		{"a role block's id of 301 bytes", Supported(Plan{RoleBlocks: []string{role}, Tasks: []Task{{ID: "a", Steps: []Step{{Role: "implementer"}}}}}), 0, "", cut(role) + "."},
-		{"a role of 301 bytes at two steps", Supported(oneTask("a", "implementer "+role+" "+role)), 0, "a", cut(role) + " at steps 2 and 3."},
-		// The key's reason comes first, then the step's, which quotes the whole word `tester:<key>`.
-		{"a step of 308 bytes read before the implementer", Supported(oneTask("a", "tester:"+role+" implementer")), 1, "a", cut("tester:" + role) + ","},
+		{"a need of 1 MiB", Validate(planOf(t, 1, taskNeeding("a", long)), d), 0, "a", cut(long) + ",", 1},
+		{"a need at the bound", Validate(planOf(t, 1, taskNeeding("a", atBound)), d), 0, "a", "needs " + atBound + ",", 1},
+		{"a need cut at the start of a character", Validate(planOf(t, 1, taskNeeding("a", wide)), d), 0, "a", wide[:127] + "… (cut from 201 bytes),", 1},
+		{"a role of 301 bytes", Validate(oneTask("a", "implementer "+role), d), 0, "a", cut(role) + ",", 1},
+		{"a key of 301 bytes", Supported(oneTask("a", "implementer reviewer:"+role)), 0, "a", cut(role) + ".", 1},
+		{"a role block's id of 301 bytes", Supported(Plan{RoleBlocks: []string{role}, Tasks: []Task{{ID: "a", Steps: []Step{{Role: "implementer"}}}}}), 0, "", cut(role) + ".", 1},
+		{"a role of 301 bytes at two steps", Supported(oneTask("a", "implementer "+role+" "+role)), 0, "a", cut(role) + " at steps 2 and 3.", 1},
+		// The key's reason comes first, then the step's. stepReasons (validate.go:499-501)
+		// names the whole word `tester:<key>` twice, so its size includes two quotes.
+		{"a step of 308 bytes read before the implementer", Supported(oneTask("a", "tester:"+role+" implementer")), 1, "a", cut("tester:"+role) + ",", 2},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if len(tc.got) <= tc.at {
 				t.Fatalf("the reasons %.400q hold no reason %d", tc.got, tc.at+1)
 			}
 			reason := tc.got[tc.at]
-			if reason.Task != tc.task || !strings.Contains(reason.Reason, tc.quote) || len(reason.Reason) > 300+len(tc.quote) {
+			if reason.Task != tc.task || !strings.Contains(reason.Reason, tc.quote) || len(reason.Reason) > 300+tc.quotes*len(tc.quote) {
 				t.Fatalf("reason %d is %.400q of task %q, want one of task %q quoting %.200q within 300 bytes of it", tc.at+1, reason.Reason, reason.Task, tc.task, tc.quote)
+			}
+			if count := strings.Count(reason.Reason, strings.TrimSuffix(tc.quote, ",")); count != tc.quotes {
+				t.Errorf("reason %d names the quote %d times, want %d: %.600q", tc.at+1, count, tc.quotes, reason.Reason)
 			}
 		})
 	}
@@ -509,7 +516,9 @@ func TestAReasonQuotesNoByteOfAURLsCredential(t *testing.T) {
 	d := Deployment{Roles: BuiltinRoles()}
 	implementer := Step{Role: "implementer"}
 	withSteps := func(steps ...Step) Plan { return Plan{Tasks: []Task{{ID: "a", Steps: steps}}} }
-	cut := func(word string) string { return fmt.Sprintf("%s… (cut from %d bytes)", word[:MostQuotedBytes], len(word)) }
+	cut := func(word string) string {
+		return fmt.Sprintf("%s… (cut from %d bytes)", word[:MostQuotedBytes], len(word))
+	}
 	quote := cut(redactedURL)
 	for _, tc := range []struct {
 		name  string
