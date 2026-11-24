@@ -167,22 +167,6 @@ if [ "$status" -ne 0 ]; then
   exit 1
 fi
 
-# The printed bound names each build target the boundary census read (cmd/redact-gate's
-# ciTargets) on its BOUNDARY api lines; a plan that printed no such line read nothing, and fails.
-boundary_targets=0
-if grep -q '^BOUNDARY api ' "$work/plan.txt"; then
-  for target in linux/amd64 darwin/arm64 linux/arm64 darwin/amd64; do
-    if ! grep '^BOUNDARY api ' "$work/plan.txt" | grep -qF "$target"; then
-      echo "check: no BOUNDARY api line of the plan names the build target $target"
-      boundary_targets=1
-    fi
-  done
-else
-  echo "check: the plan printed no BOUNDARY api line, so it names no build target"
-  boundary_targets=1
-fi
-step "the boundary census names each build target it read" "$boundary_targets"
-
 # Each package's inventory tests, and no other test of it: a row's test is `Top` or `Top/sub`, and
 # `-run '^(Top|...)$'` runs each Top whole, every subtest with it. Each package's timeout is derived
 # in this run, not set ahead, because the box's load moves from one run to the next: on 2026-11-22

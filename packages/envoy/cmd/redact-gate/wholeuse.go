@@ -40,12 +40,13 @@ func (g *gate) wholeUse(dir string) census {
 	}
 	roots, _ := workRoots(dir)
 	for _, mod := range mods {
-		tagSets, err := ciTagSets(dir, mod)
+		builds, err := g.ciBuilds(dir, mod)
 		if err != nil {
 			c.Unknown = append(c.Unknown, fmt.Sprintf("whole-value census: the build tags of %s cannot be read: %v", mod, err))
 			continue
 		}
-		list := exec.Command(bin, "-dir", ".", "-targets", strings.Join(ciTargets, ","), "-tags", strings.Join(tagSets, ";"), "./...")
+		targets, tags := builds.flags()
+		list := exec.Command(bin, "-dir", ".", "-targets", targets, "-tags", tags, "./...")
 		list.Dir = filepath.Join(dir, mod)
 		// Each module loads as its own build loads it (moduleWork).
 		list.Env = append(os.Environ(), "GOWORK="+moduleWork(dir, mod, roots))
