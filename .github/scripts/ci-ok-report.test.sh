@@ -815,6 +815,57 @@ check "an age that is no number of seconds: fails the step" "$(is "$status" 1)"
 check "names it" \
   "$(contains "$out" "ci-ok-hold.sh's CI_OK_HOLD_AGE_SECONDS is not a whole number of seconds: 30m")"
 
+echo "case: the hold prints no word of the answers it reads but a time and a commit id"
+# Whatever answers the creation read in GitHub's place holds gh's token and writes the answer, and
+# the hold printed it whole: as the creation time when date could read it, which date does for a
+# time with any TZ="..." before it, and inside its warning when date could not. The refs' answer
+# is the remote's, and the hold printed the tip and the group's head it named.
+remote "$tip_base:abc123"
+printf 'TZ="%s" %s\n' "$marker" "$(date -u +%FT%TZ)" > "$work/created"
+run_hold
+shown "$out"
+check "a creation date reads with the marker in it: the stand-in gh is the one called (control)" \
+  "$(is "$(calls 'repos/o/r/actions/runs/41 --jq .created_at')" 1)"
+check "  twin: the stand-in's answer holds the marker" "$(is "$(grep -cF -- "$marker" "$work/created")" 1)"
+check "  the hold reads it as the time it is, and ends at the front" \
+  "$(is "$status $(contains "$out" "$front_line")" '0 true')"
+check "  prints no run of the marker the answer holds" "$(prints_no_marker "$out")"
+check "  and gives the creation time in date's own words" \
+  "$(contains "$out" '^This run was created at [0-9-]*T[0-9:]*Z, so the hold ends at the latest at ')"
+remote "$tip_base:abc123"
+echo "$marker" > "$work/created"
+run_hold
+shown "$out"
+check "a creation that is no time: the stand-in gh is the one called (control)" \
+  "$(is "$(calls 'repos/o/r/actions/runs/41 --jq .created_at')" 1)"
+check "  twin: the stand-in's answer holds the marker" "$(is "$(grep -cF -- "$marker" "$work/created")" 1)"
+check "  prints no run of the marker the answer holds" "$(prints_no_marker "$out")"
+check "  warns it counts from its own start, naming the file that keeps the answer" \
+  "$(contains "$out" "^::warning::GitHub did not give this run's creation time (an answer that is no time, it is kept in $work/temp/ci-ok-hold-created\.")"
+check "  the kept answer holds the marker, where the operator finds it" "$(kept_marker "$out")"
+remote "$marker:abc123" "$tip_base:abc123"
+twin=$(grep -cF -- "$marker" "$work/remote")
+run_hold
+shown "$out"
+check "a tip that is no commit id: the stand-in git is the one called, twice (control)" "$(is "$(reads)" 2)"
+check "  twin: the stand-in's answer holds the marker" "$(is "$twin" 1)"
+check "  the hold waits past it, as for any tip that is not the base, to the front" \
+  "$(is "$status $(contains "$out" "$front_line")" '0 true')"
+check "  prints no run of the marker the answer holds" "$(prints_no_marker "$out")"
+check "  says the tip is no commit id, naming the file that keeps it" \
+  "$(contains "$out" "its base $tip_base is not an answer that is no commit id (it is kept in $work/temp/ci-ok-hold-tip\.")"
+check "  the kept answer holds the marker, where the operator finds it" "$(kept_marker "$out")"
+remote "$tip_other:$marker"
+twin=$(grep -cF -- "$marker" "$work/remote")
+run_hold
+shown "$out"
+check "a group's head that is no commit id: the stand-in git is the one called (control)" "$(is "$(reads)" 1)"
+check "  twin: the stand-in's answer holds the marker" "$(is "$twin" 1)"
+check "  prints no run of the marker the answer holds" "$(prints_no_marker "$out")"
+check "  ends the hold as another head does, naming the file that keeps it" \
+  "$(contains "$out" "${gone_line}an answer that is no commit id (it is kept in $work/temp/ci-ok-hold-group\.")"
+check "  the kept answer holds the marker, where the operator finds it" "$(kept_marker "$out")"
+
 echo "case: the real ci.yaml's ci-ok job holds a failing verdict of a merge group's first attempt"
 # The hold is the step right after the verdict and keys on the verdict step's own outcome, so a
 # passing verdict never waits, whatever a later step does: had it keyed on failure(), a reconcile
