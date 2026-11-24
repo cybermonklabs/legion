@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/redact"
+	"github.com/sjawhar/envoy/internal/urljoin"
 	"github.com/sjawhar/envoy/redirects"
 )
 
@@ -61,7 +62,11 @@ func runProbePrivate(args []string, stdout, stderr io.Writer) int {
 // runProbeBound is `dev-airlock-stands probe-bound`: check k7's Go client, one GET of
 // AIRLOCK_S_URL/go carrying AIRLOCK_DEMO_TOKEN as its Bearer, printing the status code alone.
 // The two names come from the environment because the grant the check runs it under is what
-// puts them there, beside the proxy and the trust bundle net/http reads for itself.
+// puts them there, beside the proxy and the trust bundle net/http reads for itself. The GET's URL
+// is /go joined onto AIRLOCK_S_URL's path, its query kept (urljoin.Join): /go appended to its text
+// would sit inside a query or a fragment, and the bound host would be asked another path. A value
+// that does not parse or names no host prints by its class alone, never url.Parse's error, which
+// quotes it whole.
 func runProbeBound(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("dev-airlock-stands probe-bound", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -75,9 +80,16 @@ func runProbeBound(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "dev-airlock-stands probe-bound: unexpected argument %q\n", fs.Arg(0))
 		return exitUsageError
 	}
-	address := os.Getenv("AIRLOCK_S_URL") + "/go"
+	target, err := urljoin.Join(os.Getenv("AIRLOCK_S_URL"), "/go")
+	if err != nil {
+		fmt.Fprintln(stdout, "error", redact.ClassNotAURL)
+		return 0
+	}
+	address := target.String()
 	request, err := http.NewRequest(http.MethodGet, address, nil)
 	if err != nil {
+		// The URL urljoin wrote can be one url.Parse refuses (an IPv6 zone holding a byte that is
+		// not ASCII, which url.URL.String escapes), and its error quotes that URL whole.
 		fmt.Fprintln(stdout, "error", redact.Class(err))
 		return 0
 	}
