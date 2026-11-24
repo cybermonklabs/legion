@@ -754,7 +754,7 @@ func (c *Client) get(ctx context.Context, path string, query url.Values, into an
 	}
 	if answer.Status != http.StatusOK {
 		code := dispatchread.RefusalCode(answer.Body)
-		shown := dispatchread.Clip(code.String())
+		shown := dispatchread.Quoted(code)
 		switch answer.Status {
 		case http.StatusNotFound:
 			if code.Equal(projectNotFoundCode) {

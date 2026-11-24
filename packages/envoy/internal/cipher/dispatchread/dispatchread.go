@@ -127,7 +127,7 @@ func (r Reader) Get(ctx context.Context, path string, query url.Values) (Answer,
 	defer response.Body.Close()
 	answer, err := redact.ReadAnswer(response, int64(r.limit))
 	if response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden {
-		return Answer{}, fmt.Errorf("%w: dispatch answered %s %d with the code %q", ErrBrokerRefused, path, response.StatusCode, Clip(RefusalCode(answer).String()))
+		return Answer{}, fmt.Errorf("%w: dispatch answered %s %d with the code %q", ErrBrokerRefused, path, response.StatusCode, Quoted(RefusalCode(answer)))
 	}
 	if errors.Is(err, redact.ErrAnswerTooLarge) {
 		return Answer{}, fmt.Errorf("dispatchread: dispatch's answer to %s is over %d bytes", path, r.limit)
@@ -175,10 +175,17 @@ func RefusalCode(answer redact.Answer) redact.RemoteText {
 const MaxQuoted = 64
 
 // Clip is text, or its first MaxQuoted bytes when it is longer: the most of a string from
-// Dispatch's answer that an error of the broker's quotes.
+// Dispatch's answer that an error of the broker's quotes. Quoted is how a caller names such a
+// string; this is for text that is no box already.
 func Clip(text string) string {
 	if len(text) > MaxQuoted {
 		return text[:MaxQuoted]
 	}
 	return text
 }
+
+// Quoted is what an error of the broker's quotes of a string Dispatch's answer named — a refusal's
+// code (RefusalCode), or a key or a value of a body the caller reads itself (redact.Answer.Said):
+// the rule's reading of it, cut to MaxQuoted bytes. Every caller of this package names such a
+// string through this one function, so that no site of its own decides the bound or the reading.
+func Quoted(text redact.RemoteText) string { return Clip(text.String()) }
