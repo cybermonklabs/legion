@@ -668,9 +668,9 @@ func retryStreamStoreFailure(create func() error) error {
 
 // hostConfig caps a NATS test container at one CPU and 512 MiB, as every container the
 // repository's tests and proofs start is capped on a shared host (a test server holds a few small
-// streams), and publishes its client and monitoring ports at host on the ports given, or leaves
-// them on Docker's default binding when host is "". It is one modifier because testcontainers
-// keeps only the last a request is given.
+// streams), and publishes its client and monitoring ports at host, each on a port of the range
+// from the one given (publishedRange), or leaves them on Docker's default binding when host is "".
+// It is one modifier because testcontainers keeps only the last a request is given.
 func hostConfig(host string, client, monitoring int) testcontainers.CustomizeRequestOption {
 	return testcontainers.WithHostConfigModifier(func(config *container.HostConfig) {
 		config.NanoCPUs = 1_000_000_000
@@ -681,29 +681,30 @@ func hostConfig(host string, client, monitoring int) testcontainers.CustomizeReq
 		if config.PortBindings == nil {
 			config.PortBindings = nat.PortMap{}
 		}
-		config.PortBindings[clientPort] = []nat.PortBinding{{HostIP: host, HostPort: strconv.Itoa(client)}}
-		config.PortBindings[monitorPort] = []nat.PortBinding{{HostIP: host, HostPort: strconv.Itoa(monitoring)}}
+		config.PortBindings[clientPort] = []nat.PortBinding{{HostIP: host, HostPort: publishedRange(client)}}
+		config.PortBindings[monitorPort] = []nat.PortBinding{{HostIP: host, HostPort: publishedRange(monitoring)}}
 	})
 }
 
-// startTries bounds the starts start makes while Docker refuses to publish a port as in use:
-// something took the probed one first (loopbackPorts), or, on a Docker daemon on another machine,
-// every port Docker tried was held (defaultBinding).
+// startTries bounds the starts start makes while Docker refuses to publish a port as in use: every
+// port it tried was held, of the range from the probed one (publishedRange) or, on a Docker daemon
+// on another machine, of its own range (defaultBinding).
 const startTries = 5
 
 // start runs a NATS container, with its monitoring endpoint on 8222. It publishes the client and
-// monitoring ports on a loopback address of its own and ports the kernel chose there
-// (loopbackPorts), so a client another test left dialing an earlier container's port cannot reach
-// this one, and tries again on a fresh address and ports, up to startTries starts, when Docker
-// refuses the publish because a probed port was taken in between; an error names every refusal
-// before it as well as its own failure. It waits for the line nats-server logs once its listeners
-// are up, in place of the NATS module's own wait, a dial of the client port at localhost, where
-// the port is not published; each caller's own connect (connect, ready, answering) is the proof a
-// client reaches the server. A container Docker created and never saw ready (a readiness wait that
-// timed out under load, or a refused publish) comes back beside the error, and is removed before
-// start returns: no test's end would remove a container the package shares. A Docker daemon on
-// another machine (localDaemon) publishes on that machine, whose loopback this one does not reach,
-// so there the ports take Docker's default binding and its choice of port (defaultBinding), and
+// monitoring ports on a loopback address of its own, each on a port of the range from one the
+// kernel chose there (loopbackPorts, publishedRange), so a client another test left dialing an
+// earlier container's port cannot reach this one, and so a probed port taken before the publish
+// leaves Docker the next one. It tries again on a fresh address and ports, up to startTries
+// starts, when Docker refuses the publish as in use; an error names every refusal before it as
+// well as its own failure. It waits for the line nats-server logs once its listeners are up, in
+// place of the NATS module's own wait, a dial of the client port at localhost, where the port is
+// not published; each caller's own connect (connect, ready, answering) is the proof a client
+// reaches the server. A container Docker created and never saw ready (a readiness wait that timed
+// out under load, or a refused publish) comes back beside the error, and is removed before start
+// returns: no test's end would remove a container the package shares. A Docker daemon on another
+// machine (localDaemon) publishes on that machine, whose loopback this one does not reach, so
+// there the ports take Docker's default binding and its choice of port (defaultBinding), and
 // endpoint names the daemon's host; Docker can refuse that publish as in use too, having tried
 // ports another process holds, and the start is tried again the same way.
 //
@@ -742,7 +743,7 @@ func start(image string, options func() []testcontainers.ContainerCustomizer) (*
 		}
 		where := "Docker's default binding"
 		if host != "" {
-			where = fmt.Sprintf("%s ports %d and %d", host, ports[0], ports[1])
+			where = fmt.Sprintf("%s ports %s and %s", host, publishedRange(ports[0]), publishedRange(ports[1]))
 		}
 		err = fmt.Errorf("%s: %w", where, errors.Join(err, testcontainers.TerminateContainer(started)))
 		if !addressInUse(err) {
