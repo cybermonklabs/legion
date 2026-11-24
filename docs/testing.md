@@ -605,7 +605,7 @@ It is a slow suite: a pull request runs it only with the label `full-ci` (or `la
 
 That job runs the command with `-v` for a second check Go's detector does not make:
 the package's `TestMain` prints `docs: <built> services built, <alive> still alive after <duration>` once the tests have run, and the line after it names each test that built a service still alive at the end of the run.
-A test that builds a `*Service` gives it a `t.Cleanup` that shuts it down.
+A test that builds a `*Service` registers a cleanup that shuts it down, with `testcleanup.Add`.
 A service a test left running holds its rooms, and their documents, for the rest of the binary's run.
 A service that was shut down is still alive at the end of the run when a callback of one of its stopped timers holds it.
 `Timer.Stop` does not free the callback: the runtime keeps a stopped timer in the heap of the P that armed it until that P next clears its stopped timers or the timer's own time comes, and an idle P clears them only when it next runs, which depends on the machine's load.

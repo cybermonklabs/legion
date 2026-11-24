@@ -51,8 +51,10 @@ func TestTheDocumentTestsRegisterEveryCleanupThroughAdd(t *testing.T) {
 }
 
 // The check finds a Cleanup call in a test file and in a helper's other file, a Cleanup method
-// value, and one taken through a field, and leaves Add, a method named Cleanup defined on a type,
-// and the word in a comment alone. Without this, a check that read nothing would pass.
+// value, one taken through a field, and a method value in a file that holds no Cleanup call at all
+// (value_test.go: a pre-filter that looked for "Cleanup(" would skip it), and leaves Add, a method
+// named Cleanup defined on a type, and the word in a comment alone. Without this, a check that read
+// nothing would pass.
 func TestTheCleanupCheckFindsWhatItLooksFor(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
@@ -71,6 +73,7 @@ func TestTheCleanupCheckFindsWhatItLooksFor(t *testing.T) {
 			"type holder struct{ t *testing.T }\n\n" +
 			"func (h holder) use() { h.t.Cleanup(func() {}) }\n",
 		"pkg/nested/b_test.go": "package nested\n\nimport \"testing\"\n\nfunc BenchmarkB(b *testing.B) { b.Cleanup(func() {}) }\n",
+		"pkg/value_test.go":    "package pkg\n\nimport \"testing\"\n\nfunc TestV(t *testing.T) {\n\tregister := t.Cleanup\n\t_ = register\n}\n",
 		"pkg/c.go":             "package pkg\n\nfunc none() {}\n",
 	}
 	for name, source := range files {
@@ -82,7 +85,7 @@ func TestTheCleanupCheckFindsWhatItLooksFor(t *testing.T) {
 	want := []string{
 		"pkg/a_test.go:7: t.Cleanup", "pkg/a_test.go:8: t.Cleanup",
 		"pkg/helper.go:13: h.t.Cleanup", "pkg/helper.go:9: tb.Cleanup",
-		"pkg/nested/b_test.go:5: b.Cleanup",
+		"pkg/nested/b_test.go:5: b.Cleanup", "pkg/value_test.go:6: t.Cleanup",
 	}
 	if !slices.Equal(got, want) {
 		t.Fatalf("the check found %q, want %q", got, want)

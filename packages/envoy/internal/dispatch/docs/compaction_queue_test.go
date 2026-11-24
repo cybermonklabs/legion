@@ -293,12 +293,15 @@ func TestTheCompactionQueueComesBackToARetriedDocumentWhenItsYoungRowsComeDue(t 
 	// (tryCompaction) and then reads its fold point (readCompaction) in a snapshot of its own, so
 	// rows made young between those two reads leave the read no fold point, and the step ends the
 	// room as done and drops it, which no later note undoes. The worker is held in afterStep, after
-	// the first retry and before the queue settles it, while the rows are changed.
-	held, release := holdAfterStep(t, service, artifactID, func(step compactionStepRecord) bool {
+	// the first retry and before the queue settles it, while the rows are changed: the retry is
+	// recorded before the hold stops the worker, and no step settles or runs until release.
+	release := holdAfterStep(t, service, artifactID, func(step compactionStepRecord) bool {
 		return step.retry > 0 && step.next.kind == compactionRetry
 	})
 	loadStored(t, service, artifactID)
-	steps.receive(t, artifactID, "the worker to stop after a retry of the busy document", held)
+	steps.await(t, artifactID, 0, "a retry of the busy document", func(step compactionStepRecord) bool {
+		return step.retry > 0 && step.next.kind == compactionRetry
+	})
 	ageUpdatesThrough(t, database, artifactID, everyVersion, 0)
 	young := storedRows(t, database, artifactID)
 	release()
@@ -731,22 +734,6 @@ func (s *compactionSteps) await(t *testing.T, room string, from int, description
 	return found
 }
 
-// receive waits for ch to close, as await waits for a step, and a wait that gives up logs every
-// step the queue ran for room (gaveUp).
-func (s *compactionSteps) receive(t *testing.T, room, description string, ch <-chan struct{}) {
-	t.Helper()
-	if !testwait.Holds(30*time.Second, 5*time.Millisecond, func() bool {
-		select {
-		case <-ch:
-			return true
-		default:
-			return false
-		}
-	}) {
-		s.gaveUp(t, room, description)
-	}
-}
-
 // gaveUp fails the test for a wait on description that gave up, after logging every step the
 // queue ran for room, so the failure says what the queue decided instead of only that nothing it
 // decided was wanted.
@@ -808,32 +795,29 @@ func holdCompactionFold(t *testing.T, versioned *PgVersioned, artifactID string)
 }
 
 // holdAfterStep holds the service's compaction queue's worker after the first step of room that
-// want accepts, from now on: held is closed once the worker has stopped there, and release lets it
-// go on, which the test's cleanup does too. It wraps the queue's afterStep, which the worker calls
-// after each step and before it settles that step or takes the next (compactionQueue.run), so no
-// step of any room runs while it waits; the step it holds after is recorded first. Like
-// quickCompactionQueue, it runs before anything notes a room, so the worker reads none of it
+// want accepts, from now on, until release, which the test's cleanup calls too. It wraps the
+// recorder quickCompactionQueue set as the queue's afterStep, which the worker calls after each
+// step and before it settles that step or takes the next (compactionQueue.run): the step it holds
+// after is recorded first, so a test awaits that step, and no step of any room runs while it waits.
+// Like quickCompactionQueue, it runs before anything notes a room, so the worker reads none of it
 // before it is set.
-func holdAfterStep(t *testing.T, service *Service, room string, want func(compactionStepRecord) bool) (<-chan struct{}, func()) {
+func holdAfterStep(t *testing.T, service *Service, room string, want func(compactionStepRecord) bool) func() {
 	t.Helper()
-	held, released := make(chan struct{}), make(chan struct{})
+	released := make(chan struct{})
 	release := sync.OnceFunc(func() { close(released) })
 	testcleanup.Add(t, release)
 	q := service.compactions
 	record := q.afterStep
 	holding := false
 	q.afterStep = func(stepRoom string, retry time.Duration, next compactionNext) {
-		if record != nil {
-			record(stepRoom, retry, next)
-		}
+		record(stepRoom, retry, next)
 		if holding || stepRoom != room || !want(compactionStepRecord{room: stepRoom, retry: retry, next: next}) {
 			return
 		}
 		holding = true
-		close(held)
 		<-released
 	}
-	return held, release
+	return release
 }
 
 // storeAgedRows stores rows rows of a new document through a store no service notes, each created
