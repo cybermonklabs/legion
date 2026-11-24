@@ -268,12 +268,45 @@ func composedFixture(t *testing.T, path string) State {
 	if err := json.Unmarshal(written, &state); err != nil {
 		t.Fatalf("decode %s (run %s): %v", path, composedStateRewrite, err)
 	}
+	keepNullPriorities(t, path, written, state)
 	if again := testgolden.Encode(t, path, state); !bytes.Equal(again, written) {
 		line, held, read := testgolden.FirstDifference(written, again)
 		t.Fatalf("%s does not read back as it was written (run %s): line %d holds %q, and the state read from it writes %q",
 			path, composedStateRewrite, line, held, read)
 	}
 	return state
+}
+
+// keepNullPriorities puts back each `priority` the file at path writes as null, on an issue and on
+// its waitingLine. Those are the two keys of the state the daemon writes as null rather than
+// leaving out: an issue the workflow records with no Dispatch priority, and a line member neither
+// it nor its tree root has one for (PriorityView's MarshalJSON). encoding/json reads a null into
+// a pointer as no pointer at all, so a decode alone drops the key, and the read-back would fail on
+// a value the daemon serves. Only a key the file holds is put back; an absent one stays absent.
+func keepNullPriorities(t *testing.T, path string, written []byte, state State) {
+	t.Helper()
+	var held struct {
+		Issues map[string]struct {
+			Priority    json.RawMessage `json:"priority"`
+			WaitingLine *struct {
+				Priority json.RawMessage `json:"priority"`
+			} `json:"waitingLine"`
+		} `json:"issues"`
+	}
+	if err := json.Unmarshal(written, &held); err != nil {
+		t.Fatalf("decode the priorities of %s: %v", path, err)
+	}
+	null := []byte("null")
+	for key, keys := range held.Issues {
+		issue := state.Issues[key]
+		if bytes.Equal(keys.Priority, null) {
+			issue.Priority = new(PriorityView(record.NoPriority))
+		}
+		if keys.WaitingLine != nil && issue.WaitingLine != nil && bytes.Equal(keys.WaitingLine.Priority, null) {
+			issue.WaitingLine.Priority = new(PriorityView(record.NoPriority))
+		}
+		state.Issues[key] = issue
+	}
 }
 
 // The state golden is the body the route serves a caller at this daemon's own contract: the
@@ -294,8 +327,11 @@ func TestStateGolden(t *testing.T) {
 // block in the shape contract 152 gave it, written from the same entries
 // (withoutRepositoriesLive), each assignment without its `plan`, since assignmentPlanContract's
 // row stands above that contract too, no `intakeGiveUps` (withoutIntakeGiveUps), since
-// intakeGiveUpsContract's row does as well, and every other key as a caller at
-// shapedAnswersContract is served it, since no other row of stateNarrowings stands between
+// intakeGiveUpsContract's row does as well, no issue's `podHold` (withoutPodHold), since
+// podHoldContract's row does too, no issue's `priority` and no waiting line's (withoutPriority),
+// since priorityContract's row does too, no claim view's `lastDeathAt` or `lastStartFailureAt`
+// (withoutCauseTimes), since causeTimesContract's row does too, and every other key as a caller
+// at shapedAnswersContract is served it, since no other row of stateNarrowings stands between
 // shapedAnswersContract and repositoriesLiveContract. shapedAnswersContract's row stands at or
 // below the contract it is served at, which is why the golden carries `lowestPluginContract` and
 // each claim view's `updateState`; the populated state holds no pause, so it carries no `paused`.
@@ -537,7 +573,7 @@ func TestReadyForUpdateRequestGolden(t *testing.T) {
 //
 // Two rows of each list, because one row of each pins less than the shape, and a third resume:
 //   - the releases are a release that suspended two roles and saved a bundle, and one whose
-//     stops suspended no claim and whose workspace held nothing unpushed (recordPodRelease
+//     stops suspended no claim and whose workspace the check read clean (recordPodRelease
 //     counts only the claims this release's own stops suspended, and the store reads an empty
 //     `roles` column back as none): `roles` is `[]` and never `null`, and `bundleBytes` is 0
 //     rather than absent;

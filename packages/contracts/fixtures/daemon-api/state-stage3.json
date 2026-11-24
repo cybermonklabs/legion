@@ -30,6 +30,7 @@
       "tree": "LEGION-208",
       "repo": "sjawhar/legion-smoke",
       "defaultBranch": "main",
+      "priority": null,
       "workers": {},
       "gatedSteps": [
         {
@@ -53,6 +54,7 @@
       "tree": "LEGION-209",
       "repo": "sjawhar/legion-smoke",
       "defaultBranch": "main",
+      "priority": null,
       "workers": {},
       "gatedSteps": [
         {
@@ -72,11 +74,12 @@
         "rootRank": "00009",
         "ownRank": "00009",
         "rootKey": "LEGION-209",
-        "reason": "It has not started. It is 1st of 1 issue that has not started, by its own Dispatch rank."
+        "priority": null,
+        "reason": "It has not started. It has no priority, so it waits after every issue at P0 to P3. It is 1st of 1 issue with no priority that has not started, by its own Dispatch rank."
       },
       "why": {
         "state": "waiting",
-        "reason": "It has not started. It is 1st of 1 issue that has not started, by its own Dispatch rank."
+        "reason": "It has not started. It has no priority, so it waits after every issue at P0 to P3. It is 1st of 1 issue with no priority that has not started, by its own Dispatch rank."
       },
       "treeMovedAt": "2126-09-22T16:02:00Z",
       "quietHours": 1.475

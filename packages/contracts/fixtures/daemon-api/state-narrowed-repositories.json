@@ -493,16 +493,16 @@
         "part": "starting",
         "kind": "queued_root",
         "partPlace": 1,
-        "partLength": 2,
+        "partLength": 1,
         "holdsSlot": false,
         "rootRank": "00011",
         "ownRank": "00011",
         "rootKey": "LEGION-211",
-        "reason": "It has not started. It is 1st of 2 issues that have not started, by its own Dispatch rank, and 1 issue whose work came back stands ahead of all of them."
+        "reason": "It has not started. It waits at P1, its own priority. It is 1st of 1 issue at P1 that has not started, by its own Dispatch rank."
       },
       "why": {
         "state": "waiting",
-        "reason": "It has not started. It is 1st of 2 issues that have not started, by its own Dispatch rank, and 1 issue whose work came back stands ahead of all of them."
+        "reason": "It has not started. It waits at P1, its own priority. It is 1st of 1 issue at P1 that has not started, by its own Dispatch rank."
       },
       "phaseEntry": 2,
       "givenEntry": 1,
@@ -557,11 +557,11 @@
         "partLength": 1,
         "holdsSlot": true,
         "since": "2126-09-22T09:12:00Z",
-        "reason": "A person answered it, and its work came back at 2126-09-22T09:12:00Z. It is 1st of 1 issue whose work came back. It already holds its admission slot, so it resumes at the next pass whatever the cap says."
+        "reason": "A person answered it, and its work came back at 2126-09-22T09:12:00Z. It waits at P0, its own priority. It is 1st of 1 issue at P0 whose work came back. It already holds its admission slot, so it resumes at the next pass whatever the cap says."
       },
       "why": {
         "state": "waiting",
-        "reason": "A person answered it, and its work came back at 2126-09-22T09:12:00Z. It is 1st of 1 issue whose work came back. It already holds its admission slot, so it resumes at the next pass whatever the cap says."
+        "reason": "A person answered it, and its work came back at 2126-09-22T09:12:00Z. It waits at P0, its own priority. It is 1st of 1 issue at P0 whose work came back. It already holds its admission slot, so it resumes at the next pass whatever the cap says."
       },
       "waitingOn": {
         "kind": "ask",
@@ -642,17 +642,17 @@
         "length": 3,
         "part": "starting",
         "kind": "queued_root",
-        "partPlace": 2,
-        "partLength": 2,
+        "partPlace": 1,
+        "partLength": 1,
         "holdsSlot": false,
         "rootRank": "00016",
         "ownRank": "00016",
         "rootKey": "LEGION-216",
-        "reason": "It has not started. It is 2nd of 2 issues that have not started, by its own Dispatch rank, and 1 issue whose work came back stands ahead of all of them."
+        "reason": "It has not started. It has no priority, so it waits after every issue at P0 to P3. It is 1st of 1 issue with no priority that has not started, by its own Dispatch rank."
       },
       "why": {
         "state": "waiting",
-        "reason": "It has not started. It is 2nd of 2 issues that have not started, by its own Dispatch rank, and 1 issue whose work came back stands ahead of all of them. It waits on LEGION-210, which is not done."
+        "reason": "It has not started. It has no priority, so it waits after every issue at P0 to P3. It is 1st of 1 issue with no priority that has not started, by its own Dispatch rank. It waits on LEGION-210, which is not done."
       },
       "treeMovedAt": "2126-09-22T08:30:00Z",
       "quietHours": 0.8

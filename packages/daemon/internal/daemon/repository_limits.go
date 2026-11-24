@@ -192,17 +192,17 @@ func limitAttributes(read limitedRead) []any {
 }
 
 // backfillRead is named's read of repo for the backfill of a record (fillRepositories,
-// nameRepositories): one read, bounded by installReadAttempt, answered from the read named keeps
+// nameRepositories): one read, bounded by attempt (repositoryReadBounds.attempt), answered from the read named keeps
 // within its ttl, or holds until a limit's reset, without asking GitHub (defaultBranches.Named).
 // A read that fails for any reason, GitHub's rate limit and a read GitHub does not answer among
 // them, is returned as the cause the backfill logs ("the read of <repo> from GitHub failed: …"),
 // for the caller to leave the record as it is and say so: a boot that waited on GitHub for a
 // record's repository would serve nothing meanwhile, and the refresher tries the record again on
-// installReadRetry (backfillLater), as the next boot does. No record's branch stands in for the
+// its retry (repositoryReadBounds.retry, backfillLater), as the next boot does. No record's branch stands in for the
 // read, since what the backfill reads GitHub for is GitHub's spelling of the repository the record
 // will carry.
-func backfillRead(ctx context.Context, named *defaultBranches, repo ghrepo.Repository) (ghbranch.Repository, error) {
-	read, cancel := context.WithTimeout(ctx, installReadAttempt)
+func backfillRead(ctx context.Context, named *defaultBranches, repo ghrepo.Repository, attempt time.Duration) (ghbranch.Repository, error) {
+	read, cancel := context.WithTimeout(ctx, attempt)
 	defer cancel()
 	branch, err := named.Named(read, repo)
 	if err != nil {

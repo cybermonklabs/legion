@@ -128,10 +128,11 @@ type repositoryCache struct {
 // What the projection serves is everything internal/projection.Project answers: the issue views,
 // the admission block, the waiting wakes, the held outbox rows and the pending status writes. What
 // the composition adds beside it is, in source.State's order: the stranded claims
-// (workflow.Stranded), each root's architect-stalled arms (admission's ArchitectStallArms), the
-// count of claims to refresh, the pause, the daemon's identity and boots, the settings, the cap,
-// the controller, the secrets login, the capabilities and the repositories; then the route's
-// consumers and lowest plugin contract.
+// (workflow.Stranded), each root's architect-stalled arms (admission's ArchitectStallArms), each
+// issue's standing pod hold (store.Store.StandingPodHoldsTx, keyed on the claim token's spelling of
+// the project, as the idle pass writes it), the count of claims to refresh, the pause, the
+// daemon's identity and boots, the settings, the cap, the controller, the secrets login, the
+// capabilities and the repositories; then the route's consumers and lowest plugin contract.
 func composedState(t *testing.T, st *store.Store, c composition) api.State {
 	t.Helper()
 	ctx := context.Background()
@@ -199,6 +200,16 @@ func composedState(t *testing.T, st *store.Store, c composition) api.State {
 		for key, arms := range stalls {
 			if view, shown := state.Issues[key]; shown {
 				view.ArchitectStalls = arms
+				state.Issues[key] = view
+			}
+		}
+		holds, err := st.StandingPodHoldsTx(ctx, tx, projectToken)
+		if err != nil {
+			return err
+		}
+		for key, hold := range holds {
+			if view, shown := state.Issues[key]; shown {
+				view.PodHold = api.PodHoldViewOf(hold)
 				state.Issues[key] = view
 			}
 		}
@@ -477,11 +488,12 @@ func podLocator(token claim.Token, issue string, generation uint64) *runtime.Loc
 //   - LEGION-210, held from implementing on its architect's escalation, with a failed implementer
 //     nothing will wake, no architect claim, and a spec whose architect registered a version after
 //     its approval.
-//   - LEGION-211, a root another tree (LEGION-200) handed over whose own tree has not been opened,
-//     waiting in the line's starting part; its implementer is released in LEGION-200's tree with
-//     two failed sends. It carries a run, so no Dispatch link holds it (blockers.Exempt).
-//   - LEGION-212, a root a person answered, holding its slot and waiting in the line's returned
-//     part, its spec sent back with changes, a tester retired in its tree.
+//   - LEGION-211, a P1 root another tree (LEGION-200) handed over whose own tree has not been
+//     opened, waiting in the line's starting part of its band; its implementer is released in
+//     LEGION-200's tree with two failed sends. It carries a run, so no Dispatch link holds it
+//     (blockers.Exempt).
+//   - LEGION-212, a P0 root a person answered, holding its slot and waiting in the line's returned
+//     part of its band, its spec sent back with changes, a tester retired in its tree.
 //   - LEGION-214, a root whose Legion label is off, which never ran.
 //   - LEGION-215, a labelled root under LEGION-217, a child of LEGION-208 its architect has not
 //     released and the daemon keeps no record of: its chain reaches LEGION-208's live tree.
@@ -532,14 +544,18 @@ func populatedRecord(s *seeding) {
 	escalated.Hold = &record.Hold{From: phase.Implementing, Reason: record.HoldEscalated}
 
 	// LEGION-211: a root LEGION-200's tree handed over with the phase it ran there (admit's
-	// hand-over, admit.go's HandedOverFrom). Its own tree has not been opened.
+	// hand-over, admit.go's HandedOverFrom). Its own tree has not been opened. Dispatch shows it at
+	// P1, which the record keeps from the observation that carried its rank (admit's
+	// recordObservation).
 	handed := issue("LEGION-211", "LEGION-211", phase.Implementing, "todo", "acme/widgets", 2, 7)
-	handed.Rank, handed.HandedOverFrom = "00011", "LEGION-200"
+	handed.Rank, handed.HandedOverFrom, handed.Priority = "00011", "LEGION-200", record.P1
 
 	// LEGION-212: its architect asked a person, and the person answered at 09:12, a movement of
 	// the root (workflow's awaiting reconcile). It keeps the slot it took when it was started.
+	// Dispatch shows it at P0, so it stands alone in the line's first band.
 	answeredAt := at(22, 9, 12, 0)
 	answered := issue("LEGION-212", "LEGION-212", phase.AwaitingPerson, "in_progress", "acme/widgets", 1, 8)
+	answered.Priority = record.P0
 	answered.Awaiting = &record.Awaiting{
 		Ask: "9a8fd348-55d5-4d72-a793-3cd037f75f13", Since: record.EventMark{Seq: 14, At: at(22, 8, 5, 0)},
 		AnsweredAt: &answeredAt, AnsweredBy: record.AnsweredByAsk,
@@ -788,9 +804,11 @@ func populatedClaims(s *seeding, rows populatedRows) map[claim.Token]capabilitie
 		{Token: token("LEGION-207", claim.RoleImplementer), Project: "legion", Tree: "LEGION-207", Issue: "LEGION-207", Role: claim.RoleImplementer,
 			Generation: 2, State: supervise.StateWorking, Session: "ses_implementer_207",
 			Locator: podLocator(token("LEGION-207", claim.RoleImplementer), "LEGION-207", 2), PluginContract: api.ServingFloor},
-		// The architect is ready in the pod: the turn it began and ended, the ready that dates the
-		// death's cause, and a start failure of a launch since the death. Its handshake is that of
-		// the entry it was last queued, which a turn confirmed.
+		// The architect is ready in the pod: the turn it began and ended, its ready, the cause its
+		// process was last found gone under and a start failure of a launch since that ready, each
+		// with the time the daemon recorded it (the claim store's causeTime): the death before the
+		// ready, so the running agent survived it. Its handshake is that of the entry it was last
+		// queued, which a turn confirmed.
 		{Token: architect208, Project: "legion", Tree: "LEGION-208", Issue: "LEGION-208", Role: claim.RoleArchitect, Generation: 3,
 			State: supervise.StateReady, Session: "ses_architect_208", Locator: podLocator(architect208, "LEGION-208", 4), PluginContract: api.ServingFloor,
 			GivenEntry: 2, Handshake: supervise.EntryHandshake{Entry: 2, Generation: 3, QueuedAt: at(22, 8, 58, 14), ConfirmedAt: at(22, 8, 58, 51)},
@@ -799,7 +817,8 @@ func populatedClaims(s *seeding, rows populatedRows) map[claim.Token]capabilitie
 				ArgsBytes: 74, ArgsHash: "3f7c1a9d62b40e58", StartedAt: at(22, 9, 16, 55), EndedAt: at(22, 9, 16, 58),
 			},
 			LastTurnStart: at(22, 9, 16, 40), LastTurnEnd: at(22, 9, 16, 58), LastReady: at(22, 9, 15, 44),
-			LastDeathCause: "the pod's process was gone at the daemon's read", LastStartFailure: "the pod was not ready within the worker boot timeout",
+			LastDeathCause: "the pod's process was gone at the daemon's read", LastDeathAt: at(22, 9, 15, 21),
+			LastStartFailure: "the pod was not ready within the worker boot timeout", LastStartFailureAt: at(22, 9, 15, 50),
 			UpdateRound: round, UpdateReasons: podUpdateReasons, UpdateTaskedAt: &tasked},
 		{Token: planner208, Project: "legion", Tree: "LEGION-208", Issue: "LEGION-208", Role: claim.RolePlanner, Generation: 3,
 			State: supervise.StateSuspended, SuspendedBy: supervise.SuspendedByDaemon, Session: "ses_planner_208",
@@ -873,9 +892,10 @@ func populatedClaims(s *seeding, rows populatedRows) map[claim.Token]capabilitie
 		s.claimAs(c)
 	}
 	// The release of LEGION-211's pod in LEGION-200's tree (store.Store.RecordPodRelease), which
-	// suspended its implementer as `released` and saved what the workspace held unpushed.
+	// suspended its implementer as `released`. A release takes only a pod whose workspace held
+	// nothing unpushed and saves no bundle, so it records no bundle bytes (store.PodRelease).
 	_, err := s.st.RecordPodRelease(s.ctx, store.PodRelease{Project: "legion", Issue: "LEGION-211", Generation: 2,
-		Roles: []string{string(claim.RoleImplementer)}, At: at(22, 8, 55, 0), BundleBytes: 18432})
+		Roles: []string{string(claim.RoleImplementer)}, At: at(22, 8, 55, 0)})
 	s.must("the release of LEGION-211's pod", err)
 
 	// The session's capability report, from the process the locator names: two rows it proved and
@@ -1016,7 +1036,22 @@ func seedPopulated(s *seeding) composition {
 	reports := populatedClaims(s, rows)
 	c := populatedDeployment(s, reports)
 	populatedIntake(s)
+	populatedPodHolds(s)
 	return c
+}
+
+// populatedPodHolds writes what the idle rule recorded of the pod it kept past the idle period
+// (internal/daemon's recordIdleHold, store.Store.RecordPodHold), keyed on the claim token's
+// spelling of the project as the idle pass writes it: LEGION-219's pod is quiet, and its
+// reviewer's last report named an async job still running, so the first pass of the rule that held
+// the pod for background work came the evening before and its newest a minute before this state.
+// The two passes are one streak, the pod's standing hold, with the kind the report named.
+func populatedPodHolds(s *seeding) {
+	for _, pass := range []time.Time{at(21, 22, 4, 0), at(22, 9, 17, 0)} {
+		s.must("a pass of the idle rule over LEGION-219's pod", s.st.RecordPodHold(s.ctx, store.PodHold{
+			Project: "legion", Issue: "LEGION-219", Reason: workflow.IdleHoldBackgroundWork.String(), Detail: "async-job", At: pass,
+		}))
+	}
 }
 
 // populatedIntake writes the intake's three open give-ups as its consumers write them
@@ -1135,6 +1170,7 @@ func seedPaused(s *seeding) composition {
 	reports := populatedClaims(s, rows)
 	c := populatedDeployment(s, reports)
 	populatedIntake(s)
+	populatedPodHolds(s)
 	s.in("the finish of LEGION-208's start", func(ctx context.Context, tx pgx.Tx) error {
 		return s.records.FinishOutbox(ctx, tx, rows.running208, rows.runningLease)
 	})

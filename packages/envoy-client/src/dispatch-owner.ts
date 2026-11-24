@@ -82,6 +82,7 @@ export interface ParsedDispatchRef {
     | "spec"
     | "log"
     | "children"
+    | "comments"
     | "artifact"
     | "block"
     | "ask"
@@ -194,15 +195,17 @@ export function parseDispatchRef(ref: string): ParsedDispatchRef | null {
   // `activity` is the Activity tab's spelling of the same event list `log` has always named, so
   // both read the issue's events; it is no kind of its own.
   const issueReference = ref.match(
-    /^dispatch:\/\/([A-Z][A-Z0-9]{1,9}-[1-9][0-9]*)(?:\/(spec)|\/(log|activity)|\/(children)|\/artifact\/([^/@]+)(?:@v(\d+))?|\/ask\/([^/]+)|\/comment\/([^/]+)|\/message\/([^/]+))?$/
+    /^dispatch:\/\/([A-Z][A-Z0-9]{1,9}-[1-9][0-9]*)(?:\/(spec)|\/(log|activity)|\/(children)|\/(comments)|\/artifact\/([^/@]+)(?:@v(\d+))?|\/ask\/([^/]+)|\/comment\/([^/]+)|\/message\/([^/]+))?$/
   );
   if (!issueReference) return null;
-  const [, issue, spec, log, children, artifact, version, ask, comment, message] = issueReference;
+  const [, issue, spec, log, children, comments, artifact, version, ask, comment, message] =
+    issueReference;
   if (!issue || (version !== undefined && Number(version) < 1)) return null;
   const owner: Owner = { kind: "issue", issue };
   if (spec) return { owner, kind: "spec", id: spec };
   if (log) return { owner, kind: "log", id: log };
   if (children) return { owner, kind: "children", id: children };
+  if (comments) return { owner, kind: "comments", id: comments };
   if (artifact) {
     return {
       owner,
