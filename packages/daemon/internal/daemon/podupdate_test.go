@@ -592,7 +592,7 @@ func (r *podUpdateRig) startInPod(role claim.Role, pod string) {
 	r.workers[role] = conn
 	// A claim the boot restored with no process of its own is launch_uncertain until its release
 	// settles it, which is what the daemon's own unfinished-launch path does before it launches
-	// (launchUnfinishedClaim).
+	// (releaseUnfinishedClaim, launchUnfinished).
 	if r.claimOf(role).State == supervise.StateLaunchUncertain {
 		if _, err := m.ReleaseUncertainLaunch(r.ctx); err != nil {
 			r.t.Fatalf("release the %s's unfinished launch: %v", role, err)

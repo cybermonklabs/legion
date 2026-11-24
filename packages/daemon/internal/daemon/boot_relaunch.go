@@ -18,16 +18,27 @@ import (
 // the boot's orphan reconciliation proves no predecessor runs, and launched again in the order its
 // work was owed.
 
-// bootRelaunch is one claim launchUnfinished relaunches: its machine, the turn reserved for
-// it in the wake pacing (the zero time for none yet), and how its release ended — left to launch
-// (spawnable) or refused by the store for a later sweep (refused).
+// bootRelaunch is one claim launchUnfinished relaunches: its machine, the turn reserved for it in
+// the wake pacing (the zero time for none yet), and how its release ended.
 type bootRelaunch struct {
-	token     claim.Token
-	m         *supervise.Machine
-	turn      time.Time
-	spawnable bool
-	refused   bool
+	token   claim.Token
+	m       *supervise.Machine
+	turn    time.Time
+	release releaseOutcome
 }
+
+// releaseOutcome is how the release of one unfinished launch ended (releaseUnfinishedClaim).
+type releaseOutcome int
+
+const (
+	// releaseSettled is a claim that left launch_uncertain by another way, its old process's
+	// hello or a stop, and is not relaunched.
+	releaseSettled releaseOutcome = iota
+	// releaseQueued is a claim released to queued with no process, relaunched now.
+	releaseQueued
+	// releaseRefused is a release the store did not take, retried at a later sweep.
+	releaseRefused
+)
 
 // waitingLaunches is tokens as launchUnfinished takes them: each with no turn reserved yet.
 func waitingLaunches(tokens []claim.Token) map[claim.Token]time.Time {
@@ -71,18 +82,17 @@ func (s *supervision) launchUnfinished(ctx context.Context, waiting map[claim.To
 			defer releasing.Done()
 			// Each relaunch runs on a goroutine of its own beside the others, so each takes a
 			// hold mark of its own rather than ctx's.
-			l.spawnable, l.refused = s.releaseUnfinishedClaim(store.ForConcurrentWorker(ctx), l.token, l.m)
+			l.release = s.releaseUnfinishedClaim(store.ForConcurrentWorker(ctx), l.token, l.m)
 		}()
 	}
 	releasing.Wait()
+	launches = slices.DeleteFunc(launches, func(l *bootRelaunch) bool { return l.release == releaseSettled })
 	s.reserveUnfinishedTurns(launches)
 	var launching sync.WaitGroup
 	refused := map[claim.Token]time.Time{}
 	for _, l := range launches {
-		if l.refused {
+		if l.release == releaseRefused {
 			refused[l.token] = l.turn
-		}
-		if !l.spawnable {
 			continue
 		}
 		launching.Add(1)
@@ -99,35 +109,43 @@ func (s *supervision) launchUnfinished(ctx context.Context, waiting map[claim.To
 	return refused
 }
 
-// releaseUnfinishedClaim releases one unfinished launch on ctx, and reports whether the claim is
-// now queued with no process, the one claim launchUnfinished launches again, and whether the
-// store refused the release (launchUnfinished).
-func (s *supervision) releaseUnfinishedClaim(ctx context.Context, token claim.Token, m *supervise.Machine) (spawnable, refused bool) {
+// releaseUnfinishedClaim releases one unfinished launch on ctx, and reports how the release ended
+// (launchUnfinished).
+func (s *supervision) releaseUnfinishedClaim(ctx context.Context, token claim.Token, m *supervise.Machine) releaseOutcome {
 	released, err := m.ReleaseUncertainLaunch(ctx)
 	if err != nil {
-		return false, s.supervisor.decisionFailed(token, "release of an uncertain launch", err,
-			"supervise: release an uncertain launch; retrying at the next orphan sweep")
+		if s.supervisor.decisionFailed(token, "release of an uncertain launch", err,
+			"supervise: release an uncertain launch; retrying at the next orphan sweep") {
+			return releaseRefused
+		}
+		return releaseSettled
 	}
 	c := m.Claim()
 	if !released || c.State != supervise.StateQueued || c.Locator != nil {
 		s.log.Info("supervise: unrecorded launch settled without relaunch", "claim", token, "state", c.State)
-		return false, false
+		return releaseSettled
 	}
-	return true, false
+	return releaseQueued
 }
 
-// reserveUnfinishedTurns reserves a turn in the wake pacing for each of launches that waits — the
-// release left it to launch, or refused it for a later sweep — holds no turn still to come, and
-// whose launch the gate would hold (supervise.PacedLaunch): one at a time, the claim whose work
-// was owed longest first (owedSince). A claim the gate would not hold — the pacing off, a project
-// pause holding it (the pause's gate takes no turn), the project controller's — is reserved
-// nothing, and launches as its gate decides.
+// reserveUnfinishedTurns hands a turn in the wake pacing to each of launches whose launch the gate
+// would hold (supervise.PacedLaunch), in the order their work was owed (owedSince): the claim owed
+// longest takes the earliest. The turns handed out are the pool of the turns these launches still
+// hold that are to come, and one turn reserved afresh for each launch that holds none, or holds one
+// that has passed. A launch the gate would not hold — the pacing off, a project pause holding it
+// (the pause's gate takes no turn), the project controller's — is handed none, and launches as its
+// gate decides.
 //
-// A claim whose release the store refused keeps its turn for the sweep that retries it, so a
-// refusal that clears before that turn costs the claim no place behind the claims released before
-// it. A kept turn that has passed by the retry is reserved again here, in owed order with the rest:
-// the gate runs a passed turn at once, and every claim a store outage kept past its turn would
-// otherwise launch together at its retry, outside the pace the operator set.
+// A claim whose release the store refused keeps the turn it was handed for the sweep that retries
+// it, so a refusal that clears costs the claim no place: its turn goes back into the pool and, its
+// work owed longer, it takes the pool's earliest turn again. The pool is what keeps that order when
+// turns pass: a kept turn that has passed is replaced by a fresh one at the pacing's tail, but the
+// pool sorts the fresh with the kept and hands the earliest to the claim owed longest, so the
+// claims owed longest do not launch last, and a passed turn is never run at once, which would let
+// every claim a store outage held launch together outside the pace. A refused claim whose turn
+// has passed is handed none and reserved none while it stays refused, so a refusal that never
+// clears does not take a turn of the pacing at every sweep; its release, when it comes, reserves
+// it one.
 func (s *supervision) reserveUnfinishedTurns(launches []*bootRelaunch) {
 	deps := &s.supervisor.deps
 	now := deps.Clock.Now()
@@ -135,21 +153,36 @@ func (s *supervision) reserveUnfinishedTurns(launches []*bootRelaunch) {
 		launch *bootRelaunch
 		since  time.Time
 	}
-	var queue []owed
+	var (
+		queue []owed
+		pool  []time.Time
+		fresh int
+	)
 	for _, l := range launches {
-		if !l.spawnable && !l.refused || l.turn.After(now) {
+		c := l.m.View().Claim
+		if !supervise.PacedLaunch(deps, &c) {
+			l.turn = time.Time{}
 			continue
 		}
-		l.turn = time.Time{}
-		if c := l.m.View().Claim; supervise.PacedLaunch(deps, &c) {
-			queue = append(queue, owed{launch: l, since: owedSince(c)})
+		switch {
+		case l.turn.After(now):
+			pool = append(pool, l.turn)
+		case l.release == releaseRefused && !l.turn.IsZero():
+			continue
+		default:
+			fresh++
 		}
+		queue = append(queue, owed{launch: l, since: owedSince(c)})
 	}
+	for range fresh {
+		pool = append(pool, deps.WakePace.Reserve(deps.Clock.Now()))
+	}
+	slices.SortFunc(pool, time.Time.Compare)
 	slices.SortStableFunc(queue, func(a, b owed) int {
 		return cmp.Or(compareOwed(a.since, b.since), cmp.Compare(a.launch.token, b.launch.token))
 	})
-	for _, waiting := range queue {
-		waiting.launch.turn = deps.WakePace.Reserve(deps.Clock.Now())
+	for i, waiting := range queue {
+		waiting.launch.turn = pool[i]
 	}
 }
 

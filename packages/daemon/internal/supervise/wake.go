@@ -109,10 +109,20 @@ type WakePace struct {
 	// (openSupervision in internal/daemon).
 	Reserve func(now time.Time) time.Time
 	// Rate and Burst are the pace the operator set (worker_wakes_per_minute, worker_wake_burst),
-	// carried for the line a wake writes as it runs and read for nothing else: the reservation
-	// above is the whole of the decision.
+	// carried for the line a wake writes as it runs. The reservation above is the whole of the
+	// decision but one: Rate also says how late a launch whose caller reserved its turn may reach
+	// the gate and still run at that turn (interval, reserveWake).
 	Rate  int
 	Burst int
+}
+
+// interval is what one wake costs at the operator's rate: the least spacing between two turns the
+// pacing gives at a burst of one. A rate of 0 or less, the pacing off, costs nothing.
+func (p WakePace) interval() time.Duration {
+	if p.Rate <= 0 {
+		return 0
+	}
+	return time.Minute / time.Duration(p.Rate)
 }
 
 // WakeWaiting is a machine's waiting wake as its view publishes it: what kind of wake it is
@@ -267,18 +277,21 @@ func (m *Machine) reserveWake(ctx context.Context, exempt bool, turn time.Time, 
 	}
 	// Past the return above there is a limiter and this wake is not one it lets through, so the
 	// pacing could have held it: the daemon hands a Reserve only while the operator's rate is
-	// above 0 (the daemon's run), which is why nothing here reads WakePace.Rate, whose doc says
-	// it is read for the line alone.
+	// above 0 (the daemon's run).
 	reserve := m.deps.WakePace.Reserve
 	now := m.deps.Clock.Now()
 	// A caller that reserved this launch's turn already, in an order of its own
 	// (RequestSpawn.Turn), was charged that moment, and a second reservation would charge it twice.
+	// A launch that reaches the gate less than one interval after its turn runs now, its own turn
+	// late; one whose turn passed longer ago is reserved a turn afresh, since every launch the
+	// caller posted together that reached its gate that late would otherwise run in one instant,
+	// outside the rate and the burst.
 	at := now
 	switch {
-	case turn.IsZero():
-		at = reserve(now)
 	case turn.After(now):
 		at = turn
+	case turn.IsZero() || now.Sub(turn) >= m.deps.WakePace.interval():
+		at = reserve(now)
 	}
 	m.wakeLetOut(at)
 	if !at.After(now) {
@@ -763,12 +776,15 @@ func (m *Machine) runParkedLaunchNow(ctx context.Context, ev Event) error {
 	return m.runWake(ctx, waiting, false)
 }
 
-// runDroppedLaunchForRetry is an operator's retry of a claim whose launch the pacing parked over no
-// process, where the state the gate found is one no retry row acts on: queued, which every spawn
-// and the boot's relaunch of an unfinished launch park from, and suspended, which a rule's resume
-// parks from. The claim reads launching for the whole wait, so a person who sees it stuck reaches
-// for `legion claims retry`; refusing that retry as "a queued claim is spawned, not retried" left
-// the claim behind a restart's whole queue, an hour of it on 2026-11-23 (dispatch://INFRA-5482).
+// runDroppedLaunchForRetry is an operator's retry of a claim whose launch the pacing or the pause's
+// gate parked over no process, where the state the gate found is one no retry row acts on: queued,
+// which every spawn and the boot's relaunch of an unfinished launch park from; suspended, which a
+// rule's resume parks from; and launching, which a try the pause met after its write
+// (pauseHeldTry) and a start whose pod grant the pause met (podStartDue) are held in, their wake
+// already past the pacing (wake.ran), whose run is a fresh try. The claim reads launching for the
+// whole wait, so a person who sees it stuck reaches for `legion claims retry`; refusing that retry
+// as "a queued claim is spawned, not retried" left the claim behind a restart's whole queue, an
+// hour of it on 2026-11-23 (dispatch://INFRA-5482).
 // The person is asking for the claim to run, and the launch the dropped wake holds is the one that
 // runs it, so that launch runs here, unpaced, exactly as its turn would have run it: the claim is
 // put back launching, where the park wrote it (waitOnMachine), and the wake goes through runWake,

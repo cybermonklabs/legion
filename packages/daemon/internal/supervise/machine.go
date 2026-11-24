@@ -1848,7 +1848,8 @@ func NewMachine(ctx context.Context, deps Deps, c Claim) (*Machine, error) {
 // answers ErrSuspendHeld (holdSuspension). A request the wake pacing never makes wait, reaching a
 // claim a paced wake parked with no process, drops that wake before the lookup and is then
 // decided against the state the gate found (dropWakeFor); an operator's retry no row of that state
-// decides runs the dropped launch itself (runDroppedLaunchForRetry); an operator's task the claim
+// decides — queued, suspended, or launching for a try the pause held after its write — runs the
+// dropped launch itself (runDroppedLaunchForRetry); an operator's task the claim
 // can take, over a launch parked above a process the claim still records, runs that launch first,
 // so the row that queues the task is the row of the claim that launch leaves (runParkedLaunchNow).
 //
@@ -2914,8 +2915,8 @@ func (m *Machine) launch(ctx context.Context, cause string) error {
 //
 // turn is the moment the request already reserved for this launch in the wake pacing
 // (RequestSpawn.Turn), which the gate takes in place of a reservation of its own, and the zero
-// time for every launch that reserved none. It travels with the launch as requested does, and a
-// retry raised anew from the top reserves afresh, passing the zero time.
+// time for every launch that reserved none. Only the gate reads it, and no field of the machine
+// holds it; a retry raised anew from the top reserves afresh, passing the zero time.
 func (m *Machine) launchAfter(ctx context.Context, charged, exempt, requested bool, turn time.Time, cause string) error {
 	again := func(ctx context.Context) error { return m.launchAfter(ctx, charged, exempt, false, time.Time{}, cause) }
 	if err := m.checkLaunch(ctx); err != nil {

@@ -85,26 +85,15 @@ func newBootRig(t *testing.T, n int, store supervise.Store) *bootRig {
 	return r
 }
 
-// spawned is how many times the runtime was asked to launch token.
-func (r *bootRig) spawned(token claim.Token) int {
-	launched := 0
-	for _, call := range r.rt.CallsOf("Spawn") {
-		if call.Spec.Claim == token {
-			launched++
-		}
-	}
-	return launched
-}
-
 // wantSpawned is the runtime having been asked to launch each of claims[i] for i in want once, and
 // no other claim at all.
 func (r *bootRig) wantSpawned(want ...int) {
 	r.t.Helper()
-	if got := len(r.rt.CallsOf("Spawn")); got != len(want) {
+	if got := len(r.rt.CallsOf("Spawn")) + len(r.rt.CallsOf("Resume")); got != len(want) {
 		r.t.Fatalf("the boot made %d launches, want %d, of claims %v", got, len(want), want)
 	}
 	for _, i := range want {
-		if got := r.spawned(r.claims[i].Token); got != 1 {
+		if got := len(launchesOf(r.rt, r.claims[i].Token)); got != 1 {
 			r.t.Fatalf("the boot launched %s %d times, want once", r.claims[i].Token, got)
 		}
 	}
@@ -216,6 +205,71 @@ func TestABootRelaunchRefusedPastItsTurnIsPacedAgainAtTheRetry(t *testing.T) {
 	r.wantSpawned(0, 1, n-1)
 	r.wantWaitingAt(n-2, 11)
 	r.wantNextTurn(12)
+}
+
+// The claims owed longest keep the earliest turns however a refusal leaves their kept turns: the
+// store refuses all four releases at the boot, and by the retry, an interval and a half on, the
+// two earliest kept turns have passed while the two later have not. The retry pools the two still
+// to come with two fresh ones and hands them out in owed order, so the claim owed longest still
+// launches first, and no more turns are reserved than were passed.
+func TestABootRelaunchRefusedAcrossPassingTurnsKeepsTheOwedOrder(t *testing.T) {
+	t.Parallel()
+	const n = 4
+	store := &releaseRefusingStore{outboxClaimStore: &outboxClaimStore{}}
+	r := newBootRig(t, n, store)
+	store.refuse = map[claim.Token]bool{}
+	for _, c := range r.claims {
+		store.refuse[c.Token] = true
+	}
+
+	refused := r.s.launchUnfinished(context.Background(), waitingLaunches(unfinishedOf(r.claims)))
+	if len(refused) != n {
+		t.Fatalf("the relaunch refused %v, want all %d claims", refused, n)
+	}
+	r.clock.advance(testWakeInterval + testWakeInterval/2)
+
+	if again := r.s.launchUnfinished(context.Background(), refused); len(again) != 0 {
+		t.Fatalf("the retry refused %v", again)
+	}
+
+	r.wantSpawned()
+	for i := n - 1; i >= 0; i-- {
+		r.wantWaitingAt(i, n+1-i)
+	}
+	r.wantNextTurn(n + 2)
+}
+
+// A refusal that never clears takes no turn of the pacing at every sweep: the claim's one turn
+// passes, and the sweeps after it reserve it nothing more until its release comes.
+func TestABootRelaunchRefusedAtEverySweepTakesOneTurn(t *testing.T) {
+	t.Parallel()
+	store := &releaseRefusingStore{outboxClaimStore: &outboxClaimStore{}}
+	r := newBootRig(t, 1, store)
+	token := r.claims[0].Token
+	reserved := 0
+	r.sup.deps.WakePace.Reserve = func(now time.Time) time.Time {
+		reserved++
+		return r.limiter.Reserve(now)
+	}
+	refuse := func() {
+		store.mu.Lock()
+		store.refuse = map[claim.Token]bool{token: true}
+		store.mu.Unlock()
+	}
+	refuse()
+	waiting := r.s.launchUnfinished(context.Background(), waitingLaunches(unfinishedOf(r.claims)))
+	for range 3 {
+		r.clock.advance(time.Minute)
+		refuse()
+		if waiting = r.s.launchUnfinished(context.Background(), waiting); len(waiting) != 1 {
+			t.Fatalf("the sweep's retry refused %v, want %s again", waiting, token)
+		}
+	}
+
+	r.wantSpawned()
+	if reserved != 1 {
+		t.Fatalf("the boot and three sweeps reserved %d turns for a release the store never took, want the boot's one", reserved)
+	}
 }
 
 // unfinishedOf is the tokens of claims, in the order the store handed them back.
