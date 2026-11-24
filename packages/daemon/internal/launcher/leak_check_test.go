@@ -64,7 +64,7 @@ func packedLeakCheck(t *testing.T, launcher string) []byte {
 		leakguardtest.MustPassName: {Body: leakguardtest.MustPass, Mode: 0o644},
 		"fixtures/must-pass.bin":   {Body: string(fixture), Mode: 0o644},
 	})
-	body, _, err := leakguard.PackTarballManifest(bytes.NewReader(raw))
+	body, _, err := leakguard.PackTarballManifest(leakguardtest.Answer(raw))
 	if err != nil {
 		t.Fatalf("pack the test's tarball: %v", err)
 	}
