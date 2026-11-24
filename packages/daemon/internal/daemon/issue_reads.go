@@ -90,7 +90,7 @@ func (w *workflowRuntime) readIssuePullRequest(ctx context.Context, issue string
 	if w.readReviews(ctx, prCtx, github, pr) {
 		return false, nil
 	}
-	return pull.State == "open" && (pull.mergeState() == record.MergeStateUnknown || pull.mergeability() == record.MergeabilityUnknown), nil
+	return pull.State == pullOpen && (pull.mergeState() == record.MergeStateUnknown || pull.mergeability() == record.MergeabilityUnknown), nil
 }
 
 // issuePullRequest is the open pull request the per-issue read judges for key: the record's, when

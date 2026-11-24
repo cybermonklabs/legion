@@ -60,7 +60,7 @@ import (
 // sha (githubrest.ShownSHA).
 func (w *workflowRuntime) followHead(ctx context.Context, github githubrest.Client, pr record.PullRequest, pull githubPullRequest) (record.PullRequest, error) {
 	head := storetext.Text(pull.Head.SHA)
-	if pull.State != "open" || head == "" || head == pr.HeadSHA {
+	if pull.State != pullOpen || head == "" || head == pr.HeadSHA {
 		return pr, nil
 	}
 	current, err := w.openRecord(ctx, pr)
@@ -361,7 +361,7 @@ func (w *workflowRuntime) openPullRequestOn(ctx context.Context, repo, branch st
 		return githubPullRequest{}, false, fmt.Errorf("mint the implement App token for %s: %w", repository.Owner(), err)
 	}
 	var pulls []githubPullRequest
-	query := url.Values{"head": {repository.Owner() + ":" + branch}, "state": {"open"}}
+	query := url.Values{"head": {repository.Owner() + ":" + branch}, "state": {pullOpen}}
 	if err := github.Get(ctx, "/pulls?"+query.Encode(), "", &pulls); err != nil {
 		return githubPullRequest{}, false, err
 	}
